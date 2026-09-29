@@ -35,14 +35,28 @@ fn gov_with_signer(
     )
 }
 
+/// Spin up an already-built `router` on an ephemeral local port: the listener bind, the address
+/// read-back, the live `axum::serve` task, and a fresh client to hit it — the "spin up a real
+/// router" preamble every v1-transport test in this file repeated inline.
+async fn spin_up(
+    router: axum::Router,
+) -> (
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<()>,
+    reqwest::Client,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    (addr, handle, reqwest::Client::new())
+}
+
 /// Build a router whose App has governance enabled with a known admin token, returning the
 /// listen address + the live server handle.
 async fn serve_with_gov(gov: Arc<GovState>) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (addr, handle, _) = spin_up(router).await;
     (addr, handle)
 }
 
@@ -147,10 +161,7 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
         .pool("mypool", &[(0, 3), (1, 1)])
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     let get = |path: String| {
         let url = format!("http://{addr}{path}");
@@ -209,10 +220,7 @@ async fn test_api_root_unmatched_paths_speak_the_admin_envelope() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     // Unmatched path INSIDE the admin nest + an /api path outside any surface: both 404 in the
     // admin envelope (`code`, never a vendor `type`).
@@ -261,10 +269,7 @@ async fn test_keys_surface_governance_disabled_semantics() {
         inner.admin_chain = Vec::new();
     }
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     // Collection read: 200 empty page in the standard envelope.
     let r = client
@@ -328,10 +333,7 @@ async fn test_admin_v1_pool_detail_live_status() {
         .pool("mypool", &[(0, 5)])
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     let ok: serde_json::Value = client
         .get(format!("http://{addr}/api/v1/admin/pools/mypool"))
@@ -447,10 +449,7 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
         .force_open_in("fast", 0, now + 300);
 
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     let fast: serde_json::Value = client
         .get(format!("http://{addr}/api/v1/admin/pools/fast"))
@@ -516,10 +515,7 @@ async fn test_admin_v1_admin_auth_read() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     let body: serde_json::Value = client
         .get(format!("http://{addr}/api/v1/admin/admin-auth"))
@@ -563,10 +559,7 @@ async fn test_admin_v1_get_single_key() {
         .unwrap();
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     // Found → 200 with metadata, no secret/hash.
     let resp = client
@@ -661,10 +654,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
     gov.flush_metering();
     let app = crate::new_test_app().governance(gov).cost(cost).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     let body: serde_json::Value = client
         .get(format!("http://{addr}/api/v1/admin/usage"))
@@ -798,10 +788,7 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
     gov.flush_metering();
     let app = crate::new_test_app().governance(gov).cost(cost).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let mut out = Vec::new();
     for path in [
         format!("/api/v1/admin/keys/{}/usage", minted.id),
@@ -886,10 +873,7 @@ async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
     let env_for_warm = env.clone();
     let app = crate::new_test_app().governance(gov).hook_env(env).build();
     let router = crate::build_router(app);
-    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = l.local_addr().unwrap();
-    let serve = tokio::spawn(async move { axum::serve(l, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, serve, client) = spin_up(router).await;
     let admin = |req: reqwest::RequestBuilder| {
         req.header("x-admin-token", "admintok")
             .header("content-type", "application/json")
@@ -998,10 +982,7 @@ async fn test_admin_v1_plugin_schema_falls_back_to_manifest_when_describe_answer
     let env_for_warm = env.clone();
     let app = crate::new_test_app().governance(gov).hook_env(env).build();
     let router = crate::build_router(app);
-    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = l.local_addr().unwrap();
-    let serve = tokio::spawn(async move { axum::serve(l, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, serve, client) = spin_up(router).await;
     let admin = |req: reqwest::RequestBuilder| {
         req.header("x-admin-token", "admintok")
             .header("content-type", "application/json")
@@ -1088,10 +1069,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         .store
         .record_hard_down(0, "tripped before apply");
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let admin = |req: reqwest::RequestBuilder| {
         req.header("x-admin-token", "admintok")
             .header("content-type", "application/json")
@@ -1226,10 +1204,7 @@ pools:
         inner.store.record_hard_down(0, "tripped before reload");
     }
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let admin = |req: reqwest::RequestBuilder| req.header("x-admin-token", "admintok");
 
     // Reload: disk truth replaces the synthetic topology.
@@ -1333,10 +1308,7 @@ async fn test_admin_v1_mutation_rate_limit_config_class() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     // 10 rollback attempts to a bogus version (all 404 — still spend budget), then the 11th
     // is limited. Tolerate landing exactly on a minute boundary (window refill mid-loop) by
@@ -1423,10 +1395,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
             .insert("test-scope-module".to_string(), "full".to_string());
     }
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let with = |tok: &'static str, req: reqwest::RequestBuilder| {
         req.header("x-admin-token", tok)
             .header("content-type", "application/json")
@@ -1560,10 +1529,7 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
             .insert("test-scope-module".to_string(), "full".to_string());
     }
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let mint = |tok: &'static str| {
         client
             .post(format!("http://{addr}/api/v1/admin/keys"))
@@ -1621,10 +1587,7 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
             .insert("test-scope-module".to_string(), table);
     }
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     // Two reads as a group-mapped principal: the module's Identify lands in the cache.
     for _ in 0..2 {
@@ -1727,10 +1690,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
             .insert("test-scope-module".to_string(), "full".to_string());
     }
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let put = |tok: &'static str, body: serde_json::Value| {
         client
             .put(format!("http://{addr}/api/v1/admin/admin-auth"))
@@ -1859,10 +1819,7 @@ async fn test_admin_v1_put_auth_refuses_empty_chain() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     // An operator credential that DOES authenticate today asks to blank the chain: refused 400.
     let r = client
@@ -1908,10 +1865,7 @@ async fn test_admin_v1_put_auth_refused_on_locked_config() {
     // `.no_overlay()` = a LOCKED config (the only supported way to reach `overlay_path: None`).
     let app = crate::new_test_app().governance(gov).no_overlay().build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     // A chain the caller would survive — so ONLY the locked refusal can make this a 400.
     let resp = client
         .put(format!("http://{addr}/api/v1/admin/admin-auth"))
@@ -1959,10 +1913,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
         .no_overlay()
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let body = serde_json::json!({
         "providers": {
             "test-provider": {"protocol": "acme", "base_url": "http://127.0.0.1:1/", "api_key_env": "BUSBAR_TEST_LOCKED_APPLY_NO_KEY"}
@@ -2008,10 +1959,7 @@ async fn test_admin_v1_key_idempotent_mint_and_if_match() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let admin = |req: reqwest::RequestBuilder| {
         req.header("x-admin-token", "admintok")
             .header("content-type", "application/json")
@@ -2089,10 +2037,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_failure() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let post = |body: &'static str| {
         client
             .post(format!("http://{addr}/api/v1/admin/keys"))
@@ -2325,9 +2270,7 @@ async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
     let gov = gov_with_signer(gated_store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (addr, handle, _) = spin_up(router).await;
 
     let keys_url = format!("http://{addr}/api/v1/admin/keys");
     let post = |client: &reqwest::Client, url: &str| {
@@ -2469,10 +2412,7 @@ async fn test_admin_v1_key_rotate_and_pagination() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov.clone()).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let admin = |req: reqwest::RequestBuilder| {
         req.header("x-admin-token", "admintok")
             .header("content-type", "application/json")
@@ -2668,10 +2608,7 @@ async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete(
     let gov = gov_with_signer(slow_store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let keys_url = format!("http://{addr}/api/v1/admin/keys");
 
     let created: serde_json::Value = client
@@ -2852,10 +2789,7 @@ async fn test_admin_v1_put_hook_replaces_live_with_guards() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let admin = |req: reqwest::RequestBuilder| {
         req.header("x-admin-token", "admintok")
             .header("content-type", "application/json")
@@ -2966,10 +2900,7 @@ async fn test_admin_v1_config_versions_rollback_and_diff() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let admin = |req: reqwest::RequestBuilder| req.header("x-admin-token", "admintok");
 
     // v1: register a hook. v2: delete it. (Boot floor is v0.)
@@ -3068,10 +2999,7 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     // Before: no hooks.
     let before: serde_json::Value = client
@@ -3240,10 +3168,7 @@ async fn test_admin_v1_audit_records_mutations() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     // A uniquely-named hook so the audit assertion can't collide with a concurrent test.
     let name = "audit_probe_hook_x7";
@@ -3326,10 +3251,7 @@ async fn test_admin_v1_hook_mutation_404_is_audited() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     // Two uniquely-named, NEVER-registered hooks so the audit assertions can't collide.
     let put_name = "ghost_put_hook_q3";
@@ -3412,10 +3334,7 @@ async fn test_admin_v1_list_keys_filters() {
         .unwrap();
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let get = |query: String| {
         let url = format!("http://{addr}/api/v1/admin/keys{query}");
         let client = client.clone();
@@ -3564,10 +3483,7 @@ async fn test_admin_v1_config_plane_golden_path() {
         .overlay_path(overlay.clone())
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let c = reqwest::Client::new();
+    let (addr, handle, c) = spin_up(router).await;
     let base = format!("http://{addr}");
     let get = |p: String| {
         let (c, url) = (c.clone(), format!("{base}{p}"));
@@ -3678,10 +3594,7 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
         .overlay_path(overlay.clone())
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     // Register a global gate — the handler persists it to the overlay file.
     let created = client
@@ -3742,10 +3655,7 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
         .overlay_path(overlay.clone())
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     let create_group = |name: &'static str| {
         let c = client.clone();
@@ -3821,10 +3731,7 @@ async fn test_admin_v1_audit_records_key_mutations() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     // Mint a uniquely-named key.
     let minted: serde_json::Value = client
@@ -3879,10 +3786,7 @@ async fn test_admin_v1_base_hook_is_read_only_via_api() {
         .base_hook("pii-guard", base)
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let _handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, _handle, client) = spin_up(router).await;
 
     // POST a same-shape definition over the base hook's name → 409 (no silent transport redirect).
     let shadow = client
@@ -3953,10 +3857,7 @@ async fn base_hook_delete_conflict_outranks_a_stale_if_match() {
         .base_hook("pii-guard", base)
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let _handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, _handle, client) = spin_up(router).await;
 
     let del = client
         .delete(format!("http://{addr}/api/v1/admin/hooks/pii-guard"))
@@ -3982,10 +3883,7 @@ async fn test_admin_v1_delete_hook_takes_effect_live() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let tok = ("x-admin-token", "admintok");
 
     // Register a global tap.
@@ -4070,10 +3968,7 @@ async fn test_admin_v1_hooks_read_surface() {
         .global_hook("compress")
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     // List: the one hook, projected.
     let list = client
@@ -4155,10 +4050,7 @@ async fn test_admin_v1_hook_health_best_effort() {
         .hook("sock", mk("sock-hook-plugin"))
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let get = |name: &str| {
         let url = format!("http://{addr}/api/v1/admin/hooks/{name}/health");
         let client = client.clone();
@@ -4233,10 +4125,7 @@ async fn test_admin_v1_plugins_catalog_by_type() {
         .hook("myhook", gate)
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     let get = |q: &str| {
         let url = format!("http://{addr}/api/v1/admin/plugins?type={q}");
@@ -4310,10 +4199,7 @@ async fn test_admin_v1_auth_read() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     let body: serde_json::Value = client
         .get(format!("http://{addr}/api/v1/admin/auth"))
@@ -4355,9 +4241,7 @@ async fn test_admin_v1_auth_read_keys_chain_reports_1_5_5_open() {
         .auth(Arc::new(mw))
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (addr, handle, _) = spin_up(router).await;
     let body = reqwest::Client::new()
         .get(format!("http://{addr}/api/v1/admin/auth"))
         .header("x-admin-token", "admintok")
@@ -4384,10 +4268,7 @@ async fn test_admin_v1_config_validate_dry_run() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let url = format!("http://{addr}/api/v1/admin/config/validate");
 
     // Malformed body → 400 invalid_request (the REQUEST is broken, not the config).
@@ -4487,10 +4368,7 @@ async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let url = format!("http://{addr}/api/v1/admin/config/validate");
 
     let proposed = serde_json::json!({
@@ -4564,10 +4442,7 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
         .global_hook("g")
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     let resp = client
         .get(format!("http://{addr}/api/v1/admin/config"))
@@ -4663,9 +4538,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
             .build();
         let router = crate::build_router(app);
         async move {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = listener.local_addr().unwrap();
-            let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+            let (addr, handle, _) = spin_up(router).await;
             (addr, handle)
         }
     };
@@ -4948,10 +4821,7 @@ async fn test_admin_v1_openapi_gzip_negotiation() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let url = format!("http://{addr}/api/v1/admin/openapi.json");
 
     // Identity: no Accept-Encoding -> plain JSON, no Content-Encoding (the shape every pre-gzip
@@ -5028,10 +4898,7 @@ async fn test_admin_v1_all_reads_require_admin_token() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     for (rel, _) in crate::v1::json::V1_GET_PATHS {
         let path = format!("{}{rel}", busbar_kernel::admin::v1::contract::ADMIN_PREFIX);
@@ -5703,10 +5570,7 @@ async fn test_patch_key_three_state_group_and_enabled() {
         .groups_tree(groups)
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let base = format!("http://{addr}/api/v1/admin/keys");
 
     // Mint a pure-auth key (no group).
@@ -7151,9 +7015,7 @@ async fn serve_with_plugins_dir(
         0,
         busbar_kernel::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (addr, handle, _) = spin_up(router).await;
     (addr, handle)
 }
 
@@ -7181,9 +7043,7 @@ async fn serve_with_plugins_dir_and_hook_env(
         0,
         busbar_kernel::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (addr, handle, _) = spin_up(router).await;
     (addr, handle)
 }
 
@@ -8234,10 +8094,7 @@ async fn test_admin_v1_plugin_install_rejections() {
             0,
             busbar_kernel::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
         );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let strict_addr = listener.local_addr().unwrap();
-        let strict_handle =
-            tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let (strict_addr, strict_handle, _) = spin_up(router).await;
         let tarball = admin_test_tarball("acme-store-x", "acmex");
         let resp = client
             .post(format!("http://{strict_addr}/api/v1/admin/plugins"))
@@ -8300,10 +8157,7 @@ async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400
     };
     let app = crate::new_test_app().governance(gov).cost(cost).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let url = format!("http://{addr}/api/v1/admin/keys");
 
     // A mint naming a MISSING group is a 400 naming the offender (the field is `group` in 1.5.0).
@@ -8414,10 +8268,7 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
         .groups_tree(groups)
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     // Mint into a leaf that does NOT exist, naming its team as the parent → auto-provision.
     let resp = client
@@ -8546,10 +8397,7 @@ async fn test_mint_parent_mismatch_is_409() {
         .groups_tree(groups)
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let url = format!("http://{addr}/api/v1/admin/keys");
 
     // Bob exists under team-a; a mint naming team-b as parent is a 409 (never re-home).
@@ -8617,10 +8465,7 @@ async fn test_max_keys_per_principal_cap_trips() {
         inner.max_keys_per_principal = 2;
     }
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let url = format!("http://{addr}/api/v1/admin/keys");
     let mint = |name: &str, group: &str| {
         client
@@ -8684,10 +8529,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
         inner.max_keys_per_principal = 1;
     }
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let keys_url = format!("http://{addr}/api/v1/admin/keys");
 
     // Fill the cap (1) with an unrelated key first — no Idempotency-Key, not part of the reuse test.
@@ -8808,10 +8650,7 @@ async fn test_admin_v1_patch_no_op_on_an_already_counted_key_is_not_an_admission
         inner.max_keys_per_principal = 1;
     }
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     // A genuinely empty PATCH on `a`: no `enabled`, no `group` — nothing that could change the
     // count. `a` was already live+counted in `capped` before this PATCH and stays so after it.
@@ -8879,10 +8718,7 @@ async fn drive_key_cap_and_delegation_errors() {
         inner.max_keys_per_principal = 2;
     }
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, server, client) = spin_up(router).await;
     let keys_url = format!("http://{addr}/api/v1/admin/keys");
 
     let mint = |name: &'static str, group: &'static str| {
@@ -9052,10 +8888,7 @@ async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
         inner.max_keys_per_principal = 3;
     }
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let url = format!("http://{addr}/api/v1/admin/keys");
     let mint = |name: String| {
         let client = client.clone();
@@ -9774,10 +9607,7 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
         inner.providers_path = Some(providers_path.clone());
     }
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
     // Create a runtime leaf group parented to the base `team`.
@@ -9928,10 +9758,7 @@ async fn test_admin_v1_overlay_reset_hooks_reverts_to_base() {
         inner.providers_path = Some(providers_path.clone());
     }
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
     // Register a runtime hook (the base config declares none).
@@ -10015,10 +9842,7 @@ async fn test_admin_v1_overlay_reset_stale_if_match_conflicts() {
         inner.providers_path = Some(providers_path.clone());
     }
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
     // Put SOMETHING in the overlay so the reset is not the empty-section no-op path.
@@ -10069,10 +9893,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_400() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     for bad in ["auth", "plugins", "Groups", "keys"] {
         let r = client
@@ -10103,9 +9924,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (addr, handle, _) = spin_up(router).await;
 
     let r = reqwest::Client::new()
         .delete(format!("http://{addr}/api/v1/admin/overlay/limits"))
@@ -10149,10 +9968,7 @@ async fn test_admin_v1_overlay_reset_empty_section_is_idempotent_noop() {
         .overlay_path(overlay.clone())
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
     let v_before: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/info")))
@@ -10207,10 +10023,7 @@ async fn test_admin_v1_overlay_reset_requires_full_scope() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     // The scope matrix requires `full` for DELETE /overlay/{section} — a read-only (or
     // hooks-register) principal cannot pass it.
@@ -10432,9 +10245,7 @@ async fn settings_test_app(
         inner.providers_path = Some(providers_path.clone());
     }
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (addr, handle, _) = spin_up(router).await;
     (dir, overlay, addr, handle, limits_lock)
 }
 
@@ -10592,10 +10403,7 @@ async fn test_admin_v1_config_settings_survives_a_real_boot_reload_at_default_ov
         inner.providers_path = Some(providers_path.clone());
     }
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
@@ -11171,9 +10979,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits()
         inner.providers_path = Some(providers_path.clone());
     }
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (addr, handle, _) = spin_up(router).await;
 
     let before = busbar_kernel::config::limits::installed();
     // A cap nothing else in this binary uses, so its presence afterwards can only come from THIS
@@ -11291,9 +11097,7 @@ auth:
         inner.providers_path = Some(providers_path.clone());
     }
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (addr, handle, _) = spin_up(router).await;
 
     // THE ROTATION INPUT: the secret behind the ref changes BEFORE the apply that will re-resolve
     // it — exactly the operational sequence this supports (rotate the file, then apply).
@@ -11465,9 +11269,7 @@ async fn settings_test_app_no_overlay(
         inner.providers_path = Some(providers_path.clone());
     }
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (addr, handle, _) = spin_up(router).await;
     (dir, addr, handle)
 }
 
@@ -11752,9 +11554,7 @@ async fn serve_keys_fixture(
         }
     };
     let router = crate::build_router(app.clone());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (addr, handle, _) = spin_up(router).await;
     // A live key id for the stale-ETag cases (only mintable on the signing fixture).
     let live = if fixture == KeysFixture::Signing {
         let (key, _) = app
@@ -12275,10 +12075,7 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
         )
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, server, client) = spin_up(router).await;
     for (rel, body) in [
         (
             "/groups",
@@ -13103,10 +12900,7 @@ async fn drive_plugin_reload_errors() {
         .disk_paths(config, providers)
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, server, client) = spin_up(router).await;
 
     let r = client
         .post(format!("http://{addr}/api/v1/admin/plugins/reload"))
@@ -13151,10 +12945,7 @@ async fn drive_plugin_rollback_errors() {
         .overlay_path(overlay)
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, server, client) = spin_up(router).await;
     let rollback = |body: String| {
         client
             .post(format!("http://{addr}/api/v1/admin/plugins/rollback"))
@@ -13281,10 +13072,7 @@ async fn drive_plugin_inspect_errors() {
         .overlay_path(overlay)
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, server, client) = spin_up(router).await;
 
     // tarball_b64 that is not valid base64 → AdminError::Validation → 400 invalid_request. This is the
     // witness for the operation's declared 400.
@@ -13866,10 +13654,7 @@ async fn limit_zero_does_not_produce_a_self_referential_cursor() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let admin = |req: reqwest::RequestBuilder| req.header("x-admin-token", "admintok");
 
     // Seed rows for all three lists: minting keys produces audit entries AND `list_keys` rows;
@@ -14194,9 +13979,7 @@ async fn named_map_app_opts(
     };
     let app = builder.build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (addr, handle, _) = spin_up(router).await;
     (dir, overlay, addr, handle)
 }
 
@@ -14359,10 +14142,7 @@ async fn test_admin_v1_named_map_reads_project_settings_keys_never_values() {
         )
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     for (section, name, secret, keys) in [
         (
@@ -14494,10 +14274,7 @@ async fn test_admin_v1_named_map_rejects_an_under_scoped_caller() {
             .insert("test-scope-module".to_string(), table);
     }
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let viewer = |r: reqwest::RequestBuilder| {
         r.header("x-admin-token", "grp:viewers")
             .header("content-type", "application/json")
@@ -15360,9 +15137,7 @@ async fn drive_named_map_errors() {
         let gov = gov_with_signer(store, Some("admintok".to_string()));
         let app = crate::new_test_app().governance(gov).build();
         let router = crate::build_router(app);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let (addr, handle, _) = spin_up(router).await;
         {
             for (label, method, rel, body) in [
                 (
@@ -15675,10 +15450,7 @@ async fn test_admin_v1_hook_reads_project_settings_keys_never_values() {
         .hook("baa-gate", cfg)
         .build();
     let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
 
     for url in [
         format!("http://{addr}/api/v1/admin/hooks"),
@@ -15822,10 +15594,7 @@ async fn a_durable_node_journals_exactly_one_claim_for_a_repeated_key_post_keys(
     // same extension slot the production seam fills.
     let router = router.layer(axum::Extension(ext));
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let mint = || {
         client
             .post(format!("http://{addr}/api/v1/admin/keys"))
@@ -15874,10 +15643,7 @@ async fn a_memory_only_node_journals_no_claim_for_a_repeated_key_post_keys() {
     // NO `.layer(Extension(..))` here — the memory-buffered-node shape: `create_key` sees `None`.
     let router = crate::build_router(app);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
+    let (addr, handle, client) = spin_up(router).await;
     let mint = || {
         client
             .post(format!("http://{addr}/api/v1/admin/keys"))
