@@ -11,9 +11,9 @@
 //! exists as soon as the instance is bound, whether or not the plugin has logged anything yet.
 //!
 //! RED IN THIS BUILD, KNOWN, AND OWNED: nothing in the production load path binds a plugin instance
-//! to `busbar_plugin_loader::dispatch::PluginLogConfig::sink`, so no file appears. The production
-//! plugin load path (BOOT-CHAIN step 6) binds every instance it loads with that sink; this test is
-//! its acceptance, and its `#[ignore]` comes off in that change.
+//! to its `PluginLogConfig::sink` yet, so no file appears. BOOT-CHAIN step 6 — the production
+//! load path for every instance the host boots — binds that sink; this test is its acceptance, and
+//! its `#[ignore]` comes off in that change.
 //!
 //! Run it: `cargo test -p busbar --test plugin_log_file_boot -- --ignored`
 #![cfg(unix)]
@@ -44,9 +44,10 @@ fn fixture_dir() -> PathBuf {
 }
 
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
+    // The provider catalog row is test data (`fixtures/mock_provider.yaml`), not a literal here.
     std::fs::write(
         dir.join("providers.yaml"),
-        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
+        include_str!("fixtures/mock_provider.yaml"),
     )
     .unwrap();
     std::fs::write(
