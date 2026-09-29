@@ -29,6 +29,7 @@
 
 use std::sync::Arc;
 
+use crate::root::loader::{DynPlane, ServedPlane};
 use busbar_contract::abi::cold::endpoint::{RouteAuth, RouteMethod};
 use busbar_contract::abi::hot;
 use busbar_contract::abi::hot::StatusClass;
@@ -40,7 +41,6 @@ use busbar_kernel::plane::registry::{BillableClass, BuildCtx, PlaneDeclaration, 
 use busbar_kernel::plane::PlaneAdmission;
 use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneResponse, PlaneRouteSpec};
-use crate::root::loader::{DynPlane, ServedPlane};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
 /// run once the deployment's secret resolver exists.
@@ -224,9 +224,7 @@ pub fn linked_exports(
             declares,
             statement: None,
         };
-        Ok(crate::root::loader::LinkedPlugin::boundary(
-            manifest, entry,
-        ))
+        Ok(crate::root::loader::LinkedPlugin::boundary(manifest, entry))
     };
     exports.iter().map(row).collect()
 }
@@ -760,15 +758,13 @@ async fn hot_answer_blocking(ctx: PlaneReqCtx) -> PlaneResponse {
     if let Some(Emitted::Head(status, headers)) = rx.recv().await {
         return live_response(status, &headers, rx);
     }
-    let reply = run
-        .await
-        .unwrap_or_else(|_| crate::root::loader::HotReply {
-            class: StatusClass::Fault,
-            status: None,
-            headers: Vec::new(),
-            body: Vec::new(),
-            streamed: false,
-        });
+    let reply = run.await.unwrap_or_else(|_| crate::root::loader::HotReply {
+        class: StatusClass::Fault,
+        status: None,
+        headers: Vec::new(),
+        body: Vec::new(),
+        streamed: false,
+    });
     buffered_response(reply)
 }
 

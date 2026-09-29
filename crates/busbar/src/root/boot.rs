@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use super::loader::*;
+use super::loader::{boot::*, dispatch::LoadError, dispatch::ManifestFacts, PluginRegistry};
 use busbar_contract::abi::mechanism::KindCode;
 
 /// STAGE 0, PLAN: what the configuration file at `path` uses, read off its raw document (secret
