@@ -6,7 +6,7 @@
 //!
 //! The binary boots with `plugins.logs.dir` set and one export instance, `metrics`, over the
 //! compiled-in `prometheus` plugin. A compiled-in plugin is called through the same door and table
-//! as a dropped-in one (THE DESIGN, §11.4), so once the instance is loaded, the host has bound it
+//! as a dropped-in one (BUSBAR-1.6.0.md THE DESIGN, §11.4), so once the instance is loaded, the host has bound it
 //! to its own log sink, and opening that sink creates `<plugins.logs.dir>/metrics.log`. The file
 //! exists as soon as the instance is bound, whether or not the plugin has logged anything yet.
 //!

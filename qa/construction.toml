@@ -376,7 +376,7 @@ from    = 55077
 to      = 55163
 because = "ARCHITECT 2026-09-28: R-KERNEL, FOLD-LLM C4' option (a) (legacy fold rulings F19/F20; BUSBAR-1.6.0.md THE DESIGN, §1). The VERIFY step's destination guard (pool allow-list, reachable fallback pools, priced destination), PoolView and VerifyRefusal move from the llm plane's verify step into the kernel's door, contract types only, for the plane driver to call at VERIFY; no kernel -> kernel-scope edge. Rebased over LOG-BRIDGE's landed +21 (plugins.logs config grammar): measured fresh at the new base by LANDER at land time. Measured by cargo xtask gate construction: 55077 before, 55163 after, +86. The ceiling rises by exactly that."
 
-# ── THE KERNEL CEILING, RE-ARMED BY LOG-BRIDGE plugin logging (#85; THE DESIGN §11.2) — EXPIRED
+# ── THE KERNEL CEILING, RE-ARMED BY LOG-BRIDGE plugin logging (#85; BUSBAR-1.6.0.md THE DESIGN, §11.2) — EXPIRED
 #    AND STRUCK
 #
 # Declared `rules.loc-ceilings.kernel_ceiling` 55056 -> 55077 (ARCHITECT 2026-09-28, R-KERNEL). Its
@@ -416,7 +416,7 @@ because = "ARCHITECT 2026-09-28: R-KERNEL, FOLD-LLM C4' option (a) (legacy fold 
 # 24900 -> 24909 (OWNER RULING Q68(3)). Its commit reached the base; struck by LOG-BRIDGE's
 # re-arm below, which declares the pair's next figure.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED BY LOG-BRIDGE plugin logging (#85; THE DESIGN §11.2) —
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY LOG-BRIDGE plugin logging (#85; BUSBAR-1.6.0.md THE DESIGN, §11.2) —
 #    measured and written by LANDER at land time, rebased over DOOR-TRANSPORT's already-landed
 #    figure ──────────────────────────────────────────────────────────────────────────────────
 

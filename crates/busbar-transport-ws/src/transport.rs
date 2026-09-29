@@ -688,7 +688,7 @@ impl Transport for WsTransport {
                             // not already sent one MUST send a Close frame in response before the
                             // underlying connection ends. NO REPLY IS BUILT HERE: tungstenite parses
                             // the incoming Close and already QUEUES the reply the moment `reader.next()`
-                            // (above) returns it -- echoing the peer's own code and reason, as §5.5.1
+                            // (above) returns it -- echoing the peer's own code and reason, as RFC 6455 §5.5.1
                             // recommends -- the prebuilt library owns that decision, not this crate. Its
                             // own docs are explicit that the queued reply needs a caller to keep driving
                             // read/write/flush to actually reach the wire (tungstenite
