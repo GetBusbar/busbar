@@ -244,3 +244,78 @@ fn an_entry_that_composes_over_a_layer_is_not_served_over_the_socket() {
     ));
     assert!(HostWire::new(door).is_err());
 }
+
+/// Every I/O error kind the seam spells, pinned per arm (the retired tcp transport's table).
+#[test]
+fn every_io_error_kind_maps_through_the_table() {
+    use std::io::{Error, ErrorKind};
+    for (kind, want) in [
+        (ErrorKind::ConnectionRefused, TransportError::Refused),
+        (ErrorKind::TimedOut, TransportError::Timeout),
+        (ErrorKind::ConnectionReset, TransportError::Reset),
+        (ErrorKind::ConnectionAborted, TransportError::Reset),
+        (ErrorKind::AddrNotAvailable, TransportError::AddressRefused),
+        (ErrorKind::InvalidInput, TransportError::AddressRefused),
+        (ErrorKind::BrokenPipe, TransportError::Closed),
+        (ErrorKind::Other, TransportError::Closed),
+    ] {
+        assert_eq!(map_io_err(&Error::from(kind)), want, "{kind:?}");
+    }
+}
+
+/// A dial to an address nothing listens on is refused by the far end; a dialled connection's peer
+/// is the address it dialled; a write to a connection already closed is Closed.
+#[test]
+fn a_dial_to_nothing_is_refused_and_a_closed_connection_takes_no_write() {
+    worker().block_on(async {
+        let w = wire();
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let nothing = free.local_addr().unwrap().to_string();
+        drop(free);
+        assert_eq!(
+            w.dial_authority(&nothing).await.map(|_| ()),
+            Err(TransportError::Refused)
+        );
+        let (client, _server, l) = pair(&w).await;
+        assert_eq!(
+            client.peer(),
+            l.local_addr(),
+            "the peer is the address dialled"
+        );
+        w.close(client.clone(), CloseReason::Normal);
+        assert_eq!(
+            w.write(&client, StreamId(0), ScratchBytes::new(b"late"))
+                .await,
+            Err(TransportError::Closed)
+        );
+    });
+}
+
+/// A far end that resets the connection ends its frames and the wire forgets it.
+#[test]
+fn a_reset_from_the_far_end_ends_the_frames_and_deregisters() {
+    worker().block_on(async {
+        let w = wire();
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap().to_string();
+        let (client, far) = tokio::join!(w.dial_authority(&addr), l.accept());
+        let client = client.unwrap();
+        let (far, _) = far.unwrap();
+        assert_eq!(w.live(), 1);
+        socket2::SockRef::from(&far)
+            .set_linger(Some(Duration::ZERO))
+            .unwrap();
+        drop(far);
+        let mut frames = w.frames(client.clone());
+        let ended = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(f) = frames.next().await {
+                if f.is_err() {
+                    break;
+                }
+            }
+        })
+        .await;
+        assert!(ended.is_ok(), "the reset ends the frames");
+        assert_eq!(w.live(), 0, "the reset connection is deregistered");
+    });
+}
