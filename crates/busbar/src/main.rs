@@ -612,6 +612,9 @@ fn open_boot_book(app: &busbar_kernel::state::App) -> root::durability::NodeBook
 }
 
 async fn run(data_workers: usize) {
+    // THE PROCESS'S ONE DISPATCHER, before any plugin loads: every kind's plugins are opened on
+    // it (`root::dispatch`).
+    let _dispatcher = root::dispatch::boot(data_workers);
     // Metrics are configured AFTER the config loads (below, via `metrics::configure`) because they
     // are 100% OPT-IN: `observability.metrics` absent ⇒ no recorder, no `/metrics`, nothing recorded
     // and nothing retained. Nothing may install a recorder before that decision is read.

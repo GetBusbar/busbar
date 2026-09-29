@@ -71,6 +71,7 @@
 pub mod adapters;
 pub mod auth_bindings;
 pub mod cli;
+pub mod dispatch;
 pub mod durability;
 pub mod gauntlet_install;
 pub mod gauntlet_kernel;
