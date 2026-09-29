@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLANE'S CALLS, AS THE HOST'S TWO HALVES SHARE THEM (`BUSBAR-1.6.0.md` Part 3, §12): the
-//! [`PlaneCalls`] trait the plugin loader implements over one loaded plane instance and the
-//! kernel's plane driver calls through. The kernel names this, the loader names this, and neither
+//! THE PLANE'S CALLS, AS THE HOST'S TWO HALVES SHARE THEM (`BUSBAR-1.6.0.md` Part 3, the plane
+//! driver): the [`PlaneCalls`] trait the plugin loader implements over one loaded plane instance
+//! and the kernel's plane driver calls through. The kernel names this, the loader names this, and neither
 //! names the other. Nothing here crosses the plugin boundary: the plane's ABI is `abi::plane`.
 //!
 //! The pure ops (`arrive`, `refusal`) and the host's own `cancel` are ticketless: they never pend.
