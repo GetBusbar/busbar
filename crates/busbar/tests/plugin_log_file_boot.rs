@@ -10,10 +10,13 @@
 //! to its own log sink, and opening that sink creates `<plugins.logs.dir>/metrics.log`. The file
 //! exists as soon as the instance is bound, whether or not the plugin has logged anything yet.
 //!
-//! RED IN THIS BUILD, KNOWN, AND OWNED: nothing in the production load path binds a plugin instance
-//! to its `PluginLogConfig::sink` yet, so no file appears. BOOT-CHAIN step 6 — the production
-//! load path for every instance the host boots — binds that sink; this test is its acceptance, and
-//! its `#[ignore]` comes off in that change.
+//! RED IN THIS BUILD, KNOWN, AND OWNED (ARCHITECT ruling 2026-09-28, BOOT-CHAIN (3)): the one load
+//! (`busbar_plugin_loader::boot::load`, KERNEL<>PLUGINS step 6) binds every memory-ABI instance it
+//! loads to `PluginLogConfig::sink` — proven at the loader by
+//! `boot::tests::the_one_load_binds_each_selected_instance_to_its_own_log_sink` — but the compiled-in
+//! `prometheus` sink is still a cold-ABI plugin, so no memory-ABI instance is loaded here and no file
+//! appears. OWNER: the export kind's `prometheus` sibling on `plugin_door!` (`1.6.0-TODO.md` steps
+//! 26/27, the export fan-out); its `#[ignore]` comes off in that change.
 //!
 //! Run it: `cargo test -p busbar --test plugin_log_file_boot -- --ignored`
 #![cfg(unix)]
@@ -44,10 +47,9 @@ fn fixture_dir() -> PathBuf {
 }
 
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
-    // The provider catalog row is test data (`fixtures/mock_provider.yaml`), not a literal here.
     std::fs::write(
         dir.join("providers.yaml"),
-        include_str!("fixtures/mock_provider.yaml"),
+        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
     )
     .unwrap();
     std::fs::write(
@@ -111,10 +113,11 @@ fn scrape_status(port: u16) -> Option<u16> {
 }
 
 #[test]
-#[ignore = "RED BY DESIGN: no production plugin load path binds an instance to \
-            PluginLogConfig::sink yet. Owner: BOOT-CHAIN step 6 (the production plugin load \
-            path), which removes this ignore. Run with --ignored; do not weaken this test to \
-            make it green."]
+#[ignore = "RED BY DESIGN: the one load binds every memory-ABI instance to \
+            PluginLogConfig::sink (KERNEL<>PLUGINS step 6), but prometheus is still a cold-ABI \
+            plugin. Owner: the export fan-out's prometheus sibling on plugin_door! (1.6.0-TODO \
+            steps 26/27), which removes this ignore. Run with --ignored; do not weaken this test \
+            to make it green."]
 fn a_loaded_plugin_instance_has_its_own_log_file() {
     let dir = fixture_dir();
     let (data_port, admin_port) = (common::boot::free_port(), common::boot::free_port());
