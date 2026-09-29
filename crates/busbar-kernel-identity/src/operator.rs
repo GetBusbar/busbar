@@ -173,7 +173,6 @@ impl OperatorCredential {
 /// answered), and adds only which providers it answers for.
 pub struct Operator {
     cred: OperatorCredential,
-    op: String,
     names: Vec<String>,
 }
 
@@ -183,20 +182,37 @@ impl Operator {
     pub fn new(op: &str) -> Self {
         Self {
             cred: OperatorCredential::Unanswered,
-            op: op.to_string(),
             names: vec![op.to_string()],
         }
     }
 
-    /// Record that the provider `name` is backed by `module`, and answer whether that makes it the
-    /// operator credential: it answers for `name` exactly when `module` is the operator provider.
-    pub fn backs(&mut self, name: &str, module: &str) -> bool {
-        self.names.retain(|n| n != name);
-        let operator = module == self.op;
-        if operator {
-            self.names.push(name.to_string());
-        }
-        operator
+    /// THE ONE JUDGEMENT: whether the provider `name`, whose `identity-providers:` definition names
+    /// `module` (`None`: it has no definition), is the operator credential of the operator provider
+    /// `op`. By its module; its name counts only when it is `op` referenced bare.
+    pub fn backed(op: &str, name: &str, module: Option<&str>) -> bool {
+        module.map_or(name == op, |m| m == op)
+    }
+
+    /// The operator credential of `op`, opened as [`OperatorCredential::open`] opens it, answering for
+    /// every provider [`Self::backed`] names among the effective definitions `defs` (each provider's
+    /// name and module) and for `op` referenced bare unless a definition under that name backs it
+    /// with another module.
+    pub fn open<'a>(
+        op: &str,
+        defs: impl Iterator<Item = (&'a str, &'a str)>,
+        answered: bool,
+        digest: Option<String>,
+        open: impl FnOnce(&str) -> Result<Box<dyn AuthModule>, String>,
+    ) -> Result<Self, String> {
+        let defs: Vec<(&str, &str)> = defs.collect();
+        let module_of = |name: &str| defs.iter().find(|d| d.0 == name).map(|d| d.1);
+        let names = std::iter::once(op)
+            .chain(defs.iter().map(|d| d.0))
+            .filter(|name| Self::backed(op, name, module_of(name)))
+            .map(str::to_string)
+            .collect();
+        let cred = OperatorCredential::open(answered, digest.as_deref(), open)?;
+        Ok(Self { cred, names })
     }
 
     /// Whether the admin-chain provider `name` is the operator credential.

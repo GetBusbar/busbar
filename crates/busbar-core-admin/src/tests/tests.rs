@@ -1659,6 +1659,61 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
     handle.abort();
 }
 
+/// `PUT /api/v1/admin/admin-auth` judges a name by its module, as the boot chain does: a provider
+/// defined under another name with the operator credential's module (`ops: { module: admin-tokens
+/// }`) is the operator credential, so a chain naming it applies and the operator token still admits
+/// through it. A name that resolves to no admin module is still refused with the same 400.
+#[tokio::test]
+async fn test_admin_v1_put_auth_accepts_a_renamed_operator_provider() {
+    busbar_kernel::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let ops: busbar_kernel::config::IdentityProviderCfg = serde_yaml::from_str(&format!(
+        "module: {}",
+        busbar_kernel::config::operator_provider()
+    ))
+    .expect("a provider definition");
+    let app = crate::new_test_app()
+        .governance(gov)
+        .identity_provider("ops", ops)
+        .build();
+    let router = crate::build_router(app);
+    let (addr, handle, client) = spin_up(router).await;
+    let put = |chain: serde_json::Value| {
+        client
+            .put(format!("http://{addr}/api/v1/admin/admin-auth"))
+            .header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+            .body(serde_json::json!({ "admin_auth": chain }).to_string())
+            .send()
+    };
+    let r = put(serde_json::json!(["ops"])).await.unwrap();
+    let status = r.status().as_u16();
+    let body = r.text().await.unwrap();
+    assert_eq!(
+        status, 200,
+        "a provider backed by the operator module applies: {body}"
+    );
+    let r = client
+        .get(format!("http://{addr}/api/v1/admin/info"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        200,
+        "the operator token admits through `ops`"
+    );
+    let r = put(serde_json::json!(["saml"])).await.unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        400,
+        "a name no admin module answers is refused"
+    );
+    handle.abort();
+}
+
 /// `PUT /api/v1/admin/admin-auth` end-to-end with the dry-run guard: a chain that would lock the
 /// CALLER out is a 409 and nothing changes; a chain the caller survives applies atomically
 /// (the old credential stops working on the very next request, the surviving one carries on);

@@ -574,6 +574,10 @@ async fn a_renamed_provider_backed_by_the_operator_module_is_the_operator_creden
     let auth = cfg.auth.as_mut().expect("the fixture configures auth");
     auth.admin_auth[0].name = "ops".to_string();
     cfg.admin_auth = vec!["ops".to_string()];
+    // The definition the resolved entry came from, as config.yaml would carry it.
+    let ops: config::IdentityProviderCfg =
+        serde_yaml::from_str(&format!("module: {}", config::operator_provider())).expect("ops");
+    cfg.identity_providers.insert("ops".to_string(), ops);
     let app = Arc::new(busbar_kernel::test_support::build_once(cfg, None).expect("boot"));
     let _ = std::fs::remove_dir_all(&dir);
 
@@ -606,8 +610,12 @@ async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that
     // provider is recorded as backed by that module, and the module is opened under its name.
     let named_op = || {
         let base = app(&[op], Vec::new());
-        let mut operator = Operator::new(op);
-        assert!(!operator.backs(op, AnyCredential.name()));
+        let defs = [(op, AnyCredential.name())].into_iter();
+        let operator = Operator::open(op, defs, false, None, |_| unreachable!()).expect("opens");
+        assert!(
+            !operator.is(op),
+            "a definition under the name, backed elsewhere"
+        );
         let mut named = (*base).clone();
         named.admin_modules = Arc::new(AdminAuthChain {
             modules: HashMap::from([(

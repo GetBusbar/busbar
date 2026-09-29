@@ -1910,7 +1910,7 @@ impl TestApp {
             global_hooks: self.global_hooks,
             groups_registry: self.groups_registry,
             base_group_names: self.base_group_names,
-            identity_providers: self.identity_providers,
+            identity_providers: self.identity_providers.clone(),
             export_defs: self.export_defs,
             versions: std::sync::Arc::new(crate::admin::versions::VersionLog::new()),
             mutation_limiter: std::sync::Arc::new(crate::ratelimit::MutationLimiter::new()),
@@ -1929,8 +1929,8 @@ impl TestApp {
                     .admin_modules
                     .unwrap_or_else(crate::auth::AdminAuthChain::empty);
                 let digest = self.governance.as_ref().and_then(|g| g.admin_token_hash());
-                let linked = crate::preflight::linked().expect("the linked registry");
-                *chain.operator = crate::auth::open_operator(&linked, digest.as_deref())
+                let reg = crate::preflight::linked().expect("the linked registry");
+                chain.operator = crate::auth::open_operator(&reg, digest, &self.identity_providers)
                     .expect("the linked operator credential opens");
                 std::sync::Arc::new(chain)
             },

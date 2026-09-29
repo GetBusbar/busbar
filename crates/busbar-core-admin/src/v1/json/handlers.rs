@@ -2084,12 +2084,13 @@ pub(crate) async fn put_auth(
                 busbar_kernel::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
             ));
         }
-        // Known-module validation (mirrors the boot rule): the operator credential's provider is
-        // the built-in; the test-only stand-in exists in test builds only. An unknown name can
-        // never silently drop auth.
+        // Known-module validation (the boot rule, by MODULE): a provider backed by the operator
+        // credential, under any name the effective `identity-providers:` gives it; the test-only
+        // stand-in exists in test builds only. An unknown name can never silently drop auth.
         let operator = busbar_kernel::config::operator_provider();
         for name in &req.admin_auth {
-            let known = name == operator || (cfg!(test) && name == "test-scope-module");
+            let known = current.admin_modules.operator.is(name)
+                || (cfg!(test) && name == "test-scope-module");
             if !known {
                 return Err(AdminError::Validation(format!(
                     "admin_auth names unknown module '{name}'; the built-in admin module is \
