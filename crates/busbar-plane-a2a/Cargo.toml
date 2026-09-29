@@ -48,6 +48,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 # The `agents:` section keeps its registrations in the order an operator wrote them.
 indexmap = { workspace = true, features = ["serde"] }
+# The deployment's `public_url`, read once into the absolute URLs the plane publishes.
+url = { workspace = true }
 # The frame reader's one diagnostic goes out through the contract's `diag_warn!`, which expands to
 # `tracing`.
 tracing = { workspace = true }

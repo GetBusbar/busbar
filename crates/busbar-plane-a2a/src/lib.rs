@@ -46,6 +46,7 @@ pub mod a2a {
     pub mod canonical;
     pub mod config;
     pub mod creds;
+    pub mod public;
     pub mod task;
 }
 
