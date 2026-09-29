@@ -37,7 +37,7 @@ use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::{DeadlineClass, InHead, OutHead, Outcome, FLAG_RESUME};
-use busbar_contract::abi::mechanism::lifecycle::{slot, CancelIn, CancelOut, DriveIn};
+use busbar_contract::abi::mechanism::lifecycle::{slot, CancelIn, CancelOut};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 
 use super::plugin::{is_lifecycle, Crossed, Instance, Plugin};
@@ -45,7 +45,7 @@ use super::services::{HostServices, Served, ServiceStore};
 use super::ticket::{
     decode, encode, recycled_generation, Completions, WakeRoute, MAX_INDEX, MAX_WORKERS,
 };
-use super::{in_head, now_ns, out_head, watchdog, Frame, InFrame, Kind, OutFrame};
+use super::{in_head, now_ns, out_head, watchdog, DriveFrame, Frame, InFrame, Kind, OutFrame};
 
 /// The longest a crossing may take before the watchdog faults it, per class. A crossing never
 /// blocks by contract, so these bound a wedged plugin, not a slow request (that is the deadline).
@@ -431,8 +431,8 @@ pub(crate) struct Current {
 
 pub(crate) struct Driver {
     instance: Arc<Instance>,
-    /// `None` while out on a crossing.
-    frame: Option<Box<Frame<DriveIn, OutHead>>>,
+    /// The kind's own `drive` frame ([`Kind::drive_frame`]); `None` while out on a crossing.
+    frame: Option<Box<dyn DriveFrame>>,
     pending: bool,
     wake_at_ns: u64,
 }
@@ -943,14 +943,11 @@ impl Worker {
                 let Some(mut frame) = d.frame.take() else {
                     return Some(st);
                 };
-                frame.input.head.size = size_of::<DriveIn>() as u32;
-                frame.input.head.flags = if d.pending { FLAG_RESUME } else { 0 };
-                frame.input.head.deadline_class = DeadlineClass::Connection as u8;
-                frame.input.head.ticket = ticket;
-                frame.input.driver = ticket;
+                let flags = if d.pending { FLAG_RESUME } else { 0 };
+                let heads = frame.prepare(ticket, flags);
                 d.pending = false;
                 let budget = env.budgets.of(slot::DRIVE, DeadlineClass::Connection);
-                let (mut st, c) = self.cross(st, &inst, slot::DRIVE, frame.heads(), budget)?;
+                let (mut st, c) = self.cross(st, &inst, slot::DRIVE, heads, budget)?;
                 let e = &mut st.entries[idx as usize];
                 if e.generation == generation {
                     if let Some(d) = e.driver.as_mut() {
@@ -1234,13 +1231,7 @@ impl Dispatcher {
         }
         self.worker(worker)?.mint(Some(Driver {
             instance: inst.clone(),
-            frame: Some(Box::new(Frame::new(
-                DriveIn {
-                    head: in_head(),
-                    driver: Ticket::NONE,
-                },
-                out_head(),
-            ))),
+            frame: Some(K::drive_frame()),
             pending: false,
             wake_at_ns: 0,
         }))

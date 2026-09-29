@@ -17,8 +17,8 @@ mod plane;
 #[path = "../../busbar-kernel/tests/support/plane_driver_cases.rs"]
 mod cases;
 
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::Outcome as AbiOutcome;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
@@ -30,9 +30,9 @@ use busbar_contract::abi::plane::{
 use busbar_contract::caps::OpClassId;
 use busbar_kernel::plane_driver::{refusal_status, BufferCaps, DriverConfig, PlaneDriver};
 use busbar_plugin_loader::dispatch::{
-    in_head, kinds::plane::Plane, load_dropped, load_linked, now_ns as dispatch_now, out_head, plane_calls::PlaneInstance,
-    Bind, DispatchConfig, Dispatcher, Frame, ManifestFacts,
-    NoSink, Plugin, NO_BLOB,
+    in_head, kinds::plane::Plane, load_dropped, load_linked, now_ns as dispatch_now, out_head,
+    plane_calls::PlaneInstance, Bind, Diagnostic, DispatchConfig, Dispatcher, Dropped,
+    EnvelopeSink, Frame, ManifestFacts, Metric, NoSink, Plugin, NO_BLOB,
 };
 
 /// The dispatcher's clock, the one a unit's deadline is on.
@@ -75,9 +75,14 @@ pub(crate) fn ways() -> Vec<Way> {
 
 /// Load and open the test plane through `way`, adopted by `dispatcher`.
 fn load(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
+    load_with(way, dispatcher, Arc::new(NoSink))
+}
+
+/// [`load`], with the #85 envelope going to `sink`.
+fn load_with(way: Way, dispatcher: &Dispatcher, sink: Arc<dyn EnvelopeSink>) -> Plugin<Plane> {
     let bind = Bind {
         max_inflight_cap: 64,
-        sink: Arc::new(NoSink),
+        sink,
         dispatcher: dispatcher.adopter(),
     };
     let plugin = match way {
@@ -201,6 +206,88 @@ pub(crate) fn rig(way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
         plugin,
         driver,
         book,
+    }
+}
+
+// ── the plane's driver ticket ────────────────────────────────────────────────────────────────────
+
+/// The envelope gauges the host accepted, by family.
+#[derive(Default)]
+struct Gauges(Mutex<Vec<(u32, f64)>>);
+
+impl EnvelopeSink for Gauges {
+    fn metric(&self, m: Metric<'_>) {
+        self.0.lock().unwrap().push((m.family, m.value));
+    }
+    fn diag(&self, _: Diagnostic<'_>) {}
+    fn dropped(&self, _: Dropped) {}
+}
+
+/// A plane's `drive`, run by the dispatcher's own driver ticket, crosses with the plane's
+/// `PlaneDriveIn`/`PlaneDriveOut` and is judged by the plane's `check_drive`: its answer is
+/// accepted (its envelope reaches the host). With the lifecycle's bare `DriveIn`/`OutHead` frame
+/// every plane `drive` was FAULT, its envelope never read.
+#[test]
+fn a_plane_driven_through_its_driver_ticket_answers_under_its_own_frame() {
+    for way in ways() {
+        let dispatcher = Dispatcher::new(DispatchConfig::default());
+        let gauges = Arc::new(Gauges::default());
+        let plugin = load_with(way, &dispatcher, gauges.clone());
+        let t = dispatcher.driver(&plugin, 0).expect("a driver ticket");
+        wake(&plugin, t);
+        let until = Instant::now() + Duration::from_secs(5);
+        while gauges.0.lock().unwrap().is_empty() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(stats(&plugin)[cases::stat::DRIVES], 1, "{way:?}: drive ran");
+        assert_eq!(
+            *gauges.0.lock().unwrap(),
+            vec![(0, 1.0)],
+            "{way:?}: the drive answer passed its check and its envelope was read"
+        );
+    }
+}
+
+/// Wake ticket `t` through the plane (only a plugin holds the host's wake).
+fn wake(plugin: &Plugin<Plane>, t: busbar_contract::abi::mechanism::ticket::Ticket) {
+    let target = format!("/wake:{}:{}", t.slot, t.generation).into_bytes();
+    let mut units = [UnitCount {
+        class: 0,
+        source: 0,
+        amount: 0,
+    }; 8];
+    let mut frame = Frame::new(
+        ArriveIn {
+            head: in_head(),
+            claim: 0,
+            _reserved: 0,
+            target: busbar_contract::abi::mechanism::call::AbiStr {
+                ptr: target.as_ptr(),
+                len: target.len(),
+            },
+            fields: std::ptr::null(),
+            fields_len: 0,
+            body: NO_BLOB,
+            units_buf: units.as_mut_ptr(),
+            units_cap: units.len(),
+        },
+        zero_arrive_out(),
+    );
+    assert_eq!(
+        plugin.call(slot::ARRIVE, &mut frame).outcome,
+        AbiOutcome::Ready
+    );
+}
+
+fn zero_arrive_out() -> ArriveOut {
+    ArriveOut {
+        head: out_head(),
+        op_class: 0,
+        principal_need: 0,
+        dialect: 0,
+        units_written: 0,
+        units_needed: 0,
+        _reserved: 0,
     }
 }
 

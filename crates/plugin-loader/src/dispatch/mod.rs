@@ -110,6 +110,44 @@ pub trait Kind: Send + Sync + 'static {
         let _ = answer;
         false
     }
+
+    /// The `drive` frame of a driver ticket of this kind ([`Dispatcher::driver`]): the kind's own
+    /// `drive` `in`/`out`, built once and boxed, so its address holds across PENDING and RESUME.
+    /// A kind whose `drive` is the lifecycle's answers the lifecycle's `DriveIn`/`OutHead`.
+    fn drive_frame() -> Box<dyn DriveFrame> {
+        Box::new(Frame::new(
+            DriveIn {
+                head: in_head(),
+                driver: Ticket::NONE,
+            },
+            out_head(),
+        ))
+    }
+}
+
+/// A driver ticket's `drive` frame, kind-erased: the kind's own `in`/`out` ([`Kind::drive_frame`]).
+pub trait DriveFrame: Send {
+    /// Stamp the frame for one `drive` crossing on `driver` (its head: size, `flags`, the
+    /// Connection class, the ticket; its `driver` field) and answer its heads, `in` first, then
+    /// `out` and the `out`'s size.
+    fn prepare(&mut self, driver: Ticket, flags: u32) -> (*mut InHead, *mut OutHead, u32);
+}
+
+impl DriveFrame for Frame<DriveIn, OutHead> {
+    fn prepare(&mut self, driver: Ticket, flags: u32) -> (*mut InHead, *mut OutHead, u32) {
+        stamp_drive(&mut self.input, driver, flags, size_of::<DriveIn>());
+        self.heads()
+    }
+}
+
+/// Stamp a `drive` `in` whose `DriveIn` is `drive`, the whole `in` being `size` bytes.
+pub fn stamp_drive(drive: &mut DriveIn, driver: Ticket, flags: u32, size: usize) {
+    drive.head.size = size as u32;
+    drive.head.flags = flags;
+    drive.head.deadline_class =
+        busbar_contract::abi::mechanism::call::DeadlineClass::Connection as u8;
+    drive.head.ticket = driver;
+    drive.driver = driver;
 }
 
 /// A lifecycle slot's name; `"op"` for a kind slot a kind did not name.
