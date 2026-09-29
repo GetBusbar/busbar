@@ -22,11 +22,12 @@ use std::sync::Arc;
 use super::log_witness_plugin as witness;
 use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut, OpsHead, TickIn, TickOut};
-use busbar_contract::abi::mechanism::{KindCode, MECHANISM_VERSION};
+use busbar_contract::abi::mechanism::KindCode;
 
 use crate::dispatch::{
-    in_head, load_dropped, load_linked, now_ns, out_head, Adopter, Bind, EnvelopeSink, Frame, Kind,
-    LogLevel, ManifestFacts, NoSink, Plugin, PluginLogConfig, MAX_LOG_RECORDS, NO_BLOB,
+    in_head, load_dropped, load_linked, now_ns, out_head, rendering_of, Adopter, Bind,
+    EnvelopeSink, Frame, Kind, LinkedRow, LogLevel, NoSink, Plugin, PluginLogConfig,
+    MAX_LOG_RECORDS, NO_BLOB,
 };
 
 /// The witness's kind, as the dispatcher sees it: a lifecycle-only table.
@@ -89,11 +90,13 @@ fn sink(dir: &Path, level: LogLevel) -> Arc<dyn EnvelopeSink> {
 }
 
 fn linked(sink: Arc<dyn EnvelopeSink>) -> Plugin<WitnessKind> {
-    load_linked::<WitnessKind>(witness::a::door, bind(sink)).expect("the linked witness loads")
+    let row = LinkedRow::of(witness::a::door).expect("the witness states its Statement");
+    load_linked::<WitnessKind>(&row, bind(sink)).expect("the linked witness loads")
 }
 
 fn linked_b(sink: Arc<dyn EnvelopeSink>) -> Plugin<WitnessKind> {
-    load_linked::<WitnessKind>(witness::b::door, bind(sink)).expect("the linked witness B loads")
+    let row = LinkedRow::of(witness::b::door).expect("the witness B states its Statement");
+    load_linked::<WitnessKind>(&row, bind(sink)).expect("the linked witness B loads")
 }
 
 /// The dropped-in witness: the `log_witness_door` example cdylib `cargo test` built beside this
@@ -120,13 +123,10 @@ fn dropped_path() -> Option<PathBuf> {
 }
 
 fn dropped(sink: Arc<dyn EnvelopeSink>) -> Option<Plugin<WitnessKind>> {
-    let facts = ManifestFacts {
-        mechanism_version: MECHANISM_VERSION,
-        kind: witness::KIND,
-        kind_abi: witness::KIND.abi_version(),
-    };
+    // The signed manifest's rendering: the linked rlib's door, the same crate the cdylib is.
+    let stated = rendering_of(witness::a::door).expect("the witness renders its Statement");
     Some(
-        load_dropped::<WitnessKind>(&dropped_path()?, &facts, bind(sink))
+        load_dropped::<WitnessKind>(&dropped_path()?, &stated, bind(sink))
             .expect("the dropped witness loads"),
     )
 }
