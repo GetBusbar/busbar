@@ -21,7 +21,15 @@
 //!
 //! A response arrives as frames on its stream: the HEAD frame (an HTTP/1.1 status line and the
 //! fields, carrying the status code, its class and any `Retry-After`), one frame per body chunk,
-//! the trailer section as one frame, and then an EMPTY frame that says the response is whole.
+//! and then an EMPTY frame that says the response is whole. A trailer section is not handed up:
+//! 1.5.5's client read a response through reqwest, which yields data only.
+//!
+//! `locate` also answers this framer's protocol offer for a secured connection (ALPN, most
+//! preferred first): `h2, http/1.1`, or `http/1.1` alone under the http1-only key, exactly as
+//! 1.5.5's client offered. The connector offers it and hands back what was agreed.
+//!
+//! One clock bounds each exchange, as 1.5.5's `limits.upstream_request_timeout_secs` did: from the
+//! attempt's start (the deadline the caller stamps on `emit`) to the response body's end.
 //!
 //! No op pends. An op that has nothing more to do answers what it has, with the next instant it
 //! must be called at when hyper is waiting on a timer.
@@ -244,7 +252,7 @@ fn read_settings(bytes: &[u8]) -> Result<(Posture, bool, bool), &'static str> {
             keep_alive_interval: Some(Duration::from_secs(30)),
             keep_alive_timeout: Duration::from_secs(10),
             adaptive_window: true,
-            head_timeout: Duration::from_secs(secs),
+            request_timeout: Duration::from_secs(secs),
             max_body_bytes: usize::try_from(max).unwrap_or(usize::MAX),
         },
         prior,
@@ -360,13 +368,18 @@ answer!(Adopt, AdoptIn, FramerOut, Outcome::Refused);
 
 // ── the framer ───────────────────────────────────────────────────────────────────────────────────
 
+/// 1.5.5's client's protocol offer (ALPN), in the handshake's ProtocolNameList encoding.
+const OFFER_H2_H1: &[u8] = b"\x02h2\x08http/1.1";
+/// The same under the http1-only key.
+const OFFER_H1: &[u8] = b"\x08http/1.1";
+
 /// `locate`.
 pub struct Locate;
 impl SafeSlot for Locate {
     type In = LocateIn;
     type Out = LocateOut;
     type State = Instance;
-    fn call(_: sdk::Instance<'_, Instance>, i: Lent<'_, LocateIn>, o: &mut LocateOut) -> Outcome {
+    fn call(p: sdk::Instance<'_, Instance>, i: Lent<'_, LocateIn>, o: &mut LocateOut) -> Outcome {
         let Ok(uri) = std::str::from_utf8(i.field(|x| &x.target).bytes())
             .ok()
             .and_then(|t| t.parse::<http::Uri>().ok())
@@ -397,17 +410,26 @@ impl SafeSlot for Locate {
         } else {
             format!("{host}:{port}")
         };
+        // The offer exists only where a handshake does: on a secured connection.
+        let offer: &[u8] = match (secure, p.get().is_some_and(|x| x.http1_only)) {
+            (false, _) => &[],
+            (true, true) => OFFER_H1,
+            (true, false) => OFFER_H2_H1,
+        };
         o.secure = u32::from(secure);
         o.has_name = 1;
-        let (mut a, mut n) = (i.authority_buf(), i.name_buf());
+        let (mut a, mut n, mut l) = (i.authority_buf(), i.name_buf(), i.alpn_buf());
         a.extend(authority.as_bytes());
         n.extend(host.as_bytes());
-        // One short answer for both buffers, each at its full size.
-        let short = !(a.fits() && n.fits());
+        l.extend(offer);
+        // One short answer for all three buffers, each at its full size.
+        let short = !(a.fits() && n.fits() && l.fits());
         let (aw, and) = a.settle(short);
         let (nw, nnd) = n.settle(short);
+        let (lw, lnd) = l.settle(short);
         (o.authority_written, o.authority_needed) = (aw as u64, and as u64);
         (o.name_written, o.name_needed) = (nw as u64, nnd as u64);
+        (o.alpn_written, o.alpn_needed) = (lw as u64, lnd as u64);
         if short {
             err(&mut o.head, "locate: a host buffer is too small");
             return Outcome::Failed;
@@ -493,8 +515,9 @@ impl SafeSlot for Emit {
     type State = Instance;
     fn call(p: sdk::Instance<'_, Instance>, i: Lent<'_, EmitIn>, o: &mut FramerOut) -> Outcome {
         let bytes = i.bytes();
+        let (now, deadline) = (i.sink.now_monotonic_ns, i.deadline_ns);
         with(&p, i.framing, i.field(|x| &x.sink), o, |f| {
-            f.emit(i.stream, bytes)
+            f.emit(i.stream, bytes, now, deadline)
         })
     }
 }

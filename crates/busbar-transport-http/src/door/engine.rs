@@ -67,9 +67,12 @@ pub struct Posture {
     pub keep_alive_timeout: Duration,
     /// HTTP/2 adaptive flow-control window.
     pub adaptive_window: bool,
-    /// The bound on the wait for a response head.
-    pub head_timeout: Duration,
-    /// The largest request message and the largest response body carried.
+    /// 1.5.5's `limits.upstream_request_timeout_secs`: ONE clock per attempt, from its start to the
+    /// response body's end (reqwest's total timeout). Counted from a stream's first `emit` when the
+    /// caller stamped no deadline of its own.
+    pub request_timeout: Duration,
+    /// The largest REQUEST message carried. A response is not capped here: 1.5.5's streaming path
+    /// carried a body for as long as the far end sent one, and its buffered reads are the plane's.
     pub max_body_bytes: usize,
 }
 
@@ -245,6 +248,10 @@ impl Timer for SinkTimer {
 }
 
 impl SinkTimer {
+    /// The instant a host time is.
+    fn at_ns(&self, ns: u64) -> Instant {
+        self.0.lock().expect("clock").at(ns)
+    }
     /// Set the host's time and wake every sleep it passed.
     fn set(&self, now_ns: u64) {
         let due: Vec<Waker> = {
@@ -329,18 +336,20 @@ enum Sender {
 
 type BoxFut<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
+/// One exchange's stage. Every stage after `Writing` carries the attempt's ONE deadline sleep, so
+/// the wait for the connection, the head and every byte of the body spend the same clock.
 enum Stage {
-    /// The request message, still arriving.
-    Writing(Vec<u8>, EgressHead),
+    /// The request message, still arriving, and the attempt's deadline (host ns).
+    Writing(Vec<u8>, EgressHead, u64),
     /// A whole request, waiting for the connection to take it.
-    Queued(http::Request<Full<Bytes>>),
-    /// Sent; waiting for the response head, until the sleep fires.
+    Queued(http::Request<Full<Bytes>>, Pin<Box<dyn Sleep>>),
+    /// Sent; waiting for the response head.
     Asked(
         BoxFut<hyper::Result<http::Response<Incoming>>>,
         Pin<Box<dyn Sleep>>,
     ),
-    /// The response body, and how many bytes of it have been carried.
-    Body(Incoming, usize, Vec<u8>),
+    /// The response body.
+    Body(Incoming, Pin<Box<dyn Sleep>>),
     /// Answered in full.
     Done,
 }
@@ -463,12 +472,29 @@ impl Framing {
     /// # Errors
     ///
     /// HTTP/1.1 only: the message is malformed, over the body cap, or is not a request.
-    pub fn emit(&mut self, stream: u64, bytes: &[u8]) -> Result<(), Failure> {
+    ///
+    /// `deadline_ns` is the attempt's deadline as the caller stamped it at the attempt's start (the
+    /// connect spent part of it); `0` counts the configured request timeout from `now_ns`. Only a
+    /// stream's first `emit` reads it.
+    pub fn emit(
+        &mut self,
+        stream: u64,
+        bytes: &[u8],
+        now_ns: u64,
+        deadline_ns: u64,
+    ) -> Result<(), Failure> {
         // A re-call after `YIELD_MORE` carries no new bytes: nothing to add to any message.
         if bytes.is_empty() {
             return Ok(());
         }
-        match self.message(stream, bytes) {
+        let deadline = if deadline_ns != 0 {
+            deadline_ns
+        } else {
+            now_ns.saturating_add(
+                u64::try_from(self.posture.request_timeout.as_nanos()).unwrap_or(u64::MAX),
+            )
+        };
+        match self.message(stream, bytes, deadline) {
             Ok(()) => Ok(()),
             Err(f) if self.proto == Proto::H2 => {
                 if let Some(slot) = self.exchanges.iter_mut().find(|(s, _)| *s == stream) {
@@ -482,17 +508,19 @@ impl Framing {
         }
     }
 
-    fn message(&mut self, stream: u64, bytes: &[u8]) -> Result<(), Failure> {
+    fn message(&mut self, stream: u64, bytes: &[u8], deadline: u64) -> Result<(), Failure> {
         let max = self.posture.max_body_bytes;
         let idx = match self.exchanges.iter().position(|(s, _)| *s == stream) {
             Some(i) => i,
             None => {
-                self.exchanges
-                    .push((stream, Stage::Writing(Vec::new(), EgressHead::default())));
+                self.exchanges.push((
+                    stream,
+                    Stage::Writing(Vec::new(), EgressHead::default(), deadline),
+                ));
                 self.exchanges.len() - 1
             }
         };
-        let Stage::Writing(buf, head) = &mut self.exchanges[idx].1 else {
+        let Stage::Writing(buf, head, deadline) = &mut self.exchanges[idx].1 else {
             return Err(Failure(format!(
                 "stream {stream} already carries a request"
             )));
@@ -524,7 +552,8 @@ impl Framing {
             .body(Full::new(Bytes::from(raw.body)))
             .map_err(|e| Failure(format!("request: {e}")))?;
         client_posture(&mut req, self.proto);
-        self.exchanges[idx].1 = Stage::Queued(req);
+        let wait = self.timer.sleep_until(self.timer.at_ns(*deadline));
+        self.exchanges[idx].1 = Stage::Queued(req, wait);
         Ok(())
     }
 
@@ -568,10 +597,7 @@ impl Framing {
             }
         }
         let k = Knobs {
-            head_timeout: self.posture.head_timeout,
             now_unix_secs: self.now_unix_ns / 1_000_000_000,
-            max: self.posture.max_body_bytes,
-            timer: self.timer.clone(),
         };
         for (id, stage) in &mut self.exchanges {
             if let Err(f) = advance(*id, stage, &mut self.sender, &mut self.out, &k, cx) {
@@ -659,10 +685,15 @@ fn client_posture(req: &mut http::Request<Full<Bytes>>, proto: Proto) {
 
 /// What every stream's round reads.
 struct Knobs {
-    head_timeout: Duration,
     now_unix_secs: u64,
-    max: usize,
-    timer: SinkTimer,
+}
+
+/// The failure a stream's deadline passing is.
+fn timed_out() -> (Failure, bool) {
+    (
+        Failure("the request timeout passed before the response was whole".into()),
+        false,
+    )
 }
 
 /// Move one stream as far as it goes this round. `Err((why, true))` is the connection's failure
@@ -679,7 +710,10 @@ fn advance(
     loop {
         match stage {
             Stage::Writing(..) | Stage::Done => return Ok(()),
-            Stage::Queued(_) => {
+            Stage::Queued(_, wait) => {
+                if wait.as_mut().poll(cx).is_ready() {
+                    return Err(timed_out());
+                }
                 let Some(s) = sender.as_mut() else {
                     return Ok(());
                 };
@@ -691,55 +725,50 @@ fn advance(
                     Poll::Pending => return Ok(()),
                     Poll::Ready(r) => r.map_err(|e| (Failure(e.to_string()), true))?,
                 }
-                let Stage::Queued(req) = std::mem::replace(stage, Stage::Done) else {
+                let Stage::Queued(req, wait) = std::mem::replace(stage, Stage::Done) else {
                     unreachable!("matched above")
                 };
                 let f: BoxFut<_> = match s {
                     Sender::H1(s) => Box::pin(s.send_request(req)),
                     Sender::H2(s) => Box::pin(s.send_request(req)),
                 };
-                *stage = Stage::Asked(f, k.timer.sleep(k.head_timeout));
+                *stage = Stage::Asked(f, wait);
             }
             Stage::Asked(f, wait) => match f.as_mut().poll(cx) {
                 Poll::Pending => {
                     if wait.as_mut().poll(cx).is_ready() {
-                        return Err((Failure("the response head did not arrive".into()), false));
+                        return Err(timed_out());
                     }
                     return Ok(());
                 }
                 Poll::Ready(r) => {
                     let r = r.map_err(own)?;
                     out.push_back(head_piece(id, &r, k.now_unix_secs));
-                    *stage = Stage::Body(r.into_body(), 0, Vec::new());
+                    let Stage::Asked(_, wait) = std::mem::replace(stage, Stage::Done) else {
+                        unreachable!("matched above")
+                    };
+                    *stage = Stage::Body(r.into_body(), wait);
                 }
             },
-            Stage::Body(b, carried, trailers) => match Pin::new(&mut *b).poll_frame(cx) {
-                Poll::Pending => return Ok(()),
+            Stage::Body(b, wait) => match Pin::new(&mut *b).poll_frame(cx) {
+                Poll::Pending => {
+                    if wait.as_mut().poll(cx).is_ready() {
+                        return Err(timed_out());
+                    }
+                    return Ok(());
+                }
                 Poll::Ready(Some(Err(e))) => return Err(own(e)),
-                Poll::Ready(Some(Ok(fr))) => match fr.into_data() {
-                    Ok(d) if d.is_empty() => {}
-                    Ok(d) => {
-                        *carried = carried.saturating_add(d.len());
-                        if *carried > k.max {
-                            return Err((Failure("response body over the cap".into()), false));
-                        }
-                        out.push_back(Piece::data(id, d));
-                    }
-                    Err(other) => {
-                        if let Ok(fields) = other.into_trailers() {
-                            for (name, value) in &fields {
-                                trailers.extend_from_slice(name.as_str().as_bytes());
-                                trailers.extend_from_slice(b": ");
-                                trailers.extend_from_slice(value.as_bytes());
-                                trailers.extend_from_slice(b"\r\n");
-                            }
+                // Data is carried as it arrives. A trailer section is not: 1.5.5's client read a
+                // response through reqwest, which yields data frames only, so trailers never
+                // reached what the layer above read, and they do not here either.
+                Poll::Ready(Some(Ok(fr))) => {
+                    if let Ok(d) = fr.into_data() {
+                        if !d.is_empty() {
+                            out.push_back(Piece::data(id, d));
                         }
                     }
-                },
+                }
                 Poll::Ready(None) => {
-                    if !trailers.is_empty() {
-                        out.push_back(Piece::data(id, Bytes::from(std::mem::take(trailers))));
-                    }
                     // The empty piece that says this stream's response is whole.
                     out.push_back(Piece::data(id, Bytes::new()));
                     *stage = Stage::Done;
@@ -778,3 +807,7 @@ fn head_piece(stream: u64, r: &http::Response<Incoming>, now_unix_secs: u64) -> 
         failed: false,
     }
 }
+
+#[cfg(test)]
+#[path = "tests/engine_tests.rs"]
+mod tests;
