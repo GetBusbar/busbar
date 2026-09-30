@@ -205,3 +205,44 @@ fn a_need_in_a_restricted_class_is_refused_a_target_that_class_forbids() {
         c.close(OWNER, id).unwrap();
     });
 }
+
+/// RED: writes made while a dial's judgement is pending are held under the same cap: a write past
+/// it is taken short, and the next is answered Pending, never buffered without bound.
+#[test]
+fn writes_held_for_a_pending_judgement_are_capped() {
+    let view = Transports::new(vec![Entry {
+        door: Arc::new(TestDoor::identity("bytes")),
+        alpn: Vec::new(),
+    }])
+    .unwrap();
+    // A judge that never answers: every dial stays in flight.
+    let judge = |_: &str, _: u32, done: crate::Judged| {
+        std::mem::forget(done);
+        None
+    };
+    let c = Connector::serving(view, Arc::new(judge), None, Arc::new(|_| {}));
+    c.declare_over(OWNER, NeedId(0), "bytes");
+    let desc = OpenDesc {
+        target: "upstream.test:80",
+        ..OpenDesc::default()
+    };
+    let id = c
+        .open(OWNER, NeedId(0), &desc)
+        .expect("opens, judgement pending");
+    let big = vec![1_u8; crate::compose::WRITE_BUFFER_BYTES + 10];
+    assert_eq!(
+        c.write(OWNER, id, &big, true),
+        Ok(crate::compose::WRITE_BUFFER_BYTES),
+        "taken short, up to the cap"
+    );
+    assert_eq!(
+        c.write(OWNER, id, b"more", false),
+        Err(ConnError::Pending),
+        "no room: Pending"
+    );
+    assert_eq!(
+        c.write(OWNER, id, b"", true),
+        Ok(0),
+        "an empty write still passes"
+    );
+}

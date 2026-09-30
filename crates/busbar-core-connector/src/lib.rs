@@ -59,7 +59,9 @@ use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::transport::ConnFacts;
 
-use crate::compose::{Connection, Dial, Failure, Planned, DEFAULT_OPEN_TIMEOUT};
+use crate::compose::{
+    Connection, Dial, Failure, Planned, DEFAULT_OPEN_TIMEOUT, WRITE_BUFFER_BYTES,
+};
 use crate::registry::Transports;
 
 /// What an open for a DECLARED need answers while no transport serves it: refused, never a silent
@@ -396,15 +398,26 @@ impl Conns for Connector {
         let (_, held) = self.slab.get(caller, conn)?;
         if !Self::settle(&held, None)? {
             if let Some(j) = held.judging.lock().expect("judging").as_mut() {
-                j.early.push((bytes.to_vec(), end));
-                return Ok(bytes.len());
+                // Held until the judgement answers, under the same cap a connection's buffer has.
+                let held_bytes: usize = j.early.iter().map(|(b, _)| b.len()).sum();
+                let take = bytes
+                    .len()
+                    .min(WRITE_BUFFER_BYTES.saturating_sub(held_bytes));
+                if take == 0 && !bytes.is_empty() {
+                    return Err(ConnError::Pending);
+                }
+                j.early
+                    .push((bytes[..take].to_vec(), end && take == bytes.len()));
+                return Ok(take);
             }
         }
         let mut c = held.conn.lock().expect("connection");
         let c = c.as_mut().ok_or(ConnError::Closed)?;
         let waker = Waker::noop();
-        c.write(bytes, end, &mut Context::from_waker(waker))
-            .map_err(|f| map(&f))
+        match c.write(bytes, end, &mut Context::from_waker(waker)) {
+            Ok(0) if !bytes.is_empty() => Err(ConnError::Pending),
+            got => got.map_err(|f| map(&f)),
+        }
     }
 
     fn read(

@@ -201,9 +201,10 @@ fn an_open_that_never_completes_is_held_to_its_timeout() {
             },
         ));
         let mut d = dial(&far);
-        d.tls = Some(Arc::new(crate::tls::client::build_client_config(
-            &Default::default(),
-        )));
+        d.tls = Some(Arc::new(
+            crate::tls::client::build_client_config(&Default::default())
+                .expect("the default config"),
+        ));
         d.open_timeout = Duration::from_millis(300);
         let start = Instant::now();
         let mut c = Connection::dial(door.clone(), d).unwrap();
@@ -269,12 +270,55 @@ fn tls_and_the_protocol_offer_are_the_connectors() {
             ..Default::default()
         };
         let mut d = dial(&far);
-        d.tls = Some(Arc::new(crate::tls::client::build_client_config(&trust)));
+        d.tls = Some(Arc::new(
+            crate::tls::client::build_client_config(&trust).expect("a usable client config"),
+        ));
         d.alpn = vec![b"h2".to_vec()];
         d.opening = Some((Vec::new(), b"hello".to_vec()));
         let mut c = Connection::dial(door, d).unwrap();
         assert_eq!(gather(&mut c, 5).await, b"hello");
         assert_eq!(c.established().agreed_protocol.as_deref(), Some(&b"h2"[..]));
         assert_eq!(c.established().offered_name.as_deref(), Some("localhost"));
+    });
+}
+
+/// RED: a far end that never reads cannot grow the host's memory. Writes are taken while the
+/// connection's buffer has room; once the socket stops taking bytes the buffer fills to
+/// [`WRITE_BUFFER_BYTES`] and a write is taken not at all (`Ok(0)`), and stays so.
+#[test]
+fn a_far_end_that_never_reads_fills_the_buffer_and_writes_are_refused_room() {
+    worker().block_on(async {
+        let far = silent().await;
+        let door = Arc::new(TestDoor::identity("bytes"));
+        let mut c = Connection::dial(door, dial(&far)).expect("dials");
+        let waker = std::task::Waker::noop();
+        let chunk = vec![7_u8; 64 * 1024];
+        let mut full = false;
+        for _ in 0..2000 {
+            let n = c
+                .write(&chunk, false, &mut std::task::Context::from_waker(waker))
+                .expect("the connection lives");
+            assert!(
+                c.buffered() <= WRITE_BUFFER_BYTES,
+                "the buffer stays under its cap"
+            );
+            if n == 0 {
+                full = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            full,
+            "a far end that never reads leaves no room, in bounded writes"
+        );
+        assert!(
+            matches!(
+                c.write(&chunk, false, &mut std::task::Context::from_waker(waker)),
+                Ok(0)
+            ),
+            "and a full buffer keeps refusing room"
+        );
+        c.close();
     });
 }

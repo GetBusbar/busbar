@@ -40,6 +40,12 @@ pub const DEFAULT_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 /// The stream a dialled connection's own exchange rides.
 pub const EXCHANGE_STREAM: u64 = 1;
 
+/// THE WRITE BUFFER CAP: the most bytes one connection holds on a caller's behalf and not yet on the
+/// socket (writes made before the framing began, and framed bytes the socket has not taken). A write
+/// past it is taken short, and a write with no room is taken not at all, so a caller that writes
+/// faster than its far end reads cannot grow the host's memory.
+pub const WRITE_BUFFER_BYTES: usize = 256 * 1024;
+
 /// Why a connection did not answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
@@ -307,9 +313,16 @@ impl Connection {
         }
     }
 
-    /// Offer `bytes` on the connection's exchange (`end` = the caller's message is complete). They
-    /// are taken whole: framed now if the framing has begun, else once it does; the socket takes
-    /// them as its readiness allows, driven by `cx`.
+    /// The bytes held for the socket: early writes and framed bytes it has not taken.
+    fn buffered(&self) -> usize {
+        self.out.len() + self.early.iter().map(|(b, _)| b.len()).sum::<usize>()
+    }
+
+    /// Offer `bytes` on the connection's exchange (`end` = the caller's message is complete),
+    /// answering how many were taken: framed now if the framing has begun, else once it does; the
+    /// socket takes them as its readiness allows, driven by `cx`. At most the room left under
+    /// [`WRITE_BUFFER_BYTES`] is taken (`end` holds only when all of `bytes` was), so `Ok(0)` for a
+    /// non-empty `bytes` means the buffer is full until the socket drains it.
     ///
     /// # Errors
     ///
@@ -320,6 +333,23 @@ impl Connection {
         end: bool,
         cx: &mut Context<'_>,
     ) -> Result<usize, Failure> {
+        match &self.phase {
+            Phase::Failed(f) => return Err(f.clone()),
+            Phase::Ended => return Err(Failure::Closed),
+            _ => {}
+        }
+        // Let the socket take what it can before measuring the room.
+        if let Err(f) = self.drive(cx) {
+            self.phase = Phase::Failed(f.clone());
+            return Err(f);
+        }
+        let take = bytes
+            .len()
+            .min(WRITE_BUFFER_BYTES.saturating_sub(self.buffered()));
+        if take == 0 && !bytes.is_empty() {
+            return Ok(0);
+        }
+        let (bytes, end) = (&bytes[..take], end && take == bytes.len());
         match &self.phase {
             Phase::Failed(f) => return Err(f.clone()),
             Phase::Ended => return Err(Failure::Closed),
@@ -334,7 +364,7 @@ impl Connection {
             self.phase = Phase::Failed(f.clone());
             return Err(f);
         }
-        Ok(bytes.len())
+        Ok(take)
     }
 
     /// One pass: connect, handshake, flush, read, and keep the deadlines. `Ok(true)` = something
