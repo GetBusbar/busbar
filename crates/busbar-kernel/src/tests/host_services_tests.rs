@@ -526,15 +526,11 @@ fn records_get_reads_the_store_and_the_instances_own_queued_writes_first() {
     put(&r.store, "k", "stored");
     let s = run(|l| r.s.records_get(&me, "approval", b"k", l));
     assert_eq!((s.value, s.bytes.as_slice()), (svc::FOUND, &b"stored"[..]));
-    r.s.pending()
-        .enqueue("inst", "approval", b"k", Some(b"mine".to_vec()));
+    let seq =
+        r.s.pending()
+            .enqueue("inst", "approval", b"k", b"mine".to_vec());
     let s = run(|l| r.s.records_get(&me, "approval", b"k", l));
     assert_eq!(s.bytes, b"mine");
-    let seq = r.s.pending().enqueue("inst", "approval", b"k", None);
-    assert_eq!(
-        run(|l| r.s.records_get(&me, "approval", b"k", l)).value,
-        svc::ABSENT
-    );
     r.s.pending().acked("inst", "approval", b"k", seq);
     assert_eq!(
         run(|l| r.s.records_get(&me, "approval", b"k", l)).bytes,
@@ -553,9 +549,10 @@ fn records_list_merges_queued_writes_in_key_order_after_the_cursor() {
     put(&r.store, "a1", "s");
     put(&r.store, "a2", "s");
     put(&r.store, "b1", "s");
-    r.s.pending().enqueue("inst", "approval", b"a2", None);
     r.s.pending()
-        .enqueue("inst", "approval", b"a3", Some(b"q".to_vec()));
+        .enqueue("inst", "approval", b"a2", b"r".to_vec());
+    r.s.pending()
+        .enqueue("inst", "approval", b"a3", b"q".to_vec());
     let list = |after: Option<&str>, limit| {
         run(|l| {
             r.s.records_list(
@@ -571,10 +568,10 @@ fn records_list_merges_queued_writes_in_key_order_after_the_cursor() {
         })
     };
     let s = list(None, 0);
-    assert_eq!(s.bytes, b"a1sa3q");
-    assert_eq!(s.spans.len(), 2);
+    assert_eq!(s.bytes, b"a1sa2ra3q");
+    assert_eq!(s.spans.len(), 3);
     assert_eq!((s.spans[1].key_off, s.spans[1].value_off), (3, 5));
-    assert_eq!(list(Some("a1"), 0).bytes, b"a3q");
+    assert_eq!(list(Some("a1"), 0).bytes, b"a2ra3q");
     assert_eq!(list(None, 1).bytes, b"a1s");
 }
 
@@ -769,7 +766,7 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
     )
     .unwrap();
     r.s.pending()
-        .enqueue("inst", "approval", b"k", Some(b"mine".to_vec()));
+        .enqueue("inst", "approval", b"k", b"mine".to_vec());
     let s = run(|l| r.s.records_get(&caller("third"), "approval", b"k", l));
     assert_eq!(s.value, svc::ABSENT);
 }

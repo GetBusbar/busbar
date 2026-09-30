@@ -498,7 +498,7 @@ impl KernelServices {
         let (schema, records, pool) = self.scope(caller, kind).map_err(|s| s.error)?;
         let pending = &self.pending;
         let started = self.batcher.push_with(|| {
-            let seq = pending.enqueue(&caller.instance, kind, key, Some(value.as_slice().to_vec()));
+            let seq = pending.enqueue(&caller.instance, kind, key, value.as_slice().to_vec());
             Write {
                 instance: Arc::clone(&caller.instance),
                 schema,
@@ -725,10 +725,8 @@ impl HostServices for KernelServices {
             });
             s
         };
-        match self.pending.get(&caller.instance, kind, key) {
-            Some(Some(v)) => return Ran::Now(found(v)),
-            Some(None) => return Ran::Now(Stored::ready(svc::ABSENT)),
-            None => {}
+        if let Some(v) = self.pending.get(&caller.instance, kind, key) {
+            return Ran::Now(found(v));
         }
         let reads = Arc::clone(&records.reads);
         let key = record_key(&caller.instance, key);

@@ -297,6 +297,19 @@ fn a_record_write_with_an_unknown_kind_is_fault() {
     );
 }
 
+/// A record write is a put: the retired delete code (2) and every other is FAULT, never a write
+/// the kernel would drop.
+#[test]
+fn a_record_write_that_is_not_a_put_is_fault() {
+    let mut o: OnPieceOut = z();
+    o.records_written = 1;
+    let mut r: RecordWrite = z();
+    for op in [0, 2, u32::MAX] {
+        r.op = op;
+        assert_eq!(piece(&o, &[], &[r], &[]), f(Rule::UnknownCode, "record.op"));
+    }
+}
+
 // ── refusal, serve, cancel ──
 
 #[test]

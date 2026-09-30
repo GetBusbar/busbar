@@ -9,7 +9,7 @@
 //!   `RECORD_PUT` / `RECORD_GET` / `RECORD_SCAN`), keyed by the caller's declared record kind as the
 //!   schema.
 //! * [`PendingRecords`] holds what an instance wrote and the store has not yet acknowledged:
-//!   `(kind, key)` to the bytes, or a tombstone. Each write is enqueued here and drained through
+//!   `(kind, key)` to the bytes. Each write is enqueued here and drained through
 //!   [`PendingRecords::acked`] once the store took it; a read consults it first, so an instance
 //!   always reads what it wrote.
 //! * [`WriteBehind`] batches the writes to the store: a burst queues behind the one flush that is
@@ -110,7 +110,7 @@ pub fn record_key(instance: &str, key: &[u8]) -> Vec<u8> {
 }
 
 /// One queued write: its sequence, and its bytes or a tombstone.
-type Queued = (u64, Option<Vec<u8>>);
+type Queued = (u64, Vec<u8>);
 
 /// Every instance's queued writes, by `(kind, key)`.
 type Queues = HashMap<Arc<str>, BTreeMap<(String, Vec<u8>), Queued>>;
@@ -127,9 +127,9 @@ impl PendingRecords {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Queue `instance`'s write of `(kind, key)`: `Some` bytes, or `None` for a delete. Answers the
-    /// write's sequence, which the batch that carries it is acknowledged up to.
-    pub fn enqueue(&self, instance: &str, kind: &str, key: &[u8], value: Option<Vec<u8>>) -> u64 {
+    /// Queue `instance`'s write of `value` under `(kind, key)`. Answers the write's sequence, which
+    /// the store's acknowledgement names.
+    pub fn enqueue(&self, instance: &str, kind: &str, key: &[u8], value: Vec<u8>) -> u64 {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
         self.lock()
             .entry(Arc::from(instance))
@@ -153,10 +153,9 @@ impl PendingRecords {
         }
     }
 
-    /// `instance`'s queued write of `(kind, key)`: `Some(Some(bytes))`, `Some(None)` for a queued
-    /// delete, or `None` when nothing is queued.
+    /// `instance`'s queued write of `(kind, key)`, or `None` when nothing is queued.
     #[must_use]
-    pub fn get(&self, instance: &str, kind: &str, key: &[u8]) -> Option<Option<Vec<u8>>> {
+    pub fn get(&self, instance: &str, kind: &str, key: &[u8]) -> Option<Vec<u8>> {
         self.lock()
             .get(instance)?
             .get(&(kind.to_string(), key.to_vec()))
@@ -165,12 +164,7 @@ impl PendingRecords {
 
     /// `instance`'s queued writes of `kind` under `prefix`, in key order.
     #[must_use]
-    pub fn under(
-        &self,
-        instance: &str,
-        kind: &str,
-        prefix: &[u8],
-    ) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
+    pub fn under(&self, instance: &str, kind: &str, prefix: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
         self.lock().get(instance).map_or_else(Vec::new, |q| {
             q.iter()
                 .filter(|((k, key), _)| k == kind && key.starts_with(prefix))

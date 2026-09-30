@@ -335,10 +335,9 @@ pub const REFUSAL_GATE: u32 = 1;
 /// kernel keeps).
 pub const MARK_GATE_REJECTED: u32 = 1;
 
-/// [`RecordWrite::op`]: put.
+/// [`RecordWrite::op`]: put, the one record write there is. A record is never deleted by a write:
+/// a code past it is FAULT, never a write the kernel drops.
 pub const RECORD_PUT: u32 = 1;
-/// [`RecordWrite::op`]: delete.
-pub const RECORD_DELETE: u32 = 2;
 
 /// [`AdminRoute::flags`]: a public route. [`slot::SERVE`] serves it to an unauthenticated caller;
 /// the arrival gate and the audit still run, it meters nothing, and a signature it carries is
@@ -705,11 +704,11 @@ pub struct UnitCount {
 pub struct RecordWrite {
     /// Index into [`PlaneTail::record_kinds`].
     pub kind: u32,
-    /// [`RECORD_PUT`] | [`RECORD_DELETE`].
+    /// [`RECORD_PUT`].
     pub op: u32,
     /// The key.
     pub key: Span,
-    /// The value (empty for a delete).
+    /// The value.
     pub value: Span,
 }
 

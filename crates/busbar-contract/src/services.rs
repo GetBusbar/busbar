@@ -173,21 +173,12 @@ pub enum Ran {
 #[must_use]
 pub fn merge_list(
     stored: Vec<(Vec<u8>, Vec<u8>)>,
-    queued: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+    queued: Vec<(Vec<u8>, Vec<u8>)>,
     after: Option<&[u8]>,
     limit: usize,
 ) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut rows: BTreeMap<Vec<u8>, Vec<u8>> = stored.into_iter().collect();
-    for (k, v) in queued {
-        match v {
-            Some(v) => {
-                rows.insert(k, v);
-            }
-            None => {
-                rows.remove(&k);
-            }
-        }
-    }
+    rows.extend(queued);
     rows.into_iter()
         .filter(|(k, _)| after.is_none_or(|a| k.as_slice() > a))
         .take(limit)

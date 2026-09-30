@@ -12,17 +12,13 @@ fn kv(k: &str, v: &str) -> (Vec<u8>, Vec<u8>) {
 #[test]
 fn the_list_lays_queued_writes_over_the_store_then_applies_after_and_limit() {
     let stored = vec![kv("a", "s"), kv("b", "s"), kv("c", "s")];
-    let queued = vec![
-        (b"b".to_vec(), None),
-        (b"c".to_vec(), Some(b"q".to_vec())),
-        (b"d".to_vec(), Some(b"q".to_vec())),
-    ];
+    let queued = vec![kv("c", "q"), kv("d", "q")];
     assert_eq!(
         merge_list(stored.clone(), queued.clone(), None, 10),
-        vec![kv("a", "s"), kv("c", "q"), kv("d", "q")]
+        vec![kv("a", "s"), kv("b", "s"), kv("c", "q"), kv("d", "q")]
     );
     assert_eq!(
-        merge_list(stored.clone(), queued.clone(), Some(b"a"), 10),
+        merge_list(stored.clone(), queued.clone(), Some(b"b"), 10),
         vec![kv("c", "q"), kv("d", "q")]
     );
     assert_eq!(merge_list(stored, queued, None, 1), vec![kv("a", "s")]);
