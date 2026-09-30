@@ -6,7 +6,7 @@
 //!
 //! ## Symmetry with the ingress, deliberately
 //!
-//! `crate::mcp::envelope` enforces this revision's transport MUSTs on requests busbar RECEIVES:
+//! The engine's `mcp::envelope` enforces this revision's transport MUSTs on requests busbar RECEIVES:
 //! `_meta` at `params._meta`, `Mcp-Method` mirroring the body's method, `Mcp-Name` mirroring the
 //! target, `MCP-Protocol-Version` mirroring `_meta`. This module produces requests that SATISFY the
 //! same MUSTs, and every one of the five shared wire words — the two `_meta` keys and the three
@@ -49,9 +49,9 @@
 //! party the caller actually trusts, and would ask that caller to satisfy, on the upstream's
 //! behalf, an ask busbar itself declined.
 
-use super::identity::ToolKey;
-use crate::mcp::envelope::{H_MCP_METHOD, H_MCP_NAME, H_PROTOCOL_VERSION, PROTOCOL_VERSION};
-pub(crate) use crate::mcp::envelope::{META_CLIENT_CAPABILITIES, META_PROTOCOL_VERSION};
+use crate::codec::{H_MCP_METHOD, H_MCP_NAME, H_PROTOCOL_VERSION, PROTOCOL_VERSION};
+pub use crate::codec::{META_CLIENT_CAPABILITIES, META_PROTOCOL_VERSION};
+use crate::identity::ToolKey;
 
 /// The `_meta` key a progress token travels under, both directions. Serialised as `null` when
 /// absent, which `serde_json` omits from the object rather than sending — so a caller that asked for
@@ -59,7 +59,7 @@ pub(crate) use crate::mcp::envelope::{META_CLIENT_CAPABILITIES, META_PROTOCOL_VE
 const META_PROGRESS_TOKEN: &str = "progressToken";
 
 // The `_meta` keys and the header names are NOT declared here. They are `use`d from
-// `crate::mcp::envelope`, which owns the single spelling of each — see the wire-words block there.
+// `crate::codec`, which owns the single spelling of each — see the wire-words block there.
 // A re-export keeps this module's existing callers (`super::*` users, the test suite) working
 // against one definition rather than two, and the re-export is deliberately not a second `const`:
 // there is nothing here for a divergence to live in.
@@ -70,11 +70,13 @@ const META_PROGRESS_TOKEN: &str = "progressToken";
 /// scans. A test that has to reconstruct the request from a builder's intermediate state is a test
 /// that can miss the field the builder added last.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct OutboundRequest {
-    pub(crate) url: String,
+pub struct OutboundRequest {
+    /// The upstream endpoint the request is sent to.
+    pub url: String,
     /// Header name/value pairs, lower-cased names, in the order they will be written.
-    pub(crate) headers: Vec<(String, String)>,
-    pub(crate) body: Vec<u8>,
+    pub headers: Vec<(String, String)>,
+    /// The serialized JSON-RPC body.
+    pub body: Vec<u8>,
 }
 
 impl OutboundRequest {
@@ -88,7 +90,7 @@ impl OutboundRequest {
     /// Used by the tests that scan the whole wire for a leaked caller credential; the dispatch
     /// path hands the body to the transport directly.
     #[allow(dead_code)]
-    pub(crate) fn wire_bytes(&self) -> Vec<u8> {
+    pub fn wire_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(self.url.as_bytes());
         for (name, value) in &self.headers {
@@ -105,9 +107,14 @@ impl OutboundRequest {
 /// in one signature are two arguments a call site can swap without the compiler noticing, and the
 /// swap would advertise an ask busbar then refuses.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct AdvertisedCaps {
-    pub(crate) roots: bool,
-    pub(crate) sampling: bool,
+pub struct AdvertisedCaps {
+    /// Declare `roots`: the operator granted it AND declared its satisfier.
+    pub roots: bool,
+    /// Declare `sampling`: the operator granted it AND declared its satisfier.
+    pub sampling: bool,
+    /// The CALLER asked for progress, so busbar's own token rides `_meta`. Read by the caller from
+    /// its per-request progress slot and handed in, so this builder reads no task state.
+    pub progress: bool,
 }
 
 /// Build a `tools/call` for `key` against `url`.
@@ -119,7 +126,7 @@ pub(crate) struct AdvertisedCaps {
 /// satisfy: an object carrying `inputResponses` and (when the upstream sealed one) `requestState`,
 /// built by the granted satisfier and echoed here onto the RETRY of the same logical call — which
 /// is MRTR's own continuation shape, the one busbar's ingress reads at
-/// `crate::mcp::method`'s `inputResponses` sites. `None` is every first round and every call whose
+/// the engine's `mcp::method` `inputResponses` sites. `None` is every first round and every call whose
 /// upstream asked nothing, and produces a byte-identical request to what this builder always sent.
 /// `advertise` declares the client capabilities in `_meta`. Each flag is TRUE exactly when the
 /// registration holds the matching grant AND the operator declared its satisfier
@@ -127,7 +134,7 @@ pub(crate) struct AdvertisedCaps {
 /// able to answer, because MRTR forbids a server sending an ask the client has not declared, and
 /// declaring a capability busbar would then refuse invites an upstream to build a call sequence
 /// around a refusal.
-pub(crate) fn tools_call(
+pub fn tools_call(
     url: &str,
     key: &ToolKey,
     arguments: &serde_json::Value,
@@ -142,16 +149,7 @@ pub(crate) fn tools_call(
     // a server MUST NOT emit progress without a token, so sending none is how busbar says "this
     // caller did not ask". Derived from `request_id`, which is already unique per outbound call, so
     // two concurrent calls cannot be told apart by the upstream as one conversation.
-    let progress_token: Option<String> = super::super::UPSTREAM_PROGRESS
-        .try_with(|slot| {
-            slot.lock().ok().and_then(|ch| {
-                ch.caller_token
-                    .as_ref()
-                    .map(|_| format!("busbar-{request_id}"))
-            })
-        })
-        .ok()
-        .flatten();
+    let progress_token: Option<String> = advertise.progress.then(|| format!("busbar-{request_id}"));
     // busbar declares NO client capabilities BY DEFAULT. Every ask kind is deny-by-default per
     // server, and declaring a capability we then refuse to honour invites an upstream to build a
     // call sequence around it. Declaring the empty set is the honest statement of a client that
@@ -201,11 +199,7 @@ pub(crate) fn tools_call(
 /// The CONNECT-path request. Nothing fetches a live tool list yet — that is the gap named in
 /// `client::catalogue`.
 #[allow(dead_code)]
-pub(crate) fn tools_list(
-    url: &str,
-    request_id: u64,
-    authorization: Option<&str>,
-) -> OutboundRequest {
+pub fn tools_list(url: &str, request_id: u64, authorization: Option<&str>) -> OutboundRequest {
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": request_id,
@@ -228,11 +222,11 @@ pub(crate) fn tools_list(
 /// request-smuggling primitive the mirroring exists to close — and busbar's own ingress answers
 /// `-32020` to it, so a bug here would be caught only by an upstream strict enough to check.
 ///
-/// `pub(super)` so [`super::verb`] — the CLOSED SET of methods busbar issues — builds through this
+/// Public so `super::verb` — the CLOSED SET of methods busbar issues — builds through this
 /// one function rather than assembling a second header block. Two envelope builders is two places
 /// the mirrored headers can be got wrong, and only one of them would be scanned by
 /// `no_key_passthrough_tests`.
-pub(super) fn envelope(
+pub fn envelope(
     url: &str,
     method: &str,
     name: Option<&str>,
@@ -241,9 +235,9 @@ pub(super) fn envelope(
 ) -> OutboundRequest {
     let mut headers = vec![
         ("content-type".to_string(), "application/json".to_string()),
-        // SSE is a permitted content type for the RESPONSE to a POST in this revision, and nothing
-        // more — there is no GET stream. Accepting both is what lets an upstream stream a long tool
-        // result without busbar having to speak a second transport.
+        // An event stream is a permitted content type for the RESPONSE to a POST in this revision,
+        // and nothing more — there is no GET stream. Accepting both is what lets an upstream stream
+        // a long tool result without busbar having to speak a second transport.
         (
             "accept".to_string(),
             "application/json, text/event-stream".to_string(),
@@ -271,7 +265,7 @@ pub(super) fn envelope(
 /// needed — but "in practice never" is exactly the branch that rots, so the encoder is written and
 /// exercised rather than assumed away. The decision is on the VALUE, never on a flag, so an encoded
 /// and a plain name cannot both describe the same request.
-pub(in crate::mcp) fn encode_sentinel(name: &str) -> String {
+pub fn encode_sentinel(name: &str) -> String {
     use base64::Engine as _;
     if name
         .bytes()
@@ -287,14 +281,23 @@ pub(in crate::mcp) fn encode_sentinel(name: &str) -> String {
 
 /// The parsed shape of a JSON-RPC response, reduced to the outcomes dispatch cares about.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum RpcOutcome {
+pub enum RpcOutcome {
     /// A normal result.
     Result(serde_json::Value),
     /// A JSON-RPC error object.
-    Error { code: i64, message: String },
+    Error {
+        /// The error's `code`. Always an integer: an error object without one is not a JSON-RPC
+        /// error and reads as [`RpcOutcome::Malformed`], never as a code nobody sent.
+        code: i64,
+        /// The error's `message`.
+        message: String,
+    },
     /// The upstream is asking busbar to spend busbar's OWN authority: an `InputRequiredResult`.
     /// Carries the kind of ask so the grant check names the right grant.
-    InputRequired { kind: ServerAsk },
+    InputRequired {
+        /// The most privileged ask the result names.
+        kind: ServerAsk,
+    },
     /// The body was not a JSON-RPC response at all.
     Malformed(String),
     /// THE BODY WAS A JSON-RPC RESPONSE TO SOMETHING ELSE — a mismatched `id`, a `null` id, or no
@@ -312,7 +315,7 @@ pub(crate) enum RpcOutcome {
 /// The three things an upstream may ask for, kept as a closed enum so a fourth cannot be handled by
 /// a default arm that says yes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ServerAsk {
+pub enum ServerAsk {
     /// `sampling/createMessage`: run an LLM completion on busbar's pools and budget.
     Sampling,
     /// Ask a human for input.
@@ -322,7 +325,8 @@ pub(crate) enum ServerAsk {
 }
 
 impl ServerAsk {
-    pub(crate) fn key(self) -> &'static str {
+    /// The ask's grant key, as the registry and the refusal text spell it.
+    pub fn key(self) -> &'static str {
         match self {
             ServerAsk::Sampling => "sampling",
             ServerAsk::Elicitation => "elicitation",
@@ -365,7 +369,7 @@ impl ServerAsk {
 // [`parse_response`] below is the whole correlation defence on this plane. There is no table of
 // pending ids (this revision deleted sessions — see the module header), so "is this the answer to
 // what I asked?" is decided by comparing one id against one id. That defence is worth exactly as
-// much as the ids being distinct, and on the STDIO carrier the handshake and the dispatch share ONE
+// much as the ids being distinct, and on the child-process carrier the handshake and the dispatch share ONE
 // byte stream: they are the two messages that must never be confused.
 //
 // THEY WERE CONFUSABLE. The handshake's id was the literal `0`, and a dispatch's id is the round
@@ -387,16 +391,16 @@ impl ServerAsk {
 /// disjointness asserted below is a claim about the RANGE of the dispatch id — and that claim is
 /// only true while this is the one way to mint one. The `u32` argument is the bound: it is what
 /// makes `0..=u32::MAX` a fact about the type rather than a convention about the counter.
-pub(crate) const fn dispatch_request_id(round: u32) -> u64 {
+pub const fn dispatch_request_id(round: u32) -> u64 {
     round as u64
 }
 
-/// THE JSON-RPC ID BUSBAR PUTS ON ITS STDIO HANDSHAKE.
+/// THE JSON-RPC ID BUSBAR PUTS ON ITS CHILD-PROCESS HANDSHAKE.
 ///
 /// DISJOINT BY CONSTRUCTION from every dispatch id — see the block above for what the collision
 /// did. It does not need to be unique across CHILDREN: correlation is per exchange, and there is no
 /// table of pending ids for two children to collide in.
-pub(crate) const HANDSHAKE_REQUEST_ID: u64 = u32::MAX as u64 + 1;
+pub const HANDSHAKE_REQUEST_ID: u64 = u32::MAX as u64 + 1;
 
 /// THE DISJOINTNESS, CHECKED BY THE COMPILER rather than asserted by a comment or a test.
 ///
@@ -426,10 +430,10 @@ const _: () = assert!(HANDSHAKE_REQUEST_ID > dispatch_request_id(u32::MAX));
 /// re-adding the thing the revision removed.
 ///
 /// The envelope rules themselves — the `jsonrpc` member, the `id` cases, exactly-one-of
-/// `result`/`error` — are [`busbar_kernel::ingress::jsonrpc::read_response`]'s, shared with the A2A relay,
+/// `result`/`error` — are [`busbar_contract::jsonrpc::read_response`]'s, shared with the A2A relay,
 /// for the reason the request side already established: one concern, one reader.
-pub(crate) fn parse_response(body: &[u8], sent_id: u64) -> RpcOutcome {
-    use busbar_kernel::ingress::jsonrpc::{read_response, NotAnAnswerKind, Reply};
+pub fn parse_response(body: &[u8], sent_id: u64) -> RpcOutcome {
+    use busbar_contract::jsonrpc::{read_response, NotAnAnswerKind, Reply};
 
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
         return RpcOutcome::Malformed("upstream response is not valid JSON".to_string());
@@ -446,12 +450,14 @@ pub(crate) fn parse_response(body: &[u8], sent_id: u64) -> RpcOutcome {
         }
     };
     match reply {
-        Reply::Error { code, message } => RpcOutcome::Error {
-            code: code
-                .as_ref()
-                .and_then(serde_json::Value::as_i64)
-                .unwrap_or(0),
-            message,
+        Reply::Error { code, message } => match code.as_ref().and_then(serde_json::Value::as_i64) {
+            Some(code) => RpcOutcome::Error { code, message },
+            // JSON-RPC 2.0 section 5.1: `code` MUST be an integer. A missing or non-integer code is
+            // a broken upstream, and inventing `0` for it would hand the caller a code the upstream
+            // never sent.
+            None => RpcOutcome::Malformed(format!(
+                "upstream error object has no integer `code` (message: {message})"
+            )),
         },
         Reply::Result(result) => match input_required_kind(&result) {
             Some(ask) => RpcOutcome::InputRequired { kind: ask },
@@ -472,7 +478,7 @@ pub(crate) fn parse_response(body: &[u8], sent_id: u64) -> RpcOutcome {
 /// So a CONFORMANT upstream's ask failed this predicate, was returned as an ordinary
 /// [`RpcOutcome::Result`], became `Outcome::Completed`, and was written onto the wire to busbar's
 /// own caller verbatim — `resultType`, `inputRequests`, `requestState` and all. The type-level
-/// guarantee in [`crate::mcp::inputreq`] (an `Outcome` with no arm that can carry an `Ask`) was real
+/// guarantee in the engine's `mcp::inputreq` (an `Outcome` with no arm that can carry an `Ask`) was real
 /// and was never reached, because whether control reaches it is decided HERE. A rule enforced by a
 /// missing enum variant still needs the predicate that routes to it to be correct.
 ///
@@ -533,16 +539,19 @@ fn input_required_kind(result: &serde_json::Value) -> Option<ServerAsk> {
 /// All false at construction, and there is no `all()` constructor. Deny-by-default is a property of
 /// the type, not of a config default somebody can invert.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ServerRequestGrants {
-    pub(crate) sampling: bool,
-    pub(crate) elicitation: bool,
-    pub(crate) roots: bool,
+pub struct ServerRequestGrants {
+    /// The server may ask for `sampling/createMessage`.
+    pub sampling: bool,
+    /// The server may ask for `elicitation/create`.
+    pub elicitation: bool,
+    /// The server may ask for `roots/list`.
+    pub roots: bool,
 }
 
 impl ServerRequestGrants {
     /// Read by the connect-path grant preview; the live gate reads the server plane's grants.
     #[allow(dead_code)]
-    pub(crate) fn allows(&self, ask: ServerAsk) -> bool {
+    pub fn allows(&self, ask: ServerAsk) -> bool {
         match ask {
             ServerAsk::Sampling => self.sampling,
             ServerAsk::Elicitation => self.elicitation,
@@ -555,11 +564,21 @@ impl ServerRequestGrants {
 #[derive(Clone, Debug, PartialEq, Eq)]
 // Reached only by the connect/refresh path, which has no verb yet.
 #[allow(dead_code)]
-pub(crate) enum AskRefusal {
+pub enum AskRefusal {
     /// The server's registry entry carries no grant for this ask.
-    Ungranted { server: String, ask: &'static str },
+    Ungranted {
+        /// The upstream server that asked.
+        server: String,
+        /// The grant key of what it asked for.
+        ask: &'static str,
+    },
     /// The bounded input-required loop is exhausted.
-    LoopExhausted { server: String, max_rounds: u32 },
+    LoopExhausted {
+        /// The upstream server that asked.
+        server: String,
+        /// The cap that was reached.
+        max_rounds: u32,
+    },
 }
 
 impl std::fmt::Display for AskRefusal {
@@ -588,7 +607,7 @@ impl std::fmt::Display for AskRefusal {
 #[derive(Debug)]
 // Reached only by the connect/refresh path, which has no verb yet.
 #[allow(dead_code)]
-pub(crate) struct InputRequiredLoop {
+pub struct InputRequiredLoop {
     server: String,
     max_rounds: u32,
     rounds: u32,
@@ -597,7 +616,8 @@ pub(crate) struct InputRequiredLoop {
 impl InputRequiredLoop {
     // Reached only by the connect/refresh path, which has no verb yet.
     #[allow(dead_code)]
-    pub(crate) fn new(server: &str, max_rounds: u32) -> Self {
+    /// A loop for one logical dispatch to `server`, capped at `max_rounds` satisfied asks.
+    pub fn new(server: &str, max_rounds: u32) -> Self {
         Self {
             server: server.to_string(),
             max_rounds,
@@ -612,7 +632,7 @@ impl InputRequiredLoop {
     /// so a revocation bites on the next retry, not at the end of a sequence that has no end.
     // Reached only by the connect/refresh path, which has no verb yet.
     #[allow(dead_code)]
-    pub(crate) fn may_satisfy(
+    pub fn may_satisfy(
         &mut self,
         ask: ServerAsk,
         grants: ServerRequestGrants,
@@ -638,15 +658,15 @@ impl InputRequiredLoop {
     /// meters.
     // Read by the connect-path preview; the live loop bound lives on the server plane.
     #[allow(dead_code)]
-    pub(crate) fn rounds(&self) -> u32 {
+    pub fn rounds(&self) -> u32 {
         self.rounds
     }
 }
 
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(test)]
 #[path = "tests/wire_tests.rs"]
 mod wire_tests;
 
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(test)]
 #[path = "tests/ask_tests.rs"]
 mod ask_tests;

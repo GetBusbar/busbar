@@ -45,6 +45,11 @@ pub use busbar_plane_mcp::{outputschema, sanitize};
 /// caller resolves the same constants.
 pub use busbar_plane_mcp::diagnostics;
 
+/// THE MCP CLIENT'S PURE HALF (outbound wire, verbs, peer classifier), defined in the plane crate
+/// and reached through this crate root, the engine's one edge to the plane, as `record`, `identity`
+/// and `diagnostics` are. `mcp::client` re-exports its modules under their old paths.
+pub(crate) use busbar_plane_mcp::client as plane_client;
+
 /// The committed per-plane diagnostics pages, rendered through the host's renderers.
 #[cfg(test)]
 #[path = "tests/diagnostics_page_tests.rs"]

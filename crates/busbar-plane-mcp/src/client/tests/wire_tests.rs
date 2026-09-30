@@ -4,23 +4,25 @@
 //! The `2026-07-28` outbound wire: the mirrored headers, `params._meta`, and the un-namespacing.
 //!
 //! The strongest assertion here is the SYMMETRY one: a request this module builds is fed to
-//! `crate::mcp::envelope`'s own reader, and must be accepted. busbar refusing a request busbar sent
+//! the engine's `mcp::envelope` reader, and must be accepted. busbar refusing a request busbar sent
 //! would be a silent, mutual misunderstanding that no single-direction test can see.
 
-use crate::mcp::client::jsonrpc::{
+use crate::client::jsonrpc::{
     parse_response, tools_call, tools_list, RpcOutcome, META_CLIENT_CAPABILITIES,
     META_PROTOCOL_VERSION,
 };
-use crate::mcp::client::support::tkey;
 
-fn body_of(req: &crate::mcp::client::jsonrpc::OutboundRequest) -> serde_json::Value {
+/// A routing key for a valid test server and tool.
+fn tkey(server: &str, tool: &str) -> crate::identity::ToolKey {
+    let server = crate::identity::ServerId::new(server).expect("test server id must be valid");
+    crate::identity::ToolKey::new(server, tool).expect("test tool key must be valid")
+}
+
+fn body_of(req: &crate::client::jsonrpc::OutboundRequest) -> serde_json::Value {
     serde_json::from_slice(&req.body).expect("the body we build must be JSON")
 }
 
-fn header<'a>(
-    req: &'a crate::mcp::client::jsonrpc::OutboundRequest,
-    name: &str,
-) -> Option<&'a str> {
+fn header<'a>(req: &'a crate::client::jsonrpc::OutboundRequest, name: &str) -> Option<&'a str> {
     req.headers
         .iter()
         .find(|(n, _)| n == name)
@@ -56,7 +58,7 @@ fn meta_lives_at_params_meta_and_not_at_the_top_level() {
     assert!(body.get("_meta").is_none(), "no top-level `_meta`");
     assert_eq!(
         body["params"]["_meta"][META_PROTOCOL_VERSION],
-        crate::mcp::envelope::PROTOCOL_VERSION
+        crate::codec::PROTOCOL_VERSION
     );
     // Capabilities are declared EMPTY: busbar will refuse sampling/elicitation/roots unless the
     // operator granted them, and declaring a capability we then refuse invites a call sequence
@@ -157,6 +159,24 @@ fn a_jsonrpc_error_is_not_reported_as_a_result() {
             message: "no such method".into()
         }
     );
+}
+
+/// An error object whose `code` is missing or not an integer is not a JSON-RPC error. It reads as
+/// malformed, and no caller is ever handed a `0` the upstream never sent.
+#[test]
+fn an_error_without_an_integer_code_is_malformed_not_code_zero() {
+    for body in [
+        br#"{"jsonrpc":"2.0","id":1,"error":{"message":"no code"}}"#.as_slice(),
+        br#"{"jsonrpc":"2.0","id":1,"error":{"code":"-32601","message":"string code"}}"#.as_slice(),
+        br#"{"jsonrpc":"2.0","id":1,"error":{"code":1.5,"message":"fractional code"}}"#.as_slice(),
+    ] {
+        let out = parse_response(body, 1);
+        assert!(
+            matches!(out, RpcOutcome::Malformed(_)),
+            "{} read as {out:?}",
+            String::from_utf8_lossy(body)
+        );
+    }
 }
 
 #[test]

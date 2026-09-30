@@ -86,7 +86,9 @@ pub(crate) use crate::identity;
 /// THE ONE GOVERNED ISSUANCE PATH for every method busbar sends an upstream. One gate, one audit
 /// record, one vtable send — see the module header for why a second one is a hole and not a feature.
 pub(crate) mod issue;
-pub(crate) mod jsonrpc;
+/// THE OUTBOUND WIRE, defined in the plane crate (reached as `crate::plane_client::jsonrpc`) and
+/// re-exported under this path, so every `client::jsonrpc::…` caller resolves the same items.
+pub(crate) use crate::plane_client::jsonrpc;
 /// WHAT A CHILD SENDS BUSBAR: the `busbar-as-client / server-originated` half of the matrix, and
 /// the deny-by-default gate on the three asks that would spend busbar's own authority.
 pub(crate) mod peer;

@@ -6,7 +6,7 @@
 //! busbar's own authority — an LLM completion on busbar's pools and budget, a prompt to a user, or
 //! disclosure of filesystem roots — that the operator never granted that server.
 
-use crate::mcp::client::jsonrpc::{
+use crate::client::jsonrpc::{
     parse_response, AskRefusal, InputRequiredLoop, RpcOutcome, ServerAsk, ServerRequestGrants,
 };
 

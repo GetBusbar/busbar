@@ -540,6 +540,11 @@ pub(crate) async fn call(
         jsonrpc::AdvertisedCaps {
             roots: auth.grants.roots && !auth.roots.is_empty(),
             sampling: auth.grants.sampling && auth.sampling.is_some(),
+            // Busbar's own progress token is sent only when the caller asked for progress, which
+            // the per-request slot records; outside `ingress`'s scope there is no slot and no token.
+            progress: super::UPSTREAM_PROGRESS
+                .try_with(|slot| slot.lock().ok().is_some_and(|ch| ch.caller_token.is_some()))
+                .unwrap_or(false),
         },
         satisfaction.as_ref(),
     );

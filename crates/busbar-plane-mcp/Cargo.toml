@@ -43,6 +43,9 @@ path = "src/lib.rs"
 [dependencies]
 # THE CONTRACT. The one busbar crate a plugin manifest may name without argument.
 busbar-contract = { path = "../busbar-contract" }
+# The `Mcp-Name` header's `=?base64?…?=` sentinel for a name a header value cannot carry
+# (owner PLUGIN LIBRARIES ruling, 2026-09-28).
+base64 = { workspace = true }
 # The notification codec writes its envelope as bytes, the same type the frame cursor hands in.
 bytes = { workspace = true }
 # The two wire parameter objects the notification codec reads and writes derive their shapes.

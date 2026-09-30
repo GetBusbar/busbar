@@ -826,7 +826,9 @@ needle = "busbar_kernel::"
 # arming the true count, not a relaxation of what the instrument ever saw. Downward only from here.
 [rules.ports-only.max_per_crate]
 busbar-llm = 251
-busbar-mcp = 283
+# LOWERED 283 -> 282 by fold A5: the outbound wire moved to busbar-plane-mcp and reads the
+# contract's JSON-RPC reader, not the kernel's. Downward only.
+busbar-mcp = 282
 busbar-a2a = 233
 busbar-voice = 88
 
@@ -1622,6 +1624,9 @@ busbar-transport-http = [
   "hyper-rustls", "http-body-util", "http", "webpki-roots", "tonic", "tower",
 ]
 busbar-transport-stdio = ["tokio", "futures"]
+# The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
+# the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
+busbar-plane-mcp = ["base64"]
 busbar-transport-tcp = ["tokio-util", "futures", "tokio"]
 busbar-transport-ws = [
   "tokio-util", "tokio", "tokio-tungstenite", "tokio-rustls", "rustls", "rustls-pki-types",
