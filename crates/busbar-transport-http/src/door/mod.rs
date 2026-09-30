@@ -46,6 +46,7 @@
 //! carrier op.
 
 pub mod engine;
+pub mod target;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -603,11 +604,28 @@ impl SafeSlot for Encode {
         // The head words, where the host states them, ARE the request line: they lead, so they win
         // over any same-named envelope field.
         let method = i.field(|x| &x.method).bytes();
-        let target = i.field(|x| &x.target).bytes();
+        let word = i.field(|x| &x.target).bytes();
+        let envelope_path = fields.iter().find_map(|f| {
+            let name = f.field(|x| &x.name).bytes();
+            name.eq_ignore_ascii_case(b"path")
+                .then(|| f.field(|x| &x.value).bytes())
+        });
+        // The target goes out as 1.5.5's client wrote it: percent-encoded, never refused for a
+        // space (`target::encode_target`).
+        let target = match (word, envelope_path) {
+            (w, _) if !w.is_empty() => Some(w),
+            (_, p) => p,
+        }
+        .map(target::encode_target)
+        .transpose();
+        let Ok(target) = target else {
+            err(&mut o.head, "encode: a request target holds CR, LF or NUL");
+            return Outcome::Failed;
+        };
         if !method.is_empty() {
             pairs.push(("method", method));
         }
-        if !target.is_empty() {
+        if let Some(target) = target.as_deref() {
             pairs.push(("path", target));
         }
         for f in fields.iter() {

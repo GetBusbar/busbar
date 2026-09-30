@@ -57,6 +57,10 @@ libloading = { workspace = true }
 # THE 1.5.5 BYTE COMPARISON (`tests/h2_parity.rs`): 1.5.5's egress client, reqwest 0.12 with its
 # `http2` feature, built exactly as 1.5.5 built it, captured beside this door on the same request.
 reqwest = { workspace = true, features = ["http2"] }
+# THE REQUEST TARGET'S 1.5.5 BYTES (`door/tests`): the URL parser 1.5.5's client serialised
+# every upstream path with, compared against the door's own encoder. Already in this list's closure
+# through reqwest: no crate is added.
+url = { workspace = true }
 # The TEST-ONLY seal (#65). `busbar_contract::plugin::TestKernelSeal` is the one blessed
 # fixture implementor of the SEALED `KernelSeal` trait; this crate's test harnesses used to
 # forge their own. Dev-only and feature-gated, so it is absent from every release build.

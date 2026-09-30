@@ -103,3 +103,65 @@ fn a_field_block_is_cut_only_where_a_continuation_extends_a_value() {
     // Opening inside a value, every byte up to the next name may go.
     assert_eq!(field_cut(b"on\r\nx: 1\r\n", 5, true), 4);
 }
+
+/// RED: the request target goes out as 1.5.5's client wrote it. A space is `%20`, an existing
+/// `%20` is not encoded twice, and CR, LF and NUL are refused.
+#[test]
+fn a_target_is_percent_encoded_as_1_5_5_wrote_it() {
+    let enc = |t: &str| String::from_utf8(target::encode_target(t.as_bytes()).unwrap()).unwrap();
+    assert_eq!(enc("/v1beta/models/my model:generateContent"), "/v1beta/models/my%20model:generateContent");
+    assert_eq!(enc("/v1/a%20b"), "/v1/a%20b");
+    for bad in ["/a\rb", "/a\nb", "/a\0b"] {
+        assert_eq!(target::encode_target(bad.as_bytes()), Err(target::REFUSED), "{bad:?}");
+    }
+}
+
+/// The encoder IS the URL parser 1.5.5's client serialised a path with: the same bytes for every
+/// target in the table.
+#[test]
+fn the_target_encoder_matches_the_url_parser_1_5_5_used() {
+    let table = [
+        "/v1/chat/completions",
+        "/v1/models/my model:generateContent",
+        "/v1/a%20b",
+        "/v1/a%zz",
+        "/v1/x?alt=sse",
+        "/v1/x?q=a b&c=\"d\"",
+        "/v1/x?q='quoted'",
+        "/v1/x?q=<tag>#frag",
+        "/v1/x#frag",
+        "/v1/\"quoted\"/path",
+        "/v1/<angle>",
+        "/v1/`tick`",
+        "/v1/{brace}",
+        "/v1/pipe|caret^",
+        "/v1/ümlaut/日本",
+        "/v1/./a/../b",
+        "/v1/%2e/a/%2E%2e/b",
+        "/v1/a/..",
+        "/v1/a/.",
+        "/..",
+        "",
+        "/",
+        "//double//slash",
+        "\\v1\\back",
+        "v1/relative",
+        "/v1/ta\tb",
+        "/v1/del\u{7f}",
+        "/v1/ctl\u{1}",
+        "/v1/x?",
+        "/v1/x??y",
+    ];
+    for t in table {
+        // 1.5.5 joined a base URL and an absolute path; a relative one is read as absolute.
+        let absolute = if t.starts_with('/') || t.starts_with('\\') {
+            t.to_owned()
+        } else {
+            format!("/{t}")
+        };
+        let url = url::Url::parse(&format!("http://h{absolute}")).unwrap();
+        let want = &url[url::Position::BeforePath..url::Position::AfterQuery];
+        let got = target::encode_target(t.as_bytes()).unwrap();
+        assert_eq!(String::from_utf8(got).unwrap(), want, "{t:?}");
+    }
+}
