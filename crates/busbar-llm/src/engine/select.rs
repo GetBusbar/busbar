@@ -600,9 +600,9 @@ impl busbar_kernel::failover::Order for SwrrOrder<'_> {
     }
 }
 
+#[cfg(test)]
+pub(crate) use crate::engine::xchg::reply::wire::ingress_stream_content_type;
 /// True for content types that carry an incremental streamed response (SSE, AWS event-stream), and
 /// the streaming `Content-Type` the INGRESS client expects: the plane's reply reads, over the
 /// dialect declarations.
-pub(crate) use crate::engine::xchg::reply::wire::{
-    ingress_stream_content_type, is_stream_content_type,
-};
+pub(crate) use crate::engine::xchg::reply::wire::is_stream_content_type;

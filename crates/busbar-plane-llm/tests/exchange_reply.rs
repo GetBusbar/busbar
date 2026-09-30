@@ -358,3 +358,168 @@ fn a_json_array_caller_reads_a_one_element_array() {
     assert_eq!(v.as_array().map(Vec::len), Some(1), "{v}");
     assert_eq!(w.answer.fields.len(), 1, "{:?}", w.answer.fields);
 }
+
+// ── a relayed answer ────────────────────────────────────────────────────────────────────────────
+
+use busbar_plane_llm::exchange::reply::relay::{self, ContentType, Fed, Relay, RelayCtx};
+
+fn chat_handler(dialect: &str) -> &'static dyn busbar_contract::codec::OperationHandler {
+    busbar_plane_llm::codec::DECLS
+        .iter()
+        .find(|d| d.name == dialect)
+        .and_then(|d| d.handler)
+        .and_then(|rh| rh.operation_handler(OpVerb::CHAT))
+        .expect("every dialect serves chat")
+}
+
+fn relay_ctx<'a>(ingress: &'a str, egress: &'a str, far_streams: bool) -> RelayCtx<'a> {
+    RelayCtx {
+        ingress,
+        egress,
+        far_streams,
+        json_array: false,
+        client_include_usage: false,
+        request: None,
+        handler: chat_handler(ingress),
+        meter: true,
+    }
+}
+
+/// An OpenAI chat stream: two text deltas, the stop, the usage chunk and the terminator.
+fn openai_stream() -> Vec<u8> {
+    let chunk = |delta: &str, finish: &str| {
+        format!(
+            "data: {{\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m-1\",\"choices\":[{{\"index\":0,\"delta\":{delta},\"finish_reason\":{finish}}}]}}\n\n"
+        )
+    };
+    let mut s = String::new();
+    s += &chunk(r#"{"role":"assistant","content":"Hel"}"#, "null");
+    s += &chunk(r#"{"content":"lo"}"#, "null");
+    s += &chunk("{}", r#""stop""#);
+    s += "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m-1\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}}\n\n";
+    s += "data: [DONE]\n\n";
+    s.into_bytes()
+}
+
+/// Every piece a relay answers, concatenated, for `far` fed in pieces of `step` bytes.
+fn relay_all(r: &mut Relay, far: &[u8], step: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    for piece in far.chunks(step) {
+        if let (Fed::Bytes(b), _) = r.feed(piece) {
+            out.extend_from_slice(&b);
+        }
+    }
+    out.extend(r.end().bytes);
+    out
+}
+
+/// A far end's native stream of `dialect`: the OpenAI stream above as the translator writes it for
+/// a caller of that dialect.
+fn native_stream(dialect: &str) -> Vec<u8> {
+    let mut ctx = relay_ctx(dialect, "openai", true);
+    ctx.client_include_usage = true;
+    let mut r = Relay::new(ctx);
+    relay_all(&mut r, &openai_stream(), usize::MAX)
+}
+
+/// A same-dialect whole body relays untouched (the far end's own bytes, borrowed) and its usage is
+/// read at the end.
+#[test]
+fn a_same_dialect_whole_body_relays_untouched_and_meters() {
+    for dialect in ["openai", "anthropic", "cohere", "responses", "gemini"] {
+        let (_, body) = native_answers(dialect)
+            .into_iter()
+            .next()
+            .expect("an answer");
+        let mut r = Relay::new(relay_ctx(dialect, dialect, false));
+        let mut out = Vec::new();
+        for piece in body.chunks(9) {
+            match r.feed(piece) {
+                (Fed::Bytes(std::borrow::Cow::Borrowed(b)), _) => out.extend_from_slice(b),
+                other => panic!("{dialect}: {other:?}"),
+            }
+        }
+        let end = r.end();
+        assert_eq!(out, body, "{dialect}");
+        assert!(end.bytes.is_empty() && !end.failed, "{dialect}");
+        assert!(end.usage.is_some(), "{dialect}: usage");
+        assert_eq!(
+            relay::content_type(dialect, dialect, false, false),
+            ContentType::Far
+        );
+    }
+}
+
+/// A stream from a far end of every dialect reaches a caller of every dialect whole, whatever the
+/// piece boundaries, and its usage is read at the end.
+#[test]
+fn a_stream_relays_for_every_pair_whatever_the_piece_boundaries() {
+    let mut checked = 0;
+    for egress in SIX {
+        let far = native_stream(egress);
+        assert!(!far.is_empty(), "{egress}");
+        for ingress in SIX {
+            let whole = relay_all(
+                &mut Relay::new(relay_ctx(ingress, egress, true)),
+                &far,
+                usize::MAX,
+            );
+            let mut r = Relay::new(relay_ctx(ingress, egress, true));
+            let pieces = relay_all(&mut r, &far, 7);
+            assert!(!whole.is_empty(), "{ingress}<-{egress}");
+            if ingress != "responses" && ingress != "anthropic" && ingress != "cohere" {
+                // Dialects that mint ids per stream answer different bytes run to run; the rest
+                // answer the same bytes whatever the boundaries.
+                assert_eq!(pieces, whole, "{ingress}<-{egress}");
+            }
+            let mut r = Relay::new(relay_ctx(ingress, egress, true));
+            for piece in far.chunks(5) {
+                let _ = r.feed(piece);
+            }
+            let end = r.end();
+            assert!(!end.failed, "{ingress}<-{egress}");
+            assert!(end.usage.is_some(), "{ingress}<-{egress}: usage");
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 36);
+}
+
+/// A stream cut after its first byte ends on the caller's own in-band error; one cut before any
+/// byte ends with no bytes and reports the far end's transfer as failed.
+#[test]
+fn a_cut_stream_ends_on_the_callers_error_frame() {
+    for ingress in SIX {
+        let far = native_stream("openai");
+        let mut r = Relay::new(relay_ctx(ingress, "openai", true));
+        let _ = r.feed(&far[..far.len() / 2]);
+        let cut = r.cut(true);
+        assert_eq!(cut.reason, "mid-stream");
+        assert!(cut.partial);
+        assert!(cut.bytes.is_some_and(|b| !b.is_empty()), "{ingress}");
+
+        let mut r = Relay::new(relay_ctx(ingress, "openai", true));
+        let cut = r.cut(true);
+        assert_eq!(cut.reason, "pre-first-byte-transport");
+        assert!(!cut.partial && cut.bytes.is_none() && cut.usage.is_none());
+    }
+}
+
+/// A caller that asked for its stream as a JSON array reads one array, under `application/json`.
+#[test]
+fn a_json_array_caller_reads_its_stream_as_one_array() {
+    let far = native_stream("gemini");
+    let mut ctx = relay_ctx("gemini", "gemini", true);
+    ctx.json_array = true;
+    let out = relay_all(&mut Relay::new(ctx), &far, 11);
+    let v: Value = serde_json::from_slice(&out).expect("one JSON array");
+    assert!(v.as_array().is_some_and(|a| !a.is_empty()), "{v}");
+    assert_eq!(
+        relay::content_type("gemini", "gemini", true, true),
+        ContentType::Json
+    );
+    assert!(relay::takes_whole("openai", "anthropic", false, false));
+    assert!(relay::takes_whole("openai", "openai", false, true));
+    assert!(!relay::takes_whole("openai", "openai", false, false));
+    assert!(!relay::takes_whole("openai", "anthropic", true, true));
+}

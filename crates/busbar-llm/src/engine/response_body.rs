@@ -138,65 +138,28 @@ impl std::fmt::Debug for TapCell {
 #[cfg(test)]
 pub(crate) use busbar_plane_llm::codec::wire_shim::TRUNCATED_TAIL_BYTES_PER_TOKEN;
 
-/// The floor, the dialect's reported-usage scan and the two together: the plane's reply reads.
-pub(crate) use crate::engine::xchg::reply::wire::{
-    estimate_usage_from_truncated_tail, reported_usage, unrecovered_usage,
-};
+/// The floor over a truncated tail (the plane's reply), read by the tests.
+#[cfg(test)]
+pub(crate) use crate::engine::xchg::reply::wire::estimate_usage_from_truncated_tail;
 
-/// The STREAM form of [`unrecovered_usage`]: a stream's reader refused a count after the bytes were
-/// delivered, and there is no reassembled body to scan, so it is the floor over the upstream bytes.
-fn unreadable_usage_floor(protocol: &str, upstream: usize) -> busbar_contract::billing::TokenUsage {
-    fault_unreadable(protocol, upstream);
-    estimate_usage_from_truncated_tail(upstream)
-}
-
-/// The fault an unreadable usage raises. It is billed (the floor), and it is still a fault.
-fn fault_unreadable(protocol: &str, delivered: usize) {
-    busbar_contract::diag_warn!(
-        busbar_contract::diagnostic::USAGE_TAP_DECODE_FAILED,
-        protocol,
-        delivered,
-        "usage is present but unreadable on a delivered response; billing the floor estimate, \
-         never 0"
-    );
-}
+use crate::engine::xchg::reply::relay::{Fed, Relay};
 
 /// Body wrapper that drives IR-based usage extraction, billing, and mid-stream error handling for
 /// streaming responses.
+///
+/// The BYTES are the plane's [`Relay`] (`busbar_plane_llm::exchange::reply::relay`): the
+/// translator feed, the JSON-array framer, the same-protocol non-stream relay's tail-anchored
+/// usage copy and stop-reason scan, the stream end's terminator and usage, and the cut's in-band
+/// error frame. This wrapper keeps what is not the plane's: the permit, the stream ceiling, the
+/// breaker records, the budget refund, the accrual and the tap.
 pub(crate) struct FirstByteBody<S, P> {
     inner: S,
-    // Plain bool: the flag is only ever read/written from the stream's own poll context (the
-    // Arc<AtomicBool> capability was never shared with anyone) — no alloc, no atomics.
-    first_byte_sent: bool,
-    /// True when the upstream body is an incremental stream (SSE or AWS event-stream). Drives the
-    /// after-first-byte error-emission behavior (vs. propagating the error for pre-first-byte
-    /// failover). Derived from the UPSTREAM Content-Type.
-    is_sse: bool,
-    /// The INGRESS protocol the CLIENT speaks (NOT the upstream/egress protocol). A mid-stream error
-    /// is emitted in THIS protocol's framing so a native client SDK can decode it — keying the
-    /// framing decision off the upstream CT (which on a cross-protocol reframe describes the egress,
-    /// not the client) was the bug.
-    ///
-    /// Held as `&'static str` (the registry interns every protocol name as `&'static`), not an owned
-    /// `Box<str>` — the previous `Box::from(ingress_protocol)` heap-allocated + memcpy'd this short
-    /// static name on EVERY streaming response. Resolved once in the constructor to the canonical
-    /// interned name (falling back to `"openai"` for an unknown ingress, the same default the error
-    /// framing already uses), so a streaming response no longer allocates for it.
-    ingress_protocol: &'static str,
-    /// The operation this response belongs to. Drives whether the non-stream body is buffered for
-    /// usage extraction (`taps_nonstream_usage`) and how usage is read from it (`extract_usage`).
-    /// Chat reads the egress reader's IR usage; a flat-fee op taps nothing.
-    op: Op,
-    /// True when the INGRESS client decodes a binary `application/vnd.amazon.eventstream` body (a
-    /// native AWS SDK Bedrock client). A mid-stream error must then be a BINARY exception frame, not
-    /// an SSE `event: error` text frame — writing SSE text into a binary eventstream body yields an
-    /// undecodable prelude/CRC for the SDK's decoder. Independent of `is_sse` (which reflects the
-    /// upstream CT) so a bedrock-ingress → SSE-egress reframe is handled correctly.
-    ingress_eventstream: bool,
+    /// The plane's relay of this answer's bytes.
+    relay: Relay,
     permit: Option<P>,
     /// App-retype WEDGE 3: the neutral engine host + this plane's runtime tables the mid-stream
-    /// breaker-trip / refund / stream-end metering reach, replacing the `Option<Arc<App>>` this body
-    /// held to stream end. `Option` for the same reason `app` was (a degraded/test body may carry none).
+    /// breaker-trip / refund / stream-end metering reach. `Option` for the same reason `app` was (a
+    /// degraded/test body may carry none).
     host: Option<Arc<dyn EngineHost>>,
     rt: Option<Arc<NativeRuntime>>,
     lane_idx: usize,
@@ -206,85 +169,22 @@ pub(crate) struct FirstByteBody<S, P> {
     /// Routing pool name, so a mid-stream failure trips this lane's per-pool breaker cell (empty on
     /// the degraded path → the lane-default cell).
     pool: Box<str>,
-    /// when Some, translate each egress SSE chunk to the caller's ingress protocol.
-    /// None = native passthrough (same-protocol or non-SSE). Held behind the neutral
-    /// [`busbar_kernel::proto::StreamTranslator`] seam so this streaming body never names the concrete
-    /// translator.
-    translate: Option<Box<dyn busbar_kernel::proto::StreamTranslator>>,
-    /// When set (gemini ingress streaming WITHOUT `?alt=sse`), the SSE bytes — whether from a
-    /// same-protocol passthrough or the cross-protocol `translate` stage above, both of which are
-    /// gemini SSE here — are reframed into the JSON-array streaming format the native non-`alt=sse`
-    /// `:streamGenerateContent` request expects (`[{...},{...}]`). Runs AFTER `translate`.
-    json_array: Option<Box<dyn busbar_kernel::proto::ArrayStreamFramer>>,
     /// When set, the token usage tapped from this response is charged to a virtual key's budget at
     /// stream end (token-accurate accounting). Taken (fired) exactly once when the stream completes.
     usage_sink: Option<UsageSink>,
     /// True when the 2xx-headers `spend_budget(lane_idx)` on this request actually decremented the
-    /// lane's `max_requests` budget. A pre-first-byte upstream transport failure on the streaming
-    /// path delivers NO usable body, so it must refund that unit — symmetric with the buffered
-    /// `ReadEnd::TransportError` path (#21). Guarding the refund on this flag keeps `refund_budget`
-    /// (an unconditional `fetch_add`) from raising the budget above its cap when the spend was a
-    /// no-op (unlimited lane, or budget already 0). Cleared once a refund fires so it happens once.
+    /// lane's `max_requests` budget; a pre-first-byte transport failure refunds it (#21), once.
     budget_spent: bool,
     /// Set once the stream has fully ended (after any translation terminator), so a later poll
     /// returns None instead of re-polling a finished inner stream.
     ended: bool,
-    /// Bounded reassembly buffer for a SAME-PROTOCOL NON-STREAM (`!is_sse`, `translate == None`)
-    /// `application/json` body that reqwest delivers across multiple transport frames. This is the
-    /// non-stream analog of the streaming read-for-IR-emit-verbatim path: the body is relayed to the
-    /// client byte-for-byte (each chunk passes through unchanged), but a bounded copy is retained here
-    /// so the stream-end arm can run the EGRESS READER over the reassembled body and source `IrUsage`
-    /// for billing. Same-proto means egress == ingress, so the body is in the ingress
-    /// protocol's native shape and `ingress_protocol`'s reader decodes it.
-    ///
-    /// Capped at `MAX_TRANSLATED_BODY_BYTES`, but TAIL-anchored, not head-truncated: every dialect's
-    /// `usage` object sits at (or near) the END of the response JSON, so once the body exceeds the
-    /// cap this buffer drops from the FRONT (oldest bytes) rather than refusing new bytes, keeping
-    /// the LAST `cap` bytes at all times. A contiguous `Vec<u8>` (memcpy appends via
-    /// `extend_from_slice` on the hot path — it was once a `VecDeque` extended byte-by-byte; the
-    /// drop site's comment records the trade): the front drop is `drain(..excess)`, one memmove of
-    /// the kept tail per over-cap chunk, paid only on the RARE over-cap response and never on the
-    /// common path. `taps_nonstream_usage`
-    /// gates this: the client stream is untouched either way (verbatim relay, below). The SSE /
-    /// translation paths never touch this (they bill via `translate.usage()`).
-    nonstream_buf: Vec<u8>,
-    /// Set once `nonstream_buf` has dropped ANY front bytes for this response — the buffer is then a
-    /// TAIL FRAGMENT, not a well-formed top-level JSON document, so the stream-end arm routes usage
-    /// extraction through `usage::recover_truncated_usage` (isolates the self-contained `usage`
-    /// sub-object) instead of `Op::extract_usage` (which needs the whole document and would
-    /// otherwise reliably fail to parse a fragment). Also gates the truncation counter/warn to fire
-    /// ONCE per response rather than once per over-cap chunk.
-    nonstream_buf_truncated: bool,
-    /// THE STOP-REASON SCAN of a SAME-PROTOCOL NON-STREAM relay (owner ruling Q31 follow-up): the
-    /// dialect reader's stop-reason key, located INCREMENTALLY in the chunks as they pass through —
-    /// governed or not, and without a copy of the body. Its state is inline and bounded (the partial
-    /// key across a chunk boundary, then the token), so it allocates nothing. `None` where there is
-    /// no such relay or the dialect's stop vocabulary cannot say the generation failed.
-    stop_scan: Option<crate::usage_tail::StopKeyScanner>,
-    /// Every upstream byte this body has read, counted on the one arm every chunk passes through.
-    /// It exists for ONE figure: when the stream's reader REFUSED a count it could not read (the
-    /// terminal error is `ir_parse`), no usage was recovered, and the request bills the SAME floor
-    /// the truncated-tail path bills — over the upstream bytes, the measure that floor is taken on.
-    upstream_bytes: usize,
-    /// Set when the UPSTREAM's own transport failed after the first byte of a NON-SSE body — a
-    /// failed transfer, not busbar's stream ceiling and not the client going away. Such a body bills
-    /// only the usage the upstream reported in the bytes it sent (owner ruling Q31: a failed
-    /// upstream bills upstream-reported usage), never the byte floor — 1.5.5 billed 0 for it (oracle
-    /// cell `route.failover|fo|primary-cut-body`).
-    upstream_failed: bool,
     /// THE STREAM CEILING — the re-provision of reqwest's total-timeout envelope over the BODY:
     /// a `Sleep` polled BEFORE the inner stream on every wakeup, so expiry cuts the body exactly
     /// as reqwest's `TotalTimeoutBody` did, even while chunks are still flowing. The DEADLINE is
-    /// the caller's — the engine passes the one per-attempt instant its send already ran under
-    /// (stream: send-start + `limits.upstream_request_timeout_secs`; non-stream passthrough: the
-    /// failover-budget remainder), so send + body share ONE envelope anchored at send start,
-    /// byte-for-byte reqwest's shape (audit finding F1 closed: no window is unbounded).
+    /// the caller's per-attempt instant, so send + body share ONE envelope anchored at send start.
     ceiling: std::pin::Pin<Box<tokio::time::Sleep>>,
     /// THE REPORT-BACK. Filled exactly once, at whichever of this body's four ends is reached — the
-    /// clean stream end, the mid-stream cut, the pre-first-byte cut, or the drop-time partial — with
-    /// the serving lane, the usage the reader found and the finish class.
-    /// The steps that ran BEFORE this body existed read it through the cell; nothing in this file
-    /// ever reads it back.
+    /// clean stream end, the mid-stream cut, the pre-first-byte cut, or the drop-time partial.
     tap: TapCell,
 }
 
@@ -311,56 +211,29 @@ where
         budget_spent: bool,
         tap: TapCell,
     ) -> Self {
-        // Resolve the ingress protocol ONCE: it supplies both the binary-eventstream flag AND the
-        // interned `&'static` name we store (no per-response allocation for the name). An unknown
-        // ingress protocol falls back to the registry's RESIDUAL DEFAULT dialect — the exact default
-        // `ingress_error` / `mid_stream_error_bytes` already use for framing, so the fallback is
-        // behavior-preserving — and core spells no dialect name to state it.
-        // Resolve the ingress protocol ONCE (was two linear `decl_for` scans) — it supplies both the
-        // binary-eventstream flag AND the interned `&'static` name we store.
-        let ingress_decl = busbar_kernel::proto::decl_for(ingress_protocol);
-        // Arm the stream ceiling on the CALLER's per-attempt deadline — see the `ceiling` field
-        // docs for the one-envelope exactness argument.
-        let ceiling = Box::pin(tokio::time::sleep_until(ceiling_deadline));
-        // Only the raw same-protocol non-stream relay (no translator, not a stream) is scanned; a
-        // dialect whose reader names no stop-reason key is not.
-        let stop_scan = (!is_sse && translate.is_none())
-            .then(|| {
-                crate::proto_codec::with_reader(ingress_protocol, |r| r.stop_reason_key())
-                    .flatten()
-                    .and_then(crate::usage_tail::StopKeyScanner::new)
-            })
-            .flatten();
+        // The relay reads usage only when there is a sink to bill it to: with governance off the
+        // same-protocol non-stream copy and its stream-end read would be pure waste.
+        let relay = Relay::from_parts(
+            ingress_protocol,
+            is_sse,
+            op.op_handler,
+            usage_sink.is_some(),
+            translate,
+            json_array,
+        );
         Self {
             inner,
-            first_byte_sent: false,
-            is_sse,
-            // Whether the client expects a binary event-stream body (Bedrock) rather than SSE text.
-            // Dispatches through the `ingress_is_eventstream` vtable method so this constructor carries
-            // no `== "bedrock"` branch — a future protocol with binary framing just overrides it.
-            ingress_eventstream: ingress_decl.is_some_and(|d| d.ingress_is_eventstream),
-            ingress_protocol: ingress_decl
-                .map(|d| d.name)
-                .or_else(busbar_kernel::proto::residual_default_protocol)
-                .unwrap_or_default(),
-            op,
+            relay,
             permit: Some(permit),
             host: Some(host),
             rt: Some(rt),
             lane_idx,
             breaker_cfg,
             pool: Box::from(pool),
-            translate,
-            json_array,
             usage_sink,
             budget_spent,
             ended: false,
-            nonstream_buf: Vec::new(),
-            nonstream_buf_truncated: false,
-            stop_scan,
-            upstream_bytes: 0,
-            upstream_failed: false,
-            ceiling,
+            ceiling: Box::pin(tokio::time::sleep_until(ceiling_deadline)),
             tap,
         }
     }
@@ -386,6 +259,24 @@ impl std::fmt::Display for StreamCut {
     }
 }
 
+impl<S, P> FirstByteBody<S, P> {
+    /// Record a transient fault for this lane's pool cell, and the trip it drives (#29).
+    fn record_transient(&self, what: &str) {
+        if let (Some(host), Some(rt)) = (self.host.as_ref(), self.rt.as_ref()) {
+            let tripped = host.lane_store().record_transient_in(
+                &self.pool,
+                self.lane_idx,
+                what,
+                &self.breaker_cfg,
+                None,
+            );
+            if tripped {
+                emit_breaker_trip(host, rt, &self.pool, self.lane_idx);
+            }
+        }
+    }
+}
+
 impl<S, P> Stream for FirstByteBody<S, P>
 where
     S: Stream<Item = Result<Bytes, hyper::Error>> + Unpin + Send + 'static,
@@ -398,12 +289,12 @@ where
         if this.ended {
             return Poll::Ready(None);
         }
-        // Loop so a translated chunk that yields no complete frame yet (partial) re-polls the
-        // inner stream instead of emitting an empty chunk to the client.
+        // Loop so a piece that completes no frame yet re-polls the inner stream instead of emitting
+        // an empty chunk to the client.
         loop {
             // The stream ceiling is polled BEFORE the inner stream (registering its waker either
-            // way), so expiry cuts even a still-flowing body — reqwest's `TotalTimeoutBody` order,
-            // which this re-provides. Both cut causes funnel into the ONE error arm below.
+            // way), so expiry cuts even a still-flowing body. Both cut causes funnel into the ONE
+            // error arm below.
             let step: Poll<Option<Result<Bytes, StreamCut>>> =
                 if std::future::Future::poll(this.ceiling.as_mut(), cx).is_ready() {
                     Poll::Ready(Some(Err(StreamCut::Ceiling)))
@@ -414,549 +305,119 @@ where
                 };
             match step {
                 Poll::Ready(Some(Ok(chunk))) => {
-                    if !this.first_byte_sent {
-                        this.first_byte_sent = true;
+                    // The plane's relay: the translated frames, or the far end's own bytes (the
+                    // chunk itself, never copied) with a bounded tail-anchored copy kept for usage.
+                    let (fed, truncated_now) = this.relay.feed(&chunk);
+                    let out = match fed {
+                        Fed::Nothing => None,
+                        Fed::Bytes(std::borrow::Cow::Borrowed(_)) => Some(None),
+                        Fed::Bytes(std::borrow::Cow::Owned(v)) => Some(Some(v)),
+                    };
+                    if truncated_now {
+                        // Fires ONCE per response: an over-cap body is alertable even though the
+                        // tail-anchored copy still recovers usage for every recognized dialect.
+                        metrics::counter!(busbar_kernel::metrics::BILLING_TRUNCATED_TOTAL)
+                            .increment(1);
+                        diag_debug!(
+                            USAGE_TAP_REASSEMBLY_CAP_EXCEEDED,
+                            cap = max_translated_body_bytes(),
+                            "same-protocol non-stream body exceeded the usage-tap reassembly \
+                             cap; retaining the TAIL (not the head) so the trailing usage \
+                             object still bills correctly for a recognized dialect"
+                        );
                     }
-                    this.upstream_bytes = this.upstream_bytes.saturating_add(chunk.len());
-                    // cross-protocol → translate egress SSE bytes to the ingress format. SAME-protocol
-                    // → `t.feed` returns the VERBATIM original frame bytes. Billing reads the
-                    // IR-derived `t.usage()` at stream end — there is no byte-scanner tap on this
-                    // path, so `feed` is the single usage source for both modes.
-                    if let Some(t) = this.translate.as_mut() {
-                        let out = t.feed(&chunk);
-                        let out_bytes = Bytes::from(out);
-                        // Gemini non-`alt=sse` ingress: reframe the (now gemini-SSE) bytes into the
-                        // JSON-array streaming shape. Run AFTER translate so accounting is unaffected.
-                        if let Some(framer) = this.json_array.as_mut() {
-                            let framed = framer.feed(&out_bytes);
-                            if framed.is_empty() {
-                                continue; // no complete object yet; poll inner again
-                            }
-                            return Poll::Ready(Some(Ok(Bytes::from(framed))));
-                        }
-                        if out_bytes.is_empty() {
-                            continue; // only a partial frame buffered; poll inner again
-                        }
-                        return Poll::Ready(Some(Ok(out_bytes)));
+                    match out {
+                        None => continue,
+                        Some(None) => return Poll::Ready(Some(Ok(chunk))),
+                        Some(Some(v)) => return Poll::Ready(Some(Ok(Bytes::from(v)))),
                     }
-                    // The relayed body's stop-reason field, located as the bytes go by (the
-                    // client's bytes are untouched): see `stop_scan`.
-                    if let Some(scan) = this.stop_scan.as_mut() {
-                        scan.feed(&chunk);
-                    }
-                    // Passthrough: the raw chunk is already in the client's shape. This branch is reached
-                    // only for (a) a SAME-PROTOCOL NON-STREAM (`!is_sse`) `application/json` body — the
-                    // streaming SSE/eventstream same-proto path always builds a `Some(translate)` now —
-                    // and (b) the unknown-protocol fallback (`new_same_proto` returned `None`), which has
-                    // no reader to drive the IR and therefore no usage source. The bytes always stream to
-                    // the client unchanged; for (a) we retain a bounded copy for IR-based billing below.
-                    // Only buffer when the operation taps usage from the body AND there is a sink to
-                    // bill it to. Chat and the token-billed ops tap; but with governance OFF (or no
-                    // resolved key) `usage_sink` is `None`, so the reassembled copy + stream-end
-                    // parse+IR-decode below would be pure waste — nothing consumes the extracted usage.
-                    // Gating on `usage_sink.is_some()` skips the per-response buffer copy AND the
-                    // full-body JSON parse + IR build entirely on the no-governance hot path (a large
-                    // RPS/RSS win), while a flat-fee op (or a large-binary response) skips it too. The
-                    // bytes still relay verbatim below, unbuffered.
-                    if !this.is_sse && this.op.taps_nonstream_usage() && this.usage_sink.is_some() {
-                        // SAME-PROTOCOL NON-STREAM `application/json` passthrough: the
-                        // non-stream analog of read-for-IR-emit-verbatim. The body relays verbatim,
-                        // but a bounded copy is retained so the stream-end arm can source `IrUsage`
-                        // for billing from it. Cap at `MAX_TRANSLATED_BODY_BYTES`, but TAIL-anchored:
-                        // every dialect's `usage` object lives at (or near) the END of the response
-                        // JSON, so once the body exceeds the cap this buffer drops bytes from the
-                        // FRONT (oldest) to keep the LAST `cap` bytes, not the first `cap` bytes — the
-                        // usage object then survives an over-cap body instead of falling past a
-                        // head-truncated cap.
-                        // ONE read of the live-reloadable cap: `INSTALLED` is a `RwLock` a config
-                        // apply can mutate mid-response (`limits.rs:74-96`), so a second read
-                        // later in this same decision could observe a DIFFERENT cap mid-computation.
-                        let cap = max_translated_body_bytes();
-                        // CONTIGUOUS buffer, memcpy appends. This was a `VecDeque<u8>` extended
-                        // element-by-element (`chunk.iter().copied()`) — a per-BYTE write loop on
-                        // every governed non-stream passthrough response, replacing what had been a
-                        // single `extend_from_slice` memcpy. The tail-anchoring the deque bought is
-                        // kept below, but paid only on the RARE over-cap response (already counted
-                        // on a dashboard), never on the per-chunk hot path.
-                        this.nonstream_buf.extend_from_slice(&chunk);
-                        if this.nonstream_buf.len() > cap {
-                            let excess = this.nonstream_buf.len() - cap;
-                            // Tail-anchor by dropping the OLDEST bytes: one memmove of the kept
-                            // tail (`Vec::drain` of a front range), amortized over an over-cap
-                            // response's lifetime — not a per-byte cost, and only ever off the
-                            // common path.
-                            this.nonstream_buf.drain(..excess);
-                            if !this.nonstream_buf_truncated {
-                                // Fires ONCE per response (the flag stays set for every subsequent
-                                // over-cap chunk). Count it so an over-cap body is alertable on a
-                                // dashboard even though the tail-anchored buffer now recovers usage
-                                // for every dialect this fix covers — a residual undercount (an
-                                // unrecognized protocol, or a usage object so large it doesn't fit in
-                                // `cap` itself) is still observable here, not silent.
-                                this.nonstream_buf_truncated = true;
-                                metrics::counter!(busbar_kernel::metrics::BILLING_TRUNCATED_TOTAL)
-                                    .increment(1);
-                                diag_debug!(
-                                    USAGE_TAP_REASSEMBLY_CAP_EXCEEDED,
-                                    cap,
-                                    "same-protocol non-stream body exceeded the usage-tap reassembly \
-                                     cap; retaining the TAIL (not the head) so the trailing usage \
-                                     object still bills correctly for a recognized dialect"
-                                );
-                            }
-                        }
-                    }
-                    // Gemini same-protocol passthrough WITHOUT `?alt=sse` on the unknown-protocol
-                    // fallback: the upstream chunk is gemini SSE (busbar always requests `?alt=sse`
-                    // upstream); reframe it into the JSON-array streaming shape the native client
-                    // expects. (The known-protocol gemini same-proto path runs through `translate`.)
-                    if let Some(framer) = this.json_array.as_mut() {
-                        let framed = framer.feed(&chunk);
-                        if framed.is_empty() {
-                            continue; // no complete object yet; poll inner again
-                        }
-                        return Poll::Ready(Some(Ok(Bytes::from(framed))));
-                    }
-                    return Poll::Ready(Some(Ok(chunk)));
                 }
                 Poll::Ready(Some(Err(e))) => {
                     // An upstream transport error (or the stream ceiling) cut the response. What
-                    // streamed before the cut is still billed — by the Drop below, which runs after
-                    // either arm and accrues the usage the readers accumulated up to the cut (#62: a
+                    // streamed before the cut is still billed — by the Drop below (#62: a
                     // mid-stream cut is not a refund).
-                    let had_first = this.first_byte_sent;
-                    if had_first && this.is_sse {
-                        // Mid-stream failure after first byte in SSE mode: record breaker failure then emit SSE error event
-                        if let (Some(host), Some(rt)) = (this.host.as_ref(), this.rt.as_ref()) {
-                            let tripped = host.lane_store().record_transient_in(
-                                &this.pool,
-                                this.lane_idx,
-                                "mid-stream",
-                                &this.breaker_cfg,
-                                None,
-                            );
-                            // A mid-stream failure that drives a Closed→Open trip is a breaker trip
-                            // for this (pool, lane) — emit BREAKER_TRIPS_TOTAL once (#29).
-                            if tripped {
-                                emit_breaker_trip(host, rt, &this.pool, this.lane_idx);
-                            }
-                        }
-                        // Mark the stream ended so the subsequent `Poll::Ready(None)` arm returns
-                        // early instead of re-recording this same failure (the inner stream closes
-                        // with `None` right after the error). Without this, one mid-stream transport
-                        // failure double-counted against the breaker.
+                    let had_first = this.relay.had_first();
+                    let cut = this.relay.cut(matches!(e, StreamCut::Transport(_)));
+                    if let Some(err_bytes) = cut.bytes {
+                        // After the first byte of a stream: the breaker records the failure, the
+                        // client's stream ends on the plane's in-band error frame in its own
+                        // framing (never the raw transport error, which embeds backend
+                        // internals), and the stream is marked ended so the inner stream's
+                        // trailing `None` does not re-record it.
+                        this.record_transient(cut.reason);
                         drop(this.permit.take());
                         this.ended = true;
-                        // THE REPORT-BACK, on the cut. The client HAS bytes — first_byte_sent is
-                        // what put us in this arm — and the answer stopped short of its end, which
-                        // is the one thing a 2xx status line can never say. `Partial`, with the
-                        // figures the readers had accumulated up to the cut — and those figures are
-                        // the charge: the customer pays for what actually streamed (#62), and the
-                        // Drop bills exactly these.
                         this.tap.report(TapReport {
                             lane: this.lane_idx,
-                            usage: this.translate.as_ref().and_then(|t| t.usage()),
-                            // This end reads usage through a TOKEN reader only, so no counted class reaches it.
+                            usage: cut.usage,
                             open_units: Default::default(),
                             finish: TapFinish::Partial,
                         });
-                        // The raw reqwest/transport error (`e`) must NEVER reach the client body: its
-                        // Display embeds hyper/reqwest/tokio internals and the egress backend URL
-                        // (hostname, region, port) — a protocol-indistinguishability tell (no native
-                        // AI vendor emits hyper/reqwest strings) AND an infrastructure-disclosure leak.
-                        // Log the real cause server-side for operator observability, then put only a
-                        // static, vendor-neutral detail into the client-facing frame. A native vendor
-                        // mid-stream interruption carries a generic message, never a backend URL.
                         diag_debug!(
                             UPSTREAM_MIDSTREAM_TRANSPORT_ERROR,
-                            ingress = %this.ingress_protocol,
+                            ingress = %this.relay.ingress(),
                             error = %e,
                             "mid-stream upstream transport error; returning generic interruption to client"
                         );
-                        // Gemini JSON-array ingress (non-`alt=sse`): the client has been receiving a
-                        // streaming JSON ARRAY (`[obj,obj`), so the in-band error MUST be a valid
-                        // trailing array element followed by the closing `]` — NOT the SSE text frame
-                        // `mid_stream_error_bytes` produces. Emitting `event: error\ndata:{...}` into a
-                        // JSON-array body splices non-JSON into the array (unparseable) and is a
-                        // protocol tell (a native Gemini JSON-array stream never contains SSE framing).
-                        // Route the error through the framer instead: a Gemini `google.rpc.Status`
-                        // element + `]`.
-                        if let Some(framer) = this.json_array.as_mut() {
-                            // The framer owns the wire status/code shape (Gemini → 500/`INTERNAL`); the
-                            // agnostic core supplies only the generic message.
-                            let err_bytes =
-                                framer.finish_with_server_error(MID_STREAM_GENERIC_DETAIL);
-                            return Poll::Ready(Some(Ok(Bytes::from(err_bytes))));
-                        }
-                        // Emit the error in the INGRESS protocol's framing, NOT a hard-coded SSE
-                        // text frame. For a bedrock-ingress client (binary eventstream) this is a
-                        // valid AWS exception frame; for SSE clients it is shaped to the ingress
-                        // protocol's native error envelope. Keying off `is_sse` (the upstream CT)
-                        // alone would inject SSE text into a binary eventstream body on a
-                        // bedrock-ingress → SSE-egress reframe — an undecodable frame for the SDK.
-                        let err_bytes = mid_stream_error_bytes(
-                            this.ingress_protocol,
-                            this.ingress_eventstream,
-                            MID_STREAM_GENERIC_DETAIL,
-                            this.translate.as_deref_mut(),
-                        );
                         return Poll::Ready(Some(Ok(Bytes::from(err_bytes))));
-                    } else {
-                        // Before first byte or non-SSE: terminate the body stream with an error. The
-                        // raw reqwest error (with its embedded backend URL / hyper internals) must not
-                        // ride out on the io::Error either — log the real cause server-side and surface
-                        // only a generic, vendor-neutral message on the stream item.
-                        diag_debug!(
-                            UPSTREAM_PREFIRSTBYTE_TRANSPORT_ERROR,
-                            ingress = %this.ingress_protocol,
-                            error = %e,
-                            "pre-first-byte upstream transport error; terminating body stream generically"
-                        );
-                        // Transport failure on the streaming path - reached for a PRE-first-byte failure
-                        // (either SSE or non-SSE) and for a post-first-byte NON-SSE mid-body failure
-                        // (the post-first-byte SSE case is handled by the if-branch above). In ALL of
-                        // these the 2xx headers already recorded an optimistic breaker SUCCESS (via
-                        // `record_success_in`), but the response never arrived intact, so that success is
-                        // wrong. Record a COMPENSATING transient so the failure counts against the lane.
-                        //
-                        // The transient is recorded UNCONDITIONALLY on the transport failure - it is
-                        // NOT gated on `had_first`. Gating it there recorded nothing for a
-                        // pre-first-byte failure (treated as "refund-only, no body content emitted"),
-                        // which meant a lane that connects, returns headers, then dies before the first
-                        // byte on EVERY attempt kept accruing optimistic successes and NEVER tripped its
-                        // circuit breaker - traffic pinned to a black-hole lane. A pre-first-byte
-                        // transport death IS a lane fault (the connection was accepted then broke with
-                        // zero usable bytes), exactly like the buffered `ReadEnd::TransportError` paths,
-                        // which already record a transient with no first-byte gate. Budget is still
-                        // refunded below (no usable response was delivered); the two are independent.
-                        if let (Some(host), Some(rt)) = (this.host.as_ref(), this.rt.as_ref()) {
-                            let what = if had_first {
-                                "mid-body-transport"
-                            } else {
-                                "pre-first-byte-transport"
-                            };
-                            let tripped = host.lane_store().record_transient_in(
-                                &this.pool,
-                                this.lane_idx,
-                                what,
-                                &this.breaker_cfg,
-                                None,
-                            );
-                            // A threshold-based Closed→Open trip here is a breaker trip (#29).
-                            if tripped {
-                                emit_breaker_trip(host, rt, &this.pool, this.lane_idx);
-                            }
-                        }
-                        // Symmetric with the buffered `ReadEnd::TransportError` path (#21): the 2xx
-                        // headers already spent one `max_requests` budget unit on this lane, but a
-                        // pre-first-byte body transport failure delivers NO usable response — so refund
-                        // that unit, or sustained streaming transport failures would permanently drain
-                        // the lane's serving-capacity budget one unit at a time. Without this refund the
-                        // streaming path leaked units here while the buffered paths did not. Refund
-                        // ONLY when the headers-spend actually decremented (`budget_spent`): a no-op
-                        // spend (unlimited lane, or budget already 0) must not be refunded, since
-                        // `refund_budget` is an unconditional `fetch_add` that would otherwise push the
-                        // budget above its cap. Mark the stream ended and clear the flag so the inner
-                        // stream's trailing `Poll::Ready(None)` neither double-refunds nor token-bills
-                        // (the Drop is the one place a cut's streamed usage is accrued).
-                        if this.budget_spent {
-                            if let Some(host) = this.host.as_ref() {
-                                host.lane_store().refund_budget(this.lane_idx);
-                            }
-                            this.budget_spent = false;
-                        }
-                        drop(this.permit.take());
-                        this.ended = true;
-                        this.upstream_failed = had_first && matches!(e, StreamCut::Transport(_));
-                        // THE REPORT-BACK, on the two cuts that reach this arm, and they are not the
-                        // same end. A cut BEFORE the first byte delivered nothing at all: the
-                        // transfer failed, and `Error` is what the plane says. A cut after the first
-                        // byte on a NON-SSE body delivered a prefix the caller cannot use as a whole
-                        // answer, which is `Partial` — the same class its SSE sibling above reports,
-                        // decided by the same flag rather than by the content type. Either way the
-                        // usage is what the readers saw before the cut, and it bills (#62); a cut
-                        // before the first byte fed no reader and so bills nothing.
-                        this.tap.report(TapReport {
-                            lane: this.lane_idx,
-                            // The figure the Drop bills for this cut — a same-protocol non-stream
-                            // prefix included (item 367) — so the report and the accrual agree.
-                            usage: this.incurred_usage(),
-                            // This end reads usage through a TOKEN reader only, so no counted class reaches it.
-                            open_units: Default::default(),
-                            finish: if had_first {
-                                TapFinish::Partial
-                            } else {
-                                TapFinish::Error
-                            },
-                        });
-                        return Poll::Ready(Some(Err(std::io::Error::other(
-                            MID_STREAM_GENERIC_DETAIL,
-                        ))));
                     }
-                }
-                Poll::Ready(None) => {
-                    // Stream ended. A clean `Poll::Ready(None)` is the NORMAL termination for both
-                    // clean and truncated streams and is NOT a failure — success was already
-                    // recorded synchronously (record_success_in) before streaming began. Only record
-                    // a breaker failure here if the tap actually saw a terminal ERROR frame
-                    // (`{"type":"error", ...}`) mid-stream. Previously this arm recorded a failure on
-                    // EVERY completed SSE stream, so healthy streaming lanes tripped after a handful
-                    // of successful requests.
-                    //
-                    // Hoist the TRANSLATE-side abort flag ONCE, at the top of this arm, BEFORE
-                    // `finish()` consumes the translate below. A cross-protocol `StreamTranslate`
-                    // that overflowed `MAX_BUF` (>16MiB without a frame terminator) or hit a
-                    // malformed egress prelude calls `abort()` and stops feeding the body — but it
-                    // leaves `tap.terminal_error` clear (no in-band `{"type":"error"}` frame was ever
-                    // scanned). That is the SIBLING condition to a mid-body terminal error:
-                    // both deliver a partial/aborted response the caller cannot use, so BOTH must be
-                    // treated as a failed stream by BOTH downstream gates (breaker, json-array
-                    // byte-shaping) and reported as an `Error` end. It is NOT a billing gate: what
-                    // streamed before the failure bills (#62). The json-array close path below previously
-                    // read `aborted()` locally for its own byte-shaping; that single read is hoisted
-                    // here and reused so the three gates can never diverge.
-                    let translate_aborted = this
-                        .translate
-                        .as_ref()
-                        .map(|t| t.aborted())
-                        .unwrap_or(false);
-                    // A stream is FAILED for breaker purposes when EITHER a reader-emitted terminal ERROR
-                    // event was seen (the IR-sourced `translate.terminal_error()`) OR the cross-protocol
-                    // translate aborted mid-flight. Every same-proto/cross-proto SSE+eventstream stream flows
-                    // through `translate`, so the terminal error is observable at this point in the arm
-                    // for all of them; the end's report re-evaluates the same predicate AFTER the bedrock
-                    // deferred `finish()` below (whose `metadata` frame can surface usage/error at end).
-                    let stream_terminal_error = this
-                        .translate
-                        .as_ref()
-                        .and_then(|t| t.terminal_error())
-                        .is_some();
-                    let breaker_failed = stream_terminal_error || translate_aborted;
-                    if this.is_sse && this.first_byte_sent && breaker_failed {
-                        if let (Some(host), Some(rt)) = (this.host.as_ref(), this.rt.as_ref()) {
-                            // Distinguish the two failure lineages in the recorded reason so the
-                            // terminal-error path and its translate-abort sibling remain
-                            // separable in breaker telemetry.
-                            let reason = if stream_terminal_error {
-                                "stream-terminal-error"
-                            } else {
-                                // translate_aborted must hold here (breaker_failed && no
-                                // terminal_error) — name the sibling lineage explicitly.
-                                "stream-translate-abort"
-                            };
-                            let tripped = host.lane_store().record_transient_in(
-                                &this.pool,
-                                this.lane_idx,
-                                reason,
-                                &this.breaker_cfg,
-                                None,
-                            );
-                            // A terminal-error frame OR translate abort that drives a Closed→Open
-                            // trip is a breaker trip for this (pool, lane) — emit BREAKER_TRIPS_TOTAL
-                            // once (#29). This is also the arm `response.failed` recognition reaches
-                            // for a streaming Responses FAILURE, which would otherwise record as a
-                            // success.
-                            if tripped {
-                                emit_breaker_trip(host, rt, &this.pool, this.lane_idx);
-                            }
+                    // Before the first byte, or a non-stream body mid-transfer: the body ends on a
+                    // generic error. The optimistic headers-time success was wrong, so a
+                    // compensating transient is recorded UNCONDITIONALLY (a lane that dies before
+                    // its first byte on every attempt must still trip), and the headers-time
+                    // budget unit is refunded once (#21) — only when the spend decremented.
+                    diag_debug!(
+                        UPSTREAM_PREFIRSTBYTE_TRANSPORT_ERROR,
+                        ingress = %this.relay.ingress(),
+                        error = %e,
+                        "pre-first-byte upstream transport error; terminating body stream generically"
+                    );
+                    this.record_transient(cut.reason);
+                    if this.budget_spent {
+                        if let Some(host) = this.host.as_ref() {
+                            host.lane_store().refund_budget(this.lane_idx);
                         }
+                        this.budget_spent = false;
                     }
-                    // emit the ingress terminator before close. `finish()` can emit CONTENT frames — the
-                    // deferred terminal `message_delta` carrying the folded trailing usage (see
-                    // StreamTranslate::finish / `folds_terminal_usage`). Drain it ONCE here so both the
-                    // decode side-effects run and the bytes are available to deliver.
-                    let tail = this
-                        .translate
-                        .as_mut()
-                        .map(|t| t.finish())
-                        .unwrap_or_default();
-                    // For a gemini JSON-array stream the terminator is the closing `]` from the framer.
-                    // finish()'s content frames MUST still reach the client, so feed them THROUGH the
-                    // framer (wrapping them as array elements) rather than discarding them — the fix for
-                    // the non-uniform delivery contract where the SSE path delivered finish() but the
-                    // json-array path dropped it, silently losing the terminal usage. A json-array
-                    // ingress is always gemini, whose finish() never carries the SSE `[DONE]` literal
-                    // (emit_done is false), so nothing spurious is wrapped. The TRANSLATE-side abort flag
-                    // was hoisted above; `finish_for_translate(translate_aborted)` still surfaces a
-                    // NATIVE error element + `]` on an aborted stream, not a silently-truncated bare `]`.
-                    // For a plain SSE ingress `tail` is streamed as-is (the [DONE] literal, if any, is
-                    // an OpenAI-ingress terminator finish() itself appends).
-                    let done = if let Some(framer) = this.json_array.as_mut() {
-                        // On a translate ABORT, `tail` IS the native error frame from finish(), and
-                        // `finish_for_translate(true)` already surfaces the canonical json-array error
-                        // element + `]`. Feeding `tail` too would wrap a SECOND (differently-worded)
-                        // error element — the 1.4.0 double-emit regression (1.3.0 discarded `tail`). So
-                        // feed `tail` ONLY on the non-aborted path, where it carries finish()'s content /
-                        // trailing-usage frames that must reach the client.
-                        let mut wrapped = if translate_aborted {
-                            Vec::new()
-                        } else {
-                            framer.feed(&tail)
-                        };
-                        wrapped.extend_from_slice(&framer.finish_for_translate(translate_aborted));
-                        wrapped
-                    } else {
-                        tail
-                    };
-                    // Bedrock ingress: `finish()` may emit a deferred terminal `metadata` frame (the
-                    // default-OpenAI-streaming case carries usage there). Its usage is folded into the
-                    // translator's `last_usage` A-tap by `finish()` itself, so `translate.usage()` below
-                    // already reflects it — no separate tap-feed of the binary `done` bytes is needed.
                     drop(this.permit.take());
                     this.ended = true;
-                    // Token usage for billing, sourced from the IR:
-                    //   - STREAMING (SSE / eventstream, same- or cross-proto): `translate.usage()` — the
-                    //     terminal `IrUsage` the readers accumulated, post Anthropic start-usage backfill.
-                    //   - SAME-PROTOCOL NON-STREAM (`!is_sse`, `translate == None`): run the EGRESS reader
-                    //     (`ingress_protocol`'s reader — same-proto, egress == ingress) over the
-                    //     reassembled `nonstream_buf` body and read `ir.usage`. The body
-                    //     was relayed verbatim; this is the read-for-IR side-channel for billing.
-                    // The unknown-protocol fallback passthrough has no reader and yields `None` (no usage
-                    // source — same as before; an unknown protocol cannot be metered).
-                    // Skip usage extraction ENTIRELY when there is no sink to bill (governance off /
-                    // no key): the terminal-usage clone and the non-stream reader run only to feed
-                    // `record_tokens`, which the `usage_sink.take()` gate below no-ops.
-                    // Projected to the neutral `billing::TokenUsage` at the boundary: the streaming
-                    // producer (`translate.usage()`, now the `StreamTranslator` seam) hands back the
-                    // OWNED token totals directly; the non-stream producers (the truncated-tail
-                    // recovery, `op.extract_usage`) still hand back the concrete `IrUsage`, projected
-                    // here. Either way the billing consumers below speak token totals and name zero
-                    // concrete IR. Byte-identical (the projection carries the four billed totals).
-                    // A SAME-PROTOCOL NON-STREAM body whose own stop reason says the generation
-                    // FAILED (owner ruling Q31 follow-up), governed or not: the token the
-                    // incremental scan found in the relayed bytes, mapped by the dialect's reader
-                    // exactly as `read_response` maps it. No copy of the body, no document parse.
-                    // It decides the breaker and the end, never the charge. A body whose field never
-                    // arrived (cut, absent) reads no reason and is not a fault.
-                    let nonstream_generation_failed = this
-                        .stop_scan
-                        .as_ref()
-                        .and_then(|scan| scan.token())
-                        .and_then(|token| {
-                            crate::proto_codec::with_reader(this.ingress_protocol, |r| {
-                                r.stop_reason_of_token(token)
-                            })
-                            .flatten()
-                        })
-                        == Some(crate::ir::IrStopReason::Error);
-                    // The NON-TOKEN billing the same body reported beside its tokens — a rerank's
-                    // counted search units (item 134) — read by the same producer as the tokens.
-                    let mut open_billing: Option<busbar_contract::billing::Billing> = None;
-                    let token_usage: Option<busbar_contract::billing::TokenUsage> = if this
-                        .usage_sink
-                        .is_none()
-                    {
-                        None
-                    } else if let Some(t) = this.translate.as_ref() {
-                        open_billing = t.open_billing();
-                        // A reader that REFUSED a count it could not read ends the stream in an
-                        // `ir_parse` error — after the body was delivered. That is NO usage
-                        // recovered, so it bills the floor the truncated-tail path bills, never
-                        // whatever fragment was read before the refusal (ruling, item 133).
-                        if t.terminal_error() == Some(busbar_contract::protocol::SIGNAL_IR_PARSE) {
-                            Some(unreadable_usage_floor(
-                                this.ingress_protocol,
-                                this.upstream_bytes,
-                            ))
+                    // A cut before the first byte delivered nothing (`Error`); after it, a
+                    // non-stream prefix the caller cannot use whole (`Partial`). The usage is what
+                    // the relay had incurred — the figure the Drop bills (item 367).
+                    this.tap.report(TapReport {
+                        lane: this.lane_idx,
+                        usage: cut.usage,
+                        open_units: Default::default(),
+                        finish: if had_first {
+                            TapFinish::Partial
                         } else {
-                            t.usage()
-                        }
-                    } else if !this.is_sse && !this.nonstream_buf.is_empty() {
-                        // Same-protocol non-stream body relayed verbatim; the operation reads
-                        // usage from the reassembled bytes. Chat runs the egress reader and
-                        // reports IR usage (byte-identical to the previous inline read); a
-                        // flat-fee op returns None and bills nothing.
-                        let truncated = this.nonstream_buf_truncated;
-                        let buf: Vec<u8> = std::mem::take(&mut this.nonstream_buf);
-                        if truncated {
-                            // The buffer is a TAIL FRAGMENT (its head was dropped to stay within
-                            // cap), not a well-formed top-level document — `Op::extract_usage`'s
-                            // full-document parse would reliably fail on it. Isolate and parse just
-                            // the self-contained `usage` sub-object instead (see
-                            // `usage::recover_truncated_usage`'s doc comment for why this is safe and
-                            // why it duplicates rather than reuses each reader's field mapping).
-                            //
-                            // C2 fail-open-to-free fix: a body large enough to OVERFLOW the
-                            // reassembly cap demonstrably consumed tokens. When the tail scan
-                            // cannot isolate the `usage` object — the usage object itself fell
-                            // past the retained tail, or the dialect is unrecognized — metering
-                            // those real tokens at $0 (only the flat fee lands) is a silent
-                            // under-bill on exactly the LARGEST responses, so `unrecovered_usage`
-                            // falls back to a conservative FLOOR estimate derived from the
-                            // retained tail and the request is never silently free. Genuine "no
-                            // usage" (a truly empty / errored response) never truncates and so
-                            // never reaches this arm — it still bills nothing.
-                            Some(unrecovered_usage(this.ingress_protocol, &buf))
-                        } else {
-                            // A whole body the op's own codec REFUSED to read (a present count it
-                            // could not read, item 133) was already delivered: that is no usage
-                            // recovered, billed exactly as the truncated arm above bills it. A body
-                            // that READ cleanly and simply carries no token usage (an image op)
-                            // still bills nothing — `read_response` is the one that decides —
-                            // but what it billed beside tokens (a rerank's search units) is kept.
-                            this.op.extract_usage(this.ingress_protocol, &buf).or_else(
-                                || match this.op.op_handler.read_response(&buf) {
-                                    Ok(read) => {
-                                        open_billing = read.billing();
-                                        None
-                                    }
-                                    Err(_) => {
-                                        fault_unreadable(this.ingress_protocol, buf.len());
-                                        Some(unrecovered_usage(this.ingress_protocol, &buf))
-                                    }
-                                },
-                            )
-                        }
-                    } else {
-                        None
-                    };
-                    // ONE projection of the open classes, ledgered below and reported to the durable
-                    // book, so both books hold the same counts (#71).
-                    let open_units = crate::engine::usage::open_units_of(&open_billing);
-                    // Charge this request's token usage to the virtual key's budget (once), on EVERY
-                    // end this arm reaches — a clean one, and one whose stream carried a reader-emitted
-                    // terminal ERROR event (`translate.terminal_error()`) or whose cross-protocol
-                    // translate aborted mid-flight (`translate_aborted`). A failed stream is a CUT, and
-                    // a mid-stream cut is not a refund: the customer pays for what actually streamed
-                    // up to it (#62, owner-locked). The readers' usage is exactly that — they were fed
-                    // only the frames that arrived before the failure — so the accrual takes it as-is.
-                    // The failure is still read, ONCE and AFTER the deferred bedrock `finish()` above
-                    // (whose `metadata`/exception frame can surface an error only at stream end), OR'd
-                    // with the hoisted translate-abort flag — the SAME predicate the breaker gate used —
-                    // but it decides the END the tap reports, never the charge. An aborted translate's
-                    // `feed` is a no-op, so the `translate_aborted` snapshot is still authoritative.
-                    let stream_failed = this
-                        .translate
-                        .as_ref()
-                        .and_then(|t| t.terminal_error())
-                        .is_some()
-                        || translate_aborted
-                        || nonstream_generation_failed;
-                    // The same-protocol non-stream failed generation's BREAKER FAULT (owner ruling
-                    // Q31 follow-up). The streamed ends record theirs above from the translator's
-                    // terminal error; this relay has no translator, so its fault is recorded here,
-                    // compensating the optimistic success recorded at headers time — exactly as
-                    // the buffered arm's failed-generation exit does, under the same reason.
-                    if nonstream_generation_failed {
-                        if let (Some(host), Some(rt)) = (this.host.as_ref(), this.rt.as_ref()) {
-                            let tripped = host.lane_store().record_transient_in(
-                                &this.pool,
-                                this.lane_idx,
-                                "upstream-generation-failed",
-                                &this.breaker_cfg,
-                                None,
-                            );
-                            if tripped {
-                                emit_breaker_trip(host, rt, &this.pool, this.lane_idx);
-                            }
-                        }
+                            TapFinish::Error
+                        },
+                    });
+                    return Poll::Ready(Some(Err(std::io::Error::other(
+                        MID_STREAM_GENERIC_DETAIL,
+                    ))));
+                }
+                Poll::Ready(None) => {
+                    // Stream ended. A clean end is NOT a failure (success was recorded at headers
+                    // time); the breaker hears only a stream the relay saw fail after its first
+                    // byte, and a same-protocol non-stream body whose own stop reason says the
+                    // generation failed (Q31).
+                    let end = this.relay.end();
+                    if let Some(reason) = end.stream_fault {
+                        this.record_transient(reason);
                     }
+                    drop(this.permit.take());
+                    this.ended = true;
+                    if end.generation_failed {
+                        this.record_transient("upstream-generation-failed");
+                    }
+                    // Charge the usage (once) on EVERY end this arm reaches: a failed stream is a
+                    // cut, and a cut is not a refund (#62). The SERVING lane is ledgered and
+                    // metered through the one accrual seam.
                     if let Some(sink) = this.usage_sink.take() {
-                        // Ledger + meter the SERVING lane (`lane_idx` is the lane that
-                        // actually answered, post-failover) through the one accrual seam.
-                        // Readers normalize `input_tokens` to UNCACHED and keep the cache
-                        // fields ADDITIVE, so the four tiers are correct provider-agnostically.
-                        let tier = token_usage
+                        let tier = end
+                            .usage
                             .as_ref()
                             .map(crate::engine::usage::tier_usage)
                             .unwrap_or_default();
@@ -970,37 +431,30 @@ where
                                 host,
                                 &sink,
                                 lane,
-                                token_usage.as_ref(),
+                                end.usage.as_ref(),
                                 &tier,
                             );
                             crate::engine::usage::ledger_open_units(
                                 host,
                                 &sink,
                                 lane,
-                                open_units.clone(),
+                                end.open_units.clone(),
                             );
                         }
                     }
-                    // THE REPORT-BACK, on the end that actually arrived, and after the accrual so the
-                    // figures move rather than copy. The whole answer reached the client unless the
-                    // reader emitted a terminal error frame or the translation aborted, and those two
-                    // are the plane's `Error`: the response ended because the destination said it had
-                    // failed, not because it had finished. The usage rides out on both, as the charge.
-                    // Nothing on this plane ever reports `TurnComplete` — these six dialects are
-                    // one-shot, so the end of a completion is the end of the unit rather than the end
-                    // of one turn of a session.
+                    // THE REPORT-BACK, after the accrual so the figures move rather than copy.
                     this.tap.report(TapReport {
                         lane: this.lane_idx,
-                        usage: token_usage,
-                        open_units,
-                        finish: if stream_failed {
+                        usage: end.usage,
+                        open_units: end.open_units,
+                        finish: if end.failed {
                             TapFinish::Error
                         } else {
                             TapFinish::Complete
                         },
                     });
-                    if !done.is_empty() {
-                        return Poll::Ready(Some(Ok(Bytes::from(done))));
+                    if !end.bytes.is_empty() {
+                        return Poll::Ready(Some(Ok(Bytes::from(end.bytes))));
                     }
                     return Poll::Ready(None);
                 }
@@ -1012,29 +466,19 @@ where
 
 impl<S, P> Drop for FirstByteBody<S, P> {
     fn drop(&mut self) {
-        // Cancellation: the stream was dropped before reaching any terminal arm (`ended` is set only
-        // by the three deliberate exits - mid-stream SSE error, pre-first-byte/non-SSE transport
-        // error, and clean end - none of which leave it false). A pre-first-byte or mid-stream client
-        // disconnect / LB reset otherwise leaks the headers-time `spend_budget` unit forever.
-        // `budget_spent` guards both against refunding a no-op spend and against double-refunding
-        // the transport-error arm's own clear of the flag.
+        // Cancellation: the stream was dropped before any terminal arm (a client disconnect / LB
+        // reset); refund the headers-time budget unit once, only when the spend decremented.
         if !self.ended && self.budget_spent {
             if let Some(host) = self.host.as_ref() {
                 host.lane_store().refund_budget(self.lane_idx);
             }
             self.budget_spent = false;
         }
-        // THE REPORT-BACK, on the end no arm above reaches: the body was DROPPED before any terminal
-        // arm ran, which is a client disconnect or a cancellation. The caller got a prefix and then
-        // stopped listening, so the answer is `Partial` — the same class the mid-stream cut reports,
-        // for the same reason. Guarded on `!self.ended` because a clean end already reported through
-        // `Poll::Ready(None)` and THEN drops through here; the cell would ignore a second report, and
-        // the guard makes that a fact about this file rather than about the cell.
-        //
-        // The tokens below were really generated and really delivered before the caller went away,
-        // and the arm underneath bills them — as it bills a cut's (#62). ONE reading serves both.
+        // THE REPORT-BACK on the end no arm reached: the caller got a prefix and stopped
+        // listening, so the answer is `Partial`. The tokens incurred up to here really were
+        // generated and delivered, and the arm below bills them — as it bills a cut's (#62).
         let usage = if !self.ended || self.usage_sink.is_some() {
-            self.incurred_usage()
+            self.relay.incurred_usage()
         } else {
             None
         };
@@ -1042,33 +486,15 @@ impl<S, P> Drop for FirstByteBody<S, P> {
             self.tap.report(TapReport {
                 lane: self.lane_idx,
                 usage: usage.clone(),
-                // This end reads usage through a TOKEN reader only, so no counted class reaches it.
                 open_units: Default::default(),
                 finish: TapFinish::Partial,
             });
         }
-        // Token-fee billing normally fires in `Poll::Ready(None)` (natural stream end), which TAKES
-        // `usage_sink`. So a `None` here means "already billed" and this Drop is a no-op — no
-        // double-charge. A `Some` means the body ended WITHOUT reaching that arm: DROPPED MID-STREAM
-        // (client disconnect / cancellation), or CUT by an upstream transport error or the stream
-        // ceiling (both transport arms set `ended` and leave the sink in place for this site). Either
-        // way the natural-end site never ran, and the tokens already generated + delivered would go
-        // unbilled. Bill the tokens incurred up to the cut point instead: a mid-stream cut is an
-        // interruption, not a reversal of incurred cost (#62, owner-locked).
-        //
-        // Best-effort on a STREAM: the provider's terminal usage frame may not have arrived before the
-        // cancel, so `translate.usage()` may be partial or absent — partial/zero usage bills
-        // partial/zero (`record_tokens` no-ops on 0 tokens). A SAME-PROTOCOL NON-STREAM body dropped
-        // mid-relay is NOT zero: the completion was generated whole before its first byte, so it bills
-        // the usage recovered from the bytes in hand, else the floor over them (`incurred_usage`, item
-        // 367). It used to bill nothing here, on the one delivery path whose tokens were all spent.
+        // A `None` sink means the natural end already billed; a `Some` means the body ended
+        // WITHOUT that arm (dropped or cut), so bill what was incurred up to the cut.
         let Some(sink) = self.usage_sink.take() else {
             return;
         };
-        // A terminal reader error, a translate abort or a transport cut does NOT gate this: the
-        // readers were fed only the frames that arrived before it, so their usage is what streamed
-        // (`test_mid_stream_transport_error_does_not_bill_partial_usage`, whose name PB-27 still binds). Nothing streamed
-        // before the first byte, so a cut there has no reader usage and accrues nothing below.
         let tier = usage
             .as_ref()
             .map(crate::engine::usage::tier_usage)
@@ -1080,8 +506,6 @@ impl<S, P> Drop for FirstByteBody<S, P> {
                     .as_ref()
                     .and_then(|rt| EngineTables::new(rt).lanes().get(self.lane_idx)),
             ) {
-                // Ledger + meter the partial through the one accrual seam (the tokens were
-                // really generated + delivered before the drop).
                 crate::engine::usage::ledger_and_meter(host, &sink, lane, usage.as_ref(), &tier);
             }
         }
@@ -1089,35 +513,6 @@ impl<S, P> Drop for FirstByteBody<S, P> {
 }
 
 impl<S, P> FirstByteBody<S, P> {
-    /// THE USAGE A BODY THAT ENDED EARLY HAD ALREADY INCURRED — the one figure both the cut's
-    /// report-back and the drop-time accrual read, so the two books are handed one number (#71).
-    ///
-    /// A streaming body (same- or cross-protocol) reads what its readers accumulated up to the end
-    /// (`translate.usage()`, #62). A SAME-PROTOCOL NON-STREAM body (`translate == None`, `!is_sse`)
-    /// has no incremental reader, but its bounded copy (`nonstream_buf`) holds the bytes relayed so
-    /// far — and a non-streamed completion is generated WHOLE before its first byte is sent, so a body
-    /// that was cut or dropped mid-relay was paid for upstream in full. It bills exactly what the
-    /// truncated-tail path bills when it cannot read the whole document: the dialect's own `usage`
-    /// scan over the bytes in hand, else the conservative floor over them (`unrecovered_usage`), never
-    /// 0 (item 367). An empty copy — nothing relayed, a flat-fee op, or no sink to bill — is `None`.
-    ///
-    /// An UPSTREAM transport failure mid-body (`upstream_failed`) is a failed transfer: it bills only
-    /// the usage the upstream itself reported in the bytes it sent, never the floor (owner ruling
-    /// Q31). The floor stays for the ends busbar or the client caused (the ceiling, a drop).
-    fn incurred_usage(&self) -> Option<busbar_contract::billing::TokenUsage> {
-        match self.translate.as_ref() {
-            Some(t) => t.usage(),
-            None if self.is_sse || self.nonstream_buf.is_empty() => None,
-            None if self.upstream_failed => {
-                reported_usage(self.ingress_protocol, &self.nonstream_buf)
-            }
-            None => Some(unrecovered_usage(
-                self.ingress_protocol,
-                &self.nonstream_buf,
-            )),
-        }
-    }
-
     pub(crate) fn into_body(self) -> Body
     where
         S: Stream<Item = Result<Bytes, hyper::Error>> + Unpin + Send + 'static,

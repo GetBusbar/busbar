@@ -84,7 +84,6 @@ pub(super) fn deliver<'a>(
             .as_ref()
             .map(|h| is_stream_content_type(h.to_str().unwrap_or("")))
             .unwrap_or(false);
-        let cross_protocol = hop.ingress_protocol != hop.egress_name;
 
         // The ORIGINAL ingress request body, parsed once (when it was JSON), so a cross-protocol
         // response can be threaded a request-echo context: a dialect whose response spec requires
@@ -103,7 +102,12 @@ pub(super) fn deliver<'a>(
         // upstream itself ignored `stream` and answered one JSON body — the raw same-protocol relay
         // below only fits a client that did not ask for a stream. Boxed: this arm is cold and its
         // future is large relative to the pinned hot path.
-        if !is_sse && (cross_protocol || hop.wants_stream) {
+        if crate::engine::xchg::reply::relay::takes_whole(
+            hop.ingress_protocol,
+            hop.egress_name,
+            is_sse,
+            hop.wants_stream,
+        ) {
             return deliver_buffered(
                 hop,
                 host,
@@ -139,7 +143,6 @@ pub(super) fn deliver<'a>(
             ingress_request_body,
             ct,
             is_sse,
-            cross_protocol,
             upstream_relay_id,
             tap,
             _rb_pre,
@@ -226,39 +229,25 @@ async fn deliver_stream(
     ingress_request_body: Option<Value>,
     ct: Option<axum::http::HeaderValue>,
     is_sse: bool,
-    cross_protocol: bool,
     upstream_relay_id: Option<String>,
     tap: TapCell,
     rb_pre: Option<busbar_kernel::profile::Timer>,
 ) -> Response {
-    // Streaming (or same-protocol non-stream): the first-byte-tracking wrapper. ONE
-    // registry-resolved translator factory: same-protocol SSE builds the verbatim re-emit with the
-    // usage tap, cross-protocol SSE the reframing translator, anything else `None` (raw passthrough).
-    // Named directly from this crate rather than through the installable pointer: an uninstalled
-    // pointer would silently drop both the reframing and the stream-end metering.
-    let translate =
-        crate::proto_stream::new_stream_translator(hop.ingress_protocol, hop.egress_name, is_sse);
-    // The upstream stream always carries a trailing usage chunk (busbar injected the opt-in); the
-    // framing surfaces it to the client ONLY when the client itself opted in.
-    let translate = translate.map(|mut t| {
-        t.set_client_include_usage(hop.client_include_usage);
-        // The live-stream twin of the buffered-path `apply_request_echo` above: a dialect whose
-        // response spec requires certain members to MIRROR the request (OpenAI Responses) reads
-        // this off the writer it holds for the life of the stream (`response.created`/
-        // `response.completed` each carry a full `response` object). Every other ingress writer's
-        // override is a no-op.
-        if let Some(body) = ingress_request_body.as_ref() {
-            t.set_request_echo(body);
-        }
-        t
-    });
-    let json_array = (hop.gemini_json_array && is_sse)
-        .then(|| {
-            busbar_kernel::proto::decl_for(hop.ingress_protocol)
-                .and_then(|d| d.dialect())
-                .and_then(|dc| dc.make_array_stream_framer())
-        })
-        .flatten();
+    // Streaming (or same-protocol non-stream): the first-byte-tracking wrapper over the plane's
+    // relay parts — the translator the dialect pair names (reframing across dialects, a verbatim
+    // re-emit with the usage tap within one, `None` for a raw passthrough), told the client's usage
+    // opt-in and request echo, and the JSON-array framer for a client that asked for an array.
+    let (translate, json_array) =
+        crate::engine::xchg::reply::relay::parts(&crate::engine::xchg::reply::relay::RelayCtx {
+            ingress: hop.ingress_protocol,
+            egress: hop.egress_name,
+            far_streams: is_sse,
+            json_array: hop.gemini_json_array,
+            client_include_usage: hop.client_include_usage,
+            request: ingress_request_body.as_ref(),
+            handler: hop.op.op_handler,
+            meter: usage_sink.is_some(),
+        });
     // The stream wrapper owns the refund decision from here (via `budget_spent`).
     budget_guard.disarm();
     drop(rb_pre);
@@ -291,22 +280,23 @@ async fn deliver_stream(
     let _rb_finish = busbar_kernel::profile::start(busbar_kernel::profile::Stage::RbFinish);
     let _rbf_build = busbar_kernel::profile::start(busbar_kernel::profile::Stage::RbfBuild);
     let mut rb = Response::builder().status(status);
-    // Cross-protocol streaming reframes the body to the client's format, so the CT must be the
-    // ingress client's; same-protocol keeps the upstream CT verbatim.
-    if hop.gemini_json_array && is_sse {
-        rb = rb.header(CONTENT_TYPE, APPLICATION_JSON);
-    } else {
-        match (cross_protocol && is_sse)
-            .then(|| ingress_stream_content_type(hop.ingress_protocol))
-            .flatten()
-        {
-            Some(client_ct) => {
-                rb = rb.header(CONTENT_TYPE, client_ct);
-            }
-            None => {
-                if let Some(ct) = ct {
-                    rb = rb.header(CONTENT_TYPE, ct);
-                }
+    // The content type is the plane's: a JSON array, the client's own streamed content type across
+    // dialects, else the upstream's verbatim.
+    match crate::engine::xchg::reply::relay::content_type(
+        hop.ingress_protocol,
+        hop.egress_name,
+        is_sse,
+        hop.gemini_json_array,
+    ) {
+        crate::engine::xchg::reply::relay::ContentType::Json => {
+            rb = rb.header(CONTENT_TYPE, APPLICATION_JSON);
+        }
+        crate::engine::xchg::reply::relay::ContentType::Ingress(client_ct) => {
+            rb = rb.header(CONTENT_TYPE, client_ct);
+        }
+        crate::engine::xchg::reply::relay::ContentType::Far => {
+            if let Some(ct) = ct {
+                rb = rb.header(CONTENT_TYPE, ct);
             }
         }
     }

@@ -3,5 +3,6 @@
 //! the walk.
 
 pub mod failure;
+pub mod relay;
 pub mod whole;
 pub mod wire;

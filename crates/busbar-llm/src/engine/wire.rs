@@ -414,6 +414,7 @@ pub(crate) use crate::engine::xchg::reply::wire::GENERIC_RESPONSE_ERROR_DETAIL;
 ///
 /// `translate` is the LIVE translator for this stream when there is one, so the failure event
 /// continues the stream's identity. The frame is the plane's reply's.
+#[cfg(test)]
 pub(crate) use crate::engine::xchg::reply::wire::mid_stream_error_bytes;
 
 /// Deterministic FNV-1a hash of a string — stable across processes/restarts (unlike the
