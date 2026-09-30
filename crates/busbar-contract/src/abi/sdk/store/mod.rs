@@ -242,7 +242,9 @@ pub trait StoreSlots: RecordStore + Sized {
         limit: u32,
     ) -> Result<Vec<(Vec<u8>, RecordBytes)>, String>;
 
-    /// `reserve` (slot 34): one all-or-nothing draw; one [`Grant`] per cell, in cell order.
+    /// `reserve` (slot 34): one all-or-nothing draw; one [`Grant`] per cell, in cell order. A store
+    /// MUST answer exactly one grant per cell: any other count is FAULT (the draw it recorded under
+    /// the `op_id` is not a failure the caller may retry).
     ///
     /// # Errors
     /// [`ReserveRefused`]; nothing is applied.
@@ -254,7 +256,7 @@ pub trait StoreSlots: RecordStore + Sized {
     ) -> Result<Vec<Grant>, ReserveRefused>;
 
     /// `slice_release` (slot 35): per item `(slice_id, unspent)`, the amount taken back after
-    /// clamping, in item order.
+    /// clamping, in item order. Exactly one amount per item: any other count is FAULT.
     ///
     /// # Errors
     /// [`OpRefused`]; an unknown slice or a stale epoch is `Failed`, nothing applied.

@@ -1722,3 +1722,7 @@ mod conformance_tests;
 #[cfg(test)]
 #[path = "tests/store_v3_deadline_tests.rs"]
 mod deadline_tests;
+
+#[cfg(test)]
+#[path = "tests/store_v3_miscount_tests.rs"]
+mod miscount_tests;
