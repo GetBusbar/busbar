@@ -648,7 +648,8 @@ pub const PER_PLUGIN_PRICING_IS_UNREPRESENTABLE: () = ();
 /// (non-reserved) keyed count. Opaque `key → count` DATA the store never interprets. An
 /// all-empty row serializes to `{"model":…}` (the map is skipped when empty); a 1.5.x persisted row
 /// with the old scalar `tokens` field is read through plugin-loader's legacy adapter on a 1.5.x
-/// store, and upgraded on disk by the store plugin's own `migrate()` (#33).
+/// store, and upgraded on disk by the store plugin's own `migrate()` through the store SDK's one
+/// fold (`abi::sdk::store_migrate`).
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct ModelTokens {
     pub model: String,
@@ -780,20 +781,12 @@ impl UsageLedger {
     }
 }
 
-// ── THE PRE-M1b ROW FOLD IS NOT HERE, AND THE ENGINE HAS NONE (#33, ARCHITECT 2026-09-29) ─────────
+// ── THE 1.5.x ROW FOLD IS NOT HERE, AND THE ENGINE HAS NONE (#33, ARCHITECT 2026-09-29) ─────────
 //
-// What stood here: frozen `TierTokensV1`/`ModelTokensV1`/`UsageLedgerV1` shapes and
-// `fold_v1_ledger`, a one-shot fold of a 1.5.x usage-ledger row (scalar `tokens`) onto the
-// name-keyed `usage_units` map, "for a backend to run under its schema gate". Nothing ever called
-// it, and nothing on this side of the seam could: a 1.5.x usage row lives in the store plugin's own
-// database, and the engine never holds those bytes.
-//
-// WHAT COVERS A 1.5.x ROW INSTEAD. (1) A published 1.5.x store (payload schema below 4) is read
-// through plugin-loader's legacy adapter (`DynStore::get_usage` -> `legacy_usage::ledger_from_legacy`),
-// which decodes the 1.5.5 wire shape on every read. (2) Upgrading the rows on disk is each STORE
-// PLUGIN's own `migrate()` job, proven per backend by the 1.5.5 golden the store conformance suite
-// owes (docs/design/1.6.0-TODO.md, the store rows). A fold here would have been a third reading of
-// a row shape the engine does not own.
+// A 1.5.x usage row lives in the store plugin's own database; the engine never holds those bytes.
+// The frozen 1.5.x shapes and the one fold a store's own `migrate()` calls live in the store SDK:
+// `abi::sdk::store_migrate` (`fold_v1_ledger`). Until M6, a published 1.5.x store (payload schema
+// below 4) is still read through plugin-loader's legacy adapter (`legacy_usage::ledger_from_legacy`).
 
 /// One model's signed unit delta inside a [`UsageDelta`] — the fleet-additive flush primitive's
 /// per-model payload. (1.6.0 M1b) The signed twin of [`ModelTokens::usage_units`]: one name-keyed
