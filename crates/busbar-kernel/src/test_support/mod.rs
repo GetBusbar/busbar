@@ -2030,27 +2030,61 @@ impl TestApp {
 /// refreshed when `[lib]` is a ROOT build target, e.g. `cargo build --all-targets`) and the raw
 /// `<profile_dir>/deps/<name>` compiler output (refreshed on every build that recompiles the lib) —
 /// a scoped `cargo test` / `cargo build` never uplifts, so checking only `profile_dir` silently found
-/// nothing and every hook test quietly no-op'd. `None` when neither exists. The fixture is named by
-/// DATA — `[package.metadata.busbar] test-fixtures` in this crate's Cargo.toml, exported by build.rs —
-/// so no source names the plugin. The one lookup the hook tests, the admin suite and the root's
-/// `hook_path` bench share.
+/// nothing and every hook test quietly no-op'd. When NEITHER exists — a scoped
+/// `cargo test -p busbar-kernel` never builds another package's cdylib — the fixture is BUILT here,
+/// once per process, into its own `<target>/fixture-build` directory (its own build lock, so it never
+/// waits on the build that is running these tests); `None` only when that build fails. Before this, a
+/// scoped run skipped all 37 hook-plugin tests silently off CI and failed them all under `CI`. The
+/// fixture is named by DATA — `[package.metadata.busbar] test-fixtures` in this crate's Cargo.toml,
+/// exported by build.rs — so no source names the plugin. The one lookup the hook tests, the admin
+/// suite and the root's `hook_path` bench share.
 pub fn hook_fixture_cdylib() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let profile_dir = exe.parent()?.parent()?;
     let name = busbar_plugin_loader::plugin_library_filename(env!("BUSBAR_FIXTURE_HOOK"));
-    [
-        profile_dir.join(&name),
-        profile_dir.join("deps").join(&name),
-    ]
-    .into_iter()
-    .filter_map(|p| {
-        std::fs::metadata(&p)
-            .and_then(|m| m.modified())
-            .ok()
-            .map(|mtime| (p, mtime))
-    })
-    .max_by_key(|(_, mtime)| *mtime)
-    .map(|(p, _)| p)
+    let newest = |dirs: &[std::path::PathBuf]| {
+        dirs.iter()
+            .map(|d| d.join(&name))
+            .filter_map(|p| {
+                std::fs::metadata(&p)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .map(|mtime| (p, mtime))
+            })
+            .max_by_key(|(_, mtime)| *mtime)
+            .map(|(p, _)| p)
+    };
+    if let Some(found) = newest(&[profile_dir.to_path_buf(), profile_dir.join("deps")]) {
+        return Some(found);
+    }
+    static BUILT: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let profile = profile_dir.file_name()?.to_str()?.to_string();
+            let target = profile_dir.parent()?.join("fixture-build");
+            let cargo = std::env::var_os("CARGO").unwrap_or_else(|| env!("CARGO").into());
+            let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            let mut cmd = std::process::Command::new(cargo);
+            cmd.current_dir(&workspace)
+                .args([
+                    "build",
+                    "--locked",
+                    "-p",
+                    env!("BUSBAR_FIXTURE_HOOK_PACKAGE"),
+                ])
+                .arg("--target-dir")
+                .arg(&target);
+            if profile == "release" {
+                cmd.arg("--release");
+            }
+            let status = cmd.status().ok()?;
+            if !status.success() {
+                return None;
+            }
+            let dir = target.join(&profile);
+            newest(&[dir.clone(), dir.join("deps")])
+        })
+        .clone()
 }
 
 /// Build a [`crate::hooks::HookEnv`] whose registry loads the hermetic `busbar-hook-test-plugin`
