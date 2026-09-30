@@ -778,11 +778,7 @@ extern "C" fn entitlement_check(
     )
 }
 
-extern "C" fn random_fill(
-    ctx: HostCtx,
-    input: *const c_void,
-    out: *mut ServiceOut,
-) -> RawOutcome {
+extern "C" fn random_fill(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     slot(
         ctx,
         input,
