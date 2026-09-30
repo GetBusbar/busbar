@@ -26,10 +26,11 @@
 //! kernel-crate rule the store has no surface for, so it is not restated here.
 
 use busbar_contract::records::{
-    fold_v1_ledger, AuditRecord, MeteringDelta, MeteringRow, ModelTokensDelta, RecordStore,
-    UsageDelta, UsageLedger, UsageLedgerV1, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT,
-    UNIT_OUTPUT,
+    AuditRecord, MeteringDelta, MeteringRow, ModelTokensDelta, RecordStore, UsageDelta,
+    UsageLedger, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };
+// The one 1.5.x usage-row fold, the store SDK's (#33: every store plugin's migrate() calls it).
+use busbar_contract::abi::sdk::store_migrate::{fold_v1_ledger, UsageLedgerV1};
 use busbar_contract::slice::{bucket_all, CapDimension, Epoch, SliceId, SliceRequest, SliceStore};
 use busbar_plugin_loader::store_adapter::StoreAdapter;
 use busbar_store_memory::MemoryStore;
