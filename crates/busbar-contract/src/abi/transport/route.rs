@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ROUTE MATCH VOCABULARY, defined once (THE DESIGN §6, "Auth points and guest lists", step 3):
+//! THE ROUTE MATCH VOCABULARY, defined once (spec: THE DESIGN, Auth points and guest lists, step 3):
 //! how a line on a listener's guest list recognises the requests that are its own. A plane declares
 //! its claims in it, the kernel orders a listener's lines by it, and the listener's transport
 //! matches a decoded head against it. All three answer through the functions here, so what boot

@@ -6,7 +6,7 @@
 //! a path hit on another method is a method miss, not no-route.
 
 use busbar_contract::abi::transport::route::{
-    FIELD_PRESENT, FIELD_VALUE_PREFIX, METHOD_GET, METHOD_POST, PATH_EXACT, PATH_PATTERN,
+    FIELD_PRESENT, FIELD_VALUE_PREFIX, METHOD_GET, METHOD_POST, PATH_EXACT, PATH_PATTERN, PATH_PREFIX,
 };
 
 use super::*;
@@ -71,6 +71,30 @@ fn a_line_with_predicates_ranks_above_one_without() {
         Claimant::Plane("signed".into())
     );
     assert_eq!(hit(&[("Authorization", b"Bearer x")]), Claimant::Plane("plain".into()));
+}
+
+/// RED: path precedence is the first key; predicates break ties only at an equal path precedence. An
+/// exact path without predicates is tried before a prefix line that names one, even when that
+/// predicate holds for the request.
+#[test]
+fn an_exact_path_beats_a_prefix_line_with_predicates() {
+    let exact = route(METHOD_POST, PATH_EXACT, "/v1/chat/completions");
+    let prefix = with_field(
+        route(METHOD_POST, PATH_PREFIX, "/v1/"),
+        FIELD_PRESENT,
+        "authorization",
+        b"",
+    );
+    let list = GuestList::seal(vec![line("prefix", prefix), line("exact", exact)]).unwrap();
+    assert_eq!(list.lines()[0].claimant, Claimant::Plane("exact".into()));
+    let Matched::Line(l) = list.matched(
+        "POST",
+        "/v1/chat/completions",
+        &[("Authorization", b"Bearer x")],
+    ) else {
+        panic!("matched");
+    };
+    assert_eq!(l.claimant, Claimant::Plane("exact".into()));
 }
 
 /// RED: a claimant's rung orders its own lines at an equal precedence.

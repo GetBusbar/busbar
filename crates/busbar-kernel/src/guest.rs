@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE GUEST LISTS (THE DESIGN §6, "Auth points and guest lists", step 3): one per listener, written
+//! THE GUEST LISTS (spec: THE DESIGN, Auth points and guest lists, step 3): one per listener, written
 //! by the kernel. A line is route → (claimant, dialect, auth); the lines are ordered by CG-62
 //! precedence and the listener's transport matches a request against them in that order.
 //!
