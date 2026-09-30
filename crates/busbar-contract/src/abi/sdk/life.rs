@@ -176,11 +176,14 @@ enum Lease {
     Kept(#[allow(dead_code)] Box<dyn std::any::Any + Send + Sync>),
 }
 
-/// The answers an instance handed the host, each held under its lease until `release`.
+/// The answers an instance handed the host, each held under its lease until `release`. ONE
+/// answer names ONE lease (`head.lease`): what it leases more than once is CHAINED under that
+/// lease as its parts `(lease, 0)`, `(lease, 1)`, ... — map entries, no list to allocate — and the
+/// host's one release of it frees every part.
 #[derive(Default)]
 pub struct Leases {
     next: AtomicU64,
-    held: Mutex<BTreeMap<u64, Lease>>,
+    held: Mutex<BTreeMap<(u64, u32), Lease>>,
 }
 
 impl std::fmt::Debug for Leases {
@@ -192,15 +195,29 @@ impl std::fmt::Debug for Leases {
 }
 
 impl Leases {
-    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, Lease>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<(u64, u32), Lease>> {
         self.held
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Hold `lease` for the answer `head` belongs to: chained as the next part of the lease
+    /// `head.lease` already names when this answer leased before, else under a new lease.
     fn hold(&self, head: &mut OutHead, lease: Lease) -> u64 {
+        let mut held = self.lock();
+        let id = head.lease;
+        if id != 0 {
+            let last = held
+                .range((id, 0)..=(id, u32::MAX))
+                .next_back()
+                .map(|(k, _)| k.1);
+            if let Some(part) = last {
+                held.insert((id, part.saturating_add(1)), lease);
+                return id;
+            }
+        }
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
-        self.lock().insert(id, lease);
+        held.insert((id, 0), lease);
         head.lease = id;
         id
     }
@@ -266,17 +283,35 @@ impl Leases {
         self.hold(head, Lease::Kept(Box::new(owned)))
     }
 
-    /// Release `lease`: READY when it was held, REFUSED when it was not (a host bug).
+    /// Release `lease` and every part chained under it: READY when it was held, REFUSED when it
+    /// was not (a host bug).
     pub fn release(&self, lease: u64) -> Outcome {
-        match self.lock().remove(&lease) {
-            Some(_) => Outcome::Ready,
-            None => Outcome::Refused,
+        let mut held = self.lock();
+        let mut freed = false;
+        while let Some(key) = held
+            .range((lease, 0)..=(lease, u32::MAX))
+            .next()
+            .map(|(k, _)| *k)
+        {
+            held.remove(&key);
+            freed = true;
+        }
+        if freed {
+            Outcome::Ready
+        } else {
+            Outcome::Refused
         }
     }
 
-    /// How many leases are held.
+    /// How many leases are held (a chained answer is one lease).
     #[must_use]
     pub fn held(&self) -> usize {
+        self.lock().keys().filter(|k| k.1 == 0).count()
+    }
+
+    /// How many parts the held leases hold in all.
+    #[must_use]
+    pub fn parts(&self) -> usize {
         self.lock().len()
     }
 }

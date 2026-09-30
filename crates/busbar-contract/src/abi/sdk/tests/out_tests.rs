@@ -82,6 +82,32 @@ fn a_leased_string_is_held_until_release_and_named_in_the_head() {
     );
 }
 
+/// RED (REVIEWER's MEDIUM): an answer that leases twice names ONE lease, and the host's one
+/// release of it frees both; across N requests nothing is left held. Overwriting `head.lease`
+/// instead of chaining leaves one orphaned part per request.
+#[test]
+fn an_answer_that_leases_twice_is_freed_by_its_one_release_across_requests() {
+    let leases = Leases::default();
+    for n in 0..8_u64 {
+        let mut o: ServeOut = zeroed();
+        let mut out = Out::new(&mut o);
+        out.lease_str(|o| &o.head.error, &leases, format!("first {n}"));
+        out.lease_str(|o| &o.head.error, &leases, format!("second {n}"));
+        assert_eq!(read(o.head.error), format!("second {n}").as_bytes());
+        assert_eq!(
+            (leases.held(), leases.parts()),
+            (1, 2),
+            "one answer, one lease, two parts"
+        );
+        assert_eq!(leases.release(o.head.lease), Outcome::Ready);
+        assert_eq!(
+            (leases.held(), leases.parts()),
+            (0, 0),
+            "request {n}: nothing left held"
+        );
+    }
+}
+
 #[test]
 fn static_text_and_lists_are_named_where_they_live() {
     const HEADERS: &[AbiStr] = &[AbiStr {
