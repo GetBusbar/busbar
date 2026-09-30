@@ -219,7 +219,7 @@ fn register_planes() {
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.
     let dropped = root::linked::dropped_from_config(&LINKED);
-    root::linked::register_planes(&LINKED, root::linked::dropped_planes_of(dropped));
+    root::linked::register_planes(&LINKED, root::linked::dropped_planes_of(&LINKED, dropped));
     root::linked::register_exports(dropped);
 
     // THE AUTHORIZATION-SERVER PLANE'S SEAM, registered UNCONDITIONALLY (no feature flag — see the
@@ -621,6 +621,8 @@ async fn run(data_workers: usize) {
     let _dispatcher = root::dispatch::boot(data_workers, late_services.clone());
     // THE PLUGIN OBSERVABILITY ENVELOPE, before any plugin loads (`root::observe`).
     root::observe::install();
+    // The planes that state themselves through a door bind on it, linked and dropped alike.
+    root::linked::load_door_planes();
     // Metrics are configured AFTER the config loads (below, via `metrics::configure`) because they
     // are 100% OPT-IN: `observability.metrics` absent ⇒ no recorder, no `/metrics`, nothing recorded
     // and nothing retained. Nothing may install a recorder before that decision is read.

@@ -736,15 +736,49 @@ impl PluginRegistry {
         Ok(entries)
     }
 
-    /// Open EVERY loadable plane, in scan (filename) order, through [`Self::open_plane`] — the planes
-    /// a dropped-in plugins directory contributes to the plane axis. The first that will not load
-    /// fails the whole set, naming it: a trusted plane that cannot be admitted is not skipped.
-    pub fn open_planes(&self) -> Result<Vec<crate::DynPlane>, String> {
-        self.loadable()
-            .iter()
-            .filter(|p| p.manifest.kind == busbar_contract::abi::cold::kind::PLANE)
-            .map(|p| self.open_plane(&p.manifest.name))
-            .collect()
+    /// THE PLANES, discovered for the one load: every compiled-in plane door in `linked`, then every
+    /// loadable dropped-in plane whose signed manifest states a Statement, as a
+    /// [`crate::boot::Candidate`] ([`crate::boot::load_planes`] binds them through
+    /// `load_linked`/`load_dropped` on the process's dispatcher). A dropped-in plane with no
+    /// Statement (a HOT-lane `PlaneDecl` cdylib) is opened here over the HOT-tier ABI
+    /// ([`Self::open_plane`]).
+    ///
+    /// M6-HOT-PLANE: the HOT-lane branch is transitional. Each linked HOT-lane plane leaves it in its
+    /// own fold's series (FOLD-LLM, FOLD-MCP, FOLD-A2A, the decisions and streaming folds), which
+    /// ship the plane's door export and its linked door row; the last fold deletes this branch and
+    /// the HOT declaration read.
+    ///
+    /// # Errors
+    ///
+    /// The first plane that will not state itself or load, named: a trusted plane that cannot be
+    /// admitted is not skipped.
+    pub fn open_planes(
+        &self,
+        linked: &[busbar_contract::abi::mechanism::door::DoorFn],
+    ) -> Result<crate::boot::PlaneSet, String> {
+        let mut set = crate::boot::PlaneSet::default();
+        for door in linked {
+            set.doors.push(crate::boot::Candidate::linked(*door)?);
+        }
+        let planes = self.loadable().iter();
+        for p in planes.filter(|p| p.manifest.kind == busbar_contract::abi::cold::kind::PLANE) {
+            let named = |e: String| format!("plugin '{}': {e}", p.manifest.name);
+            match p.manifest.stated_rendering().map_err(named)? {
+                Some(stated) => set.doors.push(
+                    crate::boot::Candidate::from_rendering(
+                        stated,
+                        Some(&p.manifest.alias),
+                        crate::boot::Origin::Dropped {
+                            file: p.file.clone(),
+                            bytes: std::sync::Arc::new(p.lib_bytes.clone()),
+                        },
+                    )
+                    .map_err(named)?,
+                ),
+                None => set.hot.push(self.open_plane(&p.manifest.name)?),
+            }
+        }
+        Ok(set)
     }
 }
 

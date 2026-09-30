@@ -354,3 +354,91 @@ fn red_an_instance_that_will_not_bind_is_named() {
     .unwrap_err();
     assert!(err.starts_with("door: ") && err.contains("repack"), "{err}");
 }
+
+/// THE PLANE AXIS, BOTH DOORS, ONE LOAD (ARCHITECT ruling 2026-09-29, P1): the plane door linked
+/// into the build and the same plane dropped into `plugins/` (an admitted tarball whose manifest
+/// states its Statement) are discovered by `open_planes` as door candidates stating the same
+/// rendering, and `load_planes` binds each through the one load — the dropped one over its verified
+/// bytes. A dropped plane with no Statement stays on the HOT lane, never a door candidate.
+#[test]
+fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
+    let Some(path) = example_cdylib("plane_door_plugin") else {
+        return;
+    };
+    let lib = std::fs::read(path).unwrap();
+    let rendering = crate::dispatch::LinkedRow::of(plug::door)
+        .unwrap()
+        .statement;
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-boot-planes-{}-{}",
+        std::process::id(),
+        crate::stage::next_seq()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let manifest = crate::sign::Manifest {
+        name: "plane-door".into(),
+        alias: "door".into(),
+        kind: "plane".into(),
+        version: "1.0.0".into(),
+        publisher: "acme".into(),
+        abi_version: 1,
+        sha256: crate::sign::sha256_hex(&lib),
+        signature: String::new(),
+        description: String::new(),
+        homepage: String::new(),
+        license: String::new(),
+        needs: Default::default(),
+        settings_schema: None,
+        schema_derived: false,
+        host: None,
+        declares: Default::default(),
+        statement: Some(hex::encode(&rendering)),
+    };
+    let tarball = crate::tarball::package(&manifest, "lib.so", &lib).unwrap();
+    std::fs::write(dir.join("plane-door.tar.gz"), tarball).unwrap();
+    let policy = crate::sign::TrustPolicy {
+        first_party_key: None,
+        binary_version: "1.6.0".into(),
+        first_party_floors: Default::default(),
+        first_party_high_water: Default::default(),
+        publishers: Default::default(),
+        allow_unsigned: true,
+        allow_third_party: true,
+        min_versions: Default::default(),
+    };
+    let dropped = crate::scan_and_validate(&dir.join("."), &policy).expect("the plane scans");
+    let logs = PluginLogConfig::from_words(
+        Some(dir.join("logs").to_str().unwrap()),
+        None,
+        &Default::default(),
+        None,
+        None,
+    )
+    .unwrap();
+    let bind = |set: crate::boot::PlaneSet| {
+        assert!(set.hot.is_empty(), "a door plane is never a HOT-lane plane");
+        let stated: Vec<Vec<u8>> = set.doors.iter().map(|c| c.stated.clone()).collect();
+        let bound = load_planes(&set.doors, &logs, Arc::new(NoSink), Adopter::unwatched(), 8)
+            .expect("the plane binds");
+        (stated, bound)
+    };
+    let (linked_stated, linked) = bind(
+        crate::PluginRegistry::empty()
+            .open_planes(&[plug::door])
+            .unwrap(),
+    );
+    let (dropped_stated, dropped_bound) = bind(dropped.open_planes(&[]).unwrap());
+    assert_eq!(linked_stated, vec![rendering.clone()]);
+    assert_eq!(
+        dropped_stated, linked_stated,
+        "both doors state one rendering"
+    );
+    let shape = |b: &[(String, Plugin<crate::dispatch::kinds::plane::Plane>)]| {
+        b.iter()
+            .map(|(i, p)| (i.clone(), p.name().to_string(), p.kind(), p.max_inflight()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(shape(&linked), shape(&dropped_bound), "one load, one shape");
+    assert_eq!(shape(&linked).len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -318,6 +318,11 @@ pub(crate) fn linked_source(
         out.push_str(&format!("&{e}::PLANE_DECL, "));
     }
     out.push_str("],\n");
+    out.push_str("    plane_doors: &[");
+    for e in on_axis("plane-door") {
+        out.push_str(&format!("{e}::door, "));
+    }
+    out.push_str("],\n");
     out.push_str("    transports: &[");
     let mut door_builds = String::new();
     for (n, (e, axes)) in linked

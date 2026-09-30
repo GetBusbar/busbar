@@ -398,6 +398,59 @@ pub fn registry(
     Ok(registry)
 }
 
+// ── THE PLANES ───────────────────────────────────────────────────────────────────────────────────
+
+/// The plane axis, discovered ([`crate::PluginRegistry::open_planes`]): the planes that state
+/// themselves through a door, not yet bound, and the HOT-lane planes (M6-HOT-PLANE) already opened.
+#[derive(Default)]
+pub struct PlaneSet {
+    /// Each plane with a door: linked rows first, then the dropped-in ones in scan order.
+    pub doors: Vec<Candidate>,
+    /// Each HOT-lane plane (no Statement), opened.
+    pub hot: Vec<crate::DynPlane>,
+}
+
+/// THE PLANES' ONE LOAD: every door plane of a [`PlaneSet`] selected under its own name and bound
+/// through [`load`] — a linked row by `load_linked`, a dropped one by `load_dropped` over its
+/// verified bytes, each against its stated Statement and tail, on `dispatcher`, to its own log
+/// sink.
+///
+/// # Errors
+///
+/// The first plane that will not bind, named.
+pub fn load_planes(
+    doors: &[Candidate],
+    logs: &PluginLogConfig,
+    metrics: Arc<dyn EnvelopeSink>,
+    dispatcher: Adopter,
+    max_inflight_cap: u32,
+) -> Result<Vec<(String, Plugin<Plane>)>, String> {
+    let selected: Vec<Selected> = doors
+        .iter()
+        .enumerate()
+        .map(|(candidate, c)| Selected {
+            candidate,
+            instance: c.name.clone(),
+        })
+        .collect();
+    let loaded = load(&LoadRequest {
+        candidates: doors,
+        selected: &selected,
+        logs,
+        metrics,
+        dispatcher,
+        max_inflight_cap,
+    })?;
+    loaded
+        .bound
+        .into_iter()
+        .map(|(instance, bound)| match bound {
+            Bound::Plane(p) => Ok((instance, p)),
+            _ => Err(format!("{instance}: a plane door states another kind")),
+        })
+        .collect()
+}
+
 // ── THE ONE LOAD ─────────────────────────────────────────────────────────────────────────────────
 
 /// One bound instance, of its kind.

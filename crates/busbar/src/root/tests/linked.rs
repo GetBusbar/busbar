@@ -40,6 +40,7 @@ pub(super) fn linked(
     Linked {
         planes,
         hot_planes,
+        plane_doors: &[],
         protocols: &[],
         path_ingress: &[],
         body_ingress: &[],
