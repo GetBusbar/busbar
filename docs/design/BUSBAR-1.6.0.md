@@ -223,7 +223,10 @@ a URL scheme a transport claims; a provider's auth style (§6); a pool's strateg
 `cheapest`); a fetch URL. env and file secrets are ordinary plugins (`busbar-secret-env`,
 `busbar-secret-file`), linked in the default build; a core + vault build that never references
 them never loads them. The kernel resolves a secret reference by asking the loaded secret plugins;
-a reference to a source that is not loaded refuses boot, naming the missing module.
+a reference to a source that is not loaded refuses boot, naming the missing module. The sugar
+parser is config-level, in the contract, and resolves among the loaded secret plugins; `api_key_env`
+keeps its 1.5.5 refusal and migration; a plane's own secret sites go wherever a host-held replacement
+exists, and a gate lists the ones still owed (WIRE-SECRET, ARCHITECT ruling 2026-09-29).
 
 **One Statement.** Every plugin carries one Statement, emitted by the door macro and embedded in its
 signed manifest. Each fact is declared once; anything derivable is derived.
@@ -305,6 +308,117 @@ loader keeps one both-ways witness per kind, on a real plugin, up to the ABI fre
 2026-09-27 by THE DESIGN §11.4: the 2026-09-27 measurement found the both-ways tests mostly compare the
 Rust API against the ABI.
 
+**One dispatcher, one opener per kind (ARCHITECT ruling 2026-09-29).** The composition root builds
+ONE process `Dispatcher` at boot and holds it; `dispatcher()` is its one accessor, and the RED that
+proves there is only one ships with the first kind axis. The kernel reaches a plugin of any kind only
+through a contract-level `<Kind>Calls` handle, opened by that kind's `<Kind>Axis`
+(`probe`/`check`/`open(module, label, settings)`) — the template is the export axis. The root
+implements every axis over the one dispatcher and the plugin registry and hands them to the kernel
+in ONE named struct, `RootInstall`, one named field per axis, installed through the existing
+root-to-kernel door as `install_<kind>_axis`. The kernel never names the loader; in `crates/busbar`
+the loader is named in one module, `root::loader`, and every other root file imports through it. A
+call is submitted and awaited through the dispatcher's async completion. The memory a call lends a
+plugin lives until that call completes, abandoned or not, for every kind (a submit that the watchdog
+can abandon uses the lending submit). A compiled-in Rust shortcut is deleted as each sibling is
+ported; a not-yet-ported dropped-in plugin keeps the retiring path only behind a marker that M6
+deletes. A kind's `max_inflight` overload answers 503 unavailable (§11.11 R8), decided before the
+verify loop runs; pending I/O is awaited, never answered 503.
+
+**A plugin catches its own panics; nothing unwinds across the door (ARCHITECT ruling 2026-09-27).**
+Every plugin builds with `panic = "unwind"` so the door macro's catch turns a panic into FAULT; a
+plugin built with `panic = "abort"` is refused at build (the fleet build config and
+`plugin-closure-deps` enforce it); a panic that escapes the catch aborts (§11.11 M3).
+
+**Libraries (OWNER rulings 2026-09-28 and 2026-09-30).** A plugin may use whatever third-party
+libraries it needs. The walls that remain are the design: a plugin reaches busbar only over the ABI,
+its busbar closure is `busbar-contract` alone (#2/#40(a)/#84), and the host owns sockets, readiness,
+TLS keys, the allow-list, pins, the breaker and money. No protocol is implemented in-tree where a
+solid prebuilt library exists — HTTP/1 and HTTP/2 through `hyper` (`h2` beneath it), WebSocket through
+the `tungstenite` family. ONE protocol = ONE library (TLS = `rustls`, DTLS = `dimpl`), ONE crypto
+backend = `ring` (the RustCrypto crates the auth styles already carried are accepted as inherited); a
+C dependency needs ARCHITECT approval; a change that adds dependencies states its `cargo tree` diff.
+A plane is transport-blind: it names no transport crate and speaks only the ABI's field shapes
+(ARCHITECT, 2026-09-30). A plugin holds no process-global state: what it keeps is per-instance, and what
+must survive a restart goes to its records through the store kind (F15). The one owner-approved
+per-thread slot is the door's log-capture slot, macro-expanded into each plugin (§11.2).
+
+**Statement facts a boot can read without opening the image (ARCHITECT rulings 2026-09-28/29).** A
+transport's claims are Statement facts: `Statement.claims` is the ONE source of the scheme names it
+serves, rendered into the signed manifest's Statement section, so Select picks a dropped-in transport
+from the signed manifest without opening it and the admit check's byte compare covers the claims (the
+door must match). The transport tail's claim rows are metadata parallel to it by index; admit refuses
+a length mismatch, and a Statement of any other kind that carries claims is refused. A framer states
+an EMPTY `composes_over`: the carrier under it is the connector's choice from the target scheme, and no
+transport names another. A per-need protocol field (`need.protocol`, `LocateIn.protocol`) was
+WITHDRAWN 2026-09-30: a protocol that needs its own framing is its own transport (§5).
+
+**A port keeps 1.5.5's surface (PORT R7/R8, ARCHITECT rulings 2026-09-30).** A plugin rewritten onto its
+kind's ABI keeps the published 1.5.5 plugin's config keys, refusal texts and wire bytes. A key 1.5.5
+read outside `settings:` for that entry stays where it is: the kernel deals the plugin its whole entry
+minus the core-reserved keys, and the Statement's settings schema declares those keys (secret fields
+marked secret). A guard core used to apply to the plugin's hops becomes the plugin's own logic, on top
+of the need's egress class and never weaker than 1.5.5's. Any 1.5.5 behaviour difference, a fix
+included, lands in its own commit and is queued for the owner; the default is 1.5.5's behaviour.
+
+**Validation refusals, every kind (ARCHITECT ruling 2026-09-29).** A plugin's validate refusal may be
+several lines. A line that starts with a `settings` path is instance-relative, and the host renders it
+as `<kind-section>.<instance>.<line>`; any other line is rendered verbatim. The rule is stated once in
+`abi/mechanism` with its check and a RED; the 1.5.5 refusal bytes are pinned.
+
+**Planes — protocol scope and per-plane rulings.** Owner direction 2026-09-29: maximum compatibility —
+every plane supports the transports and bindings its protocol's official design defines. Owner scope
+2026-09-29: IN — MCP session-based Streamable HTTP (revisions 2025-06-18 and 2025-11-25), MCP's legacy
+HTTP+SSE (2024-11-05), the Bedrock InvokeModel dialect, A2A over gRPC in both directions (inbound and
+outbound, over h2 with TLS and h2c), A2A push delivery, the unix transport, the Twilio Media Streams
+leg and WebRTC media (#45); OUT — native SIP (#45). Priority (owner 2026-09-29): mcp, a2a, llm and
+decisions before streaming.
+- *mcp (FOLD-MCP F25 and MCP-COMPAT, ARCHITECT rulings 2026-09-29, inside the owner's scope):* the
+  baseline is current `predev` behaviour with the MCP-COMPAT exceptions; subscribe stays for the old
+  revisions; the plane's `meter()` equals `predev`'s (`$`). Sessions: a CSPRNG id of at least 128
+  bits from the host, bound to its owner `{principal: actor id, credential: key id | "<ungoverned>"}`
+  (no tenant noun) — a mismatch answers 404 on every path; revision by negotiation only, no revision
+  config; sessions are per process; the 2026 stateless path stays byte-identical; per-owner session
+  and byte quotas; an ungoverned chain is unisolated and says so, with a per-instance boot diagnostic
+  latched on the first legacy stream. Sessionless GET+SSE: `MCP-Protocol-Version` present
+  (streamable revision) → 405; absent → the legacy 2024-11-05 stream; plain GET or DELETE with no
+  session → 405. Homes: the stdio supervisor is the stdio transport's; RFC 8693 exchange is the auth
+  kind's `exchange()` (F7); the tools grammar is the plane's; the task store is host records.
+- *a2a (A2A-PUSH, FOLD-A2A; ARCHITECT rulings 2026-09-29/30):* a claim may be a path PATTERN (a `{…}`
+  segment is a variable), resolved under CG-62's precedence (§2). Push delivery retries at most three times
+  (250/500 ms ±20 %) on a transport error, 5xx or 429 only, on an async timer, holding no slot, and
+  re-runs the destination judge on every attempt; streaming-sink delivery is detached through a
+  per-task ordered bounded queue (64, drop-oldest, counted). A gRPC binding reads `grpc-status` from
+  the trailers (the 1.5.5 trailer drop applies to llm paths only).
+- *decisions (OWNER rulings 2026-09-29/30, DECISIONS rulings):* like llm, N dialects over an IR — but
+  the engines named so far are PROVIDERS of the one dialect (protocol `jev`, the `/v1/systemone`
+  spine), as groq is a provider of the openai dialect (#51): catalog rows carrying their `error_map`
+  and any #51 path override, bytes passing through (an engine that speaks the openai dialect is an llm
+  catalog provider instead); a second
+  dialect exists only where a provider's request spine really differs (NanoJev is the one, dialect
+  `nanojev`: `/api/evaluate` is its second exact claim; a model's dialect is its override or its
+  provider's protocol; a model of the wrong dialect gets that dialect's existing unknown-model refusal;
+  it meters the upstream's own billing unit, counted from the answer already read, with no extra
+  egress; a cross-dialect request is a validate refusal unless the translation is exact). Usage
+  pointers are dialect data. The binary feature `plane-decisions` is the plane's one switch. Model
+  resolution: all configured decisions models are listed (scope-filtered); a request routes by its
+  model; one configured model and none named is the default (byte-identical); more than one and none
+  named is 400; an unknown model is 404. `upstream_model` rewrites only the top-level model value, by
+  span splice, when it is set and differs; otherwise the body passes through. `/v1/models` appends each
+  plane generation's listed names (bytes unchanged when none).
+- *llm (BEDROCK-INVOKE, ARCHITECT ruling 2026-09-30):* a model entry may override `protocol` and
+  `error_map` exactly as #51 states, fail-closed. A MODEL-ONLY protocol (`ProtocolDecl.model_only`) is
+  never a valid provider default and is excluded from the must-be-one-of list; its telemetry index is
+  appended after the 1.5.5 families. Bedrock InvokeModel serves Anthropic-on-Bedrock chat only (the
+  other families are reachable through Converse); its usage row is `$` and lands alone.
+- *streaming (OWNER ruling 2026-09-29):* exactly three dialects — OpenAI Realtime (WS and WebRTC),
+  Gemini Live, Twilio. Twilio is a dialect over the ws transport (no transport crate), claimed on the ws
+  transport's `/twilio` prefix. Tools mid-session are relayed to the client; the gateway runs no tool
+  executor of its own (the echo executor is deleted) — the #45 clause on executing tools through the
+  MCP plane is queued as an owner question (`1.6.0-QUESTIONS.md`) and not folded here. A session is
+  keyed to its caller by an opaque per-principal reference on `arrive`/open, never the raw principal
+  (a privacy fix against `predev`), and the plane serves its own protected-resource metadata document
+  (ARCHITECT, 2026-09-30).
+
 ### 3. Boot
 
 The owner's four phases — read config, load plugins, register, serve — in dependency order:
@@ -336,6 +450,26 @@ reads it — never per connection, per dial, per call or per frame. A leak anywh
 
 *Proven by:* the 1.5.5 validate golden; `boot_lines_neutrality`; RED arms for one seal after two
 reloads, `tools:` added on reload, and a provider key rotated on reload.
+
+**The boot chain (BOOT-CHAIN, ARCHITECT rulings 2026-09-28/29).** Discover and Select read Statement
+facts from the signed manifest, which is the no-dlopen source (the object-section reader is
+withdrawn); Select is a pure function first, then flipped on behind its gate. The old HOT/COLD
+boot-loop steps 4-5 are SUPERSEDED. **P1:** a plane that exports a plane-kind door loads through
+`load_linked`/`load_dropped::<Plane>` (Statement + tail → the plane row). A plane that is still
+HOT-only is a transitional row, drained by its own fold. **P2:** the last fold deletes the HOT read
+path. Every fold's flip ships that plane's door and its linked door row.
+
+**Inbound listeners (INBOUND-LISTEN, ARCHITECT rulings 2026-09-29/30).** Boot collects every inbound
+need and its bind from the instance's settings — the 1.5.5 shape `{listen, tls{cert, key, client_ca?}}`,
+secrets by reference; the connector binds ONE listener per need and, per accepted connection, runs the
+framer's accept side (under the TLS server wrap when configured); the ALPN offer is the framer's.
+`max_conns` defaults to 1024 (a CHANGELOG line); two needs naming one address are refused at
+validation. The data and admin root listeners are in the same inbound bind list and bind through the
+connector (the admin router stays separate; the root binds uncapped); `--validate` prints plugin
+listeners only. The connector's listening set is the one listener source: the root's stream hand-up
+is permanent for the admin listener and transitional for the data door until the plane driver serves
+it. Until then boot refuses a plugin's inbound need. ONE root `Connector` serves inbound and outbound,
+built once at boot (a RED holds that both sides get the same instance).
 
 ### 4. Config
 
@@ -411,6 +545,14 @@ entry's `base_url`, or a non-plane plugin's connection setting) uses a scheme it
 - A plane's section is required only when that plane is linked; the default build keeps 1.5.5's error
   bytes. Sections carry position maps, so 1.5.5 line and column numbers survive rewrites.
 
+**Pools and work bounds under the plane verbs (POOLS-VERBS, ARCHITECT ruling 2026-09-30).** Pools are
+lifted into each plane's own section (#43, #47); the root `pools:` stays llm-only, as in 1.5.5; pool
+names are unique across planes; a `pools` sub-key under `decisions` or `streams` is a validation
+refusal; `busbar migrate` moves 1.5.x pools and prints a visible TODO report. A plane's reserved
+`work: {max_live, retain_s}` sub-key is lifted the same way. A plane's settings reach it as ONE
+validated JSON object `{section: value}` per `open`/`refresh`, reserved keys and secrets stripped;
+`upstream_credentials` is kernel-owned (FOLD-LLM2 Q1, FOLD-A2A, 2026-09-29/30).
+
 ### 5. Connections
 
 **Every plugin that needs an external connection declares a need, and the kernel instantiates the
@@ -423,7 +565,8 @@ wire protocol, framed by the plugin itself) or a framed transport (http).
 **The chain is kernel → `busbar-core-connector` → transport plugins.** The kernel knows nothing about
 transport. Transport plugins have two roles: **carriers** (`tcp`, `stdio`, `unix`) dial, accept, read
 and write; **framers** (`http`, `ws`) are sans-IO state machines. One plugin is one entry, and the
-schemes it serves are its claims — http claims `http`, `https`, `sse` and `grpc`; ws claims `ws` and
+schemes it serves are its claims — http claims `http`, `https` and `sse` ~~and `grpc`~~ (SUPERSEDED
+2026-09-29 by OWNER ruling: gRPC is its own transport, below); ws claims `ws` and
 `wss`. Two plugins claiming one scheme refuses boot, and no transport names another. The connector
 builds every connection as **carrier → [TLS] → framer**. TLS is core-only, inside the connector, and
 is never a plugin. The http framer drives hyper over an in-memory pipe, so the wire bytes are
@@ -492,6 +635,104 @@ plane→host calls per chunk. ~~a same-machine A/B against published 1.5.5 on th
 p99 ≤ +10 %, req/s ≥ −5 %~~ SUPERSEDED 2026-09-27 by THE DESIGN §11.9: the A/B against published 1.5.5
 is PHASE SIX's, on the fixed reference machine, with the owner's absolute gates.
 
+**The host connector — one design (ARCHITECT rulings 2026-09-27/28 and 2026-09-30).** One connector
+serves every kind that needs a connection, through ONE `Need` shape that every kind's Statement and
+tail may carry: direction, egress class (one of the four above), `target_from`, `trust_from` (an extra
+trusted root added on top of the public roots, as in 1.5.5) and auth; the loader fills each instance's
+connection table for the needs it declared. A need asks for a raw byte stream or a framed one
+(http); `exchange()` is the SDK's one-shot helper over a FRAMED http need — one request `{method,
+target, fields, body, timeout}`, not-ready until `{status, fields, body}` under the caller's cap — so
+its bytes are hyper's. The 2026-09-28 rulings that put the endpoint list, its ordering and the pool
+in the host are SUPERSEDED 2026-09-30 by ARCHITECT ruling (PORT R4): **a
+database or directory wire protocol is plugin logic over the generic connection table, and needs no
+new host shape** — the plugin tries a multi-host endpoint list in order (open; on reject close and try
+the next), runs the startup and authentication handshake (SCRAM, md5, AUTH/SELECT, bind) over the raw
+stream, keeps its per-instance pool as its own set of `ConnId`s held across not-ready turns with
+reset-on-return in plugin code, and cancels over a second connection on the same need; a driver is a
+sans-IO codec over the host stream, never a blocking driver (the `mysql-ldap-stream` ruling, §10).
+Streams are full-duplex (the plugin may write while a read is pending), and a full-duplex connection
+holds TWO tickets, one per side, each with at most one op in flight. TLS is `upgrade_secure` on the
+connection — ONE generic mid-stream service owned by the connector — after which the connector exposes
+the server certificate hash (channel binding). A store op holds ONE checked-out connection across its
+not-ready turns, released on READY, FAILED or cancel; a write-behind op keeps its connection across a
+reload. The host supplies randomness and the process identity at open; statement naming is the
+plugin's; server notices become #85 diagnostics. Deadlines are host-owned, per read. A local-disk
+store opens its own file and answers Ready; the host runs its calls on the bounded disk lane (§11.11
+R4), and a host service that reaches such a store offloads onto that lane and answers FAILED if it
+fails (ARCHITECT, 2026-09-29/30). The connection table reaches a plugin only through its
+`open`/`refresh` host tables and lives in its instance state (`busbar-contract` holds no static; "no
+table handed" is `ConnError::Unarmed`, per instance). The connector's internal wire surface is its own
+trait, never the plugin transport face; the legacy transport face is adapted in the composition root
+as a transitional row deleted at step 36.
+
+**Dialing only what the kernel judged (CONNECTOR-19, ARCHITECT rulings 2026-09-29).** The connector
+dials IP literals the kernel has judged: a `DialJudge` trait (no connector-to-kernel edge) that the
+kernel implements with its ONE destination judge; the connector dials exactly the pinned judged
+address, name resolution pends inside a ticketed op, and the 1.5.5 refusal timing holds. A dial is
+judged under the need's own egress class. No path may regress from "hostname refused" to "hostname
+dialed". Writes are back-pressured (a full buffer answers not-ready); an mTLS identity that fails to
+parse is a boot refusal. The cloud-metadata refusal (§10, `cloud-metadata`) is a pure check in the
+connector's endpoint check, run before any dial, over the whole 169.254.0.0/16 link-local range,
+`fd00:ec2::254`, `fd00:ec2::23`, `100.100.100.200`, `192.0.0.192` and `metadata.google.internal`, in
+every spelling (IPv4-mapped, decimal, octal) (ARCHITECT ruling 2026-09-28).
+
+**One secure layer, sibling engines (OWNER ruling 2026-09-30).** The connector composes **carrier →
+[secure layer] → framer**; the secure layer is ONE core-owned slot with sibling engines — `tls`
+(stream, `rustls`, today's code moved byte-identically) and `dtls` (datagram, `dimpl` on `ring`). The
+host owns every key; a framer gets plaintext and, where it needs one, the keying-material exporter
+through one generic ABI item.
+
+**HTTP and gRPC framing (OWNER rulings 2026-09-28/29; GRPC-DOOR rulings 2026-09-29/30).** h1/h2
+framing lives in the http transport plugin, built on `hyper`'s client/server connection API over the
+host-socket shim — readiness from the host's `io.*`, not-ready answered through the ABI wake, a
+per-connection executor inside the plugin, the timer on the host clock through `tick`. Parity with
+1.5.5: ALPN h2 by default to providers, the h2c prior-knowledge key, the http1-only key, keep-alive
+30 s / 10 s, the adaptive window; h1 port normalisation and the h2 HPACK and SETTINGS-ack bytes match
+1.5.5's (the recorded step-20 wire cells). The ws door marks a text frame with a vocabulary bit, no
+layout change. When the caller sets none, the http door adds `accept: */*`, and on
+h1 the host header and origin-form target: the http transport owns the client defaults (owner-agreed
+2026-09-28). **gRPC is its own transport**, `busbar-transport-grpc` (OWNER 2026-09-29: *"1 new transport
+and thats basically it"*): a framer over the carrier running hyper's h2 client and server itself;
+the connector composes ONE framer per connection, and no framer stacks on another. Its acceptance is
+the owner's claim: outside its own crate the change is a root row, the workspace and pre-tag vocabulary
+only — zero kernel or plane change. gRPC ingress is a dedicated listener. The code the framers share
+is `busbar_contract::hyper_io!`, a `macro_rules!` in the contract's SDK area expanded in each framer
+against that framer's own `hyper`/`bytes` dependencies; the contract gains only dev-dependencies. A
+shared transport "kit" crate is refused (it breaches #40(a)'s contract-only closure and creates a
+transport-to-transport edge), and so is a trailer piece on the transport ABI. The legacy in-process
+gRPC transport and the kernel's shared-port gRPC service are deleted right after the door lands, with
+the supported path proven end to end before and after.
+
+**The response head and trailers (HEAD-FIELDS, K2, GRPC-DOOR; ARCHITECT rulings 2026-09-29/30).** A
+framer yields the response head as the FIRST `Fields` piece, always — an empty one carrying the
+status when there are no headers; a `Fields` piece after the body is the trailers; `Fields` with
+`STREAM_FAILED` is refused. The head reaches a plane only on the far-end path (the far piece's head
+and the `on_piece` field list): each plane DECLARES `keep_response_headers` at boot — at most 32,
+lowercase, never a hop-by-hop or credential name, validated — and the kernel copies only those. For
+gRPC the head carries no status code; the trailers carry `grpc-status`, then a terminal piece (empty
+on OK, `STREAM_FAILED` with `grpc-message`), bytes as 1.5.5. On the accept side a framer yields a
+typed `RequestHead` (stream, method, target, authority) with the first `Fields` piece, and the kernel
+fills `arrive`'s method and target from it: request pseudo-headers travel in typed head slots, never
+as fields, and a pseudo-field inside `Fields` is refused. `te` is checked at the door as 1.5.5 did — a
+missing `te` is served, a wrong one is reset with h2 `PROTOCOL_ERROR` — then dropped as hop-by-hop. A
+transport's emit carries the response status as a typed `u16`, never a magic `:status` header, with
+its validator wired and a RED in the first commit that sets it.
+
+**The unix transport (TRANSPORT-UNIX, ARCHITECT ruling 2026-09-30).** Claim `unix`, targets
+`unix:///absolute/path` only; the connector unlinks a stale socket only if it is a socket and refuses a
+symlinked parent; a unix egress bypass exists only for an operator-configured exact path, never a
+plane-supplied one (a RED holds it).
+
+**Datagram media (WEBRTC, ARCHITECT rulings 2026-09-30).** WebRTC mirrors HTTPS layering: the udp
+carrier is the host's (in the connector, no carrier plugin); DTLS runs in the connector's secure layer
+with the host certificate, RFC 7983 demultiplexing, cookies and ICE-gated associations; the webrtc
+framer holds ICE, SRTP and SCTP and gets the exported SRTP keys through the keying-material item — it
+holds no DTLS state. SRTP is AEAD-AES-GCM only (`AES_CM` refused); the `aes`/`cipher`/`inout` crates
+are the one exception to `ring`-only, confined to the SRTP key derivation by a dependency-closure
+test. ICE path migration rebinds only on a verified round-trip check (a spoof is a RED); keys are
+zeroised; application data waits for peer verification. Opus passes through; no C codec (`libopus`
+refused). Admission is at SDP accept (`$`). Tickets are busbar-minted.
+
 ### 6. Outbound auth — one call per request (OWNER-LOCKED 2026-09-27)
 
 **The rule.** Auth is on the memory ABI (§11). For every request the kernel makes ONE uniform call to
@@ -537,9 +778,15 @@ plugins", and it routes each call by the style the provider entry resolves to. T
 7. **IdP logins** (oidc, github) hold their own client secret and make their token exchange through
    their own need.
 
-The outbound styles `bearer`, `api-key`, `x-goog-api-key`, `sigv4`, `jwt-bearer`,
+~~The outbound styles `bearer`, `api-key`, `x-goog-api-key`, `sigv4`, `jwt-bearer`,
 `oauth-client-credentials` and `caller-credential` live in one plugin, `busbar-auth-outbound`, loaded
-when some provider uses one of them. No config changes, and the wire bytes match 1.5.5, h2 included.
+when some provider uses one of them.~~ SUPERSEDED 2026-09-29 by OWNER correction: *"there is no
+outbound auth plugin. there is an auth plugin that applies auth to connections/transports. the
+direction is irrelevant."* An auth plugin serves styles; which crate carries which style is queued
+for the owner (`1.6.0-QUESTIONS.md`). `caller-credential` is a credential SOURCE, not a mechanism:
+each mechanism plugin serves its styles in operator or caller mode, declared by a style flag, and the
+kernel maps `caller-credential {as: X}` and `upstream_credentials: passthrough` to style X in caller
+mode (ARCHITECT ruling 2026-09-29). Styles are loaded when some provider uses one of them. No config changes, and the wire bytes match 1.5.5, h2 included.
 
 **Trust boundary.** The plane never sees the key. The auth plugin holds it. The framer sees it pass.
 Both are operator-trusted — signed, and granted in the root manifest; the operator chose them. TLS
@@ -555,6 +802,39 @@ its whole request and response and never sees the credential; the auth kind's co
 compiled-in and dropped-in builds through the same table (§11.4); the crossing under 1 µs (§11.9).
 ~~`decorate` p99 < 20 µs.~~ SUPERSEDED 2026-09-27 by THE DESIGN §11.6: the JSON `decorate` crossing and
 its bench are gone.
+
+**Inbound verify (ARCHITECT rulings 2026-09-29/30).** The kernel refuses a request every inbound auth
+plugin abstained on: all-abstain is 401. **Replay refusal is kernel-side:** a verified identity may
+carry a `replay_key` and `replay_ttl_secs`, and the verify caller claims the record
+(`auth-replay`, plugin/key, ttl) through `records.claim` (§11.12) — already TAKEN is 401. An auth
+plugin that needs the request body declares the fact and receives the body, bounded (over the bound is
+a refusal). Webhook signatures are verified by ONE mechanism-named inbound auth plugin,
+`busbar-auth-webhook-signature` (scheme `webhook-signature`; variants Twilio — HMAC-SHA1
+`X-Twilio-Signature` — and Standard Webhooks); a missing signature is 401 end to end; a Standard
+Webhooks `webhook-id` replay is refused through the claim record; Twilio carries no replay rule (1.5.5
+had none, and Twilio sends no nonce). The kernel's admin authenticate step is async — it awaits a
+pending verify, never answers 503 for pending I/O; a synchronous probe (`verify_now`) is ticketless
+and watchdog-bounded. An auth plugin's `LoginOutcome` distinguishes an outage from a bad credential;
+its service credential is a secret reference; its inbound SigV4 reads through a host store service.
+The verify cache's flush count is reported as a fixed metric on `refresh`'s #85 envelope, and the
+kernel sums it into the 1.5.5 `{flushed: N}` bytes. Short buffers default to 16 KiB, 256 groups and
+16 fields; hard maxima are 64 fields and 65,536 groups (ARCHITECT, 2026-09-27). An IdP login plugin
+uses the SDK's login kit — `begin_login` returns the authorize URL, `complete_login` answers
+not-ready, an identity, a bad credential or an outage — and holds its own client secret. JWKS
+fetching is sans-IO single-flight: a cold key id pends verify, one `exchange()` fetches, every waiter
+wakes; `tick` refreshes ahead of the TTL, with 1.5.5's timings. The auth reply may carry generic query
+parameters, and an outbound style may name a query key (ARCHITECT, 2026-09-30). The kernel judges a
+token URL by the 1.5.5 rule; no plugin-set "sensitive" flag exists — 1.5.5 bytes win (AUTH-OUT,
+2026-09-28). The owner signed three LDAP differences from 1.5.5 (2026-09-28), each registered when the
+LDAP plugin lands: fail closed instead of panicking on a malformed reply or a hostless URL; fail fast
+on an overrunning nested length; a 16 MiB inbound cap.
+
+**The per-request auth call on the route walk (K2, ARCHITECT rulings 2026-09-29/30).** The seal-time
+half of step 21 (the auth object's open and fields, the per-generation member route table) is the
+walk's; waiting for auth fields is bounded by the attempt's deadline; auth material is zeroised; SigV4
+signs the real method and query of the walked request; the switch-over deletes the kernel's own
+outbound-auth copies in the same train, so two implementations never ship together. No SigV4 crypto
+lives in the contract.
 
 ### 7. Money
 
@@ -606,6 +886,62 @@ its bench are gone.
   plane's refusal bytes stay 1.5.5's.
 - Auth objects touch no money.
 
+- **Attribution (F14, ARCHITECT 2026-09-28).** The kernel bills the unit's principal. A plane's own
+  ids (agent, context, task) live in that plane's records and are never kernel nouns.
+- **Cancel billing (F13).** Money follows 1.5.5's four cancel rules; where a cancel disposition would
+  bill differently, the disposition must express the 1.5.5 outcome — never a silent change. A cancel
+  disposition is `UNKNOWN`, `NOT_APPLIED` or `APPLIED`; the dispatcher carries it to the caller and a
+  FAULT on cancel is FAULT (ARCHITECT, 2026-09-27). A flat-fee cancel refund is 1.5.5's, cited; an end
+  posts exactly once; accruals use checked addition and a duplicate class is refused (K2-5,
+  2026-09-30).
+- **The money chain (MONEY-CHAIN, ARCHITECT ruling 2026-09-30).** A change to how many ledger rows a
+  unit writes must keep every 1.5.5 oracle cell identical, or it stops. The budget mode keys on the
+  budget limit; downgrade (at admission) and cut-stream (mid-stream) coexist; a checkpoint is a
+  durability `unit.accrued` record; an Abort line carries the CUT posting flag. The integrity
+  verifiers are wired into the 1.6.0 `GET /api/v1/admin/verify` surface — the real checkpoint anchor,
+  the boot recheck's findings, the audit chain verified over retained records (#82), the amend
+  journal, and the resume-break drain — with no change to a 1.5.5 byte; `GET /audit` is unchanged.
+- **Unit keys and op ids (WIRE-STORE Q10, ARCHITECT ruling 2026-09-30).** ONE node allocator in the
+  kernel mints every unit key and every store `OpId`: the node half is a per-process, non-zero u64
+  from the OS CSPRNG, the counter a process-wide atomic from 1 (`OpId` = node ‖ counter,
+  little-endian). The kernel never re-issues an op id younger than the store's retention. The boot
+  incarnation enters the audit preimage (a RED: two boots, the same unit key, distinct records).
+- **Store v3 money slots (ARCHITECT rulings 2026-09-27/28; the model is `busbar-contract/src/slice.rs`:
+  a draw is (bucket, dimension, wanted, epoch), dimension ∈ {nano-units, requests, concurrency,
+  class}, a chain draw all-or-nothing).** Request-path ops carry fixed unit cells, never a JSON map
+  (§11.11 M8): `reserve` is ATOMIC — if any cell grants 0 the store applies nothing and answers FAILED
+  (Exhausted, StaleEpoch, Unavailable or NoCap) naming the first ungrantable cell; `slice_release`
+  clamps each release to what that slice has left and never returns more than was granted; the usage,
+  metering and audit batches are off-path write-behind, applied in order, atomic per batch. Each cell
+  names its own window start (0 = a gauge that never rolls); the kernel pushes window caps at open,
+  at refresh and before a window's first reserve — a whole push is atomic, a higher config generation
+  wins, an equal generation with a different cap is refused `STORE_CAP_CONFLICT`, a reserve on a
+  window with no cap fails NoCap. **Dedupe:** the same op id replayed re-writes its ORIGINAL results
+  into the new buffers and applies nothing; "same" means the op's value fields, never buffer pointers;
+  only an op that APPLIED a change is recorded (a FAILED, REFUSED or short answer is not, and a retry
+  is judged afresh); the capacity check precedes the replay lookup; retention is durable, survives a
+  store restart and lasts at least 24 h; the same op id with a different body is REFUSED
+  `STORE_OPID_CONFLICT` and nothing applies (OWNER-approved 2026-09-28, registered as new surface). A
+  partial grant is sized exactly as the 1.5.5 in-tree store sized it; `used + amount` is checked, and
+  overflow is Exhausted.
+- **1.5.x usage rows (#33; OWNER rulings 2026-09-29).** The engine holds no fold: 1.5.x rows live in
+  the store plugins' own databases, so each store plugin's `migrate()` upgrades them (scalar `tokens`
+  onto `usage_units`) through ONE shared fold in the contract's store SDK (`abi::sdk::store_migrate`),
+  crash-idempotent, proven per backend against rows written by the pinned 1.5.5 binary read back
+  byte-identically. This migration conformance is a HARD gate (M5): no store sibling opens a 1.5.x
+  database, and the legacy 1.5.5 store wire does not retire (M6), until every backend passes it; CI
+  fails on a missing fixture or cdylib and runs the migration-fixture script; network backends run in
+  Latchkey. #21: the per-request fee counts at admission, as 1.5.5 did. #32: a retroactive RATE
+  correction that would cut inside a stored row is refused with a clear error; `adjust` is untouched;
+  no storage change. #34: the currency leaves the audit digest (digest v3); v2 records still verify; the
+  public audit range read gains a per-record `recipe` field so mixed batches verify — additive, and
+  flagged to the owner.
+- **Owner money rulings 2026-09-28.** Refund across a window refunds the bucket actually charged —
+  1.6.0's behaviour ships as a `breaking` accepted difference (M-1). The decisions plane bills one
+  `decision` per successful, settled answer from every provider; its card prices `decision`,
+  `input_tokens` and `output_tokens` (family `decision`, all three required, 0 = free); the hosted
+  provider keeps 1.5.5's `/usage/units` as the decision count (DECISIONS D9, 2026-09-30).
+
 *Proven by:* the oracle's billing, ledger and teller families; kill -9 during a stream; the
 cut-stream failover cell, which asserts the client's error frame and the one Abort line; the streaming
 conformance rig's session legs (admit at open, checkpoints, one sealed line).
@@ -622,7 +958,8 @@ names no plugin, and gets its listeners through the connector.
 | `busbar-core-connector` | composition; TLS — the only holder of TLS keys, certificates, trust roots and mTLS identity, sourced through secret plugins; per-worker pools; ALPN; the proxy; URL joining; the transport registry; ~~the cold-I/O runtime; carrying auth objects to framers~~ (SUPERSEDED 2026-09-27 by THE DESIGN §11.2 and §11.6: no cold lane; the kernel makes the auth call) | **yes** |
 
 The connector is not kernel, because it understands TLS and composition. It is not a plugin, because
-it holds TLS keys.
+it holds TLS keys. It also owns the secure layer's DTLS engine and the udp carrier (§5), and every
+listener (§3).
 
 ### 9. Crates and repos
 
@@ -633,10 +970,10 @@ the three cleanliness crates. Every plugin lives in its own repo, named `busbar-
 | Kind | Plugins |
 |---|---|
 | plane | llm, mcp, a2a, streaming, decisions |
-| transport | tcp, stdio, unix, http, ws |
+| transport | tcp, stdio, unix, http, ws, grpc (OWNER 2026-09-29) |
 | store | memory, postgres, mysql, sqlite, valkey |
 | secret | env, file, vault |
-| auth | admin-tokens, github, ldap, oidc, outbound |
+| auth | admin-tokens, github, ldap, oidc, webhook-signature; the connection-auth styles' crates are an owner question (§6) ~~outbound~~ |
 | hook | ranking, headroom, webrequest |
 | export | prometheus, webhook, file, otlp |
 
@@ -646,6 +983,33 @@ contract-ABI range~~, promotes on its own dev → qa → main, and is generated 
 `plugins.yaml` and `.github/fleet/`. The default distribution pins exact plugin versions, and core
 refuses a plugin built for any version of its kind other than the current one (§11.8) ~~outside its ABI
 range~~ (SUPERSEDED 2026-09-27 by THE DESIGN §11.2 and §11.8).
+
+**The legacy engine folds (ARCHITECT rulings F1-F26, 2026-09-28; OWNER 2026-09-28: one Opus agent per
+plane, plan first, landing serially).** A pure MOVE is a byte-identical line move (#19). Code that must
+become sans-IO, contract-only plane code is a REWRITE, and its identity proof is the oracle for llm and
+core surfaces (wire bytes against the 1.5.5 golden) and, for the planes new in 1.6.0, the plane's
+conformance rig, the tests and the money suites against current `predev` — plus the plane
+conformance suite and, for a `$` step, the money suites. Folds consume the prerequisite steps
+(host tables, the plane driver, the connector, http, auth, the money chain); they never build them.
+The legacy operation-handler and codec-registry cells die with the registry at step 36. A JSON-RPC
+reader shared by two planes is a pure, stateless helper in `busbar-contract` outside `abi/` (no
+statics, no I/O, no lateral plane edge). The trust lifecycle is the kernel's (§11.12); URL judging
+inside arguments is a host call at the point 1.5.5 made it; RFC 8707/8693 token exchange is the auth
+kind's `exchange()`. Whole-App tests move to `crates/busbar` integration tests and the conformance
+suites, and test counts never fall; before any engine deletion a per-test coverage map names the new
+home of every test, and no test retires without an ARCHITECT ruling (F25). Of two implementations,
+the SERVED one is the base and the unserved one merges in or is deleted, with proof (F11). A move that
+raises the destination crate's cells is accepted only when the pair nets down in the same commit
+(F12). Unit steps land in their kernel crates (admit → budget, meter/usage → ledger, audit → audit,
+verify/approve → scope, authenticate → identity). A plane reading its own declarations instead of the
+kernel's protocol registry is an accepted mechanical change. The hook projection is supplied by the
+plane (Part 3 §12), and 1.5.5's hook tests land verbatim. Health probers become the kernel breaker's
+probe units (Part 3 §12). A fold removes `tracing` from its plane in favour of #85 diagnostics under the
+library rule (§2). Folds stop at in-tree `crates/busbar-plane-*`; repo extraction is step 40. The plane
+is `streaming` everywhere a plane is named (key, crate, feature, lanes, admin noun, pools, diagnostics);
+`voice` survives only as a dialect name inside it (OWNER 2026-09-28). The codecs fold into their planes
+(R7), and `DialectCodec`/`ProtocolDecl` move out of the contract into the llm plane, after which the
+contract names no http (ARCHITECT, 2026-09-30).
 
 ### 10. Owner questions — decided 2026-09-27
 
@@ -706,6 +1070,13 @@ binds the design; the rows in `1.6.0-QUESTIONS.md` keep the options and the cost
   identical to 1.5.5 — a memory-store node keeps no usage history across a restart without an explicit
   opt-in, `data_dir` or not.
 - **jemalloc purge crash — RULED 2026-09-27:** no 1.5.x hotfix; the fix ships in 1.6.0 only.
+- **Accepted differences ruled 2026-09-28 (OWNER):** D-1 "diagnostic codes" — the register's expected
+  cells go 480 → 481 for the extra `boot.refusal|BOOT-MCP-01|validate` cell (new 1.6.0 surface, no
+  1.5.5 golden, in accepted-gaps; it forgives nothing new); refund across a window (§7, M-1
+  `breaking`); `STORE_OPID_CONFLICT` (§7, new surface); the three LDAP differences (§6); the door-only
+  gate's +56 rows from the codec fold are relocated debt that drains with the legacy engine fold. The
+  a2a and mcp egress fences are recorded from a clean `predev` build (ARCHITECT, 2026-09-28), and a
+  fence never pins a known defect: a capture waits for the fix (ARCHITECT, 2026-09-29).
 - **The plugin ABI — LOCKED by the owner 2026-09-27:** §11. It SUPERSEDES the `own-socket-legacy-plugins`
   answer (Q86 in `1.6.0-QUESTIONS.md`), whose "published 1.5.5 plugins keep loading" no longer holds, and
   the loader-window half of the ABI-version ruling above. Q86 was SUPERSEDED 2026-09-27 by THE DESIGN §11.8.
@@ -755,7 +1126,12 @@ lines leave the host log for per-plugin files, which #85 allows ("log changes fr
 
 **Per kind**, and only per kind: its own operations, its own data shapes and **its own version
 number**. Each kind's version is its v1.5.5 value + 1; a kind whose ABI is new in 1.6.0 ships 1. A
-kind evolves without forcing any other kind's plugins to rebuild.
+kind evolves without forcing any other kind's plugins to rebuild. The shipped numbers:
+`MECHANISM_VERSION` 2; store 3; secret 2; auth 3; hook 2; export 3; plane 1; transport 1. The loader
+checks the manifest's mechanism version before `dlopen`, then the door symbol, then the magic, the
+mechanism version and the kind version: an older kind version is refused naming the rebuild, a newer
+one is refused (ARCHITECT, 2026-09-27; fleet plugins declaring older numbers move to these at their
+port).
 
 **11.3 JSON is only a payload.** JSON appears only as a pointer + length blob inside a field, for data
 that is naturally a document or likely to grow. On the request path the kernel never builds JSON per
@@ -809,6 +1185,22 @@ lost, not the whole fleet. The two 1.5.5 timeout tests, `dlopen_decide_deadline_
 `dlopen_slow_gate_hits_the_deadline`, must pass as written — no rewrite. This lane's cost is measured in
 PHASE SIX (§11.9), not gated before it.
 
+*The hook kind as ruled (SEH, WIRE-HOOK; ARCHITECT rulings 2026-09-27/30).* The body reaches a hook as
+the raw request bytes, zero-copy (an octets blob; the SDK's decoded views borrow it); the plugin or
+its SDK parses. The stage view carries the full 1.5.5 hook stage projection and `decide` the hook
+context's budget; signals are tagged values (u64, i64, f64, string, bool) so the SDK renders
+byte-identical 1.5.5 JSON; the ABI's field names are neutral and the SDK maps them to the frozen 1.5.5
+keys. `decide` and `transform` answer EXACTLY one verb bit (decide: prefer, abstain, reject, restrict;
+transform: rewrite, abstain, reject) — there is no precedence rule — and a reject status without the
+reject verb is FAULT. A rewrite is 1.5.5's rewrite JSON, parsed kernel-side, fail-closed. The
+watchdog's budget is the hook's `timeout_ms`; quarantine (R2) backs off from 1 s, doubling to 30 s,
+then makes one trial call on a fresh instance, and while quarantined a call waits for the trial window
+within its own deadline, never beyond it. `notify` carries the signals and, only under a `prompt: ro`
+grant, the prompt view (messages as role and text), and its JSON is byte-exact 1.5.5; the tap is THE
+notify path. A hook's `serve` is a separate row (new surface). The final wiring commit deletes the JSON
+notify path and the dlopen policy and adds a RED that a 1.5.5 JSON hook plugin is refused at boot. An
+export scrape's families are the WHOLE snapshot, in the 1.5.5 recorder's order (kind, then name).
+
 **11.8 No legacy loading.** Owner: published 1.5.5 JSON-contract plugins no longer load. Every
 first-party plugin is rewritten; a third party rebuilds against the 1.6.0 SDK. This is an owner-signed
 customer-visible break: boot refuses such a plugin with a message naming the rebuild. The loader
@@ -818,9 +1210,21 @@ value" half of the ABI-version ruling (§10). An accepted-differences `breaking`
 CHANGELOG line and an SDK migration note are owed (`1.6.0-TODO.md`, KERNEL<>PLUGINS).
 
 **11.9 Performance is its own phase.** Speed tuning is PHASE SIX, after the RECORD phase (Phase Five; done = ready for QA): a
-full A/B against published 1.5.5 plus the owner's absolute gates — ≥ 120k rps, ≤ 15 MB peak memory,
-idle memory and binary size ≤ 1.5.5's, a zero-allocation hot path — on a fixed reference machine (an
+full A/B against published 1.5.5 ~~plus the owner's absolute gates — ≥ 120k rps, ≤ 15 MB peak memory,
+idle memory and binary size ≤ 1.5.5's, a zero-allocation hot path~~ (SUPERSEDED 2026-09-30 by OWNER
+ruling: no fixed numbers — throughput as high as possible, 2× 1.5.5 being the floor and not the stop;
+peak memory as low as possible; a zero-allocation hot path; binary size is not a goal; the loop runs
+until the gains run out) — on a fixed reference machine (an
 ephemeral EC2 instance, terminated after); then tuning; then the RECORD phase's exit test re-run; then QA.
+**The method (OWNER, 2026-09-29/30):** one cell, openai → openai, on the `GetBusbar/benchmarking`
+harness; both binaries built the shipped way (PGO, BOLT, LSE atomics on arm64, fat LTO, one codegen
+unit, strip, jemalloc — build-posture parity is not negotiable); CPU and allocation profiles drive
+each round. **Every result is reported twice, raw and machine-adjusted:** ratio = gateway rps ÷ that
+run's no-gateway machine check (`box_qualify.observed_rps`); runs are compared by ratio, never by raw
+rps from different machines, and 1.6.0's ratio ÷ 1.5.5's ratio is the code speedup. The 1.5.5
+baseline is owner-accepted (the numbers and the exact command are in `1.6.0-TODO.md` PHASE SIX). **The
+phase runs with the owner (OWNER, 2026-09-29):** no 1.6.0 performance run, PGO/BOLT build or tuning
+loop starts until the owner joins; everything else reaches code-done first.
 Before PHASE SIX only design-level checks gate: zero plane→host calls per chunk, a crossing under 1 µs,
 and a zero-allocation hot path. The per-landing A/B trend line is a report-only record, never a gate.
 
@@ -1015,6 +1419,68 @@ a RED test holds the rule for every may-pend service.
 
 *Proven by:* the `HostSlots` layout golden; one RED test per service validator arm; the may-pend
 refusal RED; a compiled-in and a dropped-in plane calling every service through the same table.
+
+**Who is calling (H2, ARCHITECT rulings 2026-09-29).** The loader records the caller when an instance
+binds: `Caller{instance, plugin, kind}`, where `instance` is the configured instance LABEL (unique per
+opened instance), `plugin` the Statement name. Every per-instance host registry keys by label, and a
+call from an instance the kernel has not admitted is REFUSED (two instances of one plugin get two
+registries — a RED). `records.*` are keyed by (label, record kind) and read through the store's typed
+record slots, the schema being the caller's record kind; a per-instance pending-records overlay gives
+read-your-writes, filled and drained by the driver's batcher. `records.claim` reuses the store's
+put-if-absent-with-expiry slot (no new store op); a zero TTL is refused by the validator; the
+idempotency key is `sha256(instance ‖ 0 ‖ kind ‖ 0 ‖ key)`. Trust policy comes from the kernel's trust
+section: NEW, SAME, DRIFTED (once), QUARANTINED; re-sighting the pinned hash clears it; the demotion
+record is durable and keyed (instance label, counterparty), and a 1.5.5 row without a label maps to the
+plane's implicit first instance. A signing-domain collision is refused at admit. **`hook.call` is op
+17 (K5 owns the ABI and the host side):** a gate or a rewrite over the hook kind's `PromptView`; a
+chain resumes with `from: u32` (0 unchanged, 1+i rewrote, 400-599 stop; at most 255); **the gate scope
+comes from the CALLING UNIT's kernel-recorded plane and pool, never from view fields**, and a resumed
+chain stays pinned to the unit's config generation. **`disk.append`** (the export kind's file sink,
+§11.11 R4): `{dest_key, bytes} → {written, rotated}`, may pend, write-behind class, on the bounded disk
+lane; the host maps the key to a path and applies its rotation config. A plane's trust keys come from
+its plane-kind tail; the old hot declaration never grows.
+
+**11.13 Mechanism rules every kind obeys (ARCHITECT rulings 2026-09-27/28).** The kind-specific
+validator rules live beside their shapes in `busbar-contract/src/abi/<kind>/`, each with a RED test
+and a distinct message per arm; what follows binds every kind.
+- **Answers are validated where their shape lives.** Each kind's out-validation is a pure
+  `check_<op>(out, caps) -> Result<(), Fault>` beside its shapes (u64 arithmetic, no statics); the
+  dispatcher calls it and no host re-implements it. `needed_bytes` ≤ `u32::MAX` and every other
+  `needed_*` ≤ that kind's hard maximum; an absent span has length 0; a count above 0 with a null
+  pointer is FAULT; an "exactly one of" bitfield with 0 or 2+ bits is FAULT; counts are checked against
+  their caps with checked arithmetic; every list element is checked; an unknown enum or flag value is
+  FAULT. Shared helpers live in `abi/mechanism/check.rs`.
+- **The short-buffer answer (M-SB), stated once in `abi/mechanism` and cited by every kind.** Request-
+  path results are written into HOST buffers the `in` names (pointer + capacity). "Your buffer is too
+  small" is FAILED with every `needed_*` at its full size, at least one above its capacity, and
+  nothing applied or written; the host re-calls ONCE on the same ticket with at least `needed_*`; a
+  second short answer is FAULT. `needed_*` on any other outcome is FAULT; FAILED with every
+  `needed_*` fitting is FAULT; REFUSED never carries `needed`. The re-call is side-effect-free: the
+  plugin checks capacity BEFORE acting; an op that cannot know its size first (bind, accept) gets a
+  host buffer at the kind's declared maximum and has no short path — an over-cap length there is
+  FAULT. A ticketless short answer is re-called only through an explicit `recall(prev)` the dispatcher
+  enforces once.
+- **Hard maxima.** Plane and transport: unit counts ≤ 64; fields, records, routes and claims ≤ 1024
+  each; frame pieces ≤ 4096; bytes ≤ `u32::MAX`. Hook serve: at most 64 headers out. Auth: see §6.
+- **Secret-bearing answers are always secret on the host side;** no plugin sets a "sensitive" flag.
+- **The dispatcher (M1).** An instance never crosses after `close`; `close` is refused while units are
+  in flight; start, resume or cancel on a closed instance is FAULT with no crossing. Every slice built
+  from a plugin-reported length is capped and validated before it is formed, diagnostics and labels
+  included. Every crossing, ticketless included, is watched by the watchdog. No plugin code (`dlclose`
+  included) runs under a host lock. `Kind::check` answers `Result<(), Fault>` and a fault is logged at
+  warn with plugin, kind and slot, never the payload. Dropping a pending reply cancels every queued op
+  on its ticket — a client drop (ARCHITECT, 2026-09-28).
+- **One kind-neutral SDK lifecycle (KIND-SHARE, ARCHITECT ruling 2026-09-30).** The SDK's door holds
+  the generic lifecycle slots once; each kind states only its own; one `KindAxis` (associated types)
+  and a root `RootAxis<K>` serve every kind; the SDK writes the out pointers; a published arena lives
+  until its generation retires; releasing an unknown lease is REFUSED; the drive, validate and cancel
+  words are per-kind constants. KIND-SHARE's lifecycle module is the one lease and error helper; a
+  kind's local copy is deleted when it is ported.
+- **Pre-tag layout edits.** R9's clarification (a v1 edit before the tag regenerates the layout golden
+  and bumps nothing) applies to every kind's unreleased 1.6.0 version, not only the plane's
+  (ARCHITECT, 2026-09-29).
+- **Test doors.** A dropped-in door in a test comes from a built cdylib that is `dlopen`ed, never from a
+  linked dev-dependency with the export feature on.
 
 ## The vocabulary (get this right or you will design the wrong thing)
 
@@ -1528,17 +1994,17 @@ are IN this file — nothing outside it does.
 | 42 | **THE MONEY MODEL — one model, locked across six rows; read them together: #42 (this — the billing switch), #43 (plugins pricing-blind, pricing is a read-time view), #44 (flat fee = one dimension, never rounded), #66 (unitless — no currency/symbol), #71 (ledger = raw counts, hot path carries no money math), #77 (the 10 core invariants). These are FACETS, not duplicates — each is cited by number (incl. granular #77(1)/#77.8) across the gates, CI, and kernel/ledger code, so the numbers are load-bearing anchors and stay. — Billing is OPTIONAL per plane; rate_card PRESENCE is the switch; there is NO `billing:on/off` flag. OWNER-LOCKED 2026-09-20.** rate_card PRESENT ⇒ billed: a hit class not priced ⇒ **REFUSE** (money-sacred, never a silent 0). rate_card ABSENT ⇒ NOT billed: a cost request reads **0**, serve free, no metering, no ledger charge, no afford-gate, no boot-refusal — busbar runs as a pure failover/routing proxy (the "user X wants failover on breaker-trip, doesn't care about billing" case). **A cost request returns: the price if billing-on & priced; FAILS if billing-on & unpriced; 0 if billing-off. A silent 0 is ONLY ever returned when rate_card is absent.** This EQUALS 1.5.5 (`config.yaml:394` "absent = tokens price 0; present = EVERY configured model needs an entry") — no divergence, now scoped per plane. `cheapest` with billing off: all candidates read 0 → tie → cost hook is a no-op → route by failover/health/weight. An unbilled plane STILL gets admission/concurrency + breaker enforcement (proxy, not unlimited); audit still records the request (no spend). | billing-off plane: cost=0, serves, zero meter/ledger rows, no boot-refusal, breaker+concurrency still enforced; billing-on + unpriced class ⇒ refuse; silent-0 appears only when rate_card absent |
 | 43 | **rate_card + fees are CORE-owned; plugins are PRICING-BLIND; pricing is a read-time VIEW. OWNER-LOCKED 2026-09-20.** A plane plugin NEVER sees its rate card or fees. Pricing is CORE functionality, not a plane/plugin concern. A plane emits USAGE FACTS only (e.g. `output_utok: 17`); the ledger records the fact once; **pricing is a read-time VIEW** core lays over recorded facts using the rate card (read-time conversion never stored — money model). `rate_card` + `fees` are RESERVED, core-owned config sub-keys: authored in config alongside a plane's own settings for ergonomics, but core **STRIPS them from the blob before it crosses the plugin ABI** (mirrors the `pools:` reserved-section-keys pattern, `config.yaml:187`; extends #40 — as secrets never cross the ABI, money never crosses it). **ENFORCEMENT + MEASURED VIOLATION (2026-09-22, owner restated this as \"planes always ledger\" / \"it's a kernel default all planes run through\"):** a plane appends its counts UNCONDITIONALLY — no branch, no knowledge of billing state. `rate_card` is optional per plane IN CONFIG (#47); the switch is a READ-TIME property of the money VIEW, kernel-side, so \"billing off\" means the VIEW reads 0 (#42), never that the plane skipped the ledger. #42's \"optional per plane\" always described the CONFIG KEY and the VIEW, never a conditional inside plane code. **The code does not match:** plane crates carry money references where this row says they carry none — `busbar-plane-streaming` 41, `-a2a` 30, `-mcp` 29, `-llm` 16, `-decision` 9 (matching `rate_card|nanos|price|spend`) — and each `crates/busbar/src/root/units_*.rs` REIMPLEMENTS the same rulings: `units_a2a` 5 accrue/3 rate_card_version/37 nanos-hold, `units_llm` 5/1/37, `units_mcp` 2/4/26, `units_voice` 7/2/61. **The duplication is the defect generator and today proved it:** `UnitKey::new(0)` was fixed at `units_a2a.rs:1019` while the identical bug still sits at `units_mcp.rs:1481` — independently written, independently wrong. END STATE: ONE kernel-side implementation of accrual, provenance and keying; a plane emits counts per its declared class and nothing else. | RED-provable gate: zero `rate_card`/price/nanos/spend references in any `busbar-plane-*` crate; accrual+provenance+keying in exactly ONE kernel-side place; no reserved money sub-key (`rate_card`,`fees`) ever appears in the serialized blob handed to any plugin; plane plugins have no pricing type on their surface; ledger stores facts, price computed at read |
 | 44 | **Money model is plane-agnostic: flat fee is one dimension, never rounded. OWNER-LOCKED 2026-09-20.** A flat/static fee is ONE plane-agnostic pricing dimension on the rate card (applied per-request or per-session), identical for every plane, and **NEVER rounded**. Per-unit rates use each plan's own declared units (tokens/seconds/frames/…); only a "per-N-units" division term uses banker's (half-to-even) rounding; card-build-time quantization stays half-away-from-zero (byte-identity). The LLM per-request fee stays a straight multiply (no division, no rounding) — it is NOT re-expressed as a per-unit term. Rate-card version is **VISIBLE** on usage/audit reports (pricing provenance), not internal-only — served on the usage and audit responses as an `additive` register entry (owner, 2026-09-27). | flat fee never divides/rounds for any plane; only per-N-units terms round (banker's); card-build quantization unchanged (oracle byte-identity); rate_card_version surfaced on usage+audit endpoints |
-| 45 | **Streaming/voice: a session holds a capacity slot for its whole life; first billable cut = OpenAI+Gemini+Twilio; media stack is adopted. OWNER-LOCKED 2026-09-20.** A live session HOLDS a capacity slot for its whole life — one admission end-to-end (one accept, one billing key, one cleanup), guaranteed capacity to continue (1.5.5 parity N/A — it had no streaming). First billable voice cut = **OpenAI Realtime + Gemini Live + Twilio telephony**; browser WebRTC (Pipecat/LiveKit class) follows in the same release. Media stack for the browser/phone audio leg = **ADOPT an existing open-source realtime-media framework**, NOT a hand-built native pump (server-to-server bridges don't need it). **Voice scope (owner, on or before 2026-09-04):** OpenAI Realtime over WS and WebRTC, with busbar terminating WebRTC; Gemini Live as a second egress dialect; one-shot transcribe/TTS as HTTP units; Twilio Media Streams as a WS-carried transport with a μ-law codec; raw SIP is not carried. **Tools mid-call** are relayed to the client AND executable through the MCP plane as a governed cross-plane destination. **Browser trust boundary** — a security invariant, tested adversarially: the browser gets only a short-lived ephemeral secret, never holds the real key, never authors tools or instructions, and cannot override the session's locked instructions. | session = one admission/one billing key/one cleanup, slot held for life; first-cut dialects = openai-realtime+gemini-live+twilio; media leg uses an adopted framework, not an in-house pump; adversarial browser-client RED arms (real key never served, client-authored tools and instruction overrides refused) |
+| 45 | **Streaming/voice: a session holds a capacity slot for its whole life; first billable cut = OpenAI+Gemini+Twilio; media stack is adopted. OWNER-LOCKED 2026-09-20.** A live session HOLDS a capacity slot for its whole life — one admission end-to-end (one accept, one billing key, one cleanup), guaranteed capacity to continue (1.5.5 parity N/A — it had no streaming). First billable voice cut = **OpenAI Realtime + Gemini Live + Twilio telephony**; browser WebRTC (Pipecat/LiveKit class) follows in the same release. Media stack for the browser/phone audio leg = **ADOPT an existing open-source realtime-media framework**, NOT a hand-built native pump (server-to-server bridges don't need it). **Voice scope (owner, on or before 2026-09-04):** OpenAI Realtime over WS and WebRTC, with busbar terminating WebRTC; Gemini Live as a second egress dialect; one-shot transcribe/TTS as HTTP units; Twilio Media Streams as a WS-carried transport with a μ-law codec; raw SIP is not carried. **Tools mid-call** are relayed to the client AND executable through the MCP plane as a governed cross-plane destination. **Scope as ruled 2026-09-29 (OWNER):** exactly three dialects — OpenAI Realtime (WS and WebRTC), Gemini Live and Twilio; SIP is not carried; streaming work follows the mcp, a2a, llm and decisions work (THE DESIGN §2, §5). **Browser trust boundary** — a security invariant, tested adversarially: the browser gets only a short-lived ephemeral secret, never holds the real key, never authors tools or instructions, and cannot override the session's locked instructions. | session = one admission/one billing key/one cleanup, slot held for life; first-cut dialects = openai-realtime+gemini-live+twilio; media leg uses an adopted framework, not an in-house pump; adversarial browser-client RED arms (real key never served, client-authored tools and instruction overrides refused) |
 | 46 | **The `cheapest` hook is plane-agnostic; expected-units profile is plane-declared with an operator override. OWNER-LOCKED 2026-09-20.** `cheapest` ranks on estimated total cost = Σ over billing classes of `price-per-unit × weight`, the weights being the plane's declared `route_cost` and the prices the card in force by opaque lane key (THE DESIGN §2, §7); the strategy words are aliases the ranking plugin declares; it names ZERO plane/llm concepts (neutrality witness / protocol-noun grep-ban covers it). For quantities a request can't reveal up front (voice seconds, relay frames), the plane declares a default `expected_units` per metered class (neutral, travels with the class); an operator MAY override per-pool/per-hook in hook settings to tune ranking without a plugin rebuild. Precedence: operator override wins if present, else plane default; empty/unknown price ⇒ sorted LAST, never 0. | cheapest carries no plane/llm noun (grep); expected_units default is plane-declared; operator override honored; unknown price sorts last (never 0) |
 
 | 47 | **1.6.0 config = one section per plane; `models` stays a root key beside `pools`; rate_card+fees are per-plane reserved keys. OWNER-LOCKED 2026-09-20.** Each plane gets its OWN top-level config section: **`pools`** (llm), **`tools`** (mcp), **`agents`** (a2a), **`decisions`** (jev, #48), **`streams`** (streaming). `models:` stays its own root key beside `pools`, the 1.5.5 shape; the llm plane owns both (THE DESIGN §4). `rate_card` + `fees` are RESERVED core-owned sub-keys inside each plane's section (#43): core strips them before the blob crosses the plugin ABI — as it does every reserved sub-key (`breaker`, `on_exhausted`, `gates`, `upstream_credentials`, `affinity`, `tier`, `repeatable`); tool and agent pools sit under their plane's verb as a reserved `pools` sub-key; `store:` is required (THE DESIGN §4). rate_card entry shape is the existing `RateEntryCfg` (`input_utok`/`output_utok`/`cache_read_utok`/`cache_write_utok`, `busbar-substrate/src/config/sections.rs:324`); `fees` = `{ per_request | per_session }` (#44). Top-level infra keys unchanged from 1.5.5 (`listen`, `admin_listen`, `identity-providers`, `auth`, `providers`, `groups`, `store`, `export`, `plugins`, `security`, `advanced`). Back-compat: 1.5.5's flat top-level `rate_card`/`per_request_fee` load as the `pools` (llm) plane's reserved keys, byte-identical. | config has a section per plane (pools/tools/agents/decisions/streams); `pools` and `models` are both root keys of the llm plane; rate_card/fees per-plane and stripped at the ABI (#43 gate); 1.5.5 flat rate_card still loads as llm |
-| 48 | **jev is the `decisions` plane — planes = 5, not 4. OWNER-LOCKED 2026-09-20 (amends #18/#39).** jev (typesafe.ai decision API; ~5 KB unbounded responses — the Scratch proof case, #41) is a busbar PLANE, configured under the `decisions:` section (#47). OWNER RULED 2026-09-27 (*"decisions feels right"*): plane id `decisions`, crate and repo `busbar-plane-decisions`, feature `plane-decisions`; its `KEY` and meter class stay `"decision"`. The locked plane roster becomes **5**: llm, mcp, a2a, streaming, **decisions(jev)** — amending #18/#39's count of 4. Plane rules are otherwise unchanged (1 plugin = 1 repo = 1 crate, #39; HOT/POD lane, #30). | plane roster = 5 incl. decisions(jev); `decisions:` config section exists; jev crate is its own repo like the other planes |
+| 48 | **jev is the `decisions` plane — planes = 5, not 4. OWNER-LOCKED 2026-09-20 (amends #18/#39).** jev (typesafe.ai decision API; ~5 KB unbounded responses — the Scratch proof case, #41) is a busbar PLANE, configured under the `decisions:` section (#47). OWNER RULED 2026-09-27 (*"decisions feels right"*): plane id `decisions`, crate and repo `busbar-plane-decisions`, feature `plane-decisions`; its `KEY` and meter class stay `"decision"`. The locked plane roster becomes **5**: llm, mcp, a2a, streaming, **decisions(jev)** — amending #18/#39's count of 4. Plane rules are otherwise unchanged (1 plugin = 1 repo = 1 crate, #39; ~~HOT/POD lane, #30~~ the memory ABI, THE DESIGN §11). OWNER RULED 2026-09-29/30: the decisions plane is N dialects over an IR, like llm; the engines named so far are providers of its one dialect (protocol `jev`), and NanoJev is the second dialect (THE DESIGN §2). | plane roster = 5 incl. decisions(jev); `decisions:` config section exists; jev crate is its own repo like the other planes |
 
 | 49 | **The kernel knows NO plane or transport STRINGS — everything is data from config + each plane's declared config verb. OWNER-LOCKED 2026-09-20.** Core/kernel contains zero plane-instance literals ("llm"/"mcp"/"a2a"/"streaming"/"decisions") and zero transport-protocol/scheme literals ("http"/"https"/"ftp"/"anthropic"/"openai"/…). The config SECTION name for a plane comes from that plane's Statement `sections.owns` (pools/tools/agents/streams/decisions, #47; THE DESIGN §2) — the plane owns its verb, core hardcodes none. The transport wire (`protocol`, `base_url`, `error_map`) is DATA read from the `providers.yaml` catalog (`providers_file:`, `config/mod.rs:1146`) merged with config `providers:` creds at startup (`mod.rs:2016/2077`); the connector dials whatever resolves, inventing no scheme (THE DESIGN §5). `providers` = the transport-config verb (global, all planes); the per-plane target invoked over it is `models` (pools/streams/decisions) / `servers` (tools) / `agents` (agents), uniform schema `{ provider, protocol?/dialect? (override, #51), upstream_model?, error_map? (override, #51), …caps }` (no `id:` key — map key IS the id). This is the neutrality witness in force: a plane/transport is added by config + a plane crate's const, never by editing core. | grep gate: kernel/core crates contain no plane-instance or transport-scheme string literal; plane config verbs come only from Statement `sections.owns`; transport protocol/base_url resolved from providers.yaml+config, never hardcoded |
 
 | 50 | **Transport is selected by the provider's base_url SCHEME; each transport plugin DECLARES the scheme(s) it serves. OWNER-LOCKED 2026-09-20 (reconciles #49; resolves the "providers vs transport verb" conflict).** `providers:` remains the transport CONNECTION-config verb (#49) — base_url + credential ref per upstream. Each TRANSPORT plugin declares the URL scheme SET it handles: e.g. `busbar-transport-http` serves `http`+`https`; a websocket transport serves `ws`+`wss`; a stdio transport serves `stdio`; etc. (that declared scheme-set is what the owner calls the transport's "own config verb"). At BOOT the kernel matches every provider's base_url **scheme** against the registered transport plugins' declared scheme-sets and the connector activates the matching plugin; **no match ⇒ fail closed**, naming the provider + the unserved scheme. The http framer claims `http` AND `https`; `https` inserts the connector's TLS. The auth style resolves the same way — the entry's `auth:`, else the plane's dialect default — as opaque strings (THE DESIGN §5, §6). The kernel names no scheme string (#49) — the mapping is data: provider base_url (config) × plugin-declared schemes (plugin). Adding a new wire = drop in a `busbar-transport-<x>` declaring its scheme(s), reboot, zero kernel edits. So `providers` (connection) and per-transport scheme declaration are COMPLEMENTARY, not competing: there is no separate top-level config section per transport. | boot matches base_url scheme → the transport plugin declaring that scheme; unmatched scheme ⇒ fail-closed naming provider+scheme; kernel contains no scheme literal (#49 gate); transport plugin manifest declares its served scheme-set |
 
-| 51 | **A provider is a CONNECTION with a DEFAULT wire protocol; the plane resolves and can OVERRIDE it, and the plane always interprets it fail-closed. OWNER-LOCKED 2026-09-20 (amends #49).** A `providers:` entry = connection (`base_url`, `api_key`, `path`/`path_base`) PLUS a **default `protocol`** (and default `error_map`) supplied by the shipped `providers.yaml` catalog. The default stays on the provider ON PURPOSE — with 100+ catalog entries, an operator must NOT have to know e.g. that `z.ai` speaks the openai wire protocol; the catalog knows it. **But the wire format is ultimately the PLANE's**: a plane's model entry may **OVERRIDE** the protocol/dialect (e.g. the same `anthropic` connection used on the streaming plane with a streaming protocol when Anthropic ships one). Resolution: model override if present, else the provider/catalog default. `error_map` follows the same rule (catalog default on the provider, per-model override). **The PLANE then interprets the resolved dialect against what it supports: knows it ⇒ use it; doesn't ⇒ FAIL (fail-closed)** — e.g. the decisions plane (only jev) handed `anthropic` fails. Dialect validation is the plane's job, never the kernel's; the kernel opens the transport from the base_url scheme (#50) and hands the plane the connection + resolved dialect. Model entry = `{ provider, protocol?/dialect? (override), upstream_model?, error_map? (override), …caps }`. Provider keeps `protocol`/`error_map` (byte-compatible with 1.5.5); the model-side override is NEW/additive — minimal migration. | provider = connection + default protocol/error_map (catalog-supplied); model may override protocol+error_map; resolution = model-override-else-provider-default; plane interprets resolved dialect, unknown ⇒ fail-closed; kernel validates no dialect |
+| 51 | **A provider is a CONNECTION with a DEFAULT wire protocol; the plane resolves and can OVERRIDE it, and the plane always interprets it fail-closed. OWNER-LOCKED 2026-09-20 (amends #49).** A `providers:` entry = connection (`base_url`, `api_key`, `path`/`path_base`) PLUS a **default `protocol`** (and default `error_map`) supplied by the shipped `providers.yaml` catalog. The default stays on the provider ON PURPOSE — with 100+ catalog entries, an operator must NOT have to know e.g. that `z.ai` speaks the openai wire protocol; the catalog knows it. **But the wire format is ultimately the PLANE's**: a plane's model entry may **OVERRIDE** the protocol/dialect (e.g. the same `anthropic` connection used on the streaming plane with a streaming protocol when Anthropic ships one). Resolution: model override if present, else the provider/catalog default. `error_map` follows the same rule (catalog default on the provider, per-model override). **The PLANE then interprets the resolved dialect against what it supports: knows it ⇒ use it; doesn't ⇒ FAIL (fail-closed)** — e.g. the decisions plane (only jev) handed `anthropic` fails. Dialect validation is the plane's job, never the kernel's; the kernel opens the transport from the base_url scheme (#50) and hands the plane the connection + resolved dialect. Model entry = `{ provider, protocol?/dialect? (override), upstream_model?, error_map? (override), …caps }`. Provider keeps `protocol`/`error_map` (byte-compatible with 1.5.5); the model-side override is NEW/additive — minimal migration. A protocol may be MODEL-ONLY — never a provider default (ARCHITECT ruling 2026-09-30, THE DESIGN §2). | provider = connection + default protocol/error_map (catalog-supplied); model may override protocol+error_map; resolution = model-override-else-provider-default; plane interprets resolved dialect, unknown ⇒ fail-closed; kernel validates no dialect |
 
 | 52 | **Admin API ↔ config = full parity, enforced by a build gate. OWNER-LOCKED 2026-09-20.** Every config-file setting is ALSO settable live over the admin API; the admin API and the config file are ONE schema (two front doors: file at boot, admin at runtime). A RED-provable build gate fails if any config field lacks a matching admin route, so the two can never drift. | config↔admin parity gate: every config field has an admin route; build fails on any gap |
 | 53 | **The secret-hygiene scan is a hard release blocker. OWNER-LOCKED 2026-09-20.** The scan for in-the-clear secrets (bare-`String` holds etc.) moves from report-only to BLOCKING: a bare/unwrapped secret fails the ship gate. The currently-flagged holds must be fixed (wrapped in the `Secret` type, #54) before 1.6.0 cuts. One exemption is written down rather than buried in a needle list: a credential-bearing URL bound to a `*_url`/`*_uri` name is waived by construction (`token_url`, `token_uri`), the one place the scan trades a real hole for signal (2026-09-23). | secret-hygiene gate blocks the ship gate (RED on any bare secret); flagged holds fixed before cut |
@@ -1929,6 +2395,48 @@ answer's verdict on `OnPieceOut`; the `project` op; the plane's `drive` in/out w
 the ready sessions; a public flag on a snapshot route; the probe claim and the probe tail flag; a
 per-record-kind chain framing declaration in the tail (verify framing for plane record chains only). Each
 lands with its validator beside it and a RED test per rule.
+
+**The driver's contract, as landed and ruled (K1, K2, K5, K6, K7, H3, FOLD-LLM2; ARCHITECT rulings
+2026-09-28/30).**
+- *Crossings.* The pure ops (`arrive`, `refusal`, `project`) cross ticketless on the caller's task; only
+  ticketed ops run on the dispatcher's worker. The kernel mints a `unit` key and carries it on
+  `arrive` and every `on_piece`; the caller's head (method, target, fields) is delivered ONCE, at
+  `arrive`, and the plane keeps what it needs keyed by `unit`. After an answer with `more = 1` the
+  driver re-calls `on_piece` with the same `from` and zero bytes; `more = 1` with nothing emitted, or
+with `EMIT_DONE`, is FAULT, and a non-READY answer takes no early return past the unit and record
+checks. `on_piece` carries the route's pool.
+  A plane that does not serve the method declines with 405. The order at the door is route →
+  authenticate → size gate → `arrive`, so 1.5.5's 401 comes before its 413.
+- *Refusals.* A refusal's code crosses as an opaque plane-local `u32`; `refusal` receives the unit,
+  the plane code and the retry-after, and — for a refusal with no unit — the TARGET, which the plane
+  renders by its own path rule. Before `arrive` the router sets the refusal dialect from the route:
+  each declared route carries an opaque `refusal_dialect`. `arrive` may answer a status (400-499, only
+  with REFUSED), which the driver uses and audits; a plane tail may override statuses sparsely, per
+  (dialect or any, reason) — exact, then any, then the driver's default. A hook veto carries the
+  hook's own clamped status and text. The llm plane's statuses equal the 1.5.5 goldens (pinned before
+  the llm flip); a new plane's equal current `predev`. The reason codes crossing the plane ABI are an
+  explicit `repr(u32)`, append-only table in `abi/` with a pinned test and a RED; the kernel adds no
+  new reason codes. The kernel refuses a reserved `upstream_credentials: passthrough` with the plane's
+  own sentence, declared in its tail (`caller_credential_refusal`).
+- *Hooks.* The hook stages run at the head of the route leg, after admission, in the hook order
+  1.5.5 used for that plane (per attachment where 1.5.5 differed). `project` may return a rewrite,
+  which the plane applies and re-projects; `PromptView` carries plane-flattened messages; the
+  projection may carry the end user. A far end exposes its candidates and a constraint the hooks
+  apply.
+- *Duplex sessions (K6).* Two plane tickets per session (one per side) and the instance's ONE driver
+  ticket; one `SessionCaller` shared with inbound listening and the stdio session; every turn leg is a
+  route walk under the session's ONE admission, inside the destination set sealed at open; cleanup
+  runs exactly once. Money per §7.
+- *Nested units and work (H3).* `unit.nest` and `work.*` are host services over per-(label, ticket)
+  unit frames; `work.open`'s target is a 128-bit reference; a child accrues 0 at admission and its
+  reported units at exit (`$`, on the money chain); the work book is in memory, as the legacy one was.
+- *Probes (K7).* A pure probe schedule, bound to the far end; a member's health follows the 1.5.5 lane
+  health configuration.
+- *The switch.* The production composition of the driver and the kernel's host services is in ONE
+  place, the serve path; a fold adds only its door rows. A development-only cargo feature flips a
+  plane onto the driver during its fold and is deleted when the fold completes; both paths are
+  oracle-proven while it exists. The llm flip's gate is the 178 v1.5.5 hook tests, verbatim, on the
+  driver (ARCHITECT, 2026-09-30).
 
 *Proven by:* the plane conformance suite (compiled-in and dropped-in through one table); zero
 plane→host calls per chunk; the hook parity tests verbatim; the oracle families of each plane as it is
@@ -2426,7 +2934,10 @@ autoscaler" confusion.
 | `main` | **a push here cuts a release** — tag, GitHub Release, container promotion, `latest` moved. Irreversible. **`main` never compiles:** it tags and publishes the artifacts, by digest, that `qa` built and verified. | release orchestration |
 
 **Never push `dev`, `qa` or `main` by hand.** `--force-with-lease` is permitted only on `predev`
-(#61), which carries no protection rule and no ruleset.
+(#61), which carries no protection rule and no ruleset. **Branch protection is on `qa` only** —
+required CI and train-only pushes (OWNER ruling 2026-09-28); the ARCHITECT drafts the settings and
+the owner applies them. Only the LANDER commits to `predev` and pushes it (`1.6.0-TODO.md`, THE RULES
+2.6).
 
 **The qa build is the bytes that ship** (owner, 2026-09-05): *"when qa is green it's prod ready and
 we just tag it and move it to main and release, but the qa build is what we release"* and *"we
@@ -2464,6 +2975,12 @@ CI runs on **Latchkey**, not EC2. The EC2 fleet is retired: it was costing ~$2k 
 fully torn down — zero instances, zero volumes, zero NAT gateways, zero elastic IPs. Latchkey is
 both cheaper and the money oracle's home (**#56 wins over #29** — the oracle rides Latchkey, it does
 not need a dedicated fleet box; `CI_RUNNER_ONDEMAND_FLOOR` is 0, not 2).
+
+**Capacity order (OWNER 2026-09-28):** zero idle instances; Latchkey first; EC2 only as overflow,
+under a launch cap and #78's spend breaker. The runner autoscaler runs as a scheduled Lambda
+(`busbar-autoscaler`), choosing the cheapest spot region. Agent compute is Latchkey only, through one
+shared job budget (`1.6.0-TODO.md`, THE RULES 6.1-6.3); the owner has ruled no extra build capacity
+(2026-09-29). EC2 is allowed for the performance phase (§11.9).
 
 **#78 sets the budget: $50 soft alarm / $80 review / $100 hard cap.** `scripts/cost-watch.py`
 enforces it with a strict exit-code contract (`0` clear / `2` alarm / `3` review / `1` cap breach /
