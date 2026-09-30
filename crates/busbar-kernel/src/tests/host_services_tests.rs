@@ -401,6 +401,10 @@ impl SignKey for FixedKey {
 
 const KIND: RecordSchemaId = RecordSchemaId::new("approval");
 
+/// The plane's declared section key: the label of its implicit first instance, the one a
+/// single-instance configuration describes.
+const SECTION_KEY: &str = "tools";
+
 /// An instance of the one test plugin, by its label.
 fn caller(instance: &str) -> Caller {
     Caller {
@@ -424,7 +428,7 @@ fn rig() -> Rig {
         .with_records(Arc::new(Mem(Arc::clone(&store))), store.clone())
         .with_pool(Arc::new(Inline))
         .with_signer(Arc::new(FixedKey))
-        .with_demotions(demotions(&store), "legacy")
+        .with_demotions(demotions(&store), SECTION_KEY)
         .with_wall_clock(Arc::new(move || c.load(Ordering::SeqCst)));
     s.admit(
         "inst",
@@ -830,10 +834,10 @@ fn an_unprefixed_row_replays_into_the_default_instance_only_and_it_clears_it() {
         .record
         .record("cp", "quarantined", 1);
     let fresh = restarted(&r);
-    fresh.admit("legacy", trusting(None)).unwrap();
+    fresh.admit(SECTION_KEY, trusting(None)).unwrap();
     fresh.admit("inst", trusting(None)).unwrap();
     assert_eq!(
-        run(|l| fresh.trust_sight(&caller("legacy"), "cp", "x", l)).value,
+        run(|l| fresh.trust_sight(&caller(SECTION_KEY), "cp", "x", l)).value,
         svc::TRUST_QUARANTINED
     );
     assert_eq!(
@@ -842,9 +846,9 @@ fn an_unprefixed_row_replays_into_the_default_instance_only_and_it_clears_it() {
     );
     // Re-admitted with a pin, the default instance's clean sighting clears the unprefixed row.
     let pinned = restarted(&r);
-    pinned.admit("legacy", trusting(Some("fp"))).unwrap();
+    pinned.admit(SECTION_KEY, trusting(Some("fp"))).unwrap();
     assert_eq!(
-        run(|l| pinned.trust_sight(&caller("legacy"), "cp", "fp", l)).value,
+        run(|l| pinned.trust_sight(&caller(SECTION_KEY), "cp", "fp", l)).value,
         svc::TRUST_SAME
     );
     assert!(r.s.demotions.as_ref().unwrap().record.list().is_empty());
@@ -1037,7 +1041,7 @@ fn a_demotion_is_written_on_the_pool_and_the_sighting_answers_after_it() {
 fn a_durable_record_with_no_pool_judges_nothing() {
     let r = rig();
     let d = r.s.demotions.as_ref().unwrap();
-    let s = services(Arc::default()).with_demotions(Arc::clone(&d.record), "legacy");
+    let s = services(Arc::default()).with_demotions(Arc::clone(&d.record), SECTION_KEY);
     s.admit("inst", trusting(Some("fp"))).unwrap();
     let a = run(|l| s.trust_sight(&caller("inst"), "cp", "moved", l));
     assert_eq!((a.outcome, a.error), (Outcome::Refused, NO_POOL));
@@ -1152,4 +1156,20 @@ fn a_flush_the_pool_refuses_leaves_the_writes_readable_and_queued_for_the_next()
     // The refused flush was abandoned: the next write starts one again (refused too, here).
     s.record_write(&me, "approval", b"k2", v).unwrap();
     assert_eq!(s.pending().queued(), 2);
+}
+
+#[test]
+fn a_row_without_a_label_is_read_back_under_the_section_key_instance_and_no_other() {
+    let r = rig();
+    // A row as a single-instance deployment wrote it: the counterparty's name alone.
+    let d = r.s.demotions.as_ref().unwrap();
+    d.record.record("cp", "quarantined", 1);
+    let fresh = restarted(&r);
+    for label in [SECTION_KEY, "inst", "tools-2"] {
+        fresh.admit(label, trusting(None)).unwrap();
+    }
+    let sight = |label: &str| run(|l| fresh.trust_sight(&caller(label), "cp", "x", l)).value;
+    assert_eq!(sight(SECTION_KEY), svc::TRUST_QUARANTINED);
+    assert_eq!(sight("inst"), svc::TRUST_NEW);
+    assert_eq!(sight("tools-2"), svc::TRUST_NEW);
 }

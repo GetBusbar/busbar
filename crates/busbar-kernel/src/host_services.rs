@@ -353,8 +353,9 @@ impl KernelServices {
 
     /// Write demotions and their clearing through `demotions`, and replay its rows at admit. Every
     /// row is keyed by [`demotion_key`], the instance's label and the counterparty. A row without
-    /// the label (one a single-instance deployment wrote) belongs to `default_instance` alone, the
-    /// instance the configuration upgrade maps that deployment's plane to; no other instance reads it.
+    /// the label (one a single-instance deployment wrote) belongs to `default_instance` alone: the
+    /// plane's implicit first instance, labelled with the plane's declared section key, which the
+    /// kernel reads from the loaded configuration at boot. No other instance reads it.
     #[must_use]
     pub fn with_demotions(
         mut self,
