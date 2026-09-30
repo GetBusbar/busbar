@@ -23,7 +23,8 @@ use crate::abi::host::conn::connector::{
     StreamIn, UpgradeIn,
 };
 use crate::abi::host::service::{
-    op, DiskAppendIn, DiskWritten, HostSlots, ServiceFn, ServiceHead, ServiceOut,
+    op, ClockNowIn, ClockReading, DiskAppendIn, DiskWritten, HostSlots, ServiceFn, ServiceHead,
+    ServiceOut,
 };
 use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome, BLOB_OCTETS};
 use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables, Ticket};
@@ -142,7 +143,8 @@ service_in!(
     UpgradeIn,
     ReplyIn,
     RequestIn,
-    DiskAppendIn
+    DiskAppendIn,
+    ClockNowIn
 );
 
 const fn blank_head() -> ServiceHead {
@@ -367,6 +369,26 @@ impl Connector<'_> {
             .map(|r| r.map(|_| *result))
     }
 
+    /// The host's clock (`clock.now`: wall and monotonic, the kernel's one clock). Never pends.
+    pub fn clock_now(&mut self) -> Answer<ClockReading> {
+        let mut reading = ClockReading {
+            size: std::mem::size_of::<ClockReading>() as u32,
+            _reserved: 0,
+            wall_ns: 0,
+            mono_ns: 0,
+        };
+        let input = ClockNowIn {
+            head: blank_head(),
+            reading: std::ptr::from_mut(&mut reading),
+        };
+        match self.call_service(op::CLOCK_NOW, |s| s.clock_now, input) {
+            Poll::Ready(Ok(_)) => Poll::Ready(Ok(reading)),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            // It never pends: a host that says so broke the service's rule.
+            Poll::Pending => Poll::Ready(Err(ConnFailure::Fault)),
+        }
+    }
+
     /// Write one request piece on a framed `stream`: `piece` describes it, `bytes` holds what its
     /// spans name (a head's method, target and field block) or the body bytes. How many bytes the
     /// host took. Both must stay where they are until the write completes (keep them parked). A
@@ -424,6 +446,28 @@ impl Connector<'_> {
                 })
             })
     }
+}
+
+/// NOT BEFORE `until_mono_ns` (the host's monotonic clock): a backoff with no plugin timer. READY
+/// once the host's clock has reached it; else PENDING with the op's `wake_at_ns` set to it, so the
+/// host resumes the op then without a wake (its timer never fires early) — and a resume that comes
+/// sooner (a latched or spurious wake) answers PENDING again with the same instant. The op computes
+/// `until_mono_ns` ONCE (`clock_now().mono_ns + delay`) and parks it on its ticket.
+pub fn not_before<T: crate::abi::sdk::door::AbiOut>(
+    c: &mut Connector<'_>,
+    out: &mut crate::abi::sdk::out::Out<'_, T>,
+    until_mono_ns: u64,
+) -> Answer<()> {
+    let now = match c.clock_now() {
+        Poll::Ready(Ok(r)) => r.mono_ns,
+        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+        Poll::Pending => return Poll::Pending,
+    };
+    if now >= until_mono_ns {
+        return Poll::Ready(Ok(()));
+    }
+    out.wake_at(until_mono_ns);
+    Poll::Pending
 }
 
 #[cfg(test)]

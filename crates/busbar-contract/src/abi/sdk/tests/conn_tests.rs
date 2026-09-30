@@ -61,6 +61,20 @@ extern "C" fn disk_append(_: HostCtx, i: *const c_void, o: *mut ServiceOut) -> R
     RawOutcome::of(Outcome::Ready)
 }
 
+/// The host clock the tests set.
+static MONO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// `clock.now`: the tests' monotonic reading.
+extern "C" fn clock_now(_: HostCtx, i: *const c_void, _: *mut ServiceOut) -> RawOutcome {
+    use crate::abi::host::service::ClockNowIn;
+    // SAFETY: a `ClockNowIn`; its reading the SDK's, live for the call.
+    unsafe {
+        let input = *i.cast::<ClockNowIn>();
+        (*input.reading).mono_ns = MONO.load(std::sync::atomic::Ordering::SeqCst);
+    }
+    RawOutcome::of(Outcome::Ready)
+}
+
 fn services() -> &'static crate::abi::host::service::HostSlots {
     use crate::abi::host::service::HostSlots;
     static SERVICES: std::sync::OnceLock<HostSlots> = std::sync::OnceLock::new();
@@ -71,6 +85,7 @@ fn services() -> &'static crate::abi::host::service::HostSlots {
         t.size = std::mem::size_of::<HostSlots>() as u32;
         t.slots = crate::abi::host::service::SERVICES;
         t.disk_append = Some(disk_append);
+        t.clock_now = Some(clock_now);
         t
     })
 }
@@ -114,7 +129,9 @@ fn an_instance_handed_no_connector_is_unarmed_and_no_ticket_cannot_pend() {
 
 #[test]
 fn a_connector_resumed_from_a_parked_count_issues_on_from_it() {
-    let _g = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     SEEN.lock().unwrap().clear();
     let h = host(&SLOTS);
     let mut c = h.connector(TICKET);
@@ -132,7 +149,9 @@ fn a_connector_resumed_from_a_parked_count_issues_on_from_it() {
 /// replay never confuses them; `disk.append` answers what the host wrote.
 #[test]
 fn connector_and_host_services_share_one_handle_count() {
-    let _g = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     use crate::abi::host::service::{DiskWritten, DISK_ROTATED};
     SEEN.lock().unwrap().clear();
     let h = host(&SLOTS);
@@ -146,4 +165,45 @@ fn connector_and_host_services_share_one_handle_count() {
     };
     assert_eq!((w.written, w.rotated), (bytes.len() as u64, DISK_ROTATED));
     assert_eq!(*SEEN.lock().unwrap(), vec![0, 1]);
+}
+
+/// RED: a backoff pends until the host's clock reaches its instant — asking for no resume before
+/// it (the op's wake_at_ns), and a resume that comes sooner pends again with the same instant. (That
+/// the host's timer never resumes before wake_at_ns is the dispatcher's own RED: dispatch_tests'
+/// `pend timer -> ... early=0`.)
+#[test]
+fn a_backoff_pends_until_the_host_clock_reaches_it() {
+    use crate::abi::mechanism::lifecycle::CancelOut;
+    use crate::abi::sdk::out::Out;
+    use std::sync::atomic::Ordering;
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let h = host(&SLOTS);
+    let until = 5_000_000_000;
+    for early in [1_000, until - 1] {
+        MONO.store(early, Ordering::SeqCst);
+        // SAFETY: plain data; all-zero is valid.
+        let mut o: CancelOut = unsafe { std::mem::zeroed() };
+        let mut out = Out::new(&mut o);
+        let mut c = h.connector(TICKET);
+        assert_eq!(
+            not_before(&mut c, &mut out, until),
+            Poll::Pending,
+            "at {early}"
+        );
+        assert_eq!(
+            o.head.wake_at_ns, until,
+            "resume no earlier than the instant"
+        );
+    }
+    MONO.store(until, Ordering::SeqCst);
+    // SAFETY: as above.
+    let mut o: CancelOut = unsafe { std::mem::zeroed() };
+    let mut c = h.connector(TICKET);
+    assert_eq!(
+        not_before(&mut c, &mut Out::new(&mut o), until),
+        Poll::Ready(Ok(()))
+    );
+    assert_eq!(o.head.wake_at_ns, 0, "a ready answer asks for no timer");
 }

@@ -168,6 +168,13 @@ impl<'a, T: AbiOut> Out<'a, T> {
         unsafe { &mut *ptr::from_mut::<T>(self.out).cast::<OutHead>() }
     }
 
+    /// For a PENDING answer: resume this op no later than `mono_ns` on the host's monotonic clock
+    /// (`clock.now`'s `mono_ns`) even if nothing wakes it — the host's timer, never earlier than
+    /// `mono_ns` (a wake may still resume it sooner: see `abi::sdk::conn::not_before`).
+    pub fn wake_at(&mut self, mono_ns: u64) {
+        self.head().wake_at_ns = mono_ns;
+    }
+
     /// Answer `refusal`: its outcome, the head's error naming its text (`abi::sdk::life::fail`).
     pub fn fail(&mut self, refusal: Refusal) -> Outcome {
         fail(self.head(), refusal)
