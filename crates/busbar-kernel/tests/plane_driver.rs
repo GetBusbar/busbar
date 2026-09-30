@@ -483,6 +483,10 @@ impl PlaneCalls for Double {
             body.extend_from_slice(b" for ");
             body.extend_from_slice(target);
         }
+        // A Retry-After the kernel hands (the walk's exhaustion terminal): this plane names it.
+        if input.retry_after_s != 0 {
+            body.extend_from_slice(format!(":retry={}", input.retry_after_s).as_bytes());
+        }
         if input.plane_code != 0 {
             body.extend_from_slice(format!(":{}@{}", input.plane_code, input.unit).as_bytes());
         }

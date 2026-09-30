@@ -710,6 +710,10 @@ extern "C" fn refusal(_: *mut c_void, input: *const c_void, out: *mut c_void) ->
             body.extend_from_slice(b" for ");
             body.extend_from_slice(target);
         }
+        // A Retry-After the kernel hands (the walk's exhaustion terminal): this plane names it.
+        if i.retry_after_s != 0 {
+            body.extend_from_slice(format!(":retry={}", i.retry_after_s).as_bytes());
+        }
         if i.plane_code != 0 {
             body.extend_from_slice(format!(":{}@{}", i.plane_code, i.unit).as_bytes());
         }

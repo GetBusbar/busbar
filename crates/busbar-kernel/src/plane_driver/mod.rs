@@ -51,7 +51,7 @@ use tokio::sync::watch;
 
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
 pub use epoch::FlushEpoch;
-pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest};
+pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick};
 
 use crate::slice::GroupLeaseSlip;
 use crate::teller::{Ended, Evidence, RouteAwait, RouteLeg, UnitCtx, Units};
@@ -379,18 +379,26 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
     /// The plane renders a refusal (`refusal`, ticketless, one re-call when short); the kernel's
     /// generic failure, with no body, when it cannot.
     fn render(&self, reason: ReasonCode) -> Rendered {
+        self.render_as(reason, None)
+    }
+
+    /// [`Self::render`], or under the status and Retry-After the walk chose (an exhaustion
+    /// terminal's `walk`), which the plane renders in its dialect.
+    fn render_as(&self, reason: ReasonCode, walk: Option<(u32, Option<u32>)>) -> Rendered {
         let (unit, dialect, declined) = {
             let st = self.lock();
             let dialect = st.decoded.as_ref().map_or(0, |d| d.dialect);
             let declined = st.declined.filter(|_| reason == ReasonCode::DecodeFailed);
             (st.unit, dialect, declined)
         };
-        // A refusal the plane's own `arrive` decided wears the status it stated; every other one
-        // the plane's stated row or the kernel's default.
-        let status = declined.map_or_else(
-            || self.driver.config.status(dialect, reason),
-            |(_, status)| status,
-        );
+        // A refusal the plane's own `arrive` decided wears the status it stated; the walk's
+        // terminal wears its own; every other one the plane's stated row or the kernel's default.
+        let status = match (walk, declined) {
+            (Some((status, _)), _) => status,
+            (None, Some((_, status))) => status,
+            (None, None) => self.driver.config.status(dialect, reason),
+        };
+        let retry_after_s = walk.and_then(|(_, r)| r).unwrap_or(0);
         let text = reason.as_str();
         let caps = self.driver.config.caps;
         let (mut reply, mut fields, mut arena) = (
@@ -416,7 +424,7 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             arena_cap: arena.len(),
             unit,
             plane_code: declined.map_or(0, |(code, _)| code),
-            retry_after_s: 0,
+            retry_after_s,
             target: AbiStr::over(&self.arrival.target),
             ..blank_in()
         };
@@ -482,6 +490,13 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         let answer = match end {
             route::End::Done => StepAnswer::proceed(token, RoutePlan::default()),
             route::End::Failed(reason) => StepAnswer::refuse(token, Refusal::new(reason)),
+            route::End::Exhausted(status, retry_after) => {
+                // THE WALK'S EXHAUSTION TERMINAL: its status and its Retry-After floor, handed to
+                // the plane's `refusal` (RefusalIn.retry_after_s), which renders them in its dialect.
+                let rendered = self.render_as(ReasonCode::BreakerOpen, Some((status, retry_after)));
+                self.lock().rendered = Some(rendered);
+                StepAnswer::refuse(token, Refusal::new(ReasonCode::BreakerOpen))
+            }
             route::End::Cancel(cause, done) => {
                 let bill = run.cancel(cause, done);
                 self.lock().bill = Some(bill);

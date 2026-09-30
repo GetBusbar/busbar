@@ -26,7 +26,7 @@ use busbar_contract::abi::plane::{
 use busbar_contract::caps::{Canary, Outcome, ReasonCode, StepName};
 use busbar_kernel::plane_driver::{
     Arrival, BufferCaps, CallerEnd, CancelBill, Checkpoint, FarEnd, FarPiece, MoneySeam,
-    OutboundRequest, PlaneUnits,
+    OutboundRequest, Pick, PlaneUnits,
 };
 use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
 use busbar_kernel::teller::{
@@ -77,6 +77,7 @@ impl Far {
                 bytes: c.to_vec(),
                 status: (k == 0).then_some((200, 2)),
                 last: k + 1 == n,
+                fail_over: false,
             })
             .collect();
         Far {
@@ -92,16 +93,34 @@ impl Far {
     }
 }
 
+/// The member whose far end answers 529, which the walk's status table fails over.
+const OVERLOADED: &str = "overloaded";
+
 impl FarEnd for Far {
-    fn member(&self, attempt_no: u32) -> Option<String> {
-        self.members
-            .get(attempt_no as usize - 1)
-            .map(|m| (*m).to_string())
+    fn member(&self, attempt_no: u32) -> impl Future<Output = Pick> + Send + '_ {
+        let pick = match self.members.get(attempt_no as usize - 1) {
+            Some(m) => Pick::Member((*m).to_string()),
+            None => Pick::Exhausted {
+                status: 503,
+                retry_after: Some(2),
+            },
+        };
+        async move { pick }
     }
 
     fn send(&self, request: OutboundRequest) -> impl Future<Output = bool> + Send + '_ {
+        let script = if request.member == OVERLOADED {
+            vec![FarPiece {
+                bytes: b"overloaded".to_vec(),
+                status: Some((529, 5)),
+                last: true,
+                fail_over: true,
+            }]
+        } else {
+            self.script.clone()
+        };
         self.sent.lock().unwrap().push(request);
-        *self.current.lock().unwrap() = self.script.iter().cloned().collect();
+        *self.current.lock().unwrap() = script.into_iter().collect();
         async { true }
     }
 
@@ -548,10 +567,10 @@ async fn a_local_answer_ends_the_unit_without_the_far_end() {
     }
 }
 
-/// With no member and no local answer the unit has nowhere to go: it fails as unreachable, and the
-/// far end is never sent to.
+/// With no member and no local answer the unit has nowhere to go: the walk's exhaustion terminal
+/// ends it (its status and Retry-After, rendered by the plane), and the far end is never sent to.
 #[tokio::test]
-async fn with_no_member_a_far_bound_unit_is_unreachable() {
+async fn with_no_member_a_far_bound_unit_ends_at_the_walks_terminal() {
     for way in ways() {
         let r = rig(way, BufferCaps::default(), Book::default());
         let (steps, far, caller) = (
@@ -566,10 +585,13 @@ async fn with_no_member_a_far_bound_unit_is_unreachable() {
         assert!(
             matches!(
                 outcome,
-                Outcome::Failed(StepName::Route, ReasonCode::DestinationUnreachable)
+                Outcome::Refused(StepName::Route, ReasonCode::BreakerOpen)
+                    | Outcome::Failed(StepName::Route, ReasonCode::BreakerOpen)
             ),
             "{way:?}: {outcome:?}"
         );
+        let rendered = units.take_rendered().expect("the terminal is rendered");
+        assert_eq!(rendered.status, 503, "{way:?}");
         assert!(far.sent().is_empty(), "{way:?}");
     }
 }
@@ -596,6 +618,73 @@ async fn a_retry_verdict_before_the_first_byte_fails_over() {
         );
         assert_eq!(sent[1].fields, vec![(b"x-attempt".to_vec(), b"2".to_vec())]);
         assert_eq!(caller.text(), "hello far end");
+    }
+}
+
+/// THE WALK'S OWN STATUS TABLE (step 24): a far-end status the breaker's `Disposition` fails over
+/// (529) moves to the next member before the first byte, and the plane never sees that piece.
+#[tokio::test]
+async fn the_walks_status_table_fails_over_before_the_plane_sees_the_piece() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), Book::default());
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&[OVERLOADED, "ok"], CHUNKS),
+            Caller::default(),
+        );
+        let before = r.stats()[stat::ON_PIECES];
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival("/call", b"p"), 0);
+        assert!(matches!(drive(&units).await, Outcome::Completed));
+        assert_eq!(
+            far.sent().len(),
+            2,
+            "{way:?}: failed over to the second member"
+        );
+        assert_eq!(
+            caller.text(),
+            "hello far end",
+            "{way:?}: no 529 byte reached the caller"
+        );
+        assert_eq!(caller.status(), Some(200));
+        assert_eq!(
+            r.stats()[stat::ON_PIECES] - before,
+            2 + 2 + 3,
+            "{way:?}: ATTEMPT + body twice, then the second far end's three pieces; never the 529"
+        );
+    }
+}
+
+/// The walk's exhaustion terminal: no member left answers its status and its Retry-After floor.
+#[tokio::test]
+async fn exhaustion_answers_the_walks_status_and_retry_after() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), Book::default());
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&[OVERLOADED], CHUNKS),
+            Caller::default(),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival("/call", b"p"), 0);
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(
+                outcome,
+                Outcome::Refused(StepName::Route, ReasonCode::BreakerOpen)
+                    | Outcome::Failed(StepName::Route, ReasonCode::BreakerOpen)
+            ),
+            "{way:?}: {outcome:?}"
+        );
+        let rendered = units.take_rendered().expect("the terminal is rendered");
+        assert_eq!(rendered.status, 503, "{way:?}");
+        assert_eq!(
+            rendered.body, b"refused:503:breaker_open:retry=2",
+            "{way:?}: the plane renders the walk's status and Retry-After"
+        );
+        assert_eq!(caller.text(), "", "{way:?}: nothing had streamed");
     }
 }
 

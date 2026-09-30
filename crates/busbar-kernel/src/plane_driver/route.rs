@@ -47,6 +47,25 @@ pub struct FarPiece {
     pub status: Option<(u32, u32)>,
     /// No piece follows.
     pub last: bool,
+    /// The walk's own status table (the breaker's `Disposition` of this piece's status) says this
+    /// attempt fails over: the pump moves to the next member WITHOUT pushing the piece to the
+    /// plane, while no byte has reached the caller.
+    pub fail_over: bool,
+}
+
+/// What the walk answers for an attempt: the member to try, or the pool's exhaustion terminal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pick {
+    /// The member the walk picked and admitted through its breaker.
+    Member(String),
+    /// No member is left: the walk's exhaustion terminal, the status the caller is told and its
+    /// Retry-After seconds (the floor the walk applies), when it names one.
+    Exhausted {
+        /// The status number.
+        status: u32,
+        /// The Retry-After seconds.
+        retry_after: Option<u32>,
+    },
 }
 
 /// One attempt's request, as the plane bound it for the far end.
@@ -70,8 +89,9 @@ pub struct OutboundRequest {
 /// in production (member pick, breaker, allow-list, pin, auth fields, the send); a test double in
 /// the driver's own proofs.
 pub trait FarEnd: Sync {
-    /// The member for attempt `attempt_no` (from `1`); `None` when the walk has none left.
-    fn member(&self, attempt_no: u32) -> Option<String>;
+    /// The member for attempt `attempt_no` (from `1`), or the walk's exhaustion terminal. May await
+    /// (the walk's backoff and queue terminals); the pump bounds it by the unit's deadline.
+    fn member(&self, attempt_no: u32) -> impl Future<Output = Pick> + Send + '_;
     /// Send one attempt's request; `false` when it could not be sent.
     fn send(&self, request: OutboundRequest) -> impl Future<Output = bool> + Send + '_;
     /// The current attempt's next reply piece; `None` once the reply has ended.
@@ -229,6 +249,8 @@ pub(crate) enum End {
     Done,
     /// The unit failed; nothing was cancelled.
     Failed(ReasonCode),
+    /// The walk had no member left: its exhaustion terminal's status and Retry-After seconds.
+    Exhausted(u32, Option<u32>),
     /// The driver cancels the unit; the answer of the op that was in flight, if one was.
     Cancel(ReasonCode, Option<Answered>),
 }
@@ -471,11 +493,21 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
         let mut attempt_no = 0;
         'attempt: loop {
             attempt_no += 1;
-            let member = self.far.member(attempt_no);
-            if member.is_none() && attempt_no > 1 {
-                return End::Failed(ReasonCode::DestinationUnreachable);
-            }
-            let member = member.unwrap_or_default();
+            // The walk's pick. With no member for the FIRST attempt the plane may still answer the
+            // caller's body itself (a local answer); otherwise the walk's exhaustion terminal ends
+            // the unit. A later attempt with no member left ends it at once.
+            let (member, terminal) = match guarded_run(run, self.far.member(attempt_no)).await {
+                Ok(Pick::Member(member)) => (member, None),
+                Ok(Pick::Exhausted {
+                    status,
+                    retry_after,
+                }) if attempt_no == 1 => (String::new(), Some((status, retry_after))),
+                Ok(Pick::Exhausted {
+                    status,
+                    retry_after,
+                }) => return End::Exhausted(status, retry_after),
+                Err(cause) => return End::Cancel(cause, None),
+            };
             run.bufs.member.clear();
             run.bufs.member.extend_from_slice(member.as_bytes());
             let far_bound = !member.is_empty();
@@ -518,7 +550,10 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 return End::Done;
             }
             if !far_bound {
-                return End::Failed(ReasonCode::DestinationUnreachable);
+                return match terminal {
+                    Some((status, retry_after)) => End::Exhausted(status, retry_after),
+                    None => End::Failed(ReasonCode::DestinationUnreachable),
+                };
             }
             match guarded_run(run, self.far.send(request)).await {
                 Ok(true) => {}
@@ -536,6 +571,11 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     },
                     Err(cause) => return End::Cancel(cause, None),
                 };
+                // THE WALK'S OWN STATUS TABLE: an attempt it fails over never reaches the plane,
+                // while nothing has reached the caller.
+                if piece.fail_over && !run.lock().facts.streamed {
+                    continue 'attempt;
+                }
                 run.lock().facts.far_end_answered = true;
                 run.bufs.input.clear();
                 run.bufs.input.extend_from_slice(&piece.bytes);
