@@ -3,5 +3,6 @@
 //! function here is pure over bytes the kernel hands in; the door adapts them to the plane ABI.
 
 pub mod arrive;
+pub mod attempt;
 pub mod multipart;
 pub mod shaping;

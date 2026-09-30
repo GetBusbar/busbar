@@ -285,41 +285,18 @@ impl LazyBody {
 /// The parity test `head_pristine_matches_translate_output` pins this mirror against the real
 /// translate seam so the two cannot silently drift.
 pub(crate) fn head_provably_pristine(rt: &Arc<NativeRuntime>, i: usize, probe: &Value) -> bool {
-    let Some(obj) = probe.as_object() else {
-        return true;
-    };
-    // #1: never-native router shim keys are stripped on every branch.
-    if busbar_kernel::proto::array_stream_shim_keys()
-        .iter()
-        .any(|k| obj.contains_key(*k))
-    {
-        return false;
-    }
     let lane = &EngineTables::new(rt).lanes()[i];
-    let model_in_url =
-        busbar_kernel::proto::decl_for(lane.protocol).is_some_and(|d| d.has_model_in_url);
-    // #2: `stream` is a path shim for a path-model egress (same-proto ⇒ egress == this lane).
-    if model_in_url && obj.contains_key("stream") {
-        return false;
-    }
-    // #3: the default model rewrite is a no-op only when the body already carries exactly the
-    // lane's wire model as a string (missing / non-string / different ⇒ the rewrite would fire).
-    if obj.get("model").and_then(|m| m.as_str()) != Some(lane.wire_model()) {
-        return false;
-    }
-    // A dialect that reshapes its body at a path-model URL always mutates an object body, so such
-    // a request can never be a pristine passthrough. Asked of the WRITER before any DOM exists.
-    if lane.path_base.is_some()
-        && busbar_kernel::proto::decl_for(lane.protocol)
-            .is_some_and(|d| d.reshapes_body_at_path_base)
-    {
-        return false;
-    }
-    // #4: a same-protocol path-model body `model` is stripped after the rewrite.
-    if model_in_url && obj.contains_key("model") {
-        return false;
-    }
-    true
+    crate::engine::xchg::attempt::provably_pristine(
+        crate::engine::xchg::shaping::FarShape {
+            dialect: lane.protocol,
+            wire_model: lane.wire_model(),
+            default_max_tokens: lane.default_max_tokens,
+            prompt_caching: lane.prompt_caching,
+            caps: lane.lane_caps,
+            path_base: lane.path_base.as_deref(),
+        },
+        probe,
+    )
 }
 
 #[cfg(test)]

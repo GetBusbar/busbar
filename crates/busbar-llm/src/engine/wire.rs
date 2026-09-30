@@ -1,5 +1,4 @@
 use super::*;
-use busbar_plane_llm::codec::translate::TranslateCodec;
 
 /// Record the upstream round-trip (to response headers) for the current request so the
 /// `server_timing` middleware can subtract it from the total and report Busbar's own added latency.
@@ -126,30 +125,28 @@ pub(crate) use busbar_kernel::proxy::{agnostic_error_envelope, ingress_error};
 /// cannot drift on shape: `BadRequest` is today's generic 400; `UnsupportedSubOp` is the second
 /// 404 (`ImageIr.op` unsupported for `model`), distinct from the no-handler 404 and naming both the
 /// operation and the model so the caller knows what to stop asking for.
+#[cfg(test)]
 pub(crate) fn ingress_reject_response(
     ingress_protocol: &str,
     reject: &busbar_contract::codec::IngressReject,
 ) -> Response {
-    match reject {
-        busbar_contract::codec::IngressReject::BadRequest(_) => ingress_error(
-            ingress_protocol,
-            StatusCode::BAD_REQUEST,
-            KIND_INVALID_REQUEST,
-            "We could not process the content of your request.",
-        ),
-        // NAMED WITH `Operation::name`, NOT WITH `{op:?}`. The Debug rendering of a core type is a
-        // by-product of a derive, and this string is on the wire in front of a customer: before
-        // 1.6.0 it read `Image`, which was the enum variant's identifier leaking out of the
-        // process, and the moment the axis grew a field it would have read
-        // `Verb { op: Invoke, name: "image" }`. `name()` is the identifier this project publishes
-        // and pins — the same word the metric label and the `paths:` key use.
-        busbar_contract::codec::IngressReject::UnsupportedSubOp { op, model } => ingress_error(
-            ingress_protocol,
-            StatusCode::NOT_FOUND,
-            KIND_NOT_FOUND,
-            &format!("{} is not supported for model \"{model}\".", op.name()),
-        ),
-    }
+    answer_response(
+        ingress_protocol,
+        &crate::engine::xchg::attempt::ingress_reject("", reject),
+    )
+}
+
+/// A refusal the plane's exchange answered, rendered in `ingress_protocol`'s envelope.
+pub(crate) fn answer_response(
+    ingress_protocol: &str,
+    a: &crate::engine::xchg::attempt::Answer,
+) -> Response {
+    ingress_error(
+        ingress_protocol,
+        StatusCode::from_u16(a.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+        a.kind,
+        &a.message,
+    )
 }
 
 /// CANONICAL mapping from an upstream HTTP status to the protocol-agnostic error `kind`, for shaping
@@ -229,6 +226,7 @@ pub(crate) fn shape_cross_protocol_error(
 /// short-circuit safety contract: a `true` here makes a same-protocol request NON-pristine. A
 /// same-proto request that carries NEITHER of these keys is left byte-for-byte untouched and can
 /// short-circuit to its retained original bytes.
+#[cfg(test)]
 pub use busbar_plane_llm::codec::wire_shim::strip_router_shim_keys;
 
 /// Remove the SHIM `model` key on the SAME-PROTOCOL gemini/bedrock passthrough path, AFTER
@@ -247,17 +245,8 @@ pub use busbar_plane_llm::codec::wire_shim::strip_router_shim_keys;
 /// gemini/bedrock passthrough a body that carried `model` is made NON-pristine (the retained
 /// original carries a `model` the native backend must not see). A same-proto path-model request that
 /// arrived without a body `model` is left untouched and stays pristine.
-pub(crate) fn strip_same_protocol_model_shim(v: &mut Value, ingress_protocol: &str) -> bool {
-    let model_in_url = busbar_kernel::proto::decl_for(ingress_protocol)
-        .map(|d| d.has_model_in_url)
-        .unwrap_or(false);
-    if model_in_url {
-        if let Some(obj) = v.as_object_mut() {
-            return obj.remove("model").is_some();
-        }
-    }
-    false
-}
+#[cfg(test)]
+pub(crate) use crate::engine::xchg::attempt::strip_same_protocol_model_shim;
 
 /// The SINGLE source of truth for shaping an ingress request body into the bytes sent to one egress
 /// lane. Both the hot path ([`forward_with_pool`], per failover hop) and the degraded last-resort
@@ -281,40 +270,10 @@ pub(crate) fn strip_same_protocol_model_shim(v: &mut Value, ingress_protocol: &s
 ///      the URL; a body `model` there is an indistinguishability leak).
 ///   5. Serialize to bytes.
 ///
-/// Returns `Err(Response)` — an ingress-native error envelope with the right status — on the only two
-/// shaping failures (unknown ingress protocol, request translation error) and on the effectively
-/// infallible re-serialization, so neither caller can panic on the request path.
-///
-/// Project a [`busbar_plane_llm::codec::translate::TranslateReqReject`] — the codec entrypoint's terminal outcome — into
-/// the caller-dialect error response. The ONE place that maps each reject arm to an HTTP shape, so the
-/// opaque and JSON request branches cannot drift: a refused body renders `ingress_reject_response`
-/// (its own 400/404 split); an egress that does not serve the operation is the 404
-/// (`DETAIL_MODEL_UNSUPPORTED_OPERATION`); an unrepresentable request is a 400 carrying the reason.
-fn map_translate_req_reject(
-    ingress_protocol: &str,
-    reject: busbar_plane_llm::codec::translate::TranslateReqReject,
-) -> Response {
-    match reject {
-        busbar_plane_llm::codec::translate::TranslateReqReject::Ingress(reject) => {
-            ingress_reject_response(ingress_protocol, &reject)
-        }
-        busbar_plane_llm::codec::translate::TranslateReqReject::EgressUnsupported => ingress_error(
-            ingress_protocol,
-            StatusCode::NOT_FOUND,
-            KIND_NOT_FOUND,
-            DETAIL_MODEL_UNSUPPORTED_OPERATION,
-        ),
-        busbar_plane_llm::codec::translate::TranslateReqReject::Unrepresentable(reason) => {
-            ingress_error(
-                ingress_protocol,
-                StatusCode::BAD_REQUEST,
-                KIND_INVALID_REQUEST,
-                &reason,
-            )
-        }
-    }
-}
-
+/// The step list itself is the plane's (`xchg::attempt::translate_request`);
+/// this adapter keeps the engine's side effects around it (the translation counter, the audit
+/// record of each control the far end cannot represent) and renders a refusal in the caller's
+/// envelope.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn translate_request_cross_protocol(
     host: &Arc<dyn EngineHost>,
@@ -324,294 +283,51 @@ pub(crate) fn translate_request_cross_protocol(
     op: Op,
     body: Option<Value>,
     req_content_type: &str,
-    // The EFFECTIVE per-lane reasoning capability for this attempt (pool-member override wins over
-    // the model flag) — computed by the caller because only it holds the candidate rows. Gates the
-    // reasoning ask at `prepare_for_egress`; see `ModelCfg::reasoning`.
     reasoning_allowed: bool,
-    // The PRISTINE source bytes `body` was parsed from THIS hop (the retained original). On a
-    // same-protocol passthrough where no same-proto-reachable mutation fired (the request
-    // short-circuit), these exact bytes are re-emitted verbatim instead of re-serializing
-    // the `Value` — keeping the upstream payload byte-identical and skipping the serialize hot spot.
-    // `&Bytes` (not `&[u8]`) so the short-circuit re-emit is a REFCOUNT BUMP (`Bytes::clone`), never
-    // an O(body) `to_vec` memcpy — the return type is `Bytes` for the same reason.
     hop_bytes: &Bytes,
-    // The resolved caller/governance key id (or `"anonymous"`) — the PRINCIPAL recorded on any
-    // `egress.control_unrepresentable` audit event this translation emits (audit-and-allow: a dropped
-    // caller control is a first-class, hash-chained event, not just a log warn).
     caller_key_id: &str,
 ) -> Result<Bytes, Box<Response>> {
-    let egress_name = EngineTables::new(rt).lanes()[i].protocol;
-    // ONE declaration resolution for the four decl facts the prep bag reads below (this used to be
-    // four separate registry scans of the same name).
-    let egress_decl = busbar_kernel::proto::decl_for(egress_name);
-    // The neutral cross-protocol egress-preparation param bag, built ONCE from RESOLVED lane
-    // primitives and ONLY on a cross-protocol hop (`.then` is lazy, so a same-protocol passthrough
-    // pays nothing). Shared by the opaque and JSON request branches below so the two cannot drift on
-    // which lane facts gate `prepare_for_egress`, and the SINGLE site outside `ir/` that names
-    // `EgressPrep` — `egress_prep.is_some()` is exactly "this hop is cross-protocol".
-    let egress_prep = (ingress_protocol != egress_name).then(|| {
-        busbar_contract::ir::egress_prep::EgressPrep {
-            ingress_protocol,
-            egress_requires_max_tokens: egress_decl.is_some_and(|d| d.requires_max_tokens),
-            lane_default_max_tokens: EngineTables::new(rt).lanes()[i].default_max_tokens,
-            // The global fallback + effort→budget table are this plane's own runtime vocabulary now,
-            // read off `rt` rather than a neutral `PlaneHost` method over `App`.
-            global_default_max_tokens: rt.global_default_max_tokens,
-            reasoning_allowed,
-            reasoning_budgets: rt.reasoning_budgets,
-            // The cache twin of `reasoning_allowed`: a lane whose dialect's cache marker is model-gated
-            // (Bedrock) must assert `prompt_caching` to receive breakpoints.
-            prompt_caching_allowed: EngineTables::new(rt).lanes()[i].prompt_caching
-                || !egress_decl.is_some_and(|d| d.cache_markers_model_gated),
-            cache_control_cap: egress_decl.and_then(|d| d.max_cache_control_breakpoints),
-            // The lane's declared request-shape capabilities (provider entry + model patterns,
-            // resolved at boot): which cap spelling, reasoning form and structured-output form this
-            // upstream model accepts. The writer cannot see them from the request.
-            lane_caps: EngineTables::new(rt).lanes()[i].lane_caps,
-            // thoughtSignature sentinel fill — the DIALECT declares whether it fills one
-            // (`ProtocolDecl::fills_thought_signature`), ANDed with the LANE's URL shape: NEVER a
-            // Vertex-style path-model lane (`path_base.is_some()`), which is not confirmed to honor the
-            // sentinel bypass and has real reports of rejecting it.
-            thought_signature_fill: egress_decl.is_some_and(|d| d.fills_thought_signature)
-                && EngineTables::new(rt).lanes()[i].path_base.is_none(),
-        }
-    });
-    // OPAQUE ingress body (multipart/binary — `None`): translate at the BYTE level through the
-    // operation codecs (cross-protocol) or relay the pristine bytes verbatim (same-protocol) —
-    // exactly the contract the JSON branch below implements at the Value level.
-    let Some(mut body) = body else {
-        if let Some(prep) = &egress_prep {
-            let ingress_handler =
-                request_handler(ingress_protocol).and_then(|rh| rh.operation_handler(op.operation));
-            let egress_handler =
-                request_handler(egress_name).and_then(|rh| rh.operation_handler(op.operation));
-            let (Some(ih), Some(_eh)) = (ingress_handler, egress_handler) else {
-                return Err(Box::new(ingress_error(
-                    ingress_protocol,
-                    StatusCode::NOT_FOUND,
-                    KIND_NOT_FOUND,
-                    DETAIL_MODEL_UNSUPPORTED_OPERATION,
-                )));
-            };
-            // OPAQUE cross-protocol: read→prepare_for_egress→set_model→write through the single
-            // translate entrypoint (byte codecs). Both codecs were 404-checked above, so the entrypoint
-            // never surfaces `EgressUnsupported` here; a refused body still renders as its reject.
-            let translated = ih
-                .translate_request(
-                    busbar_plane_llm::codec::translate::TranslateReqInput::Opaque {
-                        bytes: hop_bytes,
-                        content_type: req_content_type,
-                    },
-                    Some(egress_name),
-                    prep,
-                    EngineTables::new(rt).lanes()[i].wire_model(),
-                )
-                .map_err(|e| Box::new(map_translate_req_reject(ingress_protocol, e)))?;
-            return match translated.wire {
-                busbar_contract::codec::EgressWire::Bytes(b) => Ok(bytes::Bytes::from_owner(b)),
-                // An opaque egress wire is always bytes; a JSON here is structurally impossible, but
-                // serialize it rather than panic on the request path — and answer the FAILURE the
-                // way the serialize arm at the end of this function answers its own. An
-                // `unwrap_or_default()` here sent the upstream an EMPTY body under a content type
-                // promising a request, so a serializer failure became a provider-side error about a
-                // request busbar never meant to make, charged to the caller and unreadable in the
-                // log. A shaped 500 says whose fault it was and stops before the wire.
-                busbar_contract::codec::EgressWire::Json(v) => {
-                    match busbar_plane_llm::codec::json::to_vec(&v) {
-                        Ok(p) => Ok(Bytes::from(p)),
-                        Err(_) => Err(Box::new(ingress_error(
-                            ingress_protocol,
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            KIND_API_ERROR,
-                            DETAIL_INTERNAL_ERROR,
-                        ))),
-                    }
-                }
-                // The handle could not write itself onto the egress dialect. REFUSE, on the same
-                // terminal an unrepresentable request already takes — forwarding an empty body
-                // would send a request the caller never made.
-                busbar_contract::codec::EgressWire::Unrepresentable { reason } => {
-                    Err(Box::new(map_translate_req_reject(
-                        ingress_protocol,
-                        busbar_plane_llm::codec::translate::TranslateReqReject::Unrepresentable(
-                            reason,
-                        ),
-                    )))
-                }
-            };
-        }
-        // Same-protocol opaque relay: the retained bytes go upstream verbatim — refcount bump only.
-        return Ok(hop_bytes.clone());
-    };
-    // Request short-circuit pristine-tracking. Starts true; flips false the moment ANY
-    // same-protocol-reachable mutation actually changes the body. The cross-protocol branch below
-    // always rebuilds the body from the IR (read_request → write_request), so it is never pristine.
-    // The invalidation contract is EXACTLY entries #1-#4 of the invalidation set — strip_router_shim_keys
-    // (#1,#2), rewrite_model_if_needed (#3), strip_same_protocol_model_shim (#4) — each of which now
-    // reports whether it truly changed the body.
-    let mut pristine = true;
-    if let Some(prep) = &egress_prep {
-        // one cross-protocol translation hop for this request (telemetry bank: per-thread cell,
-        // fixed protocol×protocol slot table — no label allocation on the hop). `egress_prep.is_some()`
-        // is exactly `ingress_protocol != egress_name`.
+    let lane = &EngineTables::new(rt).lanes()[i];
+    let egress_name = lane.protocol;
+    // The translation counter's event, counted when a JSON request is read for another dialect,
+    // before the read can refuse (as it always was).
+    if body.is_some() && ingress_protocol != egress_name {
         host.telemetry_translation(ingress_protocol, egress_name);
-        // Cross-protocol: translate the request body through the superset IR.
-        let Some(ingress_dialect) =
-            busbar_kernel::proto::decl_for(ingress_protocol).and_then(|d| d.dialect())
-        else {
-            return Err(Box::new(ingress_error(
-                ingress_protocol,
-                StatusCode::BAD_REQUEST,
-                KIND_INVALID_REQUEST,
-                DETAIL_INTERNAL_ERROR,
-            )));
-        };
-        // Multi-candidate cross-protocol degrade (v1.5.4-restored). The busbar IR (`IrResponse`)
-        // models exactly ONE assistant turn, so a cross-protocol hop's response reader keeps
-        // candidate [0] and drops the rest. A same-protocol route never reaches here (it relays the
-        // backend body verbatim), so an `n>1` / `candidateCount>1` request served same-protocol is
-        // untouched and keeps returning all N. On a cross-protocol route we forward the request and
-        // return the FIRST candidate at HTTP 200, exactly as v1.5.4 did, rather than rejecting with a
-        // 400 (fail-loud is a deliberate opt-in for a future plane, not a 1.6.0 default). The
-        // `ProtocolWriter::requested_candidate_count` detection machinery is retained for that future
-        // opt-in; only the outcome here reverts to the silent 1-of-N degrade.
-        let _ = ingress_dialect.requested_candidate_count(&body);
-        // OPERATION-BLIND translate: the INGRESS operation handler parses its dialect into the
-        // neutral IR; the IR applies its own cross-protocol semantics (`prepare_for_egress` — chat's
-        // max-tokens default, tool-id decode, and the extra-key leak guard live INSIDE the IR,
-        // not here); the EGRESS handler writes its dialect. The engine names no operation.
-        // Codec roles resolve from PROTOCOL IDENTITY, not from the threaded handle: the ingress
-        // dialect is (ingress_protocol, operation)'s handler; the egress dialect is the lane's.
-        // (`op` supplies the operation tag + capabilities; its instance is registry-identical to
-        // this lookup on every production path.)
-        let ingress_handler =
-            request_handler(ingress_protocol).and_then(|rh| rh.operation_handler(op.operation));
-        let egress_handler =
-            request_handler(egress_name).and_then(|rh| rh.operation_handler(op.operation));
-        let Some(ingress_handler) = ingress_handler else {
-            return Err(Box::new(ingress_error(
-                ingress_protocol,
-                StatusCode::NOT_FOUND,
-                KIND_NOT_FOUND,
-                DETAIL_ENDPOINT_UNSUPPORTED_OPERATION,
-            )));
-        };
-        // OPERATION-BLIND translate through the single entrypoint: `ingress_handler` reads its dialect
-        // into the neutral IR, the IR applies its own cross-protocol semantics (`prepare_for_egress`),
-        // and the egress dialect writes. The representability guard + dropped-controls collection live
-        // BEHIND the entrypoint; the seam keeps telemetry (above), the audit-and-allow emission, and
-        // the error shaping (`map_translate_req_reject`) — none of which are the codec's business.
-        let translated = match ingress_handler.translate_request(
-            busbar_plane_llm::codec::translate::TranslateReqInput::Json(&body),
-            egress_handler.map(|_| egress_name),
-            prep,
-            EngineTables::new(rt).lanes()[i].wire_model(),
-        ) {
-            Ok(t) => t,
-            Err(e) => return Err(Box::new(map_translate_req_reject(ingress_protocol, e))),
-        };
-        // AUDIT-AND-ALLOW: a caller control the egress dialect cannot natively represent is STILL
-        // forwarded (behavior unchanged), but each drop is recorded as a first-class, hash-chained
-        // audit event — not just the writer's `warn!` — so the degradation is visible in the audit
-        // trail. Emitted before the body is consumed; forwarding proceeds.
-        for control in translated.dropped_controls {
-            host.audit_record(
-                "egress.control_unrepresentable",
-                &format!("{control} on {egress_name}"),
-                busbar_contract::vocab::OUTCOME_DEGRADED,
-                caller_key_id,
-            );
-        }
-        match translated.wire {
-            busbar_contract::codec::EgressWire::Json(written) => body = written,
-            // The EGRESS wire is not JSON (multipart transcription): the IR carried the resolved model
-            // in-band, and the JSON-only post-shaping below (shim strips, model rewrite) does not
-            // apply — emit the handler's bytes directly.
-            busbar_contract::codec::EgressWire::Bytes(b) => return Ok(bytes::Bytes::from_owner(b)),
-            // The translate entrypoint already turns an unrepresentable write into its reject, so
-            // this arm is not reachable through it; it refuses rather than forwarding anything,
-            // because the one thing that must never happen here is an empty body going upstream.
-            busbar_contract::codec::EgressWire::Unrepresentable { reason } => {
-                return Err(Box::new(map_translate_req_reject(
-                    ingress_protocol,
-                    busbar_plane_llm::codec::translate::TranslateReqReject::Unrepresentable(reason),
-                )))
-            }
-        }
-        // The body was fully rebuilt from the IR (read_request → write_request), so it bears no fixed
-        // relationship to `hop_bytes` — a cross-protocol hop is NEVER pristine and must serialize the
-        // rewritten `Value`, never short-circuit to the original bytes.
-        pristine = false;
     }
-    // Remove the never-native shim keys (gemini JSON-array key on every protocol; `stream` for
-    // path-model EGRESS) on EVERY branch — same- AND cross-protocol. `model` is handled below,
-    // ordered relative to `rewrite_model`. Each helper reports whether it ACTUALLY changed the body;
-    // any true makes a same-protocol hop non-pristine (`&` accumulates into `pristine`). This is the
-    // structural coupling: a future same-proto-reachable mutation added to these helpers automatically
-    // invalidates the short-circuit (it cannot be silently missed).
-    pristine &= !strip_router_shim_keys(&mut body, egress_name); // invalidators #1, #2
-                                                                 // `rewrite_model_if_needed` installs the authoritative lane model. ORDERING (critical): on a
-                                                                 // cross-protocol hop to a BODY-MODEL egress (gemini/bedrock → openai/anthropic/cohere/responses)
-                                                                 // the backend REQUIRES this `model` body field, so `model` is stripped ONLY on the same-protocol
-                                                                 // passthrough (below), where the model rides the URL and a body `model` is an indistinguishability
-                                                                 // leak. Reports a change only when the written model differs from the body's existing one (#3).
-                                                                 // Resolve the lane's DialectCodec ONCE and reuse it for BOTH the model rewrite (#3) and the
-                                                                 // path-base reshape below. `decl_for(..).dialect()` allocates a fresh `Box<dyn DialectCodec>` per
-                                                                 // call, so resolving it twice on the request hot path was a redundant allocation. Behavior/output
-                                                                 // are identical: same dialect, same two mutations, same order.
-    let lane_dialect = busbar_kernel::proto::decl_for(EngineTables::new(rt).lanes()[i].protocol)
-        .and_then(|d| d.dialect());
-    pristine &= !lane_dialect
-        .as_ref()
-        .map(|dc| {
-            dc.rewrite_model_if_needed(&mut body, EngineTables::new(rt).lanes()[i].wire_model())
-        })
-        .unwrap_or(false); // invalidator #3
-                           // PATH-BASE BODY RESHAPE. A lane with a `path_base` carries the model in the URL, and some
-                           // dialects must reshape the body for that form (Claude-on-Vertex drops `model` and adds
-                           // `anthropic_version`). WHICH reshape, and whether there is one at all, is the writer's;
-                           // this path only knows the lane's URL shape. A reshape necessarily mutates the body, so such
-                           // a same-protocol passthrough is (correctly) no longer pristine.
-    if EngineTables::new(rt).lanes()[i].path_base.is_some()
-        && lane_dialect
-            .as_ref()
-            .map(|dc| dc.reshape_for_path_base(&mut body))
-            .unwrap_or(false)
-    {
-        pristine = false;
+    let far = crate::engine::xchg::shaping::FarShape {
+        dialect: egress_name,
+        wire_model: lane.wire_model(),
+        default_max_tokens: lane.default_max_tokens,
+        prompt_caching: lane.prompt_caching,
+        caps: lane.lane_caps,
+        path_base: lane.path_base.as_deref(),
+    };
+    let t = crate::engine::xchg::attempt::translate_request(
+        ingress_protocol,
+        op.operation,
+        far,
+        rt.global_default_max_tokens,
+        rt.reasoning_budgets,
+        reasoning_allowed,
+        body,
+        req_content_type,
+        hop_bytes,
+    );
+    for control in t.dropped_controls {
+        host.audit_record(
+            "egress.control_unrepresentable",
+            &format!("{control} on {egress_name}"),
+            busbar_contract::vocab::OUTCOME_DEGRADED,
+            caller_key_id,
+        );
     }
-    if ingress_protocol == egress_name {
-        pristine &= !strip_same_protocol_model_shim(&mut body, ingress_protocol);
-        // invalidator #4
-    }
-    // Request SHORT-CIRCUIT: a same-protocol passthrough that triggered none of the
-    // invalidators #1-#4 left `body` byte-for-byte equivalent to the retained `hop_bytes`, so re-emit
-    // those exact bytes verbatim — byte-identical to the old re-serialize path, minus the serialize
-    // cost (and minus any key-ordering / float-formatting drift a round-trip could introduce). Cross-
-    // protocol hops set `pristine = false` above and always fall through to the serialize arm.
-    // `Bytes::clone` is a refcount bump — the pristine passthrough copies ZERO body bytes.
-    if ingress_protocol == egress_name && pristine {
-        return Ok(hop_bytes.clone());
-    }
-    // sonic-rs: SIMD serialize of the (large, string-heavy) upstream body — the request-path hot spot.
-    match busbar_plane_llm::codec::json::to_vec(&body) {
-        Ok(p) => Ok(Bytes::from(p)),
-        // Re-serializing a Value parsed from valid JSON and rewritten only with serde_json values is
-        // effectively infallible; return a shaped 500 rather than panic a worker on the request path
-        // (the layer's no-unwrap/expect rule).
-        Err(_) => Err(Box::new(ingress_error(
-            ingress_protocol,
-            StatusCode::INTERNAL_SERVER_ERROR,
-            KIND_API_ERROR,
-            DETAIL_INTERNAL_ERROR,
-        ))),
+    match t.outcome {
+        Ok(translated) if translated.pristine => Ok(hop_bytes.clone()),
+        Ok(translated) => Ok(Bytes::from(translated.bytes.into_owned())),
+        Err(a) => Err(Box::new(answer_response(ingress_protocol, &a))),
     }
 }
 
-// The TIGHT upstream-error-body buffer cap (`max_upstream_buffered_bytes`) is NEUTRAL vocabulary that
-// STAYS in core (`busbar_kernel::proxy::proxy_vocab`); the engine names it at its historical short path
-// through this re-export. (`max_translated_body_bytes` below is the SEPARATE, wider translate cap and
-// stays here.)
 pub(crate) use busbar_kernel::proxy::max_upstream_buffered_bytes;
 
 /// Upper bound on a buffered cross-protocol non-stream SUCCESS (2xx) body that must be parsed and
