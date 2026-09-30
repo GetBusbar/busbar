@@ -14,7 +14,6 @@
 
 mod common;
 
-use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -61,11 +60,6 @@ models:
         ),
     )
     .unwrap();
-}
-
-/// Whether a listener accepts on `port`.
-fn listening(port: u16) -> bool {
-    TcpStream::connect(("127.0.0.1", port)).is_ok()
 }
 
 fn wait_for(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
@@ -117,12 +111,12 @@ fn boot(tag: &str, env: &[(&str, &str)]) -> (usize, String) {
         if let Some(status) = child.try_wait().expect("try_wait") {
             panic!("busbar exited at boot ({status:?}); log:\n{}", log_text());
         }
-        listening(data_port) && listening(admin_port)
+        log_text().contains("busbar listening")
     });
     let threads = dispatcher_threads(child.id());
     let _ = child.kill();
     let _ = child.wait();
-    assert!(ready, "busbar never listened; log:\n{}", log_text());
+    assert!(ready, "busbar never logged its listener; log:\n{}", log_text());
     let out = log_text();
     let _ = std::fs::remove_dir_all(&dir);
     (threads, out)

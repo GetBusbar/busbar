@@ -16,9 +16,9 @@ use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::sdk::door::abi_str;
 use busbar_contract::conn::{
-    ConnError, ConnFacts, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc,
-    Piece,
+    ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, Piece,
 };
+use busbar_contract::transport::ConnFacts;
 
 use super::CONN_SLOTS;
 use crate::dispatch::load::validate_door;
@@ -84,7 +84,7 @@ const NONE: AbiStr = AbiStr {
     len: 0,
 };
 
-static NEEDS: [Need; 1] = [Need {
+const NEEDS: [Need; 1] = [Need {
     direction: DIRECTION_OUTBOUND,
     egress_class: 0,
     transport: abi_str("sock"),
@@ -151,7 +151,7 @@ fn establish(p: &Plugin<TestKind>, need: u32, target: &'static str) -> ServiceOu
 #[test]
 fn an_instance_with_a_declared_need_is_declared_and_its_establish_reaches_the_table() {
     let table = Arc::new(Recording::default());
-    let p = bound(&NEEDS, &table);
+    let p = bound(Box::leak(Box::new(NEEDS)), &table);
     assert!(!p.inner.conns_table().is_null(), "it is handed the slots");
     let declared = table.declared.lock().unwrap().clone();
     assert_eq!(declared.len(), 1);
@@ -186,7 +186,7 @@ fn an_instance_without_a_need_is_handed_no_table_and_its_open_is_undeclared() {
         Err(ConnError::UndeclaredNeed)
     );
     assert_ne!(
-        bound(&NEEDS, &table).instance(),
+        bound(Box::leak(Box::new(NEEDS)), &table).instance(),
         p.instance(),
         "every bind mints its own identity"
     );
