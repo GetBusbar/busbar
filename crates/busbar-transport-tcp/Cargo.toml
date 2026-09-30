@@ -26,6 +26,12 @@ busbar-contract = { path = "../busbar-contract" }
 
 [dev-dependencies]
 # THE BOTH-WAYS WITNESS (`tests/conformance.rs`): the linked door and this crate's own dropped-in
-# image, admitted through the one loader and driven through the one dispatcher.
+# image (the `tcp_door` example below), admitted through the one loader and driven through the one
+# dispatcher. No dev edge turns `dropped-in` on: a linked rlib exporting the door symbol puts a second
+# `busbar_plugin_door` into every test binary of any build this crate's tests share.
 busbar-plugin-loader = { path = "../plugin-loader" }
-busbar-transport-tcp = { path = ".", features = ["dropped-in"] }
+
+# THE DROPPED-IN IMAGE ON THE ONE DOOR: built by `cargo test`.
+[[example]]
+name = "tcp_door"
+crate-type = ["cdylib"]

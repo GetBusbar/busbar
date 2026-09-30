@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE `tcp` DOOR'S BOTH-WAYS WITNESS: the linked door and this crate's own dropped-in image
-//! (built with its `dropped-in` door by this crate's dev-dependency on itself), each admitted
+//! (the `tcp_door` example, the door behind the one `export_door!`), each admitted
 //! through the loader's ONE door validation and driven through the ONE dispatcher's crossing, give
 //! the same Statement and the same answers, byte for byte.
 
@@ -27,21 +27,20 @@ fn z<T>() -> T {
     unsafe { zeroed() }
 }
 
-/// This crate's built cdylib (uplifted or under `deps`, newest wins). A missing artifact is a
-/// failure, never a skip: this test IS the dropped-in door's proof.
+/// This crate's dropped-in image, the `tcp_door` example `cargo test` builds. A missing artifact
+/// is a failure, never a skip: this test IS the dropped-in door's proof.
 fn cdylib() -> std::path::PathBuf {
     let exe = std::env::current_exe().expect("the test binary has a path");
-    let profile = exe
+    let examples = exe
         .parent()
         .and_then(|d| d.parent())
-        .expect("target/<profile>");
-    let file = busbar_plugin_loader::plugin_library_filename("busbar_transport_tcp");
-    [profile.join(&file), profile.join("deps").join(&file)]
+        .expect("target/<profile>")
+        .join("examples");
+    let file = busbar_plugin_loader::plugin_library_filename("tcp_door");
+    [examples.join(&file), examples.join("deps").join(&file)]
         .into_iter()
-        .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
-        .max()
-        .map(|(_, p)| p)
-        .unwrap_or_else(|| panic!("the busbar-transport-tcp cdylib ({file}) is not built"))
+        .find(|p| p.exists())
+        .unwrap_or_else(|| panic!("the tcp_door example ({file}) is not built"))
 }
 
 fn bind(d: &Dispatcher) -> Bind {
