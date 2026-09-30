@@ -606,6 +606,9 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     );
                     continue;
                 }
+                // A FAULT (the watchdog's, for a crossing that may still be running) ENDS the unit:
+                // no `on_piece` may follow a FAULTed one within a unit, because the wedged crossing
+                // still holds the unit's buffers. A retry after FAULT would have to lend fresh ones.
                 _ => return Step::End(End::Failed(ReasonCode::PlanePanic)),
             };
             let bufs = &run.bufs;
