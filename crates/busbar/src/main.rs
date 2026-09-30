@@ -482,7 +482,7 @@ fn main() {
 /// continuing would be worse than refusing. A store that merely would not answer for some rows is
 /// NOT one of them; see that module's preamble.
 fn compose_boot_book(
-    adapter: &busbar_plugin_loader::store_adapter::StoreAdapter,
+    adapter: &crate::root::loader::store_adapter::StoreAdapter,
     data_dir: Option<std::path::PathBuf>,
     mig: &root::migration::MigrationConfig,
     now: u64,
@@ -570,7 +570,7 @@ fn open_boot_book(app: &busbar_kernel::state::App) -> root::durability::NodeBook
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let adapter = busbar_plugin_loader::store_adapter::StoreAdapter::native(gov.store());
+    let adapter = crate::root::loader::store_adapter::StoreAdapter::native(gov.store());
     let mig = root::migration::config_from(&app.cost, now);
     let token = root::kernel::new_kernel().durability_token();
     let data_dir = busbar_kernel::preflight::fleet_data_dir();
@@ -612,6 +612,9 @@ fn open_boot_book(app: &busbar_kernel::state::App) -> root::durability::NodeBook
 }
 
 async fn run(data_workers: usize) {
+    // THE PROCESS'S ONE DISPATCHER, before any plugin loads: every kind's plugins are opened on
+    // it (`root::dispatch`).
+    let _dispatcher = root::dispatch::boot(data_workers);
     // Metrics are configured AFTER the config loads (below, via `metrics::configure`) because they
     // are 100% OPT-IN: `observability.metrics` absent ⇒ no recorder, no `/metrics`, nothing recorded
     // and nothing retained. Nothing may install a recorder before that decision is read.
@@ -702,7 +705,7 @@ async fn run(data_workers: usize) {
     // BOOT-TIME dead-pid sweep: remove any orphaned plugin staging directory a CRASHED prior busbar
     // left behind (a clean shutdown removes its own; a dead pid's files are unlocked). Runs even
     // when plugins are disabled — the orphan may predate a config change.
-    let swept = busbar_plugin_loader::sweep_dead_staging();
+    let swept = crate::root::loader::sweep_dead_staging();
     if swept > 0 {
         eprintln!(
             "[info] removed {swept} orphaned plugin staging dir(s) left by a crashed prior run"

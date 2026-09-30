@@ -2210,12 +2210,11 @@ fn the_operator_credential_opens_from_the_axis() {
     let digest = busbar_contract::redacted::sha256_hex(b"tok");
     // This crate's test binary links no auth row, so its linked registry has none to open.
     let linked = crate::preflight::linked().expect("the linked registry");
+    let none = Default::default();
+    let open = |digest| open_operator(&linked, digest, &none).expect("opens");
     assert!(matches!(
-        open_operator(&linked, Some(&digest)),
-        Ok(OperatorCredential::Unanswered)
+        *open(Some(digest)),
+        OperatorCredential::Unanswered
     ));
-    assert!(matches!(
-        open_operator(&linked, None),
-        Ok(OperatorCredential::Unanswered)
-    ));
+    assert!(matches!(*open(None), OperatorCredential::Unanswered));
 }

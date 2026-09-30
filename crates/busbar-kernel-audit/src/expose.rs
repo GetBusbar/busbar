@@ -147,6 +147,11 @@ fn push_record(out: &mut String, record: &AuditRecord) {
     member_opt(out, "signature", record.signature.as_deref());
     out.push(',');
     member_opt(out, "key_id", record.key_id.as_deref());
+    // Which recipe THIS record was sealed under (#34). The body's own `recipe` names the recipe the
+    // node seals under now; a window that straddles a recipe change holds records of both, and a
+    // verifier reads each record's rules off the record.
+    out.push(',');
+    member_str(out, "recipe", record.recipe.name());
     out.push('}');
 }
 

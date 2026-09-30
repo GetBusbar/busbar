@@ -17,6 +17,7 @@
 # THE VERDICT IS NEVER GREEN WITHOUT A SERVED LEG THAT JUDGED THE SERVED BYTES. The rules, in order:
 #
 #   battery red                       -> fail, naming the battery.
+#   no subject binary                 -> fail, naming the failed build (a stale binary is never booted).
 #   subject did not boot              -> fail, naming the boot.
 #   POST /v1/systemone reads absent   -> fail, "not served": the plane is registered and configured
 #                                        and nothing answers its operation. The kernel plane driver
@@ -49,12 +50,17 @@ red() { printf '\033[31m%s\033[0m\n' "$*"; }
 grn() { printf '\033[32m%s\033[0m\n' "$*"; }
 note() { printf '%s\n' "$*"; }
 
-# judge <battery-rc> <booted 0|1> <absence-code> <systemone-code> → prints "<status>\t<reason>".
-# A PURE FUNCTION, so `--selftest` drives every rule without a build or a boot.
+# judge <battery-rc> <build> <booted 0|1> <absence-code> <systemone-code> → prints
+# "<status>\t<reason>". <build> is `0` when the subject binary was built (or handed in with --bin
+# and is executable), else the reason there is none. A PURE FUNCTION, so `--selftest` drives every
+# rule without a build or a boot.
 judge() {
-  local battery="$1" booted="$2" absent="$3" code="$4"
+  local battery="$1" build="$2" booted="$3" absent="$4" code="$5"
   if [ "$battery" != "0" ]; then
     printf 'fail\tbattery: cargo test -p busbar-plane-decisions exited %s\n' "$battery"; return
+  fi
+  if [ "$build" != "0" ]; then
+    printf 'fail\tserved: no subject binary (%s), so nothing was booted or judged\n' "$build"; return
   fi
   if [ "$booted" != "1" ] || [ -z "$absent" ] || [ "$absent" = "000" ]; then
     printf 'fail\tserved: the subject binary did not boot with a configured decisions: section, so nothing was judged\n'; return
@@ -78,17 +84,25 @@ selftest() {
       *) fail=1; red "FAIL  $name: got '$out'" ;;
     esac
   }
-  check "battery red is a fail naming the battery" "battery:" 101 1 404 404
-  check "no boot is a fail, never a pass" "did not boot" 0 0 "" ""
-  check "an unmeasured absence code is a fail" "did not boot" 0 1 "" 404
-  check "no answer is a fail" "no answer" 0 1 404 000
-  check "an absent route is NOT SERVED" "not served" 0 1 404 404
-  check "absence is measured, not assumed (401 boot)" "not served" 0 1 401 401
-  check "a mounted route without a served battery is still a fail" "mounted" 0 1 404 200
+  check "battery red is a fail naming the battery" "battery:" 101 0 1 404 404
+  check "a failed build is a fail naming the build, whatever a stale binary would answer" "cargo build exited 101" 0 "cargo build exited 101" 1 404 200
+  check "no boot is a fail, never a pass" "did not boot" 0 0 0 "" ""
+  check "an unmeasured absence code is a fail" "did not boot" 0 0 1 "" 404
+  check "no answer is a fail" "no answer" 0 0 1 404 000
+  check "an absent route is NOT SERVED" "not served" 0 0 1 404 404
+  check "absence is measured, not assumed (401 boot)" "not served" 0 0 1 401 401
+  check "a mounted route without a served battery is still a fail" "mounted" 0 0 1 404 200
+  # A FAILED BUILD YIELDS NO BINARY: `subject_bin` never names a target path after a failed build,
+  # so a stale binary from an earlier build is never booted under this commit's sha.
+  if [ -z "$(subject_bin 101 /nonexistent-target)" ] && [ -n "$(subject_bin 0 /t)" ]; then
+    note "PASS  a failed build names no subject binary; a good one names its target path"
+  else
+    fail=1; red "FAIL  subject_bin named a binary after a failed build (or none after a good one)"
+  fi
   # And no input at all yields a pass: the judge has no pass arm to reach.
-  for b in 0 1; do for bo in 0 1; do for a in 404 401 ""; do for c in 200 404 401 500 ""; do
-    case "$(judge "$b" "$bo" "$a" "$c")" in pass*) fail=1; red "FAIL  judge passed ($b $bo $a $c)" ;; esac
-  done; done; done; done
+  for b in 0 1; do for bu in 0 "cargo build exited 1"; do for bo in 0 1; do for a in 404 401 ""; do for c in 200 404 401 500 ""; do
+    case "$(judge "$b" "$bu" "$bo" "$a" "$c")" in pass*) fail=1; red "FAIL  judge passed ($b $bu $bo $a $c)" ;; esac
+  done; done; done; done; done
   [ "$fail" -eq 0 ] && note "PASS  no planted input yields a pass"
   # The writer emits valid JSON carrying the status and the reason.
   local tmp; tmp="$(mktemp)"
@@ -125,6 +139,12 @@ with open(f, "w") as fh:
     json.dump(doc, fh, indent=2)
     fh.write("\n")
 PYEOF
+}
+
+# subject_bin <build-rc> <target-dir> → the built binary's path, or NOTHING when the build failed.
+subject_bin() {
+  [ "$1" = "0" ] || return 0
+  printf '%s/debug/busbar\n' "$2"
 }
 
 free_port_pair() {
@@ -226,15 +246,19 @@ main() {
   fi
   rm -f "${TMPDIR:-/tmp}/jev-battery.$$.log"
 
+  local build=0 rc
   if [ -z "$BIN" ]; then
-    (cd "$REPO" && cargo build -q -p busbar) || { red "served: the busbar binary did not build"; BIN=""; }
-    [ -n "${CARGO_TARGET_DIR:-}" ] && BIN="${CARGO_TARGET_DIR}/debug/busbar" || BIN="$REPO/target/debug/busbar"
+    (cd "$REPO" && cargo build -q -p busbar); rc=$?
+    BIN="$(subject_bin "$rc" "${CARGO_TARGET_DIR:-$REPO/target}")"
+    if [ "$rc" -ne 0 ]; then build="cargo build exited $rc"; red "served: the busbar binary did not build"; fi
+  elif [ ! -x "$BIN" ]; then
+    build="--bin $BIN is not an executable"
   fi
   BOOTED=0; ABSENT=""; CODE=""
-  [ -x "$BIN" ] && served_leg "$BIN"
+  [ "$build" = "0" ] && served_leg "$BIN"
 
   IFS="$(printf '\t')" read -r status reason <<EOF
-$(judge "$battery" "$BOOTED" "$ABSENT" "$CODE")
+$(judge "$battery" "$build" "$BOOTED" "$ABSENT" "$CODE")
 EOF
   write_verdict "$OUT" "$status" "$reason" "$commit" "$RUN_ID" || exit 2
   note "verdict: $status — $reason"

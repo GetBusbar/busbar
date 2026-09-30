@@ -207,14 +207,17 @@ pub use busbar_kernel_identity::operator::{Operator, OperatorCredential};
 
 /// Open the operator credential from `registry`: the row answering
 /// [`crate::config::operator_provider`], over the operator token's SHA-256 hex `digest` (the
-/// plaintext never crosses the seam).
+/// plaintext never crosses the seam), answering for every provider the effective `providers`
+/// back with its module ([`Operator::backed`]).
 pub fn open_operator(
     registry: &busbar_plugin_loader::PluginRegistry,
-    digest: Option<&str>,
-) -> Result<OperatorCredential, String> {
+    digest: Option<String>,
+    providers: &crate::config::IdentityProviders,
+) -> Result<Operator, String> {
     let op = crate::config::operator_provider();
     let answered = registry.answers(op, "auth");
-    OperatorCredential::open(answered, digest, |d| registry.open_auth(op, d))
+    let defs = providers.iter().map(|(n, d)| (n.as_str(), d.module.trim()));
+    Operator::open(op, defs, answered, digest, |d| registry.open_auth(op, d))
 }
 
 impl fmt::Debug for AdminAuthChain {
@@ -255,12 +258,11 @@ impl AdminAuthChain {
         let mut modules: std::collections::HashMap<String, Box<dyn AuthModule>> =
             std::collections::HashMap::new();
         let mut has_plugin = false;
-        let mut operator = Operator::new(crate::config::operator_provider());
+        let op = crate::config::operator_provider();
         for entry in &cfg.admin_auth {
-            if operator.backs(&entry.name, &entry.module) {
-                continue;
-            }
             match entry.module.as_str() {
+                // The operator credential is opened beside the chain ([`open_operator`]).
+                module if Operator::backed(op, &entry.name, Some(module)) => {}
                 // TEST-ONLY inline admin stand-ins (dispatched by name in `run_admin_chain`); never
                 // resolved as plugins. Compiled out of release binaries.
                 #[cfg(any(test, feature = "test-support"))]
@@ -288,7 +290,7 @@ impl AdminAuthChain {
         Ok(Self {
             modules,
             has_plugin,
-            operator,
+            operator: Operator::new(op),
         })
     }
 }

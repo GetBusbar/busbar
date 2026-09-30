@@ -5,7 +5,7 @@
 //!
 //! This is the plane half of the kernel's `Units::meter` row: the step's own unit token, the usage
 //! token the report is sealed with, the request's context and the provisional end, answering with
-//! `Decision<Meter>` carrying the `Usage` the exit path settles against.
+//! `SeatVerdict<Meter>` carrying the `Usage` the exit path settles against.
 //!
 //! # The body is today's accrual, unchanged
 //!
@@ -99,7 +99,7 @@
 
 use std::sync::Arc;
 
-use busbar_contract::caps::{step::Meter, Consumption, Decision, Grant, Outcome, Pass, Usage};
+use busbar_contract::caps::{step::Meter, Consumption, Grant, Outcome, Pass, SeatVerdict, Usage};
 use busbar_kernel::{door, plane_host::EngineHost};
 
 /// WHAT THE ROUTE STEP OBSERVED — the facts this step is bound to, as the step before it hands
@@ -276,7 +276,7 @@ impl<'a> MeterCtx<'a> {
 /// [`Metered::decision`] is exactly what the kernel's `Units::meter` returns.
 pub struct Metered {
     /// The sealed step-6 answer: the usage report the posting is made against.
-    pub decision: Decision<Meter>,
+    pub decision: SeatVerdict<Meter>,
     /// The metering row this response accrued — one request for the serving model, with the token
     /// split preserved. `None` when there was no key or no serving lane to attribute it to, which
     /// is the only case in which nothing is metered at all.
@@ -306,7 +306,7 @@ pub struct Metered {
 
 impl Metered {
     /// The step's answer on its own, which is what the loop takes.
-    pub fn into_decision(self) -> Decision<Meter> {
+    pub fn into_decision(self) -> SeatVerdict<Meter> {
         self.decision
     }
 }
@@ -403,7 +403,7 @@ pub fn meter(
     // This step settles nothing: what the unit consumed leaves on the report, and the side that
     // holds the card is the one that turns those quantities into an amount.
     Metered {
-        decision: Decision::proceed(unit_token, usage),
+        decision: SeatVerdict::proceed(unit_token, usage),
         row,
         fee_count,
         posted,

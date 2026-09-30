@@ -353,7 +353,8 @@ impl NamedMapSection {
 /// Validate a named-definition write through the OWNING PLANE's
 /// [`config_validate`](crate::plane::registry::PlaneDecl::config_validate) seam, resolved by config
 /// section — so core routes a plane-section write to the plane's own validator without naming a
-/// plane-specific validate function. A section whose plane declares no validator (none of
+/// plane-specific validate function — after the kernel's own per-registration judgement
+/// ([`crate::plane::config::validate_plane_entry`]). A section whose plane declares no validator (none of
 /// the sections that reach this helper) validates vacuously; a section whose plane is compiled out is
 /// refused by the caller before it reaches here.
 fn plane_config_validate(
@@ -361,9 +362,21 @@ fn plane_config_validate(
     name: &str,
     def: &serde_json::Value,
 ) -> Result<(), String> {
-    match crate::plane::registry::plane_decl_for_config_section(section.key())
-        .and_then(|d| d.config_validate)
-    {
+    let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section.key()) else {
+        return Ok(());
+    };
+    // The kernel's own judgement of the definition first, exactly as boot runs it on a section
+    // entry: the plane's declared trust keys, then its hook references.
+    let entry =
+        serde_yaml::to_value(def).map_err(|e| format!("`{}.{name}`: {e}", section.key()))?;
+    crate::plane::config::validate_plane_entry(
+        section.key(),
+        name,
+        &entry,
+        decl.trust_keys,
+        &crate::plane::config::config_sections(),
+    )?;
+    match decl.config_validate {
         Some(f) => f(name, def),
         None => Ok(()),
     }

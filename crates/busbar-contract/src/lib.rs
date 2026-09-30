@@ -67,6 +67,7 @@ pub mod ids;
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod ir;
 pub(crate) mod json_grammar;
+pub mod jsonrpc;
 pub mod kinds;
 // The media carriers (#83a SD-2b), re-expressed over `bounded::SlabBytes`.
 #[allow(missing_docs, missing_debug_implementations)]
@@ -97,11 +98,17 @@ pub mod secret;
 // The config secret-reference SHAPE (DECISIONS #83 MERGE, fold F1): the former `busbar-secret-ref`
 // crate. Its `SecretRef` is also the kind ABI's (`kinds::SecretRef` re-exports it): one type.
 pub mod secret_ref;
+pub mod section;
 pub mod services;
 pub mod signal;
 pub mod slice;
 pub mod spans;
 pub mod surface;
+// THE TEST KIT IS NOT IN A RELEASE BUILD (Locked Decision #33, "there is NO testkit"). Its log
+// double is compiled for this crate's own tests and, through the dev-only `test-seal` feature, for a
+// plugin's dev-dependency edge; `tests/test_seal_is_dev_only.rs` refuses any non-dev edge that
+// enables it, so no shipped artifact carries it.
+#[cfg(any(test, feature = "test-seal"))]
 pub mod testkit;
 pub mod transport;
 pub mod unit;

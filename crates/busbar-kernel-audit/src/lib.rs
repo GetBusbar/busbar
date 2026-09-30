@@ -97,7 +97,9 @@ pub use legacy::{
     AUDIT_SCHEME_LENGTH_PREFIXED, AUDIT_SCHEME_PIPE, MAX_AUDIT_ENTRIES, OUTCOME_APPLIED,
     OUTCOME_DEGRADED, OUTCOME_REJECTED,
 };
-pub use recipe::{digest_fields, digest_over, DigestField, DigestValue, DIGEST_RECIPE};
+pub use recipe::{
+    digest_fields, digest_over, DigestField, DigestValue, Recipe, DIGEST_RECIPE, DIGEST_RECIPE_V2,
+};
 pub use record::{
     Audit, AuditBreak, AuditBreakKind, AuditChain, AuditInputs, AuditRecord, Controls, FinishClass,
     HookApplied, OpClassId, OutcomeFacts, QuantitySource, Subject, Usage, UsageLine, What,

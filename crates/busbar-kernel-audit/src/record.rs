@@ -141,8 +141,6 @@ pub struct Usage {
     pub tier_bp: u32,
     /// How many request fees were charged.
     pub fee_count: u32,
-    /// Which currency the nano-units are of.
-    pub currency: String,
     /// Which rate card version was in force — the card a read-time price is taken at.
     pub rate_card_version: u64,
     /// Which chain of buckets it was drawn against.
@@ -213,6 +211,10 @@ pub struct AuditRecord {
     pub seq: u64,
     /// The preceding record's digest.
     pub prev_hash: String,
+    /// WHICH RECIPE this record was sealed under, and so the rules its digest is recomputed by
+    /// (#34). Every record this build seals is [`crate::recipe::Recipe::V3`]; a record sealed
+    /// under `v2` keeps verifying by `v2`'s rules.
+    pub recipe: crate::recipe::Recipe,
     /// This record's own digest.
     pub hash: String,
     /// THE SIGNATURE OVER [`AuditRecord::hash`], minted at seal time by the process that sealed
@@ -463,8 +465,8 @@ impl AuditChain {
     ///
     /// ONE RECIPE, and this walks it. The field order, the framing and the exact spelling of every
     /// value live in [`crate::recipe::digest_fields`], which is also what the range read publishes
-    /// and what `docs/audit-chain-digest-v2.md` describes. Before, the order lived here and the
-    /// document described it from the outside — two copies of one contract, and the one thing a
+    /// and what `docs/audit-chain-digest-v3.md` describes (a record sealed under `v2`: the `v2`
+    /// page). Before, the order lived here and the document described it from the outside — two copies of one contract, and the one thing a
     /// published digest recipe cannot survive is two spellings of itself: a drift between them
     /// would make every third-party verification fail while looking, to the third party, exactly
     /// like a tampered chain.
@@ -618,6 +620,7 @@ impl Audit for AuditChain {
                 .map(|label| crate::legacy::sha256_hex(label.as_bytes())),
             seq: self.next_seq,
             prev_hash: self.tail_hash.clone(),
+            recipe: crate::recipe::Recipe::V3,
             hash: String::new(),
             signature: None,
             key_id: None,

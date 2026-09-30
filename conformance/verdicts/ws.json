@@ -1,0 +1,14 @@
+{
+  "schema": "busbar.conformance.verdict/1",
+  "suite": "ws",
+  "standard": "WebSocket (RFC 6455)",
+  "plan": "Autobahn|Testsuite against busbar-transport-ws",
+  "spec_version": "autobahn-testsuite 0.8.2",
+  "status": "fail",
+  "armed": true,
+  "commit": "51dba32fb33286be8e12840df399c0a9eed4b809",
+  "run_id": null,
+  "evidence": null,
+  "generated_at": "2026-09-28T19:37:44Z",
+  "reason": "127 of 517 cases FAIL (216 UNIMPLEMENTED -- RFC 7692 permessage-deflate, out of this suite's RFC 6455 claim, not counted). Root cause diagnosed and singular: busbar-transport-ws's wire Frame carries no text/binary discriminator, so every inbound WS TEXT frame is echoed back as BINARY -- content, close code and close cleanliness all now match (the close-handshake defects this same commit range fixed are gone from the failure set). Fix in flight as PIECE_TEXT (abi/transport vocabulary bit); this verdict is expected to flip to pass once that lands and Autobahn is re-run clean."
+}

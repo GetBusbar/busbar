@@ -128,8 +128,8 @@ pub struct ChainGroup {
     pub tier_bp: u32,
 }
 
-/// The neutral tier multiplier: one times ten thousand.
-pub const STANDARD_TIER_BP: u32 = 10_000;
+/// The neutral tier multiplier — the one the settlement and every read apply, defined once.
+pub use crate::price::STANDARD_TIER_BP;
 
 /// A resolved chain: the principal's attribution bucket, then every ancestor group's per-window
 /// buckets, innermost first, plus the groups themselves in the same order.

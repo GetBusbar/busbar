@@ -14,7 +14,7 @@
 //!
 //! - The [ten steps](step) as type-level markers, sealed so no eleventh can be invented.
 //! - The [tokens](token): one per unit, plus the kernel's own.
-//! - [`Decision<S>`] — a step's answer, buildable only with the token for that same step.
+//! - [`SeatVerdict<S>`] — a step's answer, buildable only with the token for that same step.
 //! - [`Hold`], [`HoldCell`], [`HoldAccrual`] — the reservation, the slot it lives in, and a child's
 //!   spend against a parent's.
 //! - [`Posted`], [`DurabilityLost`], [`Usage`] — what closes a hold, and what it is closed against.
@@ -68,9 +68,9 @@
 
 pub mod canary;
 pub mod capability;
-pub mod decision;
 pub mod egress;
 pub mod hold;
+pub mod seat_verdict;
 pub mod step;
 pub mod token;
 pub mod unit_end;
@@ -81,12 +81,12 @@ pub use capability::{
     AdminVerb, Admittance, Capability, Consumption, Dial, DurableWrite, Exit, KeyHandle, Recover,
     Sign, WriteMoney,
 };
-pub use decision::{Decision, ReasonCode, Refusal};
 pub use egress::{AuthDecoration, SecretOnce, SecretSlot, TransportKeyHandle, VerifiedDestination};
 pub use hold::{
     Accrual, AccrualRefused, Admission, AdmitRejected, CellError, DurabilityLost, Hold,
     HoldAccrual, HoldCell, HoldCellState, Posted, PostingFlags, Spend,
 };
+pub use seat_verdict::{ReasonCode, Refusal, SeatVerdict};
 pub use step::{
     Admit, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate, Authenticated,
     Challenge, Decode, Encode, Frame, LaneId, Meter, MeterClassId, OpClassId, PrincipalId, Route,

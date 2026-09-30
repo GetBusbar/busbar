@@ -3,7 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
-use busbar_contract::caps::{KernelSeal, StepName};
+use busbar_contract::caps::{KernelSeal, ReasonCode, StepName};
 
 /// A deployment, as the guards see one.
 #[derive(Default)]

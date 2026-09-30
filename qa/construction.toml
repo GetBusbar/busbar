@@ -370,11 +370,33 @@ abi = ["crates/busbar-contract"]
 # 17779 -> 17802 (OWNER RULING Q68(3)). Its commit reached the base; struck by the batch re-arm
 # below, which declares the pair's next figure.
 
-[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
+# [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"] 55182 -> 55337 — EXPIRED AND STRUCK: its commit reached the base,
+# and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
+
+# ── THE KERNEL CEILING, RE-ARMED BY FOLD-LLM C3' (the AUDIT step's finish) — EXPIRED AND STRUCK
+#
+# Declared `rules.loc-ceilings.kernel_ceiling` 55163 -> 55182 (ARCHITECT 2026-09-28, R-KERNEL). Its
+# commit reached the base; struck by KERNEL-VALIDATE's re-arm above, which declares the next figure.
+
+# ── THE KERNEL CEILING, RE-ARMED BY FOLD-LLM C4' (the VERIFY step's destination guard) — EXPIRED
+#    AND STRUCK
+#
+# Declared `rules.loc-ceilings.kernel_ceiling` 55077 -> 55163 (ARCHITECT 2026-09-28, R-KERNEL). Its
+# commit reached the base; struck by the FOLD-LLM C3' re-arm above, which declares the pair's next
+# figure.
+
+[gate.ceiling_raises."rules.loc-ceilings.kernel_files.teller.ceiling"]
 file    = "qa/construction.toml"
-from    = 55056
-to      = 55077
-because = "ARCHITECT 2026-09-28: R-KERNEL, owner 2026-09-28 plugin log files ruling (BUSBAR-1.6.0.md #85 and THE DESIGN, §11.2 Plugin logging). The kernel carries the plugins.logs config grammar (the field, its default and a five-field struct), kernel config by necessity because the config-schema gate reads only kernel config, and refuses a bad value at the one plugins_preflight seam every path runs. Measured by cargo xtask gate construction: 55056 before, 55077 after, +21. The ceiling rises by exactly that."
+from    = 599
+to      = 600
+because = "OWNER GRANT 2026-09-29 (3), ARCHITECT approval: line-limit re-arm at the measured value. Renaming busbar_contract::caps::decision::Decision to caps::seat_verdict::SeatVerdict makes rustfmt re-wrap one line in crates/busbar-kernel/src/teller.rs. Measured by cargo xtask gate construction and cargo xtask loc: teller.rs 599 before, 600 after, +1. The kernel_ceiling row needs no raise: measured 55149 before, 55150 after (+1), under its 55163 ceiling."
+
+# ── THE KERNEL CEILING, RE-ARMED BY LOG-BRIDGE plugin logging (#85; BUSBAR-1.6.0.md THE DESIGN, §11.2) — EXPIRED
+#    AND STRUCK
+#
+# Declared `rules.loc-ceilings.kernel_ceiling` 55056 -> 55077 (ARCHITECT 2026-09-28, R-KERNEL). Its
+# commit reached the base; struck by FOLD-LLM C4's re-arm above, which declares the pair's next
+# figure.
 
 # ── THE KERNEL CEILING, RE-ARMED BY FOLD-LLM C2' — EXPIRED AND STRUCK
 #
@@ -409,21 +431,55 @@ because = "ARCHITECT 2026-09-28: R-KERNEL, owner 2026-09-28 plugin log files rul
 # 24900 -> 24909 (OWNER RULING Q68(3)). Its commit reached the base; struck by LOG-BRIDGE's
 # re-arm below, which declares the pair's next figure.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED BY LOG-BRIDGE plugin logging (#85; THE DESIGN §11.2) —
-#    measured and written by LANDER at land time, rebased over DOOR-TRANSPORT's already-landed
-#    figure ──────────────────────────────────────────────────────────────────────────────────
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY LOG-BRIDGE plugin logging (#85) — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 24909 -> 25143. Its commit reached the base; struck by SDK-SAFE's re-arm below, which declares
+# the pair's next figure.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY SDK-SAFE (the SDK's safe surface and the plane Claim
+#    flags) — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 25082 -> 25543. Its commit reached the base; struck by KERNEL-VALIDATE's re-arm below, which
+# declares the pair's next figure.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY KERNEL-VALIDATE (the section split moves into the
+#    contract; the plane tail declares its kernel-owned trust keys) — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 25543 -> 25712. Its commit reached the base; struck by STORE-MIGRATE's re-arm below, which
+# declares the pair's next figure.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY STORE-MIGRATE (the 1.5.x usage-row fold returns to the
+#    contract at abi::sdk::store_migrate, an F12 relocation netting 0 against the -61 deletion) —
+#    measured by LANDER at the landed tip
+
+# [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
+# and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
+
+# ── THE KIND-ISOLATION CELL busbar-plane-mcp x transport, RAISED BY FOLD-MCP A3 AND A6 (F12 relocations)
+
+[gate.ceiling_raises."cell[crate=busbar-plane-mcp,kind=transport].count"]
+file    = "qa/kind-isolation.toml"
+from    = 60
+to      = 90
+because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan approved 2026-09-29): fold A3 moved the MCP diagnostics catalog from busbar-mcp into busbar-plane-mcp, and the catalog's stdio diagnostic (MCP_STDIO_READ_ERROR, its slug and customer-visible text) names the transport vocabulary. The pair nets down in that commit: busbar-plane-mcp x transport 60 -> 66 (+6), busbar-mcp x plane 3822 -> 3761 (-61), busbar-mcp x transport 583 -> 577 (-6), busbar-mcp x contract 306 -> 305 (-1) (net -62). Measured by cargo xtask gate kind-isolation (the METER-FIX meter): 60 before, 66 after. Fold A6 moved the MCP client verb enum and peer classifier (client/verb.rs, client/peer.rs and their tests) from busbar-mcp into busbar-plane-mcp; their prose and tests name the transport vocabulary. The pair nets down in that commit: busbar-plane-mcp x transport 66 -> 90 (+24), busbar-plane-mcp x plane 10 -> 13 (+3), busbar-mcp x transport 574 -> 550 (-24), busbar-mcp x plane 3711 -> 3671 (-40) (net -37). Measured: 66 before, 90 after."
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 24909
-to      = 25143
-because = "ARCHITECT 2026-09-28 plugin logging, the standing contract-pair exception: the step's declared surface is the door macro's call capture (abi::sdk::capture), its wiring into the trampoline and plugin_door!, and the reserved log diagnostic ids and bounds in abi::mechanism::call (BUSBAR-1.6.0.md #85 and THE DESIGN, §11.2 Plugin logging), +234 (LOG-BRIDGE's own delta, rebased over DOOR-TRANSPORT's landed +9). Measured by cargo xtask gate construction: 24909 before, 25143 after."
+from    = 23937
+to      = 23998
+because = "OWNER GRANT 2026-09-29 (2), an F12 relocation netting down: the 1.5.x usage-row fold returns to the contract at the store SDK (abi::sdk::store_migrate). The pair: the engine fold's deletion -61 (25143 -> 25082, landed) and this relocation +61, net 0. Measured by cargo xtask gate construction on METER-FIX's loc basis at the landing tip: 23937 before, 23998 after, +61."
+
+# [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
+# and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 24909
-to      = 25143
-because = "ARCHITECT 2026-09-28 plugin logging, the standing contract-pair exception: the step's declared surface is the door macro's call capture (abi::sdk::capture), its wiring into the trampoline and plugin_door!, and the reserved log diagnostic ids and bounds in abi::mechanism::call (BUSBAR-1.6.0.md #85 and THE DESIGN, §11.2 Plugin logging), +234 (LOG-BRIDGE's own delta, rebased over DOOR-TRANSPORT's landed +9). Measured by cargo xtask gate construction: 24909 before, 25143 after."
+from    = 23937
+to      = 23998
+because = "OWNER GRANT 2026-09-29 (2), an F12 relocation netting down: the 1.5.x usage-row fold returns to the contract at the store SDK (abi::sdk::store_migrate). The pair: the engine fold's deletion -61 (25143 -> 25082, landed) and this relocation +61, net 0. Measured by cargo xtask gate construction on METER-FIX's loc basis at the landing tip: 23937 before, 23998 after, +61."
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY LANDER'S BATCH (XTASK-SPEED, KI-ABI-SCOPE, M3-SDK,
 #    M3-SHAPES AUTH, billing-cite) — EXPIRED AND STRUCK
@@ -687,8 +743,21 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 24900 -> 24909, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
 # the transport stream-end rule (+9); struck by LOG-BRIDGE's re-arm below.
 # RE-ARMED 24909 -> 25143, AT THE MEASUREMENT, in its own commit after LOG-BRIDGE plugin logging
-# (#85, +234); the live declaration above carries the measure.
-contract_caps = 25143
+# (#85, +234).
+# LOWERED 25143 -> 25082, the measurement: the contract's frozen pre-M1b usage-row shapes and
+# fold_v1_ledger are deleted (-61). Downward only.
+# RE-ARMED 25082 -> 25543, AT THE MEASUREMENT, in its own commit after SDK-SAFE (the SDK's safe
+# surface and the plane Claim flags, +461); struck by KERNEL-VALIDATE's re-arm.
+# RE-ARMED 25543 -> 25712, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# KERNEL-VALIDATE (the contract section split and the plane tail's trust keys, +169); struck by
+# the next re-arm.
+# LOWERED 25712 -> 23937, the measurement: METER-FIX's loc basis (layout pins billed as test, -1605;
+# the contract testkit out of release builds, -167; measured, -1775). Downward only.
+# RE-ARMED 23937 -> 23998, AT THE MEASUREMENT (OWNER GRANT 2026-09-29 (3)), in its own commit after
+# STORE-MIGRATE (the 1.5.x usage-row fold returns to the contract at abi::sdk::store_migrate, an F12
+# relocation netting 0 against the -61 deletion, +61); the live declaration above carries the
+# measure.
+contract_caps = 23998
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -756,9 +825,11 @@ needle = "busbar_kernel::"
 # measurement on the committed tree (HEAD b091b4e83), a raise the owner ruled is a needle repair
 # arming the true count, not a relaxation of what the instrument ever saw. Downward only from here.
 [rules.ports-only.max_per_crate]
-busbar-llm = 252
-busbar-mcp = 285
-busbar-a2a = 236
+busbar-llm = 251
+# LOWERED 283 -> 282 by fold A5: the outbound wire moved to busbar-plane-mcp and reads the
+# contract's JSON-RPC reader, not the kernel's. Downward only.
+busbar-mcp = 282
+busbar-a2a = 233
 busbar-voice = 88
 
 [rules.ports-only-tests]
@@ -1258,7 +1329,16 @@ kernel_crate = "busbar-kernel"
 # check_structure/pin_answer), declared above. Measured 54915 before, 55056 after, +141.
 # ── RE-ARMED 55056 -> 55077 for the plugins.logs config grammar and its pre-flight refusal
 # (plugin log files, owner 2026-09-28), declared above. Measured 55056 before and 55077 after, +21.
-kernel_ceiling = 55077
+# ── RE-ARMED 55077 -> 55163 for FOLD-LLM C4' (the VERIFY step's destination guard, PoolView and
+# VerifyRefusal move into the kernel door), declared above. Measured 55077 before, 55163 after, +86.
+# ── RE-ARMED 55163 -> 55182 for FOLD-LLM C3' (the kernel door decides the AUDIT step's finish).
+# Measured 55163 before, 55182 after, +19; struck by KERNEL-VALIDATE's re-arm.
+# ── RE-ARMED 55182 -> 55337 for KERNEL-VALIDATE (kernel boot validation of every plane section's
+# hook references and declared trust keys), declared above. Measured 55168 before, 55337 after, +169.
+# ── LOWERED 55337 -> 52187 by METER-FIX's loc basis, with RENAME (xtask loc bills test-gated
+# modules and const _ assertions as test; measured plus K2g's named 73-line reservation), the
+# measurement, -3150. Downward only.
+kernel_ceiling = 52187
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -1350,7 +1430,15 @@ contract_crate = "busbar-contract"
 # +560).
 # RE-ARMED 24900 -> 24909 with its pair (OWNER RULING Q68(3); the transport stream-end rule, +9).
 # RE-ARMED 24909 -> 25143 with its pair (LOG-BRIDGE plugin logging #85, +234).
-caps_contract_ceiling = 25143
+# LOWERED 25143 -> 25082 with its pair (fold_v1_ledger and the frozen usage-row shapes deleted, -61).
+# RE-ARMED 25082 -> 25543 with its pair (SDK-SAFE: the SDK's safe surface and the Claim flags, +461).
+# RE-ARMED 25543 -> 25712 with its pair (OWNER RULING Q68(3); KERNEL-VALIDATE, the contract
+# section split and the plane tail's trust keys, +169).
+# LOWERED 25712 -> 23937 with its pair (METER-FIX's loc basis: layout pins billed as test, -1605;
+# the contract testkit out of release builds, -167; measured, -1775).
+# RE-ARMED 23937 -> 23998 with its pair (STORE-MIGRATE: the 1.5.x usage-row fold returns to the
+# contract at abi::sdk::store_migrate, an F12 relocation netting 0 against the -61 deletion, +61).
+caps_contract_ceiling = 23998
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
@@ -1421,7 +1509,9 @@ patterns = ["teller.rs"]
 # re-exported from `teller` under every old path; its 96 code lines still spend `kernel_ceiling`.
 # That took the row from 695 (RED against 659) to 604. Downward only.
 # ── LOWERED 604 -> 601, the measurement: TLS-RETIRE (2/3) deletes `Kernel::transport_key_token`.
-ceiling = 599
+# ── RE-ARMED 599 -> 600 (OWNER GRANT 2026-09-29 (3)): the RENAME of caps::decision::Decision to
+# caps::seat_verdict::SeatVerdict re-wraps one line of teller.rs under rustfmt. Measured 599 before, 600 after, +1.
+ceiling = 600
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
@@ -1534,6 +1624,9 @@ busbar-transport-http = [
   "hyper-rustls", "http-body-util", "http", "webpki-roots", "tonic", "tower",
 ]
 busbar-transport-stdio = ["tokio", "futures"]
+# The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
+# the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
+busbar-plane-mcp = ["base64"]
 busbar-transport-tcp = ["tokio-util", "futures", "tokio"]
 busbar-transport-ws = [
   "tokio-util", "tokio", "tokio-tungstenite", "tokio-rustls", "rustls", "rustls-pki-types",
@@ -2382,13 +2475,9 @@ forbidden_deps = ["busbar-kernel-ledger"]
 max_hits = 0
 # Reviewed per-file exceptions: file -> the symbols accepted there, the reason recorded here.
 #
-#   The llm plane's Verify step holds a `CostHandle` and calls its guard `priced`, and neither
-#   learns a price: the handle is opaque and the two questions asked through it
-#   (`cost_pricing_enabled`, `cost_model_unpriced`) answer yes or no, so the step can refuse a lane
-#   the card does not cover without any figure crossing the seam. Every amount-bearing symbol above
-#   is still held against that file.
+#   None stands: the destination guard (and its `priced` question) is the kernel's
+#   (busbar-kernel-scope, re-exported by the kernel door).
 [rules.plane-no-money.allowlist]
-"crates/busbar-llm/src/unit/verify.rs" = ["CostHandle", "priced"]
 
 # ── 29. one-pricing-site ─────────────────────────────────────────────────────────────────────────
 [rules.one-pricing-site]

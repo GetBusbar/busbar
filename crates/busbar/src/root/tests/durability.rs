@@ -281,7 +281,6 @@ fn audit_inputs(unit: u64) -> busbar_kernel_audit::AuditInputs {
             lines: Vec::new(),
             tier_bp: 9_000,
             fee_count: 1,
-            currency: "USD".into(),
             rate_card_version: 3,
             bucket_chain_ref: "chain:free>paid".into(),
         },

@@ -1991,7 +1991,6 @@ pub fn audit_body(record: &AuditRecord) -> Vec<u8> {
     body.text(&format!("{:?}", record.outcome.finish));
     body.num(u64::from(record.usage.tier_bp));
     body.num(u64::from(record.usage.fee_count));
-    body.text(&record.usage.currency);
     body.num(record.usage.rate_card_version);
     body.text(&record.usage.bucket_chain_ref);
     body.text(record.correlation_hash.as_deref().unwrap_or(""));

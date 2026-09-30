@@ -103,12 +103,9 @@ pub(crate) const META_PROTOCOL_VERSION: &str = busbar_plane_mcp::codec::META_PRO
 /// [`META_PROTOCOL_VERSION`] states.
 pub(crate) const META_CLIENT_CAPABILITIES: &str = busbar_plane_mcp::codec::META_CLIENT_CAPABILITIES;
 
-/// The header mirroring the body's `method`. REQUIRED on every request.
-pub(crate) const H_MCP_METHOD: &str = "mcp-method";
-/// The header mirroring the target name. REQUIRED on `tools/call`, `resources/read`, `prompts/get`.
-pub(crate) const H_MCP_NAME: &str = "mcp-name";
-/// The header mirroring the `_meta` protocol version.
-pub(crate) const H_PROTOCOL_VERSION: &str = "mcp-protocol-version";
+/// The three mirrored header names (`mcp-method`, `mcp-name`, `mcp-protocol-version`), defined in
+/// `busbar-plane-mcp` and read here BY IDENTITY, for the reason [`META_PROTOCOL_VERSION`] states.
+pub(crate) use busbar_plane_mcp::codec::{H_MCP_METHOD, H_MCP_NAME, H_PROTOCOL_VERSION};
 
 /// JSON-RPC error codes this module emits. Named rather than inlined because three of the four are
 /// MCP extensions rather than JSON-RPC standard codes, and a bare `-32022` in a match arm is a

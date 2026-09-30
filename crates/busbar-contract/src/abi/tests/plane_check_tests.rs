@@ -419,13 +419,31 @@ fn a_snapshot_list_counted_with_a_null_pointer_or_too_long_is_fault() {
     );
 }
 
+fn claim(verb: &'static str, target: &'static str, flags: u32) -> Claim {
+    Claim {
+        verb: s(verb),
+        target: s(target),
+        carrier: s("c"),
+        flags,
+        _reserved: 0,
+    }
+}
+
+#[test]
+fn a_claim_states_only_known_flags() {
+    let open_exact = claim("V", "/t", CLAIM_OPEN | CLAIM_EXACT);
+    assert_eq!(check_claims(&[open_exact]), Ok(()));
+    // RED: a bit neither CLAIM_OPEN nor CLAIM_EXACT.
+    let unknown = claim("V", "/t", CLAIM_EXACT << 1);
+    assert_eq!(
+        check_claims(&[unknown]),
+        f(Rule::UnknownCode, "claim.flags")
+    );
+}
+
 #[test]
 fn every_snapshot_claim_and_route_is_named() {
-    let c = Claim {
-        verb: s("V"),
-        target: s("/t"),
-        carrier: s("c"),
-    };
+    let c = claim("V", "/t", 0);
     assert_eq!(check_claims(&[c]), Ok(()));
     let mut bad = c;
     bad.carrier = z();
@@ -770,6 +788,196 @@ fn a_record_kind_is_chained_at_most_once() {
     assert_eq!(
         check_record_chains(&[chain(1), chain(0), chain(1)], 2),
         f(Rule::Contradiction, "record_chain.kind_twice")
+    );
+}
+
+// ── trust keys ──
+
+const MECHANISMS: [PinMechanism; 2] = [
+    PinMechanism {
+        token: AbiStr {
+            ptr: b"rooted".as_ptr(),
+            len: 6,
+        },
+        flags: MECHANISM_ROOT,
+        _reserved: 0,
+    },
+    PinMechanism {
+        token: AbiStr {
+            ptr: b"bare".as_ptr(),
+            len: 4,
+        },
+        flags: 0,
+        _reserved: 0,
+    },
+];
+
+fn pin_key() -> TrustKey {
+    TrustKey {
+        key: s("pin"),
+        role: TRUST_PIN,
+        flags: PIN_FINGERPRINT,
+        default: AbiStr {
+            ptr: null(),
+            len: 0,
+        },
+        mechanisms: MECHANISMS.as_ptr(),
+        mechanisms_len: MECHANISMS.len(),
+    }
+}
+
+fn duration_key(role: u32) -> TrustKey {
+    TrustKey {
+        key: s("ttl"),
+        role,
+        flags: 0,
+        default: s("5s"),
+        mechanisms: null(),
+        mechanisms_len: 0,
+    }
+}
+
+#[test]
+fn a_tail_counting_trust_keys_over_a_null_pointer_is_fault() {
+    let mut t = tail();
+    t.trust_keys_len = 1;
+    assert_eq!(check_tail(&t), f(Rule::NullWithCount, "tail.trust_keys"));
+}
+
+#[test]
+fn well_formed_trust_keys_pass() {
+    let keys = [
+        pin_key(),
+        duration_key(TRUST_REVERIFY_TTL),
+        duration_key(TRUST_RECOVERY_BACKOFF),
+    ];
+    assert_eq!(check_trust_keys(&keys), Ok(()));
+    assert_eq!(check_pin_mechanisms(&MECHANISMS), Ok(()));
+}
+
+#[test]
+fn a_trust_key_is_named() {
+    let mut k = pin_key();
+    k.key = AbiStr {
+        ptr: null(),
+        len: 0,
+    };
+    assert_eq!(check_trust_keys(&[k]), f(Rule::Missing, "trust_key.key"));
+}
+
+#[test]
+fn a_trust_key_role_is_known() {
+    for role in [0, TRUST_RECOVERY_BACKOFF + 1] {
+        assert_eq!(
+            check_trust_keys(&[duration_key(role)]),
+            f(Rule::UnknownCode, "trust_key.role")
+        );
+    }
+}
+
+#[test]
+fn a_trust_key_default_is_never_counted_over_a_null_pointer() {
+    let mut k = duration_key(TRUST_REVERIFY_TTL);
+    k.default = AbiStr {
+        ptr: null(),
+        len: 2,
+    };
+    assert_eq!(
+        check_trust_keys(&[k]),
+        f(Rule::NullWithCount, "trust_key.default")
+    );
+}
+
+#[test]
+fn a_trust_key_never_counts_mechanisms_over_a_null_pointer() {
+    let mut k = pin_key();
+    k.mechanisms = null();
+    assert_eq!(
+        check_trust_keys(&[k]),
+        f(Rule::NullWithCount, "trust_key.mechanisms")
+    );
+}
+
+#[test]
+fn a_pin_flag_is_known() {
+    let mut k = pin_key();
+    k.flags = PIN_FINGERPRINT << 1;
+    assert_eq!(
+        check_trust_keys(&[k]),
+        f(Rule::UnknownCode, "trust_key.flags")
+    );
+}
+
+#[test]
+fn a_pin_names_at_least_one_mechanism() {
+    let mut k = pin_key();
+    k.mechanisms_len = 0;
+    assert_eq!(
+        check_trust_keys(&[k]),
+        f(Rule::Missing, "trust_key.mechanisms")
+    );
+}
+
+#[test]
+fn a_pin_has_no_default() {
+    let mut k = pin_key();
+    k.default = s("x");
+    assert_eq!(
+        check_trust_keys(&[k]),
+        f(Rule::Contradiction, "trust_key.pin_default")
+    );
+}
+
+#[test]
+fn a_duration_key_carries_no_pin_flag() {
+    let mut k = duration_key(TRUST_REVERIFY_TTL);
+    k.flags = PIN_FINGERPRINT;
+    assert_eq!(
+        check_trust_keys(&[k]),
+        f(Rule::UnknownCode, "trust_key.duration_flags")
+    );
+}
+
+#[test]
+fn a_duration_key_names_no_mechanism() {
+    let mut k = duration_key(TRUST_REVERIFY_TTL);
+    k.mechanisms = MECHANISMS.as_ptr();
+    k.mechanisms_len = 1;
+    assert_eq!(
+        check_trust_keys(&[k]),
+        f(Rule::Contradiction, "trust_key.duration_mechanisms")
+    );
+}
+
+#[test]
+fn a_trust_role_is_declared_at_most_once() {
+    let keys = [
+        duration_key(TRUST_REVERIFY_TTL),
+        pin_key(),
+        duration_key(TRUST_REVERIFY_TTL),
+    ];
+    assert_eq!(
+        check_trust_keys(&keys),
+        f(Rule::Contradiction, "trust_key.role_twice")
+    );
+}
+
+#[test]
+fn a_pin_mechanism_is_named_with_known_flags() {
+    let mut m = MECHANISMS[0];
+    m.token = AbiStr {
+        ptr: null(),
+        len: 0,
+    };
+    assert_eq!(
+        check_pin_mechanisms(&[m]),
+        f(Rule::Missing, "pin_mechanism.token")
+    );
+    let mut m = MECHANISMS[0];
+    m.flags = MECHANISM_ROOT << 1;
+    assert_eq!(
+        check_pin_mechanisms(&[m]),
+        f(Rule::UnknownCode, "pin_mechanism.flags")
     );
 }
 

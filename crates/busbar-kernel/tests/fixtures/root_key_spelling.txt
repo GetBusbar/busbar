@@ -8,7 +8,6 @@
 crates/busbar-kernel/src/admin/v1/contract/mod.rs 2
 crates/busbar-kernel/src/config/migrate.rs 10
 crates/busbar-kernel/src/config/mod.rs 1
-crates/busbar-kernel/src/plane/config.rs 3
 crates/busbar-kernel/src/plane/registry.rs 1
 crates/busbar-kernel/src/plugin_routes.rs 1
 crates/busbar-kernel/src/preflight.rs 1

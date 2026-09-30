@@ -225,6 +225,12 @@ impl FarEndReading {
     /// A count is reported only for a successful answer (a 2xx status and no `/error` member)
     /// whose `/usage/units` is a whole number. An error answer, or a count that is missing,
     /// negative or fractional, reports nothing.
+    ///
+    /// NOT YET THE LIVE DECODE, and it must be before the driver goes live: the served count must
+    /// match predev's `Plane::decode_response` + `meter` byte for byte. Two known differences:
+    /// this reading accepts a count above `i64::MAX`, where `decode_response` drops it (its
+    /// `i64::try_from`) and `meter` falls back to a locator; and this reading requires a 2xx
+    /// status, where `decode_response` judges success by the `/error` member alone.
     #[must_use]
     pub fn units(&self, status: u16) -> Option<Units> {
         if !(200..300).contains(&status) || codec::has(&self.body, PTR_ERROR) {

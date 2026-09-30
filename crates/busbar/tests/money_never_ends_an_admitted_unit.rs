@@ -28,7 +28,7 @@
 //!
 //! The behavioural half of the binding is proven where the behaviour is:
 //! `busbar-llm/src/unit/admit.rs::over_budget_refuses_with_no_charge_and_nothing_to_refund` (an
-//! over-budget request is a `Decision::refuse` at `StepName::Admit`, charging nothing) and
+//! over-budget request is a `SeatVerdict::refuse` at `StepName::Admit`, charging nothing) and
 //! `busbar-llm/src/unit/meter.rs::a_spend_past_the_reservation_is_carried_out_as_an_overdraft` (a
 //! unit that overspends after admission carries the excess out rather than ending).
 

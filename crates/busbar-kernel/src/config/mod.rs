@@ -885,8 +885,8 @@ pub use busbar_kernel::config::auth::{default_admin_auth, default_admin_auth_nam
 // all-scope knob must therefore land under a reserved `defaults:` sub-key (`pools.defaults.<knob>`),
 // which costs one word ONCE and is then additive forever.
 //
-// THIS IS THE ONLY DECLARATION, on every plane, and it now lives in the neutral substrate as
-// `busbar_kernel::plane::config::RESERVED_SECTION_KEYS` (the shared section split that reads it
+// THIS IS THE ONLY DECLARATION, on every plane, and it lives in `busbar-contract` as
+// `busbar_contract::section::RESERVED_SECTION_KEYS` (the shared section split that reads it
 // moved there): `tools:` and `agents:` reserve the same two words by reading that ONE slice, not by
 // restating it. Pinned by `pools_reserved_section_keys_are_frozen` in the config tests.
 
@@ -979,7 +979,7 @@ fn check_failover_pool(
 }
 
 /// The top-level `pools:` map (1.5.3), which carries the two reserved section keys
-/// ([`busbar_kernel::plane::config::RESERVED_SECTION_KEYS`]) alongside the
+/// ([`busbar_contract::section::RESERVED_SECTION_KEYS`]) alongside the
 /// pools themselves. Every key that is NOT one of those two reserved words is a pool. A pool may NOT be
 /// named `hooks` or `upstream_credentials` — both are REJECTED at parse with a clear error. The custom
 /// `Deserialize` lifts the reserved keys out first, then parses the remainder as the pool map.

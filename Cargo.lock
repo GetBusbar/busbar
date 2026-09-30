@@ -491,6 +491,7 @@ dependencies = [
  "futures",
  "hex",
  "http",
+ "indexmap",
  "jsonschema",
  "memchr",
  "serde",
@@ -786,7 +787,6 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel-budget",
  "serde",
- "serde_json",
  "sha2 0.11.0",
 ]
 
@@ -934,6 +934,7 @@ dependencies = [
 name = "busbar-plane-mcp"
 version = "1.6.0"
 dependencies = [
+ "base64 0.23.1",
  "busbar-contract",
  "bytes",
  "serde",

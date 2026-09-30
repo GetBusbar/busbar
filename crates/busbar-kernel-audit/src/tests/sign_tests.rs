@@ -85,7 +85,6 @@ fn inputs(unit: u64) -> AuditInputs {
             ],
             tier_bp: 9_000,
             fee_count: 1,
-            currency: "USD".into(),
             rate_card_version: 3,
             bucket_chain_ref: "chain:free>paid".into(),
         },
@@ -142,7 +141,7 @@ fn empty_group_inputs() -> AuditInputs {
 
 /// THE PUBLISHED RECIPE AND THE SEALED DIGEST ARE ONE COMPUTATION.
 ///
-/// This is the test the whole publication rests on. `docs/audit-chain-digest-v2.md` describes the
+/// This is the test the whole publication rests on. `docs/audit-chain-digest-v3.md` describes the
 /// field list in [`crate::recipe::digest_fields`]; if hashing that list did not reproduce what
 /// [`AuditChain::digest_of`] seals, then the document would describe something the node does not
 /// do, and every third-party verification would fail while looking — to the third party — exactly
@@ -239,9 +238,6 @@ fn altering_any_field_breaks_the_signature_including_the_cosmetic_ones() {
             r.usage.lines[0].estimated = !r.usage.lines[0].estimated
         }),
         ("the tier's basis points", |r| r.usage.tier_bp += 1),
-        ("the currency's spelling", |r| {
-            r.usage.currency = "usd".into()
-        }),
         ("the rate card version", |r| r.usage.rate_card_version += 1),
         ("whether a hook failed", |r| {
             r.outcome.hook_failed = !r.outcome.hook_failed
@@ -707,7 +703,7 @@ fn the_head_read_answers_with_the_tip_and_the_recipe_it_was_sealed_under() {
     let last = last.expect("three records were sealed");
     let body = expose::head_body(&chain);
     assert!(
-        body.contains("\"recipe\":\"busbar.audit.digest.v2\""),
+        body.contains("\"recipe\":\"busbar.audit.digest.v3\""),
         "{body}"
     );
     assert!(
@@ -822,7 +818,7 @@ fn the_published_bodies_parse_and_the_wide_numbers_are_text() {
         vec!["hook"],
         "a hook that ran is named, never priced"
     );
-    assert_eq!(parsed["recipe"].as_str(), Some("busbar.audit.digest.v2"));
+    assert_eq!(parsed["recipe"].as_str(), Some("busbar.audit.digest.v3"));
     // The inputs a read-time price takes ARE published: the counts, the tier, the fee count and the
     // card version.
     assert_eq!(parsed["records"][0]["tier_bp"].as_u64(), Some(9_000));
@@ -877,7 +873,6 @@ fn worked_example_inputs() -> AuditInputs {
     i.what.op_class = OpClassId::new("chat.completion");
     i.wall = 1_700_000_000;
     i.mono = 42;
-    i.usage.currency = "USD".into();
     i.usage.bucket_chain_ref = "chain:free>paid".into();
     i.usage.tier_bp = 9_000;
     i.usage.fee_count = 1;
@@ -899,7 +894,7 @@ fn spec_json_block(doc: &str, nth: usize) -> serde_json::Value {
 
 /// THE PUBLISHED SPEC CANNOT DRIFT FROM THE CODE.
 ///
-/// `docs/audit-chain-digest-v2.md` quotes three bodies and a digest as literal values. A document
+/// `docs/audit-chain-digest-v3.md` quotes three bodies and a digest as literal values. A document
 /// that described something the node does not do would make every third-party verification fail
 /// while looking, to the third party, exactly like a tampered chain — so the worked example is
 /// asserted against this build rather than transcribed once and trusted.
@@ -910,7 +905,7 @@ fn spec_json_block(doc: &str, nth: usize) -> serde_json::Value {
 fn the_worked_example_in_the_published_spec_is_what_this_build_answers_with() {
     let doc = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docs/audit-chain-digest-v2.md"),
+            .join("../../docs/audit-chain-digest-v3.md"),
     )
     .expect("the published spec is in the tree");
 
@@ -951,7 +946,7 @@ fn the_worked_example_in_the_published_spec_is_what_this_build_answers_with() {
     assert!(doc.contains(&signer().public_key_hex()));
     assert!(doc.contains(signer().key_id()));
     assert!(
-        doc.contains(&format!("preimage is {} bytes", 468)),
+        doc.contains(&format!("preimage is {} bytes", 457)),
         "the spec quotes a preimage length this build does not produce"
     );
     assert_eq!(
@@ -975,7 +970,7 @@ fn the_worked_examples_preimage_is_the_length_the_spec_quotes() {
             }
         })
         .sum();
-    assert_eq!(framed, 468);
+    assert_eq!(framed, 457);
 }
 
 // ── ONE KEYSET, TWO DOMAINS: ledger checkpoints are signed by the audit key (Q71(3), #82) ──────────

@@ -48,11 +48,11 @@
 //!
 //! ## Where this lands on the kernel's seam
 //!
-//! `busbar_kernel::teller::Units::arrival` takes the step's token and returns `Decision<Arrival>` —
+//! `busbar_kernel::teller::Units::arrival` takes the step's token and returns `SeatVerdict<Arrival>` —
 //! proceed with facts, or refuse. This plane does not name the kernel (a plane depends on the
 //! neutral ABI and nothing else), so the shape is expressed here as `Result<_, ArrivalRefusal>`:
-//! `Ok` is the facts a `Decision::proceed` would carry, `Err` is the closed reason a
-//! `Decision::refuse` would carry. The adapter that mints the token and calls this lives in the
+//! `Ok` is the facts a `SeatVerdict::proceed` would carry, `Err` is the closed reason a
+//! `SeatVerdict::refuse` would carry. The adapter that mints the token and calls this lives in the
 //! module root, which is the only file in this plane allowed to hold one.
 //!
 //! On the pure-codec side the same reading is `Plane::decode_ingress`'s own `parse`, whose whole

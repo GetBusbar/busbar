@@ -400,6 +400,47 @@ pub struct PlaneDeclaration {
     /// own missing-field message for it; a section no registered plane lists may be omitted. `&[]`
     /// for a plane that requires none.
     pub required_config_sections: &'static [&'static str],
+    /// The per-registration keys of [`Self::config_section`] the HOST parses for the trust
+    /// lifecycle (the tail's `trust_keys`): the pin and the re-verification cadence. The plane's own
+    /// validator does not read them. At most one key per [`TrustRole`]. `&[]` for a plane whose
+    /// registrations carry no trust root.
+    pub trust_keys: &'static [TrustKeyDecl],
+}
+
+/// Which trust-lifecycle fact a [`TrustKeyDecl`] holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustRole {
+    /// The pin object, `{mechanism, key?, fingerprint?}`.
+    Pin,
+    /// The longest a verification may be reused, a `<n><s|m|h|d>` duration.
+    ReverifyTtl,
+    /// How long after a drift a clean answer is disbelieved, a `<n><s|m|h|d>` duration.
+    RecoveryBackoff,
+}
+
+/// One pin mechanism a [`TrustRole::Pin`] key accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PinMechanismDecl {
+    /// The config token the operator writes.
+    pub token: &'static str,
+    /// True when the mechanism is an authenticity root, and so needs key material; false for the
+    /// no-root spelling, which must carry none.
+    pub root: bool,
+}
+
+/// One per-registration key the host parses for the trust lifecycle ([`PlaneDeclaration::trust_keys`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrustKeyDecl {
+    /// The key, as written inside one registration.
+    pub key: &'static str,
+    /// What it holds.
+    pub role: TrustRole,
+    /// A pin only: the pin object may also carry `fingerprint`.
+    pub fingerprint: bool,
+    /// A duration key's value when a registration writes none; `None` = zero. A pin has none.
+    pub default: Option<&'static str>,
+    /// A pin's mechanisms; `&[]` for a duration key.
+    pub mechanisms: &'static [PinMechanismDecl],
 }
 
 /// Whether `decl` declares it keeps plane records of `kind` ([`PlaneDeclaration::record_kinds`]).

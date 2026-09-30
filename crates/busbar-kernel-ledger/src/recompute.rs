@@ -63,8 +63,8 @@ use busbar_contract::caps::MeterClassId;
 
 use crate::totals::TotalsKey;
 
-/// Ten thousand basis points is full price.
-pub const BASIS_POINTS: u32 = 10_000;
+/// Full price in basis points: the standard tier every posting is priced at, defined once.
+pub const BASIS_POINTS: u32 = crate::cost::STANDARD_TIER_BP;
 
 /// The dated card history the recompute reads.
 ///

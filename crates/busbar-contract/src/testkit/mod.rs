@@ -3,9 +3,9 @@
 
 //! THE CONTRACT'S TEST KIT: pure shapes and in-memory doubles a plugin's own tests use to observe what
 //! it did through the contract, without reaching any crate above it. Nothing here opens a file, a
-//! socket or a process, reads the environment or the clock, and nothing is behind a feature: it is the
-//! same module in every build, so a plugin tested against it is tested against the contract it ships
-//! on.
+//! socket or a process, reads the environment or the clock. It is compiled only under `cfg(test)` or
+//! the dev-only `test-seal` feature (Locked Decision #33: no testkit ships), so a release build has
+//! none of it and a plugin reaches it only on its `[dev-dependencies]` edge.
 
 pub mod warn_capture;
 

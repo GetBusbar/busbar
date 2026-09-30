@@ -423,6 +423,35 @@ case "$sub" in
     exit "$rc" ;;
 
   replay)
+    # ── THE PREDEV FENCES, IN THEIR OWN SECTION ────────────────────────────────────────────────
+    # testing/shadow-oracle/fence/<name>/ holds cells recorded from a named predev build (no 1.5.5
+    # baseline exists for them: the mcp/a2a/decisions planes). They are judged AFTER the 1.5.5
+    # verdict, each fence against its own recording, under a separate "predev fence" heading —
+    # never merged into golden/1.5.5 and never cited as 1.5.5 evidence. A fence DIVERGENCE is red:
+    # it is a regression, or a change an ARCHITECT ruling re-records the fence for. The replay's exit
+    # is the worse of the two.
+    replay_fences() {  # replay_fences <1.5.5 rc> <id filter or ""> <diff args...>
+      local rc="$1" idf="$2"; shift 2
+      local cand="" out="" a prev=""
+      for a in "$@"; do
+        case "$prev" in --candidate) cand="$a";; --out) out="$a";; esac; prev="$a"
+      done
+      [ -d "$DATA/fence" ] || return "$rc"
+      local f frc worst="$rc" ids
+      for f in "$DATA"/fence/*/; do
+        f="${f%/}"; [ -f "$f/ledger.tsv" ] || continue
+        ids="$(awk -F'\t' 'NF{print $1}' "$f/ledger.tsv" | python3 -c 'import re,sys; print("^("+"|".join(re.escape(l.strip()) for l in sys.stdin if l.strip())+")$")')"
+        if [ -n "$idf" ] && ! awk -F'\t' 'NF{print $1}' "$f/ledger.tsv" | grep -Eq -- "$idf"; then continue; fi
+        echo
+        echo "== predev fence: $(basename "$f") (recorded from a predev build; NOT 1.5.5 evidence) =="
+        set +e
+        "$RUST_BIN" diff --golden "$f" --candidate "$cand" --out "${out:-$(mktemp -d)}/fence-$(basename "$f")" \
+          --cells "$DATA/cells.json" --id-filter "$ids" --allow-harness-skew --strict
+        frc=$?; set -e
+        [ "$frc" -le "$worst" ] || worst="$frc"
+      done
+      return "$worst"
+    }
     # OLD: replay --golden G --candidate C --out R  →  the in-process Rust differ (the judge).
     #
     # `--allow-harness-skew` IS NO LONGER INJECTED HERE, AND THAT IS THE POINT. It used to be
@@ -445,13 +474,15 @@ case "$sub" in
       --id-filter) IDF="$2"; shift 2;;
       *) args+=("$1"); shift;;
     esac; done
-    if [ -z "$IDF" ]; then exec "$RUST_BIN" diff "${args[@]}" --cells "$DATA/cells.json"; fi
+    if [ -z "$IDF" ]; then
+      set +e; "$RUST_BIN" diff "${args[@]}" --cells "$DATA/cells.json"; rc=$?; set -e
+      replay_fences "$rc" "" "${args[@]}"; exit $? ; fi
     WIDE="$(widen_filter "$IDF")"
     log="$(mktemp)"; set +e
     "$RUST_BIN" diff "${args[@]}" --id-filter "$WIDE" --cells "$DATA/cells.json" 2>&1 | tee "$log"
     rc=${PIPESTATUS[0]}; set -e
     withheld_selected "$log" "$IDF" || { rm -f "$log"; exit 3; }
-    rm -f "$log"; exit "$rc" ;;
+    rm -f "$log"; replay_fences "$rc" "$IDF" "${args[@]}"; exit $? ;;
 
   diff)
     # The engine's own diff: a FILTERED one gets the same premise widening and refusal as replay.

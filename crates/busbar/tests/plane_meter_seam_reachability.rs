@@ -60,7 +60,7 @@
 //!
 //! And the scan is of the Meter step's BODY, not of the file the step lives in. A leg file names
 //! the usage seam in several steps; asking the file is how a `fn meter` that returns
-//! `Decision::proceed` with an empty report keeps a green gate.
+//! `SeatVerdict::proceed` with an empty report keeps a green gate.
 
 mod common;
 
@@ -175,11 +175,11 @@ fn every_billing_plane_reaches_the_core_meter_seam_in_production() {
 // the request and reaches the host's metering entry points itself. Over the composition root the
 // plane does not hold the host at all — it contributes one method per Teller step
 // (`busbar_kernel::teller::TellerPlane`) and the loop calls them in order, so the Meter step is
-// `fn meter(&mut self, token: &Pass<Meter>, usage: &Grant<Consumption>, …) -> Decision<Meter>` in that
+// `fn meter(&mut self, token: &Pass<Meter>, usage: &Grant<Consumption>, …) -> SeatVerdict<Meter>` in that
 // plane's leg under `crates/busbar/src/root/`.
 //
 // A leg can satisfy every neutrality and isomorphism gate in the tree and still hand back a
-// `Decision::proceed` with an EMPTY usage report — the loop would run, the audit step would seal a
+// `SeatVerdict::proceed` with an EMPTY usage report — the loop would run, the audit step would seal a
 // terminal, and the principal would be charged nothing. That is the identical blind spot the legacy
 // gate closes, one path over, and it is the one that matters now that the planes are being switched
 // onto the root. So: every billing plane's leg must reach the ONE usage seam on its Meter step.
@@ -850,8 +850,8 @@ fn selftest_the_seam_scanners_discriminate() {
 fn selftest_a_seam_reached_only_by_a_test_module_does_not_count() {
     let leg_that_meters_nobody = r#"
 impl TellerPlane for Leg {
-    fn meter(&self, token: &Pass<Meter>, usage: &Grant<Consumption>) -> Decision<Meter> {
-        Decision::proceed(token, Default::default())
+    fn meter(&self, token: &Pass<Meter>, usage: &Grant<Consumption>) -> SeatVerdict<Meter> {
+        SeatVerdict::proceed(token, Default::default())
     }
 }
 

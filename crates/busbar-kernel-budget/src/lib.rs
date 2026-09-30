@@ -23,7 +23,7 @@
 //!
 //! - [`Door`] holds the decision: check-then-charge over a bucket chain, under one set of locks.
 //! - [`AdmissionUnit`] wraps it in the sealed step-4 trait shape, turning the answer into a
-//!   [`Decision<Admit>`] carrying a hold.
+//!   [`SeatVerdict<Admit>`] carrying a hold.
 //! - [`BucketChain`] is what the door walks: the principal's attribution bucket, then each
 //!   ancestor group's per-window buckets.
 //! - [`Pricer`] derives spend from tokens, because no spend figure is ever stored.
@@ -71,14 +71,14 @@ pub use price::{Pricer, RateNanos};
 pub use window::{budget_window, window_end};
 
 use busbar_contract::caps::{
-    step::Admit, Admittance, Decision, Grant, Hold, HoldCell, Pass, PostingFlags, PrincipalId,
-    ReasonCode, Refusal,
+    step::Admit, Admittance, Grant, Hold, HoldCell, Pass, PostingFlags, PrincipalId, ReasonCode,
+    Refusal, SeatVerdict,
 };
 
 /// The sealed step-4 shape: the door, asked.
 ///
 /// The signature is the one the architecture pins, with one addition it cannot avoid: building a
-/// [`Decision`] takes the step's own unit token, and opening a [`Hold`] takes the admit token, so
+/// [`SeatVerdict`] takes the step's own unit token, and opening a [`Hold`] takes the admit token, so
 /// the call is lent both. Neither is stored; both are gone when the call returns.
 pub trait Admission {
     /// Judge one unit. The answer either carries the unit's admission — its own hold, a spend
@@ -90,7 +90,7 @@ pub trait Admission {
         chain: &BucketChain,
         admit_token: &Grant<Admittance>,
         unit_token: &Pass<Admit>,
-    ) -> Decision<Admit>;
+    ) -> SeatVerdict<Admit>;
 }
 
 /// Open a unit's arrival hold.
@@ -324,7 +324,7 @@ impl<S: CellStore> Admission for AdmissionUnit<'_, S> {
         chain: &BucketChain,
         admit_token: &Grant<Admittance>,
         unit_token: &Pass<Admit>,
-    ) -> Decision<Admit> {
+    ) -> SeatVerdict<Admit> {
         match self.door.try_admit(self.pricer, chain, self.pool, self.now) {
             Ok(grant) => {
                 self.grant = Some(grant);
@@ -346,7 +346,7 @@ impl<S: CellStore> Admission for AdmissionUnit<'_, S> {
                 if let Some(cell) = self.parent {
                     match cell.accrue_child(principal, nanos, admit_token) {
                         Ok(accrual) => {
-                            return Decision::proceed(
+                            return SeatVerdict::proceed(
                                 unit_token,
                                 busbar_contract::caps::Admission::Accrual(accrual),
                             );
@@ -356,12 +356,12 @@ impl<S: CellStore> Admission for AdmissionUnit<'_, S> {
                     }
                 }
                 if nanos == 0 {
-                    return Decision::proceed(
+                    return SeatVerdict::proceed(
                         unit_token,
                         busbar_contract::caps::Admission::ZeroHold,
                     );
                 }
-                Decision::proceed(
+                SeatVerdict::proceed(
                     unit_token,
                     busbar_contract::caps::Admission::Own(Hold::open(
                         admit_token,
@@ -377,7 +377,7 @@ impl<S: CellStore> Admission for AdmissionUnit<'_, S> {
                 // A refused unit never reached its parent's cell, so there is no accrual condition
                 // to report against it.
                 self.parent_accrual_refused = None;
-                Decision::refuse(unit_token, refusal)
+                SeatVerdict::refuse(unit_token, refusal)
             }
         }
     }

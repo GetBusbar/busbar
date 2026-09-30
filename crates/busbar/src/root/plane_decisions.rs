@@ -138,6 +138,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // Every model this plane's section declares names its provider in the top-level
         // `providers:` map, so this plane consumes `providers`.
         required_config_sections: &[Kind::Transport.root()],
+        trust_keys: &[],
     };
 
 /// The claims axis: the pure plane the boot seal registers, and the two exact-path claims it declares

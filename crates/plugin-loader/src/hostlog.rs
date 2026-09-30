@@ -44,15 +44,26 @@ pub(crate) fn intern_log_ctx(name: &str) -> *mut c_void {
 /// Handed to the plugin so it can filter on ITS side of the FFI boundary. Without it a plugin's
 /// dispatcher claims interest in everything, and every `trace!`/`debug!` in the plugin's dependency
 /// tree renders a string and crosses the sink call on the REQUEST PATH just to be dropped here.
+///
+/// The HOST's level is what the dispatcher in force on this thread enables, asked level by level.
+/// It is NOT `LevelFilter::current()`: that is the process-wide maximum over EVERY registered
+/// dispatcher, and a door plugin's call capture (which keeps every level, the host filters) is one
+/// of them while its thread lives, so it would read TRACE whatever the host is set to.
 pub(crate) fn host_max_level() -> u32 {
     use busbar_contract::abi::cold::log_level;
-    match tracing::level_filters::LevelFilter::current() {
-        tracing::level_filters::LevelFilter::OFF => log_level::OFF,
-        tracing::level_filters::LevelFilter::ERROR => log_level::ERROR,
-        tracing::level_filters::LevelFilter::WARN => log_level::WARN,
-        tracing::level_filters::LevelFilter::INFO => log_level::INFO,
-        tracing::level_filters::LevelFilter::DEBUG => log_level::DEBUG,
-        _ => log_level::TRACE,
+    use tracing::Level;
+    if tracing::enabled!(Level::TRACE) {
+        log_level::TRACE
+    } else if tracing::enabled!(Level::DEBUG) {
+        log_level::DEBUG
+    } else if tracing::enabled!(Level::INFO) {
+        log_level::INFO
+    } else if tracing::enabled!(Level::WARN) {
+        log_level::WARN
+    } else if tracing::enabled!(Level::ERROR) {
+        log_level::ERROR
+    } else {
+        log_level::OFF
     }
 }
 

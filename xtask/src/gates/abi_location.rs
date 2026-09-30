@@ -779,7 +779,13 @@ fn collect_rs(base: &Path, dir: &Path, out: &mut Vec<String>) {
     }
 }
 
-/// Where the self-test plants a plugin crate's source.
+/// Where the self-test plants a plugin crate's source. A SYNTHETIC path by construction, never a
+/// real file this gate's own selftest overlay (`Overlay::set`, below) writes the plant to a virtual
+/// tree the gate reads instead of the disk, exactly like the other `planted_*.rs` paths this file
+/// invents beside it (`planted_slot.rs`, `planted_double.rs`, `planted_cfg_test.rs` — none of those
+/// are `const`s, so `qa-names` never asked about them; this one is, because the two overlay call
+/// sites below share it rather than repeating the literal).
+// qa-names: crates/hook-test-plugin/src/planted_impl.rs -- xtask/src/gates/abi_location.rs -- an overlay-only plant path this gate's selftest writes into a virtual tree, never a file on disk; the sibling planted_*.rs literals beside it are not consts so qa-names never asked about them
 const PLUGIN_PLANT: &str = "crates/hook-test-plugin/src/planted_impl.rs";
 /// A plugin's `Op` and `DoorFn` bodies: implementations of abi/'s fn types, never findings.
 const PLUGIN_IMPLS: &str = "use std::os::raw::c_void;\n\

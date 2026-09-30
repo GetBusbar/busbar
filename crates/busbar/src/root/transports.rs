@@ -45,7 +45,7 @@ pub trait PlaneDispatch: Send + Sync {
     /// Drive ONE operation of one unit, and count that it was driven.
     ///
     /// `drive` is the plane's own leg, already built and not yet polled. An implementation returns a
-    /// leg that produces the same [`Decision`](busbar_contract::caps::Decision) the one it was handed would
+    /// leg that produces the same [`SeatVerdict`](busbar_contract::caps::SeatVerdict) the one it was handed would
     /// have: this seam chooses WHERE the work happens, never WHAT it answers.
     fn execute<'a>(
         &'a self,

@@ -42,7 +42,9 @@
 #![deny(missing_docs)]
 
 pub mod claims;
+pub mod client;
 pub mod codec;
+pub mod diagnostics;
 pub mod facts;
 pub mod identity;
 pub mod jsonrpc;

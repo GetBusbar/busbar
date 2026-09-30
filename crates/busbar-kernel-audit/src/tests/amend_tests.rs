@@ -586,7 +586,6 @@ fn an_amendment_names_the_audit_record_it_amends() {
                 lines: Vec::new(),
                 tier_bp: 10_000,
                 fee_count: 0,
-                currency: "USD".into(),
                 rate_card_version: 1,
                 bucket_chain_ref: String::new(),
             },

@@ -3663,6 +3663,7 @@ mod plane_fees_on_admin_usage {
                     metric_families: &[],
                     record_kinds: &[],
                     required_config_sections: &[],
+                    trust_keys: &[],
                     served_op_classes: &[],
                 },
                 wire_format_names: || &[],

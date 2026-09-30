@@ -29,6 +29,7 @@ fn decl(key: &'static str, served: &'static [ServedOpClass]) -> PlaneDeclaration
         metric_families: &[],
         record_kinds: &[],
         required_config_sections: &[],
+        trust_keys: &[],
         served_op_classes: served,
     }
 }

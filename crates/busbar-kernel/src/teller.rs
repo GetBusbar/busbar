@@ -62,10 +62,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use busbar_contract::caps::{
     Abort, AdminVerb, Admission, Admit, Admittance, Approve, Arrival, Audit, Authenticate,
-    Authenticated, CallId, Canary, Consumption, Decision, Decode, Dial, DurabilityLost,
-    DurableWrite, Encode, Exit, Grant, Hold, HoldAccrual, HoldCell, HoldCellState, KernelSeal,
-    Meter, Origin, OriginKind, Outcome, Pass, Posted, PostingFlags, PrincipalId, QuantitySource,
-    ReasonCode, Refusal, Route, SessionId, Sign, StepName, UnitEnd, UnitKey, Usage, UsageLine,
+    Authenticated, CallId, Canary, Consumption, Decode, Dial, DurabilityLost, DurableWrite, Encode,
+    Exit, Grant, Hold, HoldAccrual, HoldCell, HoldCellState, KernelSeal, Meter, Origin, OriginKind,
+    Outcome, Pass, Posted, PostingFlags, PrincipalId, QuantitySource, ReasonCode, Refusal, Route,
+    SeatVerdict, SessionId, Sign, StepName, UnitEnd, UnitKey, Usage, UsageLine,
     VerifiedDestination, Verify, WriteMoney,
 };
 
@@ -310,13 +310,13 @@ pub use crate::settlement::{
 // contract: the sealed unit traits (auth, trust, scope, admission, egress, usage, ledger, audit)
 pub trait Units {
     /// The kernel's own gate: size, rate, source and the budgets, before any plane is known.
-    fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> Decision<Arrival>;
+    fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival>;
 
     /// The plane says what shape arrived.
-    fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> Decision<Decode>;
+    fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> SeatVerdict<Decode>;
 
     /// Who is calling.
-    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> Decision<Authenticate>;
+    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> SeatVerdict<Authenticate>;
 
     /// Where the unit may go.
     ///
@@ -332,7 +332,7 @@ pub trait Units {
         trust: &Grant<Dial>,
         ctx: &UnitCtx,
         principal: &PrincipalId,
-    ) -> Decision<Verify>;
+    ) -> SeatVerdict<Verify>;
 
     /// Whether the caller may do this at all.
     fn approve(
@@ -341,7 +341,7 @@ pub trait Units {
         ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
-    ) -> Decision<Approve>;
+    ) -> SeatVerdict<Approve>;
 
     /// The door.
     ///
@@ -365,7 +365,7 @@ pub trait Units {
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
         leases: &GroupLeaseSlip,
-    ) -> Decision<Admit>;
+    ) -> SeatVerdict<Admit>;
 
     /// Dial, send, relay — all under the hold, with the meter running.
     ///
@@ -379,7 +379,7 @@ pub trait Units {
         token: &Pass<Route>,
         ctx: &UnitCtx,
         destinations: &[VerifiedDestination],
-    ) -> Decision<Route>;
+    ) -> SeatVerdict<Route>;
 
     /// What the unit actually cost, folded from what the legs reported.
     ///
@@ -393,10 +393,10 @@ pub trait Units {
         ctx: &UnitCtx,
         provisional: &Outcome,
         destinations: &[VerifiedDestination],
-    ) -> Decision<Meter>;
+    ) -> SeatVerdict<Meter>;
 
     /// Seal the end for the record. The door a unit that PASSED the door leaves through.
-    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit>;
+    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit>;
 
     /// Seal the end of a unit that never passed the door. Nothing was charged.
     fn audit_refused(
@@ -404,10 +404,11 @@ pub trait Units {
         token: &Pass<Audit>,
         ctx: &UnitCtx,
         refusal: &Refusal,
-    ) -> Decision<Audit>;
+    ) -> SeatVerdict<Audit>;
 
     /// The bytes that leave.
-    fn encode(&self, token: &Pass<Encode>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Encode>;
+    fn encode(&self, token: &Pass<Encode>, ctx: &UnitCtx, outcome: &Outcome)
+        -> SeatVerdict<Encode>;
 
     /// What the unit's evidence looks like once it has run. Read by the settlement table.
     fn evidence(&self, ctx: &UnitCtx) -> Evidence;
@@ -474,7 +475,7 @@ pub trait RouteAwait {
 }
 
 /// The Route step's future, as the loop holds it while it waits.
-pub type RouteLeg<'a> = std::pin::Pin<Box<dyn Future<Output = Decision<Route>> + Send + 'a>>;
+pub type RouteLeg<'a> = std::pin::Pin<Box<dyn Future<Output = SeatVerdict<Route>> + Send + 'a>>;
 
 /// A plane whose Route answers in place, as the one loop reaches it.
 ///

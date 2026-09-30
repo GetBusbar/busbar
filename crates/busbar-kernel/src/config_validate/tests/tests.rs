@@ -5985,6 +5985,7 @@ static CLASS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::
         metric_families: &[],
         record_kinds: &[],
         required_config_sections: &[],
+        trust_keys: &[],
         served_op_classes: &[],
     },
     wire_format_names: || &[],

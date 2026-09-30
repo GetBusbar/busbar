@@ -45,9 +45,9 @@
 //!
 //! ## Where this lands on the kernel's seam
 //!
-//! `busbar_kernel::teller::Units::decode` returns `Decision<Decode>`. This plane does not name the
-//! kernel, so the shape is `Result<DecodeFacts, DecodeRefusal>`: `Ok` is what a `Decision::proceed`
-//! would carry, `Err` the closed reason a `Decision::refuse` would. On the pure-codec side both 404s
+//! `busbar_kernel::teller::Units::decode` returns `SeatVerdict<Decode>`. This plane does not name the
+//! kernel, so the shape is `Result<DecodeFacts, DecodeRefusal>`: `Ok` is what a `SeatVerdict::proceed`
+//! would carry, `Err` the closed reason a `SeatVerdict::refuse` would. On the pure-codec side both 404s
 //! are `Decode::UnsupportedOperation`; the missing-model refusal has NO codec counterpart, because
 //! the codec treats `model` as a fact that may simply be absent while this path treats it as the
 //! thing without which there is nothing to route.

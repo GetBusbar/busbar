@@ -494,6 +494,12 @@ identically, and every 1.5.5 key and minted secret carries over.
 - 1.6.0 Changed: every audit entry carries its `scheme`, the signing scheme of the record.
   `GET /api/v1/admin/audit` items gain `scheme`, and `openapi.json` marks it required.
   **Migration:** none; every 1.5.5 member is unchanged.
+- 1.6.0 Changed: a newly sealed audit record signs under `busbar.audit.digest.v3`, which drops `currency` from the digest.
+  Money is unitless abstract cost, so the signed preimage no longer names a denomination. A record
+  already sealed keeps verifying under `busbar.audit.digest.v2`, and every record in
+  `GET /api/v1/admin/audit/range` names its own recipe in a `recipe` member;
+  `docs/audit-chain-digest-v3.md` publishes the new field order beside the v2 page. **Migration:**
+  a third-party verifier adds the v3 order (v2 less `currency`); no stored record is rewritten.
 - 1.6.0 Changed: a request served before a rate-card edit keeps the price of the card in force when it arrived.
   1.5.5 priced every row of `GET /api/v1/admin/usage` at the card current at read time, so a card
   edited to one micro-unit per token made requests served earlier under a dearer card read 18
@@ -597,16 +603,13 @@ hook payload schemas are unchanged, as is the transport version (`busbar_abi() =
 exported symbols. A sink that wants the back-channel implements one new defaulted SDK method,
 `drain_observations`.
 
-**Plugin log lines now go to per-plugin files.** Every plugin instance logs to its own file,
-`logs/plugins/<instance>.log` by default, instead of the Busbar log. A plugin writes nothing itself.
-Whatever it logs during a call, through `tracing` or `log`, including from the libraries inside it,
-rides the call's reply, and Busbar writes it: one line per record, stating the time, level,
-instance, kind and target. It is the same file whether the plugin is compiled in or dropped in. A
-new `plugins.logs` block sets the directory (`dir`), the default level (`level`, default `info`),
-per-instance levels (`levels`), and rotation (`rotate_mb` and `keep`, the same rename rotation as
-the request-log file). One reply carries at most 128 records and 64 KiB; anything over is one line
-saying how many were dropped. **Migration:** an operator who read plugin lines from the Busbar log
-reads them from the plugin's file.
+**A new `plugins.logs` block is accepted and checked; plugin log lines have not moved.** The block
+names the directory for per-plugin log files (`dir`, default `logs/plugins`), the default level
+(`level`, default `info`), per-instance levels (`levels`), and rotation (`rotate_mb` and `keep`).
+A level word that names no level, or a `rotate_mb` of `0`, refuses the boot and names the key. This
+build writes no per-plugin log file: the plugins it loads do not run through the path that writes
+them, so a plugin's log lines reach the Busbar log exactly as they did in 1.5.5, and setting
+`plugins.logs` changes nothing an operator can observe beyond that check.
 
 ### Spec fidelity
 

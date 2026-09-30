@@ -415,7 +415,7 @@ fn list_plugins_command() -> i32 {
         dir.display(),
         plugins_cfg.enabled
     );
-    let rows = busbar_plugin_loader::inventory_tarballs(&dir, &policy);
+    let rows = crate::root::loader::inventory_tarballs(&dir, &policy);
     if rows.is_empty() {
         println!("no plugin tarballs found");
         return 0;

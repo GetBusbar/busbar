@@ -115,6 +115,7 @@ pub const LEDGER: &str = "qa/kind-isolation.toml";
 const MIN_SCANNED: usize = 600;
 
 mod instances;
+mod os_words;
 mod vendors;
 
 /// LAW 0/1: the plugin-INSTANCE vocabularies a NEUTRAL crate may name ZERO times — ALL SEVEN plugin
@@ -652,6 +653,12 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         };
         // English words that are also instance names are not counted as English prose.
         let masked = mask_english_prose(&rel, &masked);
+        // Instance ids that are also a crate's or an abbreviation's name count only as references.
+        let masked = mask_colliding_words(&rel, &masked);
+        // `unix` as the operating system (a cfg, `std::os::unix`, the clock) is not the carrier.
+        // Its context is read off the ORIGINAL text: an earlier mask's filler must not change what
+        // a neighbouring word says ("the unix socket" with `socket` masked as a contract name).
+        let masked = os_words::mask_os_words_in(&rel, text, &masked);
         for h in scan_file(per_kind, &dir, &rel, &masked).iter() {
             let line = h
                 .line
@@ -874,6 +881,303 @@ fn mask_prose_words(prose: &str) -> String {
     String::from_utf8(out).expect("ascii-for-ascii")
 }
 
+/// THE INSTANCE IDS THAT ARE ALSO SOMEBODY ELSE'S NAME: the sibling of [`ENGLISH_INSTANCE_WORDS`]
+/// for crate names and abbreviations. `http` is the
+/// transport's bare id and also the `http` crate (`http::Method`, `axum::http::StatusCode`, the
+/// `http-body` dependency), a URL scheme (`http://`), and the protocol's name in a sentence. `ws` is
+/// the transport's bare id and also whitespace (`skip_ws`), a local's name (`let ws = …`) and a URL
+/// scheme. Counted as instance knowledge, those spellings made `busbar-kernel × transport` 1 811,
+/// of which 1 539 were these two words.
+///
+/// So a bare occurrence of one of these words counts ONLY where it is a real reference to the
+/// instance:
+///
+/// * joined to its kind marker (`transport-ws`, `busbar_transport_http`, `TransportWs`), which is
+///   the crate's own name and still counts everywhere, prose included;
+/// * in code, as a whole token that is a Rust PATH SEGMENT (`crate::ingress::ws`, `mod ws`,
+///   `Transport::Http`) — but never a path rooted at the external crate of the same name
+///   (`http::Method`) or at a third-party library ([`EXTERNAL_PATH_HEADS`], `axum::http`);
+/// * as a string literal that IS the id (`"ws"`, `"http"`: a registry or config key);
+/// * in a `Cargo.toml`, as a key or header outside a dependency table (a feature named `ws`), or a
+///   dependency key that is not the external crate of the same name;
+/// * in any other text file (`.json`, `.yaml`, fixtures), as a whole token (`transport: ws`);
+/// * in the file's own path, as a whole directory or file stem (`ws.rs`, `http/`).
+///
+/// Everything else is masked before the scanners read the line: prose (a `.rs` `//` comment, a
+/// `.toml` `#` comment, a `.md` line), a URL scheme (`http://`, `ws://`), a segment of a longer
+/// identifier (`skip_ws`, `split_ws_url`, `http_status`, `WsArrival`), a local variable, and a
+/// path of the external crate. Instance ids that collide with nothing (`llm`, `mcp`, `a2a`, `tcp`,
+/// `sse`, …) are never touched here.
+pub(super) const COLLIDING_INSTANCE_WORDS: &[(&str, bool)] = &[
+    // (the word, whether it is ALSO an external crate's name, so `word::…` is that crate's path)
+    ("http", true),
+    ("ws", false),
+];
+
+/// Third-party library path heads: a colliding word inside a path rooted at one of these is that
+/// library's module (`axum::http`, `hyper::http`), not the instance.
+const EXTERNAL_PATH_HEADS: &[&str] = &[
+    "axum",
+    "hyper",
+    "hyper_util",
+    "tonic",
+    "tungstenite",
+    "tokio_tungstenite",
+    "reqwest",
+    "h2",
+    "http_body",
+    "http_body_util",
+    "tower_http",
+];
+
+/// The Cargo tables whose keys are dependency names.
+fn is_dependency_table(header: &str) -> bool {
+    let h = header
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim();
+    h.ends_with("dependencies") || h.contains("dependencies.")
+}
+
+/// Whether the occurrence of a word at `b[i..j]` is a SEGMENT the scanners can see: its start and
+/// end are each a non-alphanumeric, a line edge, or a case transition either scanner splits at.
+fn segment_bounded(b: &[u8], i: usize, j: usize) -> bool {
+    let lo = |k: usize| b.get(k).is_some_and(|c| c.is_ascii_lowercase());
+    let up = |k: usize| b.get(k).is_some_and(|c| c.is_ascii_uppercase());
+    let alnum = |k: usize| b.get(k).is_some_and(|c| c.is_ascii_alphanumeric());
+    let start =
+        i == 0 || !alnum(i - 1) || (lo(i - 1) && up(i)) || (up(i - 1) && up(i) && lo(i + 1));
+    let end =
+        j >= b.len() || !alnum(j) || (lo(j - 1) && up(j)) || (up(j - 1) && up(j) && lo(j + 1));
+    start && end
+}
+
+/// Whether the word at `b[i..]` is JOINED to its kind marker: the bytes before it, after a run of
+/// `-`, `_` or `:` (or nothing, at a case joint), spell `transport`.
+fn joined_to_marker(b: &[u8], i: usize) -> bool {
+    let mut k = i;
+    while k > 0 && matches!(b[k - 1], b'-' | b'_' | b':') {
+        k -= 1;
+    }
+    const MARKER: &[u8] = b"transport";
+    k >= MARKER.len() && b[k - MARKER.len()..k].eq_ignore_ascii_case(MARKER)
+}
+
+/// The head of the Rust path the token at `b[i..j]` sits in. On a `use` line it is the first
+/// segment after `use` (so `use axum::{http, …}` is rooted at `axum`); elsewhere it is found by
+/// walking back over `ident::` links.
+fn path_head(line: &[u8], i: usize) -> String {
+    let text = String::from_utf8_lossy(line);
+    let trimmed = text.trim_start();
+    let after_vis = trimmed
+        .strip_prefix("pub(crate) ")
+        .or_else(|| trimmed.strip_prefix("pub(super) "))
+        .or_else(|| trimmed.strip_prefix("pub "))
+        .unwrap_or(trimmed);
+    if let Some(rest) = after_vis.strip_prefix("use ") {
+        return rest
+            .trim_start_matches("::")
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .next()
+            .unwrap_or("")
+            .to_string();
+    }
+    let is_id = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let mut start = i;
+    loop {
+        if start >= 2 && &line[start - 2..start] == b"::" {
+            let mut k = start - 2;
+            while k > 0 && is_id(line[k - 1]) {
+                k -= 1;
+            }
+            if k == start - 2 {
+                break;
+            }
+            start = k;
+        } else {
+            break;
+        }
+    }
+    let mut end = start;
+    while end < line.len() && is_id(line[end]) {
+        end += 1;
+    }
+    String::from_utf8_lossy(&line[start..end]).into_owned()
+}
+
+/// `text` with every NON-REFERENCE occurrence of a [`COLLIDING_INSTANCE_WORDS`] word masked (same
+/// length `x` filler, so lines and columns hold). See that constant for what is kept.
+fn mask_colliding_words<'a>(rel: &str, text: &'a str) -> std::borrow::Cow<'a, str> {
+    let lower = text.to_ascii_lowercase();
+    if !COLLIDING_INSTANCE_WORDS
+        .iter()
+        .any(|(w, _)| lower.contains(w))
+    {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let rs = rel.ends_with(".rs");
+    let toml = rel.ends_with(".toml");
+    let md = rel.ends_with(".md");
+    let mut out = String::with_capacity(text.len());
+    let mut table = String::new();
+    for line in text.split_inclusive('\n') {
+        let b = line.as_bytes();
+        let t = line.trim_start();
+        if toml && t.starts_with('[') {
+            table = t.trim_end().to_string();
+        }
+        // WHERE PROSE STARTS on this line: all of a `.md`, a `.rs` `//` comment, a `.toml` `#`.
+        let prose_at = if md {
+            Some(0)
+        } else if rs {
+            comment_start(line)
+        } else if toml {
+            toml_comment_start(line)
+        } else {
+            None
+        };
+        let mut buf = b.to_vec();
+        let low = line.to_ascii_lowercase();
+        for (word, external) in COLLIDING_INSTANCE_WORDS {
+            let mut from = 0;
+            while let Some(off) = low[from..].find(word) {
+                let i = from + off;
+                let j = i + word.len();
+                from = j;
+                if !segment_bounded(b, i, j) {
+                    continue;
+                }
+                if !keeps_reference(b, i, j, prose_at, rs, toml, &table, word, *external) {
+                    buf[i..j].fill(b'x');
+                }
+            }
+        }
+        out.push_str(&String::from_utf8(buf).expect("ascii-for-ascii"));
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+/// Whether the colliding word at `b[i..j]` is a real reference to the instance (see
+/// [`COLLIDING_INSTANCE_WORDS`]).
+#[allow(clippy::too_many_arguments)]
+fn keeps_reference(
+    b: &[u8],
+    i: usize,
+    j: usize,
+    prose_at: Option<usize>,
+    rs: bool,
+    toml: bool,
+    table: &str,
+    word: &str,
+    external: bool,
+) -> bool {
+    if joined_to_marker(b, i) {
+        return true;
+    }
+    if prose_at.is_some_and(|p| i >= p) {
+        return false;
+    }
+    // A URL scheme names a protocol on the wire, not the plugin.
+    if b[j..].starts_with(b"://") || b[j..].starts_with(b"s://") {
+        return false;
+    }
+    let tok =
+        |c: Option<&u8>| c.is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'-');
+    let whole = !tok(i.checked_sub(1).and_then(|k| b.get(k))) && !tok(b.get(j));
+    if !whole {
+        return false;
+    }
+    let quoted = i > 0 && b[i - 1] == b'"' && b.get(j) == Some(&b'"');
+    if quoted {
+        return true;
+    }
+    if rs {
+        let before = String::from_utf8_lossy(&b[..i]);
+        if before.trim_end().ends_with("mod") {
+            return true;
+        }
+        let path_after = b[j..].starts_with(b"::");
+        let path_before = i >= 2 && &b[i - 2..i] == b"::";
+        let in_use_group = {
+            let t = String::from_utf8_lossy(b);
+            let t = t.trim_start();
+            (t.starts_with("use ") || t.starts_with("pub use ") || t.starts_with("pub(crate) use "))
+                && matches!(b.get(i.wrapping_sub(1)), Some(b'{' | b' ' | b','))
+        };
+        if !(path_after || path_before || in_use_group) {
+            return false;
+        }
+        let head = path_head(b, i);
+        if external && head.eq_ignore_ascii_case(word) {
+            return false;
+        }
+        return !EXTERNAL_PATH_HEADS.contains(&head.as_str());
+    }
+    if toml {
+        let t = String::from_utf8_lossy(b);
+        let t = t.trim_start();
+        if t.starts_with('[') {
+            // `[dependencies.http]` is the external crate's table; any other header keeps it.
+            return !(external && is_dependency_table(t));
+        }
+        let is_key = t.len() == b.len() - i || String::from_utf8_lossy(&b[..i]).trim().is_empty();
+        if is_key {
+            return !(external && is_dependency_table(table));
+        }
+        return false;
+    }
+    true
+}
+
+/// The byte offset of a `.toml` `#` comment on `line` that is not inside a `"…"` string.
+fn toml_comment_start(line: &str) -> Option<usize> {
+    let b = line.as_bytes();
+    let mut in_str = false;
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'\\' if in_str => i += 1,
+            b'"' => in_str = !in_str,
+            b'#' if !in_str => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// A file's own path (the scanners' line 0) with every colliding word that is not a whole
+/// directory or file stem masked: `egress/duplex_ws.rs` names no instance, `ingress/ws.rs` does.
+fn mask_colliding_path(tail: &str) -> std::borrow::Cow<'_, str> {
+    let lower = tail.to_ascii_lowercase();
+    if !COLLIDING_INSTANCE_WORDS
+        .iter()
+        .any(|(w, _)| lower.contains(w))
+    {
+        return std::borrow::Cow::Borrowed(tail);
+    }
+    let b = tail.as_bytes();
+    let mut buf = b.to_vec();
+    for (word, _) in COLLIDING_INSTANCE_WORDS {
+        let mut from = 0;
+        while let Some(off) = lower[from..].find(word) {
+            let i = from + off;
+            let j = i + word.len();
+            from = j;
+            if !segment_bounded(b, i, j) || joined_to_marker(b, i) {
+                continue;
+            }
+            let lead = i == 0 || b[i - 1] == b'/';
+            let trail = j == b.len() || b[j] == b'/' || b[j] == b'.';
+            if !(lead && trail) {
+                buf[i..j].fill(b'x');
+            }
+        }
+    }
+    std::borrow::Cow::Owned(String::from_utf8(buf).expect("ascii-for-ascii"))
+}
+
 /// `text` with every whole-token occurrence of an identifier in `idents` replaced by a run of `x` of
 /// the same length, so lines and columns are unchanged. The filler is a WORD, not separators: a run
 /// of `_` would let a multi-part needle's joint (which matches any run of non-alphanumerics) reach
@@ -1093,6 +1397,7 @@ fn scan_file(plan: &Plan, dir: &str, rel: &str, text: &str) -> std::sync::Arc<Ve
     }
     drop(guard);
     out.sort_by_key(|(line, i, _)| (*line, *i));
+    one_needle_per_span(plan, &mut out);
     let out: std::sync::Arc<Vec<Hit>> =
         std::sync::Arc::new(out.into_iter().map(|(_, _, h)| h).collect());
     assembled
@@ -1100,6 +1405,60 @@ fn scan_file(plan: &Plan, dir: &str, rel: &str, text: &str) -> std::sync::Arc<Ve
         .expect("the memo mutex is never poisoned")
         .insert((key, plan.key), std::sync::Arc::clone(&out));
     out
+}
+
+/// ONE WRITTEN NAME, ONE HIT: THE LONGEST NEEDLE WINS.
+///
+/// Needles nest. `busbar_kernel_ledger::` is the package name `busbar-kernel-ledger` and, inside
+/// it, the kind-qualified id `kernel-ledger`. `busbar_plane_llm` holds `plane-llm` and `llm`. Each
+/// needle is scanned alone, so one written name scored once per needle it contains: a crate naming
+/// `busbar_plane_llm` once was charged three plane hits.
+///
+/// So on each line a needle's count is what is LEFT after every longer needle containing it has
+/// taken its occurrences: `residual(A) = raw(A) - Σ residual(M) × occurrences(A in M)`, over the
+/// needles `M` on the same line whose segments contain `A`'s as a contiguous run, taken longest
+/// first. The subtraction runs per reading (segments, windows, decoded), so a disagreement between
+/// the scanners survives it. A needle nothing longer contains is untouched, and a hit whose
+/// residual is zero in every reading is dropped. `llm` written on its own beside `busbar_plane_llm`
+/// still counts once.
+fn one_needle_per_span(plan: &Plan, out: &mut Vec<(usize, usize, Hit)>) {
+    fn occurrences(inner: &[String], outer: &[String]) -> usize {
+        if inner.len() >= outer.len() {
+            return 0;
+        }
+        outer.windows(inner.len()).filter(|w| *w == inner).count()
+    }
+    let mut k = 0;
+    while k < out.len() {
+        let line = out[k].0;
+        let mut e = k;
+        while e < out.len() && out[e].0 == line {
+            e += 1;
+        }
+        if e - k > 1 {
+            let mut order: Vec<usize> = (k..e).collect();
+            order.sort_by_key(|&x| std::cmp::Reverse(plan.needles[out[x].1].parts.len()));
+            for pos in 0..order.len() {
+                let a = order[pos];
+                let inner = &plan.needles[out[a].1].parts;
+                let (mut seg, mut win, mut dec) = (0usize, 0usize, 0usize);
+                for &m in &order[..pos] {
+                    let n = occurrences(inner, &plan.needles[out[m].1].parts);
+                    if n > 0 {
+                        seg += out[m].2.by_segments * n;
+                        win += out[m].2.by_windows * n;
+                        dec += out[m].2.by_decoded * n;
+                    }
+                }
+                let h = &mut out[a].2;
+                h.by_segments = h.by_segments.saturating_sub(seg);
+                h.by_windows = h.by_windows.saturating_sub(win);
+                h.by_decoded = h.by_decoded.saturating_sub(dec);
+            }
+        }
+        k = e;
+    }
+    out.retain(|(_, _, h)| h.by_segments + h.by_windows + h.by_decoded > 0);
 }
 
 // How many spellings THIS THREAD has put to a file through [`scan_needles`] — the exit test's
@@ -1138,6 +1497,8 @@ fn scan_needles(
     // it is read, and a filename is the first thing a reader of the tree sees. The crate's OWN
     // directory is stripped: it is the crate naming itself.
     let tail = rel.strip_prefix(dir).unwrap_or(rel);
+    let tail = mask_colliding_path(tail);
+    let tail = tail.as_ref();
     let subject = std::iter::once((0usize, tail)).chain(
         text.lines()
             .enumerate()
@@ -1820,11 +2181,18 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
                     .join(", ")
             ));
         }
+        // THE DISAGREEMENT'S FIGURE IS THE GAP, NOT THE CELL. The
+        // cell's own count is already this cell's `ratchet`/`unlisted-cell` finding; carrying it
+        // here too filed every disagreeing cell twice in the standing snapshot (kernel×transport
+        // 1 811 twice), so a burn-down summed over the snapshot double-counted exactly those
+        // cells. What a disagreement IS is the spellings one scanner sees and the other does not.
         if cell.disagrees() && !listed.disagreements.contains_key(&key) {
+            let gap = cell.by_segments.abs_diff(cell.by_windows);
             offenders.push(format!(
                 "measurement-disagreement\t{krate} × {kind}\tsegment scanner {} vs window scanner \
-                 {}; the scored count is the higher, {}. Record a `[[disagreement]]` row for this \
-                 cell, or drain the spellings one scanner cannot see.",
+                 {}: they differ by {gap}, and the cell scores the higher, {} (that count is the \
+                 cell's own row). Record a `[[disagreement]]` row for this cell, or drain the \
+                 spellings one scanner cannot see.",
                 cell.by_segments, cell.by_windows, cell.count
             ));
         }
@@ -2524,6 +2892,197 @@ pub fn selftest<'a>(
         ],
     ));
 
+    // AN INSTANCE ID THAT IS ALSO A CRATE'S OR AN ABBREVIATION'S NAME COUNTS ONLY AS A REFERENCE
+    // ([`COLLIDING_INSTANCE_WORDS`]). The fixture's transport cell is recorded
+    // at its one hit, a registry key `"ws"`. The `http` crate's paths, `axum::http`, HTTP in a
+    // comment, a URL scheme, whitespace called `ws`, and a file named `skip_ws.rs` leave it there
+    // (GREEN). A crate-rooted path to a `ws` module, and the transport crate's own path, are each
+    // a hit (RED).
+    let colliding_fixture = |extra: Option<(&'static str, &'static str)>| {
+        let mut files = vec![
+            ("wiring.rs", "pub const T: &str = \"ws\";\n"),
+            (
+                "skip_ws.rs",
+                "// speaks HTTP; a WS peer never reaches this.\n\
+                 use http::Method;\n\
+                 use axum::{http, Router};\n\
+                 pub fn status() -> axum::http::StatusCode { axum::http::StatusCode::OK }\n\
+                 pub fn skip_ws(s: &str) -> &str { let ws = s.trim_start(); ws }\n\
+                 pub const URL: &str = \"http://example.com/ws\";\n\
+                 pub fn is_http(m: &Method) -> bool { m == Method::GET }\n",
+            ),
+        ];
+        files.extend(extra);
+        fixture_cell(cx, "transport", "1", &files, true)
+    };
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "`http` as the http crate, in prose or a URL, and `ws` as whitespace are not the instance",
+        &[ROW_MATRIX],
+        colliding_fixture(None),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a crate-rooted path to a `ws` module still counts",
+        &[ROW_MATRIX],
+        colliding_fixture(Some(("accept.rs", "pub use crate::ingress::ws::accept;\n"))),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
+            "RAISED",
+        ],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "the http transport crate's own path still counts",
+        &[ROW_MATRIX],
+        colliding_fixture(Some(("dial.rs", "use busbar_transport_http::Dial;\n"))),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
+            "RAISED",
+        ],
+    ));
+
+    // ONE WRITTEN NAME, ONE HIT ([`one_needle_per_span`]). The fixture's plane cell is recorded
+    // at 1. `busbar_plane_llm::` is the package name, and inside it `plane-llm` and `llm`: it
+    // scored 3 before, and is 1 now (GREEN). The bare id written again on the same line is a
+    // second name and still counts (RED).
+    let nested_fixture =
+        |line: &'static str| fixture_cell(cx, "plane", "1", &[("wiring.rs", line)], true);
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a package name scores once, not once per shorter needle inside it",
+        &[ROW_MATRIX],
+        nested_fixture("use busbar_plane_llm::Codec;\n"),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "the bare id written beside the package name still counts",
+        &[ROW_MATRIX],
+        nested_fixture("use busbar_plane_llm::Codec; // an llm codec\n"),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} plane", instances::FIXTURE_CRATE),
+            "RAISED",
+        ],
+    ));
+
+    // `unix` AS THE OPERATING SYSTEM IS NOT THE CARRIER ([`os_words`]). A `busbar-transport-unix`
+    // crate is planted so `unix` is a transport needle at all. The fixture's only real hit is the
+    // claim literal `"unix"`; its cfg predicate, `std::os::unix`, standard socket type, clock and
+    // "non-unix" prose are not hits. The carrier's crate path, a `unix://` target, "the unix
+    // socket" in prose and a carrier identifier each RAISE a cell recorded at 1.
+    let unix_fixture = |count: &'static str, extra: Option<(&'static str, &'static str)>| {
+        let mut files = vec![
+            ("wiring.rs", "pub const CLAIM: &str = \"unix\";\n"),
+            (
+                "os.rs",
+                "#[cfg(unix)]\n\
+                 use std::os::unix::fs::PermissionsExt;\n\
+                 #[cfg(all(unix, not(target_os = \"macos\")))]\n\
+                 pub fn mode(l: &tokio::net::UnixListener) -> u64 { now_unix_ns() }\n\
+                 fn now_unix_ns() -> u64 { std::time::UNIX_EPOCH.elapsed().map_or(0, |d| d.as_secs()) }\n\
+                 // Non-unix builds have no mode bits; Unix seconds since the epoch.\n",
+            ),
+        ];
+        files.extend(extra);
+        let mut ov = fixture_cell(cx, "transport", count, &files, true);
+        ov.set(
+            "crates/busbar-transport-unix/Cargo.toml",
+            "[package]\nname = \"busbar-transport-unix\"\nversion = \"0.0.0\"\n".to_string(),
+        );
+        ov.set(
+            "crates/busbar-transport-unix/src/lib.rs",
+            "//! Fixture.\n".to_string(),
+        );
+        ov
+    };
+    // THE MASK'S OWN RED ARM: the same fixture recorded one hit ABOVE its true count (the claim
+    // literal alone), as if the OS spellings counted. With the mask the cell measures under its row and is STALE SLACK;
+    // without it the OS spellings fill the row and nothing is said. (A GREEN arm cannot be written
+    // here: with a unix carrier planted, the real tree's own carrier mentions raise real cells.)
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "`unix` as a cfg, a std path, a socket type, UNIX_EPOCH, the clock or the platform is not counted",
+        &[ROW_MATRIX],
+        unix_fixture("2", None),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
+            "STALE SLACK",
+        ],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "the unix carrier's crate path still counts",
+        &[ROW_MATRIX],
+        unix_fixture(
+            "1",
+            Some(("dial.rs", "use busbar_transport_unix::Carrier;\n")),
+        ),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
+            "RAISED",
+        ],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a `unix://` target still counts",
+        &[ROW_MATRIX],
+        unix_fixture(
+            "1",
+            Some((
+                "target.rs",
+                "pub const SOCK: &str = \"unix:///run/busbar.sock\";\n",
+            )),
+        ),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
+            "RAISED",
+        ],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "\"the unix socket\" in prose still counts",
+        &[ROW_MATRIX],
+        unix_fixture("1", Some(("prose.rs", "// dial the unix socket first.\n"))),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
+            "RAISED",
+        ],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "an identifier naming the carrier (`UnixCarrier`, `connect_unix`) still counts",
+        &[ROW_MATRIX],
+        unix_fixture(
+            "1",
+            Some((
+                "carrier.rs",
+                "pub struct UnixCarrier;\npub fn connect_unix() {}\n",
+            )),
+        ),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
+            "RAISED",
+        ],
+    ));
+
     // A CONTRACT IDENTIFIER IS THE CONTRACT'S SHAPE, NOT A PLANE'S NAME (the Q77a measurement
     // correction, [`contract_identifiers`]). The fixture's plane cell is recorded at its one hit;
     // naming the hook contract's `RoutingDecision` — whose camel half reads as the `decision`
@@ -2869,8 +3428,8 @@ pub fn selftest<'a>(
     // The honest fixture for "this row covers nothing" is a tree in which the thing it covered is
     // GONE, and a crate leaves the measurement the way it leaves the census: its manifest goes.
 
-    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-kernel-scope` carries live cells; every
-    // one of them measures nothing the moment the crate stops being one.
+    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-kernel-ledger` carries a live cell; it
+    // measures nothing the moment the crate stops being one.
     //
     // RE-TARGETED TWICE. The subject was `busbar-auth-admin-tokens × api`, and that row went dead
     // on the real tree when the crate's last `busbar-api` name moved to the contract; then
@@ -2878,16 +3437,18 @@ pub fn selftest<'a>(
     // contract (#84) and the plugin stopped naming `busbar-plugin-sdk`. Each time its red became
     // standing debt the debt-free base subtracts and the case came back green. A kernel workflow
     // crate's cell is not a fixture's and not an edge a fold retires: removing the crate's manifest
-    // kills it exactly as it did the old ones.
+    // kills it exactly as it did the old ones. Re-targeted a third time: the subject was
+    // `busbar-kernel-scope × transport`, whose every hit was an `http` spelling that
+    // [`COLLIDING_INSTANCE_WORDS`] no longer counts, so that row went dead on the real tree.
     let mut ov = crate::ctx::Overlay::new();
-    ov.remove("crates/busbar-kernel-scope/Cargo.toml");
+    ov.remove("crates/busbar-kernel-ledger/Cargo.toml");
     report.push(prove_rows_red(
         cx,
         gate,
         "a `[[cell]]` row whose cell measures nothing is a dead allowance, not a tight one",
         &[ROW_MATRIX],
         ov,
-        &["dead-cell", "busbar-kernel-scope \u{d7} transport"],
+        &["dead-cell", "busbar-kernel-ledger \u{d7} kernel"],
     ));
 
     // A `[[disagreement]]` ROW WHOSE TWO SCANNERS HAVE NOTHING LEFT TO DISAGREE ABOUT. The note is
@@ -2948,6 +3509,77 @@ pub fn selftest<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_nested_name_scores_once() {
+        let plan = plan_of(&[
+            ("plane", "busbar-plane-llm"),
+            ("plane", "plane-llm"),
+            ("plane", "llm"),
+        ]);
+        let hits = scan_file(
+            &plan,
+            "crates/x",
+            "crates/x/src/nested_once.rs",
+            "use busbar_plane_llm::A;\nuse busbar_plane_llm::B; // llm\n",
+        );
+        let total = |line: usize| -> usize {
+            hits.iter()
+                .filter(|h| h.line == line)
+                .map(|h| h.by_segments.max(h.by_windows).max(h.by_decoded))
+                .sum()
+        };
+        assert_eq!(total(1), 1, "one package name is one hit");
+        assert_eq!(total(2), 2, "the bare id written again is a second hit");
+    }
+
+    #[test]
+    fn colliding_words_count_only_as_references() {
+        let kept = |rel: &str, line: &str| {
+            let m = mask_colliding_words(rel, line);
+            let l = m.to_ascii_lowercase();
+            l.matches("http").count() + l.matches("ws").count()
+        };
+        // not references
+        assert_eq!(kept("a.rs", "use http::Method;"), 0);
+        assert_eq!(kept("a.rs", "use axum::{http, Router};"), 0);
+        assert_eq!(kept("a.rs", "let s = axum::http::StatusCode::OK;"), 0);
+        assert_eq!(kept("a.rs", "fn skip_ws() { let ws = 1; }"), 0);
+        assert_eq!(kept("a.rs", "let u = \"http://x/ws\";"), 0);
+        assert_eq!(kept("a.rs", "// speaks HTTP to a ws peer"), 0);
+        assert_eq!(kept("a.rs", "struct WsArrival; fn http_status() {}"), 0);
+        assert_eq!(
+            kept(
+                "Cargo.toml",
+                "[dependencies]\nhttp = { workspace = true }\nhttp-body = \"1\"\n"
+            ),
+            0
+        );
+        assert_eq!(
+            kept("Cargo.toml", "rt = [\"axum/ws\"] # the ws accept\n"),
+            0
+        );
+        assert_eq!(kept("README.md", "The http transport and ws."), 0);
+        // references
+        assert_eq!(kept("a.rs", "use crate::ingress::ws;"), 1);
+        assert_eq!(kept("a.rs", "mod ws;"), 1);
+        assert_eq!(kept("a.rs", "let t = Transport::Http;"), 1);
+        assert_eq!(kept("a.rs", "let k = \"ws\";"), 1);
+        assert_eq!(kept("a.rs", "use busbar_transport_http::X;"), 1);
+        assert_eq!(kept("a.rs", "// see busbar-transport-ws"), 1);
+        assert_eq!(kept("Cargo.toml", "[features]\nws = []\n"), 1);
+        assert_eq!(kept("x.yaml", "transport: ws\n"), 1);
+        // the path line
+        assert_eq!(
+            mask_colliding_path("src/egress/duplex_ws.rs"),
+            "src/egress/duplex_xx.rs"
+        );
+        assert_eq!(
+            mask_colliding_path("src/ingress/ws.rs"),
+            "src/ingress/ws.rs"
+        );
+        assert_eq!(mask_colliding_path("src/http/mod.rs"), "src/http/mod.rs");
+    }
 
     fn plan_of(words: &[(&'static str, &str)]) -> Plan {
         let mut p = Plan::default();

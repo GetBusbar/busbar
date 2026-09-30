@@ -160,6 +160,8 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         metric_families: &[],
         record_kinds: busbar_plane_mcp::records::RECORD_KINDS,
         required_config_sections: &[],
+        // The pin and `verify_ttl:` are the kernel's to parse and judge; declared here by key.
+        trust_keys: config::TRUST_KEYS,
         served_op_classes: &[],
     };
 

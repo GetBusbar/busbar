@@ -99,7 +99,8 @@ unsafe impl AbiOut for CancelOut {}
 /// # Safety
 /// The implementor is `#[repr(C)]`, its first field is `head: OpsHead`, and every field after it is
 /// an `Option<Op>` — kind op `k` at slot index `LIFECYCLE_SLOTS + k`, contiguous (the mechanism's
-/// SLOT LAYOUT rule).
+/// SLOT LAYOUT rule). Its `Lifecycle`'s `out` at slot `open` leads with the lifecycle's `OpenOut`
+/// (a [`Safe`](crate::abi::sdk::safe::Safe) `open` writes the instance there).
 pub unsafe trait KindOps: Copy + 'static {
     /// The kind this table belongs to; the door's `kind` and `kind_abi` follow from it.
     const KIND: KindCode;
@@ -267,16 +268,52 @@ pub trait Slot {
     fn call(instance: *mut c_void, input: &Self::In, out: &mut Self::Out) -> Outcome;
 }
 
+/// What a table entry runs: a raw [`Slot`], or a [`SafeSlot`](crate::abi::sdk::safe::SafeSlot)
+/// behind [`Safe`](crate::abi::sdk::safe::Safe). The trampoline is generic over this, so
+/// [`plugin_door!`](crate::plugin_door) takes either in any slot position.
+pub trait Entry {
+    /// The slot's `in`.
+    type In: AbiIn;
+    /// The slot's `out`.
+    type Out: AbiOut;
+    /// Whether this entry reads the instance as the SDK's typed state
+    /// ([`Safe`](crate::abi::sdk::safe::Safe)); `plugin_door!` then requires `open` to be one too.
+    const SAFE: bool = false;
+    /// The body.
+    ///
+    /// # Safety
+    /// Called only by the trampoline, under the call contract: `input` and `out` are the
+    /// trampoline's private copies of the host's `in` and `out`; every pointer the host put in
+    /// `input` is valid for the call as the kind's ABI states it; `index` is the slot's own index;
+    /// `instance` is NULL or the pointer this plugin's `open` answered READY, not yet answered
+    /// READY by `close`, and `close` runs with no other op in flight on it.
+    unsafe fn enter(
+        instance: *mut c_void,
+        index: u32,
+        input: &Self::In,
+        out: &mut Self::Out,
+    ) -> Outcome;
+}
+
+impl<S: Slot> Entry for S {
+    type In = S::In;
+    type Out = S::Out;
+    unsafe fn enter(instance: *mut c_void, _: u32, input: &S::In, out: &mut S::Out) -> Outcome {
+        S::call(instance, input, out)
+    }
+}
+
 /// THE TRAMPOLINE every table entry is: `S`'s body behind the SDK's checks (the module doc), under
 /// the call capture `H` keeps. `INDEX` is the slot's index in its kind's table; an `in.op` naming
 /// another slot is a fault.
-extern "C" fn trampoline<S: Slot, H: CaptureHome, const INDEX: u32>(
+extern "C" fn trampoline<S: Entry, H: CaptureHome, const INDEX: u32>(
     instance: *mut c_void,
     input: *const c_void,
     out: *mut c_void,
 ) -> RawOutcome {
-    // SAFETY: the host passes `in`/`out` of this slot's types (the call convention); `enter`
-    // checks NULL and the heads' sizes before reading or writing beyond them.
+    // SAFETY: the host passes `in`/`out` of this slot's types and the instance `open` answered
+    // (the call convention); `enter` checks NULL and the heads' sizes before reading or writing
+    // beyond them.
     RawOutcome::of(unsafe { enter::<S, H>(INDEX, instance, input.cast(), out.cast()) })
 }
 
@@ -286,7 +323,7 @@ extern "C" fn trampoline<S: Slot, H: CaptureHome, const INDEX: u32>(
 /// `out`, when non-NULL, points at a writable host `out` of at least `out.size` bytes whose first
 /// field is an [`OutHead`]; `input`, when non-NULL, points at a readable host `in` of at least
 /// `in.size` bytes whose first field is an [`InHead`].
-unsafe fn enter<S: Slot, H: CaptureHome>(
+unsafe fn enter<S: Entry, H: CaptureHome>(
     index: u32,
     instance: *mut c_void,
     input: *const S::In,
@@ -348,7 +385,10 @@ unsafe fn enter<S: Slot, H: CaptureHome>(
     let ran = tracing_core::dispatcher::with_default(&capture, || {
         catch_unwind(move || {
             let mut written = local_out;
-            let answered = S::call(instance, &local_in, &mut written);
+            // SAFETY: `local_in`/`written` are this call's private copies of the host's `in`/`out`,
+            // `index` is this slot's (checked against `in.op` above), and `instance` is what the
+            // host passed: the call contract `Entry::enter` states.
+            let answered = unsafe { S::enter(instance, index, &local_in, &mut written) };
             (answered, written)
         })
     });
@@ -416,12 +456,15 @@ pub const fn slot_count<T: KindOps>() -> u32 {
 
 /// A table entry: the `trampoline` over `S` at `INDEX` under the call capture `H` keeps, refusing
 /// to compile unless `S` reads and writes the structs `T` states for that slot ([`KindSlot`]): a
-/// kind op's `T` is the kind's `Ops`, a lifecycle slot's its [`KindOps::Lifecycle`].
+/// kind op's `T` is the kind's `Ops`, a lifecycle slot's its [`KindOps::Lifecycle`]. A table
+/// holding any [`Safe`](crate::abi::sdk::safe::Safe) entry holds a `Safe` `open`, which mints the
+/// instance the others read; [`plugin_door!`](crate::plugin_door) refuses to compile one that does
+/// not, so a plugin builds its table with the macro, never by hand.
 #[must_use]
 pub const fn kind_op<T, S, H, const INDEX: u32>() -> Option<Op>
 where
     T: KindSlot<INDEX>,
-    S: Slot<In = <T as KindSlot<INDEX>>::In, Out = <T as KindSlot<INDEX>>::Out>,
+    S: Entry<In = <T as KindSlot<INDEX>>::In, Out = <T as KindSlot<INDEX>>::Out>,
     H: CaptureHome,
 {
     Some(trampoline::<S, H, INDEX>)
@@ -584,6 +627,20 @@ macro_rules! plugin_door {
             // A `path` fragment cannot open a struct literal; an alias can.
             type __Ops = $ops;
             type __Life = <__Ops as __sdk::KindOps>::Lifecycle;
+            // A `Safe` slot reads the typed state a `Safe` `open` mints (`abi::sdk::safe`).
+            const _: () = ::core::assert!(
+                <$open as __sdk::Entry>::SAFE
+                    || !(<$validate as __sdk::Entry>::SAFE
+                        || <$refresh as __sdk::Entry>::SAFE
+                        || <$retire as __sdk::Entry>::SAFE
+                        || <$tick as __sdk::Entry>::SAFE
+                        || <$drive as __sdk::Entry>::SAFE
+                        || <$cancel as __sdk::Entry>::SAFE
+                        || <$release as __sdk::Entry>::SAFE
+                        || <$close as __sdk::Entry>::SAFE
+                        $($(|| <$slot as __sdk::Entry>::SAFE)*)?),
+                "a Safe slot reads the state a Safe open installs: name open as Safe<_> too"
+            );
             /// THIS PLUGIN IMAGE'S CALL CAPTURE: one slot per thread, the image's own (compiled in
             /// or dropped in, each image holds its own). Its first use on a thread makes
             /// `tracing-log`'s `LogTracer` the image's `log` logger, if nothing is yet, and opens

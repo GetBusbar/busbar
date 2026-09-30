@@ -119,6 +119,58 @@ async fn a_frame_with_a_reserved_opcode_is_a_framing_error_and_not_a_reset() {
     );
 }
 
+/// RFC 6455 §7.1.7 "Fail the WebSocket Connection": detecting a protocol violation locally (no
+/// Close frame from the peer at all, unlike `frames_answers_a_peer_initiated_close_within_budget`
+/// above) still obliges this endpoint to fail the connection and SHOULD send a Close frame naming
+/// why. Tungstenite queues nothing on its own for a violation IT reads (unlike a peer's own Close,
+/// which it does queue a reply for) — the arm this test exercises builds one from the crate's own
+/// existing reason→code table. RED ON THE PARENT: before this fix the pump matched
+/// `Some(Err(e)) => break Some(Err(read_error(&e)))` and never touched the writer, so the raw
+/// client's `next()` below never resolves within the budget and this test times out; a second,
+/// smaller parent bug (fixed in the same commit) had the pump's own late-close check discard the
+/// violation's `Err` and report a silent `None` instead, which this test would have caught too.
+#[tokio::test]
+async fn frames_answers_a_locally_detected_violation_with_a_close_within_budget() {
+    let t = WsTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (accepted, dialled) = tokio::join!(
+        t.handshake_over(end_a, true, WS_TARGET, "peer-a"),
+        tokio_tungstenite::client_async("ws://localhost/", end_b)
+    );
+    let conn = accepted.unwrap();
+    let (mut client, _resp) = dialled.unwrap();
+
+    // Same injected violation as the test above: FIN + reserved opcode 0x3, masked, empty.
+    tokio::io::AsyncWriteExt::write_all(client.get_mut(), &[0x83, 0x80, 0, 0, 0, 0])
+        .await
+        .unwrap();
+    tokio::io::AsyncWriteExt::flush(client.get_mut())
+        .await
+        .unwrap();
+
+    // busbar's server role must answer this from inside `frames()`, unprompted.
+    let mut frames = t.frames(conn);
+    let pump = tokio::spawn(async move { while frames.next().await.is_some() {} });
+
+    let msg = tokio::time::timeout(crate::transport::CLOSE_BUDGET * 4, client.next())
+        .await
+        .expect("busbar must fail the connection within its own budget, not hang")
+        .expect("the stream must not end before the Close arrives")
+        .expect("a valid WS frame");
+    match msg {
+        tokio_tungstenite::tungstenite::Message::Close(Some(frame)) => {
+            assert_eq!(
+                u16::from(frame.code),
+                1002,
+                "a reserved opcode is a Protocol Error (1002), not some other code"
+            );
+        }
+        other => panic!("expected busbar to fail the connection with a Close frame, got {other:?}"),
+    }
+
+    pump.await.unwrap();
+}
+
 /// The third lifecycle for the ceiling: an instance with NO layer under it — the `handshake_over`
 /// seam an embedder drives directly — must be able to carry the operator's cap too. Before
 /// [`WsTransport::with_max_message_bytes`] a `new()` instance had no route to set it, so it was
@@ -486,6 +538,66 @@ async fn half_close_is_the_ws_closing_handshake() {
     assert_eq!(frame.bytes.as_slice(), b"last words");
     // The Close frame ends the stream cleanly (`None`), never as a `Reset` error.
     assert!(frames.next().await.is_none());
+}
+
+/// RFC 6455 §5.5.1/§7.1.5: an endpoint that receives a Close frame and has not already sent one
+/// MUST answer with one before the connection ends, echoing the peer's own code. `frames()` used to
+/// match `Message::Close(_) => break None` and never touch the writer at all, so a peer that closed
+/// first got no reply and every closing handshake this transport's SERVER role ever answered timed
+/// out. RED ON THE PARENT: this drives a raw `tokio_tungstenite` client (the same harness
+/// `close_maps_the_reason_to_its_rfc6455_code` below uses) that sends the Close itself, and asserts
+/// the literal bytes busbar puts back on the wire — before the fix `raw_client.next()` below never
+/// resolves inside the budget and this test times out; after it, it observes a Close frame carrying
+/// the SAME code the client sent.
+#[tokio::test]
+async fn frames_answers_a_peer_initiated_close_within_budget() {
+    let t = WsTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    // Both roles' opening handshakes run concurrently, exactly like `pair()`: each is waiting on
+    // bytes only the other side's handshake produces.
+    let server_fut = t.handshake_over(end_a, true, WS_TARGET, "peer");
+    let client_fut = tokio_tungstenite::client_async(WS_TARGET, end_b);
+    let (server_conn, client_res) = tokio::join!(server_fut, client_fut);
+    let server_conn = server_conn.unwrap();
+    let (mut raw_client, _resp) = client_res.unwrap();
+
+    // busbar's server role must answer this from inside `frames()`, unprompted — nothing above the
+    // pump ever sees this connection or calls `close` on it.
+    let mut frames = t.frames(server_conn);
+    let pump = tokio::spawn(async move { while frames.next().await.is_some() {} });
+
+    // A private-use close code (3000), not 1000: proves the reply ECHOES the peer, rather than a
+    // hardcoded constant that would coincidentally match the RFC's own default.
+    let sent_code: u16 = 3000;
+    futures::SinkExt::send(
+        &mut raw_client,
+        tokio_tungstenite::tungstenite::Message::Close(Some(
+            tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                code: sent_code.into(),
+                reason: "".into(),
+            },
+        )),
+    )
+    .await
+    .unwrap();
+
+    let msg = tokio::time::timeout(crate::transport::CLOSE_BUDGET * 4, raw_client.next())
+        .await
+        .expect("busbar must answer the Close within its own budget, not hang")
+        .expect("the stream must not end before the Close reply arrives")
+        .expect("a valid WS frame");
+    match msg {
+        tokio_tungstenite::tungstenite::Message::Close(Some(frame)) => {
+            assert_eq!(
+                u16::from(frame.code),
+                sent_code,
+                "the reply must echo the peer's own code, not a hardcoded one"
+            );
+        }
+        other => panic!("expected busbar to answer with a Close frame, got {other:?}"),
+    }
+
+    pump.await.unwrap();
 }
 
 /// `close` must carry the [`CloseReason`] it was given onto the wire as the matching RFC 6455 close

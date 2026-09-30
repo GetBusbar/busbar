@@ -40,15 +40,20 @@ pub use busbar_plane_mcp::record;
 pub(crate) use busbar_plane_mcp::identity;
 pub use busbar_plane_mcp::{outputschema, sanitize};
 
-/// THE MCP PLANE'S DIAGNOSTICS CATALOG.
-///
-/// The `MCP_*` catalog entries and the `DIAGNOSTICS` slice previously lived in the standalone
-/// `busbar-plane-mcp-host` crate (the first byte-safe step of the fat-crate collapse — DECISIONS
-/// #19/#20/#21) and re-exported here under this path; that crate has since folded back into this
-/// one (#19/#39: `busbar-plane-mcp-host` is named for deletion explicitly), so the module lives here
-/// directly now. Every `busbar_mcp::diagnostics::…` / `crate::diagnostics::…` caller still resolves
-/// exactly what it always did.
-pub mod diagnostics;
+/// THE MCP PLANE'S DIAGNOSTICS CATALOG, defined in the plane crate (`busbar_plane_mcp::diagnostics`)
+/// and re-exported under this path, so every `busbar_mcp::diagnostics::…` / `crate::diagnostics::…`
+/// caller resolves the same constants.
+pub use busbar_plane_mcp::diagnostics;
+
+/// THE MCP CLIENT'S PURE HALF (outbound wire, verbs, peer classifier), defined in the plane crate
+/// and reached through this crate root, the engine's one edge to the plane, as `record`, `identity`
+/// and `diagnostics` are. `mcp::client` re-exports its modules under their old paths.
+pub(crate) use busbar_plane_mcp::client as plane_client;
+
+/// The committed per-plane diagnostics pages, rendered through the host's renderers.
+#[cfg(test)]
+#[path = "tests/diagnostics_page_tests.rs"]
+mod diagnostics_page_tests;
 
 pub mod mcp;
 

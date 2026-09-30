@@ -1560,6 +1560,40 @@
       "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): the only difference is effects.script /audit_after/items/0/scheme and /newest_entry/scheme: absent -> 2. effects.script is a money-rated class, so only kind=breaking may take it. PREMISE (evaluated): the served audit entries carry scheme 2 and the teller step still seals exactly one key.create record (the step's own contract)."
     },
     {
+      "id": "#34 a new audit record signs under digest v3, which drops currency",
+      "kind": "breaking",
+      "changelog": "1.6.0 Changed: a newly sealed audit record signs under `busbar.audit.digest.v3`, which drops `currency` from the digest.",
+      "by": "owner (Matthew Jackson), #34 ruling 2026-09-29 (remove and migrate)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-29",
+        "ruling": "#34 OWNER 2026-09-29: remove `currency` from the signed audit digest and migrate: new records sign under a versioned recipe v3 without it, every existing record verifies under the recipe it was sealed under"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^admin\\.ops\\|(GetAuditHead|GetAuditKeys|GetAuditRange)\\|ok$",
+      "expected_cells": 3,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "admin.ops|GetAuditHead|ok",
+            "status": 200
+          },
+          {
+            "cell": "admin.ops|GetAuditHead|ok",
+            "pointer": "/recipe",
+            "equals": "busbar.audit.digest.v3"
+          }
+        ]
+      },
+      "rationale": "OWNER-RULED 2026-09-29 (#34). The only bytes that move are the published recipe name (`busbar.audit.digest.v2` -> `busbar.audit.digest.v3`) in the three audit reads, the digest (and so the signature) of a record sealed from here on, the `currency` member leaving a new record in the range read, and a `recipe` member on each range record naming the recipe it was sealed under. The three cells are 1.6.0-additive and carry no 1.5.5 golden (accepted-gaps `admin-kernel-verbs-new-in-1.6.0`), so this entry forgives no measured cell today; it registers the published-contract change so the next golden that records these reads meets it signed. A record sealed under v2 is never rewritten and still verifies by docs/audit-chain-digest-v2.md, proven in crates/busbar-kernel-audit (record_tests, published_recipe_tests)."
+    },
+    {
       "id": "#79 warm-up requests keep the card in force when they arrived (minor-unit-rounding)",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: a request served before a rate-card edit keeps the price of the card in force when it arrived.",

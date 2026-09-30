@@ -71,6 +71,7 @@
 pub mod adapters;
 pub mod auth_bindings;
 pub mod cli;
+pub mod dispatch;
 pub mod durability;
 pub mod gauntlet_install;
 pub mod gauntlet_kernel;
@@ -80,6 +81,7 @@ pub mod kernel;
 pub mod keyset;
 pub mod ledger_identity;
 pub mod linked;
+pub(crate) mod loader;
 pub mod migration;
 pub mod otlp;
 #[cfg(feature = "plane-decisions")]

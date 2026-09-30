@@ -55,7 +55,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use serde_json::Value;
 
-use busbar_contract::caps::{step::Route, Decision, LaneId, Pass, ReasonCode, Refusal, RoutePlan};
+use busbar_contract::caps::{
+    step::Route, LaneId, Pass, ReasonCode, Refusal, RoutePlan, SeatVerdict,
+};
 use busbar_contract::{DestinationFacts, Leg, UpstreamAddress};
 use busbar_kernel::observability::HOTPATH_LEVEL;
 use busbar_kernel::{handlers::Op, plane_host::EngineHost};
@@ -120,7 +122,7 @@ pub(crate) struct RouteInput<'a> {
 /// decides where the unit's single accrual is made.
 pub(crate) struct Routed {
     /// The sealed step-5 answer.
-    pub(crate) decision: Decision<Route>,
+    pub(crate) decision: SeatVerdict<Route>,
     /// The bytes the walk produced — a delivered body, a relayed upstream error, the exhaustion
     /// disposition's own answer, or the candidate-miss refusal. Never posted here.
     pub(crate) response: Response,
@@ -206,7 +208,7 @@ fn plan_over(rt: &Arc<NativeRuntime>, cands: &[WeightedLane]) -> RoutePlan {
 /// WHAT THE WALK SAW, before a token seals it.
 ///
 /// The same four things [`Routed`] carries, minus the one that cannot cross a thread: a
-/// `Decision<Route>` can only be built with the step's own token, and the token is minted for the
+/// `SeatVerdict<Route>` can only be built with the step's own token, and the token is minted for the
 /// length of the loop's call on the thread the loop runs on. The walk itself is asynchronous and the
 /// loop is not, so the two are on opposite sides of a channel — and a channel carries values, not
 /// borrows. So the walk answers with the REFUSAL or the PLAN and the sealing happens back where the
@@ -249,10 +251,10 @@ pub(crate) fn seal(unit_token: &Pass<Route>, parts: RouteParts) -> Routed {
         meter_sink,
     } = parts;
     let decision = match refusal {
-        Some(refusal) => Decision::refuse(unit_token, refusal),
+        Some(refusal) => SeatVerdict::refuse(unit_token, refusal),
         // A walk that did not refuse ran a plan; the `unwrap_or_default` is the empty plan a
         // refusing walk would have carried, and it is unreachable from the two constructions below.
-        None => Decision::proceed(unit_token, plan.unwrap_or_default()),
+        None => SeatVerdict::proceed(unit_token, plan.unwrap_or_default()),
     };
     Routed {
         decision,

@@ -8,7 +8,7 @@ use crate::test_support::engine_kit::EngineTestKit as _;
 use crate::test_support::{LaneSpec, TestApp};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use busbar_contract::caps::KernelSeal;
+use busbar_contract::caps::{AuditFacts, KernelSeal};
 use busbar_kernel::proxy::reqlog::{RequestRecord, REQUESTS};
 
 /// The one operation class these fixtures seal, as a plane names its own.

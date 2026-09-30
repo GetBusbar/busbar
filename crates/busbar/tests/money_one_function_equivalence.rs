@@ -1162,3 +1162,115 @@ fn census_flags_a_planted_seventh_copy() {
     )];
     assert!(census(&only_prose).is_empty());
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE SCALES — ten thousand is a money number twice over, and each is written ONCE.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Every constant in production code whose value is ten thousand, with the one reason each exists.
+/// Two of them are money: the standard tier in basis points, and micro-units per minor unit. A
+/// second definition of either — or a new constant, or a bare ten thousand multiplied or divided
+/// by — is a copy of a scale the one function owns, free to drift from it.
+const TEN_THOUSANDS: &[(&str, &str)] = &[
+    ("STANDARD_TIER_BP", "the standard tier, in basis points"),
+    ("MICROS_PER_CENT", "micro-units in one minor unit"),
+    ("WHOLE_BP", "a metering tolerance ratio's whole, not money"),
+    (
+        "CHECKPOINT_ENTRIES",
+        "a checkpoint cadence in journal entries, not money",
+    ),
+];
+
+/// Where a production source writes ten thousand as a scale: a `const` defined as it, or a bare
+/// operand of a multiply or divide.
+fn scale_literals(sources: &[(String, String)]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut defined: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (rel, src) in sources {
+        for (n, line) in code_only(src).lines().enumerate() {
+            let at = format!("{rel}:{}", n + 1);
+            let squeezed: String = line.split_whitespace().collect::<Vec<_>>().join(" ");
+            let ten_k = |s: &str| s == "10_000" || s == "10000";
+            if let Some(rest) = squeezed.split("const ").nth(1) {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                let value = rest
+                    .rsplit('=')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .trim_end_matches(';');
+                if rest.contains('=') && ten_k(value) {
+                    defined.entry(name).or_default().push(at.clone());
+                    continue;
+                }
+            }
+            for op in ["mul(", "div(", "div_ceil(", "* ", "/ "] {
+                for (i, _) in squeezed.match_indices(op) {
+                    let operand: String = squeezed[i + op.len()..]
+                        .chars()
+                        .take_while(|c| c.is_ascii_digit() || *c == '_')
+                        .collect();
+                    if ten_k(&operand) {
+                        out.push(format!("inline ten thousand at {at}: `{}`", line.trim()));
+                    }
+                }
+            }
+        }
+    }
+    for (name, sites) in defined {
+        match TEN_THOUSANDS.iter().find(|(known, _)| *known == name) {
+            None => out.push(format!("`{name}` is a new ten-thousand scale at {sites:?}")),
+            Some(_) if sites.len() > 1 => out.push(format!(
+                "`{name}` is defined {} times: {sites:?}",
+                sites.len()
+            )),
+            Some(_) => {}
+        }
+    }
+    out
+}
+
+#[test]
+fn census_every_ten_thousand_scale_is_written_once() {
+    rule("S1  the tier and micro-per-minor scales, each defined once and never inlined");
+    let findings = scale_literals(&production_sources());
+    for f in &findings {
+        row("scale", f);
+    }
+    assert!(findings.is_empty(), "{findings:#?}");
+}
+
+/// The scale census can say no: a second definition, a new name and an inline operand each trip it.
+#[test]
+fn census_flags_a_planted_scale_copy() {
+    let planted = vec![(
+        "crates/planted/src/scale.rs".to_string(),
+        "pub const STANDARD_TIER_BP: u32 = 10_000;\n\
+         pub const STANDARD_TIER_BP: u32 = 10_000;\n\
+         const BASIS: u128 = 10_000;\n\
+         fn f(c: i64) -> i64 { c.saturating_mul(10_000) }\n\
+         // prose: multiply by 10_000\n"
+            .to_string(),
+    )];
+    let findings = scale_literals(&planted);
+    assert!(
+        findings.iter().any(|f| f.contains("defined 2 times")),
+        "{findings:?}"
+    );
+    assert!(
+        findings.iter().any(|f| f.contains("`BASIS` is a new")),
+        "{findings:?}"
+    );
+    assert!(
+        findings.iter().any(|f| f.contains("inline ten thousand")),
+        "{findings:?}"
+    );
+    assert_eq!(
+        findings.len(),
+        3,
+        "a comment is prose, not a scale: {findings:?}"
+    );
+}

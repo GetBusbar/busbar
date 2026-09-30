@@ -5,7 +5,7 @@
 //!
 //! This is the plane half of the kernel's `Units::admit` row. It asks the door and hands back the
 //! door's VERDICT — admitted, or the refusal — alongside the plane-side facts the Route, Meter and
-//! Audit steps read. It does not hand back the sealed `Decision<Admit>`, because on a yes that
+//! Audit steps read. It does not hand back the sealed `SeatVerdict<Admit>`, because on a yes that
 //! decision carries the unit's hold, and the hold is not the plane's to open (see "The hold" below).
 //!
 //! # The body is today's door, unchanged

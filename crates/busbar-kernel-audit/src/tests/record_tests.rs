@@ -55,7 +55,6 @@ fn inputs(unit: u64) -> AuditInputs {
             }],
             tier_bp: 9_000,
             fee_count: 1,
-            currency: "USD".into(),
             rate_card_version: 3,
             bucket_chain_ref: "chain:free>paid".into(),
         },
@@ -87,6 +86,23 @@ fn frozen_record() -> crate::record::AuditRecord {
     chain.seal(with_payloads, &token())
 }
 
+/// The `v2` digest [`frozen_record`]'s fields froze when `busbar.audit.digest.v2` was published,
+/// with `currency` `"USD"` in the preimage. Pinned, never re-captured: a record sealed under `v2`
+/// carries exactly this and must keep verifying by it.
+const FROZEN_V2: &str = "ea279d25a42d6345875b06b44fa7bb558f0d05655f985d376cd37fe2e0422293";
+
+/// [`frozen_record`] AS A `v2` NODE SEALED AND STORED IT: the same fields, the `currency` text the
+/// `v2` preimage framed, and the `v2` digest. This is what "an existing record" is on a node that
+/// sealed before `v3` (#34): nothing is rewritten, it is read back and verified by its own recipe.
+fn frozen_v2_record() -> crate::record::AuditRecord {
+    let mut record = frozen_record();
+    record.recipe = crate::recipe::Recipe::V2 {
+        currency: "USD".into(),
+    };
+    record.hash = FROZEN_V2.to_string();
+    record
+}
+
 /// THE SEALED DIGEST IS A FROZEN VALUE, not whatever today's encoder happens to produce.
 ///
 /// Every record a deployment has already written is verified by recomputing this digest, so a
@@ -95,18 +111,97 @@ fn frozen_record() -> crate::record::AuditRecord {
 ///
 /// History, and the rule it set. Moved once, before any release wrote a chain, when the record's
 /// position entered the digest. Moved a second time — and NOT re-captured — when the recipe became
-/// `busbar.audit.digest.v2` (#43, #71, #77(3): the record stores counts, never a price). That move
-/// is a NEW RECIPE beside the old one, which is the migration this test's earlier wording demanded:
-/// the v1 value is still pinned, byte for byte, by
-/// [`the_v1_frozen_digest_is_reproduced_by_v1_rules_from_a_v2_record`], and this value is the v2
-/// recipe's own, armed the day it was published. The next move needs a v3 beside these two.
+/// `busbar.audit.digest.v2` (#43, #71, #77(3): the record stores counts, never a price). Moved a
+/// third time, the same way, when the recipe became `busbar.audit.digest.v3` (#34, OWNER
+/// 2026-09-29: `currency` leaves the signed digest). Each move is a NEW RECIPE beside the old one:
+/// the v2 value is still pinned, byte for byte, by
+/// [`a_record_sealed_under_v2_still_verifies_by_the_v2_rules`], the v1 value by
+/// [`the_v1_frozen_digest_is_reproduced_by_v1_rules_from_a_v2_record`], and this value is the v3
+/// recipe's own, armed the day it was published. The next move needs a v4 beside these three.
 #[test]
 fn the_sealed_digest_of_a_fully_populated_record_is_the_frozen_hex() {
+    let record = frozen_record();
+    assert_eq!(record.recipe, crate::recipe::Recipe::V3);
     assert_eq!(
-        frozen_record().hash,
-        "ea279d25a42d6345875b06b44fa7bb558f0d05655f985d376cd37fe2e0422293",
+        record.hash, "d181a17502af4f637b8e3cd8ec7a107f07d4dc9fafe95375626e4709e2e7e26c",
         "the sealed digest moved: every persisted chain would now report itself tampered"
     );
+}
+
+/// A NEW RECORD'S PREIMAGE NAMES NO CURRENCY (#34). `v3` is `v2` less exactly `currency`: the same
+/// fields, in the same order, with that one taken out.
+#[test]
+fn a_new_record_is_sealed_under_v3_and_its_preimage_names_no_currency() {
+    use crate::recipe::digest_fields;
+    let v3: Vec<_> = digest_fields(&frozen_record())
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
+    let v2: Vec<_> = digest_fields(&frozen_v2_record())
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
+    assert!(
+        !v3.contains(&"currency"),
+        "a v3 preimage still frames a currency: {v3:?}"
+    );
+    let v2_less_currency: Vec<_> = v2.iter().copied().filter(|n| *n != "currency").collect();
+    assert_eq!(v2.len(), v3.len() + 1);
+    assert_eq!(v3, v2_less_currency, "v3 is not v2 less exactly `currency`");
+    assert!(AuditChain::verify_chain(std::slice::from_ref(&frozen_record())).is_ok());
+}
+
+/// AN EXISTING RECORD STILL VERIFIES, BY THE RECIPE IT WAS SEALED UNDER (#34).
+///
+/// A `v2` record read back after the upgrade recomputes to the `v2` digest it froze, and walks as a
+/// chain — the recipe change did not make a single stored record report itself tampered.
+#[test]
+fn a_record_sealed_under_v2_still_verifies_by_the_v2_rules() {
+    let record = frozen_v2_record();
+    assert_eq!(AuditChain::digest_of(&record), FROZEN_V2);
+    assert!(AuditChain::verify_chain(std::slice::from_ref(&record)).is_ok());
+}
+
+/// TAMPERING FAILS UNDER EITHER RECIPE — and so does moving a record between them.
+///
+/// The RED arms. A `v2` record whose frozen `currency` text is edited, a `v2` record relabelled as
+/// `v3` (dropping the field from its preimage), a `v3` record relabelled as `v2` (adding one), and
+/// a `v3` record with a count edited: each must stop hashing to its sealed digest. The relabelling
+/// arms are why the recipe does not itself need to be digested.
+#[test]
+fn tampering_fails_under_either_recipe_and_so_does_relabelling_one() {
+    use crate::recipe::Recipe;
+    type Edit = fn(&mut crate::record::AuditRecord);
+    let arms: Vec<(&str, crate::record::AuditRecord, Edit)> = vec![
+        ("a v2 record's currency text", frozen_v2_record(), |r| {
+            r.recipe = Recipe::V2 {
+                currency: "EUR".into(),
+            }
+        }),
+        ("a v2 record relabelled v3", frozen_v2_record(), |r| {
+            r.recipe = Recipe::V3
+        }),
+        ("a v3 record relabelled v2", frozen_record(), |r| {
+            r.recipe = Recipe::V2 {
+                currency: "USD".into(),
+            }
+        }),
+        ("a v2 record's count", frozen_v2_record(), |r| {
+            r.usage.lines[0].quantity += 1
+        }),
+        ("a v3 record's count", frozen_record(), |r| {
+            r.usage.lines[0].quantity += 1
+        }),
+    ];
+    for (what, mut record, edit) in arms {
+        assert!(AuditChain::verify_chain(std::slice::from_ref(&record)).is_ok());
+        edit(&mut record);
+        assert_eq!(
+            AuditChain::verify_chain(std::slice::from_ref(&record)).map_err(|b| b.kind),
+            Err(AuditBreakKind::DigestMismatch),
+            "{what}: the edited record still verifies"
+        );
+    }
 }
 
 /// THE V1 FROZEN DIGEST SURVIVES THE V2 RECIPE, and it is reproduced here from a v2 record.
@@ -125,7 +220,7 @@ fn the_v1_frozen_digest_is_reproduced_by_v1_rules_from_a_v2_record() {
         name,
         value: DigestValue::Text(v.to_string()),
     };
-    let record = frozen_record();
+    let record = frozen_v2_record();
     let mut v1 = Vec::new();
     for field in digest_fields(&record) {
         match field.name {
@@ -204,7 +299,6 @@ fn editing_any_recorded_fact_is_caught() {
             r.usage.lines[0].source = QuantitySource::KernelBytes { divisor: 4 }
         }),
         ("the estimated mark", |r| r.usage.lines[0].estimated = true),
-        ("the currency", |r| r.usage.currency = "EUR".into()),
         ("the card version", |r| r.usage.rate_card_version += 1),
         ("the bucket chain", |r| {
             r.usage.bucket_chain_ref = "chain:other".into()
@@ -285,7 +379,7 @@ fn a_plane_contributes_exactly_two_identifiers() {
     // Same shape, different two ids.
     assert_eq!(record.what.op_class.as_str(), "tool.call");
     assert_eq!(record.outcome.finish, FinishClass::TurnComplete);
-    assert_eq!(record.usage.currency, "USD");
+    assert_eq!(record.recipe, crate::recipe::Recipe::V3);
     assert!(record.controls.hold_ref.is_some());
 }
 

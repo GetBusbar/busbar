@@ -1,0 +1,48 @@
+{
+  "_comment": [
+    "KNOWN-RED: owed 1.5.5 golden cells that the current build is MEASURED to diverge from, each with",
+    "the fix that owns it. This file FORGIVES NOTHING. It is not read by the differ: every cell named",
+    "here still scores FAIL on replay, and stays red until its owning fix lands and it replays",
+    "identical. It is not an accepted difference (accepted-differences.json: owner-signed, ship gate)",
+    "and not a gap (accepted-gaps.json: cells the golden does not owe). It records that a red is",
+    "known, what exactly moves, and whose landing turns it green, so the red is not re-investigated",
+    "or 'fixed' by the wrong party.",
+    "Rules: an entry is added only with the measurement that shows the divergence (`measured`). It is",
+    "removed in the commit that makes its cells replay identical, never by editing the cell, its",
+    "masks or the golden. `fails_on` is the exact difference; any OTHER difference on these cells is",
+    "a new regression, not this entry."
+  ],
+  "known_red": [
+    {
+      "id": "egress-mint-accept",
+      "cells": "^egress\\.auth\\|(oauth-cc|jwt-bearer)\\|mint-refresh$",
+      "fails_on": "every token-endpoint POST (the mint and the refresh) lacks the `accept: */*` header 1.5.5's reqwest `.post().form()` sent between content-type and host; method, target, every other header, their order and the form body are byte-identical",
+      "sites": [
+        "busbar-kernel egress_auth/oauth_client_credentials.rs:124-139 (1.5.5 egress_auth/oauth_client_credentials.rs:119-120)",
+        "busbar-kernel egress_auth/jwt_bearer.rs:183-196 (1.5.5 egress_auth/jwt_bearer.rs:177-178)"
+      ],
+      "owning_fix": "the egress move onto the connector and the http door, whose transport owns the client defaults (owner ruling: the http transport owns them; the kernel is not patched), and the AUTH-OUT plugin (busbar-auth-outbound, KERNEL<>PLUGINS step 22), where the minting styles land",
+      "measured": "busbar origin/predev caa557266, release build, against golden/1.5.5 (busbar-oracle c853683): FAIL body /upstream/0/headers/len 4 -> 3, both cells"
+    },
+    {
+      "id": "egress-login-hop-accept",
+      "cells": "^egress\\.auth\\|login-hop\\|oidc$",
+      "fails_on": "the browser login's code-for-token POST lacks the `accept: */*` header 1.5.5's reqwest `request().form()` sent between content-type and host; method, target, every other header, their order and the form body (client_secret injected) are byte-identical",
+      "sites": [
+        "busbar-kernel auth/token.rs:957-1005 execute_hop (1.5.5 auth/token.rs:915,949)"
+      ],
+      "owning_fix": "the egress move onto the connector and the http door (the transport owns the client defaults), and the auth-kind ports (KERNEL<>PLUGINS step 21: one auth call per request; step 37: the oidc port)",
+      "measured": "busbar origin/predev caa557266, release build, against golden/1.5.5 (busbar-oracle c853683): FAIL body /upstream/0/headers/len 4 -> 3"
+    },
+    {
+      "id": "egress-plugin-fetch-accept",
+      "cells": "^egress\\.fetch\\|plugins\\|url$",
+      "fails_on": "the plugins.fetch download GET lacks the `accept: */*` header 1.5.5's `Client::new().get()` sent before host; method, target, host and the boot refusal that follows are byte-identical",
+      "sites": [
+        "busbar-kernel preflight.rs plugin_fetch_downloader_with_cap, the engine request with an empty HeaderMap (1.5.5 main.rs:2605-2641)"
+      ],
+      "owning_fix": "the egress move onto the connector and the http door (the transport owns the client defaults)",
+      "measured": "busbar origin/predev caa557266, release build, against golden/1.5.5 (busbar-oracle c853683): FAIL body /upstream/0/headers/len 2 -> 1"
+    }
+  ]
+}

@@ -338,7 +338,20 @@ pub(crate) trait Job: Send {
 struct JobOf<I, O> {
     frame: Box<Frame<I, O>>,
     reply: Arc<ReplySlot<Done<I, O>>>,
+    /// The memory the frame's pointers lend the plugin ([`Lent`]): held with the frame, so it is
+    /// dropped only when the job is — after the op's last crossing returned (an answer, a `cancel`
+    /// or a hung crossing that finally returns), never when the caller drops its [`Reply`].
+    lent: Option<Lent>,
 }
+
+/// HOST-LENT MEMORY, kept alive until the op completes (ARCHITECT ruling 2026-09-29, every kind): an
+/// `in` names host buffers by raw pointer (strings, lists, result buffers), so whatever owns them
+/// must outlive every crossing of the op. The caller hands its owner to
+/// [`Dispatcher::submit_lent`]; the dispatcher holds it with the frame. A caller that stops waiting
+/// (its [`Reply`] dropped, its deadline passed, its task cancelled) can therefore never free memory
+/// a plugin is still reading on a worker. The caller keeps its own clone to read what the plugin
+/// wrote.
+pub type Lent = Arc<dyn std::any::Any + Send + Sync>;
 
 impl<I: InFrame, O: OutFrame> Job for JobOf<I, O> {
     fn heads(&mut self) -> (*mut InHead, *mut OutHead, u32) {
@@ -346,15 +359,20 @@ impl<I: InFrame, O: OutFrame> Job for JobOf<I, O> {
     }
 
     fn finish(self: Box<Self>, c: Crossed) -> bool {
-        self.reply.put(Done {
+        let JobOf { frame, reply, lent } = *self;
+        let put = reply.put(Done {
             outcome: c.outcome,
             error: c.error,
             lease: c.lease,
-            frame: Some(self.frame),
+            frame: Some(frame),
             detached: false,
             short: c.short,
             disposition: c.disposition,
-        })
+        });
+        // The op is over: nothing crosses on this frame again, so the lent memory may go (the
+        // caller's own clone, if it kept one, still holds it).
+        drop(lent);
+        put
     }
 }
 
@@ -1237,6 +1255,37 @@ impl Dispatcher {
         class: DeadlineClass,
         deadline_ns: u64,
     ) -> Reply<I, O> {
+        self.submit_with(plugin, ticket, s, frame, class, deadline_ns, None)
+    }
+
+    /// [`Dispatcher::submit`], with the owner of the memory `frame`'s pointers lend the plugin:
+    /// the dispatcher keeps `lent` alive until the op completes (its answer, its `cancel`, or a hung
+    /// crossing's return), even when the caller drops the [`Reply`] first ([`Lent`]).
+    #[allow(clippy::too_many_arguments)] // `submit`'s six, plus the lent memory
+    pub fn submit_lent<K: Kind, I: InFrame, O: OutFrame>(
+        &self,
+        plugin: &Plugin<K>,
+        ticket: Ticket,
+        s: u32,
+        frame: Frame<I, O>,
+        class: DeadlineClass,
+        deadline_ns: u64,
+        lent: Lent,
+    ) -> Reply<I, O> {
+        self.submit_with(plugin, ticket, s, frame, class, deadline_ns, Some(lent))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn submit_with<K: Kind, I: InFrame, O: OutFrame>(
+        &self,
+        plugin: &Plugin<K>,
+        ticket: Ticket,
+        s: u32,
+        frame: Frame<I, O>,
+        class: DeadlineClass,
+        deadline_ns: u64,
+        lent: Option<Lent>,
+    ) -> Reply<I, O> {
         let inst = &plugin.inner;
         if ticket.is_none() {
             return Reply::settled(Outcome::Fault, frame);
@@ -1278,6 +1327,7 @@ impl Dispatcher {
         let job = Box::new(JobOf {
             frame: Box::new(frame),
             reply: slot.clone(),
+            lent,
         });
         self.pool.send(ticket, Msg::Submit { ticket, meta, job });
         Reply {

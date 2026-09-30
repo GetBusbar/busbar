@@ -124,6 +124,13 @@ pub const META_PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion
 /// reason [`META_PROTOCOL_VERSION`] is.
 pub const META_CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
 
+/// The header mirroring the body's `method`. REQUIRED on every request.
+pub const H_MCP_METHOD: &str = "mcp-method";
+/// The header mirroring the target name. REQUIRED on `tools/call`, `resources/read`, `prompts/get`.
+pub const H_MCP_NAME: &str = "mcp-name";
+/// The header mirroring the `_meta` protocol version.
+pub const H_PROTOCOL_VERSION: &str = "mcp-protocol-version";
+
 // ══ THE ERROR CODES, DEFINED EXACTLY ONCE ═══════════════════════════════════════════════════════
 //
 // Both halves write these: the server half emits them, and `busbar-plane-mcp` publishes the set it

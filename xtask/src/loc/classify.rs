@@ -148,7 +148,10 @@ pub const DEFINITION: [(&str, &str); 5] = [
     (
         "test",
         "a path with a `tests` or `benches` segment at ANY depth, `tests.rs`, `*_tests.rs`, \
-         `*_test.rs`, or inside the AST span of a `#[cfg(test)]` item.",
+         `*_test.rs`, inside the AST span of a `#[cfg(test)]` item, a file only a test-gated \
+         `mod name;` declares (and its children), or a compile-time assertion: an anonymous \
+         `const _` item, and a same-file `macro_rules!` that expands only to those, with its \
+         item-level invocations.",
     ),
     (
         "code",
@@ -179,6 +182,131 @@ pub fn is_test_path(rel: &str) -> bool {
 pub struct FileVerdict {
     pub counts: Counts,
     pub kinds: Vec<Kind>,
+    /// Every OUT-OF-LINE `mod name;` this file declares, at any inline-module depth: the file it
+    /// names is a different file, so the declaration's `#[cfg(test)]` is the only place that
+    /// file's test-ness is written down. See [`OutOfLineMod`].
+    pub mods: Vec<OutOfLineMod>,
+}
+
+/// One `mod name;` with no body: where its file is, and whether the declaration is test-only.
+///
+/// `#[cfg(any(test, feature = "test-support"))] mod test_support;` is ONE line in `lib.rs`, and the
+/// 3,191 lines of `test_support/` it compiles were billed as production `code`, because the file
+/// that holds them carries no attribute of its own. The declaration is the attribute; the counter
+/// follows it to the files ([`crate::loc::measure`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutOfLineMod {
+    /// The inline modules the declaration sits inside (`mod a { mod b; }` gives `["a"]`).
+    pub inline: Vec<String>,
+    /// The declared name.
+    pub name: String,
+    /// A `#[path = "…"]` override, as written.
+    pub path: Option<String>,
+    /// Whether the declaration, or an inline module around it, is behind a test gate.
+    pub test: bool,
+}
+
+/// Every out-of-line module declaration in `items`, inside the inline modules `inline`, under a
+/// test gate already when `test`.
+fn out_of_line_mods(
+    items: &[syn::Item],
+    inline: &[String],
+    test: bool,
+    out: &mut Vec<OutOfLineMod>,
+) {
+    for item in items {
+        let syn::Item::Mod(m) = item else { continue };
+        let gated = test || has_cfg_test(&m.attrs);
+        let name = m.ident.to_string();
+        match &m.content {
+            Some((_, inner)) => {
+                let mut deeper = inline.to_vec();
+                deeper.push(name);
+                out_of_line_mods(inner, &deeper, gated, out);
+            }
+            None => {
+                let path = m.attrs.iter().find_map(|a| {
+                    if !a.path().is_ident("path") {
+                        return None;
+                    }
+                    match &a.meta {
+                        syn::Meta::NameValue(nv) => match &nv.value {
+                            syn::Expr::Lit(syn::ExprLit {
+                                lit: syn::Lit::Str(s),
+                                ..
+                            }) => Some(s.value()),
+                            _ => None,
+                        },
+                        _ => None,
+                    }
+                });
+                out.push(OutOfLineMod {
+                    inline: inline.to_vec(),
+                    name,
+                    path,
+                    test: gated,
+                });
+            }
+        }
+    }
+}
+
+/// The candidate files an out-of-line module declared in `declaring` (a repo-relative `.rs` path)
+/// lives in, and the directory its own children live under.
+///
+/// Rust's rule: a crate root or a `mod.rs` declares its children beside itself; any other file
+/// `x.rs` declares them under `x/`. A `#[path]` outside an inline module is relative to the
+/// declaring file's directory.
+pub fn module_files(declaring: &str, m: &OutOfLineMod) -> (Vec<String>, String) {
+    let norm = declaring.replace('\\', "/");
+    let (dir, file) = match norm.rsplit_once('/') {
+        Some((d, f)) => (d.to_string(), f.to_string()),
+        None => (String::new(), norm.clone()),
+    };
+    let stem = file.strip_suffix(".rs").unwrap_or(&file);
+    let owns_dir =
+        matches!(stem, "mod" | "lib" | "main") || dir.ends_with("/src/bin") || stem == "build";
+    let join = |a: &str, b: &str| {
+        if a.is_empty() {
+            b.to_string()
+        } else {
+            format!("{a}/{b}")
+        }
+    };
+    if let Some(p) = &m.path {
+        let base = if m.inline.is_empty() {
+            dir.clone()
+        } else {
+            let mut b = if owns_dir {
+                dir.clone()
+            } else {
+                join(&dir, stem)
+            };
+            for i in &m.inline {
+                b = join(&b, i);
+            }
+            b
+        };
+        let f = join(&base, p);
+        let child = match f.strip_suffix("/mod.rs") {
+            Some(d) => d.to_string(),
+            None => f.strip_suffix(".rs").unwrap_or(&f).to_string(),
+        };
+        return (vec![f], child);
+    }
+    let mut base = if owns_dir {
+        dir.clone()
+    } else {
+        join(&dir, stem)
+    };
+    for i in &m.inline {
+        base = join(&base, i);
+    }
+    let child = join(&base, &m.name);
+    (
+        vec![format!("{child}.rs"), format!("{child}/mod.rs")],
+        child,
+    )
 }
 
 /// Classify every line of `text`.
@@ -210,8 +338,11 @@ pub fn classify(text: &str, path_is_test: bool) -> Result<FileVerdict, String> {
 
     let mut test_lines: BTreeSet<usize> = BTreeSet::new();
     if !whole_file_is_test {
+        let mut proof_macros = BTreeSet::new();
+        collect_proof_macros(&file.items, &mut proof_macros);
         let mut spans = TestSpans {
             out: &mut test_lines,
+            proof_macros: &proof_macros,
         };
         spans.visit_file(&file);
     }
@@ -235,7 +366,13 @@ pub fn classify(text: &str, path_is_test: bool) -> Result<FileVerdict, String> {
         kinds.push(kind);
     }
 
-    Ok(FileVerdict { counts, kinds })
+    let mut mods = Vec::new();
+    out_of_line_mods(&file.items, &[], whole_file_is_test, &mut mods);
+    Ok(FileVerdict {
+        counts,
+        kinds,
+        mods,
+    })
 }
 
 /// The file's lines, WITHOUT the phantom empty line a trailing newline otherwise produces.
@@ -322,6 +459,104 @@ fn starts_comment(lines: &[&str], at: LineColumn) -> bool {
 /// its children can only re-mark lines that are already marked.
 struct TestSpans<'a> {
     out: &'a mut BTreeSet<usize>,
+    /// The file's own `macro_rules!` whose every arm expands to nothing but `const _` items
+    /// ([`is_proof_macro`]); an item-level invocation of one is a compile-time assertion.
+    proof_macros: &'a BTreeSet<String>,
+}
+
+/// A COMPILE-TIME ASSERTION IS A PROOF, NOT PRODUCTION. `const _: () = assert!(size_of::<T>() ==
+/// 88);` emits no symbol and no instruction: it exists to fail the BUILD when a layout drifts, which
+/// is a test that runs at compile time. `busbar-contract`'s two layout-pin files (1,633 lines of
+/// `pin!(T, size, align, field = offset, …)`, each expanding to such a `const _`) were billed as
+/// contract production code, so every ABI field cost about two lines of "surface" for its proof.
+///
+/// So an anonymous `const _` item is `test`, and so is a same-file `macro_rules!` whose every arm
+/// expands ONLY to `const _` items, together with every item-level invocation of it. A macro that
+/// can expand to anything else (a `fn`, a `static`, a named `const`) is not a proof and stays code.
+fn is_anonymous_const(item: &syn::Item) -> bool {
+    matches!(item, syn::Item::Const(c) if c.ident == "_")
+}
+
+/// Whether a `macro_rules!` body's every arm expands to `const _ …;` items and nothing else.
+fn is_proof_macro(tokens: &TokenStream) -> bool {
+    let trees: Vec<TokenTree> = tokens.clone().into_iter().collect();
+    let mut arms = 0usize;
+    let mut i = 0;
+    while i < trees.len() {
+        // matcher, `=`, `>`, body, optional `;`
+        let (Some(TokenTree::Group(_)), Some(TokenTree::Punct(eq)), Some(TokenTree::Punct(gt))) =
+            (trees.get(i), trees.get(i + 1), trees.get(i + 2))
+        else {
+            return false;
+        };
+        if eq.as_char() != '=' || gt.as_char() != '>' {
+            return false;
+        }
+        let Some(TokenTree::Group(body)) = trees.get(i + 3) else {
+            return false;
+        };
+        if !body_is_anonymous_consts(body.stream()) {
+            return false;
+        }
+        arms += 1;
+        i += 4;
+        if matches!(trees.get(i), Some(TokenTree::Punct(p)) if p.as_char() == ';') {
+            i += 1;
+        }
+    }
+    arms > 0
+}
+
+/// Whether `ts` is one or more `const _ … ;` items and nothing else.
+fn body_is_anonymous_consts(ts: TokenStream) -> bool {
+    let trees: Vec<TokenTree> = ts.into_iter().collect();
+    if trees.is_empty() {
+        return false;
+    }
+    let mut at_start = true;
+    let mut i = 0;
+    while i < trees.len() {
+        if at_start {
+            let is_const = matches!(&trees[i], TokenTree::Ident(id) if id == "const");
+            let is_anon = match trees.get(i + 1) {
+                Some(TokenTree::Ident(id)) => id == "_",
+                Some(TokenTree::Punct(p)) => p.as_char() == '_',
+                _ => false,
+            };
+            if !(is_const && is_anon) {
+                return false;
+            }
+            at_start = false;
+            i += 2;
+            continue;
+        }
+        if matches!(&trees[i], TokenTree::Punct(p) if p.as_char() == ';') {
+            at_start = true;
+        }
+        i += 1;
+    }
+    at_start
+}
+
+/// Every proof macro ([`is_proof_macro`]) the file defines, at any inline-module depth.
+fn collect_proof_macros(items: &[syn::Item], out: &mut BTreeSet<String>) {
+    for item in items {
+        match item {
+            syn::Item::Macro(m) => {
+                if let Some(name) = &m.ident {
+                    if m.mac.path.is_ident("macro_rules") && is_proof_macro(&m.mac.tokens) {
+                        out.insert(name.to_string());
+                    }
+                }
+            }
+            syn::Item::Mod(m) => {
+                if let Some((_, inner)) = &m.content {
+                    collect_proof_macros(inner, out);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 impl TestSpans<'_> {
@@ -334,6 +569,19 @@ impl TestSpans<'_> {
 impl<'ast> Visit<'ast> for TestSpans<'_> {
     fn visit_item(&mut self, node: &'ast syn::Item) {
         if item_attrs(node).is_some_and(has_cfg_test) {
+            self.claim(node);
+            return;
+        }
+        let proof = is_anonymous_const(node)
+            || matches!(node, syn::Item::Macro(m) if match &m.ident {
+                Some(name) => self.proof_macros.contains(&name.to_string()),
+                None => m
+                    .mac
+                    .path
+                    .get_ident()
+                    .is_some_and(|id| self.proof_macros.contains(&id.to_string())),
+            });
+        if proof {
             self.claim(node);
             return;
         }

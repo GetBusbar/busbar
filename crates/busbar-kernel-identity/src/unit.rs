@@ -3,7 +3,7 @@
 
 //! The sealed answer: the unit the loop calls at the authenticate step.
 
-use busbar_contract::caps::{Authenticate, Authenticated, Decision, Pass, ReasonCode, Refusal};
+use busbar_contract::caps::{Authenticate, Authenticated, Pass, ReasonCode, Refusal, SeatVerdict};
 
 use crate::cache::CredentialCache;
 use crate::chain::{AuthChain, ChainVerdict, KeyVerifier, RevocationView};
@@ -72,11 +72,11 @@ impl Auth {
         revocations: Option<&dyn RevocationView>,
         pending: Option<Challenge>,
         token: &Pass<Authenticate>,
-    ) -> Decision<Authenticate> {
+    ) -> SeatVerdict<Authenticate> {
         // 1. The caller may only narrow within what the claim declared.
         if let Some(scheme) = req.scheme {
             if !req.declared_schemes.contains(&scheme) {
-                return Decision::refuse(token, Refusal::new(ReasonCode::SchemeNotDeclared));
+                return SeatVerdict::refuse(token, Refusal::new(ReasonCode::SchemeNotDeclared));
             }
         }
 
@@ -85,9 +85,12 @@ impl Auth {
         if let Some(challenge) = pending {
             if req.in_handshake {
                 if challenge.exhausted() {
-                    return Decision::refuse(token, Refusal::new(ReasonCode::ChallengeExhausted));
+                    return SeatVerdict::refuse(
+                        token,
+                        Refusal::new(ReasonCode::ChallengeExhausted),
+                    );
                 }
-                return Decision::proceed(token, Authenticated::Challenge((&challenge).into()));
+                return SeatVerdict::proceed(token, Authenticated::Challenge((&challenge).into()));
             }
         }
 
@@ -109,7 +112,7 @@ impl Auth {
         if req.new_unit && matches!(verdict, ChainVerdict::Identified { .. }) {
             if let (Some(r), Some(cred)) = (revocations, req.candidate) {
                 if r.is_revoked(cred) {
-                    return Decision::refuse(token, Refusal::new(ReasonCode::Revoked));
+                    return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Revoked));
                 }
             }
         }
@@ -127,19 +130,19 @@ impl Auth {
                 resolved: None,
                 ..
             } if Principal::id_is_reserved(&principal.id) => {
-                Decision::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
+                SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
             }
             ChainVerdict::Identified { principal, .. } => {
-                Decision::proceed(token, Authenticated::Principal((&principal).into()))
+                SeatVerdict::proceed(token, Authenticated::Principal((&principal).into()))
             }
             // The open front door admits with the anonymous principal: no bucket, and an actor id
             // that reads as the plain word everywhere it is written.
-            ChainVerdict::Open => Decision::proceed(
+            ChainVerdict::Open => SeatVerdict::proceed(
                 token,
                 Authenticated::Principal((&Principal::anonymous()).into()),
             ),
             ChainVerdict::Denied => {
-                Decision::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
+                SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
             }
         }
     }

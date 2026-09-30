@@ -30,7 +30,7 @@ use axum::body::Bytes;
 use axum::http::HeaderMap;
 use axum::response::Response;
 
-use busbar_contract::caps::{Consumption, Decision, Grant, Meter, Outcome, Pass, Route};
+use busbar_contract::caps::{Consumption, Grant, Meter, Outcome, Pass, Route, SeatVerdict};
 use busbar_kernel::{
     handlers::{frame, request_handler},
     plane_host::{EngineHost, EngineTablesView},
@@ -538,7 +538,7 @@ impl Walk {
         token: &Pass<busbar_contract::caps::step::Audit>,
         ctx: &crate::unit::audit::AuditCtx<'_>,
         fallback: impl FnOnce() -> Served,
-    ) -> Decision<busbar_contract::caps::step::Audit> {
+    ) -> SeatVerdict<busbar_contract::caps::step::Audit> {
         let bytes = self.take_bytes().unwrap_or_else(fallback);
         let audited = crate::unit::audit::audit(token, ctx, bytes, self.charged());
         self.seal_terminal(audited.response);
@@ -554,7 +554,7 @@ impl Walk {
         token: &Pass<busbar_contract::caps::step::Audit>,
         ctx: &crate::unit::audit::AuditCtx<'_>,
         fallback: impl FnOnce() -> Served,
-    ) -> Decision<busbar_contract::caps::step::Audit> {
+    ) -> SeatVerdict<busbar_contract::caps::step::Audit> {
         let bytes = self.take_bytes().unwrap_or_else(fallback);
         let audited = crate::unit::audit::audit_refused(token, ctx, bytes);
         self.seal_terminal(audited.response);
@@ -572,7 +572,7 @@ impl Walk {
     /// in-flight table's rather than a thread pool's. Dropping this future is what a client going
     /// away does to the upstream leg, and it is what the loop does to it when the caller drops the
     /// unit. What the walk SEES travels back here; the sealing happens here, where the token is.
-    pub async fn route(&self, token: &Pass<Route>, destination: &str) -> Decision<Route> {
+    pub async fn route(&self, token: &Pass<Route>, destination: &str) -> SeatVerdict<Route> {
         let (arrived, sink) = {
             let mut carry = self.lock();
             (carry.arrived.take(), carry.sink.take())
@@ -581,7 +581,7 @@ impl Walk {
         // from the loop's order — Route runs after Arrival or not at all — and answered rather than
         // unwrapped, because an arm that cannot be taken is still an arm that must say something.
         let Some(arrived) = arrived else {
-            return Decision::refuse(
+            return SeatVerdict::refuse(
                 token,
                 busbar_contract::caps::Refusal::new(
                     busbar_contract::caps::ReasonCode::NoDestination,
@@ -599,7 +599,7 @@ impl Walk {
             match request_handler(self.proto).and_then(|rh| rh.operation_handler(self.operation)) {
                 Some(h) => h,
                 None => {
-                    return Decision::refuse(
+                    return SeatVerdict::refuse(
                         token,
                         busbar_contract::caps::Refusal::new(
                             busbar_contract::caps::ReasonCode::NoDestination,
@@ -669,12 +669,12 @@ impl Walk {
     ///
     /// Nothing on this side names a rate: the step assembles what the unit consumed and hands it
     /// back on the report, and the side that holds the card is the one that turns it into an amount.
-    pub fn meter(&self, token: &Pass<Meter>, usage: &Grant<Consumption>) -> Decision<Meter> {
+    pub fn meter(&self, token: &Pass<Meter>, usage: &Grant<Consumption>) -> SeatVerdict<Meter> {
         let mut carry = self.lock();
         let Some(facts) = carry.facts.as_ref() else {
             // Route never ran, so there is nothing the walk reported to seal. Unreachable from the
             // loop's order and answered rather than unwrapped.
-            return Decision::proceed(
+            return SeatVerdict::proceed(
                 token,
                 busbar_contract::caps::Usage::report(usage, Vec::new())
                     .unwrap_or_else(|_| unreachable!("the empty report fits any record")),

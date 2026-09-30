@@ -22,8 +22,8 @@
 
 use super::tests::{dropped, linked, LINKED_HOT};
 use super::*;
+use crate::root::loader::HotDeclStr;
 use busbar_kernel::plane::registry::TestRegistryIsolation;
-use busbar_plugin_loader::HotDeclStr;
 
 /// The carried family the example plane declares.
 const FAMILY: &str = "busbar_billing_tap_decode_fail_total";
@@ -187,6 +187,7 @@ fn a_plane_declaring_an_unlisted_first_party_family_is_refused_a_row() {
                 metric_families: families,
                 record_kinds: &[],
                 required_config_sections: &[],
+                trust_keys: &[],
                 served_op_classes: &[],
             };
             let native: &'static [PlaneDecl] = Box::leak(Box::new([PlaneDecl::assemble(
