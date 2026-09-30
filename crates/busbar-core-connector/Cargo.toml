@@ -45,6 +45,8 @@ tokio-util = { workspace = true }
 # transport no longer holds (TRANSPORT-STACK: TLS is core's connection security).
 webpki-roots = { workspace = true }
 sha2 = { workspace = true }
+# The host's UDP port (`udp`): a non-blocking datagram socket built without a runtime.
+socket2 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util"] }

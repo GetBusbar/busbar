@@ -552,6 +552,7 @@ dependencies = [
  "rustls-pki-types",
  "serde_json",
  "sha2 0.11.0",
+ "socket2",
  "tokio",
  "tokio-rustls",
  "tokio-util",
