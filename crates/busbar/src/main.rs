@@ -1495,7 +1495,11 @@ fn serve_thread_per_core(
                     });
                 rt.block_on(async move {
                     // This worker's own SO_REUSEPORT listener, the connector's (the one listener
-                    // source; ruling H5 (1)).
+                    // source; ruling H5 (1)). Each socket it admits is handed up pre-TLS so the
+                    // balancer can place it on another worker; the TLS handshake runs after
+                    // placement, in the serving loop (pinning at accept would change 1.5.5's
+                    // per-core placement).
+                    // TRANSITIONAL: drains at K1 U6/U7 (1.6.0-TODO.md).
                     let listener = busbar_core_connector::listen::Listening::bind_stream(
                         &bind_at,
                         ROOT_BIND_LIMITS,

@@ -200,6 +200,13 @@ impl Listening {
     /// The next admitted socket of a STREAM listener ([`Listening::bind_stream`]), as it arrived:
     /// non-blocking, on no reactor, with the listener's slot for it. For the root's own non-plane
     /// binds only; a plane's connections are framed ([`Listening::poll_accept`]).
+    ///
+    /// Securing the socket is deliberately NOT done here: the kernel's placement balancer hands
+    /// bare, pre-TLS sockets across data workers, and handshaking at accept would pin every
+    /// connection to the worker that accepted it (1.5.5's per-core placement). The serving loop
+    /// runs the connector's prepared connection security, under the configured handshake bound,
+    /// after placement.
+    // TRANSITIONAL: drains at K1 U6/U7 (1.6.0-TODO.md) for the data door; the admin surface keeps it.
     pub fn poll_accept_stream(&mut self, cx: &mut Context<'_>) -> Poll<Handed> {
         loop {
             let (stream, peer, slot) = std::task::ready!(self.poll_socket(cx));
