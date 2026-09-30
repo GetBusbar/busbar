@@ -75,7 +75,7 @@ kind-isolation:matrix	unlisted-cell	busbar-kernel-ledger × cleanliness	4
 kind-isolation:matrix	unlisted-cell	busbar-kernel-ledger × plane	14
 kind-isolation:matrix	unlisted-cell	busbar-llm × kernel	14
 kind-isolation:matrix	unlisted-cell	busbar-llm × legacy	10
-kind-isolation:matrix	unlisted-cell	busbar-mcp × contract	307
+kind-isolation:matrix	unlisted-cell	busbar-mcp × contract	308
 kind-isolation:matrix	unlisted-cell	busbar-mcp × kernel	25
 kind-isolation:matrix	unlisted-cell	busbar-oauth2 × kernel	5
 kind-isolation:matrix	unlisted-cell	busbar-oauth2 × legacy	2
