@@ -627,9 +627,10 @@ The return path runs in reverse; the plane reports the units it did, and the ker
 |---|---|---|
 | plane | the content | the key; the socket |
 | kernel | provider name, destination, units, money | what the content means |
-| connector | everything below the framer, TLS keys included | — |
+| connector | everything below the framer, TLS and DTLS keys included | — |
 | auth object | the API key | — |
 | http framer | the finished headers, the key included, in transit | TLS keys |
+| webrtc framer | the SRTP keying material the connector's DTLS engine exported (it protects media, as http sees the headers it frames); plaintext SCTP | DTLS keys, the session certificate's private key, the DTLS state |
 | carrier | ciphertext on https | — |
 
 *Proven by:* a secret-kind test plugin that dials through the connector; kernel × transport = 0;

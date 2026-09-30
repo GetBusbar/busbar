@@ -47,10 +47,19 @@ webpki-roots = { workspace = true }
 sha2 = { workspace = true }
 # The host's UDP port (`udp`): a non-blocking datagram socket built without a runtime.
 socket2 = { workspace = true }
+# The dtls engine (`dtls`): dimpl for the DTLS state machine, run on ring through the engine's own
+# provider (the one crypto backend); rcgen mints the per-session certificate on ring; webpki is
+# rustls's ring signature verifier; zeroize clears the exported SRTP keying material.
+dimpl = { workspace = true }
+ring = { workspace = true }
+rcgen = { workspace = true }
+webpki = { workspace = true }
+zeroize = { workspace = true }
+# STUN FINGERPRINT (CRC-32) on the dtls engine's consent probes.
+crc32fast = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util"] }
-rcgen = { workspace = true }
 # THE UNIVERSAL-NEEDS WITNESS (tests/universal_needs.rs, its only user): the fixture below is loaded
 # dropped in through the real admission, scan and open, never a host written for the test. Dev-only.
 busbar-plugin-loader = { path = "../plugin-loader" }
