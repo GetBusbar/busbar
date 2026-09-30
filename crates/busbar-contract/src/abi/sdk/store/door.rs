@@ -44,7 +44,7 @@ use crate::abi::mechanism::lifecycle::{
     ValidateIn,
 };
 use crate::abi::sdk::door::abi_str;
-use crate::abi::sdk::{HostBuf, Instance, Lent, LentList, SafeSlot};
+use crate::abi::sdk::{HostBuf, Instance, Lent, LentList, Out, SafeSlot};
 use crate::abi::store::{
     AddUsageBatchIn, AddUsageIn, AppendBatchIn, AppendPlaneRecordIn, BlobIn, CountOut,
     GetPlaneRecordIn, HeadOut, HeadsOut, HostBytesOut, HostListOut, IdIn, IdReasonIn,
@@ -582,7 +582,12 @@ macro_rules! slot {
             type Out = $out;
             type State = Served<B>;
             #[allow(unused_variables)]
-            fn call(instance: Instance<'_, Served<B>>, $i: Lent<'_, $in>, $o: &mut $out) -> Outcome {
+            fn call(
+                instance: Instance<'_, Served<B>>,
+                $i: Lent<'_, $in>,
+                mut out: Out<'_, $out>,
+            ) -> Outcome {
+                let $o: &mut $out = out.raw();
                 let Some($s) = instance.get() else {
                     return Outcome::Fault;
                 };
@@ -599,7 +604,11 @@ impl<B: StoreSlots> SafeSlot for Validate<B> {
     type In = ValidateIn;
     type Out = OutHead;
     type State = Served<B>;
-    fn call(_: Instance<'_, Served<B>>, input: Lent<'_, ValidateIn>, _: &mut OutHead) -> Outcome {
+    fn call(
+        _: Instance<'_, Served<B>>,
+        input: Lent<'_, ValidateIn>,
+        _: Out<'_, OutHead>,
+    ) -> Outcome {
         match B::open(input.field(|i| &i.settings).bytes()) {
             Ok(_) => Outcome::Ready,
             // The instance does not exist yet, so the reason has nowhere to live: REFUSED, bare.
@@ -618,7 +627,7 @@ impl<B: StoreSlots> SafeSlot for Open<B> {
     fn call(
         instance: Instance<'_, Served<B>>,
         input: Lent<'_, OpenIn>,
-        _: &mut OpenOut,
+        _: Out<'_, OpenOut>,
     ) -> Outcome {
         match B::open(input.field(|i| &i.settings).bytes()) {
             Ok(store) => {
