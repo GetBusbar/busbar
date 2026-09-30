@@ -8,5 +8,7 @@
 /// The session revisions, spoken as a client: lowering, the ladder's reading, the message address.
 pub mod compat;
 pub mod jsonrpc;
+/// One upstream call carried across the revisions, as a sans-I/O state machine.
+pub mod negotiate;
 pub mod peer;
 pub mod verb;
