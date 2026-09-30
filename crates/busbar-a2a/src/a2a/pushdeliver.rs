@@ -615,9 +615,9 @@ fn queues() -> &'static Mutex<HashMap<String, VecDeque<QueuedDelivery>>> {
 
 /// ENQUEUE this task's notification for delivery, IN ORDER, without blocking the caller.
 ///
-/// This is the seam both production sites (the unary hop's `notify_push` and the streaming sink)
+/// This is the seam both production sites (the unary hop's `notify_push` and the event-stream sink)
 /// now call INSTEAD OF [`deliver`] directly. Neither may await a delivery inline: the unary hop
-/// already runs detached, and the streaming sink's caller is the stream's own chunk pump — a
+/// already runs detached, and the event-stream sink's caller is the stream's own chunk pump — a
 /// notification that blocked there would stall every later chunk of that same stream behind
 /// whatever the webhook is doing, retries included.
 ///
@@ -628,7 +628,7 @@ fn queues() -> &'static Mutex<HashMap<String, VecDeque<QueuedDelivery>>> {
 /// see [`drain_queue`]), so calling this from a hot path costs one lock and, ordinarily, nothing
 /// else — no new task is spawned once a task's worker is already draining.
 ///
-/// Both production sites in `receive.rs` (`notify_push` and the streaming sink) call this; neither
+/// Both production sites in `receive.rs` (`notify_push` and the event-stream sink) call this; neither
 /// calls [`deliver`] directly any more.
 pub(crate) fn enqueue(engine_host: Arc<dyn EngineHost>, seam: Arc<dyn RelaySeam>, task: Task) {
     if task.push_callback.is_none() {
