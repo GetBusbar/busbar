@@ -71,13 +71,20 @@ fn bind() -> Bind {
     }
 }
 
+/// The fixture's manifest, stating the door's Statement rendering as its signed manifest does (the
+/// door is admitted against it).
 fn manifest() -> crate::sign::Manifest {
-    statement(
-        busbar_contract::abi::cold::kind::TRANSPORT,
-        "door-fixture",
-        "door-fixture",
-        busbar_contract::abi::ABI_MINOR,
-    )
+    let rendering = crate::dispatch::rendering_of(busbar_transport_tcp::linked::door)
+        .expect("the fixture's door states itself");
+    crate::sign::Manifest {
+        statement: Some(hex::encode(rendering)),
+        ..statement(
+            busbar_contract::abi::cold::kind::TRANSPORT,
+            "door-fixture",
+            "door-fixture",
+            busbar_contract::abi::ABI_MINOR,
+        )
+    }
 }
 
 /// The manifest as the structural gate reads a packed one: an artifact digest present.

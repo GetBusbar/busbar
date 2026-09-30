@@ -54,7 +54,7 @@ fn the_roots_fetch_refuses_a_metadata_host_through_the_kernels_guard() {
         filename: "plugin.tar.gz".into(),
     };
     let guard = busbar_kernel::preflight::plugin_fetch_downloader(&[]);
-    let via_root = plugins_fetch(&dir, &[target.clone()], true, &guard).unwrap_err();
+    let via_root = plugins_fetch(&dir, std::slice::from_ref(&target), true, &guard).unwrap_err();
     let spec = super::super::loader::FetchSpec {
         url: target.url.clone(),
         sha256: None,
