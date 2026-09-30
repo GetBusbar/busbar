@@ -5,8 +5,9 @@
 // on the memory ABI — compiled in (its row's `door`) or dropped in (a `kind: transport` image with
 // the one door symbol) — is admitted through the ONE dispatcher's door validation, opened, and
 // presented to the connector as the entry's framer table ([`Dispatched`]); the connector serves it
-// over the host's sockets ([`HostWire`]). Compiled in and dropped in are the same table, the same
-// crossing and the same wire.
+// over the host's sockets ([`HostWire`]), which the root presents at the kernel's legacy transport
+// seam through [`RootWire`]. Compiled in and dropped in are the same table, the same crossing and
+// the same wire.
 //
 // Written to be `include!`d: the root mounts it as `root::doors`, and the build's generated table of
 // linked transports (`$OUT_DIR/linked_transports.rs`, which the integration tests include) mounts it
@@ -119,7 +120,121 @@ impl FramerDoor for Dispatched {
     }
 }
 
-/// A door, opened and served over the host's sockets.
+/// THE ROOT'S ADAPTER FROM THE CONNECTOR'S HOST-SIDE SURFACE TO THE KERNEL'S LEGACY TRANSPORT SEAM.
+/// The connector is core and presents no plugin face; the kernel's listeners, accept loop and
+/// upgrades still speak `busbar_contract::Transport`, so the root wraps a [`HostWire`] in this and
+/// every method ONLY delegates. Transitional: `RootWire` deletes with the legacy stack at TODO step 36.
+#[derive(Debug)]
+pub struct RootWire(pub HostWire);
+
+impl busbar_contract::Plugin for RootWire {
+    fn key(&self) -> &'static str {
+        self.0.key()
+    }
+    fn kind(&self) -> busbar_contract::Kind {
+        busbar_contract::Kind::Transport
+    }
+    fn abi(&self) -> busbar_contract::transport::AbiVersion {
+        busbar_contract::transport::TRANSPORT_ABI
+    }
+}
+
+impl busbar_contract::Transport for RootWire {
+    fn arrival(
+        &self,
+        conn: &busbar_contract::transport::wire::Conn,
+    ) -> busbar_contract::transport::wire::ArrivalRecord {
+        self.0.arrival(conn)
+    }
+
+    fn listen<'a>(
+        &'a self,
+        cfg: &'a dyn busbar_contract::TransportConfigView,
+        keys: &'a busbar_contract::TransportKeyHandle,
+    ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Listener> {
+        self.0.listen(cfg, keys)
+    }
+
+    fn accept<'a>(
+        &'a self,
+        l: &'a busbar_contract::transport::wire::Listener,
+    ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Conn> {
+        self.0.accept(l)
+    }
+
+    fn dial<'a>(
+        &'a self,
+        dest: &'a busbar_contract::VerifiedDestination,
+        keys: &'a busbar_contract::TransportKeyHandle,
+    ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Conn> {
+        self.0.dial(dest, keys)
+    }
+
+    fn frames(
+        &self,
+        conn: busbar_contract::transport::wire::Conn,
+    ) -> busbar_contract::transport::FrameStream {
+        self.0.frames(conn)
+    }
+
+    fn write<'a>(
+        &'a self,
+        conn: &'a busbar_contract::transport::wire::Conn,
+        stream: busbar_contract::StreamId,
+        bytes: busbar_contract::ScratchBytes<'a>,
+    ) -> busbar_contract::Fut<'a, usize> {
+        self.0.write(conn, stream, bytes)
+    }
+
+    fn encode_envelope<'a>(
+        &self,
+        fields: &[(&str, &[u8])],
+        body: &[u8],
+        arena: &'a dyn busbar_contract::PlaneAlloc,
+    ) -> Result<busbar_contract::ScratchBytes<'a>, busbar_contract::transport::wire::Encode> {
+        self.0.encode_envelope(fields, body, arena)
+    }
+
+    fn adopt<'a>(
+        &'a self,
+        _from: &'a dyn busbar_contract::Transport,
+        conn: busbar_contract::transport::wire::Conn,
+        keys: &'a busbar_contract::TransportKeyHandle,
+    ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Conn> {
+        self.0.adopt(conn, keys)
+    }
+
+    fn detach(
+        &self,
+        conn: &busbar_contract::transport::wire::Conn,
+    ) -> Option<busbar_contract::transport::wire::RawStream> {
+        self.0.detach(conn)
+    }
+
+    fn composed_over(&self) -> Option<&'static str> {
+        self.0.composed_over()
+    }
+
+    fn close(
+        &self,
+        conn: busbar_contract::transport::wire::Conn,
+        reason: busbar_contract::transport::wire::CloseReason,
+    ) {
+        self.0.close(conn, reason);
+    }
+
+    fn unit0_refusal<'a>(
+        &'a self,
+        conn: busbar_contract::transport::wire::Conn,
+        stream: Option<busbar_contract::StreamId>,
+        refusal: &'a busbar_contract::Refusal,
+        bytes: busbar_contract::ScratchBytes<'a>,
+    ) -> busbar_contract::Fut<'a, ()> {
+        self.0.unit0_refusal(conn, stream, refusal, bytes)
+    }
+}
+
+/// A door, opened and served over the host's sockets, presented at the legacy transport seam.
 ///
 /// # Errors
 ///
@@ -128,7 +243,7 @@ pub fn host_wire(
     plugin: Plugin<TransportKind>,
 ) -> Result<Arc<dyn busbar_contract::Transport>, String> {
     let door = Dispatched::open(plugin)?;
-    Ok(Arc::new(HostWire::new(Arc::new(door))?))
+    Ok(Arc::new(RootWire(HostWire::new(Arc::new(door))?)))
 }
 
 /// A linked row's build: its door admitted through the one validation, served over the host's

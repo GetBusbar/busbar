@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use busbar_contract::transport::wire::{CloseReason, Listener, TransportError};
 use busbar_contract::{
-    ConfigView, Plugin, ScratchBytes, StreamId, Transport, TransportConfigView, TransportKeyHandle,
+    ConfigView, ScratchBytes, StreamId, TransportConfigView, TransportKeyHandle,
 };
 use futures::StreamExt;
 

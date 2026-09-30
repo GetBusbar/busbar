@@ -1420,12 +1420,12 @@ why = "the retiring a2a engine carries its own transport implementation, from be
 drain = "finish the a2a drain and delete busbar-a2a; the row goes with the crate."
 
 [[face]]
-crate = "busbar-core-connector"
+crate = "busbar"
 face = "Transport"
 count = "1"
-cite = "BUSBAR-1.6.0.md THE DESIGN, §5 — the host owns every socket; the connector serves a framer entry over them. F12 relocation (ARCHITECT): the retired tcp carrier implemented this face in busbar-transport-tcp."
-why = "`busbar_core_connector::wire::HostWire` presents a memory-ABI framer door over the host's sockets as the kernel's legacy transport seam, so the kernel's listeners and upgrades drive it. One implementation, in shipped source."
-drain = "drains at TODO step 36, when the kernel's serve/egress path stops speaking `Transport` and the engine is deleted."
+cite = "BUSBAR-1.6.0.md THE DESIGN, §5 — the host owns every socket; the connector serves a framer entry over them. ARCHITECT ruling (Option R): `busbar-core-connector` is core and presents no plugin face, so the adapter onto the kernel's legacy transport seam lives in the composition root. F12 relocation (ARCHITECT): the retired tcp carrier implemented this face in busbar-transport-tcp; it moved to the connector, then to the root."
+why = "`busbar::root::doors::RootWire` wraps the connector's `HostWire` and implements the kernel's legacy transport seam by only delegating to the connector's host-side surface, so the kernel's listeners and upgrades drive a memory-ABI framer door over the host's sockets. One implementation, in shipped source. Transitional: RootWire deletes with the legacy stack at step 36."
+drain = "drains at TODO step 36, when the kernel's serve/egress path stops speaking `Transport` and the engine is deleted; RootWire deletes with the legacy stack at step 36."
 
 [[face]]
 crate = "busbar-plugin-loader"

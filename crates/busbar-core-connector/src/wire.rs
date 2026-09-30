@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A FRAMER ENTRY OVER HOST SOCKETS, AT THE KERNEL'S TRANSPORT SEAM: [`HostWire`] presents one
-//! transport entry that frames directly over the host's socket (an empty `composes_over`) as the
-//! contract's [`Transport`], so the kernel's listeners, accept loop and upgrades drive it the way
-//! they drive any transport.
+//! A FRAMER ENTRY OVER HOST SOCKETS: [`HostWire`] serves one transport entry that frames directly
+//! over the host's socket (an empty `composes_over`) through the connector's own host-side surface.
+//! The connector is core and presents no plugin face; the composition root adapts this surface to
+//! the kernel's legacy transport seam, so the kernel's listeners, accept loop and upgrades drive it
+//! the way they drive any transport.
 //!
 //! The sockets are the host's: listened, accepted, dialled, read and written here, non-blocking,
 //! their readiness on the calling worker's reactor ([`crate::io`]). Every byte in or out goes
@@ -28,8 +29,8 @@ use busbar_contract::transport::wire::{
 };
 use busbar_contract::transport::FrameStream;
 use busbar_contract::{
-    DestinationFacts, Frame, Fut, Kind, Plugin, Refusal, ScratchBytes, SlabBytes, StreamId,
-    Transport, TransportConfigView, TransportKeyHandle, VerifiedDestination,
+    DestinationFacts, Frame, Fut, Refusal, ScratchBytes, SlabBytes, StreamId, TransportConfigView,
+    TransportKeyHandle, VerifiedDestination,
 };
 
 use crate::framer::{self, Established, FramerDoor, Framing, Got};
@@ -280,20 +281,18 @@ impl HostWire {
     }
 }
 
-impl Plugin for HostWire {
-    fn key(&self) -> &'static str {
+/// THE HOST-SIDE SURFACE. What the host drives on a wire: listen, accept, dial, read, write, hand
+/// up, close. The connector is core and presents no plugin face; the composition root adapts this
+/// surface to the kernel's legacy transport seam where it still needs one.
+impl HostWire {
+    /// The entry's registry key: its first claim.
+    #[must_use]
+    pub fn key(&self) -> &'static str {
         self.key
     }
-    fn kind(&self) -> Kind {
-        Kind::Transport
-    }
-    fn abi(&self) -> busbar_contract::transport::AbiVersion {
-        busbar_contract::transport::TRANSPORT_ABI
-    }
-}
 
-impl Transport for HostWire {
-    fn arrival(&self, conn: &Conn) -> ArrivalRecord {
+    /// What the host records about `conn` on arrival: its peer, the local port, this entry as the chain.
+    pub fn arrival(&self, conn: &Conn) -> ArrivalRecord {
         let port = self.get(conn.id()).map_or(0, |c| c.local_port);
         ArrivalRecord {
             source: conn.peer(),
@@ -305,7 +304,8 @@ impl Transport for HostWire {
         }
     }
 
-    fn listen<'a>(
+    /// Bind a listener on the configured address (loopback, any port, when none is configured).
+    pub fn listen<'a>(
         &'a self,
         cfg: &'a dyn TransportConfigView,
         _keys: &'a TransportKeyHandle,
@@ -327,7 +327,8 @@ impl Transport for HostWire {
         })
     }
 
-    fn accept<'a>(&'a self, l: &'a Listener) -> Fut<'a, Conn> {
+    /// The next connection on `l`, held and framed.
+    pub fn accept<'a>(&'a self, l: &'a Listener) -> Fut<'a, Conn> {
         Box::pin(async move {
             let reg = self
                 .listeners
@@ -345,7 +346,8 @@ impl Transport for HostWire {
         })
     }
 
-    fn dial<'a>(
+    /// Dial a verified upstream destination: its authority, as [`Self::dial_authority`] does.
+    pub fn dial<'a>(
         &'a self,
         dest: &'a VerifiedDestination,
         _keys: &'a TransportKeyHandle,
@@ -361,7 +363,8 @@ impl Transport for HostWire {
         })
     }
 
-    fn frames(&self, conn: Conn) -> FrameStream {
+    /// The inbound frames on `conn`, as the framer yields them from the socket.
+    pub fn frames(&self, conn: Conn) -> FrameStream {
         let held = self.get(conn.id());
         let conns = Arc::clone(&self.conns);
         let mut ended = false;
@@ -432,7 +435,8 @@ impl Transport for HostWire {
         }))
     }
 
-    fn write<'a>(
+    /// Write `bytes` on `stream` of `conn` through the framer.
+    pub fn write<'a>(
         &'a self,
         conn: &'a Conn,
         stream: StreamId,
@@ -452,7 +456,12 @@ impl Transport for HostWire {
         })
     }
 
-    fn encode_envelope<'a>(
+    /// Encode an envelope in the entry's framing, into `arena`.
+    ///
+    /// # Errors
+    ///
+    /// The framer cannot represent it, or the arena is exhausted.
+    pub fn encode_envelope<'a>(
         &self,
         fields: &[(&str, &[u8])],
         body: &[u8],
@@ -465,18 +474,15 @@ impl Transport for HostWire {
             .map_err(|_| busbar_contract::transport::wire::Encode::ScratchExhausted)
     }
 
-    fn adopt<'a>(
-        &'a self,
-        _from: &'a dyn Transport,
-        _conn: Conn,
-        _keys: &'a TransportKeyHandle,
-    ) -> Fut<'a, Conn> {
+    /// Adopt a connection from another layer: this entry frames the host's own socket, so it refuses.
+    pub fn adopt<'a>(&'a self, _conn: Conn, _keys: &'a TransportKeyHandle) -> Fut<'a, Conn> {
         // This entry frames the host's own socket: nothing is adopted onto it, it only hands a
         // connection up.
         Box::pin(async move { Err(TransportError::HandoffMismatch) })
     }
 
-    fn detach(&self, conn: &Conn) -> Option<RawStream> {
+    /// Hand `conn` up: its socket, with the bytes the framer took and did not answer in front of it.
+    pub fn detach(&self, conn: &Conn) -> Option<RawStream> {
         let c = self.get(conn.id())?;
         let taken = {
             let mut sock = c.sock.lock().expect("socket");
@@ -508,12 +514,14 @@ impl Transport for HostWire {
         ))
     }
 
-    fn composed_over(&self) -> Option<&'static str> {
+    /// The layer this entry composes over: none, it frames the host's own socket.
+    pub fn composed_over(&self) -> Option<&'static str> {
         // The entry frames the host's own socket: nothing built it over a lower layer.
         None
     }
 
-    fn close(&self, conn: Conn, _reason: CloseReason) {
+    /// Close `conn`: the framer finishes, and whatever is parked on it ends.
+    pub fn close(&self, conn: Conn, _reason: CloseReason) {
         let removed = self.conns.lock().expect("conns").remove(&conn.id());
         if let Some(c) = removed {
             if let Some(f) = c.framing.lock().expect("framing").take() {
@@ -523,7 +531,8 @@ impl Transport for HostWire {
         }
     }
 
-    fn unit0_refusal<'a>(
+    /// Deliver a Unit 0 refusal on `conn` through the framer, then finalise the connection.
+    pub fn unit0_refusal<'a>(
         &'a self,
         conn: Conn,
         stream: Option<StreamId>,
