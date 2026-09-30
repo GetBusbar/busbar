@@ -362,3 +362,61 @@ fn a_deployment_is_bootstrapped_exactly_once() {
         BootstrapVerdict::KeysetMissing
     );
 }
+
+/// A plane door's claim as the host reads it: the target and flags through the contract's one
+/// mapping onto the claim grammar.
+fn door_claim(target: &'static str, flags: u32) -> Claim {
+    let selector = busbar_contract::abi::plane::check::claim_selector(target, flags)
+        .expect("a well-formed door claim");
+    claim("wire", selector)
+}
+
+/// RED: within one plane, a door's EXACT claim is tried before its PATTERN claim over the same
+/// path, which is tried before its PREFIX claim. The sealed precedence is the grammar's, unchanged.
+#[test]
+fn a_door_exact_claim_beats_its_pattern_which_beats_its_prefix() {
+    use busbar_contract::abi::plane::{CLAIM_EXACT, CLAIM_PATTERN};
+    let claims = vec![
+        PlaneClaim {
+            plane: "door",
+            claim: door_claim("/v1/tasks", 0),
+        },
+        PlaneClaim {
+            plane: "door",
+            claim: door_claim("/v1/tasks/{id}", CLAIM_PATTERN),
+        },
+        PlaneClaim {
+            plane: "door",
+            claim: door_claim("/v1/tasks/current", CLAIM_EXACT),
+        },
+    ];
+    assert!(precedence(&claims[2].claim.selector) > precedence(&claims[1].claim.selector));
+    assert!(precedence(&claims[1].claim.selector) > precedence(&claims[0].claim.selector));
+    assert_eq!(precedence_order(&claims), vec![2, 1, 0]);
+}
+
+/// RED: two planes' door pattern claims that can match one path at equal precedence refuse boot.
+#[test]
+fn two_door_pattern_claims_at_equal_precedence_refuse_boot() {
+    use busbar_contract::abi::plane::CLAIM_PATTERN;
+    let claims = vec![
+        PlaneClaim {
+            plane: "left",
+            claim: door_claim("/v1/tasks/{id}", CLAIM_PATTERN),
+        },
+        PlaneClaim {
+            plane: "right",
+            claim: door_claim("/v1/tasks/{task}", CLAIM_PATTERN),
+        },
+    ];
+    let conflict = check_claims(&claims).expect_err("one pattern, two planes");
+    assert_eq!(conflict.reason, ConflictReason::EqualPrecedence);
+    let disjoint = vec![
+        claims[0].clone(),
+        PlaneClaim {
+            plane: "right",
+            claim: door_claim("/v1/agents/{id}", CLAIM_PATTERN),
+        },
+    ];
+    assert!(check_claims(&disjoint).is_ok());
+}
