@@ -1452,6 +1452,7 @@ fn compute_layout() -> String {
             now_unix_ns
         ]
     );
+    record!(s, tkind::FrameSpan, [offset, len]);
     record!(
         s,
         tkind::FramerYield,
