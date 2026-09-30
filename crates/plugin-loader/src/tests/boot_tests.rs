@@ -442,3 +442,60 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
     assert_eq!(shape(&linked).len(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A plane whose Statement tail declares a rooted pin naming NO mechanism is refused at boot: the
+/// tail's trust keys are judged per element when the plane binds (`open_planes` discovers it,
+/// `load_planes` refuses it), exactly as the door plane's whole tail is. The plane is the fixture's
+/// own door with its tail's `trust_keys` swapped for a pin that names nothing to be rooted in.
+#[test]
+fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
+    use busbar_contract::abi::mechanism::door::{Door, KindTailHead, Statement};
+    use busbar_contract::abi::plane::{PlaneTail, TrustKey, TRUST_PIN};
+    use std::sync::OnceLock;
+
+    extern "C" fn bad_door() -> *const Door {
+        static BAD: OnceLock<usize> = OnceLock::new();
+        let door = *BAD.get_or_init(|| {
+            // SAFETY: `plug::door` answers the fixture's `'static` Door, Statement and tail.
+            unsafe {
+                let good = plug::door();
+                let mut tail = (*(*good).statement)
+                    .kind_tail
+                    .cast::<PlaneTail>()
+                    .read_unaligned();
+                let keys: &'static [TrustKey] = Box::leak(Box::new([TrustKey {
+                    key: abi_str("anchor"),
+                    role: TRUST_PIN,
+                    flags: 0,
+                    default: abi_str(""),
+                    mechanisms: std::ptr::null(),
+                    mechanisms_len: 0,
+                }]));
+                tail.trust_keys = keys.as_ptr();
+                tail.trust_keys_len = keys.len();
+                let tail: &'static PlaneTail = Box::leak(Box::new(tail));
+                let mut st: Statement = *(*good).statement;
+                st.kind_tail = std::ptr::from_ref(tail).cast::<KindTailHead>();
+                let st: &'static Statement = Box::leak(Box::new(st));
+                let mut d: Door = *good;
+                d.statement = st;
+                std::ptr::from_ref::<Door>(Box::leak(Box::new(d))) as usize
+            }
+        });
+        door as *const Door
+    }
+
+    let logs = PluginLogConfig::from_words(None, None, &Default::default(), None, None).unwrap();
+    let set = crate::PluginRegistry::empty()
+        .open_planes(&[bad_door])
+        .expect("the plane states itself");
+    let err = load_planes(&set.doors, &logs, Arc::new(NoSink), Adopter::unwatched(), 8)
+        .expect_err("a pin naming no mechanism must refuse the boot");
+    assert!(err.contains("trust_key.mechanisms"), "{err}");
+    // The GREEN twin: the unmodified door binds.
+    let ok = crate::PluginRegistry::empty()
+        .open_planes(&[plug::door])
+        .unwrap();
+    load_planes(&ok.doors, &logs, Arc::new(NoSink), Adopter::unwatched(), 8)
+        .expect("the well-formed plane binds");
+}
