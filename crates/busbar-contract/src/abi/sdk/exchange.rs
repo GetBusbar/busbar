@@ -94,6 +94,8 @@ pub struct Exchange {
     code: u32,
     /// How many of this op's services' results are already applied to `reply`.
     applied: u32,
+    /// The handle of the read that answered the terminal piece, once one has.
+    ended: Option<u32>,
 }
 
 fn piece(kind: u32) -> Box<RequestPiece> {
@@ -119,6 +121,7 @@ impl Exchange {
             reply: ExchangeResponse::default(),
             code: 0,
             applied: 0,
+            ended: None,
         }
     }
 
@@ -279,7 +282,13 @@ fn send_and_read(
             REPLY_HEAD | REPLY_ACK | REPLY_BODY | REPLY_END => {}
             _ => return failed("the transport answered no reply piece: every request is acked"),
         }
-        if matches!(p.kind, REPLY_ACK | REPLY_END) {
+        // The terminal piece ends the reads, on the entry that first saw it and on every replay
+        // of that read. A replayed earlier read never does: the piece descriptor is the op's one
+        // parked slot, so a replay finds the LATEST read's piece there, not its own.
+        if fresh && matches!(p.kind, REPLY_ACK | REPLY_END) {
+            state.ended = Some(this);
+        }
+        if state.ended == Some(this) {
             break;
         }
     }

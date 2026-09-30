@@ -403,7 +403,7 @@ fn the_host_refuses_a_capacity_with_a_null_buffer() {
 }
 
 #[test]
-fn the_services_that_never_pend_are_exactly_the_stated_six() {
+fn the_services_that_never_pend_are_exactly_the_stated_seven() {
     let never: Vec<u32> = (0..SERVICES).filter(|s| !may_pend(*s)).collect();
     assert_eq!(
         never,
@@ -413,7 +413,8 @@ fn the_services_that_never_pend_are_exactly_the_stated_six() {
             op::TRUST_DUE,
             op::VERIFY_STORE,
             op::ENTITLEMENT_CHECK,
-            op::RANDOM_FILL
+            op::RANDOM_FILL,
+            op::NEED_ADMIT
         ]
     );
     assert!(!may_pend(SERVICES), "an index past the table never pends");
