@@ -1430,6 +1430,16 @@ impl RouteAwait for Driven<'_> {
 // The driven plane's abandoned end
 // ---------------------------------------------------------------------------------------------
 
+/// Each open unit's facts, by key: its principal, its pinned arrival, its admitted card history.
+type OpenUnits = HashMap<
+    UnitKey,
+    (
+        PrincipalId,
+        Arrived,
+        Option<crate::root::kernel::PinnedHistory>,
+    ),
+>;
+
 /// THE ROOT'S POSTING SITE for an abandoned end of a unit the kernel's plane driver runs
 /// (`busbar_kernel::plane_driver::EndPost`): the caller went away, the loop's guard sealed the end,
 /// and it is posted here onto the same book, balance and window a returned end settles on
@@ -1438,16 +1448,7 @@ impl RouteAwait for Driven<'_> {
 /// and closes them when the unit returns; an end posts at most once.
 pub struct NodeEndPost {
     node: Arc<Node>,
-    open: Mutex<
-        HashMap<
-            UnitKey,
-            (
-                PrincipalId,
-                Arrived,
-                Option<crate::root::kernel::PinnedHistory>,
-            ),
-        >,
-    >,
+    open: Mutex<OpenUnits>,
 }
 
 impl std::fmt::Debug for NodeEndPost {
@@ -1466,22 +1467,8 @@ impl NodeEndPost {
         }
     }
 
-    fn lock(
-        &self,
-    ) -> std::sync::MutexGuard<
-        '_,
-        HashMap<
-            UnitKey,
-            (
-                PrincipalId,
-                Arrived,
-                Option<crate::root::kernel::PinnedHistory>,
-            ),
-        >,
-    > {
-        self.open
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn lock(&self) -> std::sync::MutexGuard<'_, OpenUnits> {
+        self.open.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Unit `key`'s facts, at its admission.
