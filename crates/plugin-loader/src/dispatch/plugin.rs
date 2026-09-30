@@ -278,6 +278,8 @@ pub(crate) struct Instance {
     short: fn(&Answer) -> bool,
     /// [`Kind::op_name`] of the bound kind.
     op_name: fn(u32) -> &'static str,
+    /// [`Kind::unit_of`] of the bound kind.
+    unit_of: fn(u32, *const InHead, usize) -> Option<u64>,
     /// [`Kind::context`] of the bound kind, built from the Statement at bind.
     context: Option<Box<super::Context>>,
     sink: Arc<dyn EnvelopeSink>,
@@ -497,6 +499,10 @@ impl Instance {
         }
         let op = self.slots[s as usize];
         self.crossings.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: the host wrote `in.size` itself.
+        let in_size = unsafe { (*input).size } as usize;
+        // The unit this crossing serves, for the host services it calls.
+        let _unit = super::services::serving((self.unit_of)(s, input.cast_const(), in_size));
         let raw = op(instance, input.cast_const().cast(), out.cast());
         // SAFETY: the plugin wrote at most the host's `out`; read it back.
         let head = unsafe { *out };
@@ -817,6 +823,7 @@ impl<K: Kind> Plugin<K> {
                 check: K::check,
                 short: K::short,
                 op_name: K::op_name,
+                unit_of: K::unit_of,
                 context,
                 sink: bind.sink.clone(),
                 wake,

@@ -9,8 +9,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use busbar_contract::abi::host::service::{
-    check_clock_now, check_dest_judge, EntitlementCheckIn, ItemSpan, DEST_INTERNAL, DEST_METADATA,
-    DEST_RESOLVE,
+    check_clock_now, check_dest_judge, ContentScanIn, EntitlementCheckIn, ItemSpan, DEST_INTERNAL,
+    DEST_METADATA, DEST_RESOLVE,
 };
 use busbar_contract::abi::mechanism::check::Filled;
 
@@ -93,6 +93,12 @@ impl HostServices for Provider {
     fn trust_due(&self, c: &Caller) -> Stored {
         self.saw(c, "trust.due", b"");
         Stored::ready(0)
+    }
+
+    fn entitlement_check(&self, c: &Caller, unit: Option<u64>, target: &str) -> Stored {
+        let arg = format!("{unit:?} {target}");
+        self.saw(c, "entitlement.check", arg.as_bytes());
+        Stored::ready(svc::ENTITLED)
     }
 }
 
@@ -267,20 +273,18 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
 #[test]
 fn every_other_slot_answers_unimplemented_on_a_ticket() {
     let d = double();
-    let i = EntitlementCheckIn {
-        head: head(
-            op::ENTITLEMENT_CHECK,
-            TICKET,
-            0,
-            size_of::<EntitlementCheckIn>(),
-        ),
-        target: AbiStr {
+    let i = ContentScanIn {
+        head: head(op::CONTENT_SCAN, TICKET, 0, size_of::<ContentScanIn>()),
+        content: busbar_contract::abi::mechanism::call::Blob {
             ptr: std::ptr::null(),
             len: 0,
+            fmt: 0,
+            flags: 0,
         },
+        into: bufs(&mut [], &mut []),
     };
     let mut o = blank();
-    let ret = HOST_SLOTS.entitlement_check.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    let ret = HOST_SLOTS.content_scan.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
     assert_eq!(ret.outcome(), Outcome::Refused);
     assert_eq!(error(&o), UNIMPLEMENTED);
 }
@@ -547,6 +551,63 @@ fn sign_and_trust_due_reach_the_kernel_without_a_ticket() {
         vec![
             ("double".to_string(), "sign", data.to_vec()),
             ("double".to_string(), "trust.due", Vec::new()),
+        ]
+    );
+}
+
+fn entitlement_in(target: &'static str) -> EntitlementCheckIn {
+    EntitlementCheckIn {
+        head: head(
+            op::ENTITLEMENT_CHECK,
+            Ticket::NONE,
+            0,
+            size_of::<EntitlementCheckIn>(),
+        ),
+        target: text(target),
+    }
+}
+
+#[test]
+fn entitlement_check_reaches_the_kernel_with_the_unit_its_crossing_serves() {
+    let d = double();
+    let ask = |target| {
+        let i = entitlement_in(target);
+        let mut o = blank();
+        let ret =
+            HOST_SLOTS.entitlement_check.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+        (ret.outcome(), o.value)
+    };
+    // Outside any crossing: no unit.
+    assert_eq!(ask("item:one"), (Outcome::Ready, svc::ENTITLED));
+    {
+        let _outer = serving(Some(7));
+        assert_eq!(ask("item:two").0, Outcome::Ready);
+        {
+            // A nested crossing states its own unit, and its end restores the outer one.
+            let _inner = serving(Some(8));
+            ask("item:three");
+        }
+        ask("item:four");
+    }
+    ask("item:five");
+    let seen: Vec<String> = d
+        .route
+        .provider
+        .scoped
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, what, _)| *what == "entitlement.check")
+        .map(|(_, _, arg)| String::from_utf8(arg.clone()).unwrap())
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            "None item:one",
+            "Some(7) item:two",
+            "Some(8) item:three",
+            "Some(7) item:four",
+            "None item:five",
         ]
     );
 }

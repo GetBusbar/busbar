@@ -30,8 +30,9 @@ use std::sync::{Arc, Mutex, Weak};
 
 use busbar_contract::abi::host::service::{
     self as svc, check_bufs, check_head, check_records_claim_in, may_pend, op, ClockNowIn,
-    ClockReading, DestJudgeIn, HostSlots, RecordsClaimIn, RecordsGetIn, RecordsListIn, ServiceBufs,
-    ServiceHead, ServiceOut, SignIn, TrustDueIn, TrustSightIn, SERVICES,
+    ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots, RecordsClaimIn, RecordsGetIn,
+    RecordsListIn, ServiceBufs, ServiceHead, ServiceOut, SignIn, TrustDueIn, TrustSightIn,
+    SERVICES,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check;
@@ -720,6 +721,60 @@ extern "C" fn trust_due(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
     )
 }
 
+thread_local! {
+    /// The unit the crossing on this thread serves.
+    static SERVING: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// The unit a crossing serves, stated for the host services it calls on its thread, and cleared
+/// (to the unit of any crossing it is nested in) when the crossing returns.
+pub(crate) struct Serving(Option<u64>);
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        SERVING.with(|s| s.set(self.0));
+    }
+}
+
+/// State that the crossing on this thread serves `unit` until the returned guard drops.
+pub(crate) fn serving(unit: Option<u64>) -> Serving {
+    Serving(SERVING.with(|s| s.replace(unit)))
+}
+
+/// The unit the crossing on this thread serves; `None` outside a crossing that serves one.
+pub(crate) fn serving_unit() -> Option<u64> {
+    SERVING.with(std::cell::Cell::get)
+}
+
+extern "C" fn entitlement_check(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::ENTITLEMENT_CHECK,
+        size_of::<EntitlementCheckIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered an `EntitlementCheckIn`.
+            let i = unsafe { input.cast::<EntitlementCheckIn>().read_unaligned() };
+            let Some(target) = text_of(i.target, "entitlement_check.target") else {
+                return Answered::fault();
+            };
+            let unit = serving_unit();
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: no buffer is named.
+            unsafe {
+                serve(&served.store, &route, &head, None, |_| {
+                    Ran::Now(provider.entitlement_check(&caller, unit, &target))
+                })
+            }
+        },
+    )
+}
+
 /// `name = OP, In;`: a slot this host does not serve yet: its frame, then REFUSED.
 macro_rules! unimplemented_slot {
     ($($name:ident = $op:ident, $in:ident;)*) => {$(
@@ -739,7 +794,6 @@ unimplemented_slot! {
     work_resume = WORK_RESUME, WorkResumeIn;
     verify_lookup = VERIFY_LOOKUP, VerifyLookupIn;
     verify_store = VERIFY_STORE, VerifyStoreIn;
-    entitlement_check = ENTITLEMENT_CHECK, EntitlementCheckIn;
     content_scan = CONTENT_SCAN, ContentScanIn;
     hook_call = HOOK_CALL, HookCallIn;
 }
