@@ -45,6 +45,8 @@
 
 pub mod admin;
 pub mod cache;
+/// The caller reference a plane attributes a request with, in place of the principal.
+pub mod caller_ref;
 // Folded from the former `busbar-unit-egress-auth` crate (#36: egress-auth folds into identity).
 pub mod carrier;
 pub mod chain;
