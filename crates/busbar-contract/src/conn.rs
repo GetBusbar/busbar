@@ -91,6 +91,10 @@ pub struct Piece {
     pub status_namespace: Option<String>,
     /// How long the far side asked to be left alone, in seconds.
     pub retry_after_secs: Option<u64>,
+    /// On the far end's HEAD (a [`PieceKind::Fields`] that ends its frame): where in the caller's
+    /// buffer its reason phrase is, exactly as sent, right after the field block's bytes. `None`
+    /// where the wire has none (HTTP/2) or the caller's buffer could not also hold it.
+    pub reason: Option<core::ops::Range<usize>>,
 }
 
 /// Why a connection operation did not answer with what was asked. The refusals carry the text an

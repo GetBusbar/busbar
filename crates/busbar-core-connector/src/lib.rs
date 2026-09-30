@@ -415,6 +415,7 @@ impl Connector {
                             status_code: None,
                             status_namespace: None,
                             retry_after_secs: None,
+                            reason: None,
                         });
                     }
                     // The far end's head (and its trailers) arrive as the framer's field block:
@@ -433,6 +434,7 @@ impl Connector {
                             status_code: got.status_code,
                             status_namespace: None,
                             retry_after_secs: got.retry_after_secs,
+                            reason: None,
                         },
                         got.bytes,
                     ),

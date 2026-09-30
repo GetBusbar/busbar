@@ -964,6 +964,11 @@ pub struct EncodeIn {
     pub body_len: usize,
     /// The sink.
     pub sink: FramerSink,
+    /// The request's method, a head word (the same name as the head slots'); absent = none. A
+    /// framer whose wire has no head words ignores it.
+    pub method: AbiStr,
+    /// The request's target (path and query), a head word; absent = none.
+    pub target: AbiStr,
 }
 
 /// `refuse`'s `in`.

@@ -157,6 +157,8 @@ pub struct WirePiece {
     pub ns: DeclStr,
     /// How long the far side asked to be left alone, in seconds.
     pub retry_after_secs: u64,
+    /// [`Piece::reason`]: a range of the caller's buffer (`len == 0` = none).
+    pub reason: crate::abi::transport::FrameSpan,
 }
 
 /// [`WirePiece::flags`]: the status number is present.
@@ -413,7 +415,7 @@ extern "C-unwind" fn host_read(
             unsafe { std::slice::from_raw_parts_mut(buf, cap) }
         };
         let piece = host.conns.read(host.instance, ConnId(conn), ticket, into)?;
-        if piece.len > cap {
+        if piece.len > cap || piece.reason.as_ref().is_some_and(|r| r.start > r.end || r.end > cap) {
             return Err(ConnError::Fault);
         }
         // The numbering is held until the connection closes, so the plugin's borrow outlives the
@@ -447,6 +449,12 @@ extern "C-unwind" fn host_read(
                     _reserved: 0,
                     ns,
                     retry_after_secs: piece.retry_after_secs.unwrap_or(0),
+                    reason: piece.reason.as_ref().map_or_else(Default::default, |r| {
+                        crate::abi::transport::FrameSpan {
+                            offset: r.start as u64,
+                            len: (r.end - r.start) as u64,
+                        }
+                    }),
                 },
             )
         }
@@ -645,6 +653,17 @@ impl HostConns {
             status_code: (p.flags & PIECE_HAS_CODE != 0).then_some(p.code),
             status_namespace: ns,
             retry_after_secs: (p.flags & PIECE_HAS_RETRY_AFTER != 0).then_some(p.retry_after_secs),
+            reason: match p.reason.len {
+                0 => None,
+                n => {
+                    let at = usize::try_from(p.reason.offset).map_err(|_| ConnError::Fault)?;
+                    let end = at
+                        .checked_add(usize::try_from(n).map_err(|_| ConnError::Fault)?)
+                        .filter(|e| *e <= buf.len())
+                        .ok_or(ConnError::Fault)?;
+                    Some(at..end)
+                }
+            },
         })
     }
 

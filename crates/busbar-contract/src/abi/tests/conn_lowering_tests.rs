@@ -60,6 +60,11 @@ impl Conns for Echo {
         }
         let next = q.remove(0);
         buf[..next.len()].copy_from_slice(&next);
+        // The first answer carries a reason phrase after its bytes, as a head's last piece does.
+        let reason = (next == b"hellokv").then(|| {
+            buf[next.len()..next.len() + 2].copy_from_slice(b"OK");
+            next.len()..next.len() + 2
+        });
         Ok(Piece {
             kind: PieceKind::Body,
             stream: StreamId(0),
@@ -69,6 +74,7 @@ impl Conns for Echo {
             status_code: Some(200),
             status_namespace: Some("numbering".into()),
             retry_after_secs: None,
+            reason,
         })
     }
     fn wait(&self, caller: InstanceId, set: &[ConnId], _: Ticket) -> Result<usize, ConnError> {
@@ -134,6 +140,9 @@ fn every_operation_crosses_the_lowering() {
     let mut buf = [0_u8; 64];
     let piece = pa.read(conn, 0, &mut buf).unwrap();
     assert_eq!(&buf[..piece.len], b"hellokv");
+    // The reason crosses the lowering as a range of the caller's buffer, and reads back.
+    assert_eq!(piece.reason, Some(7..9));
+    assert_eq!(&buf[7..9], b"OK");
     assert_eq!(
         (
             piece.kind,
@@ -149,8 +158,9 @@ fn every_operation_crosses_the_lowering() {
         )
     );
     assert_eq!(pa.write(conn, b"again", true), Ok(5));
-    let again = pa.read(conn, 0, &mut buf).unwrap().len;
-    assert_eq!(&buf[..again], b"again");
+    let again = pa.read(conn, 0, &mut buf).unwrap();
+    assert_eq!(&buf[..again.len], b"again");
+    assert_eq!(again.reason, None);
     assert_eq!(
         pa.read(conn, 0, &mut buf),
         Err(ConnError::Pending),

@@ -918,7 +918,8 @@ fn compute_layout() -> String {
             code,
             _reserved,
             ns,
-            retry_after_secs
+            retry_after_secs,
+            reason
         ]
     );
 
@@ -1563,7 +1564,7 @@ fn compute_layout() -> String {
     record!(
         s,
         tkind::EncodeIn,
-        [head, fields, fields_len, body, body_len, sink]
+        [head, fields, fields_len, body, body_len, sink, method, target]
     );
     record!(
         s,
