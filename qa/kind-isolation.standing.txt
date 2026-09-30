@@ -16,9 +16,9 @@ kind-isolation:matrix	instance-ratchet	busbar-core-admin × auth	27
 kind-isolation:matrix	instance-ratchet	busbar-kernel × export	55
 kind-isolation:matrix	instance-ratchet	busbar-kernel × secret	55
 kind-isolation:matrix	instance-ratchet	busbar-plugin-loader × secret	9
-kind-isolation:matrix	measurement-disagreement	busbar-kernel × plane	1617
-kind-isolation:matrix	measurement-disagreement	busbar-kernel × transport	308
-kind-isolation:matrix	measurement-disagreement	busbar-plane-llm × transport	599
+kind-isolation:matrix	measurement-disagreement	busbar-kernel × plane	3
+kind-isolation:matrix	measurement-disagreement	busbar-kernel × transport	5
+kind-isolation:matrix	measurement-disagreement	busbar-plane-llm × transport	5
 kind-isolation:matrix	ratchet	busbar × cleanliness	206
 kind-isolation:matrix	ratchet	busbar × hooks	16
 kind-isolation:matrix	ratchet	busbar × kernel	1295

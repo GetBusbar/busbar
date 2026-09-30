@@ -2121,11 +2121,18 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
                     .join(", ")
             ));
         }
+        // THE DISAGREEMENT'S FIGURE IS THE GAP, NOT THE CELL (METER-FIX, ratchet-audit M-e). The
+        // cell's own count is already this cell's `ratchet`/`unlisted-cell` finding; carrying it
+        // here too filed every disagreeing cell twice in the standing snapshot (kernel×transport
+        // 1 811 twice), so a burn-down summed over the snapshot double-counted exactly those
+        // cells. What a disagreement IS is the spellings one scanner sees and the other does not.
         if cell.disagrees() && !listed.disagreements.contains_key(&key) {
+            let gap = cell.by_segments.abs_diff(cell.by_windows);
             offenders.push(format!(
                 "measurement-disagreement\t{krate} × {kind}\tsegment scanner {} vs window scanner \
-                 {}; the scored count is the higher, {}. Record a `[[disagreement]]` row for this \
-                 cell, or drain the spellings one scanner cannot see.",
+                 {}: they differ by {gap}, and the cell scores the higher, {} (that count is the \
+                 cell's own row). Record a `[[disagreement]]` row for this cell, or drain the \
+                 spellings one scanner cannot see.",
                 cell.by_segments, cell.by_windows, cell.count
             ));
         }

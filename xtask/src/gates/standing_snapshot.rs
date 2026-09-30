@@ -76,6 +76,7 @@ pub fn findings(row: &Row) -> Vec<(Key, i64, bool)> {
             figure = Some(1);
         }
         let figure = figure
+            .or_else(|| number_after(&rest, "they differ by "))
             .or_else(|| number_after(&rest, "vs measured "))
             .or_else(|| number_after(&rest, "scored count is the higher, "))
             .or_else(|| number_before(&rest, " time(s)"))
@@ -276,6 +277,25 @@ mod tests {
 
     fn snap_of(tree: &str) -> BTreeMap<Key, i64> {
         parse(&rewrite(&SR, &Verdict::of(vec![row(tree)]), None)).expect("parses")
+    }
+
+    /// A measurement-disagreement finding carries the GAP between its scanners, never the cell's
+    /// scored count: that count is the same cell's ratchet finding, and filing it twice made the
+    /// snapshot's figure-sum count every disagreeing cell twice (ratchet-audit M-e).
+    #[test]
+    fn a_disagreement_carries_its_gap_not_its_cells_count() {
+        let tree = "2 hit(s): ratchet\tbusbar-kernel × transport\tceiling 4 vs measured 308 \
+                    (RAISED). | measurement-disagreement\tbusbar-kernel × transport\tsegment \
+                    scanner 303 vs window scanner 308: they differ by 5, and the cell scores the \
+                    higher, 308 (that count is the cell's own row).";
+        let f = findings(&row(tree));
+        assert!(f.contains(&(
+            "g:matrix\tmeasurement-disagreement\tbusbar-kernel × transport".to_string(),
+            5,
+            false
+        )));
+        let sum: i64 = snap_of(tree).values().sum();
+        assert_eq!(sum, 308 + 5, "the cell is counted once, its disagreement is its gap");
     }
 
     #[test]
