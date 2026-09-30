@@ -675,30 +675,38 @@ fn statement(door: &Door) -> Result<Statement, LoadError> {
     // with a count before it reads the list.
     unsafe { check_statement(&st) }
         .map_err(|f| LoadError::BadStatement(format!("{} breaks {:?}", f.field, f.rule)))?;
-    if !st.kind_tail.is_null() {
-        // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`.
-        let tail = unsafe { st.kind_tail.read_unaligned() };
-        if (tail.size as usize) < size_of::<KindTailHead>() {
-            return Err(LoadError::KindTail(format!(
-                "its head states {} bytes, less than the head itself",
-                tail.size
-            )));
-        }
-        // A transport's claim NAMES are its Statement's alone; its tail carries one row per name.
-        if st.kind == KindCode::Transport as u32 {
-            if (tail.size as usize) < size_of::<TransportTail>() {
-                return Err(LoadError::KindTail(format!(
-                    "a transport tail states {} bytes, less than its claim rows",
-                    tail.size
-                )));
-            }
-            // SAFETY: a transport's kind tail is a `'static` `TransportTail` of the size it states.
-            let t = unsafe { st.kind_tail.cast::<TransportTail>().read_unaligned() };
-            check_claim_rows(st.claims_len, &t)
-                .map_err(|f| LoadError::KindTail(format!("{} breaks {:?}", f.field, f.rule)))?;
-        }
-    }
+    kind_tail(&st)?;
     Ok(st)
+}
+
+/// A Statement's kind tail, at admit: its head states at least itself, and a transport's tail is a
+/// whole [`TransportTail`] with exactly one claim row per scheme the Statement names (the names
+/// are the Statement's alone).
+pub(crate) fn kind_tail(st: &Statement) -> Result<(), LoadError> {
+    if st.kind_tail.is_null() {
+        return Ok(());
+    }
+    // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`.
+    let tail = unsafe { st.kind_tail.read_unaligned() };
+    if (tail.size as usize) < size_of::<KindTailHead>() {
+        return Err(LoadError::KindTail(format!(
+            "its head states {} bytes, less than the head itself",
+            tail.size
+        )));
+    }
+    if st.kind != KindCode::Transport as u32 {
+        return Ok(());
+    }
+    if (tail.size as usize) < size_of::<TransportTail>() {
+        return Err(LoadError::KindTail(format!(
+            "a transport tail states {} bytes, less than its claim rows",
+            tail.size
+        )));
+    }
+    // SAFETY: a transport's kind tail is a `'static` `TransportTail` of the size it states.
+    let t = unsafe { st.kind_tail.cast::<TransportTail>().read_unaligned() };
+    check_claim_rows(st.claims_len, &t)
+        .map_err(|f| LoadError::KindTail(format!("{} breaks {:?}", f.field, f.rule)))
 }
 
 fn str_is_bad(s: AbiStr) -> bool {

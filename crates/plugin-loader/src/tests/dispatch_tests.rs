@@ -1981,3 +1981,38 @@ fn two_instances_of_one_plugin_are_two_callers() {
     assert_eq!(a.plugin, b.plugin);
     assert_ne!(a.instance, b.instance);
 }
+
+/// THE ONE SOURCE OF CLAIM NAMES, AT ADMIT (ARCHITECT ruling 2026-09-29 (A)): a transport's
+/// Statement names its claimed schemes and its tail carries one row per name. RED: a transport
+/// Statement naming two schemes over a tail with one row is refused at admit; one name over one
+/// row, and a non-transport Statement's tail, pass.
+#[test]
+fn a_transport_tail_with_a_row_per_claimed_name_is_admitted_and_no_other() {
+    use busbar_contract::abi::mechanism::call::AbiStr;
+    use busbar_contract::abi::transport::{Claim, TransportTail};
+    const NAMES: &[AbiStr] = &[
+        busbar_contract::abi::sdk::door::abi_str("tele"),
+        busbar_contract::abi::sdk::door::abi_str("teles"),
+    ];
+    // SAFETY: an all-zero Claim is a valid row (no strings, no lists).
+    let row: &'static Claim = Box::leak(Box::new(unsafe { std::mem::zeroed::<Claim>() }));
+    // SAFETY: an all-zero TransportTail is a valid value; its size and rows are set below.
+    let mut t: TransportTail = unsafe { std::mem::zeroed() };
+    t.head.size = std::mem::size_of::<TransportTail>() as u32;
+    t.claim_rows = row;
+    t.claim_rows_len = 1;
+    let tail = (Box::leak(Box::new(t)) as *const TransportTail).cast::<KindTailHead>();
+    let st = |names: usize, kind: KindCode| Statement {
+        kind: kind as u32,
+        kind_tail: tail,
+        claims: NAMES.as_ptr(),
+        claims_len: names,
+        ..busbar_contract::abi::sdk::door::statement("sockets", "1.0.0", 1)
+    };
+    assert!(crate::dispatch::load::kind_tail(&st(1, KindCode::Transport)).is_ok());
+    assert!(matches!(
+        crate::dispatch::load::kind_tail(&st(2, KindCode::Transport)),
+        Err(LoadError::KindTail(why)) if why.contains("tail.claim_rows")
+    ));
+    assert!(crate::dispatch::load::kind_tail(&st(0, KindCode::Plane)).is_ok());
+}
