@@ -79,6 +79,7 @@ impl Far {
                 last: k + 1 == n,
                 fail_over: false,
                 fields: false,
+                head: Vec::new(),
             })
             .collect();
         Far {
@@ -131,6 +132,7 @@ impl FarEnd for Far {
                 last: true,
                 fail_over: true,
                 fields: false,
+                head: Vec::new(),
             }]
         } else if request.member.starts_with("trailers") {
             // The body, then the far end's trailers after it.
@@ -174,6 +176,8 @@ struct Caller {
     head: Mutex<Option<Head>>,
     bytes: Mutex<Vec<u8>>,
     writes: AtomicU64,
+    /// Writes that came as ONE text message.
+    texts: AtomicU64,
 }
 
 impl CallerEnd for Caller {
@@ -186,6 +190,11 @@ impl CallerEnd for Caller {
         self.bytes.lock().unwrap().extend_from_slice(bytes);
         self.writes.fetch_add(1, Ordering::SeqCst);
         true
+    }
+
+    async fn write_text(&self, bytes: &[u8]) -> bool {
+        self.texts.fetch_add(1, Ordering::SeqCst);
+        self.write(bytes).await
     }
 }
 
@@ -735,6 +744,32 @@ async fn trailers_reach_the_plane_which_decides() {
                 "{way:?} {member}"
             );
             assert_eq!(caller.text(), expect, "{way:?} {member}");
+        }
+    }
+}
+
+/// A plane's text message reaches the caller's side as text: the driver hands PIECE_OUT_TEXT on to
+/// the caller's writer; a plane that does not say so writes plain bytes.
+#[tokio::test]
+async fn a_text_message_reaches_the_caller_as_text() {
+    for way in ways() {
+        for (member, texts) in [("text", true), ("ok", false)] {
+            let r = rig(way, BufferCaps::default(), Book::default());
+            let (steps, far, caller) = (
+                TestUnits::passing(),
+                Far::new(&[member], CHUNKS),
+                Caller::default(),
+            );
+            let units = r
+                .driver
+                .unit(&steps, &far, &caller, arrival("/call", b"p"), 0);
+            assert!(matches!(drive(&units).await, Outcome::Completed), "{way:?} {member}");
+            let (t, w) = (
+                caller.texts.load(Ordering::SeqCst),
+                caller.writes.load(Ordering::SeqCst),
+            );
+            assert!(w > 0, "{way:?} {member}");
+            assert_eq!(t == w, texts, "{way:?} {member}: {t} of {w} writes were text");
         }
     }
 }

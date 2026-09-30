@@ -967,6 +967,7 @@ impl EgressFarEnd<'_> {
                 last: false,
                 fail_over: false,
                 fields: false,
+                head: Vec::new(),
             };
         }
         let classified = e.breaker.classify(destination, status);
@@ -989,6 +990,7 @@ impl EgressFarEnd<'_> {
                 last: false,
                 fail_over: false,
                 fields: false,
+                head: Vec::new(),
             };
         }
         e.telemetry

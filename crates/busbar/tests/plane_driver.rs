@@ -214,6 +214,7 @@ pub(crate) fn rig(way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
             op_classes: vec![OpClassId::new("call")],
             status_of: refusal_status,
             refusal_statuses,
+            caller_refs: None,
         },
         book.clone(),
     );

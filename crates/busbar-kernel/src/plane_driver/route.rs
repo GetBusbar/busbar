@@ -26,9 +26,9 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, EMIT_DONE, EMIT_TO_FAR_END,
+    Field, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, EMIT_DONE, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
-    VERDICT_RETRY,
+    PIECE_OUT_TEXT, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, ReasonCode, Route};
@@ -48,6 +48,9 @@ pub struct FarPiece {
     pub status: Option<(u32, u32)>,
     /// No piece follows.
     pub last: bool,
+    /// On the reply's first piece: the far end's response head fields the plane's need keeps, in
+    /// the far end's order, names lower-case (no other response field crosses).
+    pub head: Vec<(Vec<u8>, Vec<u8>)>,
     /// The bytes are the far end's fields after its body (trailers): pushed with `PIECE_FIELDS`,
     /// and the plane decides what they mean.
     pub fields: bool,
@@ -130,6 +133,11 @@ pub trait CallerEnd: Sync {
     /// Write `bytes`, resolving once they are written (the caller's side was writable); `false`
     /// when the caller has gone.
     fn write<'a>(&'a self, bytes: &'a [u8]) -> impl Future<Output = bool> + Send + 'a;
+    /// Write `bytes` as ONE text message (the plane answered `PIECE_OUT_TEXT`); a caller's side
+    /// with no text/binary distinction writes them as any bytes.
+    fn write_text<'a>(&'a self, bytes: &'a [u8]) -> impl Future<Output = bool> + Send + 'a {
+        self.write(bytes)
+    }
 }
 
 /// Every host buffer an `on_piece` names, and the bytes it borrows. Owned by the op while it is in
@@ -148,6 +156,16 @@ pub(crate) struct PieceBufs {
     member: Vec<u8>,
     /// The pool the current attempt's member was picked from.
     pool: Vec<u8>,
+    /// The snapshot claim the unit arrived on, lent on every piece.
+    pub(crate) claim: u32,
+    /// The dialect `arrive` answered, lent on every piece.
+    pub(crate) dialect: u32,
+    /// The caller's opaque reference, lent on every piece (empty = none).
+    pub(crate) caller_ref: Vec<u8>,
+    /// The far end's kept response head fields, lent on the answer's first piece.
+    head: Vec<(Vec<u8>, Vec<u8>)>,
+    /// `head` as the ABI's field list, pointing into it.
+    head_list: Vec<Field>,
 }
 
 impl PieceBufs {
@@ -162,6 +180,11 @@ impl PieceBufs {
             input: Vec::new(),
             member: Vec::new(),
             pool: Vec::new(),
+            claim: 0,
+            dialect: 0,
+            caller_ref: Vec::new(),
+            head: Vec::new(),
+            head_list: Vec::new(),
         };
         bufs.grow(caps.units, caps.records, caps.fields, caps.arena);
         bufs
@@ -213,6 +236,8 @@ struct Piece {
     status: (u32, u32),
     attempt_no: u32,
     src: Src,
+    /// The piece lends the far end's kept response head fields.
+    head: bool,
 }
 
 impl Piece {
@@ -224,6 +249,7 @@ impl Piece {
             status: (0, 0),
             attempt_no: 0,
             src: Src::None,
+            head: false,
             ..self
         }
     }
@@ -237,10 +263,23 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
         Src::Input => &bufs.input[..],
         Src::None => &[][..],
     };
-    let member = if p.attempt_no == 0 {
-        &[][..]
+    let (member, pool) = if p.attempt_no == 0 {
+        (&[][..], &[][..])
     } else {
-        &bufs.member[..]
+        (&bufs.member[..], &bufs.pool[..])
+    };
+    let str_of = |b: &[u8]| {
+        if b.is_empty() {
+            AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            }
+        } else {
+            AbiStr {
+                ptr: b.as_ptr(),
+                len: b.len(),
+            }
+        }
     };
     let input = OnPieceIn {
         unit,
@@ -261,19 +300,17 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
         arena_cap: bufs.arena.len(),
         member: AbiStr::over(member),
         attempt_no: p.attempt_no,
-        // The walk's pool is named with its member (K2 fills it from the pick); absent until then.
-        pool: AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
+        // The walk's pool is named with its member, on an ATTEMPT piece.
+        pool: str_of(pool),
+        caller_ref: str_of(&bufs.caller_ref),
+        claim: bufs.claim,
+        dialect: bufs.dialect,
+        head_fields: if p.head && !bufs.head_list.is_empty() {
+            bufs.head_list.as_ptr()
+        } else {
+            std::ptr::null()
         },
-        caller_ref: AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
-        claim: 0,
-        dialect: 0,
-        head_fields: std::ptr::null(),
-        head_fields_len: 0,
+        head_fields_len: if p.head { bufs.head_list.len() } else { 0 },
         ..blank_in()
     };
     (input, blank_out())
@@ -450,6 +487,14 @@ impl<'u> Pumping<'u> {
         bill
     }
 
+    /// Lend the unit's own facts on every piece it pushes: the claim it arrived on, the dialect
+    /// `arrive` answered, and the caller's opaque reference (empty = none).
+    pub(crate) fn lend_unit(&mut self, claim: u32, dialect: u32, caller_ref: &[u8]) {
+        self.bufs.claim = claim;
+        self.bufs.dialect = dialect;
+        self.bufs.caller_ref = caller_ref.to_vec();
+    }
+
     /// The unit reached its end: its ticket goes back.
     pub(crate) fn finish(&mut self) {
         self.ended = true;
@@ -569,6 +614,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 status: (0, 0),
                 attempt_no,
                 src: Src::None,
+                head: false,
             };
             let body = Piece {
                 from: FROM_CALLER,
@@ -624,6 +670,25 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 run.bufs.input.clear();
                 run.bufs.input.extend_from_slice(&piece.bytes);
                 let status = piece.status.filter(|_| first);
+                if status.is_some() {
+                    // THE ANSWER'S HEAD: the kept response fields cross with its first piece.
+                    let bufs = &mut *run.bufs;
+                    bufs.head.clone_from(&piece.head);
+                    bufs.head_list = bufs
+                        .head
+                        .iter()
+                        .map(|(n, v)| Field {
+                            name: AbiStr {
+                                ptr: n.as_ptr(),
+                                len: n.len(),
+                            },
+                            value: AbiStr {
+                                ptr: v.as_ptr(),
+                                len: v.len(),
+                            },
+                        })
+                        .collect();
+                }
                 first = false;
                 let far = Piece {
                     from: FROM_FAR_END,
@@ -637,6 +702,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     status: status.unwrap_or((0, 0)),
                     attempt_no: 0,
                     src: Src::Input,
+                    head: status.is_some(),
                 };
                 match self.push(run, far, &mut Toward::Caller).await {
                     Step::End(end) => return end,
@@ -722,7 +788,14 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         let left = run.left();
                         let Pumping { stop, bufs, .. } = &mut *run;
                         let emitted = &bufs.reply[..n];
-                        match guarded(stop, left, self.caller.write(emitted)).await {
+                        let written = async {
+                            if out.flags & PIECE_OUT_TEXT != 0 {
+                                self.caller.write_text(emitted).await
+                            } else {
+                                self.caller.write(emitted).await
+                            }
+                        };
+                        match guarded(stop, left, written).await {
                             Ok(true) => {}
                             Ok(false) => {
                                 return Step::End(End::Cancel(ReasonCode::ClientGone, None));
@@ -743,3 +816,8 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/route_tests.rs"]
+mod tests;

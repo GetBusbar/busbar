@@ -110,6 +110,9 @@ pub struct DriverConfig {
     pub status_of: fn(ReasonCode) -> u32,
     /// The statuses the plane's tail states per dialect and reason (validated at load).
     pub refusal_statuses: Vec<RefusalStatus>,
+    /// The key the caller's opaque reference is derived under (the node's signing material);
+    /// `None` = the node keeps none, and no reference is lent.
+    pub caller_refs: Option<Arc<busbar_kernel_identity::caller_ref::CallerRefKey>>,
 }
 
 impl DriverConfig {
@@ -265,6 +268,8 @@ pub(crate) struct UnitState {
     rendered: Option<Rendered>,
     facts: cancel::Facts,
     bill: Option<CancelBill>,
+    /// The caller's opaque reference, derived at verify (never the principal itself).
+    caller_ref: Vec<u8>,
 }
 
 /// ONE UNIT OF A PLANE, as the loop drives it.
@@ -491,6 +496,13 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
             self.deadline_ns,
             self.arrival.body.clone(),
         );
+        {
+            let st = self.lock();
+            let dialect = st.decoded.as_ref().map_or(0, |d| d.dialect);
+            let caller_ref = st.caller_ref.clone();
+            drop(st);
+            run.lend_unit(self.arrival.claim, dialect, &caller_ref);
+        }
         let end = self.attempts(&mut run).await;
         let answer = match end {
             route::End::Done => StepAnswer::proceed(token, RoutePlan::default()),
@@ -531,7 +543,7 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
 }
 
 /// The seats the kernel's own steps answer, forwarded to `self.steps` unchanged: one line per
-/// seat, so the plane's three seats (decode, route, encode) are the only bodies in the impl.
+/// seat, so the plane's own seats (decode, verify, route, encode) are the only bodies in the impl.
 macro_rules! forward_to_steps {
     ($($seat:ident($($arg:ident: $ty:ty),* $(,)?) -> $answer:ty;)*) => {$(
         fn $seat(&self, $($arg: $ty),*) -> $answer {
@@ -544,8 +556,6 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C>
     forward_to_steps! {
         arrival(token: &Pass<ArrivalStep>, ctx: &UnitCtx) -> StepAnswer<ArrivalStep>;
         authenticate(token: &Pass<Authenticate>, ctx: &UnitCtx) -> StepAnswer<Authenticate>;
-        verify(token: &Pass<Verify>, trust: &Grant<Dial>, ctx: &UnitCtx, principal: &PrincipalId)
-            -> StepAnswer<Verify>;
         approve(token: &Pass<Approve>, ctx: &UnitCtx, principal: &PrincipalId,
             destinations: &[VerifiedDestination]) -> StepAnswer<Approve>;
         admit(token: &Pass<Admit>, admit: &Grant<Admittance>, ctx: &UnitCtx, principal: &PrincipalId,
@@ -556,6 +566,21 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C>
         audit_refused(token: &Pass<Audit>, ctx: &UnitCtx, refusal: &Refusal) -> StepAnswer<Audit>;
         evidence(ctx: &UnitCtx) -> Evidence;
         at_parent_exit(ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal>;
+    }
+
+    /// The kernel's verify, after which the unit's caller reference is derived under the node's
+    /// key (none when the node keeps no key); the principal itself never enters a plane input.
+    fn verify(
+        &self,
+        token: &Pass<Verify>,
+        trust: &Grant<Dial>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+    ) -> StepAnswer<Verify> {
+        if let Some(key) = &self.driver.config.caller_refs {
+            self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
+        }
+        self.steps.verify(token, trust, ctx, principal)
     }
 
     /// S1, DECODE: the plane's `arrive`; a plane that did not answer, or named an operation class

@@ -41,9 +41,9 @@ use busbar_contract::abi::plane::{
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneSnapshot, PlaneTail, RefusalIn,
     RefusalOut, RefusalStatus, Section, UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL,
     EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE,
-    INGRESS_RESPONSE_STREAM, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_OPTIONAL,
-    REFUSAL_ANY_DIALECT, SECTION_DECLARING, SHAPE_WHOLE, UNITS_ESTIMATED, UNITS_REPORTED,
-    VERDICT_RETRY,
+    INGRESS_RESPONSE_STREAM, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT,
+    PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT, SECTION_DECLARING, SHAPE_WHOLE, UNITS_ESTIMATED,
+    UNITS_REPORTED, VERDICT_RETRY,
 };
 
 /// The counters `/stats` answers, in this order.
@@ -739,6 +739,10 @@ extern "C" fn on_piece(
         if u.saw_last && u.pending.is_empty() {
             o.flags = EMIT_DONE;
             o.verdict = 0;
+        }
+        // A plane whose emitted messages are text (mode `text`): each whole message says so.
+        if u.mode.as_slice() == b"text" && o.emitted > 0 && o.more == 0 {
+            o.flags |= PIECE_OUT_TEXT;
         }
         say(out, Outcome::Ready)
     }

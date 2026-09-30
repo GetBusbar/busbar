@@ -40,6 +40,7 @@ fn config() -> DriverConfig {
         op_classes: Vec::new(),
         status_of: refusal_status,
         refusal_statuses: REFUSAL_STATUSES.to_vec(),
+        caller_refs: None,
     }
 }
 

@@ -28,8 +28,8 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, RefusalIn, RefusalOut, UnitCount,
     CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER,
-    FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_OPTIONAL,
-    UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT,
+    PRINCIPAL_OPTIONAL, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };
 use busbar_contract::caps::OpClassId;
 use busbar_contract::plane_calls::{Answered, Grow, Lent, PieceInFlight, PlaneCalls};
@@ -79,6 +79,7 @@ pub(crate) fn rig(_way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
             op_classes: vec![OpClassId::new("call")],
             status_of: refusal_status,
             refusal_statuses: cases::statuses(),
+        caller_refs: None,
         },
         book.clone(),
     );
@@ -381,6 +382,10 @@ impl Double {
         if u.saw_last && u.pending.is_empty() {
             o.flags = EMIT_DONE;
             o.verdict = 0;
+        }
+        // A plane whose emitted messages are text (mode `text`): each whole message says so.
+        if u.mode == b"text" && o.emitted > 0 && o.more == 0 {
+            o.flags |= PIECE_OUT_TEXT;
         }
         (ready(Outcome::Ready), hold)
     }
