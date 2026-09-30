@@ -29,7 +29,7 @@ use busbar_contract::abi::plane::{
 use busbar_contract::abi::sdk::door::abi_str;
 
 use crate::a2a::config::{AgentsCfg, DEFAULT_REVERIFY_TTL, SUBJECT_NOUN};
-use crate::claims::{GRPC_TRANSPORT, HTTP_TRANSPORT};
+use crate::claims::{DOCUMENT_TRANSPORT, FRAMED_TRANSPORT};
 use crate::surface::{BINDING_DOCUMENT, BINDING_FRAMED, BINDING_TARGET};
 
 /// The grant kind that admits traffic on this plane: one registered agent.
@@ -198,7 +198,7 @@ pub struct Route {
 }
 
 /// The carrier the document and target bindings arrive over.
-const CARRIER: &str = HTTP_TRANSPORT;
+const CARRIER: &str = DOCUMENT_TRANSPORT;
 
 const fn keyed(verb: &'static str, target: &'static str) -> Route {
     Route {
@@ -245,7 +245,7 @@ pub const ROUTES: &[Route] = &[
     Route {
         verb: "POST",
         target: "/lf.a2a.v1.A2AService/{method}",
-        carrier: GRPC_TRANSPORT,
+        carrier: FRAMED_TRANSPORT,
         open: false,
     },
 ];

@@ -122,7 +122,7 @@ impl A2aPlane {
                 lane: agent.lane,
             },
             None => DestinationFacts::Upstream {
-                transport: crate::claims::HTTP_TRANSPORT,
+                transport: crate::claims::DOCUMENT_TRANSPORT,
                 address: busbar_contract::UpstreamAddress::socket(""),
                 lane: LaneId::new(""),
             },

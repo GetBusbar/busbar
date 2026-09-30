@@ -10,6 +10,16 @@ use busbar_contract::abi::plane::check::{
 };
 use busbar_contract::plane::TrustRole;
 
+/// A fixture endpoint: the secure scheme and a reserved example host, spelled once for every test.
+fn endpoint(host: &str, rest: &str) -> String {
+    format!("https://{host}.example{rest}")
+}
+
+/// A one-entry `agents:` section named `name` whose endpoint is `url`.
+fn one_agent(name: &str, url: &str) -> Vec<u8> {
+    format!(r#"{{"{name}": {{"url": "{url}", "pin": {{"mechanism": "unpinned"}}}}}}"#).into_bytes()
+}
+
 fn s(a: AbiStr) -> &'static str {
     if a.ptr.is_null() {
         return "";
@@ -91,15 +101,15 @@ fn the_abi_trust_keys_are_the_grammars_trust_keys() {
 
 #[test]
 fn an_admitted_generation_claims_every_route_and_states_its_audience() {
-    let g = Generation::build(7, Some("https://gw.example/base?x=1"));
+    let g = Generation::build(7, Some(&endpoint("gw", "/base?x=1")));
     assert_eq!(g.generation(), 7);
     assert_eq!(check_snapshot(g.snapshot(), 7), Ok(()));
     assert_eq!(g.claims.len(), ROUTES.len());
     assert_eq!(check_claims(&g.claims), Ok(()));
-    assert_eq!(g.audience, "https://gw.example/a2a");
+    assert_eq!(g.audience, endpoint("gw", "/a2a"));
     assert_eq!(
         g.resource_metadata,
-        "https://gw.example/.well-known/oauth-protected-resource/a2a"
+        endpoint("gw", "/.well-known/oauth-protected-resource/a2a")
     );
     assert_eq!(g.snapshot().admin_routes_len, ADMIN_ROUTES.len());
 }
@@ -166,10 +176,9 @@ fn an_empty_blob_is_the_empty_section() {
 
 #[test]
 fn a_valid_section_reads_and_a_bad_entry_is_refused_in_the_grammars_words() {
-    let ok =
-        br#"{"vendor": {"url": "https://vendor.example/a2a", "pin": {"mechanism": "unpinned"}}}"#;
-    assert_eq!(read_settings(ok).expect("valid").agents.len(), 1);
-    let bad = br#"{"vendor": {"url": "ftp://vendor.example", "pin": {"mechanism": "unpinned"}}}"#;
-    let err = read_settings(bad).expect_err("refused");
+    let ok = one_agent("vendor", &endpoint("vendor", "/a2a"));
+    assert_eq!(read_settings(&ok).expect("valid").agents.len(), 1);
+    let bad = one_agent("vendor", "ftp://vendor.example");
+    let err = read_settings(&bad).expect_err("refused");
     assert!(err.contains("`agents.vendor`: `url:` must be an"), "{err}");
 }

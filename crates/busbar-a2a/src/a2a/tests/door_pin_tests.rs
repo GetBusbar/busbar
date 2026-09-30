@@ -8,6 +8,11 @@
 use super::*;
 use busbar_contract::abi::cold::endpoint::RouteAuth;
 
+/// A fixture endpoint: the secure scheme and a reserved example host, spelled once.
+fn endpoint(host: &str, rest: &str) -> String {
+    format!("https://{host}.example{rest}")
+}
+
 #[test]
 fn the_declaration_states_the_doors_nouns() {
     let d = &PLANE_DECLARATION;
@@ -30,12 +35,12 @@ fn the_declaration_states_the_doors_nouns() {
 
 #[test]
 fn the_engines_routes_are_the_doors_routes_in_order() {
-    let cfg = door::read_settings(
-        br#"{"planner": {"url": "https://vendor.example/planner", "pin": {"mechanism": "unpinned"}}}"#,
-    )
-    .expect("a valid section");
-    let plane =
-        plane::A2aPlane::from_config(&cfg, Some("https://busbar.example")).expect("a plane");
+    let section = format!(
+        r#"{{"planner": {{"url": "{}", "pin": {{"mechanism": "unpinned"}}}}}}"#,
+        endpoint("vendor", "/planner")
+    );
+    let cfg = door::read_settings(section.as_bytes()).expect("a valid section");
+    let plane = plane::A2aPlane::from_config(&cfg, Some(&endpoint("busbar", ""))).expect("a plane");
     let engine: Vec<(&str, String, bool)> = receive::a2a_routes(plane.as_ref())
         .iter()
         .map(|r| (r.method.as_str(), r.path.clone(), r.auth == RouteAuth::None))
