@@ -388,6 +388,12 @@ because = "ARCHITECT 2026-09-28: R-KERNEL, KERNEL-VALIDATE (BUSBAR-1.6.0.md THE 
 # commit reached the base; struck by the FOLD-LLM C3' re-arm above, which declares the pair's next
 # figure.
 
+[gate.ceiling_raises."rules.loc-ceilings.kernel_files.teller.ceiling"]
+file    = "qa/construction.toml"
+from    = 599
+to      = 600
+because = "OWNER GRANT 2026-09-29 (3), ARCHITECT approval: line-limit re-arm at the measured value. Renaming busbar_contract::caps::decision::Decision to caps::seat_verdict::SeatVerdict makes rustfmt re-wrap one line in crates/busbar-kernel/src/teller.rs. Measured by cargo xtask gate construction and cargo xtask loc: teller.rs 599 before, 600 after, +1. The kernel_ceiling row needs no raise: measured 55149 before, 55150 after (+1), under its 55163 ceiling."
+
 # ── THE KERNEL CEILING, RE-ARMED BY LOG-BRIDGE plugin logging (#85; BUSBAR-1.6.0.md THE DESIGN, §11.2) — EXPIRED
 #    AND STRUCK
 #
@@ -1470,7 +1476,9 @@ patterns = ["teller.rs"]
 # re-exported from `teller` under every old path; its 96 code lines still spend `kernel_ceiling`.
 # That took the row from 695 (RED against 659) to 604. Downward only.
 # ── LOWERED 604 -> 601, the measurement: TLS-RETIRE (2/3) deletes `Kernel::transport_key_token`.
-ceiling = 599
+# ── RE-ARMED 599 -> 600 (OWNER GRANT 2026-09-29 (3)): the RENAME of caps::decision::Decision to
+# caps::seat_verdict::SeatVerdict re-wraps one line of teller.rs under rustfmt. Measured 599 before, 600 after, +1.
+ceiling = 600
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
