@@ -325,9 +325,16 @@ fn twilio_media_streams_is_claimed_on_ws_under_the_webhook_signature() {
         .iter()
         .filter(|c| c.dialect == Dialect::TwilioMediaStreams)
         .collect();
-    assert_eq!(twilio.len(), 1, "exactly one claim names the Twilio dialect");
+    assert_eq!(
+        twilio.len(),
+        1,
+        "exactly one claim names the Twilio dialect"
+    );
     let claim = &twilio[0].claim;
-    assert_eq!(claim.transport, WS_TRANSPORT, "Twilio rides the ws transport");
+    assert_eq!(
+        claim.transport, WS_TRANSPORT,
+        "Twilio rides the ws transport"
+    );
     assert_eq!(claim.selector, Selector::PrefixOneLevel("/twilio"));
     assert_eq!(claim.scheme_alternatives, &["webhook-signature"]);
     assert!(
@@ -336,7 +343,10 @@ fn twilio_media_streams_is_claimed_on_ws_under_the_webhook_signature() {
     );
     // An arrival one level under `/twilio` names the dialect; the prefix alone and a deeper path do
     // not, and neither does another dialect's path.
-    assert_eq!(dialect_for("/twilio/inbound"), Some(Dialect::TwilioMediaStreams));
+    assert_eq!(
+        dialect_for("/twilio/inbound"),
+        Some(Dialect::TwilioMediaStreams)
+    );
     assert_eq!(dialect_for("/twilio"), None);
     assert_eq!(dialect_for("/twilio/a/b"), None);
     assert_eq!(dialect_for("/v1/realtime"), Some(Dialect::OpenaiRealtime));
