@@ -571,3 +571,92 @@ fn loopback_allowed_refuses_plaintext_off_loopback() {
         c.close(OWNER, id).unwrap();
     });
 }
+
+/// An inbound need listens through the table: the listener is bound for the need's owner, an
+/// accepted connection is held for that owner (read and answered on the piece's stream through the
+/// table), another instance can neither accept on the need nor read the connection, and a need
+/// listens once.
+#[test]
+fn an_inbound_need_listens_and_its_connections_are_its_owners() {
+    worker().block_on(async {
+        let wakes = Arc::new(AtomicU64::new(0));
+        let c = serving(wakes.clone());
+        c.declare_over(OWNER, NeedId(0), "bytes");
+        c.declare_over(OWNER, NeedId(1), "bytes");
+        c.declare_over(OTHER, NeedId(0), "bytes");
+        let limits = crate::listen::AcceptLimits::default();
+        let addr = c
+            .listen(OWNER, NeedId(0), "127.0.0.1:0", None, limits)
+            .expect("listens");
+        let second = c
+            .listen(OWNER, NeedId(1), "127.0.0.1:0", None, limits)
+            .expect("a second need gets its own listener");
+        assert_ne!(addr, second);
+        assert_eq!(
+            c.listen(OWNER, NeedId(0), "127.0.0.1:0", None, limits),
+            Err(ConnError::Refused),
+            "a need listens once"
+        );
+        assert_eq!(
+            c.listen(OWNER, NeedId(7), "127.0.0.1:0", None, limits),
+            Err(ConnError::UndeclaredNeed)
+        );
+        assert_eq!(
+            c.accept(OTHER, NeedId(0), 3).map(|_| ()),
+            Err(ConnError::Refused)
+        );
+        assert_eq!(
+            c.accept(OWNER, NeedId(0), 3).map(|_| ()),
+            Err(ConnError::Pending)
+        );
+        let client = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+            s.write_all(b"knock").await.unwrap();
+            let mut got = [0_u8; 5];
+            s.read_exact(&mut got).await.unwrap();
+            got
+        });
+        let id = loop {
+            match c.accept(OWNER, NeedId(0), 3) {
+                Err(ConnError::Pending) => tokio::task::yield_now().await,
+                other => break other.expect("accepted").0,
+            }
+        };
+        let mut buf = [0_u8; 64];
+        assert_eq!(c.read(OTHER, id, 3, &mut buf), Err(ConnError::NotOwner));
+        let mut got = Vec::new();
+        let mut stream = 0;
+        while got.len() < 5 {
+            match c.read(OWNER, id, 3, &mut buf) {
+                Err(ConnError::Pending) => tokio::task::yield_now().await,
+                Ok(p) => {
+                    stream = p.stream.0;
+                    got.extend_from_slice(&buf[..p.len]);
+                }
+                Err(e) => panic!("{e:?}"),
+            }
+        }
+        assert_eq!(got, b"knock");
+        assert_eq!(
+            c.emit(OTHER, id, stream, b"x", false),
+            Err(ConnError::NotOwner)
+        );
+        c.emit(OWNER, id, stream, b"welcome"[..5].as_ref(), false)
+            .unwrap();
+        // Nothing drives the connection but the owner's own calls.
+        let answered = loop {
+            let _ = c.wait(OWNER, &[id], 3);
+            if client.is_finished() {
+                break client.await.unwrap();
+            }
+            tokio::task::yield_now().await;
+        };
+        assert_eq!(&answered, b"welco");
+        assert!(
+            wakes.load(Ordering::SeqCst) >= 1,
+            "the accept woke the ticket"
+        );
+        c.close(OWNER, id).unwrap();
+    });
+}

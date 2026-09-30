@@ -70,6 +70,7 @@ use busbar_contract::transport::ConnFacts;
 use crate::compose::{
     Connection, Dial, Failure, Planned, DEFAULT_OPEN_TIMEOUT, WRITE_BUFFER_BYTES,
 };
+use crate::listen::{AcceptLimits, Listening};
 use crate::registry::Transports;
 
 /// What an open for a DECLARED need answers while no transport serves it: refused, never a silent
@@ -156,6 +157,9 @@ struct DeclaredNeed {
 /// A judgement's answer once it came, and the waker of the read or wait that found none.
 type Answer = Arc<Mutex<(Option<Result<SocketAddr, Verdict>>, Option<Waker>)>>;
 
+/// The listeners, one per inbound need, by the need's owner and need.
+type Listeners = Mutex<HashMap<(InstanceId, NeedId), Arc<Mutex<Listening>>>>;
+
 /// A dial whose judgement pended: what to dial once it answers, the answer, and the waker of the
 /// read or wait that found it unanswered.
 struct Judging {
@@ -200,6 +204,8 @@ pub struct Connector {
     tls: Option<Arc<rustls::ClientConfig>>,
     wake: WakeTicket,
     judge: Arc<dyn DialJudge>,
+    /// One listener per inbound need.
+    listeners: Listeners,
 }
 
 impl std::fmt::Debug for Connector {
@@ -218,6 +224,7 @@ impl Default for Connector {
             tls: None,
             wake: Arc::new(|_| {}),
             judge: Arc::new(LiteralsOnly),
+            listeners: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -344,6 +351,114 @@ impl Connector {
                 declared_target: declared_target.map(str::to_owned),
             },
         );
+    }
+
+    /// Bind the one listener for `owner`'s INBOUND `need` on `bind` (`ip:port`), over the transport
+    /// the need was declared over, secured by `tls` where set (the protocols agreed off the entry's
+    /// registered offer), bounded by `limits`. Answers the address bound. Called on a worker.
+    ///
+    /// # Errors
+    ///
+    /// The need is not `owner`'s or names no transport served here ([`ConnError::Refused`]), it
+    /// already listens, or the address cannot be bound ([`ConnError::Fault`]).
+    pub fn listen(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        bind: &str,
+        tls: Option<Arc<rustls::ServerConfig>>,
+        limits: AcceptLimits,
+    ) -> Result<SocketAddr, ConnError> {
+        self.slab.check_need(owner, need)?;
+        let scheme = self
+            .over
+            .lock()
+            .expect("needs")
+            .get(&(owner, need))
+            .cloned()
+            .ok_or(NO_TRANSPORT_YET)?;
+        let (door, alpn) = {
+            let view = self.transports.read().expect("transports");
+            let served = view.serving(&scheme).ok_or(NO_TRANSPORT_YET)?;
+            (Arc::clone(&served.entry.door), served.entry.alpn.clone())
+        };
+        let mut listeners = self.listeners.lock().expect("listeners");
+        if listeners.contains_key(&(owner, need)) {
+            return Err(ConnError::Refused);
+        }
+        let l = Listening::bind(door, bind, tls, alpn, limits).map_err(|_| ConnError::Fault)?;
+        let addr = l.local_addr();
+        listeners.insert((owner, need), Arc::new(Mutex::new(l)));
+        Ok(addr)
+    }
+
+    /// The next connection `owner`'s inbound `need` admitted, held for `owner` like one it
+    /// opened: read, written (`emit` on the piece's stream), waited and closed through the same
+    /// table. [`ConnError::Pending`] wakes `ticket` when one arrives.
+    ///
+    /// # Errors
+    ///
+    /// The need does not listen for `owner` ([`ConnError::Refused`]); an accepted socket that could
+    /// not be composed ([`ConnError::Fault`]; the listener stays up).
+    pub fn accept(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        ticket: Ticket,
+    ) -> Result<(ConnId, SocketAddr), ConnError> {
+        self.slab.check_need(owner, need)?;
+        let l = self
+            .listeners
+            .lock()
+            .expect("listeners")
+            .get(&(owner, need))
+            .cloned()
+            .ok_or(ConnError::Refused)?;
+        let waker = self.waker(ticket);
+        let got = l
+            .lock()
+            .expect("listener")
+            .poll_accept(&mut Context::from_waker(&waker));
+        match got {
+            Poll::Pending => Err(ConnError::Pending),
+            Poll::Ready(Err(f)) => Err(map(&f)),
+            Poll::Ready(Ok(a)) => {
+                let id = self.slab.insert(
+                    owner,
+                    need,
+                    Held {
+                        conn: Mutex::new(Some(a.conn)),
+                        judging: Mutex::new(None),
+                        rest: Mutex::new((None, Vec::new(), false)),
+                    },
+                )?;
+                Ok((id, a.peer))
+            }
+        }
+    }
+
+    /// Offer `bytes` on `stream` of `caller`'s connection `conn` (`end` = the stream's message is
+    /// complete): an accepted connection answers each piece on the stream it came on.
+    ///
+    /// # Errors
+    ///
+    /// The connection is not `caller`'s, is closed or failed, or the framer refused the bytes.
+    pub fn emit(
+        &self,
+        caller: InstanceId,
+        conn: ConnId,
+        stream: u64,
+        bytes: &[u8],
+        end: bool,
+    ) -> Result<usize, ConnError> {
+        let (_, held) = self.slab.get(caller, conn)?;
+        if !Self::settle(&held, None)? {
+            return Err(ConnError::Pending);
+        }
+        let mut c = held.conn.lock().expect("connection");
+        let c = c.as_mut().ok_or(ConnError::Closed)?;
+        c.emit(stream, bytes, end, &mut Context::from_waker(Waker::noop()))
+            .map_err(|f| map(&f))
     }
 
     /// Dial a held connection whose judgement has answered. `Ok(false)`: still judging, `waker`
