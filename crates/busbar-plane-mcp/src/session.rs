@@ -20,7 +20,8 @@
 //!   event can no longer be replayed; the replay says so instead of pretending the tail is whole.
 //! - `max_total_bytes`: the whole table is held under this by evicting least-recently-used OTHER
 //!   sessions first, then trimming the session being written.
-//! - `max_streams`: a session's resumable streams are capped; opening one more drops the oldest.
+//! - `stream_cap`: how many resumable event stream cursors one session may hold; opening one more drops
+//!   the oldest.
 //!
 //! An evicted or expired session answers exactly as an unknown one does. The spec's rule for that
 //! (404, and the client re-initialises) is what makes eviction safe to do at all.
@@ -55,8 +56,8 @@ pub struct Bounds {
     pub max_total_bytes: usize,
     /// A session untouched for this many milliseconds is expired.
     pub idle_ms: u64,
-    /// Most resumable streams one session may hold.
-    pub max_streams: usize,
+    /// Most resumable event stream cursors one session may hold at once.
+    pub stream_cap: usize,
 }
 
 impl Default for Bounds {
@@ -66,7 +67,7 @@ impl Default for Bounds {
             max_session_bytes: 1 << 20,
             max_total_bytes: 64 << 20,
             idle_ms: 30 * 60 * 1000,
-            max_streams: 16,
+            stream_cap: 16,
         }
     }
 }
@@ -131,7 +132,7 @@ pub enum OpenRefused {
 #[derive(Debug)]
 struct Event {
     seq: u64,
-    /// Session-wide write order, so the oldest event across streams is found without a clock.
+    /// Session-wide write order, so the oldest event in any stream is found without a clock.
     order: u64,
     data: String,
 }
@@ -152,7 +153,7 @@ struct Session {
     carriage: Carriage,
     initialized: bool,
     last_ms: u64,
-    streams: Vec<Stream>,
+    open: Vec<Stream>,
     next_stream: u32,
     next_order: u64,
     bytes: usize,
@@ -166,7 +167,7 @@ impl Session {
     /// Drops the oldest buffered event in the session. Returns the bytes freed (0 when empty).
     fn trim_oldest(&mut self) -> usize {
         let Some(stream) = self
-            .streams
+            .open
             .iter_mut()
             .filter(|s| !s.events.is_empty())
             .min_by_key(|s| s.events.front().map_or(u64::MAX, |e| e.order))
@@ -288,7 +289,7 @@ impl SessionTable {
                 carriage,
                 initialized: false,
                 last_ms: now_ms,
-                streams: Vec::new(),
+                open: Vec::new(),
                 next_stream: 0,
                 next_order: 0,
                 bytes,
@@ -346,14 +347,14 @@ impl SessionTable {
         true
     }
 
-    /// Opens a resumable stream in `id`. When the session is at `max_streams`, the oldest stream
+    /// Opens a resumable stream in `id`. When the session is at `stream_cap`, the oldest stream
     /// and its buffered events are dropped first.
     pub fn open_stream(&mut self, id: &str, owner: &Owner, now_ms: u64) -> Option<u32> {
-        let max_streams = self.bounds.max_streams.max(1);
+        let stream_cap = self.bounds.stream_cap.max(1);
         let s = self.find(id, owner, now_ms)?;
         let mut freed = 0;
-        while s.streams.len() >= max_streams {
-            let dropped = s.streams.remove(0);
+        while s.open.len() >= stream_cap {
+            let dropped = s.open.remove(0);
             freed += dropped
                 .events
                 .iter()
@@ -363,7 +364,7 @@ impl SessionTable {
         s.bytes -= freed;
         let stream = s.next_stream;
         s.next_stream = s.next_stream.wrapping_add(1);
-        s.streams.push(Stream {
+        s.open.push(Stream {
             id: stream,
             next_seq: 1,
             trimmed_through: 0,
@@ -387,7 +388,7 @@ impl SessionTable {
         let max_session = self.bounds.max_session_bytes;
         let s = self.find(id, owner, now_ms)?;
         let order = s.next_order;
-        let st = s.streams.iter_mut().find(|st| st.id == stream)?;
+        let st = s.open.iter_mut().find(|st| st.id == stream)?;
         let seq = st.next_seq;
         st.next_seq += 1;
         let cost = data.len() + EVENT_OVERHEAD;
@@ -424,7 +425,7 @@ impl SessionTable {
     ) -> Option<Replay> {
         let (stream, cursor) = parse_event_id(last_event_id)?;
         let s = self.find(id, owner, now_ms)?;
-        let st = s.streams.iter().find(|st| st.id == stream)?;
+        let st = s.open.iter().find(|st| st.id == stream)?;
         let events: Vec<(String, String)> = st
             .events
             .iter()

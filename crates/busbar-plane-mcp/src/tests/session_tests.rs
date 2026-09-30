@@ -36,7 +36,7 @@ fn small(max_sessions: usize, per: usize, total: usize) -> SessionTable {
         max_session_bytes: per,
         max_total_bytes: total,
         idle_ms: 1_000,
-        max_streams: 2,
+        stream_cap: 2,
     })
 }
 
@@ -207,7 +207,7 @@ fn an_idle_session_expires() {
 }
 
 #[test]
-fn the_stream_count_is_bounded_and_a_cursor_never_crosses_streams() {
+fn the_stream_count_is_bounded_and_a_cursor_never_crosses_to_another_stream() {
     let mut t = small(10, 10_000, 1 << 20);
     let id = open(&mut t, 1, "p", 0);
     let s0 = t.open_stream(&id, &owner("p"), 0).unwrap();
