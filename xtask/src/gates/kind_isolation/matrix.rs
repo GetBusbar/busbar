@@ -2384,6 +2384,34 @@ fn the_accept_loop_that_named_its_plane() -> String {
     )
 }
 
+/// THE ROOT'S `busbar × plane` ROW RE-PINNED TO WHAT THE UNPLANTED TREE MEASURES, as the base the
+/// accept-loop case and its green twin share. The number is MEASURED here, never quoted (see
+/// [`cell_anchor`]), and the plant is built on the worker, so the one extra scan is the case's own.
+///
+/// Empty when the row already equals the measurement: the twin is then the unplanted control, and
+/// a ledger written back byte for byte would be an inert plant. Empty, too, when the tree cannot
+/// be measured or the row cannot be found: the red case then plants the file alone and says what
+/// it says, and nothing here hides that.
+fn root_plane_row_at_measurement(cx: &Ctx) -> crate::ctx::Overlay {
+    let repinned = super::census(cx)
+        .and_then(|crates| measured_cells(cx, &crates))
+        .and_then(|cells| {
+            let now = cells
+                .get(&("busbar".to_string(), "plane".to_string()))
+                .copied()
+                .unwrap_or(0);
+            cell_subst(cx, "busbar", "plane", &now.to_string())
+        })
+        .and_then(|(from, to)| {
+            if from == to {
+                Ok(crate::ctx::Overlay::new())
+            } else {
+                ledger_with(cx, &from, &to)
+            }
+        });
+    repinned.unwrap_or_default()
+}
+
 /// THE HAND-WIRED ROOT, as a fixture this battery owns: a composition-root module that names four
 /// planes' crates, nodes, units and sections by hand. Read at run time and planted at
 /// [`HAND_WIRED_ROOT_PLANT`]; stored as `.txt` so no crate, compiler or source scanner reads it
@@ -2627,24 +2655,42 @@ pub fn selftest<'a>(
     ));
 
     // THE INCIDENT, PLANTED — and its green twin, which is the same tree with the file absent.
+    //
+    // BOTH RUN ON THE ROOT'S ROW RE-PINNED TO ITS MEASUREMENT ([`root_plane_row_at_measurement`]).
+    // The case used to read the LIVE `busbar × plane` ceiling, and whenever that row sat above what
+    // the tree measures (919 over 787 on predev f882c3ce6, owned drain debt) the plant's seven hits
+    // left it STALE SLACK and the case could never say RAISED: a proof that depended on the
+    // ledger's debt, the same failure the comment case below was moved off for. Pinned, the plant
+    // is the only thing that moves the cell, whatever the ledger carries.
+    let root_repin = {
+        let cx = cx.clone();
+        move || root_plane_row_at_measurement(&cx)
+    };
+    let accept_loop = {
+        let cx = cx.clone();
+        let repin = root_repin.clone();
+        move || {
+            repin().layered(&plant(
+                &cx,
+                "crates/busbar/src/root/voice_serve.rs",
+                &the_accept_loop_that_named_its_plane(),
+            ))
+        }
+    };
     report.push(prove_rows_red(
         cx,
         gate,
         "the accept loop that named its plane (`root/voice_serve.rs`, keep-streams-3 dd96a04f3)",
         &[ROW_MATRIX],
-        plant(
-            cx,
-            "crates/busbar/src/root/voice_serve.rs",
-            &the_accept_loop_that_named_its_plane(),
-        ),
+        accept_loop,
         &["ratchet", "busbar × plane", "RAISED"],
     ));
     report.push(prove_rows_green(
         cx,
         gate,
-        "the same tree with that accept loop absent, at the ceiling it is recorded at",
+        "the same tree with that accept loop absent, at the ceiling its measurement pins",
         &[ROW_MATRIX],
-        crate::ctx::Overlay::new(),
+        root_repin,
     ));
 
     // THE ROOT THAT HAND-WIRED FOUR PLANES. Drop the cell to what a registry-driven root would
