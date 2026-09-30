@@ -728,8 +728,10 @@ async fn harness_core(
     billed: bool,
     money: Option<(Option<Card>, Vec<LimitCfg>)>,
 ) -> Harness {
-    use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
-    use busbar_kernel::governance::NewKeySpec;
+    use busbar_kernel::governance::{
+        signing::{TokenSigner, TokenVerifier, DEFAULT_KID},
+        NewKeySpec,
+    };
     engine().metrics_init();
 
     let store: Arc<dyn busbar_contract::records::RecordStore> = engine().scratch_store();
