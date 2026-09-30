@@ -947,9 +947,7 @@ fn census(sources: &[(String, String)]) -> Vec<String> {
         "crates/busbar-kernel-ledger/src/cost/view.rs",
         "crates/busbar-kernel-ledger/src/cost/posting.rs",
     ];
-    const FOLD_HOMES: &[&str] = &[
-        "crates/busbar-kernel-ledger/src/cost/rate.rs",
-    ];
+    const FOLD_HOMES: &[&str] = &["crates/busbar-kernel-ledger/src/cost/rate.rs"];
     const TALLY_ROUTES: &[&str] = &[
         "crates/busbar-kernel-ledger/src/cost/view.rs",
         "crates/busbar-kernel-ledger/src/cost/project.rs",

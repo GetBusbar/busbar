@@ -1472,7 +1472,10 @@ impl Gate for NoFloatMoneyGate {
         // ITS ONE NAMED NOT-MONEY EXEMPTION, found by name in a file the walk above read. Absent
         // exempts NOTHING and is refused, the same rule every intake and egress boundary keeps.
         let mut ratio_span: Option<(usize, usize)> = None;
-        match governance_files.iter().find(|f| f.rel_str() == NOT_MONEY_RATIO.file) {
+        match governance_files
+            .iter()
+            .find(|f| f.rel_str() == NOT_MONEY_RATIO.file)
+        {
             None if !governance_files.is_empty() => float_scan_problems.push(format!(
                 "{}: the named not-money exemption's file is not in the {GOVERNANCE_SRC} scan — \
                  move the exemption with the file, in the diff that moves it",
@@ -2580,7 +2583,9 @@ mod tests {
     #[test]
     fn the_one_not_money_exemption_is_found_inside_the_governance_scope() {
         assert!(
-            NOT_MONEY_RATIO.file.starts_with(&format!("{GOVERNANCE_SRC}/")),
+            NOT_MONEY_RATIO
+                .file
+                .starts_with(&format!("{GOVERNANCE_SRC}/")),
             "{} is outside {GOVERNANCE_SRC}",
             NOT_MONEY_RATIO.file
         );
@@ -2588,7 +2593,10 @@ mod tests {
             .read(NOT_MONEY_RATIO.file)
             .unwrap_or_else(|e| panic!("{}: {e}", NOT_MONEY_RATIO.file));
         let b = find_boundary(&text, NOT_MONEY_RATIO.function).unwrap_or_else(|| {
-            panic!("{}: `fn {}` was not found", NOT_MONEY_RATIO.file, NOT_MONEY_RATIO.function)
+            panic!(
+                "{}: `fn {}` was not found",
+                NOT_MONEY_RATIO.file, NOT_MONEY_RATIO.function
+            )
         });
         assert!(b.last_line > b.first_line, "measured backwards");
     }
