@@ -9,7 +9,7 @@ use super::*;
 const LEGACY_14X: &str = r#"
 listen: "0.0.0.0:8080"
 auth:
-  chain: ["oidc"]
+  chain: ["test-idp-double"]
   group_map:
     growth-eng:
       allowed_pools: [fast]
@@ -180,12 +180,12 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
     assert_eq!(token_env.as_deref(), Some("BUSBAR_ADMIN_TOKEN"));
     // group_map -> role_bindings nested under the ONE external chain module.
     assert_eq!(
-        get(&["auth", "role_bindings", "oidc", "growth-eng", "group"]).as_str(),
+        get(&["auth", "role_bindings", "test-idp-double", "growth-eng", "group"]).as_str(),
         Some("growth")
     );
     // Inline caps became a generated group bound to the role.
     assert_eq!(
-        get(&["auth", "role_bindings", "oidc", "capped", "group"]).as_str(),
+        get(&["auth", "role_bindings", "test-idp-double", "capped", "group"]).as_str(),
         Some("migrated-capped")
     );
     let ml = get(&["groups", "migrated-capped", "limits"]);
@@ -418,11 +418,11 @@ fn migrate_real_14x_top_level_auth_surfaces() {
     crate::test_support::register_neutral_test_plane();
     let raw = r#"
 auth:
-  chain: [tokens, oidc]
+  chain: [tokens, test-idp-double]
   upstream_credentials: own
   client_tokens: [ "${BUSBAR_CLIENT_TOKEN}" ]
   modules:
-    oidc:
+    test-idp-double:
       allowed_groups: [growth]
       max_admin_scope: full
 admin_auth: [admin-tokens]
@@ -436,7 +436,7 @@ pools: {}
 "#;
     let (out, doc) = migrate_to_value(raw);
 
-    // chain: tokens -> keys (deduped), oidc carries its folded max_admin_scope.
+    // chain: tokens -> keys (deduped), test-idp-double carries its folded max_admin_scope.
     let chain = dig(&doc, &["auth", "chain"])
         .unwrap()
         .as_sequence()
@@ -444,22 +444,23 @@ pools: {}
     assert_eq!(chain[0].as_str(), Some("keys"), "tokens -> keys");
     assert_eq!(
         chain[1].as_str(),
-        Some("oidc"),
+        Some("test-idp-double"),
         "a 1.5.3 chain is a list of bare PROVIDER NAMES"
     );
     assert_eq!(
-        dig(&doc, &["identity-providers", "oidc", "max_admin_scope"]).and_then(|v| v.as_str()),
+        dig(&doc, &["identity-providers", "test-idp-double", "max_admin_scope"])
+            .and_then(|v| v.as_str()),
         Some("full"),
-        "auth.modules.oidc.max_admin_scope must fold onto the identity-providers DEFINITION"
+        "auth.modules.test-idp-double.max_admin_scope must fold onto the identity-providers DEFINITION"
     );
-    // top-level group_map -> auth.role_bindings nested under the ONE external module (oidc).
+    // top-level group_map -> auth.role_bindings nested under the ONE external module (test-idp-double).
     assert_eq!(
         dig(
             &doc,
             &[
                 "auth",
                 "role_bindings",
-                "oidc",
+                "test-idp-double",
                 "growth-eng",
                 "allowed_pools"
             ]
@@ -552,7 +553,7 @@ fn detect_real_14x_top_level_and_on_exhausted_markers() {
     let raw = r#"
 auth:
   chain: [tokens]
-  modules: { oidc: { max_admin_scope: full } }
+  modules: { test-idp-double: { max_admin_scope: full } }
 group_map: { r1: { allowed_pools: [fast] } }
 admin_auth: [admin-tokens]
 providers: {}
@@ -733,7 +734,7 @@ pools: {}
 fn migrate_non_mapping_group_map_survives_a_mapping_auth() {
     let raw = r#"
 auth:
-  chain: [oidc]
+  chain: [test-idp-double]
 group_map: [foo]
 providers: {}
 models: {}
@@ -850,9 +851,9 @@ pools: {}
 fn migrate_dropped_scopes_map_to_full_with_warning() {
     let raw = r#"
 auth:
-  chain: ["oidc"]
+  chain: ["test-idp-double"]
   modules:
-    oidc:
+    test-idp-double:
       max_admin_scope: hooks-register
   group_map:
     minter:
@@ -875,11 +876,11 @@ pools:
         .and_then(|v| v.as_mapping())
         .expect("auth mapping");
 
-    // (a) role_bindings.oidc.minter.admin_scope: mint -> full.
+    // (a) role_bindings.test-idp-double.minter.admin_scope: mint -> full.
     let bound_scope = auth
         .get(serde_yaml::Value::from("role_bindings"))
         .and_then(|v| v.as_mapping())
-        .and_then(|m| m.get(serde_yaml::Value::from("oidc")))
+        .and_then(|m| m.get(serde_yaml::Value::from("test-idp-double")))
         .and_then(|v| v.as_mapping())
         .and_then(|m| m.get(serde_yaml::Value::from("minter")))
         .and_then(|v| v.as_mapping())
@@ -891,11 +892,12 @@ pools:
         "the retired `mint` admin_scope must be rewritten to `full`; got {bound_scope:?}"
     );
 
-    // (b) the oidc provider's max_admin_scope: hooks-register -> full. 1.5.3: the cap lives on the
+    // (b) the test-idp-double provider's max_admin_scope: hooks-register -> full. 1.5.3: the cap lives on the
     // `identity-providers:` DEFINITION, which the chain now references by bare name — so
     // the scope rewrite and the definition lift compose in ONE migrator run.
     let oidc_cap =
-        dig(&doc, &["identity-providers", "oidc", "max_admin_scope"]).and_then(|v| v.as_str());
+        dig(&doc, &["identity-providers", "test-idp-double", "max_admin_scope"])
+            .and_then(|v| v.as_str());
     assert_eq!(
         oidc_cap,
         Some("full"),
@@ -906,7 +908,7 @@ pools:
         .and_then(|v| v.as_sequence())
         .expect("chain sequence");
     assert!(
-        chain.iter().any(|e| e.as_str() == Some("oidc")),
+        chain.iter().any(|e| e.as_str() == Some("test-idp-double")),
         "the chain references the provider by BARE NAME: {chain:?}"
     );
 
@@ -1523,7 +1525,7 @@ fn golden_migrate_type_keyed_export_becomes_a_named_map() {
 /// GOLDEN — inline `auth.chain:`/`auth.admin_auth:` entries and the `auth.methods:` block all
 /// lift into ONE `identity-providers:` definition per module, referenced by bare name.
 ///
-/// This is THE point of the redesign, and the assertion that proves it is the DEDUPE: `oidc` appears in
+/// This is THE point of the redesign, and the assertion that proves it is the DEDUPE: `test-idp-double` appears in
 /// BOTH chains and in `methods:` in the source, and there is exactly ONE definition afterwards,
 /// carrying the union of what the three sites contributed. Under the retired grammar the operator
 /// wrote those settings three times and nothing stopped the copies from drifting.
@@ -1536,12 +1538,12 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
     let raw = "auth:\n\
                \x20 chain:\n\
                \x20   - keys\n\
-               \x20   - oidc: { settings: { issuer: \"https://idp.example/\" } }\n\
+               \x20   - test-idp-double: { settings: { issuer: \"https://idp.example/\" } }\n\
                \x20 admin_auth:\n\
                \x20   - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }\n\
-               \x20   - oidc: { max_admin_scope: full }\n\
+               \x20   - test-idp-double: { max_admin_scope: full }\n\
                \x20 methods:\n\
-               \x20   oidc:\n\
+               \x20   test-idp-double:\n\
                \x20     audience: busbar\n\
                \x20     browser_login: { client_id: busbar-web }\n\
                providers: {}\nmodels: {}\npools: {}\n";
@@ -1558,7 +1560,7 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
             .iter()
             .filter_map(|v| v.as_str().map(str::to_string))
             .collect::<Vec<_>>(),
-        ["keys", "oidc"]
+        ["keys", "test-idp-double"]
     );
     assert_eq!(
         dig(&doc, &["auth", "admin_auth"])
@@ -1567,40 +1569,42 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
             .iter()
             .filter_map(|v| v.as_str().map(str::to_string))
             .collect::<Vec<_>>(),
-        ["admin-tokens", "oidc"]
+        ["admin-tokens", "test-idp-double"]
     );
     assert!(
         dig(&doc, &["auth", "methods"]).is_none(),
         "the parallel methods map is gone"
     );
 
-    // THE DEDUPE: exactly ONE `oidc` definition, carrying the union of all three source sites.
+    // THE DEDUPE: exactly ONE `test-idp-double` definition, carrying the union of all three source sites.
     let defs = dig(&doc, &["identity-providers"])
         .and_then(|v| v.as_mapping().cloned())
         .expect("identity-providers map");
     assert_eq!(
         defs.len(),
         2,
-        "one definition per MODULE (oidc + the operator credential), not one per REFERENCE: {defs:?}"
+        "one definition per MODULE (test-idp-double + the operator credential), not one per REFERENCE: {defs:?}"
     );
     assert_eq!(
-        dig(&doc, &["identity-providers", "oidc", "module"]).and_then(|v| v.as_str()),
-        Some("oidc")
+        dig(&doc, &["identity-providers", "test-idp-double", "module"]).and_then(|v| v.as_str()),
+        Some("test-idp-double")
     );
     assert_eq!(
-        dig(&doc, &["identity-providers", "oidc", "max_admin_scope"]).and_then(|v| v.as_str()),
+        dig(&doc, &["identity-providers", "test-idp-double", "max_admin_scope"])
+            .and_then(|v| v.as_str()),
         Some("full"),
         "the ceiling written on the ADMIN chain entry lands on the one definition"
     );
     assert_eq!(
-        dig(&doc, &["identity-providers", "oidc", "settings", "issuer"]).and_then(|v| v.as_str()),
+        dig(&doc, &["identity-providers", "test-idp-double", "settings", "issuer"])
+            .and_then(|v| v.as_str()),
         Some("https://idp.example/"),
         "the settings written on the DATA chain entry land on the same definition"
     );
     assert_eq!(
         dig(
             &doc,
-            &["identity-providers", "oidc", "settings", "audience"]
+            &["identity-providers", "test-idp-double", "settings", "audience"]
         )
         .and_then(|v| v.as_str()),
         Some("busbar"),
@@ -1609,7 +1613,7 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
     assert_eq!(
         dig(
             &doc,
-            &["identity-providers", "oidc", "browser_login", "client_id"]
+            &["identity-providers", "test-idp-double", "browser_login", "client_id"]
         )
         .and_then(|v| v.as_str()),
         Some("busbar-web"),
@@ -1745,7 +1749,7 @@ fn migrate_never_drops_a_malformed_auth_block() {
 /// fell through to `Mapping::new()`), taking the operator's line with it.
 #[test]
 fn migrate_never_drops_a_malformed_identity_providers_block() {
-    let raw = "auth:\n  chain: [{ oidc: { settings: { issuer: https://a.example.com } } }]\n\
+    let raw = "auth:\n  chain: [{ test-idp-double: { settings: { issuer: https://a.example.com } } }]\n\
                identity-providers: 7\nproviders: {}\nmodels: {}\npools: {}\n";
     let (out, doc) = migrate_to_value(raw);
     assert_eq!(
@@ -1805,18 +1809,19 @@ fn migrate_records_the_deletion_of_a_malformed_retired_block() {
 /// migrated config authenticated admins against the wrong issuer. Two definitions is the honest
 /// outcome: `<module>-admin` carries the admin chain's settings and `auth.admin_auth` references it.
 ///
-/// Pre-fix the migrated doc has ONE `oidc` definition whose `settings.issuer` is
-/// `data.example.com`, `auth.admin_auth` is `[oidc]`, and `admin.example.com` appears nowhere.
+/// Pre-fix the migrated doc has ONE `test-idp-double` definition whose `settings.issuer` is
+/// `data.example.com`, `auth.admin_auth` is `[test-idp-double]`, and `admin.example.com` appears nowhere.
 #[test]
 fn migrate_identity_providers_splits_a_per_plane_settings_conflict() {
     let raw = "auth:\n  \
-                 chain: [{ oidc: { settings: { issuer: https://data.example.com } } }]\n  \
-                 admin_auth: [{ oidc: { max_admin_scope: full, settings: { issuer: https://admin.example.com } } }]\n\
+                 chain: [{ test-idp-double: { settings: { issuer: https://data.example.com } } }]\n  \
+                 admin_auth: [{ test-idp-double: { max_admin_scope: full, settings: { issuer: https://admin.example.com } } }]\n\
                providers: {}\nmodels: {}\npools: {}\n";
     let (out, doc) = migrate_to_value(raw);
 
     assert_eq!(
-        dig(&doc, &["identity-providers", "oidc", "settings", "issuer"]).and_then(|v| v.as_str()),
+        dig(&doc, &["identity-providers", "test-idp-double", "settings", "issuer"])
+            .and_then(|v| v.as_str()),
         Some("https://data.example.com"),
         "the first plane keeps the module-named definition:\n{}",
         out.yaml
@@ -1824,7 +1829,7 @@ fn migrate_identity_providers_splits_a_per_plane_settings_conflict() {
     assert_eq!(
         dig(
             &doc,
-            &["identity-providers", "oidc-admin", "settings", "issuer"]
+            &["identity-providers", "test-idp-double-admin", "settings", "issuer"]
         )
         .and_then(|v| v.as_str()),
         Some("https://admin.example.com"),
@@ -1833,23 +1838,24 @@ fn migrate_identity_providers_splits_a_per_plane_settings_conflict() {
         out.yaml
     );
     assert_eq!(
-        dig(&doc, &["identity-providers", "oidc-admin", "module"]).and_then(|v| v.as_str()),
-        Some("oidc"),
+        dig(&doc, &["identity-providers", "test-idp-double-admin", "module"])
+            .and_then(|v| v.as_str()),
+        Some("test-idp-double"),
         "the split definition still names the same backing module"
     );
     assert_eq!(
         dig(&doc, &["auth", "admin_auth"]).and_then(|v| v.as_sequence()),
-        Some(&vec![serde_yaml::Value::from("oidc-admin")]),
+        Some(&vec![serde_yaml::Value::from("test-idp-double-admin")]),
         "the admin plane must REFERENCE the split definition:\n{}",
         out.yaml
     );
     assert_eq!(
         dig(&doc, &["auth", "chain"]).and_then(|v| v.as_sequence()),
-        Some(&vec![serde_yaml::Value::from("oidc")]),
+        Some(&vec![serde_yaml::Value::from("test-idp-double")]),
         "the data plane keeps referencing the original definition"
     );
     assert!(
-        out.todos.iter().any(|t| t.contains("oidc-admin")),
+        out.todos.iter().any(|t| t.contains("test-idp-double-admin")),
         "a split must be explained in the todos; got {:?}",
         out.todos
     );
@@ -1857,22 +1863,22 @@ fn migrate_identity_providers_splits_a_per_plane_settings_conflict() {
     // AND THE DEDUPE STILL WINS when there is nothing to lose: identical settings on both planes
     // (and a plane that states none) still fold into exactly ONE definition.
     let same = "auth:\n  \
-                  chain: [{ oidc: { settings: { issuer: https://one.example.com } } }]\n  \
-                  admin_auth: [{ oidc: { settings: { issuer: https://one.example.com } } }, { tokens: {} }]\n\
+                  chain: [{ test-idp-double: { settings: { issuer: https://one.example.com } } }]\n  \
+                  admin_auth: [{ test-idp-double: { settings: { issuer: https://one.example.com } } }, { tokens: {} }]\n\
                 providers: {}\nmodels: {}\npools: {}\n";
     let (_, doc) = migrate_to_value(same);
     let defs = dig(&doc, &["identity-providers"])
         .and_then(|v| v.as_mapping())
         .expect("definitions");
     assert!(
-        defs.contains_key(serde_yaml::Value::from("oidc"))
-            && !defs.contains_key(serde_yaml::Value::from("oidc-admin")),
+        defs.contains_key(serde_yaml::Value::from("test-idp-double"))
+            && !defs.contains_key(serde_yaml::Value::from("test-idp-double-admin")),
         "identical per-plane settings must still DEDUPE to one definition: {defs:?}"
     );
     assert_eq!(
         dig(&doc, &["auth", "admin_auth"]).and_then(|v| v.as_sequence()),
         Some(&vec![
-            serde_yaml::Value::from("oidc"),
+            serde_yaml::Value::from("test-idp-double"),
             serde_yaml::Value::from("tokens")
         ]),
         "both planes reference the ONE deduped definition"

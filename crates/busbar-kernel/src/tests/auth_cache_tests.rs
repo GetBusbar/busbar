@@ -116,13 +116,13 @@ fn a_flush_cannot_be_undone_by_an_authentication_already_in_flight() {
     // A request begins: capture the generation, THEN consult the (slow) module.
     let in_flight = c.generation();
     // Meanwhile the operator revokes: flush_all clears everything and closes the window.
-    c.put("oidc", "seed", &ident(Some(3600)), t, c.generation());
+    c.put("test-idp-double", "seed", &ident(Some(3600)), t, c.generation());
     assert_eq!(c.flush_all(), 1, "the flush reports what it dropped");
     // …and only NOW does the in-flight authentication come back with its stale allow verdict.
-    c.put("oidc", "victim", &ident(Some(3600)), t, in_flight);
+    c.put("test-idp-double", "victim", &ident(Some(3600)), t, in_flight);
 
     assert!(
-        c.get("oidc", "victim", t + 1).is_none(),
+        c.get("test-idp-double", "victim", t + 1).is_none(),
         "a verdict computed BEFORE the flush must not land AFTER it — that is the entire \
              cached-allow window the flush endpoint exists to close"
     );
@@ -130,18 +130,18 @@ fn a_flush_cannot_be_undone_by_an_authentication_already_in_flight() {
     // A FRESH authentication (generation captured after the flush) caches normally: the guard
     // closes the revocation window, it does not disable the cache.
     let fresh = c.generation();
-    c.put("oidc", "victim", &ident(Some(3600)), t, fresh);
+    c.put("test-idp-double", "victim", &ident(Some(3600)), t, fresh);
     assert!(
-        c.get("oidc", "victim", t + 1).is_some(),
+        c.get("test-idp-double", "victim", t + 1).is_some(),
         "post-flush authentications must still populate the cache"
     );
 
     // A per-MODULE flush closes the same window (the generation is global on purpose).
     let in_flight2 = c.generation();
-    c.flush_module("oidc");
-    c.put("oidc", "victim2", &ident(Some(3600)), t, in_flight2);
+    c.flush_module("test-idp-double");
+    c.put("test-idp-double", "victim2", &ident(Some(3600)), t, in_flight2);
     assert!(
-        c.get("oidc", "victim2", t + 1).is_none(),
+        c.get("test-idp-double", "victim2", t + 1).is_none(),
         "flush_module must also invalidate in-flight verdicts"
     );
 }

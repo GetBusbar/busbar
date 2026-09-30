@@ -636,7 +636,7 @@ fn untrusted_auth_plugin_fails_closed_not_open() {
         return;
     };
     let lib = std::fs::read(&path).unwrap();
-    let tarball = unsigned_tarball(auth_manifest("acme-idp", "oidc", "acme"), &lib);
+    let tarball = unsigned_tarball(auth_manifest("acme-idp", "test-idp-double", "acme"), &lib);
     std::fs::write(dir.join("idp.tar.gz"), tarball).unwrap();
 
     // STRICT default trust: the unsigned auth plugin is skipped.
@@ -645,7 +645,7 @@ fn untrusted_auth_plugin_fails_closed_not_open() {
         dir: dir.to_string_lossy().into_owned(),
         ..Default::default()
     };
-    let cfg = chain_with("oidc", settings());
+    let cfg = chain_with("test-idp-double", settings());
     // Preflight refuses (names the module + carries the trust opt-in to set).
     let err = crate::plugins_preflight(
         None,
@@ -656,7 +656,7 @@ fn untrusted_auth_plugin_fails_closed_not_open() {
         &Default::default(),
     )
     .unwrap_err();
-    assert!(err.contains("oidc"), "names the auth module: {err}");
+    assert!(err.contains("test-idp-double"), "names the auth module: {err}");
     assert!(
         err.contains("allow_unsigned"),
         "carries the trust reason: {err}"
@@ -676,7 +676,7 @@ fn untrusted_auth_plugin_fails_closed_not_open() {
     )
     .unwrap_err();
     assert!(
-        mw_err.contains("oidc"),
+        mw_err.contains("test-idp-double"),
         "middleware names the module: {mw_err}"
     );
     assert!(
@@ -696,7 +696,7 @@ fn missing_auth_plugin_is_loud_boot_failure() {
     let other = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
     std::fs::write(dir.join("x.tar.gz"), other).unwrap();
     let plugins = plugins_cfg_allow_unsigned(&dir);
-    let cfg = chain_with("oidc", settings());
+    let cfg = chain_with("test-idp-double", settings());
 
     let err = crate::plugins_preflight(
         None,
@@ -707,7 +707,7 @@ fn missing_auth_plugin_is_loud_boot_failure() {
         &Default::default(),
     )
     .unwrap_err();
-    assert!(err.contains("oidc"), "names the missing module: {err}");
+    assert!(err.contains("test-idp-double"), "names the missing module: {err}");
     assert!(
         err.contains("no plugin matching") && err.contains("is installed in"),
         "explains it is unresolved: {err}"
@@ -731,7 +731,7 @@ fn missing_auth_plugin_is_loud_boot_failure() {
         &crate::config::secret::SecretResolver::builtins_only(),
     )
     .unwrap_err();
-    assert!(mw_err.contains("oidc"), "middleware names it: {mw_err}");
+    assert!(mw_err.contains("test-idp-double"), "middleware names it: {mw_err}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -746,7 +746,7 @@ fn auth_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
         dir: dir.to_string_lossy().into_owned(),
         ..Default::default()
     };
-    let cfg = chain_with("oidc", settings());
+    let cfg = chain_with("test-idp-double", settings());
     let err = crate::plugins_preflight(
         None,
         Some(&cfg),
@@ -757,7 +757,7 @@ fn auth_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
     )
     .unwrap_err();
     assert!(err.contains("plugins.enabled"), "names the flag: {err}");
-    assert!(err.contains("oidc"), "names the auth module: {err}");
+    assert!(err.contains("test-idp-double"), "names the auth module: {err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

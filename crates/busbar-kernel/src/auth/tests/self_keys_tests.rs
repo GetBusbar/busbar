@@ -372,8 +372,8 @@ fn concurrent_issue_self_yields_one_binding() {
 fn identity_from_principal_not_body() {
     // resolve_exchange takes ONLY the verdict — there is no body parameter through which a caller
     // could assert a different identity. The subject it resolves is exactly the verified principal.
-    let rb = bindings("oidc", "eng", Some("team"));
-    let v = identified("oidc", principal("sam", &["eng"]));
+    let rb = bindings("test-idp-double", "eng", Some("team"));
+    let v = identified("test-idp-double", principal("sam", &["eng"]));
     let (p, team, _pools) = resolve_exchange(&v, &rb, None).expect("bound principal admitted");
     assert_eq!(
         p.id, "sam",
@@ -387,7 +387,7 @@ fn identity_from_principal_not_body() {
 
 #[test]
 fn rejects_static_key_400() {
-    let rb = bindings("oidc", "eng", Some("team"));
+    let rb = bindings("test-idp-double", "eng", Some("team"));
     // A static busbar key was presented → the engine resolved a VirtualKey.
     let key = Arc::new(crate::governance::VirtualKey {
         id: "vk_static".into(),
@@ -404,7 +404,7 @@ fn rejects_static_key_400() {
         ..Default::default()
     });
     let v = ChainVerdict::Identified {
-        module: "oidc".into(),
+        module: "test-idp-double".into(),
         principal: principal("sam", &["eng"]),
         resolved: Some(key),
     };
@@ -416,7 +416,7 @@ fn rejects_static_key_400() {
 
 #[test]
 fn open_and_denied_are_unauthorized() {
-    let rb = bindings("oidc", "eng", Some("team"));
+    let rb = bindings("test-idp-double", "eng", Some("team"));
     assert_eq!(
         resolve_exchange(&ChainVerdict::Open, &rb, None).unwrap_err(),
         ExchangeError::Unauthorized
@@ -430,8 +430,8 @@ fn open_and_denied_are_unauthorized() {
 #[test]
 fn unbound_role_is_403() {
     // Identified but no role bound under the identifying module.
-    let rb = bindings("oidc", "eng", Some("team"));
-    let v = identified("oidc", principal("sam", &["other"]));
+    let rb = bindings("test-idp-double", "eng", Some("team"));
+    let v = identified("test-idp-double", principal("sam", &["other"]));
     assert_eq!(
         resolve_exchange(&v, &rb, None).unwrap_err(),
         ExchangeError::Unbound
@@ -441,8 +441,8 @@ fn unbound_role_is_403() {
 #[test]
 fn bound_role_without_group_is_403() {
     // A self key must charge through a group; a binding without one is refused.
-    let rb = bindings("oidc", "eng", None);
-    let v = identified("oidc", principal("sam", &["eng"]));
+    let rb = bindings("test-idp-double", "eng", None);
+    let v = identified("test-idp-double", principal("sam", &["eng"]));
     assert_eq!(
         resolve_exchange(&v, &rb, None).unwrap_err(),
         ExchangeError::Unbound
@@ -480,9 +480,9 @@ fn later_role_group_used_when_earlier_role_bound_but_groupless() {
         },
     );
     let mut rb: RoleBindings = BTreeMap::new();
-    rb.insert("oidc".to_string(), inner);
+    rb.insert("test-idp-double".to_string(), inner);
 
-    let v = identified("oidc", principal("sam", &["A", "B"]));
+    let v = identified("test-idp-double", principal("sam", &["A", "B"]));
     let (_p, team, pools) = resolve_exchange(&v, &rb, None)
         .expect("a later granting role's group must admit the principal, not Unbound");
     assert_eq!(team, "x", "resolves to role B's group, not Unbound");
@@ -527,9 +527,9 @@ fn omitted_pools_on_any_granting_binding_widens_union_to_all_pools() {
         },
     );
     let mut rb: RoleBindings = BTreeMap::new();
-    rb.insert("oidc".to_string(), inner);
+    rb.insert("test-idp-double".to_string(), inner);
 
-    let v = identified("oidc", principal("sam", &["A", "B"]));
+    let v = identified("test-idp-double", principal("sam", &["A", "B"]));
     let (_p, team, pools) = resolve_exchange(&v, &rb, None).expect("both roles grant");
     assert_eq!(team, "x");
     assert_eq!(
@@ -540,11 +540,11 @@ fn omitted_pools_on_any_granting_binding_widens_union_to_all_pools() {
 
 #[test]
 fn sub_sanitization_refused() {
-    let rb = bindings("oidc", "eng", Some("team"));
+    let rb = bindings("test-idp-double", "eng", Some("team"));
     // Refused: '/' separator, a LEADING reserved bucket/real-key prefix, empty, and control chars.
     // NOTE an INTERNAL ':' (e.g. `oidc:alice`) is NOT here — it is legitimate (module-namespaced).
     for bad in ["a/b", "vk_evil", "group:x", "user:x", "", "a\tb", "a\nb"] {
-        let v = identified("oidc", principal(bad, &["eng"]));
+        let v = identified("test-idp-double", principal(bad, &["eng"]));
         assert_eq!(
             resolve_exchange(&v, &rb, None).unwrap_err(),
             ExchangeError::BadSubject,
@@ -552,8 +552,8 @@ fn sub_sanitization_refused() {
         );
     }
     // Admitted: a plain sub and a module-namespaced sub (internal ':').
-    for ok in ["sam", "oidc:alice", "github:torvalds"] {
-        let v = identified("oidc", principal(ok, &["eng"]));
+    for ok in ["sam", "test-idp-double:alice", "test-external-idp:torvalds"] {
+        let v = identified("test-idp-double", principal(ok, &["eng"]));
         assert!(
             resolve_exchange(&v, &rb, None).is_ok(),
             "legitimate subject {ok:?} must be admitted"
@@ -566,8 +566,8 @@ fn sub_sanitization_refused() {
 #[tokio::test]
 async fn resolve_then_issue_via_real_seam() {
     let gov = gov();
-    let rb = bindings("oidc", "eng", Some("team"));
-    let v = identified("oidc", principal("sam", &["eng"]));
+    let rb = bindings("test-idp-double", "eng", Some("team"));
+    let v = identified("test-idp-double", principal("sam", &["eng"]));
     let (p, team, pools) = resolve_exchange(&v, &rb, None).unwrap();
     let keys = DeterministicEd25519Keys::new(gov.clone(), team, pools, Arc::new(NoopProvisioner));
     let issued = issue_key(&keys, p, Duration::from_secs(3600), false)
@@ -590,8 +590,8 @@ async fn resolve_then_issue_via_real_seam() {
 #[tokio::test]
 async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
     let gov = gov();
-    let rb = bindings("oidc", "eng", Some("team"));
-    let v = identified("oidc", principal("oidc:alice", &["eng"]));
+    let rb = bindings("test-idp-double", "eng", Some("team"));
+    let v = identified("test-idp-double", principal("test-idp-double:alice", &["eng"]));
     let (p, team, pools) = resolve_exchange(&v, &rb, None)
         .expect("a module-namespaced subject is legitimate + verified");
     let keys = DeterministicEd25519Keys::new(gov.clone(), team, pools, Arc::new(NoopProvisioner));
@@ -599,7 +599,7 @@ async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
         .await
         .unwrap();
     assert_eq!(
-        issued.group, "user:oidc:alice",
+        issued.group, "user:test-idp-double:alice",
         "the whole sub lives inside the user: namespace"
     );
     assert!(gov
@@ -636,8 +636,8 @@ impl SelfServeKeys for FakeKeys {
 
 #[tokio::test]
 async fn endpoint_is_scheme_agnostic_over_the_trait() {
-    let rb = bindings("oidc", "eng", Some("team"));
-    let v = identified("oidc", principal("sam", &["eng"]));
+    let rb = bindings("test-idp-double", "eng", Some("team"));
+    let v = identified("test-idp-double", principal("sam", &["eng"]));
     let (p, _team, _pools) = resolve_exchange(&v, &rb, None).unwrap();
     let issued = issue_key(&FakeKeys, p, Duration::from_secs(60), false)
         .await
@@ -656,8 +656,8 @@ async fn endpoint_is_scheme_agnostic_over_the_trait() {
 /// token is `[REDACTED]` in Debug while the safe `key_id` identity still shows.
 #[tokio::test]
 async fn issued_key_debug_never_leaks_the_live_token() {
-    let rb = bindings("oidc", "eng", Some("team"));
-    let v = identified("oidc", principal("sam", &["eng"]));
+    let rb = bindings("test-idp-double", "eng", Some("team"));
+    let v = identified("test-idp-double", principal("sam", &["eng"]));
     let (p, _team, _pools) = resolve_exchange(&v, &rb, None).unwrap();
     let issued = issue_key(&FakeKeys, p, Duration::from_secs(60), false)
         .await
@@ -686,8 +686,8 @@ async fn issued_key_debug_never_leaks_the_live_token() {
 /// the policy switch closing the path — not a pre-existing rejection of this identity.
 #[tokio::test]
 async fn proof_self_mint_disabled_refuses_self_serve() {
-    let rb = bindings("oidc", "eng", Some("team"));
-    let v = identified("oidc", principal("sam", &["eng"]));
+    let rb = bindings("test-idp-double", "eng", Some("team"));
+    let v = identified("test-idp-double", principal("sam", &["eng"]));
 
     // PRECONDITION: with the knob explicitly OPEN (`Some(true)`), this identity resolves and mints
     // exactly one self-serve key — so the ONLY thing that changes below is the policy switch.

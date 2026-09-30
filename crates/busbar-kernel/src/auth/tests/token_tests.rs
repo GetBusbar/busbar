@@ -501,7 +501,7 @@ async fn client_secret_is_core_injected_only() {
 struct CredLogin;
 impl AuthModule for CredLogin {
     fn name(&self) -> &'static str {
-        "ldap"
+        "test-login-double"
     }
     fn authenticate(&self, _c: Option<&str>) -> AuthVerdict {
         AuthVerdict::Pass
@@ -537,7 +537,7 @@ impl LoginModule for CredLogin {
                 .map(|(_, v)| v.expose_secret().as_str())
         };
         if get("username") == Some("alice") && get("password") == Some("pw") {
-            let mut p = Principal::from_id("ldap:alice");
+            let mut p = Principal::from_id("test-login-double:alice");
             p.roles = vec!["members".into()];
             LoginOutcome::Identify(p)
         } else {
@@ -572,7 +572,7 @@ fn cred_bindings() -> crate::config::RoleBindings {
         },
     );
     let mut outer: crate::config::RoleBindings = BTreeMap::new();
-    outer.insert("ldap".to_string(), role);
+    outer.insert("test-login-double".to_string(), role);
     outer
 }
 
@@ -590,7 +590,7 @@ fn cred_app() -> std::sync::Arc<crate::state::App> {
         .governance(cred_gov())
         .role_bindings(cred_bindings())
         .groups_tree(groups)
-        .login_method("ldap", Box::new(CredLogin), None, None, true)
+        .login_method("test-login-double", Box::new(CredLogin), None, None, true)
         .build()
 }
 
@@ -602,7 +602,7 @@ fn cred_handle(app: &std::sync::Arc<crate::state::App>) -> std::sync::Arc<crate:
 
 fn cred_cookie(state: &str, refresh: bool) -> String {
     LoginCookie {
-        method: "ldap".into(),
+        method: "test-login-double".into(),
         code_verifier: String::new(),
         state: state.into(),
         nonce: String::new(),
@@ -625,7 +625,7 @@ fn extract_key(body: &str) -> String {
 #[tokio::test]
 async fn credential_begin_renders_the_form() {
     let app = cred_app();
-    let resp = begin(&app, "ldap", false).await;
+    let resp = begin(&app, "test-login-double", false).await;
     assert_eq!(
         resp.status().as_u16(),
         200,
@@ -653,7 +653,7 @@ async fn redirect_begin_still_redirects() {
 }
 
 /// POSTing valid credentials runs `complete_login` (which reads the SUBMITTED map) and issues a key
-/// through the SAME seam — grouped under `user:ldap:alice` (the module-namespaced sub).
+/// through the SAME seam — grouped under `user:test-login-double:alice` (the module-namespaced sub).
 #[tokio::test]
 async fn credential_submit_issues_via_shared_seam() {
     let app = cred_app();
@@ -667,7 +667,7 @@ async fn credential_submit_issues_via_shared_seam() {
     assert_eq!(resp.status().as_u16(), 200);
     let body = body_of(resp);
     assert!(
-        body.contains("ldap:alice"),
+        body.contains("test-login-double:alice"),
         "the issued page shows the identity: {body}"
     );
     // The issued token verifies through the ordinary path.
@@ -1550,7 +1550,7 @@ fn concurrent_anonymous_begin_does_not_starve_the_runtime() {
         crate::test_support::TestApp::new()
             .public_url("https://busbar.example.com")
             .login_method(
-                "ldap",
+                "test-login-double",
                 Box::new(ParkingLogin {
                     park: std::time::Duration::from_secs(3),
                     kind: LoginKind::Redirect,
@@ -1565,7 +1565,7 @@ fn concurrent_anonymous_begin_does_not_starve_the_runtime() {
     let tasks: Vec<_> = (0..4)
         .map(|_| {
             let a = app.clone();
-            rt.spawn(async move { begin(&a, "ldap", false).await.status() })
+            rt.spawn(async move { begin(&a, "test-login-double", false).await.status() })
         })
         .collect();
     // Wall-clock (not a Tokio timer): let the begins actually reach the plugin.
@@ -1593,7 +1593,7 @@ fn concurrent_credential_submit_does_not_starve_the_runtime() {
         let app = crate::test_support::TestApp::new()
             .public_url("https://busbar.example.com")
             .login_method(
-                "ldap",
+                "test-login-double",
                 Box::new(ParkingLogin {
                     park: std::time::Duration::from_secs(3),
                     kind: LoginKind::Credential,
@@ -1609,7 +1609,7 @@ fn concurrent_credential_submit_does_not_starve_the_runtime() {
     // The cookie an attacker mints for themselves by calling `begin` first — its `state` is theirs to
     // echo in `__state`, so CSRF is satisfied without any prior authentication.
     let cookie = LoginCookie {
-        method: "ldap".to_string(),
+        method: "test-login-double".to_string(),
         code_verifier: String::new(),
         state: "S".to_string(),
         nonce: String::new(),

@@ -21,7 +21,7 @@ models: {}
 pools: {}
 identity-providers:
   corp:
-    module: oidc
+    module: test-idp-double
     max_admin_scope: read-only
     settings:
       issuer: "https://idp.example.com"
@@ -62,7 +62,7 @@ fn an_overlay_patch_merges_onto_the_base_entry_it_names() {
         .get("corp")
         .expect("the base entry is still there");
     assert_eq!(corp.max_admin_scope.as_deref(), Some("full"), "patched");
-    assert_eq!(corp.module, "oidc", "an unnamed field keeps its base value");
+    assert_eq!(corp.module, "test-idp-double", "an unnamed field keeps its base value");
     assert_eq!(
         corp.settings.get("issuer").and_then(|v| v.as_str()),
         Some("https://idp.example.com"),
@@ -114,7 +114,7 @@ fn a_null_patch_unsets_a_field_the_base_config_set() {
         corp.max_admin_scope, None,
         "the field is unset, which is the most restrictive default"
     );
-    assert_eq!(corp.module, "oidc", "and nothing else moved");
+    assert_eq!(corp.module, "test-idp-double", "and nothing else moved");
 }
 
 /// BACK-COMPAT, and it is what makes this change safe to ship over existing overlays: for a name
@@ -129,7 +129,7 @@ fn a_full_document_for_an_unshadowed_name_lands_exactly_as_it_used_to() {
         "identity-providers",
         "runtime-added",
         serde_json::json!({
-            "module": "oidc",
+            "module": "test-idp-double",
             "max_admin_scope": "read-only",
             "settings": { "issuer": "https://other.example.com" }
         }),
@@ -140,7 +140,7 @@ fn a_full_document_for_an_unshadowed_name_lands_exactly_as_it_used_to() {
         .identity_providers
         .get("runtime-added")
         .expect("the runtime entry landed");
-    assert_eq!(added.module, "oidc");
+    assert_eq!(added.module, "test-idp-double");
     assert_eq!(added.max_admin_scope.as_deref(), Some("read-only"));
     assert!(deploy.identity_providers.contains_key("corp"), "base kept");
 }
@@ -165,7 +165,7 @@ fn a_patch_with_an_unknown_field_is_refused_and_the_base_entry_survives() {
         Some("read-only"),
         "the typo'd patch is dropped whole; it never half-applies"
     );
-    assert_eq!(corp.module, "oidc");
+    assert_eq!(corp.module, "test-idp-double");
 }
 
 /// A patch that would make the merged document INVALID by a value-level rule (not merely by serde)

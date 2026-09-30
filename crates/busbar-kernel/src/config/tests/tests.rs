@@ -3110,7 +3110,7 @@ models: {}
 #[test]
 fn test_auth_method_browser_login_parses() {
     let yaml = "\
-oidc:
+test-idp-double:
   module: oidc-plugin
   browser_login:
     client_secret: { env: BUSBAR_OIDC_SECRET }
@@ -3123,12 +3123,15 @@ oidc:
         serde_yaml::from_str(yaml).expect("the provider definition must parse");
     let mut errors = Vec::new();
     let auth = crate::config::resolve_auth(
-        &serde_yaml::from_str("chain: [oidc]\n").expect("auth parses"),
+        &serde_yaml::from_str("chain: [test-idp-double]\n").expect("auth parses"),
         &providers,
         &mut errors,
     );
     assert!(errors.is_empty(), "{errors:?}");
-    let method = auth.methods.get("oidc").expect("oidc method present");
+    let method = auth
+        .methods
+        .get("test-idp-double")
+        .expect("test-idp-double method present");
     assert_eq!(
         method.module, "oidc-plugin",
         "the method carries the definition's MODULE, distinct from its NAME"

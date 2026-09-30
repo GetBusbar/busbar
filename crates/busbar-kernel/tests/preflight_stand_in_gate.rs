@@ -60,7 +60,7 @@ fn a_real_plugin_module_is_still_refused_with_plugins_off() {
     providers.insert(
         "corp".to_string(),
         IdentityProviderCfg {
-            module: "oidc".to_string(),
+            module: "test-idp-double".to_string(),
             max_admin_scope: None,
             token: None,
             browser_login: None,
