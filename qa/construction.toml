@@ -423,21 +423,26 @@ because = "ARCHITECT 2026-09-28: R-KERNEL, FOLD-LLM C3' (legacy fold rulings F19
 # 24900 -> 24909 (OWNER RULING Q68(3)). Its commit reached the base; struck by LOG-BRIDGE's
 # re-arm below, which declares the pair's next figure.
 
-# ── THE CONTRACT CEILING PAIR, RE-ARMED BY LOG-BRIDGE plugin logging (#85; BUSBAR-1.6.0.md THE DESIGN, §11.2) —
-#    measured and written by LANDER at land time, rebased over DOOR-TRANSPORT's already-landed
-#    figure ──────────────────────────────────────────────────────────────────────────────────
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY LOG-BRIDGE plugin logging (#85) — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 24909 -> 25143. Its commit reached the base; struck by SDK-SAFE's re-arm below, which declares
+# the pair's next figure.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY SDK-SAFE (the SDK's safe surface and the plane Claim
+#    flags) — measured by LANDER at the rebased tip ─────────────────────────────────────────────────────
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 24909
-to      = 25143
-because = "ARCHITECT 2026-09-28 plugin logging, the standing contract-pair exception: the step's declared surface is the door macro's call capture (abi::sdk::capture), its wiring into the trampoline and plugin_door!, and the reserved log diagnostic ids and bounds in abi::mechanism::call (BUSBAR-1.6.0.md #85 and THE DESIGN, §11.2 Plugin logging), +234 (LOG-BRIDGE's own delta, rebased over DOOR-TRANSPORT's landed +9). Measured by cargo xtask gate construction: 24909 before, 25143 after."
+from    = 25082
+to      = 25543
+because = "ARCHITECT ruling 2026-09-29 (SDK-SAFE), the standing contract-pair exception: the step's declared surface is the SDK's safe surface in abi::sdk (Entry, SafeSlot, Safe<S>, Instance<T>, Published<T>/Plain in safe.rs; Lent, LentList, HostBuf and the per-in accessor table in lent.rs; the plugin_door! Safe-open assertion) and the plane Claim flags word with CLAIM_OPEN/CLAIM_EXACT and its check_claims rule (OWNER D1 ruling 2026-09-28), +461, rebased by LANDER over the 25143 -> 25082 lowering that deleted fold_v1_ledger and re-measured at the rebased tip. Measured by cargo xtask gate construction: 25082 before, 25543 after."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 24909
-to      = 25143
-because = "ARCHITECT 2026-09-28 plugin logging, the standing contract-pair exception: the step's declared surface is the door macro's call capture (abi::sdk::capture), its wiring into the trampoline and plugin_door!, and the reserved log diagnostic ids and bounds in abi::mechanism::call (BUSBAR-1.6.0.md #85 and THE DESIGN, §11.2 Plugin logging), +234 (LOG-BRIDGE's own delta, rebased over DOOR-TRANSPORT's landed +9). Measured by cargo xtask gate construction: 24909 before, 25143 after."
+from    = 25082
+to      = 25543
+because = "ARCHITECT ruling 2026-09-29 (SDK-SAFE), the standing contract-pair exception: the step's declared surface is the SDK's safe surface in abi::sdk (Entry, SafeSlot, Safe<S>, Instance<T>, Published<T>/Plain in safe.rs; Lent, LentList, HostBuf and the per-in accessor table in lent.rs; the plugin_door! Safe-open assertion) and the plane Claim flags word with CLAIM_OPEN/CLAIM_EXACT and its check_claims rule (OWNER D1 ruling 2026-09-28), +461, rebased by LANDER over the 25143 -> 25082 lowering that deleted fold_v1_ledger and re-measured at the rebased tip. Measured by cargo xtask gate construction: 25082 before, 25543 after."
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY LANDER'S BATCH (XTASK-SPEED, KI-ABI-SCOPE, M3-SDK,
 #    M3-SHAPES AUTH, billing-cite) — EXPIRED AND STRUCK
@@ -701,10 +706,12 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 24900 -> 24909, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
 # the transport stream-end rule (+9); struck by LOG-BRIDGE's re-arm below.
 # RE-ARMED 24909 -> 25143, AT THE MEASUREMENT, in its own commit after LOG-BRIDGE plugin logging
-# (#85, +234); the live declaration above carries the measure.
+# (#85, +234).
 # LOWERED 25143 -> 25082, the measurement: the contract's frozen pre-M1b usage-row shapes and
 # fold_v1_ledger are deleted (-61). Downward only.
-contract_caps = 25082
+# RE-ARMED 25082 -> 25543, AT THE MEASUREMENT, in its own commit after SDK-SAFE (the SDK's safe
+# surface and the plane Claim flags, +461); the live declaration above carries the measure.
+contract_caps = 25543
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1371,7 +1378,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 24900 -> 24909 with its pair (OWNER RULING Q68(3); the transport stream-end rule, +9).
 # RE-ARMED 24909 -> 25143 with its pair (LOG-BRIDGE plugin logging #85, +234).
 # LOWERED 25143 -> 25082 with its pair (fold_v1_ledger and the frozen usage-row shapes deleted, -61).
-caps_contract_ceiling = 25082
+# RE-ARMED 25082 -> 25543 with its pair (SDK-SAFE: the SDK's safe surface and the Claim flags, +461).
+caps_contract_ceiling = 25543
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
