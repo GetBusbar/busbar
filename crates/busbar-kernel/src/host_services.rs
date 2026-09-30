@@ -53,10 +53,12 @@ use busbar_contract::caps::{IdempotencyKey, KernelSeal};
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::RecordStore;
-use busbar_contract::services::{Caller, HostServices, Later, Ran, Reading, RecordsList, Stored};
+use busbar_contract::services::{
+    merge_list, Caller, HostServices, Later, Ran, Reading, RecordsList, Stored,
+};
 use sha2::{Digest, Sha256};
 
-use crate::host_records::{merge_list, record_key, PendingRecords, RecordRows, Write, WriteBehind};
+use crate::host_records::{record_key, PendingRecords, RecordRows, Write, WriteBehind};
 use crate::plane::quarantine::DemotionRecord;
 use crate::trust::book::{Effect, Sight, TrustBook, Unjudged};
 use crate::trust::section::TrustEntry;

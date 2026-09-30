@@ -17,9 +17,8 @@
 //!   refuses stays queued, first in line for the next flush.
 //! * [`record_key`] scopes every stored key by the instance's LABEL: two instances declaring one
 //!   kind (of one plugin or of two) never read or write each other's records.
-//! * [`merge_list`] is the one list rule: the store's rows under the prefix, the overlay laid over
-//!   them (a queued value replaces, a tombstone removes), then the keys after `after`, in key order,
-//!   at most `limit`.
+//! * The list rule, laying the overlay over the store's rows, is the contract's
+//!   [`busbar_contract::services::merge_list`].
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -259,32 +258,6 @@ impl WriteBehind {
             }
         }
     }
-}
-
-/// THE LIST RULE: `stored` (the store's rows under the prefix) with `queued` laid over them, the
-/// keys after `after`, in key order, at most `limit`.
-#[must_use]
-pub fn merge_list(
-    stored: Vec<(Vec<u8>, Vec<u8>)>,
-    queued: Vec<(Vec<u8>, Option<Vec<u8>>)>,
-    after: Option<&[u8]>,
-    limit: usize,
-) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let mut rows: BTreeMap<Vec<u8>, Vec<u8>> = stored.into_iter().collect();
-    for (k, v) in queued {
-        match v {
-            Some(v) => {
-                rows.insert(k, v);
-            }
-            None => {
-                rows.remove(&k);
-            }
-        }
-    }
-    rows.into_iter()
-        .filter(|(k, _)| after.is_none_or(|a| k.as_slice() > a))
-        .take(limit)
-        .collect()
 }
 
 #[cfg(test)]
