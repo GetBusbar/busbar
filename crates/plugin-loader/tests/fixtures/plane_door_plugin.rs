@@ -104,6 +104,8 @@ const TAIL: &PlaneTail = &PlaneTail {
     egress_targets_len: 0,
     record_chains: ptr::null(),
     record_chains_len: 0,
+    trust_keys: ptr::null(),
+    trust_keys_len: 0,
 };
 
 /// Every generation's claim.
