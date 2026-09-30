@@ -2850,7 +2850,7 @@
             "type": "array"
           },
           "token_configured": {
-            "description": "`identity-providers` ONLY: whether a `token:` secret REFERENCE is configured (the operator\ncredential). The reference itself is never projected.",
+            "description": "`identity-providers` ONLY: whether a `token:` secret REFERENCE is configured (the built-in\n`admin-tokens` operator credential). The reference itself is never projected.",
             "type": [
               "boolean",
               "null"

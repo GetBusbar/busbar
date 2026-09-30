@@ -81,8 +81,8 @@ pub struct NamedDefView {
     /// entirely for a section that carries no ceiling.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_admin_scope: Option<String>,
-    /// `identity-providers` ONLY: whether a `token:` secret REFERENCE is configured (the operator
-    /// credential). The reference itself is never projected.
+    /// `identity-providers` ONLY: whether a `token:` secret REFERENCE is configured (the built-in
+    /// `admin-tokens` operator credential). The reference itself is never projected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_configured: Option<bool>,
     /// `identity-providers` ONLY: whether a `browser_login:` block is configured, the presence that
