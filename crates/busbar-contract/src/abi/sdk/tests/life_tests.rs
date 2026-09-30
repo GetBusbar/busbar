@@ -354,14 +354,25 @@ fn a_leased_string_is_read_back_across_a_refresh_generation_until_its_release() 
     input.head = in_head::<ResolveIn>(crate::abi::secret::slot::RESOLVE);
     let mut out: ResolveOut = zeroed();
     out.head = out_head::<ResolveOut>();
-    assert_eq!(call(table().resolve, inst, &input, &mut out), Outcome::Ready);
+    assert_eq!(
+        call(table().resolve, inst, &input, &mut out),
+        Outcome::Ready
+    );
     let (lease, said) = (out.head.lease, out.head.error);
     assert_ne!(lease, 0, "the string is leased");
     assert_eq!(refresh(inst, b"{}").0, Outcome::Ready);
     let _churn: Vec<Vec<u8>> = (0..64).map(|i| vec![0xAA; 15 + i]).collect();
-    assert_eq!(text(said), "a leased answer", "held across the refresh generation");
+    assert_eq!(
+        text(said),
+        "a leased answer",
+        "held across the refresh generation"
+    );
     assert_eq!(release(inst, lease), Outcome::Ready);
-    assert_eq!(release(inst, lease), Outcome::Refused, "released: nothing is held there");
+    assert_eq!(
+        release(inst, lease),
+        Outcome::Refused,
+        "released: nothing is held there"
+    );
     assert_eq!(close(inst), Outcome::Ready);
 }
 

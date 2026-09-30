@@ -198,6 +198,20 @@ pub struct HostBuf<'a, T> {
 }
 
 impl<'a, T: Copy> HostBuf<'a, T> {
+    /// Write `v` at the next index while there is room; count it either way. Answers its index.
+    /// The SDK's own writer for a row that may hold a pointer: only a kind SDK in this crate
+    /// writes one, naming memory the same answer lent the host (a plugin writes [`Scalar`]s,
+    /// through [`HostBuf::push`]).
+    pub(crate) fn push_row(&mut self, v: T) -> usize {
+        let at = self.asked;
+        if at < self.cap {
+            // SAFETY: `at < cap`, and the host lent `cap` writable `T`s at `ptr` (`new`).
+            unsafe { self.ptr.add(at).write_unaligned(v) };
+        }
+        self.asked = self.asked.saturating_add(1);
+        at
+    }
+
     /// # Safety
     /// A non-NULL `ptr` points at `cap` writable `T`s, overlapping nothing else the call is lent,
     /// for `'a`.
@@ -264,13 +278,7 @@ impl<'a, T: Copy> HostBuf<'a, T> {
 impl<T: Scalar> HostBuf<'_, T> {
     /// Write `v` at the next index while there is room; count it either way. Answers its index.
     pub fn push(&mut self, v: T) -> usize {
-        let at = self.asked;
-        if at < self.cap {
-            // SAFETY: `at < cap`, and the host lent `cap` writable `T`s at `ptr` (`new`).
-            unsafe { self.ptr.add(at).write_unaligned(v) };
-        }
-        self.asked = self.asked.saturating_add(1);
-        at
+        self.push_row(v)
     }
 
     /// Write `vs` from the next index while there is room; count all of them either way. Answers

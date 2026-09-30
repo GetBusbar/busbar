@@ -105,6 +105,7 @@ unsafe impl Scalar for crate::abi::plane::RecordWrite {}
 unsafe impl Scalar for crate::abi::plane::OutField {}
 unsafe impl Scalar for crate::abi::transport::FramePiece {}
 unsafe impl Scalar for crate::abi::transport::FramerYield {}
+unsafe impl Scalar for crate::abi::store::CellGrant {}
 
 /// A slot's `out`, as a safe body is handed it: read anything, set scalars, and hand pointers to
 /// the SDK's writers. Only the SDK makes one; it lives for the call.
@@ -269,12 +270,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
 
     /// As [`Out::lease`], for a string: set the string field `pick` names to `text`, held by
     /// `leases` under `head.lease` until the host's `release` of it, across refresh generations.
-    pub fn lease_str(
-        &mut self,
-        pick: impl FnOnce(&T) -> &AbiStr,
-        leases: &Leases,
-        text: String,
-    ) {
+    pub fn lease_str(&mut self, pick: impl FnOnce(&T) -> &AbiStr, leases: &Leases, text: String) {
         let s = leases.str(self.head(), text);
         self.put(pick, s);
     }

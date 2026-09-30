@@ -75,7 +75,11 @@ fn a_leased_string_is_held_until_release_and_named_in_the_head() {
     let mut e: ServeOut = zeroed();
     let mut out = Out::new(&mut e);
     out.lease_str(|o| &o.head.error, &leases, String::new());
-    assert_eq!((e.head.lease, e.head.error.len, leases.held()), (0, 0, 0), "empty: no lease");
+    assert_eq!(
+        (e.head.lease, e.head.error.len, leases.held()),
+        (0, 0, 0),
+        "empty: no lease"
+    );
 }
 
 #[test]

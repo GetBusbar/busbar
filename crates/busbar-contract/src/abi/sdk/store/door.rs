@@ -423,7 +423,7 @@ fn list_into<T: Copy>(
                 (bytes.as_ptr().wrapping_add(off).cast_const(), b.len())
             }));
         }
-        items.push(row(n, &at));
+        items.push_row(row(n, &at));
     }
     let short = !items.fits() || !bytes.fits();
     let (iw, ineed) = items.settle(short);
