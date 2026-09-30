@@ -1008,9 +1008,7 @@ slot!(
                 o.reason = RESERVE_OK;
                 Outcome::Ready
             }
-            // The store committed a draw under this `op_id` and then answered it malformed: a
-            // committed write never reads as a failure (FAILED says nothing applied), so it is FAULT.
-            Ok(_) => Outcome::Fault,
+            Ok(_) => Outcome::Fault, // committed under the op_id: never FAILED (`StoreSlots::reserve`)
             Err(r) => {
                 let (reason, cell) = match r {
                     ReserveRefused::Exhausted { cell } => (RESERVE_EXHAUSTED, cell),
@@ -1045,8 +1043,7 @@ slot!(
                 o.released_len = released_buf.written();
                 Outcome::Ready
             }
-            // As `reserve`: the release was committed, so a miscounted answer is FAULT, never FAILED.
-            Ok(_) => Outcome::Fault,
+            Ok(_) => Outcome::Fault, // committed: never FAILED (`StoreSlots::slice_release`)
             Err(OpRefused::Conflict) => conflict(o),
             Err(OpRefused::Failed(t)) => failed(s, o, &t),
         }

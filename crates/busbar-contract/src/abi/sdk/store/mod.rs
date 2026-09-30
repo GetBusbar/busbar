@@ -242,9 +242,7 @@ pub trait StoreSlots: RecordStore + Sized {
         limit: u32,
     ) -> Result<Vec<(Vec<u8>, RecordBytes)>, String>;
 
-    /// `reserve` (slot 34): one all-or-nothing draw; one [`Grant`] per cell, in cell order. A store
-    /// MUST answer exactly one grant per cell: any other count is FAULT (the draw it recorded under
-    /// the `op_id` is not a failure the caller may retry).
+    /// `reserve` (slot 34): all or nothing; EXACTLY one [`Grant`] per cell, in order (else FAULT).
     ///
     /// # Errors
     /// [`ReserveRefused`]; nothing is applied.
