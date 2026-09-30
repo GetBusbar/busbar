@@ -126,24 +126,53 @@ pub trait Offload: Send + Sync {
     fn run(&self, job: Box<dyn FnOnce() + Send>);
 }
 
-/// The runtime's blocking pool, bounded by the runtime's `max_blocking_threads`: past the bound a
-/// job queues for a thread, and a runtime that is shutting down drops it unrun.
+/// The runtime's blocking pool, with an explicit bound on the jobs it holds: at most `bound` are
+/// queued or running at once, and a job past the bound is dropped unrun, which answers FAILED. The
+/// runtime's `max_blocking_threads` bounds the threads under it; a runtime that is shutting down
+/// drops a job unrun too.
 #[derive(Debug, Clone)]
-pub struct BlockingPool(tokio::runtime::Handle);
+pub struct BlockingPool {
+    handle: tokio::runtime::Handle,
+    held: Arc<std::sync::atomic::AtomicUsize>,
+    bound: usize,
+}
 
 impl BlockingPool {
-    /// The blocking pool of the runtime `handle` drives.
+    /// The blocking pool of the runtime `handle` drives, holding at most `bound` jobs.
     #[must_use]
-    pub fn new(handle: tokio::runtime::Handle) -> Self {
-        Self(handle)
+    pub fn new(handle: tokio::runtime::Handle, bound: usize) -> Self {
+        Self {
+            handle,
+            held: Arc::default(),
+            bound,
+        }
+    }
+}
+
+/// One job the pool holds; releases its place however the job ends, run or dropped.
+struct Place(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for Place {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     }
 }
 
 impl Offload for BlockingPool {
     fn run(&self, job: Box<dyn FnOnce() + Send>) {
+        use std::sync::atomic::Ordering;
+        if self.held.fetch_add(1, Ordering::AcqRel) >= self.bound {
+            self.held.fetch_sub(1, Ordering::AcqRel);
+            // Past the bound: the job is dropped unrun, which answers FAILED.
+            return;
+        }
+        let place = Place(Arc::clone(&self.held));
         // A runtime shutting down drops the job unrun, which answers FAILED; so does one the OS
         // will not give a thread, before the runtime's panic goes on.
-        drop(self.0.spawn_blocking(job));
+        drop(self.handle.spawn_blocking(move || {
+            let _place = place;
+            job();
+        }));
     }
 }
 
@@ -229,6 +258,12 @@ pub struct InstanceFacts {
 /// Why an instance was not admitted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdmitRefused {
+    /// The label is longer than 65535 bytes or holds a control character: every per-instance key
+    /// is built from it, and only a label without them keeps those keys apart.
+    LabelUnfit {
+        /// The label's length in bytes.
+        len: usize,
+    },
     /// Another instance holds the signing domain the instance declares.
     DomainHeld {
         /// The domain.
@@ -243,6 +278,11 @@ pub enum AdmitRefused {
 impl std::fmt::Display for AdmitRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::LabelUnfit { len } => write!(
+                f,
+                "an instance label of {len} bytes is longer than 65535 bytes or holds a control \
+                 character"
+            ),
             Self::DomainHeld {
                 domain,
                 held_by,
@@ -382,9 +422,15 @@ impl KernelServices {
     ///
     /// # Errors
     ///
-    /// [`AdmitRefused::DomainHeld`] when another instance holds the signing domain it declares:
+    /// [`AdmitRefused::LabelUnfit`] for a label longer than 65535 bytes or holding a control
+    /// character; [`AdmitRefused::DomainHeld`] when another instance holds the signing domain it declares:
     /// no instance signs as another. Nothing is registered then.
     pub fn admit(&self, instance: &str, facts: InstanceFacts) -> Result<(), AdmitRefused> {
+        if instance.len() > usize::from(u16::MAX) || instance.chars().any(char::is_control) {
+            return Err(AdmitRefused::LabelUnfit {
+                len: instance.len(),
+            });
+        }
         let key: Arc<str> = Arc::from(instance);
         let (rows, default) = self.demotions.as_ref().map_or_else(
             || (Vec::new(), false),

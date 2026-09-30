@@ -941,7 +941,7 @@ impl RecordRows for Gauge {
 fn pooled(rt: &tokio::runtime::Runtime, reads: Arc<dyn RecordRows>) -> KernelServices {
     let s = services(Arc::default())
         .with_records(reads, Arc::new(MemoryStore::new()))
-        .with_pool(Arc::new(BlockingPool::new(rt.handle().clone())));
+        .with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 64)));
     s.admit(
         "inst",
         InstanceFacts {
@@ -1139,7 +1139,7 @@ fn a_flush_the_pool_refuses_leaves_the_writes_readable_and_queued_for_the_next()
     let store = Arc::new(MemoryStore::new());
     let s = services(Arc::default())
         .with_records(Arc::new(Mem(Arc::clone(&store))), store.clone())
-        .with_pool(Arc::new(BlockingPool::new(rt.handle().clone())));
+        .with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 64)));
     s.admit(
         "inst",
         InstanceFacts {
@@ -1172,4 +1172,106 @@ fn a_row_without_a_label_is_read_back_under_the_section_key_instance_and_no_othe
     assert_eq!(sight(SECTION_KEY), svc::TRUST_QUARANTINED);
     assert_eq!(sight("inst"), svc::TRUST_NEW);
     assert_eq!(sight("tools-2"), svc::TRUST_NEW);
+}
+
+#[test]
+fn a_label_too_long_or_holding_a_control_character_is_refused_at_admit() {
+    let r = rig();
+    for label in [
+        "a\u{1f}b".to_string(),
+        "x\ny".to_string(),
+        "l".repeat(65_536),
+    ] {
+        let refused = r.s.admit(&label, InstanceFacts::default()).unwrap_err();
+        assert_eq!(refused, AdmitRefused::LabelUnfit { len: label.len() });
+        let s = r.s.sign(&caller(&label), b"x");
+        assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
+    }
+    r.s.admit(&"l".repeat(65_535), InstanceFacts::default())
+        .unwrap();
+}
+
+/// Record reads that hold every call until the test opens the gate.
+#[derive(Default)]
+struct Gate {
+    open: Mutex<bool>,
+    opened: std::sync::Condvar,
+}
+
+impl Gate {
+    fn open(&self) {
+        *self.open.lock().unwrap() = true;
+        self.opened.notify_all();
+    }
+}
+
+impl RecordRows for Gate {
+    fn record_put(
+        &self,
+        _schema: RecordSchemaId,
+        _key: &[u8],
+        _value: &RecordBytes,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    fn record_get(
+        &self,
+        _schema: RecordSchemaId,
+        _key: &[u8],
+    ) -> Result<Option<RecordBytes>, StoreError> {
+        let open = self.open.lock().unwrap();
+        drop(self.opened.wait_while(open, |o| !*o).unwrap());
+        Ok(None)
+    }
+
+    fn record_scan(
+        &self,
+        _schema: RecordSchemaId,
+        _prefix: &[u8],
+        _limit: u32,
+    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError> {
+        Ok(Vec::new())
+    }
+}
+
+#[test]
+fn a_call_past_the_pools_bound_answers_failed_at_once() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .build()
+        .unwrap();
+    let gate = Arc::new(Gate::default());
+    let s = services(Arc::default())
+        .with_records(gate.clone(), Arc::new(MemoryStore::new()))
+        .with_pool(Arc::new(BlockingPool::new(rt.handle().clone(), 2)));
+    s.admit(
+        "inst",
+        InstanceFacts {
+            record_kinds: vec![KIND],
+            ..InstanceFacts::default()
+        },
+    )
+    .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    for _ in 0..5 {
+        let tx = tx.clone();
+        let ran = s.records_get(
+            &caller("inst"),
+            "approval",
+            b"k",
+            Box::new(move |a| tx.send((a.outcome, a.error)).unwrap()),
+        );
+        assert!(matches!(ran, Ran::Later));
+    }
+    // The three past the bound answered FAILED before any store call ended.
+    for _ in 0..3 {
+        let a = rx.recv_timeout(std::time::Duration::from_secs(10));
+        assert_eq!(a, Ok((Outcome::Failed, POOL_REFUSED)));
+    }
+    gate.open();
+    for _ in 0..2 {
+        let a = rx.recv_timeout(std::time::Duration::from_secs(10));
+        assert_eq!(a, Ok((Outcome::Ready, "")));
+    }
 }
