@@ -126,9 +126,7 @@ pub(crate) use busbar_kernel::egress::engine::{
 // (`busbar_kernel::proxy`) — the plane names the neutral ABI crate directly. Re-exported into the
 // flattened engine namespace so the moved classification/error-envelope call sites keep naming them at
 // their historical short paths (`crate::engine::{KIND_*, DISPOSITION_TRANSIENT, APPLICATION_JSON, …}`).
-pub(crate) use busbar_kernel::proxy::{
-    APPLICATION_JSON, EGRESS_UA_DEFAULT, PROVIDER_CODE_CONTEXT_LENGTH, TEXT_EVENT_STREAM,
-};
+pub(crate) use busbar_kernel::proxy::{APPLICATION_JSON, EGRESS_UA_DEFAULT, TEXT_EVENT_STREAM};
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use busbar_kernel::proxy::{
     DISPOSITION_ATTEMPT_TIMEOUT, DISPOSITION_CONTEXT_LENGTH, DISPOSITION_HARD_DOWN,

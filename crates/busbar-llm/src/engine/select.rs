@@ -600,30 +600,9 @@ impl busbar_kernel::failover::Order for SwrrOrder<'_> {
     }
 }
 
-/// True for content types that carry an incremental streamed response: SSE (text/event-stream,
-/// used by Anthropic/OpenAI/Gemini-SSE) and AWS event-stream (Bedrock ConverseStream). Both
-/// must engage the streaming body path rather than being buffered.
-pub(crate) fn is_stream_content_type(ct: &str) -> bool {
-    // A CT is "streaming" iff SOME declared protocol declared it as its streaming `Content-Type`
-    // (SSE protocols → `text/event-stream`; Bedrock → `application/vnd.amazon.eventstream`). The
-    // set is a registry aggregate folded once at boot from the declarations, so naming no
-    // protocol/MIME literal here keeps the agnostic core clean.
-    busbar_kernel::proto::streaming_content_types()
-        .iter()
-        .any(|p| ct.starts_with(p))
-}
-
-/// The streaming `Content-Type` the INGRESS client expects, by ingress protocol. On a cross-protocol
-/// reframe the streamed body is re-encoded into the client's framing, so the response header must
-/// describe the CLIENT's wire format — copying the upstream CT verbatim would mislabel the body
-/// (e.g. a Bedrock-egress `application/vnd.amazon.eventstream` reaching an SSE client, or vice
-/// versa). Returns `None` for an unrecognized protocol name so the caller keeps the upstream CT
-/// rather than guessing.
-///
-/// Reads `ProtocolDecl::streaming_content_type` (SSE protocols → `text/event-stream`; Bedrock →
-/// `application/vnd.amazon.eventstream`) so this function carries no `"bedrock"` branch — the CT is
-/// a fact the protocol DECLARED, not the name string, and reading a declaration allocates nothing
-/// where building a writer to ask it allocated two boxes.
-pub(crate) fn ingress_stream_content_type(ingress: &str) -> Option<&'static str> {
-    busbar_kernel::proto::decl_for(ingress).and_then(|d| d.streaming_content_type)
-}
+/// True for content types that carry an incremental streamed response (SSE, AWS event-stream), and
+/// the streaming `Content-Type` the INGRESS client expects: the plane's reply reads, over the
+/// dialect declarations.
+pub(crate) use busbar_plane_llm::exchange::reply::wire::{
+    ingress_stream_content_type, is_stream_content_type,
+};

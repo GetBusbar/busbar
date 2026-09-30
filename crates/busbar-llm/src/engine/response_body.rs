@@ -134,42 +134,14 @@ impl std::fmt::Debug for TapCell {
     }
 }
 
-/// Bytes-per-token divisor for the truncated-tail billing FLOOR. Deliberately conservative
-/// (~4 bytes/token is typical for English prose; a JSON response envelope with field names and
-/// escaping runs HIGHER), so the estimate UNDER-counts the true consumption: the retained tail is
-/// already only the LAST `cap` bytes of a strictly larger body, making this a genuine floor that
-/// cannot over-charge relative to the tokens actually generated. Its only job is to keep a
-/// truncated-beyond-recovery response from billing ZERO.
+/// Bytes-per-token divisor for the truncated-tail billing FLOOR (the plane's), read by the tests.
+#[cfg(test)]
 pub(crate) use busbar_plane_llm::codec::wire_shim::TRUNCATED_TAIL_BYTES_PER_TOKEN;
 
-/// FLOOR token estimate for a same-protocol non-stream response whose body OVERFLOWED the usage-tap
-/// reassembly cap AND whose trailing `usage` object could not be recovered by the tail scan. Such a
-/// body demonstrably consumed tokens (it exceeded the cap), so metering it at zero is the C2
-/// fail-open-to-free defect. Attribute the floor to the OUTPUT tier — the overflow is generated
-/// content — so it prices under the model's output rate; `.max(1)` keeps it non-zero even for a
-/// pathologically small tail.
-fn estimate_usage_from_truncated_tail(tail_len: usize) -> busbar_contract::billing::TokenUsage {
-    busbar_contract::billing::TokenUsage {
-        output: (tail_len as u64 / TRUNCATED_TAIL_BYTES_PER_TOKEN).max(1),
-        ..Default::default()
-    }
-}
-
-/// NO USAGE RECOVERED — the one answer for a delivered body whose usage could not be read: the
-/// dialect's own tail scan for its `usage` object, and when that yields nothing (the object is gone,
-/// or it holds a count the reader refuses), the conservative FLOOR over the bytes in hand. The
-/// truncated-tail arm and the refused-count arms share it, so the two can never bill differently.
-fn unrecovered_usage(protocol: &str, buf: &[u8]) -> busbar_contract::billing::TokenUsage {
-    reported_usage(protocol, buf).unwrap_or_else(|| estimate_usage_from_truncated_tail(buf.len()))
-}
-
-/// THE USAGE THE UPSTREAM REPORTED in the bytes in hand — the dialect's own tail scan for its `usage`
-/// object, and nothing else: no floor. `None` when the bytes carry no readable usage.
-fn reported_usage(protocol: &str, buf: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
-    busbar_kernel::proto::decl_for(protocol)
-        .and_then(|d| d.dialect())
-        .and_then(|di| di.recover_truncated_usage(buf))
-}
+/// The floor, the dialect's reported-usage scan and the two together: the plane's reply reads.
+pub(crate) use busbar_plane_llm::exchange::reply::wire::{
+    estimate_usage_from_truncated_tail, reported_usage, unrecovered_usage,
+};
 
 /// The STREAM form of [`unrecovered_usage`]: a stream's reader refused a count after the bytes were
 /// delivered, and there is no reassembled body to scan, so it is the floor over the upstream bytes.

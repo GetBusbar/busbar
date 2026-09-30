@@ -54,36 +54,10 @@ pub(crate) fn record_resp_usage(
     }
 }
 
-/// **EVERY OPEN CLASS a delivery billed**, as the class map it is ledgered under (#71): a COUNTED
-/// non-token unit (a rerank's search units, item 134) VERBATIM as its open class, and nothing for any
-/// other shape.
-///
-/// ONE function, read twice: [`record_resp_usage`] ledgers exactly this map onto the governance
-/// ledger, and the buffered tap reports exactly this map back
-/// ([`crate::engine::TapReport::open_units`]) so the late reading hands the durable (second) book
-/// the same counts. Two spellings of this projection are how the two books came to disagree.
-///
-/// Every variant is spelled, as in the tap's token projection: `Billing` is closed, and a wildcard
-/// here would quietly report nothing for a counted shape added after this was written. The token
-/// split rides [`crate::engine::TapReport::usage`]; duration, characters, images and the flat fee are
-/// not ledgered as a class today, so reporting one here would put a count on the durable book the
-/// governance ledger does not hold.
-pub(crate) fn open_units_of(
-    usage: &Option<busbar_contract::billing::Billing>,
-) -> std::collections::BTreeMap<String, u64> {
-    use busbar_contract::billing::Billing;
-    match usage {
-        Some(Billing::Counted { class, count }) => {
-            std::collections::BTreeMap::from([(class.clone(), *count)])
-        }
-        Some(Billing::Tokens(_))
-        | Some(Billing::Duration { .. })
-        | Some(Billing::Characters { .. })
-        | Some(Billing::Images { .. })
-        | Some(Billing::Flat)
-        | None => std::collections::BTreeMap::new(),
-    }
-}
+/// **EVERY OPEN CLASS a delivery billed**, as the class map it is ledgered under (#71): the plane's
+/// reply read. ONE function, read twice: [`record_resp_usage`] ledgers exactly this map, and the
+/// buffered tap reports exactly this map back, so the two books are handed the same counts.
+pub(crate) use busbar_plane_llm::exchange::reply::wire::open_units_of;
 
 /// Ledger a delivery's OPEN classes ([`open_units_of`]'s map) VERBATIM against the key's budget
 /// chain, in the fee's window (#71) — where the card prices them; a present card silent about one

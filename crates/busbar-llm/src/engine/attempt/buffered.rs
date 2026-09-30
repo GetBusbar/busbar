@@ -44,36 +44,9 @@ impl Drop for BudgetSpendGuard<'_> {
     }
 }
 
-/// The token figures out of a delivery's neutral billing carrier, for the report-back.
-///
-/// A non-token `Billing` (or none at all) answers `None`, which is the honest report: that response
-/// consumed no TOKENS to account for, and the metering series still counts its request through the
-/// accrual seam.
-///
-/// Every variant is spelled. `Billing` is a CLOSED enum the pricer matches exhaustively, and a
-/// wildcard here would quietly answer `None` for a variant added after this was written — the one
-/// case where a new billable shape needs a reader to be looked at rather than to keep compiling. The
-/// four below are not token counts and cannot be converted into one: seconds of audio, characters of
-/// speech, a count of images and a flat fee are each priced off their own dimension, and inventing a
-/// token figure for any of them would put a number the provider never reported into the ledger.
-fn token_usage_of(
-    usage: &Option<busbar_contract::billing::Billing>,
-) -> Option<busbar_contract::billing::TokenUsage> {
-    use busbar_contract::billing::Billing;
-    match usage {
-        Some(Billing::Tokens(t)) => Some(t.clone()),
-        // A COUNTED unit (a rerank's search units, item 134) is not a token figure either, and is
-        // NOT dropped: it rides the report's `open_units` (`open_units_of`), and
-        // `record_resp_usage`, reading the same `usage` right after the report, ledgers that same
-        // map as its open class, where the card prices it.
-        Some(Billing::Duration { .. })
-        | Some(Billing::Characters { .. })
-        | Some(Billing::Images { .. })
-        | Some(Billing::Counted { .. })
-        | Some(Billing::Flat)
-        | None => None,
-    }
-}
+// The token figures out of a delivery's neutral billing carrier, for the report-back (a non-token
+// billing answers `None`): the plane's reply read.
+use busbar_plane_llm::exchange::reply::wire::token_usage_of;
 
 /// Where a translated body goes and how it is labelled: the parts every delivery exit shares.
 struct Delivery<'a> {
@@ -483,17 +456,9 @@ fn not_translatable(
     )
 }
 
-/// Did the upstream REPORT this buffered chat generation as failed? True exactly when the egress
-/// dialect's own reader reads the body's stop reason as [`crate::ir::IrStopReason::Error`] — the
-/// one canonical reason that means "the generation failed", as opposed to a refusal, a safety stop
-/// or a truncation, each of which is a correctly-served answer. A body the reader refuses answers
-/// `false`: the translate above already accepted it, and this is a question about its stop reason,
-/// not a second opinion on its shape.
-fn generation_failed(egress_name: &str, rv: &Value) -> bool {
-    crate::proto_codec::with_reader(egress_name, |r| r.read_response(rv))
-        .and_then(Result::ok)
-        .is_some_and(|ir| ir.stop_reason == Some(crate::ir::IrStopReason::Error))
-}
+// Did the upstream REPORT this buffered chat generation as failed? The plane's reply reads the
+// egress reader's stop reason.
+use busbar_plane_llm::exchange::reply::wire::generation_failed;
 
 /// The failed-generation exit (owner ruling Q31). The upstream answered 2xx with a whole body whose
 /// stop reason says the generation FAILED:

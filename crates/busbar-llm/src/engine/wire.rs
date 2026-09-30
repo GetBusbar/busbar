@@ -27,38 +27,20 @@ pub(crate) fn maybe_attach_response_request_id(
     ingress_protocol: &str,
     upstream_request_id: Option<&str>,
 ) -> axum::http::response::Builder {
-    match busbar_kernel::proto::decl_for(ingress_protocol)
-        .and_then(|d| d.dialect())
-        .and_then(|di| di.ingress_response_request_id(upstream_request_id))
-    {
+    match busbar_plane_llm::exchange::reply::wire::response_request_id(
+        ingress_protocol,
+        upstream_request_id,
+    ) {
         Some((name, id)) => rb.header(name, id),
         None => rb,
     }
 }
 
-/// True when `ingress_protocol`'s writer signals that EVERY response — 2xx, streaming, and error —
-/// must carry `x-amzn-RequestId` (and, on error paths, `x-amzn-errortype`). Dispatches through the
-/// `ProtocolWriter::ingress_relays_amzn_headers()` vtable instead of branching on the provider name
-/// `"bedrock"`, so the agnostic forward path never contains a hard-coded protocol string for this
-/// decision. Unknown protocols fall back to `false` (no `x-amzn-*` headers emitted).
-pub(crate) fn ingress_relays_amzn_headers(ingress_protocol: &str) -> bool {
-    busbar_kernel::proto::decl_for(ingress_protocol)
-        .map(|d| d.ingress_relays_amzn_headers)
-        .unwrap_or(false)
-}
-
-/// The UPSTREAM response header NAMES this ingress protocol forwards VERBATIM on a same-protocol
-/// passthrough — read from the upstream response and re-emitted on the client response (Bedrock's
-/// `x-amzn-requestid` + `x-amzn-errortype`; Anthropic's `request-id`). Dispatched through the
-/// `ProtocolWriter::ingress_relayed_response_header_names()` vtable so the agnostic forward path reads
-/// and forwards these by NAME without naming any protocol module. Unknown protocols: `&[]`.
-pub(crate) fn ingress_relayed_response_header_names(
-    ingress_protocol: &str,
-) -> &'static [&'static str] {
-    busbar_kernel::proto::decl_for(ingress_protocol)
-        .map(|d| d.ingress_relayed_response_header_names)
-        .unwrap_or(&[])
-}
+/// Whether a caller's dialect relays the far end's `x-amzn-*` head fields, and which far-end head
+/// field names it relays verbatim on a same-protocol answer: the plane's reply reads.
+pub(crate) use busbar_plane_llm::exchange::reply::wire::{
+    ingress_relayed_response_header_names, ingress_relays_amzn_headers,
+};
 
 /// TRANSPARENCY: stamp which routing POLICY chose which TARGET onto a successful response, mirroring
 /// the `x-busbar-*` header convention (e.g. the bedrock/anthropic request-id headers above):
@@ -117,7 +99,7 @@ fn maybe_attach_route_policy_gated(
 // (`busbar_kernel::proxy::proxy_vocab`); the engine names them at their historical short paths through
 // this re-export. `ingress_reject_response` (LLM-specific — it maps an `IngressReject`) delegates to
 // the re-exported `ingress_error`.
-pub(crate) use busbar_kernel::proxy::{agnostic_error_envelope, ingress_error};
+pub(crate) use busbar_kernel::proxy::ingress_error;
 
 /// Project an [`busbar_contract::codec::IngressReject`] into the caller-dialect error response
 /// (`ingress_error`). The one place that decides what each reject arm renders as, so the two
@@ -149,51 +131,21 @@ pub(crate) fn answer_response(
     )
 }
 
-/// CANONICAL mapping from an upstream HTTP status to the protocol-agnostic error `kind`, for shaping
-/// a CROSS-PROTOCOL non-2xx upstream response into the ingress protocol's native error envelope.
-/// Shared by BOTH the main forward loop (`forward_with_pool`) and the degraded last-resort path
-/// (`forward_once`) so they cannot drift on which kind a given status maps to (the bug this closes:
-/// the degraded path labeled a 401/403 `invalid_request_error` while the main path correctly used
-/// `authentication_error`/`permission_error`, an SDK-visible typed-exception mismatch and an
-/// indistinguishability leak). The mapping mirrors the native discriminant a real vendor uses for
-/// each status.
-pub(crate) fn cross_protocol_error_kind(status: StatusCode) -> &'static str {
-    if status == StatusCode::UNAUTHORIZED {
-        KIND_AUTHENTICATION
-    } else if status == StatusCode::FORBIDDEN {
-        KIND_PERMISSION
-    } else if status == StatusCode::TOO_MANY_REQUESTS {
-        KIND_RATE_LIMIT
-    } else if status == StatusCode::SERVICE_UNAVAILABLE {
-        // A genuine upstream 503 carries the unavailable/overloaded distinction — collapsing it into
-        // `api_error` would emit, on a bedrock ingress, the status(503)/InternalServerException
-        // pairing the real AWS runtime NEVER produces (503 pairs with ServiceUnavailableException).
-        // Use `overloaded` — the SAME kind busbar already uses for its OWN 503s, mapping to
-        // ServiceUnavailableException (bedrock) / UNAVAILABLE (gemini).
-        KIND_OVERLOADED
-    } else if status == StatusCode::GATEWAY_TIMEOUT {
-        // 504 maps to the timeout class (bedrock ModelTimeoutException), not a generic server error.
-        KIND_TIMEOUT
-    } else if status.is_server_error() {
-        KIND_API_ERROR
-    } else {
-        KIND_INVALID_REQUEST
-    }
-}
+/// The canonical kind for a cross-protocol non-2xx, the plane's reply table.
+#[cfg(test)]
+pub(crate) use busbar_plane_llm::exchange::reply::wire::cross_protocol_error_kind;
 
 /// Shared finalizer for a cross-protocol NON-2xx upstream response, used by BOTH `forward_with_pool`
-/// and `forward_once`. Lifts the upstream's human message where present, maps the status to the
-/// canonical ingress `kind` (`cross_protocol_error_kind`), and reshapes into the ingress protocol's
-/// native error envelope via `ingress_error`. Relaying the EGRESS provider's native error body to a
-/// different-protocol client is a foreign-format leak the SDK cannot decode into its typed
-/// exception — an immediate proxy tell — so a crossed boundary NEVER relays verbatim.
+/// and `forward_once`: the plane's reply picks the kind and lifts the message
+/// (`busbar_plane_llm::exchange::reply::wire::cross_protocol_error`), rendered here in the ingress
+/// protocol's native error envelope. A crossed boundary NEVER relays verbatim.
 pub(crate) fn shape_cross_protocol_error(
     ingress_protocol: &str,
     status: StatusCode,
     bytes: &[u8],
 ) -> Response {
-    let kind = cross_protocol_error_kind(status);
-    let msg = extract_error_message(bytes).unwrap_or_else(|| GENERIC_REJECTED_DETAIL.to_string());
+    let (kind, msg) =
+        busbar_plane_llm::exchange::reply::wire::cross_protocol_error(status.as_u16(), bytes);
     ingress_error(ingress_protocol, status, kind, &msg)
 }
 
@@ -372,38 +324,10 @@ pub(crate) async fn read_capped_body(
     }
 }
 
-/// Map the classified `StatusClass` of a CLIENT-fault upstream 4xx to a protocol-agnostic error
-/// `kind` for `ingress_error` (the per-protocol writer maps it to its native error type/category).
-/// Exhaustive over `StatusClass` — no `_` wildcard (the no-catch-all rule for disposition matches).
-pub(crate) fn client_fault_kind(class: StatusClass) -> &'static str {
-    match class {
-        StatusClass::ContextLength => PROVIDER_CODE_CONTEXT_LENGTH,
-        StatusClass::ClientError => KIND_INVALID_REQUEST,
-        // The other classes are not reached on the ClientFault arm (they classify as
-        // TransientUpstream / HardDown / ContextLength), but the match must be exhaustive; treat
-        // them as a generic invalid-request shape rather than panicking on the request path.
-        StatusClass::RateLimit
-        | StatusClass::Overloaded
-        | StatusClass::ServerError
-        | StatusClass::Timeout
-        | StatusClass::Network
-        | StatusClass::Auth
-        | StatusClass::Billing => KIND_INVALID_REQUEST,
-    }
-}
-
-/// Best-effort human-readable message from an upstream error body, across the vendor error shapes
-/// (`error.message`, top-level `message`, Gemini `error.message`). Returns `None` when the body is
-/// not JSON or carries no recognizable message field, so the caller substitutes a generic detail
-/// rather than leaking the raw foreign body.
-pub(crate) fn extract_error_message(bytes: &[u8]) -> Option<String> {
-    let v: Value = busbar_plane_llm::codec::json::parse(bytes).ok()?;
-    v.get("error")
-        .and_then(|e| e.get("message"))
-        .and_then(|m| m.as_str())
-        .or_else(|| v.get("message").and_then(|m| m.as_str()))
-        .map(|s| s.to_string())
-}
+/// The client-fault kind by class and the far-end error message lift: the plane's reply reads.
+pub(crate) use busbar_plane_llm::exchange::reply::wire::{
+    client_fault_kind, extract_error_message,
+};
 
 /// Vendor-neutral, infrastructure-free detail used for EVERY client-facing mid-stream / pre-first-byte
 /// transport-error frame. The raw `reqwest::Error` Display embeds hyper/reqwest/tokio internals and the
@@ -418,13 +342,13 @@ pub(crate) fn extract_error_message(bytes: &[u8]) -> Option<String> {
 /// SSE `error` event, or a Gemini `google.rpc.Status` element carries generic service phrasing, never
 /// the word "upstream" — leaking it is a protocol-indistinguishability tell on the most-exercised
 /// cross-protocol error path. Keep this generic and free of any intermediary/translation vocabulary.
-pub(crate) const MID_STREAM_GENERIC_DETAIL: &str = busbar_kernel::proto::STREAM_ABORT_DETAIL;
+pub(crate) use busbar_plane_llm::exchange::reply::wire::MID_STREAM_GENERIC_DETAIL;
 
 /// Vendor-neutral fallback `error.message` for a NON-2xx response whose body carried no extractable
 /// human message. Rendered into the CLIENT's native error envelope via `ingress_error`, so it must
 /// read like copy a real single-vendor API would emit — NOT reverse-proxy vocabulary like "upstream".
 /// The real status/cause is logged server-side; only this generic string reaches the client.
-pub(crate) const GENERIC_REJECTED_DETAIL: &str = "The request could not be processed.";
+pub(crate) use busbar_plane_llm::exchange::reply::wire::GENERIC_REJECTED_DETAIL;
 
 /// Client-visible fallback `detail` strings each repeated across several ingress-error sites —
 /// hoisted so the copy cannot drift between them. Same vendor-neutral rules as
@@ -447,8 +371,7 @@ pub(crate) const DETAIL_REQUEST_TIMEOUT: &str = "The request timed out. Please r
 /// client's native error envelope, so it must NOT disclose the existence of a translating
 /// intermediary ("translate"/"untranslatable") or proxy vocabulary ("upstream"); a native vendor
 /// returns a generic internal-error message here. The precise cause is logged server-side.
-pub(crate) const GENERIC_RESPONSE_ERROR_DETAIL: &str =
-    "An internal error occurred while processing the response.";
+pub(crate) use busbar_plane_llm::exchange::reply::wire::GENERIC_RESPONSE_ERROR_DETAIL;
 
 /// Build the bytes for a mid-stream error to send to the CLIENT, framed in the INGRESS protocol.
 ///
@@ -466,95 +389,9 @@ pub(crate) const GENERIC_RESPONSE_ERROR_DETAIL: &str =
 ///     `{"response":{...,"error":{...}}}` STREAM shape (NOT the non-stream `{"error":...}` HTTP
 ///     envelope), so the official SDK's stream decoder finds `event.response` instead of crashing.
 ///
-/// `translate` is the LIVE translator for this stream when there is one. Its ingress writer is the
-/// one that framed every event the client has already received, so it holds this stream's identity
-/// (a Responses ingress latches the response id, `created_at`, `model` and the monotonic
-/// `sequence_number`). Asking it for the terminal frame keeps the failure event CONTINUOUS with the
-/// stream; resolving a fresh dialect writer here restarts all of that, and the client gets a
-/// `response.failed` numbered 0 for a response it never opened. The dialect seam stays as the
-/// fallback for a stream with no translator (and for a translator that frames no in-band error).
-pub(crate) fn mid_stream_error_bytes(
-    ingress_protocol: &str,
-    ingress_eventstream: bool,
-    message: &str,
-    // `+ 'static` explicitly: the streaming body holds a `Box<dyn StreamTranslator>` (whose object
-    // lifetime is `'static`), and `&mut` is invariant in its pointee, so the elided `&'a mut (dyn _ +
-    // 'a)` this would otherwise mean cannot accept that borrow.
-    translate: Option<&mut (dyn busbar_kernel::proto::StreamTranslator + 'static)>,
-) -> Vec<u8> {
-    // The error is a mid-stream transport failure ≈ internal/5xx. Resolve the ingress protocol
-    // ONCE. An unknown ingress resolves to no writer at all and takes the dialect-free terminal
-    // frame at the bottom of this function — the same ruling `ingress_error` makes, for the same
-    // reason: every LLM dialect is a droppable plugin now, so there is no resident writer to borrow
-    // a shape from, and inventing one would put a foreign dialect's bytes on the wire.
-    let err = busbar_kernel::proto::IrError {
-        class: busbar_contract::upstream::StatusClass::ServerError,
-        provider_signal: Some(message.to_string()),
-        retry_after: None,
-    };
-    let Some(dialect) = busbar_kernel::proto::decl_for(ingress_protocol).and_then(|d| d.dialect())
-    else {
-        return agnostic_stream_error_frame(message);
-    };
-    if ingress_eventstream {
-        // Binary eventstream client (a native AWS SDK): a mid-stream failure is a MODELED-EXCEPTION
-        // frame, not an SSE event. The exception NAME comes from the ingress writer's vtable
-        // (`write_response_exception`) — so proxy engine names no protocol's wire shape;
-        // `encode_exception_frame` is the generic binary framer. A protocol that reports
-        // `ingress_is_eventstream` but declines an exception mapping (a contradiction) falls through.
-        if let Some((exc_name, msg)) = dialect.write_response_exception(&err) {
-            return busbar_plane_llm::codec::eventstream::encode_exception_frame(&exc_name, &msg);
-        }
-    }
-    // SSE client: build the terminal error frame through the ingress protocol writer's STREAMING
-    // error seam (`write_error_frame`), NOT the non-stream `write_error()` HTTP envelope. The two are
-    // genuinely different shapes for some protocols and a native SDK decodes the STREAM event, not the
-    // HTTP body:
-    //   - Responses: the stream `response.failed` event wraps the error in a `response` object
-    //     (`{"response":{...,"error":{...}}}`); the HTTP envelope is a top-level `{"error":...}` the
-    //     SDK's stream decoder cannot locate via `event.response` (it would crash / silently swallow).
-    //   - Anthropic: the stream `error` event is `{"type":"error","error":{...}}` (no HTTP-only
-    //     `request_id`); the writer's event arm produces exactly that.
-    //   - OpenAI/Cohere/Gemini: bare `data:` frame in each protocol's native in-band error shape.
-    // `write_error_frame` is the NEUTRAL seam: it returns `(event_type, data)` without core naming any
-    // concrete stream-event type, and we frame it identically to the happy-path SSE framer
-    // (`proto::reframe_sse`): a non-empty `event_type` becomes an `event:` line, an empty one is a
-    // bare `data:` frame. This guarantees the mid-stream error is byte-for-byte the same framing the
-    // ingress protocol uses for every other event. The error carries `StatusClass::ServerError`
-    // (mid-stream transport failure ≈ internal/5xx) with the human detail as `provider_signal`, which
-    // each writer maps to its native error `type`/`message`.
-    //
-    // Every SSE-framed writer (openai/anthropic/gemini/cohere/responses) returns `Some`; the `None`
-    // fallback only guards a hypothetical future writer that declines to frame errors in-band, in
-    // which case we still emit a decodable bare `data:` error.
-    let frame = translate
-        .and_then(|t| t.terminal_error_frame(&err))
-        .or_else(|| dialect.write_error_frame(&err));
-    match frame {
-        Some((event_type, data)) => {
-            let data = busbar_plane_llm::codec::json::to_string(&data).unwrap_or_else(|_| {
-                serde_json::json!({ "error": { "message": message, "type": KIND_API_ERROR } })
-                    .to_string()
-            });
-            if event_type.is_empty() {
-                format!("data: {data}\n\n").into_bytes()
-            } else {
-                format!("event: {event_type}\ndata: {data}\n\n").into_bytes()
-            }
-        }
-        None => agnostic_stream_error_frame(message),
-    }
-}
-
-/// CORE'S OWN TERMINAL STREAM ERROR FRAME — the streaming sibling of [`agnostic_error_envelope`],
-/// for the two cases with no ingress writer to ask: an ingress name that resolves to no protocol,
-/// and a writer that declines to frame errors in-band. A bare `data:` SSE frame is the lowest
-/// common denominator every SSE decoder accepts, and it is core's to emit precisely because no LLM
-/// dialect is guaranteed linked into the binary any more.
-fn agnostic_stream_error_frame(message: &str) -> Vec<u8> {
-    let data = agnostic_error_envelope(KIND_API_ERROR, message).to_string();
-    format!("data: {data}\n\n").into_bytes()
-}
+/// `translate` is the LIVE translator for this stream when there is one, so the failure event
+/// continues the stream's identity. The frame is the plane's reply's.
+pub(crate) use busbar_plane_llm::exchange::reply::wire::mid_stream_error_bytes;
 
 /// Deterministic FNV-1a hash of a string — stable across processes/restarts (unlike the
 /// std `DefaultHasher`, whose seed is randomized), so session affinity pins consistently.
