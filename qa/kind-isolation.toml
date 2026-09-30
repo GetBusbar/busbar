@@ -1900,11 +1900,6 @@ count = "10"
 
 [[instance]]
 crate = "busbar-kernel"
-kind = "auth"
-count = "9"
-
-[[instance]]
-crate = "busbar-kernel"
 kind = "export"
 count = "54"
 
