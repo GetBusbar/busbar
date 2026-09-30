@@ -418,7 +418,7 @@ fn rig() -> Rig {
             Arc::new(Inline),
         )
         .with_signer(Arc::new(FixedKey))
-        .with_demotions(demotions(&store))
+        .with_demotions(demotions(&store), "legacy")
         .with_wall_clock(Arc::new(move || c.load(Ordering::SeqCst)));
     s.admit(
         "inst",
@@ -657,12 +657,12 @@ fn trust_sight_judges_from_the_admitted_entries_and_writes_the_demotion() {
     let sight = |h: &str| run(|l| r.s.trust_sight(&me, "cp", h, l));
     assert_eq!(sight("fp").value, svc::TRUST_SAME);
     assert_eq!(sight("moved").value, svc::TRUST_DRIFTED);
-    let demoted = r.s.demotions.as_ref().unwrap().list();
+    let demoted = r.s.demotions.as_ref().unwrap().record.list();
     assert_eq!(demoted.len(), 1);
-    assert_eq!(demoted[0].server, "cp");
+    assert_eq!(demoted[0].server, demotion_key("inst", "cp"));
     assert_eq!(sight("moved").value, svc::TRUST_QUARANTINED);
     assert_eq!(sight("fp").value, svc::TRUST_SAME);
-    assert!(r.s.demotions.as_ref().unwrap().list().is_empty());
+    assert!(r.s.demotions.as_ref().unwrap().record.list().is_empty());
     let s = run(|l| r.s.trust_sight(&me, "nobody", "fp", l));
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_A_COUNTERPARTY));
 }
@@ -676,8 +676,7 @@ fn a_durable_demotion_is_replayed_at_admit() {
         svc::TRUST_DRIFTED
     );
     // A re-admit (a restart re-registering the instance) keeps the demotion from the record.
-    let fresh =
-        services(Arc::default()).with_demotions(Arc::clone(r.s.demotions.as_ref().unwrap()));
+    let fresh = restarted(&r);
     fresh.admit(
         "inst",
         InstanceFacts {
@@ -753,4 +752,82 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
         .enqueue("inst", "approval", b"k", Some(b"mine".to_vec()));
     let s = run(|l| r.s.records_get(&caller("third"), "approval", b"k", l));
     assert_eq!(s.value, svc::ABSENT);
+}
+
+/// The rig's kernel after a restart: the same durable demotion record, nothing else.
+fn restarted(r: &Rig) -> KernelServices {
+    let d = r.s.demotions.as_ref().unwrap();
+    services(Arc::default()).with_demotions(Arc::clone(&d.record), &d.default_instance)
+}
+
+/// One trust entry for `cp`, pinned to `fp` or unpinned.
+fn trusting(pin: Option<&str>) -> InstanceFacts {
+    InstanceFacts {
+        trust: vec![(
+            "cp".into(),
+            TrustEntry {
+                pin: pin.map(|fp| DeclaredPin {
+                    mechanism: "fingerprint".into(),
+                    root: false,
+                    key: None,
+                    fingerprint: Some(fp.into()),
+                }),
+                policy: Policy {
+                    ttl_ms: 0,
+                    recovery_backoff_ms: 0,
+                },
+            },
+        )],
+        ..InstanceFacts::default()
+    }
+}
+
+#[test]
+fn a_demotion_in_one_instance_is_never_replayed_into_another_with_the_same_counterparty() {
+    let r = rig();
+    assert_eq!(
+        run(|l| r.s.trust_sight(&caller("inst"), "cp", "moved", l)).value,
+        svc::TRUST_DRIFTED
+    );
+    let fresh = restarted(&r);
+    fresh.admit("inst", trusting(None));
+    fresh.admit("second", trusting(None));
+    assert_eq!(
+        run(|l| fresh.trust_sight(&caller("inst"), "cp", "x", l)).value,
+        svc::TRUST_QUARANTINED
+    );
+    assert_eq!(
+        run(|l| fresh.trust_sight(&caller("second"), "cp", "x", l)).value,
+        svc::TRUST_NEW
+    );
+}
+
+#[test]
+fn an_unprefixed_row_replays_into_the_default_instance_only_and_it_clears_it() {
+    let r = rig();
+    // A row a single-instance deployment wrote: keyed by the counterparty alone.
+    r.s.demotions
+        .as_ref()
+        .unwrap()
+        .record
+        .record("cp", "quarantined", 1);
+    let fresh = restarted(&r);
+    fresh.admit("legacy", trusting(None));
+    fresh.admit("inst", trusting(None));
+    assert_eq!(
+        run(|l| fresh.trust_sight(&caller("legacy"), "cp", "x", l)).value,
+        svc::TRUST_QUARANTINED
+    );
+    assert_eq!(
+        run(|l| fresh.trust_sight(&caller("inst"), "cp", "x", l)).value,
+        svc::TRUST_NEW
+    );
+    // Re-admitted with a pin, the default instance's clean sighting clears the unprefixed row.
+    let pinned = restarted(&r);
+    pinned.admit("legacy", trusting(Some("fp")));
+    assert_eq!(
+        run(|l| pinned.trust_sight(&caller("legacy"), "cp", "fp", l)).value,
+        svc::TRUST_SAME
+    );
+    assert!(r.s.demotions.as_ref().unwrap().record.list().is_empty());
 }

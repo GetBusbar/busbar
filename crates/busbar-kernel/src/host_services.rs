@@ -32,7 +32,8 @@
 //!
 //! EVERY CALLER-SCOPED SERVICE ANSWERS FROM WHAT [`KernelServices::admit`] REGISTERED for the
 //! caller's instance: its record kinds, its signing declaration and its trust entries. Every
-//! per-instance registry (these facts, the queued writes, the trust state, the claim digest) is
+//! per-instance registry (these facts, the queued writes, the trust state, the claim digest, the
+//! durable demotion rows) is
 //! keyed by the instance's LABEL, never its plugin: two instances of one plugin never share one. An
 //! instance never admitted is REFUSED, never served on a guess.
 //!
@@ -208,7 +209,13 @@ pub struct KernelServices {
     pending: Arc<PendingRecords>,
     signer: Option<Arc<dyn SignKey>>,
     trust: TrustBook,
-    demotions: Option<Arc<DemotionRecord>>,
+    demotions: Option<Demotions>,
+}
+
+/// The durable demotion record, and the instance its unprefixed rows belong to.
+struct Demotions {
+    record: Arc<DemotionRecord>,
+    default_instance: Arc<str>,
 }
 
 impl std::fmt::Debug for KernelServices {
@@ -262,10 +269,20 @@ impl KernelServices {
         self
     }
 
-    /// Write demotions and their clearing through `demotions`, and replay its rows at admit.
+    /// Write demotions and their clearing through `demotions`, and replay its rows at admit. Every
+    /// row is keyed by [`demotion_key`], the instance's label and the counterparty. A row without
+    /// the label (one a single-instance deployment wrote) belongs to `default_instance` alone, the
+    /// instance the configuration upgrade maps that deployment's plane to; no other instance reads it.
     #[must_use]
-    pub fn with_demotions(mut self, demotions: Arc<DemotionRecord>) -> Self {
-        self.demotions = Some(demotions);
+    pub fn with_demotions(
+        mut self,
+        demotions: Arc<DemotionRecord>,
+        default_instance: &str,
+    ) -> Self {
+        self.demotions = Some(Demotions {
+            record: demotions,
+            default_instance: Arc::from(default_instance),
+        });
         self
     }
 
@@ -276,21 +293,26 @@ impl KernelServices {
         self
     }
 
-    /// Register (or re-register) what the instance labelled `instance` declared. Every caller-scoped service answers from
-    /// this; its trust entries are admitted to the trust state, the durable demotions replayed.
+    /// Register (or re-register) what the instance labelled `instance` declared. Every
+    /// caller-scoped service answers from this; its trust entries are admitted to the trust state,
+    /// and its own durable demotions replayed.
     pub fn admit(&self, instance: &str, facts: InstanceFacts) {
         let key: Arc<str> = Arc::from(instance);
-        let rows = self
-            .demotions
-            .as_ref()
-            .map(|d| d.list())
-            .unwrap_or_default();
-        self.trust.admit(
-            &key,
-            facts.trust.iter().cloned(),
-            rows.iter()
-                .map(|r| (r.server.as_str(), r.recorded_at.saturating_mul(1000))),
+        let (rows, default) = self.demotions.as_ref().map_or_else(
+            || (Vec::new(), false),
+            |d| (d.record.list(), *d.default_instance == *instance),
         );
+        let prefix = demotion_key(instance, "");
+        let replayed = rows.iter().filter_map(|r| {
+            let counterparty = match r.server.strip_prefix(prefix.as_str()) {
+                Some(cp) => cp,
+                None if default && !r.server.contains(DEMOTION_SEP) => r.server.as_str(),
+                None => return None,
+            };
+            Some((counterparty, r.recorded_at.saturating_mul(1000)))
+        });
+        self.trust
+            .admit(&key, facts.trust.iter().cloned(), replayed);
         self.lock_instances().insert(key, Arc::new(facts));
     }
 
@@ -383,6 +405,17 @@ fn span(key_off: usize, key_len: usize, value_off: usize, value_len: usize) -> I
         value_off: n(value_off),
         value_len: n(value_len),
     }
+}
+
+/// The separator between the instance label and the counterparty in a demotion row's key: the
+/// ASCII unit separator, which no configured label carries.
+pub const DEMOTION_SEP: char = '\u{1f}';
+
+/// The durable demotion row key of `counterparty` as seen by the instance labelled `instance`: two
+/// instances never share a row, even for counterparties of one name.
+#[must_use]
+pub fn demotion_key(instance: &str, counterparty: &str) -> String {
+    format!("{instance}{DEMOTION_SEP}{counterparty}")
 }
 
 /// The token a claim spends: the hex digest of the [`IdempotencyKey`] minted over the caller's
@@ -567,17 +600,19 @@ impl HostServices for KernelServices {
                 }
             };
         if let Some(d) = self.demotions.as_ref() {
+            let key = demotion_key(&caller.instance, counterparty);
+            let settle = |server: &str, state| {
+                crate::plane::quarantine::settle(&d.record, server, state);
+            };
             match effect {
-                Effect::Demote => crate::plane::quarantine::settle(
-                    d,
-                    counterparty,
-                    crate::trust::TrustState::Quarantined,
-                ),
-                Effect::Clear => crate::plane::quarantine::settle(
-                    d,
-                    counterparty,
-                    crate::trust::TrustState::Approved,
-                ),
+                Effect::Demote => settle(&key, crate::trust::TrustState::Quarantined),
+                Effect::Clear => {
+                    settle(&key, crate::trust::TrustState::Approved);
+                    // The default instance also clears the unprefixed row it was replayed from.
+                    if caller.instance == d.default_instance {
+                        settle(counterparty, crate::trust::TrustState::Approved);
+                    }
+                }
                 Effect::None => {}
             }
         }
