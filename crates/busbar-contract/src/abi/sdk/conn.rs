@@ -6,7 +6,8 @@
 //! host tables as `open` handed them (`OpenIn.host`, kept by the generic lifecycle,
 //! `abi::sdk::life::Held::host`); [`Connector`] makes the connector's services for ONE op on ONE
 //! ticket, each answering [`Poll::Ready`] or [`Poll::Pending`]; [`exchange`] is the one-shot
-//! request/response every driver needs (establish, write, read to the end, close).
+//! request/reply every driver needs (establish, write, read the reply to its terminal piece,
+//! close), and [`send_and_ack`] its form for a transport whose reply is a single ack.
 //!
 //! THE REPLAY RULE (the mechanism's completion handles, `abi::mechanism::ticket`). An op that
 //! answers PENDING is re-invoked, on the same ticket, when its wake fires; its body runs again from
@@ -19,11 +20,13 @@
 use std::task::Poll;
 
 use crate::abi::host::conn::connector::{
-    service, ConnectorSlots, EstablishIn, IoIn, StreamIn, UpgradeIn,
+    service, ConnectorSlots, EstablishIn, IoIn, ReplyIn, ReplyPiece, StreamIn, UpgradeIn,
+    REPLY_ACK, REPLY_BODY, REPLY_END, REPLY_HEAD,
 };
 use crate::abi::host::service::{ServiceFn, ServiceHead, ServiceOut};
 use crate::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
 use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables, Ticket};
+use crate::abi::transport::{fields, FrameSpan};
 
 /// Why a connector service answered without its result.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,7 +122,7 @@ macro_rules! service_in {
         fn head(&mut self) -> &mut ServiceHead { &mut self.head }
     })*};
 }
-service_in!(EstablishIn, StreamIn, IoIn, UpgradeIn);
+service_in!(EstablishIn, StreamIn, IoIn, UpgradeIn, ReplyIn);
 
 const fn blank_head() -> ServiceHead {
     ServiceHead {
@@ -270,20 +273,83 @@ impl Connector<'_> {
     }
 }
 
+/// One reply piece as [`Connector::read_reply`] reads it: its descriptor, its bytes in the buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Replied {
+    /// The descriptor.
+    pub piece: ReplyPiece,
+    /// How many bytes the host wrote into the buffer.
+    pub len: usize,
+}
+
+impl Connector<'_> {
+    /// Read the next piece of the reply on `stream` into `buf`, with its descriptor. `buf` (and
+    /// the descriptor the SDK keeps beside it in `slot`) must stay where they are until the read
+    /// completes (on a PENDING answer, keep them parked).
+    pub fn read_reply(
+        &mut self,
+        stream: u64,
+        buf: &mut [u8],
+        slot: &mut ReplyPiece,
+    ) -> Answer<Replied> {
+        let input = ReplyIn {
+            head: blank_head(),
+            stream,
+            buf: buf.as_mut_ptr(),
+            len: buf.len(),
+            piece: std::ptr::from_mut(slot),
+        };
+        let cap = buf.len();
+        self.call(service::READ_REPLY, |s| s.read_reply, input)
+            .map(|r| {
+                r.map(|o| Replied {
+                    piece: *slot,
+                    len: (o.len as usize).min(cap),
+                })
+            })
+    }
+}
+
 /// How much one read of an [`exchange`] asks for.
 pub const EXCHANGE_READ: usize = 16 * 1024;
 
 /// The most an [`exchange`] reads before it fails (a far end that never ends).
 pub const EXCHANGE_MAX: usize = 16 * 1024 * 1024;
 
-/// An [`exchange`]'s state across its op's PENDING entries: the request (a pending write reads
-/// it), the read buffer (a pending read writes it) and the response so far. Parked on the ticket.
+/// The far end's reply to an [`exchange`], or the ack of a [`send_and_ack`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExchangeResponse {
+    /// The code: the reply's status, or the transport's delivery/result code.
+    pub status: u16,
+    /// The reason exactly as the peer sent it (a non-canonical phrase included); `None` when the
+    /// transport carries none (h2, or a transport without one).
+    pub reason: Option<Vec<u8>>,
+    /// The reply's fields, in order, as the field block names them.
+    pub fields: Vec<(Vec<u8>, Vec<u8>)>,
+    /// The body.
+    pub body: Vec<u8>,
+}
+
+/// What became of what a [`send_and_ack`] sent: the transport's code and the peer's text.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Ack {
+    /// The transport's result code.
+    pub code: u32,
+    /// The peer's text, exactly as sent; empty when none.
+    pub reason: Vec<u8>,
+}
+
+/// An [`exchange`]'s (or a [`send_and_ack`]'s) state across its op's PENDING entries: the request
+/// (a pending write reads it), the read buffer and the descriptor slot (a pending read writes them)
+/// and the reply so far. Parked on the ticket.
 #[derive(Debug)]
 pub struct Exchange {
     request: Box<[u8]>,
     buf: Box<[u8]>,
-    response: Vec<u8>,
-    /// How many of this op's services' results are already applied to `response`.
+    slot: Box<ReplyPiece>,
+    reply: ExchangeResponse,
+    code: u32,
+    /// How many of this op's services' results are already applied to `reply`.
     applied: u32,
 }
 
@@ -294,23 +360,32 @@ impl Exchange {
         Self {
             request: request.into_boxed_slice(),
             buf: vec![0; EXCHANGE_READ].into_boxed_slice(),
-            response: Vec::new(),
+            slot: Box::default(),
+            reply: ExchangeResponse::default(),
+            code: 0,
             applied: 0,
         }
     }
 }
 
-/// ONE REQUEST, ONE RESPONSE over the declared need `need` to `target`: establish, write the whole
-/// request, read to the end, close. PENDING until it completes; the caller keeps `state` parked on
-/// its ticket across PENDING entries and passes it back each time (the same order of services on
-/// every entry: the replay rule). READY with the whole response, or why it failed. Bounded by the
-/// op's own deadline (the host's), and by [`EXCHANGE_MAX`] bytes.
-pub fn exchange(
+/// The bytes `span` names in `buf`, or none past its end.
+fn spanned(buf: &[u8], span: FrameSpan) -> &[u8] {
+    let (at, len) = (span.offset as usize, span.len as usize);
+    buf.get(at..at.saturating_add(len)).unwrap_or(&[])
+}
+
+fn failed<T>(text: &str) -> Answer<T> {
+    Poll::Ready(Err(ConnFailure::Failed(text.to_string())))
+}
+
+/// Send the request and read the reply to its terminal piece: what it returns is the terminal's
+/// kind. The reply accumulates in `state`.
+fn send_and_read(
     c: &mut Connector<'_>,
     state: &mut Exchange,
     need: u32,
     target: Option<&str>,
-) -> Answer<Vec<u8>> {
+) -> Answer<u32> {
     let stream = match c.establish(need, target) {
         Poll::Ready(Ok(s)) => s,
         Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
@@ -319,39 +394,93 @@ pub fn exchange(
     let mut sent = 0;
     while sent < state.request.len() {
         match c.write(stream, &state.request[sent..]) {
-            Poll::Ready(Ok(0)) => {
-                return Poll::Ready(Err(ConnFailure::Failed("the far end took no bytes".into())))
-            }
+            Poll::Ready(Ok(0)) => return failed("the far end took no bytes"),
             Poll::Ready(Ok(n)) => sent += n,
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
             Poll::Pending => return Poll::Pending,
         }
     }
-    loop {
+    let terminal = loop {
         let this = c.issued;
-        let n = match c.read(stream, &mut state.buf) {
-            Poll::Ready(Ok(n)) => n,
+        let got = match c.read_reply(stream, &mut state.buf, &mut state.slot) {
+            Poll::Ready(Ok(r)) => r,
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
             Poll::Pending => return Poll::Pending,
         };
-        // A replayed read answers its stored length; its bytes were applied on the entry that
-        // first saw them.
-        if this >= state.applied {
-            state.response.extend_from_slice(&state.buf[..n]);
+        // A replayed read answers its stored result; it was applied on the entry that first saw
+        // it (its bytes are no longer in the buffer).
+        let fresh = this >= state.applied;
+        if fresh {
             state.applied = this + 1;
         }
-        if n == 0 {
-            break;
+        let p = got.piece;
+        match p.kind {
+            REPLY_HEAD | REPLY_ACK if fresh => {
+                let bytes = &state.buf[..got.len];
+                state.code = p.code;
+                let reason = spanned(bytes, p.reason);
+                state.reply.reason = (!reason.is_empty()).then(|| reason.to_vec());
+                state.reply.fields = fields::lines(spanned(bytes, p.fields))
+                    .map(|(n, v)| (n.to_vec(), v.to_vec()))
+                    .collect();
+            }
+            REPLY_BODY if fresh => {
+                state.reply.body.extend_from_slice(&state.buf[..got.len]);
+                if state.reply.body.len() > EXCHANGE_MAX {
+                    return failed("the reply passed the exchange's bound");
+                }
+            }
+            REPLY_HEAD | REPLY_ACK | REPLY_BODY | REPLY_END => {}
+            _ => return failed("the transport answered no reply piece: every request is acked"),
         }
-        if state.response.len() > EXCHANGE_MAX {
-            return Poll::Ready(Err(ConnFailure::Failed(format!(
-                "the response passed {EXCHANGE_MAX} bytes"
-            ))));
+        if matches!(p.kind, REPLY_ACK | REPLY_END) {
+            break p.kind;
         }
-    }
+    };
     match c.close(stream) {
         Poll::Pending => Poll::Pending,
-        Poll::Ready(_) => Poll::Ready(Ok(std::mem::take(&mut state.response))),
+        Poll::Ready(_) => Poll::Ready(Ok(terminal)),
+    }
+}
+
+/// ONE REQUEST, ONE REPLY over the declared need `need` to `target`: establish, write the whole
+/// request, read the reply to its terminal piece, close. PENDING until it completes; the caller
+/// keeps `state` parked on its ticket across PENDING entries and passes it back each time (the
+/// same order of services on every entry: the replay rule). READY with the reply's code, reason,
+/// fields and body, or why it failed. Bounded by the op's own deadline and by [`EXCHANGE_MAX`].
+pub fn exchange(
+    c: &mut Connector<'_>,
+    state: &mut Exchange,
+    need: u32,
+    target: Option<&str>,
+) -> Answer<ExchangeResponse> {
+    match send_and_read(c, state, need, target) {
+        Poll::Ready(Ok(_)) => {
+            let mut reply = std::mem::take(&mut state.reply);
+            reply.status = u16::try_from(state.code).unwrap_or(0);
+            Poll::Ready(Ok(reply))
+        }
+        Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+        Poll::Pending => Poll::Pending,
+    }
+}
+
+/// SEND and learn what became of it, over any transport (a pure-send one answers a single ack):
+/// establish, write, read to the terminal piece, close. READY with the transport's code and the
+/// peer's text, verbatim — a failure the transport acked is an [`Ack`] too, never a lost request.
+pub fn send_and_ack(
+    c: &mut Connector<'_>,
+    state: &mut Exchange,
+    need: u32,
+    target: Option<&str>,
+) -> Answer<Ack> {
+    match send_and_read(c, state, need, target) {
+        Poll::Ready(Ok(_)) => Poll::Ready(Ok(Ack {
+            code: state.code,
+            reason: state.reply.reason.take().unwrap_or_default(),
+        })),
+        Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+        Poll::Pending => Poll::Pending,
     }
 }
 

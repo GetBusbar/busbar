@@ -135,10 +135,12 @@ pub mod service {
     pub const RANDOM: u32 = 10;
     /// The process identity.
     pub const IDENTITY: u32 = 11;
+    /// Read the next piece of the far end's reply to what the plugin sent, with its descriptor.
+    pub const READ_REPLY: u32 = 12;
 }
 
 /// How many services [`ConnectorSlots`] holds.
-pub const SERVICES: u32 = 12;
+pub const SERVICES: u32 = 13;
 
 /// [`service::ESTABLISH`]'s `in`: dial the need's endpoints in the host's order, apply connection
 /// security when the need asks for it, and answer the stream. The plugin's own authentication
@@ -296,6 +298,54 @@ pub struct IdentityIn {
     pub identity: *mut ProcessIdentity,
 }
 
+/// [`ReplyPiece::kind`]: the terminal piece of a reply with no head — what became of what the
+/// plugin sent (delivered or not), in [`ReplyPiece::code`] and [`ReplyPiece::reason`].
+pub const REPLY_ACK: u32 = 1;
+/// [`ReplyPiece::kind`]: the reply's head: its code, its reason and its fields.
+pub const REPLY_HEAD: u32 = 2;
+/// [`ReplyPiece::kind`]: body bytes of the reply.
+pub const REPLY_BODY: u32 = 3;
+/// [`ReplyPiece::kind`]: the terminal piece of a reply that had a head: nothing follows.
+pub const REPLY_END: u32 = 4;
+
+/// ONE PIECE OF A REPLY, as [`service::READ_REPLY`] describes it (OWNER ruling: a plugin that
+/// sends data sees what became of it, over EVERY transport). Every request's reply ends with exactly
+/// ONE terminal piece: [`REPLY_ACK`] (no head: the delivery result, a code and the peer's text), or
+/// [`REPLY_END`] after a [`REPLY_HEAD`] and its [`REPLY_BODY`] pieces. A refusal by the egress class
+/// is an ack failure carrying the class's text. The spans are ranges of the READ_REPLY buffer.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReplyPiece {
+    /// `REPLY_*`; `0` = none (a transport that answered no piece breaks the rule).
+    pub kind: u32,
+    /// The transport's result code: the reply's status, or its own delivery/result code; `0` =
+    /// none. On [`REPLY_HEAD`] and [`REPLY_ACK`].
+    pub code: u32,
+    /// The text the peer sent with the code, exactly as sent; empty when the transport has none.
+    pub reason: crate::abi::transport::FrameSpan,
+    /// The reply's metadata, ONE field block (`abi::transport::fields`); empty = none. On
+    /// [`REPLY_HEAD`].
+    pub fields: crate::abi::transport::FrameSpan,
+}
+
+/// [`service::READ_REPLY`]'s `in`. The buffer is the plugin's and stays valid until the service
+/// completes: the host writes the piece's bytes into it (a head's reason and field block, or body
+/// bytes) and its descriptor into `piece`; `ServiceOut::len` is the bytes written.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ReplyIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The stream.
+    pub stream: u64,
+    /// The buffer the piece's bytes go into.
+    pub buf: *mut u8,
+    /// Its capacity.
+    pub len: usize,
+    /// Where the host writes the piece's descriptor.
+    pub piece: *mut ReplyPiece,
+}
+
 /// THE CONNECTOR TABLE: one [`ServiceFn`] per [`service`], in index order. A NULL slot is a
 /// service this host does not offer, and a plugin that needs it refuses to open.
 #[repr(C)]
@@ -329,4 +379,6 @@ pub struct ConnectorSlots {
     pub random: Option<ServiceFn>,
     /// [`service::IDENTITY`], in [`IdentityIn`].
     pub identity: Option<ServiceFn>,
+    /// [`service::READ_REPLY`], in [`ReplyIn`].
+    pub read_reply: Option<ServiceFn>,
 }

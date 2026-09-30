@@ -1872,9 +1872,12 @@ fn compute_layout() -> String {
             checkin,
             close,
             random,
-            identity
+            identity,
+            read_reply
         ]
     );
+    record!(s, hconn::ReplyPiece, [kind, code, reason, fields]);
+    record!(s, hconn::ReplyIn, [head, stream, buf, len, piece]);
     // The host services (abi/host/service.rs) and the call shape they share with the connector.
     record!(s, hsvc::ServiceHead, [size, op, handle]);
     record!(
