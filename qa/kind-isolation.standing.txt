@@ -19,7 +19,7 @@ kind-isolation:matrix	instance-ratchet	busbar-plugin-loader × secret	9
 kind-isolation:matrix	measurement-disagreement	busbar-kernel × plane	3
 kind-isolation:matrix	measurement-disagreement	busbar-kernel × transport	5
 kind-isolation:matrix	measurement-disagreement	busbar-plane-llm × transport	5
-kind-isolation:matrix	ratchet	busbar × cleanliness	206
+kind-isolation:matrix	ratchet	busbar × cleanliness	207
 kind-isolation:matrix	ratchet	busbar × hooks	13
 kind-isolation:matrix	ratchet	busbar × kernel	1295
 kind-isolation:matrix	ratchet	busbar × store	7
@@ -60,7 +60,7 @@ kind-isolation:matrix	unlisted-cell	busbar-core-admin × store	2
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × transport	109
 kind-isolation:matrix	unlisted-cell	busbar-core-connector × cleanliness	2
 kind-isolation:matrix	unlisted-cell	busbar-core-connector × legacy	1
-kind-isolation:matrix	unlisted-cell	busbar-core-connector × transport	51
+kind-isolation:matrix	unlisted-cell	busbar-core-connector × transport	47
 kind-isolation:matrix	unlisted-cell	busbar-hooks-ranking × plane	4
 kind-isolation:matrix	unlisted-cell	busbar-kernel × cleanliness	47
 kind-isolation:matrix	unlisted-cell	busbar-kernel × hooks	34
@@ -95,7 +95,7 @@ kind-isolation:matrix	unlisted-edge	cleanliness -> legacy	22
 kind-isolation:matrix	unlisted-edge	cleanliness -> plane	93
 kind-isolation:matrix	unlisted-edge	cleanliness -> plugin-tooling	95
 kind-isolation:matrix	unlisted-edge	cleanliness -> store	7
-kind-isolation:matrix	unlisted-edge	cleanliness -> transport	169
+kind-isolation:matrix	unlisted-edge	cleanliness -> transport	78
 kind-isolation:matrix	unlisted-edge	contract -> cleanliness	1
 kind-isolation:matrix	unlisted-edge	contract -> kernel	1
 kind-isolation:matrix	unlisted-edge	contract -> plugin-tooling	1
@@ -107,7 +107,7 @@ kind-isolation:matrix	unlisted-edge	kernel -> legacy	181
 kind-isolation:matrix	unlisted-edge	kernel -> plugin-tooling	213
 kind-isolation:matrix	unlisted-edge	kernel -> store	31
 kind-isolation:matrix	unlisted-edge	legacy -> cleanliness	9
-kind-isolation:matrix	unlisted-edge	root -> cleanliness	206
+kind-isolation:matrix	unlisted-edge	root -> cleanliness	207
 kind-isolation:matrix	unlisted-instance	busbar × export	8
 kind-isolation:matrix	vendor-name	busbar crates/busbar/benches/hook_path.rs	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/src/root/units_admin/tests/units_admin.rs	1

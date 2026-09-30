@@ -449,7 +449,7 @@ count = "5"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "299"
+count = "295"
 
 [[cell]]
 crate = "busbar-a2a"
