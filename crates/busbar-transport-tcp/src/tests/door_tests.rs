@@ -62,7 +62,7 @@ struct Host {
     pieces: Vec<FramePiece>,
     /// Everything the framer answered: wire bytes, and frame bytes with their pieces' flags.
     wire_log: Vec<u8>,
-    frames: Vec<(Vec<u8>, u8)>,
+    frames: Vec<(Vec<u8>, u16)>,
     flags: u32,
 }
 

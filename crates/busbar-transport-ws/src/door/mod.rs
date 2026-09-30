@@ -656,7 +656,7 @@ fn fill(owed: &mut Owed, sink: &FramerSink, o: &mut FramerOut) {
                 } else {
                     0
                 },
-                _reserved: [0; 2],
+                _reserved: 0,
                 retry_after_secs: 0,
             });
         }

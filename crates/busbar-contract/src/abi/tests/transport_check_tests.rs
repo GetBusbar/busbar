@@ -265,7 +265,7 @@ fn a_piece_outside_the_frame_or_with_unknown_codes_is_fault() {
         f(Rule::SpanOutOfBounds, "framer.piece.bytes")
     );
     let mut bad = piece(0, 1);
-    bad.flags = 16;
+    bad.flags = 1 << 8;
     assert_eq!(
         check_framer(Ready, &o, &[bad], 8, 8, 8),
         f(Rule::UnknownCode, "framer.piece.flags")

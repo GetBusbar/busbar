@@ -1448,8 +1448,8 @@ fn compute_layout() -> String {
             len,
             status_code,
             status_class,
-            flags,
             _reserved,
+            flags,
             retry_after_secs
         ]
     );

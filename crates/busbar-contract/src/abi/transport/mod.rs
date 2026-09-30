@@ -350,14 +350,14 @@ pub const DEST_AUTHORITY: u32 = 0;
 pub const DEST_PROGRAM: u32 = 1;
 
 /// [`FramePiece::flags`]: the piece completes its frame.
-pub const PIECE_END_OF_FRAME: u8 = 1;
+pub const PIECE_END_OF_FRAME: u16 = 1;
 /// [`FramePiece::flags`]: `status_code` is present.
-pub const PIECE_HAS_CODE: u8 = 2;
+pub const PIECE_HAS_CODE: u16 = 2;
 /// [`FramePiece::flags`]: `retry_after_secs` is present.
-pub const PIECE_HAS_RETRY_AFTER: u8 = 4;
+pub const PIECE_HAS_RETRY_AFTER: u16 = 4;
 /// [`FramePiece::flags`]: the stream FAILED; the piece's bytes are the reason. Always with
 /// [`PIECE_END_OF_FRAME`]: it is the stream's last piece.
-pub const PIECE_STREAM_FAILED: u8 = 8;
+pub const PIECE_STREAM_FAILED: u16 = 8;
 
 /// [`FramerYield::flags`]: no frame follows on this connection.
 pub const YIELD_ENDED: u32 = 1;
@@ -534,10 +534,10 @@ pub struct FramePiece {
     pub status_code: u32,
     /// `STATUS_*`.
     pub status_class: u8,
-    /// `PIECE_*` bits.
-    pub flags: u8,
     /// Alignment padding.
-    pub _reserved: [u8; 2],
+    pub _reserved: u8,
+    /// `PIECE_*` bits (a `u16`: room past the first eight).
+    pub flags: u16,
     /// How long the far side asked to be left alone, in seconds.
     pub retry_after_secs: u64,
 }
@@ -552,6 +552,11 @@ pub struct FrameSpan {
     /// How many bytes.
     pub len: u64,
 }
+
+// The piece's size and its flags' place are fixed: a framer built against another layout is refused
+// at compile time, never read wrong at run time.
+const _: () = assert!(core::mem::size_of::<FramePiece>() == 40);
+const _: () = assert!(core::mem::offset_of!(FramePiece, flags) == 30);
 
 /// The HOST buffers every framer op writes into, and the host's clock at the call.
 #[repr(C)]

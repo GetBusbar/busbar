@@ -477,7 +477,7 @@ impl Framing {
                     status_code: 0,
                     status_class: 0,
                     flags,
-                    _reserved: [0; 2],
+                    _reserved: 0,
                     retry_after_secs: 0,
                 });
             }

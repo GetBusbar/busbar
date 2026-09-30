@@ -68,7 +68,7 @@ fn open(p: &Plugin<Transport>) {
 }
 
 /// What one script saw: the wire bytes, the frame bytes with their pieces' flags, the last flags.
-type Script = (Vec<u8>, Vec<(Vec<u8>, u8)>, u32);
+type Script = (Vec<u8>, Vec<(Vec<u8>, u16)>, u32);
 
 /// One scripted exchange through the dispatcher: begin, emit, ingest (tight sink), ingest the end.
 /// What comes back: the wire bytes, the frame bytes with their pieces' flags, the last flags.

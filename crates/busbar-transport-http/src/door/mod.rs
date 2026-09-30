@@ -694,7 +694,7 @@ fn fill(f: &mut Framing, sink: Lent<'_, FramerSink>, o: &mut Out<'_, FramerOut>)
             status_code: 0,
             status_class: 0,
             flags: 0,
-            _reserved: [0; 2],
+            _reserved: 0,
             retry_after_secs: 0,
         };
         if let Some(code) = piece.status {

@@ -158,7 +158,7 @@ fn serve(rt: &tokio::runtime::Runtime, h2: bool) -> Arc<Socket> {
 struct Got {
     stream: u64,
     bytes: Vec<u8>,
-    flags: u8,
+    flags: u16,
     code: u32,
 }
 
