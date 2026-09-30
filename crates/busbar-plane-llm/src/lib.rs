@@ -34,6 +34,7 @@ pub mod codec;
 pub mod dialect;
 pub mod meta;
 pub mod plane;
+pub mod refusal;
 
 use busbar_contract::ids::LaneId;
 use busbar_contract::ir::egress_prep::LaneCaps;
