@@ -12,6 +12,7 @@ fn every_stated_reason_code_is_the_reason_it_is_named_for() {
         (reason::UNAUTHENTICATED, "unauthenticated"),
         (reason::OVER_BUDGET, "over_budget"),
         (reason::DESTINATION_UNREACHABLE, "destination_unreachable"),
+        (reason::GROUP_FROZEN, "group_frozen"),
     ] {
         assert_eq!(
             reason_of(code).map(|r| r.as_str()),

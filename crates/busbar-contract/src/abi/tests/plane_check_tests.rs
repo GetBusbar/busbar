@@ -1228,7 +1228,6 @@ fn every_wire_refusal_code_is_pinned_to_its_number_and_word() {
     }
 }
 
-
 // ── project ──
 
 struct Host {

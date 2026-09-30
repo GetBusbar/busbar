@@ -2,9 +2,9 @@
 //!
 //! The kernel chooses a refusal's status from the plane's statement: the row for the unit's
 //! dialect, else the row for every dialect, else its own default. What is stated here is what the
-//! previous release answered and the kernel's default does not: each row is proved against the
-//! recorded answer of the previous release (`tests/refusal_statuses.rs`), and nothing is stated
-//! that no recording shows.
+//! previous release answered and the kernel's default does not, each proved against the previous
+//! release's recorded answer (the root's `tests/llm_refusal_statuses.rs`) or, where the oracle has
+//! no cell yet, pinned from its source as noted below.
 //!
 //! | reason | dialect | status | the recorded answer |
 //! |---|---|---|---|
@@ -12,6 +12,11 @@
 //! | unauthenticated | gemini | 400 | `API_KEY_INVALID` |
 //! | over budget | bedrock | 400 | `ServiceQuotaExceededException` |
 //! | destination unreachable | every dialect | 503 | the overloaded envelope |
+//! | group frozen | every dialect | 403 | `permission_error`, "... group 'X' is disabled" |
+//!
+//! The last row is pinned from 1.5.5's source (its limit refusal for a disabled group: 403, the
+//! permission kind) until the oracle records the cell (ARCHITECT ruling, 2026-09-30); the rest are
+//! proved against recorded cells.
 //!
 //! A hook's veto is not stated here: the hook's own status rides the refusal.
 
@@ -55,6 +60,8 @@ pub mod reason {
     pub const OVER_BUDGET: u32 = 20;
     /// `destination_unreachable`: no member of the pool answered.
     pub const DESTINATION_UNREACHABLE: u32 = 31;
+    /// `group_frozen`: the caller's group is disabled.
+    pub const GROUP_FROZEN: u32 = 21;
 }
 
 const fn row(dialect: u32, reason: u32, status: u32) -> RefusalStatus {
@@ -67,9 +74,10 @@ const fn row(dialect: u32, reason: u32, status: u32) -> RefusalStatus {
 }
 
 /// The plane's refusal statuses, in its statement's order.
-pub const REFUSAL_STATUSES: [RefusalStatus; 4] = [
+pub const REFUSAL_STATUSES: [RefusalStatus; 5] = [
     row(dialect_index("bedrock"), reason::UNAUTHENTICATED, 403),
     row(dialect_index("gemini"), reason::UNAUTHENTICATED, 400),
     row(dialect_index("bedrock"), reason::OVER_BUDGET, 400),
     row(REFUSAL_ANY_DIALECT, reason::DESTINATION_UNREACHABLE, 503),
+    row(REFUSAL_ANY_DIALECT, reason::GROUP_FROZEN, 403),
 ];
