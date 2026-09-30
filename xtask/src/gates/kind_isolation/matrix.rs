@@ -1043,7 +1043,7 @@ fn mask_colliding_words<'a>(rel: &str, text: &'a str) -> std::borrow::Cow<'a, st
                 if !segment_bounded(b, i, j) {
                     continue;
                 }
-                if !keeps_reference(b, i, j, prose_at, rs, toml, &table, *word, *external) {
+                if !keeps_reference(b, i, j, prose_at, rs, toml, &table, word, *external) {
                     buf[i..j].fill(b'x');
                 }
             }
