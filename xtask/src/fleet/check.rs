@@ -35,7 +35,8 @@ fn skip(repo: &str, subject: &str, reason: impl Into<String>) -> Finding {
 }
 
 /// The reason a pending repo's crate-shaped checks do not apply yet.
-const PENDING: &str = "pending-crate: registered before its crates moved in (plugins.yaml `pending_crate`)";
+const PENDING: &str =
+    "pending-crate: registered before its crates moved in (plugins.yaml `pending_crate`)";
 
 /// The branch the render is compared on.
 pub const DEV: &str = "dev";
@@ -441,7 +442,7 @@ pub fn report(fleet: &Fleet, only: &[String], findings: &[Finding]) -> i32 {
         );
         return 0;
     }
-    for x in findings {
+    for x in &findings {
         println!("DRIFT {} {}: {}", x.repo, x.subject, x.reason);
     }
     let repos: BTreeSet<&str> = findings.iter().map(|x| x.repo.as_str()).collect();

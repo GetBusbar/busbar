@@ -948,10 +948,16 @@ fn a_pending_crate_repo_is_skipped_with_its_reason_and_a_non_pending_empty_repo_
     let mut pending = fixture();
     pending.plugins[0].pending_crate = true;
     let fake = empty(&pending);
-    assert!(run(&pending, &t, &fake).is_empty(), "{:#?}", run(&pending, &t, &fake));
+    assert!(
+        run(&pending, &t, &fake).is_empty(),
+        "{:#?}",
+        run(&pending, &t, &fake)
+    );
     let s = skips(&pending, &t, &fake);
     assert_eq!(s.len(), 1, "{s:#?}");
-    assert!(s[0].repo == a && s[0].reason.contains("pending-crate") && s[0].reason.contains("empty"));
+    assert!(
+        s[0].repo == a && s[0].reason.contains("pending-crate") && s[0].reason.contains("empty")
+    );
 
     // Seeded (the render is in) but no crates yet: the crate dirs and declares skip; the render and
     // every other check still hold it.
@@ -961,15 +967,34 @@ fn a_pending_crate_repo_is_skipped_with_its_reason_and_a_non_pending_empty_repo_
         let r = repos.get_mut(a).unwrap();
         r.files.retain(|k, _| !k.starts_with("store-alpha"));
     }
-    assert!(run(&pending, &t, &fake).is_empty(), "{:#?}", run(&pending, &t, &fake));
-    let s: Vec<String> = skips(&pending, &t, &fake).into_iter().map(|x| x.subject).collect();
-    assert_eq!(s, ["store-alpha-plugin/", "store-alpha/", "store-alpha/declares.json"]);
+    assert!(
+        run(&pending, &t, &fake).is_empty(),
+        "{:#?}",
+        run(&pending, &t, &fake)
+    );
+    let s: Vec<String> = skips(&pending, &t, &fake)
+        .into_iter()
+        .map(|x| x.subject)
+        .collect();
+    assert_eq!(
+        s,
+        [
+            "store-alpha-plugin/",
+            "store-alpha/",
+            "store-alpha/declares.json"
+        ]
+    );
     {
         let mut repos = fake.repos.borrow_mut();
         let r = repos.get_mut(a).unwrap();
         r.files.remove(".mailmap");
     }
-    one(&run(&pending, &t, &fake), a, ".mailmap", "missing (the render owns it)");
+    one(
+        &run(&pending, &t, &fake),
+        a,
+        ".mailmap",
+        "missing (the render owns it)",
+    );
 
     // Pending but the crates are in: the flag is stale, RED.
     let fake = conforming(&pending, &t);
