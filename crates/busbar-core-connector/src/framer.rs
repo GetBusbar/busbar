@@ -172,6 +172,8 @@ impl Buffers {
             pieces_cap: self.pieces.len(),
             now_monotonic_ns: now_ns(),
             now_unix_ns: unix_ns(),
+            heads: std::ptr::null_mut(),
+            heads_cap: 0,
         }
     }
 

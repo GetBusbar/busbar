@@ -1464,14 +1464,29 @@ fn compute_layout() -> String {
             pieces,
             pieces_cap,
             now_monotonic_ns,
-            now_unix_ns
+            now_unix_ns,
+            heads,
+            heads_cap
         ]
     );
     record!(s, tkind::FrameSpan, [offset, len]);
     record!(
         s,
+        tkind::HeadSlots,
+        [stream, method, target, authority, reason]
+    );
+    record!(
+        s,
         tkind::FramerYield,
-        [wire_len, frame_len, pieces_len, flags, next_deadline_ns]
+        [
+            wire_len,
+            frame_len,
+            pieces_len,
+            flags,
+            next_deadline_ns,
+            heads_len,
+            _reserved
+        ]
     );
     record!(s, tkind::ListenIn, [head, bind, addr_buf, addr_cap]);
     record!(s, tkind::ListenOut, [head, listener, addr_written]);

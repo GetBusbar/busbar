@@ -243,6 +243,8 @@ impl Host {
             pieces_cap: self.caps.2,
             now_monotonic_ns: self.now,
             now_unix_ns: 1_790_000_000 * SEC + self.now,
+            heads: std::ptr::null_mut(),
+            heads_cap: 0,
         }
     }
 

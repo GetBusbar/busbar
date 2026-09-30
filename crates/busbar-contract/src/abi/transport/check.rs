@@ -13,12 +13,13 @@
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
 use super::{
-    AcceptOut, ArrivalOut, Claim, ConnFacts, FramePiece, FramerOut, IoOut, ListenOut, LocateOut,
-    SettingDecl, StatusRow, TransportTail, CANCEL_COMPLETED, CANCEL_NOTHING_MOVED,
-    FACT_DECODES_PAYLOAD, FACT_SIGNS_NOTHING_AFTER_AUTH, FRAMING_DATAGRAM, FRAMING_STREAM,
-    MAX_ADDR, PIECE_END_OF_FRAME, PIECE_HAS_CODE, PIECE_FIELDS, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED,
-    ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER,
-    STATUS_SUCCESS, UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    AcceptOut, ArrivalOut, Claim, ConnFacts, FramePiece, FrameSpan, FramerOut, HeadSlots, IoOut,
+    ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail, CANCEL_COMPLETED,
+    CANCEL_NOTHING_MOVED, FACT_DECODES_PAYLOAD, FACT_SIGNS_NOTHING_AFTER_AUTH, FRAMING_DATAGRAM,
+    FRAMING_STREAM, MAX_ADDR, PIECE_CONTINUED, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE,
+    PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG,
+    SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER, STATUS_SUCCESS, UNIT0_HANDSHAKE, YIELD_ENDED,
+    YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome};
 use crate::abi::mechanism::check::{
@@ -221,10 +222,17 @@ pub fn check_framer(
                     | PIECE_HAS_CODE
                     | PIECE_HAS_RETRY_AFTER
                     | PIECE_STREAM_FAILED
-                    | PIECE_FIELDS,
+                    | PIECE_FIELDS
+                    | PIECE_CONTINUED,
             ),
             "framer.piece.flags",
         )?;
+        if p.flags & PIECE_CONTINUED != 0 && p.flags & PIECE_FIELDS == 0 {
+            return Err(fault(
+                Rule::Contradiction,
+                "framer.piece.continued_not_fields",
+            ));
+        }
         // A field block is never a failure's reason.
         if p.flags & PIECE_FIELDS != 0 && p.flags & PIECE_STREAM_FAILED != 0 {
             return Err(fault(Rule::Contradiction, "framer.piece.fields_failed"));
@@ -267,6 +275,66 @@ pub const fn check_cancel(outcome: Outcome, disposition: u32) -> Result<(), Faul
         CANCEL_COMPLETED as u64,
         "cancel.disposition",
     )
+}
+
+/// A framer answer's field blocks, over the frame bytes it wrote (`frame`, the first `frame_len`
+/// bytes of the sink): a pseudo-field (a line whose name starts with `:`) never enters a block;
+/// the request's method, target and authority are [`HeadSlots`] slots. A line starts after every
+/// CR LF (also one split across two pieces), and at the first byte of a fields piece that does not
+/// carry [`PIECE_CONTINUED`].
+/// Run after [`check_framer`] passed.
+///
+/// # Errors
+///
+/// [`Rule::Foreign`] for a pseudo-field; [`Rule::SpanOutOfBounds`] for a piece outside `frame`.
+pub fn check_framer_fields(pieces: &[FramePiece], frame: &[u8]) -> Result<(), Fault> {
+    const FIELD: &str = "framer.piece.pseudo_field";
+    for p in pieces.iter().filter(|p| p.flags & PIECE_FIELDS != 0) {
+        let bytes = usize::try_from(p.offset)
+            .ok()
+            .zip(usize::try_from(p.len).ok())
+            .and_then(|(at, len)| frame.get(at..at.checked_add(len)?))
+            .ok_or(fault(Rule::SpanOutOfBounds, "framer.piece.bytes"))?;
+        if p.flags & PIECE_CONTINUED == 0 && bytes.first() == Some(&b':') {
+            return Err(fault(Rule::Foreign, FIELD));
+        }
+        // A CR LF split across pieces: the LF opens this one and the next line follows it.
+        if bytes.starts_with(b"\n:") || bytes.windows(3).any(|w| w == b"\r\n:") {
+            return Err(fault(Rule::Foreign, FIELD));
+        }
+    }
+    Ok(())
+}
+
+/// A framer answer's head slots (`heads`, the host's buffer of `heads_cap`): at most the
+/// capacity; one per stream; each slot inside the frame bytes written; a method and a target
+/// present together or both absent.
+///
+/// # Errors
+///
+/// The rule the slots break.
+pub fn check_head_slots(out: &FramerOut, heads: &[HeadSlots], heads_cap: u64) -> Result<(), Fault> {
+    let y = &out.yielded;
+    let n = u64::from(y.heads_len);
+    within(n, heads_cap, "framer.heads_len")?;
+    let heads = first(heads, n, "framer.heads")?;
+    for (i, h) in heads.iter().enumerate() {
+        if heads[..i].iter().any(|e| e.stream == h.stream) {
+            return Err(fault(Rule::Contradiction, "framer.head.stream_twice"));
+        }
+        let span = |s: FrameSpan, field| range(s.offset, s.len, y.frame_len, field);
+        span(h.method, "framer.head.method")?;
+        span(h.target, "framer.head.target")?;
+        span(h.authority, "framer.head.authority")?;
+        span(h.reason, "framer.head.reason")?;
+        if (h.method.len == 0) != (h.target.len == 0) {
+            return Err(fault(
+                Rule::Contradiction,
+                "framer.head.method_without_target",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Connection facts: the size is the struct's own.

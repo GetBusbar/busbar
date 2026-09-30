@@ -59,7 +59,10 @@
 //! field is left in it (an EMPTY fields piece, with [`PIECE_END_OF_FRAME`], is an empty head, never
 //! the stream's end), so the head always precedes the first payload piece and a later fields frame
 //! is the far end's fields after its body (trailers). The block's bytes are [`fields`]' rendering;
-//! hop-by-hop fields never enter it: the framer drops them.
+//! hop-by-hop fields never enter it: the framer drops them. A pseudo-field (`:method`, `:path`,
+//! `:authority`, `:status`) never does either: on an ACCEPTED stream the request's method, target
+//! and authority are typed [`HeadSlots`], a dialled answer's reason phrase too, and the answer's
+//! number is the piece's own `code`.
 //!
 //! EVERY REQUEST-PATH RESULT IS IN A HOST BUFFER (memory class (i)): a carrier's addresses and read
 //! bytes, a framer's wire bytes, frame bytes and pieces. The short-buffer rule is stated once,
@@ -371,6 +374,11 @@ pub const PIECE_STREAM_FAILED: u16 = 8;
 /// never payload. Never with [`PIECE_STREAM_FAILED`].
 pub const PIECE_FIELDS: u16 = 16;
 
+/// [`FramePiece::flags`], with [`PIECE_FIELDS`]: the piece's first byte CONTINUES a line an earlier
+/// piece of the block began (a sink too small for the block split it mid-line). A fields piece
+/// without it starts a line.
+pub const PIECE_CONTINUED: u16 = 32;
+
 /// [`FramerYield::flags`]: no frame follows on this connection.
 pub const YIELD_ENDED: u32 = 1;
 /// [`FramerYield::flags`]: a buffer filled; call the same op again once drained.
@@ -554,8 +562,8 @@ pub struct FramePiece {
     pub retry_after_secs: u64,
 }
 
-/// A byte range of a host buffer a piece's bytes were written into; `len == 0` = absent. (The same
-/// shape HEAD-FIELDS gives the framer's head slots, a range of [`FramerSink::frame`].)
+/// A byte range of a host buffer a piece's bytes were written into; `len == 0` = absent. A
+/// [`HeadSlots`] slot is one of these, a range of [`FramerSink::frame`] a framer wrote.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FrameSpan {
@@ -590,6 +598,37 @@ pub struct FramerSink {
     pub now_monotonic_ns: u64,
     /// The host's wall clock, nanoseconds since the Unix epoch.
     pub now_unix_ns: u64,
+    /// Each stream's head typed slots ([`HeadSlots`]).
+    pub heads: *mut HeadSlots,
+    /// Its capacity, in heads.
+    pub heads_cap: usize,
+}
+
+/// A STREAM'S HEAD TYPED SLOTS: what a head says that is never a field. A framer yields at most
+/// ONE per stream, in the same answer as that stream's first [`PIECE_FIELDS`] frame (the ordinary
+/// fields; a pseudo-field such as `:path` never enters a field block, and hop-by-hop fields, `te`
+/// among them, are dropped). Each slot's bytes are in [`FramerSink::frame`].
+///
+/// * An ACCEPTED stream ([`SIDE_ACCEPT`]) fills `method`, `target` and, where the caller named one,
+///   `authority`: the kernel fills the plane's `ArriveIn::method` and target from these slots, never
+///   by reading bytes.
+/// * A DIALLED stream ([`SIDE_DIAL`]) fills `reason` only: the far end's reason phrase exactly as
+///   it was sent (HTTP/1), where the wire has one; a wire without one (HTTP/2) yields no slots.
+///
+/// The answer's number is never a slot: it is the head piece's [`FramePiece::code`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HeadSlots {
+    /// The stream.
+    pub stream: u64,
+    /// The method (`GET`, `POST`, ...); with `target`, or both absent.
+    pub method: FrameSpan,
+    /// The target: the path and query the caller asked for; with `method`, or both absent.
+    pub target: FrameSpan,
+    /// The authority the caller named; absent when it named none.
+    pub authority: FrameSpan,
+    /// The far end's reason phrase, exactly as sent; absent when it sent none.
+    pub reason: FrameSpan,
 }
 
 /// What a framer op wrote into its [`FramerSink`].
@@ -606,6 +645,10 @@ pub struct FramerYield {
     pub flags: u32,
     /// With [`YIELD_HAS_DEADLINE`]: the monotonic instant to call [`slot::TIMER`] at.
     pub next_deadline_ns: u64,
+    /// Head slots written to `heads`.
+    pub heads_len: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }
 
 // ── carrier ins and outs ─────────────────────────────────────────────────────────────────────────

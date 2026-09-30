@@ -85,6 +85,8 @@ fn script(p: &Plugin<Transport>) -> Script {
         pieces_cap: pieces.len(),
         now_monotonic_ns: 1,
         now_unix_ns: 1,
+        heads: std::ptr::null_mut(),
+        heads_cap: 0,
     };
     let sink = || base;
     let mut i: BeginIn = z();
