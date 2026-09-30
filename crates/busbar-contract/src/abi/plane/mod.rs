@@ -967,12 +967,13 @@ pub struct PlaneRefreshOut {
 /// may cross threads with the op that lends it.
 #[derive(Debug, Default)]
 pub struct FieldList {
-    bytes: Vec<(Vec<u8>, Vec<u8>)>,
+    /// The names and values, kept only to own the bytes `fields` points into.
+    _owned: Vec<(Vec<u8>, Vec<u8>)>,
     fields: Vec<Field>,
 }
 
-// SAFETY: every pointer in `fields` points into `bytes`' own heap allocations, owned here and never
-// mutated or moved (a Vec's heap does not move when the Vec does) while the list lives.
+// SAFETY: every pointer in `fields` points into `_owned`'s own heap allocations, owned here and
+// never mutated or moved (a Vec's heap does not move when the Vec does) while the list lives.
 unsafe impl Send for FieldList {}
 // SAFETY: as above; the list is read-only once built.
 unsafe impl Sync for FieldList {}
@@ -995,7 +996,7 @@ impl FieldList {
             })
             .collect();
         FieldList {
-            bytes: pairs,
+            _owned: pairs,
             fields,
         }
     }
