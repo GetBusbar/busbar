@@ -2160,6 +2160,18 @@ pub const PLANE_JOURNAL_ROW_UNREADABLE: Diagnostic = Diagnostic {
     retired: false,
 };
 
+pub const PLANE_JOURNAL_RESUME_CHAIN_BROKEN: Diagnostic = Diagnostic {
+    code: 2048,
+    class: Class::Audit,
+    slug: "plane-journal-resume-chain-broken",
+    title: "A plane journal scope failed hash-chain verification on resume (tamper evidence)",
+    severity: Severity::Actionable,
+    summary: "A plane journal scope that had been evicted from the in-memory cache was read back from               the durable store to take its next record, and the persisted tail does NOT verify               against its own hash chain, which is tamper evidence surfaced at runtime rather than at               boot. The chain resumes from the broken tail and the write is not refused, because               refusing here would convert a detection control into a deletion primitive.",
+    action: "Treat the durable governance store as compromised until explained: capture it for              forensic review before it is overwritten, then restore from a trusted backup once the              cause is understood.",
+    since: "1.6.0",
+    retired: false,
+};
+
 pub const PLANE_AUDIT_ROW_UNREADABLE: Diagnostic = Diagnostic {
     code: 2047,
     class: Class::Audit,
@@ -3229,6 +3241,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &PLANE_TASK_CHAIN_VERIFY_FAILED,
     &PLANE_CALLLOG_CHAIN_VERIFY_FAILED,
     &PLANE_AUDITLOG_CHAIN_VERIFY_FAILED,
+    &PLANE_JOURNAL_RESUME_CHAIN_BROKEN,
     &PLANE_AUDITLOG_WRITE_FAILED,
     &PLANE_CALLLOG_ROW_UNREADABLE,
     &PLANE_JOURNAL_ROW_UNREADABLE,

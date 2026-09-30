@@ -1037,3 +1037,80 @@ fn out_of_range_register_framing_is_refused_not_matched() {
         );
     });
 }
+
+/// U16: RUNTIME RESUME TAMPER IS REPORTED ON THE DIAGNOSTICS ENVELOPE, through the real seam. A capped
+/// stream evicts a scope; its cold persisted row is tampered (kept decodable, so the failure is a chain
+/// break); the next append resumes the scope from that tail. The append STILL lands (a refusal would
+/// make the detection a deletion primitive), and the wrapper DRAINS the recorded break and names it as
+/// `plane-journal-resume-chain-broken`. Before the wrapper drained `take_resume_breaks`, the break sat
+/// in the journal unread by anything in production and no diagnostic fired.
+#[test]
+fn a_resumed_scopes_broken_tail_is_reported_by_the_append_wrapper() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let store = Arc::new(GenericPlaneStore::new());
+    let app = durable_app_over(store.clone());
+    let kind_id = fresh_kind_id();
+    let cap = crate::test_support::warn_capture::WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        with_dispatch_scope(&app, |host, _vt| {
+            let kind = b"durable_test_event";
+            let desc = JournalStreamDesc {
+                size: core::mem::size_of::<JournalStreamDesc>() as u32,
+                version: POD_VERSION,
+                framing: RawFraming::of(AbiFraming::LengthPrefixed),
+                digests_scope: 1,
+                kind_id,
+                _reserved: 0,
+                kind_ptr: kind.as_ptr(),
+                kind_len: kind.len(),
+            };
+            assert_eq!(
+                journal_register_capped(host, &desc, neutral_reframe, 1),
+                StatusClass::Ok
+            );
+            let append = |scope: &[u8], content: &[u8]| {
+                journal_append_scoped(
+                    host,
+                    kind_id,
+                    scope.as_ptr(),
+                    scope.len(),
+                    content.as_ptr(),
+                    content.len(),
+                )
+            };
+            assert_eq!(append(b"acme", b"|first"), Seq(1));
+            assert_eq!(
+                append(b"other", b"|x"),
+                Seq(1),
+                "cap 1: `other` evicts `acme`"
+            );
+            // Tamper acme's cold persisted row, keeping it a decodable neutral body.
+            {
+                let mut rows = store.rows();
+                let row = rows
+                    .iter_mut()
+                    .find(|r| r.parent.as_deref() == Some("acme"))
+                    .expect("acme's row was persisted");
+                let mut nb: NeutralBody = serde_json::from_slice(&row.body).expect("neutral body");
+                nb.content = b"|forged".to_vec();
+                row.body = serde_json::to_vec(&nb).expect("encodes");
+            }
+            assert_eq!(
+                append(b"acme", b"|second"),
+                Seq(2),
+                "the resume still proceeds from the tail: the write is not refused"
+            );
+            let h = stream_handle(kind_id).expect("registered");
+            assert!(
+                h.journal.take_resume_breaks().is_empty(),
+                "the append wrapper drained the break it reported"
+            );
+        });
+    });
+    assert!(
+        cap.contains("CHAIN VERIFICATION FAILED on resume"),
+        "the resume break must be named on the diagnostics envelope: {:?}",
+        cap.messages()
+    );
+}

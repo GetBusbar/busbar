@@ -204,6 +204,18 @@
     "retired": false
   },
   {
+    "code": "BUSBAR-2048",
+    "number": 2048,
+    "class": "audit",
+    "slug": "plane-journal-resume-chain-broken",
+    "title": "A plane journal scope failed hash-chain verification on resume (tamper evidence)",
+    "severity": "actionable",
+    "summary": "A plane journal scope that had been evicted from the in-memory cache was read back from               the durable store to take its next record, and the persisted tail does NOT verify               against its own hash chain, which is tamper evidence surfaced at runtime rather than at               boot. The chain resumes from the broken tail and the write is not refused, because               refusing here would convert a detection control into a deletion primitive.",
+    "action": "Treat the durable governance store as compromised until explained: capture it for              forensic review before it is overwritten, then restore from a trusted backup once the              cause is understood.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
     "code": "BUSBAR-3001",
     "number": 3001,
     "class": "config",
