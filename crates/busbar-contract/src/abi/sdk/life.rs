@@ -308,12 +308,6 @@ impl Leases {
     pub fn held(&self) -> usize {
         self.lock().keys().filter(|k| k.1 == 0).count()
     }
-
-    /// How many parts the held leases hold in all.
-    #[must_use]
-    pub fn parts(&self) -> usize {
-        self.lock().len()
-    }
 }
 
 fn absent() -> Blob {

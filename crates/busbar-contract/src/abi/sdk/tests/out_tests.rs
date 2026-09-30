@@ -94,16 +94,13 @@ fn an_answer_that_leases_twice_is_freed_by_its_one_release_across_requests() {
         out.lease_str(|o| &o.head.error, &leases, format!("first {n}"));
         out.lease_str(|o| &o.head.error, &leases, format!("second {n}"));
         assert_eq!(read(o.head.error), format!("second {n}").as_bytes());
-        assert_eq!(
-            (leases.held(), leases.parts()),
-            (1, 2),
-            "one answer, one lease, two parts"
-        );
+        assert_eq!(leases.held(), 1, "one answer, one lease");
         assert_eq!(leases.release(o.head.lease), Outcome::Ready);
+        assert_eq!(leases.held(), 0, "request {n}: nothing left held");
         assert_eq!(
-            (leases.held(), leases.parts()),
-            (0, 0),
-            "request {n}: nothing left held"
+            leases.release(o.head.lease),
+            Outcome::Refused,
+            "no part outlives it"
         );
     }
 }
