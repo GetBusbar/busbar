@@ -6688,7 +6688,10 @@ impl Gate for KindIsolationGate {
             // planted in a cleanliness crate that has none: the loader as a dev-edge whose
             // only user is `tests/universal_needs.rs` is scored nowhere…
             let universal = |normal: bool, extra_user: bool| {
-                let dir = "crates/busbar-oauth2";
+                // A crate the tree does not carry, registered as cleanliness: `busbar-oauth2` names the loader for real today
+                // (`routes.rs`), so planting a second declaration there measures "row 1 vs 2" and
+                // is a pre-existing edge, never the NEW forbidden one this case is about.
+                let dir = "crates/busbar-planted-clean";
                 let rel = format!("{dir}/Cargo.toml");
                 let table = if normal {
                     "dependencies"
@@ -6698,12 +6701,20 @@ impl Gate for KindIsolationGate {
                 let mut ov = Overlay::new();
                 ov.set(
                     rel.as_str(),
+                    format!(
+                        "[package]\nname = \"busbar-planted-clean\"\nversion = \"0.0.0\"\n\n[{table}]\n\
+                         busbar-plugin-loader = {{ path = \"../plugin-loader\" }}\n"
+                    ),
+                );
+                // registered as `cleanliness` (its name says nothing), so no real crate's mentions
+                // of a name move the vocabulary matrix.
+                ov.set(
+                    REGISTRY_FILE,
                     manifest_plus(
                         cx,
-                        &rel,
-                        &format!(
-                            "[{table}]\nbusbar-plugin-loader = {{ path = \"../plugin-loader\" }}\n"
-                        ),
+                        REGISTRY_FILE,
+                        "[[registered]]\ncrate = \"busbar-planted-clean\"\nkind = \"cleanliness\"\n\
+                         reason = \"planted\"\n",
                     ),
                 );
                 ov.set(
@@ -6739,7 +6750,7 @@ impl Gate for KindIsolationGate {
                 universal(true, false),
                 &[
                     "new-forbidden-edge",
-                    "busbar-oauth2 -> busbar-plugin-loader",
+                    "busbar-planted-clean -> busbar-plugin-loader",
                 ],
             ));
             // …and any other file using it is not the witness.
@@ -6750,7 +6761,7 @@ impl Gate for KindIsolationGate {
                  is not a witness",
                 &[ROW_TEST_DEPS],
                 universal(false, true),
-                &["new-forbidden-edge", "busbar-oauth2 -> busbar-plugin-loader"],
+                &["new-forbidden-edge", "busbar-planted-clean -> busbar-plugin-loader"],
             ));
 
             // A NEGATIVE COUNT IS A PER-CELL OFF SWITCH, and it is refused where every other
