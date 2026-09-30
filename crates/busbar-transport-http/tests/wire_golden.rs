@@ -218,10 +218,6 @@ struct Door {
 }
 
 impl Door {
-    fn open(settings: &str, agreed: &str) -> Self {
-        Self::open_at(settings, agreed, &format!("http://127.0.0.1:{PORT}"))
-    }
-
     fn open_at(settings: &str, agreed: &str, target: &str) -> Self {
         let d = busbar_transport_http::door::door();
         // SAFETY: the door's `'static` table.
