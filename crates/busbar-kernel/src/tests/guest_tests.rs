@@ -169,8 +169,16 @@ fn two_claimants_at_an_equal_precedence_are_refused() {
         "prefixes that rule each other out"
     );
     assert!(
-        GuestList::seal(vec![line("a", pre(b"AWS4")), line("b", pre(b"AWS4-HMAC"))]).is_err(),
-        "prefixes that can both hold"
+        GuestList::seal(vec![line("a", pre(b"AWS4")), line("b", pre(b"AWS4"))]).is_err(),
+        "the same prefix can hold for both, at one precedence"
+    );
+    // A longer prefix is more specific (its own precedence), so it is ordered ahead, never refused.
+    let ordered =
+        GuestList::seal(vec![line("a", pre(b"AWS4")), line("b", pre(b"AWS4-HMAC"))]).unwrap();
+    assert_eq!(
+        ordered.lines()[0].claimant,
+        Claimant::Plane("b".into()),
+        "the longer prefix is tried first"
     );
 }
 
