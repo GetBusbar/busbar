@@ -351,16 +351,30 @@ const CARRIER_WORDS: &[&str] = &[
 ];
 
 /// `text` (a file at `rel`) with every operating-system occurrence of an [`OS_WORDS`] word masked.
+#[cfg(test)]
 pub(super) fn mask_os_words<'a>(rel: &str, text: &'a str) -> Cow<'a, str> {
-    let lower = text.to_ascii_lowercase();
-    if !OS_WORDS.iter().any(|w| lower.contains(w)) {
-        return Cow::Borrowed(text);
+    mask_os_words_in(rel, text, text)
+}
+
+/// [`mask_os_words`] over `masked`, an earlier mask's same-length rewrite of `original`: every
+/// context is read off `original`, and the filler goes into `masked` at the same bytes.
+pub(super) fn mask_os_words_in<'a>(rel: &str, original: &str, masked: &'a str) -> Cow<'a, str> {
+    let lower = masked.to_ascii_lowercase();
+    if !OS_WORDS.iter().any(|w| lower.contains(w)) || original.len() != masked.len() {
+        return Cow::Borrowed(masked);
     }
-    let mut out = String::with_capacity(text.len());
-    for line in text.split_inclusive('\n') {
-        let b = line.as_bytes();
+    let mut out = String::with_capacity(masked.len());
+    for (line, orig) in masked
+        .split_inclusive('\n')
+        .zip(original.split_inclusive('\n'))
+    {
+        if orig.len() != line.len() {
+            out.push_str(line);
+            continue;
+        }
+        let b = orig.as_bytes();
         let low = line.to_ascii_lowercase();
-        let mut buf = b.to_vec();
+        let mut buf = line.as_bytes().to_vec();
         let mut touched = false;
         for word in OS_WORDS {
             let mut from = 0;
@@ -454,6 +468,17 @@ mod tests {
         ] {
             assert!(!masked("crates/busbar-kernel/src/a.rs", s), "{s}");
         }
+    }
+
+    /// An earlier mask's filler (`socket` masked as a contract identifier) must not turn "the unix
+    /// socket" into "the unix xxxxxx" and so into the operating system.
+    #[test]
+    fn context_is_read_off_the_original_text() {
+        let original = "// dial the unix socket first.\n";
+        let masked = "// dial the unix xxxxxx xxxxx.\n";
+        assert_eq!(mask_os_words_in("a.rs", original, masked), masked);
+        let os = "// SIGTERM on unix, or ctrl_c.\n";
+        assert!(!mask_os_words_in("a.rs", os, os).contains("unix"));
     }
 
     #[test]
