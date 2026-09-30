@@ -148,12 +148,18 @@ pub fn cdylib(snake: &str) -> Option<Vec<u8>> {
     std::fs::read(cdylib_path(snake)?).ok()
 }
 
-/// Every loadable plugin library in the target directory (uplifted or under `deps/`), newest first.
+/// Every loadable plugin library in the target directory (uplifted, under `deps/`, or an example
+/// `cdylib` under `examples/`), newest first.
 fn libraries() -> Vec<PathBuf> {
     let Some(profile) = profile_dir() else {
         return Vec::new();
     };
-    let mut found: Vec<(std::time::SystemTime, PathBuf)> = [profile.clone(), profile.join("deps")]
+    let dirs = [
+        profile.clone(),
+        profile.join("deps"),
+        profile.join("examples"),
+    ];
+    let mut found: Vec<(std::time::SystemTime, PathBuf)> = dirs
         .iter()
         .flat_map(|dir| list_plugin_files(dir).into_iter().map(move |f| dir.join(f)))
         .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))

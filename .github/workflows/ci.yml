@@ -2259,10 +2259,10 @@ jobs:
           # and the wire serves only when its cdylib is dropped into `plugins/`. The one test that
           # boots it both ways — no tarball: refused at boot (layers compose over nothing); tarball:
           # serves the linked build's pinned exchange through the dropped-in wire, one listener per
-          # data worker. `-p busbar-plugin-loader` is on the line for its dev-edge to the wire with
-          # `dropped-in` on: that is what builds the wire's cdylib beside the binary, which the test
-          # finds by kind and refuses to skip without under CI. `check` runs the same test with the
-          # default (linked) row only.
+          # data worker. The wire's door cdylib the test finds by kind (and refuses to skip without
+          # under CI) is built by the "Plugin cdylibs the suites dlopen" step, the wire's own
+          # `dropped-in` build; no linked dev edge carries that feature. `check` runs the same test
+          # with the default (linked) row only.
           - name: dropped-in tcp transport
             features: busbar/auth-admin-tokens,busbar/hooks-ranking,busbar/proto-llm,busbar/plane-mcp,busbar/plane-a2a,busbar/plane-streaming,busbar/plane-decisions,busbar/root-admin
             default_axes: exports

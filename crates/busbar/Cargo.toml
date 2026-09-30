@@ -16,6 +16,14 @@ license = "Apache-2.0"
 name = "busbar"
 path = "src/main.rs"
 
+# The root's dropped-in transport fixture (see the featureless `busbar-transport-tcp` dev edge): the
+# door behind the one `export_door!`, a `cdylib` `cargo test` builds and the tests dlopen. An example,
+# not a crate: it never ships.
+[[example]]
+name = "transport_door"
+path = "tests/fixtures/transport_door.rs"
+crate-type = ["cdylib"]
+
 [dependencies]
 # The engine (busbar-core absorbed INTO busbar-kernel, W4.a #19/#37) is the merged `busbar-kernel`
 # dep declared below with the loop crate; `default-features = false` there so the binary's OWN
@@ -483,14 +491,13 @@ tracing-subscriber = { workspace = true }
 opentelemetry-proto = { workspace = true }
 prost = { workspace = true }
 # The transport axis's both-doors proofs (`src/root/tests/registry.rs`: a dropped-in wire rides the
-# one fold in place of its linked row, and one on a linked key is refused as a second linked row is)
-# find a `kind: transport` cdylib beside the test binary and refuse to skip without one under CI.
-# The tcp wire's door is compiled only under `dropped-in` (so a release image links one set of door
-# symbols), so without this edge a package-scoped test build (`cargo test -p busbar`, every
-# feature-sets row naming the root) emits a tcp cdylib with no door ("returned a null kind string")
-# and both proofs fail; only a workspace build, where the loader's dev-edge unifies the feature in,
-# carried a loadable one. The normal edge above stays featureless: a release build carries no door.
-busbar-transport-tcp = { path = "../busbar-transport-tcp", features = ["dropped-in"] }
+# one fold in place of its linked row, and one on a linked key is refused as a second linked row is;
+# `tests/transport_dropped_in_serves.rs`) find a `kind: transport` cdylib beside the test binary and
+# refuse to skip without one under CI. That cdylib is this crate's example `transport_door` (below),
+# the door behind the one `export_door!`, built by `cargo test` and dlopened. This edge stays
+# featureless: `dropped-in` would export the door symbol from the LINKED rlib, a second door symbol in
+# every test binary that links it.
+busbar-transport-tcp = { path = "../busbar-transport-tcp" }
 # tests/cli_validate.rs builds signed plugin tarball fixtures.
 hex = { workspace = true }
 # THE ADDED-LATENCY INSTRUMENT (`benches/hook_path.rs`) — black-box, boots the shipped binary.
