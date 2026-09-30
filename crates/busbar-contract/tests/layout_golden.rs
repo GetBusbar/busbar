@@ -1880,6 +1880,7 @@ fn compute_layout() -> String {
     record!(s, hsvc::EntitlementCheckIn, [head, target]);
     record!(s, hsvc::ContentScanIn, [head, content, into]);
     record!(s, hsvc::HookCallIn, [head, stage, _reserved, view, into]);
+    record!(s, hsvc::RandomFillIn, [head, len, into]);
     record!(
         s,
         hsvc::HostSlots,
@@ -1903,7 +1904,8 @@ fn compute_layout() -> String {
             verify_store,
             entitlement_check,
             content_scan,
-            hook_call
+            hook_call,
+            random_fill
         ]
     );
 

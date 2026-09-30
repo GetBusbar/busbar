@@ -3,8 +3,10 @@
 
 //! The plugin side's host-service wrappers (`services.rs`), over a hand-built table.
 
+use std::sync::atomic::{AtomicU8, Ordering};
+
 use super::*;
-use crate::abi::host::service::{ServiceFn, NOT_ENTITLED, SERVICES};
+use crate::abi::host::service::{MAX_RANDOM_FILL, NOT_ENTITLED, SERVICES};
 use crate::abi::mechanism::ticket::Ticket;
 
 /// A host that entitles exactly `item:one`.
@@ -66,6 +68,43 @@ fn table(slot: Option<ServiceFn>) -> HostSlots {
         entitlement_check: slot,
         content_scan: None,
         hook_call: None,
+        random_fill: None,
+    }
+}
+
+/// How many fills [`fills_with_its_count`] answered.
+static FILLS: AtomicU8 = AtomicU8::new(0);
+
+/// A host that fills every byte asked with the fill's ordinal, `short` bytes fewer than asked.
+fn fill_with_count(input: *const c_void, out: *mut ServiceOut, short: u64) -> RawOutcome {
+    // SAFETY: the wrapper hands a `RandomFillIn` naming its live buffer, and a live `out`.
+    unsafe {
+        let i = input.cast::<RandomFillIn>().read_unaligned();
+        let n = FILLS.fetch_add(1, Ordering::SeqCst) + 1;
+        std::ptr::write_bytes(i.into.buf, n, i.len as usize);
+        (*out).len = i.len - short;
+        (*out).outcome = RawOutcome::of(Outcome::Ready);
+    }
+    RawOutcome::of(Outcome::Ready)
+}
+
+extern "C" fn fills_with_its_count(
+    _ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    fill_with_count(input, out, 0)
+}
+
+/// A host that answers one byte fewer than asked.
+extern "C" fn fills_short(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    fill_with_count(input, out, 1)
+}
+
+fn fill_table(slot: Option<ServiceFn>) -> HostSlots {
+    HostSlots {
+        random_fill: slot,
+        ..table(None)
     }
 }
 
@@ -125,4 +164,47 @@ fn no_table_is_no_services() {
         services: std::ptr::null(),
     };
     assert!(Services::of(&tables).is_none());
+}
+
+#[test]
+fn random_fill_fills_the_buffer_fresh_each_call_and_refuses_outside_its_cap_before_the_host() {
+    let t = fill_table(Some(fills_with_its_count));
+    let s = services(&t);
+    let (mut a, mut b) = ([0u8; 32], [0u8; 32]);
+    assert_eq!(s.random_fill(handle(), &mut a), Ok(()));
+    assert_eq!(s.random_fill(handle(), &mut b), Ok(()));
+    assert_ne!(a, b, "two fills are never equal");
+    assert!(a.iter().all(|x| *x == a[0]));
+    let mut top = vec![0u8; MAX_RANDOM_FILL as usize];
+    assert_eq!(s.random_fill(handle(), &mut top), Ok(()));
+    let called = FILLS.load(Ordering::SeqCst);
+    let mut over = vec![0u8; MAX_RANDOM_FILL as usize + 1];
+    assert_eq!(
+        s.random_fill(handle(), &mut over),
+        Err(ServiceError::Declined(Outcome::Refused))
+    );
+    assert_eq!(
+        s.random_fill(handle(), &mut []),
+        Err(ServiceError::Declined(Outcome::Refused))
+    );
+    // A refused fill never calls the host.
+    assert_eq!(FILLS.load(Ordering::SeqCst), called);
+    assert!(over.iter().all(|x| *x == 0));
+    assert_eq!(
+        services(&fill_table(Some(fills_short))).random_fill(handle(), &mut a),
+        Err(ServiceError::Broken)
+    );
+    assert_eq!(
+        services(&fill_table(None)).random_fill(handle(), &mut a),
+        Err(ServiceError::Unserved)
+    );
+    // A host whose table ends before `random.fill` serves none, and its slot is never read.
+    let old = HostSlots {
+        slots: op::RANDOM_FILL,
+        ..fill_table(Some(fills_with_its_count))
+    };
+    assert_eq!(
+        services(&old).random_fill(handle(), &mut a),
+        Err(ServiceError::Unserved)
+    );
 }

@@ -29,10 +29,10 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, Weak};
 
 use busbar_contract::abi::host::service::{
-    self as svc, check_bufs, check_head, check_records_claim_in, may_pend, op, ClockNowIn,
-    ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots, RecordsClaimIn, RecordsGetIn,
-    RecordsListIn, ServiceBufs, ServiceHead, ServiceOut, SignIn, TrustDueIn, TrustSightIn,
-    SERVICES,
+    self as svc, check_bufs, check_head, check_random_fill_in, check_records_claim_in, may_pend,
+    op, ClockNowIn, ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots, RandomFillIn,
+    RecordsClaimIn, RecordsGetIn, RecordsListIn, ServiceBufs, ServiceHead, ServiceOut, SignIn,
+    TrustDueIn, TrustSightIn, SERVICES,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check;
@@ -54,6 +54,8 @@ pub const NO_TTL: &str = "a claim states its time to live";
 pub const UNTICKETED: &str = "a service that may pend is callable only inside a ticketed op";
 /// The error text of a short answer.
 pub const SHORT: &str = "the buffer is too small";
+/// The refusal of a `random.fill` of no bytes or above `MAX_RANDOM_FILL`, before a byte is drawn.
+pub const FILL_OUT_OF_RANGE: &str = "a fill asks for 1 to MAX_RANDOM_FILL bytes";
 /// The error text of the second short answer on one handle.
 pub const SECOND_SHORT: &str = "a second short answer on one handle";
 
@@ -321,6 +323,7 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     entitlement_check: Some(entitlement_check),
     content_scan: Some(content_scan),
     hook_call: Some(hook_call),
+    random_fill: Some(random_fill),
 };
 
 /// The dispatcher an instance's context routes to, and what it serves.
@@ -769,6 +772,37 @@ extern "C" fn entitlement_check(
             unsafe {
                 serve(&served.store, &route, &head, None, |_| {
                     Ran::Now(provider.entitlement_check(&caller, unit, &target))
+                })
+            }
+        },
+    )
+}
+
+extern "C" fn random_fill(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    slot(
+        ctx,
+        input,
+        out,
+        op::RANDOM_FILL,
+        size_of::<RandomFillIn>(),
+        |served, route, head| {
+            // SAFETY: the head covered a `RandomFillIn`.
+            let i = unsafe { input.cast::<RandomFillIn>().read_unaligned() };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            if check_random_fill_in(&i).is_err() {
+                return Answered::bare(Outcome::Refused, FILL_OUT_OF_RANGE);
+            }
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: `into` checked above; the caller's buffers.
+            unsafe {
+                serve(&served.store, &route, &head, Some(&i.into), |_| {
+                    Ran::Now(provider.random_fill(i.len))
                 })
             }
         },

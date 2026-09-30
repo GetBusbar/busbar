@@ -58,6 +58,25 @@ fn the_clock_reads_wall_time_and_a_monotonic_origin() {
     assert!(b.mono_ns >= a.mono_ns);
 }
 
+#[test]
+fn random_fill_draws_fresh_bytes_every_call_and_refuses_outside_its_cap() {
+    let s = services(Arc::default());
+    let a = s.random_fill(32);
+    let b = s.random_fill(32);
+    assert_eq!((a.outcome, a.bytes.len()), (Outcome::Ready, 32));
+    assert_eq!((b.outcome, b.bytes.len()), (Outcome::Ready, 32));
+    assert!(a.spans.is_empty() && b.spans.is_empty());
+    assert_ne!(a.bytes, b.bytes, "two fills are never equal");
+    assert_ne!(a.bytes, [0; 32], "a fill is drawn");
+    let top = s.random_fill(svc::MAX_RANDOM_FILL);
+    assert_eq!(top.bytes.len() as u64, svc::MAX_RANDOM_FILL);
+    for len in [0, svc::MAX_RANDOM_FILL + 1, u64::MAX] {
+        let r = s.random_fill(len);
+        assert_eq!((r.outcome, r.error), (Outcome::Refused, FILL_OUT_OF_RANGE));
+        assert!(r.bytes.is_empty(), "len {len}");
+    }
+}
+
 /// 1.5.5 REFUSAL TIMING: a refusal the name decides answers at once, before any resolution, with the
 /// verdict the one judge gives.
 #[test]

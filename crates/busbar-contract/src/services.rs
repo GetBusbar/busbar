@@ -113,6 +113,13 @@ pub trait HostServices: Send + Sync {
         let _ = (caller, unit, target);
         Stored::refused(UNSERVED)
     }
+
+    /// `random.fill`: `len` bytes from the kernel's CSPRNG, READY with exactly those bytes; `len`
+    /// outside `1..=MAX_RANDOM_FILL` is REFUSED, an OS randomness failure FAILED. Never pends.
+    fn random_fill(&self, len: u64) -> Stored {
+        let _ = len;
+        Stored::refused(UNSERVED)
+    }
 }
 
 /// A `records.list` request, as the host copied it out of the caller's `in`.

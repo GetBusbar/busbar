@@ -9,8 +9,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use busbar_contract::abi::host::service::{
-    check_clock_now, check_dest_judge, ContentScanIn, EntitlementCheckIn, ItemSpan, DEST_INTERNAL,
-    DEST_METADATA, DEST_RESOLVE,
+    check_clock_now, check_dest_judge, check_random_fill, ContentScanIn, EntitlementCheckIn,
+    ItemSpan, RandomFillIn, DEST_INTERNAL, DEST_METADATA, DEST_RESOLVE,
 };
 use busbar_contract::abi::mechanism::check::Filled;
 
@@ -29,6 +29,8 @@ struct Provider {
     held: Mutex<Vec<Later>>,
     /// Every caller-scoped call, as `(instance, service, first argument)`.
     scoped: Mutex<Vec<(String, &'static str, Vec<u8>)>>,
+    /// How many `random.fill`s reached the provider.
+    filled: AtomicUsize,
 }
 
 impl Provider {
@@ -99,6 +101,15 @@ impl HostServices for Provider {
         let arg = format!("{unit:?} {target}");
         self.saw(c, "entitlement.check", arg.as_bytes());
         Stored::ready(svc::ENTITLED)
+    }
+
+    /// Every fill's bytes differ from the last one's: all `n`, the fill's ordinal.
+    fn random_fill(&self, len: u64) -> Stored {
+        let n = self.filled.fetch_add(1, Ordering::SeqCst) + 1;
+        Stored {
+            bytes: vec![n as u8; len as usize],
+            ..Stored::ready(0)
+        }
     }
 }
 
@@ -250,6 +261,7 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         HOST_SLOTS.entitlement_check,
         HOST_SLOTS.content_scan,
         HOST_SLOTS.hook_call,
+        HOST_SLOTS.random_fill,
     ];
     assert_eq!(slots.len(), SERVICES as usize);
     for (service, f) in (0..SERVICES).zip(slots) {
@@ -265,7 +277,7 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
             assert_eq!(error(&o), UNTICKETED, "service {service}");
         } else if !matches!(
             service,
-            op::CLOCK_NOW | op::SIGN | op::TRUST_DUE | op::ENTITLEMENT_CHECK
+            op::CLOCK_NOW | op::SIGN | op::TRUST_DUE | op::ENTITLEMENT_CHECK | op::RANDOM_FILL
         ) {
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), UNIMPLEMENTED, "service {service}");
@@ -612,5 +624,47 @@ fn entitlement_check_reaches_the_kernel_with_the_unit_its_crossing_serves() {
             "Some(7) item:four",
             "None item:five",
         ]
+    );
+}
+
+fn fill_in(len: u64, buf: &mut [u8]) -> RandomFillIn {
+    RandomFillIn {
+        head: head(op::RANDOM_FILL, Ticket::NONE, 0, size_of::<RandomFillIn>()),
+        len,
+        into: bufs(buf, &mut []),
+    }
+}
+
+#[test]
+fn random_fill_writes_the_kernels_bytes_and_refuses_outside_its_cap_before_the_kernel() {
+    let d = double();
+    let fill = |len: u64, buf: &mut [u8]| {
+        let i = fill_in(len, buf);
+        let mut o = blank();
+        let ret = HOST_SLOTS.random_fill.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+        (check_random_fill(&i, ret, &o), ret.outcome(), o)
+    };
+    let (mut a, mut b) = ([0u8; 16], [0u8; 16]);
+    let (checked, outcome, o) = fill(16, &mut a[..]);
+    assert_eq!(
+        (checked, outcome, o.len),
+        (Ok(Filled::Written), Outcome::Ready, 16)
+    );
+    let (checked, _, _) = fill(16, &mut b[..]);
+    assert_eq!(checked, Ok(Filled::Written));
+    // Each fill lands in its own buffer.
+    assert_eq!((a, b), ([1; 16], [2; 16]));
+    assert_ne!(a, b, "two fills are never equal");
+    for len in [0, svc::MAX_RANDOM_FILL + 1, u64::MAX] {
+        let mut big = vec![0u8; 2048];
+        let (_, outcome, o) = fill(len, &mut big[..]);
+        assert_eq!(outcome, Outcome::Refused, "len {len}");
+        assert_eq!(error(&o), FILL_OUT_OF_RANGE, "len {len}");
+        assert!(big.iter().all(|x| *x == 0), "nothing written");
+    }
+    assert_eq!(
+        d.route.provider.filled.load(Ordering::SeqCst),
+        2,
+        "a refused fill never reaches the kernel"
     );
 }

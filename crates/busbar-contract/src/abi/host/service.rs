@@ -146,10 +146,12 @@ pub mod op {
     pub const CONTENT_SCAN: u32 = 16;
     /// `hook.call`.
     pub const HOOK_CALL: u32 = 17;
+    /// `random.fill`.
+    pub const RANDOM_FILL: u32 = 18;
 }
 
 /// How many services [`HostSlots`] holds.
-pub const SERVICES: u32 = 18;
+pub const SERVICES: u32 = 19;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for
 /// an index past the table.
@@ -157,7 +159,12 @@ pub const SERVICES: u32 = 18;
 pub const fn may_pend(service: u32) -> bool {
     !matches!(
         service,
-        op::CLOCK_NOW | op::SIGN | op::TRUST_DUE | op::VERIFY_STORE | op::ENTITLEMENT_CHECK
+        op::CLOCK_NOW
+            | op::SIGN
+            | op::TRUST_DUE
+            | op::VERIFY_STORE
+            | op::ENTITLEMENT_CHECK
+            | op::RANDOM_FILL
     ) && service < SERVICES
 }
 
@@ -472,6 +479,41 @@ pub const NOT_ENTITLED: u64 = 0;
 /// `entitlement.check`: entitled.
 pub const ENTITLED: u64 = 1;
 
+// ── random ────────────────────────────────────────────────────────────────────────────────────
+
+/// The most bytes one `random.fill` answers.
+pub const MAX_RANDOM_FILL: u64 = 1024;
+
+/// [`op::RANDOM_FILL`]'s `in`: `len` bytes from the kernel's CSPRNG, written into `into`'s bytes
+/// (no span); READY `value` `0`, `len` exactly the bytes asked. `len` is `1..=`[`MAX_RANDOM_FILL`];
+/// anything else is REFUSED before a byte is drawn. Never pends.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RandomFillIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// How many bytes.
+    pub len: u64,
+    /// Where they go.
+    pub into: ServiceBufs,
+}
+
+/// `random.fill`'s `in`, before any byte is drawn: a fill asks for at least one byte and at most
+/// [`MAX_RANDOM_FILL`]. The host REFUSES an `in` that breaks this.
+///
+/// # Errors
+///
+/// [`Rule::Missing`] for `len == 0`; [`Rule::OverMax`] above [`MAX_RANDOM_FILL`].
+pub const fn check_random_fill_in(i: &RandomFillIn) -> Result<(), Fault> {
+    if i.len == 0 {
+        return Err(fault(Rule::Missing, "random_fill.len"));
+    }
+    if i.len > MAX_RANDOM_FILL {
+        return Err(fault(Rule::OverMax, "random_fill.len"));
+    }
+    Ok(())
+}
+
 // ── content ───────────────────────────────────────────────────────────────────────────────────
 
 /// [`op::CONTENT_SCAN`]'s `in`: pass a piece of in-session content through the gate that governs
@@ -560,6 +602,8 @@ pub struct HostSlots {
     pub content_scan: Option<ServiceFn>,
     /// [`op::HOOK_CALL`], in [`HookCallIn`].
     pub hook_call: Option<ServiceFn>,
+    /// [`op::RANDOM_FILL`], in [`RandomFillIn`].
+    pub random_fill: Option<ServiceFn>,
 }
 
 // ── the host's checks of an `in` ──────────────────────────────────────────────────────────────
@@ -934,6 +978,23 @@ pub fn check_entitlement_check(
         out,
         bare(op::ENTITLEMENT_CHECK, (NOT_ENTITLED, ENTITLED)),
     )
+}
+
+/// `random.fill`'s answer: the common rules, and on READY exactly the `len` bytes asked, no span.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_random_fill(
+    i: &RandomFillIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    let filled = answer(ret, &i.head, out, into(op::RANDOM_FILL, i.into, (0, 0)))?;
+    if ret.outcome() == Outcome::Ready && (out.len != i.len || out.items != 0) {
+        return Err(fault(Rule::Contradiction, "random_fill.out.len"));
+    }
+    Ok(filled)
 }
 
 /// `content.scan`'s answer.

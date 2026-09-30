@@ -736,6 +736,10 @@ pub const NO_POOL: &str = "no pool is bound";
 pub const POOL_REFUSED: &str = "the pool refused the store call";
 /// The FAILED answer of a store call that did not answer.
 pub const STORE_FAILED: &str = "the store did not answer";
+/// The refusal of a `random.fill` of no bytes or more than `MAX_RANDOM_FILL`.
+pub const FILL_OUT_OF_RANGE: &str = "a fill asks for 1 to MAX_RANDOM_FILL bytes";
+/// The FAILED answer of a `random.fill` the OS randomness source did not serve.
+pub const NO_RANDOMNESS: &str = "the OS randomness source failed";
 
 /// FAILED for `why`, nothing written.
 fn failed(why: &'static str) -> Stored {
@@ -999,6 +1003,20 @@ impl HostServices for KernelServices {
         } else {
             svc::NOT_ENTITLED
         })
+    }
+
+    fn random_fill(&self, len: u64) -> Stored {
+        if len == 0 || len > svc::MAX_RANDOM_FILL {
+            return Stored::refused(FILL_OUT_OF_RANGE);
+        }
+        let mut bytes = vec![0; len as usize];
+        if getrandom::fill(&mut bytes).is_err() {
+            return failed(NO_RANDOMNESS);
+        }
+        Stored {
+            bytes,
+            ..Stored::ready(0)
+        }
     }
 
     fn trust_due(&self, caller: &Caller) -> Stored {
