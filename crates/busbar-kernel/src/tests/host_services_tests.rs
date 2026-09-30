@@ -441,7 +441,8 @@ fn rig() -> Rig {
                 },
             )],
         },
-    );
+    )
+    .unwrap();
     Rig { s, store, clock }
 }
 
@@ -578,7 +579,8 @@ fn a_claim_is_won_once_and_taken_after_until_it_lapses() {
             record_kinds: vec![KIND],
             ..InstanceFacts::default()
         },
-    );
+    )
+    .unwrap();
     assert_eq!(claim(&caller("other")).value, svc::CLAIM_WON);
     r.clock.fetch_add(3_000, Ordering::SeqCst);
     assert_eq!(claim(&me).value, svc::CLAIM_WON);
@@ -612,7 +614,8 @@ fn records_are_refused_on_a_host_with_no_store() {
             record_kinds: vec![KIND],
             ..InstanceFacts::default()
         },
-    );
+    )
+    .unwrap();
     let a = run(|l| s.records_claim(&caller("inst"), "approval", b"k", 1, l));
     assert_eq!((a.outcome, a.error), (Outcome::Refused, NO_STORE));
 }
@@ -630,20 +633,22 @@ fn sign_signs_under_the_declared_domain_with_the_prefixed_key_id() {
 #[test]
 fn sign_is_refused_without_a_declared_domain_or_a_key() {
     let r = rig();
-    r.s.admit("plain", InstanceFacts::default());
+    r.s.admit("plain", InstanceFacts::default()).unwrap();
     let s = r.s.sign(&caller("plain"), b"x");
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NO_DOMAIN));
     let keyless = services(Arc::default());
-    keyless.admit(
-        "inst",
-        InstanceFacts {
-            signing: Some(Signing {
-                domain: "d".into(),
-                kid_prefix: String::new(),
-            }),
-            ..InstanceFacts::default()
-        },
-    );
+    keyless
+        .admit(
+            "inst",
+            InstanceFacts {
+                signing: Some(Signing {
+                    domain: "d".into(),
+                    kid_prefix: String::new(),
+                }),
+                ..InstanceFacts::default()
+            },
+        )
+        .unwrap();
     let s = keyless.sign(&caller("inst"), b"x");
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NO_KEY));
 }
@@ -675,22 +680,24 @@ fn a_durable_demotion_is_replayed_at_admit() {
     );
     // A re-admit (a restart re-registering the instance) keeps the demotion from the record.
     let fresh = restarted(&r);
-    fresh.admit(
-        "inst",
-        InstanceFacts {
-            trust: vec![(
-                "cp".into(),
-                TrustEntry {
-                    pin: None,
-                    policy: Policy {
-                        ttl_ms: 0,
-                        recovery_backoff_ms: 0,
+    fresh
+        .admit(
+            "inst",
+            InstanceFacts {
+                trust: vec![(
+                    "cp".into(),
+                    TrustEntry {
+                        pin: None,
+                        policy: Policy {
+                            ttl_ms: 0,
+                            recovery_backoff_ms: 0,
+                        },
                     },
-                },
-            )],
-            ..InstanceFacts::default()
-        },
-    );
+                )],
+                ..InstanceFacts::default()
+            },
+        )
+        .unwrap();
     assert_eq!(
         run(|l| fresh.trust_sight(&me, "cp", "anything", l)).value,
         svc::TRUST_QUARANTINED
@@ -726,7 +733,8 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
             }),
             trust: Vec::new(),
         },
-    );
+    )
+    .unwrap();
     let (first, second) = (caller("inst"), caller("second"));
     assert_eq!(first.plugin, second.plugin);
     let s = run(|l| r.s.records_get(&second, "approval", b"k", l));
@@ -745,7 +753,8 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
             record_kinds: vec![KIND],
             ..InstanceFacts::default()
         },
-    );
+    )
+    .unwrap();
     r.s.pending()
         .enqueue("inst", "approval", b"k", Some(b"mine".to_vec()));
     let s = run(|l| r.s.records_get(&caller("third"), "approval", b"k", l));
@@ -790,8 +799,8 @@ fn a_demotion_in_one_instance_is_never_replayed_into_another_with_the_same_count
         svc::TRUST_DRIFTED
     );
     let fresh = restarted(&r);
-    fresh.admit("inst", trusting(None));
-    fresh.admit("second", trusting(None));
+    fresh.admit("inst", trusting(None)).unwrap();
+    fresh.admit("second", trusting(None)).unwrap();
     assert_eq!(
         run(|l| fresh.trust_sight(&caller("inst"), "cp", "x", l)).value,
         svc::TRUST_QUARANTINED
@@ -812,8 +821,8 @@ fn an_unprefixed_row_replays_into_the_default_instance_only_and_it_clears_it() {
         .record
         .record("cp", "quarantined", 1);
     let fresh = restarted(&r);
-    fresh.admit("legacy", trusting(None));
-    fresh.admit("inst", trusting(None));
+    fresh.admit("legacy", trusting(None)).unwrap();
+    fresh.admit("inst", trusting(None)).unwrap();
     assert_eq!(
         run(|l| fresh.trust_sight(&caller("legacy"), "cp", "x", l)).value,
         svc::TRUST_QUARANTINED
@@ -824,7 +833,7 @@ fn an_unprefixed_row_replays_into_the_default_instance_only_and_it_clears_it() {
     );
     // Re-admitted with a pin, the default instance's clean sighting clears the unprefixed row.
     let pinned = restarted(&r);
-    pinned.admit("legacy", trusting(Some("fp")));
+    pinned.admit("legacy", trusting(Some("fp"))).unwrap();
     assert_eq!(
         run(|l| pinned.trust_sight(&caller("legacy"), "cp", "fp", l)).value,
         svc::TRUST_SAME
@@ -840,8 +849,8 @@ fn another_instance_declaring_the_same_kind_never_reaches_the_records_of_this_on
         record_kinds: vec![KIND],
         ..InstanceFacts::default()
     };
-    r.s.admit("other", declares());
-    r.s.admit("elsewhere", declares());
+    r.s.admit("other", declares()).unwrap();
+    r.s.admit("elsewhere", declares()).unwrap();
     // "other" is another instance of the same plugin; "elsewhere" is an instance of another.
     let elsewhere = Caller {
         plugin: Arc::from("another-plugin"),
@@ -917,7 +926,8 @@ fn pooled(rt: &tokio::runtime::Runtime, reads: Arc<dyn RecordReads>) -> KernelSe
             record_kinds: vec![KIND],
             ..InstanceFacts::default()
         },
-    );
+    )
+    .unwrap();
     s
 }
 
@@ -986,7 +996,7 @@ fn a_demotion_is_written_on_the_pool_and_the_sighting_answers_after_it() {
     let r = rig();
     let held = Arc::new(Held::default());
     let s = restarted(&r).with_pool(Arc::new(Arc::clone(&held)));
-    s.admit("inst", trusting(Some("fp")));
+    s.admit("inst", trusting(Some("fp"))).unwrap();
     let (slot, later) = recorder();
     let ran = s.trust_sight(&caller("inst"), "cp", "moved", later);
     // Nothing is written, nor answered, on the calling thread.
@@ -1010,7 +1020,42 @@ fn a_durable_record_with_no_pool_judges_nothing() {
     let r = rig();
     let d = r.s.demotions.as_ref().unwrap();
     let s = services(Arc::default()).with_demotions(Arc::clone(&d.record), "legacy");
-    s.admit("inst", trusting(Some("fp")));
+    s.admit("inst", trusting(Some("fp"))).unwrap();
     let a = run(|l| s.trust_sight(&caller("inst"), "cp", "moved", l));
     assert_eq!((a.outcome, a.error), (Outcome::Refused, NO_POOL));
+}
+
+#[test]
+fn an_instance_declaring_a_signing_domain_another_holds_is_refused() {
+    let r = rig();
+    let taker = InstanceFacts {
+        signing: Some(Signing {
+            domain: "dom".into(),
+            kid_prefix: "x-".into(),
+        }),
+        ..InstanceFacts::default()
+    };
+    let refused = r.s.admit("taker", taker.clone()).unwrap_err();
+    assert_eq!(
+        refused,
+        AdmitRefused::DomainHeld {
+            domain: "dom".into(),
+            held_by: "inst".into(),
+            asked_by: "taker".into(),
+        }
+    );
+    let said = refused.to_string();
+    assert!(said.contains("`inst`") && said.contains("`taker`"));
+    // Nothing was registered: the taker is not admitted and cannot sign.
+    let s = r.s.sign(&caller("taker"), b"x");
+    assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
+    // The holder re-admitting its own domain is not a collision.
+    r.s.admit(
+        "inst",
+        InstanceFacts {
+            signing: taker.signing,
+            ..InstanceFacts::default()
+        },
+    )
+    .unwrap();
 }

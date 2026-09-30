@@ -208,6 +208,38 @@ pub struct InstanceFacts {
     pub trust: Vec<(String, TrustEntry)>,
 }
 
+/// Why an instance was not admitted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdmitRefused {
+    /// Another instance holds the signing domain the instance declares.
+    DomainHeld {
+        /// The domain.
+        domain: String,
+        /// The instance holding it.
+        held_by: String,
+        /// The instance refused.
+        asked_by: String,
+    },
+}
+
+impl std::fmt::Display for AdmitRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DomainHeld {
+                domain,
+                held_by,
+                asked_by,
+            } => write!(
+                f,
+                "instance `{asked_by}` declares the signing domain `{domain}`, which instance \
+                 `{held_by}` holds: no instance signs as another"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AdmitRefused {}
+
 /// The stores the records services reach.
 struct Records {
     reads: Arc<dyn RecordReads>,
@@ -326,12 +358,30 @@ impl KernelServices {
     /// Register (or re-register) what the instance labelled `instance` declared. Every
     /// caller-scoped service answers from this; its trust entries are admitted to the trust state,
     /// and its own durable demotions replayed.
-    pub fn admit(&self, instance: &str, facts: InstanceFacts) {
+    ///
+    /// # Errors
+    ///
+    /// [`AdmitRefused::DomainHeld`] when another instance holds the signing domain it declares:
+    /// no instance signs as another. Nothing is registered then.
+    pub fn admit(&self, instance: &str, facts: InstanceFacts) -> Result<(), AdmitRefused> {
         let key: Arc<str> = Arc::from(instance);
         let (rows, default) = self.demotions.as_ref().map_or_else(
             || (Vec::new(), false),
             |d| (d.record.list(), *d.default_instance == *instance),
         );
+        let mut instances = self.lock_instances();
+        if let Some(domain) = facts.signing.as_ref().map(|s| s.domain.as_str()) {
+            let holder = instances.iter().find(|(label, f)| {
+                &***label != instance && f.signing.as_ref().is_some_and(|s| s.domain == domain)
+            });
+            if let Some((held_by, _)) = holder {
+                return Err(AdmitRefused::DomainHeld {
+                    domain: domain.to_string(),
+                    held_by: held_by.to_string(),
+                    asked_by: instance.to_string(),
+                });
+            }
+        }
         let prefix = demotion_key(instance, "");
         let replayed = rows.iter().filter_map(|r| {
             let counterparty = match r.server.strip_prefix(prefix.as_str()) {
@@ -343,7 +393,8 @@ impl KernelServices {
         });
         self.trust
             .admit(&key, facts.trust.iter().cloned(), replayed);
-        self.lock_instances().insert(key, Arc::new(facts));
+        instances.insert(key, Arc::new(facts));
+        Ok(())
     }
 
     /// The overlay of every instance's unacknowledged record writes, which the plane driver's
