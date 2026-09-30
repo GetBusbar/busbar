@@ -33,6 +33,11 @@
 //! and the item under each one must be one of [`TEST_SEAL_ITEMS`], in the file that list names.
 //! Any other feature, any non-empty `test-seal`, and any other item behind `test-seal` stays RED;
 //! the `*_red_*` tests below plant each of those and require the finding.
+//!
+//! 3. The TEST KIT (Locked Decision #33, "there is NO testkit"): `pub mod testkit;` in `lib.rs`,
+//!    behind exactly [`TESTKIT_CFG`] — this crate's own `cfg(test)`, or the same dev-only
+//!    `test-seal` feature a plugin's `[dev-dependencies]` edge already enables. No new feature, so
+//!    the surface a plugin compiles against in a release build has no kit in it at all.
 
 use std::path::{Path, PathBuf};
 
@@ -51,6 +56,13 @@ const TEST_SEAL_FEATURE: &str = "test-seal";
 
 /// The one attribute spelling the `test-seal` exemption accepts.
 const TEST_SEAL_CFG: &str = "#[cfg(feature = \"test-seal\")]";
+
+/// The one attribute the test kit's module declaration may carry: the crate's own tests, or the
+/// dev-only seal feature. Nothing else may be spelled this way.
+const TESTKIT_CFG: &str = "#[cfg(any(test, feature = \"test-seal\"))]";
+
+/// The one item [`TESTKIT_CFG`] may gate: `(file under src/, the item's first line)`.
+const TESTKIT_ITEM: (&str, &str) = ("lib.rs", "pub mod testkit;");
 
 /// Every item `test-seal` may gate: `(file under src/, the item's first line)`. The type and its two
 /// sealed-trait impls, and nothing else.
@@ -133,6 +145,17 @@ fn cfg_findings(files: &[(String, String)]) -> Vec<String> {
                     continue;
                 }
             }
+            // The test kit's declaration: this exact attribute, over that one item, in lib.rs.
+            if line.trim_end() == TESTKIT_CFG {
+                let item = lines[n + 1..]
+                    .iter()
+                    .map(|l| l.trim())
+                    .find(|l| !l.starts_with("#["))
+                    .unwrap_or_default();
+                if rel == TESTKIT_ITEM.0 && item == TESTKIT_ITEM.1 {
+                    continue;
+                }
+            }
             out.push(format!("{rel}:{}", n + 1));
         }
     }
@@ -203,6 +226,45 @@ fn every_test_seal_item_is_present_behind_its_attribute() {
             "src/{file}: `{first}` is not behind `{TEST_SEAL_CFG}`"
         );
     }
+}
+
+/// Locked Decision #33: the test kit is not in a release build. Its declaration carries exactly
+/// [`TESTKIT_CFG`]; an ungated `pub mod testkit;` (the kit shipping in every build) is RED here.
+#[test]
+fn the_testkit_is_behind_its_test_only_attribute() {
+    let files = src_files();
+    let (_, text) = files
+        .iter()
+        .find(|(rel, _)| rel == TESTKIT_ITEM.0)
+        .expect("src/lib.rs is present");
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    let at = lines
+        .iter()
+        .position(|l| *l == TESTKIT_ITEM.1)
+        .expect("src/lib.rs still declares the test kit");
+    assert!(
+        lines[..at]
+            .iter()
+            .rev()
+            .take_while(|l| l.starts_with("#[") || l.starts_with("//"))
+            .any(|l| *l == TESTKIT_CFG),
+        "src/lib.rs: `{}` is not behind `{TESTKIT_CFG}`, so the kit ships in every build",
+        TESTKIT_ITEM.1
+    );
+}
+
+/// RED: the test kit's attribute over any other item, or in any other file, is refused.
+#[test]
+fn the_testkit_attribute_over_another_item_is_red() {
+    let planted = format!("{TESTKIT_CFG}\npub fn shipped_only_sometimes() {{}}\n");
+    assert_eq!(
+        cfg_findings(&[("lib.rs".to_string(), planted.clone())]).len(),
+        1
+    );
+    let moved = format!("{TESTKIT_CFG}\npub mod testkit;\n");
+    assert_eq!(cfg_findings(&[("plugin.rs".to_string(), moved)]).len(), 1);
+    let right = format!("{TESTKIT_CFG}\npub mod testkit;\n");
+    assert!(cfg_findings(&[("lib.rs".to_string(), right)]).is_empty());
 }
 
 /// RED: a feature beyond the three exemptions is refused.

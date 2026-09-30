@@ -103,6 +103,11 @@ pub mod signal;
 pub mod slice;
 pub mod spans;
 pub mod surface;
+// THE TEST KIT IS NOT IN A RELEASE BUILD (Locked Decision #33, "there is NO testkit"). Its log
+// double is compiled for this crate's own tests and, through the dev-only `test-seal` feature, for a
+// plugin's dev-dependency edge; `tests/test_seal_is_dev_only.rs` refuses any non-dev edge that
+// enables it, so no shipped artifact carries it.
+#[cfg(any(test, feature = "test-seal"))]
 pub mod testkit;
 pub mod transport;
 pub mod unit;
