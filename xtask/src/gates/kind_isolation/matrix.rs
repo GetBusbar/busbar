@@ -1397,6 +1397,7 @@ fn scan_file(plan: &Plan, dir: &str, rel: &str, text: &str) -> std::sync::Arc<Ve
     }
     drop(guard);
     out.sort_by_key(|(line, i, _)| (*line, *i));
+    one_needle_per_span(plan, &mut out);
     let out: std::sync::Arc<Vec<Hit>> =
         std::sync::Arc::new(out.into_iter().map(|(_, _, h)| h).collect());
     assembled
@@ -1404,6 +1405,60 @@ fn scan_file(plan: &Plan, dir: &str, rel: &str, text: &str) -> std::sync::Arc<Ve
         .expect("the memo mutex is never poisoned")
         .insert((key, plan.key), std::sync::Arc::clone(&out));
     out
+}
+
+/// ONE WRITTEN NAME, ONE HIT: THE LONGEST NEEDLE WINS.
+///
+/// Needles nest. `busbar_kernel_ledger::` is the package name `busbar-kernel-ledger` and, inside
+/// it, the kind-qualified id `kernel-ledger`. `busbar_plane_llm` holds `plane-llm` and `llm`. Each
+/// needle is scanned alone, so one written name scored once per needle it contains: a crate naming
+/// `busbar_plane_llm` once was charged three plane hits.
+///
+/// So on each line a needle's count is what is LEFT after every longer needle containing it has
+/// taken its occurrences: `residual(A) = raw(A) - Σ residual(M) × occurrences(A in M)`, over the
+/// needles `M` on the same line whose segments contain `A`'s as a contiguous run, taken longest
+/// first. The subtraction runs per reading (segments, windows, decoded), so a disagreement between
+/// the scanners survives it. A needle nothing longer contains is untouched, and a hit whose
+/// residual is zero in every reading is dropped. `llm` written on its own beside `busbar_plane_llm`
+/// still counts once.
+fn one_needle_per_span(plan: &Plan, out: &mut Vec<(usize, usize, Hit)>) {
+    fn occurrences(inner: &[String], outer: &[String]) -> usize {
+        if inner.len() >= outer.len() {
+            return 0;
+        }
+        outer.windows(inner.len()).filter(|w| *w == inner).count()
+    }
+    let mut k = 0;
+    while k < out.len() {
+        let line = out[k].0;
+        let mut e = k;
+        while e < out.len() && out[e].0 == line {
+            e += 1;
+        }
+        if e - k > 1 {
+            let mut order: Vec<usize> = (k..e).collect();
+            order.sort_by_key(|&x| std::cmp::Reverse(plan.needles[out[x].1].parts.len()));
+            for pos in 0..order.len() {
+                let a = order[pos];
+                let inner = &plan.needles[out[a].1].parts;
+                let (mut seg, mut win, mut dec) = (0usize, 0usize, 0usize);
+                for &m in &order[..pos] {
+                    let n = occurrences(inner, &plan.needles[out[m].1].parts);
+                    if n > 0 {
+                        seg += out[m].2.by_segments * n;
+                        win += out[m].2.by_windows * n;
+                        dec += out[m].2.by_decoded * n;
+                    }
+                }
+                let h = &mut out[a].2;
+                h.by_segments = h.by_segments.saturating_sub(seg);
+                h.by_windows = h.by_windows.saturating_sub(win);
+                h.by_decoded = h.by_decoded.saturating_sub(dec);
+            }
+        }
+        k = e;
+    }
+    out.retain(|(_, _, h)| h.by_segments + h.by_windows + h.by_decoded > 0);
 }
 
 // How many spellings THIS THREAD has put to a file through [`scan_needles`] — the exit test's
@@ -2892,6 +2947,32 @@ pub fn selftest<'a>(
         ],
     ));
 
+    // ONE WRITTEN NAME, ONE HIT ([`one_needle_per_span`]). The fixture's plane cell is recorded
+    // at 1. `busbar_plane_llm::` is the package name, and inside it `plane-llm` and `llm`: it
+    // scored 3 before, and is 1 now (GREEN). The bare id written again on the same line is a
+    // second name and still counts (RED).
+    let nested_fixture =
+        |line: &'static str| fixture_cell(cx, "plane", "1", &[("wiring.rs", line)], true);
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a package name scores once, not once per shorter needle inside it",
+        &[ROW_MATRIX],
+        nested_fixture("use busbar_plane_llm::Codec;\n"),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "the bare id written beside the package name still counts",
+        &[ROW_MATRIX],
+        nested_fixture("use busbar_plane_llm::Codec; // an llm codec\n"),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} plane", instances::FIXTURE_CRATE),
+            "RAISED",
+        ],
+    ));
+
     // `unix` AS THE OPERATING SYSTEM IS NOT THE CARRIER ([`os_words`]). A `busbar-transport-unix`
     // crate is planted so `unix` is a transport needle at all. The fixture's only real hit is the
     // claim literal `"unix"`; its cfg predicate, `std::os::unix`, standard socket type, clock and
@@ -2922,7 +3003,11 @@ pub fn selftest<'a>(
         );
         ov
     };
-    report.push(prove_rows_green(
+    // THE MASK'S OWN RED ARM: the same fixture recorded one hit ABOVE its true count (the claim
+    // literal alone), as if the OS spellings counted. With the mask the cell measures under its row and is STALE SLACK;
+    // without it the OS spellings fill the row and nothing is said. (A GREEN arm cannot be written
+    // here: with a unix carrier planted, the real tree's own carrier mentions raise real cells.)
+    report.push(prove_rows_red(
         cx,
         gate,
         "`unix` as a cfg, a std path, a socket type, UNIX_EPOCH, the clock or the platform is not counted",
@@ -3018,11 +3103,7 @@ pub fn selftest<'a>(
         }
         fixture_cell(cx, "plane", "1", &files, true)
     };
-    // THE MASK'S OWN RED ARM: the same fixture recorded one hit ABOVE its true count (the claim
-    // literal alone), as if the OS spellings counted. With the mask the cell measures under its row and is STALE SLACK;
-    // without it the OS spellings fill the row and nothing is said. (A GREEN arm cannot be written
-    // here: with a unix carrier planted, the real tree's own carrier mentions raise real cells.)
-    report.push(prove_rows_red(
+    report.push(prove_rows_green(
         cx,
         gate,
         "a crate naming the contract's `RoutingDecision` is not naming the decision plane",
@@ -3428,6 +3509,29 @@ pub fn selftest<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_nested_name_scores_once() {
+        let plan = plan_of(&[
+            ("plane", "busbar-plane-llm"),
+            ("plane", "plane-llm"),
+            ("plane", "llm"),
+        ]);
+        let hits = scan_file(
+            &plan,
+            "crates/x",
+            "crates/x/src/nested_once.rs",
+            "use busbar_plane_llm::A;\nuse busbar_plane_llm::B; // llm\n",
+        );
+        let total = |line: usize| -> usize {
+            hits.iter()
+                .filter(|h| h.line == line)
+                .map(|h| h.by_segments.max(h.by_windows).max(h.by_decoded))
+                .sum()
+        };
+        assert_eq!(total(1), 1, "one package name is one hit");
+        assert_eq!(total(2), 2, "the bare id written again is a second hit");
+    }
 
     #[test]
     fn colliding_words_count_only_as_references() {

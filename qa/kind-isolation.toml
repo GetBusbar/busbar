@@ -428,12 +428,12 @@ count = "5"
 [[cell]]
 crate = "busbar"
 kind = "kernel"
-count = "981"
+count = "649"
 
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1104"
+count = "919"
 
 [[cell]]
 crate = "busbar"
@@ -449,7 +449,7 @@ count = "5"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "303"
+count = "299"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -464,7 +464,7 @@ count = "8"
 [[cell]]
 crate = "busbar-a2a"
 kind = "plane"
-count = "3156"
+count = "2723"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -474,7 +474,7 @@ count = "6"
 [[cell]]
 crate = "busbar-a2a"
 kind = "store"
-count = "11"
+count = "9"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -490,12 +490,12 @@ count = "115"
 [[cell]]
 crate = "busbar-contract"
 kind = "transport"
-count = "277"
+count = "233"
 
 [[cell]]
 crate = "busbar-kernel"
 kind = "plane"
-count = "2049"
+count = "1369"
 
 [[cell]]
 crate = "busbar-kernel"
@@ -525,7 +525,7 @@ count = "14"
 [[cell]]
 crate = "busbar-kernel-egress"
 kind = "kernel"
-count = "40"
+count = "22"
 
 [[cell]]
 crate = "busbar-kernel-egress"
@@ -545,7 +545,7 @@ count = "2"
 [[cell]]
 crate = "busbar-kernel-ledger"
 kind = "kernel"
-count = "6"
+count = "5"
 
 [[cell]]
 crate = "busbar-llm"
@@ -583,7 +583,7 @@ count = "2"
 [[cell]]
 crate = "busbar-mcp"
 kind = "plane"
-count = "3877"
+count = "3821"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -593,7 +593,7 @@ count = "4"
 [[cell]]
 crate = "busbar-mcp"
 kind = "store"
-count = "8"
+count = "5"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -603,7 +603,7 @@ count = "583"
 [[cell]]
 crate = "busbar-oauth2"
 kind = "plane"
-count = "30"
+count = "22"
 
 [[cell]]
 crate = "busbar-oauth2"
@@ -663,7 +663,7 @@ count = "60"
 [[cell]]
 crate = "busbar-plane-streaming"
 kind = "plane"
-count = "53"
+count = "43"
 
 [[cell]]
 crate = "busbar-plane-streaming"
@@ -688,7 +688,7 @@ count = "2"
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "kernel"
-count = "26"
+count = "17"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -703,7 +703,7 @@ count = "4"
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "store"
-count = "67"
+count = "5"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -727,12 +727,12 @@ count = "1"
 [[cell]]
 crate = "busbar-transport-http"
 kind = "plane"
-count = "83"
+count = "53"
 
 [[cell]]
 crate = "busbar-transport-http"
 kind = "transport"
-count = "110"
+count = "102"
 
 [[cell]]
 crate = "busbar-transport-stdio"
