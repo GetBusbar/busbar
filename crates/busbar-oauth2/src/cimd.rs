@@ -31,13 +31,13 @@
 //! 5 KB and 10 s, not the card fetch's 512 KB. No redirects: the document lives at the
 //! `client_id` or it is not that client's document.
 //!
-//! ## The validator seam, honestly labelled
+//! ## The validator is busbar's own
 //!
 //! `oauth-as` ships a CIMD *validator* behind an off-by-default `cimd` feature this tree does not
-//! enable. The document checks in [`materialize`] are therefore busbar's own — real checks,
-//! enforced today — and the one call swapping the feature on would replace is marked `TODO` at
-//! the site, tied to `chore/1.6.0-oauth-as-0.9.3`. The fetch and the seam are unchanged by that
-//! bump: the library validates only, it does not fetch, and it exposes no client-resolution hook.
+//! enable. The document checks in [`materialize`] are therefore busbar's own, and they are the
+//! enforced ones. The feature stays off because switching it on changes a customer-visible byte
+//! stream: it adds the `client_id_metadata_document_supported` member to the served RFC 8414
+//! document, which `tests::signer_tests` pins. The library validates only; it does not fetch.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -206,11 +206,11 @@ fn is_cimd_client_id(client_id: &str) -> bool {
 
 /// VALIDATE THE DOCUMENT AND MATERIALISE THE CLIENT, under the operator's ceiling.
 ///
-/// TODO(chore/1.6.0-oauth-as-0.9.3): `oauth-as` ships a CIMD document validator behind its `cimd`
-/// feature; this tree pins 1.0.0 but does not enable that feature. When it is switched on, the
-/// checks below hand over to (or are cross-checked against) the crate's validator AT THIS CALL
-/// SITE — the fetch, the seam and the ceiling are unchanged by that switch. The checks below are
-/// busbar's own and are ENFORCED TODAY; nothing here is a placeholder.
+/// These checks ARE busbar's CIMD validator. `oauth-as` 1.0.0 carries its own behind the `cimd`
+/// feature, which this tree does not enable: enabling it adds the
+/// `client_id_metadata_document_supported` member to the served RFC 8414 document, which is a
+/// customer-visible byte change (see the module docs). The fetch, the seam and the ceiling are
+/// busbar's either way.
 fn materialize(url: &str, body: &[u8], ceiling: &ScopeSet) -> Result<Client, String> {
     let doc: serde_json::Value =
         serde_json::from_slice(body).map_err(|e| format!("not JSON: {e}"))?;
