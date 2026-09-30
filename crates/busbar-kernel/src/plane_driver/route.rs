@@ -70,6 +70,9 @@ pub enum Pick {
         name: String,
         /// The pool's configured name.
         pool: String,
+        /// Whether the member relays the caller's own credential to the far end (its upstream
+        /// credentials are passthrough); the plane is told on every piece from this attempt on.
+        passthrough: bool,
     },
     /// No member is left: the walk's exhaustion terminal, the status the caller is told and its
     /// Retry-After seconds (the floor the walk applies), when it names one.
@@ -164,6 +167,8 @@ pub(crate) struct PieceBufs {
     pub(crate) caller_ref: Vec<u8>,
     /// The far end's kept response head fields, lent on the answer's first piece.
     head: FieldList,
+    /// Whether the current attempt's member relays the caller's own credential.
+    pub(crate) passthrough: bool,
 }
 
 impl PieceBufs {
@@ -182,6 +187,7 @@ impl PieceBufs {
             dialect: 0,
             caller_ref: Vec::new(),
             head: FieldList::default(),
+            passthrough: false,
         };
         bufs.grow(caps.units, caps.records, caps.fields, caps.arena);
         bufs
@@ -308,6 +314,7 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
             std::ptr::null()
         },
         head_fields_len: if p.head { bufs.head.len() } else { 0 },
+        passthrough: u32::from(bufs.passthrough),
         ..blank_in()
     };
     (input, blank_out())
@@ -577,7 +584,14 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             attempt_no += 1;
             let picked = guarded_run(run, self.far.member(run.token, attempt_no)).await;
             let ((member, pool), terminal) = match picked {
-                Ok(Pick::Member { name, pool }) => ((name, pool), None),
+                Ok(Pick::Member {
+                    name,
+                    pool,
+                    passthrough,
+                }) => {
+                    run.bufs.passthrough = passthrough;
+                    ((name, pool), None)
+                }
                 Ok(Pick::Exhausted {
                     status,
                     retry_after,

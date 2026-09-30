@@ -508,7 +508,8 @@ async fn one_attempt_end_to_end() {
         far.member(&t, 1).await,
         Pick::Member {
             name: "m0".into(),
-            pool: POOL.into()
+            pool: POOL.into(),
+            passthrough: false,
         }
     );
     assert!(far.send(&t, request()).await);
@@ -613,7 +614,8 @@ async fn a_401_takes_the_member_down_and_fails_over() {
         far.member(&t, 1).await,
         Pick::Member {
             name: "m0".into(),
-            pool: POOL.into()
+            pool: POOL.into(),
+            passthrough: false,
         }
     );
     assert!(far.send(&t, request()).await);
@@ -859,8 +861,12 @@ async fn passthrough_hands_the_callers_credential_only_to_its_member() {
         caller_credential: Some(b"caller-key".to_vec().into()),
         ..route()
     });
+    let mut relays = Vec::new();
     for n in 1..=2 {
-        let _ = far.member(&t, n).await;
+        let Pick::Member { passthrough, .. } = far.member(&t, n).await else {
+            panic!("a member");
+        };
+        relays.push(passthrough);
         assert!(far.send(&t, request()).await);
         let _ = drain(&far, &t).await;
     }
@@ -868,4 +874,6 @@ async fn passthrough_hands_the_callers_credential_only_to_its_member() {
         *r.auth.callers.lock().unwrap(),
         vec![None, Some(b"caller-key".to_vec())]
     );
+    // The pick says so, and the plane is told: only the passthrough member relays.
+    assert_eq!(relays, vec![false, true]);
 }

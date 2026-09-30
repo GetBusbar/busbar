@@ -84,6 +84,18 @@ fn only_the_answers_first_piece_lends_the_kept_head() {
 }
 
 #[test]
+fn every_piece_says_whether_the_attempts_member_relays_the_callers_credential() {
+    let mut b = bufs(0);
+    let (i, _) = frame(&mut b, &piece(FROM_CALLER, 0, false), 9);
+    assert_eq!(i.passthrough, 0, "no attempt yet, nothing relayed");
+    b.passthrough = true;
+    for from in [FROM_KERNEL, FROM_CALLER, FROM_FAR_END] {
+        let (i, _) = frame(&mut b, &piece(from, 1, false), 9);
+        assert_eq!(i.passthrough, 1);
+    }
+}
+
+#[test]
 fn a_node_without_signing_material_lends_no_caller_reference() {
     let mut b = bufs(0);
     b.caller_ref.clear();

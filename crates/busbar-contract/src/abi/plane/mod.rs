@@ -1187,6 +1187,12 @@ pub struct OnPieceIn {
     pub head_fields: *const Field,
     /// How many.
     pub head_fields_len: usize,
+    /// From the unit's first attempt on, on every piece: `1` when the attempt's member relays the
+    /// caller's own credential to the far end (the operator configured its upstream credentials as
+    /// passthrough), `0` otherwise and before any attempt.
+    pub passthrough: u32,
+    /// Alignment padding.
+    pub _reserved_tail: u32,
 }
 
 /// `on_piece`'s `out`.

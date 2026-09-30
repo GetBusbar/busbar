@@ -1700,7 +1700,9 @@ fn compute_layout() -> String {
             claim,
             dialect,
             head_fields,
-            head_fields_len
+            head_fields_len,
+            passthrough,
+            _reserved_tail
         ]
     );
     record!(

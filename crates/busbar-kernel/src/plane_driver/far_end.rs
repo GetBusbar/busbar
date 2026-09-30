@@ -406,6 +406,12 @@ impl EgressFarEnd<'_> {
             lane: member.lane,
         };
         let name = member.name.clone();
+        let passthrough = self
+            .egress
+            .routes
+            .get(&member.destination)
+            .and_then(|r| r.auth.as_ref())
+            .is_some_and(|a| a.passthrough);
         w.live = Some(Live {
             pool: pool.to_string(),
             member,
@@ -422,6 +428,7 @@ impl EgressFarEnd<'_> {
         Pick::Member {
             name,
             pool: pool.to_string(),
+            passthrough,
         }
     }
 

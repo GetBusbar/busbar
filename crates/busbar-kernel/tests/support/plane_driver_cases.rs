@@ -111,6 +111,7 @@ impl FarEnd for Far {
             Some(m) => Pick::Member {
                 name: (*m).to_string(),
                 pool: POOL.to_string(),
+                passthrough: false,
             },
             None => Pick::Exhausted {
                 status: 503,
