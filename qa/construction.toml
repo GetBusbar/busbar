@@ -702,7 +702,9 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # the transport stream-end rule (+9); struck by LOG-BRIDGE's re-arm below.
 # RE-ARMED 24909 -> 25143, AT THE MEASUREMENT, in its own commit after LOG-BRIDGE plugin logging
 # (#85, +234); the live declaration above carries the measure.
-contract_caps = 25143
+# LOWERED 25143 -> 25082, the measurement: MONEY-WAVE3 #33 deletes the contract's frozen pre-M1b
+# usage-row shapes and fold_v1_ledger (-61). Downward only.
+contract_caps = 25082
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1368,7 +1370,8 @@ contract_crate = "busbar-contract"
 # +560).
 # RE-ARMED 24900 -> 24909 with its pair (OWNER RULING Q68(3); the transport stream-end rule, +9).
 # RE-ARMED 24909 -> 25143 with its pair (LOG-BRIDGE plugin logging #85, +234).
-caps_contract_ceiling = 25143
+# LOWERED 25143 -> 25082 with its pair (MONEY-WAVE3 #33 deletes fold_v1_ledger, -61).
+caps_contract_ceiling = 25082
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
