@@ -320,6 +320,10 @@ impl MoneySeam for PlaneMoney {
             }
         };
         if let Some((money, counts)) = owed {
+            // Safe inside the loop's `Drop` guard: GovState::record_usage is an in-memory accrual
+            // (the bucket cells and the metering row are write-behind; the durable write is the
+            // flusher's, never a store call on this thread), and it neither awaits nor crosses a
+            // plugin.
             self.ledger(&money, &counts);
         }
         self.post.post(ctx, ended);
