@@ -91,6 +91,8 @@ pub struct Source {
 pub struct Vocab {
     pub names: BTreeMap<&'static str, BTreeMap<String, Vec<Source>>>,
     pub unattributed: Vec<String>,
+    /// Every `[[core-name]]` row that would mask a PLUGIN's name, and so masks nothing.
+    pub refused_core: Vec<String>,
 }
 
 /// One `const` declaration a module name was read from.
@@ -220,7 +222,18 @@ fn module_decls(rel: &str, text: &str) -> Vec<Decl> {
 }
 
 /// THE VOCABULARY, READ OFF THE TREE. See the module header for both derivations.
-pub fn vocabulary(crates: &[CrateInfo], files: &[(String, String)]) -> Vocab {
+///
+/// `core` is the ledger's `[[core-name]]` table: words a module-name constant spells that the spec
+/// names as CORE'S OWN rather than a plugin's (`keys`, the badge press's verifier; `literal` and
+/// `none`, core secret grammar — THE DESIGN §1). They are struck from the learned vocabulary after
+/// both derivations run, and ONLY when no plugin could be what they name: a census id (a plugin
+/// crate is named for it) or a constant declared outside the kernel and contract tiers keeps the
+/// name counted and turns the row RED (`core-name-is-plugin`).
+pub fn vocabulary(
+    crates: &[CrateInfo],
+    files: &[(String, String)],
+    core: &[super::super::CoreName],
+) -> Vocab {
     let axes = axes();
     let mut v = Vocab::default();
     for k in &axes {
@@ -272,6 +285,8 @@ pub fn vocabulary(crates: &[CrateInfo], files: &[(String, String)]) -> Vocab {
     };
     // value -> (kinds any declaration attributes it to, where it was declared)
     let mut values: BTreeMap<String, (BTreeSet<&'static str>, Vec<String>)> = BTreeMap::new();
+    // value -> the kinds of the crates whose constants spell it (`None`: a crate of no kind).
+    let mut declared_in: BTreeMap<String, BTreeSet<Option<&'static str>>> = BTreeMap::new();
     for d in &decls {
         let mut vals: Vec<String> = d.literals.clone();
         for i in &d.idents {
@@ -286,9 +301,9 @@ pub fn vocabulary(crates: &[CrateInfo], files: &[(String, String)]) -> Vocab {
             .unwrap_or("")
             .trim_end_matches(".rs")
             .to_string();
-        let krate_kind = super::owning_dir(&d.rel)
-            .and_then(|dir| dir_kind.get(dir.as_str()).copied().flatten())
-            .filter(|k| axes.contains(k));
+        let decl_kind = super::owning_dir(&d.rel)
+            .and_then(|dir| dir_kind.get(dir.as_str()).copied().flatten());
+        let krate_kind = decl_kind.filter(|k| axes.contains(k));
         for val in vals {
             if val.trim().is_empty() {
                 continue;
@@ -316,6 +331,7 @@ pub fn vocabulary(crates: &[CrateInfo], files: &[(String, String)]) -> Vocab {
                     kinds.extend(ks.iter().copied());
                 }
             }
+            declared_in.entry(val.clone()).or_default().insert(decl_kind);
             let e = values.entry(val).or_default();
             e.0.extend(kinds);
             e.1.push(format!("{}:{} {}", d.rel, d.line, d.ident));
@@ -344,6 +360,51 @@ pub fn vocabulary(crates: &[CrateInfo], files: &[(String, String)]) -> Vocab {
                     from: from.join(", "),
                 });
         }
+    }
+
+    // 3. CORE'S OWN WORDS, STRUCK — and never a plugin's. A word is core's own only when EVERY
+    //    source of it is a constant the kernel or the contract declares: a plugin crate named for it,
+    //    or a constant spelling it anywhere else (the root's `ADMIN_TOKENS_MODULE`, a plugin's own),
+    //    is an instance, and masking it would be the C1 breach wearing a cite.
+    for row in core {
+        let Some(k) = axes.iter().copied().find(|k| *k == row.kind) else {
+            continue;
+        };
+        let Some(names) = v.names.get_mut(k) else {
+            continue;
+        };
+        let Some(sources) = names.get(&row.name) else {
+            continue;
+        };
+        let plugin_owner: Vec<&str> = sources.iter().filter_map(|s| s.owner.as_deref()).collect();
+        let foreign_decl = declared_in
+            .get(&row.name)
+            .is_some_and(|ks| ks.iter().any(|k| !matches!(k, Some("kernel" | "contract"))));
+        if !plugin_owner.is_empty() || foreign_decl {
+            v.refused_core.push(format!(
+                "core-name-is-plugin\t{}\t`[[core-name]] {} / {}` ({}) would mask a PLUGIN's \
+                 name: {}. A core name is a word only the kernel and the contract declare; no \
+                 plugin name may ever enter the table, so the name stays counted.",
+                super::LEDGER,
+                row.kind,
+                row.name,
+                row.cite,
+                if plugin_owner.is_empty() {
+                    format!(
+                        "a module-name constant outside the kernel and contract spells it ({})",
+                        sources
+                            .iter()
+                            .map(|s| s.from.as_str())
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    )
+                } else {
+                    format!("the plugin crate(s) {} are named for it", plugin_owner.join(", "))
+                }
+            ));
+            continue;
+        }
+        names.remove(&row.name);
     }
     v
 }
@@ -475,6 +536,7 @@ pub fn offenders(
     reg: &super::super::KindRegistry,
 ) -> Vec<String> {
     let mut out: Vec<String> = vocab.unattributed.clone();
+    out.extend(vocab.refused_core.iter().cloned());
     let led = super::super::REGISTRY_FILE;
 
     // A KIND WITH NO INSTANCE NAME IS AN AXIS THAT SEES NOTHING, which reads exactly like an axis
@@ -597,7 +659,8 @@ fn one_name_per_axis(cx: &crate::ctx::Ctx) -> Result<Vec<(&'static str, String)>
     let (planes, ports) = super::super::vocabularies(&crates);
     super::super::assign_instances(&mut crates, &planes, &ports);
     let (files, _) = super::scan_set(cx)?;
-    let vocab = vocabulary(&crates, &files);
+    let reg = super::super::load_registry(cx)?;
+    let vocab = vocabulary(&crates, &files, &reg.core_names);
     let mut out = Vec::new();
     for k in axes() {
         let names = vocab.names.get(k).cloned().unwrap_or_default();
@@ -766,6 +829,100 @@ pub fn selftest<'a>(
             "crates/store-memory/src/planted_self.rs",
             "pub const ME: &str = \"memory\";\n",
         ),
+    ));
+
+    // CORE'S OWN WORDS (ARCHITECT 2026-09-30, KERNEL-AUTH-ZERO Q1). A `[[core-name]]` row masks a
+    // word the kernel declares and the spec names as core's own; it can never mask a plugin's.
+    // `zebedee` is typed nowhere in the tree: the kernel declares it as an auth module name, core
+    // writes it once, and only the ledger row differs between the RED control and the GREEN mask.
+    let text = cx.read(super::LEDGER).unwrap_or_default();
+    let core_word = |row: bool, plugin: bool| {
+        let mut ov = super::plant(
+            cx,
+            "crates/busbar-kernel/src/config/planted_core_word.rs",
+            "pub const PLANTED_AUTH_MODULE: &str = \"zebedee\";\n",
+        );
+        ov.set(
+            format!("{CORE}/src/planted_core_word.rs"),
+            "pub const W: &str = \"zebedee\";\n".to_string(),
+        );
+        if plugin {
+            ov.set(
+                "crates/busbar-auth-zebedee/Cargo.toml".to_string(),
+                "[package]\nname = \"busbar-auth-zebedee\"\nversion = \"0.0.0\"\n".to_string(),
+            );
+        }
+        if row {
+            ov.set(
+                super::LEDGER,
+                format!(
+                    "{}\n\n[[core-name]]\nkind = \"auth\"\nname = \"zebedee\"\ncite = \
+                     \"BUSBAR-1.6.0.md:155\"\n",
+                    text.trim_end()
+                ),
+            );
+        }
+        ov
+    };
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a kernel-declared auth module name core writes, with no [[core-name]] row, is counted",
+        &[ROW_MATRIX],
+        core_word(false, false),
+        &[
+            "unlisted-instance",
+            &format!("{CORE_NAME} \u{d7} auth = 1"),
+            "planted_core_word.rs",
+        ],
+    ));
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a [[core-name]] row masks core's own word, and only it",
+        &[ROW_MATRIX],
+        core_word(true, false),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a [[core-name]] row naming a word a plugin crate is named for masks nothing",
+        &[ROW_MATRIX],
+        core_word(true, true),
+        &["core-name-is-plugin", "busbar-auth-zebedee", "zebedee"],
+    ));
+    // The live plugin name the kernel USED to spell: the root declares it, so it is an instance.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a [[core-name]] row naming a module the root declares masks nothing",
+        &[ROW_MATRIX],
+        super::plant(
+            cx,
+            super::LEDGER,
+            &format!(
+                "{}\n\n[[core-name]]\nkind = \"auth\"\nname = \"admin-tokens\"\ncite = \
+                 \"BUSBAR-1.6.0.md:155\"\n",
+                text.trim_end()
+            ),
+        ),
+        &["core-name-is-plugin", "admin-tokens"],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a [[core-name]] row with no spec line is refused at load",
+        &[super::super::ROW_REGISTRY],
+        super::plant(
+            cx,
+            super::LEDGER,
+            &format!(
+                "{}\n\n[[core-name]]\nkind = \"auth\"\nname = \"zebedee\"\ncite = \"it is \
+                 ours\"\n",
+                text.trim_end()
+            ),
+        ),
+        &["bad-core-name-cite", "zebedee"],
     ));
 
     // THE RATCHET IS EXACT BOTH WAYS, and a ceiling for an axis nothing measures is refused at load.

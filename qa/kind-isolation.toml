@@ -1835,16 +1835,38 @@ drain = "none: the #36 kernel group is intra-tier by design. What the paired [[c
 # ARMED AT TODAY'S MEASURED NUMBER (Law 9, TODO rule 9.4), exact in both directions: a rise is the
 # landing that grew the naming, a fall must bring the row down with it, a zero cell must be struck.
 # The ship twin owes ZERO in every neutral crate (law0-neutral-instance). The drain is Phase 4's.
+#
+# [[core-name]] — CORE'S OWN WORDS, which the learned vocabulary must not count (ARCHITECT ruling
+# 2026-09-30, KERNEL-AUTH-ZERO Q1: a lower-only MEASUREMENT CORRECTION, the class of INBOUND-LISTEN's
+# "Tcp* = OS words"). A module-name constant teaches the axis a word; these three are words the
+# spec names as core's own, not a plugin's. The list is EXACTLY these three. No plugin name may ever
+# enter it: a word a plugin crate is named for, or one a constant outside the kernel and contract
+# spells, stays counted and the row is RED (`core-name-is-plugin`).
+
+[[core-name]]
+kind = "auth"
+name = "keys"
+cite = "BUSBAR-1.6.0.md:155 — THE DESIGN §1: the badge press's auth verify (`keys`, core's own signed-key verifier, is part of it and is not a plugin)"
+
+[[core-name]]
+kind = "secret"
+name = "literal"
+cite = "BUSBAR-1.6.0.md:175 — THE DESIGN §1: `literal` and `none` are core secret grammar"
+
+[[core-name]]
+kind = "secret"
+name = "none"
+cite = "BUSBAR-1.6.0.md:175 — THE DESIGN §1: `literal` and `none` are core secret grammar"
 
 [[instance]]
 crate = "busbar"
 kind = "auth"
-count = "3"
+count = "2"
 
 [[instance]]
 crate = "busbar"
 kind = "secret"
-count = "10"
+count = "5"
 
 [[instance]]
 crate = "busbar-contract"
@@ -1854,7 +1876,7 @@ count = "6"
 [[instance]]
 crate = "busbar-core-admin"
 kind = "auth"
-count = "25"
+count = "17"
 
 [[instance]]
 crate = "busbar-core-admin"
@@ -1869,7 +1891,7 @@ count = "3"
 [[instance]]
 crate = "busbar-core-admin"
 kind = "secret"
-count = "43"
+count = "40"
 
 [[instance]]
 crate = "busbar-core-admin"
@@ -1879,7 +1901,7 @@ count = "10"
 [[instance]]
 crate = "busbar-kernel"
 kind = "auth"
-count = "42"
+count = "9"
 
 [[instance]]
 crate = "busbar-kernel"
@@ -1894,22 +1916,12 @@ count = "1"
 [[instance]]
 crate = "busbar-kernel"
 kind = "secret"
-count = "49"
+count = "40"
 
 [[instance]]
 crate = "busbar-kernel"
 kind = "store"
 count = "7"
-
-[[instance]]
-crate = "busbar-kernel-audit"
-kind = "auth"
-count = "2"
-
-[[instance]]
-crate = "busbar-kernel-identity"
-kind = "auth"
-count = "2"
 
 [[instance]]
 crate = "busbar-oauth2"

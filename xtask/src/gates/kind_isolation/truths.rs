@@ -225,7 +225,7 @@ fn ledger_kinds(text: &str) -> Vec<(String, usize)> {
         };
         let key = k.trim();
         let is_kind_field = match table {
-            "cell" | "instance" | "registered" | "announced" => key == "kind",
+            "cell" | "instance" | "core-name" | "registered" | "announced" => key == "kind",
             "edge" => key == "from" || key == "to",
             _ => false,
         };

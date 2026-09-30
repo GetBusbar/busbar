@@ -137,12 +137,13 @@ pub(super) fn instance_axes() -> Vec<&'static str> {
 }
 
 /// Every neutral crate's naming of the five axes, `(crate, kind) -> count` — for `--write`.
-pub fn measured_instances(
+pub(super) fn measured_instances(
     cx: &Ctx,
     crates: &[CrateInfo],
+    core: &[super::CoreName],
 ) -> Result<BTreeMap<(String, String), usize>, String> {
     let (files, _) = scan_set(cx)?;
-    let vocab = instances::vocabulary(crates, &files);
+    let vocab = instances::vocabulary(crates, &files, core);
     Ok(instances::measure(crates, &files, &vocab)
         .into_iter()
         .map(|((k, kind), c)| ((k, kind.to_string()), c.count))
@@ -2051,7 +2052,7 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
             )
         }
     };
-    let ivocab = instances::vocabulary(crates, &files);
+    let ivocab = instances::vocabulary(crates, &files, &reg.core_names);
     let inst = instances::measure(crates, &files, &ivocab);
     let inst_total: usize = inst.values().map(|c| c.count).sum();
 

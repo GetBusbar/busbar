@@ -925,6 +925,24 @@ struct MatrixCell {
     count: i64,
 }
 
+/// One `[[core-name]]` row: a word the instance vocabulary learns off a module-name constant that is
+/// NOT a plugin instance, because the spec names it as core's own (ARCHITECT ruling 2026-09-30,
+/// KERNEL-AUTH-ZERO Q1: a lower-only measurement correction, the class of INBOUND-LISTEN's
+/// "Tcp* = OS words"). `keys` is the badge press's own signed-key verifier (THE DESIGN §1: "is part
+/// of it and is not a plugin"); `literal` and `none` are core secret grammar (§1). `cite` is the
+/// `BUSBAR-1.6.0.md:<line>` that says so.
+///
+/// It is a MASK over the learned vocabulary, and it is refused the moment it would mask a plugin:
+/// a name any plugin crate is named for, or a name a module-name constant OUTSIDE the kernel and
+/// the contract spells, stays counted and the row is RED (`core-name-is-plugin`). No plugin name
+/// may ever enter it.
+#[derive(Debug, Clone)]
+struct CoreName {
+    kind: String,
+    name: String,
+    cite: String,
+}
+
 /// One `[[disagreement]]` row: a cell whose two scanners return different totals, and why.
 ///
 /// Its own table rather than an optional field on `[[cell]]`, because every other row in this file
@@ -1019,6 +1037,9 @@ struct KindRegistry {
     /// 118). Same row shape as `[[cell]]` — crate, kind, today's exact count. See
     /// `matrix::instances`.
     instance_cells: Vec<MatrixCell>,
+    /// The `[[core-name]]` table: core's own words the instance vocabulary must not count. See
+    /// [`CoreName`] and `matrix::instances::vocabulary`.
+    core_names: Vec<CoreName>,
     /// Every named `[patch]`/`[replace]`/`[source]` allowance. See [`PatchAllow`].
     patch_allows: Vec<PatchAllow>,
     /// Rows REFUSED AT LOAD. A malformed or over-broad row is not skipped and it is not tolerated:
@@ -1355,6 +1376,55 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 count,
             });
         }
+        // CORE'S OWN WORDS (ARCHITECT 2026-09-30, KERNEL-AUTH-ZERO Q1). A mask over the learned
+        // instance vocabulary, so every refusal a ceiling gets and two more: the cite must be a
+        // spec line, because a mask no clause grants is an exemption this file refuses; and one
+        // word is one row, because two rows for one mask are two answers.
+        "core-name" => {
+            let Some(v) = take_row(fields, &["kind", "name", "cite"], table, at, &mut reg.errors)
+            else {
+                return;
+            };
+            if !matrix::instance_axes().contains(&v[0].as_str()) {
+                reg.errors.push(format!(
+                    "bad-core-name-kind\t{REGISTRY_FILE}:{at}\t`[[core-name]] kind = \"{}\"` is \
+                     not one of the instance axes ({}). A mask over a vocabulary nothing learns \
+                     masks nothing",
+                    v[0],
+                    matrix::instance_axes().join(", ")
+                ));
+                return;
+            }
+            let line = v[2].strip_prefix("BUSBAR-1.6.0.md:").unwrap_or("");
+            let digits: String = line.chars().take_while(char::is_ascii_digit).collect();
+            if digits.is_empty() {
+                reg.errors.push(format!(
+                    "bad-core-name-cite\t{REGISTRY_FILE}:{at}\t`[[core-name]] cite = \"{}\"` \
+                     does not open with `BUSBAR-1.6.0.md:<line>`. A word is core's own only where \
+                     the spec says so; a mask no clause grants is an exemption",
+                    v[2]
+                ));
+                return;
+            }
+            let name = v[1].trim().to_ascii_lowercase();
+            if reg
+                .core_names
+                .iter()
+                .any(|c| c.kind == v[0] && c.name == name)
+            {
+                reg.errors.push(format!(
+                    "duplicate-core-name\t{REGISTRY_FILE}:{at}\t`[[core-name]] {} / {name}` is \
+                     already a row. Two rows for one mask are two answers",
+                    v[0]
+                ));
+                return;
+            }
+            reg.core_names.push(CoreName {
+                kind: v[0].clone(),
+                name,
+                cite: v[2].clone(),
+            });
+        }
         "disagreement" => {
             let Some(v) = take_row(fields, &["crate", "kind", "note"], table, at, &mut reg.errors)
             else {
@@ -1473,8 +1543,8 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
         other => reg.errors.push(format!(
             "unknown-table\t{REGISTRY_FILE}:{at}\t`[[{other}]]` is not a table this gate reads; the \
              file holds `[[transitional]]`, `[[registered]]`, `[[announced]]`, `[[dep]]`, \
-             `[[question]]`, `[[face]]`, `[[edge]]`, `[[cell]]` and `[[disagreement]]` rows and \
-             nothing else"
+             `[[question]]`, `[[face]]`, `[[edge]]`, `[[cell]]`, `[[disagreement]]`, `[[instance]]`, \
+             `[[core-name]]` and `[[patch]]` rows and nothing else"
         )),
     }
 }
@@ -5555,7 +5625,7 @@ fn repins(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry) -> Result<Vec<Repi
         }
     }
 
-    let inst = matrix::measured_instances(cx, crates)?;
+    let inst = matrix::measured_instances(cx, crates, &reg.core_names)?;
     for c in &reg.instance_cells {
         let now = inst
             .get(&(c.krate.clone(), c.kind.clone()))
