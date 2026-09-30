@@ -21,8 +21,8 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::{
     AdoptIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FinishIn, FramePiece, FramerOut, FramerSink,
-    FramingIn, IngestIn, LocateIn, LocateOut, RefuseIn, PIECE_END_OF_FRAME, PIECE_HAS_CODE,
-    PIECE_HAS_RETRY_AFTER, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    FramingIn, IngestIn, LocateIn, LocateOut, RefuseIn, PIECE_END_OF_FRAME, PIECE_FIELDS,
+    PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 
 /// One framer op, its `in` and its `out`, as the connector hands it to a [`FramerDoor`].
@@ -108,6 +108,8 @@ pub struct Got {
     pub status_class: u8,
     /// The far side's `Retry-After`, in seconds, where it asked.
     pub retry_after_secs: Option<u64>,
+    /// The bytes are a field block (`PIECE_FIELDS`): the far end's head, or its trailers.
+    pub fields: bool,
 }
 
 /// Everything one op answered, across its `YIELD_MORE` re-calls.
@@ -205,6 +207,7 @@ impl Buffers {
                 status_class: p.status_class,
                 retry_after_secs: (p.flags & PIECE_HAS_RETRY_AFTER != 0)
                     .then_some(p.retry_after_secs),
+                fields: p.flags & PIECE_FIELDS != 0,
             });
         }
         into.ended |= y.flags & YIELD_ENDED != 0;

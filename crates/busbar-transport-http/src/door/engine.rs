@@ -310,6 +310,8 @@ pub struct Piece {
     pub retry_after_secs: Option<u64>,
     /// The stream failed; `bytes` are the reason, and this is its last piece.
     pub failed: bool,
+    /// `bytes` are a field block: the head.
+    pub fields: bool,
 }
 
 impl Piece {
@@ -326,6 +328,7 @@ impl Piece {
             status: None,
             retry_after_secs: None,
             failed: false,
+            fields: false,
         }
     }
 }
@@ -780,33 +783,41 @@ fn advance(
     }
 }
 
-/// The response head as the frame the layer above reads: an HTTP/1.1 status line and the fields,
-/// less the two that describe a body framing hyper has already undone.
+/// The response head as the frame the layer above reads: ONE field block
+/// (`busbar_contract::abi::transport::fields`) carrying the status and any `Retry-After`, framed
+/// even when no field is left in it, so it always comes before the body.
 fn head_piece(stream: u64, r: &http::Response<Incoming>, now_unix_secs: u64) -> Piece {
-    let status = r.status().as_u16();
-    let mut head = format!(
-        "HTTP/1.1 {} {}\r\n",
-        status,
-        r.status().canonical_reason().unwrap_or("")
-    )
-    .into_bytes();
-    for (name, value) in r.headers() {
-        if name == http::header::TRANSFER_ENCODING || name == http::header::CONTENT_LENGTH {
-            continue;
-        }
-        head.extend_from_slice(name.as_str().as_bytes());
-        head.extend_from_slice(b": ");
-        head.extend_from_slice(value.as_bytes());
-        head.extend_from_slice(b"\r\n");
-    }
-    head.extend_from_slice(b"\r\n");
     Piece {
         stream,
-        bytes: Bytes::from(head),
-        status: Some(status),
+        bytes: Bytes::from(field_block(r.headers())),
+        status: Some(r.status().as_u16()),
         retry_after_secs: retry_after_secs(r.headers(), now_unix_secs),
         failed: false,
+        fields: true,
     }
+}
+
+/// `headers` as the field block: `name: value\r\n` per value, in the map's order (1.5.5's: names
+/// as they first arrived, a repeated name's values each on its own line after it), hop-by-hop
+/// fields and those `connection` names dropped, and `content-length` too: the pieces carry the body
+/// hyper already unframed.
+pub(crate) fn field_block(headers: &http::HeaderMap) -> Vec<u8> {
+    use busbar_contract::abi::transport::fields::{hop_by_hop, LINE_END, SEPARATOR};
+    let nominated = headers.get_all(http::header::CONNECTION);
+    let mut block = Vec::new();
+    for (name, value) in headers {
+        let name = name.as_str();
+        if name == "content-length"
+            || hop_by_hop(name, nominated.iter().map(http::HeaderValue::as_bytes))
+        {
+            continue;
+        }
+        block.extend_from_slice(name.as_bytes());
+        block.extend_from_slice(SEPARATOR);
+        block.extend_from_slice(value.as_bytes());
+        block.extend_from_slice(LINE_END);
+    }
+    block
 }
 
 #[cfg(test)]

@@ -318,7 +318,8 @@ fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
             .expect("the server answers")
             .expect("no failure");
             let Some(p) = p else { break };
-            let last = p.end_of_frame && p.bytes.is_empty();
+            // The stream's end: its empty closing piece (an empty head is a fields piece).
+            let last = !p.fields && p.end_of_frame && p.bytes.is_empty();
             pieces.push(p);
             if last {
                 break;
@@ -403,4 +404,135 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
         assert_eq!(&got[8..], &payload[..]);
         c.close();
     });
+}
+
+/// Every piece one need's exchange answers through the connection table, from a server that
+/// writes `response`, up to the empty piece that ends the stream: `(kind, status, bytes)`.
+fn pieces_through_the_table(
+    response: &'static [u8],
+) -> Vec<(busbar_contract::conn::PieceKind, Option<u32>, Vec<u8>)> {
+    use busbar_contract::conn::{Conns, InstanceId, NeedId, OpenDesc, PieceKind};
+    use busbar_core_connector::registry::{Entry, Transports};
+    use busbar_core_connector::{Connector, Judged};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let door = dropped_door("http_door");
+    let scheme = door.facts().claims[0];
+    // An IP literal is its own address: the judge the test needs, and no more.
+    let judge = |dest: &str, _: u32, _: Judged| {
+        Some(dest.parse::<std::net::SocketAddr>().map_err(|_| 1_u64))
+    };
+    let c = Connector::serving(
+        // The door composes over the socket-framing door, so the view serves both.
+        Transports::new(vec![
+            Entry {
+                door,
+                alpn: Vec::new(),
+            },
+            Entry {
+                door: socket_framer_door().expect("a socket-framing door is built beside the test"),
+                alpn: Vec::new(),
+            },
+        ])
+        .unwrap(),
+        std::sync::Arc::new(judge),
+        None,
+        std::sync::Arc::new(|_| {}),
+    );
+    let owner = InstanceId(1);
+    c.declare_over(owner, NeedId(0), scheme);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = format!("{scheme}://{}/v1/probe", l.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut req = Vec::new();
+            let mut buf = [0_u8; 1024];
+            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = s.read(&mut buf).await.unwrap();
+                assert!(n > 0, "the request head arrives");
+                req.extend_from_slice(&buf[..n]);
+            }
+            s.write_all(response).await.unwrap();
+        });
+        let fields: [(&str, &[u8]); 2] = [("method", b"GET"), ("path", b"/v1/probe")];
+        let desc = OpenDesc {
+            target: &target,
+            fields: &fields,
+            ..OpenDesc::default()
+        };
+        let id = c.open(owner, NeedId(0), &desc).expect("opens");
+        let mut got = Vec::new();
+        let mut buf = [0_u8; 4096];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            assert!(std::time::Instant::now() < deadline, "the server answers");
+            match c.read(owner, id, 7, &mut buf) {
+                Err(ConnError::Pending) => tokio::task::yield_now().await,
+                Err(e) => panic!("the exchange failed: {e}"),
+                Ok(p) => {
+                    // The stream's end: its empty closing piece (an empty head is a Fields piece).
+                    let done = p.kind == PieceKind::Completion
+                        || (p.kind == PieceKind::Body && p.end && p.len == 0);
+                    got.push((p.kind, p.status_code, buf[..p.len].to_vec()));
+                    if done {
+                        break;
+                    }
+                }
+            }
+        }
+        c.close(owner, id).unwrap();
+        got
+    })
+}
+
+/// RED: THE CONNECTOR YIELDS THE FAR END'S HEAD. A response with head fields reads, through the
+/// connection table, as ONE Fields piece carrying the status — the field block, lower-case names in
+/// the far end's order, a repeated field on its own lines, hop-by-hop fields (and what `connection`
+/// names) and `content-length` dropped — and then the Body.
+#[test]
+fn a_response_with_head_fields_yields_fields_then_body() {
+    use busbar_contract::conn::PieceKind;
+    let got = pieces_through_the_table(
+        b"HTTP/1.1 200 OK\r\nX-B: 1\r\nConnection: keep-alive, x-hop\r\nX-Session-Id: s1\r\n\
+          Keep-Alive: timeout=5\r\nx-b: 2\r\nX-Hop: secret\r\ncontent-length: 5\r\n\r\nhello",
+    );
+    let (kind, status, head) = &got[0];
+    assert_eq!((*kind, *status), (PieceKind::Fields, Some(200)), "{got:?}");
+    assert_eq!(
+        String::from_utf8_lossy(head),
+        "x-b: 1\r\nx-b: 2\r\nx-session-id: s1\r\n"
+    );
+    let body: Vec<u8> = got[1..]
+        .iter()
+        .inspect(|(k, _, _)| assert_eq!(*k, PieceKind::Body, "{got:?}"))
+        .flat_map(|(_, _, b)| b.clone())
+        .collect();
+    assert_eq!(body, b"hello");
+}
+
+/// RED: AN EMPTY HEAD STILL COMES FIRST. A head with no field left after the hop-by-hop drop reads
+/// as ONE EMPTY Fields piece, carrying the status, before anything else: the head is always the
+/// answer's first piece, and the only Fields piece (a trailer section is dropped, as 1.5.5's
+/// client dropped it).
+#[test]
+fn an_empty_head_yields_one_empty_fields_piece() {
+    use busbar_contract::conn::PieceKind;
+    let got = pieces_through_the_table(
+        b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n",
+    );
+    assert_eq!(
+        got[0],
+        (PieceKind::Fields, Some(204), Vec::new()),
+        "{got:?}"
+    );
+    assert_eq!(
+        got.iter().filter(|(k, _, _)| *k == PieceKind::Fields).count(),
+        1,
+        "{got:?}"
+    );
 }

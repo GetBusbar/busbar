@@ -16,23 +16,23 @@ use std::convert::Infallible;
 use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use busbar_contract::abi::mechanism::DOOR_SYMBOL;
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, Field, InHead, Op, OutHead, Outcome, BLOB_JSON,
 };
 use busbar_contract::abi::mechanism::door::Door;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
-use busbar_contract::abi::mechanism::DOOR_SYMBOL;
-use busbar_contract::abi::transport::check::check_framer;
 use busbar_contract::abi::transport::{
     slot, BeginIn, ConnFacts, EmitIn, EncodeIn, FramePiece, FramerOut, FramerSink, FramingIn,
-    IngestIn, Ops, PIECE_END_OF_FRAME, PIECE_HAS_CODE, PIECE_STREAM_FAILED, SIDE_DIAL,
+    IngestIn, Ops, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_STREAM_FAILED, SIDE_DIAL,
     YIELD_HAS_DEADLINE, YIELD_MORE,
 };
+use busbar_contract::abi::transport::check::check_framer;
 use bytes::Bytes;
 use hyper::body::{Body, Frame, Incoming};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -471,7 +471,12 @@ fn text(got: &[Got], stream: u64) -> String {
 
 fn ended(got: &[Got], stream: u64) -> bool {
     got.iter()
-        .any(|g| g.stream == stream && g.bytes.is_empty() && g.flags & PIECE_END_OF_FRAME != 0)
+        .any(|g| {
+            g.stream == stream
+                && g.bytes.is_empty()
+                && g.flags & PIECE_END_OF_FRAME != 0
+                && g.flags & PIECE_FIELDS == 0
+        })
 }
 
 // ── the scenarios ────────────────────────────────────────────────────────────────────────────────
@@ -516,7 +521,15 @@ fn scenario(label: &str, ops: &'static Ops, rt: &tokio::runtime::Runtime, case: 
         .expect("a head frame");
     println!("PROOF {label}: HEAD {}", head.code);
     assert_eq!((head.stream, head.code), (1, 200));
-    assert!(String::from_utf8_lossy(&head.bytes).starts_with("HTTP/1.1 200 OK\r\n"));
+    // The head is ONE field block, flagged as one: no status line, no hop-by-hop field.
+    assert_ne!(head.flags & PIECE_FIELDS, 0, "the head is a fields piece");
+    let block = String::from_utf8_lossy(&head.bytes).into_owned();
+    assert!(!block.starts_with("HTTP/"), "{block}");
+    assert!(
+        block.split_terminator("\r\n").all(|l| l.contains(": ")
+            && l.split(": ").next().is_some_and(|n| n == n.to_ascii_lowercase())),
+        "{block}"
+    );
     println!("PROOF {label}: body so far {:?}", text(&got, 1));
     assert_eq!(text(&got, 1), "got=5;a");
     assert!(!ended(&got, 1), "the stalled response is not whole");

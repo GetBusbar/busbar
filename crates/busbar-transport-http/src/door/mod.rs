@@ -19,10 +19,13 @@
 //! * `ingest` takes what the far end sent; `timer` is the host's clock reaching a deadline the
 //!   framer asked for. Each answers the wire bytes owed and the frame pieces completed.
 //!
-//! A response arrives as frames on its stream: the HEAD frame (an HTTP/1.1 status line and the
-//! fields, carrying the status code, its class and any `Retry-After`), one frame per body chunk,
-//! and then an EMPTY frame that says the response is whole. A trailer section is not handed up:
-//! 1.5.5's client read a response through reqwest, which yields data only.
+//! A response arrives as frames on its stream: the HEAD frame (one field block, flagged
+//! `PIECE_FIELDS` and carrying the status code, its class and any `Retry-After`; framed even when
+//! no field is left in it), one frame per body chunk, and then an EMPTY frame that says the
+//! response is whole. The field block is `busbar_contract::abi::transport::fields`' rendering:
+//! lower-case names, hyper's (1.5.5's) order, a repeated field on its own lines, hop-by-hop fields
+//! dropped here. A trailer section is not handed up: 1.5.5's client read a response through
+//! reqwest, which yields data only.
 //!
 //! `locate` also answers this framer's protocol offer for a secured connection (ALPN, most
 //! preferred first): `h2, http/1.1`, or `http/1.1` alone under the http1-only key, exactly as
@@ -64,7 +67,7 @@ use busbar_contract::abi::transport::{
     EmitIn, EncodeIn, FinishIn, FramePiece, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
     ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, SettingDecl, ShutIn,
     StatusRow, TransportTail, WriteIn, CANCEL_NOTHING_MOVED, FRAMING_STREAM, PIECE_END_OF_FRAME,
-    PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, ROLE_FRAMER, SETTING_COUNT,
+    PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, ROLE_FRAMER, SETTING_COUNT,
     SETTING_FLAG, SIDE_DIAL, STATUS_AT_FIRST_FRAME, STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT,
     STATUS_OTHER, STATUS_SUCCESS, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
@@ -686,6 +689,9 @@ fn fill(f: &mut Framing, sink: Lent<'_, FramerSink>, o: &mut Out<'_, FramerOut>)
         // A failure frame may span pieces like any other; its LAST piece says the stream failed.
         if piece.failed && whole {
             flags |= PIECE_STREAM_FAILED;
+        }
+        if piece.fields {
+            flags |= PIECE_FIELDS;
         }
         let mut fp = FramePiece {
             stream: piece.stream,

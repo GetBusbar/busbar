@@ -417,9 +417,15 @@ impl Connector {
                             retry_after_secs: None,
                         });
                     }
+                    // The far end's head (and its trailers) arrive as the framer's field block:
+                    // a Fields piece, the head ahead of the first Body piece.
                     Poll::Ready(Ok(Some(got))) => (
                         Piece {
-                            kind: PieceKind::Body,
+                            kind: if got.fields {
+                                PieceKind::Fields
+                            } else {
+                                PieceKind::Body
+                            },
                             stream: StreamId(got.stream),
                             len: 0,
                             end: got.end_of_frame,

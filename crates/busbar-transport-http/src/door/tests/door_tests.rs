@@ -56,3 +56,35 @@ fn locate_offers_what_1_5_5_offered_in_the_handshake() {
     assert_eq!(offer_for(false, http1_only("{}")), b"");
     assert_eq!(offer_for(false, true), b"");
 }
+
+/// RED: the head is the field block — lower-case names, hyper's (1.5.5's) order with a repeated
+/// field on its own lines after its first, values unaltered — and no hop-by-hop field (the fixed
+/// list, and what `connection` names: a `connection:`, `te:` or `upgrade:` line in the wire input
+/// never appears as a framed field) nor `content-length` ever enters it.
+#[test]
+fn the_field_block_keeps_order_and_duplicates_and_drops_hop_by_hop() {
+    let mut h = http::HeaderMap::new();
+    for (n, v) in [
+        ("X-B", "1"),
+        ("Connection", "keep-alive, X-Hop"),
+        ("x-a", "v: w"),
+        ("Keep-Alive", "timeout=5"),
+        ("x-b", "2"),
+        ("X-Hop", "secret"),
+        ("TE", "trailers"),
+        ("Upgrade", "h2c"),
+        ("Transfer-Encoding", "chunked"),
+        ("Content-Length", "5"),
+        ("X-Session-Id", "s1"),
+    ] {
+        h.append(
+            http::header::HeaderName::from_bytes(n.as_bytes()).unwrap(),
+            http::HeaderValue::from_static(v),
+        );
+    }
+    assert_eq!(
+        String::from_utf8(engine::field_block(&h)).unwrap(),
+        "x-b: 1\r\nx-b: 2\r\nx-a: v: w\r\nx-session-id: s1\r\n"
+    );
+    assert!(engine::field_block(&http::HeaderMap::new()).is_empty());
+}
