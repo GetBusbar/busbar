@@ -252,3 +252,93 @@ fn writes_held_for_a_pending_judgement_are_capped() {
 #[allow(unsafe_code)]
 #[path = "name_dial_tests.rs"]
 mod name_dial;
+
+// ── EGRESS: the declared target (PB-100) ──
+
+/// A connector serving the byte-exact door, admitting literals (loopback and private included).
+fn literal_connector() -> Connector {
+    let view = Transports::new(vec![Entry {
+        door: Arc::new(TestDoor::identity("bytes")),
+        alpn: Vec::new(),
+    }])
+    .unwrap();
+    Connector::serving(view, Arc::new(crate::LiteralsOnly), None, Arc::new(|_| {}))
+}
+
+/// RED: a need whose config names its target (`target_from`) dials that target and no other: an
+/// open to another host, or to another port on the same host, is refused before any dial, while
+/// the declared target itself opens.
+#[test]
+fn a_config_targeted_need_dialing_elsewhere_is_refused() {
+    worker().block_on(async {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let declared = l.local_addr().unwrap().to_string();
+        let c = literal_connector();
+        c.declare_need_to(OWNER, NeedId(0), "bytes", crate::DEFAULT_CLASS, &declared);
+        let open = |target: &str| {
+            c.open(
+                OWNER,
+                NeedId(0),
+                &OpenDesc {
+                    target,
+                    ..OpenDesc::default()
+                },
+            )
+        };
+        assert_eq!(
+            open("127.0.0.2:443"),
+            Err(ConnError::Refused),
+            "another host"
+        );
+        assert_eq!(open("127.0.0.1:1"), Err(ConnError::Refused), "another port");
+        let id = open(&declared).expect("the declared target opens");
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// A need whose target the plugin names (no `target_from`) is judged by its egress class only: any
+/// host the class admits opens.
+#[test]
+fn a_plugin_named_need_to_a_class_legal_host_is_allowed() {
+    worker().block_on(async {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        let c = literal_connector();
+        c.declare_over(OWNER, NeedId(0), "bytes");
+        let id = c
+            .open(
+                OWNER,
+                NeedId(0),
+                &OpenDesc {
+                    target: &far,
+                    ..OpenDesc::default()
+                },
+            )
+            .expect("a plugin-named target the class admits opens");
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// RED: a plugin-named need to a cloud metadata or link-local address is refused, whatever its
+/// class admits.
+#[test]
+fn a_plugin_named_need_to_the_metadata_address_is_refused() {
+    worker().block_on(async {
+        let c = literal_connector();
+        c.declare_over(OWNER, NeedId(0), "bytes");
+        for target in ["169.254.169.254:80", "169.254.1.1:80", "[fe80::1]:80"] {
+            assert_eq!(
+                c.open(
+                    OWNER,
+                    NeedId(0),
+                    &OpenDesc {
+                        target,
+                        ..OpenDesc::default()
+                    },
+                ),
+                Err(ConnError::Refused),
+                "{target}"
+            );
+        }
+    });
+}

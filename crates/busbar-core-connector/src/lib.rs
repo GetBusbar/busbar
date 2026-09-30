@@ -123,6 +123,15 @@ impl DialJudge for LiteralsOnly {
     }
 }
 
+/// What the connector holds for one declared need.
+#[derive(Debug, Clone)]
+struct DeclaredNeed {
+    transport: String,
+    egress_class: u32,
+    /// The target the need's `target_from` resolved to; `None` = the plugin names it per open.
+    declared_target: Option<String>,
+}
+
 /// A judgement's answer once it came, and the waker of the read or wait that found none.
 type Answer = Arc<Mutex<(Option<Result<SocketAddr, Verdict>>, Option<Waker>)>>;
 
@@ -153,8 +162,9 @@ impl std::fmt::Debug for Held {
 /// THE CONNECTOR: the host side of the connection table.
 pub struct Connector {
     slab: ConnSlab<Held>,
-    /// The transport each declared need names, and the egress class its dials are judged under.
-    over: Mutex<HashMap<(InstanceId, NeedId), (String, u32)>>,
+    /// The transport each declared need names, the egress class its dials are judged under, and
+    /// the target its config names (`target_from`), when it names one.
+    over: Mutex<HashMap<(InstanceId, NeedId), DeclaredNeed>>,
     transports: RwLock<Transports>,
     tls: Option<Arc<rustls::ClientConfig>>,
     wake: WakeTicket,
@@ -260,11 +270,41 @@ impl Connector {
         transport: &str,
         egress_class: u32,
     ) {
+        self.record(owner, need, transport, egress_class, None);
+    }
+
+    /// Record that `owner` declared `need` over `transport` in `egress_class`, its target named by
+    /// the need's config (`target_from`) and resolved to `declared_target`. Every open on the need
+    /// must dial that target: another authority, or the same one under another security, is
+    /// refused before any judgement or dial.
+    pub fn declare_need_to(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        transport: &str,
+        egress_class: u32,
+        declared_target: &str,
+    ) {
+        self.record(owner, need, transport, egress_class, Some(declared_target));
+    }
+
+    fn record(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        transport: &str,
+        egress_class: u32,
+        declared_target: Option<&str>,
+    ) {
         self.slab.declare(owner, need);
-        self.over
-            .lock()
-            .expect("needs")
-            .insert((owner, need), (transport.to_owned(), egress_class));
+        self.over.lock().expect("needs").insert(
+            (owner, need),
+            DeclaredNeed {
+                transport: transport.to_owned(),
+                egress_class,
+                declared_target: declared_target.map(str::to_owned),
+            },
+        );
     }
 
     /// Dial a held connection whose judgement has answered. `Ok(false)`: still judging, `waker`
@@ -319,7 +359,11 @@ impl Conns for Connector {
     ) -> Result<ConnId, ConnError> {
         self.slab.check_need(caller, need)?;
         endpoint::check(desc.target).map_err(|_| ConnError::Refused)?;
-        let (scheme, egress_class) = self
+        let DeclaredNeed {
+            transport: scheme,
+            egress_class,
+            declared_target,
+        } = self
             .over
             .lock()
             .expect("needs")
@@ -348,7 +392,18 @@ impl Conns for Connector {
                 desc.body.to_vec(),
             )),
         };
-        let planned = Planned::locate(door, dial).map_err(|f| map(&f))?;
+        let planned = Planned::locate(Arc::clone(&door), dial).map_err(|f| map(&f))?;
+        // THE DECLARED TARGET (1.5.5's per-module target guarantee, on every need): a need whose
+        // config names its target dials that target and no other.
+        if let Some(declared) = declared_target {
+            let located =
+                framer::locate(door.as_ref(), &declared).map_err(|_| ConnError::Refused)?;
+            if !located.authority.eq_ignore_ascii_case(planned.authority())
+                || located.secure != planned.secure()
+            {
+                return Err(ConnError::Refused);
+            }
+        }
         let answer: Answer = Arc::new(Mutex::new((None, None)));
         let later = Arc::clone(&answer);
         let judged = self.judge.judge_dial(

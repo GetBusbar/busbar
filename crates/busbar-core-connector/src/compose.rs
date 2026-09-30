@@ -207,6 +207,12 @@ impl Planned {
         &self.located.authority
     }
 
+    /// Whether the entry located a target asking for connection security.
+    #[must_use]
+    pub fn secure(&self) -> bool {
+        self.located.secure
+    }
+
     /// Dial exactly `addr` — the address judged for [`Self::authority`] — with the name the entry
     /// located offered to connection security: a non-blocking connect registered on the calling
     /// worker's reactor. The connection comes back at once, its open in flight.

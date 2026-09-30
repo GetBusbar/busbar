@@ -4,7 +4,9 @@
 //! THE ENDPOINT CHECK — a pure function over an open's target, run before any dial.
 //!
 //! An owner-answered, accepted difference from 1.5.5: the connector refuses a cloud
-//! METADATA host by name, and the whole IPv4 link-local range they live in. A plugin that could reach `169.254.169.254` could read the host's cloud
+//! METADATA host by name, and the whole IPv4 link-local range they live in, and (ARCHITECT, PB-100:
+//! metadata and link-local are refused on every need, whatever its egress class) IPv6 link-local,
+//! fe80::/10. A plugin that could reach `169.254.169.254` could read the host's cloud
 //! credentials, so no need, no configuration and no plugin opens one. The check reads the target
 //! the way a resolver would, so a respelling of the same address is the same address: an IPv4
 //! literal in dotted, decimal, octal or hex parts (`inet_aton` rules), and an IPv6 literal, IPv4-mapped
@@ -97,6 +99,11 @@ fn host_of(target: &str) -> &str {
     }
 }
 
+/// IPv6 link-local, fe80::/10: refused on every need, as IPv4 link-local is, whatever the class.
+fn link_local_v6(a: Ipv6Addr) -> bool {
+    a.segments()[0] & 0xffc0 == 0xfe80
+}
+
 fn is_metadata(host: &str) -> bool {
     let name = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
     if METADATA_NAMES.contains(&name.as_str()) {
@@ -108,7 +115,7 @@ fn is_metadata(host: &str) -> bool {
     }
     let bare = name.split('%').next().unwrap_or(&name);
     if let Ok(a) = bare.parse::<Ipv6Addr>() {
-        return METADATA_V6.contains(&a) || a.to_ipv4().is_some_and(v4);
+        return METADATA_V6.contains(&a) || link_local_v6(a) || a.to_ipv4().is_some_and(v4);
     }
     false
 }
