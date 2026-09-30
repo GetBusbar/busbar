@@ -2327,11 +2327,8 @@ jobs:
         # time its tests run. A per-package test run has to say so itself. ~30 s, and the alternative
         # -- a second `cargo build --workspace` per row -- is a full codegen for the same artifacts.
         #
-        # busbar-plugin-example-plane is the kind:plane member of that list, and it is the one whose
-        # absence is most expensive: `crates/busbar-kernel/tests/plane_abi_rider.rs` is the ONLY proof
-        # that the plane ABI has a real rider ("no 0-caller ABI"), and a
-        # missing artifact would make all seven of its tests pass vacuously. They panic under CI rather
-        # than skip for exactly that reason; this line is what keeps them from having to.
+        # busbar-plugin-example-plane is the kind:plane member of that list: the loader's own plane
+        # conformance suite dlopens it, and panics under CI rather than skip when it is missing.
         #
         # The auth kind's cdylib is not on the list: it is the REAL token-verifying module
         # (GetBusbar/busbar-auth-oidc), a pinned git dev-dependency of busbar-kernel, busbar and

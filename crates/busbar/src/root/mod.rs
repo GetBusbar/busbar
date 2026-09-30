@@ -110,3 +110,7 @@ mod percall_meter_shadow;
 #[cfg(test)]
 #[path = "../../tests/common/plugins.rs"]
 pub(crate) mod test_plugins;
+
+#[cfg(test)]
+#[path = "tests/plane_rider.rs"]
+mod plane_rider;

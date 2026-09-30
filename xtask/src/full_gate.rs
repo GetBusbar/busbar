@@ -164,7 +164,7 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate design-bindings --selftest",
     "cargo xtask gate design-bindings",
     // The feature-sets job's plugin cdylibs. `busbar-plugin-example-plane` joined the list in
-    // ci.yml at 4e39e1a11 (the kind:plane rider `plane_abi_rider.rs` dlopens) and the local copy
+    // ci.yml at 4e39e1a11 (the loader's plane conformance suite dlopens it) and the local copy
     // was never moved with it, so the CI line went unclassified. One list, both places.
     "cargo build --locked -p busbar-hook-test-plugin -p busbar-plugin-example-plane",
     // The connector's universal-needs witness dlopens two transport doors beside its test binary

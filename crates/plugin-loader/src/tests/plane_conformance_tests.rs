@@ -25,8 +25,8 @@
 //! * the PER-SLOT drive withdraws exactly one of the six granted slots at a time and asserts the
 //!   plane refuses each time, naming the withdrawn slot — which is what proves it calls each one.
 //!
-//! The REAL host — `busbar_kernel::plane_host::build_plane_host_vtable()`, 44 of 44 slots over live
-//! core primitives — is crossed by the SAME artifact in `crates/busbar-kernel/tests/plane_abi_rider.rs`.
+//! This lane retires with the old loader; the door lane's crossing into the kernel's own host
+//! services is proven by the composition root (`crates/busbar/src/root/tests/plane_rider.rs`).
 //! It cannot be crossed from here: this crate may not name `busbar-kernel` (that edge is the
 //! core→loader→kernel cycle the 1.6.0 W4.a chunk-0 split broke), so the two halves of the proof live on
 //! the two sides of that seam, on purpose.
@@ -85,8 +85,8 @@ fn vocab(ptr: *const u8, len: usize) -> String {
 // THE TEST HOST — a REAL, non-EMPTY `PlaneHostVtable` that COUNTS what the plane calls.
 //
 // `busbar-plugin-loader` cannot name `busbar-kernel` (that edge is the core→loader→kernel cycle the
-// 1.6.0 W4.a chunk-0 split exists to break), so the REAL `build_plane_host_vtable()` crossing lives in
-// the kernel's own suite (`crates/busbar-kernel/tests/plane_abi_rider.rs`). What belongs HERE is the
+// 1.6.0 W4.a chunk-0 split exists to break); the door lane's real-host crossing is the composition
+// root's (`crates/busbar/src/root/tests/plane_rider.rs`). What belongs HERE is the
 // half the loader owns: that the artifact the LOADER produced — dlopened, trust-verified, resolved
 // through the registry — actually calls back through the table it was handed, and how many times.
 //

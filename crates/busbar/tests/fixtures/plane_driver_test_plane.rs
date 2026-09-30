@@ -7,7 +7,7 @@
 //! It exports the one door over the plane table and defines no ABI shape of its own. What it does
 //! with a unit is chosen by the member name the kernel hands its ATTEMPT piece (`ok`, `retry`,
 //! `retry-late`, `pend`, `hang`, `wedge`, `fault`, `cancel-fault`, `short`, `short-twice`), and `arrive`
-//! reacts to the request target (`/short`, `/short-twice`, `/refuse`, `/stats`). Its far-end
+//! reacts to the request target (`/short`, `/short-twice`, `/refuse`, `/stats`, `/clock`). Its far-end
 //! answer echoes the far end's bytes, in pieces of at most `reply_cap` (`more = 1` for the rest),
 //! with cumulative far-end-reported units = the bytes emitted so far.
 //!
@@ -23,6 +23,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use busbar_contract::abi::host::service::{
+    op as service_op, ClockNowIn, ClockReading, HostSlots, ServiceHead, ServiceOut,
+};
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, OutHead, Outcome, RawOutcome, BLOB_ABSENT, FLAG_RESUME,
 };
@@ -31,7 +34,7 @@ use busbar_contract::abi::mechanism::door::{
     Door, KindTailHead, MetricFamily, Statement, FAMILY_GAUGE,
 };
 use busbar_contract::abi::mechanism::lifecycle::{CancelIn, CancelOut, OpsHead, LIFECYCLE_SLOTS};
-use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket, WakeFn};
+use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket, WakeFn};
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, Claim, OnPieceIn, OnPieceOut, OpClass, Ops, OutField,
@@ -243,6 +246,8 @@ struct Unit {
 
 struct Inst {
     wake: WakeFn,
+    /// The host's service table, as `open` was handed it (`/clock` reads its `clock.now`).
+    services: *const HostSlots,
     ctx: HostCtx,
     snapshot: Box<PlaneSnapshot>,
     units: Mutex<HashMap<u64, Unit>>,
@@ -335,6 +340,7 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
         });
         let me = Box::new(Inst {
             wake,
+            services: host.services,
             ctx: host.ctx,
             snapshot,
             units: Mutex::new(HashMap::new()),
@@ -429,6 +435,39 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 me.count(Stat::HostCalls);
                 (me.wake)(me.ctx, ticket);
                 vec![estimate(0)]
+            }
+            b"/clock" => {
+                // The host's own clock, through its service table: the reading, as two amounts. A
+                // clock the host would not read (no table, no slot, not READY) refuses the arrival.
+                me.count(Stat::HostCalls);
+                let Some(now) = me.services.as_ref().and_then(|t| t.clock_now) else {
+                    return say(out, Outcome::Refused);
+                };
+                let mut reading = ClockReading {
+                    size: std::mem::size_of::<ClockReading>() as u32,
+                    _reserved: 0,
+                    wall_ns: 0,
+                    mono_ns: 0,
+                };
+                let call = ClockNowIn {
+                    head: ServiceHead {
+                        size: std::mem::size_of::<ClockNowIn>() as u32,
+                        op: service_op::CLOCK_NOW,
+                        handle: CompletionHandle {
+                            ticket: Ticket::NONE,
+                            seq: 0,
+                            _reserved: 0,
+                        },
+                    },
+                    reading: &mut reading,
+                };
+                let mut answer = std::mem::zeroed::<ServiceOut>();
+                if now(me.ctx, (&call as *const ClockNowIn).cast(), &mut answer).outcome()
+                    != Outcome::Ready
+                {
+                    return say(out, Outcome::Refused);
+                }
+                vec![estimate(reading.wall_ns), estimate(reading.mono_ns)]
             }
             b"/stats" => me
                 .stats
