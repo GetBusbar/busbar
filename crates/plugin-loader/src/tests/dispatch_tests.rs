@@ -1372,6 +1372,40 @@ fn red_a_hanging_unload_faults_no_innocent_instance() {
     release.send(()).unwrap();
 }
 
+/// A HANGING UNLOAD HOLDS BACK NO OTHER UNLOAD: while one library's `.fini_array` hangs, the next
+/// unload still runs, on a reaper of its own. RED on a single shared reaper thread: the second
+/// unload queues behind the wedged one and never runs while it hangs (this is also why a test that
+/// wedges the reaper starved `an_unload_runs_on_the_reaper_never_under_a_worker_lock` whenever the
+/// two ran together).
+#[test]
+fn red_a_hanging_unload_holds_back_no_other_unload() {
+    use crate::dispatch::load::reap;
+    let (release, hold) = std::sync::mpsc::channel::<()>();
+    let (entered, inside) = std::sync::mpsc::channel::<()>();
+    reap(Box::new(move || {
+        let _ = entered.send(());
+        let _ = hold.recv();
+    }));
+    inside
+        .recv_timeout(WAIT)
+        .expect("the first unload runs, and hangs");
+    let (ran, next) = std::sync::mpsc::channel::<String>();
+    reap(Box::new(move || {
+        let name = std::thread::current()
+            .name()
+            .unwrap_or_default()
+            .to_string();
+        let _ = ran.send(name);
+    }));
+    let got = next.recv_timeout(WAIT);
+    release.send(()).unwrap();
+    assert_eq!(
+        got.as_deref(),
+        Ok(crate::dispatch::load::REAPER_THREAD),
+        "the second unload ran on a reaper while the first hung"
+    );
+}
+
 #[test]
 fn red_a_ticketless_short_answer_is_re_called_once() {
     let d = Dispatcher::new(config());

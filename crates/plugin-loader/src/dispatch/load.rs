@@ -219,34 +219,37 @@ impl Drop for Lib {
 /// An unload, as the reaper runs it.
 pub(crate) type Unload = Box<dyn FnOnce() + Send>;
 
-/// THE REAPER: every library unload (plugin `.fini_array` code) runs on this one dedicated thread,
+/// THE REAPER: every library unload (plugin `.fini_array` code) runs on a reaper thread of its own,
 /// fire and forget. Never on a request worker, never on the watchdog, never under a worker's lock
-/// and never inside another op's crossing record, so an unload that hangs wedges only the reaper:
-/// no innocent instance is faulted and no caller waits.
+/// and never inside another op's crossing record, so an unload that hangs wedges only its own
+/// reaper: no innocent instance is faulted, no caller waits, and no LATER unload waits behind it (a
+/// single shared reaper let one hanging `.fini_array` hold every later library — and its staged
+/// image — loaded for the life of the process). A reaper the OS will not spawn leaks the library
+/// rather than run its unload on the caller's thread.
 pub(crate) fn reap(unload: Unload) {
-    static REAPER: std::sync::OnceLock<std::sync::Mutex<std::sync::mpsc::Sender<Unload>>> =
-        std::sync::OnceLock::new();
-    let tx = REAPER.get_or_init(|| {
-        let (tx, rx) = std::sync::mpsc::channel::<Unload>();
-        std::thread::Builder::new()
-            .name(REAPER_THREAD.into())
-            .spawn(move || {
-                for unload in rx {
-                    unload();
-                    #[cfg(test)]
-                    UNLOADS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                }
-            })
-            .expect("spawn the unload reaper");
-        std::sync::Mutex::new(tx)
-    });
-    let _ = tx.lock().unwrap_or_else(|e| e.into_inner()).send(unload);
+    let handed = std::sync::Arc::new(std::sync::Mutex::new(Some(unload)));
+    let taken = std::sync::Arc::clone(&handed);
+    let spawned = std::thread::Builder::new()
+        .name(REAPER_THREAD.into())
+        .spawn(move || {
+            let unload = taken.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(unload) = unload {
+                unload();
+                #[cfg(test)]
+                UNLOADS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+    if let Err(e) = spawned {
+        tracing::warn!(error = %e, "no reaper thread: the plugin library stays loaded");
+        let unload = handed.lock().unwrap_or_else(|e| e.into_inner()).take();
+        std::mem::forget(unload);
+    }
 }
 
 /// The reaper thread's name.
 pub(crate) const REAPER_THREAD: &str = "busbar-dispatch-reaper";
 
-/// TEST WITNESS: unloads the reaper finished.
+/// TEST WITNESS: unloads the reapers finished.
 #[cfg(test)]
 pub(crate) static UNLOADS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
