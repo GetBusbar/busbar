@@ -211,6 +211,7 @@ fn is_cimd_client_id(client_id: &str) -> bool {
 /// `client_id_metadata_document_supported` member to the served RFC 8414 document, which is a
 /// customer-visible byte change (see the module docs). The fetch, the seam and the ceiling are
 /// busbar's either way.
+/// (Owner ruling 2026-09-30, N3: a statement of fact, not a deferral.)
 fn materialize(url: &str, body: &[u8], ceiling: &ScopeSet) -> Result<Client, String> {
     let doc: serde_json::Value =
         serde_json::from_slice(body).map_err(|e| format!("not JSON: {e}"))?;
