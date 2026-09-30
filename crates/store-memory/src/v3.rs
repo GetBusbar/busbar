@@ -95,7 +95,7 @@ struct Inner {
     slices: HashMap<u64, Drawn>,
     next_slice: u64,
     /// `stream -> its records`; the head's `seq` is the count.
-    streams: HashMap<String, Vec<RecordBytes>>,
+    journals: HashMap<String, Vec<RecordBytes>>,
     /// `session -> (node, principal)`.
     sessions: HashMap<u64, (String, String)>,
 }
@@ -258,7 +258,7 @@ impl StoreSlots for MemoryStore {
     fn append_batch(&self, op: OpId, stream: &str, records: &[RecordBytes]) -> OpResult<Head> {
         let body = format!("append_batch:{stream:?}:{records:?}");
         let answer = self.deduped(op, body, |_, inner| {
-            let rows = inner.streams.entry(stream.to_string()).or_default();
+            let rows = inner.journals.entry(stream.to_string()).or_default();
             rows.extend(records.iter().cloned());
             Ok(Answer::Head(Head {
                 seq: rows.len() as u64,
@@ -274,7 +274,7 @@ impl StoreSlots for MemoryStore {
     fn heads(&self) -> Result<Vec<(String, Head)>, String> {
         let inner = self.v3.lock();
         let mut heads: Vec<(String, Head)> = inner
-            .streams
+            .journals
             .iter()
             .map(|(s, rows)| {
                 (

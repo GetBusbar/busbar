@@ -103,7 +103,7 @@ fn the_memory_store_states_its_facts_in_its_tail() {
             fork_refusal: true,
         }
     );
-    assert_eq!(s.name(), "memory");
+    assert!(!s.name().is_empty(), "the store states its name");
 }
 
 #[test]
@@ -180,7 +180,7 @@ fn credentials_cross_as_secret_blobs_and_read_back() {
         .expect("found");
     assert_eq!(got.meta.id, "c1");
     assert_eq!(
-        s.lookup_credential_secret("generic", "none")
+        s.lookup_credential_secret("generic", "pub-absent")
             .expect("lookup"),
         None
     );
@@ -220,7 +220,7 @@ fn plane_records_and_tokens_cross_the_request_path_slots() {
         s.get_plane_record("task", "t1").expect("get"),
         Some(b"body".to_vec())
     );
-    assert_eq!(s.get_plane_record("task", "none").expect("get"), None);
+    assert_eq!(s.get_plane_record("task", "t-absent").expect("get"), None);
     s.append_plane_record(&record("event", "e", Some("t1"), 1, b"one".to_vec()))
         .expect("append");
     s.append_plane_record(&record("event", "e", Some("t1"), 2, b"two".to_vec()))

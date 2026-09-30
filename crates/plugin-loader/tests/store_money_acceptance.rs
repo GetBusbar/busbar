@@ -878,25 +878,23 @@ mod v3 {
         LoadedStore::open(p, d, b"{}", 3).expect("open")
     }
 
-    /// The same crate's cdylib through the same table; `None` in a scoped non-CI run without it.
+    /// The same door dropped in (the `store_memory_door` example cdylib) through the same table;
+    /// `None` in a scoped non-CI run without it.
     pub fn dropped_in() -> Option<LoadedStore> {
         let exe = std::env::current_exe().ok()?;
-        let dir = exe.parent()?.parent()?;
         let name = format!(
-            "{}busbar_store_memory{}",
+            "{}store_memory_door{}",
             std::env::consts::DLL_PREFIX,
             std::env::consts::DLL_SUFFIX
         );
-        let path = [dir.join(&name), dir.join("deps").join(&name)]
-            .into_iter()
-            .find(|p| p.exists());
-        let Some(path) = path else {
+        let path = exe.parent()?.parent()?.join("examples").join(name);
+        if !path.exists() {
             assert!(
                 std::env::var_os("CI").is_none(),
-                "the store's cdylib is not built under CI; refusing to skip the dropped-in table"
+                "the store's door cdylib is not built under CI; refusing to skip the dropped-in table"
             );
             return None;
-        };
+        }
         let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
         let facts = ManifestFacts {
             mechanism_version: MECHANISM_VERSION,

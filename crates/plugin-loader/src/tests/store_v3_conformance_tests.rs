@@ -51,10 +51,10 @@ fn compiled_in() -> LoadedStore {
     LoadedStore::open(p, d, b"{}", 1).expect("it opens")
 }
 
-/// The same crate's `cdylib`, dropped in. `None` only in a scoped, non-CI run that did not build it
-/// (`both_ways::cdylib` refuses to skip under CI).
+/// The same door, dropped in (the `store_memory_door` example `cdylib`). `None` only in a scoped,
+/// non-CI run that did not build it (`both_ways::example_cdylib` refuses to skip under CI).
 fn dropped_in() -> Option<LoadedStore> {
-    let path = crate::both_ways::cdylib("busbar_store_memory")?;
+    let path = crate::both_ways::example_cdylib("store_memory_door")?;
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let facts = ManifestFacts {
         mechanism_version: MECHANISM_VERSION,
@@ -187,7 +187,7 @@ fn line<T: std::fmt::Debug, E: std::fmt::Display>(what: &str, r: Result<T, E>) -
 
 fn keys_line(r: Result<Vec<VirtualKey>, busbar_contract::records::RecordStoreError>) -> String {
     line(
-        "keys",
+        "key list",
         r.map(|mut ks| {
             ks.sort_by(|a, b| a.id.cmp(&b.id));
             ks.into_iter()
@@ -278,7 +278,7 @@ fn script(s: &LoadedStore) -> Vec<String> {
     ));
     t.push(line(
         "lookup none",
-        b.lookup_credential_secret("generic", "none")
+        b.lookup_credential_secret("generic", "pub-absent")
             .map(|c| c.map(|c| c.meta.id)),
     ));
     t.push(line("revoke c1", b.revoke_credential("c1", "rotated")));
@@ -379,7 +379,7 @@ fn script(s: &LoadedStore) -> Vec<String> {
         t.push(line("reserve replay", s.reserve(op(3), 0, &draw).await));
         t.push(line("reserve over", s.reserve(op(4), 0, &draw).await));
         let nocap = [Cell {
-            key: cell_key("none", Dimension::NanoUnits),
+            key: cell_key("uncapped", Dimension::NanoUnits),
             amount: 1,
         }];
         t.push(line("reserve no cap", s.reserve(op(5), 0, &nocap).await));

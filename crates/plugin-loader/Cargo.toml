@@ -50,6 +50,15 @@ name = "log_witness_door"
 path = "tests/fixtures/log_witness_door.rs"
 crate-type = ["cdylib"]
 
+# The build's store DROPPED IN on the store v3 table: `busbar-store-memory`'s `door` behind one
+# `export_door!` line (`store_v3` conformance, `store_axis`, `store_money_acceptance`). An example,
+# not a crate: `cargo test` builds it and it never ships (the shipped artifact is the store crate's
+# own `cdylib`, built with its `dropped-in` feature).
+[[example]]
+name = "store_memory_door"
+path = "tests/fixtures/store_memory_door.rs"
+crate-type = ["cdylib"]
+
 [dependencies]
 # The three unit-side store seams the composition root binds to one loaded store (`store_adapter`).
 # None of the three crates may name a store, so the adapter that implements all three lives on this
@@ -134,9 +143,11 @@ busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-
 # `BUSBAR_COLD_ENTRY`), its `cdylib` is `dlopen`ed. `store_conformance_tests` requires the two to answer
 # every store operation byte-identically; `store_scope_kind_conformance_tests` requires them to
 # round-trip a plane scope grant identically — a dropped-in store's copy of the scope-kind registry is
-# never populated by the engine's boot registration. `dropped-in`: the cdylib's door is compiled only
-# under it (a build that links the store beside other plugins registers it through `linked::STORE`).
-busbar-store-memory = { path = "../store-memory", features = ["dropped-in", "cold-dropped-in"] }
+# never populated by the engine's boot registration. `cold-dropped-in`: the cdylib's legacy cold door
+# (M6). The store v3 door DROPPED IN is the `store_memory_door` example below, not the crate's own
+# `dropped-in` feature: that exports `busbar_plugin_door` from the rlib too, which this test build's
+# own linked fixtures already define.
+busbar-store-memory = { path = "../store-memory", features = ["cold-dropped-in"] }
 # NO `kind: secret` fixture: the in-tree secret fixture is deleted (owner, 1.6.0-QUESTIONS.md
 # "FIXTURES": "real plugins are the examples"). The secret kind is proven by the REAL plugin repo
 # (GetBusbar/busbar-secret-vault) — `plugin_proof_tests` dlopens its built cdylib from
