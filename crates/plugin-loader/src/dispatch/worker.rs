@@ -1190,6 +1190,13 @@ impl Dispatcher {
         }
     }
 
+    /// The host services' store itself (test witness: a test serves into it as an instance's
+    /// service call would).
+    #[cfg(test)]
+    pub(crate) fn service_store(&self) -> Arc<ServiceStore> {
+        Arc::clone(&self.pool.env.services)
+    }
+
     /// Whether an op on `t` is pending (test witness: it has crossed and answered PENDING).
     #[cfg(test)]
     pub(crate) fn is_pending(&self, t: Ticket) -> bool {

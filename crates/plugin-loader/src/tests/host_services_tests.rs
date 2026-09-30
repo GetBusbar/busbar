@@ -681,3 +681,48 @@ fn random_fill_writes_the_kernels_bytes_and_refuses_outside_its_cap_before_the_k
         "a refused fill never reaches the kernel"
     );
 }
+
+/// A RECYCLE drops the stored service results of every `(ticket, n)` of its ticket, through the
+/// dispatcher's own recycle path: nothing an earlier request's services answered survives into the
+/// ticket's next life, and a replay of an old handle runs its service afresh rather than reading
+/// the stored result.
+#[test]
+fn a_recycled_ticket_drops_its_stored_service_results() {
+    let d = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let t = d.mint(0).expect("a ticket");
+    let store = d.service_store();
+    let runs = AtomicUsize::new(0);
+    let heads = [head(op::RECORDS_GET, t, 0, 0), head(op::RECORDS_GET, t, 1, 0)];
+    for h in &heads {
+        let (mut b, mut s) = ([0u8; 8], [SPAN; 1]);
+        let into = bufs(&mut b, &mut s);
+        // SAFETY: the test's own buffers.
+        let a = unsafe { serve(&store, &nowhere(), h, Some(&into), eight(&runs)) };
+        assert_eq!((a.outcome, a.value), (Outcome::Ready, 1));
+    }
+    assert_eq!(d.services().held(), 2, "one stored result per (ticket, n)");
+    let (mut b, mut s) = ([0u8; 8], [SPAN; 1]);
+    let into = bufs(&mut b, &mut s);
+    // SAFETY: as above.
+    let replay = unsafe { serve(&store, &nowhere(), &heads[0], Some(&into), eight(&runs)) };
+    assert_eq!(replay.outcome, Outcome::Ready);
+    assert_eq!(runs.load(Ordering::SeqCst), 2, "a replay before the recycle reads, not runs");
+
+    d.recycle(t);
+    let start = std::time::Instant::now();
+    while d.services().held() != 0 {
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "the recycle must drop the ticket's stored results"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    // SAFETY: as above.
+    let after = unsafe { serve(&store, &nowhere(), &heads[0], Some(&into), eight(&runs)) };
+    assert_eq!(after.outcome, Outcome::Ready);
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        3,
+        "the recycled ticket's old handle runs afresh: no earlier result is read back"
+    );
+}
