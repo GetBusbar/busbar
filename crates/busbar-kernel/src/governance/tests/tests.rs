@@ -201,6 +201,8 @@ fn budget_group_cfg(cap: i64, period: &str, parent: Option<&str>) -> crate::conf
             scope: None,
             on_exhaust: None,
             downgrade_to: None,
+            admission: None,
+            on_exhaustion: None,
         }],
         ..Default::default()
     }
@@ -1608,6 +1610,8 @@ fn test_rate_headroom_reports_fraction_remaining() {
                     scope: None,
                     on_exhaust: None,
                     downgrade_to: None,
+                    admission: None,
+                    on_exhaustion: None,
                 }],
                 ..Default::default()
             },
@@ -1637,6 +1641,8 @@ fn test_rate_headroom_reports_fraction_remaining() {
                         scope: None,
                         on_exhaust: None,
                         downgrade_to: None,
+                        admission: None,
+                        on_exhaustion: None,
                     },
                     LimitCfg {
                         metric: LimitMetric::Tokens,
@@ -1645,6 +1651,8 @@ fn test_rate_headroom_reports_fraction_remaining() {
                         scope: None,
                         on_exhaust: None,
                         downgrade_to: None,
+                        admission: None,
+                        on_exhaustion: None,
                     },
                 ],
                 ..Default::default()
@@ -4480,6 +4488,8 @@ fn test_reclaim_group_cells_drops_the_per_group_concurrent_gauge() {
             scope: None,
             on_exhaust: None,
             downgrade_to: None,
+            admission: None,
+            on_exhaustion: None,
         }],
         ..Default::default()
     };

@@ -207,6 +207,8 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
                     scope: None,
                     on_exhaust: None,
                     downgrade_to: None,
+                    admission: None,
+                    on_exhaustion: None,
                 }],
                 ..Default::default()
             },

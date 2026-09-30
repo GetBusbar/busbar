@@ -513,6 +513,8 @@ async fn test_admit_check_uses_charged_at_window_not_clock() {
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
             }],
             ..Default::default()
         },
@@ -3591,6 +3593,8 @@ fn governed_app_over_budget() -> (Arc<App>, busbar_contract::records::VirtualKey
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
             }],
             ..Default::default()
         },
@@ -3635,6 +3639,8 @@ fn governed_app_rate_limited() -> (Arc<App>, busbar_contract::records::VirtualKe
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
             }],
             ..Default::default()
         },
@@ -5998,6 +6004,8 @@ async fn governed_limit_router(
             scope: None,
             on_exhaust: None,
             downgrade_to: None,
+            admission: None,
+            on_exhaustion: None,
         }
     } else {
         LimitCfg {
@@ -6007,6 +6015,8 @@ async fn governed_limit_router(
             scope: None,
             on_exhaust: None,
             downgrade_to: None,
+            admission: None,
+            on_exhaustion: None,
         }
     };
     let groups = std::collections::BTreeMap::from([(
@@ -6345,6 +6355,8 @@ fn governed_app_group_blocked() -> (Arc<App>, busbar_contract::records::VirtualK
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
             }],
             ..Default::default()
         },
@@ -6518,6 +6530,8 @@ fn governed_app_downgrade(
                 scope: Some(busbar_contract::records::ScopeRef::pool("frontier")),
                 on_exhaust: Some(busbar_kernel::config::groups::OnExhaust::Downgrade),
                 downgrade_to: Some(busbar_contract::records::ScopeRef::pool("value")),
+                admission: None,
+                on_exhaustion: None,
             }],
             ..Default::default()
         },
@@ -6607,6 +6621,8 @@ async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
                     scope: Some(busbar_contract::records::ScopeRef::pool("a")),
                     on_exhaust: Some(busbar_kernel::config::groups::OnExhaust::Downgrade),
                     downgrade_to: Some(busbar_contract::records::ScopeRef::pool("b")),
+                    admission: None,
+                    on_exhaustion: None,
                 },
                 // b: budget is ALREADY exhausted (cap 0) -> downgrades to c.
                 busbar_kernel::config::groups::LimitCfg {
@@ -6616,6 +6632,8 @@ async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
                     scope: Some(busbar_contract::records::ScopeRef::pool("b")),
                     on_exhaust: Some(busbar_kernel::config::groups::OnExhaust::Downgrade),
                     downgrade_to: Some(busbar_contract::records::ScopeRef::pool("c")),
+                    admission: None,
+                    on_exhaustion: None,
                 },
                 // c: budget is ALSO already exhausted -> downgrades back to b, the CYCLE.
                 busbar_kernel::config::groups::LimitCfg {
@@ -6625,6 +6643,8 @@ async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
                     scope: Some(busbar_contract::records::ScopeRef::pool("c")),
                     on_exhaust: Some(busbar_kernel::config::groups::OnExhaust::Downgrade),
                     downgrade_to: Some(busbar_contract::records::ScopeRef::pool("b")),
+                    admission: None,
+                    on_exhaustion: None,
                 },
             ],
             ..Default::default()

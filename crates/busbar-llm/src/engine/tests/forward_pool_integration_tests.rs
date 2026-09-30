@@ -445,6 +445,8 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
             }],
             ..Default::default()
         },
@@ -580,6 +582,8 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
             }],
             ..Default::default()
         },
@@ -1147,6 +1151,8 @@ async fn test_governance_budget_over_quota() {
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
             }],
             ..Default::default()
         },
@@ -1268,6 +1274,8 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
             }],
             ..Default::default()
         },
@@ -1507,6 +1515,8 @@ async fn test_governance_rate_limit_429() {
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
             }],
             ..Default::default()
         },
@@ -1618,6 +1628,8 @@ async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
             }],
             ..Default::default()
         },

@@ -219,6 +219,8 @@ async fn over_budget_refuses_with_no_charge_and_nothing_to_refund() {
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
             }],
             ..Default::default()
         },

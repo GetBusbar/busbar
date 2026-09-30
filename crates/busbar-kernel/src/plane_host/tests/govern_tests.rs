@@ -28,6 +28,8 @@ fn group_cost(name: &str, cap: i64) -> crate::cost::CostModel {
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
             }],
             ..Default::default()
         },
@@ -52,6 +54,8 @@ fn disabled_group_cost(name: &str) -> crate::cost::CostModel {
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
             }],
             ..Default::default()
         },

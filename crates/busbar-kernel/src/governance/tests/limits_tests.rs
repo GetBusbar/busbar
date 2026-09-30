@@ -23,6 +23,8 @@ fn limit(metric: LimitMetric, amount: u64, per: Option<LimitWindow>) -> LimitCfg
         scope: None,
         on_exhaust: None,
         downgrade_to: None,
+        admission: None,
+        on_exhaustion: None,
     }
 }
 
@@ -892,6 +894,8 @@ fn pooled(metric: LimitMetric, amount: u64, per: LimitWindow, pool: &str) -> Lim
         scope: Some(ScopeRef::pool(pool)),
         on_exhaust: None,
         downgrade_to: None,
+        admission: None,
+        on_exhaustion: None,
     }
 }
 

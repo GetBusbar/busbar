@@ -191,6 +191,95 @@ fn limit_pool_and_downgrade_to_wire_shape_is_byte_identical_to_pre_generalizatio
     );
 }
 
+/// THE BUDGET MODES (KERNEL<>PLUGINS step 15; `BUSBAR-1.6.0.md` §7, #77(6)/(7)): `admission` and
+/// `on_exhaustion` parse on a budget limit, default to `exact` and `finish-unit` when absent, and
+/// round-trip exactly.
+#[test]
+fn budget_modes_parse_default_and_round_trip() {
+    let bare: LimitCfg = serde_yaml::from_str("{ budget: 5000, per: month }").expect("parses");
+    assert_eq!((bare.admission, bare.on_exhaustion), (None, None));
+    assert_eq!(AdmissionMode::governing([&bare]), AdmissionMode::Exact);
+    assert_eq!(
+        ExhaustionMode::governing([&bare]),
+        ExhaustionMode::FinishUnit
+    );
+
+    let set: LimitCfg = serde_yaml::from_str(
+        "{ budget: 5000, per: month, admission: estimate, on_exhaustion: cut-stream }",
+    )
+    .expect("the budget modes parse");
+    assert_eq!(set.admission, Some(AdmissionMode::Estimate));
+    assert_eq!(set.on_exhaustion, Some(ExhaustionMode::CutStream));
+    assert_eq!(
+        AdmissionMode::governing([&bare, &set]),
+        AdmissionMode::Estimate
+    );
+    assert_eq!(
+        ExhaustionMode::governing([&bare, &set]),
+        ExhaustionMode::CutStream,
+        "any governing cut-stream cuts"
+    );
+    let out = serde_yaml::to_string(&set).expect("serializes");
+    assert!(out.contains("admission: estimate"), "{out}");
+    assert!(out.contains("on_exhaustion: cut-stream"), "{out}");
+    let back: LimitCfg = serde_yaml::from_str(&out).expect("reparses");
+    assert_eq!(back, set);
+
+    let spelled: LimitCfg = serde_yaml::from_str(
+        "{ budget: 1, per: day, admission: exact, on_exhaustion: finish-unit }",
+    )
+    .expect("the defaults may be spelled out");
+    assert_eq!(spelled.admission, Some(AdmissionMode::Exact));
+    assert_eq!(spelled.on_exhaustion, Some(ExhaustionMode::FinishUnit));
+}
+
+/// The budget modes are BUDGET behaviors: every other metric refuses them by name, and an unknown
+/// mode refuses.
+#[test]
+fn budget_modes_refuse_on_a_non_budget_limit_and_an_unknown_mode() {
+    for (limit, key) in [
+        (
+            "{ requests: 10, per: minute, admission: estimate }",
+            "admission",
+        ),
+        (
+            "{ tokens: 10, per: day, on_exhaustion: cut-stream }",
+            "on_exhaustion",
+        ),
+    ] {
+        let err = serde_yaml::from_str::<LimitCfg>(limit)
+            .expect_err("a non-budget limit refuses a budget mode")
+            .to_string();
+        assert!(
+            err.contains(&format!("`{key}` is a BUDGET behavior")),
+            "{err}"
+        );
+    }
+    assert!(
+        serde_yaml::from_str::<LimitCfg>("{ budget: 1, per: day, on_exhaustion: cut }").is_err()
+    );
+    assert!(serde_yaml::from_str::<LimitCfg>("{ budget: 1, per: day, admission: guess }").is_err());
+    assert!(serde_yaml::from_str::<LimitCfg>(
+        "{ budget: 1, per: day, admission: exact, admission: estimate }"
+    )
+    .is_err());
+}
+
+/// `on_exhaust: downgrade` and `on_exhaustion: cut-stream` COEXIST (ARCHITECT 2026-09-30): the first
+/// decides a unit arriving at an exhausted budget, at admission; the second a unit already running
+/// when the budget dries, mid-stream. Both set on one limit parse, and each keeps its own meaning.
+#[test]
+fn downgrade_and_cut_stream_coexist_on_one_limit() {
+    let l: LimitCfg = serde_yaml::from_str(
+        "{ budget: 5000, per: month, pool: frontier, on_exhaust: downgrade, downgrade_to: value, \
+           on_exhaustion: cut-stream }",
+    )
+    .expect("downgrade at admission and cut-stream mid-stream are two moments, not a conflict");
+    assert_eq!(l.on_exhaust, Some(OnExhaust::Downgrade));
+    assert_eq!(l.downgrade_to, Some(ScopeRef::pool("value")));
+    assert_eq!(l.on_exhaustion, Some(ExhaustionMode::CutStream));
+}
+
 /// An org → team tree where engineering sets its own child_default, accounting inherits the org's,
 /// and an isolated group has none anywhere up the chain.
 fn tree() -> BTreeMap<String, GroupCfg> {
