@@ -8,6 +8,7 @@
 use super::*;
 use busbar_contract::abi::mechanism::route::RouteAuth;
 use busbar_kernel::ingress::protocol::{CoreRefusal, Words as _};
+use busbar_plane_a2a::arrival;
 
 /// A fixture endpoint: the secure scheme and a reserved example host, spelled once.
 fn endpoint(host: &str, rest: &str) -> String {
@@ -105,9 +106,8 @@ fn answered(resp: axum::response::Response) -> (u16, String, Vec<u8>) {
 }
 
 /// The door's rendering of a refusal it made itself, as the same three facts.
-fn rendered(r: &busbar_plane_a2a::arrival::Refusal) -> (u16, String, Vec<u8>) {
-    let out =
-        busbar_plane_a2a::arrival::render(busbar_plane_a2a::arrival::Dialect::JsonRpc, r, true);
+fn rendered(r: &arrival::Refusal) -> (u16, String, Vec<u8>) {
+    let out = arrival::render(arrival::Dialect::JsonRpc, r, true);
     (
         u16::try_from(out.status).expect("a status"),
         out.content_type.to_string(),
@@ -140,7 +140,7 @@ fn the_doors_head_refusals_are_the_engines() {
             headers.insert("a2a-version", v.parse().expect("a header"));
         }
         let engine = receive::Wire::from_headers(&headers).refuse().map(answered);
-        let door = busbar_plane_a2a::arrival::head_refusal(|name| match name {
+        let door = arrival::head_refusal(|name| match name {
             "content-type" => *ct,
             "a2a-version" => *version,
             _ => None,
@@ -155,8 +155,8 @@ fn the_doors_head_refusals_are_the_engines() {
 /// shared reader refuses, in the words the engine's `A2aWords` gives them.
 #[test]
 fn the_doors_body_refusals_are_the_engines() {
-    let door = |body: &[u8]| match busbar_plane_a2a::arrival::decide(body, |_| None) {
-        busbar_plane_a2a::arrival::Decision::Refused(r) => rendered(&r),
+    let door = |body: &[u8]| match arrival::decide(body, |_| None) {
+        arrival::Decision::Refused(r) => rendered(&r),
         other => panic!("the door did not refuse: {other:?}"),
     };
     assert_eq!(
@@ -197,9 +197,9 @@ fn the_doors_kernel_refusal_is_the_engines_admission_words() {
             message: text.to_string(),
             reason: None,
         }));
-        let out = busbar_plane_a2a::arrival::render(
-            busbar_plane_a2a::arrival::Dialect::JsonRpc,
-            &busbar_plane_a2a::arrival::kernel_refusal(u32::from(status), text),
+        let out = arrival::render(
+            arrival::Dialect::JsonRpc,
+            &arrival::kernel_refusal(u32::from(status), text),
             false,
         );
         assert_eq!(out.status, 0, "the kernel's status stands");
@@ -229,7 +229,7 @@ fn the_doors_rest_rendering_is_the_engines_reframe() {
         (503, -1),
         (401, -1),
     ] {
-        let r = busbar_plane_a2a::arrival::Refusal {
+        let r = arrival::Refusal {
             status,
             id: None,
             code,
@@ -240,11 +240,7 @@ fn the_doors_rest_rendering_is_the_engines_reframe() {
             &r.envelope()["error"],
         );
         assert_eq!(r.aip193(), engine, "{status} {code}");
-        let out = busbar_plane_a2a::arrival::render(
-            busbar_plane_a2a::arrival::Dialect::RestJson,
-            &r,
-            true,
-        );
+        let out = arrival::render(arrival::Dialect::RestJson, &r, true);
         assert_eq!(out.body, serde_json::to_vec(&engine).expect("json"));
     }
     // The envelope's error object is the engine's `rpcerror::body` for every code it names.
@@ -252,7 +248,7 @@ fn the_doors_rest_rendering_is_the_engines_reframe() {
         -32001_i64, -32005, -32009, -32600, -32601, -32602, -32603, -32700,
     ] {
         let err = rpcerror::A2aError::from_code(code).expect("a code");
-        let r = busbar_plane_a2a::arrival::Refusal {
+        let r = arrival::Refusal {
             status: 400,
             id: Some(serde_json::json!("i")),
             code,
