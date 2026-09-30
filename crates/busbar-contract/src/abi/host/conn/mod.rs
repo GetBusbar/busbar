@@ -191,7 +191,16 @@ pub struct ConnSlots lowers Conns -> RawConnOutcome {
 
 /// What a host keeps for one plugin instance, behind the [`ConnCtx`] it hands that instance: its
 /// connection table, the instance it serves, and what a slot handed back that borrows the host.
+///
+/// The state lives on the heap and the [`ConnCtx`] points at it, never at the `ConnHost` itself, so
+/// moving a `ConnHost` after minting its context (returning it from a helper, pushing it into a
+/// vector) leaves every context valid.
 pub struct ConnHost {
+    state: Box<HostState>,
+}
+
+/// The heap-stable state behind a [`ConnHost`]: what its [`ConnCtx`] points at.
+struct HostState {
     conns: Arc<dyn Conns>,
     instance: InstanceId,
     held: Mutex<HashMap<ConnId, Held>>,
@@ -207,7 +216,7 @@ struct Held {
 impl std::fmt::Debug for ConnHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConnHost")
-            .field("instance", &self.instance)
+            .field("instance", &self.state.instance)
             .finish_non_exhaustive()
     }
 }
@@ -217,20 +226,25 @@ impl ConnHost {
     #[must_use]
     pub fn new(conns: Arc<dyn Conns>, instance: InstanceId) -> Self {
         Self {
-            conns,
-            instance,
-            held: Mutex::new(HashMap::new()),
+            state: Box::new(HostState {
+                conns,
+                instance,
+                held: Mutex::new(HashMap::new()),
+            }),
         }
     }
 
-    /// The context the host hands `self`'s instance. `self` must outlive every call made with it.
+    /// The context the host hands `self`'s instance: a pointer to the heap-stable state, valid
+    /// wherever `self` moves. `self` must outlive every call made with it.
     #[must_use]
     pub fn ctx(&self) -> ConnCtx {
         ConnCtx {
-            ptr: (self as *const Self).cast_mut().cast(),
+            ptr: (&*self.state as *const HostState).cast_mut().cast(),
         }
     }
+}
 
+impl HostState {
     fn held(&self) -> std::sync::MutexGuard<'_, HashMap<ConnId, Held>> {
         self.held
             .lock()
@@ -255,12 +269,13 @@ pub const fn host_slots() -> ConnSlots {
 
 /// Run a host slot body over the instance's state, answering the fault byte for a panic or a null
 /// context.
-fn hosted(ctx: ConnCtx, body: impl FnOnce(&ConnHost) -> Result<(), ConnError>) -> RawConnOutcome {
+fn hosted(ctx: ConnCtx, body: impl FnOnce(&HostState) -> Result<(), ConnError>) -> RawConnOutcome {
     RawConnOutcome::of(
         crate::abi::sdk::boundary::caught(|| {
-            // SAFETY: a non-null context is the `ConnHost` the host minted it from (`ConnHost::ctx`),
+            // SAFETY: a non-null context is the `HostState` of the `ConnHost` the host minted it from
+            // (`ConnHost::ctx`),
             // alive for the call.
-            let host = unsafe { ctx.ptr.cast::<ConnHost>().as_ref() }.ok_or(ConnError::Fault)?;
+            let host = unsafe { ctx.ptr.cast::<HostState>().as_ref() }.ok_or(ConnError::Fault)?;
             body(host)
         })
         .unwrap_or(Err(ConnError::Fault)),
