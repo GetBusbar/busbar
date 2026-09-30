@@ -107,7 +107,7 @@ fn a_node_without_signing_material_lends_no_caller_reference() {
 /// principal: 64 lower-case hex characters that do not contain it.
 #[test]
 fn the_caller_reference_is_never_the_principal() {
-    let key = busbar_kernel_identity::caller_ref::CallerRefKey::derive(b"node signing material");
+    let key = crate::plane_driver::CallerRefKey::derive(b"node signing material");
     let r = key.caller_ref("acct:alice@example.com");
     assert_eq!(r.len(), 64);
     assert!(r

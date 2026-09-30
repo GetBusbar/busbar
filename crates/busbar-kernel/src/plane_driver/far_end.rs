@@ -4,7 +4,7 @@
 //! THE PRODUCTION FAR END (`BUSBAR-1.6.0.md` Part 3, §12 "The route pump"; THE DESIGN, §5 "One
 //! outbound request, kernel to wire", section 6): the kernel's egress walk for one unit, one attempt at a
 //! time, as the pump asks for it. The driver builds no second walk: every decision here is the
-//! egress unit's own (`busbar_kernel_egress`) — the pick over the pool with its breaker and its
+//! egress unit's own — the pick over the pool with its breaker and its
 //! permits ([`select::pick_among`]), the pool's exhaustion terminals and their Retry-After floor
 //! ([`exhaustion::retry_after_secs`]), the breaker's classification of the far end's status and
 //! its record ([`Breaker::classify`], [`Breaker::observe`]) — and the wire is the connector's.
@@ -52,13 +52,16 @@ use busbar_contract::conn::{
 use busbar_contract::redacted::Redacted;
 use busbar_contract::transport::registry::status_ns;
 use busbar_contract::transport::wire::{WireStatus, WireStatusClass};
-use busbar_kernel_egress::exhaustion::retry_after_secs;
-use busbar_kernel_egress::ports::{
-    disposition, net, Breaker, Capacity, Clock, DestinationId, Dispatched, Disposition, Journal,
-    Outcome, Permit, Telemetry, Unavailable, UpstreamStatus,
+use busbar_kernel_egress::{
+    exhaustion::retry_after_secs,
+    ports::{
+        disposition, net, Breaker, Capacity, Clock, DestinationId, Dispatched, Disposition,
+        Journal, Outcome, Permit, Telemetry, Unavailable, UpstreamStatus,
+    },
+    race,
+    select::{pick_among, PickInput},
+    Member, OnExhausted, Pool, RequestCtx, Shed, WeightedFloor,
 };
-use busbar_kernel_egress::select::{pick_among, PickInput};
-use busbar_kernel_egress::{race, Member, OnExhausted, Pool, RequestCtx, Shed, WeightedFloor};
 
 use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
 
@@ -972,10 +975,13 @@ impl EgressFarEnd<'_> {
     ) -> FarPiece {
         let e = self.egress;
         let now = e.clock.now_secs();
-        let namespace = match piece.status_namespace.as_deref() {
-            Some(ns) if ns == status_ns::GRPC => status_ns::GRPC,
-            _ => status_ns::HTTP,
-        };
+        // The numbering the far end's status is in, when it is one the kernel reserves; the
+        // first reserved numbering otherwise (the one a response head carries).
+        let namespace = piece
+            .status_namespace
+            .as_deref()
+            .and_then(|ns| status_ns::RESERVED.iter().copied().find(|r| *r == ns))
+            .unwrap_or(status_ns::RESERVED[0]);
         let status = UpstreamStatus {
             class: piece.status,
             code: piece.status_code.map(|c| WireStatus::new(namespace, c)),

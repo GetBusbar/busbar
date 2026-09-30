@@ -51,6 +51,7 @@ use busbar_contract::caps::{
 use busbar_contract::plane_calls::PlaneCalls;
 use tokio::sync::watch;
 
+pub use busbar_kernel_identity::caller_ref::CallerRefKey;
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
 pub use epoch::FlushEpoch;
 pub use far_end::{
@@ -114,7 +115,7 @@ pub struct DriverConfig {
     pub refusal_statuses: Vec<RefusalStatus>,
     /// The key the caller's opaque reference is derived under (the node's signing material);
     /// `None` = the node keeps none, and no reference is lent.
-    pub caller_refs: Option<Arc<busbar_kernel_identity::caller_ref::CallerRefKey>>,
+    pub caller_refs: Option<Arc<CallerRefKey>>,
 }
 
 impl DriverConfig {

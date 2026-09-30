@@ -22,12 +22,14 @@ use busbar_contract::conn::{
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::transport::ConnFacts;
-use busbar_kernel_egress::ports::{
-    Admit, BoxFut, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched, Disposition,
-    DurabilityUnavailable, Journal, Outcome, Permit, PermitHandle, Telemetry, Unavailable,
-    UpstreamStatus,
+use busbar_kernel_egress::{
+    ports::{
+        Admit, BoxFut, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched,
+        Disposition, DurabilityUnavailable, Journal, Outcome, Permit, PermitHandle, Telemetry,
+        Unavailable, UpstreamStatus,
+    },
+    Failover, Member, OnExhausted, Pool, WeightedFloor,
 };
-use busbar_kernel_egress::{Failover, Member, OnExhausted, Pool, WeightedFloor};
 
 use super::*;
 use crate::plane_driver::{FarEnd, OutboundRequest, Pick};
@@ -210,7 +212,10 @@ impl Breaker for Book {
         self.cooldown.lock().unwrap().get(&d).copied().unwrap_or(0)
     }
     fn classify(&self, _: DestinationId, s: UpstreamStatus) -> Classified {
-        let code = s.code.and_then(|c| c.http()).unwrap_or(500);
+        let code = s
+            .code
+            .and_then(|c| c.in_namespace(status_ns::RESERVED[0]))
+            .unwrap_or(500);
         let (disposition, outcome, label) = match code {
             401 | 403 => (Disposition::HardDown, Outcome::HardDown, "hard_down"),
             408 | 429 | 500..=599 => (
@@ -828,7 +833,7 @@ async fn trailers_are_handed_to_the_plane() {
     let r = rig(
         &[(
             "a.test",
-            Script::Trailed(200, vec![b"ok"], b"grpc-status: 0"),
+            Script::Trailed(200, vec![b"ok"], b"far-status: 0"),
         )],
         OnExhausted::Status503,
         None,
@@ -840,7 +845,7 @@ async fn trailers_are_handed_to_the_plane() {
     let pieces = drain(&far, &t).await;
     let trailers: Vec<&FarPiece> = pieces.iter().filter(|p| p.fields).collect();
     assert_eq!(trailers.len(), 1, "{pieces:?}");
-    assert_eq!(trailers[0].bytes, b"grpc-status: 0");
+    assert_eq!(trailers[0].bytes, b"far-status: 0");
     assert!(pieces.last().unwrap().last);
 }
 
@@ -885,7 +890,10 @@ async fn passthrough_hands_the_callers_credential_only_to_its_member() {
 #[tokio::test]
 async fn a_relayed_failures_body_is_capped_and_a_success_is_not() {
     let mut r = rig(
-        &[("a.test", Script::Answer(400, None, vec![b"0123", b"4567", b"89"]))],
+        &[(
+            "a.test",
+            Script::Answer(400, None, vec![b"0123", b"4567", b"89"]),
+        )],
         OnExhausted::Status503,
         None,
     );
@@ -898,11 +906,18 @@ async fn a_relayed_failures_body_is_capped_and_a_success_is_not() {
     let body: Vec<u8> = pieces.iter().flat_map(|p| p.bytes.clone()).collect();
     assert_eq!(body, b"012345", "cut at the cap");
     assert!(pieces.last().unwrap().last, "the cut ends the answer");
-    assert_eq!(r.table.closed.load(Ordering::SeqCst), 1, "its connection closed");
+    assert_eq!(
+        r.table.closed.load(Ordering::SeqCst),
+        1,
+        "its connection closed"
+    );
     assert!(far.next(&t).await.is_none(), "nothing more is read");
 
     let mut r = rig(
-        &[("a.test", Script::Answer(200, None, vec![b"0123", b"4567", b"89"]))],
+        &[(
+            "a.test",
+            Script::Answer(200, None, vec![b"0123", b"4567", b"89"]),
+        )],
         OnExhausted::Status503,
         None,
     );

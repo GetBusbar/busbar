@@ -142,7 +142,7 @@ impl FarEnd for Far {
                 last.last = false;
             }
             script.push(FarPiece {
-                bytes: b"grpc-status: 0".to_vec(),
+                bytes: b"far-status: 0".to_vec(),
                 last: true,
                 fields: true,
                 ..FarPiece::default()
@@ -728,7 +728,7 @@ async fn the_walks_status_table_fails_over_before_the_plane_sees_the_piece() {
 async fn trailers_reach_the_plane_which_decides() {
     for way in ways() {
         for (member, expect) in [
-            ("trailers", "hello far end[grpc-status: 0]"),
+            ("trailers", "hello far end[far-status: 0]"),
             ("trailers-ignored", "hello far end"),
         ] {
             let r = rig(way, BufferCaps::default(), Book::default());
