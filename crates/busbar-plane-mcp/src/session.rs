@@ -35,7 +35,7 @@
 //!
 //! ## Bound to the principal that opened it
 //!
-//! A session id is a bearer of nothing. The table records the [`Owner`] (principal and tenant) that
+//! A session id is a bearer of nothing. The table records the [`Owner`] (principal and credential) that
 //! opened each session, and a lookup under any other owner answers "unknown", indistinguishable from
 //! a session that never existed, so a leaked id is not a probe. The id is 128 bits from the caller's
 //! CSPRNG, and an all-zero entropy buffer (the failure shape of a refused entropy source) is refused
@@ -78,13 +78,15 @@ const SESSION_OVERHEAD: usize = 256;
 /// The fixed cost charged per buffered event over its data.
 const EVENT_OVERHEAD: usize = 32;
 
-/// The principal and tenant a session is bound to.
+/// The principal and credential a session is bound to. A session belongs to the credential (the
+/// virtual key) that opened it, never to a group of keys, so a sibling key cannot take it over.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Owner {
     /// The authenticated principal that opened the session.
     pub principal: String,
-    /// The tenant that principal was authenticated in.
-    pub tenant: String,
+    /// The credential the principal presented: the virtual key's id, or one constant for the
+    /// ungoverned open chain (which isolates nothing, matching that posture's wildcard grants).
+    pub credential: String,
 }
 
 /// How a session's messages are carried.
@@ -161,7 +163,7 @@ struct Session {
 
 impl Session {
     fn base_bytes(owner: &Owner) -> usize {
-        SESSION_OVERHEAD + owner.principal.len() + owner.tenant.len()
+        SESSION_OVERHEAD + owner.principal.len() + owner.credential.len()
     }
 
     /// Drops the oldest buffered event in the session. Returns the bytes freed (0 when empty).

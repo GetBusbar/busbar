@@ -6,7 +6,7 @@ use super::*;
 fn owner(p: &str) -> Owner {
     Owner {
         principal: p.to_string(),
-        tenant: "t1".to_string(),
+        credential: "key-1".to_string(),
     }
 }
 
@@ -74,7 +74,7 @@ fn zero_entropy_is_refused_and_a_live_id_is_not_minted_twice() {
 }
 
 #[test]
-fn red_a_session_is_unknown_to_every_other_principal_and_tenant() {
+fn red_a_session_is_unknown_to_every_other_principal_and_credential() {
     let mut t = SessionTable::new(Bounds::default());
     let id = open(&mut t, 1, "alice", 0);
     assert_eq!(
@@ -82,11 +82,11 @@ fn red_a_session_is_unknown_to_every_other_principal_and_tenant() {
         Some(Revision::R2025_11_25)
     );
     assert_eq!(t.revision(&id, &owner("mallory"), 1), None);
-    let other_tenant = Owner {
+    let other_credential = Owner {
         principal: "alice".into(),
-        tenant: "t2".into(),
+        credential: "key-2".into(),
     };
-    assert_eq!(t.revision(&id, &other_tenant, 1), None);
+    assert_eq!(t.revision(&id, &other_credential, 1), None);
     assert!(
         !t.close(&id, &owner("mallory"), 1),
         "a foreign DELETE ends nothing"
