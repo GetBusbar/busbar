@@ -9,7 +9,7 @@
 //! [`Ack`] (OWNER ruling: a plugin that sends sees what became of it).
 //!
 //! Both answer PENDING until they complete. The caller parks the [`Exchange`] on its ticket across
-//! PENDING entries (`abi::sdk::life::Held::park`) and passes it back each time, making the same
+//! PENDING entries (`abi::sdk::safe::Instance::park`) and passes it back each time, making the same
 //! services in the same order (the replay rule, `abi::sdk::conn`): no service runs twice.
 
 use std::task::Poll;

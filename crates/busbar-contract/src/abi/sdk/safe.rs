@@ -19,29 +19,73 @@
 //! since the host keeps calling an instance whose `close` was not READY. So the body never frees
 //! it, and nothing can free it twice or use it after.
 //!
+//! AN OP'S PARKED CONTINUATION, OWNED BY THE SDK. A body that answers PENDING parks what it has
+//! done on its call's ticket ([`Instance::park`]) and takes it back when the host re-enters the op
+//! with `FLAG_RESUME` ([`Instance::resume`]). The SDK keeps it beside the state and drops it
+//! whenever it can no longer be the RESUME of the op that parked it: on any entry on that ticket
+//! WITHOUT `FLAG_RESUME` (a fresh op, possibly on a recycled ticket under another principal), on
+//! every answer that is not PENDING (READY or any failure: the op is over), and on `cancel` of that
+//! ticket. So a recycled ticket never resumes a finished op's state.
+//!
 //! THE CALL CONTRACT this relies on (`Entry::enter`): the host passes back the pointer `open`
 //! answered READY, until `close` answers READY, and runs `close` with no other op in flight. The
 //! state is boxed behind its type's `TypeId`, so a slot naming a different `T` reads `None` rather
 //! than another type's bytes.
 
-use std::any::TypeId;
+use std::any::{Any, TypeId};
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::mem::size_of;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use crate::abi::mechanism::call::Outcome;
-use crate::abi::mechanism::lifecycle::{slot, OpenOut};
+use crate::abi::mechanism::call::{InHead, Outcome, FLAG_RESUME};
+use crate::abi::mechanism::lifecycle::{slot, CancelIn, OpenOut};
+use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::door::{AbiIn, AbiOut, Entry};
 use crate::abi::sdk::lent::Lent;
 use crate::abi::sdk::out::Out;
 
-/// The box an instance pointer points to: the state behind its type's `TypeId`, at offset `0`
-/// whatever `T` is (`#[repr(C)]`), so any slot can read the tag before it trusts the type.
+/// What each ticket's op parked, by ticket.
+type Parked = HashMap<Ticket, Box<dyn Any + Send + Sync>>;
+
+/// What the SDK keeps in every instance box whatever the state's type: the tag, then the parked
+/// continuations.
+#[repr(C)]
+struct Head {
+    tag: TypeId,
+    parked: Mutex<Parked>,
+}
+
+impl Head {
+    fn parked(&self) -> MutexGuard<'_, Parked> {
+        self.parked.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Drop what `ticket` parked, outside the lock.
+    fn forget(&self, ticket: Ticket) {
+        let gone = self.parked().remove(&ticket);
+        drop(gone);
+    }
+}
+
+/// The box an instance pointer points to: the [`Head`] at offset `0` whatever `T` is
+/// (`#[repr(C)]`), so any slot can read the tag before it trusts the type, then the state.
 #[repr(C)]
 struct Tagged<T> {
-    tag: TypeId,
+    head: Head,
     state: T,
+}
+
+/// The SDK's [`Head`] of a non-NULL instance.
+///
+/// # Safety
+/// `instance` is NULL or a `Tagged<_>` box the SDK minted in `open` and has not dropped, and it
+/// lives for `'a` (the call contract).
+unsafe fn head<'a>(instance: *mut c_void) -> Option<&'a Head> {
+    // SAFETY: the caller's contract; the `Head` is at offset 0 whatever the state's type.
+    (!instance.is_null()).then(|| unsafe { &*instance.cast::<Head>() })
 }
 
 /// The plugin's instance state, as a slot body is handed it. Only the SDK makes one; it lives for
@@ -49,6 +93,8 @@ struct Tagged<T> {
 pub struct Instance<'call, T> {
     ptr: *mut c_void,
     index: u32,
+    ticket: Ticket,
+    resuming: bool,
     opened: &'call Cell<Option<Box<Tagged<T>>>>,
 }
 
@@ -57,6 +103,8 @@ impl<T> std::fmt::Debug for Instance<'_, T> {
         f.debug_struct("Instance")
             .field("open", &!self.ptr.is_null())
             .field("slot", &self.index)
+            .field("ticket", &self.ticket)
+            .field("resuming", &self.resuming)
             .finish_non_exhaustive()
     }
 }
@@ -92,9 +140,58 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
             "Instance::open: the state is installed in `open` only"
         );
         self.opened.set(Some(Box::new(Tagged {
-            tag: TypeId::of::<T>(),
+            head: Head {
+                tag: TypeId::of::<T>(),
+                parked: Mutex::new(HashMap::new()),
+            },
             state,
         })));
+    }
+
+    fn head(&self) -> Option<&'call Head> {
+        // SAFETY: a non-NULL instance is the SDK's box, alive beyond `'call` (as `get`).
+        unsafe { head(self.ptr) }
+    }
+
+    /// PARK `state` on this call's ticket across its PENDING answer: the op's own continuation
+    /// (what it has done, buffers a pending service reads or writes). It replaces what was parked
+    /// there. The SDK drops it unless this call answers PENDING and the host's next entry on the
+    /// ticket is its RESUME; a call with no ticket or no instance parks nothing (it may not pend).
+    pub fn park<S: Send + Sync + 'static>(&self, state: S) {
+        if let (Some(h), false) = (self.head(), self.ticket.is_none()) {
+            let old = h.parked().insert(self.ticket, Box::new(state));
+            drop(old);
+        }
+    }
+
+    /// Take back what [`Instance::park`] parked on this call's ticket, in the op's RESUME;
+    /// `None` in a fresh entry, when nothing is parked, or when another type is (it stays).
+    #[must_use]
+    pub fn resume<S: Send + Sync + 'static>(&self) -> Option<Box<S>> {
+        if !self.resuming {
+            return None;
+        }
+        let h = self.head()?;
+        let mut parked = h.parked();
+        match parked.remove(&self.ticket)?.downcast::<S>() {
+            Ok(s) => Some(s),
+            Err(other) => {
+                parked.insert(self.ticket, other);
+                None
+            }
+        }
+    }
+
+    /// How many tickets hold parked state on this instance.
+    #[must_use]
+    pub fn parked_count(&self) -> usize {
+        self.head().map_or(0, |h| h.parked().len())
+    }
+
+    /// This call's ticket ([`Ticket::NONE`] for a call that may not pend).
+    #[must_use]
+    pub const fn ticket(&self) -> Ticket {
+        self.ticket
     }
 }
 
@@ -222,15 +319,38 @@ impl<S: SafeSlot> Entry for Safe<S> {
     unsafe fn enter(instance: *mut c_void, index: u32, input: &S::In, out: &mut S::Out) -> Outcome {
         // What `open` installs; dropped on the way out, a panic included, unless handed over.
         let opened = Cell::new(None);
+        // SAFETY: every `in` leads with its `InHead` (`AbiIn`'s contract); `input` is live.
+        let call = unsafe { std::ptr::from_ref(input).cast::<InHead>().read() };
+        let resuming = call.flags & FLAG_RESUME != 0;
+        // SAFETY: a non-NULL instance is the SDK's box, alive for the call (the call contract).
+        let parked = unsafe { head(instance) };
+        if let (Some(h), false) = (parked, resuming) {
+            // A fresh op on this ticket: nothing parked there is its continuation.
+            h.forget(call.ticket);
+        }
         let handle = Instance {
             ptr: instance,
             index,
+            ticket: call.ticket,
+            resuming,
             opened: &opened,
         };
         // SAFETY: `input` is the trampoline's copy of the host's `in`, whose every pointer is
         // valid for the call (`Entry::enter`'s contract), and it lives until this returns.
         crate::abi::sdk::out::begin_call();
         let answered = S::call(handle, unsafe { Lent::new(input) }, Out::new(&mut *out));
+        if let Some(h) = parked {
+            if answered != Outcome::Pending {
+                // The op is over (READY or a failure): no RESUME will come for what it parked.
+                h.forget(call.ticket);
+            }
+            if index == slot::CANCEL {
+                if let Some(c) = (input as &dyn Any).downcast_ref::<CancelIn>() {
+                    // `cancel`: the cancelled ticket's op will not resume either.
+                    h.forget(c.ticket);
+                }
+            }
+        }
         match index {
             slot::OPEN => {
                 // Every kind's `open` `out` leads with the lifecycle's `OpenOut` (`KindOps`).

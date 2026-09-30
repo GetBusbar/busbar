@@ -49,9 +49,8 @@
 //! # fn main() { let _ = door(); }
 //! ```
 
-use std::any::Any;
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -65,7 +64,6 @@ use crate::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn, TickOut,
     ValidateIn,
 };
-use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::conn::Host;
 use crate::abi::sdk::lent::{Lent, LentList};
 use crate::abi::sdk::out::Out;
@@ -359,7 +357,6 @@ pub struct Held<L> {
     leases: Leases,
     reported: Reported,
     host: Option<Host>,
-    parked: Mutex<HashMap<Ticket, Box<dyn Any + Send + Sync>>>,
 }
 
 impl<L> std::fmt::Debug for Held<L> {
@@ -377,7 +374,6 @@ impl<L: Life> Held<L> {
             leases: Leases::default(),
             reported: Reported(Mutex::new(entry(None))),
             host,
-            parked: Mutex::new(HashMap::new()),
         }
     }
 
@@ -395,35 +391,6 @@ impl<L: Life> Held<L> {
     /// none. Its connector is `host().map(|h| h.connector(ticket))` (`abi::sdk::conn`).
     pub const fn host(&self) -> Option<&Host> {
         self.host.as_ref()
-    }
-
-    fn parked(&self) -> std::sync::MutexGuard<'_, HashMap<Ticket, Box<dyn Any + Send + Sync>>> {
-        self.parked
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// PARK `state` on `ticket` across the op's PENDING answers: the op's own continuation (what
-    /// it has done, buffers a pending service reads or writes). It replaces what was parked there.
-    pub fn park<S: Send + Sync + 'static>(&self, ticket: Ticket, state: S) {
-        self.parked().insert(ticket, Box::new(state));
-    }
-
-    /// Take back what [`Held::park`] parked on `ticket`; `None` when nothing (or another type) is.
-    pub fn resume<S: Send + Sync + 'static>(&self, ticket: Ticket) -> Option<Box<S>> {
-        let mut parked = self.parked();
-        match parked.remove(&ticket)?.downcast::<S>() {
-            Ok(s) => Some(s),
-            Err(other) => {
-                parked.insert(ticket, other);
-                None
-            }
-        }
-    }
-
-    /// How many tickets hold parked state.
-    pub fn parked_count(&self) -> usize {
-        self.parked().len()
     }
 }
 
@@ -540,11 +507,9 @@ life_slot!(
 );
 
 life_slot!(
-    /// `cancel`: what the cancelled ticket parked is dropped; the answer is [`Life::CANCEL`].
-    Cancel(CancelIn => CancelOut) |instance, input, out| {
-        if let Some(h) = instance.get() {
-            h.parked().remove(&input.ticket);
-        }
+    /// `cancel`: [`Life::CANCEL`] (the SDK drops what the cancelled ticket parked,
+    /// `abi::sdk::safe`).
+    Cancel(CancelIn => CancelOut) |_, _, out| {
         out.set(|o| &o.disposition, L::CANCEL);
         Outcome::Ready
     }

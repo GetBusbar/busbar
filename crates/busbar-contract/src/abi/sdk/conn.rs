@@ -14,7 +14,7 @@
 //! services this entry made. So a body that makes its services in the same order on every entry
 //! re-issues each completed one with its own handle, and the host answers its stored result
 //! without running it twice. Memory a pending service writes into (a read buffer) must outlive the
-//! entry: `abi::sdk::exchange` keeps its buffers parked on the ticket (`Held::park`).
+//! entry: `abi::sdk::exchange` keeps its buffers parked on the ticket (`Instance::park`).
 
 use std::task::Poll;
 

@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::abi::mechanism::call::{
     AbiStr, Blob, InHead, Op, OutHead, Outcome, RawOutcome, BLOB_ABSENT, BLOB_OCTETS, BLOB_SECRET,
+    FLAG_RESUME,
 };
 use crate::abi::mechanism::lifecycle::{
     slot, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn,
@@ -86,15 +87,33 @@ impl SafeSlot for Resolve {
             return Outcome::Fault;
         };
         if h.life().0 == b"park" {
-            // The parking probe: on a ticket it parks and pends; on none it reports how many
-            // tickets hold parked state (in `error_kind`).
-            let ticket = input.head.ticket;
-            if !ticket.is_none() {
-                h.park(ticket, 1_u64);
-                return Outcome::Pending;
+            // The parking probe, answering in `error_kind`. With no ticket: how many tickets hold
+            // parked state. In a RESUME: whether its op's `u64` came back (another type never
+            // does: FAULT if it did). Fresh on a ticket, by `deadline_class`: park and pend (0),
+            // park and FAIL (1), or pend having parked nothing (2).
+            if input.head.ticket.is_none() {
+                out.set(|o| &o.error_kind, i.parked_count() as u32);
+                return Outcome::Ready;
             }
-            out.set(|o| &o.error_kind, h.parked_count() as u32);
-            return Outcome::Ready;
+            if input.head.flags & FLAG_RESUME != 0 {
+                if i.resume::<String>().is_some() {
+                    return Outcome::Fault;
+                }
+                let found = i.resume::<u64>().map_or(0, |b| u32::try_from(*b).unwrap_or(0));
+                out.set(|o| &o.error_kind, found);
+                return Outcome::Ready;
+            }
+            return match input.head.deadline_class {
+                0 => {
+                    i.park(7_u64);
+                    Outcome::Pending
+                }
+                1 => {
+                    i.park(7_u64);
+                    Outcome::Failed
+                }
+                _ => Outcome::Pending,
+            };
         }
         out.lease_secret(|o| &o.secret, h.leases(), h.life().0.clone(), BLOB_OCTETS);
         Outcome::Ready
@@ -442,9 +461,16 @@ fn validate_defaults_to_the_object_check_and_a_kind_may_answer_its_own_words() {
 }
 
 fn resolve_on(inst: *mut c_void, ticket: Ticket) -> (Outcome, u32) {
+    resolve_as(inst, ticket, 0, 0)
+}
+
+/// `resolve` on `ticket` with `flags` and the probe's mode in `deadline_class`.
+fn resolve_as(inst: *mut c_void, ticket: Ticket, flags: u32, mode: u8) -> (Outcome, u32) {
     let mut input: ResolveIn = zeroed();
     input.head = in_head::<ResolveIn>(crate::abi::secret::slot::RESOLVE);
     input.head.ticket = ticket;
+    input.head.flags = flags;
+    input.head.deadline_class = mode;
     let mut out: ResolveOut = zeroed();
     out.head = out_head::<ResolveOut>();
     let o = call(table().resolve, inst, &input, &mut out);
@@ -479,19 +505,57 @@ fn state_parked_on_a_ticket_is_dropped_by_its_cancel() {
 }
 
 #[test]
-fn a_parked_state_is_taken_back_by_its_own_type_only() {
-    let h = Held::new(Echo(Vec::new()), None);
+fn a_pending_op_resumes_what_it_parked_and_only_its_own_type() {
     let t = Ticket {
-        slot: 1,
-        generation: 2,
+        slot: 4,
+        generation: 1,
     };
-    h.park(t, 5_u32);
-    assert!(
-        h.resume::<String>(t).is_none(),
-        "another type leaves it parked"
+    let (_, inst, _) = open(b"park", &[]);
+    assert_eq!(resolve_as(inst, t, 0, 0).0, Outcome::Pending);
+    assert_eq!(
+        resolve_as(inst, t, FLAG_RESUME, 0),
+        (Outcome::Ready, 7),
+        "the RESUME takes back its own u64 (a String ask is None and leaves it)"
     );
-    assert_eq!(h.parked_count(), 1);
-    assert_eq!(h.resume::<u32>(t).as_deref(), Some(&5));
-    assert_eq!(h.parked_count(), 0);
-    assert!(h.host().is_none());
+    assert_eq!(resolve_on(inst, Ticket::NONE), (Outcome::Ready, 0));
+    assert_eq!(close(inst), Outcome::Ready);
+}
+
+/// REVIEWER's MEDIUM: what an op parked must never reach the next op on its ticket once the op is
+/// over. Each arm goes RED with its clear removed from `Safe::enter`.
+#[test]
+fn a_recycled_ticket_never_resumes_a_finished_ops_parked_state() {
+    let t = Ticket {
+        slot: 5,
+        generation: 3,
+    };
+    let (_, inst, _) = open(b"park", &[]);
+    // Parked, then a FAILED answer: the op is over, so the SDK drops it with the answer.
+    assert_eq!(resolve_as(inst, t, 0, 1).0, Outcome::Failed);
+    assert_eq!(
+        resolve_on(inst, Ticket::NONE),
+        (Outcome::Ready, 0),
+        "a terminal answer drops what its op parked"
+    );
+    assert_eq!(
+        resolve_as(inst, t, FLAG_RESUME, 0),
+        (Outcome::Ready, 0),
+        "the next op's RESUME on the ticket must not see the failed op's state"
+    );
+    // Parked and pending, then a fresh (non-RESUME) op on the same ticket, the recycled ticket's
+    // next request: it drops the old state on entry, so its own RESUME finds nothing.
+    assert_eq!(resolve_as(inst, t, 0, 0).0, Outcome::Pending);
+    assert_eq!(resolve_on(inst, Ticket::NONE), (Outcome::Ready, 1));
+    assert_eq!(resolve_as(inst, t, 0, 2).0, Outcome::Pending);
+    assert_eq!(
+        resolve_on(inst, Ticket::NONE),
+        (Outcome::Ready, 0),
+        "a fresh entry drops what an earlier op parked on its ticket"
+    );
+    assert_eq!(
+        resolve_as(inst, t, FLAG_RESUME, 0),
+        (Outcome::Ready, 0),
+        "the new op's RESUME must not see the earlier op's state"
+    );
+    assert_eq!(close(inst), Outcome::Ready);
 }
