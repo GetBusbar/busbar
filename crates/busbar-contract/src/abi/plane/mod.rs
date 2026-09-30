@@ -961,6 +961,68 @@ pub struct PlaneRefreshOut {
 
 // ── per-call shapes ──────────────────────────────────────────────────────────────────────────────
 
+/// A HOST-OWNED LIST OF [`Field`]s a host lends a plane (`OnPieceIn::head_fields`): the names and
+/// values it owns and the field array pointing into them, built once and moved as one value. The
+/// pointers point only into this list's own heap bytes, which never move while it lives, so it
+/// may cross threads with the op that lends it.
+#[derive(Debug, Default)]
+pub struct FieldList {
+    bytes: Vec<(Vec<u8>, Vec<u8>)>,
+    fields: Vec<Field>,
+}
+
+// SAFETY: every pointer in `fields` points into `bytes`' own heap allocations, owned here and never
+// mutated or moved (a Vec's heap does not move when the Vec does) while the list lives.
+unsafe impl Send for FieldList {}
+// SAFETY: as above; the list is read-only once built.
+unsafe impl Sync for FieldList {}
+
+impl FieldList {
+    /// The list of `pairs` (name, value), in order.
+    #[must_use]
+    pub fn new(pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Self {
+        let fields = pairs
+            .iter()
+            .map(|(n, v)| Field {
+                name: AbiStr {
+                    ptr: n.as_ptr(),
+                    len: n.len(),
+                },
+                value: AbiStr {
+                    ptr: v.as_ptr(),
+                    len: v.len(),
+                },
+            })
+            .collect();
+        FieldList {
+            bytes: pairs,
+            fields,
+        }
+    }
+
+    /// The field array, NULL when empty.
+    #[must_use]
+    pub fn as_ptr(&self) -> *const Field {
+        if self.fields.is_empty() {
+            core::ptr::null()
+        } else {
+            self.fields.as_ptr()
+        }
+    }
+
+    /// How many fields.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.fields.len()
+    }
+
+    /// Whether there are none.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.fields.is_empty()
+    }
+}
+
 /// One head field the plugin writes, its bytes in the call's `arena`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]

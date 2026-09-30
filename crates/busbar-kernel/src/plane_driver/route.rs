@@ -26,7 +26,7 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    Field, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, EMIT_DONE, EMIT_TO_FAR_END,
+    FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, EMIT_DONE, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
     PIECE_OUT_TEXT, VERDICT_RETRY,
 };
@@ -163,9 +163,7 @@ pub(crate) struct PieceBufs {
     /// The caller's opaque reference, lent on every piece (empty = none).
     pub(crate) caller_ref: Vec<u8>,
     /// The far end's kept response head fields, lent on the answer's first piece.
-    head: Vec<(Vec<u8>, Vec<u8>)>,
-    /// `head` as the ABI's field list, pointing into it.
-    head_list: Vec<Field>,
+    head: FieldList,
 }
 
 impl PieceBufs {
@@ -183,8 +181,7 @@ impl PieceBufs {
             claim: 0,
             dialect: 0,
             caller_ref: Vec::new(),
-            head: Vec::new(),
-            head_list: Vec::new(),
+            head: FieldList::default(),
         };
         bufs.grow(caps.units, caps.records, caps.fields, caps.arena);
         bufs
@@ -305,12 +302,12 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
         caller_ref: str_of(&bufs.caller_ref),
         claim: bufs.claim,
         dialect: bufs.dialect,
-        head_fields: if p.head && !bufs.head_list.is_empty() {
-            bufs.head_list.as_ptr()
+        head_fields: if p.head {
+            bufs.head.as_ptr()
         } else {
             std::ptr::null()
         },
-        head_fields_len: if p.head { bufs.head_list.len() } else { 0 },
+        head_fields_len: if p.head { bufs.head.len() } else { 0 },
         ..blank_in()
     };
     (input, blank_out())
@@ -672,22 +669,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 let status = piece.status.filter(|_| first);
                 if status.is_some() {
                     // THE ANSWER'S HEAD: the kept response fields cross with its first piece.
-                    let bufs = &mut *run.bufs;
-                    bufs.head.clone_from(&piece.head);
-                    bufs.head_list = bufs
-                        .head
-                        .iter()
-                        .map(|(n, v)| Field {
-                            name: AbiStr {
-                                ptr: n.as_ptr(),
-                                len: n.len(),
-                            },
-                            value: AbiStr {
-                                ptr: v.as_ptr(),
-                                len: v.len(),
-                            },
-                        })
-                        .collect();
+                    run.bufs.head = FieldList::new(piece.head.clone());
                 }
                 first = false;
                 let far = Piece {

@@ -26,9 +26,15 @@ fn the_reference_never_carries_the_principal() {
     let principal = "vk-alice-0123456789";
     let r = key.caller_ref(principal);
     assert_eq!(r.len(), 64);
-    assert!(r.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+    assert!(r
+        .bytes()
+        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
     assert!(!r.contains(principal) && !r.contains("alice"));
-    assert_eq!(format!("{key:?}"), "CallerRefKey(..)", "the key never prints");
+    assert_eq!(
+        format!("{key:?}"),
+        "CallerRefKey(..)",
+        "the key never prints"
+    );
 }
 
 #[test]
@@ -37,7 +43,10 @@ fn the_reference_is_hmac_sha256_under_the_hkdf_derived_key() {
     // every reference already handed to a far end.
     let key = CallerRefKey::derive(MATERIAL);
     let pinned = key.caller_ref("vk-alice");
-    assert_eq!(pinned, CallerRefKey::derive(MATERIAL).caller_ref("vk-alice"));
+    assert_eq!(
+        pinned,
+        CallerRefKey::derive(MATERIAL).caller_ref("vk-alice")
+    );
     use ring::{hkdf, hmac};
     let prk = hkdf::Salt::new(hkdf::HKDF_SHA256, &[]).extract(MATERIAL);
     let okm = prk

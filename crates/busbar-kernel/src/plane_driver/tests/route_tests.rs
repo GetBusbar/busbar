@@ -14,21 +14,7 @@ fn bufs(claim: u32) -> PieceBufs {
     b.caller_ref = b"c0ffee".to_vec();
     b.member = b"m1".to_vec();
     b.pool = b"p1".to_vec();
-    b.head = vec![(b"retry-after".to_vec(), b"7".to_vec())];
-    b.head_list = b
-        .head
-        .iter()
-        .map(|(n, v)| Field {
-            name: AbiStr {
-                ptr: n.as_ptr(),
-                len: n.len(),
-            },
-            value: AbiStr {
-                ptr: v.as_ptr(),
-                len: v.len(),
-            },
-        })
-        .collect();
+    b.head = FieldList::new(vec![(b"retry-after".to_vec(), b"7".to_vec())]);
     b
 }
 
@@ -87,7 +73,7 @@ fn only_the_answers_first_piece_lends_the_kept_head() {
     let mut b = bufs(0);
     let (i, _) = frame(&mut b, &piece(FROM_FAR_END, 0, true), 9);
     assert_eq!(i.head_fields_len, 1);
-    // SAFETY: one field in `b.head_list`.
+    // SAFETY: one field in `b.head`.
     let f = unsafe { *i.head_fields };
     assert_eq!(
         (text(f.name), text(f.value)),
