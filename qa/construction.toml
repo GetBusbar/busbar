@@ -373,13 +373,19 @@ abi = ["crates/busbar-contract"]
 # [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"] 55182 -> 55337 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
 
-# ── THE KERNEL CEILING, RE-ARMED BY THE MONEY VIEW'S SCRAPE MEMO (R-KERNEL; OWNER GRANT 2026-09-29 (3))
+# ── THE KERNEL CEILING, RE-ARMED BY T13b (WIRE-STORE C1 + CONNECTOR-19 + T13B-FIX; R-KERNEL;
+#    OWNER GRANT 2026-09-29 (3))
 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
 file    = "qa/construction.toml"
-from    = 52002
-to      = 52101
-because = "OWNER GRANT 2026-09-29 (3), a kernel line-limit re-arm at the measured value in its own commit: the /metrics scrape reads the kernel money view through a memo (governance::money_view) and reprices a bucket only when its facts, the card generation, the dated history or the corrections moved, so a scrape never drives the pricing path by itself (#43/#71; the export kind, property 4). Measured by cargo xtask gate construction: 51934 before, 52101 after."
+from    = 52101
+to      = 52136
+because = "OWNER GRANT 2026-09-29 (3), a kernel line-limit re-arm at the measured value in its own commit: train T13b's kernel lines (dest.judge's one judge answers a dial the address it pinned, host_services.rs; the served 1.5.5 admin descriptions read off the frozen row, admin/v1/contract and api.rs), +35 over predev, landing on top of the money view's scrape memo re-arm (52101, measured). Measured by cargo xtask gate construction: 51934 before T13b on predev 3cc28b00e, 51969 after (+35); rebased over predev 8a4b18692 (52101), disjoint kernel files: 52136."
+
+# ── THE KERNEL CEILING, RE-ARMED BY THE MONEY VIEW'S SCRAPE MEMO — EXPIRED AND STRUCK
+#
+# Declared `rules.loc-ceilings.kernel_ceiling` 52002 -> 52101 (OWNER GRANT 2026-09-29 (3)). Its commit
+# reached the base; struck by T13b's re-arm above, which declares the next figure.
 
 # ── THE KERNEL CEILING, RE-ARMED BY FOLD-LLM C3' (the AUDIT step's finish) — EXPIRED AND STRUCK
 #
@@ -1391,7 +1397,9 @@ kernel_crate = "busbar-kernel"
 # measurement, -185. Downward only.
 # ── RE-ARMED 52002 -> 52101 for the money view's scrape memo (a scrape reprices only a bucket whose
 # facts moved; #43/#71), declared above. Measured 51934 before, 52101 after.
-kernel_ceiling = 52101
+# ── RE-ARMED 52101 -> 52136 for T13b (WIRE-STORE C1 + CONNECTOR-19 + T13B-FIX), declared above.
+# Measured 51934 before, 51969 after on predev 3cc28b00e (+35); 52136 over predev 8a4b18692.
+kernel_ceiling = 52136
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
