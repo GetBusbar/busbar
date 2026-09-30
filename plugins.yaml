@@ -86,7 +86,7 @@
 #   branches    exactly these branches, each with .github/fleet/protection.json's protection; any
 #               other branch is stale.
 fleet:
-  busbar_ref: "7a5b429041752e00375e120ab1547a8928c3dee4 1.6.0"
+  busbar_ref: "23d8a6b46deb158839df8bc02115b09023633040 1.6.0"
   name_pattern: "^busbar-(store|secret|auth|hook|export|plane|transport)-[a-z0-9]+(-[a-z0-9]+)*$"
   branches: [dev, qa, main]
 
