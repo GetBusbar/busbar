@@ -639,6 +639,17 @@ impl EgressFarEnd<'_> {
         fail_over()
     }
 
+    /// The live attempt's cap, ms: the member's attempt timeout, never beyond what the walk has
+    /// left, never zero; the walk's remaining budget for a member with no cap.
+    fn attempt_cap(&self) -> u64 {
+        let w = self.lock();
+        let remaining = w.ctx.remaining_ms(self.egress.clock.now_millis());
+        w.live
+            .as_ref()
+            .and_then(|l| l.member.attempt_timeout_ms)
+            .map_or(remaining.max(1), |ms| attempt_cap_ms(ms, remaining))
+    }
+
     /// ONE CALL to the member's auth binding for this attempt's fields (THE DESIGN §6).
     async fn auth_fields(
         &self,
@@ -672,7 +683,14 @@ impl EgressFarEnd<'_> {
         };
         let answer = match binding.auth.fields_now(binding.handle, &facts) {
             Some(answer) => answer,
-            None => binding.auth.fields(binding.handle, facts, 0).await,
+            // A plugin that must wait (a token refreshing) is awaited no longer than the attempt
+            // may still take: its cap, never beyond what the walk has left (1.5.5's bound).
+            None => tokio::time::timeout(
+                Duration::from_millis(self.attempt_cap()),
+                binding.auth.fields(binding.handle, facts, 0),
+            )
+            .await
+            .unwrap_or(Fields::Failed),
         };
         match answer {
             Fields::Ready(fields) => Some(
@@ -746,19 +764,13 @@ impl EgressFarEnd<'_> {
             .iter()
             .map(|(n, v)| (n.as_str(), v.as_slice()))
             .collect();
-        let (cap_ms, pool) = {
+        let cap_ms = self.attempt_cap();
+        let pool = {
             let w = self.lock();
-            let remaining = w.ctx.remaining_ms(e.clock.now_millis());
-            let cap = w
-                .live
+            w.live
                 .as_ref()
-                .and_then(|l| l.member.attempt_timeout_ms)
-                .map_or(remaining.max(1), |ms| attempt_cap_ms(ms, remaining));
-            let pool = w
-                .live
-                .as_ref()
-                .map(|l| Self::metric_pool(&l.pool, &l.member).to_string());
-            (cap, pool.unwrap_or_default())
+                .map(|l| Self::metric_pool(&l.pool, &l.member).to_string())
+                .unwrap_or_default()
         };
         e.telemetry.upstream_attempt(&pool, destination);
         // 3. The connector: the judged, pinned dial and the framer's encode.

@@ -289,9 +289,24 @@ impl Telemetry for Quiet {
 #[derive(Default)]
 struct Bearer {
     calls: AtomicU64,
+    /// Never answers on the spot, and its submitted call never answers at all.
+    stall: std::sync::atomic::AtomicBool,
     facts: Mutex<Vec<Facts>>,
 }
 struct Done(Fields);
+/// A submitted call that never answers.
+struct Never;
+impl std::future::Future for Never {
+    type Output = Fields;
+    fn poll(self: std::pin::Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Fields> {
+        Poll::Pending
+    }
+}
+impl Fielding for Never {
+    fn settled(&mut self) -> Option<Fields> {
+        None
+    }
+}
 impl std::future::Future for Done {
     type Output = Fields;
     fn poll(self: std::pin::Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Fields> {
@@ -309,6 +324,9 @@ impl OutboundAuth for Bearer {
     }
     fn fields_now(&self, _: u64, r: &FieldsRequest) -> Option<Fields> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.stall.load(Ordering::SeqCst) {
+            return None;
+        }
         self.facts
             .lock()
             .unwrap()
@@ -320,6 +338,9 @@ impl OutboundAuth for Bearer {
         }]))
     }
     fn fields(&self, h: u64, r: FieldsRequest, _: u64) -> Box<dyn Fielding> {
+        if self.stall.load(Ordering::SeqCst) {
+            return Box::new(Never);
+        }
         Box::new(Done(self.fields_now(h, &r).unwrap_or(Fields::Failed)))
     }
 }
@@ -714,5 +735,28 @@ async fn a_target_that_is_not_a_path_is_refused_before_the_dial() {
     }
     assert!(r.table.opened.lock().unwrap().is_empty());
     assert_eq!(r.auth.calls.load(Ordering::SeqCst), 0);
+    assert!(r.book.observed.lock().unwrap().is_empty());
+}
+
+/// An auth binding that must wait (a refresh that never comes back) is awaited no longer than the
+/// attempt's cap: the attempt ends without a dial, nothing recorded against the member.
+#[tokio::test]
+async fn a_stalled_auth_call_is_bounded_by_the_attempt_cap() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        Some(50),
+    );
+    r.auth.stall.store(true, Ordering::SeqCst);
+    let t = token();
+    let far = r.egress.unit(route());
+    let _ = far.member(&t, 1).await;
+    let started = std::time::Instant::now();
+    let sent = tokio::time::timeout(std::time::Duration::from_secs(5), far.send(&t, request()))
+        .await
+        .expect("the auth wait is bounded");
+    assert!(!sent);
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    assert!(r.table.opened.lock().unwrap().is_empty());
     assert!(r.book.observed.lock().unwrap().is_empty());
 }
