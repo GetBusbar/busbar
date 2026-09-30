@@ -412,11 +412,8 @@ fn rig() -> Rig {
     let clock = Arc::new(AtomicU64::new(1_000_000));
     let c = Arc::clone(&clock);
     let s = services(Arc::default())
-        .with_records(
-            Arc::new(Mem(Arc::clone(&store))),
-            store.clone(),
-            Arc::new(Inline),
-        )
+        .with_records(Arc::new(Mem(Arc::clone(&store))), store.clone())
+        .with_pool(Arc::new(Inline))
         .with_signer(Arc::new(FixedKey))
         .with_demotions(demotions(&store), "legacy")
         .with_wall_clock(Arc::new(move || c.load(Ordering::SeqCst)));
@@ -875,4 +872,90 @@ fn another_instance_declaring_the_same_kind_never_reaches_the_records_of_this_on
         run(|l| r.s.records_list(&me, everything.clone(), l)).bytes,
         b"kmine"
     );
+}
+
+/// Record reads that hold each call a while and count how many run at once.
+#[derive(Default)]
+struct Gauge {
+    now: AtomicUsize,
+    most: AtomicUsize,
+}
+
+impl RecordReads for Gauge {
+    fn record_get(
+        &self,
+        _schema: RecordSchemaId,
+        _key: &[u8],
+    ) -> Result<Option<RecordBytes>, StoreError> {
+        let n = self.now.fetch_add(1, Ordering::SeqCst) + 1;
+        self.most.fetch_max(n, Ordering::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        self.now.fetch_sub(1, Ordering::SeqCst);
+        Ok(None)
+    }
+
+    fn record_scan(
+        &self,
+        _schema: RecordSchemaId,
+        _prefix: &[u8],
+        _limit: u32,
+    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError> {
+        Ok(Vec::new())
+    }
+}
+
+/// Kernel services over `reads`, on the blocking pool of `rt`, with "inst" admitted.
+fn pooled(rt: &tokio::runtime::Runtime, reads: Arc<dyn RecordReads>) -> KernelServices {
+    let s = services(Arc::default())
+        .with_records(reads, Arc::new(MemoryStore::new()))
+        .with_pool(Arc::new(BlockingPool::new(rt.handle().clone())));
+    s.admit(
+        "inst",
+        InstanceFacts {
+            record_kinds: vec![KIND],
+            ..InstanceFacts::default()
+        },
+    );
+    s
+}
+
+#[test]
+fn a_burst_of_reads_never_runs_on_more_threads_than_the_pool_bound() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .max_blocking_threads(2)
+        .build()
+        .unwrap();
+    let gauge = Arc::new(Gauge::default());
+    let s = pooled(&rt, gauge.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    for _ in 0..40 {
+        let tx = tx.clone();
+        let ran = s.records_get(
+            &caller("inst"),
+            "approval",
+            b"k",
+            Box::new(move |a| tx.send(a.value).unwrap()),
+        );
+        assert!(matches!(ran, Ran::Later));
+    }
+    for _ in 0..40 {
+        let answered = rx.recv_timeout(std::time::Duration::from_secs(10));
+        assert_eq!(answered, Ok(svc::ABSENT));
+    }
+    assert!(gauge.most.load(Ordering::SeqCst) <= 2);
+}
+
+#[test]
+fn a_store_call_the_pool_refuses_answers_failed_and_never_runs_inline() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .build()
+        .unwrap();
+    let gauge = Arc::new(Gauge::default());
+    let s = pooled(&rt, gauge.clone());
+    rt.shutdown_background();
+    let s = run(|l| s.records_get(&caller("inst"), "approval", b"k", l));
+    assert_eq!((s.outcome, s.error), (Outcome::Failed, POOL_REFUSED));
+    assert_eq!(gauge.most.load(Ordering::SeqCst), 0);
 }

@@ -117,35 +117,61 @@ fn take(cell: &Mutex<Option<Resolved>>) -> Option<Resolved> {
     cell.lock().unwrap_or_else(|e| e.into_inner()).take()
 }
 
-/// Runs a store call off the caller's thread.
+/// Runs store I/O off the calling thread, on a bounded pool.
 pub trait Offload: Send + Sync {
-    /// Run `job` on any thread, now or when one is free; never blocks the caller.
+    /// Submit `job`. A pool that refuses it drops it unrun; it never runs on the caller's thread.
     fn run(&self, job: Box<dyn FnOnce() + Send>);
 }
 
-/// One short-lived thread per call, so a slow store never holds a dispatcher worker.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct ThreadOffload;
+/// The runtime's blocking pool, bounded by the runtime's `max_blocking_threads`: past the bound a
+/// job queues for a thread, and a runtime that is shutting down drops it unrun.
+#[derive(Debug, Clone)]
+pub struct BlockingPool(tokio::runtime::Handle);
 
-impl Offload for ThreadOffload {
+impl BlockingPool {
+    /// The blocking pool of the runtime `handle` drives.
+    #[must_use]
+    pub fn new(handle: tokio::runtime::Handle) -> Self {
+        Self(handle)
+    }
+}
+
+impl Offload for BlockingPool {
     fn run(&self, job: Box<dyn FnOnce() + Send>) {
-        let cell = Arc::new(Mutex::new(Some(job)));
-        let mine = Arc::clone(&cell);
-        let spawned = std::thread::Builder::new()
-            .name("busbar-service".into())
-            .spawn(move || {
-                let job = mine.lock().unwrap_or_else(|e| e.into_inner()).take();
-                if let Some(job) = job {
-                    job();
-                }
-            });
-        if spawned.is_err() {
-            let job = cell.lock().unwrap_or_else(|e| e.into_inner()).take();
-            if let Some(job) = job {
-                job();
-            }
+        // The runtime panics when the OS will not give it a thread; the job is dropped unrun then,
+        // which answers FAILED, and the panic stops here.
+        let spawned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            drop(self.0.spawn_blocking(job));
+        }));
+        drop(spawned);
+    }
+}
+
+/// A may-pend service's answer, owed through its [`Later`]. Dropped unanswered (its job was
+/// refused by the pool and never ran) it answers FAILED, so a caller is never left waiting.
+struct Owed(Option<Later>);
+
+impl Owed {
+    fn answer(mut self, stored: Stored) {
+        if let Some(later) = self.0.take() {
+            later(stored);
         }
     }
+}
+
+impl Drop for Owed {
+    fn drop(&mut self) {
+        if let Some(later) = self.0.take() {
+            later(failed(POOL_REFUSED));
+        }
+    }
+}
+
+/// Run `job` on `pool` and answer what it returns through `later`; FAILED if the pool refuses it.
+fn submit(pool: &dyn Offload, later: Later, job: impl FnOnce() -> Stored + Send + 'static) -> Ran {
+    let owed = Owed(Some(later));
+    pool.run(Box::new(move || owed.answer(job())));
+    Ran::Later
 }
 
 /// Signs for the `sign` service: the key id and the signature of `data` under the subkey derived
@@ -186,7 +212,6 @@ pub struct InstanceFacts {
 struct Records {
     reads: Arc<dyn RecordReads>,
     claims: Arc<dyn RecordStore>,
-    offload: Arc<dyn Offload>,
 }
 
 /// The wall clock, in milliseconds since the Unix epoch.
@@ -206,6 +231,7 @@ pub struct KernelServices {
     wall_ms: WallMs,
     instances: Mutex<HashMap<Arc<str>, Arc<InstanceFacts>>>,
     records: Option<Records>,
+    pool: Option<Arc<dyn Offload>>,
     pending: Arc<PendingRecords>,
     signer: Option<Arc<dyn SignKey>>,
     trust: TrustBook,
@@ -238,6 +264,7 @@ impl KernelServices {
             wall_ms: Arc::new(system_wall_ms),
             instances: Mutex::default(),
             records: None,
+            pool: None,
             pending: Arc::default(),
             signer: None,
             trust: TrustBook::default(),
@@ -246,19 +273,22 @@ impl KernelServices {
     }
 
     /// Serve the records services over `reads` (the store's typed record reads) and `claims` (its
-    /// single-use redemption), running each call through `offload`. Without it they are REFUSED.
+    /// single-use redemption). Without them they are REFUSED.
     #[must_use]
     pub fn with_records(
         mut self,
         reads: Arc<dyn RecordReads>,
         claims: Arc<dyn RecordStore>,
-        offload: Arc<dyn Offload>,
     ) -> Self {
-        self.records = Some(Records {
-            reads,
-            claims,
-            offload,
-        });
+        self.records = Some(Records { reads, claims });
+        self
+    }
+
+    /// Run every store call on `pool`, never on the calling thread. Without it the services that
+    /// reach a store are REFUSED.
+    #[must_use]
+    pub fn with_pool(mut self, pool: Arc<dyn Offload>) -> Self {
+        self.pool = Some(pool);
         self
     }
 
@@ -336,8 +366,12 @@ impl KernelServices {
         self.lock_instances().get(&caller.instance).cloned()
     }
 
-    /// The caller's facts and its declared schema for `kind`, and the stores; or the refusal.
-    fn scope(&self, caller: &Caller, kind: &str) -> Result<(RecordSchemaId, &Records), Stored> {
+    /// The caller's declared schema for `kind`, the stores and the pool; or the refusal.
+    fn scope(
+        &self,
+        caller: &Caller,
+        kind: &str,
+    ) -> Result<(RecordSchemaId, &Records, &dyn Offload), Stored> {
         let facts = self
             .facts(caller)
             .ok_or_else(|| Stored::refused(NOT_ADMITTED))?;
@@ -351,7 +385,11 @@ impl KernelServices {
             .records
             .as_ref()
             .ok_or_else(|| Stored::refused(NO_STORE))?;
-        Ok((schema, records))
+        let pool = self
+            .pool
+            .as_deref()
+            .ok_or_else(|| Stored::refused(NO_POOL))?;
+        Ok((schema, records, pool))
     }
 }
 
@@ -371,6 +409,10 @@ pub const NO_DOMAIN: &str = "the instance declares no signing domain";
 pub const NO_KEY: &str = "no signing key is configured";
 /// The refusal of `trust.sight` for a counterparty the instance does not declare.
 pub const NOT_A_COUNTERPARTY: &str = "not a counterparty the instance declares";
+/// The refusal of a store-reaching service on a host with no pool bound.
+pub const NO_POOL: &str = "no pool is bound";
+/// The FAILED answer of a store call the pool refused to run.
+pub const POOL_REFUSED: &str = "the pool refused the store call";
 /// The FAILED answer of a store call that did not answer.
 pub const STORE_FAILED: &str = "the store did not answer";
 
@@ -467,7 +509,7 @@ impl HostServices for KernelServices {
     }
 
     fn records_get(&self, caller: &Caller, kind: &str, key: &[u8], later: Later) -> Ran {
-        let (schema, records) = match self.scope(caller, kind) {
+        let (schema, records, pool) = match self.scope(caller, kind) {
             Ok(s) => s,
             Err(refused) => return Ran::Now(refused),
         };
@@ -489,18 +531,15 @@ impl HostServices for KernelServices {
         }
         let reads = Arc::clone(&records.reads);
         let key = record_key(&caller.instance, key);
-        records.offload.run(Box::new(move || {
-            later(match reads.record_get(schema, &key) {
-                Ok(Some(v)) => found(v.as_slice().to_vec()),
-                Ok(None) => Stored::ready(svc::ABSENT),
-                Err(_) => failed(STORE_FAILED),
-            });
-        }));
-        Ran::Later
+        submit(pool, later, move || match reads.record_get(schema, &key) {
+            Ok(Some(v)) => found(v.as_slice().to_vec()),
+            Ok(None) => Stored::ready(svc::ABSENT),
+            Err(_) => failed(STORE_FAILED),
+        })
     }
 
     fn records_list(&self, caller: &Caller, list: RecordsList, later: Later) -> Ran {
-        let (schema, records) = match self.scope(caller, &list.kind) {
+        let (schema, records, pool) = match self.scope(caller, &list.kind) {
             Ok(s) => s,
             Err(refused) => return Ran::Now(refused),
         };
@@ -515,10 +554,10 @@ impl HostServices for KernelServices {
         let reads = Arc::clone(&records.reads);
         let scope = record_key(&caller.instance, &[]).len();
         let prefix = record_key(&caller.instance, &list.prefix);
-        records.offload.run(Box::new(move || {
-            // The store's scan has no cursor: the whole prefix is read, and `after` and `limit`
-            // are applied here, over the store's rows and the queued writes together.
-            later(match reads.record_scan(schema, &prefix, u32::MAX) {
+        // The store's scan has no cursor: the whole prefix is read, and `after` and `limit` are
+        // applied here, over the store's rows and the queued writes together.
+        submit(pool, later, move || {
+            match reads.record_scan(schema, &prefix, u32::MAX) {
                 Ok(rows) => {
                     let rows = rows
                         .into_iter()
@@ -529,9 +568,8 @@ impl HostServices for KernelServices {
                     spans_of(merge_list(rows, queued, list.after.as_deref(), limit))
                 }
                 Err(_) => failed(STORE_FAILED),
-            });
-        }));
-        Ran::Later
+            }
+        })
     }
 
     fn records_claim(
@@ -542,7 +580,7 @@ impl HostServices for KernelServices {
         ttl_ms: u64,
         later: Later,
     ) -> Ran {
-        let (_, records) = match self.scope(caller, kind) {
+        let (_, records, pool) = match self.scope(caller, kind) {
             Ok(s) => s,
             Err(refused) => return Ran::Now(refused),
         };
@@ -559,16 +597,13 @@ impl HostServices for KernelServices {
         let token = claim_token(&caller.instance, kind, key);
         let claims = Arc::clone(&records.claims);
         let kind = kind.to_string();
-        records.offload.run(Box::new(move || {
-            later(
-                match claims.redeem_plane_token(&kind, &token, expires_at, now) {
-                    Ok(true) => Stored::ready(svc::CLAIM_WON),
-                    Ok(false) => Stored::ready(svc::CLAIM_TAKEN),
-                    Err(_) => failed(STORE_FAILED),
-                },
-            );
-        }));
-        Ran::Later
+        submit(pool, later, move || {
+            match claims.redeem_plane_token(&kind, &token, expires_at, now) {
+                Ok(true) => Stored::ready(svc::CLAIM_WON),
+                Ok(false) => Stored::ready(svc::CLAIM_TAKEN),
+                Err(_) => failed(STORE_FAILED),
+            }
+        })
     }
 
     fn sign(&self, caller: &Caller, data: &[u8]) -> Stored {
