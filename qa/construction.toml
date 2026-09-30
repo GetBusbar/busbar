@@ -458,13 +458,13 @@ because = "OWNER GRANT 2026-09-29 (3), ARCHITECT approval: line-limit re-arm at 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
 
-# ── THE KIND-ISOLATION CELL busbar-plane-mcp x transport, RAISED BY FOLD-MCP A3 (an F12 relocation)
+# ── THE KIND-ISOLATION CELL busbar-plane-mcp x transport, RAISED BY FOLD-MCP A3 AND A6 (F12 relocations)
 
 [gate.ceiling_raises."cell[crate=busbar-plane-mcp,kind=transport].count"]
 file    = "qa/kind-isolation.toml"
 from    = 60
-to      = 66
-because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan approved 2026-09-29): fold A3 moved the MCP diagnostics catalog from busbar-mcp into busbar-plane-mcp, and the catalog's stdio diagnostic (MCP_STDIO_READ_ERROR, its slug and customer-visible text) names the transport vocabulary. The pair nets down in that commit: busbar-plane-mcp x transport 60 -> 66 (+6), busbar-mcp x plane 3822 -> 3761 (-61), busbar-mcp x transport 583 -> 577 (-6), busbar-mcp x contract 306 -> 305 (-1) (net -62). Measured by cargo xtask gate kind-isolation (the METER-FIX meter): 60 before, 66 after."
+to      = 90
+because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan approved 2026-09-29): fold A3 moved the MCP diagnostics catalog from busbar-mcp into busbar-plane-mcp, and the catalog's stdio diagnostic (MCP_STDIO_READ_ERROR, its slug and customer-visible text) names the transport vocabulary. The pair nets down in that commit: busbar-plane-mcp x transport 60 -> 66 (+6), busbar-mcp x plane 3822 -> 3761 (-61), busbar-mcp x transport 583 -> 577 (-6), busbar-mcp x contract 306 -> 305 (-1) (net -62). Measured by cargo xtask gate kind-isolation (the METER-FIX meter): 60 before, 66 after. Fold A6 moved the MCP client verb enum and peer classifier (client/verb.rs, client/peer.rs and their tests) from busbar-mcp into busbar-plane-mcp; their prose and tests name the transport vocabulary. The pair nets down in that commit: busbar-plane-mcp x transport 66 -> 90 (+24), busbar-plane-mcp x plane 10 -> 13 (+3), busbar-mcp x transport 574 -> 550 (-24), busbar-mcp x plane 3711 -> 3671 (-40) (net -37). Measured: 66 before, 90 after."
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
