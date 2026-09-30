@@ -18,8 +18,8 @@
 //! work and the unit takes that classifier's verdict.
 //!
 //! This module takes no dependency beyond [`crate::classify`] and [`crate::Outcome`] — in
-//! particular, no `busbar-contract` (this crate's `Cargo.toml` is explicit that `busbar-caps` is the
-//! only workspace crate it may name). The egress unit's own `UpstreamStatus` additionally carries
+//! particular, it names no `busbar-contract` type in its own signatures (the crate's `Cargo.toml` names that
+//! contract as its only workspace dependency). The egress unit's own `UpstreamStatus` additionally carries
 //! the transport's coarse status-class reading (`busbar_contract::WireStatusClass`); a caller that has
 //! that reading folds it into [`UpstreamStatus::code`] itself before calling in — exactly the kind
 //! of narrowing an integrator's adapter does, alongside the `DestinationId` width narrowing.
@@ -53,7 +53,7 @@ pub enum UpstreamCode {
 /// `status.code`, when it is an [`UpstreamCode::Http`], stands in for BOTH the HTTP status and the
 /// provider error code an `error_map` entry is keyed on — the config grammar accepts a plain
 /// HTTP-status string as a key (`error_map: { "400": client_error }`), which is the one signal a
-/// caller that reads no response body (per `// contract:` in `busbar-unit-egress`'s `ports.rs`) can
+/// caller that reads no response body (per `// contract:` in `busbar-kernel-egress`'s `ports.rs`) can
 /// supply. A gRPC code is NOT offered to the `error_map` as a provider code: those keys are
 /// HTTP-status strings by the config grammar, and feeding `14` in would let an operator's rule for
 /// HTTP `14` — a status that does not exist — silently claim a gRPC `UNAVAILABLE`.

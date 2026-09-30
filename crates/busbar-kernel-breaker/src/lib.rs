@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-//! # busbar-unit-breaker — the breaker unit
+//! # busbar-kernel-breaker — the breaker unit
 //!
 //! The design (`docs/design/BUSBAR-1.6.0.md` THE DESIGN, §1, §5) splits egress into two units: the EGRESS
 //! unit owns the pool per `(transport, destination)` — selection, weighting, concurrency; the
@@ -16,7 +16,7 @@
 //! cooldown with jitter, the Retry-After floor, half-open recovery) and the classifier in
 //! [`classify`] are byte-identical to 1.5.5's `busbar-core::store::in_memory::breaker` and
 //! `busbar-substrate::breaker`. See each module's doc comment for the handful of call-site
-//! adaptations required by depending on nothing but `busbar-caps` (no `axum`, no `tracing`, no
+//! adaptations required by depending on no workspace crate but `busbar-contract` (no `axum`, no `tracing`, no
 //! SWRR/pool-selection state, which belongs to the egress unit).
 //!
 //! ## What's new here, not ported
@@ -35,7 +35,6 @@ pub mod budget;
 pub mod cell;
 pub mod cfg;
 pub mod classify;
-pub mod clock;
 pub mod journal;
 pub mod normalize;
 pub mod port;
@@ -121,7 +120,7 @@ pub enum Outcome {
     /// The attempt succeeded.
     Success,
     /// A transient upstream failure — cooldown + error counter. `retry_after` is the parsed
-    /// `Retry-After` header, if any (see [`classify::parse_retry_after`]).
+    /// `Retry-After` header, if any (see [`normalize::parse_retry_after`]).
     Transient {
         /// The upstream's requested Retry-After, in seconds, if any.
         retry_after: Option<u64>,
@@ -141,7 +140,7 @@ mod sealed {
 /// The breaker unit's sealed trait shape (`docs/design/BUSBAR-1.6.0.md` THE DESIGN, §9: `Breaker::observe/
 /// state`). Sealed on a private supertrait so no plugin crate can implement it — only
 /// [`BreakerUnit`] does. Like the design's other seven token-taking unit traits, every call also
-/// takes a `&Pass<Route>` (`busbar-caps`'s capability token): the proof that the loop is at
+/// takes a `&Pass<Route>` (`busbar-contract`'s capability token): the proof that the loop is at
 /// the route step for this unit right now. The token is minted fresh per step call and taken by
 /// reference, never stored, so this trait cannot be driven outside the step it was lent for.
 pub trait Breaker: sealed::Sealed {

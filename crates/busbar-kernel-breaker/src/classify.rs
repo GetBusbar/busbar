@@ -3,15 +3,11 @@
 //!
 //! Moved byte-identical from `busbar-substrate::breaker` (1.5.5's
 //! `crates/busbar-substrate/src/breaker.rs`). Stage 1 (per-protocol extraction of a
-//! [`RawUpstreamError`] from a response) stays with the wire/dialect code, which is out of scope
-//! for this unit; this module starts from the already-extracted raw error.
+//! [`RawUpstreamError`] from a response) stays with the plane's wire/dialect code; this module
+//! starts from the already-extracted raw error.
 //!
-//! Two call-site adaptations from the source, neither of which changes the classification
-//! arithmetic itself:
-//! - `parse_retry_after` takes a plain `&str` (the `Retry-After` header VALUE), not an
-//!   `axum::http::HeaderMap` — this crate depends on nothing but `busbar-caps`, so it cannot name
-//!   `axum`'s header map type. The HTTP-date branch is a hand-rolled RFC 9110 IMF-fixdate parser
-//!   (`parse_imf_fixdate`) rather than the `httpdate` crate, for the same reason.
+//! One call-site adaptation from the source, which does not change the classification arithmetic
+//! itself:
 //! - the "operator `error_map` points at an unrecognized class" diagnostic is delivered through an
 //!   injectable [`Diagnostics`] sink rather than `tracing::warn!`, since this crate takes no
 //!   logging dependency. `// contract:` — a caller wires a real sink (or the kernel's diagnostics
@@ -205,21 +201,8 @@ pub struct RawUpstreamError {
     /// as a second signal when the code doesn't match.
     pub structured_type: Option<String>,
     /// The upstream `Retry-After` value in whole seconds, when present and already parsed by the
-    /// caller (see [`parse_retry_after`]).
+    /// caller (see [`crate::normalize::parse_retry_after`]).
     pub retry_after_secs: Option<u64>,
-}
-
-impl RawUpstreamError {
-    /// Build a raw error from the status alone, claiming no provider vocabulary — the most
-    /// restrictive USEFUL answer when nothing on the path could read the upstream's error shape.
-    pub fn from_status(status: u16) -> Self {
-        Self {
-            http_status: status,
-            provider_code: None,
-            structured_type: None,
-            retry_after_secs: None,
-        }
-    }
 }
 
 /// The wire literal upstream APIs recognize for a context-length rejection.
@@ -227,84 +210,6 @@ impl RawUpstreamError {
 /// recognition names it directly; a dialect crate importing this constant, rather than
 /// hand-copying the literal, is how the spelling stays single-sourced.
 pub const PROVIDER_CODE_CONTEXT_LENGTH: &str = "context_length_exceeded";
-
-/// Parse an RFC 9110 `Retry-After` header VALUE against the caller's `now`. Both normative forms
-/// are accepted: `delay-seconds` (an integer, which ignores `now`) and an HTTP-date, converted to
-/// the seconds remaining until that instant and floored at 0 when it is already in the past.
-///
-/// `now` is a PARAMETER because "how long until that instant" is a question about a clock, and a
-/// unit crate does not own one: the kernel that read the response also read the time, and handing
-/// that same value down is what makes this answer replayable rather than a re-measurement.
-pub fn parse_retry_after(value: &str, now: u64) -> Option<u64> {
-    let s = value.trim();
-    if let Ok(n) = s.parse::<u64>() {
-        return Some(n);
-    }
-    parse_imf_fixdate_retry_after(s, now)
-}
-
-/// Parse the value as an IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`, the sole HTTP-date form RFC
-/// 9110 recommends generating, though obsolete forms are permitted for parsing — this parser
-/// accepts only the recommended form, matching every provider observed in practice) and return the
-/// whole seconds remaining until it, floored at 0 for a date already in the past.
-fn parse_imf_fixdate_retry_after(s: &str, now: u64) -> Option<u64> {
-    // "Www, dd Mon yyyy HH:MM:SS GMT" — fixed-width, so a byte-length check plus field slicing is
-    // enough; no general calendar library is warranted for one wire format.
-    let bytes = s.as_bytes();
-    if bytes.len() != 29 || !s.ends_with(" GMT") {
-        return None;
-    }
-    let day: u64 = s.get(5..7)?.parse().ok()?;
-    let month = month_from_abbrev(s.get(8..11)?)?;
-    let year: u64 = s.get(12..16)?.parse().ok()?;
-    let hour: u64 = s.get(17..19)?.parse().ok()?;
-    let minute: u64 = s.get(20..22)?.parse().ok()?;
-    let second: u64 = s.get(23..25)?.parse().ok()?;
-    if s.as_bytes().get(3) != Some(&b',') || s.as_bytes().get(4) != Some(&b' ') {
-        return None;
-    }
-    let epoch_secs = civil_to_epoch_secs(year, month, day, hour, minute, second)?;
-    Some(epoch_secs.saturating_sub(now))
-}
-
-fn month_from_abbrev(m: &str) -> Option<u64> {
-    Some(match m {
-        "Jan" => 1,
-        "Feb" => 2,
-        "Mar" => 3,
-        "Apr" => 4,
-        "May" => 5,
-        "Jun" => 6,
-        "Jul" => 7,
-        "Aug" => 8,
-        "Sep" => 9,
-        "Oct" => 10,
-        "Nov" => 11,
-        "Dec" => 12,
-        _ => return None,
-    })
-}
-
-/// Days-from-civil algorithm (Howard Hinnant's public-domain `civil_from_days` inverse), giving a
-/// UTC Unix timestamp for a UTC calendar date and time with no external date/time dependency.
-fn civil_to_epoch_secs(
-    year: u64,
-    month: u64,
-    day: u64,
-    hour: u64,
-    minute: u64,
-    second: u64,
-) -> Option<u64> {
-    let y = year as i64 - i64::from(month <= 2);
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400; // [0, 399]
-    let mp = (month as i64 + 9) % 12; // [0, 11]
-    let doy = (153 * mp + 2) / 5 + day as i64 - 1; // [0, 365]
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
-    let days_since_epoch = era * 146_097 + doe - 719_468;
-    let days_since_epoch = u64::try_from(days_since_epoch).ok()?;
-    Some(days_since_epoch * 86_400 + hour * 3600 + minute * 60 + second)
-}
 
 /// Classify a raw upstream error into a [`CanonicalSignal`] using an operator `error_map`. Stage 1b
 /// (the provider normalizer): data-driven mapping from raw errors to [`StatusClass`], with a
