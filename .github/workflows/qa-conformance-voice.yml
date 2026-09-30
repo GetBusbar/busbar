@@ -46,7 +46,7 @@ name: Voice conformance
 #
 # THE INPUTS LATER LEGS CONSUME (authored by another agent; referenced, not created, here):
 #   testing/voice-conformance/fixtures/{openai,gemini}/   captured transcripts + spec fixtures
-#   docs/design/voice-cross-dialect-mapping.*             the OpenAI<->Gemini equivalence mapping
+#   qa/evidence/voice-cross-dialect-mapping.*             the OpenAI<->Gemini equivalence mapping
 #
 # busbar is PUBLIC, so per the org rule every job runs on `ubuntu-latest` at no cost, and there is no
 # secret anywhere in this file.

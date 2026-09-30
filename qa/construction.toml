@@ -1636,7 +1636,7 @@ busbar-transport-ws = [
 # (busbar-llm/-mcp/-a2a/-voice) for codecs only, read-only, no engine state crossing back — but
 # those engine crates are ALSO named in gate.plane_crates, so this is structurally the exact "a
 # plane names another plane" coupling section 1.2 forbids. Tracked here, not waved through, until
-# docs/design/1.6.0-protocols-as-plugins.md's codec split lands and the dependency disappears.
+# the codec split lands and the dependency disappears (BUSBAR-1.6.0.md #39: codecs fold into the plane).
 # STALE — verified 2026-09-07: NONE of the four edges below exists at this commit. Every plane crate
 # is exactly `busbar-contract` + its own codec and nothing else; the planes are the cleanest seam in
 # the workspace. This ratchet describes a tree that no longer exists and tells a reader the coupling
