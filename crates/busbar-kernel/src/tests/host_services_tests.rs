@@ -1521,3 +1521,202 @@ fn a_claim_is_durable_when_it_answers_whatever_happens_to_the_overlay() {
     assert_eq!(fresh.pending().queued(), 0);
     assert_eq!(claim(&fresh).value, svc::CLAIM_TAKEN);
 }
+
+use crate::host_claims::{Answer as ClaimAnswer, Claim, ClaimLater};
+
+/// A claim's answers, in the order they came.
+type Claims = Arc<Mutex<Vec<Claim>>>;
+
+fn claim_sink() -> (Claims, impl Fn() -> ClaimLater) {
+    let got = Arc::new(Mutex::new(Vec::new()));
+    let g = Arc::clone(&got);
+    (got, move || {
+        let g = Arc::clone(&g);
+        Box::new(move |c| g.lock().unwrap().push(c)) as ClaimLater
+    })
+}
+
+/// One claim on the rig's inline pool, answered at once.
+fn claim_now(s: &KernelServices, who: &str, ttl_ms: u64, held: Option<u64>) -> Claim {
+    let (got, later) = claim_sink();
+    let ran = s.claim_own(who, "auth-replay", b"k", ttl_ms, held, u64::MAX, later());
+    assert_eq!(ran, ClaimAnswer::Later);
+    let c = got.lock().unwrap().pop();
+    c.expect("the inline pool answered")
+}
+
+fn admitted(r: &Rig, label: &str) {
+    r.s.admit(label, InstanceFacts::default()).unwrap();
+}
+
+#[test]
+fn two_claimants_of_one_key_get_one_won() {
+    let r = rig();
+    let first = claim_now(&r.s, "inst", 2_000, None);
+    assert!(matches!(first, Claim::Won { epoch: 1, .. }));
+    let second = claim_now(&r.s, "inst", 2_000, None);
+    assert!(matches!(second, Claim::Taken { until_ns } if until_ns > 0));
+}
+
+#[test]
+fn expiry_hands_the_claim_over_with_a_higher_epoch() {
+    let r = rig();
+    assert!(matches!(
+        claim_now(&r.s, "inst", 2_000, None),
+        Claim::Won { epoch: 1, .. }
+    ));
+    // Past the hold and its one-second guard band.
+    r.clock.fetch_add(3_000, Ordering::SeqCst);
+    assert!(matches!(
+        claim_now(&r.s, "inst", 2_000, None),
+        Claim::Won { epoch: 2, .. }
+    ));
+}
+
+#[test]
+fn another_instances_claim_on_the_same_key_is_its_own() {
+    let r = rig();
+    admitted(&r, "other");
+    assert!(matches!(
+        claim_now(&r.s, "inst", 2_000, None),
+        Claim::Won { epoch: 1, .. }
+    ));
+    assert!(matches!(
+        claim_now(&r.s, "other", 2_000, None),
+        Claim::Won { epoch: 1, .. }
+    ));
+    // An instance never admitted is Taken at once, never pended.
+    let (_, later) = claim_sink();
+    let ran = r.s.claim_own(
+        "stranger",
+        "auth-replay",
+        b"k",
+        2_000,
+        None,
+        u64::MAX,
+        later(),
+    );
+    assert_eq!(ran, ClaimAnswer::Now(Claim::Taken { until_ns: 0 }));
+}
+
+#[test]
+fn claims_left_pending_on_the_pool_never_both_win() {
+    let r = rig();
+    let held = Arc::new(Held::default());
+    let c = Arc::clone(&r.clock);
+    let s = services(Arc::default())
+        .with_records(Arc::new(Mem(Arc::clone(&r.store))), r.store.clone())
+        .with_pool(Arc::new(Arc::clone(&held)))
+        .with_wall_clock(Arc::new(move || c.load(Ordering::SeqCst)));
+    s.admit("inst", InstanceFacts::default()).unwrap();
+    let (got, later) = claim_sink();
+    for _ in 0..2 {
+        let ran = s.claim_own("inst", "auth-replay", b"k", 2_000, None, u64::MAX, later());
+        assert_eq!(ran, ClaimAnswer::Later);
+    }
+    assert!(got.lock().unwrap().is_empty());
+    assert_eq!(held.drain(), 2);
+    let answers = got.lock().unwrap().clone();
+    let won = answers
+        .iter()
+        .filter(|c| matches!(c, Claim::Won { .. }))
+        .count();
+    assert_eq!((answers.len(), won), (2, 1));
+}
+
+#[test]
+fn a_won_answer_past_the_callers_deadline_is_taken() {
+    let r = rig();
+    let held = Arc::new(Held::default());
+    let c = Arc::clone(&r.clock);
+    let s = services(Arc::default())
+        .with_records(Arc::new(Mem(Arc::clone(&r.store))), r.store.clone())
+        .with_pool(Arc::new(Arc::clone(&held)))
+        .with_wall_clock(Arc::new(move || c.load(Ordering::SeqCst)));
+    s.admit("inst", InstanceFacts::default()).unwrap();
+    let (got, later) = claim_sink();
+    let deadline_ns = r.clock.load(Ordering::SeqCst) * 1_000_000 + 1;
+    s.claim_own(
+        "inst",
+        "auth-replay",
+        b"k",
+        2_000,
+        None,
+        deadline_ns,
+        later(),
+    );
+    r.clock.fetch_add(1, Ordering::SeqCst);
+    held.drain();
+    assert!(matches!(got.lock().unwrap()[0], Claim::Taken { .. }));
+}
+
+#[test]
+fn the_holder_extends_but_a_stale_holder_after_handover_is_refused() {
+    let r = rig();
+    let Claim::Won { epoch: 1, until_ns } = claim_now(&r.s, "inst", 2_000, None) else {
+        panic!("the first claim wins");
+    };
+    // The holder, well before its guard band, extends and keeps its epoch.
+    let extended = claim_now(&r.s, "inst", 20_000, Some(1));
+    assert!(matches!(extended, Claim::Won { epoch: 1, until_ns: u } if u > until_ns));
+    // Past the extended hold and its guard: a new claimant wins epoch 2.
+    r.clock.fetch_add(20_000 + 2_000, Ordering::SeqCst);
+    assert!(matches!(
+        claim_now(&r.s, "inst", 20_000, None),
+        Claim::Won { epoch: 2, .. }
+    ));
+    // The old holder's extend of epoch 1 is refused.
+    assert!(matches!(
+        claim_now(&r.s, "inst", 20_000, Some(1)),
+        Claim::Taken { .. }
+    ));
+    // The new holder extends.
+    assert!(matches!(
+        claim_now(&r.s, "inst", 20_000, Some(2)),
+        Claim::Won { epoch: 2, .. }
+    ));
+}
+
+#[test]
+fn inside_the_guard_band_neither_an_extend_nor_a_claim_holds() {
+    let r = rig();
+    // A 20 s hold has a 2 s guard band.
+    assert!(matches!(
+        claim_now(&r.s, "inst", 20_000, None),
+        Claim::Won { epoch: 1, .. }
+    ));
+    // 19 s in: past until - guard, so the holder may not extend.
+    r.clock.fetch_add(19_000, Ordering::SeqCst);
+    assert!(matches!(
+        claim_now(&r.s, "inst", 20_000, Some(1)),
+        Claim::Taken { .. }
+    ));
+    // 21 s in: past until, but not until + guard, so no claimant may win.
+    r.clock.fetch_add(2_000, Ordering::SeqCst);
+    assert!(matches!(
+        claim_now(&r.s, "inst", 20_000, None),
+        Claim::Taken { .. }
+    ));
+    // 22 s in: the band is over.
+    r.clock.fetch_add(1_000, Ordering::SeqCst);
+    assert!(matches!(
+        claim_now(&r.s, "inst", 20_000, None),
+        Claim::Won { epoch: 2, .. }
+    ));
+}
+
+#[test]
+fn an_empty_key_or_a_zero_ttl_is_taken_at_once() {
+    let r = rig();
+    let (got, later) = claim_sink();
+    let refused = ClaimAnswer::Now(Claim::Taken { until_ns: 0 });
+    assert_eq!(
+        r.s.claim_own("inst", "auth-replay", b"", 1_000, None, u64::MAX, later()),
+        refused
+    );
+    assert_eq!(
+        r.s.claim_own("inst", "auth-replay", b"k", 0, None, u64::MAX, later()),
+        refused
+    );
+    assert!(got.lock().unwrap().is_empty());
+}

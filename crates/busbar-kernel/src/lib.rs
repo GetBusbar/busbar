@@ -239,6 +239,7 @@ pub mod failover;
 pub mod governance;
 pub mod handlers;
 pub mod hooks;
+pub mod host_claims;
 pub mod host_records;
 pub mod ingress;
 pub mod ir;
