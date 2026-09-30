@@ -1513,8 +1513,21 @@ fn fetch_filename_from_url(url: &str) -> Result<String, String> {
     Ok(base.to_string())
 }
 
-/// Map one [`PluginFetch`] to a loader [`busbar_plugin_loader::FetchSpec`].
-fn fetch_spec_from(f: &PluginFetch) -> Result<busbar_plugin_loader::FetchSpec, String> {
+/// One `plugins.fetch` entry, resolved: the URL, its optional sha256 pin and the tarball filename
+/// inside `plugins.dir` it writes to. The composition root's fetch downloads it
+/// ([`crate::preflight::PluginsFetch`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FetchTarget {
+    /// The URL.
+    pub url: String,
+    /// The sha256 pin (hex), if any.
+    pub sha256: Option<String>,
+    /// The filename inside `plugins.dir`.
+    pub filename: String,
+}
+
+/// Resolve one [`PluginFetch`] to its [`FetchTarget`].
+fn fetch_target_from(f: &PluginFetch) -> Result<FetchTarget, String> {
     match f {
         PluginFetch::Github(g) => {
             // "org/repo@tag" → the GitHub release-asset URL. busbar plugins ship one signed
@@ -1539,13 +1552,13 @@ fn fetch_spec_from(f: &PluginFetch) -> Result<busbar_plugin_loader::FetchSpec, S
             }
             let filename = format!("{repo}.tar.gz");
             let url = format!("https://github.com/{org}/{repo}/releases/download/{tag}/{filename}");
-            Ok(busbar_plugin_loader::FetchSpec {
+            Ok(FetchTarget {
                 url,
                 sha256: g.sha256.clone(),
                 filename,
             })
         }
-        PluginFetch::Url(u) => Ok(busbar_plugin_loader::FetchSpec {
+        PluginFetch::Url(u) => Ok(FetchTarget {
             url: u.url.clone(),
             sha256: u.sha256.clone(),
             filename: fetch_filename_from_url(&u.url)?,
@@ -1565,7 +1578,7 @@ fn fetch_spec_from(f: &PluginFetch) -> Result<busbar_plugin_loader::FetchSpec, S
                 }
                 _ => (raw.clone(), None),
             };
-            Ok(busbar_plugin_loader::FetchSpec {
+            Ok(FetchTarget {
                 filename: fetch_filename_from_url(&url)?,
                 url,
                 sha256,
@@ -1620,14 +1633,14 @@ pub struct PluginPublisher {
 }
 
 impl PluginsCfg {
-    /// Resolve `plugins.fetch:` into the loader's [`busbar_plugin_loader::FetchSpec`] list: each
-    /// entry becomes a `{ url, sha256?, filename }`. `github: "org/repo@tag"` → the release-asset
+    /// Resolve `plugins.fetch:` into its [`FetchTarget`] list: each entry becomes a
+    /// `{ url, sha256?, filename }`. `github: "org/repo@tag"` → the release-asset
     /// download URL (busbar's one-file-per-plugin `{repo}.tar.gz` convention); `url:` → itself, with
     /// the target filename taken from the URL basename; `env:` → the named var's value (a `url` or
     /// `url@sha256`), erroring if the var is unset. Called at boot/reload BEFORE the fetch; never in
     /// `--validate` (the zero-network contract).
-    pub fn fetch_specs(&self) -> Result<Vec<busbar_plugin_loader::FetchSpec>, String> {
-        self.fetch.iter().map(fetch_spec_from).collect()
+    pub fn fetch_targets(&self) -> Result<Vec<FetchTarget>, String> {
+        self.fetch.iter().map(fetch_target_from).collect()
     }
 
     /// Resolve into the `busbar-plugin-sign` trust policy: the EMBEDDED first-party release key +

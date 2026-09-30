@@ -41,7 +41,7 @@ use busbar_kernel::plane::registry::{BillableClass, BuildCtx, PlaneDeclaration, 
 use busbar_kernel::plane::PlaneAdmission;
 use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneResponse, PlaneRouteSpec};
-use busbar_kernel::preflight::{LinkedStore, RootInstall};
+use busbar_kernel::preflight::{LinkedAuth, LinkedHook, LinkedStore, RootInstall};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
 /// run once the deployment's secret resolver exists.
@@ -95,11 +95,11 @@ pub struct Linked {
     /// The export axis: each linked export sink's statement and boundary (see [`LinkedExport`]).
     pub exports: &'static [LinkedExport],
     /// The store axis: each linked in-process store's `(name, ephemeral, default, open)`.
-    pub stores: &'static [busbar_kernel::preflight::LinkedStore],
+    pub stores: &'static [LinkedStore],
     /// The hook axis: each linked ranking row's `(name, aliases, open)`.
-    pub hooks: &'static [busbar_kernel::preflight::LinkedHook],
+    pub hooks: &'static [LinkedHook],
     /// The auth axis: each linked `kind: auth` plugin's `(registry key, SDK boundary)`.
-    pub auths: &'static [busbar_kernel::preflight::LinkedAuth],
+    pub auths: &'static [LinkedAuth],
     /// The kernel-loop axes (#28): the declaration key of each plane `gauntlet_install::install()`
     /// flips onto the unified loop's ONE-SHOT runner, and of each it flips onto the SESSION runner.
     pub gauntlet_one_shot: &'static [&'static str],
@@ -303,6 +303,7 @@ pub fn register_stores(linked: &Linked) {
             hooks: linked.hooks,
             default_store_module: default.unwrap_or_default(),
             registry_build: crate::root::boot::registry,
+            plugins_fetch: crate::root::boot::plugins_fetch,
         }),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");

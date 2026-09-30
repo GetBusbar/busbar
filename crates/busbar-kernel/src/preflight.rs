@@ -57,6 +57,50 @@ use busbar_plugin_loader::{boot, dispatch::PluginLogConfig, LinkedPlugin, Plugin
 /// of it, each step noted so the preflight's log lines keep their order.
 pub type RegistryBuild =
     fn(boot::Build<'_>, &mut dyn FnMut(boot::Note<'_>)) -> Result<PluginRegistry, String>;
+/// One `plugins.fetch` entry's outcome, as the root's fetch reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Fetched {
+    /// The pinned file was already present and hashed to the pin: no network.
+    Cached {
+        /// The file inside `plugins.dir`.
+        filename: String,
+    },
+    /// Downloaded, verified against its pin (if any), and written.
+    Fetched {
+        /// The file inside `plugins.dir`.
+        filename: String,
+    },
+    /// A reload's miss or mismatch: the node keeps serving what it has.
+    Warned {
+        /// The entry's URL.
+        url: String,
+        /// Why.
+        error: String,
+    },
+}
+
+/// THE ROOT'S PLUGINS FETCH: every `plugins.fetch` target into `dir`, through the kernel's
+/// SSRF-guarded `download` (the root never downloads by any other path); `fatal_on_miss` at boot,
+/// a [`Fetched::Warned`] per problem on reload. Errors are every problem at boot.
+pub type PluginsFetch = fn(
+    &std::path::Path,
+    &[config::FetchTarget],
+    bool,
+    &dyn Fn(&str) -> Result<Vec<u8>, String>,
+) -> Result<Vec<Fetched>, Vec<String>>;
+
+/// No root installed a fetch: every fetch refuses, naming the missing root.
+fn no_root_fetch(
+    _: &std::path::Path,
+    _: &[config::FetchTarget],
+    _: bool,
+    _: &dyn Fn(&str) -> Result<Vec<u8>, String>,
+) -> Result<Vec<Fetched>, Vec<String>> {
+    Err(vec![
+        "no composition root installed the plugins fetch".to_owned()
+    ])
+}
+
 /// WHAT THE COMPOSITION ROOT INSTALLS into the kernel, by name: its linked entries, the default
 /// store it resolved and its registry build — and, as each kind's axis lands, that kind's
 /// `<kind>_axis` field (ARCHITECT ruling Q8: the kernel receives contract `<Kind>Axis` seams from
@@ -72,6 +116,8 @@ pub struct RootInstall {
     pub default_store_module: &'static str,
     /// The root's registry build.
     pub registry_build: RegistryBuild,
+    /// The root's `plugins.fetch`.
+    pub plugins_fetch: PluginsFetch,
 }
 
 impl RootInstall {
@@ -81,6 +127,7 @@ impl RootInstall {
         hooks: &[],
         default_store_module: "",
         registry_build: no_root,
+        plugins_fetch: no_root_fetch,
     };
 }
 
@@ -103,6 +150,7 @@ const STAND_IN: RootInstall = RootInstall {
     ],
     default_store_module: fixture_store::linked::STORE.0,
     registry_build: boot::registry,
+    plugins_fetch: crate::test_support::fetch_stand_in,
 };
 
 /// The composition root's linked store and hook entries (the build's in-process stores and, when
@@ -1032,15 +1080,13 @@ pub(crate) fn build_secret_resolver(
     )))
 }
 
-/// The `plugins.fetch` download closure the engine hands to `busbar_plugin_loader::fetch_plugins`.
+/// The `plugins.fetch` download closure the engine hands to the root's fetch ([`PluginsFetch`]).
 /// Enforces the SAME cloud-metadata SSRF denylist provider URLs face (fetch is off-box, key-adjacent
 /// I/O) and requires https for a public host, then performs the GET. The GET runs on a DEDICATED
 /// std::thread with its own current-thread runtime, so it is safe whether the caller sits on a tokio
 /// worker (boot) or a `spawn_blocking` thread (reload) — a nested `block_on` on a runtime thread would
 /// otherwise panic. The loader owns cache/verify/atomic-write; this owns network + SSRF.
-pub(crate) fn plugin_fetch_downloader(
-    blocked: &[String],
-) -> impl Fn(&str) -> Result<Vec<u8>, String> {
+pub fn plugin_fetch_downloader(blocked: &[String]) -> impl Fn(&str) -> Result<Vec<u8>, String> {
     plugin_fetch_downloader_with_cap(blocked, config::DEFAULT_PLUGIN_FETCH_MAX_BYTES)
 }
 

@@ -562,7 +562,7 @@ pub fn build_app_from_config(
     // per-request. `prior.is_none()` is the boot(fatal-on-miss) vs reload(warn-on-miss) discriminator.
     // Signature verification stays the trust gate below; fetch is integrity/cache + delivery only.
     if plugins_cfg.enabled && !plugins_cfg.fetch.is_empty() {
-        let specs = plugins_cfg.fetch_specs()?;
+        let targets = plugins_cfg.fetch_targets()?;
         let dir = std::path::Path::new(&plugins_cfg.dir).to_path_buf();
         // Ensure the target dir exists so the atomic rename has a home.
         if let Err(e) = crate::durable::create_dir_all(&dir) {
@@ -571,19 +571,20 @@ pub fn build_app_from_config(
                 dir.display()
             ));
         }
+        // The root fetches; the kernel's SSRF-guarded downloader is the only way it downloads.
         let downloader = plugin_fetch_downloader(&cfg.blocked_metadata_hosts);
-        let outcomes =
-            busbar_plugin_loader::fetch_plugins(&dir, &specs, prior.is_none(), &downloader)
-                .map_err(|errs| format!("plugins.fetch failed:\n  - {}", errs.join("\n  - ")))?;
+        let fetch = crate::preflight::root_rows().plugins_fetch;
+        let outcomes = fetch(&dir, &targets, prior.is_none(), &downloader)
+            .map_err(|errs| format!("plugins.fetch failed:\n  - {}", errs.join("\n  - ")))?;
         for outcome in &outcomes {
             match outcome {
-                busbar_plugin_loader::FetchOutcome::Cached { filename } => {
+                crate::preflight::Fetched::Cached { filename } => {
                     tracing::info!(filename, "plugins.fetch: cached (pin match, no download)")
                 }
-                busbar_plugin_loader::FetchOutcome::Fetched { filename } => {
+                crate::preflight::Fetched::Fetched { filename } => {
                     tracing::info!(filename, "plugins.fetch: downloaded + verified")
                 }
-                busbar_plugin_loader::FetchOutcome::Warned { url, error } => {
+                crate::preflight::Fetched::Warned { url, error } => {
                     diag_warn!(
                         PLUGINS_FETCH_RELOAD_MISS,
                         url,

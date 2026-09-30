@@ -3137,7 +3137,7 @@ fetch:
     );
 }
 
-// ─── 1.5.2: plugins.fetch → FetchSpec resolution ───
+// ─── 1.5.2: plugins.fetch → FetchTarget resolution ───
 
 #[test]
 fn test_fetch_specs_maps_github_and_url() {
@@ -3150,7 +3150,7 @@ fetch:
   - url: https://host/plugins/store-durable.tar.gz
 ";
     let cfg: PluginsCfg = serde_yaml::from_str(yaml).unwrap();
-    let specs = cfg.fetch_specs().expect("fetch_specs resolves");
+    let specs = cfg.fetch_targets().expect("fetch_targets resolves");
     assert_eq!(specs.len(), 2);
     // github → release-asset url + {repo}.tar.gz filename, pin carried.
     assert_eq!(specs[0].filename, "widget.tar.gz");
@@ -3171,7 +3171,7 @@ fn test_fetch_env_spec_reads_var() {
     std::env::set_var("BUSBAR_T_FETCH_URL", "https://host/p/thing.tar.gz@abc123");
     let cfg: PluginsCfg =
         serde_yaml::from_str("enabled: true\nfetch:\n  - env: BUSBAR_T_FETCH_URL\n").unwrap();
-    let specs = cfg.fetch_specs().expect("env spec resolves");
+    let specs = cfg.fetch_targets().expect("env spec resolves");
     assert_eq!(specs[0].url, "https://host/p/thing.tar.gz");
     assert_eq!(specs[0].sha256.as_deref(), Some("abc123"));
     assert_eq!(specs[0].filename, "thing.tar.gz");
@@ -3184,7 +3184,7 @@ fn test_fetch_env_spec_unset_is_error() {
     std::env::remove_var("BUSBAR_T_FETCH_UNSET");
     let cfg: PluginsCfg =
         serde_yaml::from_str("enabled: true\nfetch:\n  - env: BUSBAR_T_FETCH_UNSET\n").unwrap();
-    let err = cfg.fetch_specs().expect_err("unset env var must error");
+    let err = cfg.fetch_targets().expect_err("unset env var must error");
     assert!(
         err.contains("BUSBAR_T_FETCH_UNSET") && err.contains("not set"),
         "{err}"

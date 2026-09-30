@@ -2119,52 +2119,6 @@ async fn plugin_fetch_downloader_refuses_to_follow_a_redirect() {
     );
 }
 
-/// Boot RUNS `plugins.fetch` before preflight, and a PIN-CACHED entry skips the
-/// network (the URL is unreachable — if boot tried to fetch it, this would fail). Proves the fetch
-/// step is wired into `build_app_from_config`'s boot path and that cache-by-pin means no-network.
-#[test]
-fn fetch_cached_pin_boots_without_network() {
-    crate::metrics::init();
-    let dir = std::env::temp_dir().join(format!("busbar-fetch-boot-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
-    // A file already present, hashing to the pin. Named `*.dat` (not `*.tar.gz`) so the plugin
-    // preflight scanner ignores it — this test asserts the FETCH wiring + cache-by-pin no-network
-    // path, not tarball validity (that is preflight's job, covered elsewhere).
-    let body = b"cached-blob-bytes";
-    std::fs::write(dir.join("cached-blob.dat"), body).unwrap();
-    let pin = busbar_plugin_loader::sign::sha256_hex(body);
-
-    let cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
-        "BUSBAR_TEST_NO_SUCH_KEY_FETCH",
-    ));
-    let plugins_cfg = crate::config::PluginsCfg {
-        enabled: true,
-        dir: dir.to_string_lossy().into_owned(),
-        fetch: vec![crate::config::PluginFetch::Url(crate::config::UrlFetch {
-            // Unreachable on purpose — cache-by-pin must skip it.
-            url: "https://plugin.invalid/cached-blob.dat".into(),
-            sha256: Some(pin),
-        })],
-        ..Default::default()
-    };
-    let res = crate::build_app_from_config(
-        cfg,
-        plugins_cfg,
-        None,
-        std::collections::HashSet::new(),
-        std::collections::HashSet::new(),
-        (None, None),
-        None,
-    );
-    // Ok carries a non-Debug App; collapse to the Err string for the assert message.
-    let err = res.err();
-    assert!(
-        err.is_none(),
-        "cached-pin boot must succeed without network: {err:?}"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 /// Source review of the boot-logging matrix: the enabled/disabled boot lines and
 /// the two-part referenced-but-missing diagnosis are present in `plugins_preflight`. Guards the
 /// observability wording against silent removal.

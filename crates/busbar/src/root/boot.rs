@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use super::loader::{boot::*, dispatch::LoadError, dispatch::ManifestFacts, PluginRegistry};
 use busbar_contract::abi::mechanism::KindCode;
+use busbar_kernel::{config::FetchTarget, preflight::Fetched};
 
 /// THE ONE REGISTRY BUILD (BUSBAR-1.6.0.md §3 stage 1; ARCHITECT ruling Q8): the plugin registry is
 /// built here, in the composition root, and nowhere else — the kernel's preflight receives it
@@ -25,6 +26,38 @@ use busbar_contract::abi::mechanism::KindCode;
 /// An invalid tarball, manifest or conflict, or a linked row the admission refuses.
 pub fn registry(b: Build<'_>, note: &mut dyn FnMut(Note<'_>)) -> Result<PluginRegistry, String> {
     super::loader::boot::registry(b, note)
+}
+
+/// THE ROOT'S PLUGINS FETCH (the kernel preflight's `PluginsFetch`): every `plugins.fetch` target
+/// through the loader's fetch (cache-by-pin, verify-before-write, atomic write) into `dir`, and only
+/// ever through the kernel's SSRF-guarded `download`.
+///
+/// # Errors
+///
+/// Every problem, at boot (`fatal_on_miss`).
+pub fn plugins_fetch(
+    dir: &std::path::Path,
+    targets: &[FetchTarget],
+    fatal_on_miss: bool,
+    download: &dyn Fn(&str) -> Result<Vec<u8>, String>,
+) -> Result<Vec<Fetched>, Vec<String>> {
+    let specs: Vec<super::loader::FetchSpec> = targets
+        .iter()
+        .map(|t| super::loader::FetchSpec {
+            url: t.url.clone(),
+            sha256: t.sha256.clone(),
+            filename: t.filename.clone(),
+        })
+        .collect();
+    let outcomes = super::loader::fetch_plugins(dir, &specs, fatal_on_miss, download)?;
+    Ok(outcomes
+        .into_iter()
+        .map(|o| match o {
+            super::loader::FetchOutcome::Cached { filename } => Fetched::Cached { filename },
+            super::loader::FetchOutcome::Fetched { filename } => Fetched::Fetched { filename },
+            super::loader::FetchOutcome::Warned { url, error } => Fetched::Warned { url, error },
+        })
+        .collect())
 }
 
 /// STAGE 0, PLAN: what the configuration file at `path` uses, read off its raw document (secret
@@ -157,3 +190,7 @@ pub fn validate(path: &std::path::Path, registry: &PluginRegistry) -> Result<Sta
         selected,
     })
 }
+
+#[cfg(test)]
+#[path = "tests/boot.rs"]
+mod tests;

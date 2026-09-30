@@ -2348,3 +2348,31 @@ fn fixture_manifest(
 #[cfg(test)]
 #[path = "tests/eventstream_frame_tests.rs"]
 mod eventstream_frame_tests;
+
+/// A test build's `plugins.fetch` (it has no composition root): each target downloaded through the
+/// kernel's guarded `download` and written into `dir`. No cache and no pin check: the root's fetch
+/// owns those, and its tests prove them.
+pub fn fetch_stand_in(
+    dir: &std::path::Path,
+    targets: &[crate::config::FetchTarget],
+    _fatal_on_miss: bool,
+    download: &dyn Fn(&str) -> Result<Vec<u8>, String>,
+) -> Result<Vec<crate::preflight::Fetched>, Vec<String>> {
+    let mut errors = Vec::new();
+    let mut done = Vec::new();
+    for t in targets {
+        match download(&t.url)
+            .and_then(|b| std::fs::write(dir.join(&t.filename), b).map_err(|e| e.to_string()))
+        {
+            Ok(()) => done.push(crate::preflight::Fetched::Fetched {
+                filename: t.filename.clone(),
+            }),
+            Err(e) => errors.push(format!("download failed: {e}")),
+        }
+    }
+    if errors.is_empty() {
+        Ok(done)
+    } else {
+        Err(errors)
+    }
+}
