@@ -29,6 +29,7 @@
 mod cancel;
 mod epoch;
 mod far_end;
+mod money;
 mod route;
 
 use std::sync::{Arc, Mutex};
@@ -53,6 +54,7 @@ use tokio::sync::watch;
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
 pub use epoch::FlushEpoch;
 pub use far_end::{AuthBinding, Egress, EgressFarEnd, MemberRoute, UnitRoute};
+pub use money::{EndPost, PlaneMoney, UnitMoney};
 pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick};
 
 use crate::slice::GroupLeaseSlip;
