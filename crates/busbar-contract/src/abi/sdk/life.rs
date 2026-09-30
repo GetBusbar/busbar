@@ -301,11 +301,15 @@ pub trait Life: Send + Sync + Sized + 'static {
     /// otherwise.
     const DRIVE: Outcome = Outcome::Ready;
 
-    /// `validate`: whether `settings` open an instance.
+    /// `validate`: whether `settings` open an instance. The default is the SDK's object check
+    /// ([`settings_object`]: "settings: must be a JSON object"); a kind's SDK forwards it to its
+    /// author trait's `validate`, so a plugin answers with its own refusal text (its 1.5.5 words).
     ///
     /// # Errors
     /// Why not.
-    fn validate(settings: &[u8]) -> Result<(), Refusal>;
+    fn validate(settings: &[u8]) -> Result<(), Refusal> {
+        settings_object(settings).map(|_| ())
+    }
 
     /// `open`: the instance over `settings` and its resolved `secrets`, at `generation`.
     ///

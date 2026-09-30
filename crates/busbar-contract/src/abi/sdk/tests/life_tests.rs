@@ -386,3 +386,46 @@ fn a_kept_answer_is_dropped_at_its_release_and_only_then() {
     assert_eq!(drops.load(Ordering::SeqCst), 1, "dropped at release");
     assert_eq!(leases.release(lease), Outcome::Refused);
 }
+
+/// A kind that states no `validate` of its own: the SDK's object check, in the SDK's words.
+struct Defaulted;
+impl Life for Defaulted {
+    const CANCEL: u32 = 0;
+    fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+        Ok(Defaulted)
+    }
+    fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+        Ok(Refreshed::default())
+    }
+}
+
+/// A kind whose plugin answers its own refusal text (a 1.5.5 plugin's words).
+struct Worded;
+impl Life for Worded {
+    const CANCEL: u32 = 0;
+    fn validate(settings: &[u8]) -> Result<(), Refusal> {
+        settings_object(settings)
+            .map(|_| ())
+            .map_err(|_| Refusal::failed("worded-hook: invalid plugin config: expected an object"))
+    }
+    fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+        Ok(Worded)
+    }
+    fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+        Ok(Refreshed::default())
+    }
+}
+
+#[test]
+fn validate_defaults_to_the_object_check_and_a_kind_may_answer_its_own_words() {
+    assert_eq!(<Defaulted as Life>::validate(b"{}"), Ok(()));
+    assert_eq!(<Defaulted as Life>::validate(b""), Ok(()));
+    let refused = <Defaulted as Life>::validate(b"[1]").expect_err("not an object");
+    assert_eq!(refused.text(), Some("settings: must be a JSON object"));
+    let worded = <Worded as Life>::validate(b"7").expect_err("not an object");
+    assert_eq!(
+        worded.text(),
+        Some("worded-hook: invalid plugin config: expected an object")
+    );
+    assert_eq!(worded.outcome(), Outcome::Failed);
+}
