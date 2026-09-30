@@ -20,25 +20,25 @@
 use std::mem::size_of;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
 
 use busbar_contract::abi::hook::{signal, SignalEntry, SignalValue, SIGNAL_TAG_U64};
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Outcome};
+use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::plane::{
-    AdminRoute, ArriveIn, ArriveOut, BillableClass, Claim, OnPieceIn, OnPieceOut, OpClass,
-    OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut,
-    PlaneSnapshot, PlaneTail, ProjectIn, ProjectOut, RecordWrite, RefusalIn, RefusalOut, Section,
-    ServeIn, ServeOut, UnitCount, CANCEL_ABORTED, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER,
-    FROM_FAR_END, FROM_KERNEL, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE,
-    MARK_GATE_REJECTED, PIECE_LAST, PRINCIPAL_NONE, RECORD_PUT, REFUSAL_GATE, SECTION_DECLARING,
-    SHAPE_PIECEWISE, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_OK,
+    ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, OpClass, OutField, PlaneDriveIn,
+    PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
+    ProjectOut, RecordWrite, RefusalIn, RefusalOut, Section, ServeIn, ServeOut, UnitCount,
+    CANCEL_ABORTED, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
+    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, MARK_GATE_REJECTED, PIECE_LAST,
+    PRINCIPAL_NONE, RECORD_PUT, REFUSAL_GATE, SECTION_DECLARING, SHAPE_PIECEWISE, UNITS_ESTIMATED,
+    UNITS_REPORTED, VERDICT_OK,
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
-use busbar_contract::abi::sdk::{Instance, Lent, Published, Safe, SafeSlot};
+use busbar_contract::abi::sdk::publish::{AdminRouteSpec, ClaimSpec, SnapshotSpec};
+use busbar_contract::abi::sdk::{Generations, Instance, Lent, Safe, SafeSlot};
 
 /// An absent string.
 const NONE: AbiStr = AbiStr {
@@ -111,21 +111,13 @@ const TAIL: &PlaneTail = &PlaneTail {
 };
 
 /// Every generation's claim.
-const CLAIMS: &[Claim] = &[Claim {
-    verb: abi_str("POST"),
-    target: abi_str("/echo"),
-    carrier: abi_str("door"),
-    flags: 0,
-    refusal_dialect: 0,
-    _pad: 0,
-}];
+fn claims() -> Vec<ClaimSpec> {
+    vec![ClaimSpec::new("POST", "/echo", "door", 0)]
+}
 /// The admin route a REFRESHED generation adds.
-const ROUTES: &[AdminRoute] = &[AdminRoute {
-    verb: abi_str("GET"),
-    target: abi_str("/door/status"),
-    flags: 0,
-    _reserved: 0,
-}];
+fn routes() -> Vec<AdminRouteSpec> {
+    vec![AdminRouteSpec::new("GET", "/door/status", 0)]
+}
 
 /// The settings `validate` refuses.
 pub const BAD_SETTINGS: &[u8] = b"bad";
@@ -133,43 +125,20 @@ pub const BAD_SETTINGS: &[u8] = b"bad";
 /// One instance: the live generations' snapshots (control lane only) and the session with
 /// unsolicited output, `0` = none (the one thing the request path touches).
 struct Plane {
-    #[allow(clippy::vec_box)] // boxed: a published snapshot's address outlives the Vec's growth
-    snapshots: Mutex<Vec<Box<Published<PlaneSnapshot>>>>,
+    snapshots: Generations<PlaneSnapshot>,
     ready: AtomicU64,
 }
 
 impl Plane {
-    /// A snapshot of `generation`, kept until its `retire`; a refreshed one adds the admin route.
+    /// A snapshot of `generation`, held by the SDK until its `retire`; a refreshed one adds the
+    /// admin route.
     fn publish(&self, generation: u64, refreshed: bool) -> *const PlaneSnapshot {
-        let routes: &[AdminRoute] = if refreshed { ROUTES } else { &[] };
-        let snap = Box::new(Published::new(PlaneSnapshot {
-            size: size_of::<PlaneSnapshot>() as u32,
-            _reserved: 0,
-            generation,
-            claims: CLAIMS.as_ptr(),
-            claims_len: CLAIMS.len(),
-            admin_routes: routes.as_ptr(),
-            admin_routes_len: routes.len(),
-            openapi: absent(),
-            audience: NONE,
-            resource_metadata: NONE,
-        }));
-        let p = snap.as_ptr();
-        lock(&self.snapshots).push(snap);
-        p
-    }
-}
-
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-fn absent() -> Blob {
-    Blob {
-        ptr: ptr::null(),
-        len: 0,
-        fmt: busbar_contract::abi::mechanism::call::BLOB_ABSENT,
-        flags: 0,
+        let spec = SnapshotSpec {
+            claims: claims(),
+            admin_routes: if refreshed { routes() } else { Vec::new() },
+            ..SnapshotSpec::default()
+        };
+        self.snapshots.publish(generation, &spec)
     }
 }
 
@@ -199,7 +168,7 @@ slot!(Validate, ValidateIn, OutHead, |_, input, _| {
 
 slot!(Open, PlaneOpenIn, PlaneOpenOut, |instance, input, out| {
     let p = Plane {
-        snapshots: Mutex::new(Vec::new()),
+        snapshots: Generations::new(),
         ready: AtomicU64::new(0),
     };
     out.snapshot = p.publish(input.open.generation, false);
@@ -222,7 +191,7 @@ slot!(
 
 slot!(Retire, GenIn, OutHead, |instance, input, _| {
     if let Some(p) = instance.get() {
-        lock(&p.snapshots).retain(|s| s.get().generation != input.generation);
+        p.snapshots.retire(input.generation);
     }
     Outcome::Ready
 });

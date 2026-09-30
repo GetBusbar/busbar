@@ -53,7 +53,7 @@ pub mod capture;
 pub mod lent;
 pub mod safe;
 pub use lent::{HostBuf, Lent, LentList};
-pub use safe::{Instance, Plain, Published, Safe, SafeSlot};
+pub use safe::{Instance, Safe, SafeSlot};
 // THE HOST SERVICES, PLUGIN SIDE: the one home of every safe host-service wrapper.
 pub mod services;
 pub use services::{ServiceError, Services};
@@ -62,6 +62,9 @@ pub use services::{ServiceError, Services};
 pub mod auth_door;
 // THE STORE KIND'S TYPED SDK: the trait a store implements to be served through the store v3 table.
 pub mod store;
+// PUBLISHED GENERATION DATA: the SDK owns what a plugin publishes (`abi::sdk::publish`).
+pub mod publish;
+pub use publish::Generations;
 
 // The `#[macro_export]` export macros, named at this module's path too, so a plugin writes
 // `busbar_contract::abi::sdk::export_store_plugin!` exactly where it wrote

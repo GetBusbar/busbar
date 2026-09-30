@@ -333,12 +333,3 @@ fn installing_outside_open_is_fault() {
     assert_eq!(close(inst, 0), Outcome::Ready);
     assert_eq!(drops.load(Ordering::SeqCst), 2);
 }
-
-#[test]
-fn published_abi_data_is_instance_state() {
-    fn state<T: Send + Sync + 'static>() {}
-    state::<super::Published<crate::abi::plane::PlaneSnapshot>>();
-    let snap: crate::abi::plane::PlaneSnapshot = zeroed();
-    let held = Box::new(super::Published::new(snap));
-    assert!(ptr::eq(held.as_ptr(), held.get()));
-}
