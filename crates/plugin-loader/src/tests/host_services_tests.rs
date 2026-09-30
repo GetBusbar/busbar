@@ -263,7 +263,10 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         if may_pend(service) {
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), UNTICKETED, "service {service}");
-        } else if !matches!(service, op::CLOCK_NOW | op::SIGN | op::TRUST_DUE) {
+        } else if !matches!(
+            service,
+            op::CLOCK_NOW | op::SIGN | op::TRUST_DUE | op::ENTITLEMENT_CHECK
+        ) {
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), UNIMPLEMENTED, "service {service}");
         }

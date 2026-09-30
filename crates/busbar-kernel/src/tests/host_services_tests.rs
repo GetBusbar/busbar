@@ -743,6 +743,7 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
                 kid_prefix: "q-".into(),
             }),
             trust: Vec::new(),
+            scope_kinds: Vec::new(),
         },
     )
     .unwrap();
