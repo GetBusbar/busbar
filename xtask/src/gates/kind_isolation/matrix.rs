@@ -652,6 +652,8 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         };
         // English words that are also instance names are not counted as English prose.
         let masked = mask_english_prose(&rel, &masked);
+        // Instance ids that are also a crate's or an abbreviation's name count only as references.
+        let masked = mask_colliding_words(&rel, &masked);
         for h in scan_file(per_kind, &dir, &rel, &masked).iter() {
             let line = h
                 .line
@@ -872,6 +874,303 @@ fn mask_prose_words(prose: &str) -> String {
         i = j;
     }
     String::from_utf8(out).expect("ascii-for-ascii")
+}
+
+/// THE INSTANCE IDS THAT ARE ALSO SOMEBODY ELSE'S NAME (METER-FIX 2026-09-29, the sibling of
+/// [`ENGLISH_INSTANCE_WORDS`] for crate names and abbreviations; ratchet-audit M-d). `http` is the
+/// transport's bare id and also the `http` crate (`http::Method`, `axum::http::StatusCode`, the
+/// `http-body` dependency), a URL scheme (`http://`), and the protocol's name in a sentence. `ws` is
+/// the transport's bare id and also whitespace (`skip_ws`), a local's name (`let ws = …`) and a URL
+/// scheme. Counted as instance knowledge, those spellings made `busbar-kernel × transport` 1 811,
+/// of which 1 539 were these two words.
+///
+/// So a bare occurrence of one of these words counts ONLY where it is a real reference to the
+/// instance:
+///
+/// * joined to its kind marker (`transport-ws`, `busbar_transport_http`, `TransportWs`), which is
+///   the crate's own name and still counts everywhere, prose included;
+/// * in code, as a whole token that is a Rust PATH SEGMENT (`crate::ingress::ws`, `mod ws`,
+///   `Transport::Http`) — but never a path rooted at the external crate of the same name
+///   (`http::Method`) or at a third-party library ([`EXTERNAL_PATH_HEADS`], `axum::http`);
+/// * as a string literal that IS the id (`"ws"`, `"http"`: a registry or config key);
+/// * in a `Cargo.toml`, as a key or header outside a dependency table (a feature named `ws`), or a
+///   dependency key that is not the external crate of the same name;
+/// * in any other text file (`.json`, `.yaml`, fixtures), as a whole token (`transport: ws`);
+/// * in the file's own path, as a whole directory or file stem (`ws.rs`, `http/`).
+///
+/// Everything else is masked before the scanners read the line: prose (a `.rs` `//` comment, a
+/// `.toml` `#` comment, a `.md` line), a URL scheme (`http://`, `ws://`), a segment of a longer
+/// identifier (`skip_ws`, `split_ws_url`, `http_status`, `WsArrival`), a local variable, and a
+/// path of the external crate. Instance ids that collide with nothing (`llm`, `mcp`, `a2a`, `tcp`,
+/// `sse`, …) are never touched here.
+pub(super) const COLLIDING_INSTANCE_WORDS: &[(&str, bool)] = &[
+    // (the word, whether it is ALSO an external crate's name, so `word::…` is that crate's path)
+    ("http", true),
+    ("ws", false),
+];
+
+/// Third-party library path heads: a colliding word inside a path rooted at one of these is that
+/// library's module (`axum::http`, `hyper::http`), not the instance.
+const EXTERNAL_PATH_HEADS: &[&str] = &[
+    "axum",
+    "hyper",
+    "hyper_util",
+    "tonic",
+    "tungstenite",
+    "tokio_tungstenite",
+    "reqwest",
+    "h2",
+    "http_body",
+    "http_body_util",
+    "tower_http",
+];
+
+/// The Cargo tables whose keys are dependency names.
+fn is_dependency_table(header: &str) -> bool {
+    let h = header
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim();
+    h.ends_with("dependencies") || h.contains("dependencies.")
+}
+
+/// Whether the occurrence of a word at `b[i..j]` is a SEGMENT the scanners can see: its start and
+/// end are each a non-alphanumeric, a line edge, or a case transition either scanner splits at.
+fn segment_bounded(b: &[u8], i: usize, j: usize) -> bool {
+    let lo = |k: usize| b.get(k).is_some_and(|c| c.is_ascii_lowercase());
+    let up = |k: usize| b.get(k).is_some_and(|c| c.is_ascii_uppercase());
+    let alnum = |k: usize| b.get(k).is_some_and(|c| c.is_ascii_alphanumeric());
+    let start =
+        i == 0 || !alnum(i - 1) || (lo(i - 1) && up(i)) || (up(i - 1) && up(i) && lo(i + 1));
+    let end =
+        j >= b.len() || !alnum(j) || (lo(j - 1) && up(j)) || (up(j - 1) && up(j) && lo(j + 1));
+    start && end
+}
+
+/// Whether the word at `b[i..]` is JOINED to its kind marker: the bytes before it, after a run of
+/// `-`, `_` or `:` (or nothing, at a case joint), spell `transport`.
+fn joined_to_marker(b: &[u8], i: usize) -> bool {
+    let mut k = i;
+    while k > 0 && matches!(b[k - 1], b'-' | b'_' | b':') {
+        k -= 1;
+    }
+    const MARKER: &[u8] = b"transport";
+    k >= MARKER.len() && b[k - MARKER.len()..k].eq_ignore_ascii_case(MARKER)
+}
+
+/// The head of the Rust path the token at `b[i..j]` sits in. On a `use` line it is the first
+/// segment after `use` (so `use axum::{http, …}` is rooted at `axum`); elsewhere it is found by
+/// walking back over `ident::` links.
+fn path_head(line: &[u8], i: usize) -> String {
+    let text = String::from_utf8_lossy(line);
+    let trimmed = text.trim_start();
+    let after_vis = trimmed
+        .strip_prefix("pub(crate) ")
+        .or_else(|| trimmed.strip_prefix("pub(super) "))
+        .or_else(|| trimmed.strip_prefix("pub "))
+        .unwrap_or(trimmed);
+    if let Some(rest) = after_vis.strip_prefix("use ") {
+        return rest
+            .trim_start_matches("::")
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .next()
+            .unwrap_or("")
+            .to_string();
+    }
+    let is_id = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let mut start = i;
+    loop {
+        if start >= 2 && &line[start - 2..start] == b"::" {
+            let mut k = start - 2;
+            while k > 0 && is_id(line[k - 1]) {
+                k -= 1;
+            }
+            if k == start - 2 {
+                break;
+            }
+            start = k;
+        } else {
+            break;
+        }
+    }
+    let mut end = start;
+    while end < line.len() && is_id(line[end]) {
+        end += 1;
+    }
+    String::from_utf8_lossy(&line[start..end]).into_owned()
+}
+
+/// `text` with every NON-REFERENCE occurrence of a [`COLLIDING_INSTANCE_WORDS`] word masked (same
+/// length `x` filler, so lines and columns hold). See that constant for what is kept.
+fn mask_colliding_words<'a>(rel: &str, text: &'a str) -> std::borrow::Cow<'a, str> {
+    let lower = text.to_ascii_lowercase();
+    if !COLLIDING_INSTANCE_WORDS
+        .iter()
+        .any(|(w, _)| lower.contains(w))
+    {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let rs = rel.ends_with(".rs");
+    let toml = rel.ends_with(".toml");
+    let md = rel.ends_with(".md");
+    let mut out = String::with_capacity(text.len());
+    let mut table = String::new();
+    for line in text.split_inclusive('\n') {
+        let b = line.as_bytes();
+        let t = line.trim_start();
+        if toml && t.starts_with('[') {
+            table = t.trim_end().to_string();
+        }
+        // WHERE PROSE STARTS on this line: all of a `.md`, a `.rs` `//` comment, a `.toml` `#`.
+        let prose_at = if md {
+            Some(0)
+        } else if rs {
+            comment_start(line)
+        } else if toml {
+            toml_comment_start(line)
+        } else {
+            None
+        };
+        let mut buf = b.to_vec();
+        let low = line.to_ascii_lowercase();
+        for (word, external) in COLLIDING_INSTANCE_WORDS {
+            let mut from = 0;
+            while let Some(off) = low[from..].find(word) {
+                let i = from + off;
+                let j = i + word.len();
+                from = j;
+                if !segment_bounded(b, i, j) {
+                    continue;
+                }
+                if !keeps_reference(b, i, j, prose_at, rs, toml, &table, *word, *external) {
+                    buf[i..j].fill(b'x');
+                }
+            }
+        }
+        out.push_str(&String::from_utf8(buf).expect("ascii-for-ascii"));
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+/// Whether the colliding word at `b[i..j]` is a real reference to the instance (see
+/// [`COLLIDING_INSTANCE_WORDS`]).
+#[allow(clippy::too_many_arguments)]
+fn keeps_reference(
+    b: &[u8],
+    i: usize,
+    j: usize,
+    prose_at: Option<usize>,
+    rs: bool,
+    toml: bool,
+    table: &str,
+    word: &str,
+    external: bool,
+) -> bool {
+    if joined_to_marker(b, i) {
+        return true;
+    }
+    if prose_at.is_some_and(|p| i >= p) {
+        return false;
+    }
+    // A URL scheme names a protocol on the wire, not the plugin.
+    if b[j..].starts_with(b"://") || b[j..].starts_with(b"s://") {
+        return false;
+    }
+    let tok =
+        |c: Option<&u8>| c.is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'-');
+    let whole = !tok(i.checked_sub(1).and_then(|k| b.get(k))) && !tok(b.get(j));
+    if !whole {
+        return false;
+    }
+    let quoted = i > 0 && b[i - 1] == b'"' && b.get(j) == Some(&b'"');
+    if quoted {
+        return true;
+    }
+    if rs {
+        let before = String::from_utf8_lossy(&b[..i]);
+        if before.trim_end().ends_with("mod") {
+            return true;
+        }
+        let path_after = b[j..].starts_with(b"::");
+        let path_before = i >= 2 && &b[i - 2..i] == b"::";
+        let in_use_group = {
+            let t = String::from_utf8_lossy(b);
+            let t = t.trim_start();
+            (t.starts_with("use ") || t.starts_with("pub use ") || t.starts_with("pub(crate) use "))
+                && matches!(b.get(i.wrapping_sub(1)), Some(b'{' | b' ' | b','))
+        };
+        if !(path_after || path_before || in_use_group) {
+            return false;
+        }
+        let head = path_head(b, i);
+        if external && head.eq_ignore_ascii_case(word) {
+            return false;
+        }
+        return !EXTERNAL_PATH_HEADS.contains(&head.as_str());
+    }
+    if toml {
+        let t = String::from_utf8_lossy(b);
+        let t = t.trim_start();
+        if t.starts_with('[') {
+            // `[dependencies.http]` is the external crate's table; any other header keeps it.
+            return !(external && is_dependency_table(t));
+        }
+        let is_key = t.len() == b.len() - i || String::from_utf8_lossy(&b[..i]).trim().is_empty();
+        if is_key {
+            return !(external && is_dependency_table(table));
+        }
+        return false;
+    }
+    true
+}
+
+/// The byte offset of a `.toml` `#` comment on `line` that is not inside a `"…"` string.
+fn toml_comment_start(line: &str) -> Option<usize> {
+    let b = line.as_bytes();
+    let mut in_str = false;
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'\\' if in_str => i += 1,
+            b'"' => in_str = !in_str,
+            b'#' if !in_str => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// A file's own path (the scanners' line 0) with every colliding word that is not a whole
+/// directory or file stem masked: `egress/duplex_ws.rs` names no instance, `ingress/ws.rs` does.
+fn mask_colliding_path(tail: &str) -> std::borrow::Cow<'_, str> {
+    let lower = tail.to_ascii_lowercase();
+    if !COLLIDING_INSTANCE_WORDS
+        .iter()
+        .any(|(w, _)| lower.contains(w))
+    {
+        return std::borrow::Cow::Borrowed(tail);
+    }
+    let b = tail.as_bytes();
+    let mut buf = b.to_vec();
+    for (word, _) in COLLIDING_INSTANCE_WORDS {
+        let mut from = 0;
+        while let Some(off) = lower[from..].find(word) {
+            let i = from + off;
+            let j = i + word.len();
+            from = j;
+            if !segment_bounded(b, i, j) || joined_to_marker(b, i) {
+                continue;
+            }
+            let lead = i == 0 || b[i - 1] == b'/';
+            let trail = j == b.len() || b[j] == b'/' || b[j] == b'.';
+            if !(lead && trail) {
+                buf[i..j].fill(b'x');
+            }
+        }
+    }
+    std::borrow::Cow::Owned(String::from_utf8(buf).expect("ascii-for-ascii"))
 }
 
 /// `text` with every whole-token occurrence of an identifier in `idents` replaced by a run of `x` of
@@ -1138,6 +1437,8 @@ fn scan_needles(
     // it is read, and a filename is the first thing a reader of the tree sees. The crate's OWN
     // directory is stripped: it is the crate naming itself.
     let tail = rel.strip_prefix(dir).unwrap_or(rel);
+    let tail = mask_colliding_path(tail);
+    let tail = tail.as_ref();
     let subject = std::iter::once((0usize, tail)).chain(
         text.lines()
             .enumerate()
@@ -2524,6 +2825,61 @@ pub fn selftest<'a>(
         ],
     ));
 
+    // AN INSTANCE ID THAT IS ALSO A CRATE'S OR AN ABBREVIATION'S NAME COUNTS ONLY AS A REFERENCE
+    // (METER-FIX 2026-09-29; [`COLLIDING_INSTANCE_WORDS`]). The fixture's transport cell is recorded
+    // at its one hit, a registry key `"ws"`. The `http` crate's paths, `axum::http`, HTTP in a
+    // comment, a URL scheme, whitespace called `ws`, and a file named `skip_ws.rs` leave it there
+    // (GREEN). A crate-rooted path to a `ws` module, and the transport crate's own path, are each
+    // a hit (RED).
+    let colliding_fixture = |extra: Option<(&'static str, &'static str)>| {
+        let mut files = vec![
+            ("wiring.rs", "pub const T: &str = \"ws\";\n"),
+            (
+                "skip_ws.rs",
+                "// speaks HTTP; a WS peer never reaches this.\n\
+                 use http::Method;\n\
+                 use axum::{http, Router};\n\
+                 pub fn status() -> axum::http::StatusCode { axum::http::StatusCode::OK }\n\
+                 pub fn skip_ws(s: &str) -> &str { let ws = s.trim_start(); ws }\n\
+                 pub const URL: &str = \"http://example.com/ws\";\n\
+                 pub fn is_http(m: &Method) -> bool { m == Method::GET }\n",
+            ),
+        ];
+        files.extend(extra);
+        fixture_cell(cx, "transport", "1", &files, true)
+    };
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "`http` as the http crate, in prose or a URL, and `ws` as whitespace are not the instance",
+        &[ROW_MATRIX],
+        colliding_fixture(None),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a crate-rooted path to a `ws` module still counts",
+        &[ROW_MATRIX],
+        colliding_fixture(Some(("accept.rs", "pub use crate::ingress::ws::accept;\n"))),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
+            "RAISED",
+        ],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "the http transport crate's own path still counts",
+        &[ROW_MATRIX],
+        colliding_fixture(Some(("dial.rs", "use busbar_transport_http::Dial;\n"))),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
+            "RAISED",
+        ],
+    ));
+
     // A CONTRACT IDENTIFIER IS THE CONTRACT'S SHAPE, NOT A PLANE'S NAME (the Q77a measurement
     // correction, [`contract_identifiers`]). The fixture's plane cell is recorded at its one hit;
     // naming the hook contract's `RoutingDecision` — whose camel half reads as the `decision`
@@ -2869,8 +3225,8 @@ pub fn selftest<'a>(
     // The honest fixture for "this row covers nothing" is a tree in which the thing it covered is
     // GONE, and a crate leaves the measurement the way it leaves the census: its manifest goes.
 
-    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-kernel-scope` carries live cells; every
-    // one of them measures nothing the moment the crate stops being one.
+    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-kernel-ledger` carries a live cell; it
+    // measures nothing the moment the crate stops being one.
     //
     // RE-TARGETED TWICE. The subject was `busbar-auth-admin-tokens × api`, and that row went dead
     // on the real tree when the crate's last `busbar-api` name moved to the contract; then
@@ -2878,16 +3234,18 @@ pub fn selftest<'a>(
     // contract (#84) and the plugin stopped naming `busbar-plugin-sdk`. Each time its red became
     // standing debt the debt-free base subtracts and the case came back green. A kernel workflow
     // crate's cell is not a fixture's and not an edge a fold retires: removing the crate's manifest
-    // kills it exactly as it did the old ones.
+    // kills it exactly as it did the old ones. Re-targeted a third time (METER-FIX): the subject was
+    // `busbar-kernel-scope × transport`, whose every hit was an `http` spelling that
+    // [`COLLIDING_INSTANCE_WORDS`] no longer counts, so that row went dead on the real tree.
     let mut ov = crate::ctx::Overlay::new();
-    ov.remove("crates/busbar-kernel-scope/Cargo.toml");
+    ov.remove("crates/busbar-kernel-ledger/Cargo.toml");
     report.push(prove_rows_red(
         cx,
         gate,
         "a `[[cell]]` row whose cell measures nothing is a dead allowance, not a tight one",
         &[ROW_MATRIX],
         ov,
-        &["dead-cell", "busbar-kernel-scope \u{d7} transport"],
+        &["dead-cell", "busbar-kernel-ledger \u{d7} kernel"],
     ));
 
     // A `[[disagreement]]` ROW WHOSE TWO SCANNERS HAVE NOTHING LEFT TO DISAGREE ABOUT. The note is
@@ -2948,6 +3306,54 @@ pub fn selftest<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn colliding_words_count_only_as_references() {
+        let kept = |rel: &str, line: &str| {
+            let m = mask_colliding_words(rel, line);
+            let l = m.to_ascii_lowercase();
+            l.matches("http").count() + l.matches("ws").count()
+        };
+        // not references
+        assert_eq!(kept("a.rs", "use http::Method;"), 0);
+        assert_eq!(kept("a.rs", "use axum::{http, Router};"), 0);
+        assert_eq!(kept("a.rs", "let s = axum::http::StatusCode::OK;"), 0);
+        assert_eq!(kept("a.rs", "fn skip_ws() { let ws = 1; }"), 0);
+        assert_eq!(kept("a.rs", "let u = \"http://x/ws\";"), 0);
+        assert_eq!(kept("a.rs", "// speaks HTTP to a ws peer"), 0);
+        assert_eq!(kept("a.rs", "struct WsArrival; fn http_status() {}"), 0);
+        assert_eq!(
+            kept(
+                "Cargo.toml",
+                "[dependencies]\nhttp = { workspace = true }\nhttp-body = \"1\"\n"
+            ),
+            0
+        );
+        assert_eq!(
+            kept("Cargo.toml", "rt = [\"axum/ws\"] # the ws accept\n"),
+            0
+        );
+        assert_eq!(kept("README.md", "The http transport and ws."), 0);
+        // references
+        assert_eq!(kept("a.rs", "use crate::ingress::ws;"), 1);
+        assert_eq!(kept("a.rs", "mod ws;"), 1);
+        assert_eq!(kept("a.rs", "let t = Transport::Http;"), 1);
+        assert_eq!(kept("a.rs", "let k = \"ws\";"), 1);
+        assert_eq!(kept("a.rs", "use busbar_transport_http::X;"), 1);
+        assert_eq!(kept("a.rs", "// see busbar-transport-ws"), 1);
+        assert_eq!(kept("Cargo.toml", "[features]\nws = []\n"), 1);
+        assert_eq!(kept("x.yaml", "transport: ws\n"), 1);
+        // the path line
+        assert_eq!(
+            mask_colliding_path("src/egress/duplex_ws.rs"),
+            "src/egress/duplex_xx.rs"
+        );
+        assert_eq!(
+            mask_colliding_path("src/ingress/ws.rs"),
+            "src/ingress/ws.rs"
+        );
+        assert_eq!(mask_colliding_path("src/http/mod.rs"), "src/http/mod.rs");
+    }
 
     fn plan_of(words: &[(&'static str, &str)]) -> Plan {
         let mut p = Plan::default();

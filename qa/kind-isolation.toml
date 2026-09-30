@@ -449,7 +449,7 @@ count = "5"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "689"
+count = "303"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -479,7 +479,7 @@ count = "11"
 [[cell]]
 crate = "busbar-a2a"
 kind = "transport"
-count = "1242"
+count = "632"
 
 [[cell]]
 crate = "busbar-contract"
@@ -490,7 +490,7 @@ count = "115"
 [[cell]]
 crate = "busbar-contract"
 kind = "transport"
-count = "345"
+count = "277"
 
 [[cell]]
 crate = "busbar-kernel"
@@ -515,17 +515,12 @@ count = "2"
 [[cell]]
 crate = "busbar-kernel-breaker"
 kind = "transport"
-count = "225"
+count = "134"
 
 [[cell]]
 crate = "busbar-kernel-budget"
 kind = "kernel"
 count = "14"
-
-[[cell]]
-crate = "busbar-kernel-budget"
-kind = "transport"
-count = "2"
 
 [[cell]]
 crate = "busbar-kernel-egress"
@@ -540,7 +535,7 @@ count = "16"
 [[cell]]
 crate = "busbar-kernel-egress"
 kind = "transport"
-count = "101"
+count = "56"
 
 [[cell]]
 crate = "busbar-kernel-identity"
@@ -548,18 +543,8 @@ kind = "plane"
 count = "2"
 
 [[cell]]
-crate = "busbar-kernel-identity"
-kind = "transport"
-count = "4"
-
-[[cell]]
 crate = "busbar-kernel-ledger"
 kind = "kernel"
-count = "6"
-
-[[cell]]
-crate = "busbar-kernel-scope"
-kind = "transport"
 count = "6"
 
 [[cell]]
@@ -575,7 +560,7 @@ count = "515"
 [[cell]]
 crate = "busbar-llm"
 kind = "transport"
-count = "1202"
+count = "546"
 
 
 
@@ -613,7 +598,7 @@ count = "8"
 [[cell]]
 crate = "busbar-mcp"
 kind = "transport"
-count = "1096"
+count = "583"
 
 [[cell]]
 crate = "busbar-oauth2"
@@ -633,7 +618,7 @@ count = "5"
 [[cell]]
 crate = "busbar-oauth2"
 kind = "transport"
-count = "67"
+count = "9"
 
 [[cell]]
 crate = "busbar-plane-a2a"
@@ -648,7 +633,7 @@ count = "26"
 [[cell]]
 crate = "busbar-plane-a2a"
 kind = "transport"
-count = "103"
+count = "62"
 
 [[cell]]
 crate = "busbar-plane-llm"
@@ -673,7 +658,7 @@ count = "13"
 [[cell]]
 crate = "busbar-plane-mcp"
 kind = "transport"
-count = "68"
+count = "60"
 
 [[cell]]
 crate = "busbar-plane-streaming"
@@ -683,7 +668,7 @@ count = "53"
 [[cell]]
 crate = "busbar-plane-streaming"
 kind = "transport"
-count = "61"
+count = "17"
 
 [[cell]]
 crate = "busbar-plugin-example-plane"
@@ -723,7 +708,7 @@ count = "67"
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "transport"
-count = "30"
+count = "13"
 
 
 
@@ -747,7 +732,7 @@ count = "83"
 [[cell]]
 crate = "busbar-transport-http"
 kind = "transport"
-count = "136"
+count = "110"
 
 [[cell]]
 crate = "busbar-transport-stdio"
@@ -757,7 +742,7 @@ count = "1"
 [[cell]]
 crate = "busbar-transport-stdio"
 kind = "transport"
-count = "6"
+count = "3"
 
 [[cell]]
 crate = "busbar-transport-tcp"
@@ -767,7 +752,7 @@ count = "1"
 [[cell]]
 crate = "busbar-transport-tcp"
 kind = "transport"
-count = "8"
+count = "2"
 
 [[cell]]
 crate = "busbar-transport-ws"
@@ -777,7 +762,7 @@ count = "2"
 [[cell]]
 crate = "busbar-transport-ws"
 kind = "transport"
-count = "52"
+count = "23"
 
 [[cell]]
 crate = "busbar-voice"
@@ -797,7 +782,7 @@ count = "1"
 [[cell]]
 crate = "busbar-voice"
 kind = "transport"
-count = "143"
+count = "9"
 
 
 
