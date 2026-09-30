@@ -759,10 +759,12 @@ crate = "busbar-transport-ws"
 kind = "plane"
 count = "2"
 
+# 23 -> 24: the ws locate's ALPN id literal b"\x08http/1.1" (door/mod.rs:378; ARCHITECT ruling
+# 2026-09-29 for the offer, row approved 2026-09-30), armed at today's measurement on METER-FIX's meter.
 [[cell]]
 crate = "busbar-transport-ws"
 kind = "transport"
-count = "23"
+count = "24"
 
 [[cell]]
 crate = "busbar-voice"
