@@ -211,6 +211,56 @@ impl AcceptBackoff {
     }
 }
 
+// ── THE ACCEPT SOURCE ─────────────────────────────────────────────────────────────────────────────
+
+/// ONE CONNECTION AN INBOUND LISTENER ADMITTED: the accepted socket, not yet on any worker's reactor
+/// (so placement may hand it to another worker), its peer, and what the listener holds for it while
+/// it is served (its connection slot), released when the connection ends.
+pub struct Admitted {
+    /// The accepted socket, non-blocking.
+    pub stream: std::net::TcpStream,
+    /// The far end.
+    pub peer: SocketAddr,
+    /// Held for as long as the connection is served.
+    pub hold: Option<Box<dyn Send>>,
+}
+
+/// AN INBOUND LISTENER, as the accept loop drains it: the next admitted connection. Accept errors,
+/// the connection cap and the accept backoff are the listener's own, so this never fails; it must
+/// be cancel-safe (the loop drops it when shutdown or a hand-off wins the race).
+pub trait Admits: Send {
+    /// The next admitted connection.
+    fn admit(&mut self) -> impl Future<Output = Admitted> + Send + '_;
+}
+
+/// A tokio socket listener as an accept source, its accept errors absorbed by [`AcceptBackoff`]:
+/// what [`serve`] and [`serve_plain`] are handed.
+struct SocketAdmits {
+    listener: TcpListener,
+    backoff: AcceptBackoff,
+    scheme: &'static str,
+}
+
+impl Admits for SocketAdmits {
+    async fn admit(&mut self) -> Admitted {
+        loop {
+            match self.listener.accept().await {
+                Ok((stream, peer)) => {
+                    self.backoff.reset();
+                    if let Ok(stream) = stream.into_std() {
+                        return Admitted {
+                            stream,
+                            peer,
+                            hold: None,
+                        };
+                    }
+                }
+                Err(e) => self.backoff.absorb(self.scheme, &e).await,
+            }
+        }
+    }
+}
+
 // ── CONNECTION PLACEMENT BALANCER (thread-per-core data plane) ──────────────────────────────────
 //
 // The kernel assigns an SO_REUSEPORT connection to a listener by a deterministic 4-tuple hash at
@@ -245,9 +295,9 @@ struct PaddedCount(std::sync::atomic::AtomicU32);
 /// worker, its own index, its own handoff receiver, and every worker's sender.
 pub struct ConnBalancer {
     counts: Arc<[PaddedCount]>,
-    txs: Arc<[tokio::sync::mpsc::Sender<(std::net::TcpStream, SocketAddr)>]>,
+    txs: Arc<[tokio::sync::mpsc::Sender<Admitted>]>,
     me: usize,
-    rx: tokio::sync::mpsc::Receiver<(std::net::TcpStream, SocketAddr)>,
+    rx: tokio::sync::mpsc::Receiver<Admitted>,
 }
 
 impl ConnBalancer {
@@ -280,11 +330,7 @@ impl ConnBalancer {
     /// least-loaded worker. Increment-before-send so the target's count is never transiently low;
     /// a full/closed channel rolls the increment back and serves locally — a connection is never
     /// dropped by balancing.
-    fn try_hand_off(
-        &self,
-        stream: tokio::net::TcpStream,
-        peer: SocketAddr,
-    ) -> Option<(tokio::net::TcpStream, SocketAddr)> {
+    fn try_hand_off(&self, admitted: Admitted) -> Option<Admitted> {
         use std::sync::atomic::Ordering;
         let mine = self.counts[self.me].0.load(Ordering::Relaxed);
         let (min_idx, min_val) = self
@@ -295,37 +341,22 @@ impl ConnBalancer {
             .min_by_key(|&(_, v)| v)
             .expect("at least one worker");
         if min_idx == self.me || mine < min_val.saturating_add(REBALANCE_MARGIN) {
-            return Some((stream, peer));
+            return Some(admitted);
         }
-        // `into_std` detaches the accepted stream from THIS worker's reactor so it can cross the
-        // hand-off channel (each worker runs its own runtime; the channel carries std streams). It
-        // consumes `stream` by value and, on error, does NOT hand the stream back — the fd is gone.
-        // This arm therefore cannot serve locally, but it also has not yet touched any counter (the
-        // `fetch_add` is below), so it neither skews the balancer nor is the never-drop contract's
-        // concern: the contract governs the BACKPRESSURE path (a full/closed channel), which the
-        // `Err(e)` arm below re-adopts and serves locally. An `into_std` failure is an OS-level
-        // reactor-deregistration fault on an already-doomed socket, not balancing dropping a live
-        // connection.
-        let std_stream = match stream.into_std() {
-            Ok(s) => s,
-            Err(_) => return None,
-        };
+        // The admitted socket is on no worker's reactor yet, so it crosses the hand-off channel as
+        // it is (each worker runs its own runtime).
         self.counts[min_idx].0.fetch_add(1, Ordering::Relaxed);
-        match self.txs[min_idx].try_send((std_stream, peer)) {
+        match self.txs[min_idx].try_send(admitted) {
             Ok(()) => None,
             Err(e) => {
                 // Backpressure (channel full) or a torn-down peer worker (closed): roll back the
                 // increment we just made and serve the connection HERE — balancing must never drop a
-                // live connection on hand-off failure. `from_std` re-attaches it to our reactor; it
-                // fails only on the same OS-level fault as `into_std` above (fd already doomed).
+                // live connection on hand-off failure.
                 self.counts[min_idx].0.fetch_sub(1, Ordering::Relaxed);
-                let (std_stream, peer) = match e {
-                    tokio::sync::mpsc::error::TrySendError::Full(v)
-                    | tokio::sync::mpsc::error::TrySendError::Closed(v) => v,
-                };
-                tokio::net::TcpStream::from_std(std_stream)
-                    .ok()
-                    .map(|s| (s, peer))
+                match e {
+                    tokio::sync::mpsc::error::TrySendError::Full(a)
+                    | tokio::sync::mpsc::error::TrySendError::Closed(a) => Some(a),
+                }
             }
         }
     }
@@ -379,81 +410,88 @@ pub async fn serve(
     balancer: Option<ConnBalancer>,
 ) -> io::Result<()> {
     let served = Served::new(router, Some(security));
-    accept_loop(listener, shutdown, balancer, served).await
+    let admits = SocketAdmits {
+        listener,
+        backoff: AcceptBackoff::new(),
+        scheme: served.scheme,
+    };
+    accept_loop(admits, shutdown, balancer, served).await
+}
+
+/// Serve `router` on the connections an inbound listener `admits` until `shutdown` resolves, then
+/// drain: each secured by `security` where set (its handshake bounded as [`serve`]'s is), served by
+/// the same hardened builder and body bounds, placed by `balancer` as [`serve`]'s are.
+///
+/// # Errors
+///
+/// None today; the signature matches [`serve`]'s.
+pub async fn serve_admitted(
+    admits: impl Admits,
+    router: Router,
+    security: Option<Arc<dyn ConnectionSecurity>>,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    balancer: Option<ConnBalancer>,
+) -> io::Result<()> {
+    accept_loop(admits, shutdown, balancer, Served::new(router, security)).await
 }
 
 /// THE ONE ACCEPT LOOP both socket listeners run ([`serve`] and [`serve_plain`]): accept until
 /// `shutdown`, place each connection (see [`ConnBalancer`]) and serve it under the graceful watcher,
 /// then serve the late hand-offs and drain in-flight connections.
 async fn accept_loop(
-    listener: TcpListener,
+    mut admits: impl Admits,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     mut balancer: Option<ConnBalancer>,
     served: Served,
 ) -> io::Result<()> {
     let graceful = GracefulShutdown::new();
     let mut shutdown = std::pin::pin!(shutdown);
-    let mut backoff = AcceptBackoff::new();
-    // Each served connection releases its placement count (if it holds one) when it ends.
-    let spawn = |stream, peer, guard: Option<ConnCountGuard>| {
-        let conn = served.clone().tcp(stream, peer, graceful.watcher());
+    // Each served connection releases its placement count (if it holds one) and the listener's
+    // hold when it ends.
+    let spawn = |a: Admitted, guard: Option<ConnCountGuard>| {
+        let Ok(stream) = tokio::net::TcpStream::from_std(a.stream) else {
+            return;
+        };
+        let conn = served.clone().tcp(stream, a.peer, graceful.watcher());
+        let hold = a.hold;
         tokio::spawn(async move {
             conn.await;
             drop(guard);
+            drop(hold);
         });
     };
 
     loop {
-        // Placement (see `ConnBalancer`): a locally-ACCEPTED connection may be handed to the
-        // least-loaded worker (pre-TLS, bare stream — placement, never migration); a RECEIVED
+        // Placement (see `ConnBalancer`): a locally-ADMITTED connection may be handed to the
+        // least-loaded worker (pre-TLS, bare socket — placement, never migration); a RECEIVED
         // hand-off is served here, its count already owned by the sender's increment.
-        let (stream, peer, guard) = tokio::select! {
+        let (admitted, guard) = tokio::select! {
             biased;
             () = &mut shutdown => break,
             handed = async { balancer.as_mut().expect("guarded by if").rx.recv().await },
                 if balancer.is_some() =>
             {
-                let Some((std_stream, peer)) = handed else { continue };
-                // The SENDER already `fetch_add`'d our slot before the hand-off; adopt that
-                // decrement BEFORE the fallible `from_std` re-adopt so a conversion failure drops
-                // the guard (releasing the count) instead of `continue`ing past it — otherwise the
-                // count is stranded high forever and this worker is permanently starved of
-                // placements (balancer skew).
-                let guard = balancer.as_ref().map(|b| b.adopt());
-                let Ok(stream) = tokio::net::TcpStream::from_std(std_stream) else { continue };
-                (stream, peer, guard)
+                let Some(a) = handed else { continue };
+                (a, balancer.as_ref().map(ConnBalancer::adopt))
             }
-            accepted = listener.accept() => match accepted {
-                Ok((stream, peer)) => {
-                    backoff.reset();
-                    match balancer.as_ref() {
-                        Some(b) => match b.try_hand_off(stream, peer) {
-                            // Handed to the least-loaded worker — nothing to serve here.
-                            None => continue,
-                            Some((stream, peer)) => (stream, peer, Some(b.place_local())),
-                        },
-                        None => (stream, peer, None),
-                    }
-                }
-                // An accept error must not kill the loop; `absorb` decides whether it is a
-                // per-connection transient (retry now) or persistent exhaustion (back off).
-                Err(e) => { backoff.absorb(served.scheme, &e).await; continue; }
+            a = admits.admit() => match balancer.as_ref() {
+                Some(b) => match b.try_hand_off(a) {
+                    // Handed to the least-loaded worker — nothing to serve here.
+                    None => continue,
+                    Some(a) => (a, Some(b.place_local())),
+                },
+                None => (a, None),
             },
         };
-        spawn(stream, peer, guard);
+        spawn(admitted, guard);
     }
 
     // Drain any hand-offs already in the channel (sent before every worker saw the shutdown):
     // serve them under the graceful watcher like any late connection rather than dropping them.
     if let Some(mut b) = balancer.take() {
-        while let Ok((std_stream, peer)) = b.rx.try_recv() {
-            // Adopt the sender's increment BEFORE `from_std` (see the accept loop): a conversion
-            // failure here must release the count via the dropped guard, not `continue` past it.
+        while let Ok(a) = b.rx.try_recv() {
             let guard = b.adopt();
-            let Ok(stream) = tokio::net::TcpStream::from_std(std_stream) else {
-                continue;
-            };
-            spawn(stream, peer, Some(guard));
+            spawn(a, Some(guard));
         }
     }
 
@@ -723,7 +761,12 @@ pub async fn serve_plain(
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     balancer: Option<ConnBalancer>,
 ) -> io::Result<()> {
-    accept_loop(listener, shutdown, balancer, Served::new(router, None)).await
+    let admits = SocketAdmits {
+        listener,
+        backoff: AcceptBackoff::new(),
+        scheme: "http",
+    };
+    accept_loop(admits, shutdown, balancer, Served::new(router, None)).await
 }
 
 /// What one listener serves every connection with: the hardened builder (see
