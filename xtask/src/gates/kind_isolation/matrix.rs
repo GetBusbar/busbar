@@ -115,6 +115,7 @@ pub const LEDGER: &str = "qa/kind-isolation.toml";
 const MIN_SCANNED: usize = 600;
 
 mod instances;
+mod os_words;
 mod vendors;
 
 /// LAW 0/1: the plugin-INSTANCE vocabularies a NEUTRAL crate may name ZERO times — ALL SEVEN plugin
@@ -654,6 +655,8 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         let masked = mask_english_prose(&rel, &masked);
         // Instance ids that are also a crate's or an abbreviation's name count only as references.
         let masked = mask_colliding_words(&rel, &masked);
+        // `unix` as the operating system (a cfg, `std::os::unix`, the clock) is not the carrier.
+        let masked = os_words::mask_os_words(&rel, &masked);
         for h in scan_file(per_kind, &dir, &rel, &masked).iter() {
             let line = h
                 .line
@@ -2880,6 +2883,98 @@ pub fn selftest<'a>(
         "the http transport crate's own path still counts",
         &[ROW_MATRIX],
         colliding_fixture(Some(("dial.rs", "use busbar_transport_http::Dial;\n"))),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
+            "RAISED",
+        ],
+    ));
+
+    // `unix` AS THE OPERATING SYSTEM IS NOT THE CARRIER ([`os_words`]). A `busbar-transport-unix`
+    // crate is planted so `unix` is a transport needle at all; the fixture's transport cell is
+    // recorded at its one hit, the claim literal `"unix"`. A cfg predicate, `std::os::unix`, a
+    // standard socket type, the clock and "non-unix" prose leave it there (GREEN). The carrier's
+    // crate path, a `unix://` target and "the unix socket" in prose each RAISE it (RED).
+    let unix_fixture = |extra: Option<(&'static str, &'static str)>| {
+        let mut files = vec![
+            ("wiring.rs", "pub const CLAIM: &str = \"unix\";\n"),
+            (
+                "os.rs",
+                "#[cfg(unix)]\n\
+                 use std::os::unix::fs::PermissionsExt;\n\
+                 #[cfg(all(unix, not(target_os = \"macos\")))]\n\
+                 pub fn mode(l: &tokio::net::UnixListener) -> u64 { now_unix_ns() }\n\
+                 fn now_unix_ns() -> u64 { std::time::UNIX_EPOCH.elapsed().map_or(0, |d| d.as_secs()) }\n\
+                 // Non-unix builds have no mode bits; Unix seconds since the epoch.\n",
+            ),
+        ];
+        files.extend(extra);
+        let mut ov = fixture_cell(cx, "transport", "1", &files, true);
+        ov.set(
+            "crates/busbar-transport-unix/Cargo.toml",
+            "[package]\nname = \"busbar-transport-unix\"\nversion = \"0.0.0\"\n".to_string(),
+        );
+        ov.set(
+            "crates/busbar-transport-unix/src/lib.rs",
+            "//! Fixture.\n".to_string(),
+        );
+        ov
+    };
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "`unix` as a cfg, a std path, a socket type, the clock or the platform is not the carrier",
+        &[ROW_MATRIX],
+        unix_fixture(None),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "the unix carrier's crate path still counts",
+        &[ROW_MATRIX],
+        unix_fixture(Some(("dial.rs", "use busbar_transport_unix::Carrier;\n"))),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
+            "RAISED",
+        ],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a `unix://` target still counts",
+        &[ROW_MATRIX],
+        unix_fixture(Some((
+            "target.rs",
+            "pub const SOCK: &str = \"unix:///run/busbar.sock\";\n",
+        ))),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
+            "RAISED",
+        ],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "\"the unix socket\" in prose still counts",
+        &[ROW_MATRIX],
+        unix_fixture(Some(("prose.rs", "// dial the unix socket first.\n"))),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
+            "RAISED",
+        ],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "an identifier naming the carrier (`UnixCarrier`, `connect_unix`) still counts",
+        &[ROW_MATRIX],
+        unix_fixture(Some((
+            "carrier.rs",
+            "pub struct UnixCarrier;\npub fn connect_unix() {}\n",
+        ))),
         &[
             "ratchet",
             &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
