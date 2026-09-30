@@ -87,7 +87,7 @@ const NONE: AbiStr = AbiStr {
 static NEEDS: [Need; 1] = [Need {
     direction: DIRECTION_OUTBOUND,
     egress_class: 0,
-    transport: abi_str("tcp"),
+    transport: abi_str("sock"),
     auth: NONE,
     target_from: abi_str("settings.upstream"),
     trust_from: NONE,
@@ -158,7 +158,7 @@ fn an_instance_with_a_declared_need_is_declared_and_its_establish_reaches_the_ta
     let (owner, need, spec) = &declared[0];
     assert_eq!((*owner, *need), (p.instance(), NeedId(0)));
     assert_eq!(spec.direction, DIRECTION_OUTBOUND);
-    assert_eq!(spec.transport, "tcp");
+    assert_eq!(spec.transport, "sock");
     assert_eq!(
         spec.target_from, "settings.upstream",
         "the target source reaches declare intact"

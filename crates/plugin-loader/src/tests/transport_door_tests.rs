@@ -75,10 +75,10 @@ fn bind() -> Bind {
 /// The fixture's manifest, stating the door's Statement rendering as its signed manifest does (the
 /// door is admitted against it).
 fn manifest() -> crate::sign::Manifest {
-    let rendering = crate::dispatch::rendering_of(busbar_transport_tcp::linked::door)
-        .expect("the fixture's door states itself");
+    let rendering = crate::dispatch_tests::example_cdylib("transport_door")
+        .and_then(|path| crate::dispatch::rendering_of_library(&path).ok().flatten());
     crate::sign::Manifest {
-        statement: Some(hex::encode(rendering)),
+        statement: rendering.map(hex::encode),
         ..statement(
             busbar_contract::abi::cold::kind::TRANSPORT,
             "door-fixture",

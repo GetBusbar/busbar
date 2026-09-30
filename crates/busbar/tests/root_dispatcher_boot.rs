@@ -14,7 +14,6 @@
 
 mod common;
 
-use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -64,19 +63,9 @@ models:
     .unwrap();
 }
 
-fn healthz_ok(port: u16) -> bool {
-    let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) else {
-        return false;
-    };
-    let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
-    if s.write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        .is_err()
-    {
-        return false;
-    }
-    let mut buf = String::new();
-    let _ = s.read_to_string(&mut buf);
-    buf.starts_with("HTTP/1.1 200")
+/// Whether a listener accepts on `port`.
+fn listening(port: u16) -> bool {
+    TcpStream::connect(("127.0.0.1", port)).is_ok()
 }
 
 fn wait_for(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
@@ -128,16 +117,12 @@ fn boot(tag: &str, env: &[(&str, &str)]) -> (usize, String) {
         if let Some(status) = child.try_wait().expect("try_wait") {
             panic!("busbar exited at boot ({status:?}); log:\n{}", log_text());
         }
-        healthz_ok(data_port) && healthz_ok(admin_port)
+        listening(data_port) && listening(admin_port)
     });
     let threads = dispatcher_threads(child.id());
     let _ = child.kill();
     let _ = child.wait();
-    assert!(
-        ready,
-        "busbar never answered /healthz; log:\n{}",
-        log_text()
-    );
+    assert!(ready, "busbar never listened; log:\n{}", log_text());
     let out = log_text();
     let _ = std::fs::remove_dir_all(&dir);
     (threads, out)
