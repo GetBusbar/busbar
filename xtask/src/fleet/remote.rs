@@ -18,6 +18,8 @@ pub struct Settings {
 }
 
 pub trait Remote {
+    /// Whether the repo has no commits at all (GitHub answers 409 "Git Repository is empty").
+    fn is_empty(&self, repo: &str) -> Result<bool, String>;
     /// The repo's visibility, detected license and default branch.
     fn settings(&self, repo: &str) -> Result<Settings, String>;
     /// Every file path on `branch` (blobs only).
@@ -54,6 +56,19 @@ fn not_found(stdout: &str, stderr: &str) -> bool {
 }
 
 impl Remote for Gh {
+    fn is_empty(&self, repo: &str) -> Result<bool, String> {
+        let api = format!("repos/{ORG}/{repo}/git/refs");
+        let (ok, out, err) = gh(&["api", &api, "--jq", "length"])?;
+        if ok {
+            return Ok(false);
+        }
+        if format!("{out}{err}").contains("Git Repository is empty") {
+            Ok(true)
+        } else {
+            Err(format!("`gh api {api}`: {}", err.trim()))
+        }
+    }
+
     fn settings(&self, repo: &str) -> Result<Settings, String> {
         let api = format!("repos/{ORG}/{repo}");
         let (ok, out, err) = gh(&["api", &api])?;

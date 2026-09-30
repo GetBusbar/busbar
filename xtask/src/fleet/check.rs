@@ -14,6 +14,8 @@ pub struct Finding {
     pub repo: String,
     pub subject: String,
     pub reason: String,
+    /// A check that did not apply, and why (a `pending_crate` repo): printed, never red.
+    pub skip: bool,
 }
 
 fn f(repo: &str, subject: &str, reason: impl Into<String>) -> Finding {
@@ -21,8 +23,19 @@ fn f(repo: &str, subject: &str, reason: impl Into<String>) -> Finding {
         repo: repo.to_string(),
         subject: subject.to_string(),
         reason: reason.into(),
+        skip: false,
     }
 }
+
+fn skip(repo: &str, subject: &str, reason: impl Into<String>) -> Finding {
+    Finding {
+        skip: true,
+        ..f(repo, subject, reason)
+    }
+}
+
+/// The reason a pending repo's crate-shaped checks do not apply yet.
+const PENDING: &str = "pending-crate: registered before its crates moved in (plugins.yaml `pending_crate`)";
 
 /// The branch the render is compared on.
 pub const DEV: &str = "dev";
@@ -93,6 +106,23 @@ fn check_repo(
         )),
         Ok(_) => {}
         Err(e) => out.push(f(repo, "name", format!("fleet name_pattern: {e}"))),
+    }
+
+    // PENDING: a registered repo whose crates have not moved in. While it is EMPTY there is nothing
+    // to hold to the render yet (`fleet sync` seeds it); every other check needs a `dev`.
+    if p.pending_crate {
+        match remote.is_empty(repo) {
+            Ok(true) => {
+                out.push(skip(
+                    repo,
+                    "repo",
+                    format!("{PENDING}; the repo is empty until `cargo xtask fleet sync` seeds it"),
+                ));
+                return;
+            }
+            Ok(false) => {}
+            Err(e) => out.push(f(repo, "repo", format!("could not read: {e}"))),
+        }
     }
 
     // BRANCHES: exactly the release branches, each with the one protection.
@@ -260,6 +290,7 @@ fn check_repo(
     }
     match remote.read(repo, DEV, &p.declares) {
         Err(e) => out.push(f(repo, &p.declares, format!("could not read: {e}"))),
+        Ok(None) if p.pending_crate => out.push(skip(repo, &p.declares, PENDING)),
         Ok(None) => out.push(f(
             repo,
             &p.declares,
@@ -315,8 +346,23 @@ fn check_shape(
             ));
         }
     }
+    let present = crate_dirs
+        .iter()
+        .filter(|d| have.contains(format!("{d}/Cargo.toml").as_str()))
+        .count();
+    if p.pending_crate && present == crate_dirs.len() {
+        out.push(f(
+            repo,
+            "pending_crate",
+            "stale: both crate dirs are in; drop `pending_crate` from the registry entry",
+        ));
+    }
     for d in &crate_dirs {
         if !have.contains(format!("{d}/Cargo.toml").as_str()) {
+            if p.pending_crate && present == 0 {
+                out.push(skip(repo, &format!("{d}/"), PENDING));
+                continue;
+            }
             out.push(f(
                 repo,
                 &format!("{d}/"),
@@ -384,6 +430,10 @@ pub fn report(fleet: &Fleet, only: &[String], findings: &[Finding]) -> i32 {
         .iter()
         .filter(|p| only.is_empty() || only.contains(&p.repo))
         .count();
+    for x in findings.iter().filter(|x| x.skip) {
+        println!("SKIP {} {}: {}", x.repo, x.subject, x.reason);
+    }
+    let findings: Vec<&Finding> = findings.iter().filter(|x| !x.skip).collect();
     if findings.is_empty() {
         println!(
             "fleet check: GREEN — {n} repo(s) match the render and the fleet policy (pin {})",

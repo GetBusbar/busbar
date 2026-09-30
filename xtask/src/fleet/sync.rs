@@ -1,9 +1,10 @@
 //! `fleet sync`: make each repo match the render and the policy. It pushes `dev` ONLY. It creates a
 //! missing release branch from `dev` (the owner-approved design) and applies the protection; it never
-//! pushes to `qa` or `main` otherwise. A registered repo that does not exist yet is CREATED (public,
-//! seeded with the render on `dev`, `dev` made its default branch): the registry entry is the
-//! decision to have it. It never overwrites a root `Cargo.toml` that is not a twin's (a repo whose
-//! crates are not the two twin crate dirs needs its code moved first); that repo is reported. A branch outside the release set is deleted only when it is
+//! pushes to `qa` or `main` otherwise. It NEVER creates a repo and never changes a repo setting: an
+//! EMPTY registered repo (created by hand) is seeded by pushing `dev` first and alone, which GitHub
+//! makes the default branch by itself; `qa` and `main` follow from it. It never overwrites a root
+//! `Cargo.toml` that is not a twin's (a repo whose crates are not the two twin crate dirs needs its
+//! code moved first); that repo is reported. A branch outside the release set is deleted only when it is
 //! FULLY MERGED into `dev`, `qa` or `main` (GitHub's compare says it is behind or identical); an
 //! unmerged branch is reported and never touched.
 
@@ -125,22 +126,6 @@ fn sync_repo(
     let repo = &p.repo;
     let dir: PathBuf = workdir.join(repo);
     let url = format!("https://github.com/{ORG}/{repo}.git");
-    // 0. A registered repo that does not exist is created, empty; step 1 seeds it.
-    let (exists_ok, exists_out, exists_err) =
-        gh(&["api", &format!("repos/{ORG}/{repo}"), "--jq", ".name"])?;
-    if !exists_ok {
-        let both = format!("{exists_out}{exists_err}");
-        if !(both.contains("HTTP 404") || both.contains("Not Found")) {
-            return Err(format!("gh api repos/{ORG}/{repo}: {}", exists_err.trim()));
-        }
-        if dry_run {
-            println!("== {repo}: does not exist; a real run creates it (public) and seeds dev");
-            o.seeded = true;
-            return Ok(());
-        }
-        gh_ok(&["repo", "create", &format!("{ORG}/{repo}"), "--public"])?;
-        o.seeded = true;
-    }
     if !dir.join(".git").exists() {
         let st = Command::new("git")
             .args(["clone", "-q", &url])
@@ -173,8 +158,11 @@ fn sync_repo(
             &["checkout", "-q", "-B", DEV, &format!("origin/{DEV}")],
         )?;
     } else if git(&dir, &["branch", "-r"])?.trim().is_empty() {
-        // An empty repo (just created, or created by hand): dev starts as an orphan.
+        // An EMPTY repo (created by hand; sync never creates a repo or changes a setting): dev starts
+        // as an orphan and is the FIRST and only branch this run pushes, so GitHub makes it the
+        // default branch by itself. qa and main follow from dev in step 3.
         git(&dir, &["checkout", "-q", "--orphan", DEV])?;
+        o.seeded = true;
         git(&dir, &["clean", "-q", "-fd"])?;
     } else {
         return Err(format!(
@@ -261,17 +249,6 @@ fn sync_repo(
         return Ok(());
     }
     o.dev_sha = git(&dir, &["rev-parse", "HEAD"])?;
-    // A repo this run seeded takes `dev` as its default branch (the fleet norm `fleet check` holds).
-    if !has_dev && !dry_run {
-        gh_ok(&[
-            "api",
-            "-X",
-            "PATCH",
-            &format!("repos/{ORG}/{repo}"),
-            "-f",
-            &format!("default_branch={DEV}"),
-        ])?;
-    }
 
     // 3. Release branches: a missing one is created from dev.
     let branches: Vec<String> = gh_ok(&[

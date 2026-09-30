@@ -30,6 +30,10 @@ pub struct Plugin {
     pub bundle_image: String,
     pub bundle_env: String,
     pub keep: Vec<String>,
+    /// A registered repo whose crates have not moved in yet: `fleet check` skips its crate-shaped
+    /// checks (with the reason) while the crate dirs are absent, and the whole repo while it is empty;
+    /// the registry gate keeps it out of the cloned/released set.
+    pub pending_crate: bool,
     /// Lines the rendered `.gitignore` carries after the fleet's own.
     pub gitignore: Vec<String>,
     /// Lines the rendered `NOTICE` carries after the fleet's own (a third-party credit).
@@ -187,6 +191,7 @@ pub fn parse(text: &str) -> Result<Fleet, String> {
             bundle_image: s(e, "bundle_image", &who)?.unwrap_or("").to_string(),
             bundle_env: s(e, "bundle_env", &who)?.unwrap_or("").to_string(),
             keep: list(e, "keep", &who)?,
+            pending_crate: b(e, "pending_crate", &who, false)?,
             gitignore: list(e, "gitignore", &who)?,
             notice: list(e, "notice", &who)?,
             crate_name,

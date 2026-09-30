@@ -22,8 +22,8 @@
 //!   Apache-2.0 and defaults to `dev`. Any drift exits 1, one
 //!   line per finding naming the repo and the file (or branch). Reads GitHub through `gh`.
 //! * `fleet sync [--repo <repo>]... [--workdir <dir>] [--dry-run]` — applies the render to each
-//!   repo's `dev` (creating and seeding a registered repo that does not exist yet; moving the pin
-//!   with scripts/fleet/repin.sh), commits and
+//!   repo's `dev` (seeding an EMPTY registered repo by pushing `dev` first; it never creates a repo
+//!   or changes a repo setting; moving the pin with scripts/fleet/repin.sh), commits and
 //!   pushes `dev` ONLY, creates a missing release branch from `dev`, applies the protection, and
 //!   lists every other branch: one fully merged into `dev`, `qa` or `main` is deleted, an unmerged
 //!   one is reported and never touched.

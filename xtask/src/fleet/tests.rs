@@ -70,6 +70,8 @@ struct Repo {
     branches: Vec<String>,
     protection: BTreeMap<String, Value>,
     settings: Settings,
+    /// No commits at all (GitHub's 409 "Git Repository is empty").
+    empty: bool,
 }
 
 impl Default for Repo {
@@ -79,6 +81,7 @@ impl Default for Repo {
             files: BTreeMap::new(),
             branches: Vec::new(),
             protection: BTreeMap::new(),
+            empty: false,
             settings: Settings {
                 visibility: "public".into(),
                 license: "Apache-2.0".into(),
@@ -95,6 +98,12 @@ struct Fake {
 }
 
 impl Remote for Fake {
+    fn is_empty(&self, repo: &str) -> Result<bool, String> {
+        if self.unreadable.iter().any(|r| r == repo) {
+            return Err("HTTP 401: Bad credentials".into());
+        }
+        Ok(self.repos.borrow()[repo].empty)
+    }
     fn settings(&self, repo: &str) -> Result<Settings, String> {
         if self.unreadable.iter().any(|r| r == repo) {
             return Err("HTTP 401: Bad credentials".into());
@@ -194,8 +203,20 @@ fn conforming(fleet: &Fleet, t: &Templates) -> Fake {
     }
 }
 
+/// The RED findings (a skip is printed, never red).
 fn run(fleet: &Fleet, t: &Templates, fake: &Fake) -> Vec<Finding> {
     check(fleet, t, fake, &[])
+        .into_iter()
+        .filter(|f| !f.skip)
+        .collect()
+}
+
+/// The skips alone.
+fn skips(fleet: &Fleet, t: &Templates, fake: &Fake) -> Vec<Finding> {
+    check(fleet, t, fake, &[])
+        .into_iter()
+        .filter(|f| f.skip)
+        .collect()
 }
 
 fn one(findings: &[Finding], repo: &str, subject: &str, needle: &str) {
@@ -825,9 +846,10 @@ fn a_readme_off_the_section_skeleton_is_red_and_sync_restructures_it_without_dro
 }
 
 #[test]
-fn the_committed_registry_is_twenty_four_twins() {
+fn the_committed_registry_is_all_twins() {
     let (fleet, t) = (registry(), templates());
-    for repo in [
+    // The repos registered before their crates moved in are pending; the rest are not.
+    let pending = [
         "busbar-plane-llm",
         "busbar-plane-mcp",
         "busbar-plane-a2a",
@@ -836,10 +858,19 @@ fn the_committed_registry_is_twenty_four_twins() {
         "busbar-transport-http",
         "busbar-transport-ws",
         "busbar-transport-stdio",
-        "busbar-transport-tcp",
-    ] {
-        fleet.plugin(repo).unwrap_or_else(|e| panic!("{e}"));
+        "busbar-transport-grpc",
+        "busbar-hook-ranking",
+        "busbar-store-memory",
+    ];
+    for repo in pending {
+        let p = fleet.plugin(repo).unwrap_or_else(|e| panic!("{e}"));
+        assert!(p.pending_crate && !p.released, "{repo}");
     }
+    assert!(!fleet.plugin("busbar-transport-tcp").unwrap().pending_crate);
+    assert_eq!(
+        fleet.plugins.iter().filter(|p| p.pending_crate).count(),
+        pending.len()
+    );
     // Every repo's render has the same shape: the same paths (the daily consumer check only once a
     // plugin has released), each workspace over its own two twin crate dirs.
     let shape = |p: &super::registry::Plugin| -> Vec<String> {
@@ -872,7 +903,7 @@ fn the_committed_registry_is_twenty_four_twins() {
     for p in fleet
         .plugins
         .iter()
-        .filter(|p| p.kind == "plane" || p.repo.starts_with("busbar-transport-"))
+        .filter(|p| p.pending_crate || p.repo.starts_with("busbar-transport-"))
     {
         assert_eq!(p.crate_name, format!("{}-plugin", p.repo));
         assert_eq!(p.declares, format!("{}/declares.json", p.stem()));
@@ -885,4 +916,67 @@ fn the_workspace_rust_version_is_the_toolchain_channels_minor() {
     assert_eq!(rust_version_of("1.98").unwrap(), "1.98");
     assert!(rust_version_of("stable").is_err());
     assert!(rust_version_of("nightly-2026-01-01").is_err());
+}
+
+#[test]
+fn a_pending_crate_repo_is_skipped_with_its_reason_and_a_non_pending_empty_repo_is_red() {
+    let t = templates();
+    let a = "busbar-store-alpha";
+    let empty = |fleet: &Fleet| {
+        let fake = conforming(fleet, &t);
+        {
+            let mut repos = fake.repos.borrow_mut();
+            let r = repos.get_mut(a).unwrap();
+            r.files.clear();
+            r.branches.clear();
+            r.protection.clear();
+            r.settings.default_branch = "main".into();
+            r.empty = true;
+        }
+        fake
+    };
+    // RED ARM: an EMPTY repo that is NOT pending is drift, not a skip.
+    let fleet = fixture();
+    let fake = empty(&fleet);
+    let f = run(&fleet, &t, &fake);
+    one(&f, a, "branch dev", "missing");
+    one(&f, a, ".github/workflows/ci.yml", "missing");
+    one(&f, a, "store-alpha/", "missing");
+    assert!(skips(&fleet, &t, &fake).is_empty());
+
+    // The same empty repo, pending: one skip naming the reason, nothing red.
+    let mut pending = fixture();
+    pending.plugins[0].pending_crate = true;
+    let fake = empty(&pending);
+    assert!(run(&pending, &t, &fake).is_empty(), "{:#?}", run(&pending, &t, &fake));
+    let s = skips(&pending, &t, &fake);
+    assert_eq!(s.len(), 1, "{s:#?}");
+    assert!(s[0].repo == a && s[0].reason.contains("pending-crate") && s[0].reason.contains("empty"));
+
+    // Seeded (the render is in) but no crates yet: the crate dirs and declares skip; the render and
+    // every other check still hold it.
+    let fake = conforming(&pending, &t);
+    {
+        let mut repos = fake.repos.borrow_mut();
+        let r = repos.get_mut(a).unwrap();
+        r.files.retain(|k, _| !k.starts_with("store-alpha"));
+    }
+    assert!(run(&pending, &t, &fake).is_empty(), "{:#?}", run(&pending, &t, &fake));
+    let s: Vec<String> = skips(&pending, &t, &fake).into_iter().map(|x| x.subject).collect();
+    assert_eq!(s, ["store-alpha-plugin/", "store-alpha/", "store-alpha/declares.json"]);
+    {
+        let mut repos = fake.repos.borrow_mut();
+        let r = repos.get_mut(a).unwrap();
+        r.files.remove(".mailmap");
+    }
+    one(&run(&pending, &t, &fake), a, ".mailmap", "missing (the render owns it)");
+
+    // Pending but the crates are in: the flag is stale, RED.
+    let fake = conforming(&pending, &t);
+    one(&run(&pending, &t, &fake), a, "pending_crate", "stale");
+
+    // An unreadable pending repo is RED, never a silent skip.
+    let mut fake = empty(&pending);
+    fake.unreadable.push(a.into());
+    one(&run(&pending, &t, &fake), a, "repo", "could not read");
 }
