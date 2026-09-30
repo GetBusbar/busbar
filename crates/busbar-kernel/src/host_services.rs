@@ -58,6 +58,9 @@ use busbar_contract::services::{
 };
 use sha2::{Digest, Sha256};
 
+/// The refusal of a record write past the write queue's bound.
+pub const QUEUE_FULL: &str = "the record write queue is full";
+
 use crate::host_records::{
     record_key, Acked, Owed as WriteOwed, PendingRecords, RecordRows, Write, WriteBehind,
 };
@@ -483,7 +486,7 @@ impl KernelServices {
     /// # Errors
     ///
     /// The refusal, with `acked` never called: an instance never admitted, a kind it did not
-    /// declare, or no store or pool.
+    /// declare, no store or pool, or [`QUEUE_FULL`] (the overlay untouched).
     pub fn record_write(
         &self,
         caller: &Caller,
@@ -493,33 +496,67 @@ impl KernelServices {
         acked: Acked,
     ) -> Result<(), &'static str> {
         let (schema, records, pool) = self.scope(caller, kind).map_err(|s| s.error)?;
-        let seq =
-            self.pending
-                .enqueue(&caller.instance, kind, key, Some(value.as_slice().to_vec()));
-        let write = Write {
-            instance: Arc::clone(&caller.instance),
-            schema,
-            key: key.to_vec(),
-            value,
-            seq,
-            owed: WriteOwed::new(acked),
-        };
-        if self.batcher.push(write) {
-            let unrun = Unrun(Some(Arc::clone(&self.batcher)));
-            let pending = Arc::clone(&self.pending);
-            let rows = Arc::clone(&records.reads);
-            pool.run(Box::new(move || {
-                if let Some(batcher) = unrun.run() {
-                    batcher.flush(&pending, &*rows);
-                }
-            }));
+        let pending = &self.pending;
+        let started = self.batcher.push_with(|| {
+            let seq = pending.enqueue(&caller.instance, kind, key, Some(value.as_slice().to_vec()));
+            Write {
+                instance: Arc::clone(&caller.instance),
+                schema,
+                key: key.to_vec(),
+                value,
+                seq,
+                owed: WriteOwed::new(acked),
+            }
+        });
+        match started {
+            Some(true) => self.start_flush(records, pool),
+            Some(false) => {}
+            None => return Err(QUEUE_FULL),
         }
         Ok(())
+    }
+
+    /// Run one flush of the record write queue on `pool`.
+    fn start_flush(&self, records: &Records, pool: &dyn Offload) {
+        let unrun = Unrun(Some(Arc::clone(&self.batcher)));
+        let pending = Arc::clone(&self.pending);
+        let rows = Arc::clone(&records.reads);
+        pool.run(Box::new(move || {
+            if let Some(batcher) = unrun.run() {
+                batcher.flush(&pending, &*rows);
+            }
+        }));
     }
 
     /// The kernel tick's re-verification mark, at the wall clock.
     pub fn mark_due(&self) {
         self.trust.mark_due((self.wall_ms)());
+    }
+
+    /// The kernel tick, every [`crate::host_records::FLUSH_INTERVAL`]: start a flush of the queued
+    /// record writes when none runs, so writes a refused flush left queued still reach the store.
+    pub fn flush_tick(&self) {
+        if let (Some(records), Some(pool)) = (self.records.as_ref(), self.pool.as_deref()) {
+            if self.batcher.start() {
+                self.start_flush(records, pool);
+            }
+        }
+    }
+
+    /// GRACEFUL SHUTDOWN: flush every queued record write before the store closes, waiting up to
+    /// `deadline`. `true` when all are written. Blocks: never call it on a dispatcher worker.
+    pub fn drain(&self, deadline: std::time::Duration) -> bool {
+        let until = Instant::now() + deadline;
+        loop {
+            if self.batcher.idle() {
+                return true;
+            }
+            if Instant::now() >= until {
+                return false;
+            }
+            self.flush_tick();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
     }
 
     fn lock_instances(&self) -> std::sync::MutexGuard<'_, HashMap<Arc<str>, Arc<InstanceFacts>>> {

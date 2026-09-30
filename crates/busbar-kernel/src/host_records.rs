@@ -186,6 +186,14 @@ impl PendingRecords {
     }
 }
 
+/// The most writes one batch carries to the store.
+pub const BATCH_CAP: usize = 256;
+/// The most writes that wait for the store; a write past it is refused.
+pub const QUEUE_CAP: usize = 4096;
+/// How often the kernel tick restarts a flush that did not run (its pool refused it), so a queued
+/// write is never left waiting on the next write.
+pub const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Where a record write's answer goes, once: `Ok` when the store took it, or the refusal.
 pub type Acked = Box<dyn FnOnce(Result<(), &'static str>) + Send>;
 
@@ -260,11 +268,29 @@ impl WriteBehind {
         self.queue.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Queue `write`. `true` when no flush is running: the caller starts one.
-    pub fn push(&self, write: Write) -> bool {
+    /// Queue the write `make` builds, if there is room: `make` runs under the queue's lock, so a
+    /// write the queue refuses never reaches the overlay. `Some(true)` when no flush is running
+    /// (the caller starts one), `None` when [`QUEUE_CAP`] writes already wait.
+    pub fn push_with(&self, make: impl FnOnce() -> Write) -> Option<bool> {
         let mut q = self.lock();
-        q.writes.push(write);
-        !std::mem::replace(&mut q.flushing, true)
+        if q.writes.len() >= QUEUE_CAP {
+            return None;
+        }
+        q.writes.push(make());
+        Some(!std::mem::replace(&mut q.flushing, true))
+    }
+
+    /// The tick: `true` when writes wait and no flush is running; the caller starts one.
+    pub fn start(&self) -> bool {
+        let mut q = self.lock();
+        !q.writes.is_empty() && !std::mem::replace(&mut q.flushing, true)
+    }
+
+    /// Nothing waits and no flush runs.
+    #[must_use]
+    pub fn idle(&self) -> bool {
+        let q = self.lock();
+        q.writes.is_empty() && !q.flushing
     }
 
     /// The flush that was to run will not: the next write starts one.
@@ -272,14 +298,15 @@ impl WriteBehind {
         self.lock().flushing = false;
     }
 
-    /// THE FLUSH: write every queued write to `rows`, in order, batch after batch; answer each once
+    /// THE FLUSH: write every queued write to `rows`, in order, at most [`BATCH_CAP`] a batch; answer each once
     /// the store took it and acknowledge it in `pending`; end when nothing is queued. A write the
     /// store refuses answers [`WRITE_FAILED`] and leaves the overlay; the rest go on.
     pub fn flush(&self, pending: &PendingRecords, rows: &dyn RecordRows) {
         loop {
             let batch = {
                 let mut q = self.lock();
-                let batch = std::mem::take(&mut q.writes);
+                let n = q.writes.len().min(BATCH_CAP);
+                let batch: Vec<Write> = q.writes.drain(..n).collect();
                 if batch.is_empty() {
                     q.flushing = false;
                     return;

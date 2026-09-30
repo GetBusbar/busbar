@@ -1395,3 +1395,132 @@ fn a_write_dropped_before_any_flush_answers_dropped() {
     drop(crate::host_records::Owed::new(acked()));
     assert_eq!(*got.lock().unwrap(), vec![Err(WRITE_DROPPED)]);
 }
+
+/// Kernel services over `store`, on `pool`, with "inst" declaring the one kind.
+fn writer(store: &Arc<MemoryStore>, pool: Arc<dyn Offload>) -> KernelServices {
+    let s = services(Arc::default())
+        .with_records(Arc::new(Mem(Arc::clone(store))), store.clone())
+        .with_pool(pool);
+    s.admit(
+        "inst",
+        InstanceFacts {
+            record_kinds: vec![KIND],
+            ..InstanceFacts::default()
+        },
+    )
+    .unwrap();
+    s
+}
+
+fn record(v: &str) -> RecordBytes {
+    RecordBytes::new(v.as_bytes().to_vec()).unwrap()
+}
+
+#[test]
+fn every_answered_write_is_durable_once_across_a_graceful_restart() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .max_blocking_threads(2)
+        .build()
+        .unwrap();
+    let pool = || -> Arc<dyn Offload> { Arc::new(BlockingPool::new(rt.handle().clone(), 64)) };
+    let backing = Arc::new(MemoryStore::new());
+    let s = writer(&backing, pool());
+    let me = caller("inst");
+    let (got, acked) = answers();
+    for round in ["first", "last"] {
+        for i in 0..100 {
+            let key = format!("k{i:03}");
+            let v = record(&format!("{round}{i}"));
+            s.record_write(&me, "approval", key.as_bytes(), v, acked())
+                .unwrap();
+        }
+    }
+    assert!(s.drain(std::time::Duration::from_secs(10)));
+    assert_eq!(got.lock().unwrap().len(), 200);
+    assert!(got.lock().unwrap().iter().all(Result::is_ok));
+    drop(s);
+    // After the restart: nothing queued, every key once, with its last value.
+    let fresh = writer(&backing, pool());
+    let everything = RecordsList {
+        kind: "approval".into(),
+        prefix: Vec::new(),
+        after: None,
+        limit: 0,
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let ran = fresh.records_list(&me, everything, Box::new(move |a| tx.send(a).unwrap()));
+    assert!(matches!(ran, Ran::Later));
+    let listed = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert_eq!(listed.spans.len(), 100);
+    let value = |n: usize| {
+        let sp = listed.spans[n];
+        let at = sp.value_off as usize;
+        listed.bytes[at..at + sp.value_len as usize].to_vec()
+    };
+    assert_eq!(value(0), b"last0");
+    assert_eq!(value(99), b"last99");
+}
+
+#[test]
+fn a_write_past_the_queue_bound_is_refused_and_leaves_the_queued_value() {
+    let backing = Arc::new(MemoryStore::new());
+    let held = Arc::new(Held::default());
+    let s = writer(&backing, Arc::new(Arc::clone(&held)));
+    let me = caller("inst");
+    s.record_write(&me, "approval", b"k", record("v1"), noop())
+        .unwrap();
+    for i in 1..crate::host_records::QUEUE_CAP {
+        s.record_write(
+            &me,
+            "approval",
+            format!("f{i}").as_bytes(),
+            record("v"),
+            noop(),
+        )
+        .unwrap();
+    }
+    let refused = s.record_write(&me, "approval", b"k", record("v2"), noop());
+    assert_eq!(refused, Err(QUEUE_FULL));
+    // The refused write never touched the overlay: the queued v1 still reads.
+    assert_eq!(
+        run(|l| s.records_get(&me, "approval", b"k", l)).bytes,
+        b"v1"
+    );
+    // One flush, in batches of at most the cap, carries the whole queue, v1 included.
+    assert_eq!(held.drain(), 1);
+    assert_eq!(s.pending().queued(), 0);
+    let stored = backing.record_get(KIND, &record_key("inst", b"k")).unwrap();
+    assert_eq!(stored.map(|v| v.as_slice().to_vec()), Some(b"v1".to_vec()));
+}
+
+#[test]
+fn the_tick_restarts_a_flush_the_pool_did_not_run() {
+    let backing = Arc::new(MemoryStore::new());
+    let held = Arc::new(Held::default());
+    let s = writer(&backing, Arc::new(Arc::clone(&held)));
+    let (got, acked) = answers();
+    s.record_write(&caller("inst"), "approval", b"k", record("v"), acked())
+        .unwrap();
+    // The pool drops the flush unrun: the write stays queued and unanswered.
+    drop(std::mem::take(&mut *held.0.lock().unwrap()));
+    assert!(got.lock().unwrap().is_empty());
+    assert_eq!(s.pending().queued(), 1);
+    s.flush_tick();
+    assert_eq!(held.drain(), 1);
+    assert_eq!(*got.lock().unwrap(), vec![Ok(())]);
+}
+
+#[test]
+fn a_claim_is_durable_when_it_answers_whatever_happens_to_the_overlay() {
+    let r = rig();
+    let me = caller("inst");
+    let claim = |s: &KernelServices| run(|l| s.records_claim(&me, "approval", b"nonce", 60_000, l));
+    assert_eq!(claim(&r.s).value, svc::CLAIM_WON);
+    // A crash: every in-memory structure gone, only the store survives.
+    let c = Arc::clone(&r.clock);
+    let fresh = writer(&r.store, Arc::new(Inline))
+        .with_wall_clock(Arc::new(move || c.load(Ordering::SeqCst)));
+    assert_eq!(fresh.pending().queued(), 0);
+    assert_eq!(claim(&fresh).value, svc::CLAIM_TAKEN);
+}

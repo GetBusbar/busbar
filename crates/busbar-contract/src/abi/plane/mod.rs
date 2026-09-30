@@ -695,6 +695,11 @@ pub struct UnitCount {
 
 /// One record write, a destination fact the kernel applies on the record seam; its key and value
 /// bytes are in the call's `arena`.
+///
+/// The kernel batches record writes to the store, and a write is DURABLE before the op that carried
+/// it completes: the instance reads its own write at once, and a write the store refuses fails the
+/// op. What must be decided once and for all (a replay refusal, an idempotency key, an approval
+/// redemption) is a `records.claim`, a one-time put the store answers itself.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct RecordWrite {
