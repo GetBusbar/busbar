@@ -74,7 +74,7 @@ const IRREGULAR_SPELLINGS: &[(&str, &str)] = &[("openai", "OpenAI")];
 /// would bury every real leak under a hundred neutral ones.
 ///
 /// * `decision` — `busbar_contract::caps::SeatVerdict<Step>` is the loop's step verdict, and
-///   `busbar_contract::abi::hot::SeatVerdict` the admit/throttle/deny answer: the primitive governance
+///   `busbar_contract::abi::hot::Decision` the admit/throttle/deny answer: the primitive governance
 ///   taxonomy itself. Measured 2026-09-24: the bare word added 98 KEY hits in the neutral crates,
 ///   every one of them core naming its own verdict type. `plane-abi-neutrality` exempts the same
 ///   key for the same collision (`PRIMITIVE_COLLISION_KEYS`).
@@ -438,7 +438,7 @@ mod tests {
         assert!(!v.key_words.contains(&"decisions".to_string()));
         assert!(v.literal_words.contains(&"\"decisions\"".to_string()));
         assert!(v.key_words.contains(&"quux".to_string()));
-        assert!(v.camel_prefixes.contains(&"SeatVerdict".to_string()));
+        assert!(v.camel_prefixes.contains(&"Decision".to_string()));
     }
 }
 
