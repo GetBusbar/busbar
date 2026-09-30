@@ -13,10 +13,10 @@
 # three companions only). The history below still names its rows; the live expiries are:
 #   H5 (the 52 hot/* STUB fixtures)          -> KP-36  the step that deletes the old plane ABI
 #                                                      slots and closes the coexistence window
-#   N3, cimd.rs:209 (oauth-as 0.9.3 note)     -> ITEM-572  the oauth-as 0.9.3 -> 1.0.0 bump
+#   N3, cimd.rs:209 (oauth-as 0.9.3 note)     -> ITEM-572  RETIRED: restated as a fact (busbar validates; the feature stays off), row dropped
 #   N1, signal.rs:80 (CandidateLatencyP95Ms)  -> ITEM-587  RETIRED: computed (2816713da), row dropped
 #   N2, signal.rs:94 (ResponseTokensOut)      -> ITEM-588  RETIRED: computed at the completion tap, row dropped
-#   N3, sign.rs:90 (TODO(release-keys))       -> ITEM-589  relabel the stale tag, delete the row
+#   N3, sign.rs:90 (TODO(release-keys))       -> ITEM-589  RETIRED: relabelled as the release-key contract naming its three guards, row dropped
 # The allowlist is a FLOOR CHECKED BOTH WAYS: a marker not waived is RED (over-count); a waiver that
 # matches no marker is RED (stale — the marker was resolved). See xtask/src/gates/no_deferral.rs
 # and docs/design/BUSBAR-1.6.0.md #15.
@@ -198,5 +198,3 @@ crates/busbar-contract/src/abi/hot/host.rs:1460	class-A STUB fn-pointer slot `Pl
 #   N2  grep -n 'Signal::ResponseTokensOut'     crates/busbar-llm/src/engine/hooks.rs  # non-empty => computed  (RETIRED: computed at the completion tap from the unit's reported output count; row removed)
 #   (for N1/N2 the other honest retirement is deletion from `Signal::ALL`, which drops the whole row)
 #   N3  the owner rules; the marker then either goes away or stops being spelled as a deferral tag
-crates/busbar-oauth2/src/cimd.rs:209	class-B tag `TODO(chore/1.6.0-oauth-as-0.9.3)`: NOT a deferred capability — the same comment states "The checks below are busbar's own and are ENFORCED TODAY; nothing here is a placeholder." It is an upstream feature-flag note about the `oauth-as` crate's own CIMD validator, which this tree pins at 0.9.3 without enabling. Mislabelled, not postponed; the relabel is the owner's, not an auditor's. [owner: architect] [retires: ITEM-572]
-crates/plugin-loader/src/sign.rs:90	class-B tag `TODO(release-keys)`: STALE — the CI wiring it asks for exists and is guarded. MEASURED 2026-09-23: .github/workflows/build-artifact.yml:126 exports BUSBAR_RELEASE_PUBKEY from the org variable, scripts/release-key-guard.sh refuses to build a release binary without a well-formed 64-hex key and carries assert-embedded cases, and scripts/release-gate/platform-checks.sh:199 fails the pubkey row when it is absent. Finished work wearing a marker's clothing. [owner: architect] [retires: ITEM-589]

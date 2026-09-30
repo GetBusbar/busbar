@@ -6,7 +6,7 @@
 #
 # LEG: cross-parity — the 4 ORDERED OpenAI<->Gemini pairs.
 #
-# The cross-dialect mapping (docs/design/voice-cross-dialect-mapping.*, authored by another agent)
+# The cross-dialect mapping (qa/evidence/voice-cross-dialect-mapping.*, authored by another agent)
 # declares which behaviours MUST be equivalent across the two dialects. This leg drives all four
 # ORDERED pairs and asserts the mapping holds in each direction:
 #

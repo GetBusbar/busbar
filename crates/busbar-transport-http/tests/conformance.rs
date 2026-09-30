@@ -628,8 +628,9 @@ fn the_linked_and_the_dropped_in_door_frame_the_same() {
     }
 }
 
-/// Two requests on ONE HTTP/2 connection: the one whose head never comes fails ALONE, at the head
-/// timeout, with a failure piece on its stream; its sibling carries on and completes.
+/// Two requests on ONE HTTP/2 connection: the one whose head never comes fails ALONE, at the
+/// request timeout (one clock per stream, send to body end), with a failure piece on its stream;
+/// its sibling, which finished inside its own clock, is untouched and the connection lives.
 fn one_stream_fails_alone(label: &str, ops: &'static Ops, rt: &tokio::runtime::Runtime) {
     let sock = serve(rt, true);
     let mut host = Host::open(
@@ -652,23 +653,6 @@ fn one_stream_fails_alone(label: &str, ops: &'static Ops, rt: &tokio::runtime::R
         !got.iter().any(|g| g.flags & PIECE_STREAM_FAILED != 0),
         "not before 5s"
     );
-    assert_eq!(
-        host.advance(t0 + 5 * SEC + SEC / 10, &mut got),
-        Outcome::Ready,
-        "the connection lives"
-    );
-    let failed = got
-        .iter()
-        .find(|g| g.flags & PIECE_STREAM_FAILED != 0)
-        .expect("a failure piece");
-    println!(
-        "PROOF {label}: stream {} failed alone: {:?}",
-        failed.stream,
-        String::from_utf8_lossy(&failed.bytes)
-    );
-    assert_eq!(failed.stream, 1);
-    assert_eq!(failed.bytes, b"the response head did not arrive");
-    assert!(failed.flags & PIECE_END_OF_FRAME != 0);
     rt.block_on(sock.release.send(())).expect("release");
     host.pump(Duration::from_millis(300), &mut got);
     println!(
@@ -678,6 +662,27 @@ fn one_stream_fails_alone(label: &str, ops: &'static Ops, rt: &tokio::runtime::R
     );
     assert_eq!(text(&got, 3), "got=5;abc");
     assert!(ended(&got, 3));
+    assert_eq!(
+        host.advance(t0 + 5 * SEC + SEC / 10, &mut got),
+        Outcome::Ready,
+        "the connection lives"
+    );
+    let failed: Vec<&Got> = got
+        .iter()
+        .filter(|g| g.flags & PIECE_STREAM_FAILED != 0)
+        .collect();
+    println!(
+        "PROOF {label}: stream {} failed alone: {:?}",
+        failed[0].stream,
+        String::from_utf8_lossy(&failed[0].bytes)
+    );
+    assert_eq!(failed.len(), 1, "one stream failed");
+    assert_eq!(failed[0].stream, 1);
+    assert_eq!(
+        failed[0].bytes,
+        b"the request timeout passed before the response was whole"
+    );
+    assert!(failed[0].flags & PIECE_END_OF_FRAME != 0);
     host.close();
 }
 

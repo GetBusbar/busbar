@@ -719,3 +719,66 @@ pub(super) fn encodings(secret: &str) -> Vec<(&'static str, Vec<u8>)> {
 pub(super) fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
 }
+
+/// One minted key: the store row and the audience-bound token its caller presents.
+pub(crate) struct MintedKey {
+    /// The key row as minted (scopes can be narrowed and written back through the governance store).
+    pub(crate) key: busbar_contract::records::VirtualKey,
+    /// An audience-bound token for `canonical`, signed with the deployment's own key material.
+    pub(crate) token: String,
+}
+
+/// REAL KEYS ON A REAL GOVERNANCE HANDLE: a scratch store and one signing key (32 bytes of `seed`)
+/// shared by the verifier busbar runs and the minter this returns, so every token is one busbar
+/// verifies exactly as it would a production token. Each `(name, group, client_id)` mints one key
+/// and its token for `canonical`.
+pub(crate) fn minted_keys(
+    seed: u8,
+    canonical: &str,
+    keys: &[(&str, Option<&str>, &str)],
+) -> (Arc<dyn GovKit>, Vec<MintedKey>) {
+    use busbar_kernel::{
+        governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID},
+        governance::NewKeySpec,
+        store::now,
+    };
+    let signer = TokenSigner::from_secret_bytes(&[seed; 32], DEFAULT_KID);
+    let gov = engine()
+        .governance(
+            engine().scratch_store(),
+            Some("admintok".to_string()),
+            Some(TokenSigner::from_secret_bytes(&[seed; 32], DEFAULT_KID)),
+        )
+        .unwrap();
+    let minted = keys
+        .iter()
+        .map(|(name, group, client_id)| {
+            let (key, plain) = gov
+                .mint_signed(
+                    NewKeySpec {
+                        name: (*name).to_string(),
+                        allowed_pools: None,
+                        group: group.map(str::to_string),
+                        labels: Default::default(),
+                        ..Default::default()
+                    },
+                    2_000_000_000,
+                    now(),
+                )
+                .unwrap();
+            let generation = TokenVerifier::single(signer.kid(), signer.verifying_key())
+                .verify(plain.as_str(), now(), None)
+                .expect("the plain token verifies")
+                .generation;
+            let token = signer.mint_for_audience(
+                &key.id,
+                2_000_000_000,
+                generation.as_deref(),
+                canonical,
+                Some(client_id),
+            );
+            MintedKey { key, token }
+        })
+        .collect();
+    (gov, minted)
+}

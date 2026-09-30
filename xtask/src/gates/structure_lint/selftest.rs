@@ -849,7 +849,28 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     ));
 
     // ── invariant 9 ──────────────────────────────────────────────────────────────────────────────
-    if let Some(r) = t.census.first() {
+    //
+    // THE ROW PLANTED OVER MUST KEEP ITS ONE SPELLING IN VIEW. The debt-free base hides every file a
+    // standing `census:count` finding names, and a file can hold more than one row's subject:
+    // `busbar-plane-mcp/src/codec.rs` carries both the `mcp-protocol-version` header (a standing
+    // over-count) and the `_meta` protocol-version key (the first row). Hiding it took the first
+    // row's only spelling out of view, so the "second" spelling planted here was the ONLY one, the
+    // count read 1, and the case came back green on predev f882c3ce6. So the case plants over the
+    // first literal row whose spelling no hidden file carries; the first row stays the fallback, so
+    // a tree where every row is hidden still fails this case rather than dropping it.
+    let hidden: Vec<String> = existing
+        .census_count
+        .iter()
+        .flat_map(|f| offender_paths(f))
+        .collect();
+    let in_view = |r: &&census::CensusRow| {
+        let spelling = r.pattern.replace(['\\', '"'], "");
+        r.pattern.starts_with('"')
+            && !hidden
+                .iter()
+                .any(|p| cx.read(p).is_ok_and(|text| text.contains(&spelling)))
+    };
+    if let Some(r) = t.census.iter().find(in_view).or(t.census.first()) {
         let spelling = r.pattern.replace(['\\', '"'], "");
         let mut ov = Overlay::new();
         ov.set(
@@ -859,7 +880,7 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         report.push(debt_free_case(
             cx,
             gate,
-            "a second spelling of a shared wire word is counted and named",
+            "a second spelling of a one-spelling word (wire or refusal) is counted and named",
             &[census::ROW_COUNT],
             without_existing(&existing.census_count),
             ov,

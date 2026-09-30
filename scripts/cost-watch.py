@@ -107,7 +107,7 @@ EXIT CODE CONTRACT -- the money bands (distinct from --selftest's own pass/fail 
         "the tool could not run" as "spend is fine". ALSO 4 when the period total is INCOMPLETE:
         any job on a runner label with no rate (`unknown`) contributes nothing to the banded
         total, so that total is a lower bound, not the period's spend -- an unpriced class
-        refuses, it does not silently answer $0 (KICKOFF 8.6). The money band of the priced
+        refuses, it does not silently answer $0 (TODO rule 8.6). The money band of the priced
         subset is still computed and printed (`band`), but the exit code is 4.
 
 --selftest is a DIFFERENT exit code space: 0 if every planted-fixture assertion passed, 1 if any

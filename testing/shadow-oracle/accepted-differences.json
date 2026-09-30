@@ -43,7 +43,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-04",
-        "ruling": "2026-09-04 parity triage"
+        "ruling": "2026-09-04 parity triage",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 3 (Admin/config/CLI), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -89,7 +94,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-04",
-        "ruling": "2026-09-04 parity triage"
+        "ruling": "2026-09-04 parity triage",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 3 (Admin/config/CLI), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -134,7 +144,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-04",
-        "ruling": "2026-09-04 parity triage; split out 2026-09-05 (round-3 audit); re-adjudicated 2026-09-24 by P3A-register under items 47/52/119 (narrowed or premise-bound; forgives no more than before)"
+        "ruling": "2026-09-04 parity triage; split out 2026-09-05 (round-3 audit); re-adjudicated 2026-09-24 by P3A-register under items 47/52/119 (narrowed or premise-bound; forgives no more than before)",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 3 (Admin/config/CLI), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -149,7 +164,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-24",
-        "ruling": "Q54 as answered in Q61: keep identity-providers + export resets, 1.5.5 sentence shape with the longer list"
+        "ruling": "Q54 as answered in Q61: keep identity-providers + export resets, 1.5.5 sentence shape with the longer list",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 3 (Admin/config/CLI), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -190,7 +210,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-24",
-        "ruling": "Q42 (generic billable-class rule; remedy `units: { search_units: 0 }`) and Q46(B) (the `units:` key names only declared classes), under spec #66 OWNER-LOCKED 2026-09-20 (money is unitless: no currency key)"
+        "ruling": "Q42 (generic billable-class rule; remedy `units: { search_units: 0 }`) and Q46(B) (the `units:` key names only declared classes), under spec #66 OWNER-LOCKED 2026-09-20 (money is unitless: no currency key)",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 3 (Admin/config/CLI), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -240,7 +265,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-24",
-        "ruling": "Q66 (answered in Q67, 2026-09-24): ACCEPT the additive difference on neutrality|NEUT-U-providers|validate [effects.stderr]; the providers.<name> unknown-field refusal keeps 1.5.5's exit status and sentence, and its expected-key list gains exactly max_output_key, anthropic_adaptive_thinking, native_structured_output and model_capabilities"
+        "ruling": "Q66 (answered in Q67, 2026-09-24): ACCEPT the additive difference on neutrality|NEUT-U-providers|validate [effects.stderr]; the providers.<name> unknown-field refusal keeps 1.5.5's exit status and sentence, and its expected-key list gains exactly max_output_key, anthropic_adaptive_thinking, native_structured_output and model_capabilities",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 3 (Admin/config/CLI), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -275,7 +305,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-06",
-        "ruling": "2026-09-06 oracle-phase0 parity triage"
+        "ruling": "2026-09-06 oracle-phase0 parity triage",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 4 (Security + telemetry), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -312,7 +347,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-22",
-        "ruling": "2026-09-22 credential-leak triage (parked by the agent with cell, diff, root cause and recommendation; approved on that report -- the path-shaped-heuristic alternative was offered and rejected)"
+        "ruling": "2026-09-22 credential-leak triage (parked by the agent with cell, diff, root cause and recommendation; approved on that report -- the path-shaped-heuristic alternative was offered and rejected)",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 4 (Security + telemetry), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -345,7 +385,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-04",
-        "ruling": "2026-09-04 parity triage"
+        "ruling": "2026-09-04 parity triage",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 3 (Admin/config/CLI), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -371,7 +416,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-04",
-        "ruling": "2026-09-04 parity triage"
+        "ruling": "2026-09-04 parity triage",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -397,7 +447,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-04",
-        "ruling": "2026-09-04 parity triage"
+        "ruling": "2026-09-04 parity triage",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -430,7 +485,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-04",
-        "ruling": "2026-09-04 PR-2 attempt-seam D-table decision"
+        "ruling": "2026-09-04 PR-2 attempt-seam D-table decision",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 4 (Security + telemetry), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -455,7 +515,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-04",
-        "ruling": "2026-09-04 PR-2 attempt-seam D-table decision"
+        "ruling": "2026-09-04 PR-2 attempt-seam D-table decision",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 4 (Security + telemetry), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -490,7 +555,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-04",
-        "ruling": "2026-09-04 PR-2 attempt-seam D-table decision; re-adjudicated 2026-09-24 by P3A-register under items 47/52/119 (narrowed or premise-bound; forgives no more than before)"
+        "ruling": "2026-09-04 PR-2 attempt-seam D-table decision; re-adjudicated 2026-09-24 by P3A-register under items 47/52/119 (narrowed or premise-bound; forgives no more than before)",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 2 (Money), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -527,7 +597,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-04",
-        "ruling": "2026-09-04 PR-2 attempt-seam D-table decision"
+        "ruling": "2026-09-04 PR-2 attempt-seam D-table decision",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 4 (Security + telemetry), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -554,7 +629,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-04",
-        "ruling": "2026-09-04 maximum spec compliance"
+        "ruling": "2026-09-04 maximum spec compliance",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -590,7 +670,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-04",
-        "ruling": "2026-09-04 maximum spec compliance"
+        "ruling": "2026-09-04 maximum spec compliance",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -626,7 +711,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-04",
-        "ruling": "2026-09-04 maximum spec compliance"
+        "ruling": "2026-09-04 maximum spec compliance",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -653,7 +743,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-04",
-        "ruling": "2026-09-04 maximum spec compliance"
+        "ruling": "2026-09-04 maximum spec compliance",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -746,7 +841,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-15",
-        "ruling": "2026-09-15 register decision on F-011b's deferred /paths leaves; re-adjudicated 2026-09-24 by P3A-register under items 47/52/119 (narrowed or premise-bound; forgives no more than before)"
+        "ruling": "2026-09-15 register decision on F-011b's deferred /paths leaves; re-adjudicated 2026-09-24 by P3A-register under items 47/52/119 (narrowed or premise-bound; forgives no more than before)",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 3 (Admin/config/CLI), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -761,7 +861,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-24",
-        "ruling": "Q56 as answered in Q61: accept additive — core admin verbs served on every node; owner-signed entry"
+        "ruling": "Q56 as answered in Q61: accept additive — core admin verbs served on every node; owner-signed entry",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 3 (Admin/config/CLI), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -915,7 +1020,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-04",
-        "ruling": "2026-09-04 maximum spec compliance"
+        "ruling": "2026-09-04 maximum spec compliance",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -953,7 +1063,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-04",
-        "ruling": "2026-09-04 E7 conformance-rig triage"
+        "ruling": "2026-09-04 E7 conformance-rig triage",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -978,7 +1093,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-05",
-        "ruling": "2026-09-05 llm-codec audit"
+        "ruling": "2026-09-05 llm-codec audit",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -1013,7 +1133,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-05",
-        "ruling": "2026-09-05 round-3 audit"
+        "ruling": "2026-09-05 round-3 audit",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -1039,7 +1164,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-05",
-        "ruling": "2026-09-05 oracle Phase 0 group-budget-total cell"
+        "ruling": "2026-09-05 oracle Phase 0 group-budget-total cell",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -1065,7 +1195,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-06",
-        "ruling": "2026-09-06 round-5 codec audit"
+        "ruling": "2026-09-06 round-5 codec audit",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -1091,7 +1226,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-06",
-        "ruling": "2026-09-06 round-5 codec audit"
+        "ruling": "2026-09-06 round-5 codec audit",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -1117,7 +1257,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-06",
-        "ruling": "2026-09-06 round-5 codec audit"
+        "ruling": "2026-09-06 round-5 codec audit",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -1143,7 +1288,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-06",
-        "ruling": "2026-09-06 round-5 codec audit"
+        "ruling": "2026-09-06 round-5 codec audit",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -1177,7 +1327,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-06",
-        "ruling": "2026-09-06 round-5 codec audit"
+        "ruling": "2026-09-06 round-5 codec audit",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -1203,7 +1358,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-06",
-        "ruling": "2026-09-06 round-5 codec audit"
+        "ruling": "2026-09-06 round-5 codec audit",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -1239,7 +1399,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-06",
-        "ruling": "2026-09-06 oracle overlong-id coverage"
+        "ruling": "2026-09-06 oracle overlong-id coverage",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 3 (Admin/config/CLI), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -1290,7 +1455,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-06",
-        "ruling": "2026-09-06 rate-card history decision; decision #79 (2026-09-22) + Q19 as ruled in Q32 (2026-09-24): accepted-difference for billing|rate-card|history-mid-window"
+        "ruling": "2026-09-06 rate-card history decision; decision #79 (2026-09-22) + Q19 as ruled in Q32 (2026-09-24): accepted-difference for billing|rate-card|history-mid-window",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 2 (Money), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -1325,7 +1495,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-07",
-        "ruling": "2026-09-07 provider-credential fail-closed decision (\"no carve outs, fix it\")"
+        "ruling": "2026-09-07 provider-credential fail-closed decision (\"no carve outs, fix it\")",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 4 (Security + telemetry), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -1349,7 +1524,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-20",
-        "ruling": "decision #64, OWNER-LOCKED 2026-09-20: parity packet #3 (NEUT-U-auth) APPROVED"
+        "ruling": "decision #64, OWNER-LOCKED 2026-09-20: parity packet #3 (NEUT-U-auth) APPROVED",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 3 (Admin/config/CLI), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -1374,7 +1554,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-24",
-        "ruling": "Q31 as ruled in Q32: failures surface as errors + charge upstream-reported usage"
+        "ruling": "Q31 as ruled in Q32: failures surface as errors + charge upstream-reported usage",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 2 (Money), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -1414,7 +1599,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-28",
-        "ruling": "ship 1.6.0's refund: the refund reaches the bucket the charge reached"
+        "ruling": "ship 1.6.0's refund: the refund reaches the bucket the charge reached",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 2 (Money), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -1459,7 +1649,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-24",
-        "ruling": "Q40 as ruled in Q47: busbar_lane_state reads the pool's own cell (2 tripped, 1 only on a real half-open probe)"
+        "ruling": "Q40 as ruled in Q47: busbar_lane_state reads the pool's own cell (2 tripped, 1 only on a real half-open probe)",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 4 (Security + telemetry), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -1492,7 +1687,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-24",
-        "ruling": "Q41 as ruled in Q47: AuditEntry.scheme is required; regenerate openapi.json; upgrade notes list the change"
+        "ruling": "Q41 as ruled in Q47: AuditEntry.scheme is required; regenerate openapi.json; upgrade notes list the change",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 3 (Admin/config/CLI), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -1527,7 +1727,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-24",
-        "ruling": "Q41 as ruled in Q47: AuditEntry.scheme is required; regenerate openapi.json; upgrade notes list the change"
+        "ruling": "Q41 as ruled in Q47: AuditEntry.scheme is required; regenerate openapi.json; upgrade notes list the change",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 3 (Admin/config/CLI), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -1567,7 +1772,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-29",
-        "ruling": "#34 OWNER 2026-09-29: remove `currency` from the signed audit digest and migrate: new records sign under a versioned recipe v3 without it, every existing record verifies under the recipe it was sealed under"
+        "ruling": "#34 OWNER 2026-09-29: remove `currency` from the signed audit digest and migrate: new records sign under a versioned recipe v3 without it, every existing record verifies under the recipe it was sealed under",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 2 (Money), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -1601,7 +1811,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-22",
-        "ruling": "spec #79 (docs/design/BUSBAR-1.6.0.md, OWNER-LOCKED 2026-09-22): a posting prices against the card in force when it arrived; publishing a new card never reprices the window before its effective_from. Registered under the architect ruling of 2026-09-24 that a cell whose only difference is a direct, measured consequence of an owner-locked row is registered citing that row with a premise pinning the exact figures"
+        "ruling": "spec #79 (docs/design/BUSBAR-1.6.0.md, OWNER-LOCKED 2026-09-22): a posting prices against the card in force when it arrived; publishing a new card never reprices the window before its effective_from. Registered under the architect ruling of 2026-09-24 that a cell whose only difference is a direct, measured consequence of an owner-locked row is registered citing that row with a premise pinning the exact figures",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 2 (Money), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -1656,7 +1871,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-22",
-        "ruling": "spec #79 (docs/design/BUSBAR-1.6.0.md, OWNER-LOCKED 2026-09-22): a posting prices against the card in force when it arrived; publishing a new card never reprices the window before its effective_from. Registered under the architect ruling of 2026-09-24 that a cell whose only difference is a direct, measured consequence of an owner-locked row is registered citing that row with a premise pinning the exact figures"
+        "ruling": "spec #79 (docs/design/BUSBAR-1.6.0.md, OWNER-LOCKED 2026-09-22): a posting prices against the card in force when it arrived; publishing a new card never reprices the window before its effective_from. Registered under the architect ruling of 2026-09-24 that a cell whose only difference is a direct, measured consequence of an owner-locked row is registered citing that row with a premise pinning the exact figures",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 2 (Money), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -1710,7 +1930,12 @@
       "signoff": {
         "who": "owner (Matthew Jackson)",
         "when": "2026-09-27",
-        "ruling": "ARCHITECT relay 2026-09-27 (AUTH-ROW): the owner approved the misconfiguration behaviour change (the admin-token check is chosen by module, not by provider name) as an accepted difference"
+        "ruling": "ARCHITECT relay 2026-09-27 (AUTH-ROW): the owner approved the misconfiguration behaviour change (the admin-token check is chosen by module, not by provider name) as an accepted difference",
+        "resigned": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-09-30",
+          "ruling": "DEV-GREEN re-signoff, group 3 (Admin/config/CLI), all 45 re-signed as they stand"
+        }
       },
       "expires": {
         "baseline": "1.5.5",

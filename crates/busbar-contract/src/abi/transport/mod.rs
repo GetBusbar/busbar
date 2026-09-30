@@ -767,6 +767,12 @@ pub struct LocateIn {
     pub name_buf: *mut u8,
     /// Its capacity.
     pub name_cap: usize,
+    /// HOST buffer for the protocols the framer offers in the connection-security handshake
+    /// (ALPN), in the handshake's own ProtocolNameList encoding: each id as one length byte and
+    /// its bytes, most preferred first.
+    pub alpn_buf: *mut u8,
+    /// Its capacity.
+    pub alpn_cap: usize,
 }
 
 /// `locate`'s `out`.
@@ -787,6 +793,12 @@ pub struct LocateOut {
     pub secure: u32,
     /// `1` = a name is offered (`name_written` bytes); `0` = none.
     pub has_name: u32,
+    /// Bytes of `alpn_buf` written: the framer's protocol offer (`0` = it offers none, and the
+    /// handshake carries no ALPN). The connector offers exactly these, in this order, and tells
+    /// the framer which one was agreed in [`ConnFacts::agreed_protocol`].
+    pub alpn_written: u64,
+    /// Short answer: the bytes `alpn_buf` needs.
+    pub alpn_needed: u64,
 }
 
 /// Every framer op's `out`.
@@ -859,6 +871,13 @@ pub struct EmitIn {
     pub _reserved: u32,
     /// The sink.
     pub sink: FramerSink,
+    /// The monotonic instant this stream's ATTEMPT must be over by, response body included: one
+    /// clock from the attempt's start (before the dial, so a slow connect spends it too) to the
+    /// body's end, as 1.5.5's `limits.upstream_request_timeout_secs` was. Read on the stream's
+    /// first `emit`. The production caller (the kernel's egress walk, and the plane driver that
+    /// starts an attempt) ALWAYS stamps it at attempt start; `0` is only the standalone fallback,
+    /// where the framer counts its own configured timeout from that first `emit`.
+    pub deadline_ns: u64,
 }
 
 /// `encode`'s `in`. The rendered bytes go into `sink.wire`.

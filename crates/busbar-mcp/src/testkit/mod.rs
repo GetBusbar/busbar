@@ -30,6 +30,8 @@ use busbar_kernel::test_support::{
 };
 use std::sync::Arc;
 
+use crate::mcp::session_serve::SessionServe;
+
 /// The MCP plane's key in `TestApp`'s scratch map — the same string as `PLANE_DECLARATION.key`.
 const SCRATCH_KEY: &str = "mcp";
 
@@ -110,6 +112,7 @@ fn finalize(app: &mut dyn TestAppSeam) {
         roots_epochs: Default::default(),
         sampling_spend: Default::default(),
         verify: Default::default(),
+        sessions: Arc::new(SessionServe::new()),
     });
     app.install_plane_runtime(
         busbar_kernel::plane_host::runtime_slot_key(crate::PLANE_DECLARATION.key),
@@ -196,6 +199,7 @@ pub fn mcp_runtime_with_servers(tools: ToolsCfg) -> Arc<dyn std::any::Any + Send
         roots_epochs: Default::default(),
         sampling_spend: Default::default(),
         verify: Default::default(),
+        sessions: Arc::new(SessionServe::new()),
     })
 }
 
@@ -212,6 +216,7 @@ pub fn default_mcp_runtime() -> Arc<dyn std::any::Any + Send + Sync> {
         roots_epochs: Default::default(),
         sampling_spend: Default::default(),
         verify: Default::default(),
+        sessions: Arc::new(SessionServe::new()),
     })
 }
 

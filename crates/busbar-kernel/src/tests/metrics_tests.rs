@@ -708,3 +708,152 @@ fn money_gauge_bytes_are_the_1_5_5_bytes() {
         }
     }
 }
+
+/// A key with an all-time ledger row of `input` input tokens and one request, in `store`.
+fn seed_viewed_key(store: &dyn RecordStore, id: &str, input: u64) -> VirtualKey {
+    let key = VirtualKey {
+        id: id.to_string(),
+        generation_hash: format!("h:{id}"),
+        name: id.to_string(),
+        enabled: true,
+        created_at: 1_700_000_000,
+        revision: 1,
+        ..Default::default()
+    };
+    store.put_key(&key).unwrap();
+    let ledger = busbar_contract::records::UsageLedger {
+        requests: 1,
+        billable_requests: 1,
+        models: vec![busbar_contract::records::ModelTokens {
+            model: "m".to_string(),
+            usage_units: std::collections::BTreeMap::from([(
+                busbar_contract::records::UNIT_INPUT.to_string(),
+                input,
+            )]),
+        }],
+    };
+    store.put_usage(id, 0, &ledger).unwrap();
+    key
+}
+
+/// A cost model pricing `m` at `input_utok` per input token, with a flat `fee`, and no groups.
+fn priced_at(input_utok: f64, fee: i64) -> crate::cost::CostModel {
+    let card = std::collections::BTreeMap::from([(
+        "m".to_string(),
+        crate::config::RateEntryCfg {
+            input_utok,
+            ..Default::default()
+        },
+    )]);
+    crate::cost::CostModel::resolve_parts(Some(&card), fee, &Default::default())
+}
+
+/// The spend gauge's value for `key` in `out`.
+fn spend_of(out: &str, key: &str) -> String {
+    let needle = format!("key=\"{key}\"");
+    let line = (out.lines())
+        .find(|l| l.starts_with(KEY_SPEND_CENTS) && l.contains(&needle))
+        .unwrap_or_else(|| panic!("no spend line for {key}; got:\n{out}"));
+    line.rsplit(' ').next().unwrap().to_string()
+}
+
+/// **A SCRAPE NEVER DRIVES THE PRICING PATH BY ITSELF** (#43/#71; the export kind, property 4).
+/// Before the money view's memo, every `/metrics` poll repriced every bucket, so a scraper's poll
+/// interval was an input to the pricing path.
+///
+/// (1) N scrapes with no fact moving price each bucket ONCE (the first scrape), then never again.
+/// (4) A served request's admission and accrual price nothing through the money view.
+/// (2) The next scrape then reprices exactly the one bucket whose facts moved.
+/// (3) A card swap reprices every bucket on the next scrape, and the gauge shows the new card's
+///     figure.
+#[test]
+fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
+    init();
+    let ids = ["vk_view_a", "vk_view_b", "vk_view_c"];
+    let gov = gov_with_key(sample_vkey(ids[0]));
+    let store = gov.store();
+    let keys: Vec<VirtualKey> = ids
+        .iter()
+        .map(|id| seed_viewed_key(store.as_ref(), id, 10_000))
+        .collect();
+    let app = TestApp::new()
+        .lane(LaneSpec::new("m", crate::proto::PROTO_OPENAI, "http://m"))
+        .pool("pool-view", &[(0, 1)])
+        .cost(priced_at(100.0, 0))
+        .governance(gov.clone())
+        .build();
+
+    // (1)
+    refresh_scrape_gauges(&app);
+    let first = gov.money_view_pricings();
+    assert_eq!(
+        first,
+        ids.len() as u64,
+        "the first scrape prices each bucket once"
+    );
+    for _ in 0..5 {
+        refresh_scrape_gauges(&app);
+    }
+    assert_eq!(
+        gov.money_view_pricings(),
+        first,
+        "scrapes with no fact moving must not price again"
+    );
+
+    // (4) a served request: admission, then the tap's accrual.
+    let now = 1_700_000_000;
+    gov.try_admit(&app.cost, &keys[0], "", now)
+        .expect("an uncapped key admits");
+    let units = std::collections::BTreeMap::from([(
+        busbar_contract::records::UNIT_INPUT.to_string(),
+        5_000u64,
+    )]);
+    gov.record_usage(&app.cost, &keys[0], "", "m", &units, now);
+    assert_eq!(
+        gov.money_view_pricings(),
+        first,
+        "the serving path prices nothing through the money view"
+    );
+
+    // (2)
+    refresh_scrape_gauges(&app);
+    assert_eq!(
+        gov.money_view_pricings(),
+        first + 1,
+        "a write between two scrapes reprices exactly that one bucket"
+    );
+
+    // (3) the same governance under a new card.
+    let old = spend_of(&render(), "vk_view_b");
+    let swapped = TestApp::new()
+        .lane(LaneSpec::new("m", crate::proto::PROTO_OPENAI, "http://m"))
+        .pool("pool-view", &[(0, 1)])
+        .cost(priced_at(300.0, 0))
+        .governance(gov.clone())
+        .build();
+    refresh_scrape_gauges(&swapped);
+    assert_eq!(
+        gov.money_view_pricings(),
+        first + 1 + ids.len() as u64,
+        "a card swap reprices every bucket once"
+    );
+    let want = (gov.derived_bucket_usage(
+        &swapped.cost,
+        "vk_view_b",
+        crate::governance::WINDOW_TOTAL,
+        true,
+        now,
+    ))
+    .expect("the new card prices")
+    .spend_cents;
+    let new = spend_of(&render(), "vk_view_b");
+    assert_eq!(
+        new,
+        want.to_string(),
+        "the gauge shows the new card's figure"
+    );
+    assert_ne!(
+        new, old,
+        "and the new card's figure differs from the old one's"
+    );
+}

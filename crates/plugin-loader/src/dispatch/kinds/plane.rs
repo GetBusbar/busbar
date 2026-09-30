@@ -38,13 +38,13 @@ use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut, OpenIn, RefreshIn};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::{
-    check_arrive, check_cancel, check_drive, check_on_piece, check_project, check_refusal,
-    check_serve, check_snapshot, check_tail, Bounds, Caps,
+    check_arrive, check_cancel, check_drive, check_on_piece, check_pin_mechanisms, check_project,
+    check_refusal, check_serve, check_snapshot, check_tail, check_trust_keys, Bounds, Caps,
 };
 use busbar_contract::abi::plane::{
-    self, slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, PlaneDriveIn, PlaneDriveOut,
-    PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn, ProjectOut,
-    RefusalIn, RefusalOut, ServeIn, ServeOut,
+    self, slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, PinMechanism, PlaneDriveIn,
+    PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
+    ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, TrustKey,
 };
 
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
@@ -98,7 +98,34 @@ fn tail_bounds(st: &Statement) -> Result<Bounds, String> {
     // SAFETY: as above.
     let tail = unsafe { p.cast::<PlaneTail>().read_unaligned() };
     check_tail(&tail).map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    check_tail_trust_keys(&tail)
+        .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     Ok(Bounds::of(&tail))
+}
+
+/// The tail's kernel-owned trust keys, judged PER ELEMENT: each key by `check_trust_keys`, each
+/// pin's mechanisms by `check_pin_mechanisms`. `check_tail` proved only that no list is counted over
+/// a NULL pointer; the elements are read here, once, at bind.
+fn check_tail_trust_keys(tail: &PlaneTail) -> Result<(), Fault> {
+    let keys: &[TrustKey] = if tail.trust_keys_len == 0 {
+        &[]
+    } else {
+        // SAFETY: `check_tail` refused a NULL `trust_keys` counted non-zero; the tail is `'static`
+        // plugin data whose list is `trust_keys_len` `TrustKey`s.
+        unsafe { std::slice::from_raw_parts(tail.trust_keys, tail.trust_keys_len) }
+    };
+    check_trust_keys(keys)?;
+    for key in keys {
+        let mechanisms: &[PinMechanism] = if key.mechanisms_len == 0 {
+            &[]
+        } else {
+            // SAFETY: `check_trust_keys` refused a NULL `mechanisms` counted non-zero; the list is
+            // `'static` plugin data of `mechanisms_len` `PinMechanism`s.
+            unsafe { std::slice::from_raw_parts(key.mechanisms, key.mechanisms_len) }
+        };
+        check_pin_mechanisms(mechanisms)?;
+    }
+    Ok(())
 }
 
 impl Kind for Plane {
@@ -322,4 +349,147 @@ fn snapshot(s: *const PlaneSnapshot, generation: u64, field: &'static str) -> Re
     // SAFETY: as above; the snapshot states this host's full size.
     let snap = unsafe { s.read_unaligned() };
     check_snapshot(&snap, generation)
+}
+
+// ── the host's copy of a generation snapshot ─────────────────────────────────────────────────────
+
+/// One claim of a snapshot, owned by the host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedClaim {
+    /// The verb.
+    pub verb: String,
+    /// The target path.
+    pub target: String,
+    /// The transport claim it arrives over.
+    pub carrier: String,
+    /// `CLAIM_OPEN` | `CLAIM_EXACT` | `CLAIM_PATTERN`.
+    pub flags: u32,
+}
+
+/// One admin route of a snapshot, owned by the host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedAdminRoute {
+    /// The verb.
+    pub verb: String,
+    /// The target path.
+    pub target: String,
+    /// `ROUTE_PUBLIC` or `0`.
+    pub flags: u32,
+}
+
+/// A GENERATION SNAPSHOT COPIED OUT OF THE PLUGIN at the crossing that published it, so nothing
+/// the host keeps points into plugin memory after that generation's `retire` or the plugin's next
+/// `refresh`. The host keeps it with the generation (claim targets, pattern segments, audience).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedSnapshot {
+    /// The generation it was published for.
+    pub generation: u64,
+    /// The paths it answers on.
+    pub claims: Vec<OwnedClaim>,
+    /// Its admin routes.
+    pub admin_routes: Vec<OwnedAdminRoute>,
+    /// Its OpenAPI contribution; `None` = none.
+    pub openapi: Option<Vec<u8>>,
+    /// The audience it binds; `None` = none.
+    pub audience: Option<String>,
+    /// Its resource metadata document; `None` = none.
+    pub resource_metadata: Option<String>,
+}
+
+impl crate::dispatch::Plugin<Plane> {
+    /// `open`, and the first generation's snapshot COPIED while the crossing that published it
+    /// proves it live: `Some` exactly when the answer is READY and every claim, admin route and
+    /// string of the snapshot passes the contract's checks and is UTF-8.
+    pub fn open(
+        &self,
+        frame: &mut crate::dispatch::Frame<PlaneOpenIn, PlaneOpenOut>,
+    ) -> (crate::dispatch::Called, Option<OwnedSnapshot>) {
+        let called = self.call(life::OPEN, frame);
+        let copy = (called.outcome == Outcome::Ready)
+            .then(|| copy_snapshot(frame.out.snapshot))
+            .flatten();
+        (called, copy)
+    }
+
+    /// `refresh`, and the new generation's snapshot copied as [`Self::open`] copies it.
+    pub fn refresh(
+        &self,
+        frame: &mut crate::dispatch::Frame<RefreshIn, PlaneRefreshOut>,
+    ) -> (crate::dispatch::Called, Option<OwnedSnapshot>) {
+        let called = self.call(life::REFRESH, frame);
+        let copy = (called.outcome == Outcome::Ready)
+            .then(|| copy_snapshot(frame.out.snapshot))
+            .flatten();
+        (called, copy)
+    }
+}
+
+/// A string of the plugin's generation data, owned; `None` when absent. Called only on data a READY
+/// crossing's checks accepted (no string counted over a NULL pointer).
+fn owned_str(s: busbar_contract::abi::mechanism::call::AbiStr) -> Option<Option<String>> {
+    if s.ptr.is_null() {
+        return Some(None);
+    }
+    // SAFETY: the plugin's generation data, valid until `retire` of its generation, and read only
+    // inside the READY crossing that published it; the contract's checks refused a NULL with a count.
+    let bytes = unsafe { std::slice::from_raw_parts(s.ptr, s.len) };
+    std::str::from_utf8(bytes).ok().map(|t| Some(t.to_string()))
+}
+
+/// Copy the snapshot a READY `open`/`refresh` published: the loader's own `check_snapshot` has
+/// passed (its size, generation, lists and strings), and the claims and admin routes are judged
+/// here by the contract's element checks before any element string is read.
+fn copy_snapshot(p: *const PlaneSnapshot) -> Option<OwnedSnapshot> {
+    use busbar_contract::abi::plane::check::{check_admin_routes, check_claims};
+    if p.is_null() {
+        return None;
+    }
+    // SAFETY: a READY answer's snapshot, whose size and lists this crossing's check accepted;
+    // valid until `retire` of its generation.
+    let s = unsafe { &*p };
+    // SAFETY: the check refused a list counted over a NULL pointer; each names `*_len` entries.
+    let claims = if s.claims_len == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(s.claims, s.claims_len) }
+    };
+    // SAFETY: as above.
+    let routes = if s.admin_routes_len == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(s.admin_routes, s.admin_routes_len) }
+    };
+    check_claims(claims).ok()?;
+    check_admin_routes(routes).ok()?;
+    let text = |a| owned_str(a)?.or(Some(String::new()));
+    Some(OwnedSnapshot {
+        generation: s.generation,
+        claims: claims
+            .iter()
+            .map(|c| {
+                Some(OwnedClaim {
+                    verb: text(c.verb)?,
+                    target: text(c.target)?,
+                    carrier: text(c.carrier)?,
+                    flags: c.flags,
+                })
+            })
+            .collect::<Option<_>>()?,
+        admin_routes: routes
+            .iter()
+            .map(|r| {
+                Some(OwnedAdminRoute {
+                    verb: text(r.verb)?,
+                    target: text(r.target)?,
+                    flags: r.flags,
+                })
+            })
+            .collect::<Option<_>>()?,
+        openapi: (!s.openapi.ptr.is_null()).then(|| {
+            // SAFETY: the check accepted the blob; it names `len` bytes of generation data.
+            unsafe { std::slice::from_raw_parts(s.openapi.ptr, s.openapi.len) }.to_vec()
+        }),
+        audience: owned_str(s.audience)?,
+        resource_metadata: owned_str(s.resource_metadata)?,
+    })
 }

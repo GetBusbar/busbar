@@ -94,6 +94,8 @@ fn raw_with_fake_call() -> Option<RawPlugin> {
 /// whose gates nobody has heard from. The load fails and names the plugin.
 #[test]
 fn a_panic_on_the_routes_query_fails_the_load() {
+    // Held BEFORE the load: the load's own queries fold into the process-global log a neighbour reads.
+    let _guard = crate::observe::testing::exclusive();
     let Some(raw) = raw_with_fake_call() else {
         eprintln!("skip: the export sink cdylib is not built");
         return;
@@ -115,6 +117,8 @@ fn a_panic_on_the_routes_query_fails_the_load() {
 /// existed.
 #[test]
 fn an_unsupported_routes_query_loads_with_no_routes() {
+    // Held BEFORE the load: the load's own queries fold into the process-global log a neighbour reads.
+    let _guard = crate::observe::testing::exclusive();
     let Some(raw) = raw_with_fake_call() else {
         eprintln!("skip: the export sink cdylib is not built");
         return;
@@ -195,6 +199,8 @@ fn raw_with_shaped_call() -> Option<RawPlugin> {
 /// the sink answers in differ.
 #[test]
 fn a_pre_envelope_v2_sink_and_an_enveloped_v3_sink_both_load_and_serve() {
+    // Held BEFORE the load: the load's own queries fold into the process-global log a neighbour reads.
+    let _guard = crate::observe::testing::exclusive();
     for enveloped in [false, true] {
         *ANSWER_ENVELOPED.lock().unwrap_or_else(|p| p.into_inner()) = enveloped;
         let Some(raw) = raw_with_shaped_call() else {
@@ -305,8 +311,10 @@ fn status_folds_what_the_sink_reports_and_an_older_sink_reports_nothing() {
         return;
     };
     raw.call = status_call;
+    // Held BEFORE the load, for the same reason as the loads above.
+    let guard = crate::observe::testing::exclusive();
     let sink = export_from_raw(raw, "status-witness").expect("load");
-    let _guard = crate::observe::testing::exclusive();
+    crate::observe::testing::clear(&guard);
 
     *STATUS_ANSWER.lock().unwrap_or_else(|p| p.into_inner()) = STATUS_OK;
     sink.status_report().expect("a sink that answers status");

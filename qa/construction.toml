@@ -373,6 +373,14 @@ abi = ["crates/busbar-contract"]
 # [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"] 55182 -> 55337 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
 
+# ── THE KERNEL CEILING, RE-ARMED BY THE MONEY VIEW'S SCRAPE MEMO (R-KERNEL; OWNER GRANT 2026-09-29 (3))
+
+[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
+file    = "qa/construction.toml"
+from    = 52002
+to      = 52101
+because = "OWNER GRANT 2026-09-29 (3), a kernel line-limit re-arm at the measured value in its own commit: the /metrics scrape reads the kernel money view through a memo (governance::money_view) and reprices a bucket only when its facts, the card generation, the dated history or the corrections moved, so a scrape never drives the pricing path by itself (#43/#71; the export kind, property 4). Measured by cargo xtask gate construction: 51934 before, 52101 after."
+
 # ── THE KERNEL CEILING, RE-ARMED BY FOLD-LLM C3' (the AUDIT step's finish) — EXPIRED AND STRUCK
 #
 # Declared `rules.loc-ceilings.kernel_ceiling` 55163 -> 55182 (ARCHITECT 2026-09-28, R-KERNEL). Its
@@ -453,7 +461,21 @@ because = "OWNER GRANT 2026-09-29 (3), ARCHITECT approval: line-limit re-arm at 
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY STORE-MIGRATE (the 1.5.x usage-row fold returns to the
 #    contract at abi::sdk::store_migrate, an F12 relocation netting 0 against the -61 deletion) —
-#    measured by LANDER at the landed tip
+#    EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 23937 -> 23998. Its commit reached the base; struck by FOLD-MCP A4's re-arm below, which declares
+# the pair's next figure.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY FOLD-MCP A4 (busbar_contract::jsonrpc, the JSON-RPC
+#    envelope reader moved out of the kernel) — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 23998 -> 24189. Its commit reached the base; struck by STEP-20's re-arm below, which declares the
+# pair's next figure.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY STEP-20 (the framer's ALPN offer, the emit deadline and
+#    the offer's safe lend) — measured at the tip
 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
@@ -468,18 +490,26 @@ because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan a
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 23937
-to      = 23998
-because = "OWNER GRANT 2026-09-29 (2), an F12 relocation netting down: the 1.5.x usage-row fold returns to the contract at the store SDK (abi::sdk::store_migrate). The pair: the engine fold's deletion -61 (25143 -> 25082, landed) and this relocation +61, net 0. Measured by cargo xtask gate construction on METER-FIX's loc basis at the landing tip: 23937 before, 23998 after, +61."
+from    = 24189
+to      = 24237
+because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception: STEP-20's transport-kind appends. The framer states its ALPN offer in locate (LocateIn.alpn_buf/alpn_cap, LocateOut.alpn_written/alpn_needed) and an emit carries its attempt's deadline (EmitIn.deadline_ns), with check_alpn/check_agreed in abi::transport::check (check.rs +42, transport/mod.rs +5; the layout pins bill as test on METER-FIX's basis); the safe surface lends the offer buffer (abi::sdk::lent LocateIn row, +1). +48, measured by cargo xtask gate construction on predev 9b279a546 (23998 -> 24046) and re-armed over FOLD-MCP A4's landed 24189: 24189 -> 24237."
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 23937
-to      = 23998
-because = "OWNER GRANT 2026-09-29 (2), an F12 relocation netting down: the 1.5.x usage-row fold returns to the contract at the store SDK (abi::sdk::store_migrate). The pair: the engine fold's deletion -61 (25143 -> 25082, landed) and this relocation +61, net 0. Measured by cargo xtask gate construction on METER-FIX's loc basis at the landing tip: 23937 before, 23998 after, +61."
+from    = 24189
+to      = 24237
+because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception: STEP-20's transport-kind appends. The framer states its ALPN offer in locate (LocateIn.alpn_buf/alpn_cap, LocateOut.alpn_written/alpn_needed) and an emit carries its attempt's deadline (EmitIn.deadline_ns), with check_alpn/check_agreed in abi::transport::check (check.rs +42, transport/mod.rs +5; the layout pins bill as test on METER-FIX's basis); the safe surface lends the offer buffer (abi::sdk::lent LocateIn row, +1). +48, measured by cargo xtask gate construction on predev 9b279a546 (23998 -> 24046) and re-armed over FOLD-MCP A4's landed 24189: 24189 -> 24237."
+
+# ── THE KIND-ISOLATION CELL busbar-transport-ws x transport, RAISED BY STEP-20 (the ALPN offer literal)
+
+[gate.ceiling_raises."cell[crate=busbar-transport-ws,kind=transport].count"]
+file    = "qa/kind-isolation.toml"
+from    = 23
+to      = 24
+because = "ARCHITECT 2026-09-30 (\"ws x transport 24 is approved and rides with A\"): the ws door's locate offers the ALPN id b\"\\x08http/1.1\" on a secured target (ARCHITECT ruling 2026-09-29; the opening handshake is HTTP/1.1), and METER-FIX's decoded scanner reads that wire literal as the http transport's name (door/mod.rs:378). Measured by cargo xtask gate kind-isolation --report on predev 9b279a546: 23 at the base, 24 at the tip, +1, that one line."
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY LANDER'S BATCH (XTASK-SPEED, KI-ABI-SCOPE, M3-SDK,
 #    M3-SHAPES AUTH, billing-cite) — EXPIRED AND STRUCK
@@ -757,7 +787,13 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # STORE-MIGRATE (the 1.5.x usage-row fold returns to the contract at abi::sdk::store_migrate, an F12
 # relocation netting 0 against the -61 deletion, +61); the live declaration above carries the
 # measure.
-contract_caps = 23998
+# RE-ARMED 23998 -> 24189, AT THE MEASUREMENT (OWNER GRANT 2026-09-29 (3)), in its own commit after
+# FOLD-MCP A4 (busbar_contract::jsonrpc, the JSON-RPC envelope reader moved out of the kernel,
+# +191); struck by STEP-20's re-arm.
+# RE-ARMED 24189 -> 24237, AT THE MEASUREMENT (OWNER GRANT 2026-09-29 (3)), in its own commit after
+# STEP-20 (the framer's ALPN offer, the emit deadline and the offer's safe lend, +48); the live
+# declaration above carries the measure.
+contract_caps = 24237
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -828,8 +864,11 @@ needle = "busbar_kernel::"
 busbar-llm = 251
 # LOWERED 283 -> 282 by fold A5: the outbound wire moved to busbar-plane-mcp and reads the
 # contract's JSON-RPC reader, not the kernel's. Downward only.
-busbar-mcp = 282
-busbar-a2a = 233
+# LOWERED 282 -> 281 at the measure on the MCP-COMPAT train (T12, lk cli-5acd1cc0). Downward only.
+busbar-mcp = 281
+# busbar-a2a 233 -> 232 (downward, at the measure): push delivery names the kernel's engine seam once
+# instead of per signature.
+busbar-a2a = 232
 busbar-voice = 88
 
 [rules.ports-only-tests]
@@ -840,7 +879,7 @@ counts can trend to zero at their own pace."""
 # TODAY's measurement on the committed tree (HEAD b091b4e83). Downward only from here.
 [rules.ports-only-tests.max_per_crate]
 busbar-llm = 990
-busbar-mcp = 188
+busbar-mcp = 185
 busbar-a2a = 98
 busbar-voice = 43
 
@@ -1338,7 +1377,12 @@ kernel_crate = "busbar-kernel"
 # ── LOWERED 55337 -> 52187 by METER-FIX's loc basis, with RENAME (xtask loc bills test-gated
 # modules and const _ assertions as test; measured plus K2g's named 73-line reservation), the
 # measurement, -3150. Downward only.
-kernel_ceiling = 52187
+# ── LOWERED 52187 -> 52002 by FOLD-MCP A4 (the JSON-RPC envelope reader leaves ingress/jsonrpc.rs
+# for busbar_contract::jsonrpc; measured 51929 plus K2g's named 73-line reservation), the
+# measurement, -185. Downward only.
+# ── RE-ARMED 52002 -> 52101 for the money view's scrape memo (a scrape reprices only a bucket whose
+# facts moved; #43/#71), declared above. Measured 51934 before, 52101 after.
+kernel_ceiling = 52101
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -1438,7 +1482,10 @@ contract_crate = "busbar-contract"
 # the contract testkit out of release builds, -167; measured, -1775).
 # RE-ARMED 23937 -> 23998 with its pair (STORE-MIGRATE: the 1.5.x usage-row fold returns to the
 # contract at abi::sdk::store_migrate, an F12 relocation netting 0 against the -61 deletion, +61).
-caps_contract_ceiling = 23998
+# RE-ARMED 23998 -> 24189 with its pair (FOLD-MCP A4: busbar_contract::jsonrpc, the JSON-RPC
+# envelope reader moved out of the kernel, +191).
+# RE-ARMED 24189 -> 24237 with its pair (STEP-20: the ALPN offer, the emit deadline, the lend, +48).
+caps_contract_ceiling = 24237
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
@@ -1636,7 +1683,7 @@ busbar-transport-ws = [
 # (busbar-llm/-mcp/-a2a/-voice) for codecs only, read-only, no engine state crossing back — but
 # those engine crates are ALSO named in gate.plane_crates, so this is structurally the exact "a
 # plane names another plane" coupling section 1.2 forbids. Tracked here, not waved through, until
-# docs/design/1.6.0-protocols-as-plugins.md's codec split lands and the dependency disappears.
+# the codec split lands and the dependency disappears (BUSBAR-1.6.0.md #39: codecs fold into the plane).
 # STALE — verified 2026-09-07: NONE of the four edges below exists at this commit. Every plane crate
 # is exactly `busbar-contract` + its own codec and nothing else; the planes are the cleanest seam in
 # the workspace. This ratchet describes a tree that no longer exists and tells a reader the coupling

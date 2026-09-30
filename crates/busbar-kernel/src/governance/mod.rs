@@ -592,6 +592,8 @@ pub struct GovState {
     /// [`MAX_PENDING_METERING`] (as [`MAX_PENDING_METERING_PER_SHARD`] per shard) and coalesces the
     /// overflow into a per-bucket sentinel rather than growing without bound or dropping billable usage.
     pending_metering: PendingMetering,
+    /// Each bucket's last derived figure, read by the `/metrics` scrape (see [`money_view`]).
+    money_view: state::money_view::MoneyView,
     /// The busbar SIGNING material (1.5.0) — the mint-side signer paired with the
     /// verify-side public keyset, held together so they can never drift. `Some` once a signing key
     /// is resolved/generated at boot; `None` in the (test) path that constructs GovState without

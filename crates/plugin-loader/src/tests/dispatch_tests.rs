@@ -1406,6 +1406,41 @@ fn red_a_hanging_unload_holds_back_no_other_unload() {
     );
 }
 
+/// A HUNG UNLOAD IS OBSERVABLE: past its bound the watch warns of it, and while it hangs its reaper
+/// is counted live in the dispatcher's stats. RED without the
+/// watch and the count: nothing reports the hang.
+#[test]
+fn red_a_hung_unload_is_warned_of_and_counted_live() {
+    use crate::dispatch::load::{reap_within, HUNG_WARNED};
+    use std::sync::atomic::Ordering::SeqCst;
+    let d = Dispatcher::new(config());
+    let warned0 = HUNG_WARNED.load(SeqCst);
+    let (release, hold) = std::sync::mpsc::channel::<()>();
+    let (entered, inside) = std::sync::mpsc::channel::<()>();
+    let (returned, back) = std::sync::mpsc::channel::<()>();
+    reap_within(
+        Box::new(move || {
+            let _ = entered.send(());
+            let _ = hold.recv();
+            let _ = returned.send(());
+        }),
+        Duration::from_millis(1),
+    );
+    inside
+        .recv_timeout(WAIT)
+        .expect("the unload runs, and hangs");
+    assert!(
+        d.stats().live_reapers >= 1,
+        "a hung unload's reaper is counted live"
+    );
+    until("the watch warned of the hung unload", || {
+        HUNG_WARNED.load(SeqCst) > warned0
+    });
+    release.send(()).unwrap();
+    back.recv_timeout(WAIT)
+        .expect("the released unload returns");
+}
+
 #[test]
 fn red_a_ticketless_short_answer_is_re_called_once() {
     let d = Dispatcher::new(config());

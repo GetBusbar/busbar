@@ -229,44 +229,24 @@ async fn a_grant_for_a_different_tool_on_the_same_server_is_refused() {
 /// The control is at the bottom: the scanner is proven able to FIND a secret on this same wire.
 #[tokio::test]
 async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
-    use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
-    use busbar_kernel::governance::NewKeySpec;
     metrics_init();
 
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
-    let store = engine().scratch_store();
-    // Two handles on the SAME key material: one inside `GovState` (which consumes it) and one for
-    // the test to mint the caller's audience-bound token with. Same bytes, same kid, so the verifier
-    // busbar runs is verifying a token this test really minted.
-    let signer = TokenSigner::from_secret_bytes(&[11u8; 32], DEFAULT_KID);
-    let gov = engine()
-        .governance(
-            store.clone(),
-            Some("admintok".to_string()),
-            Some(TokenSigner::from_secret_bytes(&[11u8; 32], DEFAULT_KID)),
-        )
-        .unwrap();
+    // A REAL key on a real governance handle: the verifier busbar runs and the minter that signed
+    // the caller's audience-bound token share one key (see `upstream_support::minted_keys`).
+    let (gov, mut minted) = super::upstream_support::minted_keys(
+        11,
+        CANONICAL,
+        &[("external-mcp-client", None, "external-client-1")],
+    );
+    let super::upstream_support::MintedKey {
+        key,
+        token: caller_token,
+    } = minted.remove(0);
 
-    // Mint a REAL key, then give it the MCP grants. Nothing in this release writes `mcp_server` /
-    // `mcp_tool` scopes at mint time (the admin verbs for it are a separate unit), so the row is
-    // written directly — which is the honest way to get the shape a future mint path will produce.
-    let (key, plain) = gov
-        .mint_signed(
-            NewKeySpec {
-                name: "external-mcp-client".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
-                ..Default::default()
-            },
-            2_000_000_000,
-            busbar_kernel::store::now(),
-        )
-        .unwrap();
-    let generation = TokenVerifier::single(signer.kid(), signer.verifying_key())
-        .verify(plain.as_str(), busbar_kernel::store::now(), None)
-        .expect("the plain token verifies")
-        .generation;
+    // Give the key the MCP grants. Nothing in this release writes `mcp_server` / `mcp_tool` scopes
+    // at mint time (the admin verbs for it are a separate unit), so the row is written directly —
+    // which is the honest way to get the shape a future mint path will produce.
     let mut scoped = key.clone();
     scoped.allowed_scopes = Some(vec![
         busbar_contract::records::ScopeRef {
@@ -281,14 +261,7 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
     gov.store().put_key(&scoped).unwrap();
     gov.refresh().unwrap();
 
-    // THE CALLER'S BUSBAR KEY: an audience-bound token for THIS deployment. This is the sentinel.
-    let caller_token = signer.mint_for_audience(
-        &key.id,
-        2_000_000_000,
-        generation.as_deref(),
-        CANONICAL,
-        Some("external-client-1"),
-    );
+    // THE CALLER'S BUSBAR KEY (`caller_token`, minted above for THIS deployment) is the sentinel.
 
     let app = test_app()
         .keys_chain()

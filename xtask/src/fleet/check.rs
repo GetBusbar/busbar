@@ -7,13 +7,15 @@ use std::collections::BTreeSet;
 use crate::ere::Ere;
 use crate::fleet::registry::{Fleet, Plugin};
 use crate::fleet::remote::{normalize_protection, normalize_spec, Remote};
-use crate::fleet::render::{region_of, render, Mode, Templates};
+use crate::fleet::render::{readme_headings, readme_skeleton, region_of, render, Mode, Templates};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Finding {
     pub repo: String,
     pub subject: String,
     pub reason: String,
+    /// A check that did not apply, and why (a `pending_crate` repo): printed, never red.
+    pub skip: bool,
 }
 
 fn f(repo: &str, subject: &str, reason: impl Into<String>) -> Finding {
@@ -21,14 +23,41 @@ fn f(repo: &str, subject: &str, reason: impl Into<String>) -> Finding {
         repo: repo.to_string(),
         subject: subject.to_string(),
         reason: reason.into(),
+        skip: false,
     }
 }
+
+fn skip(repo: &str, subject: &str, reason: impl Into<String>) -> Finding {
+    Finding {
+        skip: true,
+        ..f(repo, subject, reason)
+    }
+}
+
+/// The reason a pending repo's crate-shaped checks do not apply yet.
+const PENDING: &str =
+    "pending-crate: registered before its crates moved in (plugins.yaml `pending_crate`)";
 
 /// The branch the render is compared on.
 pub const DEV: &str = "dev";
 
 /// Where a file the render does not produce is drift unless the entry keeps it.
-const OWNED_DIRS: &[&str] = &[".github/workflows/", ".github/scripts/"];
+const OWNED_DIRS: &[&str] = &[".github/"];
+
+/// Top-level paths a repo holds that the render does not write: generated, and the repo's own.
+const GENERATED: &[&str] = &["Cargo.lock"];
+
+/// THE FLEET NORM for a plugin repo's own settings.
+pub const NORM_VISIBILITY: &str = "public";
+pub const NORM_LICENSE: &str = "Apache-2.0";
+
+/// Whether the entry's `keep` declares the top-level path `top` (the path itself, or anything under
+/// it).
+fn keeps_top(p: &Plugin, top: &str) -> bool {
+    p.keep
+        .iter()
+        .any(|k| k.trim_end_matches('/') == top || k.starts_with(&format!("{top}/")))
+}
 
 pub fn check(fleet: &Fleet, t: &Templates, remote: &dyn Remote, only: &[String]) -> Vec<Finding> {
     let mut out = Vec::new();
@@ -80,6 +109,23 @@ fn check_repo(
         Err(e) => out.push(f(repo, "name", format!("fleet name_pattern: {e}"))),
     }
 
+    // PENDING: a registered repo whose crates have not moved in. While it is EMPTY there is nothing
+    // to hold to the render yet (`fleet sync` seeds it); every other check needs a `dev`.
+    if p.pending_crate {
+        match remote.is_empty(repo) {
+            Ok(true) => {
+                out.push(skip(
+                    repo,
+                    "repo",
+                    format!("{PENDING}; the repo is empty until `cargo xtask fleet sync` seeds it"),
+                ));
+                return;
+            }
+            Ok(false) => {}
+            Err(e) => out.push(f(repo, "repo", format!("could not read: {e}"))),
+        }
+    }
+
     // BRANCHES: exactly the release branches, each with the one protection.
     match remote.branches(repo) {
         Err(e) => out.push(f(repo, "branches", format!("could not list: {e}"))),
@@ -121,6 +167,26 @@ fn check_repo(
                             ));
                         }
                     }
+                }
+            }
+        }
+    }
+
+    // SETTINGS: public, Apache-2.0, `dev` the default branch.
+    match remote.settings(repo) {
+        Err(e) => out.push(f(repo, "settings", format!("could not read: {e}"))),
+        Ok(s) => {
+            for (what, have, norm) in [
+                ("visibility", s.visibility.as_str(), NORM_VISIBILITY),
+                ("license", s.license.as_str(), NORM_LICENSE),
+                ("default branch", s.default_branch.as_str(), DEV),
+            ] {
+                if have != norm {
+                    out.push(f(
+                        repo,
+                        what,
+                        format!("is `{have}`, the fleet norm is `{norm}`"),
+                    ));
                 }
             }
         }
@@ -180,6 +246,26 @@ fn check_repo(
             ));
         }
     }
+    check_shape(p, &rendered, &files, out);
+    match (
+        remote.read(repo, DEV, "README.md"),
+        readme_skeleton(fleet, p, t),
+    ) {
+        (Ok(Some(text)), Ok(skeleton)) => {
+            let want = readme_headings(&skeleton);
+            let have = readme_headings(&text);
+            if have != want {
+                out.push(f(
+                    repo,
+                    "README.md",
+                    format!("the section skeleton differs: have {have:?}, the fleet's is {want:?}"),
+                ));
+            }
+        }
+        (_, Err(e)) => out.push(f(repo, "README.md", e)),
+        // Unreadable or missing: already a finding from the render comparison above.
+        _ => {}
+    }
     for m in files
         .iter()
         .filter(|x| x.as_str() == "Cargo.toml" || x.ends_with("/Cargo.toml"))
@@ -205,6 +291,7 @@ fn check_repo(
     }
     match remote.read(repo, DEV, &p.declares) {
         Err(e) => out.push(f(repo, &p.declares, format!("could not read: {e}"))),
+        Ok(None) if p.pending_crate => out.push(skip(repo, &p.declares, PENDING)),
         Ok(None) => out.push(f(
             repo,
             &p.declares,
@@ -215,6 +302,88 @@ fn check_repo(
                 out.push(f(repo, &p.declares, e));
             }
         }
+    }
+}
+
+/// THE TWIN SHAPE: every top-level path is the render's, one of the two crate dirs
+/// (`<kind>-<name>/`, `<kind>-<name>-plugin/`), generated (`Cargo.lock`) or kept by the entry; both
+/// crate dirs exist; the cdylib crate is `<repo>-plugin`.
+fn check_shape(
+    p: &Plugin,
+    rendered: &[crate::fleet::render::Rendered],
+    files: &[String],
+    out: &mut Vec<Finding>,
+) {
+    let repo = p.repo.as_str();
+    let crate_dirs = p.crate_dirs();
+    let rendered_tops: BTreeSet<&str> = rendered
+        .iter()
+        .filter_map(|r| r.path.split('/').next())
+        .collect();
+    let have: BTreeSet<&str> = files.iter().map(String::as_str).collect();
+    let tops: BTreeSet<&str> = files.iter().filter_map(|x| x.split('/').next()).collect();
+    for top in tops {
+        if rendered_tops.contains(top)
+            || crate_dirs.iter().any(|d| d == top)
+            || GENERATED.contains(&top)
+            || keeps_top(p, top)
+        {
+            continue;
+        }
+        if have.contains(format!("{top}/Cargo.toml").as_str()) {
+            out.push(f(
+                repo,
+                &format!("{top}/"),
+                format!(
+                    "a crate dir outside the twin layout: a plugin repo's crates are exactly `{}/` and `{}/`",
+                    crate_dirs[0], crate_dirs[1]
+                ),
+            ));
+        } else {
+            out.push(f(
+                repo,
+                top,
+                "unmanaged top-level path: not rendered, not one of the two crate dirs, not in the entry's `keep`",
+            ));
+        }
+    }
+    let present = crate_dirs
+        .iter()
+        .filter(|d| have.contains(format!("{d}/Cargo.toml").as_str()))
+        .count();
+    if p.pending_crate && present == crate_dirs.len() {
+        out.push(f(
+            repo,
+            "pending_crate",
+            "stale: both crate dirs are in; drop `pending_crate` from the registry entry",
+        ));
+    }
+    for d in &crate_dirs {
+        if !have.contains(format!("{d}/Cargo.toml").as_str()) {
+            if p.pending_crate && present == 0 {
+                out.push(skip(repo, &format!("{d}/"), PENDING));
+                continue;
+            }
+            out.push(f(
+                repo,
+                &format!("{d}/"),
+                format!(
+                    "missing: the twin crate dir (`{}/` the logic, `{}/` the cdylib)",
+                    crate_dirs[0], crate_dirs[1]
+                ),
+            ));
+        }
+    }
+    let want = format!("{repo}-plugin");
+    if p.crate_name != want {
+        out.push(f(
+            repo,
+            "crate",
+            format!(
+                "the cdylib crate is `{}`; a twin's is `{want}` in `{}/`",
+                p.crate_name, crate_dirs[1]
+            ),
+        ));
     }
 }
 
@@ -262,6 +431,10 @@ pub fn report(fleet: &Fleet, only: &[String], findings: &[Finding]) -> i32 {
         .iter()
         .filter(|p| only.is_empty() || only.contains(&p.repo))
         .count();
+    for x in findings.iter().filter(|x| x.skip) {
+        println!("SKIP {} {}: {}", x.repo, x.subject, x.reason);
+    }
+    let findings: Vec<&Finding> = findings.iter().filter(|x| !x.skip).collect();
     if findings.is_empty() {
         println!(
             "fleet check: GREEN — {n} repo(s) match the render and the fleet policy (pin {})",
@@ -269,7 +442,7 @@ pub fn report(fleet: &Fleet, only: &[String], findings: &[Finding]) -> i32 {
         );
         return 0;
     }
-    for x in findings {
+    for x in &findings {
         println!("DRIFT {} {}: {}", x.repo, x.subject, x.reason);
     }
     let repos: BTreeSet<&str> = findings.iter().map(|x| x.repo.as_str()).collect();

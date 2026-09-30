@@ -81,35 +81,35 @@ fn a_read_above_its_buffer_is_fault() {
 #[test]
 fn locate_flags_and_the_name_arms_are_checked() {
     let mut o: LocateOut = z();
-    assert_eq!(check_locate(Ready, &o, 8, 8), Ok(()));
+    assert_eq!(check_locate(Ready, &o, 8, 8, 16, &[]), Ok(()));
     o.secure = 2;
     assert_eq!(
-        check_locate(Ready, &o, 8, 8),
+        check_locate(Ready, &o, 8, 8, 16, &[]),
         f(Rule::UnknownCode, "locate.secure")
     );
     let mut o: LocateOut = z();
     o.has_name = 2;
     assert_eq!(
-        check_locate(Ready, &o, 8, 8),
+        check_locate(Ready, &o, 8, 8, 16, &[]),
         f(Rule::UnknownCode, "locate.has_name")
     );
     let mut o: LocateOut = z();
     o.name_written = 1;
     assert_eq!(
-        check_locate(Ready, &o, 8, 8),
+        check_locate(Ready, &o, 8, 8, 16, &[]),
         f(Rule::Contradiction, "locate.name_without_has_name")
     );
     let mut o: LocateOut = z();
     o.authority_needed = 9;
     assert_eq!(
-        check_locate(Ready, &o, 8, 8),
+        check_locate(Ready, &o, 8, 8, 16, &[]),
         f(Rule::NeededNotFailed, "locate.authority")
     );
     let mut o: LocateOut = z();
     o.has_name = 1;
     o.name_needed = 8;
     assert_eq!(
-        check_locate(Failed, &o, 8, 8),
+        check_locate(Failed, &o, 8, 8, 16, &[]),
         f(Rule::WastedRecall, "locate")
     );
 }
@@ -121,14 +121,51 @@ fn locate_is_one_multi_dimension_short_answer() {
     o.authority_needed = 9;
     o.name_needed = 3;
     assert_eq!(
-        check_locate(Failed, &o, 8, 8),
+        check_locate(Failed, &o, 8, 8, 16, &[]),
         Ok(()),
         "one short, the other reports its size"
     );
     o.authority_needed = 8;
     assert_eq!(
-        check_locate(Failed, &o, 8, 8),
+        check_locate(Failed, &o, 8, 8, 16, &[]),
         f(Rule::WastedRecall, "locate")
+    );
+}
+
+/// The framer's protocol offer is the handshake's ProtocolNameList: it partitions exactly into
+/// non-empty ids, it is a third short-buffer dimension, and the agreed protocol is one it offered.
+#[test]
+fn locate_answers_an_alpn_offer_the_connector_can_trust() {
+    let offer = b"\x02h2\x08http/1.1";
+    let mut o: LocateOut = z();
+    o.alpn_written = offer.len() as u64;
+    assert_eq!(check_locate(Ready, &o, 8, 8, 16, offer), Ok(()));
+    assert_eq!(
+        check_locate(Ready, &o, 8, 8, 16, b"\x02h2\x00"),
+        f(Rule::Missing, "locate.alpn.id")
+    );
+    assert_eq!(
+        check_locate(Ready, &o, 8, 8, 16, b"\x09http/1.1"),
+        f(Rule::SpanOutOfBounds, "locate.alpn.id")
+    );
+    o.alpn_written = 17;
+    assert_eq!(
+        check_locate(Ready, &o, 8, 8, 16, offer),
+        f(Rule::OverCap, "locate.alpn")
+    );
+    let mut o: LocateOut = z();
+    o.alpn_needed = 20;
+    assert_eq!(
+        check_locate(Failed, &o, 8, 8, 16, &[]),
+        Ok(()),
+        "short: re-call with 20"
+    );
+    assert_eq!(check_agreed(offer, b"h2"), Ok(()));
+    assert_eq!(check_agreed(offer, b"http/1.1"), Ok(()));
+    assert_eq!(check_agreed(offer, b""), Ok(()));
+    assert_eq!(
+        check_agreed(b"\x08http/1.1", b"h2"),
+        f(Rule::Contradiction, "facts.agreed_protocol")
     );
 }
 

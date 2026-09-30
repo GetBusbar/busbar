@@ -14,6 +14,9 @@
 //! * [`endpoint`] is the pure check an open's target passes before any dial: a cloud metadata host,
 //!   in any spelling, is refused by name.
 //! * [`tls`] is connection security — core-only, never a plugin, never crossing the ABI.
+//! * [`dtls`] is its datagram sibling — the DTLS engine a WebRTC association runs on (the RFC 7983
+//!   demux, the ICE-gated bind, the SRTP exporter), on ring like [`tls`].
+//! * [`udp`] is the host's datagram socket: one bound port, a peer per datagram.
 //!
 //! THE SHELL. This landing holds the table and its ownership book; composing a need's transports
 //! (carrier → [TLS] → framer) is the next step, so until then an open for a declared need is refused
@@ -22,8 +25,10 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod dtls;
 pub mod endpoint;
 pub mod tls;
+pub mod udp;
 
 use busbar_contract::conn::{
     ConnError, ConnId, ConnSlab, Conns, InstanceId, NeedId, OpenDesc, Piece, Ticket,

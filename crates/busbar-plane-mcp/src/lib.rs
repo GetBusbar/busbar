@@ -41,6 +41,8 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+/// The session revisions raised into, and lowered out of, the one dispatch.
+pub mod adapt;
 pub mod claims;
 pub mod client;
 pub mod codec;
@@ -54,7 +56,11 @@ pub mod outputschema;
 pub mod plane;
 pub mod record;
 pub mod records;
+/// The dated revisions of the one MCP dialect, and their negotiation.
+pub mod revision;
 pub mod sanitize;
+/// Bounded, owner-bound session state for the session revisions.
+pub mod session;
 
 /// THE REGISTRY KEY MCP IS KNOWN BY, in the protocol registry and in the plane registry alike.
 ///

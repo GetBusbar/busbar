@@ -644,6 +644,13 @@ impl Catalogue {
         Some((server.id.as_str(), server))
     }
 
+    /// The approved `inputSchema` of the tool routed as `namespaced_name`, read only to build the
+    /// custom parameter mirror a session client's `tools/call` is raised with. It decides nothing:
+    /// the grant and the digest are judged in [`Self::resolve`], unchanged.
+    pub(crate) fn input_schema_of(&self, namespaced_name: &str) -> Option<&serde_json::Value> {
+        self.tools.get(namespaced_name)?.input_schema.as_ref()
+    }
+
     /// EVERY registration, in deterministic id order. Read by `mcp_on_swap` to retire the stdio
     /// children of registrations a config apply removed — a plain iterator over the whole map because
     /// "which registrations exist" is not a decision this plane wants spread across call sites.

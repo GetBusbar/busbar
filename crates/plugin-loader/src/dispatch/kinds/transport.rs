@@ -7,7 +7,7 @@
 //!   (`peer_cap` from `AcceptIn`), `read` by `check_io` (`cap` from `ReadIn`), `write` by
 //!   `check_io` (the `len` offered in `WriteIn`), `arrival` by `check_arrival` (`peer_cap` from
 //!   `ArrivalIn`);
-//! * framer: `locate` by `check_locate` (`authority_cap`/`name_cap` from `LocateIn`), and every op
+//! * framer: `locate` by `check_locate` (`authority_cap`/`name_cap`/`alpn_cap` from `LocateIn`), and every op
 //!   answering a `FramerOut` (`begin`, `ingest`, `emit`, `encode`, `refuse`, `finish`, `detach`,
 //!   `adopt`, `timer`) by `check_framer`, its pieces over the host's `sink.pieces` and every cap
 //!   from the op's `sink`;
@@ -114,11 +114,28 @@ impl Kind for Transport {
             ),
             slot::LOCATE => {
                 let i = a.input::<LocateIn>()?;
+                let o = a.out::<LocateOut>()?;
+                let offer: &[u8] = if a.outcome == Outcome::Ready {
+                    // SAFETY: `alpn_buf` is the host's own buffer of `alpn_cap` bytes, named by
+                    // this op's `in`.
+                    unsafe {
+                        reported(
+                            i.alpn_buf.cast_const(),
+                            o.alpn_written,
+                            i.alpn_cap as u64,
+                            "locate.alpn",
+                        )
+                    }?
+                } else {
+                    &[]
+                };
                 check_locate(
                     a.outcome,
-                    a.out::<LocateOut>()?,
+                    o,
                     i.authority_cap as u64,
                     i.name_cap as u64,
+                    i.alpn_cap as u64,
+                    offer,
                 )
             }
             slot::BEGIN => framer(a, a.input::<BeginIn>()?.sink),
@@ -144,7 +161,7 @@ impl Kind for Transport {
             slot::ARRIVAL => a.out::<ArrivalOut>().is_ok_and(|o| o.peer_needed != 0),
             slot::LOCATE => a
                 .out::<LocateOut>()
-                .is_ok_and(|o| o.authority_needed != 0 || o.name_needed != 0),
+                .is_ok_and(|o| o.authority_needed != 0 || o.name_needed != 0 || o.alpn_needed != 0),
             _ => false,
         }
     }

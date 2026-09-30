@@ -10,7 +10,6 @@
 //! | --- | --- |
 //! | `BUSBAR-1.6.0.md` | the spec — the design |
 //! | `1.6.0-TODO.md` | the plan — the order of the work |
-//! | `1.6.0-KICKOFF.md` | how a session starts |
 //! | `1.6.0-QUESTIONS.md` | what is open with the owner |
 //! | `1.6.0-SLOT-LOG.md` | what each slot did |
 //! | `1.6.0-PARKED/` | held work, one file per item |
@@ -42,7 +41,6 @@ const DIR: &str = "docs/design/";
 pub const ALLOWED_FILES: &[&str] = &[
     "docs/design/BUSBAR-1.6.0.md",
     "docs/design/1.6.0-TODO.md",
-    "docs/design/1.6.0-KICKOFF.md",
     "docs/design/1.6.0-QUESTIONS.md",
     "docs/design/1.6.0-SLOT-LOG.md",
 ];
@@ -157,7 +155,7 @@ impl Gate for DesignDocsAllowlistGate {
                 ROW_ONLY,
                 "docs/design holds a file outside the allowlist",
                 format!(
-                    "{} stray path(s): {} — docs/design holds the spec, the TODO, KICKOFF, \
+                    "{} stray path(s): {} — docs/design holds the spec, the TODO, \
                      QUESTIONS, SLOT-LOG and 1.6.0-PARKED/ only (owner, 2026-09-27). A design topic \
                      is a section of BUSBAR-1.6.0.md; generated data and evidence go under qa/.",
                     strays.len(),
@@ -258,7 +256,6 @@ mod tests {
         for p in [
             "docs/design/BUSBAR-1.6.0.md",
             "docs/design/1.6.0-TODO.md",
-            "docs/design/1.6.0-KICKOFF.md",
             "docs/design/1.6.0-QUESTIONS.md",
             "docs/design/1.6.0-SLOT-LOG.md",
             "docs/design/1.6.0-PARKED/a.md",
@@ -268,6 +265,7 @@ mod tests {
         }
         for p in [
             "docs/design/ARCHITECTURE.md",
+            "docs/design/1.6.0-KICKOFF.md",
             "docs/design/1.6.0-TRACKER.md",
             "docs/design/1.6.0-TODO.md.bak",
             "docs/design/old/BUSBAR-1.6.0.md",

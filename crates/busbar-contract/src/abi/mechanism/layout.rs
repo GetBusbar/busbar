@@ -999,18 +999,20 @@ mod transport_kind {
     );
     pin!(
         LocateIn,
-        136,
+        152,
         8,
         head = 0,
         target = 88,
         authority_buf = 104,
         authority_cap = 112,
         name_buf = 120,
-        name_cap = 128
+        name_cap = 128,
+        alpn_buf = 136,
+        alpn_cap = 144
     );
     pin!(
         LocateOut,
-        136,
+        152,
         8,
         head = 0,
         authority_written = 96,
@@ -1018,7 +1020,9 @@ mod transport_kind {
         name_written = 112,
         name_needed = 120,
         secure = 128,
-        has_name = 132
+        has_name = 132,
+        alpn_written = 136,
+        alpn_needed = 144
     );
     pin!(FramerOut, 136, 8, head = 0, yielded = 96, framing = 128);
     pin!(
@@ -1046,7 +1050,7 @@ mod transport_kind {
     );
     pin!(
         EmitIn,
-        192,
+        200,
         8,
         head = 0,
         framing = 88,
@@ -1055,7 +1059,8 @@ mod transport_kind {
         len = 112,
         end_of_frame = 120,
         _reserved = 124,
-        sink = 128
+        sink = 128,
+        deadline_ns = 192
     );
     pin!(
         EncodeIn,

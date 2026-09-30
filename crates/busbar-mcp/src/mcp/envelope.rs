@@ -47,9 +47,15 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 
 use super::sse;
-use busbar_kernel::ingress::protocol::CoreRefusal;
+// The kernel seams this file and `super::session_serve` both use, named in ONE line so the
+// session revisions' glue adds no kernel reach of its own (ports-only).
+pub(in crate::mcp) use busbar_kernel::{
+    ingress::{jsonrpc::error_body, protocol, protocol::CoreRefusal},
+    plane_host::EngineHost,
+    plane_routes::PlaneReqCtx,
+};
 
-/// The single MCP protocol revision busbar implements — MOVED to `busbar-plane-mcp` with the rest
+/// The single MCP protocol revision busbar implements — MOVED to the plane crate with the rest
 /// of the protocol vocabulary and re-exported here, so `busbar_mcp::mcp::envelope::PROTOCOL_VERSION`
 /// resolves unchanged and there is one revision string rather than two that agree today.
 pub use busbar_plane_mcp::codec::PROTOCOL_VERSION;
@@ -83,8 +89,8 @@ pub(crate) const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[PROTOCOL_VERSION];
 /// schema is unambiguous — `JSONRPCRequest.params` requires `_meta`, and that `RequestMetaObject`
 /// requires this key — and the mistake is worth a comment because both placements read naturally
 /// and only one of them is a request any client will send.
-/// Defined in `busbar-plane-mcp` and read here BY IDENTITY, because a third reader —
-/// `busbar-plane-mcp`, which may not name this crate — states it as a correlation fact key. This
+/// Defined in the plane crate and read here BY IDENTITY, because a third reader — the plane
+/// crate itself, which may not name this crate — states it as a correlation fact key. This
 /// path and this value are exactly what they always were.
 pub(crate) const META_PROTOCOL_VERSION: &str = busbar_plane_mcp::codec::META_PROTOCOL_VERSION;
 
@@ -99,12 +105,12 @@ pub(crate) const META_PROTOCOL_VERSION: &str = busbar_plane_mcp::codec::META_PRO
 /// server that fills the gap in has decided on the client's behalf what the client can do. The
 /// schema makes it required for exactly that reason, and both this repository's own battery
 /// (`SRV.META.MISSING-CAPABILITIES`) and the official suite read the omission as `-32602`.
-/// Defined in `busbar-plane-mcp` and read here BY IDENTITY, for the reason
+/// Defined in the plane crate and read here BY IDENTITY, for the reason
 /// [`META_PROTOCOL_VERSION`] states.
 pub(crate) const META_CLIENT_CAPABILITIES: &str = busbar_plane_mcp::codec::META_CLIENT_CAPABILITIES;
 
 /// The three mirrored header names (`mcp-method`, `mcp-name`, `mcp-protocol-version`), defined in
-/// `busbar-plane-mcp` and read here BY IDENTITY, for the reason [`META_PROTOCOL_VERSION`] states.
+/// the plane crate and read here BY IDENTITY, for the reason [`META_PROTOCOL_VERSION`] states.
 pub(crate) use busbar_plane_mcp::codec::{H_MCP_METHOD, H_MCP_NAME, H_PROTOCOL_VERSION};
 
 /// JSON-RPC error codes this module emits. Named rather than inlined because three of the four are
@@ -273,6 +279,11 @@ pub(crate) async fn legacy_verb(_ctx: busbar_kernel::plane_routes::PlaneReqCtx) 
 /// made the middleware verify the token's audience against this deployment's canonical URI. Anything
 /// reaching this function is an admitted caller.
 pub(crate) async fn rpc(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> Response {
+    // THE SESSION REVISIONS (MCP-COMPAT C4). `None` for every request the stateless revision
+    // answers, which then takes exactly the path below and nothing else.
+    if let Some(answer) = super::session_serve::intercept(&ctx).await {
+        return answer;
+    }
     // S4a Option A: this handler no longer extracts `axum::State<Arc<AppHandle>>` /
     // `Extension<..>`. Core's route adapter (the mount behind the substrate's `MountHost` seam) took them
     // off the request and handed them across the NEUTRAL `PlaneReqCtx` seam, so this plane names no
@@ -750,18 +761,16 @@ pub(in crate::mcp) fn error_response(
     // The case that motivated the omission — a NOTIFICATION — can no longer reach here at all: section 4.1
     // forbids answering one, and the envelope reader now returns `202` with no body before dispatch.
     let id = id.unwrap_or(serde_json::Value::Null);
-    (
-        status,
-        axum::Json(busbar_kernel::ingress::jsonrpc::error_body(
-            id, code, message, data,
-        )),
-    )
-        .into_response()
+    (status, axum::Json(error_body(id, code, message, data))).into_response()
 }
 
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/ingress_tests.rs"]
 mod ingress_tests;
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/session_serve_tests.rs"]
+mod session_serve_tests;
 
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/request_meta_tests.rs"]
@@ -795,3 +804,7 @@ mod content_tests;
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/resource_uri_tests.rs"]
 mod resource_uri_tests;
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/stateless_capture_tests.rs"]
+mod stateless_capture_tests;

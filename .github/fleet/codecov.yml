@@ -1,0 +1,19 @@
+# RENDERED by `cargo xtask fleet render` from GetBusbar/busbar's plugins.yaml and .github/fleet/.
+# Codecov is INFORMATIONAL, never a gate: the correctness gate is the `ci` job (busbar's
+# plugin-ci.yml). Coverage is an observation on the README badge and the Codecov UI, so every status
+# is informational, there are no PR comments, and test-only paths plus the busbar checkout the
+# end-to-end tests build are excluded from the percentage.
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
+
+comment: false
+
+ignore:
+  - "**/tests"
+  - "busbar"

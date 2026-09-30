@@ -185,11 +185,11 @@ mcp:
 tools:
   # A SECOND REGISTERED SERVER, and its id is load-bearing rather than decorative.
   #
-  # The suite asks for a tool named `json_schema_2020_12_tool` -- BARE, unlike every other diagnostic
-  # tool it names, which all carry a `test_` prefix. busbar's routing key is `{server}_{tool}` and
-  # there is no way to publish an un-namespaced name, so the id `json` plus the tool
-  # `schema_2020_12_tool` produces exactly the string the scenario looks for, through the REAL
-  # namespacing with nothing bypassed -- the same trick the `test` server already uses, and the same
+  # The suite asks for a tool named \`json_schema_2020_12_tool\` -- BARE, unlike every other diagnostic
+  # tool it names, which all carry a \`test_\` prefix. busbar's routing key is \`{server}_{tool}\` and
+  # there is no way to publish an un-namespaced name, so the id \`json\` plus the tool
+  # \`schema_2020_12_tool\` produces exactly the string the scenario looks for, through the REAL
+  # namespacing with nothing bypassed -- the same trick the \`test\` server already uses, and the same
   # reason the header of this file gives for it.
   json:
     # A PATH OF ITS OWN. Each registration is answered exactly the tool set it approves
@@ -204,7 +204,7 @@ tools:
       mechanism: pinned_pubkey
       key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
     tools_allow:
-        # `json-schema-2020-12`. THE SCHEMA IS THE POINT: the scenario reads `inputSchema` off
+        # \`json-schema-2020-12\`. THE SCHEMA IS THE POINT: the scenario reads \`inputSchema\` off
         # \`tools/list\` and asserts the 2020-12 keywords survived. Declared here in full because busbar
         # publishes the OPERATOR's schema, never the upstream's -- so this is a test of the \`tools:\`
         # grammar carrying \$defs / \$anchor / \$ref / allOf / if-then-else without flattening them.
@@ -567,8 +567,8 @@ tools:
     # for, and proxying the body would let the upstream edit what it was approved to serve.
     #
     # THE URIs ARE THE SUITE'S OWN, verbatim, and that is the point of this block. Until the routing
-    # key changed, busbar published `test_test://static-text` for a resource whose URI is
-    # `test://static-text` — so a suite that asks for the identifier the SPEC fixes could not reach
+    # key changed, busbar published \`test_test://static-text\` for a resource whose URI is
+    # \`test://static-text\` — so a suite that asks for the identifier the SPEC fixes could not reach
     # it, and declaring these here would have proved nothing. The URI is now the wire identity, so
     # these are addressable exactly as the reference server's are.
     resources_allow:
@@ -577,7 +577,7 @@ tools:
         description: "A static text resource for testing"
         mime_type: "text/plain"
         text: "This is the content of the static text resource."
-      # A 1x1 PNG, the reference server's own bytes. `blob` rather than `text` because
+      # A 1x1 PNG, the reference server's own bytes. \`blob\` rather than \`text\` because
       # ResourceContents is a union of the two forms and base64 in a text field is prose to every
       # client that reads it.
       "test://static-binary":
@@ -586,7 +586,7 @@ tools:
         mime_type: "image/png"
         blob: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
     # A TEMPLATE is an approval over a SHAPE rather than over one URI, which is why it is a separate
-    # map: `{id}` is bound from the caller's expanded URI and substituted into the body.
+    # map: \`{id}\` is bound from the caller's expanded URI and substituted into the body.
     resource_templates_allow:
       "test://template/{id}/data":
         name: "Resource Template"
@@ -1211,6 +1211,19 @@ boot_selftest() {
     printf 'ok\ta failing producer trips the pipeline || die guard\n'
   else
     printf 'FAIL\ta failing producer did NOT trip the pipeline guard (got %s)\n' "$pipe"
+    failed=1
+  fi
+  # The config is written through an EXPANDING heredoc, so a backtick in one of its comments is a
+  # command substitution: bash runs the quoted word and prints "command not found" into the leg's
+  # log. Render the config once and refuse any stderr at all.
+  local cfgdir cfgerr
+  cfgdir="$(mktemp -d)"
+  cfgerr="$(bash -c 'set +e +u +o pipefail; . "$1"; SUBJECT_DIGESTS=/dev/null; subject_write_config "$2" 1 2 3 4 2>&1 >/dev/null' _ "$self" "$cfgdir")"
+  rm -rf "$cfgdir"
+  if [ -z "$cfgerr" ]; then
+    printf 'ok\trendering config.yaml writes nothing to stderr (no command substitution in its heredoc)\n'
+  else
+    printf 'FAIL\trendering config.yaml wrote to stderr: %s\n' "$(printf '%s' "$cfgerr" | head -3)"
     failed=1
   fi
   [ "$failed" -eq 0 ] && printf 'PASS\tboot.sh selftest\n' || printf 'FAIL\tboot.sh selftest\n'

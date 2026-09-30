@@ -50,7 +50,7 @@ if [ "$MODE" = "--selftest" ]; then
   # 5's cases, so check 2's fail-injection below never executed on the happy path and could not
   # change the outcome on the unhappy one. The EXIT trap counts the cases that actually ran and
   # turns a green exit with any case unrun into RED.
-  SELFTEST_CASES=14
+  SELFTEST_CASES=16
   ran=0
   selftest_exit() {
     local st=$?
@@ -236,6 +236,25 @@ MUT
   else
     printf '  [FAILED] %s\n' "check 1 passed manifest_name ${first}-plugin"; rc=1
   fi
+  # A `pending_crate: true` entry (registered, its crates not moved in yet) is kept OUT of the --list
+  # feed every cloning/testing consumer iterates, so qa-gate and release-check do not clone or test an
+  # empty repo; an entry WITHOUT it stays in (the RED arm: the filter is the flag, not a blanket drop).
+  c1_list() { (cd "$c1" && ./scripts/plugin-registry-check.sh --list) 2>/dev/null | cut -f1; }
+  cp plugins.yaml "$c1/plugins.yaml"
+  ran=$((ran + 1))
+  awk -v r="$first" '{print} $0=="  - repo: "r {print "    pending_crate: true"}' plugins.yaml > "$c1/plugins.yaml"
+  if c1_list | grep -qx "$first"; then
+    printf '  [FAILED] %s\n' "--list still feeds pending_crate entry ${first}"; rc=1
+  else
+    printf '  [ok]     %s\n' "a pending_crate entry is kept out of the --list feed"
+  fi
+  cp plugins.yaml "$c1/plugins.yaml"
+  ran=$((ran + 1))
+  if c1_list | grep -qx "$first"; then
+    printf '  [ok]     %s\n' "an entry without pending_crate stays in the --list feed"
+  else
+    printf '  [FAILED] %s\n' "--list dropped ${first}, which is not pending_crate"; rc=1
+  fi
 
   echo
   [ "$rc" = 0 ] && { echo "plugin-registry-check selftest: the org sweep fails loud and still finds strays, a comment cannot stand in for the registry loop, and a plugin repo is named busbar-<kind>-<name>"; exit 0; }
@@ -329,6 +348,9 @@ if list_mode:
             print(f"  - {f}", file=sys.stderr)
         sys.exit(1)
     for p in plugins:
+        # Registered before its crates moved in: nothing to clone, build or test yet.
+        if str(p.get("pending_crate", "false")).strip().lower() == "true":
+            continue
         print("\t".join([
             p["repo"],
             p.get("checkout_dir") or p["repo"],

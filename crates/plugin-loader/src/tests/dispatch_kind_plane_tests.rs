@@ -646,3 +646,55 @@ fn red_a_plane_without_a_whole_tail_does_not_bind() {
         "a tail shorter than this host's"
     );
 }
+
+/// The tail's trust keys are judged per ELEMENT at bind: a pin naming no mechanism, and a mechanism
+/// with no token, each refuse the load; a whole key binds.
+#[test]
+fn red_a_tail_trust_key_that_breaks_its_element_rule_does_not_bind() {
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    use busbar_contract::abi::plane::{
+        PinMechanism, PlaneTail, TrustKey, INGRESS_REQUEST_RESPONSE, MECHANISM_ROOT, SHAPE_WHOLE,
+        TRUST_PIN,
+    };
+    fn abi(s: &'static str) -> AbiStr {
+        busbar_contract::abi::sdk::door::abi_str(s)
+    }
+    fn bind(keys: &[TrustKey]) -> Result<(), String> {
+        let mut t: PlaneTail = z();
+        t.head = KindTailHead {
+            size: size_of::<PlaneTail>() as u32,
+            _reserved: 0,
+        };
+        t.ingress = INGRESS_REQUEST_RESPONSE;
+        t.dispatch_shape = SHAPE_WHOLE;
+        t.trust_keys = keys.as_ptr();
+        t.trust_keys_len = keys.len();
+        let mut st: Statement = z();
+        st.kind_tail = std::ptr::from_ref(&t).cast();
+        Plane::context(&st).map(|_| ())
+    }
+    let good = [PinMechanism {
+        token: abi("sealed_key"),
+        flags: MECHANISM_ROOT,
+        _reserved: 0,
+    }];
+    let pin = |mechs: &[PinMechanism]| TrustKey {
+        key: abi("anchor"),
+        role: TRUST_PIN,
+        flags: 0,
+        default: z(),
+        mechanisms: mechs.as_ptr(),
+        mechanisms_len: mechs.len(),
+    };
+    assert_eq!(bind(&[pin(&good)]), Ok(()));
+    // A pin with no mechanisms: refused by the key's own rule.
+    assert!(bind(&[pin(&[])]).is_err());
+    // A mechanism with no token: refused by the per-mechanism rule, which `check_tail` never ran.
+    let nameless = [PinMechanism {
+        token: z(),
+        flags: MECHANISM_ROOT,
+        _reserved: 0,
+    }];
+    let err = bind(&[pin(&nameless)]).unwrap_err();
+    assert!(err.contains("pin_mechanism.token"), "{err}");
+}

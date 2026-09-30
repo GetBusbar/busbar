@@ -1,0 +1,16 @@
+{
+  "name": "mcp-compat-real-peers",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Real, pinned MCP SDK peers for busbar's session-revision interop matrix (2024-11-05, 2025-06-18, 2025-11-25). Driven by run-compat.sh; never part of cargo test. eventsource is the EventSource the 1.0.4 client expects as a browser global.",
+  "dependencies": {
+    "sdk-2024-11-05": "npm:@modelcontextprotocol/sdk@1.0.4",
+    "sdk-2025-06-18": "npm:@modelcontextprotocol/sdk@1.17.5",
+    "sdk-2025-11-25": "npm:@modelcontextprotocol/sdk@1.24.3",
+    "eventsource": "3.0.7"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

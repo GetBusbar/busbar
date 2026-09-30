@@ -112,6 +112,9 @@ bytes = "1"
 # topology). Used ONLY by the `busbar` binary's boot seam; nothing on the request path names it.
 core_affinity = "0.8"
 crc32fast = "1"
+# DTLS for the connector's dtls engine (WebRTC), on ring through the connector's own provider:
+# no default features, so neither aws-lc-rs nor the RustCrypto suite enters.
+dimpl = { version = "=0.7.4", default-features = false }
 # THE MICROBENCHMARK HARNESS. Dev-only, and deliberately stripped: `default-features = false` drops
 # criterion's plotting stack (plotters, its font/image chain) and its rayon thread pool, keeping
 # `cargo_bench_support` — the part `cargo bench` actually needs to run a `harness = false` target.
@@ -240,6 +243,8 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1"
+# The ring signature verifier the dtls engine checks a peer's DTLS signature with (rustls's own).
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["std", "ring"] }
 rustls-pki-types = { version = "1", default-features = false, features = ["std"] }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }

@@ -262,7 +262,7 @@ impl HookEnv {
 
 // The per-pool routing-policy carriers [`ResolvedPolicy`] / [`FallbackHook`] — the plain-data layer
 // resolved ONCE at config load — live in the NEUTRAL substrate (`busbar_kernel::hooks`) so the LLM
-// model plane names them without reaching back into core (see docs/design/1.6.0-hooks-seam-notes.md).
+// model plane names them without reaching back into core (BUSBAR-1.6.0.md decision #1).
 // Every field is already-neutral (`Arc<dyn RoutingPolicy>` (api), `PolicyOnError` (substrate),
 // `Duration`, `bool`) and no trait object crosses the plugin C-ABI here — the plane invokes
 // `policy.decide(..)` in-process on the api trait. Re-exported by-identity so core-internal

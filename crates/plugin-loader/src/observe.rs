@@ -262,6 +262,11 @@ pub(crate) mod testing {
         guard
     }
 
+    /// Forget the folds so far, for a holder of the [`exclusive`] guard whose setup folded.
+    pub(crate) fn clear(_held: &std::sync::MutexGuard<'static, ()>) {
+        FOLDS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
     /// Every fold since the caller took its [`exclusive`] guard.
     pub(crate) fn folds() -> Vec<Fold> {
         FOLDS.lock().unwrap_or_else(|e| e.into_inner()).clone()

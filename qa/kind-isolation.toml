@@ -433,7 +433,7 @@ count = "649"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "919"
+count = "787"
 
 [[cell]]
 crate = "busbar"
@@ -583,7 +583,7 @@ count = "2"
 [[cell]]
 crate = "busbar-mcp"
 kind = "plane"
-count = "3821"
+count = "3705"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -759,10 +759,12 @@ crate = "busbar-transport-ws"
 kind = "plane"
 count = "2"
 
+# 23 -> 24: the ws locate's ALPN id literal b"\x08http/1.1" (door/mod.rs:378; ARCHITECT ruling
+# 2026-09-29 for the offer, row approved 2026-09-30), armed at today's measurement on METER-FIX's meter.
 [[cell]]
 crate = "busbar-transport-ws"
 kind = "transport"
-count = "23"
+count = "24"
 
 [[cell]]
 crate = "busbar-voice"
@@ -1817,7 +1819,7 @@ drain = "none: the #36 kernel group is intra-tier by design. What the paired [[c
 # `*_MODULE*` constants (see xtask/src/gates/kind_isolation/matrix/instances.rs); nothing here
 # lists it.
 #
-# ARMED AT TODAY'S MEASURED NUMBER (Law 9, KICKOFF 9.4), exact in both directions: a rise is the
+# ARMED AT TODAY'S MEASURED NUMBER (Law 9, TODO rule 9.4), exact in both directions: a rise is the
 # landing that grew the naming, a fall must bring the row down with it, a zero cell must be struck.
 # The ship twin owes ZERO in every neutral crate (law0-neutral-instance). The drain is Phase 4's.
 

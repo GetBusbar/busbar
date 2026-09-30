@@ -596,6 +596,26 @@ pub const A2A_PUSH_CONFIG_UNDELETED: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// A per-task push-delivery queue was full and dropped its oldest, not-yet-attempted notification.
+pub const A2A_PUSH_QUEUE_DROPPED: Diagnostic = Diagnostic {
+    code: 7105,
+    class: Class::Plane,
+    slug: "a2a-push-queue-dropped",
+    title: "A2A push-delivery queue dropped an event",
+    severity: Severity::BenignRecurring,
+    summary: "A task's push-notification delivery queue (bounded, per task, so one slow webhook \
+              cannot pin unbounded memory) was at capacity when a new state change arrived, and the \
+              OLDEST not-yet-attempted notification was dropped to make room. The caller's poll of \
+              the task's own state is unaffected — this is the push CHANNEL falling behind an \
+              unusually fast sequence of transitions against a slow receiver, not a lost task \
+              outcome. The most recent state is enqueued and will still be delivered.",
+    action: "None ordinarily — self-heals once the receiver catches up. A callback that drops \
+             notifications routinely has a receiver too slow for the task's event rate; the caller \
+             should poll rather than rely on push alone.",
+    since: "1.6.0",
+    retired: false,
+};
+
 /// The reconciliation found busbar's own push registration gone at the agent and the re-arm failed.
 pub const A2A_PUSH_REARM_FAILED: Diagnostic = Diagnostic {
     code: 7103,
@@ -674,6 +694,7 @@ pub static DIAGNOSTICS: &[&Diagnostic] = &[
     &A2A_DISPATCH_UNRECORDED,
     &A2A_PUSH_CALLBACK_UNPERSISTED,
     &A2A_PUSH_CONFIG_UNDELETED,
+    &A2A_PUSH_QUEUE_DROPPED,
     &A2A_PUSH_REARM_FAILED,
     &PLANE_SSE_FRAME_NOT_UTF8,
 ];

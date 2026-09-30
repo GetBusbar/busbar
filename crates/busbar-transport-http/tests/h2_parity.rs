@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE 1.5.5 BYTE COMPARISON: an HTTP/2 bearer request, as 1.5.5's egress client put it on the
-//! wire and as this door puts it on the wire, byte for byte.
+//! THE 1.5.5 BYTE COMPARISON, SECOND OPINION: an HTTP/2 bearer request, as 1.5.5's egress client
+//! put it on the wire and as this door puts it on the wire, byte for byte.
+//!
+//! The exit test is `tests/wire_golden.rs`, which reads what the PUBLISHED 1.5.5 binary sent (the
+//! recorded capture cells). This file rebuilds 1.5.5's client from its source instead, so a drift
+//! between the recording and a fresh reqwest 0.12 build shows up as a disagreement between the two.
 //!
 //! 1.5.5's client is reqwest 0.12 with its `http2` feature, built with exactly the calls 1.5.5 made
 //! (`crates/busbar/src/main.rs` at v1.5.5, the shared upstream client: keep-alive 30s/10s, adaptive

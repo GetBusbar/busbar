@@ -1819,4 +1819,41 @@ mod door {
         let mut e = Frame::new(in_head(), out_head());
         assert_eq!(green.call(life::CLOSE, &mut e).outcome, Outcome::Ready);
     }
+
+    /// RED: the host's copy of a generation snapshot survives the plugin's next refresh and the
+    /// retire of its generation. The copy is taken inside the READY crossing that published it
+    /// (`Plugin<Plane>::open`/`refresh`), so after the plugin has published generation 2 and
+    /// dropped generation 1's memory, the host still reads generation 1 exactly as it was published.
+    #[test]
+    fn red_the_hosts_snapshot_copy_survives_the_plugins_next_refresh() {
+        for p in [Some(linked()), dropped()].into_iter().flatten() {
+            let mut o = open_frame(1);
+            let (c, first) = p.open(&mut o);
+            assert_eq!(c.outcome, Outcome::Ready);
+            let first = first.expect("a READY open's snapshot is copied");
+            let published = first.clone();
+            assert_eq!(first.generation, 1);
+            assert_eq!(first.claims.len(), 1);
+            assert_eq!(first.claims[0].target, "/echo");
+            assert!(first.admin_routes.is_empty());
+
+            let mut r: Frame<RefreshIn, PlaneRefreshOut> = Frame::new(z(), z());
+            (r.input.head, r.out.head) = (in_head(), out_head());
+            r.input.generation = 2;
+            let (c, second) = p.refresh(&mut r);
+            assert_eq!(c.outcome, Outcome::Ready);
+            let second = second.expect("a READY refresh's snapshot is copied");
+            assert_eq!((second.generation, second.admin_routes.len()), (2, 1));
+
+            let mut g = Frame::new(
+                GenIn {
+                    head: in_head(),
+                    generation: 1,
+                },
+                out_head(),
+            );
+            assert_eq!(p.call(life::RETIRE, &mut g).outcome, Outcome::Ready);
+            assert_eq!(first, published, "generation 1's copy outlives its retire");
+        }
+    }
 }

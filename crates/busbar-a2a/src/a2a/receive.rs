@@ -43,9 +43,9 @@ use crate::diagnostics::{
     A2A_AGENT_BINDING_UNSPEAKABLE, A2A_BREAKER_REFUSAL_UNRECORDED, A2A_DISPATCH_UNRECORDED,
     A2A_FAILURE_UNRECORDED, A2A_INBOUND_TASK_UNOPENED, A2A_INBOUND_TASK_UNRECORDED,
     A2A_INTERRUPTED_TASK_UNRESUMED, A2A_OUTBOUND_CRED_UNLEASED, A2A_OWN_CARD_BUILD_FAILED,
-    A2A_PUSH_CALLBACK_UNPERSISTED, A2A_PUSH_NOTIFY_UNDELIVERED, A2A_REFUSE_SERVE_CARD,
-    A2A_RELAYED_OUTCOME_UNRECORDED, A2A_RELAYED_STREAM_REFUSED, A2A_RELAYED_SUBMISSION_FAILED,
-    A2A_RELAY_THREAD_INCOMPLETE, A2A_STREAM_EMPTY, A2A_STREAM_RELAY_INCOMPLETE,
+    A2A_PUSH_CALLBACK_UNPERSISTED, A2A_REFUSE_SERVE_CARD, A2A_RELAYED_OUTCOME_UNRECORDED,
+    A2A_RELAYED_STREAM_REFUSED, A2A_RELAYED_SUBMISSION_FAILED, A2A_RELAY_THREAD_INCOMPLETE,
+    A2A_STREAM_EMPTY, A2A_STREAM_RELAY_INCOMPLETE,
 };
 use busbar_kernel::plane_host::EngineHost;
 use busbar_kernel::{diag_debug, diag_error, diag_warn};
@@ -2913,15 +2913,14 @@ async fn stream_hop(
                     .and_then(|row| super::task::Task::from_row(&row).map_err(|e| e.to_string()))
                 {
                     Ok(task) => {
-                        if task.push_callback.is_some() {
-                            if let Err(e) = super::pushdeliver::deliver(
-                                engine_host.as_ref(),
-                                notify_seam.as_ref(),
-                                &task,
-                            ) {
-                                diag_debug!(A2A_PUSH_NOTIFY_UNDELIVERED, task = %task.task_id, error = %e, "a2a: the push notification was not delivered");
-                            }
-                        }
+                        // ENQUEUED, never delivered inline: this closure is the stream's own chunk
+                        // pump, and a slow webhook (retries included) must not stall later chunks.
+                        // The per-task queue keeps the receiver's order and drains off this thread.
+                        super::pushdeliver::enqueue(
+                            Arc::clone(&engine_host),
+                            Arc::clone(&notify_seam),
+                            task,
+                        );
                     }
                     Err(e) => {
                         // Reported, never fatal — the STREAM keeps flowing to the caller (the same
@@ -3224,8 +3223,8 @@ fn record_state(ctx: &HopContext, state: super::task::TaskState) {
 /// determined and the receiver is the caller's OWN infrastructure: holding busbar's response open
 /// while somebody else's webhook thinks would let a caller slow busbar down by being slow itself.
 ///
-/// ON A BLOCKING THREAD, because the guard performs a real name lookup and the transport blocks a
-/// thread per hop — the same reason the relay and the registration-time guard do.
+/// ORDERED PER TASK through `pushdeliver::enqueue`; each attempt runs on a blocking thread because
+/// the guard performs a real name lookup and the transport blocks a thread per hop.
 ///
 /// A task with no callback never spawns anything: the overwhelmingly common case costs one
 /// `Option` test.
@@ -3237,23 +3236,10 @@ pub(super) fn notify_push(
     if task.push_callback.is_none() {
         return;
     }
-    let seam = Arc::clone(seam);
-    tokio::task::spawn_blocking(move || {
-        let task_id = task.task_id.clone();
-        // DETACHED: the delivery's chained outcome (`record_push_delivery`) reaches the durable
-        // `task_event` seam through the neutral `EngineHost`, which mints the transient `HostCtx`
-        // internally and never lets it cross the `spawn_blocking` boundary.
-        let delivered = super::pushdeliver::deliver(engine_host.as_ref(), seam.as_ref(), &task);
-        match delivered {
-            Ok(()) => tracing::debug!(task = %task_id, "a2a: push notification delivered"),
-            // NEVER fatal to the task, and never retried into a hammer. The outcome is recorded and
-            // the caller's poll will find it; a webhook that is down is the caller's problem to
-            // read in this log line.
-            Err(e) => {
-                diag_debug!(A2A_PUSH_NOTIFY_UNDELIVERED, task = %task_id, error = %e, "a2a: the push notification was not delivered")
-            }
-        }
-    });
+    // The queue's worker delivers (with bounded retry) off this task, in order per task; the
+    // outcome is recorded on the task's own chain by `deliver`, and an undelivered notification is
+    // logged there. Never fatal to the task.
+    super::pushdeliver::enqueue(engine_host, Arc::clone(seam), task);
 }
 
 /// RENDER A HOP REFUSAL. The refusal's own words go to the LOG, where they name the backend and the

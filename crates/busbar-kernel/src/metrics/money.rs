@@ -104,8 +104,8 @@ pub(super) fn refresh_money_gauges(app: &App, now: u64) {
             KEY_GAUGE_LIMIT_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
         }
         for key in keys.iter().take(key_gauge_limit) {
-            // `usage_for` queries the SQLite store for the key's current-window counters.
-            let usage = match gov.usage_for(&app.cost, &key.id, now) {
+            // The key's derived usage, read through the money view's memo.
+            let usage = match gov.viewed_usage_for(&app.cost, &key.id, now) {
                 Ok(Some(u)) => u,
                 Ok(None) => continue, // key vanished between list and get — skip
                 Err(e) => {
@@ -172,13 +172,14 @@ pub(super) fn refresh_money_gauges(app: &App, now: u64) {
 
         // ── GROUP buckets: derived spend + remaining + per-(model, tier) tokens, one series per
         // (group, window) enforcement bucket. Bounded by |groups| x |windows-in-use| (operator-
-        // owned names + the fixed window vocabulary). Spend derives fresh from the ledger x the
-        // CURRENT rate card (reprice-on-read), fee included (each bucket counts its own requests).
+        // owned names + the fixed window vocabulary). Spend is the kernel money view's figure, fee
+        // included (each bucket counts its own requests), read through its memo: a bucket is priced
+        // again only when what it was priced from changed, never because a scraper polled (#43/#71).
         // The `group` and `window` labels are the 1.5.0 limit dimensions; `bucket` stays the raw
         // ledger id for join-ability with the store.
         for group in app.cost.groups() {
             for bucket in &group.buckets {
-                let derived = match gov.derived_bucket_usage(
+                let derived = match gov.viewed_bucket_usage(
                     &app.cost,
                     &bucket.bucket_id,
                     bucket.window,

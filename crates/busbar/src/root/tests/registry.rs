@@ -31,7 +31,7 @@ fn linked_registry() -> Registry {
 /// The shipped transport fold (`<wire key> <composed over, or ->` rows, in build order), as data.
 const TRANSPORT_FOLD: &str = include_str!("fixtures/transport_fold.txt");
 
-/// The sealed walk over the fifty declared claims, most specific first. The decisions plane's two
+/// The sealed walk over the fifty-one declared claims, most specific first. The decisions plane's two
 /// exact paths (item 251) sit among the other exact paths, ahead of every pattern that could also
 /// describe them.
 ///
@@ -47,7 +47,7 @@ const SEALED_ORDER: &str = include_str!("fixtures/sealed_order.txt");
 const CLAIMS_PER_PLANE: &str = include_str!("fixtures/claims_per_plane.txt");
 
 /// Whether this build links a plane on the kernel's SESSION loop (the `gauntlet-session` axis of the
-/// linked table) — and with it its WS transport, its registry row and its four claims. Every pinned
+/// linked table) — and with it its WS transport, its registry row and its five claims. Every pinned
 /// number below is a statement about ONE composition, and the shipped one (the session plane linked,
 /// since its row's feature is in `default`) is the one they are pinned against; a build that
 /// compiled it out is a different composition, not a smaller one. Read off `LINKED`, so this source
@@ -138,7 +138,7 @@ fn six_transports_and_five_planes_register() {
 // because the numbers below are that composition's, not a subset of it.
 #[cfg(linked_every_plane)]
 #[test]
-fn the_planes_declare_fifty_claims() {
+fn the_planes_declare_fifty_one_claims() {
     let claims = linked_claims();
     let count = |plane: &str| claims.iter().filter(|c| c.plane == plane).count();
     // One `<plane key> <claims>` row per plane, pinned as fixture DATA so this source names none.
@@ -168,7 +168,7 @@ fn the_planes_declare_fifty_claims() {
         claims.len(),
         "every claim belongs to a pinned plane"
     );
-    assert_eq!(claims.len(), 50);
+    assert_eq!(claims.len(), 51);
 }
 
 /// The measured overlap, split the way the rule splits it. Both counts are pinned because both
@@ -307,7 +307,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     }
 }
 
-/// The sealed order of the fifty, written out.
+/// The sealed order of the fifty-one, written out.
 ///
 /// A snapshot, and deliberately a verbose one: the walk every arriving connection is matched
 /// against is the thing this file produces, and a change to it is a change to which plane
@@ -318,7 +318,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
 // because the numbers below are that composition's, not a subset of it.
 #[cfg(linked_every_plane)]
 #[test]
-fn the_sealed_order_of_the_fifty_claims_is_pinned() {
+fn the_sealed_order_of_the_fifty_one_claims_is_pinned() {
     let claims = linked_claims();
     let sealed = seal_claims(&claims);
     let walk: Vec<String> = sealed
@@ -607,8 +607,8 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
 fn the_seal_answers_now_that_every_claim_names_a_registered_transport() {
     let sealed = seal(&crate::LINKED, &[], TransportSettings::default())
         .expect("every claim names a live transport");
-    assert_eq!(sealed.claims.len(), 50);
-    assert_eq!(sealed.precedence.len(), 50);
+    assert_eq!(sealed.claims.len(), 51);
+    assert_eq!(sealed.precedence.len(), 51);
 }
 
 /// The operator's request-body cap reaches every linked transport.
