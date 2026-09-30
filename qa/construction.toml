@@ -402,8 +402,8 @@ because = "OWNER GRANT 2026-09-29 (3), a kernel line-limit re-arm at the measure
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
 file    = "qa/construction.toml"
 from    = 52002
-to      = 53169
-because = "R-KERNEL / OWNER GRANT 2026-09-29 (3), KERNEL<>PLUGINS step 4 (BUSBAR-1.6.0.md Part 3, §12): the plane driver core, busbar-kernel/src/plane_driver/ (PlaneUnits implementing Units and RouteAwait over the contract's PlaneCalls; the on_piece pump and the buffers it lends until a crossing returns; cancel and its bill; the money seam and its flush epoch; the kernel-minted unit key on arrive and on_piece). Measured by cargo xtask gate construction, base origin/predev f882c3ce6: ceiling 52002, branch 53151. The ceiling is pinned at the measurement. Re-measured on predev 9cbd0288a (KERNEL-VALIDATE's landed kernel lines under the plane driver): 53156. kernel x plugin-tooling drain: the observer's grants seam (observe::Grants, install_grants), +13; 53169 measured on k1-kpt-drain."
+to      = 53189
+because = "R-KERNEL / OWNER GRANT 2026-09-29 (3), KERNEL<>PLUGINS step 4 (BUSBAR-1.6.0.md Part 3, §12): the plane driver core, busbar-kernel/src/plane_driver/ (PlaneUnits implementing Units and RouteAwait over the contract's PlaneCalls; the on_piece pump and the buffers it lends until a crossing returns; cancel and its bill; the money seam and its flush epoch; the kernel-minted unit key on arrive and on_piece). Measured by cargo xtask gate construction, base origin/predev f882c3ce6: ceiling 52002, branch 53151. The ceiling is pinned at the measurement. Re-measured on predev 9cbd0288a (KERNEL-VALIDATE's landed kernel lines under the plane driver): 53156. kernel x plugin-tooling drain: the observer's grants seam (observe::Grants, install_grants), +13; 53169 measured on k1-kpt-drain. Re-measured on the stack k1-plane-driver d8e5e5b23 + k1-kpt-drain on predev 3cc28b00e (rule L local answer, +20): 53189."
 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_files.teller.ceiling"]
 file    = "qa/construction.toml"
