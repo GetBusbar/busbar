@@ -123,6 +123,7 @@ mod amend;
 // Re-exported for its one production caller, `main`'s boot-book open, which a build runs only when a
 // root leg opens the book; the unit tests reach it through `amend` directly.
 pub use amend::bind_amendments;
+pub(crate) use amend::verify_held;
 
 /// The checkpoint sealer: the cadence, and the audit keyset bound to the ledger's two seams
 /// (Q71(3)). A private child module, as `replay` is; its public items are re-exported here.

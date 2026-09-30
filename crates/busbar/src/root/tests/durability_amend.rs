@@ -158,6 +158,47 @@ fn restart_phase() {
             );
             assert_eq!(accesses[0].fields, vec!["content".to_string()]);
         }
+        // U15: the on-demand verify sees an edit to the HELD amendment run. One correction is
+        // sealed and `/verify` reports nothing; the held run is then edited in place, and `/verify`
+        // names the amendment chain. A process of its own, because the node journal is the
+        // process's one journal.
+        "tamper" => {
+            correct_counts(
+                busbar_contract::authz::Scope::Full,
+                &recorded,
+                CountCorrection {
+                    amends: ENTRY,
+                    principal: Some("pseudonym-1"),
+                    lane: LANE_M,
+                    card_epoch_ms: 1_700_000_000_000,
+                    now: counts(800),
+                    authorised_by: "root",
+                    reason: "duplicate charge on a retried request",
+                    pool: None,
+                },
+            )
+            .expect("a root correction lands");
+            let findings = |answer: crate::root::units_admin::AdminAnswer| -> String {
+                String::from_utf8(answer.body).expect("utf-8")
+            };
+            let clean = crate::root::units_admin::bound::verify_effect(
+                &crate::root::units_admin::UnopenedLedger,
+            )
+            .expect("verify answers");
+            let clean = findings(clean);
+            assert!(!clean.contains("amendment chain"), "{clean}");
+            tamper_node_for_test();
+            let tampered = findings(
+                crate::root::units_admin::bound::verify_effect(
+                    &crate::root::units_admin::UnopenedLedger,
+                )
+                .expect("verify answers"),
+            );
+            assert!(
+                tampered.contains("amendment chain") && tampered.contains(r#""ok":false"#),
+                "an edit to the held amendment run must be a /verify finding: {tampered}"
+            );
+        }
         other => panic!("unknown phase {other}"),
     }
 }
@@ -178,6 +219,20 @@ fn run_phase(phase: &str, dir: &std::path::Path) {
         text.contains("1 passed"),
         "the {phase} phase ran nothing:\n{text}"
     );
+}
+
+/// U15: `GET /admin/verify` VERIFIES THE HELD AMENDMENT RUN ON DEMAND. See the `tamper` phase.
+#[test]
+fn verify_reports_an_edit_to_the_held_amendment_run() {
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-root-amend-verify-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    run_phase("tamper", &dir);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A CORRECTED COUNT AND A CONTENT ACCESS SURVIVE A RESTART. The first process seals a root

@@ -3866,7 +3866,7 @@ pub(crate) use admin_mount::*;
 // ── `adjust` and the idempotency claim journal: sibling modules, re-exported here ─────────────────
 mod adjust;
 pub use adjust::RecordedCounts;
-mod bound;
+pub(crate) mod bound;
 pub use bound::{
     live_admin_door, live_planes, live_records, no_planes, PlaneLookup, PlaneRecordSink,
 };

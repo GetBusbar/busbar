@@ -17,11 +17,24 @@
 //! are part of its public surface.
 
 use super::*;
+#[cfg(test)]
+use busbar_kernel_audit::amend::tamper_node_for_test;
 use busbar_kernel_audit::amend::{
-    self as amend, Access, Adjust, AmendBody, AmendClass, AmendSink, Amendment, ClassCounts, Reader,
+    self as amend, verify_node, Access, Adjust, AmendBody, AmendClass, AmendSink, Amendment,
+    ClassCounts, Reader,
 };
 use busbar_kernel_audit::record::OpClassId;
 use std::sync::{Arc, Mutex, Weak};
+
+/// THE NODE'S HELD AMENDMENT RUN, verified as it stands now — what `GET /admin/verify` reports
+///. The boot restore verifies what it reads back; this sees an edit made after boot.
+///
+/// # Errors
+///
+/// The held run does not verify; the break, rendered.
+pub(crate) fn verify_held() -> Result<(), String> {
+    verify_node().map_err(|broken| broken.to_string())
+}
 
 /// The first field of every amendment record: names the shape, so no other record on the chain is
 /// read as one.

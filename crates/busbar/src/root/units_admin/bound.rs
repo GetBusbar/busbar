@@ -120,6 +120,12 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
     let discrepancies = crate::root::ledger_identity::reconcile(&ledger_rows, &legacy_rows)
         .map_err(|_| GovernanceError::Store)?;
     let identity_holds = discrepancies.is_empty();
+    let mut findings: Vec<String> = findings.iter().map(ToString::to_string).collect();
+    // THE AMENDMENT CHAIN, verified as it is held now: an edit made to the node's held
+    // corrections and content accesses after boot is a finding, as a rewound checkpoint is.
+    if let Err(broken) = crate::root::durability::verify_held() {
+        findings.push(format!("amendment chain: {broken}"));
+    }
     answer(&serde_json::json!({
         "checkpoints": checkpoints.len(),
         "since": since.map(|c| serde_json::json!({
@@ -128,7 +134,7 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
             "wall": c.wall,
         })),
         "book_verified": book_verified,
-        "findings": findings.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        "findings": findings,
         "identity_holds": identity_holds,
         "discrepancies": discrepancies.len(),
         "ok": findings.is_empty() && identity_holds,
