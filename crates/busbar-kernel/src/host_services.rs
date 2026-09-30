@@ -58,7 +58,9 @@ use busbar_contract::services::{
 };
 use sha2::{Digest, Sha256};
 
-use crate::host_records::{record_key, PendingRecords, RecordRows, Write, WriteBehind};
+use crate::host_records::{
+    record_key, Acked, Owed as WriteOwed, PendingRecords, RecordRows, Write, WriteBehind,
+};
 use crate::plane::quarantine::DemotionRecord;
 use crate::trust::book::{Effect, Sight, TrustBook, Unjudged};
 use crate::trust::section::TrustEntry;
@@ -470,18 +472,21 @@ impl KernelServices {
         &self.pending
     }
 
-    /// WRITE `value` under `key` of the caller's record kind `kind`, behind: the instance reads it
-    /// at once, and the store takes it in the next batch, on the pool.
+    /// WRITE `value` under `key` of the caller's record kind `kind`: the instance reads it at once,
+    /// the store takes it in the next batch, on the pool, and `acked` is answered only then (`Ok`,
+    /// or the store's refusal). The write is durable before its writer hears so.
     ///
     /// # Errors
     ///
-    /// The refusal: an instance never admitted, a kind it did not declare, or no store or pool.
+    /// The refusal, with `acked` never called: an instance never admitted, a kind it did not
+    /// declare, or no store or pool.
     pub fn record_write(
         &self,
         caller: &Caller,
         kind: &str,
         key: &[u8],
         value: RecordBytes,
+        acked: Acked,
     ) -> Result<(), &'static str> {
         let (schema, records, pool) = self.scope(caller, kind).map_err(|s| s.error)?;
         let seq =
@@ -493,6 +498,7 @@ impl KernelServices {
             key: key.to_vec(),
             value,
             seq,
+            owed: WriteOwed::new(acked),
         };
         if self.batcher.push(write) {
             let unrun = Unrun(Some(Arc::clone(&self.batcher)));

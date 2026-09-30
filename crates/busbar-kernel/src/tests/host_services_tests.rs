@@ -347,6 +347,7 @@ use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::kinds::{RecordBytes, StoreError};
 
 use crate::governance::MemoryStore;
+use crate::host_records::{WRITE_DROPPED, WRITE_FAILED};
 use crate::trust::reverify::Policy;
 use crate::trust::section::{DeclaredPin, TrustEntry};
 
@@ -936,6 +937,11 @@ impl RecordRows for Gauge {
     }
 }
 
+/// A write's answer nobody waits for.
+fn noop() -> Acked {
+    Box::new(|_| {})
+}
+
 /// Kernel services over `reads`, on the blocking pool of `rt`, with "inst" admitted.
 fn pooled(rt: &tokio::runtime::Runtime, reads: Arc<dyn RecordRows>) -> KernelServices {
     let s = services(Arc::default())
@@ -1098,8 +1104,14 @@ fn a_burst_of_writes_is_one_batch_and_the_writer_reads_it_at_once() {
     let bytes = |v: String| RecordBytes::new(v.into_bytes()).unwrap();
     for i in 0..50 {
         let key = format!("k{i:02}");
-        s.record_write(&me, "approval", key.as_bytes(), bytes(format!("v{i}")))
-            .unwrap();
+        s.record_write(
+            &me,
+            "approval",
+            key.as_bytes(),
+            bytes(format!("v{i}")),
+            noop(),
+        )
+        .unwrap();
     }
     // The writer reads its writes before the store has any of them.
     assert_eq!(
@@ -1114,8 +1126,14 @@ fn a_burst_of_writes_is_one_batch_and_the_writer_reads_it_at_once() {
     };
     assert_eq!(stored("inst", b"k07"), None);
     // Another instance writing the same key writes its own record.
-    s.record_write(&caller("other"), "approval", b"k07", bytes("theirs".into()))
-        .unwrap();
+    s.record_write(
+        &caller("other"),
+        "approval",
+        b"k07",
+        bytes("theirs".into()),
+        noop(),
+    )
+    .unwrap();
     // One flush carried the whole burst.
     assert_eq!(held.drain(), 1);
     assert_eq!(s.pending().queued(), 0);
@@ -1123,7 +1141,7 @@ fn a_burst_of_writes_is_one_batch_and_the_writer_reads_it_at_once() {
     assert_eq!(stored("inst", b"k49"), Some(b"v49".to_vec()));
     assert_eq!(stored("other", b"k07"), Some(b"theirs".to_vec()));
     // The next write starts the next flush.
-    s.record_write(&me, "approval", b"k50", bytes("v50".into()))
+    s.record_write(&me, "approval", b"k50", bytes("v50".into()), noop())
         .unwrap();
     assert_eq!(held.drain(), 1);
     assert_eq!(stored("inst", b"k50"), Some(b"v50".to_vec()));
@@ -1150,10 +1168,11 @@ fn a_flush_the_pool_refuses_leaves_the_writes_readable_and_queued_for_the_next()
     rt.shutdown_background();
     let me = caller("inst");
     let v = RecordBytes::new(b"v".to_vec()).unwrap();
-    s.record_write(&me, "approval", b"k", v.clone()).unwrap();
+    s.record_write(&me, "approval", b"k", v.clone(), noop())
+        .unwrap();
     assert_eq!(run(|l| s.records_get(&me, "approval", b"k", l)).bytes, b"v");
     // The refused flush was abandoned: the next write starts one again (refused too, here).
-    s.record_write(&me, "approval", b"k2", v).unwrap();
+    s.record_write(&me, "approval", b"k2", v, noop()).unwrap();
     assert_eq!(s.pending().queued(), 2);
 }
 
@@ -1273,4 +1292,106 @@ fn a_call_past_the_pools_bound_answers_failed_at_once() {
         let a = rx.recv_timeout(std::time::Duration::from_secs(10));
         assert_eq!(a, Ok((Outcome::Ready, "")));
     }
+}
+
+/// Record rows that refuse every put.
+struct Refusing(Mem);
+
+impl RecordRows for Refusing {
+    fn record_put(
+        &self,
+        _schema: RecordSchemaId,
+        _key: &[u8],
+        _value: &RecordBytes,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Unavailable)
+    }
+
+    fn record_get(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+    ) -> Result<Option<RecordBytes>, StoreError> {
+        self.0.record_get(schema, key)
+    }
+
+    fn record_scan(
+        &self,
+        schema: RecordSchemaId,
+        prefix: &[u8],
+        limit: u32,
+    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError> {
+        self.0.record_scan(schema, prefix, limit)
+    }
+}
+
+/// The answers writes got, in order.
+type Answers = Arc<Mutex<Vec<Result<(), &'static str>>>>;
+
+/// The answers of writes, in the order they came.
+fn answers() -> (Answers, impl Fn() -> Acked) {
+    let got = Arc::new(Mutex::new(Vec::new()));
+    let g = Arc::clone(&got);
+    (got, move || {
+        let g = Arc::clone(&g);
+        Box::new(move |r| g.lock().unwrap().push(r)) as Acked
+    })
+}
+
+#[test]
+fn a_write_is_answered_only_once_the_store_took_it() {
+    let r = rig();
+    let held = Arc::new(Held::default());
+    let s = services(Arc::default())
+        .with_records(Arc::new(Mem(Arc::clone(&r.store))), r.store.clone())
+        .with_pool(Arc::new(Arc::clone(&held)));
+    s.admit(
+        "inst",
+        InstanceFacts {
+            record_kinds: vec![KIND],
+            ..InstanceFacts::default()
+        },
+    )
+    .unwrap();
+    let (got, acked) = answers();
+    let v = RecordBytes::new(b"v".to_vec()).unwrap();
+    s.record_write(&caller("inst"), "approval", b"k", v, acked())
+        .unwrap();
+    // Queued, readable, and NOT answered: the store has not taken it.
+    assert!(got.lock().unwrap().is_empty());
+    assert_eq!(held.drain(), 1);
+    assert_eq!(*got.lock().unwrap(), vec![Ok(())]);
+    let stored = r.store.record_get(KIND, &record_key("inst", b"k")).unwrap();
+    assert!(stored.is_some());
+}
+
+#[test]
+fn a_write_the_store_refuses_answers_failed_and_leaves_the_overlay() {
+    let store = Arc::new(MemoryStore::new());
+    let held = Arc::new(Held::default());
+    let s = services(Arc::default())
+        .with_records(Arc::new(Refusing(Mem(Arc::clone(&store)))), store.clone())
+        .with_pool(Arc::new(Arc::clone(&held)));
+    s.admit(
+        "inst",
+        InstanceFacts {
+            record_kinds: vec![KIND],
+            ..InstanceFacts::default()
+        },
+    )
+    .unwrap();
+    let (got, acked) = answers();
+    let v = RecordBytes::new(b"v".to_vec()).unwrap();
+    s.record_write(&caller("inst"), "approval", b"k", v, acked())
+        .unwrap();
+    assert_eq!(held.drain(), 1);
+    assert_eq!(*got.lock().unwrap(), vec![Err(WRITE_FAILED)]);
+    assert_eq!(s.pending().queued(), 0);
+}
+
+#[test]
+fn a_write_dropped_before_any_flush_answers_dropped() {
+    let (got, acked) = answers();
+    drop(crate::host_records::Owed::new(acked()));
+    assert_eq!(*got.lock().unwrap(), vec![Err(WRITE_DROPPED)]);
 }

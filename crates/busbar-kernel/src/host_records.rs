@@ -13,8 +13,10 @@
 //!   [`PendingRecords::acked`] once the store took it; a read consults it first, so an instance
 //!   always reads what it wrote.
 //! * [`WriteBehind`] batches the writes to the store: a burst queues behind the one flush that is
-//!   running, which writes everything queued, batch after batch, then ends; a write the store
-//!   refuses stays queued, first in line for the next flush.
+//!   running, which writes everything queued, batch after batch, then ends. A write is ANSWERED only
+//!   once the store took it ([`Acked`]): a write is durable before its writer hears so, as the
+//!   durable handle engine's write-through is. A write the store refuses answers FAILED and leaves
+//!   the overlay.
 //! * [`record_key`] scopes every stored key by the instance's LABEL: two instances declaring one
 //!   kind (of one plugin or of two) never read or write each other's records.
 //! * The list rule, laying the overlay over the store's rows, is the contract's
@@ -184,6 +186,46 @@ impl PendingRecords {
     }
 }
 
+/// Where a record write's answer goes, once: `Ok` when the store took it, or the refusal.
+pub type Acked = Box<dyn FnOnce(Result<(), &'static str>) + Send>;
+
+/// The answer of a write the store did not take.
+pub const WRITE_FAILED: &str = "the store did not take the write";
+/// The answer of a write dropped before any flush reached it.
+pub const WRITE_DROPPED: &str = "the write was dropped before the store took it";
+
+/// A write's owed answer. Dropped unanswered it answers [`WRITE_DROPPED`]: a writer never waits on
+/// a write nobody will make.
+pub struct Owed(Option<Acked>);
+
+impl Owed {
+    /// Owe `acked` its answer.
+    #[must_use]
+    pub fn new(acked: Acked) -> Self {
+        Self(Some(acked))
+    }
+
+    fn answer(mut self, result: Result<(), &'static str>) {
+        if let Some(acked) = self.0.take() {
+            acked(result);
+        }
+    }
+}
+
+impl Drop for Owed {
+    fn drop(&mut self) {
+        if let Some(acked) = self.0.take() {
+            acked(Err(WRITE_DROPPED));
+        }
+    }
+}
+
+impl std::fmt::Debug for Owed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Owed")
+    }
+}
+
 /// One write on its way to the store.
 #[derive(Debug)]
 pub struct Write {
@@ -197,6 +239,8 @@ pub struct Write {
     pub value: RecordBytes,
     /// Its sequence in [`PendingRecords`].
     pub seq: u64,
+    /// Its writer's answer.
+    pub owed: Owed,
 }
 
 #[derive(Debug, Default)]
@@ -228,9 +272,9 @@ impl WriteBehind {
         self.lock().flushing = false;
     }
 
-    /// THE FLUSH: write every queued write to `rows`, batch after batch, and acknowledge each in
-    /// `pending`; end when nothing is queued. A write the store refuses ends the flush and stays
-    /// queued ahead of the rest, in order, for the next.
+    /// THE FLUSH: write every queued write to `rows`, in order, batch after batch; answer each once
+    /// the store took it and acknowledge it in `pending`; end when nothing is queued. A write the
+    /// store refuses answers [`WRITE_FAILED`] and leaves the overlay; the rest go on.
     pub fn flush(&self, pending: &PendingRecords, rows: &dyn RecordRows) {
         loop {
             let batch = {
@@ -242,19 +286,11 @@ impl WriteBehind {
                 }
                 batch
             };
-            let mut writes = batch.into_iter();
-            for w in writes.by_ref() {
+            for w in batch {
                 let key = record_key(&w.instance, &w.key);
-                if rows.record_put(w.schema, &key, &w.value).is_err() {
-                    let mut q = self.lock();
-                    let mut kept = vec![w];
-                    kept.extend(writes);
-                    kept.append(&mut q.writes);
-                    q.writes = kept;
-                    q.flushing = false;
-                    return;
-                }
+                let took = rows.record_put(w.schema, &key, &w.value);
                 pending.acked(&w.instance, w.schema.as_str(), &w.key, w.seq);
+                w.owed.answer(took.map_err(|_| WRITE_FAILED));
             }
         }
     }
