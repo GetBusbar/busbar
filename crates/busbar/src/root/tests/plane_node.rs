@@ -1113,6 +1113,85 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
     assert_eq!(replayed.len(), 1, "one posting, one record");
 }
 
+/// A DRIVEN PLANE'S ABANDONED END POSTS ONCE, onto the node's book. The loop's sealed end is handed
+/// to the root's posting site under the unit's key: posted once for a unit whose facts are open,
+/// never for a unit that closed (returned) or was never opened, and never twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_driven_planes_abandoned_end_posts_once_onto_the_nodes_book() {
+    use busbar_kernel::plane_driver::EndPost;
+    let rig = rig(Fixture::BufferedOk).await;
+    let node = Arc::new(Node::new());
+    let durability = crate::root::durability::build(
+        &crate::root::durability::DurabilityConfig { data_dir: None },
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+    )
+    .expect("a memory-buffered journal cannot fail to open");
+    let book = Arc::new(std::sync::Mutex::new(durability));
+    node.bind_book(Arc::clone(&book));
+    let posted = || {
+        book.lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .journal
+            .replay()
+            .expect("reads back")
+            .expect("verifies")
+            .len()
+    };
+    let site = NodeEndPost::new(Arc::clone(&node));
+    let ctx = |key: u64| UnitCtx {
+        key: UnitKey::new(key),
+        origin: OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    let who = PrincipalId::new("acct:node");
+    // Opened, then abandoned: posted once; a second post of the same key posts nothing.
+    let ended = drive_to_end(
+        &rig,
+        &node,
+        Fixture::BufferedOk,
+        rig.gov(),
+        plane::native_seats(),
+    )
+    .await;
+    site.open(
+        UnitKey::new(41),
+        who.clone(),
+        Arrived::at(EPOCH * 1_000, 0),
+        None,
+    );
+    site.post(&ctx(41), ended);
+    assert_eq!(posted(), 1, "the abandoned end is on the book");
+    let ended = drive_to_end(
+        &rig,
+        &node,
+        Fixture::BufferedOk,
+        rig.gov(),
+        plane::native_seats(),
+    )
+    .await;
+    site.post(&ctx(41), ended);
+    assert_eq!(posted(), 1, "an end posts at most once");
+    // Opened then closed (the unit returned): the node's exit arm posts it, not this site.
+    let ended = drive_to_end(
+        &rig,
+        &node,
+        Fixture::BufferedOk,
+        rig.gov(),
+        plane::native_seats(),
+    )
+    .await;
+    site.open(UnitKey::new(42), who, Arrived::at(EPOCH * 1_000, 1), None);
+    site.close(UnitKey::new(42));
+    site.post(&ctx(42), ended);
+    assert_eq!(posted(), 1, "a returned unit's end is not this site's");
+    assert_eq!(site.open_units(), 0, "every unit's facts closed");
+    rig.server.shutdown().await;
+}
+
 /// THE FLAT FEE IS A CLIENT'S FEE, and this plane reads which it has off the sealed origin.
 ///
 /// One unit, driven once and then asked the same question under two origins. The delivered

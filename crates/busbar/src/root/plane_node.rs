@@ -1427,6 +1427,99 @@ impl RouteAwait for Driven<'_> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The driven plane's abandoned end
+// ---------------------------------------------------------------------------------------------
+
+/// THE ROOT'S POSTING SITE for an abandoned end of a unit the kernel's plane driver runs
+/// (`busbar_kernel::plane_driver::EndPost`): the caller went away, the loop's guard sealed the end,
+/// and it is posted here onto the same book, balance and window a returned end settles on
+/// ([`Node::settle_end`], the node's one posting site; no second seal). The root opens each unit's
+/// facts at admission (its principal, its pinned arrival, the card history it was admitted under)
+/// and closes them when the unit returns; an end posts at most once.
+pub struct NodeEndPost {
+    node: Arc<Node>,
+    open: Mutex<
+        HashMap<
+            UnitKey,
+            (
+                PrincipalId,
+                Arrived,
+                Option<crate::root::kernel::PinnedHistory>,
+            ),
+        >,
+    >,
+}
+
+impl std::fmt::Debug for NodeEndPost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeEndPost").finish_non_exhaustive()
+    }
+}
+
+impl NodeEndPost {
+    /// The posting site over `node`.
+    #[must_use]
+    pub fn new(node: Arc<Node>) -> Self {
+        NodeEndPost {
+            node,
+            open: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn lock(
+        &self,
+    ) -> std::sync::MutexGuard<
+        '_,
+        HashMap<
+            UnitKey,
+            (
+                PrincipalId,
+                Arrived,
+                Option<crate::root::kernel::PinnedHistory>,
+            ),
+        >,
+    > {
+        self.open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Unit `key`'s facts, at its admission.
+    pub fn open(
+        &self,
+        key: UnitKey,
+        principal: PrincipalId,
+        arrived: Arrived,
+        history: Option<crate::root::kernel::PinnedHistory>,
+    ) {
+        self.lock().insert(key, (principal, arrived, history));
+    }
+
+    /// Unit `key` returned: its end is the node's exit arm's to post, never this site's.
+    pub fn close(&self, key: UnitKey) {
+        self.lock().remove(&key);
+    }
+
+    /// How many units' facts are open (a witness: every unit closes).
+    #[must_use]
+    pub fn open_units(&self) -> usize {
+        self.lock().len()
+    }
+}
+
+impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
+    /// Post the abandoned end, once. Inside the loop's `Drop` guard: the book's settle is the
+    /// node's in-memory posting behind one short lock, and nothing here awaits or crosses a plugin.
+    fn post(&self, ctx: &UnitCtx, ended: Ended) {
+        let facts = self.lock().remove(&ctx.key);
+        if let Some((principal, arrived, history)) = facts {
+            self.node
+                .settle_end(&principal, arrived, history.as_ref(), ended);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // The exit arm
 // ---------------------------------------------------------------------------------------------
 
