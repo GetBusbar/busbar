@@ -158,7 +158,7 @@ pub struct Stages {
     pub candidates: Vec<Candidate>,
     /// The instances selected over them.
     pub selected: Vec<Selected>,
-    /// Every selected instance's inbound listener, with its bind (THE DESIGN §3 stage 3f).
+    /// Every selected instance's inbound listener, with its bind (boot stage 3f's input).
     pub inbound: Vec<InboundBind>,
 }
 

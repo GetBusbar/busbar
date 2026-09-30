@@ -564,45 +564,45 @@ use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
 #[test]
 fn inbound_needs_are_collected_with_their_binds_from_instance_settings() {
     let d = doc(r#"{
-        "agents": {"ingress": {"grpc": {"listen": "127.0.0.1:9443",
-            "tls": {"cert": {"file": "/c.pem"}, "key": {"env": "K"}}}}},
-        "export": {"scrape": {"module": "prom",
+        "agents": {"ingress": {"edge": {"listen": "127.0.0.1:9443",
+            "tls": {"cert": {"ref": "c"}, "key": {"ref": "k"}}}}},
+        "export": {"scrape": {"module": "sink",
             "settings": {"serve": {"listen": "0.0.0.0:9100", "max_conns": 8}}}}
     }"#);
     let cands = vec![
         listening(
             KindCode::Plane,
-            "a2a",
+            "p1",
             &["agents"],
             vec![
-                need(DIRECTION_OUTBOUND, "https", ""),
-                need(DIRECTION_INBOUND, "grpc", "ingress.grpc"),
+                need(DIRECTION_OUTBOUND, "scheme-c", ""),
+                need(DIRECTION_INBOUND, "scheme-a", "ingress.edge"),
             ],
         ),
         listening(
             KindCode::Export,
-            "prom",
+            "sink",
             &[],
-            vec![need(DIRECTION_INBOUND, "http", "serve")],
+            vec![need(DIRECTION_INBOUND, "scheme-b", "serve")],
         ),
         listening(
             KindCode::Plane,
             "unused",
             &["tools"],
-            vec![need(DIRECTION_INBOUND, "http", "nowhere")],
+            vec![need(DIRECTION_INBOUND, "scheme-b", "nowhere")],
         ),
     ];
     let got = inbound(&d, &cands, &[sel(0, "agents"), sel(1, "scrape")], &[]).unwrap();
     assert_eq!(got.len(), 2);
     assert_eq!(got[0].instance, "agents");
     assert_eq!(got[0].need, 1, "the need's index in its Statement");
-    assert_eq!(got[0].transport, "grpc");
-    assert_eq!(got[0].at, "agents.ingress.grpc");
+    assert_eq!(got[0].transport, "scheme-a");
+    assert_eq!(got[0].at, "agents.ingress.edge");
     assert_eq!(got[0].listen, "127.0.0.1:9443".parse().unwrap());
     assert_eq!(got[0].max_conns, DEFAULT_MAX_CONNS);
     assert_eq!(
         got[0].tls,
-        Some(doc(r#"{"cert": {"file": "/c.pem"}, "key": {"env": "K"}}"#)),
+        Some(doc(r#"{"cert": {"ref": "c"}, "key": {"ref": "k"}}"#)),
         "the TLS block stays raw: its references resolve at stage 3f"
     );
     assert_eq!(got[1].at, "export.scrape.settings.serve");
@@ -618,9 +618,9 @@ fn red_an_inbound_need_without_a_usable_bind_is_refused_by_its_setting() {
         let d = doc(&format!(r#"{{"agents": {settings}}}"#));
         let c = vec![listening(
             KindCode::Plane,
-            "a2a",
+            "p1",
             &["agents"],
-            vec![need(DIRECTION_INBOUND, "grpc", target_from)],
+            vec![need(DIRECTION_INBOUND, "scheme-a", target_from)],
         )];
         inbound(&d, &c, &[sel(0, "agents")], &[]).unwrap_err()
     };
@@ -656,11 +656,11 @@ fn red_two_listeners_on_one_address_are_refused() {
     }"#);
     let c = vec![listening(
         KindCode::Plane,
-        "a2a",
+        "p1",
         &["agents"],
         vec![
-            need(DIRECTION_INBOUND, "grpc", "a"),
-            need(DIRECTION_INBOUND, "http", "b"),
+            need(DIRECTION_INBOUND, "scheme-a", "a"),
+            need(DIRECTION_INBOUND, "scheme-b", "b"),
         ],
     )];
     assert_eq!(
@@ -670,9 +670,9 @@ fn red_two_listeners_on_one_address_are_refused() {
     let d = doc(r#"{"agents": {"a": {"listen": "127.0.0.1:8080"}}}"#);
     let c = vec![listening(
         KindCode::Plane,
-        "a2a",
+        "p1",
         &["agents"],
-        vec![need(DIRECTION_INBOUND, "grpc", "a")],
+        vec![need(DIRECTION_INBOUND, "scheme-a", "a")],
     )];
     let root = [("listen".to_string(), "0.0.0.0:8080".parse().unwrap())];
     assert_eq!(
@@ -682,11 +682,11 @@ fn red_two_listeners_on_one_address_are_refused() {
     let d = doc(r#"{"agents": {"a": {"listen": "127.0.0.1:0"}, "b": {"listen": "127.0.0.1:0"}}}"#);
     let c = vec![listening(
         KindCode::Plane,
-        "a2a",
+        "p1",
         &["agents"],
         vec![
-            need(DIRECTION_INBOUND, "grpc", "a"),
-            need(DIRECTION_INBOUND, "http", "b"),
+            need(DIRECTION_INBOUND, "scheme-a", "a"),
+            need(DIRECTION_INBOUND, "scheme-b", "b"),
         ],
     )];
     assert_eq!(
@@ -704,7 +704,7 @@ fn a_candidate_carries_its_statements_needs() {
     const NEEDS: &[Need] = &[Need {
         direction: DIRECTION_INBOUND,
         egress_class: 0,
-        transport: abi_str("grpc"),
+        transport: abi_str("scheme-a"),
         auth: abi_str(""),
         target_from: abi_str("ingress"),
         trust_from: abi_str(""),
@@ -732,5 +732,8 @@ fn a_candidate_carries_its_statements_needs() {
         },
     )
     .unwrap();
-    assert_eq!(c.needs, vec![need(DIRECTION_INBOUND, "grpc", "ingress")]);
+    assert_eq!(
+        c.needs,
+        vec![need(DIRECTION_INBOUND, "scheme-a", "ingress")]
+    );
 }

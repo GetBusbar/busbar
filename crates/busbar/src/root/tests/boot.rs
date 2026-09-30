@@ -236,7 +236,7 @@ use busbar_contract::abi::mechanism::KindCode;
 fn listening_plane(target_from: &str) -> Candidate {
     Candidate {
         kind: KindCode::Plane,
-        name: "a2a".into(),
+        name: "p1".into(),
         aliases: Vec::new(),
         sugar: Vec::new(),
         verbs: vec!["agents".into()],
@@ -244,7 +244,7 @@ fn listening_plane(target_from: &str) -> Candidate {
         needs: vec![ReadNeed {
             direction: DIRECTION_INBOUND,
             egress_class: 0,
-            transport: "grpc".into(),
+            transport: "scheme-a".into(),
             auth: String::new(),
             target_from: target_from.into(),
             trust_from: String::new(),
@@ -256,7 +256,7 @@ fn listening_plane(target_from: &str) -> Candidate {
         }],
         stated: Vec::new(),
         origin: Origin::Dropped {
-            file: "a2a.tar.gz".into(),
+            file: "p1.tar.gz".into(),
             bytes: Arc::new(Vec::new()),
         },
     }

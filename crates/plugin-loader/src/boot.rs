@@ -462,7 +462,7 @@ pub fn load_planes(
 /// A listener's connection cap when its settings block names none (new in 1.6.0).
 pub const DEFAULT_MAX_CONNS: u64 = 1024;
 
-/// ONE INBOUND NEED'S BIND (THE DESIGN §3 stages 3f and 6, §5): the listener a selected instance's
+/// ONE INBOUND NEED'S BIND (boot stages 3f and 6): the listener a selected instance's
 /// `DIRECTION_INBOUND` need asks for, read from the settings block its `target_from` names,
 /// `{listen, tls: {cert, key, client_ca?}, max_conns?}` — the 1.5.5 root `listen` / `tls` shape.
 /// The TLS block stays raw: its `cert` and `key` are secret references the root resolves through
