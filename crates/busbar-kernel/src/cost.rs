@@ -273,6 +273,16 @@ pub struct CostModel {
     /// "does this ledger cell still back an enforced cap?" an IDENTITY question (is this id one of
     /// the ids the model produces?) instead of a parse of the id's internal structure.
     capped_bucket_ids: std::collections::HashSet<String>,
+    /// This model's GENERATION: unique to each constructed model and moved by every card edit, so
+    /// the scrape's money-view memo (`governance::money_view`) knows the card changed without
+    /// comparing cards. Never reused, so a new model at a freed address cannot pass as the old one.
+    generation: u64,
+}
+
+/// The next [`CostModel`] generation.
+fn next_generation() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl CostModel {
@@ -317,6 +327,7 @@ impl CostModel {
         let (groups, group_idx) = Self::project_groups(groups_cfg);
         Self {
             capped_bucket_ids: Self::capped_bucket_ids(&groups),
+            generation: next_generation(),
             card,
             groups,
             group_idx,
@@ -334,6 +345,7 @@ impl CostModel {
         let (groups, group_idx) = Self::project_groups(groups_cfg);
         Self {
             capped_bucket_ids: Self::capped_bucket_ids(&groups),
+            generation: next_generation(),
             card: self.card.clone(),
             groups,
             group_idx,
@@ -488,6 +500,7 @@ impl CostModel {
             groups: Vec::new(),
             group_idx: HashMap::new(),
             capped_bucket_ids: std::collections::HashSet::new(),
+            generation: next_generation(),
         }
     }
 
@@ -521,7 +534,13 @@ impl CostModel {
         self.card = self
             .card
             .with_plane_fees(fees.iter().map(|(p, f)| (&**p, *f)));
+        self.generation = next_generation();
         self
+    }
+
+    /// This model's generation (see the field).
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// The card every figure this model derives is priced against — the one function's own type.

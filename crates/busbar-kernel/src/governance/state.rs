@@ -1,7 +1,10 @@
 use super::*;
 use busbar_contract::records::{UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
-use busbar_kernel_ledger::cost::{
-    plane_fee_lane, split_plane_lane, Money, MICROS_PER_CENT, PER_REQUEST,
+use busbar_kernel_ledger::{
+    cost::{
+        plane_fee_lane, split_plane_lane, History, Money, MoneyError, MICROS_PER_CENT, PER_REQUEST,
+    },
+    usage::FeeEras,
 };
 use std::collections::{BTreeMap, BTreeSet};
 // The wall clock, by name: the admission path reads it and never reaches a store handle for it.
@@ -84,6 +87,7 @@ impl GovState {
             ),
             budget: Sharded::new(),
             pending_metering: PendingMetering::new(),
+            money_view: money_view::MoneyView::default(),
             signing: RwLock::new(signer.map(|s| Arc::new(SigningMaterial::new(s)))),
             denylist,
             refresh_lock: std::sync::Mutex::new(()),
@@ -1062,6 +1066,7 @@ impl GovState {
         // A still-dirty cell would also be flushed after the store cascade-deleted the key's
         // ledger rows; whether that re-creates a durable row depends on the delta being non-zero.
         self.budget.write(id).remove(id);
+        self.money_view.forget(id);
         if let Err(refresh_err) = refreshed {
             diag_error!(
                 DELETE_KEY_CACHE_RECONCILE_FAILED,
@@ -1329,14 +1334,19 @@ impl GovState {
         id: &str,
         now: u64,
     ) -> RecordStoreResult<Option<DerivedUsage>> {
+        self.key_usage(id, |id| {
+            self.derived_bucket_usage(cost, id, super::WINDOW_TOTAL, true, now)
+        })
+    }
+
+    /// `read` of the key's own bucket, or `None` when the key does not exist.
+    fn key_usage(
+        &self,
+        id: &str,
+        read: impl FnOnce(&str) -> RecordStoreResult<DerivedUsage>,
+    ) -> RecordStoreResult<Option<DerivedUsage>> {
         match self.store.get_key(id)? {
-            Some(_) => Ok(Some(self.derived_bucket_usage(
-                cost,
-                id,
-                super::WINDOW_TOTAL,
-                true,
-                now,
-            )?)),
+            Some(_) => read(id).map(Some),
             None => Ok(None),
         }
     }
@@ -1374,16 +1384,83 @@ impl GovState {
         now: u64,
     ) -> RecordStoreResult<Result<DerivedUsage, busbar_kernel_ledger::cost::MoneyError>> {
         let window = budget_window(budget_period, now);
+        let cell = self.bucket_cell(bucket_id, window)?;
+        self.price_cell(
+            cost,
+            (bucket_id, budget_period, window),
+            include_request_fee,
+            cell,
+        )
+    }
+
+    /// **THE SCRAPE'S READ OF [`Self::derived_bucket_usage`]**, through the money view's memo: the
+    /// same figure, priced only when something it is priced from changed since this bucket was last
+    /// read (see [`super::money_view`]). A `/metrics` poll therefore never drives the pricing path
+    /// by itself (#43/#71).
+    pub fn viewed_bucket_usage(
+        &self,
+        cost: &crate::cost::CostModel,
+        bucket_id: &str,
+        budget_period: &str,
+        include_request_fee: bool,
+        now: u64,
+    ) -> RecordStoreResult<DerivedUsage> {
+        let window = budget_window(budget_period, now);
+        let cell = self.bucket_cell(bucket_id, window)?;
+        let inputs = money_view::Inputs::of(cost, budget_period, include_request_fee, &cell);
+        let priced = match self.money_view.fresh(bucket_id, &inputs) {
+            Some(priced) => priced,
+            None => {
+                let key = (bucket_id, budget_period, window);
+                let priced = self.price_cell(cost, key, include_request_fee, cell)?;
+                self.money_view.keep(bucket_id, inputs, priced.clone());
+                priced
+            }
+        };
+        priced.map_err(|e| money_refusal(bucket_id, &e))
+    }
+
+    /// [`Self::usage_for`] through the money view's memo — the scrape's per-key read.
+    pub fn viewed_usage_for(
+        &self,
+        cost: &crate::cost::CostModel,
+        id: &str,
+        now: u64,
+    ) -> RecordStoreResult<Option<DerivedUsage>> {
+        self.key_usage(id, |id| {
+            self.viewed_bucket_usage(cost, id, super::WINDOW_TOTAL, true, now)
+        })
+    }
+
+    /// How many times the money view has priced a bucket on this node. Test-only.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn money_view_pricings(&self) -> u64 {
+        self.money_view.pricings()
+    }
+
+    /// The bucket's current-window cell: the live one, else the durable row read AS THE CELL
+    /// HYDRATED FROM IT (era zero, the card in force when the window opened), so a read that
+    /// reaches the store answers what the same read answers once the bucket is hydrated — never the
+    /// current card over stored history.
+    fn bucket_cell(&self, bucket_id: &str, window: u64) -> RecordStoreResult<BudgetCell> {
         let live = (self.budget.read(bucket_id).get(bucket_id))
             .filter(|c| c.window_start == window)
             .cloned();
-        // No live cell: the durable row, read AS THE CELL HYDRATED FROM IT (era zero, the card in
-        // force when the window opened), so a read that reaches the store answers what the same
-        // read answers once the bucket is hydrated — never the current card over stored history.
-        let mut cell = match live {
+        Ok(match live {
             Some(cell) => cell,
             None => durable_cell(self.store.get_usage(bucket_id, window)?, window),
-        };
+        })
+    }
+
+    /// THE MONEY VIEW over one cell: its counts as corrected, priced by the one function.
+    fn price_cell(
+        &self,
+        cost: &crate::cost::CostModel,
+        (bucket_id, budget_period, window): (&str, &str, u64),
+        include_request_fee: bool,
+        mut cell: BudgetCell,
+    ) -> RecordStoreResult<Result<DerivedUsage, MoneyError>> {
+        self.money_view.priced();
         // Q51: the counts AS CORRECTED by every sealed `adjust` landing on this bucket. Fee derives
         // from the BILLABLE (2xx-only) count; `requests` reports the admission count (the
         // requests-limit truth).
@@ -2241,3 +2318,7 @@ fn durable_segments(rows: Vec<busbar_contract::records::ModelTokens>) -> Vec<Mod
     };
     rows.into_iter().map(segment).collect()
 }
+
+// The scrape's memo over the money view: a bucket reprices only when what it was priced from changed.
+#[path = "money_view.rs"]
+pub(super) mod money_view;
