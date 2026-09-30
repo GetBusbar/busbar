@@ -449,6 +449,17 @@ impl GovState {
         Some(m.signer.sign_with_card_subkey(domain, signing_input))
     }
 
+    /// SIGN `input` with the subkey this node's signing key derives for `domain`: the key id and the
+    /// 64 signature bytes, the secret never leaving here. `None` when no signing key is configured.
+    /// The host side of the `sign` host service; the caller's declared domain picks the subkey.
+    pub fn sign_in_domain(&self, domain: &str, input: &[u8]) -> Option<(String, [u8; 64])> {
+        let m = self.signing_material()?;
+        Some((
+            m.signer.kid().to_string(),
+            m.signer.sign_with_card_subkey(domain, input),
+        ))
+    }
+
     /// The RAW SIGNING SECRET, for callers that need to DERIVE a key from it rather than sign with
     /// it. `None` when no signing key is configured, which is the fail-closed answer everywhere it
     /// is read.
