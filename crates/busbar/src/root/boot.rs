@@ -4,7 +4,7 @@
 //! THE BOOT (`BUSBAR-1.6.0.md` THE DESIGN, §3): the composition root's boot stages, reaching the
 //! plugin loader through [`super::loader`] (the one module that names it). Stage 0 Plan reads what the configuration USES; stage 1 Discover reads
 //! each plugin's facts off its Statement (a signed manifest's rendering; nothing is opened); stage 2
-//! Select picks the plugins the configuration uses (§2, §4 Law 7). `--validate` runs these three
+//! Select picks the plugins the configuration uses (BUSBAR-1.6.0.md §2, §4 Law 7). `--validate` runs these three
 //! stages and nothing dials, no library is opened and no store is opened.
 //!
 //! The rest of boot — the one load, register and seal — moves here as BOOT-LOOP 8.
@@ -14,7 +14,7 @@ use std::sync::Arc;
 use super::loader::{boot::*, dispatch::LoadError, dispatch::ManifestFacts, PluginRegistry};
 use busbar_contract::abi::mechanism::KindCode;
 
-/// THE ONE REGISTRY BUILD (THE DESIGN §3 stage 1; ARCHITECT ruling Q8): the plugin registry is
+/// THE ONE REGISTRY BUILD (BUSBAR-1.6.0.md §3 stage 1; ARCHITECT ruling Q8): the plugin registry is
 /// built here, in the composition root, and nowhere else — the kernel's preflight receives it
 /// through the root's rows (the kernel preflight's `RegistryBuild`), and the root's own
 /// dropped-plugin scan runs the same build. The linked rows alone, or the directory scan with the
@@ -120,7 +120,7 @@ fn kind_word(k: KindCode) -> String {
 /// `--validate`'s STAGES 0-2 over the configuration at `path` and the dropped-in plugins the
 /// preflight admitted: Plan, Discover, Select — and the loader's version refusal for every SELECTED
 /// plugin whose Statement states a mechanism or kind ABI version other than this host's, naming
-/// the rebuild (THE DESIGN §11.8). Nothing is opened.
+/// the rebuild (BUSBAR-1.6.0.md §11.8). Nothing is opened.
 ///
 /// # Errors
 ///

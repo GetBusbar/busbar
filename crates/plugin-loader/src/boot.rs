@@ -4,7 +4,7 @@
 //! THE BOOT STAGES the loader owns (`BUSBAR-1.6.0.md` THE DESIGN, §3 Boot): what the configuration
 //! USES (read from stage 0's plan), DISCOVER (stage 1: each plugin's facts, read from the linked
 //! row or the signed manifest, nothing loaded), SELECT (stage 2: the plugins the configuration uses,
-//! §2 "A plugin loads if and only if config uses it", §4 "Selection follows the classes") and the
+//! BUSBAR-1.6.0.md §2 "A plugin loads if and only if config uses it", §4 "Selection follows the classes") and the
 //! ONE LOAD (every selected instance bound through the one dispatcher, each to its own log sink).
 //!
 //! [`Uses::of`], [`Candidate`] and [`select`] are pure: no file is read, nothing is opened, no
@@ -47,7 +47,7 @@ pub const fn kind_of(code: KindCode) -> Kind {
 
 // ── USES: what the configuration names, read from the plan's document ──────────────────────────
 
-/// WHAT THE CONFIGURATION USES, by the three classes of root key (THE DESIGN §4): the root keys it
+/// WHAT THE CONFIGURATION USES, by the three classes of root key (BUSBAR-1.6.0.md §4): the root keys it
 /// carries (a plane is used iff its verb is one), every `module:` an entry under a non-plane kind's
 /// root key names, the reference keys it spells (`{k: X}`, a plugin's sugar), and the URL schemes its
 /// URLs use (a transport is used iff it claims one).
@@ -272,7 +272,7 @@ pub struct Selected {
     pub instance: String,
 }
 
-/// STAGE 2, SELECT (THE DESIGN §4 "Selection follows the classes"; pure): a plane is selected iff
+/// STAGE 2, SELECT (BUSBAR-1.6.0.md §4 "Selection follows the classes"; pure): a plane is selected iff
 /// one of its verbs is a root key; a store, secret, auth, hook or export plugin once per entry whose
 /// `module` names it (its name or an alias) and once if a reference uses its sugar; a transport iff
 /// a configured URL uses a scheme it claims. Candidates are read in order and the first that answers
@@ -358,7 +358,7 @@ pub enum Note<'r> {
     FloorUnwritable(&'r std::io::Error),
 }
 
-/// THE REGISTRY BUILD (THE DESIGN §3 stage 1; ARCHITECT ruling Q8: the composition root builds the
+/// THE REGISTRY BUILD (BUSBAR-1.6.0.md §3 stage 1; ARCHITECT ruling Q8: the composition root builds the
 /// registry and the kernel receives it): the linked rows alone, or — given a [`Scan`] — the
 /// first-party floor armed from the persisted marks, the directory's three-phase scan
 /// (structural -> trust -> conflict; ANY invalid tarball or conflict refuses, every problem named;
@@ -414,7 +414,7 @@ pub enum Bound {
 }
 
 /// THE ONE LOAD's request: the discovered candidates, the selection over them, and what every bind
-/// takes — the plugin log configuration (each instance gets its own sink, THE DESIGN §11.2 Plugin
+/// takes — the plugin log configuration (each instance gets its own sink, BUSBAR-1.6.0.md §11.2 Plugin
 /// logging), where the #85 metrics go, the dispatcher that adopts every instance, and the host's
 /// clamp on a Statement's `max_inflight`.
 pub struct LoadRequest<'a> {

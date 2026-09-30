@@ -30,7 +30,7 @@ path = "src/lib.rs"
 [dependencies]
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 # The plugin contract: the route vocabulary (`RouteAuth`, `RouteMethod`) the authorization-server
-# routes are declared in is the contract's, named from the crate that owns it (BOOT-LOOP step 3, R2).
+# routes are declared in is the contract's, named from the crate that owns it (BOOT-LOOP step 3).
 busbar-contract = { path = "../busbar-contract" }
 axum = { workspace = true }
 base64 = { workspace = true }

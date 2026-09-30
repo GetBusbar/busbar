@@ -1616,7 +1616,7 @@ fn write_stated_store(dir: &Path, name: &str, alias: &str, kind_abi: u32, lib: &
     .unwrap();
 }
 
-/// STAGES 0-2 (THE DESIGN §3): `--validate` names a dropped-in plugin's stated facts and whether the
+/// STAGES 0-2 (BUSBAR-1.6.0.md §3): `--validate` names a dropped-in plugin's stated facts and whether the
 /// configuration selects it, read off its signed manifest — WITHOUT opening it: the library bytes
 /// are not a library, so a `dlopen` would refuse the run.
 #[cfg(linked_axis_body_ingress)]
@@ -1653,7 +1653,7 @@ fn validate_names_a_dropped_plugins_stated_facts_without_opening_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// RED (THE DESIGN §11.8): a SELECTED dropped-in plugin whose Statement states another kind ABI
+/// RED (BUSBAR-1.6.0.md §11.8): a SELECTED dropped-in plugin whose Statement states another kind ABI
 /// version than this host's is refused by `--validate`, naming the rebuild — still without opening
 /// it.
 #[cfg(linked_axis_body_ingress)]
