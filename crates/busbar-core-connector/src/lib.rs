@@ -21,8 +21,10 @@
 //! * [`io`] is readiness on the per-worker reactor (`io.{register, poll_ready, clear_ready,
 //!   deregister}`); [`socket`] the host's OS sockets; [`stream`] a host socket as a byte stream.
 //! * [`framer`] drives one transport entry's framer table host-side; [`compose`] builds a dialled
-//!   connection as socket -> \[TLS\] -> framer; [`registry`] is the view of which entry serves which
-//!   scheme; [`wire`] presents a framer entry over host sockets to the kernel's transport seam.
+//!   connection as socket -> \[TLS\] -> framer; [`listen`] binds one listener per inbound need and
+//!   composes each accepted connection the same way, begun on the accept side; [`registry`] is the
+//!   view of which entry serves which scheme; [`wire`] presents a framer entry over host sockets to
+//!   the kernel's transport seam.
 //!
 //! No `unsafe` is written here outside the tests' framer entry, which writes a host sink through its
 //! raw pointers as a plugin does.
@@ -38,6 +40,7 @@ pub mod dtls;
 pub mod endpoint;
 pub mod framer;
 pub mod io;
+pub mod listen;
 pub mod registry;
 pub mod socket;
 pub mod stream;

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! COMPOSE: one dialled connection, `socket -> [TLS] -> framer` (`BUSBAR-1.6.0.md` THE DESIGN, §5).
+//! COMPOSE: one connection, `socket -> [TLS] -> framer` (`BUSBAR-1.6.0.md` THE DESIGN, §5), dialled
+//! ([`Connection::dial`], the framing begun on `SIDE_DIAL`) or accepted ([`Connection::accepted`],
+//! the server-side mirror: TLS as the server, the framing begun on `SIDE_ACCEPT`).
 //!
 //! The socket is the host's, non-blocking, its readiness on the dialling worker's reactor
 //! ([`crate::io`]); connection security is `rustls` driven sans-IO here, with the protocol offer
@@ -24,7 +26,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::transport::{CLOSE_NORMAL, SIDE_DIAL};
+use busbar_contract::abi::transport::{CLOSE_NORMAL, SIDE_ACCEPT, SIDE_DIAL};
 
 use crate::endpoint;
 use crate::framer::{self, Established, FramerDoor, Framing, Got, Yielded};
@@ -120,7 +122,10 @@ pub struct Connection {
     door: Arc<dyn FramerDoor>,
     sock: Registered<TcpStream>,
     target: String,
-    tls: Option<rustls::ClientConnection>,
+    /// `SIDE_DIAL` | `SIDE_ACCEPT`.
+    side: u32,
+    /// Client TLS on a dialled connection, server TLS on an accepted one.
+    tls: Option<rustls::Connection>,
     framing: Option<Framing>,
     established: Established,
     phase: Phase,
@@ -132,11 +137,57 @@ pub struct Connection {
     opening: Option<Opening>,
     /// Its head words.
     head_words: HeadWords,
-    /// Writes the caller made before the framing began, in order.
-    early: Vec<(Vec<u8>, bool)>,
+    /// Writes the caller made before the framing began, in order: `(stream, bytes, end)`.
+    early: Vec<(u64, Vec<u8>, bool)>,
     open_deadline: Option<Instant>,
     framer_deadline: Option<Instant>,
     sleep: Option<(Instant, Pin<Box<tokio::time::Sleep>>)>,
+    /// The listener's hold on one of its connection slots, freed when the connection is dropped.
+    _slot: Option<Slot>,
+}
+
+/// One of a listener's connection slots, held by the connection it admitted and freed on drop.
+#[derive(Debug)]
+pub struct Slot(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Slot {
+    /// Take a slot of `live` when fewer than `max` are held; `None` = the listener is full.
+    #[must_use]
+    pub fn take(live: &Arc<std::sync::atomic::AtomicUsize>, max: usize) -> Option<Self> {
+        use std::sync::atomic::Ordering;
+        live.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            (n < max).then_some(n + 1)
+        })
+        .ok()
+        .map(|_| Self(Arc::clone(live)))
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+/// What an accept asks for: the server TLS (its protocol offer set per accept from `alpn`) and the
+/// bound on the handshake.
+#[derive(Clone)]
+pub struct Accept {
+    /// The server TLS config; `None` = the listener is in the clear.
+    pub tls: Option<Arc<rustls::ServerConfig>>,
+    /// The protocols the server agrees to, most preferred first (the claiming framer's offer).
+    pub alpn: Vec<Vec<u8>>,
+    /// The bound on the handshake; the framer's own deadlines bound the rest.
+    pub handshake_timeout: Duration,
+}
+
+impl std::fmt::Debug for Accept {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Accept")
+            .field("tls", &self.tls.is_some())
+            .field("handshake_timeout", &self.handshake_timeout)
+            .finish_non_exhaustive()
+    }
 }
 
 impl std::fmt::Debug for Connection {
@@ -252,7 +303,9 @@ impl Planned {
                     .to_owned(),
             )
             .map_err(|e| Failure::Refused(format!("the name offered is not a server name: {e}")))?;
-            Some(rustls::ClientConnection::new(Arc::new(config), name).map_err(failed)?)
+            Some(rustls::Connection::Client(
+                rustls::ClientConnection::new(Arc::new(config), name).map_err(failed)?,
+            ))
         } else {
             None
         };
@@ -266,6 +319,7 @@ impl Planned {
             door,
             sock,
             target: dial.target,
+            side: SIDE_DIAL,
             tls,
             framing: None,
             established,
@@ -278,7 +332,74 @@ impl Planned {
             open_deadline: Some(Instant::now() + dial.open_timeout),
             framer_deadline: None,
             sleep: None,
+            _slot: None,
         })
+    }
+}
+
+impl Connection {
+    /// Take `stream`, accepted by a listener, on the calling worker's reactor: server TLS first when
+    /// `accept.tls` is set (bounded by the handshake timeout, the protocol agreed off
+    /// `accept.alpn`), then the framing begun on `SIDE_ACCEPT`. `slot` is the listener's hold,
+    /// freed when the connection is dropped.
+    ///
+    /// # Errors
+    ///
+    /// [`Failure::Failed`] off a worker or when the socket or TLS cannot be set up;
+    /// [`Failure::Refused`] when the framer will not frame a clear connection.
+    pub fn accepted(
+        door: Arc<dyn FramerDoor>,
+        stream: TcpStream,
+        accept: &Accept,
+        slot: Option<Slot>,
+    ) -> Result<Self, Failure> {
+        stream.set_nonblocking(true).map_err(failed)?;
+        let _ = stream.set_nodelay(true);
+        let tls = match &accept.tls {
+            None => None,
+            Some(base) => {
+                let mut config = (**base).clone();
+                config.alpn_protocols.clone_from(&accept.alpn);
+                Some(rustls::Connection::Server(
+                    rustls::ServerConnection::new(Arc::new(config)).map_err(failed)?,
+                ))
+            }
+        };
+        let sock = reactor::register(stream).map_err(failed)?;
+        let established = Established {
+            offered_name: None,
+            agreed_protocol: None,
+            claim: door.facts().claims.first().map(|c| (*c).to_owned()),
+        };
+        let mut conn = Self {
+            door,
+            sock,
+            target: String::new(),
+            side: SIDE_ACCEPT,
+            tls,
+            framing: None,
+            established,
+            phase: Phase::Handshaking,
+            out: VecDeque::new(),
+            inbox: VecDeque::new(),
+            opening: None,
+            head_words: HeadWords::default(),
+            early: Vec::new(),
+            open_deadline: Some(Instant::now() + accept.handshake_timeout),
+            framer_deadline: None,
+            sleep: None,
+            _slot: slot,
+        };
+        if conn.tls.is_none() {
+            conn.begin()?;
+        }
+        Ok(conn)
+    }
+
+    /// Whether the connection is past its handshake and framing.
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        matches!(self.phase, Phase::Open)
     }
 }
 
@@ -329,7 +450,7 @@ impl Connection {
 
     /// The bytes held for the socket: early writes and framed bytes it has not taken.
     fn buffered(&self) -> usize {
-        self.out.len() + self.early.iter().map(|(b, _)| b.len()).sum::<usize>()
+        self.out.len() + self.early.iter().map(|(_, b, _)| b.len()).sum::<usize>()
     }
 
     /// Offer `bytes` on the connection's exchange (`end` = the caller's message is complete),
@@ -343,6 +464,23 @@ impl Connection {
     /// The connection is closed or failed, or the framer refused the bytes.
     pub fn write(
         &mut self,
+        bytes: &[u8],
+        end: bool,
+        cx: &mut Context<'_>,
+    ) -> Result<usize, Failure> {
+        self.emit(EXCHANGE_STREAM, bytes, end, cx)
+    }
+
+    /// Offer `bytes` on `stream` (`end` = the stream's message is complete): the framer's `emit`
+    /// on that stream, now if the framing has begun, else once it does. An accepted connection
+    /// answers each piece on the stream the piece came on.
+    ///
+    /// # Errors
+    ///
+    /// The connection is closed or failed, or the framer refused the bytes.
+    pub fn emit(
+        &mut self,
+        stream: u64,
         bytes: &[u8],
         end: bool,
         cx: &mut Context<'_>,
@@ -369,10 +507,12 @@ impl Connection {
             Phase::Ended => return Err(Failure::Closed),
             Phase::Open => {
                 let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
-                let y = framing.emit(EXCHANGE_STREAM, bytes, end).map_err(failed)?;
+                let y = framing.emit(stream, bytes, end).map_err(failed)?;
                 self.absorb(y)?;
             }
-            Phase::Connecting | Phase::Handshaking => self.early.push((bytes.to_vec(), end)),
+            Phase::Connecting | Phase::Handshaking => {
+                self.early.push((stream, bytes.to_vec(), end));
+            }
         }
         if let Err(f) = self.drive(cx) {
             self.phase = Phase::Failed(f.clone());
@@ -497,7 +637,7 @@ impl Connection {
     fn begin(&mut self) -> Result<(), Failure> {
         let (framing, y) = Framing::begin(
             Arc::clone(&self.door),
-            SIDE_DIAL,
+            self.side,
             &self.target,
             &self.established,
         )
@@ -522,9 +662,9 @@ impl Connection {
                 self.absorb(y)?;
             }
         }
-        for (bytes, end) in std::mem::take(&mut self.early) {
+        for (stream, bytes, end) in std::mem::take(&mut self.early) {
             let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
-            let y = framing.emit(EXCHANGE_STREAM, &bytes, end).map_err(failed)?;
+            let y = framing.emit(stream, &bytes, end).map_err(failed)?;
             self.absorb(y)?;
         }
         Ok(())
@@ -552,6 +692,9 @@ impl Connection {
                     .tls
                     .as_ref()
                     .and_then(|t| t.alpn_protocol().map(<[u8]>::to_vec));
+                if let Some(rustls::Connection::Server(s)) = self.tls.as_ref() {
+                    self.established.offered_name = s.server_name().map(str::to_owned);
+                }
                 self.begin()?;
             }
         }
@@ -621,11 +764,14 @@ impl Connection {
     /// Close: the framing finishes, TLS says goodbye, and what that owes is written as far as the
     /// socket takes it now.
     pub fn close(mut self) {
+        let framed = self.framing.is_some();
         if let Some(framing) = self.framing.take() {
             let y = framing.finish(CLOSE_NORMAL);
             let _ = self.absorb(y);
         }
-        if let Some(tls) = self.tls.as_mut() {
+        // A handshake that never finished is dropped, not said goodbye to (1.5.5's handshake
+        // timeout drops the connection).
+        if let Some(tls) = self.tls.as_mut().filter(|_| framed) {
             tls.send_close_notify();
             let _ = self.tls_out();
         }
