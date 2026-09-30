@@ -370,16 +370,13 @@ abi = ["crates/busbar-contract"]
 # 17779 -> 17802 (OWNER RULING Q68(3)). Its commit reached the base; struck by the batch re-arm
 # below, which declares the pair's next figure.
 
-[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
-file    = "qa/construction.toml"
-from    = 55182
-to      = 55337
+# [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"] 55182 -> 55337 — EXPIRED AND STRUCK: its commit reached the base,
+# and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
 
 # ── THE KERNEL CEILING, RE-ARMED BY FOLD-LLM C3' (the AUDIT step's finish) — EXPIRED AND STRUCK
 #
 # Declared `rules.loc-ceilings.kernel_ceiling` 55163 -> 55182 (ARCHITECT 2026-09-28, R-KERNEL). Its
 # commit reached the base; struck by KERNEL-VALIDATE's re-arm above, which declares the next figure.
-because = "ARCHITECT 2026-09-28: R-KERNEL, KERNEL-VALIDATE (BUSBAR-1.6.0.md THE DESIGN, Law 2 and §11.12; rulings F4/F5). Kernel boot validation owns the cross-plane hook refusal and the trust keys a plane declares: plane::config validate_plane_section/validate_plane_entry run before a section reaches its plane and on the admin write path, and trust/section.rs parses the pin and cadence into the per-counterparty book trust.sight/trust.due answer from; the section split moved out to busbar-contract. Rebased by LANDER over FOLD-LLM C3' (landed) and measured fresh at the new base. Measured by cargo xtask gate construction: 55168 before, 55337 after, +169 (the ceiling rises 55182 -> 55337, +155; the 14 lines of slack FOLD-LLM C3' left are absorbed). The ceiling rises by exactly that."
 
 # ── THE KERNEL CEILING, RE-ARMED BY FOLD-LLM C4' (the VERIFY step's destination guard) — EXPIRED
 #    AND STRUCK
@@ -1309,7 +1306,10 @@ kernel_crate = "busbar-kernel"
 # Measured 55163 before, 55182 after, +19; struck by KERNEL-VALIDATE's re-arm.
 # ── RE-ARMED 55182 -> 55337 for KERNEL-VALIDATE (kernel boot validation of every plane section's
 # hook references and declared trust keys), declared above. Measured 55168 before, 55337 after, +169.
-kernel_ceiling = 55337
+# ── LOWERED 55337 -> 52187 by METER-FIX's loc basis, with RENAME (xtask loc bills test-gated
+# modules and const _ assertions as test; measured plus K2g's named 73-line reservation), the
+# measurement, -3150. Downward only.
+kernel_ceiling = 52187
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
