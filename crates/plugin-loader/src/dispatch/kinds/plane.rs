@@ -350,3 +350,146 @@ fn snapshot(s: *const PlaneSnapshot, generation: u64, field: &'static str) -> Re
     let snap = unsafe { s.read_unaligned() };
     check_snapshot(&snap, generation)
 }
+
+// ── the host's copy of a generation snapshot ─────────────────────────────────────────────────────
+
+/// One claim of a snapshot, owned by the host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedClaim {
+    /// The verb.
+    pub verb: String,
+    /// The target path.
+    pub target: String,
+    /// The transport claim it arrives over.
+    pub carrier: String,
+    /// `CLAIM_OPEN` | `CLAIM_EXACT` | `CLAIM_PATTERN`.
+    pub flags: u32,
+}
+
+/// One admin route of a snapshot, owned by the host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedAdminRoute {
+    /// The verb.
+    pub verb: String,
+    /// The target path.
+    pub target: String,
+    /// `ROUTE_PUBLIC` or `0`.
+    pub flags: u32,
+}
+
+/// A GENERATION SNAPSHOT COPIED OUT OF THE PLUGIN at the crossing that published it, so nothing
+/// the host keeps points into plugin memory after that generation's `retire` or the plugin's next
+/// `refresh`. The host keeps it with the generation (claim targets, pattern segments, audience).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedSnapshot {
+    /// The generation it was published for.
+    pub generation: u64,
+    /// The paths it answers on.
+    pub claims: Vec<OwnedClaim>,
+    /// Its admin routes.
+    pub admin_routes: Vec<OwnedAdminRoute>,
+    /// Its OpenAPI contribution; `None` = none.
+    pub openapi: Option<Vec<u8>>,
+    /// The audience it binds; `None` = none.
+    pub audience: Option<String>,
+    /// Its resource metadata document; `None` = none.
+    pub resource_metadata: Option<String>,
+}
+
+impl crate::dispatch::Plugin<Plane> {
+    /// `open`, and the first generation's snapshot COPIED while the crossing that published it
+    /// proves it live: `Some` exactly when the answer is READY and every claim, admin route and
+    /// string of the snapshot passes the contract's checks and is UTF-8.
+    pub fn open(
+        &self,
+        frame: &mut crate::dispatch::Frame<PlaneOpenIn, PlaneOpenOut>,
+    ) -> (crate::dispatch::Called, Option<OwnedSnapshot>) {
+        let called = self.call(life::OPEN, frame);
+        let copy = (called.outcome == Outcome::Ready)
+            .then(|| copy_snapshot(frame.out.snapshot))
+            .flatten();
+        (called, copy)
+    }
+
+    /// `refresh`, and the new generation's snapshot copied as [`Self::open`] copies it.
+    pub fn refresh(
+        &self,
+        frame: &mut crate::dispatch::Frame<RefreshIn, PlaneRefreshOut>,
+    ) -> (crate::dispatch::Called, Option<OwnedSnapshot>) {
+        let called = self.call(life::REFRESH, frame);
+        let copy = (called.outcome == Outcome::Ready)
+            .then(|| copy_snapshot(frame.out.snapshot))
+            .flatten();
+        (called, copy)
+    }
+}
+
+/// A string of the plugin's generation data, owned; `None` when absent. Called only on data a READY
+/// crossing's checks accepted (no string counted over a NULL pointer).
+fn owned_str(s: busbar_contract::abi::mechanism::call::AbiStr) -> Option<Option<String>> {
+    if s.ptr.is_null() {
+        return Some(None);
+    }
+    // SAFETY: the plugin's generation data, valid until `retire` of its generation, and read only
+    // inside the READY crossing that published it; the contract's checks refused a NULL with a count.
+    let bytes = unsafe { std::slice::from_raw_parts(s.ptr, s.len) };
+    std::str::from_utf8(bytes).ok().map(|t| Some(t.to_string()))
+}
+
+/// Copy the snapshot a READY `open`/`refresh` published: the loader's own `check_snapshot` has
+/// passed (its size, generation, lists and strings), and the claims and admin routes are judged
+/// here by the contract's element checks before any element string is read.
+fn copy_snapshot(p: *const PlaneSnapshot) -> Option<OwnedSnapshot> {
+    use busbar_contract::abi::plane::check::{check_admin_routes, check_claims};
+    if p.is_null() {
+        return None;
+    }
+    // SAFETY: a READY answer's snapshot, whose size and lists this crossing's check accepted;
+    // valid until `retire` of its generation.
+    let s = unsafe { &*p };
+    // SAFETY: the check refused a list counted over a NULL pointer; each names `*_len` entries.
+    let claims = if s.claims_len == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(s.claims, s.claims_len) }
+    };
+    // SAFETY: as above.
+    let routes = if s.admin_routes_len == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(s.admin_routes, s.admin_routes_len) }
+    };
+    check_claims(claims).ok()?;
+    check_admin_routes(routes).ok()?;
+    let text = |a| owned_str(a)?.or(Some(String::new()));
+    Some(OwnedSnapshot {
+        generation: s.generation,
+        claims: claims
+            .iter()
+            .map(|c| {
+                Some(OwnedClaim {
+                    verb: text(c.verb)?,
+                    target: text(c.target)?,
+                    carrier: text(c.carrier)?,
+                    flags: c.flags,
+                })
+            })
+            .collect::<Option<_>>()?,
+        admin_routes: routes
+            .iter()
+            .map(|r| {
+                Some(OwnedAdminRoute {
+                    verb: text(r.verb)?,
+                    target: text(r.target)?,
+                    flags: r.flags,
+                })
+            })
+            .collect::<Option<_>>()?,
+        openapi: (!s.openapi.ptr.is_null()).then(|| {
+            // SAFETY: the check accepted the blob; it names `len` bytes of generation data.
+            unsafe { std::slice::from_raw_parts(s.openapi.ptr, s.openapi.len) }.to_vec()
+        }),
+        audience: owned_str(s.audience)?,
+        resource_metadata: owned_str(s.resource_metadata)?,
+    })
+}
