@@ -808,3 +808,361 @@ async fn a_receiver_that_answers_non_2xx_is_recorded_as_failed_and_not_as_refuse
          distinguishable: {kinds:?}"
     );
 }
+
+// ══ BOUNDED RETRY AND THE PER-TASK QUEUE ═════════════════════════════════════════════════════════
+//
+// The receiver here is a SCRIPTED transport: it answers the next status in a list, counts every POST
+// and records the state each carried. It is not a socket for the reason the module header gives —
+// loopback is INTERNAL and the guard refuses it with no override, so a real listener cannot be a
+// delivery target — and a scripted send is exactly what "no socket" is asserted against.
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+
+struct ScriptedTransport {
+    /// Statuses answered in order; the last one repeats. `Err` entries are transport failures.
+    script: Vec<Result<u16, String>>,
+    posts: AtomicUsize,
+    /// Task state (from the body) of each POST, in arrival order.
+    arrivals: Mutex<Vec<String>>,
+    /// Extra time the FIRST POST takes, to model a slow webhook.
+    first_post_delay: Duration,
+}
+
+impl RelayTransport for ScriptedTransport {
+    fn send(
+        &self,
+        _http_method: &str,
+        _url: &url::Url,
+        _addr: IpAddr,
+        _headers: &[(String, String)],
+        body: &[u8],
+    ) -> Result<HttpResponse, String> {
+        let n = self.posts.fetch_add(1, Ordering::SeqCst);
+        if n == 0 {
+            std::thread::sleep(self.first_post_delay);
+        }
+        self.arrivals
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(String::from_utf8_lossy(body).into_owned());
+        let step = self.script.get(n).or_else(|| self.script.last()).unwrap();
+        match step {
+            Ok(status) => Ok(HttpResponse {
+                status: *status,
+                ..Default::default()
+            }),
+            Err(e) => Err(e.clone()),
+        }
+    }
+
+    fn post_stream(
+        &self,
+        _url: &url::Url,
+        _addr: IpAddr,
+        _headers: &[(String, String)],
+        _body: &[u8],
+        _on_chunk: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),
+    ) -> Result<StreamHead, String> {
+        panic!("a push notification is never a stream hop")
+    }
+}
+
+struct ScriptedSeam {
+    resolver: FixedResolver,
+    transport: ScriptedTransport,
+}
+
+impl RelaySeam for ScriptedSeam {
+    fn resolver(&self) -> &dyn Resolver {
+        &self.resolver
+    }
+    fn transport(&self) -> &dyn RelayTransport {
+        &self.transport
+    }
+}
+
+fn scripted(answers: &[IpAddr], script: Vec<Result<u16, String>>) -> Arc<ScriptedSeam> {
+    Arc::new(ScriptedSeam {
+        resolver: FixedResolver(answers.to_vec()),
+        transport: ScriptedTransport {
+            script,
+            posts: AtomicUsize::new(0),
+            arrivals: Mutex::new(Vec::new()),
+            first_post_delay: Duration::ZERO,
+        },
+    })
+}
+
+/// Wait until `cond` holds or `limit` passes.
+async fn until(limit: Duration, cond: impl Fn() -> bool) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < limit {
+        if cond() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    cond()
+}
+
+fn host() -> Arc<dyn busbar_kernel::plane_host::EngineHost> {
+    let app = engine().new_app_plus().build();
+    Arc::clone(&app).engine_host()
+}
+
+/// A 503 then a 200 is exactly TWO posts: the retry happened, and it stopped at the success.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_503_then_a_200_is_exactly_two_posts() {
+    crate::testkit::install_test_seams();
+    let id = "t-retry-503-200";
+    register(id);
+    let seam = scripted(&[AT_REGISTRATION], vec![Ok(503), Ok(200)]);
+    pushdeliver::enqueue(
+        host(),
+        Arc::clone(&seam) as Arc<dyn RelaySeam>,
+        task_with_callback(id, TaskState::Completed),
+    );
+    assert!(
+        until(Duration::from_secs(5), || seam
+            .transport
+            .posts
+            .load(Ordering::SeqCst)
+            >= 2)
+        .await
+    );
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    assert_eq!(seam.transport.posts.load(Ordering::SeqCst), 2);
+    pushdeliver::forget(id);
+}
+
+/// A transport error and a 429 are retried, up to the third attempt and no further.
+#[tokio::test(flavor = "multi_thread")]
+async fn transport_errors_and_429_retry_but_stop_at_three_attempts() {
+    crate::testkit::install_test_seams();
+    let id = "t-retry-cap";
+    register(id);
+    let seam = scripted(
+        &[AT_REGISTRATION],
+        vec![Err("reset".to_string()), Ok(429), Ok(500)],
+    );
+    pushdeliver::enqueue(
+        host(),
+        Arc::clone(&seam) as Arc<dyn RelaySeam>,
+        task_with_callback(id, TaskState::Completed),
+    );
+    assert!(
+        until(Duration::from_secs(5), || seam
+            .transport
+            .posts
+            .load(Ordering::SeqCst)
+            >= 3)
+        .await
+    );
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert_eq!(seam.transport.posts.load(Ordering::SeqCst), 3);
+    pushdeliver::forget(id);
+}
+
+/// A 400 is the receiver's answer, not a fault: exactly ONE post.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_400_is_exactly_one_post() {
+    crate::testkit::install_test_seams();
+    let id = "t-retry-400";
+    register(id);
+    let seam = scripted(&[AT_REGISTRATION], vec![Ok(400)]);
+    pushdeliver::enqueue(
+        host(),
+        Arc::clone(&seam) as Arc<dyn RelaySeam>,
+        task_with_callback(id, TaskState::Completed),
+    );
+    assert!(
+        until(Duration::from_secs(5), || seam
+            .transport
+            .posts
+            .load(Ordering::SeqCst)
+            >= 1)
+        .await
+    );
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    assert_eq!(seam.transport.posts.load(Ordering::SeqCst), 1);
+    pushdeliver::forget(id);
+}
+
+/// A private address is refused by the guard and NO socket is opened, on every attempt: the guard
+/// refusal is not retryable, so the transport is never reached.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_private_address_is_refused_with_no_socket() {
+    crate::testkit::install_test_seams();
+    let id = "t-retry-private";
+    register(id);
+    let seam = scripted(&[METADATA], vec![Ok(200)]);
+    pushdeliver::enqueue(
+        host(),
+        Arc::clone(&seam) as Arc<dyn RelaySeam>,
+        task_with_callback(id, TaskState::Completed),
+    );
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    assert_eq!(seam.transport.posts.load(Ordering::SeqCst), 0);
+    pushdeliver::forget(id);
+}
+
+/// THE JUDGE RUNS ON EVERY ATTEMPT: a name that is public on attempt 1 and private on attempt 2 is
+/// refused on the second, so the retry never reaches a socket it was not entitled to.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_guard_is_re_run_on_the_retry() {
+    struct Flipping(AtomicUsize);
+    impl Resolver for Flipping {
+        fn resolve(&self, _h: &str) -> Result<Vec<IpAddr>, String> {
+            Ok(if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                vec![AT_REGISTRATION]
+            } else {
+                vec![METADATA]
+            })
+        }
+    }
+    struct FlipSeam(Flipping, ScriptedTransport);
+    impl RelaySeam for FlipSeam {
+        fn resolver(&self) -> &dyn Resolver {
+            &self.0
+        }
+        fn transport(&self) -> &dyn RelayTransport {
+            &self.1
+        }
+    }
+    crate::testkit::install_test_seams();
+    let id = "t-retry-rejudge";
+    register(id);
+    let seam = Arc::new(FlipSeam(
+        Flipping(AtomicUsize::new(0)),
+        ScriptedTransport {
+            script: vec![Ok(503)],
+            posts: AtomicUsize::new(0),
+            arrivals: Mutex::new(Vec::new()),
+            first_post_delay: Duration::ZERO,
+        },
+    ));
+    pushdeliver::enqueue(
+        host(),
+        Arc::clone(&seam) as Arc<dyn RelaySeam>,
+        task_with_callback(id, TaskState::Completed),
+    );
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(
+        seam.1.posts.load(Ordering::SeqCst),
+        1,
+        "attempt 2 and 3 were refused by the guard"
+    );
+    assert!(
+        seam.0 .0.load(Ordering::SeqCst) >= 2,
+        "the guard ran again on the retry"
+    );
+    pushdeliver::forget(id);
+}
+
+/// A SLOW WEBHOOK DOES NOT STALL THE CALLER, and what it is sent arrives in order. `enqueue` is what
+/// the stream's chunk pump calls per state change; it must return at once while the first POST is
+/// still in flight, and the queued states must reach the receiver oldest first.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slow_webhook_does_not_stall_the_pump_and_arrives_in_order() {
+    crate::testkit::install_test_seams();
+    let id = "t-queue-order";
+    register(id);
+    let seam = Arc::new(ScriptedSeam {
+        resolver: FixedResolver(vec![AT_REGISTRATION]),
+        transport: ScriptedTransport {
+            script: vec![Ok(200)],
+            posts: AtomicUsize::new(0),
+            arrivals: Mutex::new(Vec::new()),
+            first_post_delay: Duration::from_millis(600),
+        },
+    });
+    let states = [
+        TaskState::Working,
+        TaskState::InputRequired,
+        TaskState::Completed,
+    ];
+    let start = Instant::now();
+    for state in states {
+        pushdeliver::enqueue(
+            host(),
+            Arc::clone(&seam) as Arc<dyn RelaySeam>,
+            task_with_callback(id, state),
+        );
+    }
+    assert!(
+        start.elapsed() < Duration::from_millis(300),
+        "enqueue waited on the webhook: {:?}",
+        start.elapsed()
+    );
+    assert!(
+        until(Duration::from_secs(5), || seam
+            .transport
+            .posts
+            .load(Ordering::SeqCst)
+            >= 3)
+        .await
+    );
+    let arrivals = seam.transport.arrivals.lock().unwrap().clone();
+    let position = |needle: &str| arrivals.iter().position(|b| b.contains(needle));
+    let (w, i, c) = (
+        position("WORKING").or(position("working")),
+        position("INPUT").or(position("input")),
+        position("COMPLETED").or(position("completed")),
+    );
+    assert!(
+        w < i && i < c,
+        "out of order: {w:?} {i:?} {c:?}\n{arrivals:?}"
+    );
+    pushdeliver::forget(id);
+}
+
+/// THE QUEUE IS BOUNDED: 64 waiting, the oldest dropped to make room, the newest kept.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_queue_holds_64_and_drops_the_oldest() {
+    crate::testkit::install_test_seams();
+    let id = "t-queue-bound";
+    register(id);
+    let seam = Arc::new(ScriptedSeam {
+        resolver: FixedResolver(vec![AT_REGISTRATION]),
+        transport: ScriptedTransport {
+            script: vec![Ok(200)],
+            posts: AtomicUsize::new(0),
+            arrivals: Mutex::new(Vec::new()),
+            first_post_delay: Duration::from_millis(800),
+        },
+    });
+    let h = host();
+    for n in 0..80 {
+        let state = if n == 79 {
+            TaskState::Completed
+        } else {
+            TaskState::Working
+        };
+        pushdeliver::enqueue(
+            Arc::clone(&h),
+            Arc::clone(&seam) as Arc<dyn RelaySeam>,
+            task_with_callback(id, state),
+        );
+    }
+    assert!(pushdeliver::queue_depth_for_test(id) <= 64);
+    // 1 in flight (already popped) + 64 waiting = 65 posts; the 15 oldest of the 79 were dropped.
+    assert!(
+        until(Duration::from_secs(10), || seam
+            .transport
+            .posts
+            .load(Ordering::SeqCst)
+            >= 65)
+        .await
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(seam.transport.posts.load(Ordering::SeqCst), 65);
+    let arrivals = seam.transport.arrivals.lock().unwrap().clone();
+    assert!(
+        arrivals
+            .last()
+            .is_some_and(|b| b.to_lowercase().contains("completed")),
+        "the newest survives"
+    );
+    pushdeliver::forget(id);
+}

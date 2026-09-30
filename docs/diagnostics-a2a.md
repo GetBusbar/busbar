@@ -382,3 +382,14 @@ A read of busbar's own push registration at the backend agent discovered it gone
 
 **What to do:** Investigate why the backend agent refuses busbar's push-config create (auth, capability, outage). Deliveries the agent originates resume once a re-arm succeeds.
 
+<a id="a2a-push-queue-dropped"></a>
+### BUSBAR-7105 — A2A push-delivery queue dropped an event
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `a2a-push-queue-dropped`
+
+A task's push-notification delivery queue (bounded, per task, so one slow webhook cannot pin unbounded memory) was at capacity when a new state change arrived, and the OLDEST not-yet-attempted notification was dropped to make room. The caller's poll of the task's own state is unaffected — this is the push CHANNEL falling behind an unusually fast sequence of transitions against a slow receiver, not a lost task outcome. The most recent state is enqueued and will still be delivered.
+
+**What to do:** None ordinarily — self-heals once the receiver catches up. A callback that drops notifications routinely has a receiver too slow for the task's event rate; the caller should poll rather than rely on push alone.
+

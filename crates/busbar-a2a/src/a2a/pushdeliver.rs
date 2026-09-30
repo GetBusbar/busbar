@@ -64,13 +64,17 @@
 //! `task.push_*` kinds), through the one mechanism in [`busbar_kernel::audit`]. A log line is still emitted;
 //! it is no longer the only thing that happens.
 
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use busbar_kernel::plane_host::EngineHost;
 
 use super::pushnotify::{self, PinnedCallback, PushNotifyError};
 use super::relay::RelaySeam;
 use super::task::Task;
-use crate::diagnostics::A2A_PUSH_OUTCOME_UNCHAINED;
+use crate::diagnostics::{
+    A2A_PUSH_NOTIFY_UNDELIVERED, A2A_PUSH_OUTCOME_UNCHAINED, A2A_PUSH_QUEUE_DROPPED,
+};
 use busbar_contract::diag_debug;
 use busbar_contract::vocab as provenance;
 
@@ -485,6 +489,225 @@ fn attempt(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefusal> {
     } else {
         Err(PushRefusal::Status(resp.status))
     }
+}
+
+// ══ BOUNDED RETRY ═══════════════════════════════════════════════════════════════════════════════
+
+/// AT MOST THIS MANY ATTEMPTS, total, for one delivery. ARCHITECT ruling 2026-09-29: 3 attempts,
+/// 250ms then 500ms between them, ±20% jitter.
+const MAX_DELIVERY_ATTEMPTS: u32 = 3;
+
+/// The delay BEFORE the 2nd and 3rd attempts (index 0 and 1), before jitter is applied.
+///
+/// FIXED rather than driven by the receiver's own `Retry-After`: `busbar_kernel::egress::Response`
+/// (this plane's `HttpResponse`) carries `status, location, body, peer_spki,
+/// client_identity_offered` and NO header map at all, so a `Retry-After` value cannot be read off a
+/// real delivery response today. That type is the LEGACY egress path step 36 deletes, and growing it
+/// for one caller was ruled out (ARCHITECT, 2026-09-29) rather than done here. **Retry-After will be
+/// honoured once push rides the http transport piece — status and retry-after are transport
+/// vocabulary there.** Until then a 429 is retried on this same fixed schedule, exactly like a 5xx.
+const RETRY_DELAYS_MS: [u64; (MAX_DELIVERY_ATTEMPTS - 1) as usize] = [250, 500];
+
+/// The jitter fraction applied to each delay: the actual wait is `base * (1.0 ± JITTER)`.
+const RETRY_JITTER_FRACTION: f64 = 0.20;
+
+/// Whether a refusal is worth a second try.
+///
+/// ONLY a transport-level failure or a 5xx/429 status. [`PushRefusal::Guard`],
+/// [`PushRefusal::Unresolved`], [`PushRefusal::NotAUrl`] and any OTHER 4xx are correctness
+/// refusals — retrying a rejected scheme or a refused SSRF judgement three times would not change
+/// the answer, it would just spend three sockets (or three guard runs) getting the same "no".
+fn is_retryable(refusal: &PushRefusal) -> bool {
+    match refusal {
+        PushRefusal::Transport(_) => true,
+        PushRefusal::Status(429) => true,
+        PushRefusal::Status(status) => (500..600).contains(status),
+        PushRefusal::NoCallback
+        | PushRefusal::Guard(_)
+        | PushRefusal::Unresolved(_)
+        | PushRefusal::NotAUrl(_) => false,
+    }
+}
+
+/// `base_ms`, jittered by up to ±[`RETRY_JITTER_FRACTION`]. Falls back to the UN-jittered delay on a
+/// `getrandom` failure — a delay is a timing nicety, not a security property, so degrading to
+/// exactly `base_ms` rather than refusing to wait at all is the honest floor here.
+fn jittered_delay(base_ms: u64) -> std::time::Duration {
+    let mut byte = [0u8; 1];
+    let signed_unit = if getrandom::fill(&mut byte).is_ok() {
+        // byte[0] in 0..=255 -> a value in [-1.0, 1.0].
+        (f64::from(byte[0]) / 255.0).mul_add(2.0, -1.0)
+    } else {
+        0.0
+    };
+    let scaled = (base_ms as f64) * signed_unit.mul_add(RETRY_JITTER_FRACTION, 1.0);
+    std::time::Duration::from_millis(scaled.max(0.0) as u64)
+}
+
+/// DELIVER, WITH BOUNDED RETRY, off an async context — the timer between attempts is
+/// [`tokio::time::sleep`], never a thread `sleep`, precisely so a retrying delivery holds no thread
+/// and no admission/capacity slot while it waits. Each attempt runs [`deliver`] on its own
+/// `spawn_blocking` thread (the guard's resolve and the transport's send both block), so the async
+/// waiter here is never itself blocked by one.
+///
+/// EVERY ATTEMPT RE-RUNS THE FULL GUARD, because [`deliver`] does — a retry is a fresh call to
+/// [`attempt`], not a re-send of a judgement made once. A name can change between attempt 1 and
+/// attempt 2 exactly as it can between registration and the first delivery, and the property this
+/// module exists for ("the guard runs at delivery, not only at registration") would be undone by a
+/// retry path that skipped it on attempts 2 and 3.
+///
+/// The ONLY callers of this are the per-task queue workers in [`enqueue`]'s drain loop — a caller
+/// that awaited this directly on a request-handling or stream-pumping task would reintroduce the
+/// exact stall the queue exists to prevent.
+async fn deliver_with_retry(
+    engine_host: Arc<dyn EngineHost>,
+    seam: Arc<dyn RelaySeam>,
+    task: Task,
+) -> Result<(), PushRefusal> {
+    let mut attempt_no: u32 = 0;
+    loop {
+        attempt_no += 1;
+        let host_for_hop = Arc::clone(&engine_host);
+        let seam_for_hop = Arc::clone(&seam);
+        let task_for_hop = task.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            deliver(host_for_hop.as_ref(), seam_for_hop.as_ref(), &task_for_hop)
+        })
+        .await
+        .unwrap_or_else(|_| {
+            Err(PushRefusal::Transport(
+                "the delivery worker thread panicked".to_string(),
+            ))
+        });
+
+        match &outcome {
+            Ok(()) => return outcome,
+            Err(refusal) if attempt_no < MAX_DELIVERY_ATTEMPTS && is_retryable(refusal) => {
+                let delay_ms = RETRY_DELAYS_MS[(attempt_no - 1) as usize];
+                tokio::time::sleep(jittered_delay(delay_ms)).await;
+            }
+            Err(_) => return outcome,
+        }
+    }
+}
+
+// ══ THE PER-TASK ORDERED DELIVERY QUEUE ═════════════════════════════════════════════════════════
+
+/// One task's callback, waiting its turn. Carries its own `engine_host`/`seam` rather than assuming
+/// the queue worker shares one held elsewhere, so a queued item is fully self-contained.
+struct QueuedDelivery {
+    engine_host: Arc<dyn EngineHost>,
+    seam: Arc<dyn RelaySeam>,
+    task: Task,
+}
+
+/// How many not-yet-attempted notifications one task's queue may hold before the oldest is dropped
+/// to make room. A caller cannot slow busbar down by being slow ([`deliver`]'s own doctrine), and an
+/// UNBOUNDED per-task queue behind a receiver that never answers would be exactly that: memory
+/// growing forever, keyed by a rate the far end controls by holding its socket open.
+const QUEUE_CAPACITY: usize = 64;
+
+/// ONE ENTRY PER TASK THAT HAS EVENTS QUEUED OR A WORKER DRAINING THEM. Removed the moment its
+/// queue empties (see [`drain_queue`]), so a task that stops changing costs nothing here — the same
+/// bound [`pins`] and [`auths`] are documented with.
+fn queues() -> &'static Mutex<HashMap<String, VecDeque<QueuedDelivery>>> {
+    static QUEUES: OnceLock<Mutex<HashMap<String, VecDeque<QueuedDelivery>>>> = OnceLock::new();
+    QUEUES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// ENQUEUE this task's notification for delivery, IN ORDER, without blocking the caller.
+///
+/// This is the seam both production sites (the unary hop's `notify_push` and the streaming sink)
+/// now call INSTEAD OF [`deliver`] directly. Neither may await a delivery inline: the unary hop
+/// already runs detached, and the streaming sink's caller is the stream's own chunk pump — a
+/// notification that blocked there would stall every later chunk of that same stream behind
+/// whatever the webhook is doing, retries included.
+///
+/// ONE WORKER PER TASK ID drains its queue in strict FIFO order, so a task's push notifications
+/// arrive at the receiver in the same order its state actually changed — the property the inline
+/// call used to get for free by construction and that a queue must keep on purpose. A worker is
+/// spawned only when this task had none already running (the queue map's own presence is the flag:
+/// see [`drain_queue`]), so calling this from a hot path costs one lock and, ordinarily, nothing
+/// else — no new task is spawned once a task's worker is already draining.
+///
+/// Both production sites in `receive.rs` (`notify_push` and the streaming sink) call this; neither
+/// calls [`deliver`] directly any more.
+pub(crate) fn enqueue(engine_host: Arc<dyn EngineHost>, seam: Arc<dyn RelaySeam>, task: Task) {
+    if task.push_callback.is_none() {
+        return;
+    }
+    let task_id = task.task_id.clone();
+    let item = QueuedDelivery {
+        engine_host,
+        seam,
+        task,
+    };
+    let spawn_worker = {
+        let mut queues = queues().lock().unwrap_or_else(|e| e.into_inner());
+        let already_running = queues.contains_key(&task_id);
+        let queue = queues.entry(task_id.clone()).or_default();
+        if queue.len() >= QUEUE_CAPACITY {
+            queue.pop_front();
+            diag_debug!(
+                A2A_PUSH_QUEUE_DROPPED,
+                task = %task_id,
+                capacity = QUEUE_CAPACITY,
+                "a2a: the push-delivery queue was full; the oldest queued notification was dropped"
+            );
+        }
+        queue.push_back(item);
+        !already_running
+    };
+    if spawn_worker {
+        tokio::spawn(drain_queue(task_id));
+    }
+}
+
+/// DRAIN one task's queue, oldest first, to exhaustion — the worker [`enqueue`] spawns at most one
+/// of, per task, at a time.
+///
+/// The queue's own entry is the flag that says whether a worker is already draining it: this
+/// function removes the entry the moment it finds the queue empty, INSIDE the same lock acquisition
+/// that observed the emptiness, so a concurrent [`enqueue`] either lands before the removal (and
+/// this loop picks the new item up on its next turn) or after it (and finds no entry, so it spawns
+/// a fresh worker) — never both, and never neither, because the two critical sections cannot
+/// interleave.
+///
+async fn drain_queue(task_id: String) {
+    loop {
+        let next = {
+            let mut queues = queues().lock().unwrap_or_else(|e| e.into_inner());
+            let Some(queue) = queues.get_mut(&task_id) else {
+                return;
+            };
+            let popped = queue.pop_front();
+            if popped.is_none() {
+                queues.remove(&task_id);
+            }
+            popped
+        };
+        let Some(item) = next else {
+            return;
+        };
+        let task_id_for_log = item.task.task_id.clone();
+        // NEVER fatal to the task: the outcome is already on its chain (`deliver`), and a webhook
+        // that stays down is the caller's to read in this line.
+        if let Err(e) = deliver_with_retry(item.engine_host, item.seam, item.task).await {
+            diag_debug!(A2A_PUSH_NOTIFY_UNDELIVERED, task = %task_id_for_log, error = %e, "a2a: the push notification was not delivered");
+        }
+    }
+}
+
+/// THE NUMBER OF EVENTS CURRENTLY QUEUED for a task, for the test that asserts the bound holds and
+/// the drop is the OLDEST rather than the newest. Not `pub(crate)` beyond tests: production code has
+/// no legitimate reason to inspect queue depth, only to enqueue into it.
+#[cfg(all(test, feature = "test-support"))]
+pub(crate) fn queue_depth_for_test(task_id: &str) -> usize {
+    queues()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(task_id)
+        .map_or(0, VecDeque::len)
 }
 
 #[cfg(all(test, feature = "test-support"))]
