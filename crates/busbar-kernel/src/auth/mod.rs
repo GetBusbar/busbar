@@ -11,7 +11,6 @@ use axum::{
 };
 
 use crate::config::AuthCfg;
-use crate::state::App;
 use crate::diagnostics::{
     diag_debug, diag_error, diag_warn, ADMIN_AUTH_CHAIN_EMPTY, ADMIN_CHAIN_STALLED,
     ADMIN_FORBIDDEN_SUPPRESSED, ADMIN_MODULE_UNRESOLVED, ADMIN_OFFLOAD_SATURATED,
@@ -19,6 +18,7 @@ use crate::diagnostics::{
     KEYS_IN_CHAIN_PASSTHROUGH_CONFLICT,
 };
 use crate::sigv4::{SIGV4_ALGORITHM, X_AMZ_CONTENT_SHA256, X_AMZ_DATE};
+use crate::state::App;
 
 /// The two non-`Authorization` headers that native vendor SDKs use to carry their API key:
 /// the Anthropic SDK sends `x-api-key`, the Gemini SDK sends `x-goog-api-key`. busbar accepts
@@ -892,7 +892,9 @@ pub fn admin_carriers(headers: &HeaderMap) -> (Option<String>, Option<String>) {
     let text = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
     (
         text(AUTHORIZATION.as_str()).and_then(AuthMiddleware::extract_bearer_token),
-        text(X_ADMIN_TOKEN).filter(|t| !t.is_empty()).map(String::from),
+        text(X_ADMIN_TOKEN)
+            .filter(|t| !t.is_empty())
+            .map(String::from),
     )
 }
 

@@ -212,12 +212,9 @@ async fn a_body_the_wrap_will_not_read_is_refused_rather_than_emptied() {
     use tower::ServiceExt;
 
     let inner = axum::Router::new().fallback(axum::routing::any(|| async { "the surface" }));
-    let wrapped = mount(
-        inner,
-        busbar_kernel::teller::Kernel::new(),
-        4,
-        |dispatch| crate::root::kernel::ProductionUnits::admin_only(dispatch, open_door()),
-    );
+    let wrapped = mount(inner, busbar_kernel::teller::Kernel::new(), 4, |dispatch| {
+        crate::root::kernel::ProductionUnits::admin_only(dispatch, open_door())
+    });
 
     // Longer than the cap and no declared length: the read stops at the cap and the request is
     // refused, rather than becoming a document nobody sent.
