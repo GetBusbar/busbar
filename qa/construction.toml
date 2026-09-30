@@ -448,17 +448,11 @@ because = "OWNER GRANT 2026-09-29 (3), ARCHITECT approval: line-limit re-arm at 
 #    contract; the plane tail declares its kernel-owned trust keys) — measured by LANDER at the
 #    rebased tip ───────────────────────────────────────────────────────────────────────────────
 
-[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
-file    = "qa/construction.toml"
-from    = 25543
-to      = 25712
-because = "OWNER RULING Q68(3): contract_caps re-arms at the MEASURED value, in its own commit. Growth is exactly KERNEL-VALIDATE's declared surface (BUSBAR-1.6.0.md THE DESIGN, §11.12; rulings F4/F5): busbar_contract::section (split_section, Section, RESERVED_SECTION_KEYS, moved out of busbar-kernel as a stateless pure helper), the plane tail's kernel-owned trust keys (abi/plane TrustKey, PinMechanism, TRUST_*/PIN_FINGERPRINT/MECHANISM_ROOT, PlaneTail.trust_keys, check_trust_keys, check_pin_mechanisms) and their Rust mirror on PlaneDeclaration (trust_keys, TrustKeyDecl, TrustRole, PinMechanismDecl). Measured by cargo xtask gate construction: 25543 before, 25712 after, +169."
+# [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
+# and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
 
-[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
-file    = "qa/construction.toml"
-from    = 25543
-to      = 25712
-because = "OWNER RULING Q68(3): contract_caps re-arms at the MEASURED value, in its own commit. Growth is exactly KERNEL-VALIDATE's declared surface (BUSBAR-1.6.0.md THE DESIGN, §11.12; rulings F4/F5): busbar_contract::section (split_section, Section, RESERVED_SECTION_KEYS, moved out of busbar-kernel as a stateless pure helper), the plane tail's kernel-owned trust keys (abi/plane TrustKey, PinMechanism, TRUST_*/PIN_FINGERPRINT/MECHANISM_ROOT, PlaneTail.trust_keys, check_trust_keys, check_pin_mechanisms) and their Rust mirror on PlaneDeclaration (trust_keys, TrustKeyDecl, TrustRole, PinMechanismDecl). Measured by cargo xtask gate construction: 25543 before, 25712 after, +169."
+# [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
+# and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY LANDER'S BATCH (XTASK-SPEED, KI-ABI-SCOPE, M3-SDK,
 #    M3-SHAPES AUTH, billing-cite) — EXPIRED AND STRUCK
@@ -728,9 +722,11 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 25082 -> 25543, AT THE MEASUREMENT, in its own commit after SDK-SAFE (the SDK's safe
 # surface and the plane Claim flags, +461); struck by KERNEL-VALIDATE's re-arm.
 # RE-ARMED 25543 -> 25712, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
-# KERNEL-VALIDATE (the contract section split and the plane tail's trust keys, +169); the live
-# declaration above carries the measure.
-contract_caps = 25712
+# KERNEL-VALIDATE (the contract section split and the plane tail's trust keys, +169); struck by
+# the next re-arm.
+# LOWERED 25712 -> 23937, the measurement: METER-FIX's loc basis (layout pins billed as test, -1605;
+# the contract testkit out of release builds, -167; measured, -1775). Downward only.
+contract_caps = 23937
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1405,7 +1401,9 @@ contract_crate = "busbar-contract"
 # RE-ARMED 25082 -> 25543 with its pair (SDK-SAFE: the SDK's safe surface and the Claim flags, +461).
 # RE-ARMED 25543 -> 25712 with its pair (OWNER RULING Q68(3); KERNEL-VALIDATE, the contract
 # section split and the plane tail's trust keys, +169).
-caps_contract_ceiling = 25712
+# LOWERED 25712 -> 23937 with its pair (METER-FIX's loc basis: layout pins billed as test, -1605;
+# the contract testkit out of release builds, -167; measured, -1775).
+caps_contract_ceiling = 23937
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
