@@ -132,8 +132,16 @@
 # NOTE: a feature branch head, the same shape as the previous pins; re-pin to the merge commit when
 # it lands.
 #
+# 2026-09-30 (owner ruling, 1.6.0-QUESTIONS.md STREAMS-ORACLE option A): moved 35b4a05 -> 97957ea
+# (branch `streams-oracle`, cut from 35b4a05). Two commits: 6f9b240 makes a PRE-RELEASE baseline
+# (`golden/1.6.0-pre`) one a caller must NAME: `version_key` ranked it above 1.5.5, so the newest-
+# baseline default (the turnstile's HarnessOracle::new, record/replay with no --baseline-version)
+# would have judged the corpus against it; 97957ea adds the seven `streams|*` capture cells (2477 ->
+# 2484) that bin/oracle replay judges against golden/1.6.0-pre (family-baselines.tsv). Still a
+# feature branch head; re-pin to the integration/merge commit when that branch lands.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=35b4a05
+release_ref=97957ea
 crate=busbar-release-oracle
 bin=busbar-oracle

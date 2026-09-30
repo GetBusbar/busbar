@@ -55,10 +55,10 @@
     }
   ],
   "counts": {
-    "total": 2477,
+    "total": 2484,
     "by_plane": {
       "a2a": 468,
-      "core": 948,
+      "core": 955,
       "llm": 149,
       "mcp": 912
     },
@@ -95,6 +95,7 @@
       "route.cheapest": 1,
       "route.failover": 16,
       "store.boot": 11,
+      "streams": 7,
       "teller": 7,
       "webrequest": 8,
       "wire.h1": 3,
@@ -35972,6 +35973,503 @@
         }
       },
       "why": "a valkey store on a PRIVATE address under `--validate`. The published store plugin paired with 1.5.5 is staged; the boot's exit code and log lines are recorded (ports, OS error numbers and timestamps masked)."
+    },
+    {
+      "id": "streams|metadata|protected-resource",
+      "plane": "core",
+      "family": "streams",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\npublic_url: \"http://{LISTEN}\"\nidentity-providers:\n  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }\nauth:\n  chain: [keys]\n  admin_auth: [admin-tokens]\n  signing_key: { file: \"{WORK}/signing.key\" }\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nstreams:\n  session:\n    model: m-cap\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-streams-0001"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "data",
+              "method": "GET",
+              "path": "/.well-known/oauth-protected-resource/v1/realtime",
+              "headers": []
+            }
+          },
+          {
+            "sleep_ms": 300
+          }
+        ],
+        "mask": [
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ],
+          [
+            "(?i)(openai-safety-identifier: )[^\\r]*",
+            "${1}<OWNER>"
+          ]
+        ]
+      },
+      "why": "STREAMS BASELINE 1.6.0-pre (no 1.5.5 baseline: 1.5.5 had no streaming plane). The RFC 9728 protected-resource metadata the streaming plane serves for its audience `<public_url>/v1/realtime`, unauthenticated, on a deployment with `public_url` and a `streams:` block. Recorded from the pinned pre-fold predev build; the streaming fold is compared against it."
+    },
+    {
+      "id": "streams|mint|client-secrets",
+      "plane": "core",
+      "family": "streams",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\npublic_url: \"http://{LISTEN}\"\nidentity-providers:\n  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }\nauth:\n  chain: [keys]\n  admin_auth: [admin-tokens]\n  signing_key: { file: \"{WORK}/signing.key\" }\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nstreams:\n  session:\n    model: m-cap\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-streams-0002"
+        },
+        "mock": {
+          "fixed": [
+            {
+              "path": "/v1/realtime/client_secrets",
+              "status": 200,
+              "content_type": "application/json",
+              "body": "{\"value\":\"ek_oracle_0001\",\"expires_at\":1767225600}"
+            }
+          ]
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "audience_token": {
+              "as": "AT",
+              "from": "{VK}",
+              "aud": "http://{LISTEN}/v1/realtime"
+            }
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/realtime/client_secrets",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {AT}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{}"
+            }
+          },
+          {
+            "sleep_ms": 300
+          }
+        ],
+        "mask": [
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ],
+          [
+            "(?i)(openai-safety-identifier: )[^\\r]*",
+            "${1}<OWNER>"
+          ]
+        ]
+      },
+      "why": "STREAMS BASELINE 1.6.0-pre. The browser `ek_` mint: an audience-bound caller POSTs /v1/realtime/client_secrets; busbar mints through the composed provider (the capture mock) under its own provider key. Recorded: every byte of the upstream mint request (method, target, every header in wire order, body carrying the locked session) and the caller's answer. Recorded from the pinned pre-fold predev build; the streaming fold is compared against it."
+    },
+    {
+      "id": "streams|mint|no-bearer",
+      "plane": "core",
+      "family": "streams",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\npublic_url: \"http://{LISTEN}\"\nidentity-providers:\n  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }\nauth:\n  chain: [keys]\n  admin_auth: [admin-tokens]\n  signing_key: { file: \"{WORK}/signing.key\" }\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nstreams:\n  session:\n    model: m-cap\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-streams-0003"
+        },
+        "mock": {
+          "fixed": [
+            {
+              "path": "/v1/realtime/client_secrets",
+              "status": 200,
+              "content_type": "application/json",
+              "body": "{\"value\":\"ek_oracle_0001\",\"expires_at\":1767225600}"
+            }
+          ]
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/realtime/client_secrets",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{}"
+            }
+          },
+          {
+            "sleep_ms": 300
+          }
+        ],
+        "mask": [
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ],
+          [
+            "(?i)(openai-safety-identifier: )[^\\r]*",
+            "${1}<OWNER>"
+          ]
+        ]
+      },
+      "why": "STREAMS BASELINE 1.6.0-pre. The mint route with no credential at all: the refusal the streaming door answers (status, headers, body) before any hook, lease or dial; the mock records that nothing went upstream. Recorded from the pinned pre-fold predev build."
+    },
+    {
+      "id": "streams|mint|no-provider",
+      "plane": "core",
+      "family": "streams",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\npublic_url: \"http://{LISTEN}\"\nidentity-providers:\n  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }\nauth:\n  chain: [keys]\n  admin_auth: [admin-tokens]\n  signing_key: { file: \"{WORK}/signing.key\" }\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nstreams: {}\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-streams-0004"
+        },
+        "mock": {
+          "fixed": [
+            {
+              "path": "/v1/realtime/client_secrets",
+              "status": 200,
+              "content_type": "application/json",
+              "body": "{\"value\":\"ek_oracle_0001\",\"expires_at\":1767225600}"
+            }
+          ]
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "audience_token": {
+              "as": "AT",
+              "from": "{VK}",
+              "aud": "http://{LISTEN}/v1/realtime"
+            }
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/realtime/client_secrets",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {AT}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{}"
+            }
+          },
+          {
+            "sleep_ms": 300
+          }
+        ],
+        "mask": [
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ],
+          [
+            "(?i)(openai-safety-identifier: )[^\\r]*",
+            "${1}<OWNER>"
+          ]
+        ]
+      },
+      "why": "STREAMS BASELINE 1.6.0-pre. The mint route on a `streams: {}` deployment that names no session model, so no provider is composed: the governed open runs and the pass answers without dialing anything. Recorded from the pinned pre-fold predev build."
+    },
+    {
+      "id": "streams|mint|wrong-audience",
+      "plane": "core",
+      "family": "streams",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\npublic_url: \"http://{LISTEN}\"\nidentity-providers:\n  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }\nauth:\n  chain: [keys]\n  admin_auth: [admin-tokens]\n  signing_key: { file: \"{WORK}/signing.key\" }\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nstreams:\n  session:\n    model: m-cap\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-streams-0005"
+        },
+        "mock": {
+          "fixed": [
+            {
+              "path": "/v1/realtime/client_secrets",
+              "status": 200,
+              "content_type": "application/json",
+              "body": "{\"value\":\"ek_oracle_0001\",\"expires_at\":1767225600}"
+            }
+          ]
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/realtime/client_secrets",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{}"
+            }
+          },
+          {
+            "sleep_ms": 300
+          }
+        ],
+        "mask": [
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ],
+          [
+            "(?i)(openai-safety-identifier: )[^\\r]*",
+            "${1}<OWNER>"
+          ]
+        ]
+      },
+      "why": "STREAMS BASELINE 1.6.0-pre. The mint route presented a valid key that is NOT bound to the streaming audience `<public_url>/v1/realtime`: the audience refusal the door answers before any hook, lease or dial. Recorded from the pinned pre-fold predev build."
+    },
+    {
+      "id": "streams|sdp|calls",
+      "plane": "core",
+      "family": "streams",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\npublic_url: \"http://{LISTEN}\"\nidentity-providers:\n  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }\nauth:\n  chain: [keys]\n  admin_auth: [admin-tokens]\n  signing_key: { file: \"{WORK}/signing.key\" }\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nstreams:\n  session:\n    model: m-cap\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-streams-0006"
+        },
+        "mock": {
+          "fixed": [
+            {
+              "path": "/v1/realtime/calls",
+              "status": 201,
+              "content_type": "application/sdp",
+              "body": "v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=oracle-answer\r\nt=0 0\r\n"
+            }
+          ]
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "audience_token": {
+              "as": "AT",
+              "from": "{VK}",
+              "aud": "http://{LISTEN}/v1/realtime"
+            }
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/realtime/calls",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {AT}"
+                ],
+                [
+                  "Content-Type",
+                  "application/sdp"
+                ]
+              ],
+              "body": "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=oracle-offer\r\nt=0 0\r\n"
+            }
+          },
+          {
+            "sleep_ms": 300
+          }
+        ],
+        "mask": [
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ],
+          [
+            "(?i)(openai-safety-identifier: )[^\\r]*",
+            "${1}<OWNER>"
+          ]
+        ]
+      },
+      "why": "STREAMS BASELINE 1.6.0-pre. The SDP broker: an audience-bound caller POSTs an `application/sdp` offer to /v1/realtime/calls; busbar brokers it to the composed provider's /v1/realtime/calls under its own provider credential (never the caller's bearer). Recorded: every byte of the upstream offer request and the answer the caller gets. Recorded from the pinned pre-fold predev build."
+    },
+    {
+      "id": "streams|sideband|no-upgrade",
+      "plane": "core",
+      "family": "streams",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\npublic_url: \"http://{LISTEN}\"\nidentity-providers:\n  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }\nauth:\n  chain: [keys]\n  admin_auth: [admin-tokens]\n  signing_key: { file: \"{WORK}/signing.key\" }\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nstreams:\n  session:\n    model: m-cap\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-streams-0007"
+        },
+        "mock": {},
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "audience_token": {
+              "as": "AT",
+              "from": "{VK}",
+              "aud": "http://{LISTEN}/v1/realtime"
+            }
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "GET",
+              "path": "/v1/realtime/sideband/rtc_oracle0001",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {AT}"
+                ]
+              ]
+            }
+          },
+          {
+            "sleep_ms": 300
+          }
+        ],
+        "mask": [
+          [
+            "vk_[0-9a-f]{32}",
+            "vk_<KEY>"
+          ],
+          [
+            "(?i)(openai-safety-identifier: )[^\\r]*",
+            "${1}<OWNER>"
+          ]
+        ]
+      },
+      "why": "STREAMS BASELINE 1.6.0-pre. The browser sideband WS route asked with a plain GET (no WebSocket upgrade) by an audience-bound caller: the answer the streaming door gives a request it cannot upgrade. Recorded from the pinned pre-fold predev build."
     },
     {
       "id": "teller|admit-refusal",
