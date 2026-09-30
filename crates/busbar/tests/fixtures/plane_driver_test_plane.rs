@@ -144,6 +144,8 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     egress_targets_len: 0,
     record_chains: std::ptr::null(),
     record_chains_len: 0,
+    trust_keys: std::ptr::null(),
+    trust_keys_len: 0,
 });
 
 static FAMILIES: Shared<[MetricFamily; 1]> = Shared([MetricFamily {
@@ -211,6 +213,8 @@ static CLAIMS: Shared<[Claim; 1]> = Shared([Claim {
     verb: s(b"POST"),
     target: s(b"/call"),
     carrier: s(b"inbound"),
+    flags: 0,
+    _reserved: 0,
 }]);
 
 /// THE DOOR: the `DoorFn` a compiled-in row holds.
