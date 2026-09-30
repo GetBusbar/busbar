@@ -445,6 +445,7 @@ fn rig(
         pools: HashMap::from([(POOL.to_string(), pool)]),
         routes,
         stream_ceiling_secs: 600,
+        error_body_max: DEFAULT_ERROR_BODY_MAX,
     };
     Rig {
         table,
@@ -876,4 +877,43 @@ async fn passthrough_hands_the_callers_credential_only_to_its_member() {
     );
     // The pick says so, and the plane is told: only the passthrough member relays.
     assert_eq!(relays, vec![false, true]);
+}
+
+/// THE ERROR-BODY CAP (1.5.5's `limits.upstream_error_body_max_bytes`): a relayed failure's body is
+/// handed to the plane up to the cap, the piece that overruns it is cut there and ends the answer,
+/// and the connection closes; a success's body passes whole.
+#[tokio::test]
+async fn a_relayed_failures_body_is_capped_and_a_success_is_not() {
+    let mut r = rig(
+        &[("a.test", Script::Answer(400, None, vec![b"0123", b"4567", b"89"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    r.egress.error_body_max = 6;
+    let t = token();
+    let far = r.egress.unit(route());
+    let _ = far.member(&t, 1).await;
+    assert!(far.send(&t, request()).await);
+    let pieces = drain(&far, &t).await;
+    let body: Vec<u8> = pieces.iter().flat_map(|p| p.bytes.clone()).collect();
+    assert_eq!(body, b"012345", "cut at the cap");
+    assert!(pieces.last().unwrap().last, "the cut ends the answer");
+    assert_eq!(r.table.closed.load(Ordering::SeqCst), 1, "its connection closed");
+    assert!(far.next(&t).await.is_none(), "nothing more is read");
+
+    let mut r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"0123", b"4567", b"89"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    r.egress.error_body_max = 6;
+    let far = r.egress.unit(route());
+    let _ = far.member(&t, 1).await;
+    assert!(far.send(&t, request()).await);
+    let body: Vec<u8> = drain(&far, &t)
+        .await
+        .iter()
+        .flat_map(|p| p.bytes.clone())
+        .collect();
+    assert_eq!(body, b"0123456789", "a success is never capped");
 }

@@ -65,6 +65,11 @@ use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
 /// The bytes one read of the far end takes.
 const READ_BYTES: usize = 16 * 1024;
 
+/// 1.5.5's cap on a buffered far-end ERROR body (`limits.upstream_error_body_max_bytes`, default
+/// 256 KiB; v1.5.5 `DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES`, config/mod.rs): the default for
+/// [`Egress::error_body_max`].
+pub const DEFAULT_ERROR_BODY_MAX: usize = 256 * 1024;
+
 /// One member's sealed route: the need the plane declared for it, the `base_url` the target is
 /// joined onto, and its auth binding.
 #[derive(Clone)]
@@ -128,6 +133,11 @@ pub struct Egress {
     pub routes: HashMap<DestinationId, MemberRoute>,
     /// The ceiling on a streamed answer's whole send, seconds.
     pub stream_ceiling_secs: u64,
+    /// The most bytes of a relayed non-success answer's body the plane is handed (the operator's
+    /// `limits.upstream_error_body_max_bytes`, [`DEFAULT_ERROR_BODY_MAX`] unset). What overruns it
+    /// is dropped and the answer ends there, as 1.5.5's capped read did: an error envelope is far
+    /// smaller, and one that overruns it can only be malformed or hostile.
+    pub error_body_max: usize,
 }
 
 impl std::fmt::Debug for Egress {
@@ -232,6 +242,8 @@ struct Live {
     spent: bool,
     /// The answer ended.
     ended: bool,
+    /// A relayed non-success answer: how many more of its body's bytes the plane may be handed.
+    error_left: Option<usize>,
 }
 
 /// One unit's walk.
@@ -424,6 +436,7 @@ impl EgressFarEnd<'_> {
             answered: false,
             spent: false,
             ended: false,
+            error_left: None,
         });
         Pick::Member {
             name,
@@ -910,12 +923,26 @@ impl EgressFarEnd<'_> {
                 fields: true,
                 ..FarPiece::default()
             }),
-            PieceKind::Body if answered => Some(FarPiece {
+            PieceKind::Body if answered => Some(self.capped(FarPiece {
                 bytes: buf[..piece.len].to_vec(),
                 ..FarPiece::default()
-            }),
+            })),
             PieceKind::Body => Some(self.first(token, &piece, buf[..piece.len].to_vec())),
         }
+    }
+
+    /// A body piece of the answer, under the error-body cap when the answer is a relayed failure.
+    fn capped(&self, piece: FarPiece) -> FarPiece {
+        let mut w = self.lock();
+        let Some(live) = w.live.as_mut() else {
+            return piece;
+        };
+        let piece = cap(live, piece);
+        if piece.last {
+            // The rest is never read: the connection closes and the member's slot frees.
+            self.settle(&mut w);
+        }
+        piece
     }
 
     /// The answer ended: `clean` keeps the budget unit its success spent.
@@ -991,14 +1018,22 @@ impl EgressFarEnd<'_> {
                 e.telemetry
                     .upstream_failure(&pool, destination, classified.label);
             }
-            return FarPiece {
-                bytes,
-                status: far_status,
-                last: false,
-                fail_over: false,
-                fields: false,
-                head: Vec::new(),
-            };
+            live.error_left = Some(e.error_body_max);
+            let piece = cap(
+                live,
+                FarPiece {
+                    bytes,
+                    status: far_status,
+                    last: false,
+                    fail_over: false,
+                    fields: false,
+                    head: Vec::new(),
+                },
+            );
+            if piece.last {
+                self.settle(&mut w);
+            }
+            return piece;
         }
         e.telemetry
             .upstream_failure(&pool, destination, classified.label);
@@ -1059,3 +1094,21 @@ impl FarEnd for EgressFarEnd<'_> {
 #[cfg(test)]
 #[path = "tests/far_end_tests.rs"]
 mod tests;
+
+/// THE ERROR-BODY CAP on one body piece of `live`'s answer: a success's body passes whole; a relayed
+/// failure's is handed over up to what is left of the cap, and a piece that overruns it is cut
+/// there and ends the answer (the caller settles the attempt; the rest is never read).
+fn cap(live: &mut Live, mut piece: FarPiece) -> FarPiece {
+    let Some(left) = live.error_left.as_mut() else {
+        return piece;
+    };
+    if piece.bytes.len() <= *left {
+        *left -= piece.bytes.len();
+        return piece;
+    }
+    piece.bytes.truncate(*left);
+    *left = 0;
+    live.ended = true;
+    piece.last = true;
+    piece
+}
