@@ -243,3 +243,22 @@ fn a_host_buf_from_nothing_is_empty() {
     assert_eq!(b.extend(b"x"), 0);
     assert_eq!(b.needed(), 1);
 }
+
+#[test]
+fn a_locate_lends_its_alpn_offer_buffer_beside_the_other_two() {
+    let (mut authority, mut alpn) = ([0_u8; 4], [0_u8; 3]);
+    let mut v: crate::abi::transport::LocateIn = zeroed();
+    (v.authority_buf, v.authority_cap) = (authority.as_mut_ptr(), authority.len());
+    (v.alpn_buf, v.alpn_cap) = (alpn.as_mut_ptr(), alpn.len());
+    let mut a = lend(&v).authority_buf();
+    let mut o = lend(&v).alpn_buf();
+    a.extend(b"h:80");
+    o.extend(b"\x02h2");
+    let short = !(a.fits() && o.fits());
+    assert!(!short);
+    assert_eq!(o.settle(short), (3, 0));
+    assert_eq!((&authority, &alpn), (b"h:80", b"\x02h2"));
+    let mut tight = lend(&v).alpn_buf();
+    tight.extend(b"\x02h2\x08http/1.1");
+    assert_eq!(tight.settle(!tight.fits()), (0, 12), "a short offer reports its full size");
+}

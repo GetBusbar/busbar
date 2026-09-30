@@ -421,6 +421,7 @@ lend! {
     LocateIn {
         buf(authority_buf, authority_cap) -> u8;
         buf(name_buf, name_cap) -> u8;
+        buf(alpn_buf, alpn_cap) -> u8;
     }
     BeginIn { one(facts) -> ConnFacts; }
     IngestIn { bytes(bytes, len); }
