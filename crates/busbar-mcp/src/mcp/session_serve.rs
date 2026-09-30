@@ -57,14 +57,23 @@ const ANSWER_MAX_BYTES: usize = 16 << 20;
 pub(crate) struct SessionServe {
     table: Mutex<SessionTable>,
     outlets: Mutex<HashMap<String, tokio::sync::mpsc::Sender<String>>>,
+    /// The ONE randomness source a session id is drawn from: the host's CSPRNG
+    /// (`busbar_contract::codec::fill_entropy`). There is no fallback; a failed draw mints nothing.
+    draw: fn(&mut [u8]) -> bool,
 }
 
 impl SessionServe {
     /// An empty table under the default bounds.
     pub(crate) fn new() -> Self {
+        Self::drawing_from(busbar_contract::codec::fill_entropy)
+    }
+
+    /// An empty table whose ids are drawn from `draw`.
+    fn drawing_from(draw: fn(&mut [u8]) -> bool) -> Self {
         Self {
             table: Mutex::new(SessionTable::new(Bounds::default())),
             outlets: Mutex::new(HashMap::new()),
+            draw,
         }
     }
 
@@ -79,7 +88,7 @@ impl SessionServe {
     ) -> Option<String> {
         for _ in 0..3 {
             let mut entropy = [0u8; 16];
-            if !draw(&mut entropy) {
+            if !(self.draw)(&mut entropy) {
                 return None;
             }
             match lock(&self.table).open(entropy, owner.clone(), revision, carriage, now) {
@@ -113,11 +122,6 @@ impl SessionServe {
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// 128 bits from the host's CSPRNG, or from the OS CSPRNG where no host source is installed.
-fn draw(out: &mut [u8]) -> bool {
-    busbar_contract::codec::fill_entropy(out) || getrandom::fill(out).is_ok()
 }
 
 fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -751,5 +755,37 @@ pub(crate) async fn delete(ctx: PlaneReqCtx) -> Response {
         StatusCode::NO_CONTENT.into_response()
     } else {
         unknown_session()
+    }
+}
+
+#[cfg(test)]
+mod draw_tests {
+    use super::*;
+
+    fn owner() -> Owner {
+        Owner {
+            principal: "p".into(),
+            credential: "k".into(),
+        }
+    }
+
+    /// RED (reviewer follow-up 3): the host CSPRNG is the only source. A failed host draw mints
+    /// nothing, and nothing else is drawn from in its place.
+    #[test]
+    fn red_a_failed_host_draw_mints_no_session() {
+        let failing = SessionServe::drawing_from(|_| false);
+        assert_eq!(
+            failing.mint(&owner(), Revision::R2025_11_25, Carriage::Endpoint, 0),
+            None
+        );
+        assert!(lock(&failing.table).is_empty());
+        let working = SessionServe::drawing_from(|out| {
+            out.fill(0x5a);
+            true
+        });
+        let id = working
+            .mint(&owner(), Revision::R2025_11_25, Carriage::Endpoint, 0)
+            .expect("a working draw mints");
+        assert_eq!(id, "5a".repeat(16));
     }
 }
