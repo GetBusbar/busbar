@@ -872,21 +872,10 @@ list, naming the auth its guests must pass.
    both.
 
    A transport declares the points it offers; an auth style declares the points it needs.
-2. ~~**Driveways are the kernel's.** The connector owns every listener, from config: each is a port
-   bound to one transport kind (e.g. https on 443). A transport never opens a port.~~ SUPERSEDED
-   2026-09-30 (review 2) by: **Driveways are the kernel's.** The connector owns every listener, from
+2. **Driveways are the kernel's.** The connector owns every listener, from
    config: each is an address bound to one transport (e.g. http; TLS is the listener's `tls:`). A
    transport never opens a port.
-3. ~~**The kernel writes the guest lists.** Each plane declares, per dialect, its claims: a route, the
-   transport kind it arrives on, and the dialect's default auth style (e.g. one route of a dialect with
-   a token style, another dialect's route with a signing style). The operator's config may override a
-   claim's auth. At boot the kernel builds one guest list per listener — route → (plane, dialect,
-   auth) — and refuses to boot on: two claims on one route of one listener; a claim whose auth needs a
-   point the listener's transport does not offer; `Peer` on a listener shared by more than one plane.
-   A claim may list several auths; the kernel tries them in order behind the one handle.~~ SUPERSEDED
-   2026-09-30 (review 2) by:
-
-   **The kernel writes the guest lists.** One per listener. A line is route → (claimant, dialect,
+3. **The kernel writes the guest lists.** One per listener. A line is route → (claimant, dialect,
    auth). A claimant is a plane, a plugin's inbound need, or a cleanliness crate's route (admin,
    oauth2), registered by capability key (#26). A plane's claims go on the data listeners (`listen`);
    the admin crate's lines go on `admin_listen`, or on the data listener under the `/api` prefix when
@@ -928,7 +917,7 @@ list, naming the auth its guests must pass.
    authority, field lines), matches the route on its guest list, and calls that line's auth at its
    points; it holds the body only when the line's auth needs `HeadBody`. `HeadBody`'s bound is the size
    gate's limit; over it is 413, answered before the verdict, as 1.5.5 did for inbound SigV4
-   (oracle-checked). ~~The auth answers proceed or refuse~~ The handle answers the transport continue
+   (oracle-checked). The handle answers the transport continue
    or stop and names its credential lines and query keys; the transport strips both, so the plane never
    sees a credential; no kernel step names an inbound credential line; the line's style names them.
    The verdict goes to the kernel first-hand, never through the transport. The verify answer carries
