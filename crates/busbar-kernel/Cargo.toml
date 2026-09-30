@@ -93,10 +93,6 @@ busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }
 # depends only on `busbar-contract`, so the edge is acyclic and kernel -> kernel, exactly as the
 # ledger, audit and breaker edges above.
 busbar-kernel-identity = { path = "../busbar-kernel-identity" }
-# Inline-capacity vectors for the per-request lane-selection working set (`proxy::select`): a
-# typical pool has a handful of members, so the candidate view, the SWRR scratch and the tried-set
-# live on the stack instead of costing three heap allocations per pick. Workspace-pinned.
-smallvec = { workspace = true }
 # The folded `timing` module (former busbar-timing, OWNER Q70) calls `atexit(3)` for its process-exit
 # dump, and only under the non-default `timing` feature. The default build does not link it.
 libc = { workspace = true, optional = true }
@@ -128,7 +124,6 @@ schemars = { workspace = true, optional = true }
 loom = { workspace = true, optional = true }
 ring = { workspace = true }
 base64 = { workspace = true }
-oauth-as = { workspace = true }
 sonic-rs = { workspace = true }
 serde_yaml = { workspace = true }
 futures = { workspace = true }
@@ -158,14 +153,6 @@ async-trait = { workspace = true }
 # Guard — no lock, no shared-refcount RMW — where the old RwLock<Arc<App>> paid a contended
 # read-lock + Arc clone on EVERY extraction, on every request, across all workers.
 arc-swap = { workspace = true }
-# Inflates the embedded gzipped OpenAPI document once on first admin request (already in the
-# release graph transitively; this only names the edge).
-flate2 = { workspace = true }
-# The netted MCP codec (handlers/mod.rs nets `busbar-mcp/src/codec` for TEST builds only) names
-# rmcp's model types, so rmcp rides the `test-support` feature and is ABSENT from the production
-# build — the other plane-stack edges (a2a-lf/a2a-pb/tonic/prost) were unused in core entirely and
-# are gone (the plane crates own them).
-rmcp = { workspace = true, optional = true }
 httpdate = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
@@ -278,7 +265,7 @@ loom-model = ["dep:loom"]
 # Exposes `test_support` to a DEPENDENT crate's tests (the bin's). Never on in a normal build;
 # the bin enables it from its [dev-dependencies] edge only. The contract's test double (its warn
 # capture) is always compiled (ARCHITECT SD-3 queue (4)), so nothing forwards there.
-test-support = ["dep:rmcp", "dep:reqwest", "dep:rcgen", "dep:fixture-store", "dep:fixture-hook", "busbar-kernel-identity/stand-in"]
+test-support = ["dep:reqwest", "dep:rcgen", "dep:fixture-store", "dep:fixture-hook", "busbar-kernel-identity/stand-in"]
 # The debug-only per-method micro-timing in `src/timing` (folded from busbar-timing, OWNER Q70).
 # DEFAULT OFF: with this off, `timeit!` expands to `()` and the RAII guards it produces are
 # zero-sized no-ops, so the `drop(_guard)` calls that end a timed span are compiled in ONLY under this
@@ -332,8 +319,6 @@ futures = { workspace = true }
 bytes = { workspace = true }
 serde_json = { workspace = true }
 rcgen = { workspace = true }
-proptest = { workspace = true }
-oauth-as = { workspace = true, features = ["test-util"] }
 # THE POOL-CREDS MICRO-BENCH (`benches/pool_upstream_creds.rs`) — measures the per-request
 # egress credential-mode resolution delta (String-keyed SipHash probe vs the flag-gated Copy read).
 criterion = { workspace = true }

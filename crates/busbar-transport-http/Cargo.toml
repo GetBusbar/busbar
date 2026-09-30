@@ -27,7 +27,6 @@ memchr = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 futures = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "sync", "io-util", "time", "macros"] }
-tokio-rustls = { workspace = true }
 rustls = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }

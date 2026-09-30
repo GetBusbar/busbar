@@ -1847,7 +1847,7 @@ reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-tra
 # of which wire library a transport links to reach them.
 [rules.manifest-allowlist.reviewed_extra]
 busbar-transport-http = [
-  "tokio-util", "memchr", "futures", "tokio", "tokio-rustls", "rustls", "hyper", "hyper-util",
+  "tokio-util", "memchr", "futures", "tokio", "rustls", "hyper", "hyper-util",
   "hyper-rustls", "http-body-util", "http", "webpki-roots", "tonic", "tower",
 ]
 busbar-transport-stdio = ["tokio", "futures"]

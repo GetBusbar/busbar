@@ -28,10 +28,6 @@ tokio-util = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 tokio = { workspace = true, features = ["rt", "macros", "io-util", "sync", "time"] }
 tokio-tungstenite = { workspace = true }
-tokio-rustls = { workspace = true }
-rustls = { workspace = true }
-rustls-pki-types = { workspace = true }
-webpki-roots = { workspace = true }
 futures = { workspace = true }
 # The door's settings blob is JSON (`door::read_settings`).
 serde_json = { workspace = true }
