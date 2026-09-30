@@ -148,7 +148,7 @@ mod miscounts {
 fn mint() -> OpId {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     OpId::from_parts(
-        0x5107,
+        0x5108,
         N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
     )
 }
@@ -164,7 +164,7 @@ fn open() -> LoadedStore {
         },
     )
     .expect("the door loads");
-    LoadedStore::open(p, d, b"{}", mint).expect("it opens")
+    LoadedStore::open(p, d, b"{}", 0x5107).expect("it opens")
 }
 
 fn run<T>(f: impl std::future::Future<Output = T>) -> T {
