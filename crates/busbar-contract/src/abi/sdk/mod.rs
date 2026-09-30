@@ -58,6 +58,8 @@ pub mod out;
 pub use out::{Out, Scalar};
 // A PLUGIN'S CONNECTIONS: the host connector for one op on one ticket, Ready|Pending, and exchange().
 pub mod conn;
+// ONE REQUEST, ONE REPLY over the connector: exchange() (framed) and send_and_ack() (any transport).
+pub mod exchange;
 pub use safe::{Instance, Safe, SafeSlot};
 // THE HOST SERVICES, PLUGIN SIDE: the one home of every safe host-service wrapper.
 pub mod services;

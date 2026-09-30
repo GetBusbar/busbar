@@ -800,6 +800,30 @@ fn a_need_keeps_only_declarable_response_fields() {
     );
 }
 
+/// The need's egress class is one of the four THE DESIGN names, or the connector's default.
+#[test]
+fn a_need_names_a_known_egress_class() {
+    use crate::abi::host::conn::connector::{
+        EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
+        EGRESS_PROVIDER,
+    };
+    let mut n: Need = z();
+    n.direction = DIRECTION_OUTBOUND;
+    n.transport = s("t");
+    for class in [
+        EGRESS_DEFAULT,
+        EGRESS_PROVIDER,
+        EGRESS_OPERATOR_INFRASTRUCTURE,
+        EGRESS_OPEN_WEB,
+        EGRESS_LOOPBACK_ALLOWED,
+    ] {
+        n.egress_class = class;
+        assert_eq!(check_needs(&[n]), Ok(()), "class {class}");
+    }
+    n.egress_class = EGRESS_LOOPBACK_ALLOWED + 1;
+    assert_eq!(check_needs(&[n]), f(Rule::UnknownCode, "need.egress_class"));
+}
+
 #[test]
 fn a_multi_buffer_short_answer_needs_one_buffer_over_its_cap() {
     let mut o: OnPieceOut = z();

@@ -56,6 +56,20 @@ pub const DIRECTION_INBOUND: u32 = 1;
 /// [`Need::direction`]: the plugin reaches out (it dials).
 pub const DIRECTION_OUTBOUND: u32 = 2;
 
+/// [`Need::egress_class`]: the connector's default class.
+pub const EGRESS_DEFAULT: u32 = 0;
+/// [`Need::egress_class`] `provider`: upstreams a plane reaches — the allow-list, and cloud
+/// metadata hosts only when allowed.
+pub const EGRESS_PROVIDER: u32 = 1;
+/// [`Need::egress_class`] `operator-infrastructure`: databases, secret services, directories —
+/// private, loopback and plaintext allowed; pinned; cloud metadata hosts refused.
+pub const EGRESS_OPERATOR_INFRASTRUCTURE: u32 = 2;
+/// [`Need::egress_class`] `open-web`: public destinations over a secure connection only.
+pub const EGRESS_OPEN_WEB: u32 = 3;
+/// [`Need::egress_class`] `loopback-allowed`: a secure connection, or plaintext to loopback; the
+/// node's own ports refused.
+pub const EGRESS_LOOPBACK_ALLOWED: u32 = 4;
+
 /// ONE NEED, declared once per direction: which transport claim carries it and which auth style
 /// guards it. Opaque bytes to the kernel: the claiming transport validates `details`.
 #[repr(C)]
@@ -63,7 +77,8 @@ pub const DIRECTION_OUTBOUND: u32 = 2;
 pub struct Need {
     /// [`DIRECTION_INBOUND`] | [`DIRECTION_OUTBOUND`].
     pub direction: u32,
-    /// The egress class the need's destinations are governed under; `0` = the connector's default.
+    /// The egress class the need's destinations are governed under (`EGRESS_*`); `0` = the
+    /// connector's default.
     pub egress_class: u32,
     /// The transport claim (a scheme some transport entry claims).
     pub transport: AbiStr,
@@ -137,10 +152,13 @@ pub mod service {
     pub const IDENTITY: u32 = 11;
     /// Read the next piece of the far end's reply to what the plugin sent, with its descriptor.
     pub const READ_REPLY: u32 = 12;
+    /// Write one piece of a request on a FRAMED stream, with its descriptor: the framer builds its
+    /// own wire head from it. A stream that is not framed refuses it (use [`WRITE`]).
+    pub const WRITE_REQUEST: u32 = 13;
 }
 
 /// How many services [`ConnectorSlots`] holds.
-pub const SERVICES: u32 = 13;
+pub const SERVICES: u32 = 14;
 
 /// [`service::ESTABLISH`]'s `in`: dial the need's endpoints in the host's order, apply connection
 /// security when the need asks for it, and answer the stream. The plugin's own authentication
@@ -346,6 +364,54 @@ pub struct ReplyIn {
     pub piece: *mut ReplyPiece,
 }
 
+/// [`RequestPiece::kind`]: the request's head — its method, target, fields and timeout.
+pub const REQUEST_HEAD: u32 = 1;
+/// [`RequestPiece::kind`]: body bytes of the request.
+pub const REQUEST_BODY: u32 = 2;
+/// [`RequestPiece::kind`]: the request is complete; nothing follows.
+pub const REQUEST_END: u32 = 3;
+
+/// ONE PIECE OF A REQUEST on a framed stream, as [`service::WRITE_REQUEST`] describes it: the mirror
+/// of [`ReplyPiece`]. A request is one [`REQUEST_HEAD`], its [`REQUEST_BODY`] pieces and one
+/// [`REQUEST_END`]. The spans are ranges of the WRITE_REQUEST buffer; the words are the approved
+/// per-stream head slots (`method`, `target`), and the fields ONE field block
+/// (`abi::transport::fields`, no pseudo-field).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RequestPiece {
+    /// `REQUEST_*`.
+    pub kind: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
+    /// The method. On [`REQUEST_HEAD`].
+    pub method: crate::abi::transport::FrameSpan,
+    /// The target. On [`REQUEST_HEAD`].
+    pub target: crate::abi::transport::FrameSpan,
+    /// The request's fields, one field block; empty = none. On [`REQUEST_HEAD`].
+    pub fields: crate::abi::transport::FrameSpan,
+    /// How long the request may take, milliseconds; `0` = the op's deadline. The host clamps a
+    /// larger value to the op's deadline class. On [`REQUEST_HEAD`].
+    pub timeout_ms: u64,
+}
+
+/// [`service::WRITE_REQUEST`]'s `in`. The buffer and the descriptor are the plugin's and stay
+/// valid until the service completes; `ServiceOut::len` is the bytes the host took (a body piece
+/// may be taken in part).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RequestIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The stream.
+    pub stream: u64,
+    /// The piece's bytes: a head's method, target and field block, or body bytes.
+    pub buf: *const u8,
+    /// Their length.
+    pub len: usize,
+    /// The piece's descriptor.
+    pub piece: *const RequestPiece,
+}
+
 /// THE CONNECTOR TABLE: one [`ServiceFn`] per [`service`], in index order. A NULL slot is a
 /// service this host does not offer, and a plugin that needs it refuses to open.
 #[repr(C)]
@@ -381,4 +447,6 @@ pub struct ConnectorSlots {
     pub identity: Option<ServiceFn>,
     /// [`service::READ_REPLY`], in [`ReplyIn`].
     pub read_reply: Option<ServiceFn>,
+    /// [`service::WRITE_REQUEST`], in [`RequestIn`].
+    pub write_request: Option<ServiceFn>,
 }
