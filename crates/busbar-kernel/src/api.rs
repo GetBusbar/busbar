@@ -81,9 +81,10 @@ pub struct NamedDefView {
     /// entirely for a section that carries no ceiling.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_admin_scope: Option<String>,
-    /// `identity-providers` ONLY: whether a `token:` secret REFERENCE is configured (the built-in
-    /// `admin-tokens` operator credential). The reference itself is never projected.
+    /// `identity-providers` ONLY: whether a `token:` secret REFERENCE is configured (the operator
+    /// credential). The reference itself is never projected.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi-schema", schemars(description = token_configured_description()))]
     pub token_configured: Option<bool>,
     /// `identity-providers` ONLY: whether a `browser_login:` block is configured, the presence that
     /// puts a button on the hosted login page.
@@ -113,6 +114,16 @@ pub struct NamedDefView {
     /// log line. Absent (and omitted from the body) for every live definition.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unparseable: Option<String>,
+}
+
+/// The served description of [`NamedDefView::token_configured`]: 1.5.5's text byte for byte, the
+/// operator credential's provider read off its frozen row, so the kernel spells no auth module.
+#[cfg(feature = "openapi-schema")]
+fn token_configured_description() -> String {
+    format!(
+        "`identity-providers` ONLY: whether a `token:` secret REFERENCE is configured (the built-in\n`{}` operator credential). The reference itself is never projected.",
+        crate::config::operator_provider()
+    )
 }
 
 /// Attach a `$ref` schema onto `<abs_path>.<method>.responses.<status>.content` — the module-level
