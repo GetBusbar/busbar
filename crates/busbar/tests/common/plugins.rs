@@ -188,11 +188,16 @@ fn transport_door(path: &Path) -> Option<(Plugin<Transport>, &'static str)> {
     Some((plugin, key))
 }
 
-/// An in-tree transport door `cdylib`, found by its KIND (a library the one dispatcher admits as a
-/// transport door), and the key its tail states — the test names no transport.
+/// An in-tree transport door `cdylib` that frames the host's socket (the wire at the floor of a
+/// stack: its tail composes over nothing), found by its KIND, and the key its tail states — the
+/// test names no transport. A door composing over a layer (the http door example, where a workspace
+/// build emits it) is not a dropped-in wire.
 pub fn transport_cdylib() -> Option<(Vec<u8>, &'static str)> {
     libraries().into_iter().find_map(|p| {
-        let (_, key) = transport_door(&p)?;
+        let (plugin, key) = transport_door(&p)?;
+        if !plugin.context::<TransportFacts>()?.composes_over.is_empty() {
+            return None;
+        }
         Some((std::fs::read(&p).ok()?, key))
     })
 }
