@@ -771,13 +771,26 @@ fn an_external_admin_module_is_consulted_by_the_loop() {
 }
 
 /// (d) THE CHAIN IS READ LIVE: swapping the snapshot's admin chain (what `PUT
-/// /api/v1/admin/admin-auth` applies) changes the loop's next answer, with no new node.
+/// /api/v1/admin/admin-auth` applies) changes the loop's next answer, with no new node. The
+/// generations are real builds (`build_once`), so every plane's swap hook sees the runtime it owns.
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_swapped_admin_chain_is_the_loops_next_door() {
-    let op = config::operator_provider();
+    link();
     busbar_kernel::metrics::init();
-    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app(&[op], Vec::new())));
+    let dir = std::env::temp_dir().join(format!("busbar-live-door-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (token_path, key_path) = (dir.join("admin.token"), dir.join("signing.key"));
+    std::fs::write(&token_path, "tok-live").unwrap();
+    std::fs::write(&key_path, hex::encode([7u8; 32])).unwrap();
+    let closed =
+        busbar_kernel::test_support::build_once(cfg_with_credentials(&token_path, &key_path), None)
+            .expect("boot");
+    let mut open = (*closed).clone();
+    open.admin_chain = Vec::new();
+    let open = Arc::new(open);
+
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::clone(&closed)));
     let units = crate::root::kernel::ProductionUnits::admin_only(
         Arc::new(Answers200),
         crate::root::units_admin::live_admin_door(Arc::clone(&handle)),
@@ -796,12 +809,13 @@ fn a_swapped_admin_chain_is_the_loops_next_door() {
         .status
     };
     assert_eq!(ask(&node), 401, "the operator chain, no credential");
-    handle.swap(app(&[], Vec::new()));
+    handle.swap(Arc::clone(&open));
     assert_eq!(
         ask(&node),
         200,
         "the swapped-in empty chain opens the SAME node's door"
     );
-    handle.swap(app(&[op], Vec::new()));
+    handle.swap(closed);
     assert_eq!(ask(&node), 401, "and swapping it back closes it");
+    let _ = std::fs::remove_dir_all(&dir);
 }
