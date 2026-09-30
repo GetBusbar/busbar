@@ -121,8 +121,19 @@
 # signed at run time for the jws_issuer_key pin, and a JSON-RPC upstream. `cells --generate` changes
 # exactly those two cells (2466 -> 2468).
 #
+# 2026-09-29 (busbar 1.6.0 TODO step 20): moved 37a53a8 -> 35b4a05, the pushed head of busbar-release
+# `step20/wire-capture`, which merges 37a53a8 and keeps cb172db (the oracle that recorded the nine
+# 1.5.5 wire goldens) in history. The capture mock gains the h2c connection transcript (`conn`,
+# `c2s`, `s2c_before`), a second stream on one connection, held answers (a PING answered during the
+# hold) and a TLS ClientHello mode (tls-parser; rustls's seeded extension shuffle is recorded by
+# type, and the view proves it is that shuffle). The driver gains wire-exact cells (a pinned mock
+# port, nothing port-masked), `{FILL:n}` bodies and role `tls` in the default roles. `cells
+# --generate` adds exactly the nine wire.h1 / wire.h2 / wire.tls cells (2468 -> 2477).
+# NOTE: a feature branch head, the same shape as the previous pins; re-pin to the merge commit when
+# it lands.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=37a53a8
+release_ref=35b4a05
 crate=busbar-release-oracle
 bin=busbar-oracle
