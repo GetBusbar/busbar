@@ -580,3 +580,15 @@ impl PlaneCalls for Double {
 struct SendOut(OnPieceOut);
 // SAFETY: plain data the double wrote; its pointers are never dereferenced.
 unsafe impl Send for SendOut {}
+
+/// The flush epoch is one counter however many handles hold it: the flush tick bumps it, and every
+/// money seam reading a clone sees the same epoch.
+#[test]
+fn the_flush_epoch_is_one_counter_across_its_clones() {
+    let epoch = busbar_kernel::plane_driver::FlushEpoch::new();
+    let reader = epoch.clone();
+    assert_eq!(reader.now(), 0);
+    epoch.bump();
+    epoch.bump();
+    assert_eq!(reader.now(), 2, "a clone reads the bumps of the tick");
+}

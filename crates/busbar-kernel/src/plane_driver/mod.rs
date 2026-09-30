@@ -27,6 +27,7 @@
 //! The driver moves no money: units, cancel bills and abandoned ends go to the [`MoneySeam`].
 
 mod cancel;
+mod epoch;
 mod route;
 
 use std::sync::{Arc, Mutex};
@@ -49,6 +50,7 @@ use busbar_contract::plane_calls::PlaneCalls;
 use tokio::sync::watch;
 
 pub use cancel::{CancelBill, CancelCause, Checkpoint, MoneySeam};
+pub use epoch::FlushEpoch;
 pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest};
 
 use crate::slice::GroupLeaseSlip;
