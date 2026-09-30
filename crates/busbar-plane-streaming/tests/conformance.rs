@@ -287,7 +287,7 @@ fn a_realtime_voice_session_reserves_takes_turns_and_settles() {
 /// changes the plane's identity, never the claims the boot's overlap check reads.
 #[test]
 fn the_streaming_plane_declares_its_full_dialect_and_meter_roster() {
-    // Three WS claims (openai-realtime + gemini-live + twilio-media-streams) and two one-shot HTTP
+    // Three WebSocket claims (openai-realtime + gemini-live + twilio-media-streams) and two one-shot
     // claims (transcribe + tts).
     assert_eq!(
         <StreamingPlane as PlaneMeta>::CLAIMS.len(),
@@ -311,11 +311,11 @@ fn the_streaming_plane_declares_its_full_dialect_and_meter_roster() {
     assert!(plane.upstream_for_dialect(Dialect::GeminiLive).is_none());
 }
 
-/// Twilio Media Streams is a streaming DIALECT carried by the `ws` transport, not a transport of its
-/// own (ARCHITECT ruling 2026-09-29, TWILIO-DOOR; the design lists five transports). Its claim is
-/// on `ws`, one path level under `/twilio`, and authenticates under the `webhook-signature`
-/// alternative alone — Twilio holds no busbar bearer or API key. Without the claim the dialect's
-/// reader, codec and µ-law transform are unreachable: no arrival ever names the dialect.
+/// Twilio Media Streams is a streaming DIALECT carried by the WebSocket transport, not a transport
+/// of its own (ARCHITECT ruling 2026-09-29, TWILIO-DOOR; the design lists five transports). Its
+/// claim is on the WebSocket transport, one path level under `/twilio`, and authenticates under the
+/// `webhook-signature` alternative alone — Twilio holds no busbar bearer or API key. Without the
+/// claim the dialect's reader, codec and µ-law transform are unreachable: no arrival ever names it.
 #[test]
 fn twilio_media_streams_is_claimed_on_ws_under_the_webhook_signature() {
     use busbar_contract::grammar::Selector;
@@ -333,7 +333,7 @@ fn twilio_media_streams_is_claimed_on_ws_under_the_webhook_signature() {
     let claim = &twilio[0].claim;
     assert_eq!(
         claim.transport, WS_TRANSPORT,
-        "Twilio rides the ws transport"
+        "Twilio rides the WebSocket transport"
     );
     assert_eq!(claim.selector, Selector::PrefixOneLevel("/twilio"));
     assert_eq!(claim.scheme_alternatives, &["webhook-signature"]);
