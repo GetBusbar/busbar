@@ -570,11 +570,18 @@ fn every_skeleton_file_is_rendered_and_its_drift_is_red() {
     }
     // The workspace manifest is the twin's: the two crate dirs, the shared package, the pin.
     let files = render(&fleet, &fleet.plugins[0], &t).unwrap();
-    let ws = &files.iter().find(|f| f.path == "Cargo.toml").unwrap().content;
+    let ws = &files
+        .iter()
+        .find(|f| f.path == "Cargo.toml")
+        .unwrap()
+        .content;
     assert!(
         ws.contains("members = [\n    \"store-alpha\",\n    \"store-alpha-plugin\",\n]\n")
             && ws.contains("[workspace.package]\n")
-            && ws.contains(&format!("rust-version = \"{}\"\n", rust_version_of(&t.channel).unwrap()))
+            && ws.contains(&format!(
+                "rust-version = \"{}\"\n",
+                rust_version_of(&t.channel).unwrap()
+            ))
             && busbar_revs(ws) == vec![PIN.to_string(), PIN.to_string()],
         "{ws}"
     );
@@ -583,12 +590,27 @@ fn every_skeleton_file_is_rendered_and_its_drift_is_red() {
     declared.plugins[0].gitignore = vec!["busbar-governance.db*".into()];
     declared.plugins[0].notice = vec!["It links x.".into()];
     let files = render(&declared, &declared.plugins[0], &t).unwrap();
-    let gi = &files.iter().find(|f| f.path == ".gitignore").unwrap().content;
-    assert!(gi.ends_with("/target\n/mutants.out*\nbusbar-governance.db*\n"), "{gi}");
+    let gi = &files
+        .iter()
+        .find(|f| f.path == ".gitignore")
+        .unwrap()
+        .content;
+    assert!(
+        gi.ends_with("/target\n/mutants.out*\nbusbar-governance.db*\n"),
+        "{gi}"
+    );
     let notice = &files.iter().find(|f| f.path == "NOTICE").unwrap().content;
-    assert!(notice.starts_with("busbar-store-alpha\n") && notice.ends_with("(https://getbusbar.com).\n\nIt links x.\n"), "{notice}");
+    assert!(
+        notice.starts_with("busbar-store-alpha\n")
+            && notice.ends_with("(https://getbusbar.com).\n\nIt links x.\n"),
+        "{notice}"
+    );
     let plain = render(&fleet, &fleet.plugins[0], &t).unwrap();
-    let gi = &plain.iter().find(|f| f.path == ".gitignore").unwrap().content;
+    let gi = &plain
+        .iter()
+        .find(|f| f.path == ".gitignore")
+        .unwrap()
+        .content;
     assert!(gi.ends_with("/mutants.out*\n"), "{gi}");
 }
 
@@ -639,12 +661,22 @@ fn crate_dirs_other_than_the_two_twin_dirs_are_red() {
             .files
             .iter()
             .filter(|(k, _)| k.starts_with("store-alpha/"))
-            .map(|(k, v)| (k.replacen("store-alpha/", "busbar-store-alpha/", 1), v.clone()))
+            .map(|(k, v)| {
+                (
+                    k.replacen("store-alpha/", "busbar-store-alpha/", 1),
+                    v.clone(),
+                )
+            })
             .collect();
         r.files.retain(|k, _| !k.starts_with("store-alpha/"));
         r.files.extend(moved);
     });
-    one(&f, a, "busbar-store-alpha/", "a crate dir outside the twin layout");
+    one(
+        &f,
+        a,
+        "busbar-store-alpha/",
+        "a crate dir outside the twin layout",
+    );
     one(&f, a, "store-alpha/", "missing: the twin crate dir");
     // A single crate at the repo root: no crate dirs, and its src/ is unmanaged.
     let f = plant(&|r| {
@@ -659,7 +691,12 @@ fn crate_dirs_other_than_the_two_twin_dirs_are_red() {
         r.files
             .insert("store-alpha-extra/Cargo.toml".into(), "[package]\n".into());
     });
-    one(&f, a, "store-alpha-extra/", "a crate dir outside the twin layout");
+    one(
+        &f,
+        a,
+        "store-alpha-extra/",
+        "a crate dir outside the twin layout",
+    );
     assert_eq!(f.len(), 1, "{f:#?}");
     // The cdylib crate is <repo>-plugin.
     let mut single = fixture();
@@ -680,7 +717,12 @@ fn settings_outside_the_fleet_norm_are_red() {
     };
     // (c) visibility, license, default branch: each alone is exactly one finding.
     let f = plant(&|r| r.settings.visibility = "private".into());
-    one(&f, a, "visibility", "is `private`, the fleet norm is `public`");
+    one(
+        &f,
+        a,
+        "visibility",
+        "is `private`, the fleet norm is `public`",
+    );
     assert_eq!(f.len(), 1, "{f:#?}");
     let f = plant(&|r| r.settings.license = "MIT".into());
     one(&f, a, "license", "is `MIT`, the fleet norm is `Apache-2.0`");
@@ -688,7 +730,12 @@ fn settings_outside_the_fleet_norm_are_red() {
     let f = plant(&|r| r.settings.license = "none".into());
     one(&f, a, "license", "is `none`");
     let f = plant(&|r| r.settings.default_branch = "main".into());
-    one(&f, a, "default branch", "is `main`, the fleet norm is `dev`");
+    one(
+        &f,
+        a,
+        "default branch",
+        "is `main`, the fleet norm is `dev`",
+    );
     assert_eq!(f.len(), 1, "{f:#?}");
     // Settings that cannot be read are a finding, not a pass.
     let mut fake = conforming(&fleet, &t);
@@ -705,7 +752,13 @@ fn a_readme_off_the_section_skeleton_is_red_and_sync_restructures_it_without_dro
     let want = readme_headings(&skeleton);
     assert_eq!(
         want,
-        ["## What it is for", "## Config", "## Build", "## Tests", "## License"]
+        [
+            "## What it is for",
+            "## Config",
+            "## Build",
+            "## Tests",
+            "## License"
+        ]
     );
     let plant = |edit: &dyn Fn(&mut Repo)| {
         let fake = conforming(&fleet, &t);
@@ -742,7 +795,16 @@ fn a_readme_off_the_section_skeleton_is_red_and_sync_restructures_it_without_dro
     let old = "# busbar-store-alpha\n\nIntro prose.\n\n## Versioning\n\nSemver.\n\n## Configuration\n\n```yaml\n# not a heading\nstore: alpha\n```\n\n## Testing\n\nRun it.\n\n## Design\n\nWhy.\n";
     let new = apply_readme(Some(old), region, &skeleton);
     assert_eq!(readme_headings(&new), want, "{new}");
-    for kept in ["Intro prose.", "### Versioning", "Semver.", "# not a heading", "store: alpha", "Run it.", "### Design", "Why."] {
+    for kept in [
+        "Intro prose.",
+        "### Versioning",
+        "Semver.",
+        "# not a heading",
+        "store: alpha",
+        "Run it.",
+        "### Design",
+        "Why.",
+    ] {
         assert!(new.contains(kept), "{kept:?} dropped:\n{new}");
     }
     // Design sat under Testing, so it stays in Tests; Versioning sat before any skeleton section.
@@ -750,7 +812,10 @@ fn a_readme_off_the_section_skeleton_is_red_and_sync_restructures_it_without_dro
     assert!(new.find("### Design").unwrap() > tests_at);
     assert!(new.find("### Versioning").unwrap() < new.find("## Config").unwrap());
     // A section the README has no text for takes the skeleton's default body.
-    assert!(new.contains("## License\n\nApache-2.0. See [LICENSE](LICENSE).\n"), "{new}");
+    assert!(
+        new.contains("## License\n\nApache-2.0. See [LICENSE](LICENSE).\n"),
+        "{new}"
+    );
     // Idempotent: restructuring a restructured README changes nothing.
     assert_eq!(apply_readme(Some(&new), region, &skeleton), new);
     // A fresh repo: the region and the skeleton's defaults.
@@ -787,7 +852,13 @@ fn the_committed_registry_is_twenty_four_twins() {
     };
     let first = shape(&fleet.plugins[0]);
     for p in &fleet.plugins {
-        assert_eq!(shape(p), first, "{}: not a twin of {}", p.repo, fleet.plugins[0].repo);
+        assert_eq!(
+            shape(p),
+            first,
+            "{}: not a twin of {}",
+            p.repo,
+            fleet.plugins[0].repo
+        );
         let ws = render(&fleet, p, &t).unwrap();
         let ws = &ws.iter().find(|f| f.path == "Cargo.toml").unwrap().content;
         let [logic, cdylib] = p.crate_dirs();
@@ -798,7 +869,11 @@ fn the_committed_registry_is_twenty_four_twins() {
         );
     }
     // The new repos are twins in the registry too: <repo>-plugin, declares in the logic crate.
-    for p in fleet.plugins.iter().filter(|p| p.kind == "plane" || p.repo.starts_with("busbar-transport-")) {
+    for p in fleet
+        .plugins
+        .iter()
+        .filter(|p| p.kind == "plane" || p.repo.starts_with("busbar-transport-"))
+    {
         assert_eq!(p.crate_name, format!("{}-plugin", p.repo));
         assert_eq!(p.declares, format!("{}/declares.json", p.stem()));
     }

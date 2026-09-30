@@ -307,7 +307,11 @@ pub fn apply_region(existing: Option<&str>, region: &str) -> String {
 /// fresh repo starts with.
 pub fn readme_skeleton(fleet: &Fleet, p: &Plugin, t: &Templates) -> Result<String, String> {
     let v = vars(fleet, p, &t.channel)?;
-    fill(&t.readme_skeleton, &v, &format!("{} (README skeleton)", p.repo))
+    fill(
+        &t.readme_skeleton,
+        &v,
+        &format!("{} (README skeleton)", p.repo),
+    )
 }
 
 /// Whether `line` opens or closes a fenced code block.

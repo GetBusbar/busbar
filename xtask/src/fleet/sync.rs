@@ -126,7 +126,8 @@ fn sync_repo(
     let dir: PathBuf = workdir.join(repo);
     let url = format!("https://github.com/{ORG}/{repo}.git");
     // 0. A registered repo that does not exist is created, empty; step 1 seeds it.
-    let (exists_ok, exists_out, exists_err) = gh(&["api", &format!("repos/{ORG}/{repo}"), "--jq", ".name"])?;
+    let (exists_ok, exists_out, exists_err) =
+        gh(&["api", &format!("repos/{ORG}/{repo}"), "--jq", ".name"])?;
     if !exists_ok {
         let both = format!("{exists_out}{exists_err}");
         if !(both.contains("HTTP 404") || both.contains("Not Found")) {
@@ -154,7 +155,12 @@ fn sync_repo(
     git(&dir, &["fetch", "-q", "--prune", "origin"])?;
     let has_dev = git(
         &dir,
-        &["rev-parse", "--verify", "-q", &format!("refs/remotes/origin/{DEV}")],
+        &[
+            "rev-parse",
+            "--verify",
+            "-q",
+            &format!("refs/remotes/origin/{DEV}"),
+        ],
     )
     .is_ok();
     if has_dev {
@@ -171,7 +177,9 @@ fn sync_repo(
         git(&dir, &["checkout", "-q", "--orphan", DEV])?;
         git(&dir, &["clean", "-q", "-fd"])?;
     } else {
-        return Err(format!("{repo} has branches but no `{DEV}`; not seeding over them"));
+        return Err(format!(
+            "{repo} has branches but no `{DEV}`; not seeding over them"
+        ));
     }
 
     // 1. The render, and nothing unmanaged beside it.

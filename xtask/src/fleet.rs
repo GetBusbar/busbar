@@ -89,7 +89,8 @@ fn run(cx: &Ctx, args: &[String]) -> Result<i32, String> {
                     // an arbitrary CLI argument (a satellite plugin repo's own checkout, never
                     // this tree) and is never resolved through `cx.abs`/`cx.root` — a fleet
                     // render never writes under, or is ever read back through, THIS `Ctx`.
-                    let skeleton = render::readme_skeleton(&fleet, fleet.plugin(repo)?, &templates)?;
+                    let skeleton =
+                        render::readme_skeleton(&fleet, fleet.plugin(repo)?, &templates)?;
                     for f in &files {
                         let p = std::path::Path::new(&dir).join(&f.path);
                         if let Some(parent) = p.parent() {

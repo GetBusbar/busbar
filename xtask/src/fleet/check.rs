@@ -216,7 +216,10 @@ fn check_repo(
         }
     }
     check_shape(p, &rendered, &files, out);
-    match (remote.read(repo, DEV, "README.md"), readme_skeleton(fleet, p, t)) {
+    match (
+        remote.read(repo, DEV, "README.md"),
+        readme_skeleton(fleet, p, t),
+    ) {
         (Ok(Some(text)), Ok(skeleton)) => {
             let want = readme_headings(&skeleton);
             let have = readme_headings(&text);
@@ -224,9 +227,7 @@ fn check_repo(
                 out.push(f(
                     repo,
                     "README.md",
-                    format!(
-                        "the section skeleton differs: have {have:?}, the fleet's is {want:?}"
-                    ),
+                    format!("the section skeleton differs: have {have:?}, the fleet's is {want:?}"),
                 ));
             }
         }
