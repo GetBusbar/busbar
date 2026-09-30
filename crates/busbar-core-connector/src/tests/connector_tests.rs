@@ -481,7 +481,7 @@ fn a_host_side_reader_is_woken_through_its_own_waker() {
     });
 }
 
-// ── EGRESS: the scheme each egress class allows (PB-100) ──
+// ── EGRESS: the scheme each egress class allows ──
 
 use busbar_contract::abi::host::conn::connector::{
     EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
@@ -534,8 +534,7 @@ fn open_in(c: &Connector, need: u32, target: &str) -> Result<ConnId, ConnError> 
 #[test]
 fn http_to_a_public_host_under_open_web_is_refused() {
     worker().block_on(async {
-        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let far = l.local_addr().unwrap().to_string();
+        let (_listening, far) = far_end().await;
         let c = scheme_connector();
         c.declare_need(OWNER, NeedId(0), "plain", EGRESS_OPEN_WEB);
         c.declare_need(OWNER, NeedId(1), "sec", EGRESS_OPEN_WEB);
@@ -551,8 +550,7 @@ fn http_to_a_public_host_under_open_web_is_refused() {
 #[test]
 fn the_operator_infrastructure_http_private_target_is_allowed() {
     worker().block_on(async {
-        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let far = l.local_addr().unwrap().to_string();
+        let (_listening, far) = far_end().await;
         let c = scheme_connector();
         c.declare_need(OWNER, NeedId(0), "plain", EGRESS_OPERATOR_INFRASTRUCTURE);
         let id = open_in(&c, 0, &far).expect("plaintext to the private target opens");
@@ -565,8 +563,7 @@ fn the_operator_infrastructure_http_private_target_is_allowed() {
 #[test]
 fn loopback_allowed_refuses_plaintext_off_loopback() {
     worker().block_on(async {
-        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let far = l.local_addr().unwrap().to_string();
+        let (_listening, far) = far_end().await;
         let c = scheme_connector();
         c.declare_need(OWNER, NeedId(0), "plain", EGRESS_LOOPBACK_ALLOWED);
         assert_eq!(open_in(&c, 0, "10.1.2.3:80"), Err(ConnError::Refused));
