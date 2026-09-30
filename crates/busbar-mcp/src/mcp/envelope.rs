@@ -273,6 +273,11 @@ pub(crate) async fn legacy_verb(_ctx: busbar_kernel::plane_routes::PlaneReqCtx) 
 /// made the middleware verify the token's audience against this deployment's canonical URI. Anything
 /// reaching this function is an admitted caller.
 pub(crate) async fn rpc(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> Response {
+    // THE SESSION REVISIONS (MCP-COMPAT C4). `None` for every request the stateless revision
+    // answers, which then takes exactly the path below and nothing else.
+    if let Some(answer) = super::session_serve::intercept(&ctx).await {
+        return answer;
+    }
     // S4a Option A: this handler no longer extracts `axum::State<Arc<AppHandle>>` /
     // `Extension<..>`. Core's route adapter (the mount behind the substrate's `MountHost` seam) took them
     // off the request and handed them across the NEUTRAL `PlaneReqCtx` seam, so this plane names no
@@ -762,6 +767,10 @@ pub(in crate::mcp) fn error_response(
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/ingress_tests.rs"]
 mod ingress_tests;
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/session_serve_tests.rs"]
+mod session_serve_tests;
 
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/request_meta_tests.rs"]

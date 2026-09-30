@@ -346,6 +346,11 @@ pub(crate) struct McpRuntime {
     /// the same reason: the coalescing epochs are ACCUMULATED coordination state, not intent, so
     /// [`McpRuntime::build`] carries it from `prior` rather than rebuilding it.
     pub(crate) verify: std::sync::Arc<busbar_kernel::trust::VerifyGate>,
+    /// THE SESSION REVISIONS' STATE (MCP-COMPAT C4): the bounded, owner-bound session table and the
+    /// live event streams' senders. Per process, and CARRIED across config applies like
+    /// `roots_epochs`: a config edit is not a reason for every connected session client to
+    /// re-initialise.
+    pub(crate) sessions: std::sync::Arc<session_serve::SessionServe>,
 }
 
 impl McpRuntime {
@@ -379,6 +384,10 @@ impl McpRuntime {
             verify: prior.map_or_else(
                 std::sync::Arc::<busbar_kernel::trust::VerifyGate>::default,
                 |p| p.verify.clone(),
+            ),
+            sessions: prior.map_or_else(
+                || std::sync::Arc::new(session_serve::SessionServe::new()),
+                |p| p.sessions.clone(),
             ),
         }
     }
@@ -670,8 +679,9 @@ pub(crate) fn mcp_hydrate(
 /// auth middleware's exact-match discipline survives. The RFC 9728 metadata document is the one open
 /// route (a credential-less client reads it to learn which credential to present); the endpoint
 /// itself takes the normal key chain, where the plane's admission facts make the verifier require
-/// this deployment's canonical URI as the token audience. GET and DELETE answer 405 (no GET stream,
-/// no sessions this revision) behind the same key bar.
+/// this deployment's canonical URI as the token audience. GET and DELETE serve the session
+/// revisions (`session_serve`) behind the same key bar, and answer 405 exactly as before to a request
+/// that names no session and opens no `2024-11-05` event stream.
 pub(crate) fn mcp_routes(
     slot: &dyn std::any::Any,
 ) -> Vec<busbar_kernel::plane_routes::PlaneRouteSpec> {
@@ -709,7 +719,7 @@ pub(crate) fn mcp_routes(
             method: RouteMethod::Get,
             auth: RouteAuth::Key,
             handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
-                Box::pin(crate::mcp::envelope::legacy_verb(ctx))
+                Box::pin(session_serve::get(ctx))
             }),
         },
         PlaneRouteSpec {
@@ -717,7 +727,7 @@ pub(crate) fn mcp_routes(
             method: RouteMethod::Delete,
             auth: RouteAuth::Key,
             handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
-                Box::pin(crate::mcp::envelope::legacy_verb(ctx))
+                Box::pin(session_serve::delete(ctx))
             }),
         },
     ]
@@ -935,6 +945,7 @@ pub(crate) mod sampling;
 pub(crate) use busbar_plane_mcp::sanitize;
 /// THE POST's SSE RESPONSE FRAMING and the `notifications/message` records that ride it. This
 /// revision removed the GET stream, not Server-Sent Events — see the module header.
+pub(crate) mod session_serve;
 pub(crate) mod sse;
 /// THE STDIO SERVE MODE: busbar as an MCP server on its own stdin/stdout — the same serve
 /// sequence, the same dispatch, a second transport binding. See the module header for the
