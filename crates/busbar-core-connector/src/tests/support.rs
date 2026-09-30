@@ -126,7 +126,7 @@ fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut, silence: Option<
                 stream: 0,
                 offset: 0,
                 len: n as u64,
-                status_code: 0,
+                code: 0,
                 status_class: 0,
                 flags,
                 _reserved: 0,

@@ -649,7 +649,7 @@ fn fill(owed: &mut Owed, sink: &FramerSink, o: &mut FramerOut) {
                 stream: piece.stream,
                 offset: frame_len as u64,
                 len: take as u64,
-                status_code: 0,
+                code: 0,
                 status_class: 0,
                 flags: if whole && piece.end_of_frame {
                     PIECE_END_OF_FRAME

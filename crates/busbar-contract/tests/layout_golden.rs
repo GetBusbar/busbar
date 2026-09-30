@@ -1446,7 +1446,7 @@ fn compute_layout() -> String {
             stream,
             offset,
             len,
-            status_code,
+            code,
             status_class,
             _reserved,
             flags,

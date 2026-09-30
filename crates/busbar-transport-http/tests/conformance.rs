@@ -273,7 +273,7 @@ impl Host {
                 stream: p.stream,
                 bytes: self.frame[p.offset as usize..(p.offset + p.len) as usize].to_vec(),
                 flags: p.flags,
-                code: p.status_code,
+                code: p.code,
             });
         }
         self.deadline =

@@ -359,7 +359,7 @@ pub const DEST_PROGRAM: u32 = 1;
 
 /// [`FramePiece::flags`]: the piece completes its frame.
 pub const PIECE_END_OF_FRAME: u16 = 1;
-/// [`FramePiece::flags`]: `status_code` is present.
+/// [`FramePiece::flags`]: `code` is present.
 pub const PIECE_HAS_CODE: u16 = 2;
 /// [`FramePiece::flags`]: `retry_after_secs` is present.
 pub const PIECE_HAS_RETRY_AFTER: u16 = 4;
@@ -543,7 +543,7 @@ pub struct FramePiece {
     /// How many bytes.
     pub len: u64,
     /// The exact status number, in the claim's numbering.
-    pub status_code: u32,
+    pub code: u32,
     /// `STATUS_*`.
     pub status_class: u8,
     /// Alignment padding.

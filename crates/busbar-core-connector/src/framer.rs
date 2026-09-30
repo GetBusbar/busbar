@@ -144,7 +144,7 @@ const EMPTY_PIECE: FramePiece = FramePiece {
     stream: 0,
     offset: 0,
     len: 0,
-    status_code: 0,
+    code: 0,
     status_class: 0,
     flags: 0,
     _reserved: 0,
@@ -203,7 +203,7 @@ impl Buffers {
                 stream: p.stream,
                 bytes: bytes.to_vec(),
                 end_of_frame: p.flags & PIECE_END_OF_FRAME != 0,
-                status_code: (p.flags & PIECE_HAS_CODE != 0).then_some(p.status_code),
+                status_code: (p.flags & PIECE_HAS_CODE != 0).then_some(p.code),
                 status_class: p.status_class,
                 retry_after_secs: (p.flags & PIECE_HAS_RETRY_AFTER != 0)
                     .then_some(p.retry_after_secs),

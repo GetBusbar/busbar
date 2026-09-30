@@ -697,7 +697,7 @@ fn fill(f: &mut Framing, sink: Lent<'_, FramerSink>, o: &mut Out<'_, FramerOut>)
             stream: piece.stream,
             offset: frame_len as u64,
             len: take as u64,
-            status_code: 0,
+            code: 0,
             status_class: 0,
             flags: 0,
             _reserved: 0,
@@ -705,7 +705,7 @@ fn fill(f: &mut Framing, sink: Lent<'_, FramerSink>, o: &mut Out<'_, FramerOut>)
         };
         if let Some(code) = piece.status {
             flags |= PIECE_HAS_CODE;
-            fp.status_code = u32::from(code);
+            fp.code = u32::from(code);
             fp.status_class = class_of(code);
         }
         if let Some(secs) = piece.retry_after_secs {
