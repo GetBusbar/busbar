@@ -24,6 +24,7 @@ kind-isolation:matrix	ratchet	busbar × hooks	13
 kind-isolation:matrix	ratchet	busbar × kernel	1295
 kind-isolation:matrix	ratchet	busbar × store	7
 kind-isolation:matrix	ratchet	busbar-a2a × legacy	12
+kind-isolation:matrix	ratchet	busbar-a2a × plane	2726
 kind-isolation:matrix	ratchet	busbar-contract × plane	216
 kind-isolation:matrix	ratchet	busbar-kernel × transport	308
 kind-isolation:matrix	ratchet	busbar-kernel-budget × kernel	26
