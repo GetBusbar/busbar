@@ -79,12 +79,12 @@ pub(crate) fn provider() -> CryptoProvider {
     }
 }
 
-static KX_GROUPS: &[&dyn SupportedKxGroup] = &[
+const KX_GROUPS: &[&dyn SupportedKxGroup] = &[
     &KxGroup(NamedGroup::X25519),
     &KxGroup(NamedGroup::Secp256r1),
     &KxGroup(NamedGroup::Secp384r1),
 ];
-static SUITES_12: &[&dyn SupportedDtls12CipherSuite] = &[
+const SUITES_12: &[&dyn SupportedDtls12CipherSuite] = &[
     &Suite12 {
         suite: Dtls12CipherSuite::ECDHE_ECDSA_AES128_GCM_SHA256,
         hash: HashAlgorithm::SHA256,
@@ -96,7 +96,7 @@ static SUITES_12: &[&dyn SupportedDtls12CipherSuite] = &[
         key_len: 32,
     },
 ];
-static SUITES_13: &[&dyn SupportedDtls13CipherSuite] = &[&ChaCha13];
+const SUITES_13: &[&dyn SupportedDtls13CipherSuite] = &[&ChaCha13];
 static VERIFIER: Verifier = Verifier;
 static KEYS: Keys = Keys;
 static RNG: Rng = Rng;

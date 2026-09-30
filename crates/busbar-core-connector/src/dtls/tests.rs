@@ -217,7 +217,7 @@ fn handshake_on_ring_exports_one_gcm_keying_and_carries_plaintext_both_ways() {
 }
 
 #[test]
-fn red_a_peer_certificate_not_matching_its_sdp_fingerprint_exports_nothing() {
+fn red_a_peer_certificate_not_matching_its_signalled_fingerprint_exports_nothing() {
     let mut t = pair(true);
     t.checked_and_bound();
     t.pump(50);
