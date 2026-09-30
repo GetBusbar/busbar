@@ -172,7 +172,7 @@ impl busbar_contract::Transport for RootWire {
     }
 
     /// Nothing listens through this seam: every inbound socket is the connector's listener's (the
-    /// one listener source, ARCHITECT ruling 2026-09-30 H5).
+    /// one listener source, ARCHITECT ruling 2026-09-30).
     fn listen<'a>(
         &'a self,
         _cfg: &'a dyn busbar_contract::TransportConfigView,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ROOT'S LISTENERS ARE THE CONNECTOR'S (ARCHITECT ruling 2026-09-30, H5): over the REAL
+//! THE ROOT'S LISTENERS ARE THE CONNECTOR'S (ARCHITECT ruling 2026-09-30): over the REAL
 //! binary, the data door and the admin surface are bound from the one list of listeners through the
 //! connector's listener — every data worker's socket and the admin socket — and each answers only
 //! its own routes: the admin surface is never served on the data bind, nor the data door on the

@@ -16,7 +16,7 @@
 //!   (`fixtures/transport_dropped_in_exchange.txt`, the `date` value masked). RED ARM, in the same
 //!   test: the same build with the tarball removed refuses to boot — the layers above the wire
 //!   compose over nothing — so the node serves only because the dropped-in wire registered. And the
-//!   door has the THREAD-PER-CORE shape (ruling K8c) from the one listener source (ruling H5): every
+//!   door has the THREAD-PER-CORE shape (ruling K8c) from the one listener source: every
 //!   data worker listens through the connector, one listener each on the one address.
 //! * In a build that DOES link it (the default), the same tarball is refused at boot exactly as a
 //!   second linked row with that key would be: two transport plugins declaring one key. And the
@@ -45,7 +45,7 @@ include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
 const WORKERS: usize = 2;
 
 /// The line the data door writes, per worker, once the connector's listener has bound that
-/// worker's socket (the one listener source, ARCHITECT ruling 2026-09-30 H5; DEBUG).
+/// worker's socket (the one listener source, ARCHITECT ruling 2026-09-30; DEBUG).
 const THROUGH_THE_CONNECTOR: &str = "data door listening through the connector";
 
 /// The one request both builds answer, and the exchange they answer it with.

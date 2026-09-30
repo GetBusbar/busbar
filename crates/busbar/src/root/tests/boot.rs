@@ -282,7 +282,7 @@ fn red_a_selected_plugin_with_an_inbound_need_is_refused_until_it_can_be_served(
     assert!(stages(&unused, vec![listening_plane("ingress")], Vec::new()).is_ok());
 }
 
-/// RED (ARCHITECT ruling 2026-09-30, H5 (a)): the root's own listeners head THE ONE LIST: the data
+/// RED (ARCHITECT ruling 2026-09-30): the root's own listeners head THE ONE LIST: the data
 /// door at `listen` with its raw `tls` block and the admin surface at `admin_listen` with its raw
 /// `admin_tls`, uncapped as in 1.5.5; `--validate` reports only plugin listeners.
 #[test]
