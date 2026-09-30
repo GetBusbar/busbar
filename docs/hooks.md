@@ -203,14 +203,13 @@ For `kind: hook` plugins, the manifest `needs` field (set with `--needs-prompt r
 > and your hook and the provider are given the same one. That is what makes a hook behave
 > identically whichever dialect the client speaks, and it is why the list below is short.
 >
-> - **The system prompt is always in `system`.** Whichever dialect the client speaks, and whether
->   they sent it as a body field or as an in-band `{role: "system"}` turn, it reaches your hook in
->   one place. A hook that compresses or rewrites "the messages" no longer risks shredding the
->   operator's own instructions on some dialects and not others. (That shipped as a real bug in
->   Headroom, fixed there on 2026-08-05; it cannot recur here.)
-> - **`messages` is aligned with the NORMALIZED turns, not with the wire body.** For a body that
->   carries its system prompt in-band, `message_count` is one lower than the client's array length.
->   Media-only turns still keep their entry, with empty text, so you never see fewer turns than the
+> - **An in-band system turn is a turn, as in 1.5.5.** `system` carries the dialect's own system
+>   field (Anthropic/Bedrock `system`, Gemini `systemInstruction`, Responses `instructions`). A
+>   `{role: "system"}` or `{role: "developer"}` entry inside the client's turn array reaches your
+>   hook in `messages`, at its position and under its own role, and counts in `message_count`. A
+>   `rewrite` replaces the whole turn array, so return that turn if you want it kept: a compressor
+>   keeps it verbatim (Headroom does).
+> - Media-only turns keep their entry, with empty text, so you never see fewer turns than the
 >   provider does.
 > - **An OpenAI `refusal` content part is projected** and counts toward `total_chars`.
 > - **Tool-call arguments are projected**, attributed to the turn that made the call, alongside tool
@@ -377,7 +376,7 @@ reply-expected connections; Busbar will never send a reply-expected op on a tap 
 
 Two `kind: hook` plugins ship signed by release CI and are auto-trusted by the embedded key:
 
-**Headroom** (`busbar-hook-headroom`) is a `kind: hook` prompt-compression rewrite gate. It compresses context before dispatch, saving tokens and latency. Deploy it as a `prompt: rw` gate; it fires before dispatch on the normalized IR (see [What a gate receives](#what-a-gate-receives)), so the system prompt reaches it in one place whichever dialect the client speaks and its own local guard for in-band system turns is now redundant rather than load-bearing, token accounting runs on the rewritten body (the savings are real and measured), and a malformed or slow rewrite proceeds with the original body untouched. It reports `chars_saved_total` and related metrics via the `status` op.
+**Headroom** (`busbar-hook-headroom`) is a `kind: hook` prompt-compression rewrite gate. It compresses context before dispatch, saving tokens and latency. Deploy it as a `prompt: rw` gate; it fires before dispatch on the normalized IR (see [What a gate receives](#what-a-gate-receives)), its own guard keeps an in-band system turn verbatim (it reaches the hook as a turn, as in 1.5.5), token accounting runs on the rewritten body (the savings are real and measured), and a malformed or slow rewrite proceeds with the original body untouched. It reports `chars_saved_total` and related metrics via the `status` op.
 
 **Webrequest** (`busbar-hook-webrequest`) is a `kind: hook` HTTP-forwarder plugin, the migration path for code you don't want in Busbar's address space. It forwards the routing projection over HTTPS to an operator-run sidecar, so you get out-of-process isolation (the sidecar can be any language) without running an untrusted library in-process. The artifact itself is signed and auto-trusted; forwarding is SSRF-guarded; and the sidecar's reply rides the same op-discriminated JSON contract.
 

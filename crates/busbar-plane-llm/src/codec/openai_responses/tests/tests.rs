@@ -94,6 +94,7 @@ fn write_request_drops_top_k_with_warn() {
         parallel_tool_calls: None,
         system: vec![],
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![crate::codec::ir::IrMessage {
             role: crate::codec::ir::IrRole::User,
             content: vec![crate::codec::ir::IrBlock::Text {
@@ -160,6 +161,7 @@ fn test_write_request() {
             refusal: false,
         }],
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![
             crate::codec::ir::IrMessage {
                 role: crate::codec::ir::IrRole::User,
@@ -436,6 +438,7 @@ fn test_roundtrip_identity() {
             refusal: false,
         }],
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![
             crate::codec::ir::IrMessage {
                 role: crate::codec::ir::IrRole::User,
@@ -1752,6 +1755,7 @@ fn test_tool_only_assistant_turn_no_empty_message_wrapper() {
         parallel_tool_calls: None,
         system: Vec::new(),
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![crate::codec::ir::IrMessage {
             role: crate::codec::ir::IrRole::Assistant,
             content: vec![crate::codec::ir::IrBlock::ToolUse {
@@ -1829,6 +1833,7 @@ fn test_assistant_text_then_tool_call_order() {
         parallel_tool_calls: None,
         system: Vec::new(),
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![crate::codec::ir::IrMessage {
             role: crate::codec::ir::IrRole::Assistant,
             content: vec![
@@ -2183,6 +2188,7 @@ fn write_request_tool_result_multi_text_concatenates_without_separator() {
         parallel_tool_calls: None,
         system: Vec::new(),
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![crate::codec::ir::IrMessage {
             role: crate::codec::ir::IrRole::Tool,
             content: vec![multi()],
@@ -2233,6 +2239,7 @@ fn write_request_tool_result_multi_text_concatenates_without_separator() {
         parallel_tool_calls: None,
         system: Vec::new(),
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![crate::codec::ir::IrMessage {
             role: crate::codec::ir::IrRole::Assistant,
             content: vec![multi()],
@@ -2483,6 +2490,7 @@ fn test_input_image_roundtrip_lossless() {
         parallel_tool_calls: None,
         system: Vec::new(),
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![crate::codec::ir::IrMessage {
             role: crate::codec::ir::IrRole::User,
             content: vec![crate::codec::ir::IrBlock::Image {
@@ -2572,6 +2580,7 @@ fn test_input_image_https_url_sentinel_roundtrip() {
         parallel_tool_calls: None,
         system: Vec::new(),
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![crate::codec::ir::IrMessage {
             role: crate::codec::ir::IrRole::User,
             content: vec![crate::codec::ir::IrBlock::Image {
@@ -2626,6 +2635,7 @@ fn test_write_request_emits_stream() {
         parallel_tool_calls: None,
         system: Vec::new(),
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![crate::codec::ir::IrMessage {
             role: crate::codec::ir::IrRole::User,
             content: vec![crate::codec::ir::IrBlock::Text {
@@ -5917,6 +5927,7 @@ fn empty_ir_request() -> crate::codec::ir::IrRequest {
         parallel_tool_calls: None,
         system: Vec::new(),
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: Vec::new(),
         tools: Vec::new(),
         max_tokens: None,
@@ -6086,6 +6097,7 @@ fn reasoning_input_item_round_trips_through_request() {
 fn user_role_thinking_is_not_emitted_as_a_reasoning_item() {
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![crate::codec::ir::IrMessage {
             role: crate::codec::ir::IrRole::User,
             content: vec![crate::codec::ir::IrBlock::Thinking {

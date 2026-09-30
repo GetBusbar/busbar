@@ -39,12 +39,8 @@ impl IrFacts for IrRequest {
             }
         }
         Shape {
-            // The in-band system turn is hoisted OUT of the conversation turn count: it is folded
-            // into `system` and does not read back as a turn any more (pinned by
-            // `hook_opt_in_projection_tests::prompt_projection_keeps_empty_entries_aligned` and
-            // `lazy_body_tests::ensure_ir_reads_the_body_through_the_ingress_reader`). NOT
-            // `self.messages.len() + self.system_turns_folded` — that would report the pre-fold wire
-            // array length, which is exactly the count this normalization deliberately changes.
+            // The wire turn count, as 1.5.5 counted it: an in-band system turn is a turn (`project`
+            // puts it back at its wire position), so the count is the IR messages plus the folds.
             turn_count: self.messages.len() + self.system_turns_folded,
             has_tools: !self.tools.is_empty(),
             tool_count: self.tools.len(),
@@ -73,9 +69,10 @@ impl IrFacts for IrRequest {
 /// must not vanish: a screening hook that sees three turns where the provider sees four has been
 /// told the request is something it is not, and "a turn I could not read anything from" is a fact
 /// worth stating. The old projection held this as an index-alignment contract against the wire
-/// `messages` array; that exact contract cannot survive the move (readers hoist system turns, and
-/// one dialect's item can produce zero or one messages), but the PROPERTY it existed to protect —
-/// every turn is visible — survives here, expressed against `IrRequest::messages` instead.
+/// `messages` array; one dialect's item can produce zero or one messages, so that exact contract
+/// cannot survive the move, but the PROPERTY it existed to protect — every turn is visible —
+/// survives here, expressed against `IrRequest::messages` plus the in-band system turns the reader
+/// folded (`IrRequest::system_folds`), each back at its wire position.
 ///
 /// # Opacity is checked BEFORE `text` is read, never after
 ///
@@ -87,32 +84,71 @@ impl IrFacts for IrRequest {
 /// [`IrBlock::is_opaque`] is the one place that knows all three shapes, and it is asked first.
 pub fn project(req: &IrRequest) -> Vec<ContentItem<'_>> {
     let mut out = Vec::new();
-    walk(
-        &req.system,
-        author_of(IrRole::System),
-        None,
-        Slot::System,
-        &mut out,
-    );
-    for (i, m) in req.messages.iter().enumerate() {
-        let before = out.len();
+    if req.system_folds.is_empty() {
         walk(
-            &m.content,
-            author_of(m.role),
-            Some(i),
-            Slot::Turn(i),
+            &req.system,
+            author_of(IrRole::System),
+            None,
+            Slot::System,
             &mut out,
         );
-        if out.len() == before {
-            // The empty-turn rule. See this function's doc comment.
-            out.push(ContentItem::Text {
-                author: author_of(m.role),
-                slot: Slot::Turn(i),
-                text: Cow::Borrowed(""),
-            });
+        for (i, m) in req.messages.iter().enumerate() {
+            turn(&m.content, author_of(m.role), i, &mut out);
+        }
+        return out;
+    }
+    // THE IN-BAND SYSTEM TURN IS A TURN (1.5.5, #85 / R8). A dialect that carries its system prompt
+    // inside the turn array showed it to a 1.5.5 hook as a turn, at its wire position and under the
+    // role it was written in, and the system slot held only the dialect's own system FIELD. The
+    // reader folded it into `system`; its `system_folds` record where it stood, so it goes back
+    // there. Without this a `prompt: rw` hook's reply, which replaces the whole turn array, deletes
+    // the operator's system prompt upstream. Turn indices are wire positions, folded turns included.
+    let len = req.system.len();
+    let clamp = |r: &std::ops::Range<usize>| r.start.min(len)..r.end.min(len);
+    for (b, block) in req.system.iter().enumerate() {
+        if !req.system_folds.iter().any(|f| clamp(&f.blocks).contains(&b)) {
+            walk(
+                std::slice::from_ref(block),
+                author_of(IrRole::System),
+                None,
+                Slot::System,
+                &mut out,
+            );
+        }
+    }
+    let mut folds = req.system_folds.iter().peekable();
+    let mut t = 0;
+    for i in 0..=req.messages.len() {
+        while let Some(f) = folds.next_if(|f| f.before <= i) {
+            let blocks = req.system.get(clamp(&f.blocks)).unwrap_or_default();
+            turn(blocks, f.role.as_str(), t, &mut out);
+            t += 1;
+        }
+        if let Some(m) = req.messages.get(i) {
+            turn(&m.content, author_of(m.role), t, &mut out);
+            t += 1;
         }
     }
     out
+}
+
+/// One conversation turn at index `i`, under the empty-turn rule (see [`project`]).
+fn turn<'a>(
+    blocks: &'a [IrBlock],
+    author: &'static str,
+    i: usize,
+    out: &mut Vec<ContentItem<'a>>,
+) {
+    let before = out.len();
+    walk(blocks, author, Some(i), Slot::Turn(i), out);
+    if out.len() == before {
+        // The empty-turn rule. See `project`'s doc comment.
+        out.push(ContentItem::Text {
+            author,
+            slot: Slot::Turn(i),
+            text: Cow::Borrowed(""),
+        });
+    }
 }
 
 /// The LLM family's author label for a chat role — the exact strings the hook wire has always

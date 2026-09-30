@@ -525,20 +525,22 @@ fn the_nine_intended_divergences_are_the_ones_that_landed() {
          blind to it"
     );
 
-    // ── THE IN-BAND SYSTEM TURN, on both dialects that carry it inside the turns array. This is the
-    // divergence that already shipped a bug: a compression hook shredded the operator's system
-    // prompt on the dialects that put it in `messages` and not on the one that does not. The system
-    // prompt is now in ONE place on every dialect, and `message_count` is one lower for these
-    // bodies — wire-visible to every deployed hook.
+    // ── THE IN-BAND SYSTEM TURN, on both dialects that carry it inside the turns array: NOT a
+    // divergence. It once was one (the system turn moved into `system`), and it deleted the
+    // operator's system prompt upstream, because a `prompt: rw` hook's reply replaces the whole
+    // turn array (codeaudit HEAD-1). A hook sees exactly the 1.5.5 view (#85, R8): the system turn is
+    // a turn, at its wire position, and `system` is only the dialect's own system field.
     for name in ["openai_in_band_system_turn", "cohere_in_band_system_turn"] {
         let v = view(name).unwrap();
+        assert_eq!(v.system, None, "{name}: no system FIELD on this body");
         assert_eq!(
-            v.system.as_deref(),
-            Some("OPERATOR SYSTEM PROMPT"),
-            "{name}: the operator's system prompt must reach the hook as a SYSTEM prompt"
+            v.turns,
+            vec![
+                ("system".to_string(), "OPERATOR SYSTEM PROMPT".to_string()),
+                ("user".to_string(), "hi".to_string())
+            ],
+            "{name}: the in-band system turn is a turn, as 1.5.5 showed it"
         );
-        assert_eq!(v.turns.len(), 1, "{name}: the system turn is not a turn");
-        assert_eq!(v.turns[0].0, "user");
     }
 
     // ── THE TOP-LEVEL `system` KEY on a dialect that does not model one. It is legal to send, the

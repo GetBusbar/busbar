@@ -812,8 +812,8 @@ moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
   [the 1.6.0 migration guide](docs/migration-1.6.md).
 - **Hooks fire on the normalized IR**, the same representation the upstream request is built
   from, so a screening hook can no longer be shown a different payload than the provider receives.
-  A client's in-band `{role: "system"}` turn arrives in `system` while `message_count` still
-  counts it, so a hook written against 1.5.5 reads the same number; tool-call arguments are projected into the
+  A client's in-band `{role: "system"}` turn still reaches a hook as a turn, at its position,
+  exactly as in 1.5.5, so a rewrite hook's reply keeps the operator's system prompt; tool-call arguments are projected into the
   content a hook holding a `prompt: ro` or `prompt: rw` grant is shown, so a gate written to screen
   a prompt screens them through the field it already reads; and a request body Busbar cannot read
   is rejected with a `400` rather than forwarded. See [the hooks guide](docs/hooks.md).

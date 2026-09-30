@@ -640,6 +640,7 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
     let writer = GeminiWriter;
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1722,6 +1723,7 @@ fn test_write_request_omits_stream_field() {
     let writer = GeminiWriter;
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1856,6 +1858,7 @@ fn test_write_request_thinking_only_turn_survives_with_placeholder() {
     let writer = GeminiWriter;
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1967,6 +1970,7 @@ fn test_write_request_null_tool_result_coerced_to_struct() {
     let writer = GeminiWriter;
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2042,6 +2046,7 @@ fn test_write_request_scalar_tool_result_coerced_to_struct() {
     let writer = GeminiWriter;
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2190,6 +2195,7 @@ fn test_write_request_tool_result_plaintext_wrapped_not_dropped() {
     let writer = GeminiWriter;
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2266,6 +2272,7 @@ fn test_write_request_tool_result_json_passthrough() {
     let writer = GeminiWriter;
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3045,6 +3052,7 @@ fn test_generation_config_typed_fields_override_raw_extra() {
     );
     let ir = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3526,6 +3534,7 @@ fn test_write_request_image_url_sentinel_emits_file_data() {
     let writer = GeminiWriter;
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3588,6 +3597,7 @@ fn test_write_request_base64_image_still_inline_data() {
     let writer = GeminiWriter;
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -4030,6 +4040,7 @@ fn test_tool_role_maps_to_user_for_function_response() {
     let writer = GeminiWriter;
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -4105,6 +4116,7 @@ fn test_assistant_tool_use_stays_model_role() {
     let writer = GeminiWriter;
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -4336,6 +4348,7 @@ fn test_write_request_cross_protocol_function_response_name_matches_call() {
     let synthetic_id = "call_00000000deadbeef".to_string();
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -4431,6 +4444,7 @@ fn test_write_request_same_protocol_function_response_name_falls_back_to_id() {
     let writer = GeminiWriter;
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -4671,6 +4685,7 @@ fn test_tool_use_array_input_coerced_to_object_args() {
     let writer = GeminiWriter;
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -5311,6 +5326,7 @@ fn context_length_override_only_fires_on_400_or_413() {
 fn base_ir_request() -> crate::codec::ir::IrRequest {
     crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -6743,6 +6759,7 @@ fn test_read_request_captures_function_call_thought_signature_from_history() {
 fn test_outage_cross_protocol_tool_use_gets_sentinel_thought_signature() {
     let mut ir_req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -6832,6 +6849,7 @@ fn test_outage_cross_protocol_tool_use_gets_sentinel_thought_signature() {
 fn test_prepare_for_egress_does_not_overwrite_real_thought_signature() {
     let mut ir_req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -6910,6 +6928,7 @@ fn test_prepare_for_egress_does_not_overwrite_real_thought_signature() {
 fn test_vertex_lane_gets_no_sentinel_thought_signature() {
     let mut ir_req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -6986,6 +7005,7 @@ fn test_vertex_lane_gets_no_sentinel_thought_signature() {
 fn test_prepare_for_egress_fills_only_missing_signatures_in_parallel_calls() {
     let mut ir_req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,

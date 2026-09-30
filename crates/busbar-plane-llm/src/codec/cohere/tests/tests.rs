@@ -40,6 +40,7 @@ fn test_write_request() {
             refusal: false,
         }],
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![
             crate::codec::ir::IrMessage {
                 role: crate::codec::ir::IrRole::User,
@@ -155,6 +156,7 @@ fn test_read_request_roundtrip() {
         parallel_tool_calls: None,
         system: vec![],
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![
             crate::codec::ir::IrMessage {
                 role: crate::codec::ir::IrRole::User,
@@ -511,6 +513,7 @@ fn test_write_request_sole_tooluse_omits_empty_content() {
         parallel_tool_calls: None,
         system: vec![],
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![crate::codec::ir::IrMessage {
             role: crate::codec::ir::IrRole::Assistant,
             content: vec![crate::codec::ir::IrBlock::ToolUse {
@@ -574,6 +577,7 @@ fn test_write_request_text_block_shapes() {
         parallel_tool_calls: None,
         system: vec![],
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![crate::codec::ir::IrMessage {
             role: crate::codec::ir::IrRole::User,
             content: vec![crate::codec::ir::IrBlock::Text {
@@ -617,6 +621,7 @@ fn test_write_request_text_block_shapes() {
 
     let multi = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![crate::codec::ir::IrMessage {
             role: crate::codec::ir::IrRole::User,
             content: vec![
@@ -2660,6 +2665,7 @@ fn test_write_request_stream_field_conditional() {
         parallel_tool_calls: None,
         system: vec![],
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![crate::codec::ir::IrMessage {
             role: crate::codec::ir::IrRole::User,
             content: vec![crate::codec::ir::IrBlock::Text {
@@ -2856,6 +2862,7 @@ fn test_tool_role_text_alongside_result_not_dropped() {
         parallel_tool_calls: None,
         system: vec![],
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![crate::codec::ir::IrMessage {
             role: crate::codec::ir::IrRole::Tool,
             content: vec![
@@ -2933,6 +2940,7 @@ fn test_tool_result_multi_block_content_joins_without_space() {
         parallel_tool_calls: None,
         system: vec![],
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![crate::codec::ir::IrMessage {
             role: crate::codec::ir::IrRole::Tool,
             content: vec![crate::codec::ir::IrBlock::ToolResult {
@@ -3004,6 +3012,7 @@ fn test_tool_role_text_without_result_not_dropped() {
         parallel_tool_calls: None,
         system: vec![],
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![crate::codec::ir::IrMessage {
             role: crate::codec::ir::IrRole::Tool,
             content: vec![crate::codec::ir::IrBlock::Text {
@@ -3068,6 +3077,7 @@ fn test_tool_role_multi_text_without_result_is_string() {
         parallel_tool_calls: None,
         system: vec![],
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![crate::codec::ir::IrMessage {
             role: crate::codec::ir::IrRole::Tool,
             content: vec![
@@ -4800,6 +4810,7 @@ fn ir_with_tool_choice(tc: Option<crate::codec::ir::IrToolChoice>) -> crate::cod
         parallel_tool_calls: None,
         system: vec![],
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![crate::codec::ir::IrMessage {
             role: crate::codec::ir::IrRole::User,
             content: vec![crate::codec::ir::IrBlock::Text {
@@ -5159,6 +5170,7 @@ fn tool_choice_maps_to_cohere_native_strings() {
     let mk = |tc: Option<crate::codec::ir::IrToolChoice>| {
         let mut req = crate::codec::ir::IrRequest {
             system_turns_folded: 0,
+            system_folds: Vec::new(),
             messages: vec![crate::codec::ir::IrMessage {
                 role: crate::codec::ir::IrRole::User,
                 content: vec![crate::codec::ir::IrBlock::Text {
@@ -5264,6 +5276,7 @@ fn response_format_json_schema_round_trips_cohere_shape() {
 fn n_candidate_count_never_emitted_on_cohere() {
     let mut req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![crate::codec::ir::IrMessage {
             role: crate::codec::ir::IrRole::User,
             content: vec![crate::codec::ir::IrBlock::Text {

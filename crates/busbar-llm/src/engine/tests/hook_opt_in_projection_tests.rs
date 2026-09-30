@@ -91,11 +91,11 @@ fn prompt_projection_system_blocks_and_absent() {
 
 /// THE ALIGNMENT CONTRACT, RESTATED — this test pinned the old one and now pins the new one.
 ///
-/// The projection used to contract itself index-aligned with the WIRE `messages` array. The IR
-/// cannot honour that and must not: every reader HOISTS system-role content into the system slot,
-/// so an in-band system turn is a system prompt here and not a turn. What the old contract existed
-/// to PROTECT survives exactly: a media-only turn keeps its entry with empty text, so a screening
-/// hook never sees fewer turns than the provider does. Entries index against `IrRequest::messages`.
+/// The projection used to contract itself index-aligned with the WIRE `messages` array, and on the
+/// in-band system turn it still is: a reader folds that turn into the IR's system prompt, and the
+/// projection puts it back at its wire position, as 1.5.5 showed it (#85, R8). What the old
+/// contract existed to PROTECT survives exactly: a media-only turn keeps its entry with empty
+/// text, so a screening hook never sees fewer turns than the provider does.
 ///
 /// The second half of the old fixture — a message with NO `role` key — no longer projects an empty
 /// role: five readers hard-reject a role they do not recognise, and the ruling is that a body busbar
@@ -118,9 +118,8 @@ fn prompt_projection_keeps_empty_entries_aligned() {
     assert_eq!(p.messages[1].0, "assistant");
     assert_eq!(p.messages[1].1, "second turn");
 
-    // The in-band system turn: hoisted into the system slot for the prompt view, but the turn count
-    // a hook sees stays the wire array's length, exactly as the previous release counted it (a hook
-    // written against 1.5.5 must read the same message_count).
+    // The in-band system turn is a TURN, at its wire position, and the turn count is the wire
+    // array's length, exactly as 1.5.5 showed both. `system` is only the dialect's own system field.
     let v: Value = serde_json::json!({
         "messages": [
             {"role": "system", "content": "OPERATOR SYSTEM PROMPT"},
@@ -129,18 +128,13 @@ fn prompt_projection_keeps_empty_entries_aligned() {
     });
     let f = facts(&v, "openai");
     let p = f.prompt();
-    assert_eq!(p.system.as_deref(), Some("OPERATOR SYSTEM PROMPT"));
-    assert_eq!(
-        p.messages.len(),
-        1,
-        "the system turn is not a turn any more"
-    );
-    assert_eq!(p.messages[0].0, "user");
-    assert_eq!(
-        f.shape().turn_count,
-        2,
-        "the folded system turn still counts on the wire"
-    );
+    assert_eq!(p.system, None);
+    assert_eq!(p.messages.len(), 2, "the system turn is a turn");
+    assert_eq!(p.messages[0].0, "system");
+    assert_eq!(p.messages[0].1, "OPERATOR SYSTEM PROMPT");
+    assert_eq!(p.messages[1].0, "user");
+    assert_eq!(f.shape().turn_count, 2, "the system turn counts on the wire");
+    assert_eq!(f.shape().system_chars, 0, "no system FIELD on this body");
 
     // A role no reader recognises is a 400, not a `role: ""` a guardrail is asked to screen.
     let v: Value = serde_json::json!({"messages": [{"role": "wizard", "content": "hi"}]});

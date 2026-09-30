@@ -158,6 +158,8 @@ impl ProtocolReader for ResponsesReader {
         // restores the 1.5.5 `message_count` semantics (the raw `input` array length) onto
         // `IrFacts::shape()`.
         let mut system_turns_folded: usize = 0;
+        // Where each folded entry stood, for the hook view (`IrRequest::system_folds`).
+        let mut system_folds: Vec<crate::codec::ir::IrSystemFold> = Vec::new();
         // IR-14: which roles the folded system entries were written in (`system` / `developer`), and
         // whether a role-less top-level `instructions` string was folded beside them.
         let (mut saw_system, mut saw_developer, mut saw_instructions) = (false, false, false);
@@ -383,7 +385,19 @@ impl ProtocolReader for ResponsesReader {
                                 system_turns_folded += 1;
                                 saw_system |= role_str == "system";
                                 saw_developer |= role_str == "developer";
+                                let blocks_before = system_blocks.len();
                                 push_system_content(&mut system_blocks, item.get("content"));
+                                crate::codec::ir::IrSystemFold::record(
+                                    &mut system_folds,
+                                    messages.len(),
+                                    if role_str == "developer" {
+                                        crate::codec::ir::IrSystemRole::Developer
+                                    } else {
+                                        crate::codec::ir::IrSystemRole::System
+                                    },
+                                    blocks_before,
+                                    system_blocks.len(),
+                                );
                                 continue;
                             }
                             let role = match role_str {
@@ -507,7 +521,19 @@ impl ProtocolReader for ResponsesReader {
                             system_turns_folded += 1;
                             saw_system |= role_str == "system";
                             saw_developer |= role_str == "developer";
+                            let blocks_before = system_blocks.len();
                             push_system_content(&mut system_blocks, content_val);
+                            crate::codec::ir::IrSystemFold::record(
+                                &mut system_folds,
+                                messages.len(),
+                                if role_str == "developer" {
+                                    crate::codec::ir::IrSystemRole::Developer
+                                } else {
+                                    crate::codec::ir::IrSystemRole::System
+                                },
+                                blocks_before,
+                                system_blocks.len(),
+                            );
                             continue;
                         }
 
@@ -743,6 +769,7 @@ impl ProtocolReader for ResponsesReader {
             parallel_tool_calls,
             system: system_blocks,
             system_turns_folded,
+            system_folds,
             messages,
             tools,
             max_tokens,

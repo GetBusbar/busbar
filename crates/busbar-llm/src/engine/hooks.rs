@@ -194,13 +194,12 @@ impl HookFacts {
     ///
     /// # The alignment contract, restated
     ///
-    /// Entries index against `IrRequest::messages`, NOT against the wire `messages` array. Every
-    /// reader hoists system-role content into the system slot, so a body carrying its system prompt
-    /// in-band contributes to `system` here and not to a turn — which is the divergence being
-    /// closed, and is precisely what would have prevented a shipped hook from shredding operator
-    /// instructions on the dialects that carry the system prompt inside the turns array. A turn that
-    /// yields no items still yields an entry with empty text: a screening hook must never see fewer
-    /// turns than the provider does.
+    /// Entries are the wire turns, as 1.5.5 showed them (#85, R8): a body carrying its system prompt
+    /// in-band shows it as a turn at its wire position under the role it was written in, and
+    /// `system` is only the dialect's own system field. A `prompt: rw` hook's reply replaces the
+    /// whole turn array, so a view that moved the in-band system turn into `system` deleted the
+    /// operator's system prompt upstream. A turn that yields no items still yields an entry with
+    /// empty text: a screening hook must never see fewer turns than the provider does.
     pub(crate) fn prompt(&self) -> busbar_contract::hooks::PromptProjection<'_> {
         use busbar_contract::ir::facts::{ContentItem, Slot};
         use std::borrow::Cow;

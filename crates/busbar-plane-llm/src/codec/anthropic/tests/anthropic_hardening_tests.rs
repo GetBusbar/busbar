@@ -2373,6 +2373,7 @@ fn read_request_promotes_system_role_message_into_system_blocks() {
 fn write_request_never_emits_system_role_message() {
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3323,6 +3324,7 @@ fn test_write_request_file_id_image_dropped_not_corrupted() {
     let writer = AnthropicWriter;
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3408,6 +3410,7 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
     let writer = AnthropicWriter;
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,

@@ -80,9 +80,10 @@ pub const LABEL_JSON: &str = "json";
 /// attribution a guardrail needs and the flat text projection cannot express.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Slot {
-    /// The request's system prompt, wherever the dialect put it.
+    /// The request's system prompt as the dialect's own system field carries it. An in-band system
+    /// turn is a [`Slot::Turn`], as a 1.5.5 hook saw it.
     System,
-    /// Ordinary content of the conversation turn at this index into `IrRequest::messages`.
+    /// Ordinary content of the conversation turn at this wire position.
     Turn(usize),
     /// The ARGUMENTS of a tool call made in the turn at this index — attacker-influenceable, sent
     /// upstream verbatim, and projected by nothing before this module existed.
@@ -343,10 +344,7 @@ impl<'a> ScreenedContent<'a> {
 /// depend on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Shape {
-    /// Conversation turns, counted on the IR. **This is not the wire `messages.len()`** — every
-    /// reader hoists system-role turns into the system slot, so a body that carries its system
-    /// prompt in-band counts one lower here than it does on the wire. That difference is the
-    /// divergence being fixed, and it is operator-visible.
+    /// Conversation turns, as the wire counts them: an in-band system turn is a turn (1.5.5).
     pub turn_count: usize,
     /// Did the caller declare any tools?
     pub has_tools: bool,
@@ -357,7 +355,8 @@ pub struct Shape {
     /// Counts TEXT, never the separators a consumer joins items with — so a flattened rendering can
     /// be longer than this by one char per join, exactly as it is today.
     pub text_chars: usize,
-    /// Chars of the SYSTEM slot alone, wherever the dialect put the system prompt. A subset of
+    /// Chars of the SYSTEM slot alone: the dialect's own system field, never an in-band system
+    /// turn, which is a turn (1.5.5). A subset of
     /// [`Shape::text_chars`] and summed in the SAME walk, so the two can never drift.
     pub system_chars: usize,
     /// The caller's output cap, normalized by the reader from whichever field its dialect spells it

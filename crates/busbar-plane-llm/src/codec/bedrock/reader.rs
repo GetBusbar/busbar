@@ -799,6 +799,7 @@ impl ProtocolReader for BedrockReader {
             // Bedrock's Converse `system` is its own top-level wire field, never folded out of
             // `messages` — the 1.5.5 raw-array count and the IR-normalized count already agree.
             system_turns_folded: 0,
+            system_folds: Vec::new(),
             messages,
             tools,
             max_tokens,

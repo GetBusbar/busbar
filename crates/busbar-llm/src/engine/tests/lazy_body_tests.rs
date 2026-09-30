@@ -208,18 +208,28 @@ fn ensure_dom_materializes_and_probe_tracks_mutation() {
 
 /// The first user-turn text projected from a request's facts — the read these tests use to tell one
 /// parse of a body from another. Reads through the neutral [`busbar_contract::ir::facts::IrFacts`] projection
-/// (turn 0's content items) rather than the concrete IR, mirroring `ensure_ir`'s facts return.
+/// (the first `user` turn's content items) rather than the concrete IR, mirroring `ensure_ir`'s
+/// facts return.
 fn first_user_text(ir: &(dyn busbar_contract::ir::facts::IrFacts + Send + Sync)) -> String {
-    ir.content()
-        .into_iter()
-        .filter(|it| it.slot().turn_index() == Some(0))
+    let items = ir.content();
+    let Some(first) = items
+        .iter()
+        .find(|it| it.author() == "user")
+        .and_then(|it| it.slot().turn_index())
+    else {
+        return String::new();
+    };
+    items
+        .iter()
+        .filter(|it| it.slot().turn_index() == Some(first))
         .map(|it| it.screenable_text().into_owned())
         .collect()
 }
 
 /// `ensure_ir` reads the body through the INGRESS operation's own handler, so the hook seam's view
 /// and the cross-protocol translate path's view come from one parse. The in-band system turn is
-/// hoisted into the IR's system slot, which is the IR's reading and not the raw body's.
+/// folded into the IR's system prompt, which is the IR's reading and not the raw body's; the hook
+/// view puts it back as a turn (1.5.5), so it does not count as a system FIELD.
 #[test]
 fn ensure_ir_reads_the_body_through_the_ingress_reader() {
     crate::testkit::install_test_seams();
@@ -233,11 +243,16 @@ fn ensure_ir_reads_the_body_through_the_ingress_reader() {
     let shape = ir.shape();
     assert_eq!(
         shape.turn_count, 2,
-        "the system turn is hoisted into the system slot but still counts as a wire turn, as the previous release counted it"
+        "the system turn counts as a wire turn, as 1.5.5 counted it"
     );
-    assert!(
-        shape.system_chars > 0,
-        "the system turn is hoisted into the system slot"
+    assert_eq!(
+        shape.system_chars, 0,
+        "an in-band system turn is a turn, not the system field (1.5.5)"
+    );
+    assert_eq!(
+        shape.text_chars,
+        "be terse".len() + "hi".len(),
+        "the folded system turn is read: its text is in the IR"
     );
     assert_eq!(first_user_text(ir), "hi");
 }
