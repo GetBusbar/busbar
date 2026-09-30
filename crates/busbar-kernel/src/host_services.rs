@@ -277,6 +277,8 @@ pub struct InstanceFacts {
     pub signing: Option<Signing>,
     /// Its trust entries, one per counterparty, as `trust::section` parsed them.
     pub trust: Vec<(String, TrustEntry)>,
+    /// The scope kinds its tail declares: `entitlement.check` answers only for these.
+    pub scope_kinds: Vec<String>,
 }
 
 /// Why an instance was not admitted.
@@ -347,6 +349,7 @@ pub struct KernelServices {
     records: Option<Records>,
     pool: Option<Arc<dyn Offload>>,
     pending: Arc<PendingRecords>,
+    units: Arc<crate::host_units::UnitRecords>,
     batcher: Arc<WriteBehind>,
     signer: Option<Arc<dyn SignKey>>,
     trust: TrustBook,
@@ -381,6 +384,7 @@ impl KernelServices {
             records: None,
             pool: None,
             pending: Arc::default(),
+            units: Arc::default(),
             batcher: Arc::default(),
             signer: None,
             trust: TrustBook::default(),
@@ -490,6 +494,48 @@ impl KernelServices {
             .admit(&key, facts.trust.iter().cloned(), replayed);
         instances.insert(key, Arc::new(facts));
         Ok(())
+    }
+
+    /// The record of every unit in flight, which the unit's admission writes and its end removes.
+    #[must_use]
+    pub fn units(&self) -> &Arc<crate::host_units::UnitRecords> {
+        &self.units
+    }
+
+    /// WHETHER THE PRINCIPAL OF `unit` IS ENTITLED TO `target`, `"<scope_kind>:<name>"`, split at
+    /// its first `:`: the kind must be one the caller's tail declares (otherwise NOT, with a debug
+    /// diagnostic), and the answer is the one identity-and-grant judgement
+    /// ([`crate::trust::validate::validate_visibility`]) over the unit's recorded principal: a dead
+    /// or expired key is entitled to nothing, an ungoverned unit to everything. An unknown caller,
+    /// a crossing that serves no unit, or a unit not in flight is entitled to nothing.
+    #[must_use]
+    pub fn entitled(&self, caller: &Caller, unit: Option<u64>, target: &str) -> bool {
+        use crate::trust::validate::{validate_visibility, Grant};
+        let Some(facts) = self.facts(caller) else {
+            return false;
+        };
+        let Some((kind, name)) = target.split_once(':') else {
+            return false;
+        };
+        if !facts.scope_kinds.iter().any(|k| k == kind) {
+            crate::diagnostics::diag_debug!(
+                crate::diagnostics::ENTITLEMENT_UNDECLARED_SCOPE_KIND,
+                instance = %caller.instance,
+                scope_kind = %kind,
+                "an entitlement check named a scope kind this plane does not declare"
+            );
+            return false;
+        }
+        let Some(record) = unit.and_then(|u| self.units.get(u)) else {
+            return false;
+        };
+        let now = (self.wall_ms)() / 1000;
+        validate_visibility(
+            record.principal.as_deref(),
+            now,
+            &[Grant::Scope { kind, name }],
+        )
+        .is_ok()
     }
 
     /// The overlay of every instance's record writes the store has not yet taken.
@@ -944,6 +990,14 @@ impl HostServices for KernelServices {
                 }
             }
             answer
+        })
+    }
+
+    fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored {
+        Stored::ready(if self.entitled(caller, unit, target) {
+            svc::ENTITLED
+        } else {
+            svc::NOT_ENTITLED
         })
     }
 

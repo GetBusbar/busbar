@@ -105,6 +105,14 @@ pub trait HostServices: Send + Sync {
         let _ = caller;
         Stored::refused(UNSERVED)
     }
+
+    /// `entitlement.check`: whether the principal of `unit` (the unit the calling crossing
+    /// serves, `None` for a crossing that serves none) is entitled to `target`,
+    /// `"<scope_kind>:<name>"`. READY `ENTITLED` or `NOT_ENTITLED`. Never pends.
+    fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored {
+        let _ = (caller, unit, target);
+        Stored::refused(UNSERVED)
+    }
 }
 
 /// A `records.list` request, as the host copied it out of the caller's `in`.

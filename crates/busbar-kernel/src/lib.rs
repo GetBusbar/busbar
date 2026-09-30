@@ -241,6 +241,7 @@ pub mod handlers;
 pub mod hooks;
 pub mod host_claims;
 pub mod host_records;
+pub mod host_units;
 pub mod ingress;
 pub mod ir;
 // The host's depth-guarded JSON parse/serialize seam (sonic-rs, MAX_JSON_DEPTH = 128). The LLM plane

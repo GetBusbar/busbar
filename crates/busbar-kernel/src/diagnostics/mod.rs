@@ -1880,6 +1880,23 @@ pub const PROVIDER_API_KEY_UNRESOLVABLE: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// `entitlement.check` named a scope kind the calling plane did not declare; the answer is
+/// NOT_ENTITLED.
+pub const ENTITLEMENT_UNDECLARED_SCOPE_KIND: Diagnostic = Diagnostic {
+    code: 8021,
+    class: Class::Governance,
+    slug: "entitlement-undeclared-scope-kind",
+    title: "An entitlement check named a scope kind its plane did not declare",
+    severity: Severity::BenignRecurring,
+    summary: "A plane asked whether the unit's principal is entitled to a target whose scope kind \
+              is not among the scope kinds the plane's tail declares. The kernel answers \
+              NOT_ENTITLED without consulting the principal's grants.",
+    action: "Declare the scope kind in the plane's tail, or correct the target the plane asks \
+             about.",
+    since: "1.6.0",
+    retired: false,
+};
+
 /// auth.chain is empty (open relay) — emitted at error so RUST_LOG=error cannot mask it.
 pub const OPEN_RELAY_NO_AUTH: Diagnostic = Diagnostic {
     code: 8014,
@@ -3228,6 +3245,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &TRUST_VERIFY_REFUSED_ON_DRIFT,
     &TRUST_VERIFY_UNREACHABLE,
     &PLANE_TASK_ABANDON_UNRECORDED,
+    &ENTITLEMENT_UNDECLARED_SCOPE_KIND,
     &ADMIN_STORE_OPERATION_FAILED,
     &ADMIN_STORE_TASK_JOIN_FAILED,
     &GROUP_DELETE_KEY_READ_FAILED,

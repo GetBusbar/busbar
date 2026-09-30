@@ -454,6 +454,7 @@ fn rig() -> Rig {
                     },
                 },
             )],
+            scope_kinds: vec!["group".into(), "item".into()],
         },
     )
     .unwrap();
@@ -1719,4 +1720,122 @@ fn an_empty_key_or_a_zero_ttl_is_taken_at_once() {
         refused
     );
     assert!(got.lock().unwrap().is_empty());
+}
+
+use crate::host_units::UnitRecord;
+use busbar_contract::records::{ScopeRef, VirtualKey};
+
+/// A live key granted `grants`, each `(kind, name)`.
+fn key_granting(grants: &[(&str, &str)]) -> Arc<VirtualKey> {
+    Arc::new(VirtualKey {
+        id: "k".into(),
+        name: "k".into(),
+        enabled: true,
+        allowed_scopes: Some(
+            grants
+                .iter()
+                .map(|(kind, value)| ScopeRef {
+                    kind: (*kind).into(),
+                    value: (*value).into(),
+                })
+                .collect(),
+        ),
+        ..VirtualKey::default()
+    })
+}
+
+/// Admit `unit` with `principal` and ask whether it is entitled to `target`.
+fn entitled(r: &Rig, unit: u64, principal: Option<Arc<VirtualKey>>, target: &str) -> u64 {
+    r.s.units().admitted(unit, UnitRecord { principal });
+    r.s.entitlement_check(&caller("inst"), Some(unit), target)
+        .value
+}
+
+/// The items of a two-item catalogue the principal sees.
+fn sees(r: &Rig, unit: u64, principal: &Arc<VirtualKey>) -> Vec<&'static str> {
+    ["one", "two"]
+        .into_iter()
+        .filter(|item| {
+            entitled(
+                r,
+                unit,
+                Some(Arc::clone(principal)),
+                &format!("item:{item}"),
+            ) == svc::ENTITLED
+        })
+        .collect()
+}
+
+#[test]
+fn two_grants_see_two_catalogues_and_a_third_sees_none() {
+    let r = rig();
+    assert_eq!(sees(&r, 1, &key_granting(&[("item", "one")])), vec!["one"]);
+    assert_eq!(sees(&r, 2, &key_granting(&[("item", "two")])), vec!["two"]);
+    assert!(sees(&r, 3, &key_granting(&[("item", "three")])).is_empty());
+}
+
+#[test]
+fn a_group_grant_without_the_item_grant_sees_nothing() {
+    let r = rig();
+    let key = key_granting(&[("group", "g")]);
+    assert_eq!(
+        entitled(&r, 1, Some(Arc::clone(&key)), "group:g"),
+        svc::ENTITLED
+    );
+    assert_eq!(entitled(&r, 1, Some(key), "item:one"), svc::NOT_ENTITLED);
+}
+
+#[test]
+fn a_dead_or_expired_key_sees_nothing() {
+    let r = rig();
+    let now_s = r.clock.load(Ordering::SeqCst) / 1000;
+    let live = key_granting(&[("item", "one")]);
+    assert_eq!(
+        entitled(&r, 1, Some(Arc::clone(&live)), "item:one"),
+        svc::ENTITLED
+    );
+    let dead = |f: &dyn Fn(&mut VirtualKey)| {
+        let mut k = (*live).clone();
+        f(&mut k);
+        Arc::new(k)
+    };
+    for k in [
+        dead(&|k| k.enabled = false),
+        dead(&|k| k.deleted_at = Some(1)),
+        dead(&|k| k.expires_at = Some(now_s)),
+    ] {
+        assert_eq!(entitled(&r, 2, Some(k), "item:one"), svc::NOT_ENTITLED);
+    }
+}
+
+#[test]
+fn an_undeclared_scope_kind_is_not_entitled() {
+    let r = rig();
+    // Even an ungoverned unit is entitled to nothing of a kind its plane does not declare.
+    assert_eq!(entitled(&r, 1, None, "other:one"), svc::NOT_ENTITLED);
+    assert_eq!(entitled(&r, 1, None, "no-kind-at-all"), svc::NOT_ENTITLED);
+    assert_eq!(entitled(&r, 1, None, "item:one"), svc::ENTITLED);
+}
+
+#[test]
+fn a_unit_not_in_flight_or_no_unit_is_not_entitled_and_ungoverned_is() {
+    let r = rig();
+    let me = caller("inst");
+    assert_eq!(
+        r.s.entitlement_check(&me, None, "item:one").value,
+        svc::NOT_ENTITLED
+    );
+    assert_eq!(
+        r.s.entitlement_check(&me, Some(9), "item:one").value,
+        svc::NOT_ENTITLED
+    );
+    assert_eq!(entitled(&r, 9, None, "item:one:with:colons"), svc::ENTITLED);
+    r.s.units().ended(9);
+    assert_eq!(
+        r.s.entitlement_check(&me, Some(9), "item:one").value,
+        svc::NOT_ENTITLED
+    );
+    let stranger =
+        r.s.entitlement_check(&caller("stranger"), Some(9), "item:one");
+    assert_eq!(stranger.value, svc::NOT_ENTITLED);
 }

@@ -1978,6 +1978,17 @@ A provider's `api_key` secret reference could not be resolved — an unset envir
 
 **What to do:** Fix the reference so it resolves (set the variable, mount the file, install and trust the secret plugin), or — if this upstream genuinely takes NO credential, such as a local ollama or vLLM — declare that explicitly with `api_key: none`, which starts the lane with no credential and sends no auth header. `--validate` reports the same refusal before you deploy.
 
+<a id="entitlement-undeclared-scope-kind"></a>
+### BUSBAR-8021 — An entitlement check named a scope kind its plane did not declare
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `entitlement-undeclared-scope-kind`
+
+A plane asked whether the unit's principal is entitled to a target whose scope kind is not among the scope kinds the plane's tail declares. The kernel answers NOT_ENTITLED without consulting the principal's grants.
+
+**What to do:** Declare the scope kind in the plane's tail, or correct the target the plane asks about.
+
 ## 9xxx — Boot & lifecycle
 
 <a id="boot-audit-restore-read-failed"></a>
