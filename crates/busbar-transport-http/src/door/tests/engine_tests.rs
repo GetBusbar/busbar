@@ -110,7 +110,7 @@ fn an_h2_trailer_block_is_not_body() {
 
 /// 1.5.5's `upstream_request_timeout_secs` was reqwest's TOTAL timeout: one clock from the send
 /// to the body's end (reqwest 0.12 wraps the response body in the same sleep). A response still
-/// streaming at the deadline is cut there, on HTTP/1.1 ...
+/// arriving at the deadline is cut there, on HTTP/1.1 ...
 #[test]
 fn a_body_still_arriving_at_the_request_timeout_is_cut_h1() {
     let mut f = asked(Proto::H1, 5);
@@ -151,7 +151,7 @@ fn a_body_still_arriving_at_the_request_timeout_is_cut_h2() {
 }
 
 /// 1.5.5 put no transport cap on a RESPONSE: a streamed body ran as long as the far end sent it
-/// (the plane's own buffered reads were capped, the streaming path was not). One larger than
+/// (the plane's own buffered reads were capped, the incremental path was not). One larger than
 /// `limits.request_body_max_bytes` (32 MiB) passes through whole.
 #[test]
 fn a_streamed_response_past_the_request_body_cap_passes_through() {
@@ -181,7 +181,7 @@ fn a_streamed_response_past_the_request_body_cap_passes_through() {
 }
 
 /// The clock is the ATTEMPT's, stamped before the dial: a connect that took 200s leaves the
-/// exchange 100s of a 300s timeout, so a body still streaming at 300s from the attempt's start is
+/// exchange 100s of a 300s timeout, so a body still arriving at 300s from the attempt's start is
 /// cut there, not 300s after the request went out.
 #[test]
 fn a_slow_connect_and_a_slow_body_share_one_attempt_clock() {

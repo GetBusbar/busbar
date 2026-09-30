@@ -71,8 +71,9 @@ pub struct Posture {
     /// response body's end (reqwest's total timeout). Counted from a stream's first `emit` when the
     /// caller stamped no deadline of its own.
     pub request_timeout: Duration,
-    /// The largest REQUEST message carried. A response is not capped here: 1.5.5's streaming path
-    /// carried a body for as long as the far end sent one, and its buffered reads are the plane's.
+    /// The largest REQUEST message carried. A response is not capped here: 1.5.5's incremental
+    /// body path carried a body for as long as the far end sent one, and its buffered reads are
+    /// the plane's.
     pub max_body_bytes: usize,
 }
 
