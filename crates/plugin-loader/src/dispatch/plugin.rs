@@ -44,7 +44,7 @@ use busbar_contract::abi::mechanism::call::{
     DIAG_LOG_DROPPED, METRIC_ADD, METRIC_OBSERVE, METRIC_SET, SEVERITY_ERROR, SEVERITY_TRACE,
 };
 use busbar_contract::abi::mechanism::door::{FAMILY_COUNTER, FAMILY_GAUGE, FAMILY_HISTOGRAM};
-use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut};
+use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut, ValidateIn};
 use busbar_contract::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
 
@@ -459,8 +459,9 @@ impl Instance {
     }
 
     /// What the host answers WITHOUT calling the plugin, if anything: a faulted instance, a slot
-    /// the table does not have, an instance-less call before `open`, a second `open`, or an `open`
-    /// whose frame cannot hold `OpenIn`/`OpenOut`.
+    /// the table does not have, an instance-less call before `open`, a second `open`, an `open`
+    /// whose frame cannot hold `OpenIn`/`OpenOut`, or a `validate` whose frame cannot hold
+    /// `ValidateIn`.
     pub(crate) fn refuse(&self, s: u32, in_size: usize, out_size: usize) -> Option<Outcome> {
         if self.faulted.load(Ordering::Acquire) || self.is_closed() {
             return Some(Outcome::Fault);
@@ -470,6 +471,7 @@ impl Instance {
         }
         let open = self.is_open();
         match s {
+            slot::VALIDATE if in_size < size_of::<ValidateIn>() => Some(Outcome::Refused),
             slot::VALIDATE => None,
             slot::OPEN if open => Some(Outcome::Refused),
             slot::OPEN if in_size < size_of::<OpenIn>() || out_size < size_of::<OpenOut>() => {
@@ -530,6 +532,17 @@ impl Instance {
             head.host = self.ctx();
             (head.ticket, self.ptr.load(Ordering::Acquire))
         };
+        // A `validate`, of every kind, is lent a reason buffer for its crossing alone (it never
+        // pends): it names what it wrote in `head.error`, read below while the buffer lives.
+        let mut validate_reason = (s == slot::VALIDATE).then(|| vec![0_u8; OPEN_REASON_CAP]);
+        if let Some(buf) = validate_reason.as_mut() {
+            // SAFETY: `refuse` checked the frame holds a `ValidateIn`.
+            unsafe {
+                let v = &mut *input.cast::<ValidateIn>();
+                v.err_buf = buf.as_mut_ptr();
+                v.err_cap = buf.len();
+            }
+        }
         if s == slot::OPEN {
             // Every `open`, of every kind, is lent the host's reason buffer: a failed open has no
             // instance to hold its reason. The same buffer is re-lent on a resume.
@@ -608,6 +621,8 @@ impl Instance {
             Outcome::Failed | Outcome::Refused => reason.or_else(|| copy_str(head.error)),
             _ => None,
         };
+        // A `validate`'s reason is copied: the buffer it was lent goes.
+        drop(validate_reason);
         match (s, outcome) {
             (slot::OPEN, Outcome::Ready) => {
                 // SAFETY: `refuse` checked the frame holds an `OpenOut`.

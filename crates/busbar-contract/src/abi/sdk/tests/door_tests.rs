@@ -236,6 +236,8 @@ fn validate_in(len: usize, op: u32) -> ValidateIn {
             fmt: BLOB_ABSENT,
             flags: 0,
         },
+        err_buf: ptr::null_mut(),
+        err_cap: 0,
     }
 }
 

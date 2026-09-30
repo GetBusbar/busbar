@@ -1448,6 +1448,8 @@ mod door {
             ValidateIn {
                 head: in_head(),
                 settings: octets(plug::BAD_SETTINGS),
+                err_buf: std::ptr::null_mut(),
+                err_cap: 0,
             },
             out_head(),
         );

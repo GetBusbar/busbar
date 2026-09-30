@@ -1025,7 +1025,7 @@ fn compute_layout() -> String {
         MechOpsHead,
         [size, slots, validate, open, refresh, retire, tick, drive, cancel, release, close]
     );
-    record!(s, MechValidateIn, [head, settings]);
+    record!(s, MechValidateIn, [head, settings, err_buf, err_cap]);
     record!(
         s,
         MechOpenIn,

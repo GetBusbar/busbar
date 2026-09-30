@@ -31,8 +31,8 @@ use std::ptr;
 use std::str::Utf8Error;
 
 use crate::abi::mechanism::call::{AbiStr, Blob, Field, Outcome, Span};
-use crate::abi::sdk::out::{Out, Scalar};
 use crate::abi::sdk::door::AbiOut;
+use crate::abi::sdk::out::{Out, Scalar};
 
 /// A borrow of data the HOST lent the current call. Only the SDK makes one (the trampoline, from
 /// its copy of the host's `in`, and the accessors below, from what that `in` points to), so every
@@ -450,7 +450,7 @@ macro_rules! lend {
 }
 
 use crate::abi::auth::{IdentityBuf, NamedValue, VerifyIn};
-use crate::abi::mechanism::lifecycle::{OpenIn, RefreshIn};
+use crate::abi::mechanism::lifecycle::{OpenIn, RefreshIn, ValidateIn};
 use crate::abi::mechanism::ticket::HostTables;
 use crate::abi::plane::{
     ArriveIn, OnPieceIn, OutField, PlaneDriveIn, ProjectIn, RecordWrite, RefusalIn, ServeIn,
@@ -475,6 +475,7 @@ lend! {
         buf(buf, buf_cap) -> u8;
         buf(groups, groups_cap) -> Span;
     }
+    ValidateIn { buf(err_buf, err_cap) -> u8; }
     // THE PLANE KIND (`abi::plane`): request-path results go into host buffers.
     ArriveIn {
         list(fields, fields_len) -> Field;

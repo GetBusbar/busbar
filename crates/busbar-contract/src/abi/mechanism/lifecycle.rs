@@ -81,6 +81,14 @@ pub struct ValidateIn {
     pub head: InHead,
     /// The settings blob.
     pub settings: Blob,
+    /// THE REASON BUFFER, the host's, lent for the call, as [`OpenIn::err_buf`] is to `open`: a
+    /// `validate` that does not answer READY writes why into it (UTF-8, at most
+    /// [`ValidateIn::err_cap`] bytes, cut on a char boundary) and names those bytes in
+    /// `head.error`. No instance exists to hold the reason past the call. NULL (with `err_cap` `0`)
+    /// = no buffer is lent.
+    pub err_buf: *mut u8,
+    /// How many bytes `err_buf` holds.
+    pub err_cap: usize,
 }
 
 /// `open`'s `in`.

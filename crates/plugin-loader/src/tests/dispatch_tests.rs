@@ -301,6 +301,8 @@ fn script(load: &dyn Fn(Arc<Recorder>) -> Plugin<TestKind>) -> Vec<String> {
         ValidateIn {
             head: in_head(),
             settings: NO_BLOB,
+            err_buf: std::ptr::null_mut(),
+            err_cap: 0,
         },
         out_head(),
     );

@@ -209,6 +209,8 @@ fn the_dropped_in_door_answers_and_a_panicking_slot_is_fault_not_abort() {
             fmt: BLOB_ABSENT,
             flags: 0,
         },
+        err_buf: ptr::null_mut(),
+        err_cap: 0,
     };
     let mut out = out_head(size_of::<OutHead>());
     assert_eq!(call(table.head.validate, &panics, &mut out), Outcome::Fault);
