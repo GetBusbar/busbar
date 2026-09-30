@@ -83,7 +83,7 @@ fn free_port() -> u16 {
 /// The transport `cdylib` packed as an UNSIGNED `kind: transport` tarball (the config opts into
 /// unsigned plugins, as the CLI fixtures do).
 fn drop_in(dir: &Path, lib: &[u8]) {
-    let bytes = common::plugins::pack("transport", "dropped-wire", lib, "acme");
+    let bytes = common::plugins::pack_stated("transport", "dropped-wire", lib, "acme");
     std::fs::write(dir.join("plugins").join("dropped-wire.tar.gz"), bytes).unwrap();
 }
 

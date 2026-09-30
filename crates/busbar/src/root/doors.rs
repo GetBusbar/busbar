@@ -24,7 +24,7 @@ use busbar_core_connector::{
     framer::{Call, Crossed, DoorFacts, FramerDoor},
     wire::HostWire,
 };
-use busbar_plugin_loader::dispatch::{
+use crate::root::loader::dispatch::{
     kinds::transport::{Transport as TransportKind, TransportFacts},
     load_linked, Bind, DispatchConfig, Dispatcher, Frame, InFrame, LinkedRow, NoSink, OutFrame,
     Plugin,
