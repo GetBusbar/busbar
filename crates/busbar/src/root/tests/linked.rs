@@ -228,7 +228,7 @@ fn dropped_again() -> Vec<DynPlane> {
 }
 
 /// The `PlaneDeclaration` a decl STATES — every field, mapped here from what the loader's admission
-/// read off the decl (`link_plane`; `busbar-plugin-loader`'s `plane_conformance_tests` hold that read
+/// read off the decl (`link_plane`; the loader's own `plane_conformance_tests` hold that read
 /// to the raw `#[repr(C)]` static, field for field) — with no adapter in between. The yardstick the
 /// installed row is held to: an adapter that dropped or defaulted any one field disagrees with it.
 fn stated(d: &'static hot::PlaneDecl) -> PlaneDeclaration {
