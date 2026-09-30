@@ -106,7 +106,11 @@ pub fn project(req: &IrRequest) -> Vec<ContentItem<'_>> {
     let len = req.system.len();
     let clamp = |r: &std::ops::Range<usize>| r.start.min(len)..r.end.min(len);
     for (b, block) in req.system.iter().enumerate() {
-        if !req.system_folds.iter().any(|f| clamp(&f.blocks).contains(&b)) {
+        if !req
+            .system_folds
+            .iter()
+            .any(|f| clamp(&f.blocks).contains(&b))
+        {
             walk(
                 std::slice::from_ref(block),
                 author_of(IrRole::System),
@@ -133,12 +137,7 @@ pub fn project(req: &IrRequest) -> Vec<ContentItem<'_>> {
 }
 
 /// One conversation turn at index `i`, under the empty-turn rule (see [`project`]).
-fn turn<'a>(
-    blocks: &'a [IrBlock],
-    author: &'static str,
-    i: usize,
-    out: &mut Vec<ContentItem<'a>>,
-) {
+fn turn<'a>(blocks: &'a [IrBlock], author: &'static str, i: usize, out: &mut Vec<ContentItem<'a>>) {
     let before = out.len();
     walk(blocks, author, Some(i), Slot::Turn(i), out);
     if out.len() == before {

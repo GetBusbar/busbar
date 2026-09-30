@@ -133,7 +133,11 @@ fn prompt_projection_keeps_empty_entries_aligned() {
     assert_eq!(p.messages[0].0, "system");
     assert_eq!(p.messages[0].1, "OPERATOR SYSTEM PROMPT");
     assert_eq!(p.messages[1].0, "user");
-    assert_eq!(f.shape().turn_count, 2, "the system turn counts on the wire");
+    assert_eq!(
+        f.shape().turn_count,
+        2,
+        "the system turn counts on the wire"
+    );
     assert_eq!(f.shape().system_chars, 0, "no system FIELD on this body");
 
     // A role no reader recognises is a 400, not a `role: ""` a guardrail is asked to screen.

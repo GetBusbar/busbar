@@ -169,7 +169,10 @@ async fn a_mid_conversation_developer_turn_keeps_its_place_and_role() {
         seen.messages,
         turns(&[("user", "u1"), ("developer", "DEV"), ("user", "u2")])
     );
-    assert_eq!((seen.message_count, seen.system_chars, seen.total_chars), (3, 0, 7));
+    assert_eq!(
+        (seen.message_count, seen.system_chars, seen.total_chars),
+        (3, 0, 7)
+    );
     assert_eq!(
         v["messages"],
         serde_json::json!([
