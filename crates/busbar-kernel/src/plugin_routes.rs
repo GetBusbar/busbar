@@ -34,7 +34,9 @@ use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::Response;
 use axum::routing::{on, MethodFilter, MethodRouter};
-use busbar_plugin_loader::{EndpointRequest, EndpointResponse, Route, RouteAuth, RouteMethod};
+use busbar_contract::abi::cold::endpoint::{
+    EndpointRequest, EndpointResponse, Route, RouteAuth, RouteMethod,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
