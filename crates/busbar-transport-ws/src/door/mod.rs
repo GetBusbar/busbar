@@ -374,7 +374,7 @@ impl Slot for Locate {
             return Outcome::Failed;
         };
         let name = at.server_name.clone().unwrap_or_default();
-        // The protocol offer for a secured connection (ALPN): the opening handshake is HTTP/1.1.
+        // The ALPN offer on a secured connection: the opening handshake is a version-1.1 upgrade.
         let offer: &[u8] = if at.secure { b"\x08http/1.1" } else { &[] };
         o.secure = u32::from(at.secure);
         o.has_name = u32::from(at.server_name.is_some());
