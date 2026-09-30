@@ -60,6 +60,8 @@ pub(crate) struct SessionServe {
     /// The ONE randomness source a session id is drawn from: the host's CSPRNG
     /// (`busbar_contract::codec::fill_entropy`). There is no fallback; a failed draw mints nothing.
     draw: fn(&mut [u8]) -> bool,
+    /// How many times the ungoverned event-stream warning was emitted: once per instance at most.
+    ungoverned_warned: std::sync::atomic::AtomicUsize,
 }
 
 impl SessionServe {
@@ -74,6 +76,7 @@ impl SessionServe {
             table: Mutex::new(SessionTable::new(Bounds::default())),
             outlets: Mutex::new(HashMap::new()),
             draw,
+            ungoverned_warned: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -110,6 +113,32 @@ impl SessionServe {
         let revision = t.revision(sid, owner, now)?;
         let carriage = t.carriage(sid, owner, now)?;
         Some((revision, carriage))
+    }
+
+    /// THE UNGOVERNED EVENT-STREAM WARNING (reviewer follow-up 2, ARCHITECT 2026-09-29), emitted
+    /// the first time this instance opens a `2024-11-05` stream for the shared ungoverned owner. The
+    /// plane cannot see the auth chain at boot, so the first such stream is where it learns it.
+    fn warn_ungoverned_event_stream(&self) {
+        use std::sync::atomic::Ordering;
+        if self
+            .ungoverned_warned
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            tracing::warn!(
+                "a 2024-11-05 event stream was opened with no governance configured: its session \
+                 id travels in the message address's URL query, and without an auth chain every \
+                 caller shares one owner, so sessions are not isolated between callers. Configure \
+                 an auth chain to bind each session to the key that opened it."
+            );
+        }
+    }
+
+    /// How many times [`Self::warn_ungoverned_event_stream`] emitted: 0 or 1.
+    #[cfg(test)]
+    pub(crate) fn ungoverned_warnings(&self) -> usize {
+        self.ungoverned_warned
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     fn end(&self, sid: &str, owner: &Owner, now: u64) -> bool {
@@ -666,6 +695,9 @@ pub(crate) async fn get(ctx: PlaneReqCtx) -> Response {
         || revision::sessionless_get(version) == SessionlessGet::NotAllowed
     {
         return super::envelope::legacy_verb(ctx).await;
+    }
+    if owner.credential == UNGOVERNED {
+        svc.warn_ungoverned_event_stream();
     }
     let Some(sid) = svc.mint(&owner, Revision::R2024_11_05, Carriage::EventStream, now) else {
         return no_session();

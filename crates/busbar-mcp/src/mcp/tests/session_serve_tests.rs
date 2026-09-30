@@ -53,6 +53,17 @@ async fn listen(router: axum::Router) -> (String, tokio::task::JoinHandle<()>) {
 
 /// Serve an MCP-enabled app behind the KEY chain, and mint two real keys' audience-bound tokens.
 async fn serve_governed() -> (String, String, String, tokio::task::JoinHandle<()>) {
+    let (url, owner, intruder, h, _host) = serve_governed_with_host().await;
+    (url, owner, intruder, h)
+}
+
+async fn serve_governed_with_host() -> (
+    String,
+    String,
+    String,
+    tokio::task::JoinHandle<()>,
+    std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
+) {
     use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     use busbar_kernel::governance::NewKeySpec;
     metrics_init();
@@ -93,10 +104,11 @@ async fn serve_governed() -> (String, String, String, tokio::task::JoinHandle<()
         ));
     }
     let app = test_app().keys_chain().governance(gov).mcp(&cfg()).build();
+    let host = engine_host(&app);
     let (url, h) = listen(build_router(app)).await;
     let intruder = tokens.pop().unwrap();
     let owner = tokens.pop().unwrap();
-    (url, owner, intruder, h)
+    (url, owner, intruder, h, host)
 }
 
 fn initialize(id: i64, version: &str) -> serde_json::Value {
@@ -563,5 +575,48 @@ async fn red_another_credential_cannot_post_to_an_event_stream_address() {
     );
     let ok = post(&target, Some(&owner), &initialize(31, "2024-11-05"), &[]).await;
     assert_eq!(ok.status, 202);
+    h.abort();
+}
+
+/// RED (reviewer follow-up 2): on the ungoverned open chain the first `2024-11-05` stream emits the
+/// operator warning exactly once per instance, and a governed deployment never emits it.
+#[tokio::test]
+async fn red_the_ungoverned_event_stream_warning_is_emitted_exactly_once() {
+    metrics_init();
+    let app = test_app().mcp(&cfg()).build();
+    let host = engine_host(&app);
+    let (url, h) = listen(build_router(app)).await;
+    let c = reqwest::Client::new();
+    for _ in 0..3 {
+        let resp = c
+            .get(&url)
+            .header("accept", "text/event-stream")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+    }
+    let sessions = super::super::runtime_of(&host).sessions.clone();
+    assert_eq!(
+        sessions.ungoverned_warnings(),
+        1,
+        "once, not once per stream"
+    );
+    h.abort();
+}
+
+#[tokio::test]
+async fn a_governed_event_stream_never_warns() {
+    let (url, owner, _intruder, h, host) = serve_governed_with_host().await;
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .header("authorization", format!("Bearer {owner}"))
+        .header("accept", "text/event-stream")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let sessions = super::super::runtime_of(&host).sessions.clone();
+    assert_eq!(sessions.ungoverned_warnings(), 0);
     h.abort();
 }

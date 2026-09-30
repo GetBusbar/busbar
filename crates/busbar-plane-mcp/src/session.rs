@@ -57,6 +57,12 @@
 //! a session that never existed, so a leaked id is not a probe. The id is 128 bits from the caller's
 //! CSPRNG, and an all-zero entropy buffer (the failure shape of a refused entropy source) is refused
 //! rather than minted. Log only [`log_prefix`] of an id, never the whole of it.
+//!
+//! The ungoverned open chain has ONE principal and ONE credential for every caller, so there the
+//! binding isolates nothing, which matches that posture's wildcard grants. It matters most for the
+//! `2024-11-05` transport, whose session id travels in the message address's URL query (where logs
+//! and intermediaries can read it): the serving side emits one operator warning per instance the
+//! first time such a stream opens without governance (reviewer follow-up 2, ARCHITECT 2026-09-29).
 
 use std::collections::{BTreeMap, VecDeque};
 
