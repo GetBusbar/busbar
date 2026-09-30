@@ -76,8 +76,9 @@ pub type Verdict = u64;
 /// from any thread.
 pub type Judged = Box<dyn FnOnce(Result<SocketAddr, Verdict>) + Send>;
 
-/// The egress class a need's dial is judged under: the host's default.
-pub const DIAL_CLASS: u32 = 0;
+/// A need's `egress_class` `0`: the connector's default class (`busbar_contract::abi::host::conn::
+/// Need::egress_class`). A need declared in another class is judged under that class, never this.
+pub const DEFAULT_CLASS: u32 = 0;
 
 /// THE KERNEL'S DESTINATION JUDGE, as a dial reaches it (`dest.judge`, R-K): every authority the
 /// connector dials is judged here and the connector dials EXACTLY the address the judgement pinned,
@@ -150,8 +151,8 @@ impl std::fmt::Debug for Held {
 /// THE CONNECTOR: the host side of the connection table.
 pub struct Connector {
     slab: ConnSlab<Held>,
-    /// The transport each declared need names.
-    over: Mutex<HashMap<(InstanceId, NeedId), String>>,
+    /// The transport each declared need names, and the egress class its dials are judged under.
+    over: Mutex<HashMap<(InstanceId, NeedId), (String, u32)>>,
     transports: RwLock<Transports>,
     tls: Option<Arc<rustls::ClientConfig>>,
     wake: WakeTicket,
@@ -242,13 +243,26 @@ impl Connector {
         self.slab.declare(owner, need);
     }
 
-    /// Record that `owner` declared `need` over `transport` (a scheme the registry view serves).
+    /// Record that `owner` declared `need` over `transport` (a scheme the registry view serves), in
+    /// the default egress class ([`DEFAULT_CLASS`]).
     pub fn declare_over(&self, owner: InstanceId, need: NeedId, transport: &str) {
+        self.declare_need(owner, need, transport, DEFAULT_CLASS);
+    }
+
+    /// Record that `owner` declared `need` over `transport`, its dials judged under the need's own
+    /// `egress_class` (`Need::egress_class`).
+    pub fn declare_need(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        transport: &str,
+        egress_class: u32,
+    ) {
         self.slab.declare(owner, need);
         self.over
             .lock()
             .expect("needs")
-            .insert((owner, need), transport.to_owned());
+            .insert((owner, need), (transport.to_owned(), egress_class));
     }
 
     /// Dial a held connection whose judgement has answered. `Ok(false)`: still judging, `waker`
@@ -303,7 +317,7 @@ impl Conns for Connector {
     ) -> Result<ConnId, ConnError> {
         self.slab.check_need(caller, need)?;
         endpoint::check(desc.target).map_err(|_| ConnError::Refused)?;
-        let scheme = self
+        let (scheme, egress_class) = self
             .over
             .lock()
             .expect("needs")
@@ -337,7 +351,7 @@ impl Conns for Connector {
         let later = Arc::clone(&answer);
         let judged = self.judge.judge_dial(
             planned.authority(),
-            DIAL_CLASS,
+            egress_class,
             Box::new(move |v| {
                 let mut a = later.lock().expect("judgement");
                 a.0 = Some(v);

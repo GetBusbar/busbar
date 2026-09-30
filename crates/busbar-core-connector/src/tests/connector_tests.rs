@@ -160,3 +160,48 @@ fn a_metadata_target_is_refused_even_over_a_served_transport() {
         }
     });
 }
+
+/// The egress class a restricted need is declared in: its judge refuses internal addresses.
+const RESTRICTED: u32 = 7;
+
+/// RED: each need's dial is judged under the need's OWN egress class. A judge that refuses internal
+/// addresses in a restricted class refuses a loopback target for the need declared in that class,
+/// while the same target opens for a need in the default class on the same connector.
+#[test]
+fn a_need_in_a_restricted_class_is_refused_a_target_that_class_forbids() {
+    worker().block_on(async {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        let view = Transports::new(vec![Entry {
+            door: Arc::new(TestDoor::identity("bytes")),
+            alpn: Vec::new(),
+        }])
+        .unwrap();
+        let judge = |dest: &str, class: u32, _: crate::Judged| {
+            let addr = crate::socket::address_of(dest)
+                .ok_or(busbar_contract::abi::host::service::DEST_UNRESOLVABLE);
+            Some(match (class, addr) {
+                (RESTRICTED, Ok(a)) if a.ip().is_loopback() => {
+                    Err(busbar_contract::abi::host::service::DEST_UNRESOLVABLE)
+                }
+                (_, got) => got,
+            })
+        };
+        let c = Connector::serving(view, Arc::new(judge), None, Arc::new(|_| {}));
+        c.declare_over(OWNER, NeedId(0), "bytes");
+        c.declare_need(OWNER, NeedId(1), "bytes", RESTRICTED);
+        let desc = OpenDesc {
+            target: &far,
+            ..OpenDesc::default()
+        };
+        assert_eq!(
+            c.open(OWNER, NeedId(1), &desc),
+            Err(ConnError::Refused),
+            "the restricted need is judged under its own class"
+        );
+        let id = c
+            .open(OWNER, NeedId(0), &desc)
+            .expect("the default-class need opens the same target");
+        c.close(OWNER, id).unwrap();
+    });
+}
