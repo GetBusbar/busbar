@@ -9,7 +9,7 @@
 //! client that never speaks is dropped at the configured handshake bound
 //! (`limits.tls_handshake_timeout_secs`), never answered.
 #![cfg(unix)]
-// The fixture boots a REAL busbar with an LLM provider (`GET /v1/models` answers from it), so the
+// The fixture boots a REAL server with an LLM provider (`GET /v1/models` answers from it), so the
 // proof needs the body-ingress axis linked, as thread_per_core_serves.rs gates.
 #![cfg(linked_axis_body_ingress)]
 
@@ -29,7 +29,7 @@ const WORKERS: usize = 2;
 
 fn fixture_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
-        "busbar-root-listeners-{tag}-{}-{}",
+        "root-listeners-{tag}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -95,7 +95,7 @@ fn boot(dir: &Path) -> Reap {
             .stdout(log.try_clone().unwrap())
             .stderr(log)
             .spawn()
-            .expect("spawn busbar"),
+            .expect("spawn the server"),
     )
 }
 
@@ -159,7 +159,7 @@ fn the_data_door_and_the_admin_surface_are_the_connectors_and_answer_only_their_
     let mut node = boot(&dir);
     let up = wait_for(Duration::from_secs(60), || {
         if let Some(s) = node.0.try_wait().expect("try_wait") {
-            panic!("busbar exited ({s:?}); log:\n{}", log(&dir));
+            panic!("the server exited ({s:?}); log:\n{}", log(&dir));
         }
         code(status(data, "/healthz")) == 200 && code(status(admin, "/v1/models")) != 0
     });
@@ -233,7 +233,7 @@ fn a_silent_client_on_the_tls_data_door_is_dropped_at_the_handshake_bound() {
     let mut node = boot(&dir);
     let up = wait_for(Duration::from_secs(60), || {
         if let Some(s) = node.0.try_wait().expect("try_wait") {
-            panic!("busbar exited ({s:?}); log:\n{}", log(&dir));
+            panic!("the server exited ({s:?}); log:\n{}", log(&dir));
         }
         log(&dir)
             .lines()
