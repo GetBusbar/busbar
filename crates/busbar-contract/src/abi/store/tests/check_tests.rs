@@ -837,6 +837,18 @@ fn window_caps_refusal_names_a_cap() {
     );
 }
 
+#[test]
+fn window_caps_refusal_may_name_an_op_id_conflict() {
+    assert_eq!(
+        check_window_caps(
+            Outcome::Refused,
+            1,
+            Some(b"STORE_OPID_CONFLICT: the op_id was already used with different value fields")
+        ),
+        Ok(())
+    );
+}
+
 // ── M-SB: the short-buffer answer ────────────────────────────────────────────────────────────
 
 fn short_reserve(needed: u64) -> ReserveOut {

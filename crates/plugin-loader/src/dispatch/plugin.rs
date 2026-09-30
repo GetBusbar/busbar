@@ -820,6 +820,14 @@ impl<K: Kind> Plugin<K> {
         Ok(plugin)
     }
 
+    /// What the kind read from the Statement at bind ([`Kind::context`]), as the kind's type `T`.
+    pub fn context<T: 'static>(&self) -> Option<&T> {
+        self.inner
+            .context
+            .as_deref()
+            .and_then(|c| c.downcast_ref::<T>())
+    }
+
     /// The kind.
     pub fn kind(&self) -> KindCode {
         self.inner.kind

@@ -32,6 +32,7 @@
 
 use busbar_contract::abi::mechanism::call::{AbiStr, OutHead, Outcome};
 use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
+use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut, LIFECYCLE_SLOTS};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::store::check::{self as sc, LIST_ITEMS_HARD_MAX};
@@ -295,10 +296,55 @@ fn window_caps(a: &Answer) -> Result<(), Fault> {
     sc::check_window_caps(a.outcome, u(input.caps_len), text).map_err(store_fault)
 }
 
+/// What a store states in its Statement tail ([`store::StoreTail`]), read once at bind: the
+/// instance's [`Kind::context`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoreFacts {
+    /// What it holds is lost on restart.
+    pub ephemeral: bool,
+    /// It holds plane records durably.
+    pub durable_plane: bool,
+    /// A different record at a used `seq` is refused as a fork.
+    pub fork_refusal: bool,
+}
+
+/// The store's tail, read from the Statement: a whole [`store::StoreTail`] whose flags are `0` or
+/// `1`. A store states one: the flags are what the host reads instead of a load-time guess.
+fn store_facts(st: &Statement) -> Result<StoreFacts, String> {
+    let p = st.kind_tail;
+    if p.is_null() {
+        return Err("a store states no kind tail".into());
+    }
+    // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`; the
+    // whole tail is read only once its size covers this host's `StoreTail`.
+    let size = unsafe { (*p).size };
+    if (size as usize) < std::mem::size_of::<store::StoreTail>() {
+        return Err(format!(
+            "the store tail is {size} bytes, smaller than this host's"
+        ));
+    }
+    // SAFETY: as above.
+    let t = unsafe { p.cast::<store::StoreTail>().read_unaligned() };
+    let flag = |v: u8, name: &str| match v {
+        0 => Ok(false),
+        1 => Ok(true),
+        n => Err(format!("the store tail's {name} is {n}, not 0 or 1")),
+    };
+    Ok(StoreFacts {
+        ephemeral: flag(t.ephemeral, "ephemeral")?,
+        durable_plane: flag(t.durable_plane, "durable_plane")?,
+        fork_refusal: flag(t.fork_refusal, "fork_refusal")?,
+    })
+}
+
 impl Kind for Store {
     const CODE: KindCode = KindCode::Store;
     type Ops = store::Ops;
     const TIMEOUT: Outcome = Outcome::Failed;
+
+    fn context(st: &Statement) -> Result<Option<Box<crate::dispatch::Context>>, String> {
+        Ok(Some(Box::new(store_facts(st)?)))
+    }
 
     fn op_name(s: u32) -> &'static str {
         match s.checked_sub(LIFECYCLE_SLOTS) {

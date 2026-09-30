@@ -53,6 +53,8 @@ pub use lent::{HostBuf, Lent, LentList};
 pub use safe::{Instance, Plain, Published, Safe, SafeSlot};
 // THE ONE 1.5.x -> 1.6.0 USAGE-ROW FOLD a store plugin's own `migrate()` calls (#33, M5/parity).
 pub mod store_migrate;
+// THE STORE KIND'S TYPED SDK: the trait a store implements to be served through the store v3 table.
+pub mod store;
 
 // The `#[macro_export]` export macros, named at this module's path too, so a plugin writes
 // `busbar_contract::abi::sdk::export_store_plugin!` exactly where it wrote

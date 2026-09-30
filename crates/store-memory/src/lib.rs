@@ -138,6 +138,9 @@ pub struct MemoryStore {
     /// the test's `now()` and the sweep's `now()` would otherwise shift the ceiling and evict the
     /// "one second inside" row. Prod behavior is untouched: the field is only ever set from tests.
     clock: AtomicU64,
+    /// The store v3 slots' own state: the `op_id` dedupe log, the caps, the drawn totals, the
+    /// slices, the ledger streams and the session directory ([`v3`]).
+    v3: v3::State,
 }
 
 impl MemoryStore {
@@ -169,10 +172,16 @@ impl MemoryStore {
         key: &[u8],
         value: &RecordBytes,
     ) -> Result<(), ContractStoreError> {
+        self.record_put_at(schema.as_str(), key, value);
+        Ok(())
+    }
+
+    /// [`Self::record_put`] under a schema named at run time (the store v3 table's `record_put`).
+    pub(crate) fn record_put_at(&self, schema: &str, key: &[u8], value: &RecordBytes) {
         let written_at = self.now();
         let mut records = self.records.write().unwrap_or_else(|e| e.into_inner());
         records.insert(
-            (schema.as_str().to_string(), key.to_vec()),
+            (schema.to_string(), key.to_vec()),
             RecordRow {
                 written_at,
                 value: value.clone(),
@@ -192,7 +201,6 @@ impl MemoryStore {
             let n = self.now();
             records.retain(|_, row| row.written_at.saturating_add(MAX_RETENTION_SECS) > n);
         }
-        Ok(())
     }
 
     /// Read one of a plane's kernel-held durable records.
@@ -206,12 +214,16 @@ impl MemoryStore {
         schema: RecordSchemaId,
         key: &[u8],
     ) -> Result<Option<RecordBytes>, ContractStoreError> {
-        Ok(self
-            .records
+        Ok(self.record_get_at(schema.as_str(), key))
+    }
+
+    /// [`Self::record_get`] under a schema named at run time.
+    pub(crate) fn record_get_at(&self, schema: &str, key: &[u8]) -> Option<RecordBytes> {
+        self.records
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .get(&(schema.as_str().to_string(), key.to_vec()))
-            .map(|row| row.value.clone()))
+            .get(&(schema.to_string(), key.to_vec()))
+            .map(|row| row.value.clone())
     }
 
     /// Walk a plane's records under a prefix, in key order, at most `limit` of them.
@@ -229,16 +241,24 @@ impl MemoryStore {
         prefix: &[u8],
         limit: u32,
     ) -> Result<Vec<(Vec<u8>, RecordBytes)>, ContractStoreError> {
-        let schema = schema.as_str();
-        Ok(self
-            .records
+        Ok(self.record_scan_at(schema.as_str(), prefix, limit))
+    }
+
+    /// [`Self::record_scan`] under a schema named at run time.
+    pub(crate) fn record_scan_at(
+        &self,
+        schema: &str,
+        prefix: &[u8],
+        limit: u32,
+    ) -> Vec<(Vec<u8>, RecordBytes)> {
+        self.records
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|((s, k), _)| s == schema && k.starts_with(prefix))
             .take(limit as usize)
             .map(|((_, k), row)| (k.clone(), row.value.clone()))
-            .collect())
+            .collect()
     }
     fn keys(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<String, VirtualKey>> {
         self.keys.write().unwrap_or_else(|e| e.into_inner())
@@ -911,21 +931,36 @@ pub fn open(_cfg: &str) -> Result<Box<dyn Store>, String> {
     Ok(Box::new(MemoryStore::new()))
 }
 
-/// THE DROPPED-IN DOOR (feature `dropped-in`): [`open`] exported through the contract's store export
-/// macro. The frozen symbols the loader looks up are the contract's, answering through this image's
-/// one registered door, so this crate defines no `#[no_mangle]` symbol of its own. The ONE module in
-/// this crate where unsafe code is allowed: the C-ABI boundary functions the macro generates are
-/// `unsafe extern "C-unwind"` by the ABI's own definition.
+/// THE STORE DOOR (store v3, `busbar_contract::abi::store`): every slot of the store v3 table over
+/// [`MemoryStore`], through the contract's store SDK (`abi::sdk::store`). `door` is what a build that
+/// links this crate registers as its compiled-in row, and what the dropped-in `cdylib` exports
+/// ([`door_export`]): compiled in or dropped in, the kernel reaches the same table. The memory store
+/// never pends, so its `max_inflight` is set well above any worker count; it only bounds a flood.
+pub use v3::door;
+
+/// THE DROPPED-IN DOOR (feature `dropped-in`): [`door`] exported as the image's ONE symbol through
+/// the contract's `export_door!`. The one module in this crate where unsafe code is allowed: the
+/// exported symbol is `#[unsafe(no_mangle)]`.
 #[cfg(feature = "dropped-in")]
+#[allow(unsafe_code)]
+pub mod door_export {
+    busbar_contract::export_door!(crate::v3::door);
+}
+
+// M6: the legacy cold export below goes with the cold ABI (TODO M6 COLD-DELETE). It is kept only as
+// the in-tree subject of the legacy store adapter's tests; production never loads it.
+/// THE LEGACY COLD DOOR (feature `cold-dropped-in`): [`open`] exported through the contract's cold
+/// store export macro. The frozen symbols the loader looks up are the contract's. Unsafe code is
+/// allowed here because the C-ABI boundary functions the macro generates are
+/// `unsafe extern "C-unwind"` by the cold ABI's own definition.
+#[cfg(feature = "cold-dropped-in")]
 #[allow(unsafe_code)]
 pub mod exports {
     busbar_contract::abi::sdk::export_store_plugin!(super::open);
 }
 
-/// The dropped-in door's boundary as a LINKED entry: the same functions the `cdylib`'s frozen symbols
-/// answer through, for a host that links this crate and registers it through the cold lane's linked
-/// door (the loader's both-ways proof).
-#[cfg(feature = "dropped-in")]
+/// The legacy cold door's boundary as a LINKED entry (the loader's legacy both-ways proof).
+#[cfg(feature = "cold-dropped-in")]
 pub use exports::BUSBAR_COLD_ENTRY;
 
 /// THE LINKED ENTRY (DECISIONS #2 rule (1)): what a build that links this store registers onto the
@@ -942,6 +977,12 @@ pub mod linked {
     pub const STORE: (&str, bool, bool, Open) = ("memory", true, true, super::open);
 }
 
+mod v3;
+
 #[cfg(test)]
 #[path = "tests/lib_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/v3_tests.rs"]
+mod v3_tests;

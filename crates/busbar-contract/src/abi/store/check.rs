@@ -199,7 +199,7 @@ fn needed_only_on_failed(outcome: Outcome, any_needed: bool) -> Result<(), Fault
 /// check; a REFUSED push names the first conflicting cap. `caps_len`
 /// is how many caps the host pushed, and `error` the bytes of `out.error` as the host copied them
 /// (`None` when the plugin left it absent). A REFUSED `error` must BEGIN with the decimal index of
-/// a cap in the push.
+/// a cap in the push, or with [`super::DIAG_OPID_CONFLICT`] (the push's `op_id` was used before).
 pub fn check_window_caps(
     outcome: Outcome,
     caps_len: u64,
@@ -212,6 +212,11 @@ pub fn check_window_caps(
         return Ok(());
     }
     let text = error.ok_or(Fault::Missing)?;
+    // An `op_id` replayed with a different push is REFUSED as every store op's is (DEDUPE): its
+    // text names the conflict, not a cap.
+    if text.starts_with(super::DIAG_OPID_CONFLICT.as_bytes()) {
+        return Ok(());
+    }
     let digits = text.iter().take_while(|b| b.is_ascii_digit()).count();
     if digits == 0 || digits > 10 {
         return Err(Fault::Missing);

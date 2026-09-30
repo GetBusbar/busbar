@@ -60,6 +60,7 @@ pub mod scrape;
 pub mod sign;
 mod stage;
 pub mod store_adapter;
+pub mod store_v3;
 pub mod tarball;
 pub mod transport;
 pub mod transport_adapter;
