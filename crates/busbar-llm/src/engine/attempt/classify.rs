@@ -74,29 +74,13 @@ pub(super) fn transport_error(hop: &Hop<'_>, e: &EgressSendError) -> AttemptOutc
     }
 }
 
-/// One PROTOCOL-DECLARED relayed response header name, as a header name to emit under.
-///
-/// The names come from a protocol's own declaration, and a declaration is written the way the header
-/// is SPELLED in its vendor's documentation — `x-amzn-RequestId` is how the doc comments here and on
-/// the writer spell it. `HeaderName::from_static` PANICS on an uppercase byte, so spelling a declared
-/// name the way its vendor does would have aborted the worker on the error-relay path, on a request
-/// that had already reached an upstream. Parsing the bytes instead lowercases the name (the wire form
-/// is case-insensitive, and this is the same name the lookup just matched), and a name that is not a
-/// legal header at all is dropped rather than taking the process with it.
-fn relayed_header_name(name: &str) -> Option<axum::http::HeaderName> {
-    axum::http::HeaderName::from_bytes(name.as_bytes()).ok()
-}
-
 /// The captured upstream error response, read and ready to classify or relay.
 struct UpstreamError {
     status: StatusCode,
-    ct: Option<axum::http::HeaderValue>,
+    /// The upstream's head, captured before the body is consumed: the plane's reply reads the
+    /// content type and the relayed request-id-class fields off it.
+    head: axum::http::HeaderMap,
     retry_after_secs: Option<u64>,
-    /// The upstream's relayed request-id-class headers, for a same-protocol relay on an ingress
-    /// that forwards them verbatim (bedrock: `x-amzn-requestid` + `x-amzn-errortype`).
-    amzn_headers: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
-    /// The upstream's PRIMARY relayed id (anthropic `request-id`), forwarded or synthesized.
-    relay_id: Option<String>,
     bytes: Bytes,
 }
 
@@ -104,70 +88,35 @@ impl UpstreamError {
     /// Everything the relay and the classifier need from the response HEADERS, captured before the
     /// body is consumed. The body is read by the caller (one `.await`, no nested future holding a
     /// second copy of the response).
-    fn from_headers(
-        hop: &Hop<'_>,
-        r: &http::Response<hyper::body::Incoming>,
-        status: StatusCode,
-    ) -> Self {
-        let ct = r.headers().get(CONTENT_TYPE).cloned();
+    fn from_headers(r: &http::Response<hyper::body::Incoming>, status: StatusCode) -> Self {
         // The upstream `Retry-After` header (whole seconds) is captured here: the per-protocol
         // `extract_error` only sees the body, so the cooldown floor would otherwise be dropped.
         let retry_after_secs = parse_retry_after(r.headers());
-        let amzn_headers = if ingress_relays_amzn_headers(hop.ingress_protocol) {
-            ingress_relayed_response_header_names(hop.ingress_protocol)
-                .iter()
-                .filter_map(|name| {
-                    let v = r.headers().get(*name)?.clone();
-                    Some((relayed_header_name(name)?, v))
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let relay_id = ingress_relayed_response_header_names(hop.ingress_protocol)
-            .first()
-            .and_then(|name| r.headers().get(*name))
-            .and_then(|h| h.to_str().ok())
-            .map(|s| s.to_string());
         Self {
             status,
-            ct,
+            head: r.headers().clone(),
             retry_after_secs,
-            amzn_headers,
-            relay_id,
             bytes: Bytes::new(),
         }
     }
 
-    /// The client-facing relay of this error. Cross-protocol: reshaped into the ingress protocol's
-    /// native envelope (relaying the egress provider's native error body to a different-protocol
-    /// SDK is a foreign-format leak). Same-protocol: the upstream body + Content-Type verbatim,
-    /// with the native request-id header(s) a real endpoint carries.
-    fn relay(&self, hop: &Hop<'_>) -> Response {
-        if hop.ingress_protocol != hop.egress_name {
-            return shape_cross_protocol_error(hop.ingress_protocol, self.status, &self.bytes);
+    fn far(&self) -> busbar_plane_llm::exchange::reply::failure::FarError<'_> {
+        busbar_plane_llm::exchange::reply::failure::FarError {
+            status: self.status.as_u16(),
+            head: &self.head,
+            body: &self.bytes,
         }
-        self.relay_verbatim(hop)
     }
 
-    fn relay_verbatim(&self, hop: &Hop<'_>) -> Response {
-        let mut rb = Response::builder().status(self.status);
-        if let Some(ct) = &self.ct {
-            rb = rb.header(CONTENT_TYPE, ct);
-        }
-        if ingress_relays_amzn_headers(hop.ingress_protocol) {
-            for (name, value) in &self.amzn_headers {
-                rb = rb.header(name, value);
-            }
-        } else {
-            rb = maybe_attach_response_request_id(
-                rb,
-                hop.ingress_protocol,
-                self.relay_id.as_deref(),
-            );
-        }
-        rb.body(Body::from(self.bytes.clone()))
-            .unwrap_or_else(|_| self.status.into_response())
+    /// The client-facing relay of this error (the plane's reply): cross-protocol reshaped into the
+    /// ingress protocol's native envelope, same-protocol the upstream body verbatim with the native
+    /// request-id header(s) a real endpoint carries.
+    fn relay(&self, hop: &Hop<'_>) -> Response {
+        rendered_response(busbar_plane_llm::exchange::reply::failure::relay(
+            hop.ingress_protocol,
+            hop.egress_name,
+            &self.far(),
+        ))
     }
 }
 
@@ -180,7 +129,7 @@ pub(super) fn non_2xx<'a>(
     read_deadline: tokio::time::Instant,
     permit: Permit,
 ) -> impl std::future::Future<Output = AttemptOutcome> + 'a {
-    let mut err = UpstreamError::from_headers(hop, &r, status);
+    let mut err = UpstreamError::from_headers(&r, status);
     async move {
         // Size-capped read: a hostile upstream must not force an unbounded allocation for a non-2xx
         // body before the breaker classification runs.
@@ -209,13 +158,12 @@ fn classify_error(
 
     // Two-stage pipeline: the cell that spoke to this upstream extracts the raw error, the lane's
     // error map normalizes it, the breaker classifies it.
-    let mut raw = op_for(
+    let mut raw = busbar_plane_llm::exchange::reply::failure::raw_error(
         hop.egress_name,
         hop.op.operation,
-        busbar_contract::transport::transport::Transport::Http,
-    )
-    .map(|cell| cell.extract_error(status.as_u16(), &err.bytes))
-    .unwrap_or_else(|| busbar_contract::upstream::RawUpstreamError::from_status(status.as_u16()));
+        status.as_u16(),
+        &err.bytes,
+    );
     raw.retry_after_secs = err.retry_after_secs;
     let sig = normalize_raw_error(&raw, &hop.lane_row().error_map);
     let disposition = classify_disposition(&sig);
@@ -228,18 +176,14 @@ fn classify_error(
             // return. Cross-protocol reshapes into the ingress envelope with the kind derived from
             // the classified status class; same-protocol relays verbatim.
             host.lane_store().record_client_fault(i);
-            if hop.ingress_protocol != hop.egress_name {
-                let kind = client_fault_kind(sig.class);
-                let msg = extract_error_message(&err.bytes)
-                    .unwrap_or_else(|| GENERIC_REJECTED_DETAIL.to_string());
-                return AttemptOutcome::Response(ingress_error(
+            AttemptOutcome::Response(rendered_response(
+                busbar_plane_llm::exchange::reply::failure::client_fault(
                     hop.ingress_protocol,
-                    status,
-                    kind,
-                    &msg,
-                ));
-            }
-            AttemptOutcome::Response(err.relay_verbatim(hop))
+                    hop.egress_name,
+                    sig.class,
+                    &err.far(),
+                ),
+            ))
         }
         Disposition::TransientUpstream => {
             // Record by class: a rate limit carries its own cooldown rule and the upstream's
@@ -339,13 +283,8 @@ fn hard_down(
         // The ingress-protocol-native auth-failure status and kind (a real Bedrock auth failure is
         // a 403 AccessDeniedException, a real Gemini bad key a 400 INVALID_ARGUMENT), with the
         // vendor-plausible message — never the egress backend's raw status or body.
-        let (auth_status, auth_kind) =
-            busbar_kernel::proxy::auth_failure_status_and_kind(hop.ingress_protocol);
-        return AttemptOutcome::Response(ingress_error(
-            hop.ingress_protocol,
-            auth_status,
-            auth_kind,
-            busbar_kernel::proto::vendor_auth_failure_message(hop.ingress_protocol),
+        return AttemptOutcome::Response(rendered_response(
+            busbar_plane_llm::exchange::reply::failure::auth_failure(hop.ingress_protocol),
         ));
     }
     AttemptOutcome::Failed {
@@ -354,7 +293,3 @@ fn hard_down(
         relay: hop.degraded.then(|| err.relay(hop)),
     }
 }
-
-#[cfg(test)]
-#[path = "tests/classify.rs"]
-mod tests;

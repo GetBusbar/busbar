@@ -38,9 +38,9 @@ pub(crate) fn maybe_attach_response_request_id(
 
 /// Whether a caller's dialect relays the far end's `x-amzn-*` head fields, and which far-end head
 /// field names it relays verbatim on a same-protocol answer: the plane's reply reads.
-pub(crate) use busbar_plane_llm::exchange::reply::wire::{
-    ingress_relayed_response_header_names, ingress_relays_amzn_headers,
-};
+pub(crate) use busbar_plane_llm::exchange::reply::wire::ingress_relayed_response_header_names;
+#[cfg(test)]
+pub(crate) use busbar_plane_llm::exchange::reply::wire::ingress_relays_amzn_headers;
 
 /// TRANSPARENCY: stamp which routing POLICY chose which TARGET onto a successful response, mirroring
 /// the `x-busbar-*` header convention (e.g. the bedrock/anthropic request-id headers above):
@@ -131,6 +131,18 @@ pub(crate) fn answer_response(
     )
 }
 
+/// An answer the plane rendered (its status, head fields in order, and body) as the client's
+/// response.
+pub(crate) fn rendered_response(r: busbar_plane_llm::exchange::refuse::Rendered) -> Response {
+    let status = StatusCode::from_u16(r.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let mut rb = Response::builder().status(status);
+    for (name, value) in r.fields {
+        rb = rb.header(name, value);
+    }
+    rb.body(Body::from(r.body))
+        .unwrap_or_else(|_| status.into_response())
+}
+
 /// The canonical kind for a cross-protocol non-2xx, the plane's reply table.
 #[cfg(test)]
 pub(crate) use busbar_plane_llm::exchange::reply::wire::cross_protocol_error_kind;
@@ -139,6 +151,7 @@ pub(crate) use busbar_plane_llm::exchange::reply::wire::cross_protocol_error_kin
 /// and `forward_once`: the plane's reply picks the kind and lifts the message
 /// (`busbar_plane_llm::exchange::reply::wire::cross_protocol_error`), rendered here in the ingress
 /// protocol's native error envelope. A crossed boundary NEVER relays verbatim.
+#[cfg(test)]
 pub(crate) fn shape_cross_protocol_error(
     ingress_protocol: &str,
     status: StatusCode,
@@ -325,6 +338,7 @@ pub(crate) async fn read_capped_body(
 }
 
 /// The client-fault kind by class and the far-end error message lift: the plane's reply reads.
+#[cfg(test)]
 pub(crate) use busbar_plane_llm::exchange::reply::wire::{
     client_fault_kind, extract_error_message,
 };
@@ -348,6 +362,7 @@ pub(crate) use busbar_plane_llm::exchange::reply::wire::MID_STREAM_GENERIC_DETAI
 /// human message. Rendered into the CLIENT's native error envelope via `ingress_error`, so it must
 /// read like copy a real single-vendor API would emit — NOT reverse-proxy vocabulary like "upstream".
 /// The real status/cause is logged server-side; only this generic string reaches the client.
+#[cfg(test)]
 pub(crate) use busbar_plane_llm::exchange::reply::wire::GENERIC_REJECTED_DETAIL;
 
 /// Client-visible fallback `detail` strings each repeated across several ingress-error sites —

@@ -37,6 +37,8 @@ use serde_json::Value;
 use busbar_contract::upstream::Disposition;
 #[cfg_attr(not(test), allow(unused_imports))]
 use busbar_contract::upstream::StatusClass;
+#[cfg(test)]
+use busbar_kernel::handlers::op_for;
 use busbar_kernel::plane_host::OnExhaustedInput as OnExhausted;
 use busbar_kernel::{
     auth::{present_caller, CallerCredential as KernelCallerCredential},
@@ -56,7 +58,7 @@ use busbar_kernel::{
         ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE, UPSTREAM_MIDSTREAM_TRANSPORT_ERROR,
         UPSTREAM_PREFIRSTBYTE_TRANSPORT_ERROR, USAGE_TAP_REASSEMBLY_CAP_EXCEEDED,
     },
-    handlers::{op_for, request_handler, Op, OpDispatch},
+    handlers::{request_handler, Op, OpDispatch},
     proto::convert_headers,
     sigv4::uri_encode_path,
 };
@@ -240,6 +242,9 @@ mod ordered_walk_tests;
 #[cfg(test)]
 #[path = "tests/plane_attempt_parity_tests.rs"]
 mod plane_attempt_parity_tests;
+#[cfg(test)]
+#[path = "tests/plane_reply_parity_tests.rs"]
+mod plane_reply_parity_tests;
 #[cfg(test)]
 #[path = "tests/pool_upstream_creds_tests.rs"]
 mod pool_upstream_creds_tests;

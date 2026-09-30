@@ -2,4 +2,5 @@
 //! far end answered an attempt with, the units the far end reported, and what the answer means for
 //! the walk.
 
+pub mod failure;
 pub mod wire;
