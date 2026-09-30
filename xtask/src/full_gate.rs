@@ -24,7 +24,7 @@
 //! For a gate that runs in-process the verdict is a returned value, so the staleness the shell
 //! suffered — a gate dies before writing, and the caller reads the PREVIOUS healthy run's ledger
 //! sitting on disk — is unrepresentable. Any gate that still shells out and reads a file back must
-//! truncate the file first, which [`crate::ledger::read_leg_after`] does for the caller.
+//! truncate the file first ([`crate::ledger::truncate_leg`]).
 
 use std::collections::BTreeSet;
 use std::process::Command;

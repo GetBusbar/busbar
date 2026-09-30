@@ -758,12 +758,4 @@ fn see_through(
     see
 }
 
-/// The waiver register as the gate reads it, exposed for the self-test.
-pub fn waivers_of(cx: &Ctx) -> Result<BTreeMap<String, String>, String> {
-    classify::load_waivers(
-        schema::WAIVERS,
-        &cx.read(schema::WAIVERS).unwrap_or_default(),
-    )
-}
-
 mod selftest;

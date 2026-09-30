@@ -183,19 +183,6 @@ impl Ere {
         let (start, len) = self.find(hay)?;
         Some(hay.chars().skip(start).take(len).collect())
     }
-
-    /// `sub(/re/, "", s)` — remove the leftmost match, or hand back the string unchanged.
-    pub fn remove_first(&self, hay: &str) -> String {
-        match self.find(hay) {
-            Some((start, len)) => {
-                let chars: Vec<char> = hay.chars().collect();
-                let mut out: String = chars[..start].iter().collect();
-                out.extend(chars[start + len..].iter());
-                out
-            }
-            None => hay.to_string(),
-        }
-    }
 }
 
 struct Parser {

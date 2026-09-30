@@ -11,7 +11,7 @@
 //!
 //! The vocabulary is the first-party plugin instance names (planes, stores, secrets, auth plugins,
 //! hooks, exports), the planes' protocol and dialect names, and the provider auth styles. The
-//! kernel's own neutral carrier vocabulary ([`NEUTRAL_CARRIER`]: `http`, `tcp`, …, a transport
+//! kernel's own neutral carrier vocabulary (`http`, `tcp`, …, a transport
 //! carrier id) is NOT a C1 leak and is not matched (ARCHITECT ruling on M0).
 //!
 //! REPORT-ONLY, armed at today's count as the drain-only ledger `qa/c1-literals.toml`.
@@ -25,23 +25,6 @@ use crate::manifest;
 pub const ROW_LITERAL: &str = "c1-literals:literal";
 pub const ROW_FEATURE: &str = "c1-literals:feature";
 
-/// THE KERNEL'S OWN NEUTRAL CARRIER VOCABULARY — NOT C1 leaks (ARCHITECT ruling on M0). A
-/// transport-carrier id (`http`, `tcp`, …) names the connection the kernel's connector carries, the
-/// way `store` names a kind; what C1 bans is a PLANE's dialect or protocol name, a plugin instance
-/// or an auth style. Listed so the exclusion is reviewable, never matched.
-pub const NEUTRAL_CARRIER: &[&str] = &[
-    "http",
-    "https",
-    "h2",
-    "grpc",
-    "sse",
-    "ws",
-    "websocket",
-    "tcp",
-    "stdio",
-    "unix",
-];
-
 /// The words the kernel may not spell, lower case. A word holding `-` also matches with `_`.
 pub const VOCABULARY: &[&str] = &[
     // planes
@@ -50,7 +33,7 @@ pub const VOCABULARY: &[&str] = &[
     "a2a",
     "voice",
     "streaming",
-    // plane protocols and dialect documents (a carrier id is NOT here: see [`NEUTRAL_CARRIER`])
+    // plane protocols and dialect documents (a transport carrier id is NOT here: it is the kernel's own neutral vocabulary)
     "jsonrpc",
     "openapi",
     // provider dialects and auth styles

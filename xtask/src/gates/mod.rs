@@ -2049,14 +2049,6 @@ pub fn execute_strict(gate: &dyn Gate, cx: &Ctx) -> Verdict {
     Reconcile::new(gate.owed()).verdict(verdict.rows)
 }
 
-/// The same, with the gate's own narrow skip allowlist.
-pub fn execute_with_skips(gate: &dyn Gate, cx: &Ctx, skip_allow: &[&str]) -> Verdict {
-    let verdict = gate.run(cx);
-    Reconcile::new(gate.owed())
-        .allow_skip(skip_allow.iter().copied())
-        .verdict(verdict.rows)
-}
-
 /// Refuse a report that does not prove the gate. Three refusals, each with its own case in
 /// `xtask/tests/infra.rs`:
 ///

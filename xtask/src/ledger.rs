@@ -131,7 +131,7 @@ pub fn parse_rows(text: &str) -> Result<Vec<Row>, String> {
 /// steps and truncation is how a later step erases an earlier step's failure.
 ///
 /// NOT A `Ctx::write_file` HAZARD: every caller passes a path under `cx.scratch()`
-/// (`.fix/xtask/…`), and a leg is always read back through [`read_leg`]/[`read_leg_after`] — a
+/// (`.fix/xtask/…`), and a leg is always read back through [`read_leg`] — a
 /// raw `std::fs::read_to_string`, never `Ctx::read` — so there is no `read_memo` entry for this
 /// path to go stale. `Ctx::list`/`Ctx::walk`'s own `collect()` also skips every dotdir
 /// unconditionally, so `.fix/…` is never a member of a cached listing either.
@@ -155,7 +155,7 @@ pub fn write_leg(path: &Path, rows: &[Row]) -> std::io::Result<()> {
 /// sitting there and the caller reads a green that nothing produced.
 ///
 /// NOT A `Ctx::write_file` HAZARD — same reasoning as [`write_leg`]: a `cx.scratch()` path, read
-/// back only through [`read_leg`]/[`read_leg_after`], never through `Ctx::read`.
+/// back only through [`read_leg`], never through `Ctx::read`.
 pub fn truncate_leg(path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -169,19 +169,6 @@ pub fn read_leg(path: &Path) -> Result<Vec<Row>, String> {
     let text =
         std::fs::read_to_string(path).map_err(|e| format!("ledger {}: {e}", path.display()))?;
     parse_rows(&text)
-}
-
-/// Truncate, run, read back — the sequence any gate that still shells out must follow. Doing it
-/// for the caller is the point: the staleness above is unrepresentable for an in-process gate and
-/// must not be reintroduced by one that is not converted yet.
-pub fn read_leg_after<F, E>(path: &Path, run: F) -> Result<Vec<Row>, String>
-where
-    F: FnOnce(&Path) -> Result<(), E>,
-    E: fmt::Display,
-{
-    truncate_leg(path).map_err(|e| format!("ledger {}: {e}", path.display()))?;
-    run(path).map_err(|e| e.to_string())?;
-    read_leg(path)
 }
 
 /// How a set of rows for one id resolves.
