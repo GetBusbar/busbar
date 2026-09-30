@@ -11,10 +11,16 @@
 //
 // Written to be `include!`d: the root mounts it as `root::doors`, and the build's generated table of
 // linked transports (`$OUT_DIR/linked_transports.rs`, which the integration tests include) mounts it
-// under its own name. So it names nothing of the root's own, only crates the root links.
+// under its own name. So it names nothing of the root's own, only crates the root links and
+// `super::loader` (the root's one loader module, or the one-line re-export each other mount gives).
 
 use std::sync::{Arc, OnceLock};
 
+use super::loader::dispatch::{
+    kinds::transport::{Transport as TransportKind, TransportFacts},
+    load_linked, Bind, DispatchConfig, Dispatcher, Frame, InFrame, LinkedRow, NoSink, OutFrame,
+    Plugin,
+};
 use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT};
 use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
@@ -23,11 +29,6 @@ use busbar_contract::abi::transport::slot;
 use busbar_core_connector::{
     framer::{Call, Crossed, DoorFacts, FramerDoor},
     wire::HostWire,
-};
-use super::loader::dispatch::{
-    kinds::transport::{Transport as TransportKind, TransportFacts},
-    load_linked, Bind, DispatchConfig, Dispatcher, Frame, InFrame, LinkedRow, NoSink, OutFrame,
-    Plugin,
 };
 
 /// The dispatcher every transport door is adopted by (its watchdog watches every crossing).

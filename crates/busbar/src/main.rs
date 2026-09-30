@@ -116,6 +116,7 @@ const MAX_WORKER_THREADS: usize = 128;
 /// Resolve a worker-thread-count env var, warning on an EXPLICITLY-SET but invalid value rather than
 /// silently ignoring it — an unset var is not warned (the normal default path). Module-level (not
 /// nested in `main()`) so it's unit-testable; see `tests/tests.rs`.
+#[cfg(test)]
 fn worker_threads_from_env(name: &str) -> Option<usize> {
     let mut warnings = Vec::new();
     let n = worker_threads_from_env_noting(name, &mut warnings);
@@ -146,6 +147,15 @@ fn worker_threads_from_env_noting(name: &str, warnings: &mut Vec<String>) -> Opt
 /// full error reporting, happens later in `run()`). A missing/unparseable config yields `None` — the
 /// caller falls through to the standard worker-thread default, and `run()` surfaces the real error.
 /// Lenient env interpolation so an unset `${VAR}` elsewhere in the file does not abort this probe.
+#[cfg(test)]
+fn worker_threads_from_config() -> Option<usize> {
+    let mut warnings = Vec::new();
+    let n = worker_threads_from_config_noting(&mut warnings);
+    warnings.iter().for_each(|w| eprintln!("{w}"));
+    n
+}
+
+/// [`worker_threads_from_config`], its warning noted rather than printed.
 fn worker_threads_from_config_noting(warnings: &mut Vec<String>) -> Option<usize> {
     let config_path = root::cli::resolve_config_path(root::cli::config_path_flag().as_deref());
     let raw = std::fs::read_to_string(&config_path).ok()?;

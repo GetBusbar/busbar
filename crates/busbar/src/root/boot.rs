@@ -16,7 +16,7 @@ use busbar_contract::abi::mechanism::KindCode;
 use busbar_kernel::config::{FetchTarget, PluginsCfg};
 use busbar_kernel::preflight::{Fetched, RegistryIn};
 
-/// THE ONE REGISTRY BUILD (THE DESIGN §3 stage 1 in BUSBAR-1.6.0.md; ARCHITECT ruling Q8): the
+/// THE ONE REGISTRY BUILD (BUSBAR-1.6.0.md §3 stage 1; ARCHITECT ruling Q8): the
 /// plugin registry is built here, in the composition root, and nowhere else — the kernel's preflight
 /// receives it through the root's rows (the kernel preflight's `RegistryBuild`), and the root's own
 /// dropped-plugin scan runs the same build. The linked rows alone, or the `plugins:` block's trust

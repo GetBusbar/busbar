@@ -355,7 +355,7 @@ fn red_an_instance_that_will_not_bind_is_named() {
     assert!(err.starts_with("door: ") && err.contains("repack"), "{err}");
 }
 
-/// THE PLANE AXIS, BOTH DOORS, ONE LOAD (ARCHITECT ruling 2026-09-29, P1): the plane door linked
+/// THE PLANE AXIS, BOTH DOORS, ONE LOAD (ARCHITECT ruling 2026-09-29): the plane door linked
 /// into the build and the same plane dropped into `plugins/` (an admitted tarball whose manifest
 /// states its Statement) are discovered by `open_planes` as door candidates stating the same
 /// rendering, and `load_planes` binds each through the one load — the dropped one over its verified
