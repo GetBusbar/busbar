@@ -95,3 +95,18 @@ fn only_the_two_2025_revisions_resume() {
     assert!(!Revision::R2026_07_28.resumable());
     assert!(Revision::R2024_11_05.is_event_stream_revision());
 }
+
+#[test]
+fn red_a_sessionless_get_is_told_apart_by_the_version_header() {
+    use SessionlessGet::*;
+    // A 2024-11-05 client sends no version header: the event stream.
+    assert_eq!(sessionless_get(None), EventStream);
+    // A single-endpoint revision's client: 405, as its revision says.
+    for v in ["2025-06-18", "2025-11-25", "2026-07-28"] {
+        assert_eq!(sessionless_get(Some(v)), NotAllowed, "{v}");
+    }
+    // An unknown revision reads as the latest session revision, as negotiation reads it.
+    for v in ["2025-03-26", "1999-01-01", ""] {
+        assert_eq!(sessionless_get(Some(v)), NotAllowed, "{v:?}");
+    }
+}

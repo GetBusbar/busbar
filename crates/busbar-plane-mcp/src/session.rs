@@ -33,6 +33,15 @@
 //! shared session store would make every replica a reader of every other replica's conversation
 //! for no gain the protocol does not already give.
 //!
+//! ## Which GET opens which stream
+//!
+//! A GET naming a session opens that session's stream (or resumes it with `Last-Event-ID`). A GET
+//! naming no session opens a `2024-11-05` event stream only when it accepts `text/event-stream` AND
+//! carries no `MCP-Protocol-Version` header, which every later revision's client sends and a
+//! `2024-11-05` client never does; any other sessionless GET, and a sessionless DELETE, is `405`,
+//! as the single-endpoint revisions say (ARCHITECT ruling 2026-09-29;
+//! [`crate::revision::sessionless_get`]).
+//!
 //! ## Bound to the principal that opened it
 //!
 //! A session id is a bearer of nothing. The table records the [`Owner`] (principal and credential) that

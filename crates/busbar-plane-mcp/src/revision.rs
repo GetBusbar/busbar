@@ -137,6 +137,33 @@ pub fn check_header(session: Revision, header: Option<&str>) -> HeaderCheck {
     }
 }
 
+/// What a GET that names no session, and accepts an event stream, is answered with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionlessGet {
+    /// Open the `2024-11-05` event stream, whose first event names the message address.
+    EventStream,
+    /// `405`: the client speaks a single-endpoint revision, which has no sessionless GET stream.
+    NotAllowed,
+}
+
+/// THE SESSIONLESS GET (ARCHITECT ruling 2026-09-29). Every single-endpoint revision's client sends
+/// `MCP-Protocol-Version`, and a `2024-11-05` client never does, so the header alone tells the two
+/// apart. Absent: the event-stream revision's GET. Present and naming any other revision: `405`, as
+/// that revision says. Present and naming no revision this plane implements: read the way
+/// [`negotiate`] reads an unknown revision, as the latest session revision, so `405` as well. The
+/// caller answers a GET that neither names a session nor accepts an event stream with `405` before
+/// asking.
+#[must_use]
+pub fn sessionless_get(version_header: Option<&str>) -> SessionlessGet {
+    match version_header {
+        None => SessionlessGet::EventStream,
+        Some(h) => match Revision::parse(h) {
+            Some(r) if r.is_event_stream_revision() => SessionlessGet::EventStream,
+            _ => SessionlessGet::NotAllowed,
+        },
+    }
+}
+
 /// THE CLIENT LADDER: the order in which busbar, as a client, tries to open a conversation with an
 /// upstream whose revision it does not yet know.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
