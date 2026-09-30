@@ -54,6 +54,9 @@ pub mod lent;
 pub mod safe;
 pub use lent::{HostBuf, Lent, LentList};
 pub use safe::{Instance, Plain, Published, Safe, SafeSlot};
+// THE HOST SERVICES, PLUGIN SIDE: the one home of every safe host-service wrapper.
+pub mod services;
+pub use services::{ServiceError, Services};
 // THE ONE 1.5.x -> 1.6.0 USAGE-ROW FOLD a store plugin's own `migrate()` calls (#33, M5/parity).
 pub mod store_migrate;
 // THE STORE KIND'S TYPED SDK: the trait a store implements to be served through the store v3 table.
