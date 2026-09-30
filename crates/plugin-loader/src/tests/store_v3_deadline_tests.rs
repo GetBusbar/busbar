@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE STORE'S DEADLINE CLASSES (H5) AND THE BRIDGE'S PENDING RULE, over a store door whose ops
+//! THE STORE'S DEADLINE CLASSES AND THE BRIDGE'S PENDING RULE, over a store door whose ops
 //! PEND and never wake:
 //!
 //! * a WriteBehind op (`add_usage_batch`) to a hung store does NOT hold a reload drain, which

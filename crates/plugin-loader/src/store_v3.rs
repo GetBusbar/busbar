@@ -1358,7 +1358,7 @@ impl StoreCalls for LoadedStore {
     }
 }
 
-// ── RecordStore: the synchronous bridge (M6) ─────────────────────────────────────────────────
+// ── RecordStore: the synchronous bridge (until M6) ────────────────────────────────────────────────
 
 impl LoadedStore {
     fn plain<I: InFrame>(&self, s: u32, input: I) -> RecordStoreResult<()> {

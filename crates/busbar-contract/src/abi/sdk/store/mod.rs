@@ -13,12 +13,12 @@
 //!
 //! # Dedupe is the store's (S1-S4)
 //!
-//! Every method that takes an [`OpId`] dedupes on it, DURABLY for a durable store (S4): the same
+//! Every method that takes an [`OpId`] dedupes on it, DURABLY for a durable store: the same
 //! `op_id` with the same value fields applies nothing and answers what the first call answered
 //! (S1: `reserve` answers the ORIGINAL grants, `slice_release` the ORIGINAL released amounts); the
 //! same `op_id` with different value fields is [`OpRefused::Conflict`] and applies nothing (S2,
 //! [`DIAG_OPID_CONFLICT`](crate::abi::store::DIAG_OPID_CONFLICT)); only an answer that APPLIED a
-//! change is recorded (S3). The SDK checks every host capacity BEFORE calling the method, so a
+//! change is recorded. The SDK checks every host capacity BEFORE calling the method, so a
 //! short-buffer answer never reaches the store and is never recorded (the S1 addendum).
 
 pub mod door;
@@ -30,11 +30,11 @@ use crate::records::{AuditRecord, MeteringDelta, PlaneRecord, RecordStore, Usage
 /// Why an `op_id`-carrying write answered without applying anything.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpRefused {
-    /// The same `op_id` arrived with different value fields (S2): REFUSED with
+    /// The same `op_id` arrived with different value fields: REFUSED with
     /// [`DIAG_OPID_CONFLICT`](crate::abi::store::DIAG_OPID_CONFLICT), nothing applied.
     Conflict,
     /// The write could not be applied (a fork at a used `seq`, a backend error): FAILED with this
-    /// text, nothing applied, nothing recorded under the `op_id` (S3).
+    /// text, nothing applied, nothing recorded under the `op_id`.
     Failed(String),
 }
 
@@ -77,7 +77,7 @@ pub struct Cell<'a> {
     pub amount: u64,
 }
 
-/// One cell's grant (`abi::store::CellGrant`): always the cell's whole `amount` (S5).
+/// One cell's grant (`abi::store::CellGrant`): always the cell's whole `amount`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Grant {
     /// The slice.
@@ -105,7 +105,7 @@ pub enum ReserveRefused {
         /// The first such cell.
         cell: u32,
     },
-    /// The same `op_id` with different value fields (S2).
+    /// The same `op_id` with different value fields.
     Conflict,
 }
 
@@ -129,7 +129,7 @@ pub enum CapsRefused {
         /// The first conflicting cap.
         index: usize,
     },
-    /// The same `op_id` with different value fields (S2).
+    /// The same `op_id` with different value fields.
     Conflict,
     /// The push could not be applied.
     Failed(String),

@@ -294,9 +294,12 @@ fn script(s: &LoadedStore) -> Vec<String> {
     ));
 
     // audit + denylist: append_audit, list_audit, add_denylist, list_denylist, list_audit_tail.
-    t.push(line("audit 1", b.append_audit(&audit(1, "a"))));
-    t.push(line("audit 2", b.append_audit(&audit(2, "b"))));
-    t.push(line("audit 2 fork", b.append_audit(&audit(2, "forked"))));
+    t.push(line("audit seq one", b.append_audit(&audit(1, "a"))));
+    t.push(line("audit seq two", b.append_audit(&audit(2, "b"))));
+    t.push(line(
+        "audit seq two, forked",
+        b.append_audit(&audit(2, "forked")),
+    ));
     t.push(line("audit", b.list_audit()));
     t.push(line("audit tail 1", b.list_audit_tail(1)));
     t.push(line("deny x", b.add_denylist("x", "why")));
@@ -532,7 +535,10 @@ fn the_script_answers_what_the_store_is_held_to() {
         find("relive b").contains(" ! "),
         "a tombstoned key is not resurrected"
     );
-    assert!(find("audit 2 fork").contains(" ! "), "an audit fork fails");
+    assert!(
+        find("audit seq two, forked").contains(" ! "),
+        "an audit fork fails"
+    );
     assert!(find("caps conflict").contains("STORE_CAP_CONFLICT"));
     assert!(
         find("caps op reused").ends_with("! STORE_OPID_CONFLICT"),

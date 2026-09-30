@@ -2270,7 +2270,7 @@ jobs:
             scope: package
           # THE DROPPED-IN STORE DOORS (#2; R-FIX1, DOOR-STORE; WIRE-STORE): busbar-store-memory's
           # cdylib exports its store v3 door only under its non-default `dropped-in` feature, and its
-          # legacy cold door (M6) only under `cold-dropped-in`, so this row is what type-checks both
+          # legacy cold door (deleted at M6) only under `cold-dropped-in`, so this row is what type-checks both
           # on their own and runs the cold one — its BUSBAR_COLD_ENTRY opens the crate's own store
           # and answers a store operation as the store answers it directly (tests/dropped_in_door.rs).
           # The v3 door's both-ways proof is busbar-plugin-loader's (`store_memory_door` example).

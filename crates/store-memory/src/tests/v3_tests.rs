@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Tests for `crates/store-memory/src/v3.rs`: the store v3 slots' dedupe (S1-S4), the reserve
-//! grant rule pinned to 1.5.5 (S5), slice release clamping, window caps, batches, the ledger
+//! grant rule pinned to 1.5.5, slice release clamping, window caps, batches, the ledger
 //! streams and the session directory.
 
 use super::*;
@@ -130,7 +130,7 @@ fn an_op_id_reused_across_slots_is_a_conflict() {
 fn a_failed_write_is_not_recorded_so_a_retry_is_evaluated_afresh() {
     let s = MemoryStore::new();
     s.append_audit(&audit(1, "a")).expect("seed");
-    // A fork FAILS and is not recorded under the op_id (S3) ...
+    // A fork FAILS and is not recorded under the op_id ...
     assert!(matches!(
         s.append_audit_op(op(9), &audit(1, "forked")),
         Err(OpRefused::Failed(_))
@@ -345,7 +345,7 @@ fn a_refused_reserve_is_not_recorded() {
     );
     s.window_caps(op(3), &[cap(Dimension::Requests, 2, 2)])
         .expect("raise");
-    // The same op_id is evaluated afresh (S3) and now fits.
+    // The same op_id is evaluated afresh and now fits.
     s.reserve(op(2), 0, &[cell(Dimension::Requests, 1)])
         .expect("afresh");
 }
@@ -436,7 +436,7 @@ fn an_op_id_is_forgotten_after_its_retention() {
     s.add_usage_batch(op(1), &[("k", 60, delta(1, 1))])
         .expect("a");
     s.pin_clock(1_000 + OP_ID_RETENTION_SECS);
-    // Recording another op sweeps the expired one; the old op_id then reads as new (S4).
+    // Recording another op sweeps the expired one; the old op_id then reads as new.
     s.add_usage_batch(op(2), &[("j", 60, delta(1, 1))])
         .expect("b");
     s.add_usage_batch(op(1), &[("k", 60, delta(1, 1))])

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE STORE MONEY ACCEPTANCE SUITE (TODO M4c STORE-MONEY; abi-brief §2 "Store", §4 kind contracts).
+//! THE STORE MONEY ACCEPTANCE SUITE: the store kind's money contract.
 //!
 //! Written BEFORE the store v3 table exists, as the contract its implementer must meet. Every
 //! money-relevant store behaviour has a test here:
@@ -12,7 +12,7 @@
 //! - **The store v3 money slots** (`v3_*`), through the store v3 table on the build's store's
 //!   compiled-in door ([`v3::bind`]): `op_id` dedupe on the coalesced batches, `reserve` with its
 //!   fixed cells (`UnitCell`, the ruled `bb_units[]`), the window caps, `slice_release` and the
-//!   epoch. The wire has no "duplicate" answer (a replay answers the ORIGINAL answer, S1), so a
+//!   epoch. The wire has no "duplicate" answer (a replay answers the ORIGINAL answer), so a
 //!   replay is asserted as the same answer with the counts unchanged; what a slice still holds is
 //!   read through `reserve` against the window's cap; the memory store is EPHEMERAL (its tail says
 //!   so), so the restart and stale-epoch arms assert that statement, and the durable arm is the
@@ -82,7 +82,7 @@ fn dropped_in() -> Option<Arc<dyn RecordStore>> {
 }
 
 /// A FRESH store on every door: its Rust type, the compiled-in door through the store v3 table,
-/// the root's adapter over that, the dropped-in door through the same table, and (M6) the legacy
+/// the root's adapter over that, the dropped-in door through the same table, and (until M6: the cold ABI's deletion) the legacy
 /// cold dropped-in door.
 fn subjects() -> Vec<Subject> {
     let mut all = vec![
@@ -107,7 +107,7 @@ fn subjects() -> Vec<Subject> {
     }
     if let Some(store) = dropped_in() {
         all.push(Subject {
-            door: "cold dropped-in (M6)",
+            door: "cold dropped-in, legacy",
             store,
         });
     }
@@ -625,7 +625,7 @@ fn metering_counters_add_and_saturate() {
 // ── 1.5.5 records ──────────────────────────────────────────────────────────────────────────────
 
 /// A usage row exactly as 1.5.5 persisted it (`v1.5.5:crates/api/src/store.rs` `UsageLedger`, the
-/// four-tier `tokens` shape) reads back as the SAME counts. abi-brief §2: record blobs are the
+/// four-tier `tokens` shape) reads back as the SAME counts. Record blobs are the
 /// unit-map shapes, not 1.5.5 serde bytes — so what must be identical is the money, not the bytes.
 #[test]
 fn a_1_5_5_usage_row_reads_the_same_counts() {
@@ -821,7 +821,7 @@ fn the_adapter_passes_money_through_to_the_loaded_store() {
     assert_eq!(inner.list_metering(DAY).expect("list")[0].requests, 2);
 }
 
-/// Record blobs are opaque to the store (abi-brief §2: unit-map shapes plus the scale marker are
+/// Record blobs are opaque to the store (unit-map shapes plus the scale marker are
 /// the KERNEL's encoding): whatever bytes go in come back exactly, by key and by prefix scan.
 #[test]
 fn a_record_blob_comes_back_byte_exact() {

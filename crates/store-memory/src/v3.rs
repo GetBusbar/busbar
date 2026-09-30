@@ -16,7 +16,7 @@
 //! EPOCH: a node-local store holds one constant epoch and never answers a stale one (`ReserveIn`'s
 //! doc, "A node-local store"), so the `epoch` a caller states is accepted as given.
 //!
-//! GRANT SIZE (S5): a cell grants its whole `amount` or the reserve fails; the per-dimension test
+//! GRANT SIZE: a cell grants its whole `amount` or the reserve fails; the per-dimension test
 //! is 1.5.5's, cited on `abi::store::ReserveIn`.
 
 use std::collections::{HashMap, VecDeque};
@@ -62,7 +62,7 @@ impl Slot {
     }
 }
 
-/// What an applied op answered, replayed verbatim (S1).
+/// What an applied op answered, replayed verbatim.
 #[derive(Debug, Clone)]
 enum Answer {
     Done,
@@ -122,7 +122,7 @@ impl Inner {
         }
     }
 
-    /// Remember an APPLIED op (S3), and forget every op past its retention (S4).
+    /// Remember an APPLIED op, and forget every op past its retention.
     fn record(&mut self, now: u64, op: OpId, body: String, answer: Answer) {
         while let Some(&(at, old)) = self.aged.front() {
             if at.saturating_add(OP_ID_RETENTION_SECS) > now {
