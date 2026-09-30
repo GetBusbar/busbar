@@ -49,6 +49,9 @@ use busbar_kernel::{
     ENV_CONFIG,
 };
 use busbar_kernel::{config, config_validate, diagnostics, export, metrics, tls};
+// The root's own binds listen through the connector's listener (the one listener source).
+#[cfg(unix)]
+use busbar_core_connector::listen::{AcceptLimits, Listening, DEFAULT_HANDSHAKE_TIMEOUT};
 // Read only by the jemalloc idle-purge fallback below, which is itself
 // `#[cfg(not(target_env = "msvc"))]` — windows-msvc has no jemalloc, so importing this
 // unconditionally is an unused-import error there under `-D warnings`.
@@ -1295,7 +1298,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             worker_shutdown_rx,
         );
         let admin_listener =
-            busbar_core_connector::listen::Listening::bind_stream(&admin_at, ROOT_BIND_LIMITS)
+            Listening::bind_stream(&admin_at, ROOT_BIND_LIMITS)
                 .unwrap_or_else(|e| {
                     die(format!("cannot bind listen address '{admin_listen}': {e}"))
                 });
@@ -1372,11 +1375,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
 /// listener's). The handshake bound is the configured `limits.tls_handshake_timeout_secs`, which
 /// the serving loop applies as it secures each connection.
 #[cfg(unix)]
-const ROOT_BIND_LIMITS: busbar_core_connector::listen::AcceptLimits =
-    busbar_core_connector::listen::AcceptLimits {
-        max_conns: usize::MAX,
-        handshake_timeout: busbar_core_connector::listen::DEFAULT_HANDSHAKE_TIMEOUT,
-    };
+const ROOT_BIND_LIMITS: AcceptLimits = AcceptLimits {
+    max_conns: usize::MAX,
+    handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
+};
 
 /// Bind a TCP listener or `die` with a clear, address-named message. Shared by the data and admin
 /// listeners so both fail fast and identically on a bad bind.
@@ -1500,7 +1502,7 @@ fn serve_thread_per_core(
                     // runs after placement, in the serving loop (pinning at accept would change
                     // 1.5.5's per-core placement).
                     // TRANSITIONAL: drains at K1 U6/U7 (1.6.0-TODO.md).
-                    let listener = busbar_core_connector::listen::Listening::bind_stream(
+                    let listener = Listening::bind_stream(
                         &bind_at,
                         ROOT_BIND_LIMITS,
                     )
