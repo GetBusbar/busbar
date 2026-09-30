@@ -631,6 +631,16 @@ async fn a_served_call_is_chained_where_it_is_audited() -> u64 {
     let actor = "served-chain";
     let (_peer, app) = exchanging_deployment(S, Behaviour::Result).await;
     engine().ensure_call_stream_registered();
+    // THE ROW BEFORE IS WRITTEN HERE. The audit chain is process-wide and 1-based, so a served row
+    // that is the process's first (seq 1: this witness run alone, or first in its binary) has no row
+    // before it, and whether another test wrote one first is scheduling. One row appended now makes
+    // the link asserted below exist on every schedule.
+    engine().emit_admin_audit_now(
+        "served-witness.anchor",
+        S,
+        busbar_contract::vocab::OUTCOME_APPLIED,
+        actor,
+    );
     let before = engine().audit_high_water_seq();
     let chained = engine().call_next_seq(actor);
     let (status, body) = read_as(&app, &granted(S), actor, S).await;
