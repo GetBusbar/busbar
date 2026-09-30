@@ -41,9 +41,9 @@ use busbar_contract::abi::plane::{
     REFUSAL_KERNEL,
 };
 use busbar_contract::caps::{
-    Admit, Admittance, Approve, Arrival as ArrivalStep, Audit, Authenticate, Consumption,
-    Decision as StepAnswer, Decode, Dial, Encode, Grant, HoldAccrual, Meter, OpClassId, Outcome,
-    Pass, PrincipalId, ReasonCode, Refusal, Route, RoutePlan, VerifiedDestination, Verify,
+    Admit, Admittance, Approve, Arrival as ArrivalStep, Audit, Authenticate, Consumption, Decode,
+    Dial, Encode, Grant, HoldAccrual, Meter, OpClassId, Outcome, Pass, PrincipalId, ReasonCode,
+    Refusal, Route, RoutePlan, SeatVerdict as StepAnswer, VerifiedDestination, Verify,
 };
 use busbar_contract::plane_calls::PlaneCalls;
 use tokio::sync::watch;
