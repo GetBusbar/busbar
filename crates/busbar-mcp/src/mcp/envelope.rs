@@ -47,7 +47,7 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 
 use super::sse;
-use busbar_kernel::ingress::protocol::CoreRefusal;
+use busbar_kernel::ingress::{jsonrpc::error_body, protocol::CoreRefusal};
 
 /// The single MCP protocol revision busbar implements — MOVED to the plane crate with the rest
 /// of the protocol vocabulary and re-exported here, so `busbar_mcp::mcp::envelope::PROTOCOL_VERSION`
@@ -755,13 +755,7 @@ pub(in crate::mcp) fn error_response(
     // The case that motivated the omission — a NOTIFICATION — can no longer reach here at all: section 4.1
     // forbids answering one, and the envelope reader now returns `202` with no body before dispatch.
     let id = id.unwrap_or(serde_json::Value::Null);
-    (
-        status,
-        axum::Json(busbar_contract::jsonrpc::error_body(
-            id, code, message, data,
-        )),
-    )
-        .into_response()
+    (status, axum::Json(error_body(id, code, message, data))).into_response()
 }
 
 #[cfg(all(test, feature = "test-support"))]
