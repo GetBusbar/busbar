@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! ONE LOADED AUTH INSTANCE'S OUTBOUND CALLS AS THE KERNEL MAKES THEM: [`OutboundInstance`]
-//! implements the contract's `OutboundAuth` over the one dispatcher's auth handle (THE DESIGN §6,
+//! implements the contract's `OutboundAuth` over the one dispatcher's auth handle (THE DESIGN, §6,
 //! §11.6), so the kernel's egress walk reaches a compiled-in and a dropped-in auth plugin through
 //! the same table without naming this crate. The composition root builds it, opens each provider's
 //! binding at generation seal, and hands the kernel the handle.

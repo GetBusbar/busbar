@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PRODUCTION FAR END (`BUSBAR-1.6.0.md` Part 3, §12 "The route pump"; THE DESIGN §5 "One
+//! THE PRODUCTION FAR END (`BUSBAR-1.6.0.md` Part 3, §12 "The route pump"; THE DESIGN, §5 "One
 //! outbound request, kernel to wire", §6): the kernel's egress walk for one unit, one attempt at a
 //! time, as the pump asks for it. The driver builds no second walk: every decision here is the
 //! egress unit's own (`busbar_kernel_egress`) — the pick over the pool with its breaker and its
@@ -15,7 +15,7 @@
 //!    the pool's terminal: the shed with its Retry-After floor, the spill into a fallback pool, the
 //!    one breaker bypass (least-bad), or the bounded wait for a permit (queue).
 //! 2. [`FarEnd::send`]: the durable dispatch record, then ONE `fields` call to the member's auth
-//!    binding (THE DESIGN §6: the kernel's one call, no kernel-side cache), whose fields lead the
+//!    binding (THE DESIGN, §6: the kernel's one call, no kernel-side cache), whose fields lead the
 //!    head before the plane's (1.5.5's egress order), then the connector's open on the plane's declared need, at the target
 //!    the member's sealed `base_url` and the plane's path spell. The connector judges and pins the
 //!    address and dials exactly it (CONNECTOR-19), so a name's refusal keeps 1.5.5's timing.
@@ -98,7 +98,7 @@ pub struct AuthBinding {
     /// `abi::auth::STYLE_NEEDS_BODY_HASH` | `abi::auth::STYLE_NEEDS_HEADERS`.
     pub style_flags: u32,
     /// The member is configured `upstream_credentials: passthrough`: its one auth call carries
-    /// the caller's own verified credential (THE DESIGN §6.6, style `caller-credential`). No other
+    /// the caller's own verified credential (THE DESIGN, §6.6, style `caller-credential`). No other
     /// binding is ever handed it.
     pub passthrough: bool,
 }
@@ -676,7 +676,7 @@ impl EgressFarEnd<'_> {
             .map_or(remaining.max(1), |ms| attempt_cap_ms(ms, remaining))
     }
 
-    /// ONE CALL to the member's auth binding for this attempt's fields (THE DESIGN §6).
+    /// ONE CALL to the member's auth binding for this attempt's fields (THE DESIGN, §6).
     async fn auth_fields(
         &self,
         binding: &AuthBinding,

@@ -146,7 +146,7 @@ pub trait AuthAxis: Send + Sync {
 
 // THE OUTBOUND HALF (open_outbound/fields) ─────────────────────────────────────────────────────
 //
-// THE DESIGN §6 and §11.6: for every attempt the kernel makes ONE uniform call to the provider's
+// THE DESIGN, §6 and §11.6: for every attempt the kernel makes ONE uniform call to the provider's
 // auth plugin, "give me the auth fields for this request", by the handle `open_outbound` answered
 // when the generation was sealed. The plugin caches inside itself; the kernel keeps only the handle
 // and no auth cache, and never branches per plugin or per style.
