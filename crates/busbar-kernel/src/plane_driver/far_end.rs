@@ -52,7 +52,7 @@ use busbar_contract::conn::{
 use busbar_contract::redacted::Redacted;
 use busbar_contract::transport::registry::status_ns;
 use busbar_contract::transport::wire::{WireStatus, WireStatusClass};
-use busbar_kernel_egress::{
+use crate::proxy::egress_unit::{
     exhaustion::retry_after_secs,
     ports::{
         disposition, net, Breaker, Capacity, Clock, DestinationId, Dispatched, Disposition,

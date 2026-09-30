@@ -22,7 +22,7 @@ use busbar_contract::conn::{
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::transport::ConnFacts;
-use busbar_kernel_egress::{
+use crate::proxy::egress_unit::{
     ports::{
         Admit, BoxFut, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched,
         Disposition, DurabilityUnavailable, Journal, Outcome, Permit, PermitHandle, Telemetry,

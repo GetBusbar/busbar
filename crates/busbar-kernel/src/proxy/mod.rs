@@ -79,8 +79,9 @@ pub use busbar_kernel::egress::engine::{
 
 // THE EGRESS UNIT'S upstream-exchange vocabulary (#83a O1) — the capped body read, the operator
 // body caps, the network-failure labels and the client-header transparency — at its historical
-// `crate::proxy::…` paths.
-pub use busbar_kernel_egress::upstream::*;
+// `crate::proxy::…` paths; and the egress unit itself as `egress_unit`, the one path the kernel's
+// plane driver reaches its walk through (the pick, the breaker ports, the exhaustion terminals).
+pub use busbar_kernel_egress::{self as egress_unit, upstream::*};
 
 // ── THE SHAPE VOCABULARY lives in `busbar_contract::protocol` (DECISIONS #83: contract = shapes;
 //    SD-1 of the #83a split): the media-type and default user-agent literals a declaration defaults
