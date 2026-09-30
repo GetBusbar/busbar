@@ -229,6 +229,7 @@ impl<S: SafeSlot> Entry for Safe<S> {
         };
         // SAFETY: `input` is the trampoline's copy of the host's `in`, whose every pointer is
         // valid for the call (`Entry::enter`'s contract), and it lives until this returns.
+        crate::abi::sdk::out::begin_call();
         let answered = S::call(handle, unsafe { Lent::new(input) }, Out::new(&mut *out));
         match index {
             slot::OPEN => {

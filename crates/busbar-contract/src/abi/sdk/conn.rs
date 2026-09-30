@@ -22,8 +22,10 @@ use crate::abi::host::conn::connector::{
     service, ConnectorSlots, EstablishIn, IoIn, ReplyIn, ReplyPiece, RequestIn, RequestPiece,
     StreamIn, UpgradeIn,
 };
-use crate::abi::host::service::{ServiceFn, ServiceHead, ServiceOut};
-use crate::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
+use crate::abi::host::service::{
+    op, DiskAppendIn, DiskWritten, HostSlots, ServiceFn, ServiceHead, ServiceOut,
+};
+use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome, BLOB_OCTETS};
 use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables, Ticket};
 
 /// Why a connector service answered without its result.
@@ -67,6 +69,7 @@ pub type Answer<T> = Poll<Result<T, ConnFailure>>;
 pub struct Host {
     ctx: HostCtx,
     conns: *const ConnectorSlots,
+    services: *const HostSlots,
 }
 
 // SAFETY: the context is an opaque handle and the table plain code addresses, both valid for the
@@ -83,6 +86,7 @@ impl Host {
         Self {
             ctx: tables.ctx,
             conns: tables.conns,
+            services: tables.services,
         }
     }
 
@@ -131,7 +135,15 @@ macro_rules! service_in {
         fn head(&mut self) -> &mut ServiceHead { &mut self.head }
     })*};
 }
-service_in!(EstablishIn, StreamIn, IoIn, UpgradeIn, ReplyIn, RequestIn);
+service_in!(
+    EstablishIn,
+    StreamIn,
+    IoIn,
+    UpgradeIn,
+    ReplyIn,
+    RequestIn,
+    DiskAppendIn
+);
 
 const fn blank_head() -> ServiceHead {
     ServiceHead {
@@ -194,9 +206,33 @@ impl Connector<'_> {
         &mut self,
         op: u32,
         pick: impl FnOnce(&ConnectorSlots) -> Option<ServiceFn>,
+        input: I,
+    ) -> Answer<ServiceOut> {
+        let f = self.host.slots().and_then(pick);
+        self.make(op, f, input)
+    }
+
+    /// Make host service `op` (the host services table) through `pick`'s slot with `input`.
+    fn call_service<I: ServiceIn>(
+        &mut self,
+        op: u32,
+        pick: impl FnOnce(&HostSlots) -> Option<ServiceFn>,
+        input: I,
+    ) -> Answer<ServiceOut> {
+        // SAFETY: NULL, or the host's services table, valid for the instance's life.
+        let f = unsafe { self.host.services.as_ref() }.and_then(pick);
+        self.make(op, f, input)
+    }
+
+    /// Make one service through `f` with `input`, under the next handle on the ticket: the
+    /// connector's services and the host's share one count, so one op may make both.
+    fn make<I: ServiceIn>(
+        &mut self,
+        op: u32,
+        f: Option<ServiceFn>,
         mut input: I,
     ) -> Answer<ServiceOut> {
-        let Some(f) = self.host.slots().and_then(pick) else {
+        let Some(f) = f else {
             return Poll::Ready(Err(ConnFailure::Unarmed));
         };
         if self.ticket.is_none() {
@@ -303,6 +339,34 @@ impl Connector<'_> {
 }
 
 impl Connector<'_> {
+    /// APPEND `bytes` to the local file the host maps this instance's `dest_key` to (the host's
+    /// bounded disk lane: it may pend; the host rotates by its own rules). `bytes` and `result`
+    /// must stay where they are until the append completes (keep them parked). READY with what the
+    /// host wrote into `result`: the whole of `bytes` landed.
+    pub fn disk_append(
+        &mut self,
+        dest_key: &str,
+        bytes: &[u8],
+        result: &mut DiskWritten,
+    ) -> Answer<DiskWritten> {
+        let input = DiskAppendIn {
+            head: blank_head(),
+            dest_key: AbiStr {
+                ptr: dest_key.as_ptr(),
+                len: dest_key.len(),
+            },
+            bytes: Blob {
+                ptr: bytes.as_ptr(),
+                len: bytes.len(),
+                fmt: BLOB_OCTETS,
+                flags: 0,
+            },
+            result: std::ptr::from_mut(result),
+        };
+        self.call_service(op::DISK_APPEND, |s| s.disk_append, input)
+            .map(|r| r.map(|_| *result))
+    }
+
     /// Write one request piece on a framed `stream`: `piece` describes it, `bytes` holds what its
     /// spans name (a head's method, target and field block) or the body bytes. How many bytes the
     /// host took. Both must stay where they are until the write completes (keep them parked). A

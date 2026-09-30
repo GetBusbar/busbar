@@ -49,11 +49,37 @@
 use std::mem::size_of;
 use std::ptr;
 
-use crate::abi::mechanism::call::{AbiStr, Blob, OutHead, Outcome};
+use crate::abi::mechanism::call::{
+    AbiStr, Blob, Diag, MetricEntry, OutHead, Outcome, MAX_ENVELOPE_ENTRIES,
+};
 use crate::abi::sdk::door::AbiOut;
 use crate::abi::sdk::lent::HostBuf;
 use crate::abi::sdk::life::{fail, Leases, Refusal};
 use crate::abi::sdk::publish::{Generations, Publish};
+
+/// THE ENVELOPE A SAFE BODY REPORTS (#85): the metrics and declared diagnostics it adds with
+/// [`Out::metric`] and [`Out::diag`]. ONE per thread, emptied as each safe call begins; the host
+/// copies the reply as the crossing returns, before the thread makes another call.
+#[derive(Default)]
+struct Reported {
+    metrics: Vec<MetricEntry>,
+    diags: Vec<Diag>,
+    texts: Vec<Box<str>>,
+}
+
+thread_local! {
+    static REPORTED: std::cell::RefCell<Reported> = std::cell::RefCell::new(Reported::default());
+}
+
+/// Empty this thread's envelope: a safe call begins (`abi::sdk::safe::Safe`).
+pub(crate) fn begin_call() {
+    REPORTED.with(|r| {
+        let mut r = r.borrow_mut();
+        r.metrics.clear();
+        r.diags.clear();
+        r.texts.clear();
+    });
+}
 
 /// A value with no pointer in it, anywhere: a safe body may set it into an `out` directly.
 ///
@@ -154,6 +180,59 @@ impl<'a, T: AbiOut> Out<'a, T> {
             ptr: text.as_ptr(),
             len: text.len(),
         };
+    }
+
+    /// REPORT one metric in the reply's envelope: `value` for the family at `family_idx` in the
+    /// Statement's `families`, as `kind` (`METRIC_ADD` | `METRIC_SET` | `METRIC_OBSERVE`), unlabelled.
+    /// `false` when the envelope is full ([`MAX_ENVELOPE_ENTRIES`]): the entry is not reported.
+    pub fn metric(&mut self, family_idx: u32, kind: u8, value: f64) -> bool {
+        let head = self.head();
+        REPORTED.with(|r| {
+            let mut r = r.borrow_mut();
+            if r.metrics.len() >= MAX_ENVELOPE_ENTRIES {
+                return false;
+            }
+            r.metrics.push(MetricEntry {
+                family_idx,
+                kind,
+                _reserved: [0; 3],
+                value,
+                label_vals: ptr::null(),
+                label_vals_len: 0,
+            });
+            head.envelope.metrics = r.metrics.as_ptr();
+            head.envelope.metrics_len = r.metrics.len();
+            true
+        })
+    }
+
+    /// REPORT one declared diagnostic in the reply's envelope: the id at `id_idx` in the
+    /// Statement's `diag_ids`, its `severity` and `text`. The call capture's log records join after
+    /// it. `false` when the envelope is full: the entry is not reported.
+    pub fn diag(&mut self, id_idx: u32, severity: u8, text: impl Into<Box<str>>) -> bool {
+        let head = self.head();
+        REPORTED.with(|r| {
+            let mut r = r.borrow_mut();
+            if r.diags.len() >= MAX_ENVELOPE_ENTRIES {
+                return false;
+            }
+            let text: Box<str> = text.into();
+            let named = AbiStr {
+                ptr: text.as_ptr(),
+                len: text.len(),
+            };
+            // The `Box<str>`'s bytes stay put while the vector of them grows.
+            r.texts.push(text);
+            r.diags.push(Diag {
+                id_idx,
+                severity,
+                _reserved: [0; 3],
+                text: named,
+            });
+            head.envelope.diags = r.diags.as_ptr();
+            head.envelope.diags_len = r.diags.len();
+            true
+        })
     }
 
     /// Hold `bytes` in `leases` under a new lease (named in the head) and set the blob `pick`

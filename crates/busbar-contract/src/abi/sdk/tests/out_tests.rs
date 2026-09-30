@@ -104,3 +104,50 @@ fn a_failure_names_its_text_in_the_head() {
     assert_eq!(answered, Outcome::Failed);
     assert_eq!(read(o.head.error), b"no");
 }
+
+#[test]
+fn a_body_reports_metrics_and_declared_diagnostics_in_its_envelope() {
+    use crate::abi::mechanism::call::{METRIC_ADD, METRIC_SET};
+    super::begin_call();
+    let mut o: CancelOut = zeroed();
+    let mut out = Out::new(&mut o);
+    assert!(out.metric(2, METRIC_ADD, 1.0));
+    assert!(out.metric(5, METRIC_SET, 7.5));
+    assert!(out.diag(1, 2, String::from("BUSBAR-7070 the webhook refused")));
+    let env = o.head.envelope;
+    assert_eq!((env.metrics_len, env.diags_len), (2, 1));
+    // SAFETY: this thread's envelope, live until its next safe call begins.
+    let (m, d) = unsafe { (std::slice::from_raw_parts(env.metrics, 2), &*env.diags) };
+    assert_eq!(
+        (m[0].family_idx, m[0].kind, m[0].value),
+        (2, METRIC_ADD, 1.0)
+    );
+    assert_eq!(
+        (m[1].family_idx, m[1].kind, m[1].value),
+        (5, METRIC_SET, 7.5)
+    );
+    assert!(m
+        .iter()
+        .all(|e| e.label_vals.is_null() && e.label_vals_len == 0));
+    assert_eq!((d.id_idx, d.severity), (1, 2));
+    assert_eq!(read(d.text), b"BUSBAR-7070 the webhook refused");
+    // The next safe call starts an empty envelope.
+    super::begin_call();
+    let mut o2: CancelOut = zeroed();
+    assert!(Out::new(&mut o2).metric(0, METRIC_ADD, 3.0));
+    assert_eq!(o2.head.envelope.metrics_len, 1);
+}
+
+#[test]
+fn a_full_envelope_reports_no_more() {
+    use crate::abi::mechanism::call::{MAX_ENVELOPE_ENTRIES, METRIC_ADD};
+    super::begin_call();
+    let mut o: CancelOut = zeroed();
+    let mut out = Out::new(&mut o);
+    for _ in 0..MAX_ENVELOPE_ENTRIES {
+        assert!(out.metric(0, METRIC_ADD, 1.0));
+    }
+    assert!(!out.metric(0, METRIC_ADD, 1.0), "the envelope is bounded");
+    assert_eq!(o.head.envelope.metrics_len, MAX_ENVELOPE_ENTRIES);
+    super::begin_call();
+}
