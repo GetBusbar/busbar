@@ -372,7 +372,6 @@ is untouched.
 | release-stage.yml | sbom, openapi | large | single-crate cargo-based generation |
 | release-fleet.yml | resolve, gate | small | jq/gh api, pure aggregator |
 | release-fleet.yml | docker, channels | large | registry/channel verification, no cargo |
-| release-fleet.yml | fleet | xlarge | rebuilds the busbar-headroom bundle image |
 | verify-deploy.yml | pointers, verify | large | third-party-host verification, no cargo |
 | verify-deploy.yml | alert | small | notifier |
 | prepare-release.yml | cut | large | cargo build/test + Cargo/CHANGELOG bump (Fast Cache added, see §3) |

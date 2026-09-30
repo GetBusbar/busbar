@@ -30,7 +30,7 @@ pub struct DescribeReply {
 
 /// One hook-reported metric entry — a Prometheus/OpenMetrics-shaped observation (parsed liberally;
 /// a malformed ENTRY is dropped whole, never the reply). This is the FROZEN metrics shape: a hook
-/// reports its operational data (a Headroom compressor's tokens-saved, a router's decision latency)
+/// reports its operational data (a prompt compressor's tokens-saved, a router's decision latency)
 /// and busbar surfaces it on the admin API + Prometheus for any dashboard. Beyond `name`+`type`
 /// everything is optional, so the simplest hook sends `{name, type, value}` and a rich one uses the
 /// rest. Modeled as an ARRAY (not a name→value map) precisely so several entries can share a `name`
@@ -73,7 +73,7 @@ pub struct HookMetric {
     /// Preferred over `quantiles` when both are present.
     #[serde(default)]
     pub buckets: Option<std::collections::BTreeMap<String, f64>>,
-    /// PROVENANCE: `true` marks this value an ESTIMATE (e.g. Headroom's holdout-control savings)
+    /// PROVENANCE: `true` marks this value an ESTIMATE (e.g. a compressor's holdout-control savings)
     /// rather than a directly measured fact — a dashboard renders it distinctly.
     #[serde(default)]
     pub estimated: Option<bool>,
@@ -295,7 +295,7 @@ pub struct HookResponse {
     #[serde(default)]
     pub restrict: Option<serde_json::Value>,
     /// REWRITE the request body (`{"rewrite": {"messages": [...], "tools": [...]}}`) — the
-    /// compression/redaction arm (Headroom). Untyped + FAIL-CLOSED: a malformed/oversize rewrite must
+    /// compression/redaction arm. Untyped + FAIL-CLOSED: a malformed/oversize rewrite must
     /// proceed with the UNMODIFIED body, never a corrupted one. Requires the hook's `prompt: rw` grant.
     /// Parsed by `parse_rewrite` and applied by the priority-ordered transform pass at the `parsed.rewrite` read below.
     #[serde(default)]

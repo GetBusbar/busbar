@@ -356,7 +356,7 @@ pub struct TrustPolicy {
     pub first_party_key: Option<VerifyingKey>,
     /// The running binary's version (`CARGO_PKG_VERSION`). Informational (error text/telemetry)
     /// only: it is NOT a floor. First-party plugins version on their own independent lines
-    /// (1.0.x stores/auth/hooks, 2.x headroom, under a 1.5.0 engine), so the pre-release
+    /// (1.0.x stores/auth/hooks under a 1.5.0 engine), so the pre-release
     /// automatic "plugin >= binary version" floor would have rejected every correctly-signed
     /// current first-party release and was removed before 1.5.0 shipped.
     pub binary_version: String,
@@ -911,7 +911,7 @@ pub fn evaluate(
 
     // FIRST-PARTY anti-downgrade: PER-NAME floors only. There is deliberately NO automatic
     // binary-version floor: first-party plugins version on their own independent lines (the
-    // stores/auth/hooks ship 1.0.x and headroom 2.x under a 1.5.0 engine — product decision,
+    // stores/auth/hooks ship 1.0.x under a 1.5.0 engine — product decision,
     // 2026-08-02), so "at or above the binary's version" would reject every correctly-signed
     // current release.
     //

@@ -11,7 +11,7 @@ name: plugin-functional
 #
 # WHAT "WORKS" MEANS HERE, AND WHY IT IS NOT plugin-ci.yml. plugin-ci builds and tests a plugin in
 # its own workspace; it never dlopens the cdylib INTO busbar. plugins.yaml's own header records what
-# that gap cost: seven of ten plugins are `gate: suite` — cargo test only — and headroom's published
+# that gap cost: most plugins are `gate: suite` — cargo test only — and a hook plugin's published
 # bundle could not even boot while every workflow was green. So this workflow proves the FUNCTIONAL
 # bar the audit sets: a real busbar binary loads the plugin and it demonstrably does its job.
 #

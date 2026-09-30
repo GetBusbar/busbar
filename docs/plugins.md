@@ -492,15 +492,13 @@ self-grant above what it declares.
 As with every plugin kind, a configured `kind: hook` module that cannot load fails closed. See
 [Fail-closed loading](#fail-closed-loading), below.
 
-**Shipped first-party hook plugins (1.5.0):**
+**Shipped first-party hook plugin:**
 
-- **Headroom** (`busbar-hook-headroom`): a `prompt: rw` gate that compresses context before
-  dispatch, saving tokens and latency. Reports `chars_saved_total` via the `status` op.
 - **Webrequest** (`busbar-hook-webrequest`): an HTTP-forwarder gate, the out-of-process isolation
   path for code you don't want in-process. Forwards the routing projection over HTTPS to an
   operator-run sidecar (any language). SSRF-guarded, signed by release CI.
 
-Both are auto-trusted by the embedded release key; no `trust.publishers` entry is needed.
+It is auto-trusted by the embedded release key; no `trust.publishers` entry is needed.
 
 ## Settings schema (`settings_schema`)
 
@@ -638,8 +636,8 @@ signing identity, but the *release* it ships from depends on the plugin:
   `GetBusbar/busbar-store-postgres`, `GetBusbar/busbar-store-mysql`, `GetBusbar/busbar-store-valkey`,
   `GetBusbar/busbar-auth-oidc`, `GetBusbar/busbar-secret-vault`) with its own CI and its own release workflow. Download the tarball for the backend you need from *that plugin's own*
   GitHub Release, not from busbar's.
-- **Hook plugins** (`busbar-hook-headroom`, `busbar-hook-webrequest`) also live in their own repos
-  (`GetBusbar/busbar-hook-headroom`, `GetBusbar/busbar-hook-webrequest`) with their own CI and release workflow,
+- **Hook plugins** (`busbar-hook-webrequest`) also live in their own repos
+  (`GetBusbar/busbar-hook-webrequest`) with their own CI and release workflow,
   same as every other kind. Busbar's own release no longer builds or re-publishes any plugin
   tarball, hook or otherwise: download the tarball for the plugin you need from *that plugin's own*
   GitHub Release, not from busbar's.

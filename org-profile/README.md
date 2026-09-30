@@ -58,7 +58,7 @@ The full table, with what each row does and does not say, is in the [Busbar READ
 | [busbar-admin](https://github.com/GetBusbar/busbar-admin) · [busbar-go](https://github.com/GetBusbar/busbar-go) · [busbar-python](https://github.com/GetBusbar/busbar-python) · [busbar-js](https://github.com/GetBusbar/busbar-js) | Drive the admin API: a CLI and typed clients. |
 | [store-postgres](https://github.com/GetBusbar/busbar-store-postgres) · [store-mysql](https://github.com/GetBusbar/busbar-store-mysql) · [store-sqlite](https://github.com/GetBusbar/busbar-store-sqlite) · [store-valkey](https://github.com/GetBusbar/busbar-store-valkey) | Governance state, shared across a cluster. |
 | [auth-oidc](https://github.com/GetBusbar/busbar-auth-oidc) · [auth-github](https://github.com/GetBusbar/busbar-auth-github) · [auth-ldap](https://github.com/GetBusbar/busbar-auth-ldap) · [hashicorp-vault](https://github.com/GetBusbar/busbar-secret-vault) | Identity and secrets, wired to what you already run. |
-| [headroom-hook](https://github.com/GetBusbar/busbar-hook-headroom) · [webrequest-hook](https://github.com/GetBusbar/busbar-hook-webrequest) | Your own code on the normalized request path. |
+| [webrequest-hook](https://github.com/GetBusbar/busbar-hook-webrequest) | Your own code on the normalized request path. |
 | [benchmarking](https://github.com/GetBusbar/benchmarking) · [validate-action](https://github.com/GetBusbar/validate-action) | The neutral harness behind onthebench.ai, and a config gate for CI. |
 
 Docs at **[getbusbar.com](https://getbusbar.com)**, agent-readable at [llms.txt](https://getbusbar.com/llms.txt).

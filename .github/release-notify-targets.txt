@@ -24,7 +24,6 @@ GetBusbar/busbar-store-valkey
 GetBusbar/busbar-secret-vault
 GetBusbar/busbar-auth-oidc
 GetBusbar/busbar-hook-webrequest
-GetBusbar/busbar-hook-headroom
 GetBusbar/helm-charts
 GetBusbar/homebrew-busbar
 GetBusbar/terraform-provider-busbar

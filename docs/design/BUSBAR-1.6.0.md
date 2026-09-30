@@ -1133,7 +1133,7 @@ the three cleanliness crates. Every plugin lives in its own repo, named `busbar-
 | store | memory, postgres, mysql, sqlite, valkey |
 | secret | env, file, vault |
 | auth | admin-tokens, github, ldap, oidc, webhook-signature; the connection-auth styles' crates are an owner question (§6) ~~outbound~~ |
-| hook | ranking, headroom, webrequest |
+| hook | ranking, webrequest ~~headroom~~ (OWNER 2026-09-30: "Delete hook headroom 100% keep the repo but remove from website"; the repo stays, outside the fleet) |
 | export | prometheus, webhook, file, otlp |
 
 The `decisions` plane keeps `"decision"` as its key and meter class. Each plugin repo is a logic crate

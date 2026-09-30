@@ -40,7 +40,7 @@ fn counter_renders_with_hook_label_and_verbatim_name() {
         labels: labels(&[("pool", "chat")]),
         ..metric("tokens_saved_total", "counter", 42.0)
     };
-    let text = render_text(&[("headroom".to_string(), vec![m])]);
+    let text = render_text(&[("compress".to_string(), vec![m])]);
     assert!(text.contains("# TYPE tokens_saved_total counter"), "{text}");
     assert!(
         text.contains("# HELP tokens_saved_total tokens the hook saved"),
@@ -48,7 +48,7 @@ fn counter_renders_with_hook_label_and_verbatim_name() {
     );
     // verbatim name + hook label FIRST + the hook's own label, exact value.
     assert!(
-        text.contains("tokens_saved_total{hook=\"headroom\",pool=\"chat\"} 42\n"),
+        text.contains("tokens_saved_total{hook=\"compress\",pool=\"chat\"} 42\n"),
         "{text}"
     );
 }
@@ -65,24 +65,24 @@ fn histogram_renders_as_summary() {
         labels: labels(&[("pool", "chat")]),
         ..metric("compress_latency_us", "histogram", 1000.0)
     };
-    let text = render_text(&[("headroom".to_string(), vec![m])]);
+    let text = render_text(&[("compress".to_string(), vec![m])]);
     assert!(
         text.contains("# TYPE compress_latency_us summary"),
         "{text}"
     );
     assert!(
-        text.contains("compress_latency_us{hook=\"headroom\",pool=\"chat\",quantile=\"0.5\"} 18\n"),
+        text.contains("compress_latency_us{hook=\"compress\",pool=\"chat\",quantile=\"0.5\"} 18\n"),
         "{text}"
     );
     assert!(
         text.contains(
-            "compress_latency_us{hook=\"headroom\",pool=\"chat\",quantile=\"0.99\"} 91\n"
+            "compress_latency_us{hook=\"compress\",pool=\"chat\",quantile=\"0.99\"} 91\n"
         ),
         "{text}"
     );
     // observation count from `value`
     assert!(
-        text.contains("compress_latency_us_count{hook=\"headroom\",pool=\"chat\"} 1000\n"),
+        text.contains("compress_latency_us_count{hook=\"compress\",pool=\"chat\"} 1000\n"),
         "{text}"
     );
 }
@@ -99,30 +99,30 @@ fn histogram_with_buckets_renders_as_native_histogram() {
     let m = HookMetric {
         buckets: Some(bs),
         labels: labels(&[("pool", "chat")]),
-        ..metric("headroom_compression_ratio", "histogram", 7.0)
+        ..metric("rewriter_compression_ratio", "histogram", 7.0)
     };
-    let text = render_text(&[("headroom".to_string(), vec![m])]);
+    let text = render_text(&[("compress".to_string(), vec![m])]);
     assert!(
-        text.contains("# TYPE headroom_compression_ratio histogram"),
+        text.contains("# TYPE rewriter_compression_ratio histogram"),
         "buckets => histogram, not summary: {text}"
     );
     // finite bounds ascending, cumulative counts, hook label first.
     let lo = text
-        .find("headroom_compression_ratio_bucket{hook=\"headroom\",pool=\"chat\",le=\"0.5\"} 3\n")
+        .find("rewriter_compression_ratio_bucket{hook=\"compress\",pool=\"chat\",le=\"0.5\"} 3\n")
         .expect("0.5 bucket");
     let hi = text
-        .find("headroom_compression_ratio_bucket{hook=\"headroom\",pool=\"chat\",le=\"1\"} 7\n")
+        .find("rewriter_compression_ratio_bucket{hook=\"compress\",pool=\"chat\",le=\"1\"} 7\n")
         .expect("1 bucket");
     assert!(lo < hi, "buckets must be ascending by le: {text}");
     // +Inf synthesized to the total count (hook omitted it), then the count line.
     assert!(
         text.contains(
-            "headroom_compression_ratio_bucket{hook=\"headroom\",pool=\"chat\",le=\"+Inf\"} 7\n"
+            "rewriter_compression_ratio_bucket{hook=\"compress\",pool=\"chat\",le=\"+Inf\"} 7\n"
         ),
         "{text}"
     );
     assert!(
-        text.contains("headroom_compression_ratio_count{hook=\"headroom\",pool=\"chat\"} 7\n"),
+        text.contains("rewriter_compression_ratio_count{hook=\"compress\",pool=\"chat\"} 7\n"),
         "{text}"
     );
 }

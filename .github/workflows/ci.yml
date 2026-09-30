@@ -2790,20 +2790,14 @@ jobs:
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. NEW JOB, no run history yet:
     # four small plugin workspaces (store-sqlite compiles a bundled SQLite) and one loader test
-    # binary, cold; since the metrics-reporting hook joined, a fifth plugin (its compression engine
-    # compiles tokenizers and tree-sitter grammars), cold. Re-measure to p95 x1.5 once ten green runs
-    # exist.
-    timeout-minutes: 60
+    # binary, cold. Re-measure to p95 x1.5 once ten green runs exist.
+    timeout-minutes: 40
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/plugin-proofs-target
       # The real store and hook plugin commits the proofs run: each repo's `dev` after its
       # busbar-contract port. Bump deliberately, like any pin.
       STORE_SQLITE_REV: 8a4b9ebeccb4ead553ac9ec1617aed5a51e17814
       WEBREQUEST_HOOK_REV: 3a7235e71b2ff00c3da32b1f0fa63864985bc4e7
-      # The real plugin that reports its OWN metrics on its status reply (GetBusbar/busbar-hook-headroom,
-      # `dev` after its busbar-contract port): the proof that a third-party plugin's own series cross
-      # the dropped-in door. Bump deliberately, like any pin.
-      HEADROOM_HOOK_REV: d49a7404449302867ef7317ba466b3c67dfd0470
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -2832,12 +2826,6 @@ jobs:
           repository: GetBusbar/busbar-hook-webrequest
           ref: ${{ env.WEBREQUEST_HOOK_REV }}
           path: busbar-hook-webrequest
-      - name: Checkout the real metrics-reporting hook (GetBusbar/busbar-hook-headroom, pinned)
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          repository: GetBusbar/busbar-hook-headroom
-          ref: ${{ env.HEADROOM_HOOK_REV }}
-          path: busbar-hook-headroom
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Patch the busbar crates both plugins name to this tree
         # `[patch]` from cargo config, not an edit of the plugins' manifests: what builds is each
@@ -2876,23 +2864,19 @@ jobs:
         working-directory: busbar-hook-webrequest
         # package-selector: busbar-hook-webrequest -- .github/workflows/ci.yml -- GetBusbar/busbar-hook-webrequest is its own checkout; `working-directory: busbar-hook-webrequest` resolves this selector against that workspace, never against this one
         run: cargo build --locked -p busbar-hook-webrequest
-      - name: Build the metrics-reporting hook's cdylib at its pinned rev
-        working-directory: busbar-hook-headroom
-        # package-selector: busbar-hook-headroom -- .github/workflows/ci.yml -- GetBusbar/busbar-hook-headroom is its own checkout; `working-directory: busbar-hook-headroom` resolves this selector against that workspace, never against this one
-        run: cargo build --locked -p busbar-hook-headroom --lib
-      - name: Dlopen all five through the dropped-in door (plugin_proof_tests)
+      - name: Dlopen all four through the dropped-in door (plugin_proof_tests)
         working-directory: busbar
         env:
           BUSBAR_PLUGIN_PROOF_DIR: ${{ github.workspace }}/plugin-proofs-target/debug
         run: |
           set -euo pipefail
           # FLOOR ON THE MATCH COUNT: the proofs are `#[ignore]`d, so this is their only execution,
-          # and a filter that matches nothing exits 0 having proven nothing. Eight: the six real-plugin
+          # and a filter that matches nothing exits 0 having proven nothing. Seven: the five real-plugin
           # proofs, the task-state restart over the real durable store, and the two-node store proof's
           # second node (a no-op when run on its own).
           out="$(cargo test --locked -p busbar-plugin-loader --lib plugin_proof_tests -- --ignored 2>&1 | tee /dev/stderr)"
-          echo "$out" | grep -qE 'test result: ok\. 8 passed' || {
-            echo "::error::plugin_proof_tests did not run exactly the six real-plugin proofs, the task-state restart and the second node"
+          echo "$out" | grep -qE 'test result: ok\. 7 passed' || {
+            echo "::error::plugin_proof_tests did not run exactly the five real-plugin proofs, the task-state restart and the second node"
             exit 1
           }
 

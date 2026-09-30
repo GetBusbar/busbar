@@ -43,9 +43,8 @@
 #   4. EXEC-BIT rule: any `scripts/….sh` a workflow EXECUTES DIRECTLY (a `run:` command that is the
 #      path itself, not `bash …`/`sh …`/`source …`/`. …`) must be tracked mode 100755. A 100644 mode
 #      makes the shell refuse the script with exit 126 the instant CI runs it — the release-stage
-#      regression that failed every busbar-store-sqlite artifact build (release-build.sh) and lurked
-#      one stage downstream in release-fleet (fleet-checks.sh), both invoked directly and both left
-#      non-executable. Sourced libraries (e.g. scripts/ci-runners-lib.sh, dot-sourced by
+#      regression that failed every busbar-store-sqlite artifact build (release-build.sh), invoked
+#      directly and left non-executable. Sourced libraries (e.g. scripts/ci-runners-lib.sh, dot-sourced by
 #      scripts/ci-runners-up.sh) are correctly exempt: the interpreter, not the file's own bit, runs them.
 #
 # Runs in CI (see .github/workflows/ci.yml, structure-lint job). No external deps; bash 3.2 + POSIX

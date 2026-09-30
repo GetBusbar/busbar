@@ -18,8 +18,7 @@
 #   crate:         the plugin cdylib's Cargo package name: <repo>-plugin beside the <repo> logic
 #                  crate, or <repo> itself for a single-crate plugin (owner ruling: repo = crate =
 #                  artifact prefix; the registry gate refuses any other name)
-#   version_line:  the semver line current releases live on (headroom's 1.x is pre-plugin
-#                  1.4.2-era and must never be retagged)
+#   version_line:  the semver line current releases live on
 #   service:       real backend container its tests need (mysql|postgres|valkey|vault|none)
 #   release_gate:  required — release-check.sh hard-fails if the sibling checkout is missing
 #                  optional — release-check.sh loud-skips (still red in the registry gate's
@@ -95,6 +94,7 @@ fleet:
 # above nor excluded here — so a new plugin repo cannot exist unregistered).
 excluded_repos:
   - hindsight-hook # design docs only — no crate, no workflows, private
+  - busbar-hook-headroom # removed from busbar and the site (owner ruling 2026-09-30) — the repo is kept, not a busbar plugin
 
 plugins:
   - repo: busbar-store-mysql
@@ -225,51 +225,6 @@ plugins:
     needs_prompt: "rw"
     needs_user: "ro"
     declares: "declares.json"
-  - repo: busbar-hook-headroom
-    kind: hook
-    alias: headroom
-    crate: busbar-hook-headroom
-    version_line: "2.0"
-    service: none
-    release_gate: optional
-    gate: smoke
-    description: "Compresses LLM chat history with the real headroom-core BM25 TextCrusher engine as a prompt:rw rewrite gate: a busbar first-party kind:hook plugin (dlopen cdylib)."
-    busbar_checkout: true
-    lib_only: true
-    needs_prompt: "rw"
-    declares: "declares.json"
-    bundle_image: "getbusbar/busbar-headroom"
-    bundle_env: "ANTHROPIC_KEY=sk-ant-consumer-verify-dummy BUSBAR_ADMIN_TOKEN=consumer-verify-dummy"
-    gitignore:
-      - "bench/__pycache__/"
-      - "bench/busbar-state.json"
-      - "bench/*.sock"
-      - "bench/results/"
-      - "bench/plugins/"
-    notice:
-      - "It links headroom-core (https://github.com/headroomlabs-ai/headroom), the"
-      - "compression core of the Headroom project, under its own license. Full credit"
-      - "for the compression work goes to the Headroom project; this hook adapts it to"
-      - "the Busbar hook wire."
-    keep:
-      - Dockerfile
-      - docker/
-      - docker-compose.yml
-      - .github/workflows/docker.yml
-      - .github/workflows/docker-bundle.yml
-      - .github/workflows/headroom-release-publish.yml
-      - .github/workflows/headroom-release-watch.yml
-      - .github/scripts/next-version.sh
-      - .github/scripts/stamp-version.sh
-      - .github/scripts/docker-bundle-smoke-test/config.yaml
-      - .github/scripts/docker-bundle-smoke-test/mock_upstream.py
-      - .github/scripts/docker-bundle-smoke-test/providers.yaml
-      - .github/scripts/docker-bundle-smoke-test/run.sh
-    # No `checkout_ref` here any more, and that is not a loosening. This entry used to pin `dev`
-    # because it carries the sibling-relative-path dependency fix the gate's build needs; `dev` is
-    # now the DEFAULT for every sibling (see the field doc above), so the pin said nothing the
-    # default does not. Restating it would imply the OTHER nine were deliberately on `main`, which
-    # is precisely the reading that cost qa-gate run 31059945604 five legs.
   - repo: busbar-export-file
     kind: export
     alias: request-log-file

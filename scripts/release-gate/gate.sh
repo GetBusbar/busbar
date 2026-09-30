@@ -229,7 +229,7 @@ selftest() {
   # while lib.sh required a PATH. So this selftest proved code no release executed, and record()'s
   # qa-sha column — read through the path convention — was blank on every real row.
   local chk
-  for chk in docker-checks.sh platform-checks.sh channel-checks.sh fleet-checks.sh; do
+  for chk in docker-checks.sh platform-checks.sh channel-checks.sh; do
     if grep -nE '\$\{?STAGED_RECORD(:-)?\}?"? *\|' "scripts/release-gate/$chk" >/dev/null 2>&1 \
        || grep -nE 'jq[^|]*\$\{?STAGED_RECORD' "scripts/release-gate/$chk" >/dev/null 2>&1; then
       nope "scripts/release-gate/$chk parses STAGED_RECORD itself instead of calling lib.sh's staged_* lookups — the selftest above would not be testing the code that runs"

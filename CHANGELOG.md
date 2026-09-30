@@ -562,17 +562,20 @@ for 1.6.0. See [the plugin guide](docs/plugins.md).
 **Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is
 named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset
 prefix are that one name.** The repos moved (`GetBusbar/store-sqlite` → `GetBusbar/busbar-store-sqlite`,
-`hashicorp-vault` → `busbar-secret-vault`, `webrequest-hook` → `busbar-hook-webrequest`,
-`headroom-hook` → `busbar-hook-headroom`, and likewise for the other twelve; GitHub redirects every old
-URL). A plugin RELEASED from here on states its repo name as its manifest name
-(`busbar-store-valkey`, not `busbar-store-valkey-plugin`; `busbar-hook-headroom`, not `busbar-headroom`)
-and publishes `busbar-<kind>-<name>-<version>-<target>.tar.gz`. **Migration:** a config that selects a
-plugin by its alias (`store.module: valkey`, `module: headroom`) needs nothing; one that names a
+`hashicorp-vault` → `busbar-secret-vault`, `webrequest-hook` → `busbar-hook-webrequest`, and likewise
+for the others; GitHub redirects every old URL). A plugin RELEASED from here on states its repo name
+as its manifest name (`busbar-store-valkey`, not `busbar-store-valkey-plugin`) and publishes
+`busbar-<kind>-<name>-<version>-<target>.tar.gz`. **Migration:** a config that selects a plugin by
+its alias (`store.module: valkey`, `module: webrequest`) needs nothing; one that names a
 plugin by its old manifest name must use the alias or the new name once the new release is
 installed, and a `plugins.fetch` that downloads by asset name must use the new prefix. Tarballs
-already published keep the names they were published with and keep loading. The container images
-keep their names (`getbusbar/busbar-headroom`, `getbusbar/headroom-hook`). `busbar --migrate-config`
+already published keep the names they were published with and keep loading. `busbar --migrate-config`
 now names the Valkey store's manifest as `busbar-store-valkey`.
+
+**The Headroom hook plugin is no longer a first-party Busbar plugin** (owner ruling, 2026-09-30).
+Busbar no longer lists, builds, tests, bundles or release-notifies it; its repository
+(`GetBusbar/busbar-hook-headroom`) stays where it is. A tarball you already installed is an ordinary
+`kind: hook` plugin and loads under the same trust rules as any other.
 
 **A plugin declares the contract-ABI range it supports** (`contract_abi: {min, max}` in its signed
 `declares` section), and Busbar refuses at load a plugin whose range shares no version with its own,

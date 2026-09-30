@@ -28,7 +28,7 @@ Every hook is one of two kinds. That is the only structural distinction: the res
 | `tap` | fire-and-forget (watch) | none: it observes, it never answers |
 | `gate` | fire-and-wait (decide) | one reply arm: nothing / reject / restrict / order / rewrite |
 
-A **tap** watches: logging, audit, metering, shipping records to a SIEM. It can never delay or change a request. A **gate** decides: it can reject the request, restrict which pool members may serve it, re-order the failover walk, or rewrite the request body. The PII guard, the smart router, and the Headroom compressor are all gates: same wire, same timing, same fail-safe, different reply arm.
+A **tap** watches: logging, audit, metering, shipping records to a SIEM. It can never delay or change a request. A **gate** decides: it can reject the request, restrict which pool members may serve it, re-order the failover walk, or rewrite the request body. The PII guard, the smart router, and a prompt compressor are all gates: same wire, same timing, same fail-safe, different reply arm.
 
 ## Named definitions, referenced by name (1.5.3)
 
@@ -58,14 +58,11 @@ hooks:                                     # THE definition map
   rtr:
     module: webrequest                     # out-of-process forwarder to a sidecar
     settings: { url: "https://hooks.internal/rtr" }
-  headroom:
-    module: headroom                       # first-party kind: hook plugin (in-process)
-    prompt: rw
 
 pools:
   hooks: [audit]                           # RESERVED all-pools attach: fires for EVERY pool
   my-pool:
-    hooks: [cheapest, pii-eng, rtr, headroom]   # bare NAMES only
+    hooks: [cheapest, pii-eng, rtr]        # bare NAMES only
     members:
       - model: claude-opus
       - model: claude-opus-bedrock
@@ -73,7 +70,7 @@ pools:
 ```
 
 The `module` names a loaded `kind: hook` plugin by its signed-manifest name/alias (e.g. the
-first-party `headroom` and `webrequest` aliases, or your own). Resolution is exact: name first,
+first-party `webrequest` alias, or your own). Resolution is exact: name first,
 then alias, with no fuzzy matching. `settings:` is the plugin's opaque config. For `webrequest`
 that includes the SSRF-guarded sidecar `url`. Loading any of these requires
 `plugins.enabled: true` and the tarball installed in `plugins.dir`; an unresolved `module:`, or an attach-point name that no `hooks:` entry defines,
@@ -208,7 +205,7 @@ For `kind: hook` plugins, the manifest `needs` field (set with `--needs-prompt r
 >   `{role: "system"}` or `{role: "developer"}` entry inside the client's turn array reaches your
 >   hook in `messages`, at its position and under its own role, and counts in `message_count`. A
 >   `rewrite` replaces the whole turn array, so return that turn if you want it kept: a compressor
->   keeps it verbatim (Headroom does).
+>   keeps it verbatim.
 > - Media-only turns keep their entry, with empty text, so you never see fewer turns than the
 >   provider does.
 > - **An OpenAI `refusal` content part is projected** and counts toward `total_chars`.
@@ -328,7 +325,7 @@ HTTP POSTs; on `kind: hook` plugins they ride `busbar_call` with the same JSON p
   serves only the settings **key names** there (`settings_keys`), never the values, on either side:
   the bag you echo is the SECRET-RESOLVED one Busbar pushed you, and that read is reachable at
   read-only admin scope. The drifting key names are reported in `drift_keys`. The
-  `metrics` ARRAY is how your hook feeds its own operational data to the control plane (a Headroom
+  `metrics` ARRAY is how your hook feeds its own operational data to the control plane (a prompt
   compressor reports `chars_saved_total`; a dashboard built on Busbar sees what each plug is doing)
   instead of running its own dashboard. Each entry is Prometheus/OpenMetrics-shaped:
   ```jsonc
@@ -374,13 +371,11 @@ reply-expected connections; Busbar will never send a reply-expected op on a tap 
 
 ## First-party hook plugins (1.5.0)
 
-Two `kind: hook` plugins ship signed by release CI and are auto-trusted by the embedded key:
-
-**Headroom** (`busbar-hook-headroom`) is a `kind: hook` prompt-compression rewrite gate. It compresses context before dispatch, saving tokens and latency. Deploy it as a `prompt: rw` gate; it fires before dispatch on the normalized IR (see [What a gate receives](#what-a-gate-receives)), its own guard keeps an in-band system turn verbatim (it reaches the hook as a turn, as in 1.5.5), token accounting runs on the rewritten body (the savings are real and measured), and a malformed or slow rewrite proceeds with the original body untouched. It reports `chars_saved_total` and related metrics via the `status` op.
+One `kind: hook` plugin ships signed by release CI and is auto-trusted by the embedded key:
 
 **Webrequest** (`busbar-hook-webrequest`) is a `kind: hook` HTTP-forwarder plugin, the migration path for code you don't want in Busbar's address space. It forwards the routing projection over HTTPS to an operator-run sidecar, so you get out-of-process isolation (the sidecar can be any language) without running an untrusted library in-process. The artifact itself is signed and auto-trusted; forwarding is SSRF-guarded; and the sidecar's reply rides the same op-discriminated JSON contract.
 
-Both plugins are installed from the release tarball and enabled under `plugins:` in the normal way. See [plugins.md](./plugins.md) for the artifact and trust model.
+It is installed from the release tarball and enabled under `plugins:` in the normal way. See [plugins.md](./plugins.md) for the artifact and trust model.
 
 ## Managing hooks over the API
 

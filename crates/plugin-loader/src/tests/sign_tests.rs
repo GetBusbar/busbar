@@ -316,7 +316,7 @@ fn export_kind_is_known_and_signs_like_any_plugin() {
 }
 
 /// First-party plugin versions float FREE of the binary's version: the fleet ships 1.0.x
-/// stores/auth/hooks (and 2.x headroom) under a 1.5.0 engine, so a verified first-party
+/// stores/auth/hooks under a 1.5.0 engine, so a verified first-party
 /// plugin below the binary version MUST load when no per-name floor pins it. (The automatic
 /// binary-version floor this replaces rejected every correctly-signed current release.)
 #[test]

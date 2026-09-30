@@ -19,7 +19,7 @@ fn apply_rewrite_to_body_swaps_messages_and_is_fail_safe() {
     });
     let rw = RewriteReply {
         messages: vec![serde_json::json!({"role": "user", "content": "compressed"})],
-        tools: vec![serde_json::json!({"name": "headroom_retrieve"})],
+        tools: vec![serde_json::json!({"name": "rewriter_retrieve"})],
     };
     assert!(super::apply_rewrite_to_body(&mut v, &rw, "openai"));
     assert_eq!(

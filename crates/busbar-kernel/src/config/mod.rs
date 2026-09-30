@@ -1645,7 +1645,7 @@ impl PluginsCfg {
     /// Build the trust policy. `binary_version` is carried on the policy for error text/telemetry
     /// only — it is NOT a floor: `busbar_plugin_loader::sign::evaluate` applies PER-NAME floors alone
     /// (`first_party_floors` rollback pins + `min_versions`), because first-party plugins version
-    /// on independent lines (1.0.x stores/auth/hooks, 2.x headroom, under a 1.5.0 engine) and an
+    /// on independent lines (1.0.x stores/auth/hooks under a 1.5.0 engine) and an
     /// automatic "plugin >= binary version" floor rejected every correctly-signed current release
     /// (removed before 1.5.0 shipped; see plugin-sign's evaluate() for the full rationale).
     ///

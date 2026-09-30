@@ -20,12 +20,9 @@
 #
 # Ships with ZERO plugins pre-installed — same treatment every first-party plugin gets, store, auth,
 # and hook alike. A plugin is a plugin: none of them are baked into this image or into busbar's own
-# release. Want a specific plugin pre-wired (e.g. Headroom's prompt compression)? See that plugin's
-# OWN repo — some ship their own bundled "busbar + plugin, one image" convenience variant for users
-# who came specifically for that plugin and just want it running (e.g.
-# https://github.com/GetBusbar/busbar-hook-headroom publishes `getbusbar/busbar-headroom`). This image is
-# the plain core: drop a signed plugin tarball into `/etc/busbar/plugins` yourself (see
-# docs/plugins.md) if you want one.
+# release. Want a specific plugin pre-wired? See that plugin's OWN repo — a plugin may ship its own
+# bundled "busbar + plugin, one image" convenience variant. This image is the plain core: drop a
+# signed plugin tarball into `/etc/busbar/plugins` yourself (see docs/plugins.md) if you want one.
 #
 # Run (one provider, no plugins):
 #   docker run -d -p 8080:8080 \

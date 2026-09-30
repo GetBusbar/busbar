@@ -56,7 +56,6 @@ pub const VOCABULARY: &[&str] = &[
     "admin-tokens",
     // hooks
     "webrequest",
-    "headroom",
     "ranking",
     // exports
     "prometheus",
