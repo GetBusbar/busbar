@@ -822,6 +822,13 @@ fn dropped_doors() -> &'static [DroppedDoor] {
     let doors = DOORS.get_or_init(|| {
         crate::root::test_plugins::transport_doors()
             .iter()
+            // Only a door that frames the host's socket is served over it; a door composing over a
+            // layer (the http door example, when built) is not a dropped-in wire for these proofs.
+            .filter(|(plugin, _)| {
+                plugin
+                    .context::<crate::root::loader::dispatch::kinds::transport::TransportFacts>()
+                    .is_some_and(|f| f.composes_over.is_empty())
+            })
             .map(|(plugin, key)| DroppedDoor {
                 key,
                 composes_over: Vec::new(),
