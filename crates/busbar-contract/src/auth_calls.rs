@@ -141,3 +141,120 @@ pub trait AuthAxis: Send + Sync {
         settings: &serde_json::Value,
     ) -> Result<Arc<dyn AuthCalls>, String>;
 }
+
+// THE OUTBOUND HALF (open_outbound/fields) ─────────────────────────────────────────────────────
+//
+// THE DESIGN §6 and §11.6: for every attempt the kernel makes ONE uniform call to the provider's
+// auth plugin, "give me the auth fields for this request", by the handle `open_outbound` answered
+// when the generation was sealed. The plugin caches inside itself; the kernel keeps only the handle
+// and no auth cache, and never branches per plugin or per style.
+
+/// One attempt's fixed facts, as the kernel hands them to `fields`. Owned: the answer may be
+/// awaited, so nothing here borrows the request.
+#[derive(Default)]
+pub struct FieldsRequest {
+    /// The method.
+    pub method: Vec<u8>,
+    /// The authority (host\[:port\]).
+    pub authority: String,
+    /// The path exactly as the framer will send it.
+    pub path: Vec<u8>,
+    /// The query without `?`, as it will be sent; `None` = none.
+    pub query: Option<Vec<u8>>,
+    /// Wall-clock seconds since the Unix epoch, read once by the kernel for this call.
+    pub timestamp: u64,
+    /// SHA-256 of the body, when the style declares `abi::auth::STYLE_NEEDS_BODY_HASH`.
+    pub body_hash: Option<[u8; 32]>,
+    /// The exact head envelope the framer will send, in order, when the style declares
+    /// `abi::auth::STYLE_NEEDS_HEADERS`; empty otherwise.
+    pub headers: Vec<(Vec<u8>, Vec<u8>)>,
+    /// The caller's verified credential, for a passthrough binding (`abi::auth::MODE_PASSTHROUGH`).
+    /// Secret: zeroised when the call ends.
+    pub caller_credential: Option<Vec<u8>>,
+}
+
+impl std::fmt::Debug for FieldsRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never the caller's credential: it is secret material.
+        f.debug_struct("FieldsRequest")
+            .field("method", &String::from_utf8_lossy(&self.method))
+            .field("authority", &self.authority)
+            .field(
+                "caller_credential",
+                &self.caller_credential.as_ref().map(|_| "<redacted>"),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+/// One auth field that joins the head before the framer encodes it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AuthField {
+    /// The field name.
+    pub name: Vec<u8>,
+    /// The value. Credential material when [`AuthField::sensitive`].
+    pub value: Vec<u8>,
+    /// `abi::auth::FIELD_SENSITIVE`: never logged, zeroised once the head is encoded.
+    pub sensitive: bool,
+}
+
+impl std::fmt::Debug for AuthField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = if self.sensitive {
+            "<redacted>".to_string()
+        } else {
+            String::from_utf8_lossy(&self.value).into_owned()
+        };
+        f.debug_struct("AuthField")
+            .field("name", &String::from_utf8_lossy(&self.name))
+            .field("value", &value)
+            .finish()
+    }
+}
+
+/// One `fields`' answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fields {
+    /// The fields, in order; none = no auth field (the upstream answers 401, as 1.5.5 did before
+    /// the first mint).
+    Ready(Vec<AuthField>),
+    /// The handle refused the request (a passthrough on a style that does not pass the caller's
+    /// credential, or a handle this generation does not hold).
+    Refused,
+    /// The call did not answer (FAILED, FAULT, a timeout or a second short answer): the attempt
+    /// fails.
+    Failed,
+}
+
+/// One `fields` in flight: PENDING while the plugin's cached token refreshes, bounded by the
+/// attempt's deadline. Dropping it before it answered is a client drop.
+pub trait Fielding: Future<Output = Fields> + Send + Unpin {
+    /// The answer, if it has arrived; never waits.
+    fn settled(&mut self) -> Option<Fields>;
+}
+
+/// ONE AUTH INSTANCE'S OUTBOUND CALLS, as the kernel's egress walk makes them.
+pub trait OutboundAuth: Send + Sync {
+    /// Bind `style` to its resolved `credential` (secret; empty for a passthrough-only binding)
+    /// and the provider's auth `settings` (one JSON document); the handle the plugin answered.
+    /// OFF-PATH: at generation seal.
+    ///
+    /// # Errors
+    ///
+    /// `open_outbound` did not answer READY.
+    fn open_outbound(
+        &self,
+        style: &str,
+        credential: &[u8],
+        settings: &serde_json::Value,
+    ) -> Result<u64, String>;
+
+    /// `fields` ON THE SPOT: one ticket-less crossing on the caller's thread. `Some` only for a
+    /// READY answer (a cached header: bearer, api-key, a fresh minted token, a SigV4 signature);
+    /// `None` when the plugin cannot answer in place, and the caller then [`OutboundAuth::fields`]s.
+    fn fields_now(&self, handle: u64, request: &FieldsRequest) -> Option<Fields>;
+
+    /// Submit `fields` on a dispatcher worker; its answer is a future, so no thread is parked.
+    /// `deadline_ns` (the dispatcher's clock; `0` = the op's own class) bounds a PENDING answer.
+    fn fields(&self, handle: u64, request: FieldsRequest, deadline_ns: u64) -> Box<dyn Fielding>;
+}
