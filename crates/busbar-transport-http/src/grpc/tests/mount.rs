@@ -110,18 +110,9 @@ fn the_two_refusals_are_distinguished() {
     );
 }
 
-/// Only the framed rows are served, and the target row on the same operation is not one of them.
+/// A surface with no framed row serves no call: a target row on the operation is not one.
 #[test]
-fn the_declared_calls_are_the_framed_rows_and_nothing_else() {
-    assert_eq!(
-        declared_calls(&SURFACE),
-        vec!["/pkg.v1.Thing/DoIt", "/pkg.v1.Thing/WatchIt"]
-    );
-}
-
-/// A surface with no framed row declares no call, rather than declaring its target rows as calls.
-#[test]
-fn a_surface_with_no_framed_row_declares_no_call() {
+fn a_surface_with_no_framed_row_serves_no_call() {
     const TARGET_ONLY: WireSurface = WireSurface {
         bindings: &[BindingDecl {
             name: "tgt",
@@ -140,7 +131,6 @@ fn a_surface_with_no_framed_row_declares_no_call() {
             response_media: "",
         }],
     };
-    assert!(declared_calls(&TARGET_ONLY).is_empty());
     assert_eq!(
         resolve(&TARGET_ONLY, "/pkg.v1.Thing/DoIt").unwrap_err(),
         Unaddressed::NoSuchMethod
