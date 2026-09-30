@@ -305,7 +305,7 @@ class Doc:
     def __init__(self, source, target, kind, text, substituted, gate="full"):
         self.source = source          # the FILE (+ step) — the pairing key, see catalog_for()
         self.target = target          # the basename the document is written to
-        self.upgrade = False          # put through the operator upgrade step before it runs (Q42)
+        self.upgrade = False          # put through the operator upgrade step before it runs
         self.origin = f"{source} -> {target}" if target else source
         self.kind = kind              # "config" | "providers"
         self.text = text
@@ -1677,7 +1677,7 @@ def selftest(busbar, out=sys.stdout):
              judged + len(env_skipped) == len(docs)),
             ("a skipped document does not count toward the floor",
              _floor_excludes_skips()),
-            ("the upgrade step (Q42) is modelled for the configs a script upgrades, and no other",
+            ("the upgrade step is modelled for the configs a script upgrades, and no other",
              _upgrade_step_is_modelled()),
             ("a catalog is validated beside the config of its source that names its providers",
              _catalog_meets_its_partner()),
