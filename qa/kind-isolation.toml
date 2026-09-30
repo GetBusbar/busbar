@@ -1775,6 +1775,16 @@ drain   = "delete the dev-dependency once the tests reach the sink through the l
 
 [[dep]]
 from    = "busbar"
+to      = "busbar-plane-a2a"
+half    = "test"
+count   = "1"
+verdict = "allowed"
+cite    = "BUSBAR-1.6.0.md THE DESIGN, §2: the composition root links every plane. The a2a plane's door is proven both ways where it is linked: tests/a2a_plane_door.rs loads busbar_plane_a2a::plane_door::door linked and the a2a_plane_door_cdylib example dropped in."
+why     = "busbar names busbar-plane-a2a: declared dev in the test graph so tests/a2a_plane_door.rs can link the plane's door and the example cdylib can export it, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT."
+drain   = "none: the flip makes it the root's shipped edge to the plane, as it already is for busbar-plane-decisions and busbar-plane-streaming."
+
+[[dep]]
+from    = "busbar"
 to      = "busbar-plugin-example-plane"
 half    = "test"
 count   = "1"

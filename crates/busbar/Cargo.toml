@@ -410,6 +410,10 @@ proto-llm = "plane_node"
 [dev-dependencies]
 # root_listeners_are_the_connectors.rs: the TLS data door's certificate, generated per run.
 rcgen = { workspace = true }
+# The a2a plane's door, both ways (`tests/a2a_plane_door.rs`): its `door` function is the LINKED
+# half, and the `a2a_plane_door_cdylib` example re-exports it as the DROPPED half. The root is where
+# planes are linked, so it is where a plane's door is proven both ways.
+busbar-plane-a2a = { path = "../busbar-plane-a2a" }
 # The loop-unify shadow-compare test (`root::gauntlet_kernel`) implements a deterministic
 # `GauntletPlane` to drive both the substrate gauntlet and the kernel rider on one input; the trait
 # is `#[async_trait]`, so its test impl needs the macro.
@@ -509,6 +513,14 @@ busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 [[example]]
 name = "plane_driver_test_plane"
 path = "tests/fixtures/plane_driver_test_plane.rs"
+crate-type = ["cdylib"]
+
+# THE A2A PLANE'S DOOR, DROPPED: `busbar_plane_a2a::plane_door::door`
+# exported from a `cdylib`, the other half of the root's both-ways proof
+# (`tests/a2a_plane_door.rs`), whose LINKED half calls the same function. An example, not a crate: it never ships.
+[[example]]
+name = "a2a_plane_door_cdylib"
+path = "tests/fixtures/a2a_plane_door_cdylib.rs"
 crate-type = ["cdylib"]
 
 [[bench]]
