@@ -30,7 +30,7 @@ kind-isolation:matrix	ratchet	busbar-kernel × transport	308
 kind-isolation:matrix	ratchet	busbar-kernel-budget × kernel	26
 kind-isolation:matrix	ratchet	busbar-kernel-egress × plane	17
 kind-isolation:matrix	ratchet	busbar-kernel-identity × plane	11
-kind-isolation:matrix	ratchet	busbar-llm × contract	520
+kind-isolation:matrix	ratchet	busbar-llm × contract	523
 kind-isolation:matrix	ratchet	busbar-llm × plane	784
 kind-isolation:matrix	ratchet	busbar-mcp × cleanliness	5
 kind-isolation:matrix	ratchet	busbar-mcp × legacy	8
