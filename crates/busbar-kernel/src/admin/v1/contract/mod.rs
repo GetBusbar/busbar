@@ -1070,8 +1070,8 @@ pub struct KeyUsageView {
 pub struct AdminAuthView {
     /// Whether an admin credential chain is configured. `false` = the empty chain = open dev posture.
     pub configured: bool,
-    /// The active admin-plane guard module names, the `admin_auth` chain verbatim (by default the
-    /// operator credential's provider alone), reported in order. Empty when the admin plane is open.
+    /// The active admin-plane guard module names, the `admin_auth` chain verbatim (e.g.
+    /// `["admin-tokens"]`), reported in order. Empty when the admin plane is open.
     pub modules: Vec<String>,
 }
 
