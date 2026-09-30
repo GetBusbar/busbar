@@ -58,7 +58,7 @@ pub(crate) trait WakeRoute: Send + Sync {
 /// What an instance's `HostCtx` points to: the dispatcher its tickets live in, and who the instance
 /// is to the host services. Leaked per instance, so a late wake never dangles; a wake before any
 /// dispatcher is bound is dropped.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct InstanceWake {
     pub(crate) route: OnceLock<Weak<dyn WakeRoute>>,
     /// The instance as the host services see it, stated once at bind.
@@ -67,8 +67,18 @@ pub(crate) struct InstanceWake {
     /// when the instance's Statement declares a need (the connector slots read it).
     pub(crate) conn: OnceLock<(
         busbar_contract::conn::InstanceId,
-        std::sync::Arc<dyn busbar_contract::conn::Conns>,
+        std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>,
     )>,
+}
+
+impl std::fmt::Debug for InstanceWake {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InstanceWake")
+            .field("route", &self.route)
+            .field("caller", &self.caller)
+            .field("conn", &self.conn.get().map(|(id, _)| id))
+            .finish()
+    }
 }
 
 /// THE HOST'S WAKE (`abi::mechanism::ticket::WakeFn`). Any thread; never blocks on the plugin;

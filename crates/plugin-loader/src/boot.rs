@@ -424,7 +424,7 @@ pub fn load_planes(
     metrics: Arc<dyn EnvelopeSink>,
     dispatcher: Adopter,
     max_inflight_cap: u32,
-    conns: Option<Arc<dyn busbar_contract::conn::Conns>>,
+    conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
 ) -> Result<Vec<(String, Plugin<Plane>)>, String> {
     let selected: Vec<Selected> = doors
         .iter()
@@ -486,7 +486,7 @@ pub struct LoadRequest<'a> {
     /// The host's clamp on `max_inflight`.
     pub max_inflight_cap: u32,
     /// The host's one connection table ([`Bind::conns`]).
-    pub conns: Option<Arc<dyn busbar_contract::conn::Conns>>,
+    pub conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
 }
 
 /// What [`load`] bound: `(instance, bound)`, in selection order.

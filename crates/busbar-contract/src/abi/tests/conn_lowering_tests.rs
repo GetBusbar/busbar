@@ -16,18 +16,6 @@ use crate::transport::wire::WireStatusClass;
 struct Echo(ConnSlab<Mutex<Vec<Vec<u8>>>>, Mutex<Vec<u64>>);
 
 impl Conns for Echo {
-    fn declare(
-        &self,
-        owner: InstanceId,
-        need: NeedId,
-        _: &crate::abi::mechanism::rendering::ReadNeed,
-    ) -> Result<(), ConnError> {
-        self.0.declare(owner, need);
-        Ok(())
-    }
-    fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>> {
-        self.0.check_need(owner, need).ok().map(Ok)
-    }
     fn open(
         &self,
         caller: InstanceId,

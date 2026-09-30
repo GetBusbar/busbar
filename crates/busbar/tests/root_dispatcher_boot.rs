@@ -133,7 +133,11 @@ fn boot(tag: &str, env: &[(&str, &str)]) -> (usize, String) {
     let threads = dispatcher_threads(child.id());
     let _ = child.kill();
     let _ = child.wait();
-    assert!(ready, "busbar never answered /healthz; log:\n{}", log_text());
+    assert!(
+        ready,
+        "busbar never answered /healthz; log:\n{}",
+        log_text()
+    );
     let out = log_text();
     let _ = std::fs::remove_dir_all(&dir);
     (threads, out)
@@ -187,7 +191,8 @@ fn the_worker_count_warnings_print_as_before_and_the_dispatcher_is_full_size() {
         2 + 1,
         "the deprecated knob still wins and sizes the dispatcher"
     );
-    let deprecated = "[warn] BUSBAR_WORKER_THREADS is DEPRECATED; set `advanced.worker_threads` in \
+    let deprecated =
+        "[warn] BUSBAR_WORKER_THREADS is DEPRECATED; set `advanced.worker_threads` in \
                       config.yaml instead (it is honored for now).";
     assert!(out.lines().any(|l| l == deprecated), "{out}");
 }

@@ -19,9 +19,9 @@
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
+use crate::abi::mechanism::rendering::ReadNeed;
 use crate::ids::StreamId;
 use crate::transport::wire::WireStatusClass;
-use crate::abi::mechanism::rendering::ReadNeed;
 use crate::transport::ConnFacts;
 
 /// A plugin instance, as the host numbers it. Never stated by a plugin: the host reads it off the
@@ -152,18 +152,6 @@ pub const NO_TICKET: Ticket = 0;
 /// THE HOST'S CONNECTION TABLE, as the host implements it. Every method names the `caller`, which
 /// the host reads off the instance's own context.
 pub trait Conns: Send + Sync {
-    /// Record that `owner` declared `need` (its index in the instance's Statement), as the Statement
-    /// states it: the whole need — direction, transport, auth, egress class, target and trust
-    /// sources, details. The answer is kept: [`Conns::declared`] reads it back.
-    ///
-    /// # Errors
-    ///
-    /// [`ConnError::Refused`] when the host will not carry the need as declared.
-    fn declare(&self, owner: InstanceId, need: NeedId, spec: &ReadNeed) -> Result<(), ConnError>;
-
-    /// What [`Conns::declare`] answered for `owner`'s `need`; `None` when it never declared it.
-    fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>>;
-
     /// Open a connection for the caller's declared `need`.
     ///
     /// # Errors
@@ -226,6 +214,23 @@ pub trait Conns: Send + Sync {
     ///
     /// [`ConnError::NotOwner`], [`ConnError::Closed`].
     fn close(&self, caller: InstanceId, conn: ConnId) -> Result<(), ConnError>;
+}
+
+/// THE HOST'S CONNECTION TABLE, as the host declares an instance's needs on it (host-side: never
+/// lowered to a plugin). The loader declares every need an instance's signed Statement states at
+/// bind; the host's need-admission service reads the answers back.
+pub trait DeclaredConns: Conns {
+    /// Record that `owner` declared `need` (its index in the instance's Statement), as the Statement
+    /// states it: the whole need — direction, transport, auth, egress class, target and trust
+    /// sources, details. The answer is kept: [`DeclaredConns::declared`] reads it back.
+    ///
+    /// # Errors
+    ///
+    /// [`ConnError::Refused`] when the host will not carry the need as declared.
+    fn declare(&self, owner: InstanceId, need: NeedId, spec: &ReadNeed) -> Result<(), ConnError>;
+
+    /// What [`DeclaredConns::declare`] answered for `owner`'s `need`; `None` = never declared.
+    fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>>;
 }
 
 /// THE HOST-SIDE READER'S CONNECTION TABLE: [`Conns`] plus a read that wakes a [`Waker`] instead of

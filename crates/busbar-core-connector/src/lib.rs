@@ -51,12 +51,12 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
-use busbar_contract::conn::{
-    ConnError, ConnId, ConnSlab, Conns, InstanceId, NeedId, OpenDesc, Piece, PieceKind, PollConns,
-    Ticket, NO_TICKET,
-};
 use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
+use busbar_contract::conn::{
+    ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, Piece,
+    PieceKind, PollConns, Ticket, NO_TICKET,
+};
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::transport::ConnFacts;
@@ -430,7 +430,7 @@ impl Connector {
     }
 }
 
-impl Conns for Connector {
+impl DeclaredConns for Connector {
     fn declare(&self, owner: InstanceId, need: NeedId, spec: &ReadNeed) -> Result<(), ConnError> {
         // An outbound need is carried over the transport its claim names, its dials judged in its
         // own egress class; an inbound need is recorded (the listener binds it).
@@ -455,7 +455,9 @@ impl Conns for Connector {
         let declared = self.declared.lock().expect("declared needs");
         declared.get(&(owner, need)).map(|(_, answer)| *answer)
     }
+}
 
+impl Conns for Connector {
     fn open(
         &self,
         caller: InstanceId,

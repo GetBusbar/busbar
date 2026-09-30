@@ -8,9 +8,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::abi::host::conn::connector::{
-    service, EstablishIn, Need, DIRECTION_OUTBOUND,
-};
+use busbar_contract::abi::host::conn::connector::{service, EstablishIn, Need, DIRECTION_OUTBOUND};
 use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::door::{Door, Statement};
@@ -18,14 +16,15 @@ use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::sdk::door::abi_str;
 use busbar_contract::conn::{
-    ConnError, ConnFacts, ConnId, ConnSlab, Conns, InstanceId, NeedId, OpenDesc, Piece,
+    ConnError, ConnFacts, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc,
+    Piece,
 };
 
 use super::CONN_SLOTS;
 use crate::dispatch::load::validate_door;
 use crate::dispatch::{Adopter, Bind, NoSink, Plugin, NO_BLOB};
-use crate::dispatch_tests::TestKind;
 use crate::dispatch_test_plugin as plug;
+use crate::dispatch_tests::TestKind;
 
 /// A connection table that records what reached it, ownership kept by the shared [`ConnSlab`].
 #[derive(Default)]
@@ -35,7 +34,7 @@ struct Recording {
     opened: Mutex<Vec<(InstanceId, NeedId, String)>>,
 }
 
-impl Conns for Recording {
+impl DeclaredConns for Recording {
     fn declare(&self, owner: InstanceId, need: NeedId, spec: &ReadNeed) -> Result<(), ConnError> {
         self.slab.declare(owner, need);
         self.declared
@@ -47,6 +46,9 @@ impl Conns for Recording {
     fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>> {
         self.slab.check_need(owner, need).ok().map(Ok)
     }
+}
+
+impl Conns for Recording {
     fn open(
         &self,
         caller: InstanceId,
@@ -63,13 +65,7 @@ impl Conns for Recording {
     fn write(&self, _: InstanceId, _: ConnId, _: &[u8], _: bool) -> Result<usize, ConnError> {
         Err(ConnError::Closed)
     }
-    fn read(
-        &self,
-        _: InstanceId,
-        _: ConnId,
-        _: u64,
-        _: &mut [u8],
-    ) -> Result<Piece, ConnError> {
+    fn read(&self, _: InstanceId, _: ConnId, _: u64, _: &mut [u8]) -> Result<Piece, ConnError> {
         Err(ConnError::Closed)
     }
     fn wait(&self, _: InstanceId, _: &[ConnId], _: u64) -> Result<usize, ConnError> {
@@ -113,7 +109,7 @@ fn bound(needs: &'static [Need], table: &Arc<Recording>) -> Plugin<TestKind> {
         ..real
     }));
     let v = validate_door::<TestKind>(door).expect("the door validates");
-    let conns: Arc<dyn Conns> = table.clone();
+    let conns: Arc<dyn DeclaredConns> = table.clone();
     Plugin::bind(
         v,
         None,
@@ -146,11 +142,7 @@ fn establish(p: &Plugin<TestKind>, need: u32, target: &'static str) -> ServiceOu
     // SAFETY: an all-zero `ServiceOut` is a valid value the slot overwrites.
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
     let slot = CONN_SLOTS.establish.expect("ESTABLISH is served");
-    let _: RawOutcome = slot(
-        p.inner.ctx(),
-        std::ptr::from_ref(&i).cast(),
-        &mut out,
-    );
+    let _: RawOutcome = slot(p.inner.ctx(), std::ptr::from_ref(&i).cast(), &mut out);
     out
 }
 
@@ -167,7 +159,10 @@ fn an_instance_with_a_declared_need_is_declared_and_its_establish_reaches_the_ta
     assert_eq!((*owner, *need), (p.instance(), NeedId(0)));
     assert_eq!(spec.direction, DIRECTION_OUTBOUND);
     assert_eq!(spec.transport, "tcp");
-    assert_eq!(spec.target_from, "settings.upstream", "the target source reaches declare intact");
+    assert_eq!(
+        spec.target_from, "settings.upstream",
+        "the target source reaches declare intact"
+    );
     let out = establish(&p, 0, "127.0.0.1:9");
     assert_eq!(out.outcome, RawOutcome::of(Outcome::Ready));
     assert_eq!(

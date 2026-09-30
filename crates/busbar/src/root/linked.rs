@@ -1009,7 +1009,7 @@ pub type DoorPlane =
 pub fn load_door_planes() {
     let doors = DOOR_CANDIDATES.get().map_or(&[][..], Vec::as_slice);
     // The process's ONE connection table: a plane that declares a need is declared on it.
-    let conns: std::sync::Arc<dyn busbar_contract::conn::Conns> =
+    let conns: std::sync::Arc<dyn busbar_contract::conn::DeclaredConns> =
         crate::root::connector::the().clone();
     let bound = crate::root::loader::boot::load_planes(
         doors,

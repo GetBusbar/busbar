@@ -166,7 +166,7 @@ pub struct Bind {
     /// The host's ONE connection table. An instance whose Statement declares a need is declared on
     /// it at bind (each need under its Statement index) and handed the connector slots
     /// ([`super::conn_services::CONN_SLOTS`]); any other instance is handed none.
-    pub conns: Option<Arc<dyn busbar_contract::conn::Conns>>,
+    pub conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
 }
 
 impl std::fmt::Debug for Bind {
@@ -892,9 +892,7 @@ impl<K: Kind> Plugin<K> {
                         .ok()
                         .and_then(|r| busbar_contract::abi::mechanism::rendering::read(&r).ok())
                         .map(|r| r.needs)
-                        .ok_or_else(|| {
-                            LoadError::BadStatement("the needs do not render".into())
-                        })?;
+                        .ok_or_else(|| LoadError::BadStatement("the needs do not render".into()))?;
                     for (i, need) in needs.iter().enumerate() {
                         let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
                         // The answer is the connection table's to keep; a need the host will not

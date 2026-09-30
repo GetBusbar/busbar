@@ -25,7 +25,7 @@ use busbar_contract::abi::host::conn::connector::{
 use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
-use busbar_contract::conn::{ConnError, ConnId, Conns, InstanceId, NeedId, OpenDesc};
+use busbar_contract::conn::{ConnError, ConnId, DeclaredConns, InstanceId, NeedId, OpenDesc};
 
 use super::ticket::InstanceWake;
 
@@ -105,7 +105,7 @@ impl Answer {
 }
 
 /// The instance a context names, and its connection table.
-fn armed(ctx: HostCtx) -> Option<&'static (InstanceId, Arc<dyn Conns>)> {
+fn armed(ctx: HostCtx) -> Option<&'static (InstanceId, Arc<dyn DeclaredConns>)> {
     if ctx.ptr.is_null() {
         return None;
     }
@@ -123,7 +123,7 @@ fn slot(
     out: *mut ServiceOut,
     service: u32,
     in_size: usize,
-    body: impl FnOnce(InstanceId, &Arc<dyn Conns>, ServiceHead) -> Answer,
+    body: impl FnOnce(InstanceId, &Arc<dyn DeclaredConns>, ServiceHead) -> Answer,
 ) -> RawOutcome {
     let a = catch_unwind(AssertUnwindSafe(|| {
         if input.is_null() || out.is_null() {
