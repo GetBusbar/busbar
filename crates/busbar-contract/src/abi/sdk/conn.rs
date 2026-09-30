@@ -23,7 +23,7 @@ use crate::abi::host::conn::connector::{
     StreamIn, UpgradeIn,
 };
 use crate::abi::host::service::{
-    op, ClockNowIn, ClockReading, HostSlots, ServiceFn, ServiceHead, ServiceOut,
+    op, ClockNowIn, ClockReading, HostSlots, NeedAdmitIn, ServiceFn, ServiceHead, ServiceOut,
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
 use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables, Ticket};
@@ -142,7 +142,8 @@ service_in!(
     UpgradeIn,
     ReplyIn,
     RequestIn,
-    ClockNowIn
+    ClockNowIn,
+    NeedAdmitIn
 );
 
 const fn blank_head() -> ServiceHead {
@@ -351,24 +352,51 @@ impl Connector<'_> {
             head: blank_head(),
             reading: std::ptr::from_mut(&mut reading),
         };
-        // SAFETY: NULL, or the host's services table, valid for the instance's life.
-        let Some(f) = unsafe { self.host.services.as_ref() }.and_then(|s| s.clock_now) else {
-            return Poll::Ready(Err(ConnFailure::Unarmed));
-        };
-        // A service that never pends is made on NO ticket: the host keeps no stored result for
-        // it, so every entry of the op reads the clock afresh, and it draws no handle from the
-        // op's count (the replay rule is untouched).
-        let none = CompletionHandle {
-            ticket: Ticket::NONE,
-            seq: 0,
-            _reserved: 0,
-        };
-        match self.cross(op::CLOCK_NOW, f, input, none) {
+        match self.cross_now(op::CLOCK_NOW, |s| s.clock_now, input) {
             Poll::Ready(Ok(_)) => Poll::Ready(Ok(reading)),
             Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
             // It never pends: a host that says so broke the service's rule.
             Poll::Pending => Poll::Ready(Err(ConnFailure::Fault)),
         }
+    }
+
+    /// THE HOST'S VERDICT on the declared need `need` (its index in the Statement's needs), as it
+    /// admitted it when it bound this instance (target, egress class, trust anchors): `Ok` when
+    /// admitted, or `ConnFailure::Refused` with the host's text. Never pends. It only lets `open`
+    /// answer its own words — a need that failed admission is refused at every establish whether
+    /// or not the plugin asked (FAIL-CLOSED, the connector's).
+    pub fn admit(&mut self, need: u32) -> Result<(), ConnFailure> {
+        let input = NeedAdmitIn {
+            head: blank_head(),
+            need,
+            _reserved: 0,
+        };
+        match self.cross_now(op::NEED_ADMIT, |s| s.need_admit, input) {
+            Poll::Ready(r) => r.map(|_| ()),
+            // It never pends: a host that says so broke the service's rule.
+            Poll::Pending => Err(ConnFailure::Fault),
+        }
+    }
+
+    /// Make a host service that NEVER pends through `pick`'s slot, on NO ticket: the host keeps no
+    /// stored result for it, so every entry of the op asks afresh, and it draws no handle from the
+    /// op's count (the replay rule is untouched).
+    fn cross_now<I: ServiceIn>(
+        &self,
+        op: u32,
+        pick: impl FnOnce(&HostSlots) -> Option<ServiceFn>,
+        input: I,
+    ) -> Answer<ServiceOut> {
+        // SAFETY: NULL, or the host's services table, valid for the instance's life.
+        let Some(f) = unsafe { self.host.services.as_ref() }.and_then(pick) else {
+            return Poll::Ready(Err(ConnFailure::Unarmed));
+        };
+        let none = CompletionHandle {
+            ticket: Ticket::NONE,
+            seq: 0,
+            _reserved: 0,
+        };
+        self.cross(op, f, input, none)
     }
 
     /// Write one request piece on a framed `stream`: `piece` describes it, `bytes` holds what its

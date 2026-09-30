@@ -471,6 +471,7 @@ fn every_service_field_sits_at_its_op_index() {
         (offset_of!(HostSlots, content_scan), op::CONTENT_SCAN),
         (offset_of!(HostSlots, hook_call), op::HOOK_CALL),
         (offset_of!(HostSlots, random_fill), op::RANDOM_FILL),
+        (offset_of!(HostSlots, need_admit), op::NEED_ADMIT),
     ];
     for (i, (offset, op)) in table.iter().enumerate() {
         assert_eq!(*op as usize, i, "op constants run 0.. in table order");
@@ -526,5 +527,36 @@ fn red_a_ready_clock_answer_of_a_foreign_reading_names_clock_now_reading_size() 
     assert_eq!(
         check_clock_now(&i, ready(&o), &o).unwrap_err(),
         fault(Rule::Foreign, "clock_now.reading.size")
+    );
+}
+
+/// `need.admit` never pends (on a ticket or not), READY carries no value, and REFUSED is its
+/// verdict against a need.
+#[test]
+fn need_admit_never_pends_and_answers_admitted_or_refused() {
+    let at = |ticket| NeedAdmitIn {
+        head: head(op::NEED_ADMIT, ticket, core::mem::size_of::<NeedAdmitIn>()),
+        need: 0,
+        _reserved: 0,
+    };
+    assert!(!may_pend(op::NEED_ADMIT));
+    let o = out(Outcome::Ready);
+    assert_eq!(
+        check_need_admit(&at(Ticket::NONE), ready(&o), &o),
+        Ok(Filled::Written)
+    );
+    let o = out(Outcome::Refused);
+    assert!(check_need_admit(&at(Ticket::NONE), ready(&o), &o).is_ok());
+    let o = out(Outcome::Pending);
+    assert_eq!(
+        rule(check_need_admit(&at(TICKET), ready(&o), &o)),
+        Rule::Contradiction,
+        "it never pends, even on a ticket"
+    );
+    let mut o = out(Outcome::Ready);
+    o.value = 1;
+    assert_eq!(
+        rule(check_need_admit(&at(Ticket::NONE), ready(&o), &o)),
+        Rule::UnknownCode
     );
 }

@@ -1953,9 +1953,11 @@ fn compute_layout() -> String {
             entitlement_check,
             content_scan,
             hook_call,
-            random_fill
+            random_fill,
+            need_admit
         ]
     );
+    record!(s, hsvc::NeedAdmitIn, [head, need, _reserved]);
 
     // M3-SHAPES (abi-v2-perkind.md B.2): the secret kind's `resolve`.
     record!(s, SecretOps, [head, resolve]);
