@@ -616,7 +616,7 @@ fn open_boot_book(app: &busbar_kernel::state::App) -> root::durability::NodeBook
 
 async fn run(data_workers: usize) {
     // THE PROCESS'S ONE DISPATCHER, before any plugin loads: every kind's plugins are opened on
-    // it (`root::dispatch`).
+    // it (`root::dispatch`), one plugin worker per data worker.
     let late_services = root::serve::LateServices::new();
     let _dispatcher = root::dispatch::boot(data_workers, late_services.clone());
     // THE PLUGIN OBSERVABILITY ENVELOPE, before any plugin loads (`root::observe`).
