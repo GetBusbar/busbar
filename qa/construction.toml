@@ -2332,6 +2332,8 @@ max_sites = 0
 #   panicking one mean the same thing — this handle was not abandoned.
 known_sites = [
   "crates/busbar-contract/src/ids.rs::key",
+  # boot/reload-time route-literal interning, deduplicated, never a money hold
+  "crates/busbar-contract/src/abi/transport/route.rs::intern",
   # was crates/busbar-core/src/plane_host/ (a whole directory) — the ten files of it that carry a
   # reviewed escape, so the seven substrate-origin files the merge added stay uncovered.
   "crates/busbar-kernel/src/plane_host/breaker.rs",

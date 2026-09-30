@@ -16,11 +16,8 @@
 //! miss on the first such line (405, never no-route). Otherwise there is no line (the listener's
 //! 1.5.5 no-route answer).
 
-use std::collections::HashSet;
-use std::sync::{Mutex, OnceLock};
-
 use busbar_contract::abi::transport::route::{
-    pattern_segments, RouteView, FIELD_VALUE_PREFIX, PATH_CONTAINS, PATH_EXACT, PATH_PATTERN,
+    intern, intern_pattern, RouteView, FIELD_VALUE_PREFIX, PATH_CONTAINS, PATH_EXACT, PATH_PATTERN,
     PATH_PREFIX, PATH_SUFFIX,
 };
 use busbar_contract::grammar::Selector;
@@ -125,38 +122,6 @@ impl Route {
                 .all(|y| x.header_name() != y.header_name() || crate::registry::overlaps(x, y))
         })
     }
-}
-
-/// A path or field literal as the grammar's `'static` spelling: interned once per distinct string.
-fn intern(s: &str) -> &'static str {
-    static SEEN: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
-    let mut seen = SEEN
-        .get_or_init(|| Mutex::new(HashSet::new()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(s) = seen.get(s) {
-        return s;
-    }
-    let s: &'static str = Box::leak(s.to_owned().into_boxed_str());
-    seen.insert(s);
-    s
-}
-
-/// A pattern's segments as the grammar's `'static` spelling: parsed and kept once per pattern.
-fn intern_pattern(p: &'static str) -> Option<&'static [busbar_contract::grammar::PathSeg]> {
-    use std::collections::HashMap;
-    type Seen = Mutex<HashMap<&'static str, &'static [busbar_contract::grammar::PathSeg]>>;
-    static SEEN: OnceLock<Seen> = OnceLock::new();
-    let mut seen = SEEN
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(segs) = seen.get(p) {
-        return Some(segs);
-    }
-    let segs: &'static [_] = Vec::leak(pattern_segments(p)?);
-    seen.insert(p, segs);
-    Some(segs)
 }
 
 /// The auth a line's guests must pass.

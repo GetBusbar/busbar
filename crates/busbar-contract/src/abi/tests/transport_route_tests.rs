@@ -136,3 +136,17 @@ fn a_view_matches_its_path_and_fields_and_admits_only_its_methods() {
         "a path hit on another method is a method miss, not a match"
     );
 }
+
+/// RED without the dedup: one string is one copy, and a pattern is parsed once.
+#[test]
+fn the_interner_returns_one_copy_per_distinct_string() {
+    let (a, b) = (intern("/a/literal"), intern("/a/literal"));
+    assert!(std::ptr::eq(a, b));
+    assert!(!std::ptr::eq(a, intern("/another")));
+    let (p, q) = (
+        intern_pattern("/m/{x}/{*rest}").unwrap(),
+        intern_pattern("/m/{x}/{*rest}").unwrap(),
+    );
+    assert!(std::ptr::eq(p, q));
+    assert!(intern_pattern("/m/{*rest}/x").is_none());
+}

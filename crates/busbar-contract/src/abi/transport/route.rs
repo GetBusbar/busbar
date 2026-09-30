@@ -11,6 +11,9 @@
 //! head's field lines. Field names are compared case-insensitively (they are lower-case in a route,
 //! refused otherwise at check); a [`FIELD_VALUE_PREFIX`] value is compared case-sensitively.
 
+use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
+
 use crate::abi::mechanism::call::AbiStr;
 use crate::grammar::{one_level_under, pattern_matches, PathSeg};
 
@@ -154,21 +157,33 @@ pub fn pattern_segments(pattern: &str) -> Option<Vec<PathSeg>> {
             },
             None if s.contains(['{', '}']) => return None,
             // The literal outlives the call as the pattern does; the matcher copies nothing.
-            None => PathSeg::Lit(leak(s)),
+            None => PathSeg::Lit(intern(s)),
         };
         out.push(seg);
     }
     Some(out)
 }
 
-/// A literal segment for [`PathSeg::Lit`], which holds `'static` strings: interned once per distinct
-/// spelling, so a route checked at every boot costs one copy of each literal for the process.
-fn leak(s: &str) -> &'static str {
-    use std::collections::HashSet;
-    use std::sync::{Mutex, OnceLock};
-    static SEEN: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
-    let mut seen = SEEN
-        .get_or_init(|| Mutex::new(HashSet::new()))
+type Strings = Mutex<HashSet<&'static str>>;
+type Patterns = Mutex<HashMap<&'static str, &'static [PathSeg]>>;
+
+fn strings() -> &'static Strings {
+    static T: OnceLock<Strings> = OnceLock::new();
+    T.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn patterns() -> &'static Patterns {
+    static T: OnceLock<Patterns> = OnceLock::new();
+    T.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The one interner of route literals. The grammar's selectors hold `'static` spellings, so a route
+/// checked at boot or at a reload needs one; each distinct string is copied once, for the life of
+/// the process, and asking again returns the same pointer. The table is bounded by the distinct
+/// strings ever seen, so a reload with the same routes adds nothing.
+#[must_use]
+pub fn intern(s: &str) -> &'static str {
+    let mut seen = strings()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(s) = seen.get(s) {
@@ -177,6 +192,36 @@ fn leak(s: &str) -> &'static str {
     let s: &'static str = Box::leak(s.to_owned().into_boxed_str());
     seen.insert(s);
     s
+}
+
+/// A `PATH_PATTERN` as the grammar's `'static` segments, parsed and kept once per distinct pattern
+/// (the same table discipline as [`intern`]); `None` when it breaks the syntax.
+#[must_use]
+pub fn intern_pattern(pattern: &str) -> Option<&'static [PathSeg]> {
+    let key = intern(pattern);
+    let mut seen = patterns()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(segs) = seen.get(key) {
+        return Some(segs);
+    }
+    let segs: &'static [PathSeg] = Vec::leak(pattern_segments(key)?);
+    seen.insert(key, segs);
+    Some(segs)
+}
+
+/// How many distinct strings and patterns the interner holds (strings, patterns).
+#[must_use]
+pub fn interned_counts() -> (usize, usize) {
+    let s = strings()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .len();
+    let p = patterns()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .len();
+    (s, p)
 }
 
 /// Whether `path` matches a route's path in `form`, the one spelling of every form. A pattern that
