@@ -263,7 +263,7 @@ pub fn root_binds(doc: &serde_json::Value, root: &RootListens<'_>) -> Vec<Inboun
 /// `root` first, then every selected instance's inbound listener read from its settings — two
 /// listeners on one address are refused here, before anything binds; and the loader's version refusal for every
 /// SELECTED plugin whose Statement states a mechanism or kind ABI version other than this host's,
-/// naming the rebuild (THE DESIGN §11.8).
+/// naming the rebuild (BUSBAR-1.6.0.md §11.8).
 ///
 /// # Errors
 ///
