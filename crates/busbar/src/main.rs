@@ -162,8 +162,14 @@ fn worker_threads_from_config_noting(warnings: &mut Vec<String>) -> Option<usize
     let mut unset = Vec::new();
     let interpolated =
         config::interpolate_env_with(&raw, config::EnvSubst::Lenient, &mut unset).ok()?;
-    let deploy: config::DeployCfg = config::deploy_from_yaml_str(&interpolated).ok()?;
-    match validate_worker_threads_config(deploy.advanced.worker_threads) {
+    // Only `advanced.worker_threads` is read: this runs as `main()`'s first act (the dispatcher is
+    // sized by it), before any plane is registered, so it must not parse the plane-owned sections.
+    let doc: serde_yaml::Value = serde_yaml::from_str(&interpolated).ok()?;
+    let worker_threads = match doc.get("advanced").and_then(|a| a.get("worker_threads")) {
+        None | Some(serde_yaml::Value::Null) => None,
+        Some(v) => Some(usize::try_from(v.as_u64()?).ok()?),
+    };
+    match validate_worker_threads_config(worker_threads) {
         Ok(v) => v,
         Err(msg) => {
             // Consistency with `worker_threads_from_env`, which WARNS on an invalid value rather than
