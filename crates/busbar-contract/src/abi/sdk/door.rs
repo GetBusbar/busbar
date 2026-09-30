@@ -604,8 +604,35 @@ pub const fn door<T: KindOps>(statement: &'static Statement, ops: &'static T) ->
 ///   field's offset (the SLOT LAYOUT rule), and its `in`/`out` must be the ones the kind states for
 ///   that index ([`KindSlot`]; a mismatch does not compile). Every field must be named (a struct
 ///   literal).
+/// * `lifecycle: life(L)` — instead of the nine: the SDK's generic lifecycle slots over the kind's
+///   [`Life`](crate::abi::sdk::life::Life) `L` (`abi::sdk::life`), every one a
+///   [`Safe`](crate::abi::sdk::safe::Safe) slot over `Held<L>`.
 #[macro_export]
 macro_rules! plugin_door {
+    (
+        ops: $ops:ty,
+        statement: $statement:expr,
+        lifecycle: life($life:ty)
+        $(, kind_ops: { $($field:ident : $slot:ty),* $(,)? })?
+        $(,)?
+    ) => {
+        $crate::plugin_door! {
+            ops: $ops,
+            statement: $statement,
+            lifecycle: {
+                validate: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Validate<$life>>,
+                open: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Open<$life>>,
+                refresh: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Refresh<$life>>,
+                retire: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Retire<$life>>,
+                tick: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Tick<$life>>,
+                drive: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Drive<$life>>,
+                cancel: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Cancel<$life>>,
+                release: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Release<$life>>,
+                close: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Close<$life>>,
+            }
+            $(, kind_ops: { $($field : $slot),* })?
+        }
+    };
     (
         ops: $ops:ty,
         statement: $statement:expr,
