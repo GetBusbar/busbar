@@ -683,7 +683,10 @@ fn route(methods: u32, path_form: u32, path: &'static str) -> route::RouteMatch 
 #[test]
 fn a_route_shape_is_checked() {
     use route::*;
-    assert_eq!(check_route(&route(METHOD_POST, PATH_EXACT, "/v1/messages")), Ok(()));
+    assert_eq!(
+        check_route(&route(METHOD_POST, PATH_EXACT, "/v1/messages")),
+        Ok(())
+    );
     assert_eq!(
         check_route(&route(0, PATH_EXACT, "/x")),
         f(Rule::Missing, "route.methods")
@@ -702,8 +705,14 @@ fn a_route_shape_is_checked() {
     let bad = [FieldPredicate {
         op: FIELD_VALUE_PREFIX + 1,
         _reserved: 0,
-        name: AbiStr { ptr: null(), len: 0 },
-        value: AbiStr { ptr: null(), len: 0 },
+        name: AbiStr {
+            ptr: null(),
+            len: 0,
+        },
+        value: AbiStr {
+            ptr: null(),
+            len: 0,
+        },
     }];
     assert_eq!(
         check_route_fields(&bad),
@@ -723,8 +732,14 @@ fn a_route_content_is_checked() {
         fields,
         rung: 0,
     };
-    assert_eq!(check_route_view(&v(PATH_EXACT, "/v1/messages", vec![])), Ok(()));
-    assert_eq!(check_route_view(&v(PATH_SUFFIX, ":countTokens", vec![])), Ok(()));
+    assert_eq!(
+        check_route_view(&v(PATH_EXACT, "/v1/messages", vec![])),
+        Ok(())
+    );
+    assert_eq!(
+        check_route_view(&v(PATH_SUFFIX, ":countTokens", vec![])),
+        Ok(())
+    );
     assert_eq!(
         check_route_view(&v(PATH_EXACT, "", vec![])),
         f(Rule::Missing, "route.path")
@@ -738,15 +753,27 @@ fn a_route_content_is_checked() {
         f(Rule::UnknownCode, "route.path.pattern")
     );
     assert_eq!(
-        check_route_view(&v(PATH_EXACT, "/x", vec![(FIELD_PRESENT, "Authorization", b"")])),
+        check_route_view(&v(
+            PATH_EXACT,
+            "/x",
+            vec![(FIELD_PRESENT, "Authorization", b"")]
+        )),
         f(Rule::UnknownCode, "route.field.name")
     );
     assert_eq!(
-        check_route_view(&v(PATH_EXACT, "/x", vec![(FIELD_PRESENT, "authorization", b"x")])),
+        check_route_view(&v(
+            PATH_EXACT,
+            "/x",
+            vec![(FIELD_PRESENT, "authorization", b"x")]
+        )),
         f(Rule::Contradiction, "route.field.value")
     );
     assert_eq!(
-        check_route_view(&v(PATH_EXACT, "/x", vec![(FIELD_VALUE_PREFIX, "authorization", b"")])),
+        check_route_view(&v(
+            PATH_EXACT,
+            "/x",
+            vec![(FIELD_VALUE_PREFIX, "authorization", b"")]
+        )),
         f(Rule::Contradiction, "route.field.value")
     );
 }

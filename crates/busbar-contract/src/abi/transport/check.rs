@@ -564,14 +564,11 @@ pub fn check_route_fields(fields: &[super::route::FieldPredicate]) -> Result<(),
 ///
 /// The rule the route breaks.
 pub fn check_route_view(r: &super::route::RouteView<'_>) -> Result<(), Fault> {
-    use super::route::{
-        pattern_segments, FIELD_PRESENT, PATH_EXACT, PATH_PATTERN, PATH_PREFIX,
-    };
+    use super::route::{pattern_segments, FIELD_PRESENT, PATH_EXACT, PATH_PATTERN, PATH_PREFIX};
     if r.path.is_empty() {
         return Err(fault(Rule::Missing, "route.path"));
     }
-    if matches!(r.path_form, PATH_EXACT | PATH_PATTERN | PATH_PREFIX) && !r.path.starts_with('/')
-    {
+    if matches!(r.path_form, PATH_EXACT | PATH_PATTERN | PATH_PREFIX) && !r.path.starts_with('/') {
         return Err(fault(Rule::UnknownCode, "route.path"));
     }
     if r.path_form == PATH_PATTERN && pattern_segments(r.path).is_none() {

@@ -6,7 +6,8 @@
 //! a path hit on another method is a method miss, not no-route.
 
 use busbar_contract::abi::transport::route::{
-    FIELD_PRESENT, FIELD_VALUE_PREFIX, METHOD_GET, METHOD_POST, PATH_EXACT, PATH_PATTERN, PATH_PREFIX,
+    FIELD_PRESENT, FIELD_VALUE_PREFIX, METHOD_GET, METHOD_POST, PATH_EXACT, PATH_PATTERN,
+    PATH_PREFIX,
 };
 
 use super::*;
@@ -59,10 +60,16 @@ fn the_most_specific_path_is_tried_first() {
 #[test]
 fn a_line_with_predicates_ranks_above_one_without() {
     let bare = route(METHOD_POST, PATH_EXACT, "/v1/chat/completions");
-    let signed = with_field(bare.clone(), FIELD_VALUE_PREFIX, "authorization", b"AWS4-HMAC");
+    let signed = with_field(
+        bare.clone(),
+        FIELD_VALUE_PREFIX,
+        "authorization",
+        b"AWS4-HMAC",
+    );
     let list = GuestList::seal(vec![line("plain", bare), line("signed", signed)]).unwrap();
     assert_eq!(list.lines()[0].claimant, Claimant::Plane("signed".into()));
-    let hit = |fields: &[(&str, &[u8])]| match list.matched("POST", "/v1/chat/completions", fields) {
+    let hit = |fields: &[(&str, &[u8])]| match list.matched("POST", "/v1/chat/completions", fields)
+    {
         Matched::Line(l) => l.claimant.clone(),
         other => panic!("{other:?}"),
     };
@@ -70,7 +77,10 @@ fn a_line_with_predicates_ranks_above_one_without() {
         hit(&[("Authorization", b"AWS4-HMAC-SHA256 x")]),
         Claimant::Plane("signed".into())
     );
-    assert_eq!(hit(&[("Authorization", b"Bearer x")]), Claimant::Plane("plain".into()));
+    assert_eq!(
+        hit(&[("Authorization", b"Bearer x")]),
+        Claimant::Plane("plain".into())
+    );
 }
 
 /// RED: path precedence is the first key; predicates break ties only at an equal path precedence. An
@@ -100,13 +110,26 @@ fn an_exact_path_beats_a_prefix_line_with_predicates() {
 /// RED: a claimant's rung orders its own lines at an equal precedence.
 #[test]
 fn a_claimants_rung_orders_its_own_lines() {
-    let mut first = with_field(route(METHOD_POST, PATH_PATTERN, "/{*rest}"), FIELD_PRESENT, "x-a", b"");
+    let mut first = with_field(
+        route(METHOD_POST, PATH_PATTERN, "/{*rest}"),
+        FIELD_PRESENT,
+        "x-a",
+        b"",
+    );
     first.rung = 2;
-    let mut second =
-        with_field(route(METHOD_POST, PATH_PATTERN, "/{*rest}"), FIELD_PRESENT, "x-b", b"");
+    let mut second = with_field(
+        route(METHOD_POST, PATH_PATTERN, "/{*rest}"),
+        FIELD_PRESENT,
+        "x-b",
+        b"",
+    );
     second.rung = 1;
     let list = GuestList::seal(vec![line("llm", first), line("llm", second)]).unwrap();
-    assert_eq!(list.lines()[0].route.fields[0].1, "x-b", "the lower rung first");
+    assert_eq!(
+        list.lines()[0].route.fields[0].1,
+        "x-b",
+        "the lower rung first"
+    );
     let both: &[(&str, &[u8])] = &[("x-a", b"1"), ("x-b", b"1")];
     let Matched::Line(l) = list.matched("POST", "/anything", both) else {
         panic!("matched");
@@ -128,7 +151,10 @@ fn two_claimants_at_an_equal_precedence_are_refused() {
         (pair.0.claimant.clone(), pair.1.claimant.clone()),
         (Claimant::Plane("a".into()), Claimant::Plane("b".into()))
     );
-    assert!(GuestList::seal(vec![line("a", r()), line("a", r())]).is_ok(), "one claimant");
+    assert!(
+        GuestList::seal(vec![line("a", r()), line("a", r())]).is_ok(),
+        "one claimant"
+    );
     assert!(
         GuestList::seal(vec![
             line("a", r()),

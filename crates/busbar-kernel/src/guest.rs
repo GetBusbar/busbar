@@ -20,8 +20,8 @@ use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 
 use busbar_contract::abi::transport::route::{
-    pattern_segments, RouteView, PATH_CONTAINS, PATH_EXACT, PATH_PATTERN, PATH_PREFIX,
-    PATH_SUFFIX, FIELD_VALUE_PREFIX,
+    pattern_segments, RouteView, FIELD_VALUE_PREFIX, PATH_CONTAINS, PATH_EXACT, PATH_PATTERN,
+    PATH_PREFIX, PATH_SUFFIX,
 };
 use busbar_contract::grammar::Selector;
 
@@ -103,10 +103,7 @@ impl Route {
             .selector()
             .map_or((0, 0), |s| crate::registry::precedence(&s));
         let preds = self.predicate_selectors();
-        let score = preds
-            .iter()
-            .map(|s| crate::registry::precedence(s).0)
-            .sum();
+        let score = preds.iter().map(|s| crate::registry::precedence(s).0).sum();
         (path, !preds.is_empty(), score)
     }
 
@@ -124,9 +121,8 @@ impl Route {
         }
         let (pa, pb) = (self.predicate_selectors(), other.predicate_selectors());
         pa.iter().all(|x| {
-            pb.iter().all(|y| {
-                x.header_name() != y.header_name() || crate::registry::overlaps(x, y)
-            })
+            pb.iter()
+                .all(|y| x.header_name() != y.header_name() || crate::registry::overlaps(x, y))
         })
     }
 }
@@ -231,7 +227,10 @@ impl GuestList {
                     break;
                 }
                 if a.claimant != b.claimant && a.route.could_meet(&b.route) {
-                    return Err(GuestRefusal::EqualPrecedence(Box::new((a.clone(), b.clone()))));
+                    return Err(GuestRefusal::EqualPrecedence(Box::new((
+                        a.clone(),
+                        b.clone(),
+                    ))));
                 }
             }
         }

@@ -29,10 +29,22 @@ fn each_path_form_matches_what_it_names() {
     assert!(path_matches(PATH_EXACT, "/v1/models", "/v1/models"));
     assert!(!path_matches(PATH_EXACT, "/v1/models", "/v1/models/x"));
 
-    assert!(path_matches(PATH_PATTERN, "/{name}/v1/messages", "/acme/v1/messages"));
-    assert!(!path_matches(PATH_PATTERN, "/{name}/v1/messages", "/v1/messages"));
+    assert!(path_matches(
+        PATH_PATTERN,
+        "/{name}/v1/messages",
+        "/acme/v1/messages"
+    ));
+    assert!(!path_matches(
+        PATH_PATTERN,
+        "/{name}/v1/messages",
+        "/v1/messages"
+    ));
     assert!(path_matches(PATH_PATTERN, "/api/{*rest}", "/api"));
-    assert!(path_matches(PATH_PATTERN, "/api/{*rest}", "/api/v1/admin/usage"));
+    assert!(path_matches(
+        PATH_PATTERN,
+        "/api/{*rest}",
+        "/api/v1/admin/usage"
+    ));
     assert!(!path_matches(PATH_PATTERN, "/api/{*rest}", "/apikeys"));
 
     assert!(path_matches(PATH_PREFIX, "/a", "/a/b"));
@@ -40,13 +52,28 @@ fn each_path_form_matches_what_it_names() {
     assert!(!path_matches(PATH_PREFIX, "/a", "/ab"));
     assert!(!path_matches(PATH_PREFIX, "/a", "/a/b/c"));
 
-    assert!(path_matches(PATH_SUFFIX, ":generateContent", "/v1/models/g:generateContent"));
-    assert!(!path_matches(PATH_SUFFIX, ":generateContent", "/v1/models/g:generateContentX"));
+    assert!(path_matches(
+        PATH_SUFFIX,
+        ":generateContent",
+        "/v1/models/g:generateContent"
+    ));
+    assert!(!path_matches(
+        PATH_SUFFIX,
+        ":generateContent",
+        "/v1/models/g:generateContentX"
+    ));
 
-    assert!(path_matches(PATH_CONTAINS, ":stream", "/v1/models/g:streamGenerateContent"));
+    assert!(path_matches(
+        PATH_CONTAINS,
+        ":stream",
+        "/v1/models/g:streamGenerateContent"
+    ));
     assert!(!path_matches(PATH_CONTAINS, ":stream", "/v1/models"));
 
-    assert!(!path_matches(0, "/", "/"), "an unknown form matches nothing");
+    assert!(
+        !path_matches(0, "/", "/"),
+        "an unknown form matches nothing"
+    );
     assert!(
         !path_matches(PATH_PATTERN, "/{*rest}/x", "/a/x"),
         "a pattern that breaks the syntax matches nothing"
@@ -58,7 +85,10 @@ fn pattern_syntax_is_whole_segments_and_a_last_tail() {
     assert!(pattern_segments("/a/{b}/c").is_some());
     assert!(pattern_segments("/a/{*rest}").is_some());
     assert!(pattern_segments("/a/{*rest}/c").is_none(), "a tail is last");
-    assert!(pattern_segments("/a/x{b}").is_none(), "a variable is a whole segment");
+    assert!(
+        pattern_segments("/a/x{b}").is_none(),
+        "a variable is a whole segment"
+    );
     assert!(pattern_segments("/a/{}").is_none(), "a variable has a name");
     assert!(pattern_segments("/a/{*}").is_none(), "a tail has a name");
 }
@@ -74,7 +104,12 @@ fn a_field_name_matches_in_any_case_and_a_value_prefix_in_its_own() {
         fields
     ));
     assert!(
-        !field_holds(FIELD_VALUE_PREFIX, "authorization", b"aws4-hmac-sha256", fields),
+        !field_holds(
+            FIELD_VALUE_PREFIX,
+            "authorization",
+            b"aws4-hmac-sha256",
+            fields
+        ),
         "a value prefix is compared in its own case, as 1.5.5's starts_with was"
     );
     assert!(!field_holds(FIELD_PRESENT, "x-api-key", b"", fields));
@@ -91,7 +126,13 @@ fn a_view_matches_its_path_and_fields_and_admits_only_its_methods() {
     };
     let with: &[(&str, &[u8])] = &[("Anthropic-Version", b"2023-06-01")];
     assert!(r.path_and_fields_match("/v1/messages", with));
-    assert!(!r.path_and_fields_match("/v1/messages", &[]), "a predicate must hold");
+    assert!(
+        !r.path_and_fields_match("/v1/messages", &[]),
+        "a predicate must hold"
+    );
     assert!(r.admits("POST"));
-    assert!(!r.admits("DELETE"), "a path hit on another method is a method miss, not a match");
+    assert!(
+        !r.admits("DELETE"),
+        "a path hit on another method is a method miss, not a match"
+    );
 }

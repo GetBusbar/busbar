@@ -1406,7 +1406,11 @@ fn compute_layout() -> String {
         ]
     );
     record!(s, tkind::StatusRow, [claim, lo, hi, class]);
-    record!(s, tkind::route::FieldPredicate, [op, _reserved, name, value]);
+    record!(
+        s,
+        tkind::route::FieldPredicate,
+        [op, _reserved, name, value]
+    );
     record!(
         s,
         tkind::route::RouteMatch,
