@@ -101,6 +101,20 @@ fn the_abi_trust_keys_are_the_grammars_trust_keys() {
 }
 
 #[test]
+fn an_open_route_claims_open_and_a_literal_target_claims_exact() {
+    let g = Generation::build(1, Some(&endpoint("gw", "")));
+    for (c, r) in g.claims.iter().zip(ROUTES) {
+        assert_eq!(c.flags & CLAIM_OPEN != 0, r.open, "{}", r.target);
+        assert_eq!(
+            c.flags & CLAIM_EXACT != 0,
+            !r.target.contains('{'),
+            "{}",
+            r.target
+        );
+    }
+}
+
+#[test]
 fn the_tail_states_the_sentence_that_refuses_a_forwarded_caller_credential() {
     assert_eq!(
         s(TAIL.caller_credential_refusal),

@@ -23,8 +23,9 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Blob, BLOB_ABSENT, BLOB_JSON
 use busbar_contract::abi::mechanism::door::KindTailHead;
 use busbar_contract::abi::plane::{
     AdminRoute, BillableClass, Claim, PinMechanism, PlaneSnapshot, PlaneTail, Section, TrustKey,
-    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, MECHANISM_ROOT, PIN_FINGERPRINT,
-    SECTION_DECLARING, SHAPE_PIECEWISE, TRUST_PIN, TRUST_RECOVERY_BACKOFF, TRUST_REVERIFY_TTL,
+    CLAIM_EXACT, CLAIM_OPEN, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, MECHANISM_ROOT,
+    PIN_FINGERPRINT, SECTION_DECLARING, SHAPE_PIECEWISE, TRUST_PIN, TRUST_RECOVERY_BACKOFF,
+    TRUST_REVERIFY_TTL,
 };
 use busbar_contract::abi::sdk::door::abi_str;
 
@@ -394,12 +395,22 @@ impl Generation {
     }
 }
 
-/// A route as the snapshot's claim.
+/// A route as the snapshot's claim: an open route takes no inbound credential, and a target with
+/// no path variable matches exactly.
 fn claim(r: &Route) -> Claim {
+    let mut flags = 0;
+    if r.open {
+        flags |= CLAIM_OPEN;
+    }
+    if !r.target.contains('{') {
+        flags |= CLAIM_EXACT;
+    }
     Claim {
         verb: abi_str(r.verb),
         target: abi_str(r.target),
         carrier: abi_str(r.carrier),
+        flags,
+        _reserved: 0,
     }
 }
 
