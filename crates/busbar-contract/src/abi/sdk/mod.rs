@@ -45,6 +45,7 @@ pub mod transport;
 // THE DOOR MACRO (THE DESIGN, the plugin ABI; abi-v2, the SDK): the plugin side of the shared mechanism — one door,
 // every slot a catch_unwind trampoline (`plugin_door!` / `export_door!`).
 pub mod door;
+pub mod hook;
 pub use crate::{export_door, plugin_door};
 // THE CALL CAPTURE: what a plugin logs during a call rides its reply as diagnostics (#85).
 pub mod capture;
