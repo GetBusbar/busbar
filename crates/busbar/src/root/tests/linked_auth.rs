@@ -783,9 +783,10 @@ fn a_swapped_admin_chain_is_the_loops_next_door() {
     let (token_path, key_path) = (dir.join("admin.token"), dir.join("signing.key"));
     std::fs::write(&token_path, "tok-live").unwrap();
     std::fs::write(&key_path, hex::encode([7u8; 32])).unwrap();
-    let closed =
+    let closed = Arc::new(
         busbar_kernel::test_support::build_once(cfg_with_credentials(&token_path, &key_path), None)
-            .expect("boot");
+            .expect("boot"),
+    );
     let mut open = (*closed).clone();
     open.admin_chain = Vec::new();
     let open = Arc::new(open);
