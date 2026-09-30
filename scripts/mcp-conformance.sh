@@ -1002,8 +1002,14 @@ printf "{}" >reports/differential.json; exit 0'
     say "  MISS: the in-house battery is not at $DEFAULT_BATTERY_DIR"; failures=$((failures+1)); }
   [ -d "$DEFAULT_BATTERY_DIR" ] && say "  ok: the in-house battery is in-repo at $DEFAULT_BATTERY_DIR"
 
+  # RED 7: the subject leg's config renders silently. boot.sh writes config.yaml through an
+  # expanding heredoc, where an unescaped backtick in a comment is a command substitution that
+  # prints "command not found" into every subject run.
+  if boot_selftest >/dev/null 2>&1; then say "  ok: boot.sh renders the subject config with nothing on stderr"
+  else say "  MISS: boot.sh selftest failed (run: bash -c '. scripts/mcp-subject/boot.sh; boot_selftest')"; failures=$((failures+1)); fi
+
   [ "$failures" -eq 0 ] || die "$failures self-test fixture(s) did not behave as declared"
-  say "  self-test: 14 fixture(s) passed"
+  say "  self-test: 15 fixture(s) passed"
 }
 
 case "${1:---help}" in
