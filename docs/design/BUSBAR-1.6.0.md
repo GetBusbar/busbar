@@ -321,8 +321,8 @@ call is submitted and awaited through the dispatcher's async completion. The mem
 plugin lives until that call completes, abandoned or not, for every kind (a submit that the watchdog
 can abandon uses the lending submit). A compiled-in Rust shortcut is deleted as each sibling is
 ported; a not-yet-ported dropped-in plugin keeps the retiring path only behind a marker that M6
-deletes. A kind's `max_inflight` overload answers 503 unavailable (§11.11 R8), decided before the
-verify loop runs; pending I/O is awaited, never answered 503.
+deletes. An inbound auth verify at its `max_inflight` bound answers 503 unavailable (§11.11 R8),
+decided before the verify loop runs; pending I/O is awaited, never answered 503.
 
 **A plugin catches its own panics; nothing unwinds across the door (ARCHITECT ruling 2026-09-27).**
 Every plugin builds with `panic = "unwind"` so the door macro's catch turns a panic into FAULT; a
@@ -377,7 +377,7 @@ decisions before streaming.
   revisions; the plane's `meter()` equals `predev`'s (`$`). Sessions: a CSPRNG id of at least 128
   bits from the host, bound to its owner `{principal: actor id, credential: key id | "<ungoverned>"}`
   (no tenant noun) — a mismatch answers 404 on every path; revision by negotiation only, no revision
-  config; sessions are per process; the 2026 stateless path stays byte-identical; per-owner session
+  config; sessions are per process; the stateless path of MCP's 2026 revision stays byte-identical; per-owner session
   and byte quotas; an ungoverned chain is unisolated and says so, with a per-instance boot diagnostic
   latched on the first legacy stream. Sessionless GET+SSE: `MCP-Protocol-Version` present
   (streamable revision) → 405; absent → the legacy 2024-11-05 stream; plain GET or DELETE with no
@@ -411,12 +411,12 @@ decisions before streaming.
   appended after the 1.5.5 families. Bedrock InvokeModel serves Anthropic-on-Bedrock chat only (the
   other families are reachable through Converse); its usage row is `$` and lands alone.
 - *streaming (OWNER ruling 2026-09-29):* exactly three dialects — OpenAI Realtime (WS and WebRTC),
-  Gemini Live, Twilio. Twilio is a dialect over the ws transport (no transport crate), claimed on the ws
-  transport's `/twilio` prefix. Tools mid-session are relayed to the client; the gateway runs no tool
+  Gemini Live, Twilio. Twilio is a dialect over the ws transport (no transport crate of its own),
+  claimed on a one-level `/twilio` path prefix. Tools mid-session are relayed to the client; the gateway runs no tool
   executor of its own (the echo executor is deleted) — the #45 clause on executing tools through the
   MCP plane is queued as an owner question (`1.6.0-QUESTIONS.md`) and not folded here. A session is
-  keyed to its caller by an opaque per-principal reference on `arrive`/open, never the raw principal
-  (a privacy fix against `predev`), and the plane serves its own protected-resource metadata document
+  keyed to its caller by the opaque caller reference (Part 3 §12), never the raw principal (a privacy
+  fix against `predev`), and the plane serves its own protected-resource metadata document
   (ARCHITECT, 2026-09-30).
 
 ### 3. Boot
@@ -901,6 +901,16 @@ lives in the contract.
   verifiers are wired into the 1.6.0 `GET /api/v1/admin/verify` surface — the real checkpoint anchor,
   the boot recheck's findings, the audit chain verified over retained records (#82), the amend
   journal, and the resume-break drain — with no change to a 1.5.5 byte; `GET /audit` is unchanged.
+- **A tampered record is never a torn tail (MONEY-CHAIN, ARCHITECT ruling 2026-09-30).** A WAL record
+  is framed with its length and a header checksum; only a true torn tail is truncated; a complete
+  record that fails its body check is quarantined and reported in the restart findings, and a unit
+  named by a quarantined record is never settled at 0. (The defect: a tampered complete tail record
+  was truncated as torn, and a billed settlement became 0 with no alarm.) `$`, alone.
+- **One audit record per unit (U14, ARCHITECT ruling 2026-09-30).** The audit record is sealed at the
+  unit's one line, from the facts the audit step kept on the unit; its recipe v4 is v3 plus the boot
+  incarnation; the journal carries the v4 body; the in-memory ring of 1024 is only a cache, and an
+  older `/audit/range` decodes from the journal; a refused unit gets a record too (outcome refused,
+  its step, an empty amount). Non-`$`, proven with the money proof.
 - **Unit keys and op ids (WIRE-STORE Q10, ARCHITECT ruling 2026-09-30).** ONE node allocator in the
   kernel mints every unit key and every store `OpId`: the node half is a per-process, non-zero u64
   from the OS CSPRNG, the counter a process-wide atomic from 1 (`OpId` = node ‖ counter,
@@ -2405,7 +2415,11 @@ lands with its validator beside it and a RED test per rule.
   driver re-calls `on_piece` with the same `from` and zero bytes; `more = 1` with nothing emitted, or
 with `EMIT_DONE`, is FAULT, and a non-READY answer takes no early return past the unit and record
 checks. `on_piece` carries the route's pool.
-  A plane that does not serve the method declines with 405. The order at the door is route →
+  Every piece also carries, lent from the arrival, the claim and dialect it arrived on (a plane with
+several doors needs them) and the caller reference: an opaque per-principal value, HMAC-SHA256 under a
+key HKDF-derived from the node's signing material (label `busbar caller-ref v1`), minted by the
+identity crate — a plane never sees the raw principal. A plane that does not serve the method
+declines with 405. The order at the door is route →
   authenticate → size gate → `arrive`, so 1.5.5's 401 comes before its 413.
 - *Refusals.* A refusal's code crosses as an opaque plane-local `u32`; `refusal` receives the unit,
   the plane code and the retry-after, and — for a refusal with no unit — the TARGET, which the plane
@@ -2435,8 +2449,9 @@ checks. `on_piece` carries the route's pool.
 - *The switch.* The production composition of the driver and the kernel's host services is in ONE
   place, the serve path; a fold adds only its door rows. A development-only cargo feature flips a
   plane onto the driver during its fold and is deleted when the fold completes; both paths are
-  oracle-proven while it exists. The llm flip's gate is the 178 v1.5.5 hook tests, verbatim, on the
-  driver (ARCHITECT, 2026-09-30).
+  oracle-proven while it exists. The llm flip's gate is every hook test green on the driver — 184:
+  the 70 of llm origin through `project`, the 114 of kernel, loader and ranking origin (ARCHITECT,
+  2026-09-30).
 
 *Proven by:* the plane conformance suite (compiled-in and dropped-in through one table); zero
 plane→host calls per chunk; the hook parity tests verbatim; the oracle families of each plane as it is
