@@ -150,3 +150,19 @@ fn event_stream_framing() {
         "event: endpoint\ndata: /mcp?sessionId=0123\n\n"
     );
 }
+
+#[test]
+fn the_param_mirror_names_every_annotated_string_argument() {
+    let schema = json!({"properties":{
+        "region":{"type":"string","x-mcp-header":"Region"},
+        "count":{"type":"integer","x-mcp-header":"Count"},
+        "note":{"type":"string"}
+    }});
+    let args = json!({"region":"eu-west","count":3,"note":"n"});
+    assert_eq!(
+        param_mirror(Some(&schema), Some(&args)),
+        vec![("mcp-param-Region".to_string(), "eu-west".to_string())]
+    );
+    assert!(param_mirror(None, Some(&args)).is_empty());
+    assert!(param_mirror(Some(&schema), None).is_empty());
+}

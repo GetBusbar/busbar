@@ -171,6 +171,37 @@ pub fn raise(message: &mut Value) -> Option<Mirror> {
     })
 }
 
+/// THE CUSTOM PARAMETER MIRROR a raised `tools/call` must carry: for every property of the tool's
+/// `inputSchema` that names an `x-mcp-header` suffix and whose argument is a string, the pair
+/// (`mcp-param-<suffix>`, the value in the name sentinel where it needs one).
+///
+/// A session client never sends these (its revision does not define them), and the one dispatch
+/// refuses a `tools/call` whose annotated argument has no mirror. The mirror is built from the
+/// client's own arguments, so it says exactly what the body says.
+#[must_use]
+pub fn param_mirror(
+    input_schema: Option<&Value>,
+    arguments: Option<&Value>,
+) -> Vec<(String, String)> {
+    let Some(props) = input_schema
+        .and_then(|s| s.get("properties"))
+        .and_then(Value::as_object)
+    else {
+        return Vec::new();
+    };
+    props
+        .iter()
+        .filter_map(|(property, definition)| {
+            let suffix = definition.get("x-mcp-header")?.as_str()?;
+            let value = arguments?.get(property)?.as_str()?;
+            Some((
+                format!("mcp-param-{suffix}"),
+                crate::client::jsonrpc::encode_sentinel(value),
+            ))
+        })
+        .collect()
+}
+
 /// The stateless revision's result members no session revision defines.
 const STATELESS_ONLY_MEMBERS: &[&str] = &["resultType", "cacheScope", "ttlMs"];
 
