@@ -58,6 +58,26 @@ fn a_leased_blob_is_held_until_release_and_named_in_the_head() {
     assert_eq!(leases.release(1), Outcome::Refused);
 }
 
+/// RED: a leased string is named where its lease holds it, and the lease's release drops it
+/// (a released string's pointer names nothing: the lease is gone).
+#[test]
+fn a_leased_string_is_held_until_release_and_named_in_the_head() {
+    let leases = Leases::default();
+    let mut o: ServeOut = zeroed();
+    let mut out = Out::new(&mut o);
+    out.lease_str(|o| &o.head.error, &leases, "why, at length".to_string());
+    assert_eq!(o.head.lease, 1);
+    assert_eq!(read(o.head.error), b"why, at length");
+    assert_eq!(leases.held(), 1);
+    assert_eq!(leases.release(1), Outcome::Ready);
+    assert_eq!(leases.held(), 0, "the release drops the string");
+    assert_eq!(leases.release(1), Outcome::Refused);
+    let mut e: ServeOut = zeroed();
+    let mut out = Out::new(&mut e);
+    out.lease_str(|o| &o.head.error, &leases, String::new());
+    assert_eq!((e.head.lease, e.head.error.len, leases.held()), (0, 0, 0), "empty: no lease");
+}
+
 #[test]
 fn static_text_and_lists_are_named_where_they_live() {
     const HEADERS: &[AbiStr] = &[AbiStr {

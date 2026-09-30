@@ -267,6 +267,18 @@ impl<'a, T: AbiOut> Out<'a, T> {
         self.put(pick, blob);
     }
 
+    /// As [`Out::lease`], for a string: set the string field `pick` names to `text`, held by
+    /// `leases` under `head.lease` until the host's `release` of it, across refresh generations.
+    pub fn lease_str(
+        &mut self,
+        pick: impl FnOnce(&T) -> &AbiStr,
+        leases: &Leases,
+        text: String,
+    ) {
+        let s = leases.str(self.head(), text);
+        self.put(pick, s);
+    }
+
     /// Set the string field `pick` names to `text`, which lives for the program.
     pub fn text(&mut self, pick: impl FnOnce(&T) -> &AbiStr, text: &'static str) {
         self.put(

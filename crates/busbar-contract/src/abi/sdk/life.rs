@@ -240,6 +240,24 @@ impl Leases {
         blob
     }
 
+    /// Hold `text` under a new lease named in `head.lease`; the string naming it. Empty text
+    /// leases nothing and answers the empty string.
+    pub fn str(&self, head: &mut OutHead, text: String) -> AbiStr {
+        if text.is_empty() {
+            return AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            };
+        }
+        let held: Box<[u8]> = text.into_bytes().into();
+        let s = AbiStr {
+            ptr: held.as_ptr(),
+            len: held.len(),
+        };
+        self.hold(head, Lease::Bytes(held));
+        s
+    }
+
     /// Hold `owned` — an answer's storage of any shape (several buffers, the arrays naming them) —
     /// under a new lease named in `head.lease`, until `release`. The caller names memory INSIDE
     /// `owned` in its `out`: heap contents do not move when `owned` moves here. Its `Drop` runs at

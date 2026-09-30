@@ -86,6 +86,11 @@ impl SafeSlot for Resolve {
         let Some(h) = i.get() else {
             return Outcome::Fault;
         };
+        if h.life().0 == b"str" {
+            // The leased-string probe: the answer's text, held under `head.lease`.
+            out.lease_str(|o| &o.head.error, h.leases(), "a leased answer".to_string());
+            return Outcome::Ready;
+        }
         if h.life().0 == b"park" {
             // The parking probe, answering in `error_kind`. With no ticket: how many tickets hold
             // parked state. In a RESUME: whether its op's `u64` came back (another type never
@@ -337,6 +342,26 @@ fn a_leased_answer_is_held_until_release_and_an_unknown_lease_is_refused() {
     assert_eq!(release(inst, lease), Outcome::Refused, "released twice");
     assert_eq!(release(inst, 999), Outcome::Refused, "never leased");
     assert_eq!(release(inst, second), Outcome::Ready);
+    assert_eq!(close(inst), Outcome::Ready);
+}
+
+/// RED: a leased string outlives the call and a refresh generation, and lives until its release;
+/// a second release of it is REFUSED (its storage is gone).
+#[test]
+fn a_leased_string_is_read_back_across_a_refresh_generation_until_its_release() {
+    let (_, inst, _) = open(b"str", &[]);
+    let mut input: ResolveIn = zeroed();
+    input.head = in_head::<ResolveIn>(crate::abi::secret::slot::RESOLVE);
+    let mut out: ResolveOut = zeroed();
+    out.head = out_head::<ResolveOut>();
+    assert_eq!(call(table().resolve, inst, &input, &mut out), Outcome::Ready);
+    let (lease, said) = (out.head.lease, out.head.error);
+    assert_ne!(lease, 0, "the string is leased");
+    assert_eq!(refresh(inst, b"{}").0, Outcome::Ready);
+    let _churn: Vec<Vec<u8>> = (0..64).map(|i| vec![0xAA; 15 + i]).collect();
+    assert_eq!(text(said), "a leased answer", "held across the refresh generation");
+    assert_eq!(release(inst, lease), Outcome::Ready);
+    assert_eq!(release(inst, lease), Outcome::Refused, "released: nothing is held there");
     assert_eq!(close(inst), Outcome::Ready);
 }
 
