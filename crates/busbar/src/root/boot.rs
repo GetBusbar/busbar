@@ -13,19 +13,62 @@ use std::sync::Arc;
 
 use super::loader::{boot::*, dispatch::LoadError, dispatch::ManifestFacts, PluginRegistry};
 use busbar_contract::abi::mechanism::KindCode;
-use busbar_kernel::{config::FetchTarget, preflight::Fetched};
+use busbar_kernel::config::{FetchTarget, PluginsCfg};
+use busbar_kernel::preflight::{Fetched, RegistryIn};
 
-/// THE ONE REGISTRY BUILD (BUSBAR-1.6.0.md §3 stage 1; ARCHITECT ruling Q8): the plugin registry is
-/// built here, in the composition root, and nowhere else — the kernel's preflight receives it
-/// through the root's rows (the kernel preflight's `RegistryBuild`), and the root's own
-/// dropped-plugin scan runs the same build. The linked rows alone, or the directory scan with the
-/// first-party floor armed and raised; each step is noted to `note`. Nothing is opened.
+/// THE ONE REGISTRY BUILD (THE DESIGN §3 stage 1 in BUSBAR-1.6.0.md; ARCHITECT ruling Q8): the
+/// plugin registry is built here, in the composition root, and nowhere else — the kernel's preflight
+/// receives it through the root's rows (the kernel preflight's `RegistryBuild`), and the root's own
+/// dropped-plugin scan runs the same build. The linked rows alone, or the `plugins:` block's trust
+/// resolved ([`trust_policy`]) and its directory scanned with the first-party floor armed and
+/// raised; each step is noted to `note`. Nothing is opened.
 ///
 /// # Errors
 ///
-/// An invalid tarball, manifest or conflict, or a linked row the admission refuses.
-pub fn registry(b: Build<'_>, note: &mut dyn FnMut(Note<'_>)) -> Result<PluginRegistry, String> {
-    super::loader::boot::registry(b, note)
+/// `plugins.trust is invalid: …`, an invalid tarball, manifest or conflict, or a linked row the
+/// admission refuses.
+pub fn registry(
+    i: RegistryIn<'_>,
+    note: &mut dyn FnMut(Note<'_>),
+) -> Result<PluginRegistry, String> {
+    let scan = match i.plugins {
+        None => None,
+        Some(p) => Some(Scan {
+            policy: trust_policy(p, env!("CARGO_PKG_VERSION"))
+                .map_err(|e| format!("plugins.trust is invalid: {e}"))?,
+            data_dir: i.data_dir,
+            dir: p.enabled.then_some(std::path::Path::new(&p.dir)),
+        }),
+    };
+    super::loader::boot::registry(
+        Build {
+            linked: i.linked,
+            scan,
+        },
+        note,
+    )
+}
+
+/// THE `plugins:` BLOCK'S TRUST, resolved: the embedded first-party key, the configured
+/// publishers and opt-ins and the per-name floors (`min_versions`, the rollback pins), through the
+/// loader's `TrustPolicy::from_config`. `binary_version` is carried for diagnostics only. The
+/// automatic first-party floor is the registry build's to arm.
+///
+/// # Errors
+///
+/// A reserved or malformed publisher.
+pub fn trust_policy(
+    cfg: &PluginsCfg,
+    binary_version: &str,
+) -> Result<super::loader::sign::TrustPolicy, String> {
+    super::loader::sign::TrustPolicy::from_config(super::loader::sign::TrustInput {
+        publishers: &cfg.publisher_keys(),
+        allow_unsigned: cfg.trust.allow_unsigned,
+        allow_third_party: cfg.trust.allow_third_party,
+        min_versions: &cfg.min_versions,
+        first_party_floors: &cfg.first_party_floors,
+        binary_version,
+    })
 }
 
 /// THE ROOT'S PLUGINS FETCH (the kernel preflight's `PluginsFetch`): every `plugins.fetch` target

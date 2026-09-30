@@ -415,7 +415,8 @@ fn list_plugins_command() -> i32 {
             )
         }
     };
-    let policy = match plugins_cfg.to_policy() {
+    plugins_cfg.warn_invalid_floors();
+    let policy = match crate::root::boot::trust_policy(&plugins_cfg, env!("CARGO_PKG_VERSION")) {
         Ok(p) => p,
         Err(e) => {
             eprintln!(

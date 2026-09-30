@@ -452,6 +452,59 @@ pub struct TrustPolicy {
     pub min_versions: BTreeMap<String, String>,
 }
 
+/// A `plugins:` block's trust facts, as plain data: what [`TrustPolicy::from_config`] resolves.
+#[derive(Debug, Clone, Copy)]
+pub struct TrustInput<'a> {
+    /// The configured third-party publishers, `(name, hex ed25519 public key)`.
+    pub publishers: &'a [(&'a str, &'a str)],
+    /// `plugins.trust.allow_unsigned`.
+    pub allow_unsigned: bool,
+    /// `plugins.trust.allow_third_party`.
+    pub allow_third_party: bool,
+    /// `plugins.min_versions`: per-name anti-downgrade floors, first- and third-party alike.
+    pub min_versions: &'a BTreeMap<String, String>,
+    /// The runtime per-name first-party floor overrides (explicit rollback pins).
+    pub first_party_floors: &'a BTreeMap<String, String>,
+    /// Carried for diagnostics only; NOT a floor.
+    pub binary_version: &'a str,
+}
+
+impl TrustPolicy {
+    /// Resolve a `plugins:` block's trust facts: the EMBEDDED first-party release key, the binary's
+    /// version (diagnostics only), the configured third-party publishers, opt-ins and per-name
+    /// floors. The AUTOMATIC first-party floor (the per-name high-water marks) is NOT resolved
+    /// here: it is an observed fact the registry build arms ([`crate::boot::registry`]).
+    ///
+    /// # Errors
+    ///
+    /// A publisher named for busbar's embedded key, or a malformed publisher key (a skipped trust
+    /// anchor could wrongly reject a good plugin).
+    pub fn from_config(i: TrustInput<'_>) -> Result<Self, String> {
+        let mut publishers = BTreeMap::new();
+        for &(name, public_key) in i.publishers {
+            if name == FIRST_PARTY_PUBLISHER {
+                return Err(format!(
+                    "plugins.trust.publishers['{name}']: the publisher name '{FIRST_PARTY_PUBLISHER}' \
+                     is reserved for busbar's embedded release key and cannot be configured"
+                ));
+            }
+            let key = public_key_from_hex(public_key)
+                .map_err(|e| format!("plugins.trust.publishers['{name}']: {e}"))?;
+            publishers.insert(name.to_string(), key);
+        }
+        Ok(TrustPolicy {
+            first_party_key: embedded_release_pubkey(),
+            binary_version: i.binary_version.to_string(),
+            first_party_floors: i.first_party_floors.clone(),
+            first_party_high_water: BTreeMap::new(),
+            publishers,
+            allow_unsigned: i.allow_unsigned,
+            allow_third_party: i.allow_third_party,
+            min_versions: i.min_versions.clone(),
+        })
+    }
+}
+
 /// The verdict for one plugin artifact that MAY proceed to load.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
@@ -725,16 +778,10 @@ pub fn valid_name(s: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-/// Is `v` a well-formed semver core (`MAJOR.MINOR.PATCH`, each a decimal integer, with an optional
-/// `-pre`/`+meta` suffix)? The strict three-component core is what the anti-downgrade ordering
-/// depends on, so it is validated structurally rather than best-effort parsed.
+/// Is `v` a well-formed semver core? The contract's one judge
+/// ([`busbar_contract::plugin::valid_semver`]).
 pub fn valid_semver(v: &str) -> bool {
-    let core = v.split(['-', '+']).next().unwrap_or("");
-    let parts: Vec<&str> = core.split('.').collect();
-    parts.len() == 3
-        && parts
-            .iter()
-            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    busbar_contract::plugin::valid_semver(v)
 }
 
 /// PHASE 1 - STRUCTURAL validation of a manifest + its library bytes, INDEPENDENT of trust: a

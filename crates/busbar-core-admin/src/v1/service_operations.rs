@@ -16,6 +16,23 @@
 //! where the block now lives.
 
 use super::*;
+use busbar_plugin_loader::sign::{TrustInput, TrustPolicy};
+
+/// `plugins.trust` resolved as boot resolves it (the loader's `TrustPolicy::from_config`), after
+/// warning about any malformed anti-downgrade floor — every admin moment the policy resolves
+/// (catalog, reload, upload, rollback) warns exactly as boot does. `binary_version` is carried for
+/// diagnostics only.
+pub(crate) fn trust_policy(cfg: &PluginsCfg, binary_version: &str) -> Result<TrustPolicy, String> {
+    cfg.warn_invalid_floors();
+    TrustPolicy::from_config(TrustInput {
+        publishers: &cfg.publisher_keys(),
+        allow_unsigned: cfg.trust.allow_unsigned,
+        allow_third_party: cfg.trust.allow_third_party,
+        min_versions: &cfg.min_versions,
+        first_party_floors: &cfg.first_party_floors,
+        binary_version,
+    })
+}
 
 impl AdminService {
     pub(crate) fn new(app: Arc<App>) -> Self {
@@ -594,7 +611,7 @@ impl AdminService {
         // `store.module` config concern (read via `GET /config`), not summarized per-row here,
         // the same posture the compiled-in hook rows take (`active: None`).
         let mut out = linked_store_rows();
-        let Ok(policy) = self.app.plugins_cfg.to_policy() else {
+        let Ok(policy) = trust_policy(&self.app.plugins_cfg, env!("CARGO_PKG_VERSION")) else {
             return out;
         };
 
@@ -707,10 +724,7 @@ impl AdminService {
     /// each row to a [`PluginView`]. No cache read, no cache write — split out so both the
     /// cache-miss path above and (indirectly, via the whole-method `spawn_blocking`)
     /// [`Self::store_plugin_catalog_async`] share exactly one implementation of "what a scan is."
-    fn scan_store_plugin_rows(
-        dir: &Path,
-        policy: &busbar_plugin_loader::sign::TrustPolicy,
-    ) -> Vec<PluginView> {
+    fn scan_store_plugin_rows(dir: &Path, policy: &TrustPolicy) -> Vec<PluginView> {
         // TEST-ONLY injection point: expands to nothing outside
         // `#[cfg(test)]`, so the release path carries zero indirection. See
         // `catalog_scan_test_hooks` above for what it does and why.
@@ -832,7 +846,7 @@ impl AdminService {
                 );
                 // Fail soft to the always-true linked rows rather than an admin 500 for what is
                 // just a plugin CATALOG read — same posture `store_plugin_catalog` itself takes on
-                // an unparseable `plugins_cfg` (`to_policy()` failing) just above.
+                // an unparseable `plugins_cfg` (`trust_policy` failing) just above.
                 Ok(linked_store_rows())
             }
         }
@@ -866,10 +880,7 @@ impl AdminService {
         // ── 1. filename sanity: a bare tarball filename ──
         let file = validate_plugin_filename(file)?;
 
-        let policy = self
-            .app
-            .plugins_cfg
-            .to_policy()
+        let policy = trust_policy(&self.app.plugins_cfg, env!("CARGO_PKG_VERSION"))
             .map_err(AdminError::Validation)?;
 
         // ── 2. STRUCTURAL: in-memory unpack + manifest completeness + integrity + abi ──
@@ -1021,10 +1032,7 @@ impl AdminService {
             )));
         }
 
-        let policy = self
-            .app
-            .plugins_cfg
-            .to_policy()
+        let policy = trust_policy(&self.app.plugins_cfg, env!("CARGO_PKG_VERSION"))
             .map_err(AdminError::Validation)?;
 
         let unpacked = busbar_plugin_loader::tarball::unpack(tarball)
@@ -1170,10 +1178,7 @@ impl AdminService {
         // third-party plugin can also roll back. Anything the target does NOT satisfy (a broken
         // signature, an un-opted-in third party) still fails: a rollback authenticates the OPERATOR,
         // never the ARTIFACT.
-        let mut policy = self
-            .app
-            .plugins_cfg
-            .to_policy_with_floor(&manifest.version)
+        let mut policy = trust_policy(&self.app.plugins_cfg, &manifest.version)
             .map_err(AdminError::Validation)?;
         policy
             .min_versions

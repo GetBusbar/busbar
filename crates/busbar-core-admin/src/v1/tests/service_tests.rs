@@ -4169,3 +4169,31 @@ fn the_store_catalog_heads_with_the_linked_store_rows() {
         .collect();
     assert_eq!(head, want);
 }
+
+/// EVERY ADMIN MOMENT THE TRUST POLICY RESOLVES WARNS AS BOOT DOES: the catalog, reload, upload and
+/// rollback all resolve through the one `trust_policy` (none resolves it any other way), and it
+/// warns about a malformed anti-downgrade floor before resolving.
+#[test]
+fn every_admin_trust_resolution_warns_about_a_malformed_floor() {
+    use busbar_kernel::diagnostics::CONFIG_ANTIDOWNGRADE_FLOOR_INVALID;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let src = include_str!("../service_operations.rs");
+    assert_eq!(
+        src.matches("trust_policy(&self.app.plugins_cfg").count(),
+        4,
+        "catalog, reload, upload and rollback resolve through trust_policy"
+    );
+    assert_eq!(src.matches("TrustPolicy::from_config(").count(), 1);
+    let mut cfg = busbar_kernel::config::PluginsCfg::default();
+    cfg.min_versions.insert("p".into(), "v2".into());
+    let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        super::operations::trust_policy(&cfg, "1.6.0").expect("the policy resolves");
+    });
+    assert!(
+        cap.contains(&CONFIG_ANTIDOWNGRADE_FLOOR_INVALID.banner().to_string()),
+        "{:?}",
+        cap.messages()
+    );
+}

@@ -48,7 +48,7 @@ pub fn registry_of(tag: &str, rows: &[(&str, &str)]) -> PluginRegistry {
         "trust": { "allow_unsigned": true },
     }))
     .expect("a plugins block");
-    let policy = plugins.to_policy().expect("a trust policy");
+    let policy = crate::test_support::trust_policy(&plugins).expect("a trust policy");
     busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("the scan")
 }
 

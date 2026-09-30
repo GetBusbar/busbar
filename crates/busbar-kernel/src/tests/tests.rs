@@ -865,6 +865,35 @@ fn the_registry_build_keeps_the_preflights_boot_lines_in_order() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// BOOT WARNS ABOUT A MALFORMED FLOOR where it resolved the trust policy: the preflight (boot,
+/// reload, apply) warns before the root's registry build resolves the policy.
+#[test]
+fn the_preflight_warns_about_a_malformed_floor() {
+    use crate::diagnostics::CONFIG_ANTIDOWNGRADE_FLOOR_INVALID;
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let mut cfg = crate::config::PluginsCfg::default();
+    cfg.min_versions.insert("p".into(), "v1".into());
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        crate::plugins_preflight(
+            None,
+            None,
+            &Default::default(),
+            &Default::default(),
+            &cfg,
+            &Default::default(),
+        )
+        .expect("the preflight passes");
+    });
+    assert!(
+        cap.contains(&CONFIG_ANTIDOWNGRADE_FLOOR_INVALID.banner().to_string()),
+        "{:?}",
+        cap.messages()
+    );
+}
+
 /// K5 (DECISIONS #2 rule (1)) — THE BUILT-IN STORE IS A ROW OF THE STORE AXIS. The default store is
 /// registered through `PluginRegistry::link`, the admission a dropped-in store's row takes, and the
 /// configured name resolves to it there — not a name the kernel matches. With the plugins directory

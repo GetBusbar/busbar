@@ -29,7 +29,7 @@ use busbar_kernel::admin::v1::contract::{
 };
 use busbar_kernel::config::named_map::NamedMapSection;
 use busbar_kernel::config::{
-    DeployCfg, HookCfg, HookKind, HookStage, PromptAccess, ProviderDef, UserAccess,
+    DeployCfg, HookCfg, HookKind, HookStage, PluginsCfg, PromptAccess, ProviderDef, UserAccess,
 };
 
 /// The KEY NAMES of one opaque `settings:` bag, sorted — the REDACTED projection EVERY admin read

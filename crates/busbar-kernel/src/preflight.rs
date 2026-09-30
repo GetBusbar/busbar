@@ -56,7 +56,19 @@ use busbar_plugin_loader::{boot, dispatch::PluginLogConfig, LinkedPlugin, Plugin
 /// the kernel receives it): the linked rows alone, or the directory scan with the linked rows ahead
 /// of it, each step noted so the preflight's log lines keep their order.
 pub type RegistryBuild =
-    fn(boot::Build<'_>, &mut dyn FnMut(boot::Note<'_>)) -> Result<PluginRegistry, String>;
+    fn(RegistryIn<'_>, &mut dyn FnMut(boot::Note<'_>)) -> Result<PluginRegistry, String>;
+
+/// What the root's registry build reads: the build's linked rows and, unless only those are
+/// wanted, the `plugins:` block (its trust, its directory, whether it is on) and the fleet data dir
+/// the first-party floor persists under.
+pub struct RegistryIn<'a> {
+    /// The rows this build links, registered ahead of the directory's.
+    pub linked: Vec<LinkedPlugin>,
+    /// The `plugins:` block, or `None` for the linked rows alone.
+    pub plugins: Option<&'a config::PluginsCfg>,
+    /// [`fleet_data_dir`].
+    pub data_dir: Option<&'a std::path::Path>,
+}
 /// One `plugins.fetch` entry's outcome, as the root's fetch reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Fetched {
@@ -132,10 +144,7 @@ impl RootInstall {
 }
 
 /// No root installed a registry build: every build refuses, naming the missing root.
-fn no_root(
-    _: boot::Build<'_>,
-    _: &mut dyn FnMut(boot::Note<'_>),
-) -> Result<PluginRegistry, String> {
+fn no_root(_: RegistryIn<'_>, _: &mut dyn FnMut(boot::Note<'_>)) -> Result<PluginRegistry, String> {
     Err("no composition root installed the plugin registry build".to_owned())
 }
 
@@ -149,7 +158,7 @@ const STAND_IN: RootInstall = RootInstall {
         fixture_hook::linked::HOOK,
     ],
     default_store_module: fixture_store::linked::STORE.0,
-    registry_build: boot::registry,
+    registry_build: crate::test_support::registry_stand_in,
     plugins_fetch: crate::test_support::fetch_stand_in,
 };
 
@@ -271,9 +280,10 @@ fn require_plugin(
 /// A registry holding only the [`linked_rows`] — what a build with the plugins directory off has —
 /// built by the root's registry build.
 pub(crate) fn linked() -> Result<busbar_plugin_loader::PluginRegistry, String> {
-    let build = boot::Build {
+    let build = RegistryIn {
         linked: linked_rows(),
-        scan: None,
+        plugins: None,
+        data_dir: None,
     };
     (root_rows().registry_build)(build, &mut |_| {})
 }
@@ -437,14 +447,12 @@ pub fn plugins_preflight(
         ));
     }
 
-    // 2. Policy resolution (embedded first-party key + configured third-party trust); the root's
-    //    registry build then arms the AUTOMATIC first-party anti-downgrade floor from the per-name
-    //    high-water marks. `to_policy` leaves the floor empty on purpose — it is an observed fact,
-    //    not a config value — and every automatic path (boot / config reload / config apply / admin
-    //    plugin reload) runs through this one build.
-    let policy = plugins_cfg
-        .to_policy()
-        .map_err(|e| format!("plugins.trust is invalid: {e}"))?;
+    // 2. Policy resolution (embedded first-party key + configured third-party trust) is the root's
+    //    registry build's, which then arms the AUTOMATIC first-party anti-downgrade floor from the
+    //    per-name high-water marks — an observed fact, not a config value. Every automatic path
+    //    (boot / config reload / config apply / admin plugin reload) runs through this one build,
+    //    and a malformed floor is warned about here first.
+    plugins_cfg.warn_invalid_floors();
     let data_dir = fleet_data_dir();
     // 3. Disabled: the registry is the linked rows and NOTHING in the directory is even read
     //    (drop-is-inert). Enabled: the three-phase scan over the plugins directory, fail-closed on
@@ -452,14 +460,10 @@ pub fn plugins_preflight(
     //    admission; then the floor RISES to what the scan proved loadable (only a VERIFIED
     //    first-party verdict counts, and the mark only ever rises). A failure to persist is NOT
     //    fatal: the in-memory marks still floor this process.
-    let dir = std::path::Path::new(&plugins_cfg.dir);
-    let build = boot::Build {
+    let build = RegistryIn {
         linked: linked_rows(),
-        scan: Some(boot::Scan {
-            policy,
-            data_dir: data_dir.as_deref(),
-            dir: plugins_cfg.enabled.then_some(dir),
-        }),
+        plugins: Some(plugins_cfg),
+        data_dir: data_dir.as_deref(),
     };
     let registry = (root_rows().registry_build)(build, &mut |n| log_build(n, &plugins_cfg.dir))?;
     if !plugins_cfg.enabled {

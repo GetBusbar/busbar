@@ -2376,3 +2376,43 @@ pub fn fetch_stand_in(
         Err(errors)
     }
 }
+
+/// A test build's trust resolution (it has no composition root): the `plugins:` block through the
+/// loader's `TrustPolicy::from_config`, exactly as the root resolves it.
+pub fn trust_policy(
+    cfg: &crate::config::PluginsCfg,
+) -> Result<busbar_plugin_loader::sign::TrustPolicy, String> {
+    use busbar_plugin_loader::sign::{TrustInput, TrustPolicy};
+    TrustPolicy::from_config(TrustInput {
+        publishers: &cfg.publisher_keys(),
+        allow_unsigned: cfg.trust.allow_unsigned,
+        allow_third_party: cfg.trust.allow_third_party,
+        min_versions: &cfg.min_versions,
+        first_party_floors: &cfg.first_party_floors,
+        binary_version: env!("CARGO_PKG_VERSION"),
+    })
+}
+
+/// A test build's registry build (it has no composition root): the root's composition over the
+/// loader's one build.
+pub fn registry_stand_in(
+    i: crate::preflight::RegistryIn<'_>,
+    note: &mut dyn FnMut(busbar_plugin_loader::boot::Note<'_>),
+) -> Result<busbar_plugin_loader::PluginRegistry, String> {
+    use busbar_plugin_loader::boot::{registry, Build, Scan};
+    let scan = match i.plugins {
+        None => None,
+        Some(p) => Some(Scan {
+            policy: trust_policy(p).map_err(|e| format!("plugins.trust is invalid: {e}"))?,
+            data_dir: i.data_dir,
+            dir: p.enabled.then_some(std::path::Path::new(&p.dir)),
+        }),
+    };
+    registry(
+        Build {
+            linked: i.linked,
+            scan,
+        },
+        note,
+    )
+}

@@ -1409,7 +1409,7 @@ pub struct PluginsCfg {
     pub trust: PluginsTrustCfg,
     /// ANTI-DOWNGRADE floors: plugin canonical `name` -> minimum acceptable `version`. Applies to
     /// first- and third-party alike, and is SEPARATE from the automatic first-party floor (the
-    /// per-name high-water mark maintained by `busbar_plugin_loader::HighWaterMarks`, which needs no
+    /// per-name high-water mark the registry build maintains, which needs no
     /// configuration). A floored plugin must prove (trusted signature, version at/above the floor)
     /// that it meets the floor; nothing else loads it. Sibling of `trust` (a version axis, not a
     /// trust axis).
@@ -1419,8 +1419,8 @@ pub struct PluginsCfg {
     /// OVERRIDES for EXPLICIT operator rollbacks (1.5.0). Empty (the default, and the ONLY value the
     /// automatic boot/reload path ever sees) = every first-party plugin faces its own automatic
     /// floor, the per-name HIGH-WATER MARK (the highest version of that name this deployment has
-    /// seen and loaded — `busbar_plugin_loader::HighWaterMarks`). An explicit, audited `POST /plugins/rollback` of a
-    /// FIRST-PARTY plugin adds a `name -> pinned target version` entry so `busbar_plugin_loader::sign::evaluate`
+    /// seen and loaded, kept by the registry build). An explicit, audited `POST /plugins/rollback` of a
+    /// FIRST-PARTY plugin adds a `name -> pinned target version` entry so the trust evaluation
     /// admits the prior artifact for THAT NAME ONLY (an unpinned first-party plugin still faces the full
     /// floor — replacing the earlier single global floor). Derived from the persisted
     /// `plugin_versions` pins during a rebuild (`overlay::apply_plugin_versions_to_deploy`); it is
@@ -1643,56 +1643,28 @@ impl PluginsCfg {
         self.fetch.iter().map(fetch_target_from).collect()
     }
 
-    /// Resolve into the `busbar-plugin-sign` trust policy: the EMBEDDED first-party release key +
-    /// the binary's own version (carried for diagnostics — NOT a floor) + the configured third-party
-    /// publishers/opt-ins/floors. A malformed publisher key is a boot error, not a silent skip (a
-    /// skipped trust anchor could wrongly reject a good plugin).
-    ///
-    /// The AUTOMATIC first-party anti-downgrade floor is NOT resolved here: it is the per-name
-    /// high-water mark, an observed fact rather than a config value, and it is injected by
-    /// [`crate::preflight`] from `busbar_plugin_loader::HighWaterMarks`. This resolver leaves
-    /// `first_party_high_water` empty; a caller that skips the injection gets NO automatic floor.
-    pub fn to_policy(&self) -> Result<busbar_plugin_loader::sign::TrustPolicy, String> {
-        self.to_policy_with_floor(env!("CARGO_PKG_VERSION"))
+    /// The configured third-party publishers as `(name, hex public key)`: what the composition
+    /// root's trust resolution reads (the loader's `TrustPolicy::from_config`). The AUTOMATIC
+    /// first-party anti-downgrade floor is not configuration: the registry build arms it from the
+    /// per-name high-water marks.
+    pub fn publisher_keys(&self) -> Vec<(&str, &str)> {
+        self.trust
+            .publishers
+            .iter()
+            .map(|p| (p.name.as_str(), p.public_key.as_str()))
+            .collect()
     }
 
-    /// Build the trust policy. `binary_version` is carried on the policy for error text/telemetry
-    /// only — it is NOT a floor: `busbar_plugin_loader::sign::evaluate` applies PER-NAME floors alone
-    /// (`first_party_floors` rollback pins + `min_versions`), because first-party plugins version
-    /// on independent lines (1.0.x stores/auth/hooks under a 1.5.0 engine) and an
-    /// automatic "plugin >= binary version" floor rejected every correctly-signed current release
-    /// (removed before 1.5.0 shipped; see plugin-sign's evaluate() for the full rationale).
-    ///
-    /// Anti-downgrade still holds per name: an explicit operator ROLLBACK (Full-scope, If-Match,
-    /// audited) persists a per-name pin via the overlay `plugin_versions` mechanism (see
-    /// `overlay::apply_plugin_versions_to_deploy`), and `plugins.min_versions` floors first- and
-    /// third-party alike. (Future: the plugin registry embeds known per-plugin floors at release
-    /// time, restoring zero-config anti-replay without version-line coupling.)
-    pub fn to_policy_with_floor(
-        &self,
-        binary_version: &str,
-    ) -> Result<busbar_plugin_loader::sign::TrustPolicy, String> {
-        let mut publishers = std::collections::BTreeMap::new();
-        for p in &self.trust.publishers {
-            if p.name == busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER {
-                return Err(format!(
-                    "plugins.trust.publishers['{}']: the publisher name '{}' is reserved for \
-                     busbar's embedded release key and cannot be configured",
-                    p.name,
-                    busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER
-                ));
-            }
-            let key = busbar_plugin_loader::sign::public_key_from_hex(&p.public_key)
-                .map_err(|e| format!("plugins.trust.publishers['{}']: {e}", p.name))?;
-            publishers.insert(p.name.clone(), key);
-        }
-        // A malformed floor is not a config error (it does not stop the boot — `version_at_least`
-        // fails closed at the comparator, refusing just the one floored plugin) but
-        // it IS worth telling the operator about early, before an artifact is even present: an
-        // unparsable floor silently disarms the anti-downgrade control, so an operator who believes
-        // it is armed should not have to discover that from a missing `--list-plugins` row.
+    /// Warn, once per resolution, about every anti-downgrade floor that is not a valid
+    /// `MAJOR.MINOR.PATCH`. A malformed floor is not a config error (it does not stop the boot —
+    /// the comparator fails closed, refusing just the one floored plugin) but it IS worth telling
+    /// the operator about early, before an artifact is even present: an unparsable floor silently
+    /// disarms the anti-downgrade control. Runs at every moment the trust policy is resolved: boot,
+    /// reload and apply (the preflight), the admin catalog, reload, upload and rollback, and
+    /// `--list-plugins`.
+    pub fn warn_invalid_floors(&self) {
         for (name, floor) in &self.min_versions {
-            if !floor.is_empty() && !busbar_plugin_loader::sign::valid_semver(floor) {
+            if !floor.is_empty() && !busbar_contract::plugin::valid_semver(floor) {
                 diag_warn!(
                     CONFIG_ANTIDOWNGRADE_FLOOR_INVALID,
                     key = %format!("plugins.min_versions['{name}']"),
@@ -1704,7 +1676,7 @@ impl PluginsCfg {
             }
         }
         for (name, floor) in &self.first_party_floors {
-            if !floor.is_empty() && !busbar_plugin_loader::sign::valid_semver(floor) {
+            if !floor.is_empty() && !busbar_contract::plugin::valid_semver(floor) {
                 diag_warn!(
                     CONFIG_FIRSTPARTY_FLOOR_INVALID,
                     key = %format!("plugins.first_party_floors['{name}']"),
@@ -1716,19 +1688,6 @@ impl PluginsCfg {
                 );
             }
         }
-        Ok(busbar_plugin_loader::sign::TrustPolicy {
-            first_party_key: busbar_plugin_loader::sign::embedded_release_pubkey(),
-            binary_version: binary_version.to_string(),
-            first_party_floors: self.first_party_floors.clone(),
-            // The automatic first-party floor is injected by the caller that owns the marks
-            // (`plugins_preflight`, from `busbar_plugin_loader::HighWaterMarks`); config carries no
-            // high-water key and never will — the mark is an observed fact, not an operator setting.
-            first_party_high_water: Default::default(),
-            publishers,
-            allow_unsigned: self.trust.allow_unsigned,
-            allow_third_party: self.trust.allow_third_party,
-            min_versions: self.min_versions.clone(),
-        })
     }
 }
 

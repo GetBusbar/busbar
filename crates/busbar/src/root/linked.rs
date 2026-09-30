@@ -41,7 +41,7 @@ use busbar_kernel::plane::registry::{BillableClass, BuildCtx, PlaneDeclaration, 
 use busbar_kernel::plane::PlaneAdmission;
 use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneResponse, PlaneRouteSpec};
-use busbar_kernel::preflight::{LinkedAuth, LinkedHook, LinkedStore, RootInstall};
+use busbar_kernel::preflight::{LinkedAuth, LinkedHook, LinkedStore, RegistryIn, RootInstall};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
 /// run once the deployment's secret resolver exists.
@@ -959,15 +959,12 @@ fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
     ) {
         let _ = LOGS.set(logs);
     }
+    plugins.warn_invalid_floors();
     let data_dir = busbar_kernel::preflight::fleet_data_dir();
-    let scan = crate::root::loader::boot::Scan {
-        policy: plugins.to_policy().ok()?,
-        data_dir: data_dir.as_deref(),
-        dir: Some(std::path::Path::new(&plugins.dir)),
-    };
-    let build = crate::root::loader::boot::Build {
+    let build = RegistryIn {
         linked: Vec::new(),
-        scan: Some(scan),
+        plugins: Some(&plugins),
+        data_dir: data_dir.as_deref(),
     };
     crate::root::boot::registry(build, &mut |_| {}).ok()
 }
