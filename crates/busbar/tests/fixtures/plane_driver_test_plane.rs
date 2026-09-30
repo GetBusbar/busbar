@@ -6,7 +6,7 @@
 //!
 //! It exports the one door over the plane table and defines no ABI shape of its own. What it does
 //! with a unit is chosen by the member name the kernel hands its ATTEMPT piece (`ok`, `retry`,
-//! `retry-late`, `pend`, `hang`, `fault`, `cancel-fault`, `short`, `short-twice`), and `arrive`
+//! `retry-late`, `pend`, `hang`, `wedge`, `fault`, `cancel-fault`, `short`, `short-twice`), and `arrive`
 //! reacts to the request target (`/short`, `/short-twice`, `/refuse`, `/stats`). Its far-end
 //! answer echoes the far end's bytes, in pieces of at most `reply_cap` (`more = 1` for the rest),
 //! with cumulative far-end-reported units = the bytes emitted so far.
@@ -67,6 +67,9 @@ pub const STATS: usize = 7;
 struct Shared<T>(T);
 // SAFETY: immutable `'static` data (pointers into other statics).
 unsafe impl<T> Sync for Shared<T> {}
+
+/// How long a `wedge` crossing runs: past the dispatcher's 1s Stream budget.
+pub const WEDGE: Duration = Duration::from_millis(1500);
 
 const fn s(b: &'static [u8]) -> AbiStr {
     AbiStr {
@@ -520,6 +523,15 @@ extern "C" fn on_piece(
             u.saw_last |= i.flags & PIECE_LAST != 0;
             match u.mode.as_slice() {
                 b"fault" => return RawOutcome::of(Outcome::Fault),
+                b"wedge" => {
+                    // A crossing that outlives the watchdog's Stream budget: the host has
+                    // answered FAULT long before it re-reads its piece and writes its reply buffer.
+                    drop(units);
+                    std::thread::sleep(WEDGE);
+                    let n = piece.len().min(i.reply_cap);
+                    std::ptr::copy(piece.as_ptr(), i.reply_buf, n);
+                    return say(out, Outcome::Ready);
+                }
                 b"hang" | b"cancel-fault" => return say(out, Outcome::Pending),
                 b"pend" if !u.pended => {
                     u.pended = true;

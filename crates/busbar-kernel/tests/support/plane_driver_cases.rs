@@ -459,6 +459,52 @@ async fn a_fault_becomes_a_failed_end_with_the_planes_refusal() {
     }
 }
 
+/// THE LENT MEMORY (ARCHITECT ruling 2026-09-29, every kind): a crossing the host answered FAULT
+/// (the watchdog, past the Stream budget) may still be running; it keeps the unit's host buffers
+/// until it returns, then re-reads its piece and writes its reply buffer into memory that is still
+/// the unit's. The witness is the caller's body, which the buffers hold: it outlives the unit until
+/// the wedged crossing returns, and not a moment longer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wedged_on_piece_keeps_the_units_buffers_until_it_returns() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), Book::default());
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["wedge"], CHUNKS),
+            Caller::default(),
+        );
+        let body: Arc<[u8]> = Arc::from(&b"wedged"[..]);
+        let arrival = Arrival {
+            body: body.clone(),
+            ..arrival("/call", b"")
+        };
+        let units = r.driver.unit(&steps, &far, &caller, arrival, 0);
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(
+                outcome,
+                Outcome::Failed(StepName::Route, ReasonCode::PlanePanic)
+            ),
+            "{way:?}: {outcome:?}"
+        );
+        drop(units);
+        assert_eq!(
+            Arc::strong_count(&body),
+            2,
+            "{way:?}: the unit is over, but its FAULTed crossing has not returned: the buffers it \
+             points into must still be alive"
+        );
+        let t = Instant::now();
+        while Arc::strong_count(&body) != 1 {
+            assert!(
+                t.elapsed() < Duration::from_secs(10),
+                "{way:?}: the buffers go once the wedged crossing returns"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_retry_verdict_before_the_first_byte_fails_over() {
     for way in ways() {

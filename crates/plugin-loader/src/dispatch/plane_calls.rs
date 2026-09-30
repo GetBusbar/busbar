@@ -18,7 +18,7 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, RefusalIn, RefusalOut,
 };
-use busbar_contract::plane_calls::{Answered, Grow, PieceInFlight, PlaneCalls};
+use busbar_contract::plane_calls::{Answered, Grow, Lent, PieceInFlight, PlaneCalls};
 
 use super::kinds::plane::Plane;
 use super::{in_head, now_ns, out_head, Dispatcher, Done, Frame, InFrame, OutFrame, Plugin, Reply};
@@ -42,7 +42,9 @@ impl PlaneInstance {
         }
     }
 
-    /// A ticketless call of `s` with the one re-call a short answer earns.
+    /// A ticketless call of `s` with the one re-call a short answer earns. It crosses on the
+    /// caller's own thread ([`Plugin::call`]), which the watchdog can fault but never abandon: the
+    /// caller is inside the crossing until it returns, so the buffers it lends need no owner.
     fn pure<I: InFrame, O: OutFrame>(
         &self,
         s: u32,
@@ -117,15 +119,19 @@ impl PlaneCalls for PlaneInstance {
         ticket: Ticket,
         mut input: OnPieceIn,
         out: OnPieceOut,
+        lent: Lent,
     ) -> Box<dyn PieceInFlight> {
         input.head = in_head();
-        let reply = self.dispatcher.submit(
+        // The unit's buffers ride with the job: a crossing the watchdog answered FAULT still owns
+        // them until it returns.
+        let reply = self.dispatcher.submit_lent(
             &self.plugin,
             ticket,
             slot::ON_PIECE,
             Frame::new(input, out),
             DeadlineClass::Stream,
             0,
+            lent,
         );
         Box::new(Piece { reply, done: None })
     }

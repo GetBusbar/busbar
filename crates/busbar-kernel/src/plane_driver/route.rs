@@ -30,7 +30,7 @@ use busbar_contract::abi::plane::{
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, VERDICT_RETRY,
 };
 use busbar_contract::caps::ReasonCode;
-use busbar_contract::plane_calls::{Answered, PieceInFlight};
+use busbar_contract::plane_calls::{Answered, Lent, PieceInFlight};
 use tokio::sync::watch;
 
 use super::cancel::{Buried, CancelBill, CancelCause, Checkpoint};
@@ -326,6 +326,13 @@ enum Toward<'r> {
     Caller,
 }
 
+/// Where a unit's host buffers go when its pump ends: every `on_piece` of the unit lends this
+/// ([`Lent`]), so the host holds it for as long as any crossing of the unit is still running. The
+/// pump moves its buffers in when it ends; they are freed when the last holder lets go, which is
+/// the pump itself when every crossing has returned, and otherwise the crossing the watchdog
+/// answered FAULT but could not stop, when it finally returns.
+type Keep = Arc<Mutex<Option<Box<PieceBufs>>>>;
+
 /// ONE UNIT'S PUMP: its ticket, its host buffers, the op in flight, and the guard that buries them
 /// when the caller goes away. Nothing in its `Drop` crosses the dispatcher: an in-flight op is
 /// handed to the client-drop path by message, and a unit with no op in flight is left for the
@@ -338,6 +345,7 @@ pub(crate) struct Pumping<'u> {
     deadline_ns: u64,
     stop: watch::Receiver<bool>,
     bufs: Box<PieceBufs>,
+    keep: Keep,
     flight: Option<Box<dyn PieceInFlight>>,
     ended: bool,
 }
@@ -359,6 +367,7 @@ impl<'u> Pumping<'u> {
             deadline_ns,
             stop: driver.reload.subscribe(),
             bufs: Box::new(PieceBufs::new(&driver.config.caps, body)),
+            keep: Arc::new(Mutex::new(None)),
             flight: None,
             ended: false,
         }
@@ -386,7 +395,10 @@ impl<'u> Pumping<'u> {
         let calls = &self.driver.calls;
         let (input, out) = frame(&mut self.bufs, p, self.ctx.key.get());
         let left = self.left();
-        let flight = self.flight.insert(calls.on_piece(self.ticket, input, out));
+        let lent: Lent = self.keep.clone();
+        let flight = self
+            .flight
+            .insert(calls.on_piece(self.ticket, input, out, lent));
         let (answered, cause) = match guarded(&mut self.stop, left, &mut **flight).await {
             Ok(answered) => (answered, None),
             Err(cause) => {
@@ -423,22 +435,29 @@ impl<'u> Pumping<'u> {
 
 impl Drop for Pumping<'_> {
     fn drop(&mut self) {
+        // THE BUFFERS OUTLIVE EVERY CROSSING, not only every answer: they move into the unit's
+        // keep, which a crossing still running (one the watchdog answered FAULT, or one the
+        // client-drop path is cancelling) holds until it returns.
+        let bufs = std::mem::replace(
+            &mut self.bufs,
+            Box::new(PieceBufs::new(&BufferCaps::EMPTY, Arc::from(&[][..]))),
+        );
+        *self
+            .keep
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(bufs);
         if self.ended {
             return;
         }
         // THE CALLER WENT AWAY. No crossing here: an op still in flight is handed to the
-        // dispatcher's client-drop path by message and buried with the buffers its `in` points
-        // into until it settles; a unit between ops is buried for the sweep's ticketless `cancel`.
+        // dispatcher's client-drop path by message and buried until it settles; a unit between
+        // ops is buried for the sweep's ticketless `cancel`.
         let flight = match self.flight.take() {
             Some(mut flight) => match flight.settled() {
                 Some(_settled) => None,
                 None => {
                     self.driver.calls.drop_client(self.ticket);
-                    let bufs = std::mem::replace(
-                        &mut self.bufs,
-                        Box::new(PieceBufs::new(&BufferCaps::EMPTY, Arc::from(&[][..]))),
-                    );
-                    Some((flight, bufs))
+                    Some(flight)
                 }
             },
             None => None,

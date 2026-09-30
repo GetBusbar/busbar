@@ -9,8 +9,16 @@
 //! The pure ops (`arrive`, `refusal`) and the host's own `cancel` are ticketless: they never pend.
 //! `on_piece` is submitted on a request ticket and crosses on that ticket's worker; its answer is a
 //! future, so the caller's task awaits it and no thread is parked.
+//!
+//! THE LENT MEMORY (ARCHITECT ruling 2026-09-29, every kind): an `on_piece` `in` names the unit's
+//! host buffers by raw pointer, and a crossing the watchdog answers FAULT may still be running on
+//! its abandoned thread. So `on_piece` takes the buffers' owner ([`Lent`]) and the host keeps it
+//! until the crossing has returned, never only until the answer. The pure ops need none: they cross
+//! on the caller's own thread, which stays inside the crossing until it returns.
 
+use std::any::Any;
 use std::future::Future;
+use std::sync::Arc;
 
 use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::ticket::Ticket;
@@ -42,6 +50,10 @@ pub trait PieceInFlight: Future<Output = Answered> + Send + Unpin {
 /// Grow the host buffers a short answer named, re-pointing the `in` at them, before the one
 /// re-call.
 pub type Grow<'a, I, O> = &'a mut dyn FnMut(&O, &mut I);
+
+/// The owner of the host memory an op's `in` points into: kept alive by the host until the op's
+/// last crossing returned.
+pub type Lent = Arc<dyn Any + Send + Sync>;
 
 /// ONE PLANE INSTANCE'S CALLS, as the kernel's plane driver makes them.
 pub trait PlaneCalls: Send + Sync {
@@ -79,8 +91,13 @@ pub trait PlaneCalls: Send + Sync {
     /// answer carries the disposition. A message, never a crossing on the calling thread.
     fn drop_client(&self, ticket: Ticket);
 
-    /// Submit `on_piece` on `ticket`; it crosses on the ticket's worker. The host buffers `input`
-    /// names must outlive the answer.
-    fn on_piece(&self, ticket: Ticket, input: OnPieceIn, out: OnPieceOut)
-        -> Box<dyn PieceInFlight>;
+    /// Submit `on_piece` on `ticket`; it crosses on the ticket's worker. `lent` owns the host
+    /// buffers `input` names; it is held until the crossing returns, even past a FAULT answer.
+    fn on_piece(
+        &self,
+        ticket: Ticket,
+        input: OnPieceIn,
+        out: OnPieceOut,
+        lent: Lent,
+    ) -> Box<dyn PieceInFlight>;
 }

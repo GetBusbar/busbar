@@ -32,7 +32,7 @@ use busbar_contract::abi::plane::{
     UNITS_REPORTED, VERDICT_RETRY,
 };
 use busbar_contract::caps::OpClassId;
-use busbar_contract::plane_calls::{Answered, Grow, PieceInFlight, PlaneCalls};
+use busbar_contract::plane_calls::{Answered, Grow, Lent, PieceInFlight, PlaneCalls};
 use busbar_kernel::plane_driver::{refusal_status, BufferCaps, DriverConfig, PlaneDriver};
 
 use cases::stat;
@@ -293,6 +293,8 @@ impl Double {
             u.saw_last |= i.flags & PIECE_LAST != 0;
             match u.mode.as_slice() {
                 b"fault" => return (ready(Outcome::Fault), Hold::No),
+                // The watchdog's FAULT for a crossing that has not returned: see `Hold::Wedge`.
+                b"wedge" => return (ready(Outcome::Fault), Hold::Wedge),
                 b"hang" | b"cancel-fault" => return (ready(Outcome::Pending), Hold::Forever),
                 b"pend" if !u.pended => {
                     u.pended = true;
@@ -370,7 +372,18 @@ enum Hold {
     No,
     For(Duration),
     Forever,
+    /// Answered FAULT (as the watchdog answers a hung crossing) while the crossing goes on: it
+    /// returns later, re-reading its input and writing its reply buffer, and only then lets go of
+    /// what the driver lent it.
+    Wedge,
 }
+
+/// How long a wedged crossing runs on after its FAULT answer.
+pub(crate) const WEDGE: Duration = Duration::from_millis(300);
+
+struct SendIn(OnPieceIn);
+// SAFETY: the driver's `in`; its buffers are owned by the lent memory the wedge holds with it.
+unsafe impl Send for SendIn {}
 
 impl PlaneCalls for Double {
     fn now_ns(&self) -> u64 {
@@ -516,6 +529,7 @@ impl PlaneCalls for Double {
         ticket: Ticket,
         input: OnPieceIn,
         mut out: OnPieceOut,
+        lent: Lent,
     ) -> Box<dyn PieceInFlight> {
         let slot = Arc::new(Shared(Mutex::new(Slot {
             answer: None,
@@ -530,6 +544,25 @@ impl PlaneCalls for Double {
                     .lock()
                     .unwrap()
                     .insert(ticket, (slot.clone(), out));
+            }
+            Hold::Wedge => {
+                slot.put(answer, out);
+                let input = SendIn(input);
+                std::thread::spawn(move || {
+                    let input = input;
+                    std::thread::sleep(WEDGE);
+                    let i = input.0;
+                    // SAFETY: the crossing still owns the buffers: `lent` is held until here.
+                    if i.bytes.len != 0 {
+                        unsafe {
+                            let seen = std::slice::from_raw_parts(i.bytes.ptr, i.bytes.len);
+                            let n = seen.len().min(i.reply_cap);
+                            std::ptr::copy(seen.as_ptr(), i.reply_buf, n);
+                        }
+                    }
+                    // The crossing returns: only now may what it was lent go.
+                    drop(lent);
+                });
             }
             Hold::For(after) => {
                 let (slot, answer, out) = (slot.clone(), answer, SendOut(out));

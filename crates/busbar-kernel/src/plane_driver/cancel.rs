@@ -13,8 +13,9 @@
 //!
 //! A unit whose caller went away is BURIED, because nothing may cross the dispatcher inside a
 //! `Drop`: an op still in flight goes to the dispatcher's client-drop path (a message, which makes
-//! the cancel crossing on the op's worker) and keeps its host buffers alive here until it settles;
-//! a unit with no op in flight waits here for its ticketless `cancel`. [`super::PlaneDriver::sweep`]
+//! the cancel crossing on the op's worker) and waits here until it settles; a unit with no op in
+//! flight waits here for its ticketless `cancel`. The host buffers are not kept here: the op lent
+//! them, so the dispatcher holds them until the crossing returns. [`super::PlaneDriver::sweep`]
 //! finishes both, outside any `Drop`.
 
 use busbar_contract::abi::mechanism::call::Outcome as AbiOutcome;
@@ -26,7 +27,6 @@ use busbar_contract::abi::plane::{
 use busbar_contract::caps::ReasonCode;
 use busbar_contract::plane_calls::PieceInFlight;
 
-use super::route::PieceBufs;
 use super::PlaneDriver;
 use crate::teller::{Ended, UnitCtx};
 
@@ -140,8 +140,8 @@ pub(crate) struct Buried {
     pub(crate) ctx: UnitCtx,
     pub(crate) ticket: Ticket,
     pub(crate) facts: Facts,
-    /// The op that was in flight, with the host buffers its `in` points into.
-    pub(crate) flight: Option<(Box<dyn PieceInFlight>, Box<PieceBufs>)>,
+    /// The op that was in flight.
+    pub(crate) flight: Option<Box<dyn PieceInFlight>>,
 }
 
 impl PlaneDriver {
@@ -154,9 +154,9 @@ impl PlaneDriver {
         let mut unsettled = Vec::new();
         for mut unit in buried {
             let disposition = match unit.flight.take() {
-                Some((mut flight, bufs)) => match flight.settled() {
+                Some(mut flight) => match flight.settled() {
                     None => {
-                        unit.flight = Some((flight, bufs));
+                        unit.flight = Some(flight);
                         unsettled.push(unit);
                         continue;
                     }
