@@ -67,6 +67,7 @@ pub mod ids;
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod ir;
 pub(crate) mod json_grammar;
+pub mod jsonrpc;
 pub mod kinds;
 // The media carriers (#83a SD-2b), re-expressed over `bounded::SlabBytes`.
 #[allow(missing_docs, missing_debug_implementations)]

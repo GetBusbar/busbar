@@ -221,11 +221,6 @@ item = "sigv4"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/ingress/jsonrpc.rs"
-item = "jsonrpc"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/ingress/protocol.rs"
 item = "jsonrpc"
 
