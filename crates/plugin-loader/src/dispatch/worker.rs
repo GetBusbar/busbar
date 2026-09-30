@@ -119,6 +119,9 @@ pub struct DispatchStats {
     pub replacements: u64,
     /// WriteBehind ops that completed after their caller stopped waiting.
     pub write_behind_late: u64,
+    /// Library unloads still running on their reapers, process-wide: a count that stays up names a
+    /// hung `.fini_array` (never forced; see `load::reap`).
+    pub live_reapers: u64,
 }
 
 #[derive(Debug, Default)]
@@ -1164,6 +1167,7 @@ impl Dispatcher {
             stale_wakes: s.stale_wakes.load(Ordering::Relaxed),
             replacements: s.replacements.load(Ordering::Relaxed),
             write_behind_late: s.write_behind_late.load(Ordering::Relaxed),
+            live_reapers: super::load::live_reapers(),
         }
     }
 

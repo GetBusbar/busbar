@@ -226,9 +226,22 @@ pub(crate) type Unload = Box<dyn FnOnce() + Send>;
 /// single shared reaper let one hanging `.fini_array` hold every later library — and its staged
 /// image — loaded for the life of the process). A reaper the OS will not spawn leaks the library
 /// rather than run its unload on the caller's thread.
+///
+/// A HUNG UNLOAD IS OBSERVABLE, NEVER FORCED: each reaper is counted live until its unload returns
+/// ([`live_reapers`], reported in `DispatchStats::live_reapers`), and a watch beside it warns once
+/// when the unload has not returned within the lifecycle budget. Nothing caps or cancels it — a
+/// leaked library is safer than a forced unload.
 pub(crate) fn reap(unload: Unload) {
+    reap_within(unload, super::Budgets::default().lifecycle);
+}
+
+/// [`reap`], warning when the unload outlives `bound`.
+pub(crate) fn reap_within(unload: Unload, bound: std::time::Duration) {
+    use std::sync::atomic::Ordering::SeqCst;
     let handed = std::sync::Arc::new(std::sync::Mutex::new(Some(unload)));
     let taken = std::sync::Arc::clone(&handed);
+    let (done, returned) = std::sync::mpsc::channel::<()>();
+    LIVE_REAPERS.fetch_add(1, SeqCst);
     let spawned = std::thread::Builder::new()
         .name(REAPER_THREAD.into())
         .spawn(move || {
@@ -236,22 +249,54 @@ pub(crate) fn reap(unload: Unload) {
             if let Some(unload) = unload {
                 unload();
                 #[cfg(test)]
-                UNLOADS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                UNLOADS.fetch_add(1, SeqCst);
             }
+            LIVE_REAPERS.fetch_sub(1, SeqCst);
+            let _ = done.send(());
         });
     if let Err(e) = spawned {
+        LIVE_REAPERS.fetch_sub(1, SeqCst);
         tracing::warn!(error = %e, "no reaper thread: the plugin library stays loaded");
         let unload = handed.lock().unwrap_or_else(|e| e.into_inner()).take();
         std::mem::forget(unload);
+        return;
     }
+    // The watch: it outlives nothing but its own wait, so a hung unload leaves one thread, its own.
+    let _ = std::thread::Builder::new()
+        .name(REAPER_WATCH_THREAD.into())
+        .spawn(move || {
+            if returned.recv_timeout(bound) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+                tracing::warn!(
+                    bound_secs = bound.as_secs_f64(),
+                    live_reapers = live_reapers(),
+                    "a plugin library's unload has not returned; its reaper stays, never forced"
+                );
+                #[cfg(test)]
+                HUNG_WARNED.fetch_add(1, SeqCst);
+            }
+        });
 }
+
+/// Reapers whose unload has not returned, process-wide.
+pub(crate) fn live_reapers() -> u64 {
+    LIVE_REAPERS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+static LIVE_REAPERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The reaper thread's name.
 pub(crate) const REAPER_THREAD: &str = "busbar-dispatch-reaper";
 
+/// The reaper watch's thread name.
+const REAPER_WATCH_THREAD: &str = "busbar-dispatch-reaper-watch";
+
 /// TEST WITNESS: unloads the reapers finished.
 #[cfg(test)]
 pub(crate) static UNLOADS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// TEST WITNESS: hung unloads the watch warned of.
+#[cfg(test)]
+pub(crate) static HUNG_WARNED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// THE DROPPED-IN DOOR: `path`'s manifest facts, then `dlopen`, then [`DOOR_SYMBOL`], then
 /// [`validate`]. A mechanism version the host does not speak is refused before the library is
