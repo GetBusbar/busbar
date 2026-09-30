@@ -71,29 +71,44 @@
 //! # The cancel rule
 //!
 //! A caller can cancel one of its own in-flight units by name. `arrive` names every unit it
-//! classifies with an optional [`ArriveOut::correlation`], and a subsequent arrival on the SAME
-//! connection whose [`ArriveOut::cancels`] equals it is a cancel:
+//! classifies with an optional [`ArriveOut::correlation`]. The CANCEL KEY is (connection, the
+//! arrival's authenticated principal, correlation): the principal is the one the kernel verified
+//! for the arrival, never a value a plane reports, so a correlation is never connection-wide. A
+//! subsequent arrival whose [`ArriveOut::cancels`] equals a live unit's correlation under the same
+//! connection and principal is a cancel:
 //!
-//! 1. The kernel ends the named unit, whatever its shape (a one-shot unit included), through the
-//!    lifecycle `cancel`, and bills it by [`cancel_bills_reported_units`] like any other cut.
-//! 2. The named unit is SILENCED: nothing of its reply that has not already reached the caller is
+//! 1. The cancel acts only AFTER its own arrival has passed the same authentication as any arrival.
+//!    An arrival that is unauthenticated, or refused, cancels nothing.
+//! 2. The kernel ends the named unit, whatever its shape (a one-shot unit included), through the
+//!    lifecycle `cancel`, and bills it by [`cancel_bills_reported_units`] like any other cut. A
+//!    cancel racing the unit's own end settles the unit's hold exactly once.
+//! 3. The named unit is SILENCED: nothing of its reply that has not already reached the caller is
 //!    written after the cancel.
-//! 3. The cancel itself is a notice: it opens no hold, bills nothing and writes no reply.
-//! 4. A `cancels` value naming no in-flight unit, a unit already finished or a unit on another
-//!    connection changes nothing. A cancel never reaches across connections.
+//! 4. The cancel itself is a notice: it opens no hold, bills nothing and writes no reply.
+//! 5. A `cancels` value naming no live unit, a finished unit, another connection's unit or ANOTHER
+//!    PRINCIPAL's unit matches nothing and is ignored silently. It is never an error and never
+//!    reveals that another principal's unit exists.
+//! 6. A DUPLICATE correlation (an arrival whose key is already held by a live unit) is served, but
+//!    it gets no cancel key: the key stays with the unit that claimed it first, the duplicate can
+//!    never be cancelled by name, and a cancel naming the key ends only the first. That is the
+//!    served baseline's behaviour, and the claim is never displaced.
 //!
-//! When to emit a cancel is the plane's call. A plane that cancels only where its dialect defines
-//! it (MCP: its stdio carrier, as predev) simply leaves `cancels` at `0` everywhere else.
+//! The kernel's key table is bounded by the connection's in-flight units: an entry leaves at its
+//! unit's end, and the whole table at the connection's close. When to emit a cancel is the plane's
+//! call; a plane whose dialect defines cancel only on some carriers leaves `cancels` at `0`
+//! everywhere else.
 //!
 //! # The catalogue-moved tick
 //!
 //! A session that asked to be told when the catalogue moves ([`EMIT_WATCH_CATALOGUE`] on any of
 //! its pieces) is given a [`PIECE_CATALOGUE_MOVED`] piece ([`FROM_KERNEL`], no bytes) on its stream
-//! each time the catalogue generation moves, at most once per move. The watch is keyed by (session
-//! stream, owning principal); [`EMIT_UNWATCH_CATALOGUE`] drops it, and so does the session ending
-//! or being evicted. The plane keeps what the session watches (its own bounded state) and answers
-//! the tick with whatever it tells the session, or with nothing; a watch never widens what the
-//! session's principal may see.
+//! when the catalogue generation moves. The watch is keyed by (session stream, the session's
+//! authenticated principal, the one the kernel verified); a repeated WATCH is idempotent, and
+//! [`EMIT_UNWATCH_CATALOGUE`] drops it, as does the session ending or being evicted, so the watch
+//! set is bounded by live sessions. The kernel holds AT MOST ONE pending tick per watch: moves that
+//! land while one is pending coalesce into it, so a slow plane never queues ticks. The plane keeps
+//! what the session watches (its own bounded state) and answers the tick with whatever it tells the
+//! session, or with nothing; a watch never widens what the session's principal may see.
 //!
 //! EVERY `PlaneDecl` FIELD, AND WHERE IT WENT (nothing dropped silently):
 //!
@@ -355,7 +370,8 @@ pub const EMIT_DONE: u32 = 1 << 1;
 pub const PIECE_OUT_TEXT: u32 = 1 << 2;
 /// [`OnPieceOut::flags`]: WATCH. From now on, this piece's session is given a
 /// [`PIECE_CATALOGUE_MOVED`] tick whenever the catalogue generation moves. The watch is keyed by
-/// (session stream, the session's owning principal) and is the kernel's to hold.
+/// (session stream, the session's authenticated principal) and is the kernel's to hold; a repeated
+/// WATCH is idempotent.
 pub const EMIT_WATCH_CATALOGUE: u32 = 1 << 3;
 /// [`OnPieceOut::flags`]: DROP the watch [`EMIT_WATCH_CATALOGUE`] set for this piece's session. The
 /// kernel also drops it on its own when the session ends or is evicted. Never set together with
@@ -1140,10 +1156,13 @@ pub struct ArriveOut {
     pub _reserved: u32,
     /// This unit's CORRELATION KEY: a non-zero value the plane derives from the arrival (for
     /// example from its request identifier), naming the unit for a subsequent
-    /// [`ArriveOut::cancels`]; `0` = the unit cannot be cancelled by name. A tail addition.
+    /// [`ArriveOut::cancels`]; `0` = the unit cannot be cancelled by name. A tail addition. It is
+    /// scoped to (connection, the arrival's authenticated principal), never connection-wide: see
+    /// the cancel rule in this module's documentation.
     pub correlation: u64,
     /// A non-zero value makes this arrival a CANCEL: it names the [`ArriveOut::correlation`] of an
-    /// in-flight unit on the same connection (the cancel rule, in this module's documentation).
+    /// in-flight unit of the same connection and principal (the cancel rule, in this module's
+    /// documentation).
     /// `0` = not a cancel. Never set together with a non-zero [`ArriveOut::correlation`].
     pub cancels: u64,
 }
