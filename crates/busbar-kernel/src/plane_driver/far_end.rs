@@ -698,6 +698,18 @@ impl EgressFarEnd<'_> {
         let Some(route) = e.routes.get(&destination).cloned() else {
             return false;
         };
+        // THE TARGET IS A PATH. Joined onto the operator's base_url, anything else could move the
+        // authority (`@evil.test/x` makes `api.host@evil.test`) and carry the member's auth fields
+        // to a host nobody configured: refused before the record, the auth call or the dial, and
+        // nothing is recorded against the member.
+        if !request.target.starts_with(b"/") {
+            let mut w = self.lock();
+            if let Some(live) = w.live.as_mut() {
+                live.answered = true; // nothing was dispatched, so nothing to abandon
+            }
+            self.settle(&mut w);
+            return false;
+        }
         // 1. The dispatch record, durable BEFORE the dial.
         if e.journal.dispatched(&record).is_err() {
             let mut w = self.lock();

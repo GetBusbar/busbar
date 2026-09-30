@@ -691,3 +691,28 @@ fn the_unit_deadline_is_the_pools_request_timeout() {
         now + 600 * 1_000_000_000
     );
 }
+
+/// A target that is not a path never leaves: joined onto the base it could move the authority
+/// (`api.host@evil.test`) and carry the member's auth fields there. Nothing is opened, the auth
+/// binding is never called, nothing is recorded against the member.
+#[tokio::test]
+async fn a_target_that_is_not_a_path_is_refused_before_the_dial() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    for target in [&b"@evil.test/x"[..], b"evil.test/x", b""] {
+        let far = r.egress.unit(route());
+        let _ = far.member(&t, 1).await;
+        let request = OutboundRequest {
+            target: target.to_vec(),
+            ..request()
+        };
+        assert!(!far.send(&t, request).await, "{target:?}");
+    }
+    assert!(r.table.opened.lock().unwrap().is_empty());
+    assert_eq!(r.auth.calls.load(Ordering::SeqCst), 0);
+    assert!(r.book.observed.lock().unwrap().is_empty());
+}
