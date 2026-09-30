@@ -275,6 +275,10 @@ fn register_planes() {
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.
     let dropped = root::linked::dropped_from_config(&LINKED);
+    root::linked::register_planes(&LINKED, root::linked::dropped_planes_of(&LINKED, dropped));
+    root::linked::register_exports(dropped);
+    // A plugin that declares an inbound need is refused until an accepted connection has a
+    // consumer, after the axes it selects against are registered.
     if let Some(registry) = dropped {
         let path = root::cli::resolve_config_path(root::cli::config_path_flag().as_deref());
         if let Err(refusal) =
@@ -284,8 +288,6 @@ fn register_planes() {
             std::process::exit(2);
         }
     }
-    root::linked::register_planes(&LINKED, root::linked::dropped_planes_of(&LINKED, dropped));
-    root::linked::register_exports(dropped);
 
     // THE AUTHORIZATION-SERVER PLANE'S SEAM, registered UNCONDITIONALLY (no feature flag — see the
     // manifest note on the `busbar-oauth2` dependency), before any config loads. Mirrors
@@ -1297,11 +1299,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             &shutdown_tx,
             worker_shutdown_rx,
         );
-        let admin_listener =
-            Listening::bind_stream(&admin_at, ROOT_BIND_LIMITS)
-                .unwrap_or_else(|e| {
-                    die(format!("cannot bind listen address '{admin_listen}': {e}"))
-                });
+        let admin_listener = Listening::bind_stream(&admin_at, ROOT_BIND_LIMITS)
+            .unwrap_or_else(|e| die(format!("cannot bind listen address '{admin_listen}': {e}")));
         tracing::debug!(listen = %admin_listen, "admin listening through the connector");
         serve_listener(
             admin_listener,
@@ -1502,16 +1501,13 @@ fn serve_thread_per_core(
                     // runs after placement, in the serving loop (pinning at accept would change
                     // 1.5.5's per-core placement).
                     // TRANSITIONAL: drains at K1 U6/U7 (1.6.0-TODO.md).
-                    let listener = Listening::bind_stream(
-                        &bind_at,
-                        ROOT_BIND_LIMITS,
-                    )
-                    .unwrap_or_else(|e| {
-                        die(format!(
-                            "cannot bind SO_REUSEPORT data listener on '{listen}' (per-core \
+                    let listener = Listening::bind_stream(&bind_at, ROOT_BIND_LIMITS)
+                        .unwrap_or_else(|e| {
+                            die(format!(
+                                "cannot bind SO_REUSEPORT data listener on '{listen}' (per-core \
                              runtime {i}): {e}"
-                        ))
-                    });
+                            ))
+                        });
                     tracing::debug!(listen = %listen, "data door listening through the connector");
                     serve_listener(
                         listener,
