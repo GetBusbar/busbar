@@ -87,13 +87,13 @@ pub const HOST_IDENTITY: &str = "busbar";
 /// builds): first-party verification is then impossible and a `publisher: busbar` plugin is treated
 /// as unsigned (loadable only under `allow_unsigned`).
 ///
-/// THE RELEASE-KEY CONTRACT. The public half is the `BUSBAR_RELEASE_PUBKEY` repository variable,
-/// committed for local builds in `.cargo/config.toml` `[env]`; the private half lives only in the
+/// THE RELEASE KEY. The public half is the `BUSBAR_RELEASE_PUBKEY` repository variable, committed
+/// for local builds in `.cargo/config.toml` `[env]`; the private half lives only in the
 /// `BUSBAR_SIGN_KEY` CI secret and never in this tree. No key is written in this file. Three guards
-/// hold the contract: `.github/workflows/build-artifact.yml` exports the variable on the release
-/// build step, `scripts/release-key-guard.sh` refuses to build a release binary without a
-/// well-formed 64-hex key, and `scripts/release-gate/platform-checks.sh` fails the `pubkey` row
-/// when the published artifact does not embed it.
+/// hold that: `.github/workflows/build-artifact.yml` sets the variable on the release build step,
+/// `scripts/release-key-guard.sh` refuses to build a release binary without a well-formed 64-hex
+/// key, and `scripts/release-gate/platform-checks.sh` fails the `pubkey` row when the published
+/// artifact does not embed it.
 pub fn embedded_release_pubkey() -> Option<VerifyingKey> {
     let hex_key: &str = option_env!("BUSBAR_RELEASE_PUBKEY")?;
     // A malformed build-time key is a build/packaging bug; fail closed to "no first-party key"
