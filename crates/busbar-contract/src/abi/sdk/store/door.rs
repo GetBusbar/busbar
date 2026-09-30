@@ -44,7 +44,7 @@ use crate::abi::mechanism::lifecycle::{
     ValidateIn,
 };
 use crate::abi::sdk::door::abi_str;
-use crate::abi::sdk::{HostBuf, Instance, Lent, LentList, Out, SafeSlot};
+use crate::abi::sdk::{open_failed, HostBuf, Instance, Lent, LentList, Out, SafeSlot};
 use crate::abi::store::{
     AddUsageBatchIn, AddUsageIn, AppendBatchIn, AppendPlaneRecordIn, BlobIn, CountOut,
     GetPlaneRecordIn, HeadOut, HeadsOut, HostBytesOut, HostListOut, IdIn, IdReasonIn,
@@ -627,14 +627,15 @@ impl<B: StoreSlots> SafeSlot for Open<B> {
     fn call(
         instance: Instance<'_, Served<B>>,
         input: Lent<'_, OpenIn>,
-        _: Out<'_, OpenOut>,
+        mut out: Out<'_, OpenOut>,
     ) -> Outcome {
         match B::open(input.field(|i| &i.settings).bytes()) {
             Ok(store) => {
                 instance.open(Served::new(store));
                 Outcome::Ready
             }
-            Err(_) => Outcome::Refused,
+            // No instance exists to hold the reason: it goes into the host's lent reason buffer.
+            Err(e) => open_failed(input, &mut out, |o| &o.err_len, &e),
         }
     }
 }

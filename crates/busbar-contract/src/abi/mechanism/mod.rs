@@ -25,7 +25,9 @@
 //! `retire` of that generation. The Door and the Statement (the Door points to it) are `'static`.
 //! (iii) PER-CALL `OutHead.error` and the `Envelope` arrays stay valid until the NEXT op on the same
 //! ticket. On [`Ticket::NONE`](ticket::Ticket::NONE) they are valid only until the op returns: the
-//! host copies them before it makes any other call on that thread.
+//! host copies them before it makes any other call on that thread. A FAILED `open` has no instance
+//! to hold its reason, so it writes it into the host's lent [`lifecycle::OpenIn::err_buf`] instead
+//! (the same for every kind; the length in [`lifecycle::OpenOut::err_len`]).
 //! (iv) OFF-PATH LISTS AND SECRETS are held under a lease until `release(lease)`.
 //! SIZES: the plugin writes at most `min(out.size, its own size of the struct)` bytes of an `out`,
 //! never reads an `in` beyond `in.size`, and reads an absent tail field as zero.

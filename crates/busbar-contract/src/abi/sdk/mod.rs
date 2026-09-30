@@ -52,7 +52,7 @@ pub mod capture;
 // host buffers filled through `Lent`/`HostBuf`, the instance typed through `Instance`.
 pub mod lent;
 pub mod safe;
-pub use lent::{HostBuf, Lent, LentList, SignalScalar};
+pub use lent::{open_failed, HostBuf, Lent, LentList, SignalScalar};
 // A SLOT'S `out`, WRITTEN BY THE SDK: scalars set, every pointer through an SDK writer.
 pub mod out;
 pub use out::{Out, Scalar};

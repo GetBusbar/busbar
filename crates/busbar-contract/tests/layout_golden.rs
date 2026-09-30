@@ -1029,9 +1029,9 @@ fn compute_layout() -> String {
     record!(
         s,
         MechOpenIn,
-        [head, host, settings, secrets, secrets_len, generation]
+        [head, host, settings, secrets, secrets_len, generation, err_buf, err_cap]
     );
-    record!(s, MechOpenOut, [head, instance]);
+    record!(s, MechOpenOut, [head, instance, err_len]);
     record!(s, MechGenIn, [head, generation]);
     record!(
         s,

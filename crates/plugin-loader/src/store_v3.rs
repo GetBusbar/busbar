@@ -36,7 +36,7 @@ use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
-    slot as life, OpenIn, OpenOut, ReleaseIn, ValidateIn, LIFECYCLE_SLOTS,
+    slot as life, OpenIn, OpenOut, ReleaseIn, LIFECYCLE_SLOTS,
 };
 use busbar_contract::abi::sdk::store::{Cap, Cell, Dimension, Grant, ReserveRefused};
 use busbar_contract::abi::store::{
@@ -92,22 +92,14 @@ impl std::fmt::Debug for LoadedStore {
     }
 }
 
-/// Why a store would not open.
-fn open_error(what: &str, outcome: Outcome, error: Option<Vec<u8>>) -> String {
-    let text = error.map(|e| String::from_utf8_lossy(&e).into_owned());
-    match text {
-        Some(t) => format!("the store's {what} answered {outcome:?}: {t}"),
-        None => format!("the store's {what} answered {outcome:?}"),
-    }
-}
-
 impl LoadedStore {
-    /// Validate and open `plugin` on the operator's `settings` (the section's JSON), on
+    /// Open `plugin` on the operator's `settings` (the section's JSON), on
     /// `dispatcher`. `node` is this node's id: the high half of every `op_id` the synchronous
     /// bridge mints for the 1.5.5 op set's additive writes.
     ///
     /// # Errors
-    /// The store's refusal of its settings, or a Statement with no store tail.
+    /// The store's refusal of its settings, in 1.5.5's words
+    /// (`plugin '<name>' open failed: <reason>`), or a Statement with no store tail.
     pub fn open(
         plugin: Plugin<Store>,
         dispatcher: Arc<Dispatcher>,
@@ -117,35 +109,28 @@ impl LoadedStore {
         let facts = *plugin
             .context::<StoreFacts>()
             .ok_or_else(|| "the store states no tail".to_string())?;
-        let blob = octets(settings);
-        let mut v = Frame::new(
-            ValidateIn {
-                head: in_head(),
-                settings: blob,
-            },
-            out_head(),
-        );
-        let c = plugin.call(life::VALIDATE, &mut v);
-        if c.outcome != Outcome::Ready {
-            return Err(open_error("validate", c.outcome, c.error));
-        }
+        // `open` is the settings' judge, as it was in 1.5.5: its refusal carries the plugin's own
+        // reason (the host's lent reason buffer), which a bare `validate` answer cannot.
         let mut o = Frame::new(
             OpenIn {
                 head: in_head(),
                 host: std::ptr::null(),
-                settings: blob,
+                settings: octets(settings),
                 secrets: std::ptr::null(),
                 secrets_len: 0,
                 generation: 1,
+                err_buf: std::ptr::null_mut(),
+                err_cap: 0,
             },
             OpenOut {
                 head: out_head(),
                 instance: std::ptr::null_mut(),
+                err_len: 0,
             },
         );
         let c = plugin.call(life::OPEN, &mut o);
         if c.outcome != Outcome::Ready {
-            return Err(open_error("open", c.outcome, c.error));
+            return Err(c.open_failure(plugin.name()));
         }
         Ok(Self {
             plugin,

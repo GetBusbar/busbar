@@ -58,6 +58,8 @@ use busbar_contract::abi::mechanism::check::Fault;
 pub const MAX_ENVELOPE_ENTRIES: usize = busbar_contract::abi::mechanism::call::MAX_ENVELOPE_ENTRIES;
 /// The most bytes of error or diagnostic text the host copies; longer text is cut.
 pub const MAX_TEXT: usize = busbar_contract::abi::mechanism::call::MAX_TEXT;
+/// How many bytes of reason the host lends every `open` ([`OpenIn::err_cap`]).
+pub const OPEN_REASON_CAP: usize = MAX_TEXT;
 /// The most log records the host keeps from one reply; the rest count as [`Dropped::Logs`].
 pub const MAX_LOG_RECORDS: usize = 128;
 /// The most bytes of log-record text the host keeps from one reply; the record that would pass it,
@@ -206,6 +208,24 @@ pub struct Called {
     pub recall: Option<Recall>,
 }
 
+impl Called {
+    /// THE OPERATOR'S TEXT FOR AN `open` THAT DID NOT ANSWER READY, 1.5.5's wording rebuilt from
+    /// the host's own context: `plugin '{display}' open failed: {reason}`, `display` being the name
+    /// the host knows the plugin by. The reason is what the plugin wrote into the host's lent
+    /// reason buffer (or its error text), lossily UTF-8. A plugin that wrote nothing reads as
+    /// 1.5.5 read a constructor error with no text, `status 1`; a FAULT (a panic, or an answer that
+    /// broke the call contract) as `status 3`, 1.5.5's panic status.
+    #[must_use]
+    pub fn open_failure(&self, display: &str) -> String {
+        let reason = match (&self.error, self.outcome) {
+            (Some(e), _) if !e.is_empty() => String::from_utf8_lossy(e).into_owned(),
+            (_, Outcome::Fault) => "status 3".to_string(),
+            _ => "status 1".to_string(),
+        };
+        format!("plugin '{display}' open failed: {reason}")
+    }
+}
+
 /// What one crossing answered.
 #[derive(Debug, Clone)]
 pub(crate) struct Crossed {
@@ -285,6 +305,10 @@ pub(crate) struct Instance {
     sink: Arc<dyn EnvelopeSink>,
     pub(crate) wake: &'static InstanceWake,
     tables: Tables,
+    /// THE OPEN REASON BUFFER lent to `open` ([`OpenIn::err_buf`]): made at the first `open`
+    /// crossing and held, at one address, until the `open` completes (a PENDING `open` keeps what
+    /// it was lent), then handed to the caller as the reason. Empty at any other time.
+    open_reason: Mutex<Vec<u8>>,
     /// Last: the library outlives everything above.
     _lib: Option<Lib>,
 }
@@ -419,6 +443,21 @@ impl Instance {
         self.lifecycle_busy.store(false, Ordering::Release);
     }
 
+    /// The open reason buffer, made on first use and kept at one address until
+    /// [`Instance::take_open_reason`]: its pointer and capacity, for [`OpenIn::err_buf`].
+    fn lend_open_reason(&self) -> (*mut u8, usize) {
+        let mut buf = self.open_reason.lock().unwrap_or_else(|e| e.into_inner());
+        if buf.is_empty() {
+            *buf = vec![0; OPEN_REASON_CAP];
+        }
+        (buf.as_mut_ptr(), buf.len())
+    }
+
+    /// The open reason buffer, taken back once its `open` completed.
+    fn take_open_reason(&self) -> Vec<u8> {
+        std::mem::take(&mut *self.open_reason.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
     /// What the host answers WITHOUT calling the plugin, if anything: a faulted instance, a slot
     /// the table does not have, an instance-less call before `open`, a second `open`, or an `open`
     /// whose frame cannot hold `OpenIn`/`OpenOut`.
@@ -492,8 +531,16 @@ impl Instance {
             (head.ticket, self.ptr.load(Ordering::Acquire))
         };
         if s == slot::OPEN {
+            // Every `open`, of every kind, is lent the host's reason buffer: a failed open has no
+            // instance to hold its reason. The same buffer is re-lent on a resume.
+            let (err_buf, err_cap) = self.lend_open_reason();
             // SAFETY: `refuse` checked the frame holds an `OpenIn`.
-            unsafe { (*input.cast::<OpenIn>()).host = &*self.tables.0 };
+            unsafe {
+                let open = &mut *input.cast::<OpenIn>();
+                open.host = &*self.tables.0;
+                open.err_buf = err_buf;
+                open.err_cap = err_cap;
+            }
         }
         // THE HOST ZEROES THE WHOLE `out` BEFORE EVERY CALL, RESUME included (FAULT = 0, every
         // tail field absent), then states its size: the plugin writes at most min(out.size, own).
@@ -542,10 +589,25 @@ impl Instance {
             }
         }
         let short = outcome == Outcome::Failed && (self.short)(&answer);
+        // An `open` that completed hands back the buffer it was lent, holding its reason.
+        let reason = if s == slot::OPEN && outcome != Outcome::Pending {
+            // SAFETY: `refuse` checked the frame holds an `OpenOut`.
+            let len = unsafe { (*out.cast::<OpenOut>()).err_len };
+            let mut buf = self.take_open_reason();
+            if len > buf.len() {
+                // A reason longer than the buffer lent is a malformed answer.
+                return Crossed::host(Outcome::Fault);
+            }
+            buf.truncate(len);
+            Some(buf).filter(|b| !b.is_empty())
+        } else {
+            None
+        };
         self.ingest(&head);
-        let error = matches!(outcome, Outcome::Failed | Outcome::Refused)
-            .then(|| copy_str(head.error))
-            .flatten();
+        let error = match outcome {
+            Outcome::Failed | Outcome::Refused => reason.or_else(|| copy_str(head.error)),
+            _ => None,
+        };
         match (s, outcome) {
             (slot::OPEN, Outcome::Ready) => {
                 // SAFETY: `refuse` checked the frame holds an `OpenOut`.
@@ -833,6 +895,7 @@ impl<K: Kind> Plugin<K> {
                 sink: bind.sink.clone(),
                 wake,
                 tables,
+                open_reason: Mutex::new(Vec::new()),
                 _lib: lib,
             }),
             _k: PhantomData,
@@ -968,3 +1031,13 @@ impl From<Crossed> for Called {
         }
     }
 }
+
+/// The open-reason witness, compiled in: the LINKED door of `open_reason_tests` (the same source is
+/// the `open_reason_store_door` example `cdylib`, the DROPPED door).
+#[cfg(test)]
+#[path = "../../tests/fixtures/open_reason_plugins.rs"]
+mod open_reason_plugins;
+
+#[cfg(test)]
+#[path = "../tests/open_reason_tests.rs"]
+mod open_reason_tests;

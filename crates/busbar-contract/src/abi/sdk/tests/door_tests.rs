@@ -373,10 +373,13 @@ fn the_returned_outcome_is_mirrored_into_out_head() {
         secrets: ptr::null(),
         secrets_len: 0,
         generation: 0x55,
+        err_buf: ptr::null_mut(),
+        err_cap: 0,
     };
     let mut out = OpenOut {
         head: prefilled_head(size_of::<OpenOut>()),
         instance: ptr::null_mut(),
+        err_len: 0,
     };
     assert_eq!(call(table().head.open, &input, &mut out), Outcome::Ready);
     assert_eq!(out.instance as usize, 0x55);
@@ -731,10 +734,13 @@ fn a_panicking_open_answers_fault_and_hands_back_no_instance() {
         secrets: ptr::null(),
         secrets_len: 0,
         generation: PANIC_GEN,
+        err_buf: ptr::null_mut(),
+        err_cap: 0,
     };
     let mut out = OpenOut {
         head: prefilled_head(size_of::<OpenOut>()),
         instance: ptr::null_mut(),
+        err_len: 0,
     };
     out.head.outcome = RawOutcome::of(Outcome::Ready);
     assert_eq!(call(table().head.open, &input, &mut out), Outcome::Fault);

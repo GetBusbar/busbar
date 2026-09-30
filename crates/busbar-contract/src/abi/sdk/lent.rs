@@ -30,8 +30,9 @@ use std::ops::Deref;
 use std::ptr;
 use std::str::Utf8Error;
 
-use crate::abi::mechanism::call::{AbiStr, Blob, Field, Span};
-use crate::abi::sdk::out::Scalar;
+use crate::abi::mechanism::call::{AbiStr, Blob, Field, Outcome, Span};
+use crate::abi::sdk::out::{Out, Scalar};
+use crate::abi::sdk::door::AbiOut;
 
 /// A borrow of data the HOST lent the current call. Only the SDK makes one (the trampoline, from
 /// its copy of the host's `in`, and the accessors below, from what that `in` points to), so every
@@ -382,6 +383,29 @@ impl<T> HostBuf<'_, T> {
     }
 }
 
+/// ANSWER A FAILED `open` WITH ITS REASON, for any kind: `text` goes into the host's lent reason
+/// buffer ([`OpenIn::err_buf`]), cut on a char boundary to its capacity, and its length into the
+/// `out`'s `err_len` (`err_len` picks it: `|o| &o.err_len`, a plane's `|o| &o.open.err_len`).
+/// Nothing is kept on the plugin's side (no instance exists to keep it): the host copies the bytes
+/// before the call returns to its caller. Answers [`Outcome::Failed`].
+///
+/// A plane's `open` passes its lifecycle half: `input.field(|i| &i.open)`.
+pub fn open_failed<T: AbiOut>(
+    input: Lent<'_, OpenIn>,
+    out: &mut Out<'_, T>,
+    err_len: impl FnOnce(&T) -> &usize,
+    text: &str,
+) -> Outcome {
+    let mut buf = input.err_buf();
+    let mut end = text.len().min(buf.cap());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    buf.extend(&text.as_bytes()[..end]);
+    out.set(err_len, end);
+    Outcome::Failed
+}
+
 /// The accessors of each `in`, one per pointer field and named after it, stated once. Each is `unsafe` inside only
 /// because the kind's ABI, cited beside it, is what makes the pointer valid for the call.
 macro_rules! lend {
@@ -442,6 +466,7 @@ lend! {
     OpenIn {
         list(secrets, secrets_len) -> Blob;
         one(host) -> HostTables;
+        buf(err_buf, err_cap) -> u8;
     }
     RefreshIn { list(secrets, secrets_len) -> Blob; }
     // THE AUTH KIND (`abi::auth`): `verify`'s carriers, and the host's identity buffer.

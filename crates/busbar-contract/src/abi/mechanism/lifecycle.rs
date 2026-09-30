@@ -100,6 +100,14 @@ pub struct OpenIn {
     pub secrets_len: usize,
     /// The generation this instance opens at.
     pub generation: u64,
+    /// THE REASON BUFFER, the host's, lent for the call: an `open` that does not answer READY
+    /// writes why into it — UTF-8, at most [`OpenIn::err_cap`] bytes, cut on a char boundary — and
+    /// states how many bytes in [`OpenOut::err_len`]. A failed open has no instance to hold its
+    /// reason past the call, so the host lends the memory, as it lends every request-path result
+    /// buffer. NULL (with `err_cap` `0`) = no reason is kept.
+    pub err_buf: *mut u8,
+    /// How many bytes `err_buf` holds.
+    pub err_cap: usize,
 }
 
 /// `open`'s `out`.
@@ -110,6 +118,9 @@ pub struct OpenOut {
     pub head: OutHead,
     /// The instance every later call is made on.
     pub instance: *mut std::os::raw::c_void,
+    /// For an `open` that did not answer READY: how many bytes of [`OpenIn::err_buf`] its reason
+    /// fills; `0` = none. More than [`OpenIn::err_cap`] is a malformed answer (FAULT).
+    pub err_len: usize,
 }
 
 /// `retire`'s `in`.

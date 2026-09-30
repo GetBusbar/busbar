@@ -242,10 +242,13 @@ fn open_frame() -> Frame<OpenIn, OpenOut> {
             secrets: std::ptr::null(),
             secrets_len: 0,
             generation: 1,
+            err_buf: std::ptr::null_mut(),
+            err_cap: 0,
         },
         OpenOut {
             head: out_head(),
             instance: std::ptr::null_mut(),
+            err_len: 0,
         },
     )
 }
@@ -646,6 +649,23 @@ fn opened(d: &Dispatcher) -> (Plugin<TestKind>, Arc<Recorder>) {
     let p = linked(sink.clone());
     assert_eq!(open(d, &p, 0), Outcome::Ready);
     (p, sink)
+}
+
+#[test]
+fn red_an_open_reason_longer_than_the_buffer_lent_is_fault() {
+    let p = linked(quiet());
+    let mut f = open_frame();
+    let settings = b"overlong:open";
+    f.input.settings = Blob {
+        ptr: settings.as_ptr(),
+        len: settings.len(),
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    };
+    let c = p.call(slot::OPEN, &mut f);
+    assert_eq!(c.outcome, Outcome::Fault);
+    assert_eq!(c.error, None);
+    assert!(!p.is_open());
 }
 
 #[test]

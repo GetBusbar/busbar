@@ -266,3 +266,43 @@ fn a_locate_lends_its_alpn_offer_buffer_beside_the_other_two() {
         "a short offer reports its full size"
     );
 }
+
+#[test]
+fn a_failed_open_writes_its_reason_into_the_lent_buffer_cut_on_a_char_boundary() {
+    use crate::abi::mechanism::call::Outcome;
+    use crate::abi::mechanism::lifecycle::OpenOut;
+    use crate::abi::sdk::door::blank_out;
+
+    // `a` then two two-byte chars: a capacity of 4 falls inside the second, so 3 bytes are kept.
+    let mut buf = [0_u8; 4];
+    let mut v: OpenIn = zeroed();
+    v.err_buf = buf.as_mut_ptr();
+    v.err_cap = buf.len();
+    let mut out: OpenOut = blank_out();
+    assert_eq!(
+        super::open_failed(
+            lend(&v),
+            &mut crate::abi::sdk::Out::new(&mut out),
+            |o| &o.err_len,
+            "aéé"
+        ),
+        Outcome::Failed
+    );
+    assert_eq!(out.err_len, 3);
+    assert_eq!(&buf[..3], "aé".as_bytes());
+    assert_eq!(buf[3], 0, "nothing past the cut is written");
+
+    // No buffer lent: nothing is written and no reason is stated.
+    let v: OpenIn = zeroed();
+    let mut out: OpenOut = blank_out();
+    assert_eq!(
+        super::open_failed(
+            lend(&v),
+            &mut crate::abi::sdk::Out::new(&mut out),
+            |o| &o.err_len,
+            "boom: x"
+        ),
+        Outcome::Failed
+    );
+    assert_eq!(out.err_len, 0);
+}

@@ -59,6 +59,15 @@ name = "store_v3_door"
 path = "tests/fixtures/store_v3_door.rs"
 crate-type = ["cdylib"]
 
+# The open-reason witness (`open_reason_tests`): a store whose `open` fails with its settings as
+# the reason, one source (`tests/fixtures/open_reason_plugins.rs`) compiled into the test build as a
+# module (the LINKED door) and built here as a `cdylib` (the DROPPED door). An example, not a
+# crate: `cargo test` builds it and it never ships.
+[[example]]
+name = "open_reason_store_door"
+path = "tests/fixtures/open_reason_store_door.rs"
+crate-type = ["cdylib"]
+
 [dependencies]
 # The three unit-side store seams the composition root binds to one loaded store (`store_adapter`).
 # None of the three crates may name a store, so the adapter that implements all three lives on this

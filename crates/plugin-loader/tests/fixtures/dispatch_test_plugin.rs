@@ -373,6 +373,11 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
         if ((*out.cast::<OutHead>()).size as usize) < std::mem::size_of::<OpenOut>() {
             return say(out, Outcome::Refused);
         }
+        // Settings `overlong:open`: FAILED, stating a reason longer than the buffer the host lent.
+        if !st.ptr.is_null() && std::slice::from_raw_parts(st.ptr, st.len) == b"overlong:open" {
+            (*out.cast::<OpenOut>()).err_len = open_in.err_cap + 1;
+            return say(out, Outcome::Failed);
+        }
         let inst = Arc::new(Inst {
             wake,
             state: Mutex::new(State::default()),
