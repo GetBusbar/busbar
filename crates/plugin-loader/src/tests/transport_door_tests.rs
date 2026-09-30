@@ -35,31 +35,37 @@ mod adapter;
 /// examples; no linked dev edge carries a door export). Under CI a missing artifact is a failure,
 /// never a skip.
 fn fixture() -> Option<Vec<u8>> {
+    Some(std::fs::read(fixture_path()?).expect("read the cdylib"))
+}
+
+/// Where [`fixture`] is: the first example `cdylib` that admits, against its own Statement
+/// rendering, as a transport composing over nothing.
+fn fixture_path() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let examples = exe.parent()?.parent()?.join("examples");
-    let facts = crate::dispatch::ManifestFacts {
-        mechanism_version: busbar_contract::abi::mechanism::MECHANISM_VERSION,
-        kind: busbar_contract::abi::mechanism::KindCode::Transport,
-        kind_abi: busbar_contract::abi::mechanism::KindCode::Transport.abi_version(),
-    };
     let found = crate::list_plugin_files(&examples)
         .into_iter()
         .map(|f| examples.join(f))
         .find(|p| {
-            crate::dispatch::load_dropped::<crate::dispatch::kinds::transport::Transport>(
-                p,
-                &facts,
-                bind(),
-            )
-            .ok()
-            .and_then(|d| d.context::<TransportFacts>().cloned())
-            .is_some_and(|f| f.composes_over.is_empty())
+            crate::dispatch::rendering_of_library(p)
+                .ok()
+                .flatten()
+                .and_then(|stated| {
+                    crate::dispatch::load_dropped::<crate::dispatch::kinds::transport::Transport>(
+                        p,
+                        &stated,
+                        bind(),
+                    )
+                    .ok()
+                })
+                .and_then(|d| d.context::<TransportFacts>().cloned())
+                .is_some_and(|f| f.composes_over.is_empty())
         });
     assert!(
         found.is_some() || std::env::var_os("CI").is_none(),
         "a socket-framing transport door example is built beside the test binary under CI"
     );
-    Some(std::fs::read(found?).expect("read the cdylib"))
+    found
 }
 
 fn bind() -> Bind {
@@ -75,8 +81,8 @@ fn bind() -> Bind {
 /// The fixture's manifest, stating the door's Statement rendering as its signed manifest does (the
 /// door is admitted against it).
 fn manifest() -> crate::sign::Manifest {
-    let rendering = crate::dispatch_tests::example_cdylib("transport_door")
-        .and_then(|path| crate::dispatch::rendering_of_library(&path).ok().flatten());
+    let rendering =
+        fixture_path().and_then(|path| crate::dispatch::rendering_of_library(&path).ok().flatten());
     crate::sign::Manifest {
         statement: rendering.map(hex::encode),
         ..statement(

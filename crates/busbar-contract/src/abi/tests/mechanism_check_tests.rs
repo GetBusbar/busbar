@@ -344,6 +344,7 @@ const NEEDS: &[Need] = &[Need {
         fmt: 0,
         flags: 0,
     },
+    timeout_ms: 0,
 }];
 
 #[test]

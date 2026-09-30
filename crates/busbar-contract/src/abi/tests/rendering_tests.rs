@@ -72,6 +72,7 @@ const NEEDS: &[Need] = &[Need {
     target_from: abi_str("settings.url"),
     trust_from: NONE,
     details: blob(b"{}", BLOB_JSON),
+    timeout_ms: 30_000,
 }];
 const ANSWERS: &[AbiStr] = &[abi_str("status")];
 const CLAIMS: &[AbiStr] = &[abi_str("https"), abi_str("sse")];
@@ -154,6 +155,10 @@ fn every_field_changes_the_bytes() {
         ..WORDS[0]
     }];
     let swapped: &[Rewrite] = &[REWRITES[1], REWRITES[0]];
+    let other_timeout: &[Need] = &[Need {
+        timeout_ms: 5_000,
+        ..NEEDS[0]
+    }];
     let mut edits: Vec<(&str, Statement)> = Vec::new();
     let mut push = |name: &'static str, f: &dyn Fn(&mut Statement)| {
         let mut st = full();
@@ -179,6 +184,7 @@ fn every_field_changes_the_bytes() {
     push("rewrites reordered", &|s| s.rewrites = swapped.as_ptr());
     push("sections dropped", &|s| s.sections_len = 0);
     push("needs dropped", &|s| s.needs_len = 0);
+    push("need.timeout_ms", &|s| s.needs = other_timeout.as_ptr());
     push("target_from", &|s| s.target_from = NONE);
     push("trust_from", &|s| s.trust_from = NONE);
     push("answers dropped", &|s| s.answers_len = 0);
@@ -223,6 +229,7 @@ fn a_rendering_reads_back_to_every_fact_it_carries() {
     assert_eq!(r.needs.len(), 1);
     assert_eq!(r.needs[0].target_from, "settings.url");
     assert_eq!(r.needs[0].details.bytes, b"{}");
+    assert_eq!(r.needs[0].timeout_ms, 30_000);
     assert_eq!(r.target_from, "settings.url");
     assert_eq!(r.trust_from, "settings.ca");
     assert_eq!(r.answers, vec!["status".to_string()]);

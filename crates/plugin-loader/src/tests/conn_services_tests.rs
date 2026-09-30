@@ -92,6 +92,7 @@ const NEEDS: [Need; 1] = [Need {
     target_from: abi_str("settings.upstream"),
     trust_from: NONE,
     details: NO_BLOB,
+    timeout_ms: 0,
 }];
 
 /// The test plugin's door, its Statement declaring `needs`, bound over `table`.

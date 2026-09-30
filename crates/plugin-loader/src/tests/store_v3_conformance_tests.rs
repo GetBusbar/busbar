@@ -19,7 +19,6 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::{KindCode, MECHANISM_VERSION};
 use busbar_contract::abi::sdk::store::{Cap, Cell, CellKey, Dimension};
 use busbar_contract::abi::store::{OpId, KIND_SLOTS};
 use busbar_contract::kinds::RecordBytes;
@@ -32,7 +31,7 @@ use busbar_contract::store_calls::StoreCalls;
 
 use crate::dispatch::kinds::store::Store;
 use crate::dispatch::{
-    load_dropped, load_linked, Bind, DispatchConfig, Dispatcher, ManifestFacts, NoSink,
+    load_dropped, load_linked, rendering_of, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
 };
 use crate::store_v3::LoadedStore;
 
@@ -42,14 +41,16 @@ fn bind(d: &Dispatcher) -> Bind {
         max_inflight_cap: 1024,
         sink: Arc::new(NoSink),
         dispatcher: d.adopter(),
+        conns: None,
     }
 }
 
 /// The shipped build's store: its compiled-in door.
 fn compiled_in() -> LoadedStore {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let p = load_linked::<Store>(crate::both_ways::store_fixture::door, bind(&d))
-        .expect("the door loads");
+    let row = LinkedRow::of(crate::both_ways::store_fixture::door)
+        .expect("the store states its Statement");
+    let p = load_linked::<Store>(&row, bind(&d)).expect("the door loads");
     LoadedStore::open(p, d, b"{}", 1).expect("it opens")
 }
 
@@ -58,12 +59,10 @@ fn compiled_in() -> LoadedStore {
 fn dropped_in() -> Option<LoadedStore> {
     let path = crate::both_ways::example_cdylib("store_v3_door")?;
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let facts = ManifestFacts {
-        mechanism_version: MECHANISM_VERSION,
-        kind: KindCode::Store,
-        kind_abi: KindCode::Store.abi_version(),
-    };
-    let p = load_dropped::<Store>(&path, &facts, bind(&d)).expect("the dropped-in door loads");
+    // The signed manifest's rendering: the linked rlib's door, the same crate the cdylib is.
+    let stated = rendering_of(crate::both_ways::store_fixture::door)
+        .expect("the store renders its Statement");
+    let p = load_dropped::<Store>(&path, &stated, bind(&d)).expect("the dropped-in door loads");
     Some(LoadedStore::open(p, d, b"{}", 1).expect("it opens"))
 }
 

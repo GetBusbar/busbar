@@ -20,7 +20,7 @@ use busbar_contract::records::{
 use busbar_contract::store_calls::{StoreCalls, StoreFailure};
 
 use crate::dispatch::kinds::store::Store;
-use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, NoSink};
+use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink};
 use crate::store_v3::LoadedStore;
 
 /// The memory store, except that every committed `reserve` and `slice_release` answers one item
@@ -166,13 +166,15 @@ fn mint() -> OpId {
 
 fn open() -> LoadedStore {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let row = LinkedRow::of(miscounts::door).expect("the miscounting door states its Statement");
     let p = load_linked::<Store>(
-        miscounts::door,
+        &row,
         Bind {
             instance: Arc::from("the-instance"),
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
+            conns: None,
         },
     )
     .expect("the door loads");

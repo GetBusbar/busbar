@@ -29,7 +29,7 @@
 //! rewrites         list of { class u32, from str, to str }
 //! sections         list of { name str, flags u32 }
 //! needs            list of { direction u32, egress_class u32, transport str, auth str,
-//!                            target_from str, trust_from str, details blob }
+//!                            target_from str, trust_from str, details blob, timeout_ms u64 }
 //! target_from      str
 //! trust_from       str
 //! answers          list of str
@@ -198,6 +198,7 @@ pub unsafe fn render(st: &Statement) -> Result<Vec<u8>, TooLong> {
             o.str(n.target_from, "need.target_from")?;
             o.str(n.trust_from, "need.trust_from")?;
             o.blob(n.details, "need.details")?;
+            o.u64(n.timeout_ms);
         }
         o.str(st.target_from, "target_from")?;
         o.str(st.trust_from, "trust_from")?;
@@ -260,6 +261,8 @@ pub struct ReadNeed {
     pub trust_from: String,
     /// Its details.
     pub details: ReadBlob,
+    /// Its establish and reply-wait bound, milliseconds; `0` = the host's default.
+    pub timeout_ms: u64,
 }
 
 /// A Statement read back from its rendering: every fact the rendering carries, owned.
@@ -442,6 +445,7 @@ pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
             target_from: i.str("need.target_from")?,
             trust_from: i.str("need.trust_from")?,
             details: i.blob("need.details")?,
+            timeout_ms: i.u64("need.timeout_ms")?,
         });
     }
     let target_from = i.str("target_from")?;
