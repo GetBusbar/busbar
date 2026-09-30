@@ -47,13 +47,18 @@ const BANNED_CRATES: &[&str] = &["hyper-util", "reqwest", "rustls", "tokio-rustl
 const BANNED_PATHS: &[&str] = &["std::net", "tokio::net"];
 
 /// The legacy plane crates: planes that predate their plugin crate and still ship in-tree.
+///
+/// `busbar-llm-codec` and `busbar-voice-codec` are not here: owner ruling R7 (2026-09-27, #39: no
+/// `busbar-*-codec` crate) folded both into their plane crate's own `codec` module -- a pure move,
+/// no item changed shape crossing it (`qa/construction.toml`'s `[gate.plane_codec_crates]` header
+/// carries the same ruling). `busbar-plane-llm` and `busbar-plane-streaming` are already
+/// `gate.plugin_kinds.plane`'s own rows, so the folded-in `codec` module scans as part of them; there
+/// is no second source root for THIS wall to add either.
 const LEGACY: &[&str] = &[
     "crates/busbar-llm",
-    "crates/busbar-llm-codec",
     "crates/busbar-mcp",
     "crates/busbar-a2a",
     "crates/busbar-voice",
-    "crates/busbar-voice-codec",
 ];
 
 /// The external source a plugin repository resolves from.

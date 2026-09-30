@@ -459,13 +459,16 @@ pub const COUNT_READ_ROOTS: &[CountRoot] = &[
     // RED that names the area" — and it was, correctly: 11 files against a floor of 12. The repair
     // the red asked for is this one, and it is the two destinations the fold commit names, not a
     // lowered floor.
+    //
+    // `crates/busbar-mcp/src/record.rs` drained in its turn: `3147ec7e1` ("busbar-mcp record.rs
+    // moves into busbar-plane-mcp (fold A1)") moves the file byte-identically to
+    // `crates/busbar-plane-mcp/src/record.rs` and says so in its own body ("door-only: the record.rs
+    // plugin-path row drains"). The destination needs no third home added: it is the same directory
+    // as `crates/busbar-plane-mcp/src`, already a home below, so the moved file was never out of this
+    // group's count for a single scan.
     CountRoot {
         area: "the tool codec, its records and the plane",
-        homes: &[
-            "crates/busbar-mcp/src/codec",
-            "crates/busbar-mcp/src/record.rs",
-            "crates/busbar-plane-mcp/src",
-        ],
+        homes: &["crates/busbar-mcp/src/codec", "crates/busbar-plane-mcp/src"],
         floor: 12,
     },
     CountRoot {
