@@ -196,19 +196,24 @@ fn dropped_door(name: &str) -> std::sync::Arc<dyn busbar_core_connector::framer:
 }
 
 /// A door that frames the host's socket (an empty `composes_over`), found by KIND among the
-/// libraries beside this test binary: the first the one dispatcher admits as such a transport.
+/// libraries beside this test binary (uplifted, under `deps/`, or an example `cdylib` such as the
+/// tcp crate's `tcp_door`): the first the one dispatcher admits as such a transport.
 fn socket_framer_door() -> Option<std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>> {
     let exe = std::env::current_exe().ok()?;
     let profile = exe.parent()?.parent()?.to_path_buf();
-    [profile.clone(), profile.join("deps")]
-        .iter()
-        .flat_map(|dir| {
-            busbar_plugin_loader::list_plugin_files(dir)
-                .into_iter()
-                .map(move |f| dir.join(f))
-        })
-        .filter_map(|p| open_door(&p))
-        .find(|d| d.facts().composes_over.is_empty())
+    [
+        profile.clone(),
+        profile.join("deps"),
+        profile.join("examples"),
+    ]
+    .iter()
+    .flat_map(|dir| {
+        busbar_plugin_loader::list_plugin_files(dir)
+            .into_iter()
+            .map(move |f| dir.join(f))
+    })
+    .filter_map(|p| open_door(&p))
+    .find(|d| d.facts().composes_over.is_empty())
 }
 
 /// `path` admitted and opened through the one dispatcher as a transport door; `None` when it is
