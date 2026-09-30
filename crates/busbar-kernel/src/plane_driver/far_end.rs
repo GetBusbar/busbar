@@ -15,8 +15,8 @@
 //!    the pool's terminal: the shed with its Retry-After floor, the spill into a fallback pool, the
 //!    one breaker bypass (least-bad), or the bounded wait for a permit (queue).
 //! 2. [`FarEnd::send`]: the durable dispatch record, then ONE `fields` call to the member's auth
-//!    binding (THE DESIGN §6: the kernel's one call, no kernel-side cache), whose fields join the
-//!    plane's after its own, then the connector's open on the plane's declared need, at the target
+//!    binding (THE DESIGN §6: the kernel's one call, no kernel-side cache), whose fields lead the
+//!    head before the plane's (1.5.5's egress order), then the connector's open on the plane's declared need, at the target
 //!    the member's sealed `base_url` and the plane's path spell. The connector judges and pins the
 //!    address and dials exactly it (CONNECTOR-19), so a name's refusal keeps 1.5.5's timing.
 //! 3. [`FarEnd::next`]: the connector's pieces, read through the task's own waker
@@ -751,7 +751,7 @@ impl EgressFarEnd<'_> {
             return false;
         }
         let url = join(&route.base_url, &request.target);
-        // 2. The one auth call; its fields join the head after the plane's.
+        // 2. The one auth call; its fields lead the head (1.5.5's order).
         let mut auth = Vec::new();
         if let Some(binding) = &route.auth {
             match self.auth_fields(binding, &request, &url).await {
@@ -765,23 +765,24 @@ impl EgressFarEnd<'_> {
             }
         }
         let (_, path) = split(&url);
-        // The head the framer encodes: method, path, the plane's fields, then the auth fields. It
+        // The head the framer encodes: method, path, the auth fields, then the plane's fields. It
         // holds the auth values, so it wipes itself when the open has taken it.
         let mut head = Head(Vec::with_capacity(request.fields.len() + auth.len() + 2));
         head.0.push(("method".into(), request.verb.clone()));
         head.0.push(("path".into(), path.as_bytes().to_vec()));
-        head.0.extend(
-            request
-                .fields
-                .iter()
-                .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone())),
-        );
+        // The auth fields FIRST, then the plane's: 1.5.5's egress header order.
         head.0.extend(auth.iter().map(|f| {
             (
                 String::from_utf8_lossy(&f.name).into_owned(),
                 f.value.expose_secret().clone(),
             )
         }));
+        head.0.extend(
+            request
+                .fields
+                .iter()
+                .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone())),
+        );
         drop(auth);
         let borrowed: Vec<(&str, &[u8])> = head
             .0

@@ -502,9 +502,13 @@ async fn one_attempt_end_to_end() {
         "base_url joined with the plane's path"
     );
     let names: Vec<&str> = head.iter().map(|(n, _)| n.as_str()).collect();
-    assert_eq!(names, ["method", "path", "content-type", "authorization"]);
+    assert_eq!(
+        names,
+        ["method", "path", "authorization", "content-type"],
+        "1.5.5's egress order: the auth fields before the plane's"
+    );
     assert_eq!(head[1].1, b"/v1/chat");
-    assert_eq!(head[3].1, b"Bearer sk-test");
+    assert_eq!(head[2].1, b"Bearer sk-test");
     assert_eq!(body, b"{}");
     assert_eq!(
         r.auth.calls.load(Ordering::SeqCst),
