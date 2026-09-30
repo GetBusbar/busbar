@@ -399,6 +399,12 @@ because = "OWNER GRANT 2026-09-29 (3), a kernel line-limit re-arm at the measure
 # commit reached the base; struck by the FOLD-LLM C3' re-arm above, which declares the pair's next
 # figure.
 
+[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
+file    = "qa/construction.toml"
+from    = 52002
+to      = 53151
+because = "R-KERNEL / OWNER GRANT 2026-09-29 (3), KERNEL<>PLUGINS step 4 (BUSBAR-1.6.0.md Part 3, §12): the plane driver core, busbar-kernel/src/plane_driver/ (PlaneUnits implementing Units and RouteAwait over the contract's PlaneCalls; the on_piece pump and the buffers it lends until a crossing returns; cancel and its bill; the money seam and its flush epoch; the kernel-minted unit key on arrive and on_piece). Measured by cargo xtask gate construction, base origin/predev f882c3ce6: ceiling 52002, branch 53151. The ceiling is pinned at the measurement."
+
 [gate.ceiling_raises."rules.loc-ceilings.kernel_files.teller.ceiling"]
 file    = "qa/construction.toml"
 from    = 599
@@ -504,8 +510,11 @@ because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan a
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
 from    = 24237
-to      = 25636
-because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception, at the measure: WIRE-STORE C1 (the store SDK door and StoreCalls, abi::sdk::store_migrate) +1384, and CONNECTOR-19 step 19 (check_tail's framer over the host socket, abi::sdk::door::blank_in/blank_out) +15. Measured by cargo xtask gate construction on the train over predev 5350ebeda: 24237 before, 25636 after."
+to      = 24284
+because = "K1, the standing contract-pair exception, KERNEL<>PLUGINS step 4 (BUSBAR-1.6.0.md Part 3, §12): busbar_contract::plane_calls (PlaneCalls, PieceInFlight, Answered, Grow, Lent), the plane's call surface the kernel's plane driver reaches a plane through, so the kernel names no loader type; and the plane ABI v1 unit key (ArriveIn.unit, OnPieceIn.unit). +47, measured by cargo xtask gate construction on origin/predev f882c3ce6 (24189 -> 24236) and re-armed over STEP-20's landed 24237 on rebase: 24237 -> 24284."
+
+# [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 24189 -> 24237 (STEP-20) — EXPIRED AND STRUCK: its commit reached the base;
+# struck by the K1 plane driver re-arm above, which declares the next figure.
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
@@ -513,8 +522,11 @@ because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
 from    = 24237
-to      = 25636
-because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception, at the measure: WIRE-STORE C1 (the store SDK door and StoreCalls, abi::sdk::store_migrate) +1384, and CONNECTOR-19 step 19 (check_tail's framer over the host socket, abi::sdk::door::blank_in/blank_out) +15. Measured by cargo xtask gate construction on the train over predev 5350ebeda: 24237 before, 25636 after."
+to      = 24284
+because = "K1, the standing contract-pair exception, KERNEL<>PLUGINS step 4 (BUSBAR-1.6.0.md Part 3, §12): busbar_contract::plane_calls (PlaneCalls, PieceInFlight, Answered, Grow, Lent), the plane's call surface the kernel's plane driver reaches a plane through, so the kernel names no loader type; and the plane ABI v1 unit key (ArriveIn.unit, OnPieceIn.unit). +47, measured by cargo xtask gate construction on origin/predev f882c3ce6 (24189 -> 24236) and re-armed over STEP-20's landed 24237 on rebase: 24237 -> 24284."
+
+# [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 24189 -> 24237 (STEP-20) — EXPIRED AND STRUCK: its commit reached the base;
+# struck by the K1 plane driver re-arm above, which declares the next figure.
 
 # ── THE KIND-ISOLATION CELL busbar-transport-ws x transport, RAISED BY STEP-20 (the ALPN offer literal)
 
@@ -805,10 +817,9 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # +191); struck by STEP-20's re-arm.
 # RE-ARMED 24189 -> 24237, AT THE MEASUREMENT (OWNER GRANT 2026-09-29 (3)), in its own commit after
 # STEP-20 (the framer's ALPN offer, the emit deadline and the offer's safe lend, +48); the live
-# declaration above carries the measure; struck by the WIRE-STORE C1 + CONNECTOR-19 re-arm.
-# RE-ARMED 24237 -> 25636, AT THE MEASUREMENT (OWNER GRANT 2026-09-29 (3)), in its own commit after
-# WIRE-STORE C1 (+1384) and CONNECTOR-19 (+15); the live declaration above carries the measure.
-contract_caps = 25636
+# declaration above carries the measure.
+# RE-ARMED 24237 -> 24284 with its pair (K1 plane driver: PlaneCalls, Lent and the plane unit key, +47).
+contract_caps = 24284
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1395,11 +1406,8 @@ kernel_crate = "busbar-kernel"
 # ── LOWERED 52187 -> 52002 by FOLD-MCP A4 (the JSON-RPC envelope reader leaves ingress/jsonrpc.rs
 # for busbar_contract::jsonrpc; measured 51929 plus K2g's named 73-line reservation), the
 # measurement, -185. Downward only.
-# ── RE-ARMED 52002 -> 52101 for the money view's scrape memo (a scrape reprices only a bucket whose
-# facts moved; #43/#71), declared above. Measured 51934 before, 52101 after.
-# ── RE-ARMED 52101 -> 52136 for T13b (WIRE-STORE C1 + CONNECTOR-19 + T13B-FIX), declared above.
-# Measured 51934 before, 51969 after on predev 3cc28b00e (+35); 52136 over predev 8a4b18692.
-kernel_ceiling = 52136
+# ── RE-ARMED 52002 -> 53151 for the plane driver core (KERNEL<>PLUGINS step 4, K1), declared above.
+kernel_ceiling = 53151
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -1502,8 +1510,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 23998 -> 24189 with its pair (FOLD-MCP A4: busbar_contract::jsonrpc, the JSON-RPC
 # envelope reader moved out of the kernel, +191).
 # RE-ARMED 24189 -> 24237 with its pair (STEP-20: the ALPN offer, the emit deadline, the lend, +48).
-# RE-ARMED 24237 -> 25636 with its pair (WIRE-STORE C1 +1384; CONNECTOR-19 +15).
-caps_contract_ceiling = 25636
+# RE-ARMED 24237 -> 24284 with its pair (K1 plane driver: PlaneCalls, Lent and the plane unit key, +47).
+caps_contract_ceiling = 24284
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
