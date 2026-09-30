@@ -7,7 +7,7 @@
 //!
 //! * the unit's spend is its far-end-REPORTED counts (never an estimate), ledgered once, at the end,
 //!   through the governance book's one accrual (`GovState::record_usage`), which files it in the
-//!   window of the unit's ARRIVAL epoch (THE DESIGN, §7: "same balance, same window, same row");
+//!   window of the unit's ARRIVAL epoch (THE DESIGN, section 7: "same balance, same window, same row");
 //! * a far end that did not deliver refunds the unit's flat request fee (`GovState::refund_request`,
 //!   1.5.5's non-2xx refund), a separate act from the ledgering;
 //! * a cancelled unit's bill (the four 1.5.5 cancel rules, computed by the driver) is ledgered the
@@ -77,11 +77,15 @@ impl std::fmt::Debug for UnitMoney {
     }
 }
 
-/// One open unit: its facts, its last cumulative counts, whether it has been ledgered.
+/// One open unit: its facts, its last cumulative counts, whether it has been ledgered, and whether
+/// its caller went away (its end then waits only for the driver's cancel bill).
 struct Open {
     money: UnitMoney,
     last: Vec<UnitCount>,
     ledgered: bool,
+    abandoned: bool,
+    /// The route step ended without a cancel: no bill will come.
+    finished: bool,
 }
 
 /// THE KERNEL'S MONEY STEPS for one plane instance's units.
@@ -122,14 +126,20 @@ impl PlaneMoney {
                 money,
                 last: Vec::new(),
                 ledgered: false,
+                abandoned: false,
+                finished: false,
             },
         );
     }
 
-    /// THE UNIT'S END: ledger its last far-end-reported counts (unless its cancel bill already
-    /// did), and refund its flat request fee when the far end did not deliver (`delivered` = a
-    /// success status reached the plane). The unit's facts are closed either way.
-    pub fn settle_end(&self, key: UnitKey, delivered: bool) {
+    /// THE UNIT'S END, returned to its caller with `caller_status`: ledger its last far-end-
+    /// reported counts (unless its cancel bill already did), and refund its flat request fee when
+    /// that status is not a success, exactly 1.5.5's rule (`busbar-kernel/src/ingress/mod.rs`, the
+    /// finish's `refund_on_non_2xx && !is_success` arm: "REFUND it for a request that produced no
+    /// usable upstream result"). A unit whose caller went away before any answer returns through
+    /// [`MoneySeam::abandoned`], never here, and is refunded nothing, as 1.5.5's dropped request
+    /// never reached that arm. The unit's facts are closed either way.
+    pub fn settle_end(&self, key: UnitKey, caller_status: u32) {
         let Some(open) = self.lock().remove(&key) else {
             return;
         };
@@ -143,7 +153,7 @@ impl PlaneMoney {
                 .collect();
             self.ledger(m, &counts);
         }
-        if !delivered {
+        if !(200..=299).contains(&caller_status) {
             self.gov.refund_request(&m.cost, &m.key, &m.pool, m.arrived);
         }
     }
@@ -157,9 +167,17 @@ impl PlaneMoney {
             .unwrap_or_default()
     }
 
-    /// Ledger `counts` (class index, amount) under the unit's model, pool and arrival window.
+    /// How many units' money facts are open (a witness: every end closes its unit).
+    #[must_use]
+    pub fn open_units(&self) -> usize {
+        self.lock().len()
+    }
+
+    /// Ledger `counts` (class index, amount) under the unit's model, pool and arrival window. A sum
+    /// that would overflow bills the saturated figure, never a wrapped or zero one (fail closed);
+    /// the plane check refuses a class counted twice, so a validated report never gets here.
     fn ledger(&self, m: &UnitMoney, counts: &[(u32, u64)]) {
-        let units = named(&m.classes, counts);
+        let units = named(&m.classes, counts).unwrap_or_else(|| saturated(&m.classes, counts));
         self.gov
             .record_usage(&m.cost, &m.key, &m.pool, &m.model, &units, m.arrived);
     }
@@ -177,9 +195,10 @@ impl PlaneMoney {
         let Some(remaining) = remaining else {
             return false; // no budget applies: nothing to run dry
         };
-        let usage = busbar_contract::billing::Usage {
-            usage_units: named(&m.classes, counts),
+        let Some(usage_units) = named(&m.classes, counts) else {
+            return true; // a report that does not add up is a plane fault: fail closed
         };
+        let usage = busbar_contract::billing::Usage { usage_units };
         match m.cost.price_usage_nanos(&m.model, &usage) {
             Some(nanos) => {
                 let micros = nanos.div_ceil(NANOS_PER_MICRO);
@@ -191,11 +210,25 @@ impl PlaneMoney {
 }
 
 /// `counts` under the plane's class names; a class index the plane never declared is not billed.
-fn named(classes: &[String], counts: &[(u32, u64)]) -> BTreeMap<String, u64> {
-    let mut units = BTreeMap::new();
+/// `None` when a class's counts do not add up in a `u64` (a plane fault; never a wrapped sum).
+fn named(classes: &[String], counts: &[(u32, u64)]) -> Option<BTreeMap<String, u64>> {
+    let mut units: BTreeMap<String, u64> = BTreeMap::new();
     for (class, amount) in counts {
         if let Some(name) = classes.get(*class as usize) {
-            *units.entry(name.clone()).or_insert(0) += *amount;
+            let n = units.entry(name.clone()).or_insert(0);
+            *n = n.checked_add(*amount)?;
+        }
+    }
+    Some(units)
+}
+
+/// [`named`], each class's sum saturated at `u64::MAX`: the figure a fail-closed ledger bills.
+fn saturated(classes: &[String], counts: &[(u32, u64)]) -> BTreeMap<String, u64> {
+    let mut units: BTreeMap<String, u64> = BTreeMap::new();
+    for (class, amount) in counts {
+        if let Some(name) = classes.get(*class as usize) {
+            let n = units.entry(name.clone()).or_insert(0);
+            *n = n.saturating_add(*amount);
         }
     }
     units
@@ -207,6 +240,12 @@ impl MoneySeam for PlaneMoney {
         let Some(open) = all.get_mut(&ctx.key) else {
             return Checkpoint::Continue;
         };
+        let all_counts: Vec<(u32, u64)> = units.iter().map(|u| (u.class, u.amount)).collect();
+        if named(&open.money.classes, &all_counts).is_none() {
+            // A report whose counts do not add up is a plane fault: it is not kept, and the unit
+            // is cut (fail closed) rather than run on a figure nothing can bill.
+            return Checkpoint::Cut;
+        }
         open.last.clear();
         open.last.extend_from_slice(units);
         if open.money.mode != ExhaustionMode::CutStream {
@@ -236,13 +275,60 @@ impl MoneySeam for PlaneMoney {
                 return;
             }
             open.ledgered = true;
-            open.money.clone()
+            let money = open.money.clone();
+            if open.abandoned {
+                // The caller went away and its end is posted: this bill was all it waited for.
+                all.remove(&ctx.key);
+            }
+            money
         };
         self.ledger(&money, &bill.billed);
     }
 
+    /// The caller went away: the loop's sealed end goes to the root's posting site, and the unit's
+    /// money facts close. A unit the driver's pump had reported counts for still owes its cancel
+    /// bill (the sweep's, by the four 1.5.5 rules): its facts close when that bill is ledgered, or
+    /// here when it already was. A unit with no count closes here. Nothing is refunded (1.5.5's
+    /// dropped request never reached its refund arm).
     fn abandoned(&self, ctx: &UnitCtx, ended: Ended) {
+        let owed = {
+            let mut all = self.lock();
+            match all.get_mut(&ctx.key) {
+                Some(open) if !open.ledgered && open.finished => {
+                    // The route ended on its own and the caller left during the exit: the last
+                    // reported counts are the bill, ledgered here, once.
+                    let open = all.remove(&ctx.key);
+                    open.map(|o| {
+                        let counts: Vec<(u32, u64)> = o
+                            .last
+                            .iter()
+                            .filter(|u| u.source == UNITS_REPORTED)
+                            .map(|u| (u.class, u.amount))
+                            .collect();
+                        (o.money, counts)
+                    })
+                }
+                Some(open) if open.ledgered || open.last.is_empty() => {
+                    all.remove(&ctx.key);
+                    None
+                }
+                Some(open) => {
+                    open.abandoned = true;
+                    None
+                }
+                None => None,
+            }
+        };
+        if let Some((money, counts)) = owed {
+            self.ledger(&money, &counts);
+        }
         self.post.post(ctx, ended);
+    }
+
+    fn finished(&self, ctx: &UnitCtx) {
+        if let Some(open) = self.lock().get_mut(&ctx.key) {
+            open.finished = true;
+        }
     }
 }
 

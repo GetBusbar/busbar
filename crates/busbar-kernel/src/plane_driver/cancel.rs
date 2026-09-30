@@ -52,6 +52,12 @@ pub trait MoneySeam: Send + Sync {
     /// A cancelled unit's bill, by the four 1.5.5 cancel rules.
     fn cancelled(&self, ctx: &UnitCtx, bill: &CancelBill);
 
+    /// The unit's route step ended without a cancel (complete, failed or exhausted): no cancel bill
+    /// will follow for it, so its last reported counts are its bill.
+    fn finished(&self, ctx: &UnitCtx) {
+        let _ = ctx;
+    }
+
     /// The end of a unit whose caller went away, as the loop's guard reached it: posted by the
     /// money steps exactly as a returned end is. Runs inside a `Drop`: it must not panic, await or
     /// cross a plugin.

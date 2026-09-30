@@ -157,9 +157,9 @@ fn the_end_ledgers_the_last_reported_counts_once() {
         0,
         "a running report is a checkpoint, never a ledger line"
     );
-    r.money.settle_end(UnitKey::new(1), true);
+    r.money.settle_end(UnitKey::new(1), 200);
     assert_eq!(usage(&r).0, 100, "the last cumulative count, once");
-    r.money.settle_end(UnitKey::new(1), true);
+    r.money.settle_end(UnitKey::new(1), 200);
     assert_eq!(usage(&r).0, 100, "a closed unit ledgers nothing again");
 }
 
@@ -172,7 +172,7 @@ fn an_estimate_never_bills() {
         amount: 500,
     }];
     let _ = r.money.checkpoint(&ctx(1), &estimated);
-    r.money.settle_end(UnitKey::new(1), true);
+    r.money.settle_end(UnitKey::new(1), 200);
     assert_eq!(usage(&r).0, 0);
 }
 
@@ -191,7 +191,7 @@ fn a_cancel_bill_is_ledgered_and_the_end_adds_nothing() {
         },
     );
     assert_eq!(usage(&r).0, 70, "the bill's counts");
-    r.money.settle_end(UnitKey::new(1), true);
+    r.money.settle_end(UnitKey::new(1), 200);
     assert_eq!(
         usage(&r).0,
         70,
@@ -206,7 +206,7 @@ fn an_undelivered_end_refunds_the_flat_fee() {
         .try_admit(&r.cost, &r.key, "", NOW)
         .expect("admitted, the fee charged");
     assert_eq!(usage(&r).1, 5);
-    r.money.settle_end(UnitKey::new(1), false);
+    r.money.settle_end(UnitKey::new(1), 503);
     assert_eq!(usage(&r).1, 0, "1.5.5's non-2xx refund of the request fee");
 }
 
@@ -214,7 +214,7 @@ fn an_undelivered_end_refunds_the_flat_fee() {
 fn a_delivered_end_keeps_the_flat_fee() {
     let r = rig(None, 5, ExhaustionMode::FinishUnit);
     r.gov.try_admit(&r.cost, &r.key, "", NOW).expect("admitted");
-    r.money.settle_end(UnitKey::new(1), true);
+    r.money.settle_end(UnitKey::new(1), 200);
     assert_eq!(usage(&r).1, 5);
 }
 
@@ -269,4 +269,160 @@ fn an_abandoned_end_goes_to_the_roots_posting_site() {
     let r = rig(None, 0, ExhaustionMode::FinishUnit);
     r.money.abandoned(&ctx(1), Ended::AlreadySettled);
     assert_eq!(r.posted.0.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        r.money.open_units(),
+        0,
+        "a unit with no count closes at once"
+    );
+}
+
+fn bill(cause: CancelCause, amount: u64) -> CancelBill {
+    CancelBill {
+        cause,
+        disposition: CANCEL_OK_PARTIAL,
+        far_end_answered: true,
+        streamed: true,
+        billed: vec![(INPUT, amount)],
+    }
+}
+
+/// A report whose counts do not add up in a u64 is a plane fault: never kept, never billed wrapped,
+/// and the unit is cut (fail closed) whatever its mode.
+#[test]
+fn a_report_that_overflows_is_cut_and_never_kept() {
+    for mode in [ExhaustionMode::FinishUnit, ExhaustionMode::CutStream] {
+        let r = rig(None, 0, mode);
+        let _ = r.money.checkpoint(&ctx(1), &reported(40));
+        let twice = [
+            UnitCount {
+                class: INPUT,
+                source: UNITS_REPORTED,
+                amount: u64::MAX,
+            },
+            UnitCount {
+                class: INPUT,
+                source: UNITS_REPORTED,
+                amount: 2,
+            },
+        ];
+        assert_eq!(
+            r.money.checkpoint(&ctx(1), &twice),
+            Checkpoint::Cut,
+            "{mode:?}"
+        );
+        r.money.settle_end(UnitKey::new(1), 200);
+        assert_eq!(usage(&r).0, 40, "{mode:?}: the last report that added up");
+    }
+}
+
+/// The sum that bills is checked, and a fail-closed ledger saturates: never wrapped, never zero.
+#[test]
+fn class_sums_are_checked_and_the_fallback_saturates() {
+    let classes = ["input".to_string()];
+    let counts = [(INPUT, u64::MAX), (INPUT, 2)];
+    assert_eq!(super::named(&classes, &counts), None);
+    assert_eq!(super::saturated(&classes, &counts)["input"], u64::MAX);
+    assert_eq!(
+        super::named(&classes, &[(INPUT, 3), (INPUT, 4)]).unwrap()["input"],
+        7
+    );
+}
+
+/// EXACTLY ONCE, every path: complete (and a second end), abandon after the route finished, abandon
+/// mid-route then its cancel bill (either order), cancel then end. Every path closes the unit.
+#[test]
+fn every_path_ledgers_a_unit_exactly_once_and_closes_it() {
+    // Complete, then a second end.
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    let _ = r.money.checkpoint(&ctx(1), &reported(10));
+    r.money.finished(&ctx(1));
+    r.money.settle_end(UnitKey::new(1), 200);
+    r.money.settle_end(UnitKey::new(1), 200);
+    assert_eq!((usage(&r).0, r.money.open_units()), (10, 0), "complete");
+
+    // The route finished, then the caller left during the exit.
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    let _ = r.money.checkpoint(&ctx(1), &reported(20));
+    r.money.finished(&ctx(1));
+    r.money.abandoned(&ctx(1), Ended::AlreadySettled);
+    r.money.settle_end(UnitKey::new(1), 200);
+    assert_eq!(
+        (usage(&r).0, r.money.open_units()),
+        (20, 0),
+        "abandon after finish"
+    );
+
+    // The caller left mid-route: the end is posted, then the sweep's cancel bill.
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    let _ = r.money.checkpoint(&ctx(1), &reported(30));
+    r.money.abandoned(&ctx(1), Ended::AlreadySettled);
+    assert_eq!(
+        r.money.open_units(),
+        1,
+        "the unit waits for its cancel bill"
+    );
+    r.money
+        .cancelled(&ctx(1), &bill(CancelCause::ClientGone, 25));
+    r.money
+        .cancelled(&ctx(1), &bill(CancelCause::ClientGone, 25));
+    assert_eq!(
+        (usage(&r).0, r.money.open_units()),
+        (25, 0),
+        "abandon then bill"
+    );
+
+    // The bill first, then the posted end.
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    let _ = r.money.checkpoint(&ctx(1), &reported(30));
+    r.money
+        .cancelled(&ctx(1), &bill(CancelCause::ClientGone, 25));
+    r.money.abandoned(&ctx(1), Ended::AlreadySettled);
+    assert_eq!(
+        (usage(&r).0, r.money.open_units()),
+        (25, 0),
+        "bill then abandon"
+    );
+
+    // A cancel the unit returns from (a deadline), then its end.
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    let _ = r.money.checkpoint(&ctx(1), &reported(30));
+    r.money.cancelled(&ctx(1), &bill(CancelCause::Deadline, 5));
+    r.money.settle_end(UnitKey::new(1), 504);
+    assert_eq!(
+        (usage(&r).0, r.money.open_units()),
+        (5, 0),
+        "cancel then end"
+    );
+}
+
+/// A cancelled unit that returns undelivered (a deadline before any answer: the caller gets a
+/// non-2xx) is refunded its flat fee, as 1.5.5 refunded every non-2xx finish; a unit whose caller
+/// went away is refunded nothing.
+#[test]
+fn a_cancelled_undelivered_unit_is_refunded_once_and_an_abandoned_one_never() {
+    let r = rig(None, 5, ExhaustionMode::FinishUnit);
+    r.gov.try_admit(&r.cost, &r.key, "", NOW).expect("admitted");
+    r.money.cancelled(
+        &ctx(1),
+        &CancelBill {
+            cause: CancelCause::Deadline,
+            disposition: CANCEL_OK_PARTIAL,
+            far_end_answered: false,
+            streamed: false,
+            billed: Vec::new(),
+        },
+    );
+    r.money.settle_end(UnitKey::new(1), 504);
+    assert_eq!(usage(&r).1, 0, "the fee refunded");
+    r.money.settle_end(UnitKey::new(1), 504);
+    assert_eq!(usage(&r).1, 0, "and once");
+
+    let r = rig(None, 5, ExhaustionMode::FinishUnit);
+    r.gov.try_admit(&r.cost, &r.key, "", NOW).expect("admitted");
+    r.money.abandoned(&ctx(1), Ended::AlreadySettled);
+    assert_eq!(
+        usage(&r).1,
+        5,
+        "a caller that went away keeps the fee charged"
+    );
 }

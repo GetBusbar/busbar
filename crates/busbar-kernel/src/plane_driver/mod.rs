@@ -511,6 +511,9 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                 StepAnswer::refuse(token, Refusal::new(cause))
             }
         };
+        if self.lock().bill.is_none() {
+            d.money.finished(ctx);
+        }
         run.finish();
         answer
     }
