@@ -19,8 +19,8 @@ use crate::budget::LifetimeBudget;
 use crate::cell::{BreakerCell, BreakerState, FailureEffect, ProbeAdmit};
 use crate::cfg::{BreakerCfg, TripConfig, TripMode};
 use crate::classify::{
-    classify, normalize_raw_error, status_class_from_str, CanonicalSignal,
-    Disposition, NoopDiagnostics, RawUpstreamError, StatusClass, PROVIDER_CODE_CONTEXT_LENGTH,
+    classify, normalize_raw_error, status_class_from_str, CanonicalSignal, Disposition,
+    NoopDiagnostics, RawUpstreamError, StatusClass, PROVIDER_CODE_CONTEXT_LENGTH,
 };
 use crate::{Admit, Breaker, BreakerUnit, DestinationId, LaneState, Outcome};
 use busbar_contract::caps::{KernelSeal, Pass, Route};
