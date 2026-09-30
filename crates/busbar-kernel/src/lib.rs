@@ -135,6 +135,7 @@ pub mod grammar;
 pub mod guest;
 pub mod inflight;
 pub mod plane_driver;
+pub mod probe;
 pub mod pump;
 pub mod recovery;
 pub mod registry;
