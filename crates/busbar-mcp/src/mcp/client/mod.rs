@@ -91,7 +91,7 @@ pub(crate) mod issue;
 pub(crate) use crate::plane_client::jsonrpc;
 /// WHAT A CHILD SENDS BUSBAR: the `busbar-as-client / server-originated` half of the matrix, and
 /// the deny-by-default gate on the three asks that would spend busbar's own authority.
-pub(crate) mod peer;
+pub(crate) use crate::plane_client::peer;
 pub(crate) mod pool;
 pub(crate) mod ssrf;
 pub(crate) mod stdio;
@@ -99,7 +99,7 @@ pub(crate) mod transport;
 /// THE CLOSED SET OF METHODS BUSBAR ISSUES to an upstream MCP server — one enum, so the column of
 /// the coverage matrix this leg owns is a value a test can enumerate rather than a property of its
 /// call sites.
-pub(crate) mod verb;
+pub(crate) use crate::plane_client::verb;
 pub(crate) mod wire;
 
 use catalogue::{CatalogueCache, ServerCatalogue, TransportPin};

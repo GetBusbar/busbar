@@ -36,10 +36,10 @@
 //! busbar to spend BUSBAR'S own authority: an LLM completion on busbar's pools and budget, a human's
 //! attention, and the disclosure of filesystem structure. Arriving over a child's stdout does not
 //! make them cheaper than arriving inline in an `InputRequiredResult`, so they get the same gate:
-//! `crate::mcp::config::ServerRequestGrants`, all-false unless an operator set them.
+//! `super::jsonrpc::ServerRequestGrants`, all-false unless an operator set them.
 //!
 //! And they get the same TWO REFUSALS the server plane already distinguishes
-//! (`crate::mcp::method`'s satisfier), because "it was refused" tells an operator nothing about
+//! (the engine's `mcp::method`'s satisfier), because "it was refused" tells an operator nothing about
 //! which thing refused it:
 //!
 //! - **[`AskOutcome::Ungranted`]** — the operator has not granted this server that authority. The
@@ -63,16 +63,16 @@
 //! ## Contents are NEVER read for a routing or trust decision
 //!
 //! The four "something changed" notifications can only bring a re-pull FORWARD, through
-//! `super::catalogue::RefreshGate`, which is rate-limited. Their payloads are not parsed and not
-//! believed. That is `super::catalogue`'s own rule — an attacker-controlled trigger may not choose
+//! the engine's `mcp::client::catalogue::RefreshGate`, which is rate-limited. Their payloads are not parsed and not
+//! believed. That is the engine's `mcp::client::catalogue`'s own rule — an attacker-controlled trigger may not choose
 //! the moment freely and may not choose the content at all — and this module is the second place it
 //! is now enforced rather than the first place it is bypassed.
 
-use crate::mcp::config::ServerRequestGrants;
+use super::jsonrpc::ServerRequestGrants;
 
 /// JSON-RPC standard: the method is not implemented.
 ///
-/// A local re-statement rather than an import of `crate::mcp::envelope::code`, and it is the one
+/// A local re-statement rather than an import of the engine's `mcp::envelope::code`, and it is the one
 /// duplicated number in this module: that module's codes are `pub(super)`/`pub(in crate::mcp)` on
 /// the SERVER plane's ingress, and widening their visibility so the client leg could borrow one
 /// would make the ingress vocabulary reachable from the outbound half. The value is the JSON-RPC
@@ -93,7 +93,7 @@ const ASK_REFUSED: i64 = -32001;
 /// correlated by the caller. Making a response representable here would create a second place a
 /// response could be consumed, which is the desynchronisation this module exists to prevent.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ServerMessage {
+pub enum ServerMessage {
     /// A notification busbar recognises. No reply, ever.
     Notification(ServerNotification),
     /// A notification busbar does not recognise. Still no reply — a notification is defined as
@@ -102,13 +102,17 @@ pub(crate) enum ServerMessage {
     UnknownNotification(String),
     /// A request busbar recognises. MUST be answered.
     Request {
+        /// The request's JSON-RPC id, echoed on the reply.
         id: serde_json::Value,
+        /// Which of the four requests it is.
         verb: ServerRequestVerb,
     },
     /// A request busbar does not recognise. MUST STILL BE ANSWERED, with `-32601`. Dropping it
     /// leaves the child blocked on a reply that never comes.
     UnknownRequest {
+        /// The request's JSON-RPC id, echoed on the `-32601` reply.
         id: serde_json::Value,
+        /// The method name as the peer sent it.
         method: String,
     },
 }
@@ -118,14 +122,16 @@ pub(crate) enum ServerMessage {
 /// Closed so that a tenth cannot be handled by a default arm that treats it as one of these — which
 /// on the four refresh triggers would mean an unknown method able to drive busbar's re-pull.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ServerNotification {
+pub enum ServerNotification {
     /// The peer withdrew a request it had sent busbar.
     Cancelled,
     /// A log record. RFC 5424 severity in `params.level`.
     Message,
     /// Progress on a call busbar has in flight.
     Progress,
+    /// The peer's prompt list changed.
     PromptsListChanged,
+    /// The peer's resource list changed.
     ResourcesListChanged,
     /// One resource's contents changed. Distinct from `ResourcesListChanged`: the LIST is the same
     /// and one member of it moved.
@@ -134,16 +140,20 @@ pub(crate) enum ServerNotification {
     SubscriptionsAcknowledged,
     /// A task busbar created moved.
     Tasks,
+    /// The peer's tool list changed.
     ToolsListChanged,
 }
 
 /// THE FOUR REQUESTS A SERVER MAY SEND, closed. Three of them are authority asks; one is a ping.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ServerRequestVerb {
+pub enum ServerRequestVerb {
     /// Liveness. The only one that is not gated — see the module header.
     Ping,
+    /// `roots/list`: disclose busbar's filesystem roots.
     RootsList,
+    /// `sampling/createMessage`: run an LLM completion on busbar's pools.
     SamplingCreateMessage,
+    /// `elicitation/create`: solicit user input.
     ElicitationCreate,
 }
 
@@ -154,7 +164,7 @@ impl ServerRequestVerb {
     /// [`super::jsonrpc::ServerAsk`] rather than spelled again — a second spelling of `"sampling"`
     /// is a second thing to get wrong, and the failure mode is a grant check that silently never
     /// matches and therefore always denies, which looks exactly like a correctly-configured denial.
-    pub(crate) fn ask(self) -> Option<super::jsonrpc::ServerAsk> {
+    pub fn ask(self) -> Option<super::jsonrpc::ServerAsk> {
         match self {
             ServerRequestVerb::Ping => None,
             ServerRequestVerb::RootsList => Some(super::jsonrpc::ServerAsk::Roots),
@@ -167,12 +177,12 @@ impl ServerRequestVerb {
 /// WHAT BUSBAR DOES about a notification it recognises. A closed set, so adding a notification
 /// forces a decision about what it MEANS rather than letting it default to "nothing".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum NotificationEffect {
-    /// Bring a `tools/list` re-pull forward, subject to [`super::catalogue::RefreshGate`]. The
+pub enum NotificationEffect {
+    /// Bring a `tools/list` re-pull forward, subject to the engine's `mcp::client::catalogue::RefreshGate`. The
     /// notification's CONTENTS are not read — see the module header.
     BringRefreshForward,
     /// `notifications/resources/updated` — everything [`NotificationEffect::BringRefreshForward`]
-    /// does, PLUS record `(server, params.uri)` into [`super::pool::ResourceUpdates`] so the
+    /// does, PLUS record `(server, params.uri)` into the engine's `mcp::client::pool::ResourceUpdates` so the
     /// server leg can relay the update onto `subscriptions/listen`'s `resourceSubscriptions`
     /// category. The ONE effect that reads a field of a peer's notification, and the field is
     /// believed nowhere — see that type's header for the exact bounds on what the reading can do.
@@ -185,7 +195,7 @@ pub(crate) enum NotificationEffect {
 
 impl ServerNotification {
     /// The effect, exhaustive and with no wildcard.
-    pub(crate) fn effect(self) -> NotificationEffect {
+    pub fn effect(self) -> NotificationEffect {
         match self {
             // The three "the shape of what you can call has moved" triggers. A refresh re-pulls
             // the authoritative list and re-hashes it, which is the ONLY way an upstream can
@@ -217,7 +227,7 @@ impl ServerNotification {
 ///
 /// ## THE HANG THIS FUNCTION USED TO PRODUCE
 ///
-/// JSON-RPC 2.0 §4 is explicit: a notification is a request whose `id` member is ABSENT — not one
+/// JSON-RPC 2.0 section 4 is explicit: a notification is a request whose `id` member is ABSENT — not one
 /// whose `id` holds `null`. This function used to decide notification-ness by filtering `id` on
 /// nullness (`.filter(|v| !v.is_null())`), which collapses a PRESENT-but-null id into "absent". Many
 /// JSON-RPC encoders — serde's default among them, for any struct whose `id` field always serializes
@@ -232,7 +242,7 @@ impl ServerNotification {
 /// same `null` back as the JSON-RPC base specification allows. An `id`-absent line on an unrecognised
 /// method still reads as a notification (see [`ServerMessage::UnknownNotification`]): the fix is
 /// "read presence, not nullness", never "answer everything".
-pub(crate) fn classify(value: &serde_json::Value) -> Option<ServerMessage> {
+pub fn classify(value: &serde_json::Value) -> Option<ServerMessage> {
     let obj = value.as_object()?;
     // A response, not a message. Checked FIRST and by the presence of the members rather than by the
     // absence of `method`, so a malformed line carrying both is read as the response it claims to be
@@ -292,7 +302,7 @@ fn request_of(method: &str) -> Option<ServerRequestVerb> {
 /// WHY an authority ask was answered the way it was. Two refusals, deliberately distinguishable —
 /// see the module header for the two different operator remedies.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum AskOutcome {
+pub enum AskOutcome {
     /// No grant. The remedy is `tools.<server>.grants.<kind>: true`.
     Ungranted,
     /// The grant is held and busbar has no satisfier for this ask on this leg.
@@ -305,11 +315,8 @@ pub(crate) enum AskOutcome {
 /// the reason `super::jsonrpc::InputRequiredLoop::may_satisfy` takes them as a parameter: there is
 /// no handshake to authorise once, so a revocation has to bite on the next message and not at the
 /// end of a stream that has no end.
-pub(crate) fn decide_ask(
-    ask: super::jsonrpc::ServerAsk,
-    grants: &ServerRequestGrants,
-) -> AskOutcome {
-    if grants.allows(ask.key()) {
+pub fn decide_ask(ask: super::jsonrpc::ServerAsk, grants: &ServerRequestGrants) -> AskOutcome {
+    if grants.allows(ask) {
         AskOutcome::Unsatisfiable
     } else {
         AskOutcome::Ungranted
@@ -320,7 +327,7 @@ pub(crate) fn decide_ask(
 ///
 /// Total over [`ServerRequestVerb`] and over both [`AskOutcome`] arms, so every request a child can
 /// send has an answer and none of them can be reached by forgetting to write one.
-pub(crate) fn answer(
+pub fn answer(
     id: &serde_json::Value,
     verb: ServerRequestVerb,
     grants: &ServerRequestGrants,
@@ -351,8 +358,8 @@ pub(crate) fn answer(
 ///
 /// ANSWERED rather than dropped, which is the point: a dropped request is a child blocked on a
 /// reply forever, and a hang is a worse diagnosis than a refusal for exactly the reason
-/// `super::stdio` inherits stderr.
-pub(crate) fn method_not_found(id: &serde_json::Value, method: &str) -> serde_json::Value {
+/// the engine's `mcp::client::stdio` inherits stderr.
+pub fn method_not_found(id: &serde_json::Value, method: &str) -> serde_json::Value {
     error_reply(
         id,
         METHOD_NOT_FOUND,
@@ -372,6 +379,6 @@ fn error_reply(id: &serde_json::Value, code: i64, message: String) -> serde_json
     })
 }
 
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(test)]
 #[path = "tests/peer_tests.rs"]
 mod peer_tests;

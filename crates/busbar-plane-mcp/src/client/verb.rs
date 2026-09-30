@@ -45,24 +45,24 @@
 //!
 //! A leg that could not send a handshake could not talk to the stdio ecosystem at all. So the
 //! handshake is BUILT, and it is sent as the child's first message by
-//! [`super::stdio`] — see `StdioChild::handshake`.
+//! the engine's `mcp::client::stdio` — see `StdioChild::handshake`.
 //!
 //! ## Params are DATA, never argv
 //!
 //! Every variant's payload is serialised into the JSON-RPC `params` object and travels on the
 //! child's stdin. Nothing here can reach `StdioCommand::args`, which is config-only. That is the
-//! fourth spawn decision in `super::stdio`'s header, expressed here as the absence of any path from
+//! fourth spawn decision in the engine's `mcp::client::stdio`'s header, expressed here as the absence of any path from
 //! a verb to an argument vector.
 
 use super::jsonrpc::{envelope, OutboundRequest};
-use crate::mcp::envelope::{META_CLIENT_CAPABILITIES, META_PROTOCOL_VERSION, PROTOCOL_VERSION};
+use crate::codec::{META_CLIENT_CAPABILITIES, META_PROTOCOL_VERSION, PROTOCOL_VERSION};
 
 /// THE PROTOCOL REVISION BUSBAR OFFERS A CHILD IN ITS HANDSHAKE.
 ///
 /// The same string busbar's own front door serves, and it is offered rather than imposed: a child
 /// that answers `initialize` with a different `protocolVersion` has told busbar what it speaks, and
 /// that answer is recorded rather than argued with. busbar is a gateway, not a conformance test.
-pub(crate) const CLIENT_PROTOCOL_VERSION: &str = PROTOCOL_VERSION;
+pub const CLIENT_PROTOCOL_VERSION: &str = PROTOCOL_VERSION;
 
 /// What busbar calls itself to a child. A constant, not a config key: an operator who could rename
 /// busbar in a handshake could make one deployment impersonate another in the child's own logs.
@@ -81,10 +81,10 @@ const CLIENT_NAME: &str = "busbar";
 ///
 /// ## WHAT HAS A PRODUCTION CALLER TODAY, and what does not
 ///
-/// `ToolsList` is built by `crate::mcp::connect::refresh` on every scheduled and operator-driven
+/// `ToolsList` is built by the engine's `mcp::connect::refresh` on every scheduled and operator-driven
 /// re-pull, and `ToolsCall`'s wire form is `super::jsonrpc::tools_call` on the dispatch path. The
-/// other twenty-one variants are reached by `super::issue::issue` — which is itself reached today
-/// only from the batteries in `crate::mcp::tests/stdio_client_leg_tests.rs`, because busbar's own
+/// other twenty-one variants are reached by the engine's `mcp::client::issue::issue` — which is itself reached today
+/// only from the batteries in the engine's `mcp::tests/stdio_client_leg_tests.rs`, because busbar's own
 /// FRONT DOOR does not yet expose a `prompts/list` that proxies through to an upstream's. The verb
 /// exists, is governed, is audited and is proven against a real child process; what is missing is
 /// the inbound method that would call it, and that is the server plane's surface rather than this
@@ -96,9 +96,13 @@ const CLIENT_NAME: &str = "busbar";
 /// stdio transport was already deleted over once.
 #[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum UpstreamVerb {
+pub enum UpstreamVerb {
     /// The handshake. See the module header for why this exists here and is waived on HTTP.
-    Initialize,
+    Initialize {
+        /// busbar's release, sent as `clientInfo.version`. Handed in by the engine: a plane reads
+        /// no build environment of its own.
+        client_version: &'static str,
+    },
     /// The handshake's acknowledgement. A NOTIFICATION: it has no reply, and a client that waited
     /// for one would hang against every conformant server.
     NotificationsInitialized,
@@ -109,67 +113,99 @@ pub(crate) enum UpstreamVerb {
     ServerDiscover,
     /// Set the upstream's log verbosity.
     LoggingSetLevel {
+        /// The RFC 5424 level name.
         level: String,
     },
-    /// The upstream's tool list. The refresh path's request — see `crate::mcp::connect`.
+    /// The upstream's tool list. The refresh path's request — see the engine's `mcp::connect`.
     ToolsList,
     /// Invoke one tool. `name` is the UN-namespaced tool: the upstream has never heard of busbar's
     /// `{server}_{tool}` namespacing and would answer `-32602` to it.
     ToolsCall {
+        /// The un-namespaced tool name.
         name: String,
+        /// The tool's arguments object.
         arguments: serde_json::Value,
     },
+    /// The upstream's prompt list.
     PromptsList,
+    /// One prompt, rendered with arguments.
     PromptsGet {
+        /// The prompt name.
         name: String,
+        /// The prompt's arguments object.
         arguments: serde_json::Value,
     },
+    /// The upstream's resource list.
     ResourcesList,
+    /// The upstream's resource templates.
     ResourcesTemplatesList,
+    /// Read one resource.
     ResourcesRead {
+        /// The resource URI.
         uri: String,
     },
+    /// Subscribe to one resource's updates.
     ResourcesSubscribe {
+        /// The resource URI.
         uri: String,
     },
+    /// Drop one resource subscription.
     ResourcesUnsubscribe {
+        /// The resource URI.
         uri: String,
     },
     /// SEP-2575's replacement for the removed GET stream. A METHOD in this revision.
     SubscriptionsListen {
+        /// The notification categories asked for.
         notifications: serde_json::Value,
     },
+    /// Argument completion.
     CompletionComplete {
+        /// The prompt or resource template being completed.
         reference: serde_json::Value,
+        /// The argument name and partial value.
         argument: serde_json::Value,
     },
-    /// SEP-2663 tasks. `taskId` is the wire spelling — see `crate::mcp::tasks`.
+    /// SEP-2663 tasks. `taskId` is the wire spelling — see the engine's `mcp::tasks`.
     TasksGet {
+        /// The task id.
         task_id: String,
     },
+    /// Hand a task the input it asked for.
     TasksUpdate {
+        /// The task id.
         task_id: String,
+        /// The answers, keyed as the task asked.
         input_responses: serde_json::Value,
     },
+    /// Cancel one task.
     TasksCancel {
+        /// The task id.
         task_id: String,
     },
     /// A NOTIFICATION: the caller withdrew a request busbar had already forwarded.
     NotificationsCancelled {
+        /// The id of the withdrawn request.
         request_id: serde_json::Value,
+        /// Why it was withdrawn.
         reason: String,
     },
     /// A NOTIFICATION: progress on a long-running call, relayed upstream.
     NotificationsProgress {
+        /// The token the upstream call was issued with.
         progress_token: serde_json::Value,
+        /// Progress so far.
         progress: f64,
+        /// The total, when known.
         total: Option<f64>,
     },
     /// A NOTIFICATION: busbar's exposed root set changed.
     NotificationsRootsListChanged,
     /// A NOTIFICATION: the answer to an `elicitation/create` the upstream asked for.
     NotificationsElicitationResponse {
+        /// The id of the upstream's `elicitation/create`.
         request_id: serde_json::Value,
+        /// The user's answer.
         content: serde_json::Value,
     },
 }
@@ -177,9 +213,9 @@ pub(crate) enum UpstreamVerb {
 impl UpstreamVerb {
     /// THE WIRE METHOD NAME. Exhaustive, with no wildcard arm, so a variant added without a name is
     /// a compile error rather than a method that silently sends the wrong word.
-    pub(crate) fn method(&self) -> &'static str {
+    pub fn method(&self) -> &'static str {
         match self {
-            UpstreamVerb::Initialize => "initialize",
+            UpstreamVerb::Initialize { .. } => "initialize",
             UpstreamVerb::NotificationsInitialized => "notifications/initialized",
             UpstreamVerb::Ping => "ping",
             UpstreamVerb::ServerDiscover => "server/discover",
@@ -212,10 +248,10 @@ impl UpstreamVerb {
     /// Decided on the VARIANT rather than by testing whether the method name starts with
     /// `notifications/`, because that string test is a rule about spelling that would silently
     /// reclassify any future method whose name happened to match. The distinction matters at the
-    /// transport: [`super::wire::McpWire::notify`] does not read, and a request sent down that path
+    /// transport: the engine's `mcp::client::wire::McpWire::notify` does not read, and a request sent down that path
     /// would wait for an answer nobody would ever read — which on a stdio child means the answer
     /// stays in the pipe and desynchronises every subsequent call.
-    pub(crate) fn is_notification(&self) -> bool {
+    pub fn is_notification(&self) -> bool {
         matches!(
             self,
             UpstreamVerb::NotificationsInitialized
@@ -228,10 +264,10 @@ impl UpstreamVerb {
 
     /// The `params` object as the ARGUMENT GUARD sees it, before `_meta` is added.
     ///
-    /// Exposed for exactly one caller, `super::issue::issue`, which walks it for URL and host
+    /// Exposed for exactly one caller, the engine's `mcp::client::issue::issue`, which walks it for URL and host
     /// fields. `_meta` is deliberately absent: it is BUSBAR's block, not the caller's, so judging it
     /// would be judging busbar's own protocol declaration as though a caller had chosen it.
-    pub(super) fn params_for_guard(&self) -> serde_json::Value {
+    pub fn params_for_guard(&self) -> serde_json::Value {
         self.params()
     }
 
@@ -241,14 +277,14 @@ impl UpstreamVerb {
     /// `params` that included it would be twenty-three chances to omit one key.
     fn params(&self) -> serde_json::Value {
         match self {
-            UpstreamVerb::Initialize => serde_json::json!({
+            UpstreamVerb::Initialize { client_version } => serde_json::json!({
                 "protocolVersion": CLIENT_PROTOCOL_VERSION,
                 // THE EMPTY CAPABILITY SET, and it is the honest one. Sampling, elicitation and
                 // roots are deny-by-default per server (`super::jsonrpc::ServerRequestGrants`), so
                 // declaring a capability busbar then refuses to honour would invite a child to build
                 // a call sequence around authority it will not be given.
                 "capabilities": {},
-                "clientInfo": { "name": CLIENT_NAME, "version": env!("CARGO_PKG_VERSION") },
+                "clientInfo": { "name": CLIENT_NAME, "version": client_version },
             }),
             UpstreamVerb::NotificationsInitialized
             | UpstreamVerb::Ping
@@ -307,7 +343,7 @@ impl UpstreamVerb {
     /// value the body does not carry would be a header busbar's own ingress answers `-32020` to.
     /// WHICH member of this verb's `params` the `Mcp-Name` header mirrors, and its value.
     ///
-    /// The RULE is `crate::mcp::envelope::name_source_of`'s and is not restated here. This function
+    /// The RULE is `crate::codec::name_source_of`'s and is not restated here. This function
     /// once carried its own copy and the two disagreed about the three tasks methods, so a
     /// `tasks/get` issued over streamable HTTP went out with no `Mcp-Name` — the exact header
     /// busbar's own ingress answers `-32020` to. Reading the ingress's table means the requests
@@ -319,7 +355,7 @@ impl UpstreamVerb {
     /// looking it up by name is what keeps the two in step. A per-variant `match` would be the
     /// second copy again, wearing a different shape.
     fn target(&self) -> Option<String> {
-        let source = crate::mcp::envelope::name_source_of(self.method())?;
+        let source = crate::codec::name_source_of(self.method())?;
         self.params()
             .get(source)
             .and_then(|v| v.as_str())
@@ -331,7 +367,7 @@ impl UpstreamVerb {
     ///
     /// `request_id` is IGNORED for a notification, which carries no `id` member at all — a
     /// notification with an `id` is a request, and a peer would be right to answer it.
-    pub(crate) fn build(
+    pub fn build(
         &self,
         url: &str,
         request_id: u64,
@@ -362,7 +398,6 @@ impl UpstreamVerb {
     }
 }
 
-#[cfg(all(test, feature = "test-support"))]
 impl UpstreamVerb {
     /// ONE INSTANCE OF EVERY VARIANT, for the tests that enumerate the surface.
     ///
@@ -370,9 +405,11 @@ impl UpstreamVerb {
     /// here by hand — `every_issued_method_is_in_the_inventory` counts these against the generated
     /// matrix, so a variant missing from this list fails that test instead of quietly narrowing
     /// what the suite covers.
-    pub(crate) fn all() -> Vec<UpstreamVerb> {
+    pub fn all() -> Vec<UpstreamVerb> {
         vec![
-            UpstreamVerb::Initialize,
+            UpstreamVerb::Initialize {
+                client_version: "0.0.0",
+            },
             UpstreamVerb::NotificationsInitialized,
             UpstreamVerb::Ping,
             UpstreamVerb::ServerDiscover,
@@ -435,6 +472,6 @@ impl UpstreamVerb {
     }
 }
 
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(test)]
 #[path = "tests/verb_tests.rs"]
 mod verb_tests;

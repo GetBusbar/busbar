@@ -4,7 +4,7 @@
 //! WHAT A CHILD SENDS BUSBAR — classification, the deny-by-default gate on the three authority
 //! asks, and the two facts that stop a well-behaved child from desynchronising the stream.
 //!
-//! The paired end-to-end battery is `crate::mcp::tests/stdio_client_leg_tests.rs`: this file proves
+//! The paired end-to-end battery is the engine's `mcp::tests/stdio_client_leg_tests.rs`: this file proves
 //! what the classifier DECIDES, that one proves a real child process's real notifications and real
 //! requests reach it. Neither substitutes for the other, and the reason is the one
 //! `stdio_dispatch_tests.rs` records: a complete, adversarially tested classifier that nothing calls
@@ -15,7 +15,7 @@ use super::super::peer::{
     answer, classify, decide_ask, method_not_found, AskOutcome, NotificationEffect, ServerMessage,
     ServerNotification, ServerRequestVerb,
 };
-use crate::mcp::config::ServerRequestGrants;
+use crate::client::jsonrpc::ServerRequestGrants;
 
 fn line(raw: &str) -> serde_json::Value {
     serde_json::from_str(raw).expect("the fixture is JSON")
@@ -28,11 +28,10 @@ fn line(raw: &str) -> serde_json::Value {
 /// of the specification is how a column silently ends early.
 #[test]
 fn every_server_originated_method_in_the_inventory_is_classified() {
-    let path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../qa/method-inventory.json");
-    let raw = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
-    let doc: serde_json::Value = serde_json::from_str(&raw).expect("parses");
+    // Compiled in rather than read at run time: the plane performs no input or output, its tests
+    // included (tests/purity.rs).
+    let raw = include_str!("../../../../../qa/method-inventory.json");
+    let doc: serde_json::Value = serde_json::from_str(raw).expect("parses");
     let owed: Vec<String> = doc["cells"]
         .as_array()
         .expect("cells")
@@ -113,7 +112,7 @@ fn a_notification_method_is_a_notification_even_with_a_null_id() {
 /// THE HANG THIS MODULE USED TO PRODUCE: A PRESENT-BUT-NULL `id` ON A REQUEST METHOD MUST STILL BE
 /// ANSWERED.
 ///
-/// JSON-RPC 2.0 §4 defines a notification as a request whose `id` MEMBER IS ABSENT — not one whose
+/// JSON-RPC 2.0 section 4 defines a notification as a request whose `id` MEMBER IS ABSENT — not one whose
 /// `id` holds `null`. Many JSON-RPC encoders (serde's default among them) spell an absent field as an
 /// explicit `null` when the struct always emits the key. A classifier that filtered `id` by nullness
 /// before consulting the method table read such a peer's `roots/list` as a notification, never

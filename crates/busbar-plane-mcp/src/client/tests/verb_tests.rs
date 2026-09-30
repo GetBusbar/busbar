@@ -17,11 +17,10 @@ use super::super::verb::UpstreamVerb;
 /// Read from the file rather than restated, for the reason the coverage gate itself gives: a list
 /// written from knowledge of the specification is exactly how a list ends at J with nobody noticing.
 fn inventory_methods() -> std::collections::BTreeSet<String> {
-    let path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../qa/method-inventory.json");
-    let raw = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
-    let doc: serde_json::Value = serde_json::from_str(&raw).expect("method-inventory.json parses");
+    // Compiled in rather than read at run time: the plane performs no input or output, its tests
+    // included (tests/purity.rs).
+    let raw = include_str!("../../../../../qa/method-inventory.json");
+    let doc: serde_json::Value = serde_json::from_str(raw).expect("method-inventory.json parses");
     doc["cells"]
         .as_array()
         .expect("a `cells` array")

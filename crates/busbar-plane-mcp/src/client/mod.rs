@@ -6,3 +6,5 @@
 //! session or reads a clock. The engine that drives them hands every fact in as an argument.
 
 pub mod jsonrpc;
+pub mod peer;
+pub mod verb;

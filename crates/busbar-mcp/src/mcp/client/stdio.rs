@@ -606,7 +606,7 @@ impl StdioChild {
             ServerMessage::Request { id, verb } => Some(super::peer::answer(
                 &id,
                 verb,
-                &policy.grants,
+                &policy.grants.as_ask_grants(),
                 policy.server,
             )),
             ServerMessage::UnknownRequest { id, method } => {
@@ -653,7 +653,10 @@ impl StdioChild {
         // call — which matters most on THIS carrier, where the handshake and every later dispatch
         // travel down one byte stream and `parse_response`'s one-id-against-one-id check is the
         // only thing that tells them apart.
-        let request = UpstreamVerb::Initialize.build("", HANDSHAKE_REQUEST_ID, None);
+        let request = UpstreamVerb::Initialize {
+            client_version: env!("CARGO_PKG_VERSION"),
+        }
+        .build("", HANDSHAKE_REQUEST_ID, None);
         let answer = self.call(&request.body, timeout, policy).await?;
         match super::jsonrpc::parse_response(&answer, HANDSHAKE_REQUEST_ID) {
             super::jsonrpc::RpcOutcome::Result(value) => {

@@ -576,6 +576,16 @@ impl ServerRequestGrants {
             _ => false,
         }
     }
+
+    /// The same three grants as the plane's value type, which the child-message classifier
+    /// (`client::peer`) decides against. Field for field; nothing widens.
+    pub(crate) fn as_ask_grants(self) -> super::client::jsonrpc::ServerRequestGrants {
+        super::client::jsonrpc::ServerRequestGrants {
+            sampling: self.sampling,
+            elicitation: self.elicitation,
+            roots: self.roots,
+        }
+    }
 }
 
 /// `tools.<server>.roots[<n>]` — ONE filesystem root busbar will disclose to THIS upstream when it
