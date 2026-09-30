@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::net::TcpStream as Client;
 
 use super::*;
 use crate::compose::Failure;
@@ -60,7 +60,7 @@ fn an_accepted_connection_is_framed_on_the_accept_side_and_answered() {
         let mut l = plain(door.clone(), AcceptLimits::default());
         let addr = l.local_addr();
         let client = tokio::spawn(async move {
-            let mut s = TcpStream::connect(addr).await.unwrap();
+            let mut s = Client::connect(addr).await.unwrap();
             let sent: Vec<u8> = (0..=255_u8).cycle().take(50_000).collect();
             s.write_all(&sent).await.unwrap();
             let mut got = vec![0_u8; sent.len()];
@@ -100,7 +100,7 @@ fn server(leaf: Vec<u8>, key: Vec<u8>) -> Arc<rustls::ServerConfig> {
         )
         .unwrap();
     // The operator's config may pin its own offer; the listener's is the framer's.
-    s.alpn_protocols = vec![b"http/1.1".to_vec()];
+    s.alpn_protocols = vec![b"x-config".to_vec()];
     Arc::new(s)
 }
 
@@ -117,7 +117,7 @@ fn tls_on_a_listener_is_the_connectors_server_with_the_framers_offer() {
             door,
             "127.0.0.1:0",
             Some(server(leaf, key)),
-            vec![b"h2".to_vec()],
+            vec![b"x-framer".to_vec()],
             AcceptLimits::default(),
         )
         .unwrap();
@@ -128,12 +128,12 @@ fn tls_on_a_listener_is_the_connectors_server_with_the_framers_offer() {
             let mut cfg = rustls::ClientConfig::builder()
                 .with_root_certificates(roots)
                 .with_no_client_auth();
-            cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+            cfg.alpn_protocols = vec![b"x-framer".to_vec(), b"x-config".to_vec()];
             let tls = tokio_rustls::TlsConnector::from(Arc::new(cfg));
-            let s = TcpStream::connect(addr).await.unwrap();
+            let s = Client::connect(addr).await.unwrap();
             let name = rustls_pki_types::ServerName::try_from("localhost").unwrap();
             let mut s = tls.connect(name, s).await.expect("the handshake completes");
-            assert_eq!(s.get_ref().1.alpn_protocol(), Some(&b"h2"[..]));
+            assert_eq!(s.get_ref().1.alpn_protocol(), Some(&b"x-framer"[..]));
             s.write_all(b"hello").await.unwrap();
             let mut got = [0_u8; 5];
             s.read_exact(&mut got).await.unwrap();
@@ -145,7 +145,7 @@ fn tls_on_a_listener_is_the_connectors_server_with_the_framers_offer() {
         let p = next(&mut conn).await.unwrap().unwrap();
         assert_eq!(
             conn.established().agreed_protocol.as_deref(),
-            Some(&b"h2"[..])
+            Some(&b"x-framer"[..])
         );
         assert_eq!(
             conn.established().offered_name.as_deref(),
@@ -192,11 +192,11 @@ fn the_connection_past_the_cap_is_closed_without_a_byte() {
         let addr = l.local_addr();
         let mut held = Vec::new();
         for _ in 0..2 {
-            let c = TcpStream::connect(addr).await.unwrap();
+            let c = Client::connect(addr).await.unwrap();
             held.push((c, accept(&mut l).await.conn));
         }
         assert_eq!(l.live(), 2);
-        let mut third = TcpStream::connect(addr).await.unwrap();
+        let mut third = Client::connect(addr).await.unwrap();
         // The listener takes the third off the queue and closes it; nothing is admitted.
         let polled = tokio::time::timeout(Duration::from_millis(300), accept(&mut l)).await;
         assert!(polled.is_err(), "the one past the cap is never admitted");
@@ -216,7 +216,7 @@ fn the_connection_past_the_cap_is_closed_without_a_byte() {
         // Dropping one frees its slot for the next client.
         let (_c1, conn1) = held.remove(0);
         drop(conn1);
-        let _c3 = TcpStream::connect(addr).await.unwrap();
+        let _c3 = Client::connect(addr).await.unwrap();
         let a = tokio::time::timeout(Duration::from_secs(2), accept(&mut l))
             .await
             .expect("a freed slot admits the next");
@@ -243,7 +243,7 @@ fn a_silent_tls_client_is_dropped_at_the_handshake_deadline() {
             },
         )
         .unwrap();
-        let mut silent = TcpStream::connect(l.local_addr()).await.unwrap();
+        let mut silent = Client::connect(l.local_addr()).await.unwrap();
         let mut conn = accept(&mut l).await.conn;
         let at = Instant::now();
         assert_eq!(next(&mut conn).await, Err(Failure::Timeout));

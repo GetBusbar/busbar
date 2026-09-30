@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! LISTEN: one listener per INBOUND need (`BUSBAR-1.6.0.md` THE DESIGN §3 stage 6, §5), the
-//! server-side mirror of [`crate::compose`]'s dial. Every connection it accepts is composed as
+//! LISTEN: one listener per INBOUND need, the server-side mirror of [`crate::compose`]'s dial. Every connection it accepts is composed as
 //! `socket -> [TLS] -> framer`, the framing begun on `SIDE_ACCEPT` ([`Connection::accepted`]).
 //!
 //! The accept is bounded, and nothing here starts a thread or a task:
