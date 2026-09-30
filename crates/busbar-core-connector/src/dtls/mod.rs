@@ -62,7 +62,7 @@
 mod ring;
 pub mod stun;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -291,7 +291,8 @@ pub struct Association {
     keys: stun::Keys,
     remote_fingerprint: [u8; 32],
     dtls: Option<dimpl::Dtls>,
-    heard: HashSet<SocketAddr>,
+    /// Paths a verified check came from, and when the last one did.
+    heard: HashMap<SocketAddr, Instant>,
     proven: HashMap<SocketAddr, Instant>,
     probes: HashMap<[u8; 12], (SocketAddr, Instant)>,
     tie_breaker: [u8; 8],
@@ -337,7 +338,7 @@ impl Association {
             keys: stun::Keys::new(local, remote),
             remote_fingerprint,
             dtls: None,
-            heard: HashSet::new(),
+            heard: HashMap::new(),
             proven: HashMap::new(),
             probes: HashMap::new(),
             tie_breaker,
@@ -370,17 +371,15 @@ impl Association {
                         return Verdict::Kept;
                     }
                 }
-                if stun::is_verified_check(datagram, &self.keys)
-                    && (self.heard.len() < MAX_HEARD_PATHS || self.heard.contains(&path))
-                {
-                    self.heard.insert(path);
+                if stun::is_verified_check(datagram, &self.keys) {
+                    self.hear(path, now);
                     if !self.proven.contains_key(&path) {
                         self.probe(path, now);
                     }
                 }
                 Verdict::Raw
             }
-            Class::Media if self.heard.contains(&path) => Verdict::Raw,
+            Class::Media if self.heard.contains_key(&path) => Verdict::Raw,
             Class::Dtls => {
                 if self.bound == Some(path) {
                     if let Some(dtls) = self.dtls.as_mut() {
@@ -390,7 +389,7 @@ impl Association {
                         }
                     }
                     self.drive();
-                } else if self.heard.contains(&path) && self.early.len() < MAX_EARLY {
+                } else if self.heard.contains_key(&path) && self.early.len() < MAX_EARLY {
                     self.early.push((path, datagram.to_vec()));
                 }
                 Verdict::Kept
@@ -410,7 +409,7 @@ impl Association {
         if self.failed.is_some() {
             return Err(BindRefused::Failed);
         }
-        if !self.heard.contains(&path) {
+        if !self.heard.contains_key(&path) {
             return Err(BindRefused::Unchecked);
         }
         self.wanted = Some(path);
@@ -442,7 +441,7 @@ impl Association {
         if self.bound != Some(old) {
             return Err(BindRefused::NotBound);
         }
-        if !self.heard.contains(&new) {
+        if !self.heard.contains_key(&new) {
             return Err(BindRefused::Unchecked);
         }
         self.wanted = Some(new);
@@ -463,7 +462,7 @@ impl Association {
             return false;
         }
         if stun::is_binding_success(datagram) {
-            return self.heard.contains(&path) || self.proven.contains_key(&path);
+            return self.heard.contains_key(&path) || self.proven.contains_key(&path);
         }
         self.bound == Some(path)
     }
@@ -492,6 +491,15 @@ impl Association {
         if self.failed.is_some() {
             return;
         }
+        // Age out what consent no longer covers (RFC 7675's 30 s): heard and proven paths that are
+        // neither bound nor awaited, and probes nobody answered.
+        let keep = [self.bound, self.wanted];
+        let fresh = |t: &Instant| now.saturating_duration_since(*t) < CONSENT_TIMEOUT;
+        self.heard
+            .retain(|p, t| keep.contains(&Some(*p)) || fresh(t));
+        self.proven
+            .retain(|p, t| keep.contains(&Some(*p)) || fresh(t));
+        self.probes.retain(|_, (_, sent)| fresh(sent));
         if let Some(bound) = self.bound {
             let last = self.proven.get(&bound).copied();
             if last.is_some_and(|t| now.saturating_duration_since(t) >= CONSENT_TIMEOUT) {
@@ -556,6 +564,29 @@ impl Association {
         self.bound
     }
 
+    /// Record a verified check from `path`. At the cap the oldest heard path that is neither bound
+    /// nor awaited makes room, so a flood of spoofed sources can neither grow the set nor lock a
+    /// real new path out of it.
+    fn hear(&mut self, path: SocketAddr, now: Instant) {
+        if !self.heard.contains_key(&path) && self.heard.len() >= MAX_HEARD_PATHS {
+            let keep = [self.bound, self.wanted];
+            let oldest = self
+                .heard
+                .iter()
+                .filter(|(p, _)| !keep.contains(&Some(**p)))
+                .min_by_key(|(_, t)| **t)
+                .map(|(p, _)| *p);
+            match oldest {
+                Some(p) => {
+                    self.heard.remove(&p);
+                    self.proven.remove(&p);
+                }
+                None => return,
+            }
+        }
+        self.heard.insert(path, now);
+    }
+
     /// Probe `path` unless a probe to it is already in flight.
     fn probe(&mut self, path: SocketAddr, now: Instant) {
         if !self.probes.values().any(|(to, _)| *to == path) {
@@ -565,7 +596,19 @@ impl Association {
 
     fn send_probe(&mut self, path: SocketAddr, now: Instant) {
         if self.probes.len() >= MAX_PROBES {
-            self.probes.clear();
+            // Evict the OLDEST probe, sparing the bound and awaited paths' own while any other
+            // remains, so a flood of sources cannot wipe the real path's check in flight.
+            let keep = [self.bound, self.wanted];
+            let oldest = |spare: bool| {
+                self.probes
+                    .iter()
+                    .filter(|(_, (to, _))| !spare || !keep.contains(&Some(*to)))
+                    .min_by_key(|(_, (_, sent))| *sent)
+                    .map(|(id, _)| *id)
+            };
+            if let Some(id) = oldest(true).or_else(|| oldest(false)) {
+                self.probes.remove(&id);
+            }
         }
         let mut txid = [0_u8; 12];
         if SystemRandom::new().fill(&mut txid).is_err() {

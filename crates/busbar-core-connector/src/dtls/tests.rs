@@ -518,3 +518,56 @@ fn red_the_key_provider_refuses_raw_key_bytes() {
         "a dropped certificate's handle resolves to nothing"
     );
 }
+
+#[test]
+fn red_a_flood_of_sources_holds_both_maps_at_their_caps_and_the_real_path_still_proves_and_moves() {
+    let mut t = pair(false);
+    let honest = check(&creds(S_ICE.0, S_ICE.1), C_ICE.0, S_ICE.1);
+    t.s.ingest(t.c_path, &honest, t.now);
+    assert_eq!(t.s.bind_path(t.c_path, t.now), Ok(Bind::WhenProven));
+    let (_, real_probe) = t.s.poll_wire().unwrap();
+
+    // MAX_PROBES + 1 distinct spoofed sources, each with a verified (replayed) check.
+    for i in 0..=MAX_PROBES {
+        let spoofed = SocketAddr::from(([192, 0, 2, u8::try_from(i).unwrap()], 9));
+        t.now += Duration::from_millis(1);
+        t.s.ingest(spoofed, &honest, t.now);
+    }
+    assert_eq!(t.s.heard.len(), MAX_HEARD_PATHS, "heard held at its cap");
+    assert_eq!(t.s.probes.len(), MAX_PROBES, "probes held at their cap");
+    assert_eq!(
+        t.s.ingest(t.c_path, &[0x80, 0x6f, 0, 1], t.now),
+        Verdict::Raw,
+        "the awaited path is still heard: the flood evicted spoofed paths, not it"
+    );
+
+    // The real path's check, in flight since before the flood, still completes.
+    t.s.ingest(t.c_path, &answer(&real_probe, C_ICE.1), t.now);
+    assert_eq!(t.s.bound_path(), Some(t.c_path));
+
+    // And a real NEW path after the flood can still be heard, proven and moved to.
+    let new = p("203.0.113.77:61000");
+    t.s.ingest(new, &honest, t.now);
+    assert_eq!(t.s.rebind_path(t.c_path, new, t.now), Ok(Bind::WhenProven));
+    let probe = std::iter::from_fn(|| t.s.poll_wire())
+        .find(|(to, d)| *to == new && is_probe(d))
+        .expect("probe to the new path")
+        .1;
+    t.s.ingest(new, &answer(&probe, C_ICE.1), t.now);
+    assert_eq!(t.s.bound_path(), Some(new));
+    assert!(t.s.heard.len() <= MAX_HEARD_PATHS && t.s.probes.len() <= MAX_PROBES);
+}
+
+#[test]
+fn red_heard_paths_and_probes_age_out_with_consent() {
+    let mut t = pair(false);
+    let honest = check(&creds(S_ICE.0, S_ICE.1), C_ICE.0, S_ICE.1);
+    for i in 0..5_u8 {
+        t.s.ingest(SocketAddr::from(([192, 0, 2, i], 9)), &honest, t.now);
+    }
+    assert_eq!(t.s.heard.len(), 5);
+    t.now += CONSENT_TIMEOUT + Duration::from_secs(1);
+    t.s.handle_timeout(t.now);
+    assert!(t.s.heard.is_empty(), "heard paths age out");
+    assert!(t.s.probes.is_empty(), "unanswered probes age out");
+}
