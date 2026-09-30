@@ -113,6 +113,8 @@ pub struct Report {
     pub groups: Vec<GroupCount>,
     pub total: Counts,
     pub errors: Vec<FileError>,
+    /// The files only a test-gated `mod name;` declares ([`TestModules`]), counted as `test`.
+    pub test_modules: TestModules,
 }
 
 impl Report {
@@ -407,6 +409,7 @@ pub fn measure(cx: &Ctx, source: &Source, cfg: &Config, only: &[String]) -> Resu
 
     let mut files: Vec<FileCount> = Vec::with_capacity(discovered.len());
     let mut errors: Vec<FileError> = Vec::new();
+    let mut declared: Vec<(String, Vec<classify::OutOfLineMod>)> = Vec::new();
     std::thread::scope(|scope| {
         let handles: Vec<_> = work
             .into_iter()
@@ -423,11 +426,14 @@ pub fn measure(cx: &Ctx, source: &Source, cfg: &Config, only: &[String]) -> Resu
                             }),
                             Ok(text) => {
                                 match classify::classify(text, classify::is_test_path(path)) {
-                                    Ok(v) => ok.push(FileCount {
-                                        path: path.clone(),
-                                        krate: krate.clone(),
-                                        counts: v.counts,
-                                    }),
+                                    Ok(v) => ok.push((
+                                        FileCount {
+                                            path: path.clone(),
+                                            krate: krate.clone(),
+                                            counts: v.counts,
+                                        },
+                                        v.mods,
+                                    )),
                                     Err(e) => bad.push(FileError {
                                         path: path.clone(),
                                         krate: krate.clone(),
@@ -443,11 +449,112 @@ pub fn measure(cx: &Ctx, source: &Source, cfg: &Config, only: &[String]) -> Resu
             .collect();
         for h in handles {
             let (ok, bad) = h.join().unwrap_or_default();
-            files.extend(ok);
+            declared.extend(ok.iter().map(|(f, m)| (f.path.clone(), m.clone())));
+            files.extend(ok.into_iter().map(|(f, _)| f));
             errors.extend(bad);
         }
     });
-    Ok(aggregate(source.label(), files, errors, cfg))
+
+    // A FILE WHOSE ONLY DECLARATION IS TEST-GATED IS TEST, WHEREVER IT LIVES. Its lines are
+    // re-classified as a test path; nothing else about them changes.
+    let text_of: BTreeMap<&str, &Result<String, String>> =
+        paths.iter().map(String::as_str).zip(texts.iter()).collect();
+    let test_modules = test_modules(&declared, &paths, &text_of);
+    for f in files.iter_mut() {
+        if classify::is_test_path(&f.path) || !test_modules.covers(&f.path) {
+            continue;
+        }
+        if let Some(Ok(text)) = text_of.get(f.path.as_str()) {
+            if let Ok(v) = classify::classify(text, true) {
+                f.counts = v.counts;
+            }
+        }
+    }
+    let mut report = aggregate(source.label(), files, errors, cfg);
+    report.test_modules = test_modules;
+    Ok(report)
+}
+
+/// `a/b/../c` as `a/c`, and `./` segments dropped.
+fn normalise_rel(p: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for seg in p.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                out.pop();
+            }
+            s => out.push(s),
+        }
+    }
+    out.join("/")
+}
+
+/// The files and directories that only a TEST-GATED `mod name;` declares (see
+/// [`classify::OutOfLineMod`]): the module's file, and every file under the directory its own
+/// children live in. A file some UNGATED declaration also names is not test, whatever else names
+/// it — `#[cfg(test)] mod x;` beside `#[cfg(not(test))] mod x;` ships `x`.
+#[derive(Clone, Debug, Default)]
+pub struct TestModules {
+    pub files: std::collections::BTreeSet<String>,
+    pub dirs: std::collections::BTreeSet<String>,
+}
+
+impl TestModules {
+    /// Whether `rel` is one of the test-gated module files, or under one's directory.
+    pub fn covers(&self, rel: &str) -> bool {
+        self.files.contains(rel) || self.dirs.iter().any(|d| rel.starts_with(&format!("{d}/")))
+    }
+}
+
+fn test_modules(
+    declared: &[(String, Vec<classify::OutOfLineMod>)],
+    paths: &[String],
+    text_of: &BTreeMap<&str, &Result<String, String>>,
+) -> TestModules {
+    let present: std::collections::BTreeSet<&str> = paths.iter().map(String::as_str).collect();
+    let resolve = |declaring: &str, m: &classify::OutOfLineMod| {
+        let (candidates, child) = classify::module_files(declaring, m);
+        let found: Vec<String> = candidates
+            .into_iter()
+            .filter(|c| present.contains(c.as_str()))
+            .collect();
+        (found, child)
+    };
+    let mut out = TestModules::default();
+    for (declaring, mods) in declared {
+        for m in mods.iter().filter(|m| m.test) {
+            let (found, child) = resolve(declaring, m);
+            out.files.extend(found);
+            out.dirs.insert(child);
+        }
+    }
+    // An UNGATED declaration only ships its file when the declaring file itself ships: a plain
+    // `mod seam;` inside a test module's own file is part of that test module.
+    let mut live: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (declaring, mods) in declared {
+        if classify::is_test_path(declaring) || out.covers(declaring) {
+            continue;
+        }
+        for m in mods.iter().filter(|m| !m.test) {
+            live.extend(resolve(declaring, m).0);
+        }
+        // `include!("x.rs")` compiles `x.rs` into a file that ships (`build.rs` includes
+        // `src/build_stamp.rs`, which `main.rs` also mounts as a `#[cfg(test)] mod`).
+        if let Some(Ok(text)) = text_of.get(declaring.as_str()) {
+            let dir = declaring.rsplit_once('/').map_or("", |(d, _)| d);
+            for piece in text.split("include!(\"").skip(1) {
+                if let Some(rel) = piece.split('"').next() {
+                    live.insert(normalise_rel(&format!("{dir}/{rel}")));
+                }
+            }
+        }
+    }
+    out.files.retain(|f| !live.contains(f));
+    // A directory is a test module's only when no ungated declaration names a file inside it.
+    out.dirs
+        .retain(|d| !live.iter().any(|f| f.starts_with(&format!("{d}/"))));
+    out
 }
 
 /// Roll per-file counts up into crates, groups and a total. Split out because an overlay patch
@@ -509,6 +616,7 @@ fn aggregate(
         groups,
         total,
         errors,
+        test_modules: TestModules::default(),
     }
 }
 
@@ -564,7 +672,10 @@ pub fn measure_worktree_cached(cx: &Ctx) -> Result<Arc<Report>, String> {
                     },
                 );
             }
-            Ok(text) => match classify::classify(&text, classify::is_test_path(&rel)) {
+            Ok(text) => match classify::classify(
+                &text,
+                classify::is_test_path(&rel) || base.test_modules.covers(&rel),
+            ) {
                 Ok(v) => {
                     files.insert(
                         rel.clone(),
@@ -588,12 +699,14 @@ pub fn measure_worktree_cached(cx: &Ctx) -> Result<Arc<Report>, String> {
             },
         }
     }
-    Ok(Arc::new(aggregate(
+    let mut report = aggregate(
         base.source.clone(),
         files.into_values().collect(),
         errors.into_values().collect(),
         &cfg,
-    )))
+    );
+    report.test_modules = base.test_modules.clone();
+    Ok(Arc::new(report))
 }
 
 /// The unplanted tree, measured once and remembered per root.

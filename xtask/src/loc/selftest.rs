@@ -19,6 +19,9 @@
 //!   `#[cfg(not(test))]` — the arm that SHIPS — and anything gated on a feature named
 //!   `test-support`.
 //! * [`Flaw::CommentsAreCode`] — no comment stripping at all.
+//! * [`Flaw::ProofsAreCode`] — a compile-time layout assertion (`const _`, and a `pin!`-style
+//!   macro that expands only to one) is production code. It billed `busbar-contract`'s 1,633 lines
+//!   of layout pins as contract surface.
 
 use std::path::PathBuf;
 
@@ -45,6 +48,7 @@ enum Flaw {
     CommentsAreCode,
     TopLevelTestsOnly,
     PhantomTrailingLine,
+    ProofsAreCode,
 }
 
 impl Case {
@@ -73,6 +77,32 @@ const fn counts(code: u64, doc: u64, comment: u64, blank: u64, test: u64) -> Cou
 }
 
 const CASES: &[Case] = &[
+    Case {
+        name: "compile-time-layout-proofs",
+        why: "an anonymous `const _` and a same-file macro expanding only to one are proofs; a \
+              macro that can expand to a `fn` is not",
+        src: "use std::mem::size_of;\n\
+              macro_rules! pin {\n\
+              \x20   ($t:ty, $n:expr) => {\n\
+              \x20       const _: () = assert!(size_of::<$t>() == $n);\n\
+              \x20   };\n\
+              }\n\
+              macro_rules! mint {\n\
+              \x20   ($f:ident) => {\n\
+              \x20       pub fn $f() {}\n\
+              \x20   };\n\
+              }\n\
+              pin!(u64, 8);\n\
+              pin!(\n\
+              \x20   u32,\n\
+              \x20   4\n\
+              );\n\
+              const _: () = assert!(size_of::<u8>() == 1);\n\
+              mint!(shipped);\n\
+              pub fn f() {}\n",
+        want: counts(8, 0, 0, 0, 11),
+        flaw: Flaw::ProofsAreCode,
+    },
     Case {
         name: "cfg-test-mod-decl-early",
         why: "a one-line `#[cfg(test)] mod x;` near the top does NOT swallow the rest of the file",
@@ -444,6 +474,56 @@ fn tree_case() -> Result<Vec<(bool, String)>, String> {
         ),
     ));
 
+    // AN OUT-OF-LINE MODULE IS TEST WHEN ITS ONLY DECLARATION IS. `delta`'s `support/` is declared
+    // once, behind `any(test, feature = "test-support")`, and carries an ungated child of its own;
+    // `stamp.rs` is declared `#[cfg(test)]` but also `include!`d by `build.rs`, so it ships.
+    write(
+        "crates/delta/src/lib.rs",
+        "#[cfg(any(test, feature = \"test-support\"))]\npub mod support;\npub mod live;\n\
+         #[cfg(test)]\nmod stamp;\n",
+    )?;
+    write(
+        "crates/delta/src/support/mod.rs",
+        "mod inner;\npub fn s() {}\n",
+    )?;
+    write("crates/delta/src/support/inner.rs", "pub fn i() {}\n")?;
+    write("crates/delta/src/live.rs", "pub fn l() {}\n")?;
+    write("crates/delta/src/stamp.rs", "pub fn st() {}\n")?;
+    write(
+        "crates/delta/build.rs",
+        "include!(\"src/stamp.rs\");\nfn main() {}\n",
+    )?;
+    let with_delta = measure(&cx, &Source::Worktree, &cfg, &[])?;
+    let delta = with_delta
+        .crate_counts("delta")
+        .copied()
+        .unwrap_or_default();
+    out.push((
+        delta.code == 5 && delta.test == 7,
+        format!(
+            "fixture tree: delta is 5 code + 7 test — the test-gated `support/` module and its \
+             ungated child are proofs, the `include!`d `stamp.rs` ships (measured {})",
+            show(&delta)
+        ),
+    ));
+    // THE RED HALF: the file-by-file rule this replaces bills `support/` as production.
+    let file_by_file: u64 = [
+        "crates/delta/src/support/mod.rs",
+        "crates/delta/src/support/inner.rs",
+    ]
+    .iter()
+    .filter_map(|rel| std::fs::read_to_string(root.join(rel)).ok())
+    .filter_map(|t| classify::classify(&t, false).ok())
+    .map(|v| v.counts.code)
+    .sum();
+    out.push((
+        file_by_file == 3,
+        format!(
+            "fixture tree: the file-by-file rule is RED on it (it bills {file_by_file} line(s) of \
+             `support/` as code, truth is 0)"
+        ),
+    ));
+
     let _ = std::fs::remove_dir_all(&root);
     Ok(out)
 }
@@ -471,6 +551,7 @@ impl Flaw {
             Flaw::CommentsAreCode => "no-comment-stripping",
             Flaw::TopLevelTestsOnly => "only-top-level-src/tests",
             Flaw::PhantomTrailingLine => "count-the-empty-element-a-trailing-newline-leaves",
+            Flaw::ProofsAreCode => "compile-time-assertions-are-production",
         }
     }
 }
