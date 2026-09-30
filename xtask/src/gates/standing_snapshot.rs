@@ -281,7 +281,7 @@ mod tests {
 
     /// A measurement-disagreement finding carries the GAP between its scanners, never the cell's
     /// scored count: that count is the same cell's ratchet finding, and filing it twice made the
-    /// snapshot's figure-sum count every disagreeing cell twice (ratchet-audit M-e).
+    /// snapshot's figure-sum count every disagreeing cell twice.
     #[test]
     fn a_disagreement_carries_its_gap_not_its_cells_count() {
         let tree = "2 hit(s): ratchet\tbusbar-kernel × transport\tceiling 4 vs measured 308 \
@@ -295,7 +295,11 @@ mod tests {
             false
         )));
         let sum: i64 = snap_of(tree).values().sum();
-        assert_eq!(sum, 308 + 5, "the cell is counted once, its disagreement is its gap");
+        assert_eq!(
+            sum,
+            308 + 5,
+            "the cell is counted once, its disagreement is its gap"
+        );
     }
 
     #[test]

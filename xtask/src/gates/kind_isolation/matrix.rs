@@ -876,8 +876,8 @@ fn mask_prose_words(prose: &str) -> String {
     String::from_utf8(out).expect("ascii-for-ascii")
 }
 
-/// THE INSTANCE IDS THAT ARE ALSO SOMEBODY ELSE'S NAME (METER-FIX 2026-09-29, the sibling of
-/// [`ENGLISH_INSTANCE_WORDS`] for crate names and abbreviations; ratchet-audit M-d). `http` is the
+/// THE INSTANCE IDS THAT ARE ALSO SOMEBODY ELSE'S NAME: the sibling of [`ENGLISH_INSTANCE_WORDS`]
+/// for crate names and abbreviations. `http` is the
 /// transport's bare id and also the `http` crate (`http::Method`, `axum::http::StatusCode`, the
 /// `http-body` dependency), a URL scheme (`http://`), and the protocol's name in a sentence. `ws` is
 /// the transport's bare id and also whitespace (`skip_ws`), a local's name (`let ws = …`) and a URL
@@ -2121,7 +2121,7 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
                     .join(", ")
             ));
         }
-        // THE DISAGREEMENT'S FIGURE IS THE GAP, NOT THE CELL (METER-FIX, ratchet-audit M-e). The
+        // THE DISAGREEMENT'S FIGURE IS THE GAP, NOT THE CELL. The
         // cell's own count is already this cell's `ratchet`/`unlisted-cell` finding; carrying it
         // here too filed every disagreeing cell twice in the standing snapshot (kernel×transport
         // 1 811 twice), so a burn-down summed over the snapshot double-counted exactly those
@@ -2833,7 +2833,7 @@ pub fn selftest<'a>(
     ));
 
     // AN INSTANCE ID THAT IS ALSO A CRATE'S OR AN ABBREVIATION'S NAME COUNTS ONLY AS A REFERENCE
-    // (METER-FIX 2026-09-29; [`COLLIDING_INSTANCE_WORDS`]). The fixture's transport cell is recorded
+    // ([`COLLIDING_INSTANCE_WORDS`]). The fixture's transport cell is recorded
     // at its one hit, a registry key `"ws"`. The `http` crate's paths, `axum::http`, HTTP in a
     // comment, a URL scheme, whitespace called `ws`, and a file named `skip_ws.rs` leave it there
     // (GREEN). A crate-rooted path to a `ws` module, and the transport crate's own path, are each
@@ -3241,7 +3241,7 @@ pub fn selftest<'a>(
     // contract (#84) and the plugin stopped naming `busbar-plugin-sdk`. Each time its red became
     // standing debt the debt-free base subtracts and the case came back green. A kernel workflow
     // crate's cell is not a fixture's and not an edge a fold retires: removing the crate's manifest
-    // kills it exactly as it did the old ones. Re-targeted a third time (METER-FIX): the subject was
+    // kills it exactly as it did the old ones. Re-targeted a third time: the subject was
     // `busbar-kernel-scope × transport`, whose every hit was an `http` spelling that
     // [`COLLIDING_INSTANCE_WORDS`] no longer counts, so that row went dead on the real tree.
     let mut ov = crate::ctx::Overlay::new();
