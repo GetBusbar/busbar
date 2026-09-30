@@ -52,7 +52,10 @@ pub mod capture;
 // host buffers filled through `Lent`/`HostBuf`, the instance typed through `Instance`.
 pub mod lent;
 pub mod safe;
-pub use lent::{HostBuf, Lent, LentList};
+pub use lent::{HostBuf, Lent, LentList, SignalScalar};
+// A SLOT'S `out`, WRITTEN BY THE SDK: scalars set, every pointer through an SDK writer.
+pub mod out;
+pub use out::{Out, Scalar};
 pub use safe::{Instance, Safe, SafeSlot};
 // THE HOST SERVICES, PLUGIN SIDE: the one home of every safe host-service wrapper.
 pub mod services;

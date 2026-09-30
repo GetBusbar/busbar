@@ -31,6 +31,7 @@ use std::ptr;
 use std::str::Utf8Error;
 
 use crate::abi::mechanism::call::{AbiStr, Blob, Field, Span};
+use crate::abi::sdk::out::Scalar;
 
 /// A borrow of data the HOST lent the current call. Only the SDK makes one (the trampoline, from
 /// its copy of the host's `in`, and the accessors below, from what that `in` points to), so every
@@ -256,7 +257,11 @@ impl<'a, T: Copy> HostBuf<'a, T> {
             (self.asked, 0)
         }
     }
+}
 
+/// Writing a host buffer: only pointer-free values ([`Scalar`]) go in by the plugin's hand, so no
+/// value in a host buffer points at memory the plugin may free.
+impl<T: Scalar> HostBuf<'_, T> {
     /// Write `v` at the next index while there is room; count it either way. Answers its index.
     pub fn push(&mut self, v: T) -> usize {
         let at = self.asked;
@@ -291,6 +296,54 @@ impl<'a, T: Copy> HostBuf<'a, T> {
     }
 }
 
+/// A signal value with no pointer in it: what a plugin writes into a host signal buffer by hand.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SignalScalar {
+    /// [`SIGNAL_TAG_U64`](crate::abi::hook::SIGNAL_TAG_U64).
+    U64(u64),
+    /// [`SIGNAL_TAG_I64`](crate::abi::hook::SIGNAL_TAG_I64).
+    I64(i64),
+    /// [`SIGNAL_TAG_F64`](crate::abi::hook::SIGNAL_TAG_F64).
+    F64(f64),
+    /// [`SIGNAL_TAG_BOOL`](crate::abi::hook::SIGNAL_TAG_BOOL).
+    Bool(bool),
+}
+
+impl HostBuf<'_, crate::abi::hook::SignalEntry> {
+    /// Write the signal `id` = `value` at the next index while there is room; count it either way.
+    /// Answers its index. (A string signal's value would point into memory; it is not written by
+    /// hand.)
+    pub fn push_signal(&mut self, id: u32, value: SignalScalar) -> usize {
+        use crate::abi::hook::{
+            SignalEntry, SignalValue, SIGNAL_TAG_BOOL, SIGNAL_TAG_F64, SIGNAL_TAG_I64,
+            SIGNAL_TAG_U64,
+        };
+        let (tag, value) = match value {
+            SignalScalar::U64(v) => (SIGNAL_TAG_U64, SignalValue { u64_: v }),
+            SignalScalar::I64(v) => (SIGNAL_TAG_I64, SignalValue { i64_: v }),
+            SignalScalar::F64(v) => (SIGNAL_TAG_F64, SignalValue { f64_: v }),
+            SignalScalar::Bool(v) => (
+                SIGNAL_TAG_BOOL,
+                SignalValue {
+                    boolean: u8::from(v),
+                },
+            ),
+        };
+        let at = self.asked;
+        if at < self.cap {
+            // SAFETY: `at < cap`, and the host lent `cap` writable entries at `ptr` (`new`); the
+            // entry holds no pointer (its tag names a number).
+            unsafe {
+                self.ptr
+                    .add(at)
+                    .write_unaligned(SignalEntry { id, tag, value })
+            };
+        }
+        self.asked = self.asked.saturating_add(1);
+        at
+    }
+}
+
 impl HostBuf<'_, u8> {
     /// Copy `bytes` into this ARENA and answer their [`Span`](Span): the
     /// offset they start at and their length.
@@ -305,7 +358,7 @@ impl HostBuf<'_, u8> {
     /// The [`AbiStr`] naming `span` inside this ARENA, for a struct that points into it (a
     /// `project` view). It points at the host's memory; nothing here reads it.
     #[must_use]
-    pub fn str_at(&self, span: Span) -> AbiStr {
+    pub(crate) fn str_at(&self, span: Span) -> AbiStr {
         AbiStr {
             ptr: self.ptr.wrapping_add(span.offset as usize).cast_const(),
             len: span.len as usize,
@@ -316,7 +369,7 @@ impl HostBuf<'_, u8> {
 impl<T> HostBuf<'_, T> {
     /// The buffer's host address, for a struct that points at it (a `project` view's signals).
     #[must_use]
-    pub const fn as_ptr(&self) -> *mut T {
+    pub(crate) const fn as_ptr(&self) -> *mut T {
         self.ptr
     }
 }

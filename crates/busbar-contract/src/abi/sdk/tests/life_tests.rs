@@ -20,6 +20,7 @@ use crate::abi::mechanism::lifecycle::{
 };
 use crate::abi::mechanism::ticket::{HostCtx, Ticket};
 use crate::abi::sdk::lent::Lent;
+use crate::abi::sdk::out::Out;
 use crate::abi::sdk::safe::{Instance, SafeSlot};
 use crate::abi::secret::{ResolveIn, ResolveOut};
 
@@ -76,14 +77,15 @@ impl SafeSlot for Resolve {
     type In = ResolveIn;
     type Out = ResolveOut;
     type State = Held<Echo>;
-    fn call(i: Instance<'_, Held<Echo>>, _: Lent<'_, ResolveIn>, out: &mut ResolveOut) -> Outcome {
+    fn call(
+        i: Instance<'_, Held<Echo>>,
+        _: Lent<'_, ResolveIn>,
+        mut out: Out<'_, ResolveOut>,
+    ) -> Outcome {
         let Some(h) = i.get() else {
             return Outcome::Fault;
         };
-        let blob = h
-            .leases()
-            .secret_blob(&mut out.head, h.life().0.clone(), BLOB_OCTETS);
-        out.secret = blob;
+        out.lease_secret(|o| &o.secret, h.leases(), h.life().0.clone(), BLOB_OCTETS);
         Outcome::Ready
     }
 }
@@ -359,4 +361,28 @@ fn leases_are_instance_state() {
     assert_eq!(l.blob(&mut h, Vec::new(), BLOB_OCTETS).fmt, BLOB_ABSENT);
     assert_eq!(h.lease, 0, "nothing leased for nothing");
     assert_eq!(l.held(), 0);
+}
+
+#[test]
+fn a_kept_answer_is_dropped_at_its_release_and_only_then() {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::Arc;
+    struct Storage(Arc<AtomicUsize>, #[allow(dead_code)] Vec<Box<[u8]>>);
+    impl Drop for Storage {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let drops = Arc::new(AtomicUsize::new(0));
+    let leases = Leases::default();
+    let mut head = out_head::<OutHead>();
+    let lease = leases.keep(
+        &mut head,
+        Storage(drops.clone(), vec![b"a".to_vec().into()]),
+    );
+    assert_eq!(head.lease, lease);
+    assert_eq!(drops.load(Ordering::SeqCst), 0, "held until release");
+    assert_eq!(leases.release(lease), Outcome::Ready);
+    assert_eq!(drops.load(Ordering::SeqCst), 1, "dropped at release");
+    assert_eq!(leases.release(lease), Outcome::Refused);
 }

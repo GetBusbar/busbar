@@ -21,7 +21,7 @@ use std::mem::size_of;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use busbar_contract::abi::hook::{signal, SignalEntry, SignalValue, SIGNAL_TAG_U64};
+use busbar_contract::abi::hook::signal;
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
 use busbar_contract::abi::mechanism::lifecycle::{
@@ -38,7 +38,7 @@ use busbar_contract::abi::plane::{
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::publish::{AdminRouteSpec, ClaimSpec, SnapshotSpec};
-use busbar_contract::abi::sdk::{Generations, Instance, Lent, Safe, SafeSlot};
+use busbar_contract::abi::sdk::{Generations, Instance, Lent, Out, Safe, SafeSlot, SignalScalar};
 
 /// An absent string.
 const NONE: AbiStr = AbiStr {
@@ -130,35 +130,38 @@ struct Plane {
 }
 
 impl Plane {
-    /// A snapshot of `generation`, held by the SDK until its `retire`; a refreshed one adds the
+    /// The snapshot of a generation, held by the SDK until its `retire`; a refreshed one adds the
     /// admin route.
-    fn publish(&self, generation: u64, refreshed: bool) -> *const PlaneSnapshot {
-        let spec = SnapshotSpec {
+    fn spec(refreshed: bool) -> SnapshotSpec {
+        SnapshotSpec {
             claims: claims(),
             admin_routes: if refreshed { routes() } else { Vec::new() },
             ..SnapshotSpec::default()
-        };
-        self.snapshots.publish(generation, &spec)
+        }
     }
 }
 
 /// One slot body on the SDK's safe surface: `$name` reads `$in` and writes `$out` over the
 /// instance's [`Plane`].
 macro_rules! slot {
-    ($name:ident, $in:ty, $out:ty, |$inst:pat_param, $input:pat_param, $o:pat_param| $body:block) => {
+    ($name:ident, $in:ty, $out:ty, |$inst:pat_param, $input:pat_param, $o:ident| $body:block) => {
         struct $name;
         impl SafeSlot for $name {
             type In = $in;
             type Out = $out;
             type State = Plane;
-            fn call($inst: Instance<'_, Plane>, $input: Lent<'_, $in>, $o: &mut $out) -> Outcome {
+            fn call(
+                $inst: Instance<'_, Plane>,
+                $input: Lent<'_, $in>,
+                #[allow(unused_mut)] mut $o: Out<'_, $out>,
+            ) -> Outcome {
                 $body
             }
         }
     };
 }
 
-slot!(Validate, ValidateIn, OutHead, |_, input, _| {
+slot!(Validate, ValidateIn, OutHead, |_, input, _out| {
     if input.field(|i| &i.settings).bytes() == BAD_SETTINGS {
         Outcome::Refused
     } else {
@@ -171,7 +174,12 @@ slot!(Open, PlaneOpenIn, PlaneOpenOut, |instance, input, out| {
         snapshots: Generations::new(),
         ready: AtomicU64::new(0),
     };
-    out.snapshot = p.publish(input.open.generation, false);
+    out.publish(
+        |o| &o.snapshot,
+        &p.snapshots,
+        input.open.generation,
+        &Plane::spec(false),
+    );
     instance.open(p);
     Outcome::Ready
 });
@@ -184,12 +192,17 @@ slot!(
         let Some(p) = instance.get() else {
             return Outcome::Failed;
         };
-        out.snapshot = p.publish(input.generation, true);
+        out.publish(
+            |o| &o.snapshot,
+            &p.snapshots,
+            input.generation,
+            &Plane::spec(true),
+        );
         Outcome::Ready
     }
 );
 
-slot!(Retire, GenIn, OutHead, |instance, input, _| {
+slot!(Retire, GenIn, OutHead, |instance, input, _out| {
     if let Some(p) = instance.get() {
         p.snapshots.retire(input.generation);
     }
@@ -197,7 +210,7 @@ slot!(Retire, GenIn, OutHead, |instance, input, _| {
 });
 
 slot!(Tick, TickIn, TickOut, |_, input, out| {
-    out.next_tick_ns = input.now_ns + 1_000_000;
+    out.set(|o| &o.next_tick_ns, input.now_ns + 1_000_000);
     Outcome::Ready
 });
 
@@ -216,24 +229,24 @@ slot!(
         let mut sessions = input.sessions_buf();
         sessions.push(ready);
         if !sessions.fits() {
-            out.sessions_needed = sessions.needed() as u32;
+            out.set(|o| &o.sessions_needed, sessions.needed() as u32);
             return Outcome::Failed;
         }
-        out.sessions_written = sessions.written() as u32;
+        out.set(|o| &o.sessions_written, sessions.written() as u32);
         p.ready.store(0, Ordering::Release);
         Outcome::Ready
     }
 );
 
 slot!(Cancel, CancelIn, CancelOut, |_, _, out| {
-    out.disposition = CANCEL_ABORTED;
+    out.set(|o| &o.disposition, CANCEL_ABORTED);
     Outcome::Ready
 });
 
-slot!(Release, ReleaseIn, OutHead, |_, _, _| { Outcome::Ready });
+slot!(Release, ReleaseIn, OutHead, |_, _, _out| { Outcome::Ready });
 
 // `close` answering READY: the SDK drops the instance's `Plane`.
-slot!(Close, InHead, OutHead, |_, _, _| { Outcome::Ready });
+slot!(Close, InHead, OutHead, |_, _, _out| { Outcome::Ready });
 
 slot!(Arrive, ArriveIn, ArriveOut, |_, input, out| {
     let mut units = input.units_buf();
@@ -243,13 +256,13 @@ slot!(Arrive, ArriveIn, ArriveOut, |_, input, out| {
         amount: input.body.len as u64,
     });
     if !units.fits() {
-        out.units_needed = units.needed() as u32;
+        out.set(|o| &o.units_needed, units.needed() as u32);
         return Outcome::Failed;
     }
-    out.units_written = units.written() as u32;
-    out.op_class = 0;
-    out.dialect = 0;
-    out.principal_need = PRINCIPAL_NONE;
+    out.set(|o| &o.units_written, units.written() as u32);
+    out.set(|o| &o.op_class, 0);
+    out.set(|o| &o.dialect, 0);
+    out.set(|o| &o.principal_need, PRINCIPAL_NONE);
     Outcome::Ready
 });
 
@@ -262,18 +275,19 @@ slot!(OnPiece, OnPieceIn, OnPieceOut, |instance, input, out| {
         (FROM_KERNEL, 1..) => {
             let (verb, target) = (arena.span(b"POST"), arena.span(b"/up"));
             if !arena.fits() {
-                out.arena_needed = arena.needed() as u64;
+                out.set(|o| &o.arena_needed, arena.needed() as u64);
                 return Outcome::Failed;
             }
-            (out.verb, out.target) = (verb, target);
-            out.arena_written = arena.written() as u64;
+            out.set(|o| &o.verb, verb);
+            out.set(|o| &o.target, target);
+            out.set(|o| &o.arena_written, arena.written() as u64);
             let member = input.field(|i| &i.member).bytes();
-            out.emitted = reply.stream(member) as u64;
-            out.flags = EMIT_TO_FAR_END;
+            out.set(|o| &o.emitted, reply.stream(member) as u64);
+            out.set(|o| &o.flags, EMIT_TO_FAR_END);
         }
         // A session's unsolicited output, after `drive` named it.
         (FROM_KERNEL, 0) => {
-            out.emitted = reply.stream(b"ping") as u64;
+            out.set(|o| &o.emitted, reply.stream(b"ping") as u64);
         }
         // The caller's piece opens a session with output to come.
         (FROM_CALLER, _) => {
@@ -307,21 +321,25 @@ slot!(OnPiece, OnPieceIn, OnPieceOut, |instance, input, out| {
             let (rw, rnd) = records.settle(short);
             let (uw, und) = units.settle(short);
             let (aw, and) = arena.settle(short);
-            (out.fields_written, out.fields_needed) = (fw as u32, fnd as u32);
-            (out.records_written, out.records_needed) = (rw as u32, rnd as u32);
-            (out.units_written, out.units_needed) = (uw as u32, und as u32);
-            (out.arena_written, out.arena_needed) = (aw as u64, and as u64);
+            out.set(|o| &o.fields_written, fw as u32);
+            out.set(|o| &o.fields_needed, fnd as u32);
+            out.set(|o| &o.records_written, rw as u32);
+            out.set(|o| &o.records_needed, rnd as u32);
+            out.set(|o| &o.units_written, uw as u32);
+            out.set(|o| &o.units_needed, und as u32);
+            out.set(|o| &o.arena_written, aw as u64);
+            out.set(|o| &o.arena_needed, and as u64);
             if short {
                 return Outcome::Failed;
             }
             let n = reply.stream(piece);
-            out.emitted = n as u64;
-            out.reply_status = 200;
-            out.verdict = VERDICT_OK;
+            out.set(|o| &o.emitted, n as u64);
+            out.set(|o| &o.reply_status, 200);
+            out.set(|o| &o.verdict, VERDICT_OK);
             if n < piece.len() {
-                out.more = 1;
+                out.set(|o| &o.more, 1);
             } else if input.flags & PIECE_LAST != 0 {
-                out.flags = EMIT_DONE;
+                out.set(|o| &o.flags, EMIT_DONE);
             }
         }
         _ => return Outcome::Refused,
@@ -341,14 +359,17 @@ slot!(Refusal, RefusalIn, RefusalOut, |_, input, out| {
     let (rw, rnd) = reply.settle(short);
     let (fw, fnd) = fields.settle(short);
     let (aw, and) = arena.settle(short);
-    (out.reply_written, out.reply_needed) = (rw as u64, rnd as u64);
-    (out.fields_written, out.fields_needed) = (fw as u32, fnd as u32);
-    (out.arena_written, out.arena_needed) = (aw as u64, and as u64);
+    out.set(|o| &o.reply_written, rw as u64);
+    out.set(|o| &o.reply_needed, rnd as u64);
+    out.set(|o| &o.fields_written, fw as u32);
+    out.set(|o| &o.fields_needed, fnd as u32);
+    out.set(|o| &o.arena_written, aw as u64);
+    out.set(|o| &o.arena_needed, and as u64);
     if short {
         return Outcome::Failed;
     }
     if input.cause == REFUSAL_GATE {
-        out.marker = MARK_GATE_REJECTED;
+        out.set(|o| &o.marker, MARK_GATE_REJECTED);
     }
     Outcome::Ready
 });
@@ -357,41 +378,39 @@ slot!(Serve, ServeIn, ServeOut, |_, input, out| {
     let mut reply = input.reply_buf();
     reply.extend(b"ok");
     if !reply.fits() {
-        out.reply_needed = reply.needed() as u64;
+        out.set(|o| &o.reply_needed, reply.needed() as u64);
         return Outcome::Failed;
     }
-    out.reply_written = reply.written() as u64;
-    out.status = 200;
+    out.set(|o| &o.reply_written, reply.written() as u64);
+    out.set(|o| &o.status, 200);
     Outcome::Ready
 });
 
-slot!(Hydrate, GenIn, OutHead, |_, _, _| { Outcome::Ready });
+slot!(Hydrate, GenIn, OutHead, |_, _, _out| { Outcome::Ready });
 
-slot!(Start, GenIn, OutHead, |_, _, _| { Outcome::Ready });
+slot!(Start, GenIn, OutHead, |_, _, _out| { Outcome::Ready });
 
 slot!(Project, ProjectIn, ProjectOut, |_, input, out| {
     let body = input.field(|i| &i.body).bytes();
     let (mut signals, mut arena) = (input.signals_buf(), input.arena_buf());
     let (pool, projected) = (arena.span(b"door"), arena.span(body));
-    signals.push(SignalEntry {
-        id: signal::REQUEST_TOTAL_CHARS,
-        tag: SIGNAL_TAG_U64,
-        value: SignalValue {
-            u64_: body.len() as u64,
-        },
-    });
+    signals.push_signal(
+        signal::REQUEST_TOTAL_CHARS,
+        SignalScalar::U64(body.len() as u64),
+    );
     let short = !(signals.fits() && arena.fits());
     let (sw, snd) = signals.settle(short);
     let (aw, and) = arena.settle(short);
-    out.signals_needed = snd as u32;
-    (out.arena_written, out.arena_needed) = (aw as u64, and as u64);
+    out.set(|o| &o.signals_needed, snd as u32);
+    out.set(|o| &o.arena_written, aw as u64);
+    out.set(|o| &o.arena_needed, and as u64);
     if short {
         return Outcome::Failed;
     }
-    out.body = projected;
-    out.view.signals = signals.as_ptr();
-    out.view.signals_len = sw;
-    out.view.pool = arena.str_at(pool);
+    out.set(|o| &o.body, projected);
+    out.host_list(|o| &o.view.signals, |o| &o.view.signals_len, &signals);
+    debug_assert_eq!(out.get().view.signals_len, sw);
+    out.host_str(|o| &o.view.pool, &arena, pool);
     Outcome::Ready
 });
 

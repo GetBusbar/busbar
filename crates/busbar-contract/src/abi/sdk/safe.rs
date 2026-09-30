@@ -34,6 +34,7 @@ use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::lifecycle::{slot, OpenOut};
 use crate::abi::sdk::door::{AbiIn, AbiOut, Entry};
 use crate::abi::sdk::lent::Lent;
+use crate::abi::sdk::out::Out;
 
 /// The box an instance pointer points to: the state behind its type's `TypeId`, at offset `0`
 /// whatever `T` is (`#[repr(C)]`), so any slot can read the tag before it trusts the type.
@@ -107,11 +108,13 @@ pub trait SafeSlot {
     /// The plugin's instance state: one type for every slot of the plugin.
     type State: Send + Sync + 'static;
     /// The body. `input` is the host's `in`, lent for the call; `out` a private copy of the
-    /// host's `out`, written back when the body returns (the trampoline's rules, `abi::sdk::door`).
+    /// host's `out`, written back when the body returns (the trampoline's rules, `abi::sdk::door`),
+    /// handed as an [`Out`]: scalars set directly, every pointer through an SDK writer
+    /// (`abi::sdk::out`).
     fn call(
         instance: Instance<'_, Self::State>,
         input: Lent<'_, Self::In>,
-        out: &mut Self::Out,
+        out: Out<'_, Self::Out>,
     ) -> Outcome;
 }
 
@@ -121,12 +124,12 @@ pub trait SafeSlot {
 /// ```
 /// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
 /// use busbar_contract::abi::mechanism::lifecycle::*;
-/// use busbar_contract::abi::sdk::{Instance, Lent, Safe, SafeSlot};
+/// use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
 /// struct State(u64);
 /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
 /// #     struct $n;
 /// #     impl SafeSlot for $n { type In = $i; type Out = $o; type State = State;
-/// #         fn call(_: Instance<'_, State>, _: Lent<'_, $i>, _: &mut $o) -> Outcome {
+/// #         fn call(_: Instance<'_, State>, _: Lent<'_, $i>, _: Out<'_, $o>) -> Outcome {
 /// #             Outcome::Ready } }
 /// # } }
 /// # ready!(V, ValidateIn, OutHead); ready!(Rf, RefreshIn, OutHead); ready!(Rt, GenIn, OutHead);
@@ -137,7 +140,7 @@ pub trait SafeSlot {
 ///     type In = OpenIn;
 ///     type Out = OpenOut;
 ///     type State = State;
-///     fn call(i: Instance<'_, State>, input: Lent<'_, OpenIn>, _: &mut OpenOut) -> Outcome {
+///     fn call(i: Instance<'_, State>, input: Lent<'_, OpenIn>, _: Out<'_, OpenOut>) -> Outcome {
 ///         i.open(State(input.field(|x| &x.settings).bytes().len() as u64));
 ///         Outcome::Ready
 ///     }
@@ -147,8 +150,8 @@ pub trait SafeSlot {
 ///     type In = TickIn;
 ///     type Out = TickOut;
 ///     type State = State;
-///     fn call(i: Instance<'_, State>, _: Lent<'_, TickIn>, out: &mut TickOut) -> Outcome {
-///         out.next_tick_ns = i.get().map_or(0, |s| s.0);
+///     fn call(i: Instance<'_, State>, _: Lent<'_, TickIn>, mut out: Out<'_, TickOut>) -> Outcome {
+///         out.set(|o| &o.next_tick_ns, i.get().map_or(0, |s| s.0));
 ///         Outcome::Ready
 ///     }
 /// }
@@ -165,7 +168,7 @@ pub trait SafeSlot {
 /// #     type In = busbar_contract::abi::secret::ResolveIn;
 /// #     type Out = busbar_contract::abi::secret::ResolveOut;
 /// #     type State = State;
-/// #     fn call(_: Instance<'_, State>, _: Lent<'_, Self::In>, _: &mut Self::Out) -> Outcome {
+/// #     fn call(_: Instance<'_, State>, _: Lent<'_, Self::In>, _: Out<'_, Self::Out>) -> Outcome {
 /// #         Outcome::Ready } }
 /// # fn main() { let _ = door(); }
 /// ```
@@ -177,12 +180,12 @@ pub trait SafeSlot {
 /// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
 /// use busbar_contract::abi::mechanism::lifecycle::*;
 /// use busbar_contract::abi::sdk::door::Slot;
-/// use busbar_contract::abi::sdk::{Instance, Lent, Safe, SafeSlot};
+/// use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
 /// # use std::ffi::c_void;
 /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
 /// #     struct $n;
 /// #     impl Slot for $n { type In = $i; type Out = $o;
-/// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+/// #         fn call(_: *mut c_void, _: &$i, _: Out<'_, $o>) -> Outcome { Outcome::Ready } }
 /// # } }
 /// # ready!(V, ValidateIn, OutHead); ready!(Rf, RefreshIn, OutHead); ready!(Rt, GenIn, OutHead);
 /// # ready!(Dr, DriveIn, OutHead); ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead);
@@ -194,7 +197,7 @@ pub trait SafeSlot {
 ///     type In = TickIn;
 ///     type Out = TickOut;
 ///     type State = u64;
-///     fn call(i: Instance<'_, u64>, _: Lent<'_, TickIn>, _: &mut TickOut) -> Outcome {
+///     fn call(i: Instance<'_, u64>, _: Lent<'_, TickIn>, _: Out<'_, TickOut>) -> Outcome {
 ///         let _ = i.get();
 ///         Outcome::Ready
 ///     }
@@ -226,7 +229,7 @@ impl<S: SafeSlot> Entry for Safe<S> {
         };
         // SAFETY: `input` is the trampoline's copy of the host's `in`, whose every pointer is
         // valid for the call (`Entry::enter`'s contract), and it lives until this returns.
-        let answered = S::call(handle, unsafe { Lent::new(input) }, out);
+        let answered = S::call(handle, unsafe { Lent::new(input) }, Out::new(&mut *out));
         match index {
             slot::OPEN => {
                 // Every kind's `open` `out` leads with the lifecycle's `OpenOut` (`KindOps`).

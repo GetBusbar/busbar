@@ -38,13 +38,13 @@
 //!     kind_ops: { resolve: busbar_contract::abi::sdk::Safe<Resolve> },
 //! }
 //! # use busbar_contract::abi::mechanism::call::Outcome;
-//! # use busbar_contract::abi::sdk::{life::Held, Instance, Lent, SafeSlot};
+//! # use busbar_contract::abi::sdk::{life::Held, Instance, Lent, Out, SafeSlot};
 //! # struct Resolve;
 //! # impl SafeSlot for Resolve {
 //! #     type In = busbar_contract::abi::secret::ResolveIn;
 //! #     type Out = busbar_contract::abi::secret::ResolveOut;
 //! #     type State = Held<Echo>;
-//! #     fn call(_: Instance<'_, Held<Echo>>, _: Lent<'_, Self::In>, _: &mut Self::Out) -> Outcome {
+//! #     fn call(_: Instance<'_, Held<Echo>>, _: Lent<'_, Self::In>, _: Out<'_, Self::Out>) -> Outcome {
 //! #         Outcome::Ready } }
 //! # fn main() { let _ = door(); }
 //! ```
@@ -65,6 +65,7 @@ use crate::abi::mechanism::lifecycle::{
     ValidateIn,
 };
 use crate::abi::sdk::lent::{Lent, LentList};
+use crate::abi::sdk::out::Out;
 use crate::abi::sdk::safe::{Instance, SafeSlot};
 
 // ── the failure text ────────────────────────────────────────────────────────────────────────
@@ -171,6 +172,7 @@ pub fn settings_object(
 enum Lease {
     Bytes(#[allow(dead_code)] Box<[u8]>),
     Secret(#[allow(dead_code)] Zeroizing<Vec<u8>>),
+    Kept(#[allow(dead_code)] Box<dyn std::any::Any + Send + Sync>),
 }
 
 /// The answers an instance handed the host, each held under its lease until `release`.
@@ -235,6 +237,14 @@ impl Leases {
         // The Vec's heap buffer does not move when the map takes the Vec.
         self.hold(head, Lease::Secret(held));
         blob
+    }
+
+    /// Hold `owned` — an answer's storage of any shape (several buffers, the arrays naming them) —
+    /// under a new lease named in `head.lease`, until `release`. The caller names memory INSIDE
+    /// `owned` in its `out`: heap contents do not move when `owned` moves here. Its `Drop` runs at
+    /// release (zeroize there what is secret).
+    pub fn keep<T: Send + Sync + 'static>(&self, head: &mut OutHead, owned: T) -> u64 {
+        self.hold(head, Lease::Kept(Box::new(owned)))
     }
 
     /// Release `lease`: READY when it was held, REFUSED when it was not (a host bug).
@@ -389,7 +399,7 @@ fn secrets<'a>(list: LentList<'a, Blob>) -> Vec<&'a [u8]> {
 // ── the nine slots ──────────────────────────────────────────────────────────────────────────
 
 macro_rules! life_slot {
-    ($(#[$doc:meta])* $name:ident($in:ty => $out:ty) |$inst:pat_param, $input:pat_param, $o:pat_param| $body:block) => {
+    ($(#[$doc:meta])* $name:ident($in:ty => $out:ty) |$inst:pat_param, $input:pat_param, $o:ident| $body:block) => {
         $(#[$doc])*
         #[derive(Debug)]
         pub struct $name<L>(PhantomData<L>);
@@ -397,7 +407,11 @@ macro_rules! life_slot {
             type In = $in;
             type Out = $out;
             type State = Held<L>;
-            fn call($inst: Instance<'_, Held<L>>, $input: Lent<'_, $in>, $o: &mut $out) -> Outcome {
+            fn call(
+                $inst: Instance<'_, Held<L>>,
+                $input: Lent<'_, $in>,
+                #[allow(unused_mut)] mut $o: Out<'_, $out>,
+            ) -> Outcome {
                 $body
             }
         }
@@ -409,7 +423,7 @@ life_slot!(
     Validate(ValidateIn => OutHead) |_, input, out| {
         match L::validate(input.field(|i| &i.settings).bytes()) {
             Ok(()) => Outcome::Ready,
-            Err(r) => fail(out, r),
+            Err(r) => out.fail(r),
         }
     }
 );
@@ -423,7 +437,7 @@ life_slot!(
                 instance.open(Held::new(life));
                 Outcome::Ready
             }
-            Err(r) => fail(&mut out.head, r),
+            Err(r) => out.fail(r),
         }
     }
 );
@@ -443,19 +457,20 @@ life_slot!(
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 *held = entry(Some(c));
-                out.envelope.metrics = std::ptr::from_ref(&*held);
-                out.envelope.metrics_len = 1;
+                let o = out.raw();
+                o.envelope.metrics = std::ptr::from_ref(&*held);
+                o.envelope.metrics_len = 1;
                 Outcome::Ready
             }
             Ok(Refreshed { counted: None }) => Outcome::Ready,
-            Err(r) => fail(out, r),
+            Err(r) => out.fail(r),
         }
     }
 );
 
 life_slot!(
     /// `retire`: [`Life::retire`].
-    Retire(GenIn => OutHead) |instance, input, _| {
+    Retire(GenIn => OutHead) |instance, input, _out| {
         if let Some(h) = instance.get() {
             h.life.retire(input.generation);
         }
@@ -466,27 +481,28 @@ life_slot!(
 life_slot!(
     /// `tick`: [`Life::tick`].
     Tick(TickIn => TickOut) |instance, input, out| {
-        out.next_tick_ns = instance.get().map_or(0, |h| h.life.tick(input.now_ns));
+        let next = instance.get().map_or(0, |h| h.life.tick(input.now_ns));
+        out.set(|o| &o.next_tick_ns, next);
         Outcome::Ready
     }
 );
 
 life_slot!(
     /// `drive`: [`Life::DRIVE`].
-    Drive(DriveIn => OutHead) |_, _, _| { L::DRIVE }
+    Drive(DriveIn => OutHead) |_, _, _out| { L::DRIVE }
 );
 
 life_slot!(
     /// `cancel`: nothing pends, so [`Life::CANCEL`].
     Cancel(CancelIn => CancelOut) |_, _, out| {
-        out.disposition = L::CANCEL;
+        out.set(|o| &o.disposition, L::CANCEL);
         Outcome::Ready
     }
 );
 
 life_slot!(
     /// `release`: the lease's bytes go (zeroized when secret); an unknown lease is REFUSED.
-    Release(ReleaseIn => OutHead) |instance, input, _| {
+    Release(ReleaseIn => OutHead) |instance, input, _out| {
         instance
             .get()
             .map_or(Outcome::Refused, |h| h.leases.release(input.lease))
@@ -495,7 +511,7 @@ life_slot!(
 
 life_slot!(
     /// `close`: READY; the SDK drops the state (every lease with it).
-    Close(InHead => OutHead) |_, _, _| { Outcome::Ready }
+    Close(InHead => OutHead) |_, _, _out| { Outcome::Ready }
 );
 
 #[cfg(test)]
