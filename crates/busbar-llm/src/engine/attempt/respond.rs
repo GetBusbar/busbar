@@ -241,7 +241,7 @@ async fn deliver_stream(
         crate::engine::xchg::reply::relay::parts(&crate::engine::xchg::reply::relay::RelayCtx {
             ingress: hop.ingress_protocol,
             egress: hop.egress_name,
-            far_streams: is_sse,
+            far_is_stream: is_sse,
             json_array: hop.gemini_json_array,
             client_include_usage: hop.client_include_usage,
             request: ingress_request_body.as_ref(),

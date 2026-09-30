@@ -229,7 +229,7 @@ impl Reply {
             };
         }
         let far_ct = wire::head_value(head, "content-type");
-        let far_streams = far_ct
+        let far_is_stream = far_ct
             .and_then(wire::head_text)
             .is_some_and(wire::is_stream_content_type);
         let ingress = ctx.arrived.dialect;
@@ -242,7 +242,7 @@ impl Reply {
                 },
             };
         };
-        if relay::takes_whole(ingress, egress, far_streams, ctx.intent.wants_stream) {
+        if relay::takes_whole(ingress, egress, far_is_stream, ctx.intent.wants_stream) {
             return Reply {
                 state: State::Whole {
                     status,
@@ -251,7 +251,7 @@ impl Reply {
             };
         }
         let mut fields = Vec::new();
-        match relay::content_type(ingress, egress, far_streams, json_array(ctx)) {
+        match relay::content_type(ingress, egress, far_is_stream, json_array(ctx)) {
             relay::ContentType::Json => fields.push((
                 "content-type".to_string(),
                 busbar_contract::protocol::APPLICATION_JSON
@@ -271,7 +271,7 @@ impl Reply {
         let relay = relay::Relay::new(relay::RelayCtx {
             ingress,
             egress,
-            far_streams,
+            far_is_stream,
             json_array: json_array(ctx),
             client_include_usage: ctx.intent.client_include_usage,
             request: ctx.arrived.parsed.as_ref(),

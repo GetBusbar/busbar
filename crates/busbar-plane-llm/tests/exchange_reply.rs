@@ -372,11 +372,11 @@ fn chat_handler(dialect: &str) -> &'static dyn busbar_contract::codec::Operation
         .expect("every dialect serves chat")
 }
 
-fn relay_ctx<'a>(ingress: &'a str, egress: &'a str, far_streams: bool) -> RelayCtx<'a> {
+fn relay_ctx<'a>(ingress: &'a str, egress: &'a str, far_is_stream: bool) -> RelayCtx<'a> {
     RelayCtx {
         ingress,
         egress,
-        far_streams,
+        far_is_stream,
         json_array: false,
         client_include_usage: false,
         request: None,

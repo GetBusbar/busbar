@@ -596,7 +596,7 @@ fn native_stream(dialect: &'static str) -> (Vec<u8>, &'static str) {
         crate::engine::xchg::reply::relay::RelayCtx {
             ingress: dialect,
             egress: "openai",
-            far_streams: true,
+            far_is_stream: true,
             json_array: false,
             client_include_usage: true,
             request: None,

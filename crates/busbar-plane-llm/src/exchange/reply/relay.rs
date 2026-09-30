@@ -48,13 +48,13 @@ pub fn takes_whole(ingress: &str, egress: &str, far_is_stream: bool, wants_strea
 pub fn content_type(
     ingress: &str,
     egress: &str,
-    far_streams: bool,
+    far_is_stream: bool,
     json_array: bool,
 ) -> ContentType {
-    if json_array && far_streams {
+    if json_array && far_is_stream {
         return ContentType::Json;
     }
-    match (ingress != egress && far_streams)
+    match (ingress != egress && far_is_stream)
         .then(|| wire::ingress_stream_content_type(ingress))
         .flatten()
     {
@@ -108,7 +108,7 @@ pub struct Cut {
 pub struct Relay {
     ingress: &'static str,
     ingress_eventstream: bool,
-    far_streams: bool,
+    far_is_stream: bool,
     handler: &'static dyn OperationHandler,
     meter: bool,
     translate: Option<Box<dyn StreamTranslator>>,
@@ -125,7 +125,7 @@ impl std::fmt::Debug for Relay {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Relay")
             .field("ingress", &self.ingress)
-            .field("far_streams", &self.far_streams)
+            .field("far_is_stream", &self.far_is_stream)
             .field("translates", &self.translate.is_some())
             .field("first_byte", &self.first_byte)
             .finish_non_exhaustive()
@@ -140,7 +140,7 @@ pub struct RelayCtx<'a> {
     /// The far end's dialect.
     pub egress: &'a str,
     /// The far end answered a stream.
-    pub far_streams: bool,
+    pub far_is_stream: bool,
     /// The caller asked for its stream as a JSON array.
     pub json_array: bool,
     /// The caller asked for usage in the stream itself.
@@ -168,7 +168,7 @@ pub type Parts = (
 #[must_use]
 pub fn parts(ctx: &RelayCtx<'_>) -> Parts {
     let translate =
-        crate::codec::proto_stream::new_stream_translator(ctx.ingress, ctx.egress, ctx.far_streams)
+        crate::codec::proto_stream::new_stream_translator(ctx.ingress, ctx.egress, ctx.far_is_stream)
             .map(|mut t| {
                 t.set_client_include_usage(ctx.client_include_usage);
                 if let Some(body) = ctx.request {
@@ -176,7 +176,7 @@ pub fn parts(ctx: &RelayCtx<'_>) -> Parts {
                 }
                 t
             });
-    let json_array = (ctx.json_array && ctx.far_streams)
+    let json_array = (ctx.json_array && ctx.far_is_stream)
         .then(|| {
             decl(ctx.ingress)
                 .and_then(|d| d.dialect())
@@ -193,7 +193,7 @@ impl Relay {
         let (translate, json_array) = parts(&ctx);
         Self::from_parts(
             ctx.ingress,
-            ctx.far_streams,
+            ctx.far_is_stream,
             ctx.handler,
             ctx.meter,
             translate,
@@ -205,14 +205,14 @@ impl Relay {
     #[must_use]
     pub fn from_parts(
         ingress: &str,
-        far_streams: bool,
+        far_is_stream: bool,
         handler: &'static dyn OperationHandler,
         meter: bool,
         translate: Option<Box<dyn StreamTranslator>>,
         json_array: Option<Box<dyn ArrayStreamFramer>>,
     ) -> Self {
         let ingress_decl = decl(ingress);
-        let stop_scan = (!far_streams && translate.is_none())
+        let stop_scan = (!far_is_stream && translate.is_none())
             .then(|| {
                 crate::codec::proto_codec::with_reader(ingress, |r| r.stop_reason_key())
                     .flatten()
@@ -225,7 +225,7 @@ impl Relay {
                 .or_else(|| DECLS.iter().find(|d| d.residual_default).map(|d| d.name))
                 .unwrap_or_default(),
             ingress_eventstream: ingress_decl.is_some_and(|d| d.ingress_is_eventstream),
-            far_streams,
+            far_is_stream,
             handler,
             meter,
             translate,
@@ -248,8 +248,8 @@ impl Relay {
 
     /// The far end answered a stream.
     #[must_use]
-    pub fn far_streams(&self) -> bool {
-        self.far_streams
+    pub fn far_is_stream(&self) -> bool {
+        self.far_is_stream
     }
 
     /// A far-end byte has arrived.
@@ -275,7 +275,7 @@ impl Relay {
             scan.feed(chunk);
         }
         let mut truncated_now = false;
-        if !self.far_streams && self.handler.taps_usage() && self.meter {
+        if !self.far_is_stream && self.handler.taps_usage() && self.meter {
             let cap = crate::codec::wire_shim::max_translated_body_bytes();
             self.nonstream_buf.extend_from_slice(chunk);
             if self.nonstream_buf.len() > cap {
@@ -303,7 +303,7 @@ impl Relay {
             .and_then(|t| t.terminal_error())
             .is_some();
         let stream_fault =
-            (self.far_streams && self.first_byte)
+            (self.far_is_stream && self.first_byte)
                 .then_some(())
                 .and(if stream_terminal_error {
                     Some("stream-terminal-error")
@@ -352,7 +352,7 @@ impl Relay {
             } else {
                 t.usage()
             }
-        } else if !self.far_streams && !self.nonstream_buf.is_empty() {
+        } else if !self.far_is_stream && !self.nonstream_buf.is_empty() {
             let buf = std::mem::take(&mut self.nonstream_buf);
             if self.nonstream_buf_truncated {
                 Some(wire::unrecovered_usage(self.ingress, &buf))
@@ -394,7 +394,7 @@ impl Relay {
     /// expired.
     pub fn cut(&mut self, transport: bool) -> Cut {
         let had_first = self.first_byte;
-        if had_first && self.far_streams {
+        if had_first && self.far_is_stream {
             let usage = self.translate.as_ref().and_then(|t| t.usage());
             let bytes = match self.json_array.as_mut() {
                 Some(framer) => framer.finish_with_server_error(wire::MID_STREAM_GENERIC_DETAIL),
@@ -439,7 +439,7 @@ impl Relay {
     pub fn incurred_usage(&self) -> Option<TokenUsage> {
         match self.translate.as_ref() {
             Some(t) => t.usage(),
-            None if self.far_streams || self.nonstream_buf.is_empty() => None,
+            None if self.far_is_stream || self.nonstream_buf.is_empty() => None,
             None if self.upstream_failed => wire::reported_usage(self.ingress, &self.nonstream_buf),
             None => Some(wire::unrecovered_usage(self.ingress, &self.nonstream_buf)),
         }
