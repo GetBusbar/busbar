@@ -839,7 +839,9 @@ busbar-llm = 251
 # LOWERED 283 -> 282 by fold A5: the outbound wire moved to busbar-plane-mcp and reads the
 # contract's JSON-RPC reader, not the kernel's. Downward only.
 busbar-mcp = 282
-busbar-a2a = 233
+# busbar-a2a 233 -> 232 (downward, at the measure): push delivery names the kernel's engine seam once
+# instead of per signature.
+busbar-a2a = 232
 busbar-voice = 88
 
 [rules.ports-only-tests]
