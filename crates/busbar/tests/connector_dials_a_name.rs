@@ -23,7 +23,8 @@ use busbar_core_connector::registry::{Entry, Transports};
 use busbar_core_connector::Connector;
 use busbar_kernel::host_services::{DestRules, KernelServices, Resolve, Resolved};
 use busbar_kernel::net_guard::{Denylist, GuardPolicy};
-use busbar_plugin_loader::dispatch::{kinds::transport::Transport as TransportKind, load_linked};
+
+mod common;
 
 include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
 
@@ -56,9 +57,10 @@ impl Resolve for Table {
 /// The connector serving the linked `tcp` door, its dials judged by the kernel's one judge over
 /// `resolver` (the host default class admitting internal addresses, as a loopback far end needs).
 fn connector(resolver: Arc<dyn Resolve>, wakes: Arc<AtomicU64>) -> Arc<Connector> {
-    let plugin =
-        load_linked::<TransportKind>(::busbar_transport_tcp::linked::door, __busbar_doors::bind())
-            .expect("the linked tcp door loads");
+    let plugin = common::plugins::linked_transport(
+        ::busbar_transport_tcp::linked::door,
+        __busbar_doors::bind(),
+    );
     let door: Arc<dyn FramerDoor> =
         Arc::new(__busbar_doors::Dispatched::open(plugin).expect("the tcp door opens"));
     let view = Transports::new(vec![Entry {
