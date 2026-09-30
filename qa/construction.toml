@@ -373,6 +373,14 @@ abi = ["crates/busbar-contract"]
 # [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"] 55182 -> 55337 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
 
+# ── THE KERNEL CEILING, RE-ARMED BY THE MONEY VIEW'S SCRAPE MEMO (R-KERNEL; OWNER GRANT 2026-09-29 (3))
+
+[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
+file    = "qa/construction.toml"
+from    = 52002
+to      = 52101
+because = "OWNER GRANT 2026-09-29 (3), a kernel line-limit re-arm at the measured value in its own commit: the /metrics scrape reads the kernel money view through a memo (governance::money_view) and reprices a bucket only when its facts, the card generation, the dated history or the corrections moved, so a scrape never drives the pricing path by itself (#43/#71; the export kind, property 4). Measured by cargo xtask gate construction: 51934 before, 52101 after."
+
 # ── THE KERNEL CEILING, RE-ARMED BY FOLD-LLM C3' (the AUDIT step's finish) — EXPIRED AND STRUCK
 #
 # Declared `rules.loc-ceilings.kernel_ceiling` 55163 -> 55182 (ARCHITECT 2026-09-28, R-KERNEL). Its
@@ -1372,7 +1380,9 @@ kernel_crate = "busbar-kernel"
 # ── LOWERED 52187 -> 52002 by FOLD-MCP A4 (the JSON-RPC envelope reader leaves ingress/jsonrpc.rs
 # for busbar_contract::jsonrpc; measured 51929 plus K2g's named 73-line reservation), the
 # measurement, -185. Downward only.
-kernel_ceiling = 52002
+# ── RE-ARMED 52002 -> 52101 for the money view's scrape memo (a scrape reprices only a bucket whose
+# facts moved; #43/#71), declared above. Measured 51934 before, 52101 after.
+kernel_ceiling = 52101
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
