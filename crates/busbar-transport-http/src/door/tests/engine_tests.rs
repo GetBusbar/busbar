@@ -112,7 +112,7 @@ fn an_h2_trailer_block_is_not_body() {
 /// to the body's end (reqwest 0.12 wraps the response body in the same sleep). A response still
 /// streaming at the deadline is cut there, on HTTP/1.1 ...
 #[test]
-fn a_body_still_streaming_at_the_request_timeout_is_cut_h1() {
+fn a_body_still_arriving_at_the_request_timeout_is_cut_h1() {
     let mut f = asked(Proto::H1, 5);
     f.ingest(
         b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n",
@@ -133,7 +133,7 @@ fn a_body_still_streaming_at_the_request_timeout_is_cut_h1() {
 
 /// ... and on HTTP/2, where it ends that stream alone.
 #[test]
-fn a_body_still_streaming_at_the_request_timeout_is_cut_h2() {
+fn a_body_still_arriving_at_the_request_timeout_is_cut_h2() {
     let mut f = asked(Proto::H2, 5);
     let mut far = h2(4, 0, 0, &[]);
     far.extend(h2(1, 0x4, 1, &[0x88]));
