@@ -17,7 +17,7 @@ use self::node_plane::{proto_codec, testkit as plane};
 
 use axum::body::Bytes;
 use axum::http::HeaderMap;
-use busbar_kernel::teller::Ended;
+use busbar_kernel::teller::{Ended, Kernel};
 use busbar_kernel::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 
 /// The one dialect these fixtures speak. Same-protocol openai→openai, so a divergence is about
@@ -881,7 +881,7 @@ fn report_of(output: u64) -> Report {
 /// exactly the recorded 1.5.5 behaviour and exactly what this replaces.
 #[test]
 fn a_unit_prices_at_the_entry_in_force_when_it_arrived_and_not_at_the_head() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let token = kernel.usage_token();
     let history = history_of(&[(0, 1.0), (5_000, 100.0)]);
 
@@ -909,7 +909,7 @@ fn a_unit_prices_at_the_entry_in_force_when_it_arrived_and_not_at_the_head() {
 /// figure to a request that was admitted under the old one.
 #[test]
 fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let token = kernel.usage_token();
     let holder = crate::root::kernel::RootHistory::default();
     holder.apply(
@@ -973,7 +973,7 @@ fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
 /// prove the stopping is real rather than an accident of when the `Arc` was cloned.
 #[test]
 fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let token = kernel.usage_token();
     let head = history_of(&[(0, 1.0), (5_000, 100.0)]);
     let earlier = crate::root::kernel::PinnedHistory::for_test_at(
@@ -1003,7 +1003,7 @@ fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
 /// answer the corrupted number and call it money.
 #[test]
 fn the_cached_price_rides_the_posting_and_is_never_read_back_for_money() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let token = kernel.usage_token();
     let history = history_of(&[(0, 1.0)]);
     let at = Arrived::at(4_000, 7);
@@ -3220,7 +3220,7 @@ fn books_agree(
 /// green above meaningless.
 #[test]
 fn the_second_book_agrees_with_the_invoice_cell_by_cell_and_a_divergence_is_red() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let token = kernel.usage_token();
     let billed = fee_history_of(
         &[
@@ -3371,7 +3371,7 @@ fn cache_silent_history() -> crate::root::kernel::PinnedHistory {
 /// dropped, and no partial figure reaches a book.
 #[test]
 fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let token = kernel.usage_token();
     let history = cache_silent_history();
     let mut report = split_report(1_000, 250, 1);
@@ -3444,7 +3444,7 @@ fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses
 /// arithmetic, past a `u64`. The narrowing used to answer `u64::MAX` — a bill nobody posted.
 #[test]
 fn a_settled_figure_past_the_record_refuses_and_is_never_pinned() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let token = kernel.usage_token();
     let history = history_of(&[(0, 1_000.0)]);
     let (_, priced) = priced_posting(
@@ -3602,7 +3602,7 @@ fn late_post(
     // The book prices its chain against the same history the arm priced the unit against.
     let pinned = history.clone();
     let node = crate::root::durability::node_book_over(Box::new(move || Some(pinned.clone())));
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let (durability, ledger, usage) = (
         kernel.durability_token(),
         kernel.ledger_token(),
