@@ -2273,7 +2273,7 @@ jobs:
           # legacy cold door (deleted at M6) only under `cold-dropped-in`, so this row is what type-checks both
           # on their own and runs the cold one — its BUSBAR_COLD_ENTRY opens the crate's own store
           # and answers a store operation as the store answers it directly (tests/dropped_in_door.rs).
-          # The v3 door's both-ways proof is busbar-plugin-loader's (`store_memory_door` example).
+          # The v3 door's both-ways proof is busbar-plugin-loader's (`store_v3_door` example).
           - name: dropped-in memory store
             features: busbar-store-memory/dropped-in,busbar-store-memory/cold-dropped-in
             tests: -p busbar-store-memory --test dropped_in_door

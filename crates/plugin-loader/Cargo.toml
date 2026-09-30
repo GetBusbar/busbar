@@ -55,8 +55,8 @@ crate-type = ["cdylib"]
 # not a crate: `cargo test` builds it and it never ships (the shipped artifact is the store crate's
 # own `cdylib`, built with its `dropped-in` feature).
 [[example]]
-name = "store_memory_door"
-path = "tests/fixtures/store_memory_door.rs"
+name = "store_v3_door"
+path = "tests/fixtures/store_v3_door.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
@@ -144,7 +144,7 @@ busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-
 # every store operation byte-identically; `store_scope_kind_conformance_tests` requires them to
 # round-trip a plane scope grant identically — a dropped-in store's copy of the scope-kind registry is
 # never populated by the engine's boot registration. `cold-dropped-in`: the cdylib's legacy cold door
-# (deleted at M6). The store v3 door DROPPED IN is the `store_memory_door` example below, not the crate's own
+# (deleted at M6). The store v3 door DROPPED IN is the `store_v3_door` example below, not the crate's own
 # `dropped-in` feature: that exports `busbar_plugin_door` from the rlib too, which this test build's
 # own linked fixtures already define.
 busbar-store-memory = { path = "../store-memory", features = ["cold-dropped-in"] }

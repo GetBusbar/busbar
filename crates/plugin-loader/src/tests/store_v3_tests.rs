@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `LoadedStore`: the build's store (`busbar-store-memory`) loaded through its COMPILED-IN door
+//! `LoadedStore`: the build's store loaded through its COMPILED-IN door
 //! and reached only through the store v3 table, on both surfaces — the synchronous `RecordStore`
 //! bridge and the typed, awaited `StoreCalls`.
 

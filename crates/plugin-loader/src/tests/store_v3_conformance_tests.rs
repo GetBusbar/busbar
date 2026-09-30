@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE STORE CONFORMANCE SUITE (TODO ABI-b4, store): the build's store, `busbar-store-memory`,
+//! THE STORE CONFORMANCE SUITE (TODO ABI-b4, store): the build's store,
 //! reached through the SAME store v3 table two ways, must answer the same script identically:
 //!
 //! * COMPILED IN: its `door` loaded through [`load_linked`] — the door the shipped build holds;
@@ -52,10 +52,10 @@ fn compiled_in() -> LoadedStore {
     LoadedStore::open(p, d, b"{}", 1).expect("it opens")
 }
 
-/// The same door, dropped in (the `store_memory_door` example `cdylib`). `None` only in a scoped,
+/// The same door, dropped in (the `store_v3_door` example `cdylib`). `None` only in a scoped,
 /// non-CI run that did not build it (`both_ways::example_cdylib` refuses to skip under CI).
 fn dropped_in() -> Option<LoadedStore> {
-    let path = crate::both_ways::example_cdylib("store_memory_door")?;
+    let path = crate::both_ways::example_cdylib("store_v3_door")?;
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let facts = ManifestFacts {
         mechanism_version: MECHANISM_VERSION,

@@ -6,7 +6,7 @@
 //! Written BEFORE the store v3 table exists, as the contract its implementer must meet. Every
 //! money-relevant store behaviour has a test here:
 //!
-//! - **Runs today** against the build's store (`busbar-store-memory`) on every door it has — the
+//! - **Runs today** against the build's store on every door it has — the
 //!   LINKED row, the DROPPED-IN cdylib over the C ABI, and the store adapter the root binds — and
 //!   against the adapter's node-local slice shim. These pin what 1.5.5 did and 1.6.0 must keep.
 //! - **The store v3 money slots** (`v3_*`), through the store v3 table on the build's store's
@@ -882,12 +882,12 @@ mod v3 {
         LoadedStore::open(p, d, b"{}", 3).expect("open")
     }
 
-    /// The same door dropped in (the `store_memory_door` example cdylib) through the same table;
+    /// The same door dropped in (the `store_v3_door` example cdylib) through the same table;
     /// `None` in a scoped non-CI run without it.
     pub fn dropped_in() -> Option<LoadedStore> {
         let exe = std::env::current_exe().ok()?;
         let name = format!(
-            "{}store_memory_door{}",
+            "{}store_v3_door{}",
             std::env::consts::DLL_PREFIX,
             std::env::consts::DLL_SUFFIX
         );
