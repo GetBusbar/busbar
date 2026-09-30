@@ -1,3 +1,5 @@
 .venv-control/
 reports/
 node_modules/
+.venv-client/
+.venv-server/
