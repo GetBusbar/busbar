@@ -267,7 +267,9 @@ fn a_refusal_echoing_the_largest_admitted_field_line_fits() {
         "h".repeat(LARGEST_ADMITTED_FIELD_LINE as usize)
     );
     assert!(echoed.len() as u64 > LARGEST_ADMITTED_FIELD_LINE);
-    assert!(MAX_REFUSAL_TEXT >= LARGEST_ADMITTED_FIELD_LINE + 1024);
+    const {
+        assert!(MAX_REFUSAL_TEXT >= LARGEST_ADMITTED_FIELD_LINE + 1024);
+    }
     let mut o: ArriveOut = z();
     o.head.error = AbiStr {
         ptr: echoed.as_ptr(),
