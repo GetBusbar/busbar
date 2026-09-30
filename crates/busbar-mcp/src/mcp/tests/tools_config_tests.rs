@@ -61,9 +61,11 @@ fn every_serialized_pin_token_is_the_declared_trust_key_token() {
         let serialized = serde_yaml::to_value(m).expect("a mechanism serialises");
         let token = serialized.as_str().expect("a mechanism is a string");
         assert!(declared.contains(&token), "`{token}` is not declared");
-        let pin: serde_yaml::Value =
-            serde_yaml::from_str(&format!("pin: {{ mechanism: {token}, key: K }}")).unwrap();
-        let read = busbar_kernel::trust::section::parse_entry("`tools.x`", &pin, super::TRUST_KEYS);
+        let section: serde_yaml::Value =
+            serde_yaml::from_str(&format!("x:\n  pin: {{ mechanism: {token}, key: K }}\n"))
+                .unwrap();
+        let read = validate_plane_section("tools", &section, super::TRUST_KEYS, &plane_sections());
+        // A root takes its material; the no-root spelling refuses it.
         assert_eq!(read.is_ok(), m.is_a_root(), "{token}: {read:?}");
     }
 }
