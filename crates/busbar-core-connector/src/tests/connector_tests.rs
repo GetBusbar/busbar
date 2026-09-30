@@ -253,7 +253,7 @@ fn writes_held_for_a_pending_judgement_are_capped() {
 #[path = "name_dial_tests.rs"]
 mod name_dial;
 
-// ── EGRESS: the declared target (PB-100) ──
+// ── EGRESS: the declared target; metadata and link-local are refused on every need ──
 
 /// A connector serving the byte-exact door, admitting literals (loopback and private included).
 fn literal_connector() -> Connector {
