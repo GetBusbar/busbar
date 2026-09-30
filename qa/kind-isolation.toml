@@ -1817,7 +1817,7 @@ drain = "none: the #36 kernel group is intra-tier by design. What the paired [[c
 # `*_MODULE*` constants (see xtask/src/gates/kind_isolation/matrix/instances.rs); nothing here
 # lists it.
 #
-# ARMED AT TODAY'S MEASURED NUMBER (Law 9, KICKOFF 9.4), exact in both directions: a rise is the
+# ARMED AT TODAY'S MEASURED NUMBER (Law 9, TODO rule 9.4), exact in both directions: a rise is the
 # landing that grew the naming, a fall must bring the row down with it, a zero cell must be struck.
 # The ship twin owes ZERO in every neutral crate (law0-neutral-instance). The drain is Phase 4's.
 

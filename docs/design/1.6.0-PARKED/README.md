@@ -4,7 +4,7 @@
 # PARKED — money figures that changed, awaiting the owner
 
 One file per parked item, named `<item-number>.md`, written under rule 15.4 of
-`docs/design/1.6.0-KICKOFF.md`.
+`docs/design/1.6.0-TODO.md` (THE RULES FOR WORKING THIS LIST).
 
 A money figure that changed is never self-approved. It is parked here with four things and
 nothing less:

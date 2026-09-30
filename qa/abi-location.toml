@@ -6,7 +6,7 @@
 # crates/busbar-contract/src/abi/ and nowhere else. Test doubles may live under tests/, benches/ or
 # #[cfg(test)] only.
 #
-# ARMED AT TODAY'S COUNT (Law 9, KICKOFF 9.4): one [[offender]] row per shape the gate measured
+# ARMED AT TODAY'S COUNT (Law 9, TODO rule 9.4): one [[offender]] row per shape the gate measured
 # outside abi/ on the day it landed. These rows ARE the work list for the one-ABI kernel-side slot.
 #
 #   * a shape with no row is a NEW offender  -> RED on abi-location:{repr-c,extern-fn,version-const}.

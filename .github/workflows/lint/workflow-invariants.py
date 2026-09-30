@@ -47,7 +47,7 @@ OWNED = [CI, VD, RS, KP, DRIFT]
 FULL_TIER_GUARD = ("github.event_name != 'push' || contains(fromJSON('[\"refs/heads/main\", "
                    "\"refs/heads/dev\", \"refs/heads/qa\"]'), github.ref)")
 
-# The bare-script selftests ci.yml owes (KICKOFF 15.5: "wire the script's own --selftest and make CI
+# The bare-script selftests ci.yml owes (TODO rule 15.5: "wire the script's own --selftest and make CI
 # call it"), each named by the slot or stream that is owed it.
 OWED_CI_CALLS = [
     "scripts/prove-remote.sh --selftest",

@@ -240,8 +240,8 @@ pub const REPORT_ONLY: &[Posture] = &[
         name: "conformance-sync",
         why: "RED ON ONE NAMED ROW, AND IT IS THE TRUE FINDING. `conformance:freshness` honours a \
               pass only if its verdict commit IS the commit under judgement (item 165), and \
-              KICKOFF 7.3 rules that every commit to predev invalidates every conformance pass: \
-              STALE is normal in flight, shown on every push and not blocking it. DRAIN: KICKOFF \
+              TODO rule 7.3 rules that every commit to predev invalidates every conformance pass: \
+              STALE is normal in flight, shown on every push and not blocking it. DRAIN: TODO rule \
               7.4, Phase 5, on the release sha, where the suites are re-run on that sha and the \
               row goes green; strike the name from CONFORMANCE_SYNC_STANDING_REDS in that commit. \
               Every OTHER row of this gate (registry, manifest-drift, coverage, readme-drift, \
@@ -470,8 +470,8 @@ pub const MONEY_INVARIANTS_STANDING_REDS: &[&str] = &[
 /// has gone green is STALE and is scored too.
 pub const CONFORMANCE_SYNC_STANDING_REDS: &[&str] = &[
     // Item 165 (2026-09-24): freshness is judged against the checkout's own commit, so every
-    // carried-over pass is STALE on the dev line (KICKOFF 7.3). Drained in Phase 5 on the release
-    // sha (KICKOFF 7.4). Strike this line in the commit that turns the row green.
+    // carried-over pass is STALE on the dev line (TODO rule 7.3). Drained in Phase 5 on the release
+    // sha (TODO rule 7.4). Strike this line in the commit that turns the row green.
     "conformance:freshness",
 ];
 
@@ -2650,7 +2650,7 @@ pub static REGISTRY: &[Registration] = &[
         batch: 1,
         tier: Tier::Fast,
         build: || Box::new(design_docs_allowlist::DesignDocsAllowlistGate),
-        summary: "docs/design holds the spec, the TODO, KICKOFF, QUESTIONS, SLOT-LOG and 1.6.0-PARKED/ only",
+        summary: "docs/design holds the spec, the TODO, QUESTIONS, SLOT-LOG and 1.6.0-PARKED/ only",
     },
     Registration {
         name: "design-bindings",

@@ -442,7 +442,7 @@ jobs:
       - name: No-tracked-ignored gate (no tracked path matches a .gitignore rule of this tree)
         run: cargo xtask gate no-tracked-ignored
       # DESIGN-DOCS ALLOWLIST (owner, 2026-09-27): docs/design holds BUSBAR-1.6.0.md, 1.6.0-TODO.md,
-      # 1.6.0-KICKOFF.md, 1.6.0-QUESTIONS.md, 1.6.0-SLOT-LOG.md and 1.6.0-PARKED/, nothing else. A new
+      # 1.6.0-QUESTIONS.md, 1.6.0-SLOT-LOG.md and 1.6.0-PARKED/, nothing else. A new
       # design topic is a section of the spec; generated data and evidence go under qa/. Self-test
       # FIRST: it plants a stray document and proves the gate names it.
       - name: Design-docs allowlist self-test
@@ -4268,7 +4268,7 @@ jobs:
         run: cargo xtask gate linked-dropped-features
 
   # EVERY REGISTERED GATE, IN ONE RUN, ON EVERY PUSH -- REPORT-ONLY IN THE UMBRELLA, NEVER SOFTENED
-  # HERE (KICKOFF 13.2). `cargo xtask gate --all` is the registry's own verdict: every gate, one
+  # HERE (TODO rule 13.2). `cargo xtask gate --all` is the registry's own verdict: every gate, one
   # closing rollup. Until this job it ran in NO automatic workflow -- its only caller was
   # manual-keep-proof.yml, which is dispatch-only -- so its red (17 gates by its own rollup when
   # 1.6.0 Phase 0 measured it) was visible to nobody who did not go and run it.
@@ -4502,7 +4502,7 @@ jobs:
     #   The job runs them plainly; the umbrella waits for it and prints its result, and does not
     #   count it until M2 moves them into a counted job.
     # report-only: gate-all -- `cargo xtask gate --all` is RED ON HEAD in the gates later phases
-    #   drain (KICKOFF 13.2). The job runs it plainly and goes red on every run; the umbrella waits
+    #   drain (TODO rule 13.2). The job runs it plainly and goes red on every run; the umbrella waits
     #   for it and prints its result, and does not count it until `gate --all` exits 0 on HEAD.
     # ── THE JOBS DELIBERATELY OUTSIDE THIS LIST ───────────────────────────────────────────────────
     # scripts/ci-umbrella-lint.py reads these two lines and requires that EVERY job in this file is
