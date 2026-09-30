@@ -98,6 +98,9 @@ pub struct Need {
     pub keep_response_headers: *const AbiStr,
     /// How many.
     pub keep_response_headers_len: usize,
+    /// How long establishing a stream, and each wait for a reply on it, may take, milliseconds;
+    /// `0` = the host's default. The host clamps a larger value to the deadline class.
+    pub timeout_ms: u64,
 }
 
 /// The most response head fields one need may keep.

@@ -1833,7 +1833,8 @@ fn compute_layout() -> String {
             trust_from,
             details,
             keep_response_headers,
-            keep_response_headers_len
+            keep_response_headers_len,
+            timeout_ms
         ]
     );
     record!(s, hconn::EstablishIn, [head, need, _reserved, target]);
