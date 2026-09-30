@@ -349,7 +349,7 @@ fn a_refresh_reports_its_count_in_the_envelope_or_fails_with_its_text() {
     // SAFETY: the instance holds the entry until its next lifecycle op.
     let m = unsafe { &*out.envelope.metrics };
     assert_eq!((m.family_idx, m.value), (2, 9.0));
-    let (o, out) = refresh(inst, b"none");
+    let (o, out) = refresh(inst, b"uncounted");
     assert_eq!(o, Outcome::Ready);
     assert_eq!(out.envelope.metrics_len, 0);
     let (o, out) = refresh(inst, b"fail");
