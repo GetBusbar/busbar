@@ -107,7 +107,8 @@ fn named(s: AbiStr, field: &'static str) -> Result<(), Fault> {
 }
 
 fn units(buf: &[UnitCount], n: u64, b: &Bounds) -> Result<(), Fault> {
-    for u in first(buf, n, "unit")? {
+    let counts = first(buf, n, "unit")?;
+    for (i, u) in counts.iter().enumerate() {
         index(u.class, b.billable_classes, "unit.class")?;
         code(
             u64::from(u.source),
@@ -115,6 +116,14 @@ fn units(buf: &[UnitCount], n: u64, b: &Bounds) -> Result<(), Fault> {
             u64::from(UNITS_REPORTED),
             "unit.source",
         )?;
+        // ONE CUMULATIVE COUNT per class and source: a second is a contradiction (two running
+        // totals of one thing), never a sum the host would have to add.
+        if counts[..i]
+            .iter()
+            .any(|p| p.class == u.class && p.source == u.source)
+        {
+            return Err(fault(Rule::Contradiction, "unit.class"));
+        }
     }
     Ok(())
 }

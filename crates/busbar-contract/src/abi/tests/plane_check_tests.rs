@@ -164,6 +164,29 @@ fn an_arrival_index_past_its_list_or_unknown_need_is_fault() {
     );
 }
 
+/// One cumulative count per class and source: a second count of one class is a contradiction,
+/// refused (so the host never has to add two running totals, which could wrap).
+#[test]
+fn a_class_counted_twice_is_fault() {
+    let mut o: ArriveOut = z();
+    o.units_written = 2;
+    let mut u: UnitCount = z();
+    u.class = 1;
+    u.source = UNITS_REPORTED;
+    u.amount = u64::MAX;
+    let mut v = u;
+    v.amount = 2;
+    assert_eq!(
+        check_arrive(Ready, &o, &[u, v], 4, &bounds()),
+        f(Rule::Contradiction, "unit.class")
+    );
+    v.source = UNITS_ESTIMATED;
+    assert_eq!(check_arrive(Ready, &o, &[u, v], 4, &bounds()), Ok(()));
+    v.source = UNITS_REPORTED;
+    v.class = 0;
+    assert_eq!(check_arrive(Ready, &o, &[u, v], 4, &bounds()), Ok(()));
+}
+
 #[test]
 fn a_unit_naming_no_billable_class_or_unknown_source_is_fault() {
     let mut o: ArriveOut = z();

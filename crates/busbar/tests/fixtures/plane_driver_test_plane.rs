@@ -102,10 +102,58 @@ static OP_CLASSES: Shared<[OpClass; 1]> = Shared([OpClass {
     op: s(b"call"),
     name: s(b"test"),
 }]);
-static CLASSES: Shared<[BillableClass; 1]> = Shared([BillableClass {
-    class: s(b"bytes"),
-    family: s(b"bytes"),
-}]);
+/// Twelve billable classes: the check refuses a class counted twice, so a report of several counts
+/// (the short-buffer cases, `/stats`) names a distinct class for each.
+static CLASSES: Shared<[BillableClass; 12]> = Shared([
+    BillableClass {
+        class: s(b"bytes"),
+        family: s(b"bytes"),
+    },
+    BillableClass {
+        class: s(b"c1"),
+        family: s(b"bytes"),
+    },
+    BillableClass {
+        class: s(b"c2"),
+        family: s(b"bytes"),
+    },
+    BillableClass {
+        class: s(b"c3"),
+        family: s(b"bytes"),
+    },
+    BillableClass {
+        class: s(b"c4"),
+        family: s(b"bytes"),
+    },
+    BillableClass {
+        class: s(b"c5"),
+        family: s(b"bytes"),
+    },
+    BillableClass {
+        class: s(b"c6"),
+        family: s(b"bytes"),
+    },
+    BillableClass {
+        class: s(b"c7"),
+        family: s(b"bytes"),
+    },
+    BillableClass {
+        class: s(b"c8"),
+        family: s(b"bytes"),
+    },
+    BillableClass {
+        class: s(b"c9"),
+        family: s(b"bytes"),
+    },
+    BillableClass {
+        class: s(b"c10"),
+        family: s(b"bytes"),
+    },
+    BillableClass {
+        class: s(b"c11"),
+        family: s(b"bytes"),
+    },
+]);
 
 /// The statuses its refusals wear where they are not the kernel's defaults (`plane_driver_cases`'s
 /// `STATUSES`): `revoked` (code 14) is 403 in its one dialect and 451 in any other, and
@@ -159,7 +207,7 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     op_classes: &OP_CLASSES.0 as *const OpClass,
     op_classes_len: 1,
     billable_classes: &CLASSES.0 as *const BillableClass,
-    billable_classes_len: 1,
+    billable_classes_len: 12,
     route_cost: std::ptr::null(),
     route_cost_len: 0,
     fee_units: std::ptr::null(),
@@ -439,8 +487,8 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 *i.units_buf.add(k) = *u;
             }
         };
-        let estimate = |amount: u64| UnitCount {
-            class: 0,
+        let estimate = |class: u32, amount: u64| UnitCount {
+            class,
             source: UNITS_ESTIMATED,
             amount,
         };
@@ -461,7 +509,7 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 o.units_needed = cap as u32 + 1;
                 return say(out, Outcome::Failed);
             }
-            b"/short" => vec![estimate(1), estimate(2)],
+            b"/short" => vec![estimate(0, 1), estimate(1, 2)],
             t if t.starts_with(b"/wake:") => {
                 // `/wake:<slot>:<generation>`: wake that ticket (the test's way to wake a driver
                 // ticket, which only a plugin can).
@@ -473,7 +521,7 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 };
                 me.count(Stat::HostCalls);
                 (me.wake)(me.ctx, ticket);
-                vec![estimate(0)]
+                vec![estimate(0, 0)]
             }
             b"/clock" => {
                 // The host's own clock, through its service table: the reading, as two amounts. A
@@ -511,9 +559,10 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
             b"/stats" => me
                 .stats
                 .iter()
-                .map(|v| estimate(v.load(Ordering::SeqCst)))
+                .enumerate()
+                .map(|(k, v)| estimate(k as u32, v.load(Ordering::SeqCst)))
                 .collect(),
-            _ => vec![estimate(i.body.len as u64)],
+            _ => vec![estimate(0, i.body.len as u64)],
         };
         if wants.len() > cap {
             o.units_needed = wants.len() as u32;
@@ -681,7 +730,7 @@ extern "C" fn on_piece(
         let wide = if u.mode.starts_with(b"short") { 12 } else { 1 };
         for k in 0..wide {
             *i.units_buf.add(k) = UnitCount {
-                class: 0,
+                class: k as u32,
                 source: UNITS_REPORTED,
                 amount: u.emitted,
             };
