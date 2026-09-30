@@ -804,3 +804,7 @@ mod content_tests;
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/resource_uri_tests.rs"]
 mod resource_uri_tests;
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/stateless_capture_tests.rs"]
+mod stateless_capture_tests;
