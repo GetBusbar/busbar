@@ -719,7 +719,7 @@ pub(crate) fn mcp_routes(
             method: RouteMethod::Get,
             auth: RouteAuth::Key,
             handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
-                Box::pin(session_serve::get(ctx))
+                Box::pin(session_serve::serve_get(ctx))
             }),
         },
         PlaneRouteSpec {
@@ -727,7 +727,7 @@ pub(crate) fn mcp_routes(
             method: RouteMethod::Delete,
             auth: RouteAuth::Key,
             handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
-                Box::pin(session_serve::delete(ctx))
+                Box::pin(session_serve::serve_delete(ctx))
             }),
         },
     ]

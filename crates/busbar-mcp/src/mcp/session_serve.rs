@@ -96,7 +96,7 @@ impl SessionServe {
             if !(self.draw)(&mut entropy) {
                 return None;
             }
-            match lock(&self.table).open(entropy, owner.clone(), revision, carriage, now) {
+            match held(&self.table).open(entropy, owner.clone(), revision, carriage, now) {
                 Ok(id) => {
                     tracing::debug!(session = session::log_prefix(id.as_str()), "session opened");
                     return Some(id.as_str().to_string());
@@ -110,7 +110,7 @@ impl SessionServe {
 
     /// The revision and carriage of `sid`, when `owner` holds it.
     fn find(&self, sid: &str, owner: &Owner, now: u64) -> Option<(Revision, Carriage)> {
-        let mut t = lock(&self.table);
+        let mut t = held(&self.table);
         let revision = t.revision(sid, owner, now)?;
         let carriage = t.carriage(sid, owner, now)?;
         Some((revision, carriage))
@@ -143,19 +143,19 @@ impl SessionServe {
     }
 
     fn end(&self, sid: &str, owner: &Owner, now: u64) -> bool {
-        let closed = lock(&self.table).close(sid, owner, now);
+        let closed = held(&self.table).close(sid, owner, now);
         if closed {
-            lock(&self.outlets).remove(sid);
+            held(&self.outlets).remove(sid);
         }
         closed
     }
 }
 
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+fn held<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+fn header_of<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers.get(name).and_then(|v| v.to_str().ok())
 }
 
@@ -178,7 +178,7 @@ fn sessions(ctx: &PlaneReqCtx) -> Arc<SessionServe> {
     super::runtime_of(&ctx.host).sessions.clone()
 }
 
-fn refusal(status: StatusCode, error: &str, description: &str) -> Response {
+fn session_refusal(status: StatusCode, error: &str, description: &str) -> Response {
     (
         status,
         axum::Json(serde_json::json!({ "error": error, "error_description": description })),
@@ -188,7 +188,7 @@ fn refusal(status: StatusCode, error: &str, description: &str) -> Response {
 
 /// The one answer for a session that does not exist, has ended, was evicted, or is someone else's.
 fn unknown_session() -> Response {
-    refusal(
+    session_refusal(
         StatusCode::NOT_FOUND,
         "session_not_found",
         "No such session. Send `initialize` to open a new one.",
@@ -196,7 +196,7 @@ fn unknown_session() -> Response {
 }
 
 fn version_disagrees() -> Response {
-    refusal(
+    session_refusal(
         StatusCode::BAD_REQUEST,
         "protocol_version_mismatch",
         "The protocol version header names a revision other than the one this session negotiated.",
@@ -204,20 +204,20 @@ fn version_disagrees() -> Response {
 }
 
 fn no_session() -> Response {
-    refusal(
+    session_refusal(
         StatusCode::SERVICE_UNAVAILABLE,
         "session_unavailable",
         "No session could be opened now; try again.",
     )
 }
 
-fn result(id: Value, result: Value) -> Response {
+fn rpc_result(id: Value, result: Value) -> Response {
     axum::Json(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result })).into_response()
 }
 
 /// `-32601` for a session client, with `200`: a session client reads `404` as "your session is
 /// gone" and re-initialises, so a missing method must not say that.
-fn not_found(id: Value, method: &str) -> Response {
+fn method_absent(id: Value, method: &str) -> Response {
     super::envelope::error_response(
         StatusCode::OK,
         Some(id),
@@ -232,7 +232,7 @@ fn not_found(id: Value, method: &str) -> Response {
 /// THE POST SWITCH. `None` for a stateless request, which the caller answers exactly as before.
 pub(crate) async fn intercept(ctx: &PlaneReqCtx) -> Option<Response> {
     let body: Value = serde_json::from_slice(&ctx.body).ok()?;
-    let session_header = header(&ctx.headers, adapt::H_SESSION_ID);
+    let session_header = header_of(&ctx.headers, adapt::H_SESSION_ID);
     let message_session = adapt::message_session_of(ctx.uri.query());
     match adapt::classify_post(&body, session_header, message_session) {
         PostKind::Stateless => None,
@@ -265,19 +265,19 @@ async fn initialize(ctx: &PlaneReqCtx, body: &Value) -> Response {
         |_, _| {},
         move |_value, id, method| async move {
             if method != adapt::METHOD_INITIALIZE {
-                return Some(not_found(id, &method));
+                return Some(method_absent(id, &method));
             }
             let now = ctx.host.clock_now_ms();
             let Some(sid) = svc.mint(owner, revision, Carriage::Endpoint, now) else {
                 return Some(no_session());
             };
-            *lock(minted_ref) = Some(sid);
-            Some(result(id, initialize_result(ctx, revision).await))
+            *held(minted_ref) = Some(sid);
+            Some(rpc_result(id, initialize_result(ctx, revision).await))
         },
     )
     .await;
     let mut answer = answer;
-    if let Some(sid) = lock(&minted).take() {
+    if let Some(sid) = held(&minted).take() {
         if let Ok(v) = HeaderValue::from_str(&sid) {
             answer.headers_mut().insert(adapt::H_SESSION_ID, v);
         }
@@ -295,7 +295,7 @@ async fn in_session(ctx: &PlaneReqCtx, sid: &str, body: Value) -> Response {
     };
     if revision::check_header(
         revision,
-        header(&ctx.headers, super::envelope::H_PROTOCOL_VERSION),
+        header_of(&ctx.headers, super::envelope::H_PROTOCOL_VERSION),
     ) == HeaderCheck::Disagrees
     {
         return version_disagrees();
@@ -312,7 +312,7 @@ async fn event_stream_message(ctx: &PlaneReqCtx, sid: &str, body: Value) -> Resp
     let Some((revision, Carriage::EventStream)) = svc.find(sid, &owner, now) else {
         return unknown_session();
     };
-    let Some(outlet) = lock(&svc.outlets).get(sid).cloned() else {
+    let Some(outlet) = held(&svc.outlets).get(sid).cloned() else {
         return unknown_session();
     };
     let lowered = converse(
@@ -361,7 +361,7 @@ where
         &super::envelope::McpWords,
         protocol::Request {
             present: resource.is_some(),
-            origin: header(&ctx.headers, "origin"),
+            origin: header_of(&ctx.headers, "origin"),
             allowed_origins: resource.as_ref().map_or(&[][..], |r| r.allowed_origins()),
             wire_refusal: None,
             body: bytes,
@@ -400,7 +400,7 @@ async fn converse(
         &bytes,
         |m, _| {
             if m == adapt::METHOD_INITIALIZED {
-                lock(&svc.table).mark_initialized(sid, owner, now);
+                held(&svc.table).mark_initialized(sid, owner, now);
             } else if m == super::roots::METHOD_NOTIFY_ROOTS_LIST_CHANGED {
                 super::runtime_of(&ctx.host)
                     .roots_epochs
@@ -411,15 +411,15 @@ async fn converse(
             let headers = &headers;
             async move {
                 if method == adapt::METHOD_INITIALIZE && carriage == Carriage::EventStream {
-                    return Some(result(id, initialize_result(ctx, revision).await));
+                    return Some(rpc_result(id, initialize_result(ctx, revision).await));
                 }
                 match adapt::session_method(Some(&method), true) {
-                    SessionMethod::Ping => Some(result(id, serde_json::json!({}))),
+                    SessionMethod::Ping => Some(rpc_result(id, serde_json::json!({}))),
                     SessionMethod::Dispatch => {
                         let (Some(gov), Some(principal)) =
                             (ctx.gov.as_ref(), ctx.principal.as_ref())
                         else {
-                            return Some(not_found(id, &method));
+                            return Some(method_absent(id, &method));
                         };
                         Some(
                             super::envelope::rpc_dispatch(
@@ -432,10 +432,12 @@ async fn converse(
                                 method.clone(),
                             )
                             .await
-                            .unwrap_or_else(|| not_found(id, &method)),
+                            .unwrap_or_else(|| method_absent(id, &method)),
                         )
                     }
-                    SessionMethod::Accept | SessionMethod::NotFound => Some(not_found(id, &method)),
+                    SessionMethod::Accept | SessionMethod::NotFound => {
+                        Some(method_absent(id, &method))
+                    }
                 }
             }
         },
@@ -633,7 +635,7 @@ impl Lowered {
 // ── GET ─────────────────────────────────────────────────────────────────────────────────────────
 
 fn accepts_event_stream(headers: &HeaderMap) -> bool {
-    header(headers, "accept").is_some_and(|a| {
+    header_of(headers, "accept").is_some_and(|a| {
         a.split(',').any(|m| {
             m.split(';')
                 .next()
@@ -645,20 +647,20 @@ fn accepts_event_stream(headers: &HeaderMap) -> bool {
 }
 
 /// GET on the endpoint: a session's stream (or its resumption), the `2024-11-05` stream, or `405`.
-pub(crate) async fn get(ctx: PlaneReqCtx) -> Response {
+pub(crate) async fn serve_get(ctx: PlaneReqCtx) -> Response {
     let svc = sessions(&ctx);
     let owner = owner_of(&ctx);
     let now = ctx.host.clock_now_ms();
-    let version = header(&ctx.headers, super::envelope::H_PROTOCOL_VERSION);
-    if let Some(sid) = header(&ctx.headers, adapt::H_SESSION_ID) {
+    let version = header_of(&ctx.headers, super::envelope::H_PROTOCOL_VERSION);
+    if let Some(sid) = header_of(&ctx.headers, adapt::H_SESSION_ID) {
         let Some((revision, Carriage::Endpoint)) = svc.find(sid, &owner, now) else {
             return unknown_session();
         };
         if revision::check_header(revision, version) == HeaderCheck::Disagrees {
             return version_disagrees();
         }
-        let head = if let Some(cursor) = header(&ctx.headers, adapt::H_LAST_EVENT_ID) {
-            let Some(replay) = lock(&svc.table).replay(sid, &owner, cursor, now) else {
+        let head = if let Some(cursor) = header_of(&ctx.headers, adapt::H_LAST_EVENT_ID) {
+            let Some(replay) = held(&svc.table).replay(sid, &owner, cursor, now) else {
                 return unknown_session();
             };
             replay
@@ -667,7 +669,7 @@ pub(crate) async fn get(ctx: PlaneReqCtx) -> Response {
                 .map(|(id, data)| adapt::frame(Some(id), None, data))
                 .collect::<String>()
         } else {
-            let mut t = lock(&svc.table);
+            let mut t = held(&svc.table);
             let Some(stream) = t.open_stream(sid, &owner, now) else {
                 return unknown_session();
             };
@@ -683,7 +685,7 @@ pub(crate) async fn get(ctx: PlaneReqCtx) -> Response {
             }
         };
         return event_stream(
-            Live {
+            OpenStreamGuard {
                 svc: svc.clone(),
                 sid: sid.to_string(),
                 owner,
@@ -706,12 +708,12 @@ pub(crate) async fn get(ctx: PlaneReqCtx) -> Response {
         return no_session();
     };
     let (tx, rx) = tokio::sync::mpsc::channel(OUTLET_DEPTH);
-    lock(&svc.outlets).insert(sid.clone(), tx);
+    held(&svc.outlets).insert(sid.clone(), tx);
     let mount = super::resource_of(&ctx.host)
         .map_or_else(|| ctx.path.clone(), |r| r.mount_path().to_string());
     let head = adapt::endpoint_event(&mount, &sid);
     event_stream(
-        Live {
+        OpenStreamGuard {
             svc,
             sid,
             owner,
@@ -724,7 +726,7 @@ pub(crate) async fn get(ctx: PlaneReqCtx) -> Response {
 }
 
 /// One open event stream. Dropped when the client goes away; a `2024-11-05` session ends with it.
-struct Live {
+struct OpenStreamGuard {
     svc: Arc<SessionServe>,
     sid: String,
     owner: Owner,
@@ -733,7 +735,7 @@ struct Live {
     ends_session: bool,
 }
 
-impl Drop for Live {
+impl Drop for OpenStreamGuard {
     fn drop(&mut self) {
         if self.ends_session {
             let now = self.host.clock_now_ms();
@@ -746,7 +748,7 @@ impl Drop for Live {
     }
 }
 
-fn event_stream(live: Live, head: String) -> Response {
+fn event_stream(live: OpenStreamGuard, head: String) -> Response {
     let first = futures::stream::once(async move {
         Ok::<_, std::convert::Infallible>(bytes::Bytes::from(head))
     });
@@ -763,7 +765,7 @@ fn event_stream(live: Live, head: String) -> Response {
             Some(None) => None,
             None => {
                 let now = live.host.clock_now_ms();
-                lock(&live.svc.table).revision(&live.sid, &live.owner, now)?;
+                held(&live.svc.table).revision(&live.sid, &live.owner, now)?;
                 Some((Ok(bytes::Bytes::from_static(b": keepalive\n\n")), live))
             }
         }
@@ -780,8 +782,8 @@ fn event_stream(live: Live, head: String) -> Response {
 // ── DELETE ──────────────────────────────────────────────────────────────────────────────────────
 
 /// DELETE on the endpoint: ends a session the caller holds, or `405` without one.
-pub(crate) async fn delete(ctx: PlaneReqCtx) -> Response {
-    let Some(sid) = header(&ctx.headers, adapt::H_SESSION_ID).map(str::to_string) else {
+pub(crate) async fn serve_delete(ctx: PlaneReqCtx) -> Response {
+    let Some(sid) = header_of(&ctx.headers, adapt::H_SESSION_ID).map(str::to_string) else {
         return super::envelope::legacy_verb(ctx).await;
     };
     let svc = sessions(&ctx);

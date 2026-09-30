@@ -19,7 +19,7 @@ fn red_a_failed_host_draw_mints_no_session() {
         failing.mint(&owner(), Revision::R2025_11_25, Carriage::Endpoint, 0),
         None
     );
-    assert!(lock(&failing.table).is_empty());
+    assert!(held(&failing.table).is_empty());
     let working = SessionServe::drawing_from(|out| {
         out.fill(0x5a);
         true
