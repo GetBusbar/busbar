@@ -1798,7 +1798,7 @@ fn compute_layout() -> String {
             marker,
             fields_written,
             fields_needed,
-            _reserved
+            status
         ]
     );
     record!(

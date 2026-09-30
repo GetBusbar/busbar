@@ -32,8 +32,8 @@ use busbar_contract::abi::plane::{
     PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
     ProjectOut, RecordWrite, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, CANCEL_ABORTED,
     EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_DUPLEX_SESSION,
-    INGRESS_REQUEST_RESPONSE, MARK_GATE_REJECTED, PIECE_LAST, PRINCIPAL_NONE, RECORD_PUT,
-    REFUSAL_GATE, SHAPE_PIECEWISE, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_OK,
+    INGRESS_REQUEST_RESPONSE, PIECE_LAST, PRINCIPAL_NONE, RECORD_PUT, SHAPE_PIECEWISE,
+    UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_OK,
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::publish::{AdminRouteSpec, ClaimSpec, SnapshotSpec};
@@ -363,9 +363,6 @@ slot!(Refusal, RefusalIn, RefusalOut, |_, input, out| {
     out.set(|o| &o.arena_needed, and as u64);
     if short {
         return Outcome::Failed;
-    }
-    if input.cause == REFUSAL_GATE {
-        out.set(|o| &o.marker, MARK_GATE_REJECTED);
     }
     Outcome::Ready
 });

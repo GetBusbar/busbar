@@ -110,6 +110,25 @@
 //! what the session watches (its own bounded state) and answers the tick with whatever it tells the
 //! session, or with nothing; a watch never widens what the session's principal may see.
 //!
+//! # A refused arrival
+//!
+//! An `arrive` that answers REFUSED states why in its `head.error`: the plane's own words, at most
+//! [`MAX_REFUSAL_TEXT`] bytes. The kernel carries them to the plane's `refusal` as
+//! [`RefusalIn::text`] with [`REFUSAL_ARRIVE`] and the arrival's claimant dialect, so the caller
+//! is answered in the plane's dialect and words:
+//!
+//! 1. The bytes are opaque: the kernel never parses or changes them.
+//! 2. More than [`MAX_REFUSAL_TEXT`] is a FAULT of that `arrive`; the kernel refuses the arrival in
+//!    its own words ([`REFUSAL_KERNEL`]) and never cuts the text.
+//! 3. The text reaches the caller only through the plane's `refusal` rendering.
+//! 4. The kernel never logs or audits the text, since it may echo what the caller sent.
+//! 5. [`MAX_REFUSAL_TEXT`] is at or above the largest field line a transport admits, so words that
+//!    echo a field line the caller sent never overflow it.
+//!
+//! [`RefusalOut::status`] lets the rendering name the status its dialect answers with; `0` keeps
+//! the one the kernel chose. The gate-rejected audit marker is the kernel's: it sets it from
+//! [`REFUSAL_GATE`], and a plane never sets [`RefusalOut::marker`].
+//!
 //! EVERY `PlaneDecl` FIELD, AND WHERE IT WENT (nothing dropped silently):
 //!
 //! | hot-lane `PlaneDecl` / `BuildCtx` | here |
@@ -392,8 +411,20 @@ pub const VERDICT_HARD: u32 = 3;
 pub const REFUSAL_KERNEL: u32 = 0;
 /// [`RefusalIn::cause`]: a gate refused.
 pub const REFUSAL_GATE: u32 = 1;
-/// [`RefusalOut::marker`]: the rendered refusal is a gate rejection (the `GateRejected` marker the
-/// kernel keeps).
+/// [`RefusalIn::cause`]: the plane refused its own arrival; [`RefusalIn::text`] is that arrival's
+/// words (see "A refused arrival" in this module's documentation).
+pub const REFUSAL_ARRIVE: u32 = 2;
+/// The most bytes of text a REFUSED `arrive` may carry in its `head.error`. More is a FAULT of
+/// that `arrive`: the words are refused whole, never cut. It is at or above the largest field
+/// line a transport admits ([`LARGEST_ADMITTED_FIELD_LINE`]), so an echoed field never overflows.
+pub const MAX_REFUSAL_TEXT: u64 = 512 * 1024;
+/// The largest field line a transport admits: a textual head is read into at most 8 KiB plus
+/// 100 x 4 KiB (its library's default read buffer), and one field line may fill it; a binary
+/// field list is admitted up to 16 KiB.
+pub const LARGEST_ADMITTED_FIELD_LINE: u64 = 8192 + 4096 * 100;
+const _: () = assert!(MAX_REFUSAL_TEXT >= LARGEST_ADMITTED_FIELD_LINE);
+/// The gate-rejected audit marker (the `GateRejected` marker the kernel keeps). The kernel sets it
+/// from [`REFUSAL_GATE`]; [`RefusalOut::marker`] from a plane is always `0`.
 pub const MARK_GATE_REJECTED: u32 = 1;
 
 /// [`RecordWrite::op`]: put, the one record write there is. A record is never deleted by a write:
@@ -1286,7 +1317,7 @@ pub struct OnPieceOut {
 pub struct RefusalIn {
     /// The head.
     pub head: InHead,
-    /// `REFUSAL_KERNEL` | `REFUSAL_GATE`.
+    /// [`REFUSAL_KERNEL`] | [`REFUSAL_GATE`] | [`REFUSAL_ARRIVE`].
     pub cause: u32,
     /// The status number the kernel chose.
     pub status: u32,
@@ -1296,7 +1327,8 @@ pub struct RefusalIn {
     /// plane renders. Two reasons may share a status and still read differently to a client.
     pub reason: u32,
     /// The refusal text: the kernel's own message for the refusal (for a limit, it names the
-    /// bucket that blocked); never secret material.
+    /// bucket that blocked); never secret material. With [`REFUSAL_ARRIVE`]: the refused arrival's
+    /// `head.error`, byte for byte.
     pub text: AbiStr,
     /// HOST buffer for the rendered body.
     pub reply_buf: *mut u8,
@@ -1336,14 +1368,15 @@ pub struct RefusalOut {
     pub arena_written: u64,
     /// Short answer: the bytes `arena_buf` needs.
     pub arena_needed: u64,
-    /// [`MARK_GATE_REJECTED`] or `0`.
+    /// Always `0`: the kernel sets [`MARK_GATE_REJECTED`] itself; a plane that sets it is FAULT.
     pub marker: u32,
     /// Fields written to `fields_buf`.
     pub fields_written: u32,
     /// Short answer: the fields `fields_buf` needs.
     pub fields_needed: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
+    /// The status number the rendered reply carries, in [`RefusalIn::status`]'s space; the
+    /// transport maps it to its wire. `0` = keep [`RefusalIn::status`].
+    pub status: u32,
 }
 
 /// `serve`'s `in`.

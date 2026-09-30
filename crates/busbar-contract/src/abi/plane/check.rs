@@ -27,7 +27,7 @@ use super::{
     CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN,
     EMIT_DONE, EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP,
     INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION,
-    MARK_GATE_REJECTED, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL,
+    MAX_REFUSAL_TEXT, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL,
     RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_PUBLIC, SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK,
     TAIL_PROBES, TRUST_PIN, TRUST_RECOVERY_BACKOFF, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_HARD,
 };
@@ -195,6 +195,12 @@ pub fn check_arrive(
         index(out.dialect, b.dialects, "arrive.dialect")?;
         if out.correlation != 0 && out.cancels != 0 {
             return Err(fault(Rule::Contradiction, "arrive.cancel_with_correlation"));
+        }
+    }
+    if outcome == Outcome::Refused {
+        text(out.head.error, "arrive.refusal_text")?;
+        if out.head.error.len as u64 > MAX_REFUSAL_TEXT {
+            return Err(fault(Rule::OverMax, "arrive.refusal_text"));
         }
     }
     Ok(())
@@ -466,7 +472,8 @@ fn reply(
     fields(fields_buf, u64::from(fields_wn.0), arena.0)
 }
 
-/// `refusal`: the marker is `0` or [`MARK_GATE_REJECTED`]; the reply is valid.
+/// `refusal`: the marker is `0` (the kernel sets [`super::MARK_GATE_REJECTED`], never a
+/// plane); the reply is valid.
 ///
 /// # Errors
 ///
@@ -477,12 +484,7 @@ pub fn check_refusal(
     fields_buf: &[OutField],
     caps: &Caps,
 ) -> Result<(), Fault> {
-    code(
-        u64::from(out.marker),
-        0,
-        u64::from(MARK_GATE_REJECTED),
-        "refusal.marker",
-    )?;
+    code(u64::from(out.marker), 0, 0, "refusal.marker")?;
     reply(
         outcome,
         [

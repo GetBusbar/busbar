@@ -215,6 +215,72 @@ fn an_arrival_that_cancels_carries_no_correlation_of_its_own() {
     );
 }
 
+/// A REFUSED ARRIVAL'S WORDS are carried whole or not at all: up to `MAX_REFUSAL_TEXT` bytes pass,
+/// one byte more is a FAULT (never cut), a length with no bytes is a FAULT, and a READY arrival's
+/// head error is not judged here.
+#[test]
+fn a_refused_arrivals_text_is_bounded_and_never_cut() {
+    let at_cap = "x".repeat(MAX_REFUSAL_TEXT as usize);
+    let over = "x".repeat(MAX_REFUSAL_TEXT as usize + 1);
+    let text = |t: &str| AbiStr {
+        ptr: t.as_ptr(),
+        len: t.len(),
+    };
+    let mut o: ArriveOut = z();
+    o.head.error = text(&at_cap);
+    assert_eq!(check_arrive(Refused, &o, &[], 4, &bounds()), Ok(()), "at the cap");
+    o.head.error = text(&over);
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::OverMax, "arrive.refusal_text")
+    );
+    o.head.error = AbiStr {
+        ptr: null(),
+        len: 3,
+    };
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::NullWithCount, "arrive.refusal_text")
+    );
+    let mut o: ArriveOut = z();
+    o.head.error = text(&over);
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()), "not judged on READY");
+    let mut o: ArriveOut = z();
+    o.head.error = s("Method `x` is not implemented by this server.");
+    assert_eq!(check_arrive(Refused, &o, &[], 4, &bounds()), Ok(()));
+}
+
+/// Words that echo the largest field line a transport admits fit: an echoed field never overflows
+/// the refusal text.
+#[test]
+fn a_refusal_echoing_the_largest_admitted_field_line_fits() {
+    let echoed = format!(
+        "unexpected field: {}",
+        "h".repeat(LARGEST_ADMITTED_FIELD_LINE as usize)
+    );
+    assert!(echoed.len() as u64 > LARGEST_ADMITTED_FIELD_LINE);
+    assert!(MAX_REFUSAL_TEXT >= LARGEST_ADMITTED_FIELD_LINE + 1024);
+    let mut o: ArriveOut = z();
+    o.head.error = AbiStr {
+        ptr: echoed.as_ptr(),
+        len: echoed.len(),
+    };
+    assert_eq!(check_arrive(Refused, &o, &[], 4, &bounds()), Ok(()));
+}
+
+/// The three refusal causes are distinct, and a rendering's status defaults to the kernel's.
+#[test]
+fn the_refusal_causes_are_distinct_and_status_zero_keeps_the_kernels() {
+    assert_eq!(
+        [REFUSAL_KERNEL, REFUSAL_GATE, REFUSAL_ARRIVE],
+        [0, 1, 2],
+        "the cause numbering is the ABI's"
+    );
+    let o: RefusalOut = z();
+    assert_eq!(o.status, 0);
+    assert_eq!(check_refusal(Ready, &o, &[], &caps()), Ok(()));
+}
+
 #[test]
 fn a_unit_naming_no_billable_class_or_unknown_source_is_fault() {
     let mut o: ArriveOut = z();
@@ -478,6 +544,12 @@ fn a_record_write_that_is_not_a_put_is_fault() {
 fn a_refusal_marker_is_known_and_its_reply_follows_m_sb() {
     let mut o: RefusalOut = z();
     o.marker = 2;
+    assert_eq!(
+        check_refusal(Ready, &o, &[], &caps()),
+        f(Rule::UnknownCode, "refusal.marker")
+    );
+    // The gate-rejected marker is the kernel's to set, never a plane's.
+    o.marker = MARK_GATE_REJECTED;
     assert_eq!(
         check_refusal(Ready, &o, &[], &caps()),
         f(Rule::UnknownCode, "refusal.marker")
