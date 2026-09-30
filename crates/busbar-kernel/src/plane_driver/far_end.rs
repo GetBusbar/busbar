@@ -40,6 +40,16 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::proxy::egress_unit::{
+    exhaustion::retry_after_secs,
+    ports::{
+        disposition, net, Breaker, Capacity, Clock, DestinationId, Dispatched, Disposition,
+        Journal, Outcome, Permit, Telemetry, Unavailable, UpstreamStatus,
+    },
+    race,
+    select::{pick_among, PickInput},
+    Member, OnExhausted, Pool, RequestCtx, Shed, WeightedFloor,
+};
 use busbar_contract::abi::auth::{STYLE_NEEDS_BODY_HASH, STYLE_NEEDS_HEADERS};
 use busbar_contract::abi::transport::{
     STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT, STATUS_OTHER, STATUS_SUCCESS,
@@ -52,16 +62,6 @@ use busbar_contract::conn::{
 use busbar_contract::redacted::Redacted;
 use busbar_contract::transport::registry::status_ns;
 use busbar_contract::transport::wire::{WireStatus, WireStatusClass};
-use crate::proxy::egress_unit::{
-    exhaustion::retry_after_secs,
-    ports::{
-        disposition, net, Breaker, Capacity, Clock, DestinationId, Dispatched, Disposition,
-        Journal, Outcome, Permit, Telemetry, Unavailable, UpstreamStatus,
-    },
-    race,
-    select::{pick_among, PickInput},
-    Member, OnExhausted, Pool, RequestCtx, Shed, WeightedFloor,
-};
 
 use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
 

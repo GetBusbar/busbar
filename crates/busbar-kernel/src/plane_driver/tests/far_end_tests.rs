@@ -14,14 +14,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
-use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, OutboundAuth};
-use busbar_contract::caps::{Pass, Route};
-use busbar_contract::conn::{
-    ConnError, ConnId, Conns, InstanceId, NeedId, OpenDesc, Piece, PieceKind, PollConns, Ticket,
-};
-use busbar_contract::ids::StreamId;
-use busbar_contract::transport::wire::WireStatusClass;
-use busbar_contract::transport::ConnFacts;
 use crate::proxy::egress_unit::{
     ports::{
         Admit, BoxFut, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched,
@@ -30,6 +22,14 @@ use crate::proxy::egress_unit::{
     },
     Failover, Member, OnExhausted, Pool, WeightedFloor,
 };
+use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, OutboundAuth};
+use busbar_contract::caps::{Pass, Route};
+use busbar_contract::conn::{
+    ConnError, ConnId, Conns, InstanceId, NeedId, OpenDesc, Piece, PieceKind, PollConns, Ticket,
+};
+use busbar_contract::ids::StreamId;
+use busbar_contract::transport::wire::WireStatusClass;
+use busbar_contract::transport::ConnFacts;
 
 use super::*;
 use crate::plane_driver::{FarEnd, OutboundRequest, Pick};
