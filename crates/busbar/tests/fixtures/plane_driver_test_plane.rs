@@ -39,10 +39,10 @@ use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, Claim, OnPieceIn, OnPieceOut, OpClass, Ops, OutField,
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneSnapshot, PlaneTail, RefusalIn,
-    RefusalOut, Section, UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, EMIT_DONE,
-    EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE,
-    INGRESS_RESPONSE_STREAM, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_OPTIONAL, SECTION_DECLARING,
-    SHAPE_WHOLE, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    RefusalOut, RefusalStatus, Section, UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL,
+    EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE,
+    INGRESS_RESPONSE_STREAM, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT,
+    SECTION_DECLARING, SHAPE_WHOLE, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };
 
 /// The counters `/stats` answers, in this order.
@@ -106,6 +106,30 @@ static CLASSES: Shared<[BillableClass; 1]> = Shared([BillableClass {
     family: s(b"bytes"),
 }]);
 
+/// The statuses its refusals wear where they are not the kernel's defaults (`plane_driver_cases`'s
+/// `STATUSES`): `revoked` (code 14) is 403 in its one dialect and 451 in any other, and
+/// `scope_denied` (code 15) is 404 in every dialect.
+static STATUSES: Shared<[RefusalStatus; 3]> = Shared([
+    RefusalStatus {
+        dialect: 0,
+        reason: 14,
+        status: 403,
+        _reserved: 0,
+    },
+    RefusalStatus {
+        dialect: REFUSAL_ANY_DIALECT,
+        reason: 14,
+        status: 451,
+        _reserved: 0,
+    },
+    RefusalStatus {
+        dialect: REFUSAL_ANY_DIALECT,
+        reason: 15,
+        status: 404,
+        _reserved: 0,
+    },
+]);
+
 static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     head: KindTailHead {
         size: std::mem::size_of::<PlaneTail>() as u32,
@@ -149,6 +173,8 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     record_chains_len: 0,
     trust_keys: std::ptr::null(),
     trust_keys_len: 0,
+    refusal_statuses: &STATUSES.0 as *const RefusalStatus,
+    refusal_statuses_len: 3,
 });
 
 static FAMILIES: Shared<[MetricFamily; 1]> = Shared([MetricFamily {
@@ -653,6 +679,11 @@ extern "C" fn refusal(_: *mut c_void, input: *const c_void, out: *mut c_void) ->
     unsafe {
         let i = &*input.cast::<RefusalIn>();
         let o = &mut *out.cast::<RefusalOut>();
+        // The reason crosses beside its text: a refusal whose code names another reason is FAULT.
+        let named = busbar_contract::abi::plane::reason_of(i.reason).map(|r| r.as_str().as_bytes());
+        if named != Some(text(i.text)) {
+            return RawOutcome::of(Outcome::Fault);
+        }
         let body = [
             b"refused:".as_slice(),
             i.status.to_string().as_bytes(),

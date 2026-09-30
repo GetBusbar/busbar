@@ -20,7 +20,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::plane::{UnitCount, CANCEL_FAILED, CANCEL_OK_PARTIAL};
+use busbar_contract::abi::plane::{
+    reason_code, RefusalStatus, UnitCount, CANCEL_FAILED, CANCEL_OK_PARTIAL, REFUSAL_ANY_DIALECT,
+};
 use busbar_contract::caps::{Canary, Outcome, ReasonCode, StepName};
 use busbar_kernel::plane_driver::{
     Arrival, BufferCaps, CallerEnd, CancelBill, Checkpoint, FarEnd, FarPiece, MoneySeam,
@@ -642,6 +644,68 @@ async fn a_short_arrive_is_recalled_once_with_what_it_needs() {
             Some(2),
             "{way:?}"
         );
+    }
+}
+
+/// The statuses the test plane's tail states: `revoked` is 403 in its one dialect (index 0) and
+/// 451 in any other; `scope_denied` is 404 in every dialect. The kernel's defaults are 401 and 403.
+pub fn statuses() -> Vec<RefusalStatus> {
+    let row = |dialect, reason, status| RefusalStatus {
+        dialect,
+        reason: reason_code(reason),
+        status,
+        _reserved: 0,
+    };
+    vec![
+        row(0, ReasonCode::Revoked, 403),
+        row(REFUSAL_ANY_DIALECT, ReasonCode::Revoked, 451),
+        row(REFUSAL_ANY_DIALECT, ReasonCode::ScopeDenied, 404),
+    ]
+}
+
+/// RED: a refusal wears the plane's status for its dialect, else the plane's status for every
+/// dialect, else the kernel's default; and the plane is told the reason beside the status.
+#[tokio::test]
+async fn a_refusal_wears_the_status_the_plane_states_for_its_dialect() {
+    for way in ways() {
+        for (step, reason, body) in [
+            (
+                StepName::Authenticate,
+                ReasonCode::Revoked,
+                "refused:403:revoked",
+            ),
+            (
+                StepName::Approve,
+                ReasonCode::ScopeDenied,
+                "refused:404:scope_denied",
+            ),
+            (
+                StepName::Admit,
+                ReasonCode::OverBudget,
+                "refused:429:over_budget",
+            ),
+        ] {
+            let r = rig(way, BufferCaps::default(), Book::default());
+            let (steps, far, caller) = (
+                TestUnits::refusing(step, reason),
+                Far::new(&["ok"], CHUNKS),
+                Caller::default(),
+            );
+            let units = r
+                .driver
+                .unit(&steps, &far, &caller, arrival("/call", b"x"), 0);
+            let outcome = drive(&units).await;
+            assert!(
+                matches!(outcome, Outcome::Refused(s, r) if s == step && r == reason),
+                "{way:?}: {outcome:?}"
+            );
+            let rendered = units.take_rendered().expect("the refusal is rendered");
+            assert_eq!(
+                String::from_utf8_lossy(&rendered.body),
+                body,
+                "{way:?} {reason:?}"
+            );
+        }
     }
 }
 

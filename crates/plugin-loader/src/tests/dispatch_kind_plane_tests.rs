@@ -8,6 +8,7 @@
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, NonNull};
 
+use crate::dispatch::kinds::plane::PlaneFacts;
 use busbar_contract::abi::hook::SignalEntry;
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome, Span};
 use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
@@ -36,15 +37,18 @@ fn f(rule: Rule, field: &'static str) -> Result<(), Fault> {
 
 /// An answer of `slot` over the test's own `in` and `out`.
 /// The tail bounds every answer here is judged against: four entries in each tail list.
-static BOUNDS: Bounds = Bounds {
-    op_classes: 4,
-    dialects: 4,
-    billable_classes: 4,
-    record_kinds: 4,
+static FACTS: PlaneFacts = PlaneFacts {
+    bounds: Bounds {
+        op_classes: 4,
+        dialects: 4,
+        billable_classes: 4,
+        record_kinds: 4,
+    },
+    refusal_statuses: Vec::new(),
 };
 
 fn answer<'a, I, O>(s: u32, outcome: Outcome, i: &I, o: &O) -> Answer<'a> {
-    bare(s, outcome, i, o).with_context(Some(&BOUNDS))
+    bare(s, outcome, i, o).with_context(Some(&FACTS))
 }
 
 /// An answer judged with no tail at all.
@@ -697,4 +701,52 @@ fn red_a_tail_trust_key_that_breaks_its_element_rule_does_not_bind() {
     }];
     let err = bind(&[pin(&nameless)]).unwrap_err();
     assert!(err.contains("pin_mechanism.token"), "{err}");
+}
+
+/// RED: the tail's refusal statuses are judged at bind. A row the validator refuses refuses the
+/// load; the rows that pass are the instance's, for the kernel's driver.
+#[test]
+fn red_a_tail_whose_refusal_statuses_break_a_rule_does_not_bind() {
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    use busbar_contract::abi::plane::{
+        reason_code, PlaneTail, RefusalStatus, INGRESS_REQUEST_RESPONSE,
+    };
+    use busbar_contract::caps::ReasonCode;
+    let rows = |status: u32| -> &'static [RefusalStatus] {
+        Box::leak(Box::new([RefusalStatus {
+            dialect: 0,
+            reason: reason_code(ReasonCode::OverBudget),
+            status,
+            _reserved: 0,
+        }]))
+    };
+    let dialects: &'static [busbar_contract::abi::mechanism::call::AbiStr] =
+        Box::leak(Box::new([busbar_contract::abi::mechanism::call::AbiStr {
+            ptr: b"plain".as_ptr(),
+            len: 5,
+        }]));
+    let bind = |rows: &'static [RefusalStatus]| {
+        let mut tail: PlaneTail = z();
+        tail.head = KindTailHead {
+            size: size_of::<PlaneTail>() as u32,
+            _reserved: 0,
+        };
+        tail.ingress = INGRESS_REQUEST_RESPONSE;
+        tail.dialects = dialects.as_ptr();
+        tail.dialects_len = 1;
+        tail.refusal_statuses = rows.as_ptr();
+        tail.refusal_statuses_len = rows.len();
+        let tail: &'static PlaneTail = Box::leak(Box::new(tail));
+        let mut st: Statement = z();
+        st.kind_tail = &tail.head;
+        Plane::context(&st)
+    };
+    let facts = bind(rows(400)).expect("a valid row binds");
+    let facts = facts
+        .expect("a plane has a context")
+        .downcast::<PlaneFacts>()
+        .expect("the plane's facts");
+    assert_eq!(facts.refusal_statuses, rows(400).to_vec());
+    let refused = bind(rows(200)).expect_err("a status outside 400-599 refuses the load");
+    assert!(refused.contains("refusal_status.status"), "{refused}");
 }

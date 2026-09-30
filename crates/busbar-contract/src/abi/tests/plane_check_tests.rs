@@ -15,6 +15,7 @@ use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::call::Outcome::{Failed, Pending, Ready, Refused};
 use crate::abi::mechanism::check::fault;
 use crate::abi::plane::*;
+use crate::caps::ReasonCode;
 
 fn z<T>() -> T {
     // SAFETY: every answer shape is plain C data (integers, raw pointers, floats); all-zero is a
@@ -850,6 +851,15 @@ fn duration_key(role: u32) -> TrustKey {
     }
 }
 
+fn row(dialect: u32, reason: ReasonCode, status: u32) -> RefusalStatus {
+    RefusalStatus {
+        dialect,
+        reason: reason_code(reason),
+        status,
+        _reserved: 0,
+    }
+}
+
 #[test]
 fn a_tail_counting_trust_keys_over_a_null_pointer_is_fault() {
     let mut t = tail();
@@ -884,6 +894,56 @@ fn a_trust_key_role_is_known() {
         assert_eq!(
             check_trust_keys(&[duration_key(role)]),
             f(Rule::UnknownCode, "trust_key.role")
+        );
+    }
+}
+
+#[test]
+fn a_tail_counting_refusal_statuses_over_a_null_pointer_is_fault() {
+    let mut t = tail();
+    t.refusal_statuses_len = 1;
+    assert_eq!(
+        check_tail(&t),
+        f(Rule::NullWithCount, "tail.refusal_statuses")
+    );
+}
+
+#[test]
+fn a_refusal_status_names_a_declared_dialect_or_every_dialect() {
+    let rows = [
+        row(0, ReasonCode::Unauthenticated, 403),
+        row(REFUSAL_ANY_DIALECT, ReasonCode::Unauthenticated, 401),
+    ];
+    assert_eq!(check_refusal_statuses(&rows, 1), Ok(()));
+    assert_eq!(
+        check_refusal_statuses(&[row(1, ReasonCode::Unauthenticated, 403)], 1),
+        f(Rule::IndexOutOfRange, "refusal_status.dialect")
+    );
+}
+
+#[test]
+fn a_refusal_status_names_a_reason_the_vocabulary_holds() {
+    let mut r = row(0, ReasonCode::OverBudget, 400);
+    r.reason = ReasonCode::ALL.len() as u32;
+    assert_eq!(
+        check_refusal_statuses(&[r], 1),
+        f(Rule::UnknownCode, "refusal_status.reason")
+    );
+}
+
+#[test]
+fn a_refusal_status_is_a_client_or_server_error() {
+    for status in [0, 200, 399, 600, 999] {
+        assert_eq!(
+            check_refusal_statuses(&[row(0, ReasonCode::OverBudget, status)], 1),
+            f(Rule::UnknownCode, "refusal_status.status"),
+            "{status}"
+        );
+    }
+    for status in [400, 599] {
+        assert_eq!(
+            check_refusal_statuses(&[row(0, ReasonCode::OverBudget, status)], 1),
+            Ok(())
         );
     }
 }
@@ -992,6 +1052,93 @@ fn a_pin_mechanism_is_named_with_known_flags() {
         check_pin_mechanisms(&[m]),
         f(Rule::UnknownCode, "pin_mechanism.flags")
     );
+}
+
+#[test]
+fn a_dialect_and_reason_are_stated_at_most_once() {
+    let rows = [
+        row(0, ReasonCode::OverBudget, 400),
+        row(0, ReasonCode::RateLimited, 429),
+        row(0, ReasonCode::OverBudget, 429),
+    ];
+    assert_eq!(
+        check_refusal_statuses(&rows, 1),
+        f(Rule::Contradiction, "refusal_status.twice")
+    );
+    let rows = [
+        row(REFUSAL_ANY_DIALECT, ReasonCode::OverBudget, 400),
+        row(REFUSAL_ANY_DIALECT, ReasonCode::OverBudget, 400),
+    ];
+    assert_eq!(
+        check_refusal_statuses(&rows, 1),
+        f(Rule::Contradiction, "refusal_status.twice")
+    );
+}
+
+/// A reason's ABI code is its place in the vocabulary, which only appends: every code is pinned
+/// to its spelling, so a reorder or an insertion is RED.
+#[test]
+fn every_reason_code_is_pinned_to_its_spelling() {
+    const PINNED: &[&str] = &[
+        "in_flight_cap",
+        "cursor_budget",
+        "credential_budget",
+        "session_budget",
+        "spill_budget",
+        "scratch_exhausted",
+        "rate_limited",
+        "body_too_large",
+        "open_slot_busy",
+        "decode_failed",
+        "scheme_not_declared",
+        "session_unbound",
+        "unauthenticated",
+        "challenge_exhausted",
+        "revoked",
+        "scope_denied",
+        "pool_not_permitted",
+        "no_rate",
+        "hook_veto",
+        "no_destination",
+        "over_budget",
+        "group_frozen",
+        "unpriced",
+        "overdraft_ceiling",
+        "stale_slice",
+        "durability_unavailable",
+        "tier_mismatch",
+        "replayed",
+        "in_flight",
+        "destination_budget_exhausted",
+        "breaker_open",
+        "destination_unreachable",
+        "meter_disputed",
+        "handoff_mismatch",
+        "plane_panic",
+        "task_lost",
+        "stalled",
+        "secret_placeholder",
+        "drain",
+        "superseded",
+        "client_gone",
+        "deadline_exceeded",
+    ];
+    for (code, spelling) in PINNED.iter().enumerate() {
+        let reason = reason_of(code as u32).expect("a pinned code names a reason");
+        assert_eq!(reason.as_str(), *spelling, "code {code}");
+        assert_eq!(reason_code(reason), code as u32);
+    }
+    assert!(
+        ReasonCode::ALL.len() >= PINNED.len(),
+        "a reason left the vocabulary"
+    );
+    for (code, reason) in ReasonCode::ALL.iter().enumerate().skip(PINNED.len()) {
+        panic!(
+            "reason {} (code {code}) is not pinned here: append it",
+            reason.as_str()
+        );
+    }
+    assert_eq!(reason_of(ReasonCode::ALL.len() as u32), None);
 }
 
 // ── project ──

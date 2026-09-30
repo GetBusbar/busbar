@@ -37,7 +37,8 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    ArriveIn, ArriveOut, OutField, RefusalIn, RefusalOut, UnitCount, REFUSAL_GATE, REFUSAL_KERNEL,
+    reason_code, ArriveIn, ArriveOut, OutField, RefusalIn, RefusalOut, RefusalStatus, UnitCount,
+    REFUSAL_ANY_DIALECT, REFUSAL_GATE, REFUSAL_KERNEL,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{
@@ -100,8 +101,28 @@ pub struct DriverConfig {
     pub caps: BufferCaps,
     /// The plane's operation classes, in its tail's order: `arrive`'s `op_class` indexes them.
     pub op_classes: Vec<OpClassId>,
-    /// The status number the kernel chooses for a refusal the plane renders.
+    /// The status number the kernel chooses for a refusal the plane renders, where the plane
+    /// states none of its own.
     pub status_of: fn(ReasonCode) -> u32,
+    /// The statuses the plane's tail states per dialect and reason (validated at load).
+    pub refusal_statuses: Vec<RefusalStatus>,
+}
+
+impl DriverConfig {
+    /// The status a refusal for `reason` wears in `dialect`: the plane's row for that dialect,
+    /// else its row for every dialect, else [`DriverConfig::status_of`].
+    pub fn status(&self, dialect: u32, reason: ReasonCode) -> u32 {
+        let code = reason_code(reason);
+        let row = |d: u32| {
+            self.refusal_statuses
+                .iter()
+                .find(|r| r.dialect == d && r.reason == code)
+                .map(|r| r.status)
+        };
+        row(dialect)
+            .or_else(|| row(REFUSAL_ANY_DIALECT))
+            .unwrap_or_else(|| (self.status_of)(reason))
+    }
 }
 
 /// The status the kernel hands `refusal` for a reason, when the deployment states no other.
@@ -347,8 +368,8 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
     /// The plane renders a refusal (`refusal`, ticketless, one re-call when short); the kernel's
     /// generic failure, with no body, when it cannot.
     fn render(&self, reason: ReasonCode) -> Rendered {
-        let status = (self.driver.config.status_of)(reason);
         let dialect = self.lock().decoded.as_ref().map_or(0, |d| d.dialect);
+        let status = self.driver.config.status(dialect, reason);
         let text = reason.as_str();
         let caps = self.driver.config.caps;
         let (mut reply, mut fields, mut arena) = (
@@ -364,6 +385,7 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             },
             status,
             dialect,
+            reason: reason_code(reason),
             text: AbiStr::over(text.as_bytes()),
             reply_buf: reply.as_mut_ptr(),
             reply_cap: reply.len(),

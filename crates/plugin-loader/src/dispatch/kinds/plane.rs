@@ -43,13 +43,13 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::{
     check_arrive, check_cancel, check_drive, check_on_piece, check_pin_mechanisms, check_project,
-    check_refusal, check_serve, check_snapshot, check_tail, check_trust_keys, Bounds, Caps,
-    MAX_SESSIONS,
+    check_refusal, check_refusal_statuses, check_serve, check_snapshot, check_tail,
+    check_trust_keys, Bounds, Caps, MAX_SESSIONS,
 };
 use busbar_contract::abi::plane::{
     self, slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, PinMechanism, PlaneDriveIn,
     PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
-    ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, TrustKey,
+    ProjectOut, RefusalIn, RefusalOut, RefusalStatus, ServeIn, ServeOut, TrustKey,
 };
 
 use crate::dispatch::{
@@ -81,15 +81,27 @@ unsafe impl OutFrame for RefusalOut {}
 unsafe impl OutFrame for ServeOut {}
 unsafe impl OutFrame for ProjectOut {}
 
+/// What the instance's tail states that the host keeps: the list bounds every answer's indices are
+/// judged against, and the refusal statuses the kernel chooses from. Read once at bind.
+#[derive(Debug, Clone)]
+pub struct PlaneFacts {
+    /// The tail's list lengths.
+    pub bounds: Bounds,
+    /// The tail's refusal statuses, each judged by `check_refusal_statuses` at bind.
+    pub refusal_statuses: Vec<RefusalStatus>,
+}
+
 /// The instance's tail bounds; an answer judged without them is FAULT (a plane instance always
 /// binds with its tail).
 fn bounds<'a>(a: &Answer<'a>) -> Result<&'a Bounds, Fault> {
-    a.context::<Bounds>()
+    a.context::<PlaneFacts>()
+        .map(|f| &f.bounds)
         .ok_or(fault(Rule::Missing, "plane.tail"))
 }
 
-/// The plane's tail, read from the Statement: a whole `PlaneTail` that passes `check_tail`.
-fn tail_bounds(st: &Statement) -> Result<Bounds, String> {
+/// The plane's tail, read from the Statement: a whole `PlaneTail` that passes `check_tail`, and
+/// refusal statuses that pass `check_refusal_statuses`.
+fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
     let p = st.kind_tail;
     if p.is_null() {
         return Err("a plane states no kind tail".into());
@@ -108,7 +120,28 @@ fn tail_bounds(st: &Statement) -> Result<Bounds, String> {
     check_tail(&tail).map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     check_tail_trust_keys(&tail)
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
-    Ok(Bounds::of(&tail))
+    let refusal_statuses: Vec<RefusalStatus> = (0..tail.refusal_statuses_len)
+        .map(|i| {
+            // SAFETY: `check_tail` refused a count over a NULL list; the list is `'static` plugin
+            // data of `refusal_statuses_len` entries.
+            unsafe { tail.refusal_statuses.add(i).read_unaligned() }
+        })
+        .collect();
+    check_refusal_statuses(&refusal_statuses, tail.dialects_len as u64)
+        .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    Ok(PlaneFacts {
+        bounds: Bounds::of(&tail),
+        refusal_statuses,
+    })
+}
+
+impl crate::dispatch::Plugin<Plane> {
+    /// The refusal statuses the plane's tail states, as judged at bind.
+    pub fn refusal_statuses(&self) -> &[RefusalStatus] {
+        self.inner
+            .context::<PlaneFacts>()
+            .map_or(&[], |f| f.refusal_statuses.as_slice())
+    }
 }
 
 /// The tail's kernel-owned trust keys, judged PER ELEMENT: each key by `check_trust_keys`, each
@@ -140,7 +173,7 @@ impl Kind for Plane {
     const CODE: KindCode = KindCode::Plane;
 
     fn context(st: &Statement) -> Result<Option<Box<Context>>, String> {
-        Ok(Some(Box::new(tail_bounds(st)?)))
+        Ok(Some(Box::new(tail_facts(st)?)))
     }
     type Ops = plane::Ops;
     const TIMEOUT: Outcome = Outcome::Failed;

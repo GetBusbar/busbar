@@ -106,6 +106,8 @@ const TAIL: &PlaneTail = &PlaneTail {
     record_chains_len: 0,
     trust_keys: ptr::null(),
     trust_keys_len: 0,
+    refusal_statuses: std::ptr::null(),
+    refusal_statuses_len: 0,
 };
 
 /// Every generation's claim.

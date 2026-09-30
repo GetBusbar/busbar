@@ -1569,6 +1569,11 @@ fn compute_layout() -> String {
     );
     record!(
         s,
+        pkind::RefusalStatus,
+        [dialect, reason, status, _reserved]
+    );
+    record!(
+        s,
         pkind::PlaneTail,
         [
             head,
@@ -1609,7 +1614,9 @@ fn compute_layout() -> String {
             record_chains,
             record_chains_len,
             trust_keys,
-            trust_keys_len
+            trust_keys_len,
+            refusal_statuses,
+            refusal_statuses_len
         ]
     );
     record!(s, pkind::Claim, [verb, target, carrier, flags, _reserved]);
@@ -1707,7 +1714,7 @@ fn compute_layout() -> String {
         s,
         pkind::RefusalIn,
         [
-            head, cause, status, dialect, _reserved, text, reply_buf, reply_cap, fields_buf,
+            head, cause, status, dialect, reason, text, reply_buf, reply_cap, fields_buf,
             fields_cap, arena_buf, arena_cap
         ]
     );

@@ -19,17 +19,18 @@
 
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
+use super::reason_of;
 use super::{
     AdminRoute, ArriveOut, BillableClass, Claim, DialectAuth, OnPieceOut, OutField, PinMechanism,
     PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite, RefusalOut,
-    RouteCost, Section, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL,
-    CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN,
-    EMIT_DONE, EMIT_TO_FAR_END, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION,
-    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MARK_GATE_REJECTED,
-    MECHANISM_ROOT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL, RECORD_PUT, ROUTE_PUBLIC,
-    SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED, SHAPE_PIECEWISE, SHAPE_WHOLE,
-    TAIL_FALLBACK, TAIL_PROBES, TRUST_PIN, TRUST_RECOVERY_BACKOFF, UNITS_ESTIMATED, UNITS_REPORTED,
-    VERDICT_HARD,
+    RefusalStatus, RouteCost, Section, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED,
+    CANCEL_OK_PARTIAL, CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED,
+    CLAIM_EXACT, CLAIM_OPEN, EMIT_DONE, EMIT_TO_FAR_END, INGRESS_ACCEPT_LOOP,
+    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
+    INGRESS_SUBSCRIPTION, MARK_GATE_REJECTED, MECHANISM_ROOT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL,
+    RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_PUBLIC, SECTION_CONSUMED, SECTION_DECLARING,
+    SECTION_REQUIRED, SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_PROBES, TRUST_PIN,
+    TRUST_RECOVERY_BACKOFF, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -576,7 +577,8 @@ pub fn check_admin_routes(routes: &[AdminRoute]) -> Result<(), Fault> {
 /// The Statement tail, at load: known flags, ingress bits and dispatch shape; at least one ingress
 /// shape; no string or list counted with a NULL pointer. Its elements: [`check_sections`],
 /// [`check_dialect_auth`], [`check_route_cost`], [`check_billable_classes`], [`check_needs`],
-/// [`check_record_chains`], [`check_trust_keys`] and each pin's [`check_pin_mechanisms`].
+/// [`check_record_chains`], [`check_trust_keys`] and each pin's [`check_pin_mechanisms`], and
+/// [`check_refusal_statuses`].
 ///
 /// # Errors
 ///
@@ -634,7 +636,12 @@ pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
         "tail.egress_targets",
     )?;
     listed(t.record_chains, t.record_chains_len, "tail.record_chains")?;
-    listed(t.trust_keys, t.trust_keys_len, "tail.trust_keys")
+    listed(t.trust_keys, t.trust_keys_len, "tail.trust_keys")?;
+    listed(
+        t.refusal_statuses,
+        t.refusal_statuses_len,
+        "tail.refusal_statuses",
+    )
 }
 
 /// The tail's sections: each named, known flags, and EXACTLY ONE is the declaring section.
@@ -784,6 +791,31 @@ pub fn check_trust_keys(keys: &[TrustKey]) -> Result<(), Fault> {
         }
         if keys[..i].iter().any(|p| p.role == k.role) {
             return Err(fault(Rule::Contradiction, "trust_key.role_twice"));
+        }
+    }
+    Ok(())
+}
+
+/// The refusal statuses: each names a dialect the tail declares (or every dialect), a reason the
+/// vocabulary holds and a status from 400 to 599, and no `(dialect, reason)` is stated twice.
+///
+/// # Errors
+///
+/// The rule an entry breaks.
+pub fn check_refusal_statuses(rows: &[RefusalStatus], dialects_len: u64) -> Result<(), Fault> {
+    for (i, r) in rows.iter().enumerate() {
+        if r.dialect != REFUSAL_ANY_DIALECT {
+            index(r.dialect, dialects_len, "refusal_status.dialect")?;
+        }
+        if reason_of(r.reason).is_none() {
+            return Err(fault(Rule::UnknownCode, "refusal_status.reason"));
+        }
+        code(u64::from(r.status), 400, 599, "refusal_status.status")?;
+        if rows[..i]
+            .iter()
+            .any(|d| d.dialect == r.dialect && d.reason == r.reason)
+        {
+            return Err(fault(Rule::Contradiction, "refusal_status.twice"));
         }
     }
     Ok(())

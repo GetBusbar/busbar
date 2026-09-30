@@ -97,6 +97,7 @@
 //! | `served_op_classes` | tail [`PlaneTail::op_classes`]; [`ArriveOut::op_class`] indexes it |
 //! | `record_kinds` | tail [`PlaneTail::record_kinds`]; [`RecordWrite::kind`] indexes it |
 //! | (new) chained record framing | tail [`PlaneTail::record_chains`] |
+//! | (new) refusal statuses per dialect and reason | tail [`PlaneTail::refusal_statuses`]; [`RefusalIn::reason`] |
 //! | `dispatch_flags` / `DISPATCH_BLOCKS` | DROPPED — a plane never blocks (the design's plugin-ABI section: no blocking on the hot path). Replaced by [`PlaneTail::dispatch_shape`] |
 //! | `required_sections` | tail: [`SECTION_REQUIRED`] on a [`PlaneTail::sections`] entry |
 //! | `BuildCtx.host`, `host_ctx` | [`crate::abi::mechanism::lifecycle::OpenIn::host`] |
@@ -149,6 +150,7 @@ use super::mechanism::lifecycle::{
     slot as life, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, RefreshIn,
     ReleaseIn, TickIn, TickOut, ValidateIn, LIFECYCLE_SLOTS,
 };
+use crate::caps::ReasonCode;
 
 /// The plane kind's ABI version: new in 1.6.0 (v1.5.5 had no plane ABI), so it ships `1`.
 pub const ABI_VERSION: u32 = 1;
@@ -351,6 +353,24 @@ pub const CHAIN_PIPE_SEPARATED: u32 = 2;
 /// [`RecordChain::flags`]: the record's scope enters its digest.
 pub const CHAIN_DIGESTS_SCOPE: u32 = 1;
 
+/// [`RefusalStatus::dialect`]: the row holds for every dialect the plane has no row of its own for.
+pub const REFUSAL_ANY_DIALECT: u32 = u32::MAX;
+
+/// A refusal reason's code on this ABI ([`RefusalStatus::reason`], [`RefusalIn::reason`]): its
+/// place in the vocabulary's declaration order, which is [`ReasonCode::ALL`]'s order. The
+/// vocabulary only ever appends, so a code never changes meaning; this crate's tests pin every
+/// code to its spelling.
+#[must_use]
+pub const fn reason_code(reason: ReasonCode) -> u32 {
+    reason as u32
+}
+
+/// The refusal reason `code` names; `None` for a code the vocabulary does not hold.
+#[must_use]
+pub fn reason_of(code: u32) -> Option<ReasonCode> {
+    ReasonCode::ALL.get(code as usize).copied()
+}
+
 // ── the Statement tail ───────────────────────────────────────────────────────────────────────────
 
 /// One top-level config section the plane owns or reads.
@@ -451,6 +471,24 @@ pub struct PinMechanism {
     pub token: AbiStr,
     /// [`MECHANISM_ROOT`] or `0`.
     pub flags: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
+}
+
+/// The status one refusal reason wears in one dialect (or in every dialect, with
+/// [`REFUSAL_ANY_DIALECT`]). The kernel chooses a refusal's status from the plane's rows: the row
+/// for the unit's dialect, else the [`REFUSAL_ANY_DIALECT`] row, else its own default. A protocol
+/// whose dialects answer the same condition with different statuses states each here, so the
+/// status a client reads is the dialect's own.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefusalStatus {
+    /// Index into [`PlaneTail::dialects`], or [`REFUSAL_ANY_DIALECT`].
+    pub dialect: u32,
+    /// The reason's code ([`reason_code`]).
+    pub reason: u32,
+    /// The status number, 400 to 599.
+    pub status: u32,
     /// Alignment padding.
     pub _reserved: u32,
 }
@@ -556,6 +594,11 @@ pub struct PlaneTail {
     pub trust_keys: *const TrustKey,
     /// How many.
     pub trust_keys_len: usize,
+    /// The statuses its refusals wear where they are not the kernel's defaults; at most one entry
+    /// per `(dialect, reason)`.
+    pub refusal_statuses: *const RefusalStatus,
+    /// How many.
+    pub refusal_statuses_len: usize,
 }
 
 // ── the generation snapshot ──────────────────────────────────────────────────────────────────────
@@ -842,8 +885,9 @@ pub struct RefusalIn {
     pub status: u32,
     /// Index into [`PlaneTail::dialects`].
     pub dialect: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
+    /// The refusal reason's code ([`reason_code`]): with the status and the dialect, what the
+    /// plane renders. Two reasons may share a status and still read differently to a client.
+    pub reason: u32,
     /// The refusal text; never secret material.
     pub text: AbiStr,
     /// HOST buffer for the rendered body.

@@ -195,12 +195,19 @@ pub(crate) fn rig(way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
     let plugin = load(way, &dispatcher);
     let book = Arc::new(book);
     let calls = Arc::new(PlaneInstance::new(plugin.clone(), dispatcher, 1));
+    let refusal_statuses = calls.refusal_statuses();
+    assert_eq!(
+        refusal_statuses,
+        cases::statuses(),
+        "{way:?}: the tail's statuses, as the loader read them"
+    );
     let driver = PlaneDriver::new(
         calls,
         DriverConfig {
             caps,
             op_classes: vec![OpClassId::new("call")],
             status_of: refusal_status,
+            refusal_statuses,
         },
         book.clone(),
     );

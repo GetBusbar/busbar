@@ -78,6 +78,7 @@ pub(crate) fn rig(_way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
             caps,
             op_classes: vec![OpClassId::new("call")],
             status_of: refusal_status,
+            refusal_statuses: cases::statuses(),
         },
         book.clone(),
     );
@@ -451,6 +452,12 @@ impl PlaneCalls for Double {
         out: &mut RefusalOut,
         grow: Grow<'_, RefusalIn, RefusalOut>,
     ) -> Outcome {
+        // The reason crosses beside its text: a refusal whose code names another reason is FAULT.
+        let named =
+            busbar_contract::abi::plane::reason_of(input.reason).map(|r| r.as_str().as_bytes());
+        if named != Some(unsafe { text(input.text) }) {
+            return Outcome::Fault;
+        }
         let body = [
             b"refused:".as_slice(),
             input.status.to_string().as_bytes(),

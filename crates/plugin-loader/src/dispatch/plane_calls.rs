@@ -16,7 +16,7 @@ use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome};
 use busbar_contract::abi::mechanism::lifecycle::slot as life;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, RefusalIn, RefusalOut,
+    slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, RefusalIn, RefusalOut, RefusalStatus,
 };
 use busbar_contract::plane_calls::{Answered, Grow, Lent, PieceInFlight, PlaneCalls};
 
@@ -42,6 +42,11 @@ impl PlaneInstance {
             dispatcher,
             worker,
         }
+    }
+
+    /// The refusal statuses the plane's tail states, for the driver's config.
+    pub fn refusal_statuses(&self) -> Vec<RefusalStatus> {
+        self.plugin.refusal_statuses().to_vec()
     }
 
     /// A ticketless call of `s` with the one re-call a short answer earns. It crosses on the
