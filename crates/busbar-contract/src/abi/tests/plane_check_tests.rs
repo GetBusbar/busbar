@@ -188,6 +188,33 @@ fn a_class_counted_twice_is_fault() {
     assert_eq!(check_arrive(Ready, &o, &[u, v], 4, &bounds()), Ok(()));
 }
 
+/// THE CANCEL RULE's shape: an arrival is either a cancellable unit (`correlation`) or a cancel
+/// (`cancels`), never both. Either alone is valid.
+#[test]
+fn an_arrival_that_cancels_carries_no_correlation_of_its_own() {
+    let mut o: ArriveOut = z();
+    o.correlation = 7;
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        Ok(()),
+        "a cancellable unit"
+    );
+    let mut o: ArriveOut = z();
+    o.cancels = 7;
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        Ok(()),
+        "a cancel"
+    );
+    let mut o: ArriveOut = z();
+    o.correlation = 7;
+    o.cancels = 7;
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.cancel_with_correlation")
+    );
+}
+
 #[test]
 fn a_unit_naming_no_billable_class_or_unknown_source_is_fault() {
     let mut o: ArriveOut = z();
@@ -225,7 +252,7 @@ fn a_streamed_reply_never_exceeds_its_buffer() {
 #[test]
 fn on_piece_unknown_flags_or_more_are_fault() {
     let mut o: OnPieceOut = z();
-    o.flags = 8;
+    o.flags = 1 << 8;
     assert_eq!(
         piece(&o, &[], &[], &[]),
         f(Rule::UnknownCode, "on_piece.flags")
@@ -255,6 +282,49 @@ fn a_text_message_is_whole_and_not_empty() {
         piece(&o, &[], &[], &[]),
         f(Rule::Contradiction, "on_piece.text")
     );
+}
+
+/// THE CATALOGUE WATCH: `EMIT_WATCH_CATALOGUE` and `EMIT_UNWATCH_CATALOGUE` are known bits, each
+/// valid alone, and an answer setting both is a contradiction.
+#[test]
+fn a_catalogue_watch_and_its_drop_are_known_and_never_together() {
+    for flag in [EMIT_WATCH_CATALOGUE, EMIT_UNWATCH_CATALOGUE] {
+        let mut o: OnPieceOut = z();
+        o.flags = flag;
+        assert_eq!(piece(&o, &[], &[], &[]), Ok(()), "flag {flag} alone");
+    }
+    let mut o: OnPieceOut = z();
+    o.flags = EMIT_WATCH_CATALOGUE | EMIT_UNWATCH_CATALOGUE;
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::Contradiction, "on_piece.watch_with_unwatch")
+    );
+}
+
+/// The catalogue-moved tick is its own `OnPieceIn::flags` bit, distinct from every other piece bit,
+/// and the watch bits are distinct from every other emit bit.
+#[test]
+fn the_catalogue_bits_share_no_bit_with_their_neighbours() {
+    let piece_bits = [
+        PIECE_END_OF_FRAME,
+        PIECE_LAST,
+        PIECE_HAS_STATUS,
+        PIECE_CATALOGUE_MOVED,
+    ];
+    let emit_bits = [
+        EMIT_TO_FAR_END,
+        EMIT_DONE,
+        EMIT_WATCH_CATALOGUE,
+        EMIT_UNWATCH_CATALOGUE,
+    ];
+    for bits in [&piece_bits[..], &emit_bits[..]] {
+        for (i, a) in bits.iter().enumerate() {
+            assert_eq!(a.count_ones(), 1, "{a} is one bit");
+            for b in &bits[i + 1..] {
+                assert_eq!(a & b, 0, "{a} and {b} overlap");
+            }
+        }
+    }
 }
 
 #[test]

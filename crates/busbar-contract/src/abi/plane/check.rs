@@ -25,11 +25,11 @@ use super::{
     PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite, RefusalOut,
     RefusalStatus, RouteCost, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL,
     CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN,
-    EMIT_DONE, EMIT_TO_FAR_END, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION,
-    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MARK_GATE_REJECTED,
-    MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL, RECORD_PUT,
-    REFUSAL_ANY_DIALECT, ROUTE_PUBLIC, SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_PROBES,
-    TRUST_PIN, TRUST_RECOVERY_BACKOFF, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_HARD,
+    EMIT_DONE, EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP,
+    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION,
+    MARK_GATE_REJECTED, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL,
+    RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_PUBLIC, SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK,
+    TAIL_PROBES, TRUST_PIN, TRUST_RECOVERY_BACKOFF, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -193,6 +193,9 @@ pub fn check_arrive(
         )?;
         index(out.op_class, b.op_classes, "arrive.op_class")?;
         index(out.dialect, b.dialects, "arrive.dialect")?;
+        if out.correlation != 0 && out.cancels != 0 {
+            return Err(fault(Rule::Contradiction, "arrive.cancel_with_correlation"));
+        }
     }
     Ok(())
 }
@@ -219,12 +222,15 @@ pub fn check_on_piece(
     code(u64::from(out.more), 0, 1, "on_piece.more")?;
     bits(
         u64::from(out.flags),
-        u64::from(EMIT_TO_FAR_END | EMIT_DONE | PIECE_OUT_TEXT),
+        u64::from(EMIT_TO_FAR_END | EMIT_DONE | EMIT_WATCH_CATALOGUE | EMIT_UNWATCH_CATALOGUE | PIECE_OUT_TEXT),
         "on_piece.flags",
     )?;
     // A text message is a whole message of at least one byte.
     if out.flags & PIECE_OUT_TEXT != 0 && (out.emitted == 0 || out.more != 0) {
         return Err(fault(Rule::Contradiction, "on_piece.text"));
+    }
+    if out.flags & EMIT_WATCH_CATALOGUE != 0 && out.flags & EMIT_UNWATCH_CATALOGUE != 0 {
+        return Err(fault(Rule::Contradiction, "on_piece.watch_with_unwatch"));
     }
     if out.more == 1 && out.emitted == 0 {
         return Err(fault(Rule::Contradiction, "on_piece.more_without_emitted"));

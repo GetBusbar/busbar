@@ -68,6 +68,33 @@
 //!
 //! [`CANCEL_FAILED`] bills nothing.
 //!
+//! # The cancel rule
+//!
+//! A caller can cancel one of its own in-flight units by name. `arrive` names every unit it
+//! classifies with an optional [`ArriveOut::correlation`], and a subsequent arrival on the SAME
+//! connection whose [`ArriveOut::cancels`] equals it is a cancel:
+//!
+//! 1. The kernel ends the named unit, whatever its shape (a one-shot unit included), through the
+//!    lifecycle `cancel`, and bills it by [`cancel_bills_reported_units`] like any other cut.
+//! 2. The named unit is SILENCED: nothing of its reply that has not already reached the caller is
+//!    written after the cancel.
+//! 3. The cancel itself is a notice: it opens no hold, bills nothing and writes no reply.
+//! 4. A `cancels` value naming no in-flight unit, a unit already finished or a unit on another
+//!    connection changes nothing. A cancel never reaches across connections.
+//!
+//! When to emit a cancel is the plane's call. A plane that cancels only where its dialect defines
+//! it (MCP: its stdio carrier, as predev) simply leaves `cancels` at `0` everywhere else.
+//!
+//! # The catalogue-moved tick
+//!
+//! A session that asked to be told when the catalogue moves ([`EMIT_WATCH_CATALOGUE`] on any of
+//! its pieces) is given a [`PIECE_CATALOGUE_MOVED`] piece ([`FROM_KERNEL`], no bytes) on its stream
+//! each time the catalogue generation moves, at most once per move. The watch is keyed by (session
+//! stream, owning principal); [`EMIT_UNWATCH_CATALOGUE`] drops it, and so does the session ending
+//! or being evicted. The plane keeps what the session watches (its own bounded state) and answers
+//! the tick with whatever it tells the session, or with nothing; a watch never widens what the
+//! session's principal may see.
+//!
 //! EVERY `PlaneDecl` FIELD, AND WHERE IT WENT (nothing dropped silently):
 //!
 //! | hot-lane `PlaneDecl` / `BuildCtx` | here |
@@ -311,6 +338,12 @@ pub const PIECE_HAS_STATUS: u32 = 1 << 2;
 /// end reports its outcome there (a trailer status) reads it, any other ignores the piece. The
 /// kernel never drops or reads it.
 pub const PIECE_FIELDS: u32 = 1 << 3;
+/// [`OnPieceIn::flags`]: the CATALOGUE-MOVED TICK. With [`FROM_KERNEL`], `attempt_no == 0` and no
+/// bytes, on a session's [`OnPieceIn::stream`], it says the catalogue generation that session
+/// watches ([`EMIT_WATCH_CATALOGUE`]) moved since the last tick it was given. The plane answers
+/// with whatever it tells the session about the move, or with nothing. See
+/// the catalogue-moved tick in this module's documentation.
+pub const PIECE_CATALOGUE_MOVED: u32 = 1 << 4;
 
 /// [`OnPieceOut::flags`]: the emitted bytes go to the far end (else to the caller).
 pub const EMIT_TO_FAR_END: u32 = 1;
@@ -320,6 +353,14 @@ pub const EMIT_DONE: u32 = 1 << 1;
 /// binary messages sends them as text). Only on an answer that emits at least one byte and
 /// completes its message (`more == 0`).
 pub const PIECE_OUT_TEXT: u32 = 1 << 2;
+/// [`OnPieceOut::flags`]: WATCH. From now on, this piece's session is given a
+/// [`PIECE_CATALOGUE_MOVED`] tick whenever the catalogue generation moves. The watch is keyed by
+/// (session stream, the session's owning principal) and is the kernel's to hold.
+pub const EMIT_WATCH_CATALOGUE: u32 = 1 << 3;
+/// [`OnPieceOut::flags`]: DROP the watch [`EMIT_WATCH_CATALOGUE`] set for this piece's session. The
+/// kernel also drops it on its own when the session ends or is evicted. Never set together with
+/// [`EMIT_WATCH_CATALOGUE`].
+pub const EMIT_UNWATCH_CATALOGUE: u32 = 1 << 4;
 
 /// [`OnPieceOut::verdict`]: no verdict; the walk's status table alone decides.
 pub const VERDICT_NONE: u32 = 0;
@@ -1097,6 +1138,14 @@ pub struct ArriveOut {
     pub refusal_status: u32,
     /// Alignment padding.
     pub _reserved: u32,
+    /// This unit's CORRELATION KEY: a non-zero value the plane derives from the arrival (for
+    /// example from its request identifier), naming the unit for a subsequent
+    /// [`ArriveOut::cancels`]; `0` = the unit cannot be cancelled by name. A tail addition.
+    pub correlation: u64,
+    /// A non-zero value makes this arrival a CANCEL: it names the [`ArriveOut::correlation`] of an
+    /// in-flight unit on the same connection (the cancel rule, in this module's documentation).
+    /// `0` = not a cancel. Never set together with a non-zero [`ArriveOut::correlation`].
+    pub cancels: u64,
 }
 
 /// `on_piece`'s `in`.
