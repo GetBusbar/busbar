@@ -228,7 +228,11 @@ fn a_refused_arrivals_text_is_bounded_and_never_cut() {
     };
     let mut o: ArriveOut = z();
     o.head.error = text(&at_cap);
-    assert_eq!(check_arrive(Refused, &o, &[], 4, &bounds()), Ok(()), "at the cap");
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        Ok(()),
+        "at the cap"
+    );
     o.head.error = text(&over);
     assert_eq!(
         check_arrive(Refused, &o, &[], 4, &bounds()),
@@ -244,7 +248,11 @@ fn a_refused_arrivals_text_is_bounded_and_never_cut() {
     );
     let mut o: ArriveOut = z();
     o.head.error = text(&over);
-    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()), "not judged on READY");
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        Ok(()),
+        "not judged on READY"
+    );
     let mut o: ArriveOut = z();
     o.head.error = s("Method `x` is not implemented by this server.");
     assert_eq!(check_arrive(Refused, &o, &[], 4, &bounds()), Ok(()));
