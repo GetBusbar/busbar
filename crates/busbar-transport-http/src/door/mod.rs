@@ -373,6 +373,15 @@ const OFFER_H2_H1: &[u8] = b"\x02h2\x08http/1.1";
 /// The same under the http1-only key.
 const OFFER_H1: &[u8] = b"\x08http/1.1";
 
+/// The protocol offer `locate` answers: none in the clear, else 1.5.5's by the http1-only key.
+fn offer_for(secure: bool, http1_only: bool) -> &'static [u8] {
+    match (secure, http1_only) {
+        (false, _) => &[],
+        (true, true) => OFFER_H1,
+        (true, false) => OFFER_H2_H1,
+    }
+}
+
 /// `locate`.
 pub struct Locate;
 impl SafeSlot for Locate {
@@ -411,11 +420,7 @@ impl SafeSlot for Locate {
             format!("{host}:{port}")
         };
         // The offer exists only where a handshake does: on a secured connection.
-        let offer: &[u8] = match (secure, p.get().is_some_and(|x| x.http1_only)) {
-            (false, _) => &[],
-            (true, true) => OFFER_H1,
-            (true, false) => OFFER_H2_H1,
-        };
+        let offer = offer_for(secure, p.get().is_some_and(|x| x.http1_only));
         o.secure = u32::from(secure);
         o.has_name = 1;
         let (mut a, mut n, mut l) = (i.authority_buf(), i.name_buf(), i.alpn_buf());

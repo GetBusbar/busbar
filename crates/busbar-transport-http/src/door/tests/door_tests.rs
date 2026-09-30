@@ -47,50 +47,12 @@ fn a_status_code_maps_to_its_class() {
 /// `http/1.1` alone under the http1-only key, and none on a cleartext one.
 #[test]
 fn locate_offers_what_1_5_5_offered_in_the_handshake() {
-    fn offer(settings: &'static str, target: &'static str) -> Vec<u8> {
-        let (posture, prior_knowledge, http1_only) =
-            read_settings(&blob(settings)).expect("settings");
-        let inst = Box::into_raw(Box::new(Instance {
-            posture,
-            prior_knowledge,
-            http1_only,
-            framings: Mutex::new(HashMap::new()),
-            next: AtomicU64::new(1),
-        }));
-        let (mut a, mut n, mut l) = ([0_u8; 64], [0_u8; 64], [0_u8; 64]);
-        // SAFETY: plain C data.
-        let mut i: LocateIn = unsafe { std::mem::zeroed() };
-        i.target = abi_str_of(target);
-        i.authority_buf = a.as_mut_ptr();
-        i.authority_cap = a.len();
-        i.name_buf = n.as_mut_ptr();
-        i.name_cap = n.len();
-        i.alpn_buf = l.as_mut_ptr();
-        i.alpn_cap = l.len();
-        // SAFETY: plain C data.
-        let mut o: LocateOut = unsafe { std::mem::zeroed() };
-        assert_eq!(Locate::call(inst.cast(), &i, &mut o), Outcome::Ready);
-        // SAFETY: `open`'s box, closed once.
-        drop(unsafe { Box::from_raw(inst) });
-        l[..o.alpn_written as usize].to_vec()
-    }
+    let http1_only = |s: &'static str| read_settings(blob(s)).expect("settings").2;
+    assert_eq!(offer_for(true, http1_only("{}")), b"\x02h2\x08http/1.1");
     assert_eq!(
-        offer("{}", "https://api.example.com"),
-        b"\x02h2\x08http/1.1"
-    );
-    assert_eq!(
-        offer(
-            r#"{"advanced.upstream_http1_only":true}"#,
-            "https://api.example.com"
-        ),
+        offer_for(true, http1_only(r#"{"advanced.upstream_http1_only":true}"#)),
         b"\x08http/1.1"
     );
-    assert_eq!(offer("{}", "http://127.0.0.1:8080"), b"");
-}
-
-fn abi_str_of(s: &'static str) -> AbiStr {
-    AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
-    }
+    assert_eq!(offer_for(false, http1_only("{}")), b"");
+    assert_eq!(offer_for(false, true), b"");
 }
