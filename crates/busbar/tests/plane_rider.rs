@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE PLANE RIDES THE REAL HOST, ON THE ONE PATH: a door plane, loaded both ways through the
-//! composition root's one loader seam (compiled in by `load_linked`, dropped in by `load_dropped`),
+//! one loader seam (compiled in by `load_linked`, dropped in by `load_dropped`),
 //! crosses into the KERNEL's own host services on the one dispatcher, and the two doors answer
 //! alike.
 //!
@@ -23,8 +23,8 @@
 //!   deleted by the old-loader removal); the door lane's delivery path is the one-dispatcher boot's
 //!   door-plane load, proven there.
 
-#[path = "../../../tests/fixtures/plane_driver_test_plane.rs"]
-#[allow(dead_code, clippy::all)]
+#[path = "fixtures/plane_driver_test_plane.rs"]
+#[allow(dead_code)]
 mod plane;
 
 use std::collections::HashMap;
@@ -40,7 +40,7 @@ use busbar_contract::abi::plane::{
 use busbar_contract::services::HostServices;
 use busbar_kernel::host_services::{KernelServices, SystemResolver};
 
-use crate::root::loader::dispatch::{
+use busbar_plugin_loader::dispatch::{
     in_head, kinds::plane::Plane, load_dropped, load_linked, out_head, Bind, DispatchConfig,
     Dispatcher, Frame, ManifestFacts, NoSink, Plugin, NO_BLOB,
 };
@@ -203,10 +203,19 @@ fn a_door_plane_reads_the_kernels_own_clock_both_ways() {
             (mono_before..=mono_after).contains(&read[1]),
             "{way:?}: the monotonic reading is on the kernel's own origin"
         );
+        assert!(
+            read[1] < read[0],
+            "{way:?}: wall and monotonic are two different readings, not one amount twice"
+        );
+        let (_, again) = arrive(&plugin, b"/clock");
+        assert!(
+            again[0] >= read[0] && again[1] >= read[1],
+            "{way:?}: a later read of the kernel's clock never runs backwards"
+        );
         assert_eq!(
             host_calls(&plugin),
-            calls + 1,
-            "{way:?}: one read crosses into the host exactly once"
+            calls + 2,
+            "{way:?}: each read crosses into the host exactly once"
         );
         answers.push(outcome);
     }
