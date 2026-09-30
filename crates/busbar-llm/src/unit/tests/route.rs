@@ -910,11 +910,15 @@ fn naming_the_legs_over_a_pool_interns_nothing_and_allocates_only_the_plan() {
     let (cands, _) = candidates(&rt, "leg-naming-gate-p").expect("the gate pool resolves");
     assert_eq!(cands.len(), 4, "the gate pool must be four lanes wide");
 
+    // Held across the two reads: every interner in this binary takes the same guard, so no other
+    // test's interning lands between them. Taken after the builds above, which take it themselves.
+    let intern_guard = crate::test_support::intern_guard();
     let vocabulary_before = Registration::interned();
     let _ = CountingJemalloc::reset();
     let plan = plan_over(&rt, &cands);
     let allocs = CountingJemalloc::count();
     let vocabulary_after = Registration::interned();
+    drop(intern_guard);
 
     assert_eq!(
         plan.legs.len(),

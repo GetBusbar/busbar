@@ -567,6 +567,7 @@ static LANES: std::sync::LazyLock<std::sync::Mutex<busbar_contract::Registration
 /// The destination set the trust unit would have sealed, over the lane this deployment CONFIGURED —
 /// the name read back off the running routing tables, not a literal spelled here.
 fn sealed_destinations(seal: &KernelSeal, lane: &str) -> Vec<VerifiedDestination> {
+    let _intern_guard = crate::test_support::intern_guard();
     let lane = LANES
         .lock()
         .expect("the rehearsal's interner is never poisoned")

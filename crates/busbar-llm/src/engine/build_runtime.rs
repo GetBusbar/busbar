@@ -111,6 +111,10 @@ pub(crate) fn build_runtime(
     // would otherwise panic "unknown protocol". Idempotent (dedupes by name); a no-op in production.
     #[cfg(any(test, feature = "test-support"))]
     busbar_kernel::proto::register_test_protocols(crate::DECLS);
+    // This build interns the generation's names into the process vocabulary; a test measuring that
+    // vocabulary holds the same guard, so no build lands inside its window.
+    #[cfg(test)]
+    let _intern_guard = crate::test_support::intern_guard();
     let input = input
         .downcast_ref::<PlaneBuildInput>()
         .expect("PlaneBuildInput: the LLM plane's build_runtime received a foreign carrier");
