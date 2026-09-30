@@ -318,6 +318,86 @@ pub fn select(uses: &Uses, candidates: &[Candidate]) -> Vec<Selected> {
     out
 }
 
+// ── THE REGISTRY: the linked rows, then the plugins directory's, through one admission ─────────────
+
+/// What [`registry`] reads to build THE plugin registry: the rows this build LINKS (registered
+/// ahead of the directory's, through the same admission) and, unless only those are wanted, the
+/// directory [`Scan`].
+pub struct Build<'a> {
+    /// The build's linked rows.
+    pub linked: Vec<crate::LinkedPlugin>,
+    /// The directory scan, or `None` for the linked rows alone (no policy, no floor, no file read).
+    pub scan: Option<Scan<'a>>,
+}
+
+/// The plugins directory's half of a [`Build`].
+pub struct Scan<'a> {
+    /// The resolved `plugins.trust` policy. Its first-party floor is the build's to arm: it is an
+    /// observed fact (the persisted high-water marks), never a configuration value.
+    pub policy: crate::sign::TrustPolicy,
+    /// The fleet data dir the first-party floor persists under (`None` = memory-only: no probe, no
+    /// files).
+    pub data_dir: Option<&'a std::path::Path>,
+    /// The plugins directory, or `None` when the plugin subsystem is off: then nothing in any
+    /// directory is read (drop-is-inert) and the registry is the linked rows.
+    pub dir: Option<&'a std::path::Path>,
+}
+
+/// What [`registry`] tells its caller as it goes, in order, so the caller's log lines keep their
+/// order: the floor could not be read; the subsystem is off; the directory was scanned (every
+/// loadable and skipped row, before the floor rises); the risen floor could not be persisted.
+#[derive(Debug)]
+pub enum Note<'r> {
+    /// The persisted first-party floor could not be used (booting with no floor).
+    FloorUnreadable(&'r str),
+    /// The plugin subsystem is off: the registry is the linked rows.
+    Off,
+    /// The directory's rows, admitted, with the linked rows ahead of them.
+    Scanned(&'r crate::PluginRegistry),
+    /// The first-party floor rose but could not be persisted (it still floors this process).
+    FloorUnwritable(&'r std::io::Error),
+}
+
+/// THE REGISTRY BUILD (THE DESIGN §3 stage 1; ARCHITECT ruling Q8: the composition root builds the
+/// registry and the kernel receives it): the linked rows alone, or — given a [`Scan`] — the
+/// first-party floor armed from the persisted marks, the directory's three-phase scan
+/// (structural -> trust -> conflict; ANY invalid tarball or conflict refuses, every problem named;
+/// an untrusted plugin is skipped, never opened) with the linked rows registered ahead of it, and
+/// the floor raised to what the scan proved loadable (only a verified first-party verdict counts;
+/// the mark only rises; a failure to persist is a [`Note`], not a refusal). Nothing is opened.
+///
+/// # Errors
+///
+/// An invalid tarball, manifest or conflict (`plugin validation failed:` and every problem), or
+/// a linked row the admission refuses.
+pub fn registry(
+    b: Build<'_>,
+    note: &mut dyn FnMut(Note<'_>),
+) -> Result<crate::PluginRegistry, String> {
+    let Some(mut scan) = b.scan else {
+        return crate::PluginRegistry::empty().link(b.linked);
+    };
+    let (mut high_water, unreadable) = crate::HighWaterMarks::load(scan.data_dir);
+    if let Some(n) = unreadable {
+        note(Note::FloorUnreadable(&n));
+    }
+    scan.policy.first_party_high_water = high_water.marks();
+    let Some(dir) = scan.dir else {
+        note(Note::Off);
+        return crate::PluginRegistry::empty().link(b.linked);
+    };
+    let registry = crate::scan_and_validate(dir, &scan.policy)
+        .map_err(|errs| format!("plugin validation failed:\n  - {}", errs.join("\n  - ")))?
+        .link(b.linked)?;
+    note(Note::Scanned(&registry));
+    if high_water.record_registry(&registry) {
+        if let Err(e) = high_water.persist() {
+            note(Note::FloorUnwritable(&e));
+        }
+    }
+    Ok(registry)
+}
+
 // ── THE ONE LOAD ─────────────────────────────────────────────────────────────────────────────────
 
 /// One bound instance, of its kind.

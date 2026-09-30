@@ -798,6 +798,73 @@ fn disabled_plugins_are_inert_even_when_present() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// THE BOOT LOG OVER THE ROOT'S REGISTRY BUILD (ARCHITECT ruling Q8): the registry is built by
+/// the composition root (`preflight::RegistryBuild`), and the preflight logs each step the build
+/// notes — the same lines, the same fields, in the order it logged them when it scanned the
+/// directory itself: `disabled`; or `enabled`, then every skipped row, then every loadable row.
+#[test]
+fn the_registry_build_keeps_the_preflights_boot_lines_in_order() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let dir = tmp_plugin_dir("boot-lines");
+    let tarball = unsigned_tarball(plugin_manifest("acme-lines", "lines", "acme"), b"lib");
+    std::fs::write(dir.join("lines.tar.gz"), tarball).unwrap();
+    let lines = |cfg: &crate::config::PluginsCfg| {
+        let cap = WarnCapture::capturing_debug();
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            crate::plugins_preflight(
+                None,
+                None,
+                &Default::default(),
+                &Default::default(),
+                cfg,
+                &Default::default(),
+            )
+            .expect("the preflight passes");
+        });
+        let ours = |m: &String| m.starts_with("plugin");
+        let messages = cap.messages().into_iter().filter(ours);
+        messages
+            .map(|m| m.trim_end().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let d = dir.to_string_lossy().into_owned();
+    let off = lines(&plugins_cfg(&dir, false));
+    assert_eq!(
+        off,
+        ["plugins: disabled (plugins.enabled is false; tarballs in the directory are inert)"]
+    );
+    let skipped = lines(&plugins_cfg(&dir, true));
+    assert_eq!(skipped.len(), 2, "{skipped:?}");
+    assert_eq!(
+        skipped[0],
+        format!("plugins: enabled dir={d} loadable=0 skipped=1")
+    );
+    assert!(
+        skipped[1].starts_with("plugin present but NOT loaded (trust policy) ")
+            && skipped[1].contains("plugin=acme-lines")
+            && skipped[1].contains("lines.tar.gz"),
+        "{skipped:?}"
+    );
+    let mut cfg = plugins_cfg(&dir, true);
+    cfg.trust.allow_unsigned = true;
+    let allowed = lines(&cfg);
+    assert_eq!(allowed.len(), 2, "{allowed:?}");
+    assert_eq!(
+        allowed[0],
+        format!("plugins: enabled dir={d} loadable=1 skipped=0")
+    );
+    assert!(
+        allowed[1].starts_with(
+            "plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in) "
+        ) && allowed[1].contains("plugin=acme-lines"),
+        "{allowed:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// K5 (DECISIONS #2 rule (1)) — THE BUILT-IN STORE IS A ROW OF THE STORE AXIS. The default store is
 /// registered through `PluginRegistry::link`, the admission a dropped-in store's row takes, and the
 /// configured name resolves to it there — not a name the kernel matches. With the plugins directory

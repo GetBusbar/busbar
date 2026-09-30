@@ -4151,7 +4151,7 @@ mod plane_fees_on_admin_usage {
 #[test]
 fn the_store_catalog_heads_with_the_linked_store_rows() {
     let svc = svc_with(tmp_plugins_dir("linked-head"), unsigned_ok_posture());
-    let (stores, _, default) = busbar_kernel::preflight::root_rows();
+    let (stores, _, default, _) = busbar_kernel::preflight::root_rows();
     let linked: Vec<&str> = stores.iter().map(|s| s.0).collect();
     assert!(
         linked.contains(&default),

@@ -293,10 +293,12 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
 /// default refuse the boot (exit 2) before anything resolves a store.
 pub fn register_stores(linked: &Linked) {
     match default_store(linked.stores) {
-        Ok(default) => {
-            let rows = (linked.stores, linked.hooks, default.unwrap_or_default());
-            busbar_kernel::preflight::install_linked_rows(rows)
-        }
+        Ok(default) => busbar_kernel::preflight::install_linked_rows((
+            linked.stores,
+            linked.hooks,
+            default.unwrap_or_default(),
+            crate::root::boot::registry,
+        )),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
             std::process::exit(2);
@@ -942,12 +944,17 @@ fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
         serde_yaml::from_value::<busbar_kernel::config::PluginsCfg>(doc.get("plugins")?.clone())
             .ok()
             .filter(|p| p.enabled)?;
-    let mut policy = plugins.to_policy().ok()?;
     let data_dir = busbar_kernel::preflight::fleet_data_dir();
-    policy.first_party_high_water = crate::root::loader::HighWaterMarks::load(data_dir.as_deref())
-        .0
-        .marks();
-    crate::root::loader::scan_and_validate(std::path::Path::new(&plugins.dir), &policy).ok()
+    let scan = crate::root::loader::boot::Scan {
+        policy: plugins.to_policy().ok()?,
+        data_dir: data_dir.as_deref(),
+        dir: Some(std::path::Path::new(&plugins.dir)),
+    };
+    let build = crate::root::loader::boot::Build {
+        linked: Vec::new(),
+        scan: Some(scan),
+    };
+    crate::root::boot::registry(build, &mut |_| {}).ok()
 }
 
 /// THE PLANES DROPPED INTO `dropped` (see [`dropped_from_config`]): every `kind: plane` plugin it

@@ -14,6 +14,19 @@ use std::sync::Arc;
 use super::loader::{boot::*, dispatch::LoadError, dispatch::ManifestFacts, PluginRegistry};
 use busbar_contract::abi::mechanism::KindCode;
 
+/// THE ONE REGISTRY BUILD (THE DESIGN §3 stage 1; ARCHITECT ruling Q8): the plugin registry is
+/// built here, in the composition root, and nowhere else — the kernel's preflight receives it
+/// through the root's rows (the kernel preflight's `RegistryBuild`), and the root's own
+/// dropped-plugin scan runs the same build. The linked rows alone, or the directory scan with the
+/// first-party floor armed and raised; each step is noted to `note`. Nothing is opened.
+///
+/// # Errors
+///
+/// An invalid tarball, manifest or conflict, or a linked row the admission refuses.
+pub fn registry(b: Build<'_>, note: &mut dyn FnMut(Note<'_>)) -> Result<PluginRegistry, String> {
+    super::loader::boot::registry(b, note)
+}
+
 /// STAGE 0, PLAN: what the configuration file at `path` uses, read off its raw document (secret
 /// references stay raw; environment references are interpolated leniently, as the boot's early
 /// reads do). An unreadable file uses nothing: the boot's own load reports why.
