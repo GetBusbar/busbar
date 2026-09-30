@@ -104,7 +104,12 @@ fn the_default_egress_class_is_the_deployments_security_stance() {
     // guard's own metadata refusal is the guard's, and no deployment setting speaks for it.
     let open = kernel(&["metadata.corp.example"], true);
     assert_eq!(
-        verdict(&open, "https://metadata.corp.example/", DEFAULT_EGRESS_CLASS).value,
+        verdict(
+            &open,
+            "https://metadata.corp.example/",
+            DEFAULT_EGRESS_CLASS
+        )
+        .value,
         svc::DEST_ALLOWED,
         "allow_all_metadata lifts the denylist"
     );
