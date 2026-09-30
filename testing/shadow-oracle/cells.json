@@ -55,10 +55,10 @@
     }
   ],
   "counts": {
-    "total": 2468,
+    "total": 2477,
     "by_plane": {
       "a2a": 468,
-      "core": 939,
+      "core": 948,
       "llm": 149,
       "mcp": 912
     },
@@ -96,7 +96,10 @@
       "route.failover": 16,
       "store.boot": 11,
       "teller": 7,
-      "webrequest": 8
+      "webrequest": 8,
+      "wire.h1": 3,
+      "wire.h2": 4,
+      "wire.tls": 2
     }
   },
   "cells": [
@@ -36850,6 +36853,591 @@
         ]
       },
       "why": "`prompt: rw` with a rewrite reply: the transform POST the forwarder sends and the body the upstream then receives, whatever 1.5.5 made of the reply. The published webrequest-hook (the release paired with 1.5.5) forwards to the capture mock's sidecar path; every POST it makes is recorded byte for byte. #63: webrequest's upstream bytes stay identical to 1.5.5 when it moves onto the connector's exchange() (KERNEL<>PLUGINS step 39)."
+    },
+    {
+      "id": "wire.h1|large-body|openai",
+      "plane": "core",
+      "family": "wire.h1",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-wire-h1-0003"
+        },
+        "mock": {
+          "port": 24735
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"{FILL:100000}\"}]}"
+            },
+            "record": "status"
+          }
+        ],
+        "mask": [],
+        "wire_exact": true
+      },
+      "why": "an openai chat with a request body of about 100 KB over HTTP/1.1: the framing 1.5.5 chose for it (content-length or chunked) and the exact bytes. Wire-exact: the capture mock's port is pinned, so nothing is port-masked. Recorded from the published 1.5.5 binary; the http door (KERNEL<>PLUGINS step 20) is compared against it."
+    },
+    {
+      "id": "wire.h1|stream|anthropic",
+      "plane": "core",
+      "family": "wire.h1",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: anthropic\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-wire-h1-anthropic-0001"
+        },
+        "mock": {
+          "port": 24733
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          }
+        ],
+        "mask": [],
+        "wire_exact": true
+      },
+      "why": "a streaming chat to an anthropic provider over HTTP/1.1: the translated request (`stream: true` on /v1/messages) as it left 1.5.5, header order and case included. The openai h1 stream is in ops.raw|header-order. Wire-exact: the capture mock's port is pinned, so nothing is port-masked. Recorded from the published 1.5.5 binary; the http door (KERNEL<>PLUGINS step 20) is compared against it."
+    },
+    {
+      "id": "wire.h1|stream|gemini",
+      "plane": "core",
+      "family": "wire.h1",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: gemini\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-wire-h1-gemini-0001"
+        },
+        "mock": {
+          "port": 24734
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          }
+        ],
+        "mask": [],
+        "wire_exact": true
+      },
+      "why": "a streaming chat to a gemini provider over HTTP/1.1: the streaming target (streamGenerateContent with alt=sse) and the request as it left 1.5.5. The openai h1 stream is in ops.raw|header-order. Wire-exact: the capture mock's port is pinned, so nothing is port-masked. Recorded from the published 1.5.5 binary; the http door (KERNEL<>PLUGINS step 20) is compared against it."
+    },
+    {
+      "id": "wire.h2|keepalive-ping",
+      "plane": "core",
+      "family": "wire.h2",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nadvanced:\n  upstream_h2_prior_knowledge: true\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-wire-h2-0004"
+        },
+        "mock": {
+          "port": 24739,
+          "fixed": [
+            {
+              "path": "/v1/chat/completions",
+              "status": 200,
+              "content_type": "application/json",
+              "body": "{\"id\":\"chatcmpl-oracle-keepalive\",\"object\":\"chat.completion\",\"created\":0,\"model\":\"m-cap\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"pong\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}",
+              "delay_ms": 32000
+            }
+          ]
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          }
+        ],
+        "mask": [],
+        "wire_exact": true
+      },
+      "why": "an h2c stream held open for 32 s: the mock holds its answer (the connection is still served, and a PING is answered at once), so 1.5.5's http2_keep_alive_interval(30 s) PING goes out while the stream waits. hyper does not ping an idle connection by default, so a stream has to be open. Recorded: the PING frame and its opaque payload in `frames_before_answer` / `c2s_before_answer`, and the served chat. Wire-exact: the capture mock's port is pinned, so nothing is port-masked. Recorded from the published 1.5.5 binary; the http door (KERNEL<>PLUGINS step 20) is compared against it."
+    },
+    {
+      "id": "wire.h2|large-body|openai",
+      "plane": "core",
+      "family": "wire.h2",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nadvanced:\n  upstream_h2_prior_knowledge: true\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-wire-h2-0003"
+        },
+        "mock": {
+          "port": 24736
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"{FILL:100000}\"}]}"
+            },
+            "record": "status"
+          }
+        ],
+        "mask": [],
+        "wire_exact": true
+      },
+      "why": "the same ~100 KB body over h2c: DATA split at the 16384 max frame size, and the flow-control wait at the 65535 initial window. The mock returns one connection WINDOW_UPDATE and one stream WINDOW_UPDATE per DATA frame, each exactly that frame's length, so what the client may send next is deterministic. The frames and the transcript (`c2s`, `s2c_before`) record the DATA sizes 1.5.5 sent. Wire-exact: the capture mock's port is pinned, so nothing is port-masked. Recorded from the published 1.5.5 binary; the http door (KERNEL<>PLUGINS step 20) is compared against it."
+    },
+    {
+      "id": "wire.h2|stream|openai",
+      "plane": "core",
+      "family": "wire.h2",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nadvanced:\n  upstream_h2_prior_knowledge: true\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-wire-h2-0002"
+        },
+        "mock": {
+          "port": 24732
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          }
+        ],
+        "mask": [],
+        "wire_exact": true
+      },
+      "why": "a streaming (`stream: true`) openai chat over h2c: the request's header block, frames and connection transcript. Wire-exact: the capture mock's port is pinned, so nothing is port-masked. Recorded from the published 1.5.5 binary; the http door (KERNEL<>PLUGINS step 20) is compared against it."
+    },
+    {
+      "id": "wire.h2|two-requests|same-conn",
+      "plane": "core",
+      "family": "wire.h2",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nadvanced:\n  upstream_h2_prior_knowledge: true\n  worker_threads: 1\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-wire-h2-0001"
+        },
+        "mock": {
+          "port": 24731
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          }
+        ],
+        "mask": [],
+        "wire_exact": true
+      },
+      "why": "two sequential non-streaming openai chats over HTTP/2 prior knowledge (h2c). The second goes over the SAME connection as stream 3 (both captures name one `conn`), so stream 3's header block records HPACK dynamic-table reuse: the fields stream 1 indexed are sent as indexed references. `advanced.worker_threads: 1` makes it deterministic, because 1.5.5 shards its upstream clients per worker thread (state.rs UpstreamClients::get, one shard per thread on first use) and with one worker both requests take the same shard's pool. Each stream carries the connection transcript (`c2s`, `s2c_before`). Wire-exact: the capture mock's port is pinned, so nothing is port-masked. Recorded from the published 1.5.5 binary; the http door (KERNEL<>PLUGINS step 20) is compared against it."
+    },
+    {
+      "id": "wire.tls|client-hello|default",
+      "plane": "core",
+      "family": "wire.tls",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"https://localhost:{CAPTURE_PORT}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-wire-tls-0001"
+        },
+        "mock": {
+          "port": 24737,
+          "tls_client_hello": true
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          },
+          {
+            "sleep_ms": 300
+          }
+        ],
+        "mask": [],
+        "wire_exact": true
+      },
+      "why": "the TLS ClientHello 1.5.5's upstream client (reqwest 0.12.28, rustls, webpki roots) sends to an https provider at https://localhost:<port>, under the default upstream client (ALPN offers h2 and http/1.1). 1.5.5 cannot trust a custom CA, so only the hello is captured and the handshake fails by design (the chat's status is recorded). tls-parser gives the view: legacy_version, cipher suites in order, compression, and every extension in wire order with its exact data. SNI, ALPN, supported_versions, signature_algorithms, supported_groups and key_share are also listed as readable fields. Masked: the random, the session id (its length kept) and the key-share keys (each group and key length kept). Wire-exact: the capture mock's port is pinned, so nothing is port-masked. Recorded from the published 1.5.5 binary; the http door (KERNEL<>PLUGINS step 20) is compared against it."
+    },
+    {
+      "id": "wire.tls|client-hello|http1-only",
+      "plane": "core",
+      "family": "wire.tls",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"https://localhost:{CAPTURE_PORT}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nadvanced:\n  upstream_http1_only: true\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-wire-tls-0001"
+        },
+        "mock": {
+          "port": 24738,
+          "tls_client_hello": true
+        },
+        "steps": [
+          {
+            "request": {
+              "listener": "admin",
+              "method": "POST",
+              "path": "/api/v1/admin/keys",
+              "auth": "admin",
+              "headers": [
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"name\":\"capture\",\"group\":\"oracle\"}"
+            },
+            "save": {
+              "VK": "token"
+            },
+            "record": false,
+            "expect": 201
+          },
+          {
+            "request": {
+              "listener": "data",
+              "method": "POST",
+              "path": "/v1/chat/completions",
+              "headers": [
+                [
+                  "Authorization",
+                  "Bearer {VK}"
+                ],
+                [
+                  "Content-Type",
+                  "application/json"
+                ]
+              ],
+              "body": "{\"model\":\"m-cap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+            },
+            "record": "status"
+          },
+          {
+            "sleep_ms": 300
+          }
+        ],
+        "mask": [],
+        "wire_exact": true
+      },
+      "why": "the TLS ClientHello 1.5.5's upstream client (reqwest 0.12.28, rustls, webpki roots) sends to an https provider at https://localhost:<port>, under `advanced.upstream_http1_only: true` (ALPN offers http/1.1 only). 1.5.5 cannot trust a custom CA, so only the hello is captured and the handshake fails by design (the chat's status is recorded). tls-parser gives the view: legacy_version, cipher suites in order, compression, and every extension in wire order with its exact data. SNI, ALPN, supported_versions, signature_algorithms, supported_groups and key_share are also listed as readable fields. Masked: the random, the session id (its length kept) and the key-share keys (each group and key length kept). Wire-exact: the capture mock's port is pinned, so nothing is port-masked. Recorded from the published 1.5.5 binary; the http door (KERNEL<>PLUGINS step 20) is compared against it."
     }
   ]
 }
