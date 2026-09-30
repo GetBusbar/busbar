@@ -45,8 +45,6 @@
 //! decision differs in exactly one place, and deliberately: see [`KernelPluginObserver::observe`]'s
 //! `hook` arm, which stands down the METRICS fold for that kind — diagnostics fold for every kind.
 
-use busbar_plugin_loader::observe::PluginObserver;
-
 /// The provenance label every folded metric carries: which loaded plugin reported it.
 ///
 /// Attached by the HOST from the loaded handle, never read off the wire, so a plugin can neither
@@ -230,19 +228,38 @@ pub(crate) fn admits_cardinality_opaque(plugin: &str, series: &str, labels: &[u8
 /// process-global one ([`crate::metrics`]) and the catalogue it resolves against is static.
 pub struct KernelPluginObserver;
 
-/// Install the kernel's observer into the loader. Idempotent-by-refusal — the first install wins;
-/// returns whether THIS call was the one that installed it.
-///
-/// Called once at boot, BEFORE any plugin loads, so nothing a plugin reports during its own
-/// construction is lost. Deliberately not gated on whether a metrics recorder is installed: the
-/// recorder install is `export.prometheus`'s business, the `metrics` facade macros are a no-op
-/// without one, and the DIAGNOSTICS half must work either way.
-pub fn install() -> bool {
-    busbar_plugin_loader::observe::install_plugin_observer(&KernelPluginObserver)
+/// WHAT THE LOADER GRANTED AT OPEN, as the kernel's observer asks it: whether a plugin was opened
+/// first-party, and which of its declared series it was granted. The composition root installs the
+/// loader's answers ([`install_grants`]) before any plugin loads, so the kernel never names the
+/// loader; with none installed, nothing is first-party and nothing is granted.
+pub trait Grants: Send + Sync {
+    /// Was `plugin` opened first-party (a linked door, or signed by the release key)?
+    fn first_party(&self, plugin: &str) -> bool;
+    /// Is `name` of type `kind` a series granted to `plugin`?
+    fn first_party_series(&self, plugin: &str, name: &str, kind: &str) -> bool;
 }
 
-impl PluginObserver for KernelPluginObserver {
-    fn observe(
+static GRANTS: std::sync::OnceLock<&'static dyn Grants> = std::sync::OnceLock::new();
+
+/// Install the loader's grants. The first install wins; a later one returns `false`.
+pub fn install_grants(grants: &'static dyn Grants) -> bool {
+    GRANTS.set(grants).is_ok()
+}
+
+fn first_party(plugin: &str) -> bool {
+    GRANTS.get().is_some_and(|g| g.first_party(plugin))
+}
+
+fn first_party_series(plugin: &str, name: &str, kind: &str) -> bool {
+    GRANTS
+        .get()
+        .is_some_and(|g| g.first_party_series(plugin, name, kind))
+}
+
+impl KernelPluginObserver {
+    /// Fold one call's back-channel: what the loader's observer hands the kernel for every plugin
+    /// response (installed by the composition root).
+    pub fn observe(
         &self,
         plugin: &str,
         kind: &str,
@@ -293,7 +310,7 @@ fn fold_metrics(plugin: &str, raw: &[serde_json::Value]) {
         // THE FIRST-PARTY NAMESPACE (K9a S1): a series the loader GRANTED this plugin at open — a
         // first-party plugin's declared series, of its declared type — is the host's to render as
         // declared: it may be reserved, and it carries no provenance label.
-        let granted = busbar_plugin_loader::observe::first_party_series(plugin, &m.name, &m.kind);
+        let granted = first_party_series(plugin, &m.name, &m.kind);
         if !granted && !admits_metric_name(&m.name) {
             // Reserved first-party namespace — a plugin cannot impersonate a `busbar_*` series.
             // (The charset half is already guaranteed by the validator; naming both through one
@@ -408,7 +425,7 @@ fn fold_diagnostics(plugin: &str, raw: &[serde_json::Value]) {
         let level = clamp_level(d.level, diag.severity);
         // A FIRST-PARTY plugin's diagnostic renders as the host renders its own (K9c): the
         // catalogue line, its fields in the order it attached them, no provenance label.
-        if busbar_plugin_loader::observe::first_party(plugin) {
+        if first_party(plugin) {
             let fields: Vec<(String, String)> = d
                 .ordered_fields()
                 .into_iter()

@@ -184,10 +184,7 @@ impl metrics::Recorder for Registered {
 fn a_granted_first_party_series_renders_as_declared_and_nothing_else_is_granted() {
     use busbar_contract::abi::cold::observe::SeriesDecl;
     let declared = [SeriesDecl::new("busbar_s1_fold_total", "counter")];
-    busbar_plugin_loader::observe::grant_series("s1-first-party", true, &declared)
-        .expect("a first-party declaration is granted");
-    busbar_plugin_loader::observe::grant_series("s1-third-party", false, &declared)
-        .expect("a third party is granted nothing and refused nothing");
+    grant("s1-first-party", &declared);
     let entry =
         |name: &str, kind: &str| serde_json::json!({"name": name, "type": kind, "value": 1});
     let recorder = Registered::default();
@@ -418,7 +415,7 @@ fn a_first_party_plugins_diagnostic_is_written_as_the_hosts_own_line() {
         .iter()
         .find(|d| d.severity == crate::diagnostics::Severity::Actionable)
         .expect("an actionable code");
-    busbar_plugin_loader::observe::grant_series("k9c-first-party", true, &[]).unwrap();
+    grant("k9c-first-party", &[]);
     let entry = serde_json::to_value(
         busbar_contract::abi::cold::observe::PluginDiagnostic::warn(
             format!("BUSBAR-{}", d.code),
@@ -452,4 +449,37 @@ fn a_first_party_plugins_diagnostic_is_written_as_the_hosts_own_line() {
     assert_eq!(lines.len(), 3, "{text}");
     assert_eq!(lines[0], lines[1], "the first-party line is the host's own");
     assert!(lines[2].contains("plugin=k9c-third-party"), "{text}");
+}
+
+/// What the loader granted at open, as these tests state it: the composition root installs the
+/// loader's own answers in a booted process; a test binary installs this one. A plugin not named
+/// here (a third party) is granted nothing.
+#[derive(Default)]
+struct TestGrants(std::sync::Mutex<std::collections::HashMap<String, Vec<(String, String)>>>);
+
+impl Grants for TestGrants {
+    fn first_party(&self, plugin: &str) -> bool {
+        self.0.lock().unwrap().contains_key(plugin)
+    }
+    fn first_party_series(&self, plugin: &str, name: &str, kind: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .get(plugin)
+            .is_some_and(|s| s.iter().any(|(n, k)| n == name && k == kind))
+    }
+}
+
+static TEST_GRANTS: std::sync::LazyLock<TestGrants> = std::sync::LazyLock::new(TestGrants::default);
+
+/// Grant `plugin` first-party with `declared` series.
+fn grant(plugin: &str, declared: &[busbar_contract::abi::cold::observe::SeriesDecl]) {
+    let _ = install_grants(&*TEST_GRANTS);
+    TEST_GRANTS.0.lock().unwrap().insert(
+        plugin.to_string(),
+        declared
+            .iter()
+            .map(|d| (d.name.clone(), d.kind.clone()))
+            .collect(),
+    );
 }

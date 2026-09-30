@@ -615,6 +615,8 @@ async fn run(data_workers: usize) {
     // THE PROCESS'S ONE DISPATCHER, before any plugin loads: every kind's plugins are opened on
     // it (`root::dispatch`).
     let _dispatcher = root::dispatch::boot(data_workers);
+    // THE PLUGIN OBSERVABILITY ENVELOPE, before any plugin loads (`root::observe`).
+    root::observe::install();
     // Metrics are configured AFTER the config loads (below, via `metrics::configure`) because they
     // are 100% OPT-IN: `observability.metrics` absent ⇒ no recorder, no `/metrics`, nothing recorded
     // and nothing retained. Nothing may install a recorder before that decision is read.

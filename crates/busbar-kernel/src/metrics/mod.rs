@@ -602,7 +602,7 @@ pub fn enabled() -> bool {
 ///
 /// A submodule of THIS module rather than a peer at the crate root, because that is what it is: the
 /// fold's whole job is to decide what a plugin is allowed to have put into the recorder this module
-/// owns, it is installed from [`configure`] below, and the one rule it enforces
+/// owns (the composition root installs it before any plugin loads), and the one rule it enforces
 /// ([`observe::admits_metric_name`]) is the rule this crate applies to every series it exposes.
 /// Its file stays at `src/observe.rs` — the path attribute says so — because a module's home in the
 /// tree is a statement about what it belongs to, and a module's home on disk is not.
@@ -610,20 +610,6 @@ pub fn enabled() -> bool {
 pub mod observe;
 
 pub fn configure(buffer: Option<Duration>) {
-    // THE HOST END OF THE PLUGIN OBSERVABILITY ENVELOPE (DECISIONS #85), installed here because this
-    // is the ONE boot call that settles the node's telemetry posture, and it runs before the first
-    // plugin loads. A plugin REPORTS metrics and diagnostics on every response; `crate::observe` is
-    // what validates, bounds and decides about them.
-    //
-    // Installing it before any load matters: a plugin's own constructor is exactly where it has
-    // something worth reporting (a refused target, a path it cannot open), and the plugin log bridge
-    // is installed before `busbar_open` for the same reason.
-    //
-    // UNCONDITIONAL, above the `buffer.is_some()` branch: the `metrics` facade macros are a no-op
-    // without a recorder, and the DIAGNOSTICS half of the envelope has to work whether or not an
-    // operator configured the Prometheus exporter. The result is discarded because "already
-    // installed" is not an error — it is what a second boot inside one test binary looks like.
-    let _ = observe::install();
     let _ = ENABLED.set(buffer.is_some());
     if let Some(buffer) = buffer {
         std::thread::spawn(move || init_with(buffer));
