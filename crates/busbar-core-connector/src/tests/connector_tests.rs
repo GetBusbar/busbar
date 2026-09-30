@@ -480,3 +480,97 @@ fn a_host_side_reader_is_woken_through_its_own_waker() {
         assert_eq!(polled, std::task::Poll::Ready(Err(ConnError::NotOwner)));
     });
 }
+
+// ── EGRESS: the scheme each egress class allows (PB-100) ──
+
+use busbar_contract::abi::host::conn::connector::{
+    EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
+};
+
+/// A connector serving a plaintext door (`plain`) and a door whose targets ask for connection
+/// security (`sec`), admitting every literal, with a client config for the secure one.
+fn scheme_connector() -> Connector {
+    let view = Transports::new(vec![
+        Entry {
+            door: Arc::new(TestDoor::identity("plain")),
+            alpn: Vec::new(),
+        },
+        Entry {
+            door: Arc::new(TestDoor::new(
+                "sec",
+                &["sec"],
+                &[],
+                crate::support::Knobs {
+                    secure_name: Some("localhost"),
+                    ..crate::support::Knobs::default()
+                },
+            )),
+            alpn: Vec::new(),
+        },
+    ])
+    .unwrap();
+    let tls = crate::tls::client::build_client_config(&Default::default()).expect("the config");
+    Connector::serving(
+        view,
+        Arc::new(crate::LiteralsOnly),
+        Some(Arc::new(tls)),
+        Arc::new(|_| {}),
+    )
+}
+
+fn open_in(c: &Connector, need: u32, target: &str) -> Result<ConnId, ConnError> {
+    c.open(
+        OWNER,
+        NeedId(need),
+        &OpenDesc {
+            target,
+            ..OpenDesc::default()
+        },
+    )
+}
+
+/// RED: open-web dials over connection security only: a plaintext target, public or not, is
+/// refused before any judgement; the same class over a secure target opens.
+#[test]
+fn http_to_a_public_host_under_open_web_is_refused() {
+    worker().block_on(async {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        let c = scheme_connector();
+        c.declare_need(OWNER, NeedId(0), "plain", EGRESS_OPEN_WEB);
+        c.declare_need(OWNER, NeedId(1), "sec", EGRESS_OPEN_WEB);
+        assert_eq!(open_in(&c, 0, "93.184.216.34:80"), Err(ConnError::Refused));
+        assert_eq!(open_in(&c, 0, &far), Err(ConnError::Refused));
+        let id = open_in(&c, 1, &far).expect("open-web over a secure target opens");
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// Operator-infrastructure takes the operator's configured plaintext private target (1.5.5's
+/// private-network http api_base case).
+#[test]
+fn the_operator_infrastructure_http_private_target_is_allowed() {
+    worker().block_on(async {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        let c = scheme_connector();
+        c.declare_need(OWNER, NeedId(0), "plain", EGRESS_OPERATOR_INFRASTRUCTURE);
+        let id = open_in(&c, 0, &far).expect("plaintext to the private target opens");
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// RED: loopback-allowed dials plaintext to loopback only: a plaintext private (non-loopback)
+/// address is refused; plaintext loopback opens.
+#[test]
+fn loopback_allowed_refuses_plaintext_off_loopback() {
+    worker().block_on(async {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        let c = scheme_connector();
+        c.declare_need(OWNER, NeedId(0), "plain", EGRESS_LOOPBACK_ALLOWED);
+        assert_eq!(open_in(&c, 0, "10.1.2.3:80"), Err(ConnError::Refused));
+        let id = open_in(&c, 0, &far).expect("plaintext loopback opens");
+        c.close(OWNER, id).unwrap();
+    });
+}

@@ -51,7 +51,10 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
-use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+use busbar_contract::abi::host::conn::connector::{
+    DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB,
+};
+use busbar_contract::abi::host::service::DEST_PLAINTEXT;
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::conn::{
     ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, Piece,
@@ -125,6 +128,19 @@ impl DialJudge for LiteralsOnly {
     }
 }
 
+/// THE SCHEME RULE OF A NEED'S EGRESS CLASS (`abi::host::conn::connector`, `EGRESS_*`), held
+/// against the address the judge pinned: open-web dials over connection security only;
+/// loopback-allowed over connection security, or in plaintext to loopback only; every other
+/// class takes the scheme its target names (operator-infrastructure's plaintext and private
+/// targets included). Which addresses a class admits at all is the kernel judge's, per class.
+fn class_admits(egress_class: u32, secure: bool, addr: SocketAddr) -> bool {
+    match egress_class {
+        EGRESS_OPEN_WEB => secure,
+        EGRESS_LOOPBACK_ALLOWED => secure || addr.ip().is_loopback(),
+        _ => true,
+    }
+}
+
 /// What the connector holds for one declared need.
 #[derive(Debug, Clone)]
 struct DeclaredNeed {
@@ -141,6 +157,8 @@ type Answer = Arc<Mutex<(Option<Result<SocketAddr, Verdict>>, Option<Waker>)>>;
 /// read or wait that found it unanswered.
 struct Judging {
     planned: Option<Planned>,
+    /// The need's egress class, whose scheme rule the pinned address is held to.
+    egress_class: u32,
     /// Writes the caller made before the dial, in order.
     early: Vec<(Vec<u8>, bool)>,
     answer: Answer,
@@ -343,6 +361,12 @@ impl Connector {
             }
         };
         let addr = got.map_err(|_| ConnError::Refused)?;
+        let secure = j.planned.as_ref().is_some_and(Planned::secure);
+        if !class_admits(j.egress_class, secure, addr) {
+            // The refusal stays the connection's answer.
+            j.answer.lock().expect("judgement").0 = Some(Err(DEST_PLAINTEXT));
+            return Err(ConnError::Refused);
+        }
         let planned = j.planned.take().ok_or(ConnError::Refused)?;
         let early = std::mem::take(&mut j.early);
         *judging = None;
@@ -528,6 +552,12 @@ impl Conns for Connector {
                 return Err(ConnError::Refused);
             }
         }
+        // SCHEME BY EGRESS CLASS: open-web is secure-only, decided by the target before any
+        // judgement; loopback-allowed's plaintext-to-loopback rule is held against the pinned
+        // address below.
+        if egress_class == EGRESS_OPEN_WEB && !planned.secure() {
+            return Err(ConnError::Refused);
+        }
         let answer: Answer = Arc::new(Mutex::new((None, None)));
         let later = Arc::clone(&answer);
         let judged = self.judge.judge_dial(
@@ -544,6 +574,9 @@ impl Conns for Connector {
         let (conn, judging) = match judged {
             // Decided at once: a refusal answers the open, as 1.5.5 answered it.
             Some(Err(_)) => return Err(ConnError::Refused),
+            Some(Ok(addr)) if !class_admits(egress_class, planned.secure(), addr) => {
+                return Err(ConnError::Refused)
+            }
             Some(Ok(addr)) => (Some(planned.dial_at(addr).map_err(|f| map(&f))?), None),
             // The name resolves off this thread: the open is in flight, and an address refusal
             // answers the read or wait that finds it.
@@ -551,6 +584,7 @@ impl Conns for Connector {
                 None,
                 Some(Judging {
                     planned: Some(planned),
+                    egress_class,
                     early: Vec::new(),
                     answer,
                 }),
