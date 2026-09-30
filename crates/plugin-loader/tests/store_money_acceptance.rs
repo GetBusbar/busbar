@@ -31,11 +31,13 @@ use busbar_contract::records::{
 };
 // The one 1.5.x usage-row fold, the store SDK's (#33: every store plugin's migrate() calls it).
 use busbar_contract::abi::sdk::store_migrate::{fold_v1_ledger, UsageLedgerV1};
+// The build's store, named once: every subject below reaches it through this alias.
 use busbar_contract::slice::{bucket_all, CapDimension, Epoch, SliceId, SliceRequest, SliceStore};
 use busbar_plugin_loader::store_adapter::StoreAdapter;
-use busbar_store_memory::MemoryStore;
+use busbar_store_memory as store_fixture;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use store_fixture::MemoryStore;
 
 // ── subjects: every door the build's store has ─────────────────────────────────────────────────
 
@@ -850,6 +852,7 @@ fn a_record_blob_comes_back_byte_exact() {
 mod v3 {
     use std::sync::Arc;
 
+    use super::store_fixture;
     use busbar_contract::abi::mechanism::{KindCode, MECHANISM_VERSION};
     use busbar_contract::abi::sdk::store::{Cap, Cell, CellKey, Dimension, Grant};
     use busbar_contract::records::{
@@ -875,7 +878,7 @@ mod v3 {
     /// The build's store through its compiled-in door.
     pub fn compiled_in() -> LoadedStore {
         let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
-        let p = load_linked::<Store>(busbar_store_memory::door, bind_to(&d)).expect("door");
+        let p = load_linked::<Store>(store_fixture::door, bind_to(&d)).expect("door");
         LoadedStore::open(p, d, b"{}", 3).expect("open")
     }
 

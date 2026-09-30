@@ -47,7 +47,8 @@ fn bind(d: &Dispatcher) -> Bind {
 /// The shipped build's store: its compiled-in door.
 fn compiled_in() -> LoadedStore {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let p = load_linked::<Store>(busbar_store_memory::door, bind(&d)).expect("the door loads");
+    let p = load_linked::<Store>(crate::both_ways::store_fixture::door, bind(&d))
+        .expect("the door loads");
     LoadedStore::open(p, d, b"{}", 1).expect("it opens")
 }
 
@@ -584,7 +585,7 @@ fn the_compiled_in_shortcut_answers_a_replayed_write_differently() {
         RecordStore::get_usage(&table, "k", 60).expect("read")
     )];
 
-    let shortcut = busbar_store_memory::MemoryStore::new();
+    let shortcut = crate::both_ways::store_fixture::MemoryStore::new();
     shortcut.add_usage("k", 60, &cells[0].2).expect("write");
     shortcut.add_usage("k", 60, &cells[0].2).expect("retry");
     let through_shortcut = vec![format!("{:?}", shortcut.get_usage("k", 60).expect("read"))];

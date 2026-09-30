@@ -27,7 +27,7 @@ fn dispatcher() -> Arc<Dispatcher> {
 fn open() -> LoadedStore {
     let d = dispatcher();
     let plugin = load_linked::<Store>(
-        busbar_store_memory::door,
+        crate::both_ways::store_fixture::door,
         Bind {
             max_inflight_cap: 1024,
             sink: Arc::new(NoSink),

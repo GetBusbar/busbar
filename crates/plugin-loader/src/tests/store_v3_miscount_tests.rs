@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use crate::both_ways::store_fixture::MemoryStore;
 use busbar_contract::abi::sdk::store::{
     Cap, CapsRefused, Cell, CellKey, Dimension, Grant, OpResult, ReserveRefused, StoreSlots, Tail,
 };
@@ -17,7 +18,6 @@ use busbar_contract::records::{
     UsageDelta, UsageLedger, VirtualKey,
 };
 use busbar_contract::store_calls::{StoreCalls, StoreFailure};
-use busbar_store_memory::MemoryStore;
 
 use crate::dispatch::kinds::store::Store;
 use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, NoSink};
