@@ -2,4 +2,5 @@
 //! attempt sends to the far end and what the far end's answer becomes for the caller. Every
 //! function here is pure over bytes the kernel hands in; the door adapts them to the plane ABI.
 
+pub mod arrive;
 pub mod multipart;
