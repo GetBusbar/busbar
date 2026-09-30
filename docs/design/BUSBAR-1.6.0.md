@@ -397,8 +397,8 @@ decisions before streaming.
   dialect exists only where a provider's request spine really differs (NanoJev is the one, dialect
   `nanojev`: `/api/evaluate` is its second exact claim; a model's dialect is its override or its
   provider's protocol; a model of the wrong dialect gets that dialect's existing unknown-model refusal;
-  it meters the upstream's own billing unit, counted from the answer already read, with no extra
-  egress; a cross-dialect request is a validate refusal unless the translation is exact). Usage
+  it meters the upstream's own billing unit, counted from the answer already read (`execution.states`;
+  an answer with no count refuses loudly; `$`, alone), with no extra egress; a cross-dialect request is a validate refusal unless the translation is exact). Usage
   pointers are dialect data. The binary feature `plane-decisions` is the plane's one switch. Model
   resolution: all configured decisions models are listed (scope-filtered); a request routes by its
   model; one configured model and none named is the default (byte-identical); more than one and none
@@ -549,7 +549,10 @@ entry's `base_url`, or a non-plane plugin's connection setting) uses a scheme it
 lifted into each plane's own section (#43, #47); the root `pools:` stays llm-only, as in 1.5.5; pool
 names are unique across planes; a `pools` sub-key under `decisions` or `streams` is a validation
 refusal; `busbar migrate` moves 1.5.x pools and prints a visible TODO report. A plane's reserved
-`work: {max_live, retain_s}` sub-key is lifted the same way. A plane's settings reach it as ONE
+`work: {max_live, retain_s}` sub-key is lifted the same way and joins the reserved core-owned sub-keys;
+a plane entry named after any reserved key is refused at validation with a clear message (a generic
+check). A plane receives, at open, the dialect fields of the providers it references and resolves
+model → dialect itself; the kernel checks no dialect (ARCHITECT, 2026-09-30). A plane's settings reach it as ONE
 validated JSON object `{section: value}` per `open`/`refresh`, reserved keys and secrets stripped;
 `upstream_credentials` is kernel-owned (FOLD-LLM2 Q1, FOLD-A2A, 2026-09-29/30).
 
@@ -711,7 +714,7 @@ and the `on_piece` field list): each plane DECLARES `keep_response_headers` at b
 lowercase, never a hop-by-hop or credential name, validated — and the kernel copies only those. For
 gRPC the head carries no status code; the trailers carry `grpc-status`, then a terminal piece (empty
 on OK, `STREAM_FAILED` with `grpc-message`), bytes as 1.5.5. On the accept side a framer yields a
-typed `RequestHead` (stream, method, target, authority) with the first `Fields` piece, and the kernel
+typed per-stream head (`HeadSlots`, Part 4 Axis 3) with the first `Fields` piece, and the kernel
 fills `arrive`'s method and target from it: request pseudo-headers travel in typed head slots, never
 as fields, and a pseudo-field inside `Fields` is refused. `te` is checked at the door as 1.5.5 did — a
 missing `te` is served, a wrong one is reset with h2 `PROTOCOL_ERROR` — then dropped as hop-by-hop. A
@@ -911,6 +914,13 @@ lives in the contract.
   incarnation; the journal carries the v4 body; the in-memory ring of 1024 is only a cache, and an
   older `/audit/range` decodes from the journal; a refused unit gets a record too (outcome refused,
   its step, an empty amount). Non-`$`, proven with the money proof.
+- **Every reported class is registered (ARCHITECT ruling 2026-09-30).** Every usage class is declared
+  by a plane or configured by the operator at boot and registered once; a plane declares every class
+  it reports (a test holds declared ⊇ reported); the one line resolves reported classes through the
+  registration, and a class that does not resolve is a plane fault — refused fail-closed with a
+  finding, never dropped, never free text, never 0. With no card, rows still count at 0, as in 1.5.5.
+  The audit step's pass travels with its facts to the one line, which consumes it to seal; nothing
+  mints an audit pass freely. The audit digest that ships is v4 (v3 never shipped).
 - **Unit keys and op ids (WIRE-STORE Q10, ARCHITECT ruling 2026-09-30).** ONE node allocator in the
   kernel mints every unit key and every store `OpId`: the node half is a per-process, non-zero u64
   from the OS CSPRNG, the counter a process-wide atomic from 1 (`OpId` = node ‖ counter,
@@ -2521,6 +2531,19 @@ work-handle at 202 and resumes via nested lookup — NOT reclaimed at future-dro
 | governed raw-connection | host opens a pinned, SSRF-checked, metered BYTE channel; plane frames on top; duplex | address/allowlist | **subprocess (MCP stdio) AND raw sockets (DB-wire/tunnel/RTP)** — subprocess is NOT a separate capability |
 Both are `egress_open(&EgressDesc{ kind: Http|RawConn|Subprocess, ... })`; kind is data, the governance
 is one path. Removes the 4 subprocess capability slots as protocol-specific furniture.
+
+**Every transport acks back to the sender (OWNER ruling 2026-09-30).** *A plugin that sends data must
+see the response.* Every transport — not only http — acks each request back to the sending plugin
+through ONE transport-neutral reply descriptor, `READ_REPLY`, appended to the host connection table
+(`abi/host/conn`, an append, no version bump): `{kind ACK|HEAD|BODY|END, code u32, reason span,
+field spans}` over the transport kind's fields. At least one terminal ack per request; an egress
+refusal is an ack FAILURE carrying 1.5.5's refusal text; a missing ack is a conformance failure.
+`send_and_ack()` is the generic SDK helper and `exchange()` its http form, whose response is
+`{status, reason, fields, body}` — the reason phrase as sent on h1, empty on h2 (so 1.5.5's texts stay
+byte-identical). The per-stream head slots are neutral, `HeadSlots{stream, method, target, authority,
+reason}`: the accepted side fills method, target and authority, the dialled side the reason; a frame
+piece's status field is `code`. The egress class (resolve, pin, the SSRF refusal, 1.5.5 texts) is the
+connector's (HEAD-FIELDS and KIND-SHARE rulings, 2026-09-30).
 
 ## Axis 4 — METERING, money-scalar (reserve/settle: the DEMOTION BELOW SHIPPED ANYWAY — read the box)
 > **SUPERSEDED 2026-09-27 by THE DESIGN §7:** `meter_charge` and `cost_reserve`/`cost_settle` give way to
