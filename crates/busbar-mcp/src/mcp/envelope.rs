@@ -757,7 +757,7 @@ pub(in crate::mcp) fn error_response(
     let id = id.unwrap_or(serde_json::Value::Null);
     (
         status,
-        axum::Json(busbar_kernel::ingress::jsonrpc::error_body(
+        axum::Json(busbar_contract::jsonrpc::error_body(
             id, code, message, data,
         )),
     )

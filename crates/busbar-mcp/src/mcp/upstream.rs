@@ -812,7 +812,7 @@ pub(super) async fn exchange(
 #[cfg(feature = "test-support")]
 #[cfg_attr(not(test), allow(dead_code))]
 #[path = "tests/upstream_support.rs"]
-mod upstream_support;
+pub(crate) mod upstream_support;
 
 // THIS PLANE'S SERVED-LEG WITNESSES, exported through `crate::testkit::SERVED` so the binary crate's
 // test build runs them through its real kernel-loop rider (see the module header).

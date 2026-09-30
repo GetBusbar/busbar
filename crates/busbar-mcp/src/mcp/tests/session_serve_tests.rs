@@ -4,7 +4,7 @@
 //! SERVING THE SESSION REVISIONS: `2025-06-18` and `2025-11-25` session Streamable HTTP, and the
 //! `2024-11-05` event-stream transport, beside the stateless `2026-07-28` revision on ONE endpoint.
 //!
-//! OWNER 2026-09-29 compat scope; MCP-COMPAT plan C4 (ARCHITECT approval 2026-09-29). Every test
+//! OWNER 2026-09-29 compat scope; the compat slot's plan C4 (ARCHITECT approval 2026-09-29). Every test
 //! drives a REAL router over a REAL socket, for the reason `ingress_tests` gives: what is under test
 //! is which verb reaches which arm, behind the auth middleware, and a handler-level call would pass
 //! while the arm was unmounted.
@@ -37,7 +37,7 @@ fn cfg() -> Cfg {
     }
 }
 
-/// Serve an MCP-enabled app with an OPEN auth chain (protocol tests; see `ingress_tests::serve`).
+/// Serve the endpoint with an OPEN auth chain (protocol tests; see `ingress_tests::serve`).
 async fn serve_open() -> (String, tokio::task::JoinHandle<()>) {
     metrics_init();
     let app = test_app().mcp(&cfg()).build();
@@ -51,64 +51,37 @@ async fn listen(router: axum::Router) -> (String, tokio::task::JoinHandle<()>) {
     (format!("http://{addr}{}", ENDPOINT), handle)
 }
 
-/// Serve an MCP-enabled app behind the KEY chain, and mint two real keys' audience-bound tokens.
+/// Serve the endpoint behind the KEY chain, and mint two real keys' audience-bound tokens.
 async fn serve_governed() -> (String, String, String, tokio::task::JoinHandle<()>) {
-    let (url, owner, intruder, h, _host) = serve_governed_with_host().await;
+    let (url, owner, intruder, h, _sessions) = serve_governed_with_sessions().await;
     (url, owner, intruder, h)
 }
 
-async fn serve_governed_with_host() -> (
+async fn serve_governed_with_sessions() -> (
     String,
     String,
     String,
     tokio::task::JoinHandle<()>,
-    std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    std::sync::Arc<super::super::session_serve::SessionServe>,
 ) {
-    use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
-    use busbar_kernel::governance::NewKeySpec;
     metrics_init();
-    let store = engine().scratch_store();
-    let signer = TokenSigner::from_secret_bytes(&[23u8; 32], DEFAULT_KID);
-    let gov = engine()
-        .governance(
-            store,
-            Some("admintok".to_string()),
-            Some(TokenSigner::from_secret_bytes(&[23u8; 32], DEFAULT_KID)),
-        )
-        .unwrap();
-    let mut tokens = Vec::new();
-    for name in ["session-owner", "session-intruder"] {
-        let (key, plain) = gov
-            .mint_signed(
-                NewKeySpec {
-                    name: name.to_string(),
-                    allowed_pools: None,
-                    group: Some("one-group".to_string()),
-                    labels: Default::default(),
-                    ..Default::default()
-                },
-                2_000_000_000,
-                busbar_kernel::store::now(),
-            )
-            .unwrap();
-        let generation = TokenVerifier::single(signer.kid(), signer.verifying_key())
-            .verify(plain.as_str(), busbar_kernel::store::now(), None)
-            .expect("the plain token verifies")
-            .generation;
-        tokens.push(signer.mint_for_audience(
-            &key.id,
-            2_000_000_000,
-            generation.as_deref(),
-            CANONICAL,
-            Some(name),
-        ));
-    }
+    // Two keys in ONE group: a session belongs to the key that opened it, never to its group.
+    let (gov, mut minted) = super::super::upstream::upstream_support::minted_keys(
+        23,
+        CANONICAL,
+        &[
+            ("session-owner", Some("one-group"), "session-owner"),
+            ("session-intruder", Some("one-group"), "session-intruder"),
+        ],
+    );
     let app = test_app().keys_chain().governance(gov).mcp(&cfg()).build();
-    let host = engine_host(&app);
+    let sessions = super::super::runtime_of(&engine_host(&app))
+        .sessions
+        .clone();
     let (url, h) = listen(build_router(app)).await;
-    let intruder = tokens.pop().unwrap();
-    let owner = tokens.pop().unwrap();
-    (url, owner, intruder, h, host)
+    let intruder = minted.pop().unwrap().token;
+    let owner = minted.pop().unwrap().token;
+    (url, owner, intruder, h, sessions)
 }
 
 fn initialize(id: i64, version: &str) -> serde_json::Value {
@@ -447,7 +420,7 @@ async fn a_stateless_request_carrying_a_session_header_is_still_stateless() {
     });
     let hdr = [
         (VERSION, v),
-        ("mcp-method", "tools/list"),
+        (super::H_MCP_METHOD, "tools/list"),
         (SID, "0123456789abcdef0123456789abcdef"),
     ];
     let a = post(&url, None, &body, &hdr).await;
@@ -607,7 +580,7 @@ async fn red_the_ungoverned_event_stream_warning_is_emitted_exactly_once() {
 
 #[tokio::test]
 async fn a_governed_event_stream_never_warns() {
-    let (url, owner, _intruder, h, host) = serve_governed_with_host().await;
+    let (url, owner, _intruder, h, sessions) = serve_governed_with_sessions().await;
     let resp = reqwest::Client::new()
         .get(&url)
         .header("authorization", format!("Bearer {owner}"))
@@ -616,7 +589,6 @@ async fn a_governed_event_stream_never_warns() {
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 200);
-    let sessions = super::super::runtime_of(&host).sessions.clone();
     assert_eq!(sessions.ungoverned_warnings(), 0);
     h.abort();
 }

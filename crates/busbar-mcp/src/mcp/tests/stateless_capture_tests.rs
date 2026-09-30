@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE STATELESS REVISION'S BYTES, PINNED (MCP-COMPAT, ARCHITECT approval 2026-09-29 condition 4).
+//! THE STATELESS REVISION'S BYTES, PINNED (compat slot, ARCHITECT approval 2026-09-29 condition 4).
 //!
 //! Serving the session revisions on the same endpoint must not move one byte of what the stateless
 //! `2026-07-28` revision answers. This test drives a fixed corpus of stateless requests (well formed,
 //! malformed in each way the envelope checks, the verbs the revision retired, a stray session
-//! header) at a real router and compares the transcript (status, content type, every `mcp-*`
-//! response header, body) with `golden/stateless_capture.txt`, which was captured from the tree
-//! BEFORE the session revisions landed (fold-mcp-a ad7890382). A difference is a change to the
+//! header) at a real router and compares the transcript (status, content type, every response
+//! header in the protocol's own prefix, body) with `golden/stateless_capture.txt`, which was captured from the tree
+//! BEFORE the session revisions landed (the fold's A6 tip, ad7890382). A difference is a change to the
 //! stateless path.
 //!
 //! `STATELESS_CAPTURE_WRITE=<path>` writes the transcript instead of comparing, which is how the
@@ -16,14 +16,19 @@
 
 use super::super::test_engine::*;
 use super::super::McpCfg as Cfg;
-use super::{H_PROTOCOL_VERSION as VERSION, PROTOCOL_VERSION};
+use super::{
+    H_MCP_METHOD as METHOD, H_MCP_NAME as NAME, H_PROTOCOL_VERSION as VERSION, PROTOCOL_VERSION,
+};
 use crate::testkit::TestAppMcpExt as _;
+use busbar_plane_mcp::adapt::H_SESSION_ID as SID;
 
 const GOLDEN: &str = include_str!("golden/stateless_capture.txt");
+/// The mount path the corpus is posted to.
+const ENDPOINT: &str = "/mcp";
 
 fn cfg() -> Cfg {
     Cfg {
-        canonical_uri: "https://gateway.example.com/mcp".to_string(),
+        canonical_uri: format!("https://gateway.example.com{ENDPOINT}"),
         authorization_servers: vec!["https://login.example.com".to_string()],
         scopes_supported: Vec::new(),
         allowed_origins: Vec::new(),
@@ -62,7 +67,7 @@ fn post(name: &'static str, body: &serde_json::Value, headers: &[(&'static str, 
 
 fn corpus() -> Vec<Case> {
     let v = PROTOCOL_VERSION;
-    let ok = |m: &'static str| vec![(VERSION, v), ("mcp-method", m)];
+    let ok = |m: &'static str| vec![(VERSION, v), (METHOD, m)];
     let mut cases = vec![
         post("tools/list", &call("tools/list"), &ok("tools/list")),
         post("prompts/list", &call("prompts/list"), &ok("prompts/list")),
@@ -90,11 +95,7 @@ fn corpus() -> Vec<Case> {
             "tools/call of an unknown tool",
             &serde_json::json!({ "jsonrpc": "2.0", "id": 8, "method": "tools/call",
                 "params": { "name": "nope", "arguments": {}, "_meta": meta() } }),
-            &[
-                (VERSION, v),
-                ("mcp-method", "tools/call"),
-                ("mcp-name", "nope"),
-            ],
+            &[(VERSION, v), (METHOD, "tools/call"), (NAME, "nope")],
         ),
         post(
             "no _meta",
@@ -115,13 +116,13 @@ fn corpus() -> Vec<Case> {
         post(
             "method header disagrees",
             &call("tools/list"),
-            &[(VERSION, v), ("mcp-method", "prompts/list")],
+            &[(VERSION, v), (METHOD, "prompts/list")],
         ),
         post("no method header", &call("tools/list"), &[(VERSION, v)]),
         post(
             "no version header",
             &call("tools/list"),
-            &[("mcp-method", "tools/list")],
+            &[(METHOD, "tools/list")],
         ),
         post(
             "unsupported version",
@@ -129,15 +130,15 @@ fn corpus() -> Vec<Case> {
                 "params": { "_meta": {
                     "io.modelcontextprotocol/protocolVersion": "2025-06-18",
                     "io.modelcontextprotocol/clientCapabilities": {} } } }),
-            &[(VERSION, "2025-06-18"), ("mcp-method", "tools/list")],
+            &[(VERSION, "2025-06-18"), (METHOD, "tools/list")],
         ),
         post(
             "a session header is ignored",
             &call("tools/list"),
             &[
                 (VERSION, v),
-                ("mcp-method", "tools/list"),
-                ("mcp-session-id", "0123456789abcdef0123456789abcdef"),
+                (METHOD, "tools/list"),
+                (SID, "0123456789abcdef0123456789abcdef"),
             ],
         ),
         post(
@@ -151,7 +152,7 @@ fn corpus() -> Vec<Case> {
             &call("tools/list"),
             &[
                 (VERSION, v),
-                ("mcp-method", "tools/list"),
+                (METHOD, "tools/list"),
                 ("accept", "text/event-stream, application/json"),
             ],
         ),
@@ -197,7 +198,7 @@ async fn the_stateless_revision_answers_byte_for_byte_as_before() {
     let addr = listener.local_addr().unwrap();
     let router = build_router(app);
     let h = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let url = format!("http://{addr}/mcp");
+    let url = format!("http://{addr}{ENDPOINT}");
     let client = reqwest::Client::new();
     let mut transcript = String::new();
     for case in corpus() {

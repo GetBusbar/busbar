@@ -5,7 +5,7 @@
 //! by a response header, a GET event stream, DELETE) and `2024-11-05` (a GET event stream whose first
 //! event names the address messages are POSTed to).
 //!
-//! OWNER 2026-09-29 compat scope; MCP-COMPAT C4. The dialect's rules are the plane's
+//! OWNER 2026-09-29 compat scope; the compat slot's C4. The dialect's rules are the plane's
 //! (`revision`, `session`, `adapt` in the plane crate) and this file is only their I/O: it reads the
 //! request, asks the plane what it is, and writes the answer. There is ONE dispatch: a session
 //! request is raised into the stateless shape and answered by [`super::envelope::rpc_dispatch`]
@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use busbar_kernel::plane_routes::PlaneReqCtx;
+use busbar_kernel::{ingress::protocol, plane_host::EngineHost, plane_routes::PlaneReqCtx};
 use busbar_plane_mcp::{adapt, client::jsonrpc::encode_sentinel, codec, revision, session};
 use serde_json::Value;
 
@@ -356,9 +356,9 @@ where
     Fut: std::future::Future<Output = Option<Response>>,
 {
     let resource = super::resource_of(&ctx.host);
-    busbar_kernel::ingress::protocol::serve(
+    protocol::serve(
         &super::envelope::McpWords,
-        busbar_kernel::ingress::protocol::Request {
+        protocol::Request {
             present: resource.is_some(),
             origin: header(&ctx.headers, "origin"),
             allowed_origins: resource.as_ref().map_or(&[][..], |r| r.allowed_origins()),
@@ -446,7 +446,9 @@ async fn converse(
 /// The header mirror a raised request carries: the stateless revision's version, method and name
 /// headers, and the custom parameter headers the tool's schema annotates.
 fn mirror_into(ctx: &PlaneReqCtx, headers: &mut HeaderMap, mirror: &adapt::Mirror, value: &Value) {
-    use super::envelope::{H_MCP_METHOD, H_MCP_NAME, H_PROTOCOL_VERSION};
+    use super::envelope::{
+        H_MCP_METHOD as METHOD_HEADER, H_MCP_NAME as NAME_HEADER, H_PROTOCOL_VERSION,
+    };
     headers.remove(adapt::H_SESSION_ID);
     headers.remove(adapt::H_LAST_EVENT_ID);
     // JSON first: a raised request's answer is lowered in memory, never relayed as a stream.
@@ -456,13 +458,13 @@ fn mirror_into(ctx: &PlaneReqCtx, headers: &mut HeaderMap, mirror: &adapt::Mirro
     );
     headers.insert(H_PROTOCOL_VERSION, HeaderValue::from_static(mirror.version));
     if let Ok(v) = HeaderValue::from_str(&mirror.method) {
-        headers.insert(H_MCP_METHOD, v);
+        headers.insert(METHOD_HEADER, v);
     }
-    headers.remove(H_MCP_NAME);
+    headers.remove(NAME_HEADER);
     if let Some(name) = &mirror.name {
         let encoded = encode_sentinel(name);
         if let Ok(v) = HeaderValue::from_str(&encoded) {
-            headers.insert(H_MCP_NAME, v);
+            headers.insert(NAME_HEADER, v);
         }
         if mirror.method == "tools/call" {
             let rt = super::runtime_of(&ctx.host);
@@ -575,7 +577,7 @@ async fn lower(answer: Response) -> Lowered {
         };
         if adapt::lower_result(r).is_err() {
             let id = m.get("id").cloned().unwrap_or(Value::Null);
-            *m = busbar_kernel::ingress::jsonrpc::error_body(
+            *m = busbar_contract::jsonrpc::error_body(
                 id,
                 codec::CODE_INTERNAL,
                 "The answer to this request cannot be expressed in this session's revision.",
@@ -725,7 +727,7 @@ struct Live {
     svc: Arc<SessionServe>,
     sid: String,
     owner: Owner,
-    host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    host: Arc<dyn EngineHost>,
     outlet: Option<tokio::sync::mpsc::Receiver<String>>,
     ends_session: bool,
 }
