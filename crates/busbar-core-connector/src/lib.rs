@@ -388,6 +388,11 @@ impl Conns for Connector {
         )
     }
 
+    /// A write is taken whole, short, or (no room under
+    /// [`WRITE_BUFFER_BYTES`](crate::compose::WRITE_BUFFER_BYTES)) not at all: `Pending`. A pending
+    /// write registers no ticket of its own; the bytes already held are flushed whenever the
+    /// connection is driven (every `read` and `wait` on it drives the socket and drains the buffer),
+    /// so a caller that got `Pending` re-offers the bytes after its next read or wait.
     fn write(
         &self,
         caller: InstanceId,
