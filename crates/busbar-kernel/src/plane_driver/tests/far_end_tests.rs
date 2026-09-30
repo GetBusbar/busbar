@@ -305,6 +305,8 @@ impl Telemetry for Quiet {
 #[derive(Default)]
 struct Bearer {
     calls: AtomicU64,
+    /// The caller credential each call carried.
+    callers: Mutex<Vec<Option<Vec<u8>>>>,
     /// Never answers on the spot, and its submitted call never answers at all.
     stall: std::sync::atomic::AtomicBool,
     facts: Mutex<Vec<Facts>>,
@@ -343,6 +345,11 @@ impl OutboundAuth for Bearer {
         if self.stall.load(Ordering::SeqCst) {
             return None;
         }
+        self.callers.lock().unwrap().push(
+            r.caller_credential
+                .as_ref()
+                .map(|c| c.expose_secret().clone()),
+        );
         self.facts
             .lock()
             .unwrap()
@@ -410,6 +417,7 @@ fn rig(
                         auth: auth.clone() as Arc<dyn OutboundAuth>,
                         handle: 1,
                         style_flags: 0,
+                        passthrough: k == 1,
                     }),
                 },
             )
@@ -831,4 +839,33 @@ async fn trailers_are_handed_to_the_plane() {
     assert_eq!(trailers.len(), 1, "{pieces:?}");
     assert_eq!(trailers[0].bytes, b"grpc-status: 0");
     assert!(pieces.last().unwrap().last);
+}
+
+/// PASSTHROUGH: a member configured `upstream_credentials: passthrough` has its one auth call carry
+/// the caller's own credential; a member that is not is never handed it.
+#[tokio::test]
+async fn passthrough_hands_the_callers_credential_only_to_its_member() {
+    // m0 is an own-credential member, m1 a passthrough one (the rig's binding for member 1).
+    let r = rig(
+        &[
+            ("a.test", Script::Answer(503, None, vec![b"x"])),
+            ("b.test", Script::Answer(200, None, vec![b"ok"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(UnitRoute {
+        caller_credential: Some(b"caller-key".to_vec().into()),
+        ..route()
+    });
+    for n in 1..=2 {
+        let _ = far.member(&t, n).await;
+        assert!(far.send(&t, request()).await);
+        let _ = drain(&far, &t).await;
+    }
+    assert_eq!(
+        *r.auth.callers.lock().unwrap(),
+        vec![None, Some(b"caller-key".to_vec())]
+    );
 }

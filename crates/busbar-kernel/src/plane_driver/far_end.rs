@@ -49,6 +49,7 @@ use busbar_contract::caps::{Pass, Route};
 use busbar_contract::conn::{
     ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
+use busbar_contract::redacted::Redacted;
 use busbar_contract::transport::registry::status_ns;
 use busbar_contract::transport::wire::{WireStatus, WireStatusClass};
 use busbar_kernel_egress::exhaustion::retry_after_secs;
@@ -96,6 +97,10 @@ pub struct AuthBinding {
     pub handle: u64,
     /// `abi::auth::STYLE_NEEDS_BODY_HASH` | `abi::auth::STYLE_NEEDS_HEADERS`.
     pub style_flags: u32,
+    /// The member is configured `upstream_credentials: passthrough`: its one auth call carries
+    /// the caller's own verified credential (THE DESIGN §6.6, style `caller-credential`). No other
+    /// binding is ever handed it.
+    pub passthrough: bool,
 }
 
 /// THE EGRESS OF ONE PLANE INSTANCE, sealed per generation by the composition root: its connection
@@ -145,6 +150,9 @@ pub struct UnitRoute {
     pub wants_stream: bool,
     /// The dispatch record's leg.
     pub leg: u8,
+    /// The caller's verified credential, as the identity step read it, for a member configured for
+    /// passthrough. Zeroised on drop; never logged, stored or handed to the plane.
+    pub caller_credential: Option<Redacted<Vec<u8>>>,
 }
 
 impl Egress {
@@ -697,7 +705,11 @@ impl EgressFarEnd<'_> {
             } else {
                 Vec::new()
             },
-            caller_credential: None,
+            caller_credential: if binding.passthrough {
+                self.route.caller_credential.clone()
+            } else {
+                None
+            },
         };
         let answer = match binding.auth.fields_now(binding.handle, &facts) {
             Some(answer) => answer,
