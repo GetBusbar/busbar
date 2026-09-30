@@ -1321,17 +1321,23 @@ fn from_config_keeps_its_refusal_bytes_and_carries_every_floor_exactly() {
         binary_version: "1.6.0",
     };
     assert_eq!(
-        TrustPolicy::from_config(input(&[("busbar", "00")])).unwrap_err(),
+        TrustPolicy::from_config(input(&[("busbar", "00")]))
+            .map(drop)
+            .unwrap_err(),
         "plugins.trust.publishers['busbar']: the publisher name 'busbar' is reserved for busbar's \
          embedded release key and cannot be configured"
     );
     assert_eq!(
-        TrustPolicy::from_config(input(&[("acme", "zz")])).unwrap_err(),
+        TrustPolicy::from_config(input(&[("acme", "zz")]))
+            .map(drop)
+            .unwrap_err(),
         "plugins.trust.publishers['acme']: public key not valid hex: Invalid character 'z' at \
          position 0"
     );
     assert_eq!(
-        TrustPolicy::from_config(input(&[("acme", "00")])).unwrap_err(),
+        TrustPolicy::from_config(input(&[("acme", "00")]))
+            .map(drop)
+            .unwrap_err(),
         "plugins.trust.publishers['acme']: public key must be 32 bytes, got 1"
     );
     // RED for rollback: a pinned first-party floor and a min_versions floor are carried as given.

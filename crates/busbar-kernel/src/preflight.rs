@@ -277,15 +277,11 @@ fn require_plugin(
     }
 }
 
-/// A registry holding only the [`linked_rows`] — what a build with the plugins directory off has —
-/// built by the root's registry build.
+/// A registry holding only the [`linked_rows`] — what a build with the plugins directory off has.
+/// No directory is read and no root is needed: the kernel's own built-in secret modules resolve in
+/// any build.
 pub(crate) fn linked() -> Result<busbar_plugin_loader::PluginRegistry, String> {
-    let build = RegistryIn {
-        linked: linked_rows(),
-        plugins: None,
-        data_dir: None,
-    };
-    (root_rows().registry_build)(build, &mut |_| {})
+    PluginRegistry::empty().link(linked_rows())
 }
 
 /// Build a complete `App` from a RESOLVED config — the ONE construction path shared by boot
