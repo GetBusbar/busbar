@@ -452,6 +452,56 @@ case "$sub" in
       done
       return "$worst"
     }
+    # ── THE DATED FAMILY BASELINES, IN THEIR OWN SECTION ──────────────────────────────────────
+    # testing/shadow-oracle/family-baselines.tsv names a family whose baseline is NOT 1.5.5 because
+    # 1.5.5 never served it, and the dated baseline it is judged against instead (`streams` ->
+    # `golden/1.6.0-pre`, recorded from a pinned pre-fold predev build; OWNER RULING 2026-09-30,
+    # 1.6.0-QUESTIONS.md STREAMS-ORACLE option A). Against 1.5.5 such a family's cells are UNBASELINED
+    # (named, not green, not red); here each is judged against its own baseline by NAME
+    # (`--baseline-version`, which refuses a baseline that does not exist), --strict, under its own
+    # heading. A divergence is red. The replay's exit is the worst of every section.
+    # `--allow-harness-skew` as for the fences: the baseline was recorded at its own pin.
+    family_baseline_rows() {  # -> "family<TAB>version" per row
+      [ -f "$DATA/family-baselines.tsv" ] || return 0
+      grep -vE '^[[:space:]]*(#|$)' "$DATA/family-baselines.tsv" || true
+    }
+    # only_rebaselined <filter> -> 0 when the filter selects at least one cell and every selected
+    # cell's family has a dated baseline of its own (so the 1.5.5 section owes nothing to compare).
+    only_rebaselined() {
+      python3 - "$1" "$DATA/cells.json" "$(family_baseline_rows | cut -f1 | tr '\n' ' ')" <<'PY'
+import json, re, sys
+sel, fams = re.compile(sys.argv[1]), set(sys.argv[3].split())
+cells = [c for c in json.load(open(sys.argv[2]))["cells"] if sel.search(c["id"])]
+sys.exit(0 if cells and all(c.get("family", c.get("plane")) in fams for c in cells) else 1)
+PY
+    }
+    replay_family_baselines() {  # replay_family_baselines <rc so far> <id filter or ""> <diff args...>
+      local rc="$1" idf="$2"; shift 2
+      local cand="" out="" acc="" a prev=""
+      for a in "$@"; do
+        case "$prev" in --candidate) cand="$a";; --out) out="$a";; --accepted) acc="$a";; esac; prev="$a"
+      done
+      local fam ver frc worst="$rc"
+      while IFS=$'\t' read -r fam ver; do
+        [ -n "$fam" ] && [ -n "$ver" ] || continue
+        if [ -n "$idf" ] && ! python3 - "$idf" "$DATA/cells.json" "$fam" <<'PY'
+import json, re, sys
+sel = re.compile(sys.argv[1])
+sys.exit(0 if any(sel.search(c["id"]) and c.get("family") == sys.argv[3]
+                  for c in json.load(open(sys.argv[2]))["cells"]) else 1)
+PY
+        then continue; fi
+        echo
+        echo "== dated baseline: family $fam against golden/$ver (NOT 1.5.5 evidence) =="
+        frc=0
+        "$RUST_BIN" diff --baseline-version "$ver" --candidate "$cand" \
+          --out "${out:-$(mktemp -d)}/baseline-$ver-$fam" --cells "$DATA/cells.json" \
+          ${acc:+--accepted "$acc"} --family "^$(printf '%s' "$fam" | sed 's/[.]/\\./g')\$" \
+          ${idf:+--id-filter "$idf"} --allow-harness-skew --strict || frc=$?
+        [ "$frc" -le "$worst" ] || worst="$frc"
+      done < <(family_baseline_rows)
+      return "$worst"
+    }
     # OLD: replay --golden G --candidate C --out R  →  the in-process Rust differ (the judge).
     #
     # `--allow-harness-skew` IS NO LONGER INJECTED HERE, AND THAT IS THE POINT. It used to be
@@ -476,13 +526,22 @@ case "$sub" in
     esac; done
     if [ -z "$IDF" ]; then
       set +e; "$RUST_BIN" diff "${args[@]}" --cells "$DATA/cells.json"; rc=$?; set -e
-      replay_fences "$rc" "" "${args[@]}"; exit $? ; fi
+      frc=0; replay_fences "$rc" "" "${args[@]}" || frc=$?
+      brc=0; replay_family_baselines "$frc" "" "${args[@]}" || brc=$?
+      exit "$brc" ; fi
+    # A filter that selects ONLY families with a dated baseline of their own owes the 1.5.5 section
+    # nothing: its --strict would refuse "no owed cells matched", a red that judges nothing.
+    if only_rebaselined "$IDF"; then
+      echo "oracle: the filter selects only families with a dated baseline (family-baselines.tsv); the 1.5.5 section is skipped" >&2
+      brc=0; replay_family_baselines 0 "$IDF" "${args[@]}" || brc=$?; exit "$brc"
+    fi
     WIDE="$(widen_filter "$IDF")"
     log="$(mktemp)"; set +e
     "$RUST_BIN" diff "${args[@]}" --id-filter "$WIDE" --cells "$DATA/cells.json" 2>&1 | tee "$log"
     rc=${PIPESTATUS[0]}; set -e
     withheld_selected "$log" "$IDF" || { rm -f "$log"; exit 3; }
-    rm -f "$log"; replay_fences "$rc" "$IDF" "${args[@]}"; exit $? ;;
+    rm -f "$log"; frc=0; replay_fences "$rc" "$IDF" "${args[@]}" || frc=$?
+    brc=0; replay_family_baselines "$frc" "$IDF" "${args[@]}" || brc=$?; exit "$brc" ;;
 
   diff)
     # The engine's own diff: a FILTERED one gets the same premise widening and refusal as replay.

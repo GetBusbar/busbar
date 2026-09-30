@@ -1,0 +1,10 @@
+# The DATED FAMILY BASELINES bin/oracle replay judges a family against instead of golden/1.5.5,
+# because 1.5.5 never served that family. One row per family: <family>TAB<baseline version>, the
+# version naming testing/shadow-oracle/golden/<version>/ (resolved with --baseline-version, which
+# refuses a baseline that does not exist).
+#
+# streams: OWNER RULING 2026-09-30 (docs/design/1.6.0-QUESTIONS.md, STREAMS-ORACLE, option A). The
+# family is recorded from the PINNED pre-fold predev build 3cc28b00e (golden/1.6.0-pre/meta.json
+# names it) so the streaming fold is proven against the unfolded plane. Re-recorded only under an
+# ARCHITECT ruling; golden/1.5.5 is never touched for it.
+streams	1.6.0-pre
