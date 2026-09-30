@@ -476,14 +476,13 @@ fn run(f: impl FnOnce(Later) -> Ran) -> Stored {
 }
 
 /// Store `value` under `key` as the instance labelled "inst" keeps it.
-fn put(store: &MemoryStore, key: &str, value: &str) {
-    store
-        .record_put(
-            KIND,
-            &record_key("inst", key.as_bytes()),
-            &RecordBytes::new(value.as_bytes().to_vec()).unwrap(),
-        )
-        .unwrap();
+fn put(into: &MemoryStore, key: &str, value: &str) {
+    into.record_put(
+        KIND,
+        &record_key("inst", key.as_bytes()),
+        &RecordBytes::new(value.as_bytes().to_vec()).unwrap(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -541,7 +540,7 @@ fn records_get_reads_the_store_and_the_instances_own_queued_writes_first() {
         b"stored"
     );
     assert_eq!(
-        run(|l| r.s.records_get(&me, "approval", b"none", l)).value,
+        run(|l| r.s.records_get(&me, "approval", b"absent", l)).value,
         svc::ABSENT
     );
 }
