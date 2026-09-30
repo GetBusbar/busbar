@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE 1.5.5 WIRE GOLDEN: step 20's exit test (THE DESIGN §11.11, M4/parity).
+//! THE 1.5.5 WIRE GOLDEN: the http door's exit test, byte parity with the published 1.5.5 wire.
 //!
 //! The golden is what the PUBLISHED 1.5.5 binary put on the wire. The C0 capture cells
 //! (`testing/shadow-oracle/golden/1.5.5/cells/`) were recorded from it by busbar-release's `capture`
