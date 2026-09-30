@@ -55,7 +55,7 @@ use busbar_contract::records::RecordStore;
 use busbar_contract::services::{Caller, HostServices, Later, Ran, Reading, RecordsList, Stored};
 use sha2::{Digest, Sha256};
 
-use crate::host_records::{merge_list, PendingRecords, RecordReads};
+use crate::host_records::{merge_list, record_key, PendingRecords, RecordReads};
 use crate::plane::quarantine::DemotionRecord;
 use crate::trust::book::{Effect, Sight, TrustBook, Unjudged};
 use crate::trust::section::TrustEntry;
@@ -488,7 +488,7 @@ impl HostServices for KernelServices {
             None => {}
         }
         let reads = Arc::clone(&records.reads);
-        let key = key.to_vec();
+        let key = record_key(&caller.instance, key);
         records.offload.run(Box::new(move || {
             later(match reads.record_get(schema, &key) {
                 Ok(Some(v)) => found(v.as_slice().to_vec()),
@@ -513,14 +513,18 @@ impl HostServices for KernelServices {
             .pending
             .under(&caller.instance, &list.kind, &list.prefix);
         let reads = Arc::clone(&records.reads);
+        let scope = record_key(&caller.instance, &[]).len();
+        let prefix = record_key(&caller.instance, &list.prefix);
         records.offload.run(Box::new(move || {
             // The store's scan has no cursor: the whole prefix is read, and `after` and `limit`
             // are applied here, over the store's rows and the queued writes together.
-            later(match reads.record_scan(schema, &list.prefix, u32::MAX) {
+            later(match reads.record_scan(schema, &prefix, u32::MAX) {
                 Ok(rows) => {
                     let rows = rows
                         .into_iter()
-                        .map(|(k, v)| (k, v.as_slice().to_vec()))
+                        .filter_map(|(k, v)| {
+                            Some((k.get(scope..)?.to_vec(), v.as_slice().to_vec()))
+                        })
                         .collect();
                     spans_of(merge_list(rows, queued, list.after.as_deref(), limit))
                 }

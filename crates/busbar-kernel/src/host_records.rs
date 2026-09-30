@@ -11,6 +11,8 @@
 //!   `(kind, key)` to the bytes, or a tombstone. The plane driver's write-behind batcher enqueues each
 //!   write and drains through [`PendingRecords::acked`] when the store acknowledges its batch; a read
 //!   consults it first, so an instance always reads what it wrote.
+//! * [`record_key`] scopes every stored key by the instance's LABEL: two instances declaring one
+//!   kind (of one plugin or of two) never read or write each other's records.
 //! * [`merge_list`] is the one list rule: the store's rows under the prefix, the overlay laid over
 //!   them (a queued value replaces, a tombstone removes), then the keys after `after`, in key order,
 //!   at most `limit`.
@@ -65,6 +67,20 @@ impl<T: Store> RecordReads for T {
     ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError> {
         Store::record_scan(self, schema, prefix, limit)
     }
+}
+
+/// The store key of `key` for the instance labelled `instance`: the label's length (two bytes, big
+/// endian), the label, then the key. The length makes the scope unambiguous whatever the label
+/// holds, and a key's scoped form begins with its prefix's scoped form, so a prefix scan stays one.
+#[must_use]
+pub fn record_key(instance: &str, key: &[u8]) -> Vec<u8> {
+    let label = instance.as_bytes();
+    let len = u16::try_from(label.len()).unwrap_or(u16::MAX);
+    let mut k = Vec::with_capacity(2 + label.len() + key.len());
+    k.extend_from_slice(&len.to_be_bytes());
+    k.extend_from_slice(label);
+    k.extend_from_slice(key);
+    k
 }
 
 /// One queued write: its sequence, and its bytes or a tombstone.

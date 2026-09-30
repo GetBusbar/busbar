@@ -464,11 +464,12 @@ fn run(f: impl FnOnce(Later) -> Ran) -> Stored {
     }
 }
 
+/// Store `value` under `key` as the instance labelled "inst" keeps it.
 fn put(store: &MemoryStore, key: &str, value: &str) {
     store
         .record_put(
             KIND,
-            key.as_bytes(),
+            &record_key("inst", key.as_bytes()),
             &RecordBytes::new(value.as_bytes().to_vec()).unwrap(),
         )
         .unwrap();
@@ -830,4 +831,48 @@ fn an_unprefixed_row_replays_into_the_default_instance_only_and_it_clears_it() {
         svc::TRUST_SAME
     );
     assert!(r.s.demotions.as_ref().unwrap().record.list().is_empty());
+}
+
+#[test]
+fn another_instance_declaring_the_same_kind_never_reaches_the_records_of_this_one() {
+    let r = rig();
+    put(&r.store, "k", "mine");
+    let declares = || InstanceFacts {
+        record_kinds: vec![KIND],
+        ..InstanceFacts::default()
+    };
+    r.s.admit("other", declares());
+    r.s.admit("elsewhere", declares());
+    // "other" is another instance of the same plugin; "elsewhere" is an instance of another.
+    let elsewhere = Caller {
+        plugin: Arc::from("another-plugin"),
+        ..caller("elsewhere")
+    };
+    let everything = RecordsList {
+        kind: "approval".into(),
+        prefix: Vec::new(),
+        after: None,
+        limit: 0,
+    };
+    for who in [caller("other"), elsewhere] {
+        let s = run(|l| r.s.records_get(&who, "approval", b"k", l));
+        assert_eq!((s.outcome, s.value), (Outcome::Ready, svc::ABSENT));
+        assert!(run(|l| r.s.records_list(&who, everything.clone(), l))
+            .spans
+            .is_empty());
+        let won = run(|l| r.s.records_claim(&who, "approval", b"k", 1_000, l));
+        assert_eq!(won.value, svc::CLAIM_WON);
+    }
+    // Their claims spent nothing of "inst"'s, and its record is its own.
+    let me = caller("inst");
+    let won = run(|l| r.s.records_claim(&me, "approval", b"k", 1_000, l));
+    assert_eq!(won.value, svc::CLAIM_WON);
+    assert_eq!(
+        run(|l| r.s.records_get(&me, "approval", b"k", l)).bytes,
+        b"mine"
+    );
+    assert_eq!(
+        run(|l| r.s.records_list(&me, everything.clone(), l)).bytes,
+        b"kmine"
+    );
 }
