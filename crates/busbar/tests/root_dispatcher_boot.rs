@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE BINARY BOOTS WITH THE ROOT'S ONE DISPATCHER INSTALLED (`BUSBAR-1.6.0.md` THE DESIGN §11.2:
-//! one dispatcher, built by the composition root at boot, one plugin worker per data worker).
+//! THE BINARY BOOTS WITH THE ROOT'S ONE DISPATCHER INSTALLED: one dispatcher, built by the
+//! composition root at boot, one plugin worker per data worker.
 //!
 //! Boots the REAL binary with `advanced.worker_threads: 3` and counts the dispatcher's threads in
 //! `/proc/<pid>/task/*/comm` (a thread name is cut to 15 bytes, so every `busbar-dispatch-<i>` worker
@@ -36,17 +36,12 @@ fn fixture_dir() -> PathBuf {
 }
 
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
+    // The provider catalog row is test data (`fixtures/mock_provider.yaml`), not a literal here.
     std::fs::write(
         dir.join("providers.yaml"),
-        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
+        include_str!("fixtures/mock_provider.yaml"),
     )
     .unwrap();
-    let key_hex = Command::new(common::boot::exe())
-        .arg("--generate-signing-key")
-        .output()
-        .expect("run --generate-signing-key");
-    assert!(key_hex.status.success(), "generate-signing-key failed");
-    std::fs::write(dir.join("signing.key"), &key_hex.stdout).unwrap();
     std::fs::write(
         dir.join("config.yaml"),
         format!(
@@ -55,23 +50,15 @@ admin_listen: "127.0.0.1:{admin_port}"
 admin_require_mtls: false
 advanced:
   worker_threads: {WORKERS}
-identity-providers:
-  admin-tokens:
-    module: admin-tokens
-    token: {{ env: BUSBAR_ADMIN_TOKEN }}
 auth:
-  chain:
-    - keys
-  signing_key: {{ file: "{key}" }}
-  admin_auth: [admin-tokens]
+  chain: []
 providers:
   mock:
     api_key: {{ env: MOCK_KEY }}
 models:
   test-model:
     provider: mock
-"#,
-            key = dir.join("signing.key").display(),
+"#
         ),
     )
     .unwrap();
@@ -126,7 +113,6 @@ fn the_binary_boots_with_the_root_dispatcher_installed() {
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
         .env("MOCK_KEY", "x")
-        .env("BUSBAR_ADMIN_TOKEN", "root-dispatcher-boot-admin-token")
         .stdout(log)
         .stderr(log_err)
         .spawn()
