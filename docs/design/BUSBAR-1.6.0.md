@@ -600,7 +600,7 @@ parks on the connector's cold-I/O runtime~~ SUPERSEDED 2026-09-27 by THE DESIGN 
 readiness through `io.{register, poll_ready, clear_ready,
 deregister}` on the per-worker reactor.
 
-**Egress classes.** Targets come from operator settings; first-party means a grant in the root manifest.
+**Egress classes.** Targets come from operator settings; first-party means a grant in the root manifest. Every declared need is held to its configured target (PB-100, ARCHITECT 2026-09-30): the loader's connection-table fill resolves a need's `target_from` against the instance's validated settings at open and refresh and declares the need pinned to that target; a `target_from` that resolves to nothing refuses that need, a refresh that changes the value re-declares it, and a dial to any other host is refused.
 
 | Class | Used by | Rule |
 |---|---|---|
