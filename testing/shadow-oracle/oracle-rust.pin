@@ -140,8 +140,11 @@
 # 2484) that bin/oracle replay judges against golden/1.6.0-pre (family-baselines.tsv). Still a
 # feature branch head; re-pin to the integration/merge commit when that branch lands.
 #
+# 2026-09-30: moved 97957ea -> 2b5f964 (same branch): the corpus sha pins 97957ea wrote were wrong
+# (a count rewrite hit the sha), and two streams cells' `why` now say the build's answer is pinned.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=97957ea
+release_ref=2b5f964
 crate=busbar-release-oracle
 bin=busbar-oracle
