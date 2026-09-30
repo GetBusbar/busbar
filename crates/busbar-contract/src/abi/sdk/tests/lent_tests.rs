@@ -260,5 +260,9 @@ fn a_locate_lends_its_alpn_offer_buffer_beside_the_other_two() {
     assert_eq!((&authority, &alpn), (b"h:80", b"\x02h2"));
     let mut tight = lend(&v).alpn_buf();
     tight.extend(b"\x02h2\x08http/1.1");
-    assert_eq!(tight.settle(!tight.fits()), (0, 12), "a short offer reports its full size");
+    assert_eq!(
+        tight.settle(!tight.fits()),
+        (0, 12),
+        "a short offer reports its full size"
+    );
 }
