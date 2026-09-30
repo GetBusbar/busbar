@@ -369,7 +369,7 @@ as `<kind-section>.<instance>.<line>`; any other line is rendered verbatim. The 
 every plane supports the transports and bindings its protocol's official design defines. Owner scope
 2026-09-29: IN — MCP session-based Streamable HTTP (revisions 2025-06-18 and 2025-11-25), MCP's legacy
 HTTP+SSE (2024-11-05), the Bedrock InvokeModel dialect, A2A over gRPC in both directions (inbound and
-outbound, over h2 with TLS and h2c), A2A push delivery, the unix transport, the Twilio Media Streams
+outbound, over h2 with TLS and h2c), A2A push delivery, ~~the unix transport~~ (DROPPED, OWNER 2026-09-30, Q127), the Twilio Media Streams
 leg and WebRTC media (#45); OUT — native SIP (#45). Priority (owner 2026-09-29): mcp, a2a, llm and
 decisions before streaming.
 - *mcp (FOLD-MCP F25 and MCP-COMPAT, ARCHITECT rulings 2026-09-29, inside the owner's scope):* the
@@ -566,7 +566,7 @@ transport, auth, target_from, trust_from, egress_class)`. It asks for a raw byte
 wire protocol, framed by the plugin itself) or a framed transport (http).
 
 **The chain is kernel → `busbar-core-connector` → transport plugins.** The kernel knows nothing about
-transport. Transport plugins have two roles: **carriers** (`tcp`, `stdio`, `unix`) dial, accept, read
+transport. Transport plugins have two roles: **carriers** (`tcp`, `stdio`) dial, accept, read
 and write; **framers** (`http`, `ws`) are sans-IO state machines. One plugin is one entry, and the
 schemes it serves are its claims — http claims `http`, `https` and `sse` ~~and `grpc`~~ (SUPERSEDED
 2026-09-29 by OWNER ruling: gRPC is its own transport, below); ws claims `ws` and
@@ -721,11 +721,6 @@ as fields, and a pseudo-field inside `Fields` is refused. `te` is checked at the
 missing `te` is served, a wrong one is reset with h2 `PROTOCOL_ERROR` — then dropped as hop-by-hop. A
 transport's emit carries the response status as a typed `u16`, never a magic `:status` header, with
 its validator wired and a RED in the first commit that sets it.
-
-**The unix transport (TRANSPORT-UNIX, ARCHITECT ruling 2026-09-30).** Claim `unix`, targets
-`unix:///absolute/path` only; the connector unlinks a stale socket only if it is a socket and refuses a
-symlinked parent; a unix egress bypass exists only for an operator-configured exact path, never a
-plane-supplied one (a RED holds it).
 
 **Datagram media (WEBRTC, ARCHITECT rulings 2026-09-30).** WebRTC mirrors HTTPS layering: the udp
 carrier is the host's (in the connector, no carrier plugin); DTLS runs in the connector's secure layer
@@ -991,7 +986,7 @@ the three cleanliness crates. Every plugin lives in its own repo, named `busbar-
 | Kind | Plugins |
 |---|---|
 | plane | llm, mcp, a2a, streaming, decisions |
-| transport | tcp, stdio, unix, http, ws, grpc (OWNER 2026-09-29) |
+| transport | tcp, stdio, ~~unix~~, http, ws, grpc (OWNER 2026-09-29; unix DROPPED, OWNER 2026-09-30, Q127) |
 | store | memory, postgres, mysql, sqlite, valkey |
 | secret | env, file, vault |
 | auth | admin-tokens, github, ldap, oidc, webhook-signature; the connection-auth styles' crates are an owner question (§6) ~~outbound~~ |
