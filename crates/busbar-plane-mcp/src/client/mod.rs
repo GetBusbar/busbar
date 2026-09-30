@@ -5,6 +5,8 @@
 //! the answer. Pure builders and readers over values; nothing here opens a connection, holds a
 //! session or reads a clock. The engine that drives them hands every fact in as an argument.
 
+/// The session revisions, spoken as a client: lowering, the ladder's reading, the message address.
+pub mod compat;
 pub mod jsonrpc;
 pub mod peer;
 pub mod verb;
