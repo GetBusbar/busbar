@@ -3124,7 +3124,21 @@ in the default `pull_request` types.
 can decide. Everything below is state and goes stale — unlike Parts 1–6. **When an item is done,
 delete the row.** Narrative belongs in commit messages; this file holds the route.
 
-## Where the tree is — measured 2026-09-22
+## Where the tree is — measured 2026-09-29
+
+| | Value |
+|---|---|
+| Tip | `origin/predev` `23d8a6b46` (re-read it: `git -C <repo> rev-parse --short origin/predev`) |
+| Last train | TRAIN 2, non-`$`: `cab747f6d` → `23d8a6b46`, 32 commits (PREDEV-REDS, the unload reaper, LENT-KEEP, WIRE-AUTH 1b — the root dispatcher and `root::loader` —, DIFFS-FIX, SDK-SAFE, KERNEL-VALIDATE, the C0 fences, STEP-20's wire cells); before it the `$` commits `b461d61b1` (audit digest v3, #34) and `5f235745a` (#33: the engine's 1.5.x fold deleted) |
+| Landed since 2026-09-27 | M0 ABI-SPEC; M1 DISPATCH and its async completion; the M3 shapes of all seven kinds; the door macro and per-kind slots; H1 (`HostSlots`, `clock.now`, `dest.judge`); the plane ABI v1 driver additions (4a); the codec folds (R7); Phase A of the mcp, a2a and streaming folds; the llm unit's kernel-door `$` steps; plugin log files (LOG-BRIDGE); the http and ws doors; the connector shell and the metadata-host refusal; the decisions rename and its driver answers |
+| In flight | the slots on the live roster, each named in the TODO's KERNEL<>PLUGINS Status cells |
+| Done-oracle (`scripts/verify-1.6.0-done.sh`) | **1 / 23 groups GREEN**, measured at `b461d61b1` (ARCHITECT, 2026-09-29); a reclassification of the groups is RUNNING — do not plan against the figure until it reports |
+| Integration smoke test | GREEN at `23d8a6b46` (20 golden arms over 5 dialects, the tool arm, the agent arm) |
+| Kernel / contract ceilings | 55337 / 25712 (`qa/construction.toml`, KERNEL-VALIDATE re-arms) |
+| `ship-ready` | RED by design — the burn-down meter; the standing count only falls (`1.6.0-TODO.md` rule 9.7) |
+| Unwired seams, transitional rows | the TODO's UNWIRED SEAMS and TRANSITIONAL ROWS tables; a transitional row is legal only with a named drain |
+
+## ~~Where the tree is — measured 2026-09-22~~ SUPERSEDED 2026-09-29 by the table above
 
 | | Value |
 |---|---|
