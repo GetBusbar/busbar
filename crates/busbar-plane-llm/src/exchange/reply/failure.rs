@@ -11,13 +11,14 @@
 
 use std::collections::HashMap;
 
-use busbar_contract::http::{HeaderMap, HeaderName};
 use busbar_contract::operation::OpVerb;
-use busbar_contract::protocol::{ProtocolDecl, KIND_AUTHENTICATION, PROVIDER_CODE_CONTEXT_LENGTH};
+use busbar_contract::protocol::{
+    HeadFields, ProtocolDecl, KIND_AUTHENTICATION, PROVIDER_CODE_CONTEXT_LENGTH,
+};
 use busbar_contract::upstream::{CanonicalSignal, Disposition, RawUpstreamError, StatusClass};
 
 use super::super::refuse::{render, Rendered};
-use super::wire;
+use super::wire::{self, head_field, head_text, head_value};
 use crate::codec::DECLS;
 
 fn decl(name: &str) -> Option<&'static ProtocolDecl> {
@@ -30,27 +31,21 @@ pub struct FarError<'a> {
     /// Its status.
     pub status: u16,
     /// Its head fields.
-    pub head: &'a HeaderMap,
+    pub head: HeadFields<'a>,
     /// Its body.
     pub body: &'a [u8],
 }
 
-/// A head field as a caller reads it: the name in its wire (lower-case) form, so a dialect may
-/// declare a relayed field the way its vendor spells it. A name that is not a legal field name is
-/// dropped, never relayed and never fatal.
-#[must_use]
-pub fn head_field(name: &str, value: &[u8]) -> Option<(String, Vec<u8>)> {
-    let name = HeaderName::from_bytes(name.as_bytes()).ok()?;
-    Some((name.as_str().to_string(), value.to_vec()))
-}
-
 /// The request-id head field a caller of `ingress` reads, forwarding the far end's own id (the
 /// first head field the caller's dialect relays) when it sent one.
-pub(crate) fn request_id_field(ingress: &str, far_head: &HeaderMap) -> Option<(String, Vec<u8>)> {
+pub(crate) fn request_id_field(
+    ingress: &str,
+    far_head: HeadFields<'_>,
+) -> Option<(String, Vec<u8>)> {
     let upstream = wire::ingress_relayed_response_header_names(ingress)
         .first()
-        .and_then(|name| far_head.get(*name))
-        .and_then(|h| h.to_str().ok());
+        .and_then(|name| head_value(far_head, name))
+        .and_then(head_text);
     let (name, id) = wire::response_request_id(ingress, upstream)?;
     head_field(name, id.as_bytes())
 }
@@ -70,31 +65,33 @@ pub fn raw_error(far: &str, operation: OpVerb, status: u16, body: &[u8]) -> RawU
 }
 
 /// The non-standard overload status a provider sends as its overloaded signal.
-const HTTP_OVERLOADED: u16 = 529;
+const OVERLOADED_STATUS: u16 = 529;
 
-/// THE CLASS of a far-end error under the provider's `error_map`: a mapped provider code first,
+/// THE CLASS of a far-end error of `status` (the status the far end answered, which its dialect's
+/// reading carries) under the provider's `error_map`: a mapped provider code first,
 /// then the built-in context-length code on a request-size status, then a mapped structured type,
 /// then the status. A mapping to `context_length` never masks a 5xx; a mapping to a string that
 /// names no class is ignored.
 #[must_use]
-pub fn normalize(raw: &RawUpstreamError, error_map: &HashMap<String, String>) -> CanonicalSignal {
+pub fn normalize(
+    status: u16,
+    raw: &RawUpstreamError,
+    error_map: &HashMap<String, String>,
+) -> CanonicalSignal {
     let signal = |class, provider_signal| CanonicalSignal {
         class,
         provider_signal,
         retry_after: raw.retry_after_secs,
     };
-    let masks_outage = |class: StatusClass| {
-        class == StatusClass::ContextLength && (500..600).contains(&raw.http_status)
-    };
+    let masks_outage =
+        |class: StatusClass| class == StatusClass::ContextLength && (500..600).contains(&status);
     let provider_signal = match &raw.provider_code {
         Some(code) => {
             let mapped = error_map.get(code).and_then(|m| StatusClass::parse(m));
             if let Some(class) = mapped.filter(|c| !masks_outage(*c)) {
                 return signal(class, Some(code.clone()));
             }
-            if code == PROVIDER_CODE_CONTEXT_LENGTH
-                && (raw.http_status == 400 || raw.http_status == 413)
-            {
+            if code == PROVIDER_CODE_CONTEXT_LENGTH && (status == 400 || status == 413) {
                 return signal(StatusClass::ContextLength, Some(code.clone()));
             }
             Some(code.clone())
@@ -107,11 +104,11 @@ pub fn normalize(raw: &RawUpstreamError, error_map: &HashMap<String, String>) ->
             return signal(class, provider_signal.or_else(|| Some(ty.clone())));
         }
     }
-    let class = match raw.http_status {
+    let class = match status {
         401 | 403 => StatusClass::Auth,
         429 => StatusClass::RateLimit,
         408 => StatusClass::Timeout,
-        HTTP_OVERLOADED => StatusClass::Overloaded,
+        OVERLOADED_STATUS => StatusClass::Overloaded,
         500..=599 => StatusClass::ServerError,
         _ => StatusClass::ClientError,
     };
@@ -124,13 +121,13 @@ pub fn normalize(raw: &RawUpstreamError, error_map: &HashMap<String, String>) ->
 #[must_use]
 pub fn relay_verbatim(ingress: &str, far: &FarError<'_>) -> Rendered {
     let mut fields = Vec::new();
-    if let Some(ct) = far.head.get(busbar_contract::http::header::CONTENT_TYPE) {
-        fields.push(("content-type".to_string(), ct.as_bytes().to_vec()));
+    if let Some(ct) = head_value(far.head, "content-type") {
+        fields.push(("content-type".to_string(), ct.to_vec()));
     }
     if wire::ingress_relays_amzn_headers(ingress) {
         for name in wire::ingress_relayed_response_header_names(ingress) {
-            if let Some(v) = far.head.get(*name) {
-                fields.extend(head_field(name, v.as_bytes()));
+            if let Some(v) = head_value(far.head, name) {
+                fields.extend(head_field(name, v));
             }
         }
     } else {
@@ -219,6 +216,7 @@ pub fn judge(
         };
     }
     let sig = normalize(
+        far.status,
         &raw_error(egress, operation, far.status, far.body),
         error_map,
     );

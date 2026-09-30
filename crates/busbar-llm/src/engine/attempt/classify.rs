@@ -100,23 +100,30 @@ impl UpstreamError {
         }
     }
 
-    fn far(&self) -> busbar_plane_llm::exchange::reply::failure::FarError<'_> {
-        busbar_plane_llm::exchange::reply::failure::FarError {
+    /// The plane's view of this error: its status, its head as field pairs, its body.
+    fn with_far<T>(
+        &self,
+        f: impl FnOnce(&crate::engine::xchg::reply::failure::FarError<'_>) -> T,
+    ) -> T {
+        let head: Vec<(&[u8], &[u8])> = self
+            .head
+            .iter()
+            .map(|(n, v)| (n.as_str().as_bytes(), v.as_bytes()))
+            .collect();
+        f(&crate::engine::xchg::reply::failure::FarError {
             status: self.status.as_u16(),
-            head: &self.head,
+            head: &head,
             body: &self.bytes,
-        }
+        })
     }
 
     /// The client-facing relay of this error (the plane's reply): cross-protocol reshaped into the
     /// ingress protocol's native envelope, same-protocol the upstream body verbatim with the native
     /// request-id header(s) a real endpoint carries.
     fn relay(&self, hop: &Hop<'_>) -> Response {
-        rendered_response(busbar_plane_llm::exchange::reply::failure::relay(
-            hop.ingress_protocol,
-            hop.egress_name,
-            &self.far(),
-        ))
+        rendered_response(self.with_far(|far| {
+            crate::engine::xchg::reply::failure::relay(hop.ingress_protocol, hop.egress_name, far)
+        }))
     }
 }
 
@@ -158,7 +165,7 @@ fn classify_error(
 
     // Two-stage pipeline: the cell that spoke to this upstream extracts the raw error, the lane's
     // error map normalizes it, the breaker classifies it.
-    let mut raw = busbar_plane_llm::exchange::reply::failure::raw_error(
+    let mut raw = crate::engine::xchg::reply::failure::raw_error(
         hop.egress_name,
         hop.op.operation,
         status.as_u16(),
@@ -176,14 +183,14 @@ fn classify_error(
             // return. Cross-protocol reshapes into the ingress envelope with the kind derived from
             // the classified status class; same-protocol relays verbatim.
             host.lane_store().record_client_fault(i);
-            AttemptOutcome::Response(rendered_response(
-                busbar_plane_llm::exchange::reply::failure::client_fault(
+            AttemptOutcome::Response(rendered_response(err.with_far(|far| {
+                crate::engine::xchg::reply::failure::client_fault(
                     hop.ingress_protocol,
                     hop.egress_name,
                     sig.class,
-                    &err.far(),
-                ),
-            ))
+                    far,
+                )
+            })))
         }
         Disposition::TransientUpstream => {
             // Record by class: a rate limit carries its own cooldown rule and the upstream's
@@ -284,7 +291,7 @@ fn hard_down(
         // a 403 AccessDeniedException, a real Gemini bad key a 400 INVALID_ARGUMENT), with the
         // vendor-plausible message — never the egress backend's raw status or body.
         return AttemptOutcome::Response(rendered_response(
-            busbar_plane_llm::exchange::reply::failure::auth_failure(hop.ingress_protocol),
+            crate::engine::xchg::reply::failure::auth_failure(hop.ingress_protocol),
         ));
     }
     AttemptOutcome::Failed {

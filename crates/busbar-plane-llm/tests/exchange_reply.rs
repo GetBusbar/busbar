@@ -6,12 +6,12 @@
 
 use std::collections::HashMap;
 
-use busbar_contract::http::{HeaderMap, HeaderValue};
 use busbar_contract::operation::OpVerb;
 use busbar_contract::upstream::{Disposition, RawUpstreamError, StatusClass};
 use busbar_plane_llm::exchange::reply::failure::{
-    auth_failure, head_field, judge, normalize, relay_verbatim, FarError,
+    auth_failure, judge, normalize, relay_verbatim, FarError,
 };
+use busbar_plane_llm::exchange::reply::wire::head_field;
 use serde_json::Value;
 
 const SIX: [&str; 6] = [
@@ -24,12 +24,10 @@ const SIX: [&str; 6] = [
 ];
 
 fn raw(status: u16, code: Option<&str>, ty: Option<&str>) -> RawUpstreamError {
-    RawUpstreamError {
-        http_status: status,
-        provider_code: code.map(str::to_string),
-        structured_type: ty.map(str::to_string),
-        retry_after_secs: None,
-    }
+    let mut r = RawUpstreamError::from_status(status);
+    r.provider_code = code.map(str::to_string);
+    r.structured_type = ty.map(str::to_string);
+    r
 }
 
 fn map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
@@ -73,50 +71,50 @@ fn a_far_end_error_is_placed_in_its_class() {
         ("typo", "rate_limt"),
         ("overloaded_error", "overloaded"),
     ]);
-    let cases: &[(RawUpstreamError, StatusClass)] = &[
-        (raw(400, Some("1302"), None), StatusClass::RateLimit),
-        (raw(402, Some("quota"), None), StatusClass::Billing),
-        (raw(400, Some("ctx"), None), StatusClass::ContextLength),
-        (raw(503, Some("ctx"), None), StatusClass::ServerError),
+    let cases: &[(u16, Option<&str>, Option<&str>, StatusClass)] = &[
+        (400, Some("1302"), None, StatusClass::RateLimit),
+        (402, Some("quota"), None, StatusClass::Billing),
+        (400, Some("ctx"), None, StatusClass::ContextLength),
+        (503, Some("ctx"), None, StatusClass::ServerError),
         (
-            raw(400, Some("context_length_exceeded"), None),
+            400,
+            Some("context_length_exceeded"),
+            None,
             StatusClass::ContextLength,
         ),
         (
-            raw(413, Some("context_length_exceeded"), None),
+            413,
+            Some("context_length_exceeded"),
+            None,
             StatusClass::ContextLength,
         ),
         (
-            raw(401, Some("context_length_exceeded"), None),
+            401,
+            Some("context_length_exceeded"),
+            None,
             StatusClass::Auth,
         ),
-        (raw(400, Some("typo"), None), StatusClass::ClientError),
-        (
-            raw(500, None, Some("overloaded_error")),
-            StatusClass::Overloaded,
-        ),
-        (raw(503, None, Some("ctx")), StatusClass::ServerError),
-        (raw(401, None, None), StatusClass::Auth),
-        (raw(403, None, None), StatusClass::Auth),
-        (raw(429, None, None), StatusClass::RateLimit),
-        (raw(408, None, None), StatusClass::Timeout),
-        (raw(529, None, None), StatusClass::Overloaded),
-        (raw(502, None, None), StatusClass::ServerError),
-        (raw(404, None, None), StatusClass::ClientError),
-        (raw(302, None, None), StatusClass::ClientError),
+        (400, Some("typo"), None, StatusClass::ClientError),
+        (500, None, Some("overloaded_error"), StatusClass::Overloaded),
+        (503, None, Some("ctx"), StatusClass::ServerError),
+        (401, None, None, StatusClass::Auth),
+        (403, None, None, StatusClass::Auth),
+        (429, None, None, StatusClass::RateLimit),
+        (408, None, None, StatusClass::Timeout),
+        (529, None, None, StatusClass::Overloaded),
+        (502, None, None, StatusClass::ServerError),
+        (404, None, None, StatusClass::ClientError),
+        (302, None, None, StatusClass::ClientError),
     ];
-    for (r, want) in cases {
-        assert_eq!(normalize(r, &em).class, *want, "{r:?}");
+    for &(status, code, ty, want) in cases {
+        let r = raw(status, code, ty);
+        assert_eq!(normalize(status, &r, &em).class, want, "{r:?}");
     }
-    let sig = normalize(&raw(400, Some("1302"), None), &em);
+    let sig = normalize(400, &raw(400, Some("1302"), None), &em);
     assert_eq!(sig.provider_signal.as_deref(), Some("1302"));
 }
 
-fn json_head() -> HeaderMap {
-    let mut h = HeaderMap::new();
-    h.insert("content-type", HeaderValue::from_static("application/json"));
-    h
-}
+const JSON_HEAD: &[(&[u8], &[u8])] = &[(b"content-type", b"application/json")];
 
 /// A far-end error judged, for every dialect: a caller's own credential failing is relayed
 /// unjudged; a client fault within one dialect is the far end's bytes, across dialects the
@@ -124,15 +122,11 @@ fn json_head() -> HeaderMap {
 /// carries the relay the walk ends on.
 #[test]
 fn a_far_end_error_is_judged_for_every_pair() {
-    let head = json_head();
+    let head = JSON_HEAD;
     let body = br#"{"error":{"message":"bad things","type":"invalid_request_error"}}"#;
     for ingress in SIX {
         for egress in SIX {
-            let far = |status| FarError {
-                status,
-                head: &head,
-                body,
-            };
+            let far = |status| FarError { status, head, body };
             let j = judge(
                 ingress,
                 egress,
@@ -201,16 +195,15 @@ fn a_far_end_error_is_judged_for_every_pair() {
 /// relay; any other caller reads the far end's own request id.
 #[test]
 fn a_verbatim_relay_carries_the_native_head_fields() {
-    let mut head = json_head();
-    head.insert("x-amzn-requestid", HeaderValue::from_static("amzn-1"));
-    head.insert(
-        "x-amzn-errortype",
-        HeaderValue::from_static("ValidationException"),
-    );
-    head.insert("request-id", HeaderValue::from_static("req_1"));
+    let head: &[(&[u8], &[u8])] = &[
+        (b"Content-Type", b"application/json"),
+        (b"x-amzn-requestid", b"amzn-1"),
+        (b"x-amzn-errortype", b"ValidationException"),
+        (b"request-id", b"req_1"),
+    ];
     let far = FarError {
         status: 400,
-        head: &head,
+        head,
         body: b"{}",
     };
     let bedrock = relay_verbatim("bedrock", &far);

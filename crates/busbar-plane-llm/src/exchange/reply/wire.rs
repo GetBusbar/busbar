@@ -12,8 +12,9 @@ use std::collections::BTreeMap;
 
 use busbar_contract::billing::{Billing, TokenUsage};
 use busbar_contract::protocol::{
-    ProtocolDecl, StreamTranslator, KIND_API_ERROR, KIND_AUTHENTICATION, KIND_INVALID_REQUEST,
-    KIND_OVERLOADED, KIND_PERMISSION, KIND_RATE_LIMIT, KIND_TIMEOUT, PROVIDER_CODE_CONTEXT_LENGTH,
+    HeadFields, ProtocolDecl, StreamTranslator, KIND_API_ERROR, KIND_AUTHENTICATION,
+    KIND_INVALID_REQUEST, KIND_OVERLOADED, KIND_PERMISSION, KIND_RATE_LIMIT, KIND_TIMEOUT,
+    PROVIDER_CODE_CONTEXT_LENGTH,
 };
 use busbar_contract::upstream::{CanonicalSignal, StatusClass};
 use serde_json::Value;
@@ -36,21 +37,26 @@ pub const GENERIC_RESPONSE_ERROR_DETAIL: &str =
 /// The message a stream cut after its first byte ends on.
 pub const MID_STREAM_GENERIC_DETAIL: &str = busbar_contract::protocol::STREAM_ABORT_DETAIL;
 
+/// The content type `d` declares for a streamed answer.
+fn stream_ct(d: &ProtocolDecl) -> Option<&'static str> {
+    d.streaming_content_type
+}
+
 /// True for a content type that carries an incremental answer: a content type some dialect
-/// declares as its streaming one.
+/// declares for a streamed answer.
 #[must_use]
 pub fn is_stream_content_type(ct: &str) -> bool {
     DECLS
         .iter()
-        .filter_map(|d| d.streaming_content_type)
+        .filter_map(|d| stream_ct(d))
         .any(|p| ct.starts_with(p))
 }
 
-/// The streaming content type the caller's dialect expects, or `None` for a dialect the plane does
-/// not hold (the far end's content type is then kept).
+/// The content type the caller's dialect expects on a streamed answer, or `None` for a dialect the
+/// plane does not hold (the far end's content type is then kept).
 #[must_use]
 pub fn ingress_stream_content_type(ingress: &str) -> Option<&'static str> {
-    decl(ingress).and_then(|d| d.streaming_content_type)
+    decl(ingress).and_then(stream_ct)
 }
 
 /// Whether every answer to a caller of `ingress` carries the far end's `x-amzn-*` head fields.
@@ -76,6 +82,38 @@ pub fn response_request_id(
     decl(ingress)
         .and_then(|d| d.dialect())
         .and_then(|di| di.ingress_response_request_id(upstream_request_id))
+}
+
+/// The first value of the head field `name` in `head`, the name matched in any case.
+#[must_use]
+pub fn head_value<'a>(head: HeadFields<'a>, name: &str) -> Option<&'a [u8]> {
+    head.iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(name.as_bytes()))
+        .map(|(_, v)| *v)
+}
+
+/// A head field's value as text: visible ASCII and the tab, else `None`.
+#[must_use]
+pub fn head_text(value: &[u8]) -> Option<&str> {
+    value
+        .iter()
+        .all(|b| *b == b'\t' || (0x20..0x7f).contains(b))
+        .then(|| std::str::from_utf8(value).ok())
+        .flatten()
+}
+
+/// Whether `b` may appear in a head field name (a token character).
+fn name_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)
+}
+
+/// A head field as a caller reads it: the name in its wire (lower-case) form, so a dialect may
+/// declare a relayed field the way its vendor spells it. A name that is not a legal field name is
+/// dropped, never relayed and never fatal.
+#[must_use]
+pub fn head_field(name: &str, value: &[u8]) -> Option<(String, Vec<u8>)> {
+    (!name.is_empty() && name.bytes().all(name_byte))
+        .then(|| (name.to_ascii_lowercase(), value.to_vec()))
 }
 
 /// The error kind a far-end status is reshaped into for a caller of another dialect: the native
@@ -131,10 +169,10 @@ pub fn cross_protocol_error(status: u16, bytes: &[u8]) -> (&'static str, String)
 }
 
 /// The bytes a stream cut after its first byte ends on, in the caller's own framing: a modeled
-/// exception frame for a binary event-stream caller, else the caller's streaming error event, asked
-/// of the live translator first (so the frame continues the stream's identity) and of the dialect
-/// second; a dialect the plane does not hold, or one that frames no in-band error, gets a bare
-/// `data:` frame.
+/// exception frame for a binary event-stream caller, else the caller's own in-band error event,
+/// asked of the live translator first (so the frame continues the stream's identity) and of the
+/// dialect second; a dialect the plane does not hold, or one that frames no in-band error, gets a
+/// bare `data:` frame.
 #[must_use]
 pub fn mid_stream_error_bytes(
     ingress: &str,

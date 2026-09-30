@@ -58,14 +58,12 @@ fn the_planes_class_rule_is_the_breakers() {
             for ty in types {
                 for status in statuses {
                     for retry in [None, Some(7)] {
-                        let raw = RawUpstreamError {
-                            http_status: status,
-                            provider_code: code.map(str::to_string),
-                            structured_type: ty.map(str::to_string),
-                            retry_after_secs: retry,
-                        };
+                        let mut raw = RawUpstreamError::from_status(status);
+                        raw.provider_code = code.map(str::to_string);
+                        raw.structured_type = ty.map(str::to_string);
+                        raw.retry_after_secs = retry;
                         assert_eq!(
-                            busbar_plane_llm::exchange::reply::failure::normalize(&raw, em),
+                            crate::engine::xchg::reply::failure::normalize(status, &raw, em),
                             crate::engine::normalize_raw_error(&raw, em),
                             "{raw:?} under {em:?}"
                         );

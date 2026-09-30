@@ -46,7 +46,7 @@ impl Drop for BudgetSpendGuard<'_> {
 
 // The token figures out of a delivery's neutral billing carrier, for the report-back (a non-token
 // billing answers `None`): the plane's reply read.
-use busbar_plane_llm::exchange::reply::wire::token_usage_of;
+use crate::engine::xchg::reply::wire::token_usage_of;
 
 /// Where a translated body goes and how it is labelled: the parts every delivery exit shares.
 struct Delivery<'a> {
@@ -458,7 +458,7 @@ fn not_translatable(
 
 // Did the upstream REPORT this buffered chat generation as failed? The plane's reply reads the
 // egress reader's stop reason.
-use busbar_plane_llm::exchange::reply::wire::generation_failed;
+use crate::engine::xchg::reply::wire::generation_failed;
 
 /// The failed-generation exit (owner ruling Q31). The upstream answered 2xx with a whole body whose
 /// stop reason says the generation FAILED:

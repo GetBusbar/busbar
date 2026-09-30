@@ -27,7 +27,7 @@ pub(crate) fn maybe_attach_response_request_id(
     ingress_protocol: &str,
     upstream_request_id: Option<&str>,
 ) -> axum::http::response::Builder {
-    match busbar_plane_llm::exchange::reply::wire::response_request_id(
+    match crate::engine::xchg::reply::wire::response_request_id(
         ingress_protocol,
         upstream_request_id,
     ) {
@@ -38,9 +38,9 @@ pub(crate) fn maybe_attach_response_request_id(
 
 /// Whether a caller's dialect relays the far end's `x-amzn-*` head fields, and which far-end head
 /// field names it relays verbatim on a same-protocol answer: the plane's reply reads.
-pub(crate) use busbar_plane_llm::exchange::reply::wire::ingress_relayed_response_header_names;
+pub(crate) use crate::engine::xchg::reply::wire::ingress_relayed_response_header_names;
 #[cfg(test)]
-pub(crate) use busbar_plane_llm::exchange::reply::wire::ingress_relays_amzn_headers;
+pub(crate) use crate::engine::xchg::reply::wire::ingress_relays_amzn_headers;
 
 /// TRANSPARENCY: stamp which routing POLICY chose which TARGET onto a successful response, mirroring
 /// the `x-busbar-*` header convention (e.g. the bedrock/anthropic request-id headers above):
@@ -133,7 +133,7 @@ pub(crate) fn answer_response(
 
 /// An answer the plane rendered (its status, head fields in order, and body) as the client's
 /// response.
-pub(crate) fn rendered_response(r: busbar_plane_llm::exchange::refuse::Rendered) -> Response {
+pub(crate) fn rendered_response(r: crate::engine::xchg::refuse::Rendered) -> Response {
     let status = StatusCode::from_u16(r.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let mut rb = Response::builder().status(status);
     for (name, value) in r.fields {
@@ -145,11 +145,11 @@ pub(crate) fn rendered_response(r: busbar_plane_llm::exchange::refuse::Rendered)
 
 /// The canonical kind for a cross-protocol non-2xx, the plane's reply table.
 #[cfg(test)]
-pub(crate) use busbar_plane_llm::exchange::reply::wire::cross_protocol_error_kind;
+pub(crate) use crate::engine::xchg::reply::wire::cross_protocol_error_kind;
 
 /// Shared finalizer for a cross-protocol NON-2xx upstream response, used by BOTH `forward_with_pool`
 /// and `forward_once`: the plane's reply picks the kind and lifts the message
-/// (`busbar_plane_llm::exchange::reply::wire::cross_protocol_error`), rendered here in the ingress
+/// (`crate::engine::xchg::reply::wire::cross_protocol_error`), rendered here in the ingress
 /// protocol's native error envelope. A crossed boundary NEVER relays verbatim.
 #[cfg(test)]
 pub(crate) fn shape_cross_protocol_error(
@@ -158,7 +158,7 @@ pub(crate) fn shape_cross_protocol_error(
     bytes: &[u8],
 ) -> Response {
     let (kind, msg) =
-        busbar_plane_llm::exchange::reply::wire::cross_protocol_error(status.as_u16(), bytes);
+        crate::engine::xchg::reply::wire::cross_protocol_error(status.as_u16(), bytes);
     ingress_error(ingress_protocol, status, kind, &msg)
 }
 
@@ -339,9 +339,7 @@ pub(crate) async fn read_capped_body(
 
 /// The client-fault kind by class and the far-end error message lift: the plane's reply reads.
 #[cfg(test)]
-pub(crate) use busbar_plane_llm::exchange::reply::wire::{
-    client_fault_kind, extract_error_message,
-};
+pub(crate) use crate::engine::xchg::reply::wire::{client_fault_kind, extract_error_message};
 
 /// Vendor-neutral, infrastructure-free detail used for EVERY client-facing mid-stream / pre-first-byte
 /// transport-error frame. The raw `reqwest::Error` Display embeds hyper/reqwest/tokio internals and the
@@ -356,14 +354,14 @@ pub(crate) use busbar_plane_llm::exchange::reply::wire::{
 /// SSE `error` event, or a Gemini `google.rpc.Status` element carries generic service phrasing, never
 /// the word "upstream" — leaking it is a protocol-indistinguishability tell on the most-exercised
 /// cross-protocol error path. Keep this generic and free of any intermediary/translation vocabulary.
-pub(crate) use busbar_plane_llm::exchange::reply::wire::MID_STREAM_GENERIC_DETAIL;
+pub(crate) use crate::engine::xchg::reply::wire::MID_STREAM_GENERIC_DETAIL;
 
 /// Vendor-neutral fallback `error.message` for a NON-2xx response whose body carried no extractable
 /// human message. Rendered into the CLIENT's native error envelope via `ingress_error`, so it must
 /// read like copy a real single-vendor API would emit — NOT reverse-proxy vocabulary like "upstream".
 /// The real status/cause is logged server-side; only this generic string reaches the client.
 #[cfg(test)]
-pub(crate) use busbar_plane_llm::exchange::reply::wire::GENERIC_REJECTED_DETAIL;
+pub(crate) use crate::engine::xchg::reply::wire::GENERIC_REJECTED_DETAIL;
 
 /// Client-visible fallback `detail` strings each repeated across several ingress-error sites —
 /// hoisted so the copy cannot drift between them. Same vendor-neutral rules as
@@ -386,7 +384,7 @@ pub(crate) const DETAIL_REQUEST_TIMEOUT: &str = "The request timed out. Please r
 /// client's native error envelope, so it must NOT disclose the existence of a translating
 /// intermediary ("translate"/"untranslatable") or proxy vocabulary ("upstream"); a native vendor
 /// returns a generic internal-error message here. The precise cause is logged server-side.
-pub(crate) use busbar_plane_llm::exchange::reply::wire::GENERIC_RESPONSE_ERROR_DETAIL;
+pub(crate) use crate::engine::xchg::reply::wire::GENERIC_RESPONSE_ERROR_DETAIL;
 
 /// Build the bytes for a mid-stream error to send to the CLIENT, framed in the INGRESS protocol.
 ///
@@ -406,7 +404,7 @@ pub(crate) use busbar_plane_llm::exchange::reply::wire::GENERIC_RESPONSE_ERROR_D
 ///
 /// `translate` is the LIVE translator for this stream when there is one, so the failure event
 /// continues the stream's identity. The frame is the plane's reply's.
-pub(crate) use busbar_plane_llm::exchange::reply::wire::mid_stream_error_bytes;
+pub(crate) use crate::engine::xchg::reply::wire::mid_stream_error_bytes;
 
 /// Deterministic FNV-1a hash of a string — stable across processes/restarts (unlike the
 /// std `DefaultHasher`, whose seed is randomized), so session affinity pins consistently.

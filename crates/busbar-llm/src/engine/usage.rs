@@ -57,7 +57,7 @@ pub(crate) fn record_resp_usage(
 /// **EVERY OPEN CLASS a delivery billed**, as the class map it is ledgered under (#71): the plane's
 /// reply read. ONE function, read twice: [`record_resp_usage`] ledgers exactly this map, and the
 /// buffered tap reports exactly this map back, so the two books are handed the same counts.
-pub(crate) use busbar_plane_llm::exchange::reply::wire::open_units_of;
+pub(crate) use crate::engine::xchg::reply::wire::open_units_of;
 
 /// Ledger a delivery's OPEN classes ([`open_units_of`]'s map) VERBATIM against the key's budget
 /// chain, in the fee's window (#71) — where the card prices them; a present card silent about one

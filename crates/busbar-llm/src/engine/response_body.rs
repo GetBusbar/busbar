@@ -139,7 +139,7 @@ impl std::fmt::Debug for TapCell {
 pub(crate) use busbar_plane_llm::codec::wire_shim::TRUNCATED_TAIL_BYTES_PER_TOKEN;
 
 /// The floor, the dialect's reported-usage scan and the two together: the plane's reply reads.
-pub(crate) use busbar_plane_llm::exchange::reply::wire::{
+pub(crate) use crate::engine::xchg::reply::wire::{
     estimate_usage_from_truncated_tail, reported_usage, unrecovered_usage,
 };
 
