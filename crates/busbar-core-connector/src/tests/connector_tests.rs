@@ -246,3 +246,9 @@ fn writes_held_for_a_pending_judgement_are_capped() {
         "an empty write still passes"
     );
 }
+
+/// A need dials a hostname through the kernel's one judge, over the plugin's own table. Its one
+/// `unsafe` is the host's own lowered table (`HostConns::new`), test-only as `support` is.
+#[allow(unsafe_code)]
+#[path = "name_dial_tests.rs"]
+mod name_dial;

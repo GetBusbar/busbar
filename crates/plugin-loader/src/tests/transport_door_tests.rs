@@ -30,11 +30,36 @@ mod conformance;
 #[path = "transport_adapter_tests.rs"]
 mod adapter;
 
-/// The transport fixture's dropped-in image: this crate's `transport_door` example `cdylib`, which
-/// `cargo test` builds. Under CI a missing artifact is a failure, never a skip.
+/// A dropped-in transport door that frames the host's socket, found by KIND among the example
+/// `cdylib`s beside the test binary (a workspace test build emits the transport crates' door
+/// examples; no linked dev edge carries a door export). Under CI a missing artifact is a failure,
+/// never a skip.
 fn fixture() -> Option<Vec<u8>> {
-    let path = crate::dispatch_tests::example_cdylib("transport_door")?;
-    Some(std::fs::read(path).expect("read the cdylib"))
+    let exe = std::env::current_exe().ok()?;
+    let examples = exe.parent()?.parent()?.join("examples");
+    let facts = crate::dispatch::ManifestFacts {
+        mechanism_version: busbar_contract::abi::mechanism::MECHANISM_VERSION,
+        kind: busbar_contract::abi::mechanism::KindCode::Transport,
+        kind_abi: busbar_contract::abi::mechanism::KindCode::Transport.abi_version(),
+    };
+    let found = crate::list_plugin_files(&examples)
+        .into_iter()
+        .map(|f| examples.join(f))
+        .find(|p| {
+            crate::dispatch::load_dropped::<crate::dispatch::kinds::transport::Transport>(
+                p,
+                &facts,
+                bind(),
+            )
+            .ok()
+            .and_then(|d| d.context::<TransportFacts>().cloned())
+            .is_some_and(|f| f.composes_over.is_empty())
+        });
+    assert!(
+        found.is_some() || std::env::var_os("CI").is_none(),
+        "a socket-framing transport door example is built beside the test binary under CI"
+    );
+    Some(std::fs::read(found?).expect("read the cdylib"))
 }
 
 fn bind() -> Bind {

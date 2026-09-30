@@ -2,13 +2,13 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A NEED DIALS A HOSTNAME THROUGH THE KERNEL'S ONE JUDGE, END TO END (`BUSBAR-1.6.0.md` THE
-//! DESIGN, connections; R-K). A plugin's view of the connection table (`HostConns`, over the host's
-//! lowered slots) opens a need whose target is a NAME; the connector judges the authority through
-//! the kernel's `dest.judge` (`KernelServices::judge_dial`), the
-//! name resolves off the caller's thread, and the connector dials exactly the pinned address over
-//! the linked `tcp` door. The open answers at once with the dial in flight; the resolution wakes the
-//! reader's ticket; a refusal the name decides answers the open, and an answered address the rules
-//! refuse answers the read — 1.5.5's refusal timing.
+//! DESIGN, connections; R-K; CONNECTOR-19 ruling (b)). A plugin's view of the connection table
+//! (`HostConns`, over the host's lowered slots) opens a need whose target is a NAME; the connector
+//! judges the authority through the kernel's `dest.judge` (`KernelServices::judge_dial`), the name
+//! resolves off the caller's thread, and the connector dials exactly the pinned address. The open
+//! answers at once with the dial in flight; the resolution wakes the reader's ticket; a refusal the
+//! name decides answers the open, and an answered address the rules refuse answers the read —
+//! 1.5.5's refusal timing.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -17,16 +17,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use busbar_contract::abi::host::conn::{host_slots, ConnHost, HostConns};
-use busbar_contract::conn::{ConnError, Conns, InstanceId, NeedId, OpenDesc};
-use busbar_core_connector::framer::FramerDoor;
-use busbar_core_connector::registry::{Entry, Transports};
-use busbar_core_connector::Connector;
+use busbar_contract::conn::{ConnError, ConnId, Conns, InstanceId, NeedId, OpenDesc};
 use busbar_kernel::host_services::{DestRules, KernelServices, Resolve, Resolved};
 use busbar_kernel::net_guard::{Denylist, GuardPolicy};
 
-mod common;
-
-include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
+use crate::registry::{Entry, Transports};
+use crate::support::{worker, TestDoor};
+use crate::Connector;
 
 const OWNER: InstanceId = InstanceId(1);
 const NEED: NeedId = NeedId(0);
@@ -54,17 +51,11 @@ impl Resolve for Table {
     }
 }
 
-/// The connector serving the linked `tcp` door, its dials judged by the kernel's one judge over
+/// The connector serving a byte-exact door, its dials judged by the kernel's one judge over
 /// `resolver` (the host default class admitting internal addresses, as a loopback far end needs).
 fn connector(resolver: Arc<dyn Resolve>, wakes: Arc<AtomicU64>) -> Arc<Connector> {
-    let plugin = common::plugins::linked_transport(
-        ::busbar_transport_tcp::linked::door,
-        __busbar_doors::bind(),
-    );
-    let door: Arc<dyn FramerDoor> =
-        Arc::new(__busbar_doors::Dispatched::open(plugin).expect("the tcp door opens"));
     let view = Transports::new(vec![Entry {
-        door,
+        door: Arc::new(TestDoor::identity("bytes")),
         alpn: Vec::new(),
     }])
     .expect("the view");
@@ -77,9 +68,8 @@ fn connector(resolver: Arc<dyn Resolve>, wakes: Arc<AtomicU64>) -> Arc<Connector
     };
     // The root's join: the kernel's one judge, as the connector's dial judge.
     let kernel = KernelServices::new(HashMap::from([(0, rules)]), resolver);
-    let judge = move |dest: &str, class: u32, done: busbar_core_connector::Judged| {
-        kernel.judge_dial(dest, class, done)
-    };
+    let judge =
+        move |dest: &str, class: u32, done: crate::Judged| kernel.judge_dial(dest, class, done);
     let c = Arc::new(Connector::serving(
         view,
         Arc::new(judge),
@@ -88,12 +78,12 @@ fn connector(resolver: Arc<dyn Resolve>, wakes: Arc<AtomicU64>) -> Arc<Connector
             wakes.fetch_add(1, Ordering::SeqCst);
         }),
     ));
-    c.declare_over(OWNER, NEED, ::busbar_transport_tcp::linked::KEY);
+    c.declare_over(OWNER, NEED, "bytes");
     c
 }
 
 /// Read one piece, driving the connection by reads alone.
-async fn read(t: &HostConns, id: busbar_contract::conn::ConnId) -> Result<Vec<u8>, ConnError> {
+async fn read(t: &HostConns, id: ConnId) -> Result<Vec<u8>, ConnError> {
     let mut buf = [0_u8; 64];
     for _ in 0..2000 {
         match t.read(id, 7, &mut buf) {
@@ -103,13 +93,6 @@ async fn read(t: &HostConns, id: busbar_contract::conn::ConnId) -> Result<Vec<u8
         }
     }
     panic!("no answer in two seconds");
-}
-
-fn rt() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
 }
 
 /// An echo far end on `ip`, answering one connection.
@@ -126,20 +109,31 @@ async fn echo(ip: IpAddr) -> u16 {
     port
 }
 
+fn host(c: &Arc<Connector>) -> ConnHost {
+    ConnHost::new(Arc::clone(c) as Arc<dyn Conns>, OWNER)
+}
+
+/// The plugin's view of `host`'s table. `host` must not move while the view is used: the view's
+/// context points at it.
+fn table(host: &ConnHost) -> HostConns {
+    // SAFETY: the host's own slots over the context it minted; `host` outlives every call and
+    // stays in place.
+    unsafe { HostConns::new(host_slots(), host.ctx()) }
+}
+
 /// THE PROOF: a hostname target opens at once, the read before the resolution answers is Pending,
 /// the resolution wakes the ticket, and the bytes round-trip over the address the judge pinned.
 #[test]
 fn a_need_dials_a_hostname_through_the_kernel_judge() {
-    rt().block_on(async {
+    worker().block_on(async {
         let port = echo([127, 0, 0, 1].into()).await;
         let wakes = Arc::new(AtomicU64::new(0));
         let c = connector(
             Arc::new(Table(vec![("upstream.test", [127, 0, 0, 1].into())])),
             Arc::clone(&wakes),
         );
-        let host = ConnHost::new(Arc::clone(&c) as Arc<dyn Conns>, OWNER);
-        // SAFETY: the host's own slots over the context it minted; `host` outlives every call.
-        let t = unsafe { HostConns::new(host_slots(), host.ctx()) };
+        let host = host(&c);
+        let t = table(&host);
         let target = format!("upstream.test:{port}");
         let id = t
             .open(
@@ -177,15 +171,14 @@ fn a_need_dials_localhost_through_the_system_resolver() {
         .next()
         .expect("to an address")
         .ip();
-    rt().block_on(async {
+    worker().block_on(async {
         let port = echo(first).await;
         let c = connector(
             Arc::new(busbar_kernel::host_services::SystemResolver),
             Arc::default(),
         );
-        let host = ConnHost::new(Arc::clone(&c) as Arc<dyn Conns>, OWNER);
-        // SAFETY: as above.
-        let t = unsafe { HostConns::new(host_slots(), host.ctx()) };
+        let host = host(&c);
+        let t = table(&host);
         let target = format!("localhost:{port}");
         let id = t
             .open(
@@ -206,14 +199,13 @@ fn a_need_dials_localhost_through_the_system_resolver() {
 /// flight and is refused on the read that finds the judgement — nothing is ever dialled.
 #[test]
 fn a_name_the_judge_refuses_is_never_dialled() {
-    rt().block_on(async {
+    worker().block_on(async {
         let c = connector(
             Arc::new(Table(vec![("rebind.test", [169, 254, 169, 254].into())])),
             Arc::default(),
         );
-        let host = ConnHost::new(Arc::clone(&c) as Arc<dyn Conns>, OWNER);
-        // SAFETY: as above.
-        let t = unsafe { HostConns::new(host_slots(), host.ctx()) };
+        let host = host(&c);
+        let t = table(&host);
         let open = |target: &str| {
             t.open(
                 NEED,

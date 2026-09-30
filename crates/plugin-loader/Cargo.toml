@@ -59,14 +59,6 @@ name = "store_v3_door"
 path = "tests/fixtures/store_v3_door.rs"
 crate-type = ["cdylib"]
 
-# The transport both-ways fixture's DROPPED door (`transport_door_tests`): the fixture's door behind
-# the one `export_door!`, built here as a `cdylib` and `dlopen`ed. The dev edge below links the
-# fixture WITHOUT its `dropped-in` export, so the lib test binary holds no second door symbol.
-[[example]]
-name = "transport_door"
-path = "tests/fixtures/transport_door.rs"
-crate-type = ["cdylib"]
-
 [dependencies]
 # The three unit-side store seams the composition root binds to one loaded store (`store_adapter`).
 # None of the three crates may name a store, so the adapter that implements all three lives on this
@@ -186,12 +178,13 @@ tungstenite = { workspace = true }
 # The `kind: hook` BOTH-WAYS fixture, on the same terms (`hook_conformance_tests`).
 busbar-hook-test-plugin = { path = "../hook-test-plugin" }
 # The `kind: transport` BOTH-WAYS fixture (#3, OWNER-LOCKED: a transport is swappable, compiled in
-# OR dropped in): a real shipped transport door. `transport_door_tests` signs its dropped-in image
-# (the `transport_door` example) into a `plugins/` directory and opens it through the one door.
+# OR dropped in): a real shipped transport door. `transport_door_tests` signs a dropped-in door image
+# (found by kind among the example cdylibs a workspace test build emits) into a `plugins/` directory
+# and opens it through the one door.
 # Reached by KIND through `[package.metadata.busbar.both-ways]` below.
 # NOT `dropped-in`: that feature exports the door's one symbol from the linked rlib, a second
 # `busbar_plugin_door` beside the dispatcher's own test plugin in this crate's lib test binary. The
-# dropped-in door is this crate's example `transport_door` (above), built as a `cdylib` and dlopened.
+# dropped-in door is a built example cdylib, dlopened.
 busbar-transport-tcp = { path = "../busbar-transport-tcp" }
 # The transport adapter's witness (`transport_adapter_tests`) dials through the trait, which takes a
 # sealed destination: the contract's blessed test seal (#65), as the wire crates' own batteries use.

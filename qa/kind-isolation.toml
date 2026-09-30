@@ -1785,16 +1785,6 @@ why     = "busbar names busbar-plugin-example-plane: declared dev in the test gr
 drain   = "none: BUSBAR-1.6.0.md grants this class. What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
-from    = "busbar"
-to      = "busbar-transport-tcp"
-half    = "test"
-count   = "1"
-verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes (`root -> transport` is granted; the shipped half of this edge is already a row). BUSBAR-1.6.0.md #3 (OWNER-LOCKED: a transport is swappable, compiled in OR dropped in): the root's both-doors transport proofs (src/root/tests/registry.rs) dlopen a transport door cdylib: this crate's `transport_door` example, the wire's linked door behind the one `export_door!`."
-why     = "busbar names busbar-transport-tcp: declared dev in the test graph, featureless, so the `transport_door` example a package-scoped test build emits can export the wire's door for the root's dropped-in-wire proofs, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: BUSBAR-1.6.0.md grants this class. What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
 from    = "busbar-plugin-loader"
 to      = "busbar-store-memory"
 half    = "test"

@@ -21,7 +21,7 @@ use busbar_contract::abi::cold::export::ExportStream;
 use busbar_plugin_loader::{
     dispatch::{
         kinds::transport::{Transport, TransportFacts},
-        load_dropped, load_linked, Bind, DispatchConfig, Dispatcher, ManifestFacts, NoSink, Plugin,
+        load_dropped, Bind, DispatchConfig, Dispatcher, ManifestFacts, NoSink, Plugin,
     },
     list_plugin_files, load_export_from_bytes, plugin_library_filename, scan_and_validate, scrape,
     sign::{sha256_hex, sign, Manifest, SigningKey, TrustPolicy},
@@ -186,15 +186,6 @@ fn transport_door(path: &Path) -> Option<(Plugin<Transport>, &'static str)> {
     let plugin = load_dropped::<Transport>(path, &facts, bind).ok()?;
     let key = *plugin.context::<TransportFacts>()?.claims.first()?;
     Some((plugin, key))
-}
-
-/// A compiled-in transport door (a linked row's door function), admitted through the same door
-/// validation as a dropped-in one and bound with `bind`.
-pub fn linked_transport(
-    door: busbar_contract::abi::mechanism::door::DoorFn,
-    bind: Bind,
-) -> Plugin<Transport> {
-    load_linked::<Transport>(door, bind).expect("the linked door loads")
 }
 
 /// An in-tree transport door `cdylib`, found by its KIND (a library the one dispatcher admits as a
