@@ -362,6 +362,26 @@ fn the_sdk_statement_states_no_marks_rewrites_sections_needs_paths_or_answers() 
     assert_eq!(unsafe { check_statement(&st) }, Ok(()));
 }
 
+/// CLAIMS ARE A TRANSPORT'S FACT: a Statement of any other kind that states URL schemes is refused
+/// at admit, so no store, plane or other kind can state a scheme Discover might read. RED: a plane
+/// Statement claiming `https` is refused; the same claim on a transport Statement passes.
+#[test]
+fn a_statement_of_another_kind_stating_claims_is_refused() {
+    const CLAIMS: &[AbiStr] = &[abi_str("https")];
+    let mut st = statement("p", "1.0.0", 1);
+    st.claims = CLAIMS.as_ptr();
+    st.claims_len = CLAIMS.len();
+    st.kind = crate::abi::mechanism::KindCode::Plane as u32;
+    // SAFETY: the claims list is a `'static` array of its stated count.
+    assert_eq!(
+        unsafe { check_statement(&st) },
+        Err(fault(Rule::Contradiction, "statement.claims"))
+    );
+    st.kind = crate::abi::mechanism::KindCode::Transport as u32;
+    // SAFETY: as above.
+    assert_eq!(unsafe { check_statement(&st) }, Ok(()));
+}
+
 #[test]
 fn a_statement_list_is_checked_whole_and_a_null_list_with_a_count_is_fault() {
     let mut st = statement("p", "1.0.0", 1);
@@ -380,7 +400,10 @@ fn a_statement_list_is_checked_whole_and_a_null_list_with_a_count_is_fault() {
         ("statement.sections", |s| s.sections_len = 1),
         ("statement.needs", |s| s.needs = core::ptr::null()),
         ("statement.answers", |s| s.answers_len = 1),
-        ("statement.claims", |s| s.claims_len = 1),
+        ("statement.claims", |s| {
+            s.kind = crate::abi::mechanism::KindCode::Transport as u32;
+            s.claims_len = 1;
+        }),
         ("statement.target_from", |s| s.target_from.len = 1),
     ] {
         let mut bad = st;

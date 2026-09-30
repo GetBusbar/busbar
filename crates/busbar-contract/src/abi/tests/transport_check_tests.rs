@@ -310,8 +310,8 @@ fn tail() -> TransportTail {
     let mut t: TransportTail = z();
     t.role = ROLE_CARRIER;
     // Never dereferenced: `check_tail` judges counts against pointers, not the pointees.
-    t.claims = NonNull::dangling().as_ptr();
-    t.claims_len = 1;
+    t.claim_rows = NonNull::dangling().as_ptr();
+    t.claim_rows_len = 1;
     t
 }
 
@@ -352,8 +352,8 @@ fn every_tail_list_counted_with_a_null_pointer_is_fault() {
     t.composes_over_len = 1;
     assert_eq!(check_tail(&t), f(Rule::NullWithCount, "tail.composes_over"));
     let mut t = tail();
-    t.claims = null();
-    assert_eq!(check_tail(&t), f(Rule::NullWithCount, "tail.claims"));
+    t.claim_rows = null();
+    assert_eq!(check_tail(&t), f(Rule::NullWithCount, "tail.claim_rows"));
     let mut t = tail();
     t.upgrades_to_len = 1;
     assert_eq!(check_tail(&t), f(Rule::NullWithCount, "tail.upgrades_to"));
@@ -371,11 +371,11 @@ fn every_tail_list_counted_with_a_null_pointer_is_fault() {
 #[test]
 fn a_tail_without_claims_or_with_unknown_codes_is_fault() {
     let mut t = tail();
-    t.claims_len = 0;
-    assert_eq!(check_tail(&t), f(Rule::Missing, "tail.claims"));
+    t.claim_rows_len = 0;
+    assert_eq!(check_tail(&t), f(Rule::Missing, "tail.claim_rows"));
     let mut t = tail();
-    t.claims_len = MAX_CLAIMS as usize + 1;
-    assert_eq!(check_tail(&t), f(Rule::OverMax, "tail.claims"));
+    t.claim_rows_len = MAX_CLAIMS as usize + 1;
+    assert_eq!(check_tail(&t), f(Rule::OverMax, "tail.claim_rows"));
     let mut t = tail();
     t.facts = 4;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.facts"));
@@ -385,18 +385,29 @@ fn a_tail_without_claims_or_with_unknown_codes_is_fault() {
 }
 
 fn claim() -> Claim {
-    let mut c: Claim = z();
-    c.key = AbiStr {
-        ptr: b"k".as_ptr(),
-        len: 1,
-    };
-    c
+    z()
+}
+
+/// THE ONE SOURCE OF CLAIM NAMES: a transport's tail carries exactly one row per scheme its
+/// Statement names (row `i` describes `claims[i]`), and a row carries no name of its own. RED: a
+/// tail with a row the Statement does not name, or a name with no row, is refused.
+#[test]
+fn a_tail_has_exactly_one_row_per_claim_the_statement_names() {
+    let t = tail();
+    assert_eq!(check_claim_rows(1, &t), Ok(()));
+    assert_eq!(
+        check_claim_rows(2, &t),
+        f(Rule::Contradiction, "tail.claim_rows")
+    );
+    assert_eq!(
+        check_claim_rows(0, &t),
+        f(Rule::Contradiction, "tail.claim_rows")
+    );
 }
 
 #[test]
 fn every_claim_element_is_checked() {
     assert_eq!(check_claims(&[claim()]), Ok(()));
-    assert_eq!(check_claims(&[z()]), f(Rule::Missing, "claim.key"));
     let mut c = claim();
     c.facts_len = 1;
     assert_eq!(check_claims(&[c]), f(Rule::NullWithCount, "claim.facts"));

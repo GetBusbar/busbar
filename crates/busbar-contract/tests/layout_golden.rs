@@ -1381,7 +1381,6 @@ fn compute_layout() -> String {
         s,
         tkind::Claim,
         [
-            key,
             selector_forms,
             egress_selector_forms,
             facts,
@@ -1407,8 +1406,8 @@ fn compute_layout() -> String {
             handshake_max_steps,
             composes_over,
             composes_over_len,
-            claims,
-            claims_len,
+            claim_rows,
+            claim_rows_len,
             upgrades_to,
             upgrades_to_len,
             handoff_from,

@@ -25,6 +25,8 @@ use busbar_contract::abi::mechanism::door::{
 use busbar_contract::abi::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 use busbar_contract::abi::mechanism::rendering::{render, RENDERING_MAGIC};
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, DOOR_SYMBOL, MECHANISM_VERSION};
+use busbar_contract::abi::transport::check::check_claim_rows;
+use busbar_contract::abi::transport::TransportTail;
 use libloading::Library;
 
 use super::plugin::{Bind, Plugin};
@@ -681,6 +683,19 @@ fn statement(door: &Door) -> Result<Statement, LoadError> {
                 "its head states {} bytes, less than the head itself",
                 tail.size
             )));
+        }
+        // A transport's claim NAMES are its Statement's alone; its tail carries one row per name.
+        if st.kind == KindCode::Transport as u32 {
+            if (tail.size as usize) < size_of::<TransportTail>() {
+                return Err(LoadError::KindTail(format!(
+                    "a transport tail states {} bytes, less than its claim rows",
+                    tail.size
+                )));
+            }
+            // SAFETY: a transport's kind tail is a `'static` `TransportTail` of the size it states.
+            let t = unsafe { st.kind_tail.cast::<TransportTail>().read_unaligned() };
+            check_claim_rows(st.claims_len, &t)
+                .map_err(|f| LoadError::KindTail(format!("{} breaks {:?}", f.field, f.rule)))?;
         }
     }
     Ok(st)

@@ -73,12 +73,12 @@
 //! | `TransportDecl` / slot table | here |
 //! |---|---|
 //! | `abi`, `size`, `version` | the door's magic, mechanism version, `kind_abi` and [`crate::abi::mechanism::door::KindTailHead::size`] |
-//! | `key` | [`TransportTail::claims`]`[0].key` (the entry's own claim) |
+//! | `key` | the Statement's `claims[0]` (the entry's own claim; the Statement holds every claimed scheme's name) |
 //! | `composes_over` | [`TransportTail::composes_over`]; [`TransportTail::role`] states the role outright |
 //! | `selector_forms`, `egress_selector_forms`, `transport_facts`, `status_namespace`, `session`, `session_bound`, `unit0_trigger`, `status_at` | per claim, [`Claim`] |
 //! | `handoff_*`, `upgrades_to`, `handshake_frame_kind`, `handshake_max_steps` | [`TransportTail`] |
 //! | `framing`, `decodes_payload` | [`TransportTail::framing`], [`FACT_DECODES_PAYLOAD`] |
-//! | `claims` | [`TransportTail::claims`] |
+//! | `claims` | the Statement's `claims` (the names) and [`TransportTail::claim_rows`] (each name's row, by index) |
 //! | `init` + `WireSettings` + `WireWaker` | lifecycle `open` (settings blob, host tables with `wake`); the settings a transport reads are declared in [`TransportTail::settings`] |
 //! | `CarrierSlots` (8) | kind ops `0..=7` |
 //! | `FramerSlots` (10) | kind ops `8..=17`; `FramerOut`'s callbacks become [`FramerSink`] host buffers |
@@ -368,13 +368,12 @@ pub const YIELD_HAS_DEADLINE: u32 = 4;
 
 // ── the Statement tail ───────────────────────────────────────────────────────────────────────────
 
-/// One claim: a scheme the entry answers for, with its per-scheme facts. The first claim is the
-/// entry's own. Two entries claiming one scheme refuse boot.
+/// One claim's ROW: the per-scheme facts of the scheme the Statement's `claims` names at the same
+/// index (the name itself is stated only there). The first claim is the entry's own. Two entries
+/// claiming one scheme refuse boot.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Claim {
-    /// The scheme.
-    pub key: AbiStr,
     /// Its selector forms, one code byte each (the transport vocabulary's numbering).
     pub selector_forms: AbiStr,
     /// Its outbound selector forms, one code byte each.
@@ -402,7 +401,7 @@ pub struct Claim {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct StatusRow {
-    /// Index into [`TransportTail::claims`].
+    /// Index into [`TransportTail::claim_rows`] (and so into the Statement's `claims`).
     pub claim: u32,
     /// The lowest code, inclusive.
     pub lo: u32,
@@ -446,10 +445,11 @@ pub struct TransportTail {
     pub composes_over: *const AbiStr,
     /// How many.
     pub composes_over_len: usize,
-    /// Every scheme the entry answers for.
-    pub claims: *const Claim,
-    /// How many (at least one).
-    pub claims_len: usize,
+    /// Each claimed scheme's row: row `i` describes the Statement's `claims[i]`, the ONE place the
+    /// scheme names are stated (signed, and byte-compared at admit).
+    pub claim_rows: *const Claim,
+    /// How many (at least one; exactly the Statement's `claims_len`).
+    pub claim_rows_len: usize,
     /// The claims a connection may upgrade to.
     pub upgrades_to: *const AbiStr,
     /// How many.

@@ -105,8 +105,13 @@ const fn bytes_str(b: &'static [u8]) -> AbiStr {
     }
 }
 
+/// The schemes `http` claims, by name: the Statement's `claims`, the one place they are stated.
+const CLAIM_NAMES: &[AbiStr] = &[abi_str(
+    <crate::HttpTransport as busbar_contract::TransportMeta>::KEY,
+)];
+
+/// Each claimed scheme's row, by index into [`CLAIM_NAMES`].
 const CLAIMS: &[Claim] = &[Claim {
-    key: abi_str(<crate::HttpTransport as busbar_contract::TransportMeta>::KEY),
     selector_forms: bytes_str(&SELECTOR_CODES),
     egress_selector_forms: abi_str(""),
     facts: FACTS.as_ptr(),
@@ -188,8 +193,8 @@ const TAIL: TransportTail = TransportTail {
     handshake_max_steps: 0,
     composes_over: COMPOSES_OVER.as_ptr(),
     composes_over_len: COMPOSES_OVER.len(),
-    claims: CLAIMS.as_ptr(),
-    claims_len: CLAIMS.len(),
+    claim_rows: CLAIMS.as_ptr(),
+    claim_rows_len: CLAIMS.len(),
     upgrades_to: std::ptr::null(),
     upgrades_to_len: 0,
     handoff_from: NONE,
@@ -205,6 +210,8 @@ const TAIL: TransportTail = TransportTail {
 /// The door's Statement: the `http` framer.
 pub const STATEMENT: Statement = Statement {
     kind_tail: (&TAIL as *const TransportTail).cast::<KindTailHead>(),
+    claims: CLAIM_NAMES.as_ptr(),
+    claims_len: CLAIM_NAMES.len(),
     ..statement("http", env!("CARGO_PKG_VERSION"), 64)
 };
 

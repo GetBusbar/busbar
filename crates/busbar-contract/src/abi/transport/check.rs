@@ -276,7 +276,7 @@ pub const fn check_facts(facts: &ConnFacts) -> Result<(), Fault> {
 /// The Statement tail, at load: the role is exactly one of carrier or framer, and a carrier composes
 /// over nothing (a framer with an empty `composes_over` frames directly over the host's socket);
 /// framing and fact bits are known; one to [`MAX_CLAIMS`]
-/// claims; no list is counted with a NULL pointer. The lists' elements: [`check_claims`],
+/// claim rows; no list is counted with a NULL pointer. The lists' elements: [`check_claims`],
 /// [`check_status_rows`], [`check_settings`].
 ///
 /// # Errors
@@ -300,14 +300,14 @@ pub fn check_tail(t: &TransportTail) -> Result<(), Fault> {
         u64::from(FACT_SIGNS_NOTHING_AFTER_AUTH | FACT_DECODES_PAYLOAD),
         "tail.facts",
     )?;
-    if t.claims_len == 0 {
-        return Err(fault(Rule::Missing, "tail.claims"));
+    if t.claim_rows_len == 0 {
+        return Err(fault(Rule::Missing, "tail.claim_rows"));
     }
-    if t.claims_len as u64 > MAX_CLAIMS {
-        return Err(fault(Rule::OverMax, "tail.claims"));
+    if t.claim_rows_len as u64 > MAX_CLAIMS {
+        return Err(fault(Rule::OverMax, "tail.claim_rows"));
     }
     listed(t.composes_over, t.composes_over_len, "tail.composes_over")?;
-    listed(t.claims, t.claims_len, "tail.claims")?;
+    listed(t.claim_rows, t.claim_rows_len, "tail.claim_rows")?;
     listed(t.upgrades_to, t.upgrades_to_len, "tail.upgrades_to")?;
     listed(t.status_rows, t.status_rows_len, "tail.status_rows")?;
     listed(t.settings, t.settings_len, "tail.settings")?;
@@ -317,18 +317,15 @@ pub fn check_tail(t: &TransportTail) -> Result<(), Fault> {
     text(t.handshake_frame_kind, "tail.handshake_frame_kind")
 }
 
-/// Every claim: a key, no string or list counted with a NULL pointer, the session bits `0`/`1`
-/// and the trigger and status-frame codes known.
+/// Every claim row: no string or list counted with a NULL pointer, the session bits `0`/`1` and
+/// the trigger and status-frame codes known. (A row's scheme name is the Statement's; see
+/// [`check_claim_rows`].)
 ///
 /// # Errors
 ///
 /// The rule a claim breaks.
 pub fn check_claims(claims: &[Claim]) -> Result<(), Fault> {
     for c in claims {
-        if c.key.len == 0 {
-            return Err(fault(Rule::Missing, "claim.key"));
-        }
-        text(c.key, "claim.key")?;
         text(c.selector_forms, "claim.selector_forms")?;
         text(c.egress_selector_forms, "claim.egress_selector_forms")?;
         text(c.status_namespace, "claim.status_namespace")?;
@@ -347,6 +344,19 @@ pub fn check_claims(claims: &[Claim]) -> Result<(), Fault> {
             u64::from(STATUS_AT_TERMINAL),
             "claim.status_at",
         )?;
+    }
+    Ok(())
+}
+
+/// THE ONE SOURCE OF CLAIM NAMES, at admit: a transport's tail has exactly one row per scheme its
+/// Statement claims (row `i` describes `claims[i]`), so no claim is named in two places.
+///
+/// # Errors
+///
+/// [`Rule::Contradiction`] at `tail.claim_rows` when the counts differ.
+pub const fn check_claim_rows(statement_claims_len: usize, t: &TransportTail) -> Result<(), Fault> {
+    if t.claim_rows_len != statement_claims_len {
+        return Err(fault(Rule::Contradiction, "tail.claim_rows"));
     }
     Ok(())
 }
