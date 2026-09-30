@@ -1,11 +1,11 @@
-//! An in-band system turn reaches a hook AS A TURN, exactly as 1.5.5 showed it (#85, R8).
+//! An in-band system turn reaches a hook AS A TURN, exactly as 1.5.5 showed it.
 //!
 //! On the dialects that carry the system prompt inside the turn array (openai, cohere, responses),
 //! 1.5.5 projected the wire array: a `{role: "system"}` entry was a turn at its wire position, under
 //! the role it was written in, and the prompt view's `system` held only the dialect's own system
 //! FIELD. A `prompt: rw` hook's reply replaces the whole turn array, so a view that moves the system
-//! turn into `system` makes the hook's reply DELETE the operator's system prompt upstream (codeaudit
-//! HEAD-1, busbar-hook-headroom). Every expectation below is what v1.5.5's
+//! turn into `system` makes the hook's reply DELETE the operator's system prompt upstream (the
+//! code audit caught it through busbar-hook-headroom). Every expectation below is what v1.5.5's
 //! `build_prompt_projection` / `build_rewrite_request` / `apply_rewrite_to_body` produced.
 
 use super::*;

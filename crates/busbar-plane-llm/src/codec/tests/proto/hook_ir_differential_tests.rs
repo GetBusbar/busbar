@@ -528,7 +528,7 @@ fn the_nine_intended_divergences_are_the_ones_that_landed() {
     // ── THE IN-BAND SYSTEM TURN, on both dialects that carry it inside the turns array: NOT a
     // divergence. It once was one (the system turn moved into `system`), and it deleted the
     // operator's system prompt upstream, because a `prompt: rw` hook's reply replaces the whole
-    // turn array (codeaudit HEAD-1). A hook sees exactly the 1.5.5 view (#85, R8): the system turn is
+    // turn array. A hook sees the same view 1.5.5 showed it: the system turn is
     // a turn, at its wire position, and `system` is only the dialect's own system field.
     for name in ["openai_in_band_system_turn", "cohere_in_band_system_turn"] {
         let v = view(name).unwrap();

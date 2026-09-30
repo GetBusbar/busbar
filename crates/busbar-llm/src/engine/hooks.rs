@@ -194,7 +194,7 @@ impl HookFacts {
     ///
     /// # The alignment contract, restated
     ///
-    /// Entries are the wire turns, as 1.5.5 showed them (#85, R8): a body carrying its system prompt
+    /// Entries are the wire turns, as 1.5.5 showed them: a body carrying its system prompt
     /// in-band shows it as a turn at its wire position under the role it was written in, and
     /// `system` is only the dialect's own system field. A `prompt: rw` hook's reply replaces the
     /// whole turn array, so a view that moved the in-band system turn into `system` deleted the

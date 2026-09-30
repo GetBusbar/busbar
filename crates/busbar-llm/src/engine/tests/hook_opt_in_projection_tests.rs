@@ -93,7 +93,7 @@ fn prompt_projection_system_blocks_and_absent() {
 ///
 /// The projection used to contract itself index-aligned with the WIRE `messages` array, and on the
 /// in-band system turn it still is: a reader folds that turn into the IR's system prompt, and the
-/// projection puts it back at its wire position, as 1.5.5 showed it (#85, R8). What the old
+/// projection puts it back at its wire position, as 1.5.5 showed it. What the old
 /// contract existed to PROTECT survives exactly: a media-only turn keeps its entry with empty
 /// text, so a screening hook never sees fewer turns than the provider does.
 ///
