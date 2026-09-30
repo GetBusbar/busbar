@@ -38,13 +38,13 @@ use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut, OpenIn, RefreshIn};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::{
-    check_arrive, check_cancel, check_drive, check_on_piece, check_project, check_refusal,
-    check_serve, check_snapshot, check_tail, Bounds, Caps,
+    check_arrive, check_cancel, check_drive, check_on_piece, check_pin_mechanisms, check_project,
+    check_refusal, check_serve, check_snapshot, check_tail, check_trust_keys, Bounds, Caps,
 };
 use busbar_contract::abi::plane::{
-    self, slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, PlaneDriveIn, PlaneDriveOut,
-    PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn, ProjectOut,
-    RefusalIn, RefusalOut, ServeIn, ServeOut,
+    self, slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, PinMechanism, PlaneDriveIn,
+    PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
+    ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, TrustKey,
 };
 
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
@@ -98,7 +98,34 @@ fn tail_bounds(st: &Statement) -> Result<Bounds, String> {
     // SAFETY: as above.
     let tail = unsafe { p.cast::<PlaneTail>().read_unaligned() };
     check_tail(&tail).map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    check_tail_trust_keys(&tail)
+        .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     Ok(Bounds::of(&tail))
+}
+
+/// The tail's kernel-owned trust keys, judged PER ELEMENT: each key by `check_trust_keys`, each
+/// pin's mechanisms by `check_pin_mechanisms`. `check_tail` proved only that no list is counted over
+/// a NULL pointer; the elements are read here, once, at bind.
+fn check_tail_trust_keys(tail: &PlaneTail) -> Result<(), Fault> {
+    let keys: &[TrustKey] = if tail.trust_keys_len == 0 {
+        &[]
+    } else {
+        // SAFETY: `check_tail` refused a NULL `trust_keys` counted non-zero; the tail is `'static`
+        // plugin data whose list is `trust_keys_len` `TrustKey`s.
+        unsafe { std::slice::from_raw_parts(tail.trust_keys, tail.trust_keys_len) }
+    };
+    check_trust_keys(keys)?;
+    for key in keys {
+        let mechanisms: &[PinMechanism] = if key.mechanisms_len == 0 {
+            &[]
+        } else {
+            // SAFETY: `check_trust_keys` refused a NULL `mechanisms` counted non-zero; the list is
+            // `'static` plugin data of `mechanisms_len` `PinMechanism`s.
+            unsafe { std::slice::from_raw_parts(key.mechanisms, key.mechanisms_len) }
+        };
+        check_pin_mechanisms(mechanisms)?;
+    }
+    Ok(())
 }
 
 impl Kind for Plane {
