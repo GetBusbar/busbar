@@ -151,7 +151,7 @@ fn linked(sink: Arc<Recorder>) -> Plugin<TestKind> {
 
 /// The example `cdylib` `name` in this target dir (`cargo test` builds examples). Under CI a
 /// missing artifact is a failure, never a skip.
-fn example_cdylib(name: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn example_cdylib(name: &str) -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let profile = exe.parent()?.parent()?;
     let path = profile.join("examples").join(format!(

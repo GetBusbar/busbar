@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use crate::both_ways::{cdylib, dropped, statement, HOT_FIXTURES};
+use crate::both_ways::{dropped, statement};
 use crate::dispatch::kinds::transport::TransportFacts;
 use crate::dispatch::{in_head, out_head, Adopter, Bind, Frame, NoSink};
 use crate::sign::validate_structure;
@@ -18,19 +18,11 @@ use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::ROLE_FRAMER;
 
-/// The transport fixture's cdylib bytes. Under CI a missing artifact is a failure, never a skip.
+/// The transport fixture's dropped-in image: this crate's `transport_door` example `cdylib`, which
+/// `cargo test` builds. Under CI a missing artifact is a failure, never a skip.
 fn fixture() -> Option<Vec<u8>> {
-    let krate = HOT_FIXTURES
-        .iter()
-        .find(|(kind, _)| *kind == busbar_contract::abi::cold::kind::TRANSPORT)
-        .map(|&(_, krate)| krate)
-        .expect("a `transport` row in [package.metadata.busbar.both-ways]");
-    let found = cdylib(krate);
-    assert!(
-        found.is_some() || std::env::var_os("CI").is_none(),
-        "the transport fixture's cdylib is built under CI"
-    );
-    Some(std::fs::read(found?).expect("read the cdylib"))
+    let path = crate::dispatch_tests::example_cdylib("transport_door")?;
+    Some(std::fs::read(path).expect("read the cdylib"))
 }
 
 fn bind() -> Bind {
