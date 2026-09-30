@@ -1619,7 +1619,11 @@ fn compute_layout() -> String {
             refusal_statuses_len
         ]
     );
-    record!(s, pkind::Claim, [verb, target, carrier, flags, _reserved]);
+    record!(
+        s,
+        pkind::Claim,
+        [verb, target, carrier, flags, refusal_dialect, _pad]
+    );
     record!(s, pkind::AdminRoute, [verb, target, flags, _reserved]);
     record!(
         s,
@@ -1646,7 +1650,10 @@ fn compute_layout() -> String {
     record!(
         s,
         pkind::ArriveIn,
-        [head, unit, claim, _reserved, target, fields, fields_len, body, units_buf, units_cap]
+        [
+            head, unit, claim, _reserved, target, fields, fields_len, body, units_buf, units_cap,
+            method
+        ]
     );
     record!(
         s,
@@ -1658,6 +1665,8 @@ fn compute_layout() -> String {
             dialect,
             units_written,
             units_needed,
+            refusal,
+            refusal_status,
             _reserved
         ]
     );
@@ -1685,7 +1694,8 @@ fn compute_layout() -> String {
             arena_cap,
             member,
             attempt_no,
-            _reserved
+            _reserved,
+            pool
         ]
     );
     record!(
@@ -1714,8 +1724,22 @@ fn compute_layout() -> String {
         s,
         pkind::RefusalIn,
         [
-            head, cause, status, dialect, reason, text, reply_buf, reply_cap, fields_buf,
-            fields_cap, arena_buf, arena_cap
+            head,
+            cause,
+            status,
+            dialect,
+            reason,
+            text,
+            reply_buf,
+            reply_cap,
+            fields_buf,
+            fields_cap,
+            arena_buf,
+            arena_cap,
+            unit,
+            plane_code,
+            retry_after_s,
+            target
         ]
     );
     record!(

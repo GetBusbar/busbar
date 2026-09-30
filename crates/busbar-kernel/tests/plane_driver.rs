@@ -420,7 +420,18 @@ impl PlaneCalls for Double {
         for call in 0..2 {
             let cap = input.units_cap;
             let wants: Vec<UnitCount> = match target.as_slice() {
-                b"/refuse" => return Outcome::Refused,
+                // A path that takes POST only: another method is the plane's own 405.
+                b"/post-only" if unsafe { text(input.method) } != b"POST" => {
+                    out.refusal = 9;
+                    out.refusal_status = 405;
+                    return Outcome::Refused;
+                }
+                b"/refuse" => {
+                    // The plane's own decode refusal: its code, and the 4xx it wears.
+                    out.refusal = 7;
+                    out.refusal_status = 404;
+                    return Outcome::Refused;
+                }
                 b"/short-twice" => vec![estimate(0); cap + 1],
                 b"/short" => vec![estimate(1), estimate(2)],
                 _ => vec![estimate(input.body.len as u64)],
@@ -458,13 +469,23 @@ impl PlaneCalls for Double {
         if named != Some(unsafe { text(input.text) }) {
             return Outcome::Fault;
         }
-        let body = [
+        let mut body = [
             b"refused:".as_slice(),
             input.status.to_string().as_bytes(),
             b":",
             unsafe { text(input.text) },
         ]
         .concat();
+        // The target crosses beside every refusal (one may precede `arrive`): this plane names it
+        // when the target asks.
+        let target = unsafe { text(input.target) };
+        if target == b"/target-echo" {
+            body.extend_from_slice(b" for ");
+            body.extend_from_slice(target);
+        }
+        if input.plane_code != 0 {
+            body.extend_from_slice(format!(":{}@{}", input.plane_code, input.unit).as_bytes());
+        }
         let (name, value) = (b"content-type".as_slice(), b"text/plain".as_slice());
         let arena = name.len() + value.len();
         for call in 0..2 {

@@ -151,6 +151,10 @@ fn stats(plugin: &Plugin<Plane>) -> [u64; cases::stat::COUNT] {
             body: NO_BLOB,
             units_buf: units.as_mut_ptr(),
             units_cap: units.len(),
+            method: busbar_contract::abi::mechanism::call::AbiStr {
+                ptr: b"POST".as_ptr(),
+                len: 4,
+            },
         },
         ArriveOut {
             head: out_head(),
@@ -159,6 +163,8 @@ fn stats(plugin: &Plugin<Plane>) -> [u64; cases::stat::COUNT] {
             dialect: 0,
             units_written: 0,
             units_needed: 0,
+            refusal: 0,
+            refusal_status: 0,
             _reserved: 0,
         },
     );
@@ -280,6 +286,10 @@ fn wake(plugin: &Plugin<Plane>, t: busbar_contract::abi::mechanism::ticket::Tick
             body: NO_BLOB,
             units_buf: units.as_mut_ptr(),
             units_cap: units.len(),
+            method: busbar_contract::abi::mechanism::call::AbiStr {
+                ptr: b"POST".as_ptr(),
+                len: 4,
+            },
         },
         zero_arrive_out(),
     );
@@ -297,6 +307,8 @@ fn zero_arrive_out() -> ArriveOut {
         dialect: 0,
         units_written: 0,
         units_needed: 0,
+        refusal: 0,
+        refusal_status: 0,
         _reserved: 0,
     }
 }
@@ -346,6 +358,10 @@ fn the_crossing_is_under_a_microsecond() {
                 },
                 attempt_no: 0,
                 _reserved: 0,
+                pool: busbar_contract::abi::mechanism::call::AbiStr {
+                    ptr: std::ptr::null(),
+                    len: 0,
+                },
             },
             zero_piece_out(),
         );

@@ -616,8 +616,13 @@ pub struct Claim {
     pub carrier: AbiStr,
     /// [`CLAIM_OPEN`] | [`CLAIM_EXACT`]; any other bit refuses the snapshot.
     pub flags: u32,
+    /// The dialect a refusal on this route wears before `arrive` has read the arrival: an index
+    /// into [`PlaneTail::dialects`], opaque to the kernel, which carries it from the matched route
+    /// into [`RefusalIn::dialect`] (the kernel authenticates and sizes a request before the plane
+    /// reads it, and picks no dialect of its own). `0` for a plane with no dialects.
+    pub refusal_dialect: u16,
     /// Alignment padding.
-    pub _reserved: u32,
+    pub _pad: u16,
 }
 
 /// One admin route the built plane serves through [`slot::SERVE`].
@@ -761,6 +766,9 @@ pub struct ArriveIn {
     pub units_buf: *mut UnitCount,
     /// Its capacity.
     pub units_cap: usize,
+    /// The request method, as the caller sent it. The plane decides which methods its paths
+    /// accept; one it does not is a refused arrive, with the plane's own status and bytes.
+    pub method: AbiStr,
 }
 
 /// `arrive`'s `out`.
@@ -779,6 +787,13 @@ pub struct ArriveOut {
     pub units_written: u32,
     /// Short answer: the units `units_buf` needs.
     pub units_needed: u32,
+    /// On REFUSED: the plane's own code for why, opaque to the kernel and echoed to `refusal` as
+    /// [`RefusalIn::plane_code`], so the plane renders what its `arrive` decided. Nonzero on
+    /// REFUSED, `0` on every other outcome.
+    pub refusal: u32,
+    /// On REFUSED: the status the refusal wears, 400 to 499: an arrive refusal is the caller's
+    /// fault by definition. `0` on every other outcome.
+    pub refusal_status: u32,
     /// Alignment padding.
     pub _reserved: u32,
 }
@@ -830,6 +845,9 @@ pub struct OnPieceIn {
     pub attempt_no: u32,
     /// Alignment padding.
     pub _reserved: u32,
+    /// On an ATTEMPT piece: the operator's name for the pool the kernel picked `member` from (a
+    /// member may shape its request differently in each pool it serves); absent otherwise.
+    pub pool: AbiStr,
 }
 
 /// `on_piece`'s `out`.
@@ -888,7 +906,8 @@ pub struct RefusalIn {
     /// The refusal reason's code ([`reason_code`]): with the status and the dialect, what the
     /// plane renders. Two reasons may share a status and still read differently to a client.
     pub reason: u32,
-    /// The refusal text; never secret material.
+    /// The refusal text: the kernel's own message for the refusal (for a limit, it names the
+    /// bucket that blocked); never secret material.
     pub text: AbiStr,
     /// HOST buffer for the rendered body.
     pub reply_buf: *mut u8,
@@ -902,6 +921,16 @@ pub struct RefusalIn {
     pub arena_buf: *mut u8,
     /// Its capacity.
     pub arena_cap: usize,
+    /// The unit the refusal ends, as the kernel minted it; `0` when no unit had arrived.
+    pub unit: u64,
+    /// The plane's own code from a REFUSED `arrive` ([`ArriveOut::refusal`]); `0` otherwise.
+    pub plane_code: u32,
+    /// The seconds the caller is told to wait before retrying; `0` = no such advice.
+    pub retry_after_s: u32,
+    /// The request target, as the caller sent it. A refusal can precede `arrive` (the kernel
+    /// authenticates first): the plane then chooses its envelope from the target by its own rule;
+    /// the kernel never picks a dialect.
+    pub target: AbiStr,
 }
 
 /// `refusal`'s `out`.

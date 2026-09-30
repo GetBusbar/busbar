@@ -116,7 +116,8 @@ const CLAIMS: &[Claim] = &[Claim {
     target: abi_str("/echo"),
     carrier: abi_str("door"),
     flags: 0,
-    _reserved: 0,
+    refusal_dialect: 0,
+    _pad: 0,
 }];
 /// The admin route a REFRESHED generation adds.
 const ROUTES: &[AdminRoute] = &[AdminRoute {

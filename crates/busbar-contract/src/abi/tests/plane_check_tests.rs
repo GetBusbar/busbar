@@ -94,6 +94,54 @@ fn arrive_units_follow_m_sb() {
     );
 }
 
+/// RED: a refused arrival names the plane's own code and a 4xx status; any other answer names
+/// neither.
+#[test]
+fn a_refused_arrival_names_its_code_and_a_caller_status() {
+    let refused = |refusal, refusal_status| {
+        let mut o: ArriveOut = z();
+        o.refusal = refusal;
+        o.refusal_status = refusal_status;
+        o
+    };
+    assert_eq!(
+        check_arrive(Refused, &refused(3, 404), &[], 4, &bounds()),
+        Ok(())
+    );
+    assert_eq!(
+        check_arrive(Refused, &refused(1, 400), &[], 4, &bounds()),
+        Ok(())
+    );
+    assert_eq!(
+        check_arrive(Refused, &refused(1, 499), &[], 4, &bounds()),
+        Ok(())
+    );
+    // Zero on REFUSED: the plane could not render what it decided.
+    assert_eq!(
+        check_arrive(Refused, &refused(0, 400), &[], 4, &bounds()),
+        f(Rule::Missing, "arrive.refusal")
+    );
+    // Out of range: a plane never mints a 5xx (the kernel's faults keep the table's status), and
+    // a refusal is never a success.
+    for status in [0, 200, 399, 500, 503, 600] {
+        assert_eq!(
+            check_arrive(Refused, &refused(1, status), &[], 4, &bounds()),
+            f(Rule::UnknownCode, "arrive.refusal_status"),
+            "{status}"
+        );
+    }
+    // Nonzero on any other outcome.
+    for outcome in [Ready, Failed, Pending] {
+        for o in [refused(1, 0), refused(0, 400)] {
+            assert_eq!(
+                check_arrive(outcome, &o, &[], 4, &bounds()),
+                f(Rule::Contradiction, "arrive.refusal"),
+                "{outcome:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn an_arrival_index_past_its_list_or_unknown_need_is_fault() {
     let mut o: ArriveOut = z();
@@ -439,29 +487,48 @@ fn claim(verb: &'static str, target: &'static str, flags: u32) -> Claim {
         target: s(target),
         carrier: s("c"),
         flags,
-        _reserved: 0,
+        refusal_dialect: 0,
+        _pad: 0,
     }
 }
 
 #[test]
 fn a_claim_states_only_known_flags() {
     let open_exact = claim("V", "/t", CLAIM_OPEN | CLAIM_EXACT);
-    assert_eq!(check_claims(&[open_exact]), Ok(()));
+    assert_eq!(check_claims(&[open_exact], 1), Ok(()));
     // RED: a bit neither CLAIM_OPEN nor CLAIM_EXACT.
     let unknown = claim("V", "/t", CLAIM_EXACT << 1);
     assert_eq!(
-        check_claims(&[unknown]),
+        check_claims(&[unknown], 1),
         f(Rule::UnknownCode, "claim.flags")
     );
+}
+
+/// RED: a route's refusal dialect names a dialect the tail declares; a plane with none states 0.
+#[test]
+fn a_claims_refusal_dialect_is_a_declared_dialect() {
+    let mut c = claim("POST", "/v1/x", 0);
+    c.refusal_dialect = 5;
+    assert_eq!(check_claims(&[c], 6), Ok(()));
+    assert_eq!(
+        check_claims(&[c], 5),
+        f(Rule::IndexOutOfRange, "claim.refusal_dialect")
+    );
+    assert_eq!(
+        check_claims(&[c], 0),
+        f(Rule::IndexOutOfRange, "claim.refusal_dialect")
+    );
+    c.refusal_dialect = 0;
+    assert_eq!(check_claims(&[c], 0), Ok(()), "no dialects: 0");
 }
 
 #[test]
 fn every_snapshot_claim_and_route_is_named() {
     let c = claim("V", "/t", 0);
-    assert_eq!(check_claims(&[c]), Ok(()));
+    assert_eq!(check_claims(&[c], 1), Ok(()));
     let mut bad = c;
     bad.carrier = z();
-    assert_eq!(check_claims(&[bad]), f(Rule::Missing, "claim.carrier"));
+    assert_eq!(check_claims(&[bad], 1), f(Rule::Missing, "claim.carrier"));
     let r = AdminRoute {
         verb: s("V"),
         target: z(),

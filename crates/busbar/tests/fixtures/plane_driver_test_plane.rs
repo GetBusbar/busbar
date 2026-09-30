@@ -243,7 +243,8 @@ static CLAIMS: Shared<[Claim; 1]> = Shared([Claim {
     target: s(b"/call"),
     carrier: s(b"inbound"),
     flags: 0,
-    _reserved: 0,
+    refusal_dialect: 0,
+    _pad: 0,
 }]);
 
 /// THE DOOR: the `DoorFn` a compiled-in row holds.
@@ -443,7 +444,18 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
             amount,
         };
         let wants: Vec<UnitCount> = match target {
-            b"/refuse" => return say(out, Outcome::Refused),
+            // A path that takes POST only: another method is the plane's own 405.
+            b"/post-only" if text(i.method) != b"POST" => {
+                o.refusal = 9;
+                o.refusal_status = 405;
+                return say(out, Outcome::Refused);
+            }
+            b"/refuse" => {
+                // The plane's own decode refusal: its code, and the 4xx it wears.
+                o.refusal = 7;
+                o.refusal_status = 404;
+                return say(out, Outcome::Refused);
+            }
             b"/short-twice" => {
                 o.units_needed = cap as u32 + 1;
                 return say(out, Outcome::Failed);
@@ -684,13 +696,23 @@ extern "C" fn refusal(_: *mut c_void, input: *const c_void, out: *mut c_void) ->
         if named != Some(text(i.text)) {
             return RawOutcome::of(Outcome::Fault);
         }
-        let body = [
+        let mut body = [
             b"refused:".as_slice(),
             i.status.to_string().as_bytes(),
             b":",
             text(i.text),
         ]
         .concat();
+        // The target crosses beside every refusal (one may precede `arrive`): this plane names it
+        // when the target asks.
+        let target = unsafe { text(i.target) };
+        if target == b"/target-echo" {
+            body.extend_from_slice(b" for ");
+            body.extend_from_slice(target);
+        }
+        if i.plane_code != 0 {
+            body.extend_from_slice(format!(":{}@{}", i.plane_code, i.unit).as_bytes());
+        }
         let (name, value) = (b"content-type".as_slice(), b"text/plain".as_slice());
         let arena = name.len() + value.len();
         if body.len() > i.reply_cap || i.fields_cap < 1 || arena > i.arena_cap {

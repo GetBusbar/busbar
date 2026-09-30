@@ -213,6 +213,11 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
         arena_cap: bufs.arena.len(),
         member: AbiStr::over(member),
         attempt_no: p.attempt_no,
+        // The walk's pool is named with its member (K2 fills it from the pick); absent until then.
+        pool: AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
         ..blank_in()
     };
     (input, blank_out())

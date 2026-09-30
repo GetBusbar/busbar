@@ -217,6 +217,8 @@ pub type HeadFields = Vec<(Vec<u8>, Vec<u8>)>;
 pub struct Arrival {
     /// Index into the plane's snapshot claims.
     pub claim: u32,
+    /// The request method.
+    pub method: Vec<u8>,
     /// The request target.
     pub target: Vec<u8>,
     /// The head fields.
@@ -251,7 +253,11 @@ pub struct Rendered {
 
 #[derive(Debug, Default)]
 pub(crate) struct UnitState {
+    /// The unit's kernel-minted key, once decode has run.
+    unit: u64,
     decoded: Option<Decoded>,
+    /// A REFUSED `arrive`'s own code and 4xx status.
+    declined: Option<(u32, u32)>,
     rendered: Option<Rendered>,
     facts: cancel::Facts,
     bill: Option<CancelBill>,
@@ -342,6 +348,7 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             body: blob(&a.body),
             units_buf: units.as_mut_ptr(),
             units_cap: units.len(),
+            method: AbiStr::over(&a.method),
             ..blank_in()
         };
         let mut o: ArriveOut = blank_out();
@@ -353,6 +360,10 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
                 i.units_buf = units.as_mut_ptr();
                 i.units_cap = units.len();
             });
+        if outcome == AbiOutcome::Refused {
+            // The dispatcher judged the answer: a nonzero code and a 4xx status.
+            self.lock().declined = Some((o.refusal, o.refusal_status));
+        }
         (outcome == AbiOutcome::Ready).then(|| Decoded {
             op_class: o.op_class,
             principal_need: o.principal_need,
@@ -368,8 +379,18 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
     /// The plane renders a refusal (`refusal`, ticketless, one re-call when short); the kernel's
     /// generic failure, with no body, when it cannot.
     fn render(&self, reason: ReasonCode) -> Rendered {
-        let dialect = self.lock().decoded.as_ref().map_or(0, |d| d.dialect);
-        let status = self.driver.config.status(dialect, reason);
+        let (unit, dialect, declined) = {
+            let st = self.lock();
+            let dialect = st.decoded.as_ref().map_or(0, |d| d.dialect);
+            let declined = st.declined.filter(|_| reason == ReasonCode::DecodeFailed);
+            (st.unit, dialect, declined)
+        };
+        // A refusal the plane's own `arrive` decided wears the status it stated; every other one
+        // the plane's stated row or the kernel's default.
+        let status = declined.map_or_else(
+            || self.driver.config.status(dialect, reason),
+            |(_, status)| status,
+        );
         let text = reason.as_str();
         let caps = self.driver.config.caps;
         let (mut reply, mut fields, mut arena) = (
@@ -393,6 +414,10 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             fields_cap: fields.len(),
             arena_buf: arena.as_mut_ptr(),
             arena_cap: arena.len(),
+            unit,
+            plane_code: declined.map_or(0, |(code, _)| code),
+            retry_after_s: 0,
+            target: AbiStr::over(&self.arrival.target),
             ..blank_in()
         };
         let mut o: RefusalOut = blank_out();
@@ -513,6 +538,7 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C>
     /// S1, DECODE: the plane's `arrive`; a plane that did not answer, or named an operation class
     /// it does not have, is refused.
     fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> StepAnswer<Decode> {
+        self.lock().unit = ctx.key.get();
         let decoded = self.arrive(ctx.key.get());
         let classes = &self.driver.config.op_classes;
         let op = decoded

@@ -163,6 +163,19 @@ pub fn check_arrive(
         "arrive.units",
     )?;
     units(units_buf, written, b)?;
+    if outcome == Outcome::Refused {
+        if out.refusal == 0 {
+            return Err(fault(Rule::Missing, "arrive.refusal"));
+        }
+        code(
+            u64::from(out.refusal_status),
+            400,
+            499,
+            "arrive.refusal_status",
+        )?;
+    } else if out.refusal != 0 || out.refusal_status != 0 {
+        return Err(fault(Rule::Contradiction, "arrive.refusal"));
+    }
     if outcome == Outcome::Ready {
         code(
             u64::from(out.principal_need),
@@ -176,6 +189,9 @@ pub fn check_arrive(
     Ok(())
 }
 
+/// (`arrive` above: a REFUSED answer names the plane's own refusal code and a 4xx status; any other
+/// outcome carries neither.)
+///
 /// `on_piece`: backpressure rules for the reply, the short-buffer rule for every other buffer, a short answer
 /// emits nothing, and every unit, record and field written is judged on any outcome.
 ///
@@ -536,13 +552,14 @@ pub fn check_snapshot(s: &PlaneSnapshot, generation: u64) -> Result<(), Fault> {
     text(s.resource_metadata, "snapshot.resource_metadata")
 }
 
-/// Every snapshot claim: a verb, a target, a carrier and known flags. Two claims of one route are
-/// not judged here: overlapping claims resolve by precedence in the kernel's registry.
+/// Every snapshot claim: a verb, a target, a carrier, known flags, and a refusal dialect the tail
+/// declares (`0` when the tail declares none). Two claims of one route are not judged here:
+/// overlapping claims resolve by precedence in the kernel's registry.
 ///
 /// # Errors
 ///
 /// The rule a claim breaks.
-pub fn check_claims(claims: &[Claim]) -> Result<(), Fault> {
+pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
     for c in claims {
         named(c.verb, "claim.verb")?;
         named(c.target, "claim.target")?;
@@ -552,6 +569,13 @@ pub fn check_claims(claims: &[Claim]) -> Result<(), Fault> {
             u64::from(CLAIM_OPEN | CLAIM_EXACT),
             "claim.flags",
         )?;
+        if dialects_len > 0 || c.refusal_dialect != 0 {
+            index(
+                u32::from(c.refusal_dialect),
+                dialects_len,
+                "claim.refusal_dialect",
+            )?;
+        }
     }
     Ok(())
 }

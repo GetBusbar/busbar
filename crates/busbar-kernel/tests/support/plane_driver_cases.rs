@@ -183,8 +183,13 @@ impl Book {
 }
 
 fn arrival(target: &str, body: &[u8]) -> Arrival {
+    arrival_by("POST", target, body)
+}
+
+fn arrival_by(method: &str, target: &str, body: &[u8]) -> Arrival {
     Arrival {
         claim: 0,
+        method: method.as_bytes().to_vec(),
         target: target.as_bytes().to_vec(),
         fields: vec![(b"content-type".to_vec(), b"text/plain".to_vec())],
         body: Arc::from(body),
@@ -709,6 +714,107 @@ async fn a_refusal_wears_the_status_the_plane_states_for_its_dialect() {
     }
 }
 
+/// RED: a refusal the plane's own `arrive` decided wears the 4xx the plane stated, and the plane
+/// is told its own code and the unit when it renders it.
+#[tokio::test]
+async fn a_refused_arrival_wears_the_planes_status_and_code() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), Book::default());
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], CHUNKS),
+            Caller::default(),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival("/refuse", b"x"), 0);
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(
+                outcome,
+                Outcome::Refused(StepName::Decode, ReasonCode::DecodeFailed)
+            ),
+            "{way:?}: {outcome:?}"
+        );
+        assert!(far.sent().is_empty());
+        let rendered = units.take_rendered().expect("the refusal is rendered");
+        assert_eq!(rendered.status, 404, "{way:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&rendered.body),
+            "refused:404:decode_failed:7@7",
+            "{way:?}"
+        );
+    }
+}
+
+/// RED: the method crosses at arrive, and a plane that takes only POST on a path declines another
+/// method with its own 405.
+#[tokio::test]
+async fn the_method_crosses_at_arrive() {
+    for way in ways() {
+        for (method, refused) in [("POST", false), ("GET", true)] {
+            let r = rig(way, BufferCaps::default(), Book::default());
+            let (steps, far, caller) = (
+                TestUnits::passing(),
+                Far::new(&["ok"], CHUNKS),
+                Caller::default(),
+            );
+            let units = r.driver.unit(
+                &steps,
+                &far,
+                &caller,
+                arrival_by(method, "/post-only", b"x"),
+                0,
+            );
+            let outcome = drive(&units).await;
+            if refused {
+                assert!(
+                    matches!(
+                        outcome,
+                        Outcome::Refused(StepName::Decode, ReasonCode::DecodeFailed)
+                    ),
+                    "{way:?}: {outcome:?}"
+                );
+                let rendered = units.take_rendered().expect("the refusal is rendered");
+                assert_eq!(rendered.status, 405, "{way:?}");
+                assert_eq!(
+                    String::from_utf8_lossy(&rendered.body),
+                    "refused:405:decode_failed:9@7"
+                );
+            } else {
+                assert!(
+                    !matches!(outcome, Outcome::Refused(StepName::Decode, _)),
+                    "{way:?}: {outcome:?}"
+                );
+            }
+        }
+    }
+}
+
+/// RED: the request target crosses beside a refusal, so a plane can choose its envelope for a
+/// refusal the kernel raised before or without its `arrive` having decided one.
+#[tokio::test]
+async fn a_refusal_carries_the_request_target() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), Book::default());
+        let (steps, far, caller) = (
+            TestUnits::refusing(StepName::Authenticate, ReasonCode::Unauthenticated),
+            Far::new(&["ok"], CHUNKS),
+            Caller::default(),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival("/target-echo", b"x"), 0);
+        let _ = drive(&units).await;
+        let rendered = units.take_rendered().expect("the refusal is rendered");
+        assert_eq!(
+            String::from_utf8_lossy(&rendered.body),
+            "refused:401:unauthenticated for /target-echo",
+            "{way:?}"
+        );
+    }
+}
+
 /// RED: a second short answer to `arrive` is FAULT; the unit is refused at decode and never
 /// reaches the far end.
 #[tokio::test]
@@ -997,9 +1103,10 @@ fn open_unit_drives_the_same_steps() {
                 "{way:?} {target}"
             );
             if want == SessionOpen::Refused {
+                // The plane's own decode refusal: its status, its code and the unit.
                 assert_eq!(
                     units.take_rendered().unwrap().body,
-                    b"refused:400:decode_failed"
+                    b"refused:404:decode_failed:7@9"
                 );
             }
         }
