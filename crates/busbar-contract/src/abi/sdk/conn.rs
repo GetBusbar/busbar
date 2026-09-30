@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A PLUGIN'S CONNECTIONS, THROUGH THE HOST CONNECTOR (THE DESIGN §5: one connector for every kind;
-//! §11.2: every call is Ready or Pending(wake), never a blocking thread). [`Host`] is the instance's
+//! A PLUGIN'S CONNECTIONS, THROUGH THE HOST CONNECTOR (THE DESIGN, the connections section: one connector for every kind;
+//! the plugin ABI: every call is Ready or Pending(wake), never a blocking thread). [`Host`] is the instance's
 //! host tables as `open` handed them (`OpenIn.host`, kept by the generic lifecycle,
 //! `abi::sdk::life::Held::host`); [`Connector`] makes the connector's services for ONE op on ONE
 //! ticket, each answering [`Poll::Ready`] or [`Poll::Pending`]. The one-shot request/reply every

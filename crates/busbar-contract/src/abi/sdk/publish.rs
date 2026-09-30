@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! PUBLISHED GENERATION DATA, OWNED BY THE SDK (THE DESIGN §11.2: memory a plugin returns is
+//! PUBLISHED GENERATION DATA, OWNED BY THE SDK (THE DESIGN, the plugin ABI: memory a plugin returns is
 //! plugin-owned and valid until that plugin's next refresh generation; a plugin crate stays
 //! `#![forbid(unsafe_code)]`). A plugin that publishes a value the host reads across calls — a
 //! plane's generation snapshot and the claims and routes it points at — hands the SDK an OWNED

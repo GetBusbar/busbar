@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE LIFECYCLE, ONCE FOR EVERY KIND (THE DESIGN §11.2: setup and refresh go through `open`,
+//! THE LIFECYCLE, ONCE FOR EVERY KIND (THE DESIGN, the plugin ABI: setup and refresh go through `open`,
 //! `refresh` and `tick`; one shared mechanism): the nine lifecycle slots of a kind's door as
 //! [`SafeSlot`]s over ONE instance state, [`Held<L>`], which a kind's SDK fills by implementing
 //! [`Life`]. A kind's SDK keeps only what is its own: its author trait, its `impl Life` (the
