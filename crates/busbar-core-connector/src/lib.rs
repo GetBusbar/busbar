@@ -52,8 +52,8 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
 use busbar_contract::conn::{
-    ConnError, ConnId, ConnSlab, Conns, InstanceId, NeedId, OpenDesc, Piece, PieceKind, Ticket,
-    NO_TICKET,
+    ConnError, ConnId, ConnSlab, Conns, InstanceId, NeedId, OpenDesc, Piece, PieceKind, PollConns,
+    Ticket, NO_TICKET,
 };
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::WireStatusClass;
@@ -339,6 +339,74 @@ impl Connector {
         Ok(true)
     }
 
+    /// One read of `conn`, waking `waker` when nothing is ready yet: the body [`Conns::read`] (a
+    /// plugin's ticket) and [`Conns::poll_read`] (a host-side reader's waker) share.
+    fn read_waking(
+        &self,
+        caller: InstanceId,
+        conn: ConnId,
+        waker: &Waker,
+        buf: &mut [u8],
+    ) -> Result<Piece, ConnError> {
+        let (_, held) = self.slab.get(caller, conn)?;
+        let mut rest = held.rest.lock().expect("rest");
+        let (piece, bytes) = match rest.0.take() {
+            Some(p) => (p, std::mem::take(&mut rest.1)),
+            None => {
+                if rest.2 {
+                    return Err(ConnError::Closed);
+                }
+                if !Self::settle(&held, Some(waker))? {
+                    return Err(ConnError::Pending);
+                }
+                let mut c = held.conn.lock().expect("connection");
+                let c = c.as_mut().ok_or(ConnError::Closed)?;
+                match c.poll_piece(&mut Context::from_waker(waker)) {
+                    Poll::Pending => return Err(ConnError::Pending),
+                    Poll::Ready(Err(f)) => return Err(map(&f)),
+                    Poll::Ready(Ok(None)) => {
+                        rest.2 = true;
+                        return Ok(Piece {
+                            kind: PieceKind::Completion,
+                            stream: StreamId(0),
+                            len: 0,
+                            end: true,
+                            status: None,
+                            status_code: None,
+                            status_namespace: None,
+                            retry_after_secs: None,
+                        });
+                    }
+                    Poll::Ready(Ok(Some(got))) => (
+                        Piece {
+                            kind: PieceKind::Body,
+                            stream: StreamId(got.stream),
+                            len: 0,
+                            end: got.end_of_frame,
+                            status: class(got.status_class),
+                            status_code: got.status_code,
+                            status_namespace: None,
+                            retry_after_secs: got.retry_after_secs,
+                        },
+                        got.bytes,
+                    ),
+                }
+            }
+        };
+        let n = bytes.len().min(buf.len());
+        buf[..n].copy_from_slice(&bytes[..n]);
+        let mut out = piece.clone();
+        out.len = n;
+        if n < bytes.len() {
+            // The caller's buffer is short: this piece does not end its frame yet, and the rest
+            // is the next read's.
+            out.end = false;
+            rest.0 = Some(piece);
+            rest.1 = bytes[n..].to_vec();
+        }
+        Ok(out)
+    }
+
     fn waker(&self, ticket: Ticket) -> Waker {
         if ticket == NO_TICKET {
             return Waker::noop().clone();
@@ -487,64 +555,7 @@ impl Conns for Connector {
         ticket: Ticket,
         buf: &mut [u8],
     ) -> Result<Piece, ConnError> {
-        let (_, held) = self.slab.get(caller, conn)?;
-        let mut rest = held.rest.lock().expect("rest");
-        let (piece, bytes) = match rest.0.take() {
-            Some(p) => (p, std::mem::take(&mut rest.1)),
-            None => {
-                if rest.2 {
-                    return Err(ConnError::Closed);
-                }
-                let waker = self.waker(ticket);
-                if !Self::settle(&held, Some(&waker))? {
-                    return Err(ConnError::Pending);
-                }
-                let mut c = held.conn.lock().expect("connection");
-                let c = c.as_mut().ok_or(ConnError::Closed)?;
-                match c.poll_piece(&mut Context::from_waker(&waker)) {
-                    Poll::Pending => return Err(ConnError::Pending),
-                    Poll::Ready(Err(f)) => return Err(map(&f)),
-                    Poll::Ready(Ok(None)) => {
-                        rest.2 = true;
-                        return Ok(Piece {
-                            kind: PieceKind::Completion,
-                            stream: StreamId(0),
-                            len: 0,
-                            end: true,
-                            status: None,
-                            status_code: None,
-                            status_namespace: None,
-                            retry_after_secs: None,
-                        });
-                    }
-                    Poll::Ready(Ok(Some(got))) => (
-                        Piece {
-                            kind: PieceKind::Body,
-                            stream: StreamId(got.stream),
-                            len: 0,
-                            end: got.end_of_frame,
-                            status: class(got.status_class),
-                            status_code: got.status_code,
-                            status_namespace: None,
-                            retry_after_secs: got.retry_after_secs,
-                        },
-                        got.bytes,
-                    ),
-                }
-            }
-        };
-        let n = bytes.len().min(buf.len());
-        buf[..n].copy_from_slice(&bytes[..n]);
-        let mut out = piece.clone();
-        out.len = n;
-        if n < bytes.len() {
-            // The caller's buffer is short: this piece does not end its frame yet, and the rest
-            // is the next read's.
-            out.end = false;
-            rest.0 = Some(piece);
-            rest.1 = bytes[n..].to_vec();
-        }
-        Ok(out)
+        self.read_waking(caller, conn, &self.waker(ticket), buf)
     }
 
     fn wait(&self, caller: InstanceId, set: &[ConnId], ticket: Ticket) -> Result<usize, ConnError> {
@@ -595,6 +606,21 @@ impl Conns for Connector {
             c.close();
         }
         Ok(())
+    }
+}
+
+impl PollConns for Connector {
+    fn poll_read(
+        &self,
+        caller: InstanceId,
+        conn: ConnId,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Result<Piece, ConnError>> {
+        match self.read_waking(caller, conn, cx.waker(), buf) {
+            Err(ConnError::Pending) => Poll::Pending,
+            done => Poll::Ready(done),
+        }
     }
 }
 

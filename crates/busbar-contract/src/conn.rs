@@ -17,6 +17,7 @@
 //! slot per [`Conns`] method.
 
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
 use crate::ids::StreamId;
 use crate::transport::wire::WireStatusClass;
@@ -204,6 +205,29 @@ pub trait Conns: Send + Sync {
     ///
     /// [`ConnError::NotOwner`], [`ConnError::Closed`].
     fn close(&self, caller: InstanceId, conn: ConnId) -> Result<(), ConnError>;
+}
+
+/// THE HOST-SIDE READER'S CONNECTION TABLE: [`Conns`] plus a read that wakes a [`Waker`] instead of
+/// a plugin's ticket, for the kernel's egress walk, which awaits a far end on the caller's runtime
+/// task. It is not part of [`Conns`] because it is never lowered: a waker does not cross the plugin
+/// boundary (`abi::host::conn` lowers [`Conns`] slot for slot), and a plugin reads with its ticket.
+///
+/// [`Waker`]: std::task::Waker
+pub trait PollConns: Conns {
+    /// [`Conns::read`], for a reader on the host's own side (the kernel's egress walk): with nothing
+    /// ready, [`Poll::Pending`] and `cx`'s waker woken once the read may progress. Never lowered:
+    /// a waker does not cross the plugin boundary, and a plugin reads with its ticket.
+    ///
+    /// # Errors
+    ///
+    /// As [`Conns::read`], less [`ConnError::Pending`], which is [`Poll::Pending`] here.
+    fn poll_read(
+        &self,
+        caller: InstanceId,
+        conn: ConnId,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Result<Piece, ConnError>>;
 }
 
 // ── the bookkeeping every host shares ────────────────────────────────────────────────────────────

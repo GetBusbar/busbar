@@ -345,3 +345,48 @@ fn a_plugin_named_need_to_the_metadata_address_is_refused() {
         }
     });
 }
+
+/// A HOST-SIDE READER awaits a connection through `poll_read`: nothing ready is `Pending` with the
+/// reader's own waker registered, the far end's bytes wake THAT waker (the task finishes without
+/// being re-polled by anything else), and no plugin ticket is ever woken.
+#[test]
+fn a_host_side_reader_is_woken_through_its_own_waker() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut buf = [0_u8; 5];
+            s.read_exact(&mut buf).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            s.write_all(b"answer").await.unwrap();
+        });
+        let wakes = Arc::new(AtomicU64::new(0));
+        let c = serving(wakes.clone());
+        c.declare_over(OWNER, NeedId(0), "bytes");
+        let desc = OpenDesc {
+            target: &far,
+            body: b"first",
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        let piece = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            std::future::poll_fn(|cx| c.poll_read(OWNER, id, cx, &mut buf)),
+        )
+        .await
+        .expect("the reader's waker was woken")
+        .unwrap();
+        assert_eq!(&buf[..piece.len], b"answer");
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            0,
+            "no plugin ticket was woken"
+        );
+        let polled =
+            std::future::poll_fn(|cx| std::task::Poll::Ready(c.poll_read(OTHER, id, cx, &mut buf)))
+                .await;
+        assert_eq!(polled, std::task::Poll::Ready(Err(ConnError::NotOwner)));
+    });
+}
