@@ -507,6 +507,91 @@ pub fn check_settings(settings: &[SettingDecl]) -> Result<(), Fault> {
     Ok(())
 }
 
+/// The most field predicates one route may carry.
+pub const MAX_ROUTE_FIELDS: u64 = 32;
+
+/// A route's shape, before its strings are read: a method set inside the vocabulary and not empty, a
+/// known path form, and its path and predicate list well-formed pointers.
+///
+/// # Errors
+///
+/// The rule the route breaks.
+pub fn check_route(r: &super::route::RouteMatch) -> Result<(), Fault> {
+    use super::route::{METHOD_ANY, PATH_CONTAINS, PATH_EXACT};
+    if r.methods == 0 {
+        return Err(fault(Rule::Missing, "route.methods"));
+    }
+    bits(u64::from(r.methods), u64::from(METHOD_ANY), "route.methods")?;
+    code(
+        u64::from(r.path_form),
+        u64::from(PATH_EXACT),
+        u64::from(PATH_CONTAINS),
+        "route.path_form",
+    )?;
+    text(r.path, "route.path")?;
+    listed(r.fields, r.fields_len, "route.fields")?;
+    if r.fields_len as u64 > MAX_ROUTE_FIELDS {
+        return Err(fault(Rule::OverMax, "route.fields"));
+    }
+    Ok(())
+}
+
+/// Every field predicate's shape: a known op and well-formed strings.
+///
+/// # Errors
+///
+/// The rule the first bad predicate breaks.
+pub fn check_route_fields(fields: &[super::route::FieldPredicate]) -> Result<(), Fault> {
+    use super::route::{FIELD_PRESENT, FIELD_VALUE_PREFIX};
+    for f in fields {
+        code(
+            u64::from(f.op),
+            u64::from(FIELD_PRESENT),
+            u64::from(FIELD_VALUE_PREFIX),
+            "route.field.op",
+        )?;
+        text(f.name, "route.field.name")?;
+        text(f.value, "route.field.value")?;
+    }
+    Ok(())
+}
+
+/// A route's CONTENT, read: a path that is not empty; an exact, pattern or prefix path that starts
+/// with `/`; a pattern that keeps the syntax; field names that are non-empty lower-case tokens; a
+/// value on a value-prefix predicate and none on a presence predicate.
+///
+/// # Errors
+///
+/// The rule the route breaks.
+pub fn check_route_view(r: &super::route::RouteView<'_>) -> Result<(), Fault> {
+    use super::route::{
+        pattern_segments, FIELD_PRESENT, PATH_EXACT, PATH_PATTERN, PATH_PREFIX,
+    };
+    if r.path.is_empty() {
+        return Err(fault(Rule::Missing, "route.path"));
+    }
+    if matches!(r.path_form, PATH_EXACT | PATH_PATTERN | PATH_PREFIX) && !r.path.starts_with('/')
+    {
+        return Err(fault(Rule::UnknownCode, "route.path"));
+    }
+    if r.path_form == PATH_PATTERN && pattern_segments(r.path).is_none() {
+        return Err(fault(Rule::UnknownCode, "route.path.pattern"));
+    }
+    for (op, name, value) in &r.fields {
+        let token = !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"-_.".contains(&b));
+        if !token {
+            return Err(fault(Rule::UnknownCode, "route.field.name"));
+        }
+        if (*op == FIELD_PRESENT) != value.is_empty() {
+            return Err(fault(Rule::Contradiction, "route.field.value"));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[path = "../tests/transport_check_tests.rs"]
 mod tests;

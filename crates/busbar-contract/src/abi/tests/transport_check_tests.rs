@@ -662,3 +662,91 @@ fn a_null_string_element_in_composes_over_upgrades_to_or_claim_facts_is_fault() 
         f(Rule::NullWithCount, "claim.fact")
     );
 }
+
+fn route(methods: u32, path_form: u32, path: &'static str) -> route::RouteMatch {
+    route::RouteMatch {
+        methods,
+        path_form,
+        path: AbiStr {
+            ptr: path.as_ptr(),
+            len: path.len(),
+        },
+        fields: null(),
+        fields_len: 0,
+        rung: 0,
+        _reserved: 0,
+    }
+}
+
+/// RED: a route's shape — a method set inside the vocabulary and not empty, a known path form, a
+/// bounded predicate list — is judged before any string is read.
+#[test]
+fn a_route_shape_is_checked() {
+    use route::*;
+    assert_eq!(check_route(&route(METHOD_POST, PATH_EXACT, "/v1/messages")), Ok(()));
+    assert_eq!(
+        check_route(&route(0, PATH_EXACT, "/x")),
+        f(Rule::Missing, "route.methods")
+    );
+    assert_eq!(
+        check_route(&route(METHOD_ANY + 1, PATH_EXACT, "/x")),
+        f(Rule::UnknownCode, "route.methods")
+    );
+    assert_eq!(
+        check_route(&route(METHOD_GET, PATH_CONTAINS + 1, "/x")),
+        f(Rule::UnknownCode, "route.path_form")
+    );
+    let mut r = route(METHOD_GET, PATH_EXACT, "/x");
+    r.fields_len = 1;
+    assert_eq!(check_route(&r), f(Rule::NullWithCount, "route.fields"));
+    let bad = [FieldPredicate {
+        op: FIELD_VALUE_PREFIX + 1,
+        _reserved: 0,
+        name: AbiStr { ptr: null(), len: 0 },
+        value: AbiStr { ptr: null(), len: 0 },
+    }];
+    assert_eq!(
+        check_route_fields(&bad),
+        f(Rule::UnknownCode, "route.field.op")
+    );
+}
+
+/// RED: a route's content — a rooted path for the exact, pattern and prefix forms, a pattern that
+/// keeps the syntax, lower-case field-name tokens, and a value exactly where the op wants one.
+#[test]
+fn a_route_content_is_checked() {
+    use route::*;
+    let v = |path_form, path, fields: Vec<(u32, &'static str, &'static [u8])>| RouteView {
+        methods: METHOD_POST,
+        path_form,
+        path,
+        fields,
+        rung: 0,
+    };
+    assert_eq!(check_route_view(&v(PATH_EXACT, "/v1/messages", vec![])), Ok(()));
+    assert_eq!(check_route_view(&v(PATH_SUFFIX, ":countTokens", vec![])), Ok(()));
+    assert_eq!(
+        check_route_view(&v(PATH_EXACT, "", vec![])),
+        f(Rule::Missing, "route.path")
+    );
+    assert_eq!(
+        check_route_view(&v(PATH_PREFIX, "v1", vec![])),
+        f(Rule::UnknownCode, "route.path")
+    );
+    assert_eq!(
+        check_route_view(&v(PATH_PATTERN, "/a/{*rest}/b", vec![])),
+        f(Rule::UnknownCode, "route.path.pattern")
+    );
+    assert_eq!(
+        check_route_view(&v(PATH_EXACT, "/x", vec![(FIELD_PRESENT, "Authorization", b"")])),
+        f(Rule::UnknownCode, "route.field.name")
+    );
+    assert_eq!(
+        check_route_view(&v(PATH_EXACT, "/x", vec![(FIELD_PRESENT, "authorization", b"x")])),
+        f(Rule::Contradiction, "route.field.value")
+    );
+    assert_eq!(
+        check_route_view(&v(PATH_EXACT, "/x", vec![(FIELD_VALUE_PREFIX, "authorization", b"")])),
+        f(Rule::Contradiction, "route.field.value")
+    );
+}
