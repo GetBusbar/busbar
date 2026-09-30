@@ -19,10 +19,18 @@
 //!   flags, stream, length, and the SETTINGS and WINDOW_UPDATE values), and the request's header
 //!   block, field by field, as the HPACK bytes 1.5.5 wrote.
 //!
-//! The recording masks the run's port. The door is sans-IO and dials nothing, so it is handed a
-//! fixed port and its bytes are masked the same way; the one HPACK field that carries the port
-//! (`:authority`) is compared by its representation (literal with incremental indexing, name index
-//! 1, Huffman) rather than its bytes, exactly as the recording masks it.
+//! A wire-exact recording pins the mock's port, so its `host` / `:authority` carries the literal
+//! port: the door is handed THAT port and every byte is compared as recorded. A recording that
+//! masks the run's port (`<PORT>`) gets a fixed port and the door's bytes are masked the same way;
+//! there the one HPACK field that carries the port (`:authority`) is compared by its representation
+//! (literal with incremental indexing, name index 1, Huffman) rather than its bytes, exactly as the
+//! recording masks it.
+//!
+//! An HTTP/2 connection is a conversation, so the far end's side is replayed from the recording:
+//! the server bytes the client had read before a stream opened (the transcript's `s2c_before`),
+//! and, while the request body waits on flow control, the capture mock's own rule, one connection
+//! and one stream WINDOW_UPDATE per DATA frame, each exactly that frame's length. The door's frames
+//! are compared up to the stream's END_STREAM, as `frames_before_end` records them.
 //!
 //! A missing golden is a FAILURE, never a skip: a wire suite that found nothing to compare proves
 //! nothing.
@@ -40,6 +48,16 @@ use serde_json::Value;
 
 /// The port the door is handed; the recording's `<PORT>` stands for whatever port the run bound.
 const PORT: u16 = 40123;
+
+/// The port a wire-exact recording pinned, read off its `host` / `:authority`; `None` where the
+/// recording masked it.
+fn recorded_port(r: &Recorded) -> Option<u16> {
+    r.headers
+        .iter()
+        .find(|(n, _)| n == "host" || n == ":authority")
+        .and_then(|(_, v)| v.rsplit_once(':'))
+        .and_then(|(_, p)| p.parse().ok())
+}
 
 /// The cells this suite must find, at the least: the h1 dialect set, the h2 bearer, the token
 /// mint, a GET, the header-order pair. A golden dir missing any of them fails the suite.
@@ -311,7 +329,6 @@ impl Door {
     }
 
     /// The far end sent `bytes`.
-    #[allow(dead_code)]
     fn ingest(&mut self, bytes: &[u8]) {
         let mut i: IngestIn = z();
         i.framing = self.framing;
@@ -335,9 +352,16 @@ impl Drop for Door {
 // ── h1 ───────────────────────────────────────────────────────────────────────────────────────────
 
 fn door_h1(r: &Recorded) -> String {
-    let mut door = Door::open(r#"{"advanced.upstream_http1_only":true}"#, "http/1.1");
+    let settings = r#"{"advanced.upstream_http1_only":true}"#;
+    let pinned = recorded_port(r);
+    let port = pinned.unwrap_or(PORT);
+    let mut door = Door::open_at(settings, "http/1.1", &format!("http://127.0.0.1:{port}"));
     door.request(1, &r.method, &r.path, &plane_fields(r), &r.body);
-    String::from_utf8_lossy(&door.sent).replace(&format!(":{PORT}"), ":<PORT>")
+    let sent = String::from_utf8_lossy(&door.sent).into_owned();
+    match pinned {
+        Some(_) => sent,
+        None => sent.replace(&format!(":{PORT}"), ":<PORT>"),
+    }
 }
 
 // ── h2 ───────────────────────────────────────────────────────────────────────────────────────────
@@ -393,6 +417,9 @@ fn frame_view((t, flags, stream, p): &H2Frame) -> Value {
                 })
                 .collect(),
         );
+    }
+    if *t == 6 {
+        v["opaque"] = Value::String(hex(p));
     }
     if *t == 8 && p.len() == 4 {
         v["increment"] =
@@ -452,19 +479,96 @@ fn compare_block(cell: &str, want_fields: &[Value], block: &[u8]) -> Result<(), 
     Ok(())
 }
 
-/// Every recorded request on ONE h2 connection, driven through ONE door framing.
+fn unhex(h: &str) -> Vec<u8> {
+    (0..h.len() / 2)
+        .map(|i| u8::from_str_radix(&h[2 * i..2 * i + 2], 16).unwrap())
+        .collect()
+}
+
+/// Whether `frames` carry `stream`'s END_STREAM (a DATA or HEADERS with flag 0x1), and where.
+fn end_of(frames: &[H2Frame], stream: u64) -> Option<usize> {
+    frames
+        .iter()
+        .position(|(t, f, st, _)| (*t == 0 || *t == 1) && f & 1 != 0 && u64::from(*st) == stream)
+}
+
+/// One WINDOW_UPDATE frame crediting `increment` to `stream` (0 = the connection).
+fn window_update(stream: u32, increment: u32) -> Vec<u8> {
+    let mut f = vec![0, 0, 4, 8, 0];
+    f.extend_from_slice(&stream.to_be_bytes());
+    f.extend_from_slice(&increment.to_be_bytes());
+    f
+}
+
+/// Every recorded request on ONE h2 connection, driven through ONE door framing, with the far
+/// end's side replayed from the recording (the module doc).
 fn check_h2_connection(cell: &str, reqs: &[&Recorded]) -> Result<(), String> {
-    let mut door = Door::open(r#"{"advanced.upstream_h2_prior_knowledge":true}"#, "");
+    let pinned = reqs.first().and_then(|r| recorded_port(r));
+    let target = format!("http://127.0.0.1:{}", pinned.unwrap_or(PORT));
+    let mut door = Door::open_at(
+        r#"{"advanced.upstream_h2_prior_knowledge":true}"#,
+        "",
+        &target,
+    );
+    // How much of the connection's server bytes the door has read, and how many of the door's
+    // DATA frames the mock has answered with WINDOW_UPDATEs.
+    let (mut s2c_read, mut credited) = (0usize, 0usize);
     for r in reqs {
         let h2 =
             r.h2.as_ref()
                 .ok_or_else(|| format!("{cell}: an h2c entry with no h2 detail"))?;
         let stream = h2["stream"].as_u64().unwrap_or(1);
+        let s2c = unhex(h2["s2c_before"].as_str().unwrap_or_default());
+        // A later stream opens after the client has read what the server wrote before it.
+        if stream > 1 && s2c.len() > s2c_read {
+            door.ingest(&s2c[s2c_read..]);
+            s2c_read = s2c.len();
+        }
         door.request(stream, &r.method, &r.path, &plane_fields(r), &r.body);
-        let (preface, frames) = h2_frames(&door.sent);
+        // A body that waits on flow control: the client reads the server's bytes, then the
+        // mock's WINDOW_UPDATEs, until the stream ends or nothing more moves.
+        loop {
+            let (_, frames) = h2_frames(&door.sent);
+            if end_of(&frames, stream).is_some() {
+                break;
+            }
+            let before = door.sent.len();
+            if s2c.len() > s2c_read {
+                door.ingest(&s2c[s2c_read..]);
+                s2c_read = s2c.len();
+            } else {
+                let data: Vec<u32> = frames
+                    .iter()
+                    .filter(|(t, _, _, _)| *t == 0)
+                    .map(|(_, _, _, p)| p.len() as u32)
+                    .collect();
+                let mut wu = Vec::new();
+                for (st, len) in frames
+                    .iter()
+                    .filter(|(t, _, _, _)| *t == 0)
+                    .map(|(_, _, st, p)| (*st, p.len() as u32))
+                    .skip(credited)
+                {
+                    wu.extend(window_update(0, len));
+                    wu.extend(window_update(st, len));
+                }
+                credited = data.len();
+                if !wu.is_empty() {
+                    door.ingest(&wu);
+                }
+            }
+            if door.sent.len() == before {
+                return Err(format!(
+                    "{cell} stream {stream}: the door stalled before END_STREAM"
+                ));
+            }
+        }
+        let (preface, all) = h2_frames(&door.sent);
         if preface != b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" {
             return Err(format!("{cell}: the door's preface is {}", hex(&preface)));
         }
+        let end = end_of(&all, stream).expect("the loop above ends the stream");
+        let frames = &all[..=end];
         let want = h2["frames_before_end"]
             .as_array()
             .cloned()
