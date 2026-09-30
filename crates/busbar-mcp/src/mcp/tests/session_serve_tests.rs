@@ -18,7 +18,9 @@ use super::super::test_engine::*;
 use super::super::McpCfg as Cfg;
 use super::H_PROTOCOL_VERSION as VERSION;
 use crate::testkit::TestAppMcpExt as _;
-use busbar_plane_mcp::adapt::{H_LAST_EVENT_ID as CURSOR, H_SESSION_ID as SID};
+/// The session header and the resume cursor header, as a client spells them.
+const SID: &str = "mcp-session-id";
+const CURSOR: &str = "last-event-id";
 
 const ENDPOINT: &str = "/mcp";
 const CANONICAL: &str = "https://gateway.example.com/mcp";

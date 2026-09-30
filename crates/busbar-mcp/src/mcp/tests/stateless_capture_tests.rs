@@ -20,7 +20,8 @@ use super::{
     H_MCP_METHOD as METHOD, H_MCP_NAME as NAME, H_PROTOCOL_VERSION as VERSION, PROTOCOL_VERSION,
 };
 use crate::testkit::TestAppMcpExt as _;
-use busbar_plane_mcp::adapt::H_SESSION_ID as SID;
+/// A stray session header, which the stateless revision ignores.
+const SID: &str = "mcp-session-id";
 
 const GOLDEN: &str = include_str!("golden/stateless_capture.txt");
 /// The mount path the corpus is posted to.

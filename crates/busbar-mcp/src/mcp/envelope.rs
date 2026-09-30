@@ -49,7 +49,7 @@ use base64::Engine as _;
 use super::sse;
 use busbar_kernel::ingress::protocol::CoreRefusal;
 
-/// The single MCP protocol revision busbar implements — MOVED to `busbar-plane-mcp` with the rest
+/// The single MCP protocol revision busbar implements — MOVED to the plane crate with the rest
 /// of the protocol vocabulary and re-exported here, so `busbar_mcp::mcp::envelope::PROTOCOL_VERSION`
 /// resolves unchanged and there is one revision string rather than two that agree today.
 pub use busbar_plane_mcp::codec::PROTOCOL_VERSION;
@@ -83,8 +83,8 @@ pub(crate) const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[PROTOCOL_VERSION];
 /// schema is unambiguous — `JSONRPCRequest.params` requires `_meta`, and that `RequestMetaObject`
 /// requires this key — and the mistake is worth a comment because both placements read naturally
 /// and only one of them is a request any client will send.
-/// Defined in `busbar-plane-mcp` and read here BY IDENTITY, because a third reader —
-/// `busbar-plane-mcp`, which may not name this crate — states it as a correlation fact key. This
+/// Defined in the plane crate and read here BY IDENTITY, because a third reader — the plane
+/// crate itself, which may not name this crate — states it as a correlation fact key. This
 /// path and this value are exactly what they always were.
 pub(crate) const META_PROTOCOL_VERSION: &str = busbar_plane_mcp::codec::META_PROTOCOL_VERSION;
 
@@ -99,12 +99,12 @@ pub(crate) const META_PROTOCOL_VERSION: &str = busbar_plane_mcp::codec::META_PRO
 /// server that fills the gap in has decided on the client's behalf what the client can do. The
 /// schema makes it required for exactly that reason, and both this repository's own battery
 /// (`SRV.META.MISSING-CAPABILITIES`) and the official suite read the omission as `-32602`.
-/// Defined in `busbar-plane-mcp` and read here BY IDENTITY, for the reason
+/// Defined in the plane crate and read here BY IDENTITY, for the reason
 /// [`META_PROTOCOL_VERSION`] states.
 pub(crate) const META_CLIENT_CAPABILITIES: &str = busbar_plane_mcp::codec::META_CLIENT_CAPABILITIES;
 
 /// The three mirrored header names (`mcp-method`, `mcp-name`, `mcp-protocol-version`), defined in
-/// `busbar-plane-mcp` and read here BY IDENTITY, for the reason [`META_PROTOCOL_VERSION`] states.
+/// the plane crate and read here BY IDENTITY, for the reason [`META_PROTOCOL_VERSION`] states.
 pub(crate) use busbar_plane_mcp::codec::{H_MCP_METHOD, H_MCP_NAME, H_PROTOCOL_VERSION};
 
 /// JSON-RPC error codes this module emits. Named rather than inlined because three of the four are
