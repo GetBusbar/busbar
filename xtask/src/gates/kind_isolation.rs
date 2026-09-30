@@ -753,6 +753,15 @@ const CLEANLINESS: &str = "cleanliness";
 /// so as the exemplar it stated no single entry and `entry-count` went unjudged for the whole kind.
 /// http's three is a finding on `:shape`, carried in the standing snapshot until TRANSPORT-STACK
 /// (one entry per plugin) collapses it to one framer entry claiming http, sse and grpc.
+///
+/// THE DOOR IS THE ENTRY (ARCHITECT ruling 2026-09-30, option A). The tcp carrier retired its
+/// `impl Transport` for a memory-ABI door, so the exemplar implemented the trait ZERO times, the
+/// kind read `no-entry`, and `entry-count` went unjudged for every transport again. A transport
+/// crate's entries are now its `impl Transport` blocks plus its door tails ([`entry_count`]): tcp
+/// states one (its door) and vouches for the kind. TRANSITIONAL FINDING, recorded rather than
+/// hidden: `busbar-transport-ws` states TWO (its legacy `impl Transport` beside its door), an
+/// `entry-count` finding on `:shape` that TRANSPORT-STACK removes when it deletes ws's legacy
+/// `impl Transport`; http's finding above counts its door too (three `impl`s plus one tail).
 const EXEMPLARS: &[(&str, &str)] = &[
     ("plane", "busbar-plane-a2a"),
     ("transport", "busbar-transport-tcp"),
@@ -3859,6 +3868,9 @@ struct SourceIndex {
     skeleton: BTreeMap<String, BTreeSet<String>>,
     /// dir -> how many times each trait is implemented in its shipped source.
     impls: BTreeMap<String, BTreeMap<String, usize>>,
+    /// dir -> how many memory-ABI transport door tails (`TransportTail { .. }` statements, the
+    /// table `export_door!` exports) its shipped source states. See [`entry_count`].
+    doors: BTreeMap<String, usize>,
     /// dir -> whether it has a `src/lib.rs` at all.
     has_lib: BTreeSet<String>,
     /// dir -> it carries a `tests/*conformance*.rs` battery file WITH AT LEAST ONE LIVE ENTRY.
@@ -4048,6 +4060,7 @@ fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
     let mut idx = SourceIndex {
         skeleton: BTreeMap::new(),
         impls: BTreeMap::new(),
+        doors: BTreeMap::new(),
         has_lib: BTreeSet::new(),
         conformance: BTreeSet::new(),
         conformance_dead: BTreeSet::new(),
@@ -4080,6 +4093,9 @@ fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
         for t in &facts.heads {
             *counts.entry(t.clone()).or_default() += 1;
         }
+        if facts.door_tails > 0 {
+            *idx.doors.entry(dir.clone()).or_default() += facts.door_tails;
+        }
     }
     Ok(idx)
 }
@@ -4100,6 +4116,8 @@ struct SourceFacts {
     mods: Option<Vec<String>>,
     /// Every trait-impl head in it, when shipped; empty otherwise.
     heads: Vec<String>,
+    /// How many transport door tails it states, when shipped; 0 otherwise. See [`door_tails`].
+    door_tails: usize,
 }
 
 /// The per-file memo behind [`source_facts`]. The key hashes the path, the owning directory and the
@@ -4131,6 +4149,7 @@ fn source_facts(rel: &str, dir: &str, text: &str) -> std::sync::Arc<SourceFacts>
     let shipped = is_shipped_source(rel);
     let mut mods = None;
     let mut heads = Vec::new();
+    let mut tails = 0;
     if shipped {
         if rel == format!("{dir}/src/lib.rs") {
             let mut found = Vec::new();
@@ -4148,12 +4167,14 @@ fn source_facts(rel: &str, dir: &str, text: &str) -> std::sync::Arc<SourceFacts>
             mods = Some(found);
         }
         heads = impl_heads(text);
+        tails = door_tails(text);
     }
     let facts = std::sync::Arc::new(SourceFacts {
         live,
         shipped,
         mods,
         heads,
+        door_tails: tails,
     });
     memo.lock()
         .expect("the source-facts memo mutex is never poisoned")
@@ -4238,6 +4259,9 @@ fn pinned_exemplars(
                     for t in &facts.heads {
                         *counts.entry(t.clone()).or_default() += 1;
                     }
+                    if facts.door_tails > 0 {
+                        *idx.doors.entry(key.clone()).or_default() += facts.door_tails;
+                    }
                 }
             }
             if files == 0 {
@@ -4251,6 +4275,54 @@ fn pinned_exemplars(
         out.insert(ex.to_string(), found);
     }
     out
+}
+
+/// THE TRANSPORT DOOR TAILS a file states: every production line that builds a `TransportTail`
+/// (`const TAIL: TransportTail = TransportTail { .. }`), the Statement tail a memory-ABI door
+/// carries and `export_door!` exports as the image's one table. The contract's own
+/// `struct TransportTail` declaration is not a tail.
+fn door_tails(text: &str) -> usize {
+    scan::production_lines(text)
+        .into_iter()
+        .filter(|(_, code)| {
+            let t = code.trim();
+            t.contains("TransportTail {") && !t.contains("struct TransportTail")
+        })
+        .count()
+}
+
+/// HOW MANY ENTRIES `dir` STATES FOR `kind` (ARCHITECT ruling 2026-09-30, option A). A kind's
+/// entry is its trait implemented in shipped source; for `transport` it is ALSO the memory-ABI
+/// door, because in the final design the door IS the entry (compiled in and dropped in are one
+/// table). So a transport crate's entries are its `impl Transport` blocks PLUS its door tails
+/// ([`door_tails`]). The exemplar `busbar-transport-tcp` is a door (one tail, no `impl`) and
+/// vouches for the kind again through it; a crate carrying a legacy `impl Transport` beside its
+/// door states TWO entries, which is true and is a finding (see [`EXEMPLARS`]).
+///
+/// End state: once no shipped crate implements `Transport` directly, the transport entry is the
+/// door alone and the `impl` half of this sum reads zero everywhere.
+fn entry_count(idx: &SourceIndex, dir: &str, kind: &str, want_trait: &str) -> usize {
+    let impls = idx
+        .impls
+        .get(dir)
+        .and_then(|m| m.get(want_trait))
+        .copied()
+        .unwrap_or(0);
+    let doors = if kind == "transport" {
+        idx.doors.get(dir).copied().unwrap_or(0)
+    } else {
+        0
+    };
+    impls + doors
+}
+
+/// How [`entry_count`] reads `kind`'s entries, for a finding's text.
+fn entry_note(kind: &str) -> &'static str {
+    if kind == "transport" {
+        " (its `impl` blocks plus its door tails)"
+    } else {
+        ""
+    }
 }
 
 fn rule_shape(
@@ -4281,13 +4353,13 @@ fn rule_shape(
             .or(pinned_dir.map(String::as_str))
         {
             Some(ex_dir) => {
-                let ex_impls = idx.impls.get(ex_dir).cloned().unwrap_or_default();
-                let n = ex_impls.get(&want_trait).copied().unwrap_or(0);
+                let n = entry_count(idx, ex_dir, kind, &want_trait);
                 if n != 1 {
                     offenders.push(format!(
                         "no-entry\t{ex_dir}\tkind `{kind}` states no single entry: the exemplar \
-                         implements `{want_trait}` {n} time(s) in shipped source, so there is no \
-                         one declaration every crate of the kind owes"
+                         implements `{want_trait}` {n} time(s) in shipped source{}, so there is no \
+                         one declaration every crate of the kind owes",
+                        entry_note(kind)
                     ));
                 }
                 n
@@ -4318,17 +4390,14 @@ fn rule_shape(
                 continue;
             }
             if ex_entries == 1 {
-                let n = idx
-                    .impls
-                    .get(&c.dir)
-                    .and_then(|m| m.get(&want_trait))
-                    .copied()
-                    .unwrap_or(0);
+                let n = entry_count(idx, &c.dir, kind, &want_trait);
                 if n != 1 {
                     offenders.push(format!(
                         "entry-count\t{}\t{} implements `{want_trait}` {n} time(s) in shipped \
-                         source; every crate of kind `{kind}` states EXACTLY ONE",
-                        c.dir, c.name
+                         source{}; every crate of kind `{kind}` states EXACTLY ONE",
+                        c.dir,
+                        c.name,
+                        entry_note(kind)
                     ));
                 }
             }
@@ -9020,6 +9089,33 @@ impl Gate for KindIsolationGate {
             &["entry-count", "busbar-transport-stdio", "2 time(s)"],
         ));
 
+        // THE DOOR IS AN ENTRY (ARCHITECT ruling 2026-09-30, option A). A transport crate that
+        // implements `Transport` nowhere and states TWO door tails states two entries: with the
+        // tails counted the rule fires; were only `impl` blocks counted the crate would read zero,
+        // a different number, and a door-only crate could carry any number of tables unjudged.
+        let mut ov = manifest_plant(
+            "crates/busbar-transport-planted-doors",
+            "busbar-transport-planted-doors",
+            &[],
+        );
+        ov.set(
+            "crates/busbar-transport-planted-doors/src/lib.rs",
+            "pub mod meta;\npub mod transport;\n",
+        );
+        ov.set(
+            "crates/busbar-transport-planted-doors/src/transport.rs",
+            "const ONE: TransportTail = TransportTail { claims: A };\n\
+             const TWO: TransportTail = TransportTail { claims: B };\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a transport crate carrying two door tails states two entries",
+            &[ROW_SHAPE],
+            ov,
+            &["entry-count", "busbar-transport-planted-doors", "2 time(s)"],
+        ));
+
         // THE SKELETON IS THE SPEC'S, NOT THE EXEMPLAR'S FILE LIST. This crate declares `meta` and
         // nothing else, so it is missing EXACTLY ONE thing: its kind's entry file. Under the old
         // rule — the exemplar's own top-level modules — it would have been charged with ten,
@@ -10430,10 +10526,29 @@ mod plant_tests {
         }
     }
 
+    /// A door tail is counted where it is built, not where the contract declares its type, and a
+    /// tail in a comment is no tail.
+    #[test]
+    fn door_tails_count_the_tables_a_door_builds() {
+        assert_eq!(
+            door_tails("const TAIL: TransportTail = TransportTail {\n    claims: C,\n};\n"),
+            1
+        );
+        assert_eq!(
+            door_tails("pub struct TransportTail {\n    pub claims: C,\n}\n"),
+            0
+        );
+        assert_eq!(
+            door_tails("// const T: TransportTail = TransportTail { };\n"),
+            0
+        );
+    }
+
     fn empty_index() -> SourceIndex {
         SourceIndex {
             skeleton: BTreeMap::new(),
             impls: BTreeMap::new(),
+            doors: BTreeMap::new(),
             has_lib: BTreeSet::new(),
             conformance: BTreeSet::new(),
             conformance_dead: BTreeSet::new(),
