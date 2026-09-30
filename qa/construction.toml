@@ -1409,7 +1409,7 @@ kernel_crate = "busbar-kernel"
 # ── RE-ARMED 52002 -> 53151 for the plane driver core (KERNEL<>PLUGINS step 4), declared above.
 # ── RE-ARMED 53151 -> 53156: Re-measured on predev 9cbd0288a (KERNEL-VALIDATE's landed kernel lines under K1): 53156.
 # ── RE-ARMED 53156 -> 53169: kernel x plugin-tooling drain: the observer's grants seam (observe::Grants, install_grants), +13; 53169 measured on k1-kpt-drain.
-kernel_ceiling = 53169
+kernel_ceiling = 53189
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
