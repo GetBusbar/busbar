@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::transport::SIDE_DIAL;
+use busbar_contract::abi::transport::{SIDE_ACCEPT, SIDE_DIAL};
 
 use super::*;
 use crate::support::{Knobs, TestDoor};
@@ -59,4 +59,86 @@ fn locate_and_encode_answer() {
     assert_eq!(l.name.as_deref(), Some("localhost"));
     assert!(l.secure);
     assert_eq!(encode(&door, &[], b"body").unwrap(), b"body");
+}
+
+/// RED: an ACCEPTED framing's head slots come out typed (method, target, an absent authority),
+/// never as field lines; the same request slots on a DIALLED framing are the other side's, and
+/// refused.
+#[test]
+fn an_accepted_framing_yields_its_request_head_typed() {
+    let knobs = Knobs {
+        head: true,
+        ..Knobs::default()
+    };
+    let door = Arc::new(TestDoor::new("bytes", &["bytes"], &[], knobs));
+    let (_, y) = Framing::begin(door.clone(), SIDE_ACCEPT, "", &Established::default()).unwrap();
+    assert_eq!(
+        y.heads,
+        [Head {
+            stream: 1,
+            method: Some(b"GET".to_vec()),
+            target: Some(b"/v1".to_vec()),
+            ..Head::default()
+        }]
+    );
+    let dialled = Framing::begin(door, SIDE_DIAL, "t", &Established::default());
+    assert!(
+        dialled.is_err(),
+        "a dialled framing carries no request slots"
+    );
+}
+
+/// RED: the host reassembles a stream's field block and never takes PIECE_CONTINUED on the framer's
+/// word. A line ended with CR LF then a "continued" `:path` is a smuggled pseudo-field, refused; a
+/// continued piece with nothing before it is refused; a continuation inside a name is refused.
+#[test]
+fn a_continued_field_piece_is_judged_by_the_host_not_the_framer() {
+    let mut l = FieldLines::default();
+    assert_eq!(l.piece(1, false, false, b"x: y\r\n"), Ok(()));
+    assert!(l.piece(1, true, true, b":path: /admin\r\n").is_err(), "smuggle");
+    let mut l = FieldLines::default();
+    assert!(l.piece(1, true, true, b"rest\r\n").is_err(), "orphan");
+    let mut l = FieldLines::default();
+    assert_eq!(l.piece(1, false, false, b"x-lo"), Ok(()));
+    assert!(l.piece(1, true, true, b"ng: v\r\n").is_err(), "inside a name");
+    let mut l = FieldLines::default();
+    assert!(l.piece(1, false, true, b":path: /\r\n").is_err(), "pseudo-field");
+    assert!(l.piece(2, false, true, b"x: 1\r").is_err(), "ends inside a line");
+}
+
+/// A long value split across pieces reassembles byte-identically, and the stream's next block
+/// starts clean.
+#[test]
+fn a_long_value_split_across_pieces_reassembles_byte_identically() {
+    let block = b"x-long: abcdefghij\r\nx-b: 2\r\n";
+    let mut l = FieldLines::default();
+    let parts: [(&[u8], bool, bool); 4] = [
+        (&block[..10], false, false),
+        (&block[10..18], true, false),
+        (&block[18..19], true, false),
+        (&block[19..], true, true),
+    ];
+    let mut joined = Vec::new();
+    for (bytes, continued, end) in parts {
+        assert_eq!(l.piece(7, continued, end, bytes), Ok(()));
+        joined.extend_from_slice(bytes);
+    }
+    assert_eq!(joined, block);
+    assert_eq!(l.piece(7, false, true, b""), Ok(()), "an empty block after it");
+}
+
+/// RED: a payload piece inside a stream's open field block is refused; a failed stream drops its
+/// open block, so its state does not outlive it (and the same stream id may start clean).
+#[test]
+fn a_payload_piece_inside_an_open_block_is_refused_and_a_failure_drops_the_block() {
+    let fields = |continued, end| FieldPiece::Fields { continued, end };
+    let mut l = FieldLines::default();
+    assert_eq!(l.take(3, fields(false, false), b"x: y\r\n"), Ok(()));
+    assert!(l.take(3, FieldPiece::Payload, b"body").is_err(), "payload inside");
+    assert_eq!(l.take(4, FieldPiece::Payload, b"body"), Ok(()), "another stream");
+    assert_eq!(l.take(3, fields(false, false), b"x-lo"), Ok(()));
+    assert_eq!(l.take(3, FieldPiece::Failed, b"reset"), Ok(()));
+    assert!(l.open.is_empty(), "the failed stream's block is gone");
+    assert_eq!(l.take(3, fields(false, true), b"a: b\r\n"), Ok(()));
+    assert_eq!(l.take(3, FieldPiece::Payload, b"body"), Ok(()));
 }

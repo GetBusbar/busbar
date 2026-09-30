@@ -522,16 +522,16 @@ fn a_response_with_head_fields_yields_fields_then_body() {
 #[test]
 fn an_empty_head_yields_one_empty_fields_piece() {
     use busbar_contract::conn::PieceKind;
-    let got = pieces_through_the_table(
-        b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n",
-    );
+    let got = pieces_through_the_table(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n");
     assert_eq!(
         got[0],
         (PieceKind::Fields, Some(204), Vec::new()),
         "{got:?}"
     );
     assert_eq!(
-        got.iter().filter(|(k, _, _)| *k == PieceKind::Fields).count(),
+        got.iter()
+            .filter(|(k, _, _)| *k == PieceKind::Fields)
+            .count(),
         1,
         "{got:?}"
     );

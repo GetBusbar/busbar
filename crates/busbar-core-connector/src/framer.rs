@@ -14,15 +14,17 @@
 //! as the host reaches it — the one dispatcher's crossing for a loaded plugin, compiled in or
 //! dropped in — so this crate names no plugin and no loader.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::{
-    AdoptIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FinishIn, FramePiece, FramerOut, FramerSink,
-    FramingIn, IngestIn, LocateIn, LocateOut, RefuseIn, PIECE_END_OF_FRAME, PIECE_FIELDS,
-    PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    AdoptIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FinishIn, FramePiece, FrameSpan, FramerOut,
+    FramerSink, FramingIn, HeadSlots, IngestIn, LocateIn, LocateOut, RefuseIn, PIECE_CONTINUED,
+    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED,
+    SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 
 /// One framer op, its `in` and its `out`, as the connector hands it to a [`FramerDoor`].
@@ -112,9 +114,27 @@ pub struct Got {
     pub fields: bool,
 }
 
+/// A stream's head typed slots (`HeadSlots`), copied out of the host's buffers: an accepted
+/// stream's method, target and authority, or a dialled answer's reason phrase. Absent = `None`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Head {
+    /// The stream.
+    pub stream: u64,
+    /// The method (accepted).
+    pub method: Option<Vec<u8>>,
+    /// The target: path and query (accepted).
+    pub target: Option<Vec<u8>>,
+    /// The authority the caller named (accepted), where it named one.
+    pub authority: Option<Vec<u8>>,
+    /// The far end's reason phrase exactly as sent (dialled), where it sent one.
+    pub reason: Option<Vec<u8>>,
+}
+
 /// Everything one op answered, across its `YIELD_MORE` re-calls.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Yielded {
+    /// Head slots, in order.
+    pub heads: Vec<Head>,
     /// Bytes owed to the far side, in order.
     pub wire: Vec<u8>,
     /// Frame pieces, in order.
@@ -131,6 +151,132 @@ pub struct Buffers {
     wire: Vec<u8>,
     frame: Vec<u8>,
     pieces: Vec<FramePiece>,
+    /// Head slots.
+    heads: Vec<HeadSlots>,
+    /// The framing's side (`SIDE_*`): what its head slots may carry.
+    side: u32,
+    /// Where each stream's field block stands between pieces.
+    lines: FieldLines,
+}
+
+/// Where a stream's field block stands between two of its pieces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Line {
+    /// At the start of a line.
+    Start,
+    /// In a field's name.
+    Name,
+    /// In a field's value.
+    Value,
+    /// In a value, just after its CR.
+    ValueCr,
+}
+
+/// THE HOST'S FIELD-BLOCK REASSEMBLY CHECK: per stream, where the block stands across pieces and
+/// across framer answers, so a framer's `PIECE_CONTINUED` is never taken on its word. A continued
+/// piece must extend an open line's VALUE; a piece that does not say it continues must start a
+/// line; a line whose name starts with `:` (a pseudo-field) is refused wherever it starts; a block
+/// ends at a line's end. Each refusal is the framer's fault.
+#[derive(Debug, Default)]
+pub struct FieldLines {
+    open: HashMap<u64, Line>,
+}
+
+/// What a piece is to its stream's field block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldPiece {
+    /// A field-block piece: whether it continues a line, and whether it ends the block.
+    Fields {
+        /// `PIECE_CONTINUED`.
+        continued: bool,
+        /// `PIECE_END_OF_FRAME`.
+        end: bool,
+    },
+    /// A payload piece.
+    Payload,
+    /// The stream failed: whatever block it had open is gone with it.
+    Failed,
+}
+
+impl FieldLines {
+    /// Take any piece of `stream`: a field-block piece is judged as [`FieldLines::piece`] judges
+    /// it; a payload piece while the stream's block is still open is refused; a failed stream's
+    /// state is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Why the piece breaks the block, as an operator reads it.
+    pub fn take(
+        &mut self,
+        stream: u64,
+        kind: FieldPiece,
+        bytes: &[u8],
+    ) -> Result<(), &'static str> {
+        match kind {
+            FieldPiece::Fields { continued, end } => self.piece(stream, continued, end, bytes),
+            FieldPiece::Payload if self.open.contains_key(&stream) => {
+                Err("a payload piece inside an open field block")
+            }
+            FieldPiece::Payload => Ok(()),
+            FieldPiece::Failed => {
+                self.open.remove(&stream);
+                Ok(())
+            }
+        }
+    }
+
+    /// Take one field-block piece of `stream`.
+    ///
+    /// # Errors
+    ///
+    /// Why the piece breaks the block, as an operator reads it.
+    pub fn piece(
+        &mut self,
+        stream: u64,
+        continued: bool,
+        end: bool,
+        bytes: &[u8],
+    ) -> Result<(), &'static str> {
+        let mut at = match (self.open.get(&stream).copied(), continued) {
+            (None, true) => return Err("a continued field piece with no line before it"),
+            (Some(l @ (Line::Value | Line::ValueCr)), true) => l,
+            (Some(_), true) => return Err("a continued field piece that does not extend a value"),
+            (None | Some(Line::Start), false) => Line::Start,
+            (Some(_), false) => return Err("a field piece that starts inside a line"),
+        };
+        for &b in bytes {
+            at = match at {
+                Line::Start => match b {
+                    b':' => return Err("a pseudo-field in a field block"),
+                    b'\r' | b'\n' => return Err("a field line without a value"),
+                    _ => Line::Name,
+                },
+                Line::Name => match b {
+                    b':' => Line::Value,
+                    b'\r' | b'\n' => return Err("a field line without a value"),
+                    _ => Line::Name,
+                },
+                Line::Value => match b {
+                    b'\r' => Line::ValueCr,
+                    b'\n' => return Err("a field line ended without its CR"),
+                    _ => Line::Value,
+                },
+                Line::ValueCr => match b {
+                    b'\n' => Line::Start,
+                    _ => return Err("a CR without its LF in a field block"),
+                },
+            };
+        }
+        if end {
+            self.open.remove(&stream);
+            if at != Line::Start {
+                return Err("a field block that ends inside a line");
+            }
+        } else {
+            self.open.insert(stream, at);
+        }
+        Ok(())
+    }
 }
 
 /// The default capacities: wire and frame bytes, and pieces.
@@ -139,6 +285,8 @@ pub const WIRE_CAP: usize = 64 * 1024;
 pub const FRAME_CAP: usize = 64 * 1024;
 /// The pieces buffer's capacity.
 pub const PIECES_CAP: usize = 64;
+/// The head-slots buffer's capacity.
+pub const HEADS_CAP: usize = 16;
 
 const EMPTY_PIECE: FramePiece = FramePiece {
     stream: 0,
@@ -159,6 +307,17 @@ impl Buffers {
             wire: vec![0; wire.max(1)],
             frame: vec![0; frame.max(1)],
             pieces: vec![EMPTY_PIECE; pieces.max(1)],
+            heads: vec![HeadSlots::default(); HEADS_CAP],
+            side: SIDE_DIAL,
+            lines: FieldLines::default(),
+        }
+    }
+
+    /// The default buffers for a framing on `side`.
+    fn for_side(side: u32) -> Self {
+        Self {
+            side,
+            ..Self::default()
         }
     }
 
@@ -172,13 +331,13 @@ impl Buffers {
             pieces_cap: self.pieces.len(),
             now_monotonic_ns: now_ns(),
             now_unix_ns: unix_ns(),
-            heads: std::ptr::null_mut(),
-            heads_cap: 0,
+            heads: self.heads.as_mut_ptr(),
+            heads_cap: self.heads.len(),
         }
     }
 
     /// Take what one READY answer wrote; `false` = it owes more (`YIELD_MORE`).
-    fn take(&self, o: &FramerOut, into: &mut Yielded) -> Result<bool, Refused> {
+    fn take(&mut self, o: &FramerOut, into: &mut Yielded) -> Result<bool, Refused> {
         let y = &o.yielded;
         let bad = |what: &str| Refused {
             outcome: Outcome::Fault,
@@ -201,6 +360,22 @@ impl Buffers {
             let bytes = frame
                 .get(at..at.checked_add(len).ok_or_else(|| bad("piece"))?)
                 .ok_or_else(|| bad("piece"))?;
+            let kind = if p.flags & PIECE_STREAM_FAILED != 0 {
+                FieldPiece::Failed
+            } else if p.flags & PIECE_FIELDS != 0 {
+                FieldPiece::Fields {
+                    continued: p.flags & PIECE_CONTINUED != 0,
+                    end: p.flags & PIECE_END_OF_FRAME != 0,
+                }
+            } else {
+                FieldPiece::Payload
+            };
+            self.lines
+                .take(p.stream, kind, bytes)
+                .map_err(|why| Refused {
+                    outcome: Outcome::Fault,
+                    error: format!("the framer's field block is refused: {why}"),
+                })?;
             into.pieces.push(Got {
                 stream: p.stream,
                 bytes: bytes.to_vec(),
@@ -211,6 +386,39 @@ impl Buffers {
                     .then_some(p.retry_after_secs),
                 fields: p.flags & PIECE_FIELDS != 0,
             });
+        }
+        let heads = self
+            .heads
+            .get(..y.heads_len as usize)
+            .ok_or_else(|| bad("heads"))?;
+        for h in heads {
+            let slot = |s: FrameSpan| {
+                let at = usize::try_from(s.offset).map_err(|_| bad("head"))?;
+                let len = usize::try_from(s.len).map_err(|_| bad("head"))?;
+                frame
+                    .get(at..at.checked_add(len).ok_or_else(|| bad("head"))?)
+                    .map(|b| (!b.is_empty()).then(|| b.to_vec()))
+                    .ok_or_else(|| bad("head"))
+            };
+            let head = Head {
+                stream: h.stream,
+                method: slot(h.method)?,
+                target: slot(h.target)?,
+                authority: slot(h.authority)?,
+                reason: slot(h.reason)?,
+            };
+            // An accepted stream's slots are the request's; a dialled one's, the answer's reason.
+            let request =
+                head.method.is_some() || head.target.is_some() || head.authority.is_some();
+            let fits = if self.side == SIDE_ACCEPT {
+                request && head.reason.is_none()
+            } else {
+                !request
+            };
+            if !fits {
+                return Err(bad("head slots of the other side"));
+            }
+            into.heads.push(head);
         }
         into.ended |= y.flags & YIELD_ENDED != 0;
         into.deadline_ns = (y.flags & YIELD_HAS_DEADLINE != 0).then_some(y.next_deadline_ns);
@@ -424,7 +632,7 @@ impl Framing {
         target: &str,
         established: &Established,
     ) -> Result<(Self, Yielded), Refused> {
-        let mut bufs = Buffers::default();
+        let mut bufs = Buffers::for_side(side);
         let facts = established.facts();
         let mut i: BeginIn = blank_in();
         i.side = side;
@@ -457,7 +665,7 @@ impl Framing {
         leftover: &[u8],
         established: &Established,
     ) -> Result<(Self, Yielded), Refused> {
-        let mut bufs = Buffers::default();
+        let mut bufs = Buffers::for_side(side);
         let facts = established.facts();
         let mut i: AdoptIn = blank_in();
         i.side = side;

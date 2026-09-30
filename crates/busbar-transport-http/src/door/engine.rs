@@ -312,6 +312,10 @@ pub struct Piece {
     pub failed: bool,
     /// `bytes` are a field block: the head.
     pub fields: bool,
+    /// A full sink split this field block mid-line: `bytes` open by continuing a line.
+    pub continued: bool,
+    /// On an HTTP/1 head: the far end's reason phrase, exactly as sent, for the stream's head slots.
+    pub reason: Option<Bytes>,
 }
 
 impl Piece {
@@ -329,6 +333,8 @@ impl Piece {
             retry_after_secs: None,
             failed: false,
             fields: false,
+            continued: false,
+            reason: None,
         }
     }
 }
@@ -794,7 +800,25 @@ fn head_piece(stream: u64, r: &http::Response<Incoming>, now_unix_secs: u64) -> 
         retry_after_secs: retry_after_secs(r.headers(), now_unix_secs),
         failed: false,
         fields: true,
+        continued: false,
+        reason: reason_phrase(r),
     }
+}
+
+/// An HTTP/1 answer's reason phrase exactly as sent: hyper keeps a phrase that differs from the
+/// canonical one, and one it did not keep was the canonical phrase. HTTP/2 has none.
+fn reason_phrase(r: &http::Response<Incoming>) -> Option<Bytes> {
+    if r.version() >= http::Version::HTTP_2 {
+        return None;
+    }
+    let phrase = r
+        .extensions()
+        .get::<hyper::ext::ReasonPhrase>()
+        .map_or_else(
+            || Bytes::from_static(r.status().canonical_reason().unwrap_or("").as_bytes()),
+            |p| Bytes::copy_from_slice(p.as_bytes()),
+        );
+    (!phrase.is_empty()).then_some(phrase)
 }
 
 /// `headers` as the field block: `name: value\r\n` per value, in the map's order (1.5.5's: names

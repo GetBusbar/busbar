@@ -29,8 +29,8 @@ use busbar_contract::abi::mechanism::door::Door;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::transport::{
     slot, BeginIn, ConnFacts, EmitIn, EncodeIn, FramePiece, FramerOut, FramerSink, FramingIn,
-    IngestIn, Ops, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_STREAM_FAILED, SIDE_DIAL,
-    YIELD_HAS_DEADLINE, YIELD_MORE,
+    HeadSlots, IngestIn, Ops, PIECE_CONTINUED, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE,
+    PIECE_STREAM_FAILED, SIDE_DIAL, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 use busbar_contract::abi::transport::check::check_framer;
 use bytes::Bytes;
@@ -176,6 +176,9 @@ struct Host {
     wire: Vec<u8>,
     frame: Vec<u8>,
     pieces: Vec<FramePiece>,
+    heads: Vec<HeadSlots>,
+    /// Every head slot's reason phrase the framer yielded, by stream.
+    reasons: Vec<(u64, Vec<u8>)>,
 }
 
 fn call<I, O>(op: Option<Op>, inst: *mut c_void, i: &mut I, o: &mut O, index: u32) -> Outcome {
@@ -230,6 +233,8 @@ impl Host {
             wire: vec![0; caps.0.max(4096)],
             frame: vec![0; caps.1],
             pieces: vec![z(); caps.2],
+            heads: vec![HeadSlots::default(); 4],
+            reasons: Vec::new(),
         }
     }
 
@@ -243,8 +248,8 @@ impl Host {
             pieces_cap: self.caps.2,
             now_monotonic_ns: self.now,
             now_unix_ns: 1_790_000_000 * SEC + self.now,
-            heads: std::ptr::null_mut(),
-            heads_cap: 0,
+            heads: self.heads.as_mut_ptr(),
+            heads_cap: self.heads.len(),
         }
     }
 
@@ -262,6 +267,14 @@ impl Host {
         .expect("the answer passes the kind's check");
         if outcome != Outcome::Ready {
             return outcome;
+        }
+        let frame = &self.frame[..o.yielded.frame_len as usize];
+        check_framer_fields(&self.pieces[..n], frame).expect("no pseudo-field in a field block");
+        check_head_slots(o, &self.heads, self.heads.len() as u64).expect("the head slots pass");
+        for h in &self.heads[..o.yielded.heads_len as usize] {
+            let at = h.reason.offset as usize;
+            self.reasons
+                .push((h.stream, frame[at..at + h.reason.len as usize].to_vec()));
         }
         let w = self.wire[..o.yielded.wire_len as usize].to_vec();
         if !w.is_empty() {
@@ -472,13 +485,12 @@ fn text(got: &[Got], stream: u64) -> String {
 }
 
 fn ended(got: &[Got], stream: u64) -> bool {
-    got.iter()
-        .any(|g| {
-            g.stream == stream
-                && g.bytes.is_empty()
-                && g.flags & PIECE_END_OF_FRAME != 0
-                && g.flags & PIECE_FIELDS == 0
-        })
+    got.iter().any(|g| {
+        g.stream == stream
+            && g.bytes.is_empty()
+            && g.flags & PIECE_END_OF_FRAME != 0
+            && g.flags & PIECE_FIELDS == 0
+    })
 }
 
 // ── the scenarios ────────────────────────────────────────────────────────────────────────────────
@@ -527,9 +539,18 @@ fn scenario(label: &str, ops: &'static Ops, rt: &tokio::runtime::Runtime, case: 
     assert_ne!(head.flags & PIECE_FIELDS, 0, "the head is a fields piece");
     let block = String::from_utf8_lossy(&head.bytes).into_owned();
     assert!(!block.starts_with("HTTP/"), "{block}");
+    // The reason phrase is a head slot, never a field: HTTP/1's exactly as sent, none on HTTP/2.
+    let reason: &[(u64, Vec<u8>)] = if case == Case::Http1Only {
+        &[(1, b"OK".to_vec())]
+    } else {
+        &[]
+    };
+    assert_eq!(host.reasons, reason, "{label}");
     assert!(
         block.split_terminator("\r\n").all(|l| l.contains(": ")
-            && l.split(": ").next().is_some_and(|n| n == n.to_ascii_lowercase())),
+            && l.split(": ")
+                .next()
+                .is_some_and(|n| n == n.to_ascii_lowercase())),
         "{block}"
     );
     println!("PROOF {label}: body so far {:?}", text(&got, 1));
@@ -716,6 +737,18 @@ fn exchange(ops: &'static Ops, rt: &tokio::runtime::Runtime, caps: Caps) -> (Vec
     rt.block_on(sock.release.send(())).expect("release");
     host.pump(Duration::from_millis(300), &mut got);
     assert!(ended(&got, 1), "the exchange completed");
+    // A field block a small sink split mid-line says so on the piece that continues the line
+    // (PIECE_CONTINUED); every other fields piece starts a line.
+    let mut mid_line = false;
+    for g in got.iter().filter(|g| g.flags & PIECE_FIELDS != 0) {
+        assert_eq!(
+            g.flags & PIECE_CONTINUED != 0,
+            mid_line,
+            "{:?}",
+            String::from_utf8_lossy(&g.bytes)
+        );
+        mid_line = g.flags & PIECE_END_OF_FRAME == 0 && !g.bytes.ends_with(b"\n");
+    }
     // The server stamps its head with the second it answered in; that one field is not the
     // framer's, so it is taken out of both runs before they are compared.
     let mut frames = host.frame_log.clone();

@@ -88,3 +88,18 @@ fn the_field_block_keeps_order_and_duplicates_and_drops_hop_by_hop() {
     );
     assert!(engine::field_block(&http::HeaderMap::new()).is_empty());
 }
+
+/// A field block is cut only at a line's start or inside a value, never inside a name: the host
+/// refuses any continuation that does not extend a value.
+#[test]
+fn a_field_block_is_cut_only_where_a_continuation_extends_a_value() {
+    let block = b"date: Mon\r\nx-a: 1\r\n";
+    assert_eq!(field_cut(block, 64, false), block.len());
+    // Inside "date": back to the start; just past the colon: a value.
+    assert_eq!(field_cut(block, 3, false), 0);
+    assert_eq!(field_cut(block, 5, false), 5);
+    // Inside "x-a" on the second line: back to the line's start.
+    assert_eq!(field_cut(block, 13, false), 11);
+    // Opening inside a value, every byte up to the next name may go.
+    assert_eq!(field_cut(b"on\r\nx: 1\r\n", 5, true), 4);
+}

@@ -64,12 +64,13 @@ use busbar_contract::abi::sdk::transport::form_codes;
 use busbar_contract::abi::sdk::{self as sdk, HostBuf, Lent, Out, Safe, SafeSlot};
 use busbar_contract::abi::transport::{
     AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn, ConnOut, DialIn,
-    EmitIn, EncodeIn, FinishIn, FramePiece, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
-    ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, SettingDecl, ShutIn,
-    StatusRow, TransportTail, WriteIn, CANCEL_NOTHING_MOVED, FRAMING_STREAM, PIECE_END_OF_FRAME,
-    PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, ROLE_FRAMER, SETTING_COUNT,
-    SETTING_FLAG, SIDE_DIAL, STATUS_AT_FIRST_FRAME, STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT,
-    STATUS_OTHER, STATUS_SUCCESS, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    EmitIn, EncodeIn, FinishIn, FramePiece, FrameSpan, FramerOut, FramerSink, FramingIn, HeadSlots,
+    IngestIn, IoOut, ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, SettingDecl,
+    ShutIn, StatusRow, TransportTail, WriteIn, CANCEL_NOTHING_MOVED, FRAMING_STREAM,
+    PIECE_CONTINUED, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER,
+    PIECE_STREAM_FAILED, ROLE_FRAMER, SETTING_COUNT, SETTING_FLAG, SIDE_DIAL,
+    STATUS_AT_FIRST_FRAME, STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT, STATUS_OTHER, STATUS_SUCCESS,
+    YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 use busbar_contract::transport::registry::{
     facts as tfacts, status_ns, DEFAULT_REQUEST_BODY_MAX_BYTES, DEFAULT_REQUEST_TIMEOUT_SECS,
@@ -675,12 +676,48 @@ fn fill(f: &mut Framing, sink: Lent<'_, FramerSink>, o: &mut Out<'_, FramerOut>)
         (sink.frame(), sink.pieces());
     let mut frame_len = 0_usize;
     let mut n = 0_usize;
+    let mut head_slots: HostBuf<'_, HeadSlots> = sink.heads();
+    let mut heads = 0_usize;
     while n < pieces.cap() {
         let Some(piece) = f.pieces().front_mut() else {
             break;
         };
+        // A head's reason phrase rides its stream's head slots, in the answer that carries the
+        // head's first piece, its bytes in the frame ahead of the piece's. A host that takes no
+        // slots (or a frame too small ever to hold the phrase) is not handed one.
+        if let Some(reason) = piece.reason.clone() {
+            if head_slots.cap() == 0 || reason.len() > frame.cap() {
+                piece.reason = None;
+            } else if heads == head_slots.cap() || reason.len() > frame.cap() - frame_len {
+                break;
+            } else {
+                // The phrase fits the frame's room and `heads < heads_cap`.
+                frame.extend(&reason);
+                head_slots.push(HeadSlots {
+                    stream: piece.stream,
+                    reason: FrameSpan {
+                        offset: frame_len as u64,
+                        len: reason.len() as u64,
+                    },
+                    ..HeadSlots::default()
+                });
+                frame_len += reason.len();
+                heads += 1;
+                piece.reason = None;
+            }
+        }
         let room = frame.cap() - frame_len;
-        let take = piece.bytes.len().min(room);
+        // A field block is cut only where the host takes a continuation: at a line's start or
+        // inside a value. A name longer than the whole frame is cut anyway (the host refuses it by
+        // name) rather than never moving.
+        let take = if piece.fields {
+            match field_cut(&piece.bytes, room, piece.continued) {
+                0 if frame_len == 0 => piece.bytes.len().min(room),
+                cut => cut,
+            }
+        } else {
+            piece.bytes.len().min(room)
+        };
         if take == 0 && !piece.bytes.is_empty() {
             break;
         }
@@ -692,6 +729,9 @@ fn fill(f: &mut Framing, sink: Lent<'_, FramerSink>, o: &mut Out<'_, FramerOut>)
         }
         if piece.fields {
             flags |= PIECE_FIELDS;
+            if piece.continued {
+                flags |= PIECE_CONTINUED;
+            }
         }
         let mut fp = FramePiece {
             stream: piece.stream,
@@ -721,12 +761,15 @@ fn fill(f: &mut Framing, sink: Lent<'_, FramerSink>, o: &mut Out<'_, FramerOut>)
         if whole {
             f.pieces().pop_front();
         } else {
+            // The rest opens mid-line unless what was taken ended one.
+            piece.continued = !piece.bytes[..take].ends_with(b"\n");
             let rest = piece.bytes.slice(take..);
             piece.bytes = rest;
         }
     }
     y.frame_len = frame_len as u64;
     y.pieces_len = n as u32;
+    y.heads_len = heads as u32;
     let more = f.wire_pending() || !f.pieces().is_empty();
     let mut flags = 0;
     if more {
@@ -741,6 +784,30 @@ fn fill(f: &mut Framing, sink: Lent<'_, FramerSink>, o: &mut Out<'_, FramerOut>)
     }
     y.flags = flags;
     o.set(|x| &x.yielded, y);
+}
+
+/// How much of a field block's `bytes` a sink with `room` may take: all of it when it fits, else the
+/// furthest cut at a line's start or inside a value, so a continued piece always extends a value (the
+/// host refuses any other continuation). `in_value`: the bytes open inside a value. `0`: no cut fits.
+fn field_cut(bytes: &[u8], room: usize, in_value: bool) -> usize {
+    if bytes.len() <= room {
+        return bytes.len();
+    }
+    // 0 = a line's start, 1 = a name, 2 = a value.
+    let mut at = if in_value { 2 } else { 0 };
+    let mut best = 0;
+    for (i, &b) in bytes[..room].iter().enumerate() {
+        at = match (at, b) {
+            (0 | 1, b':') => 2,
+            (0 | 1, _) => 1,
+            (_, b'\n') => 0,
+            _ => 2,
+        };
+        if at != 1 {
+            best = i + 1;
+        }
+    }
+    best
 }
 
 fn class_of(code: u16) -> u8 {

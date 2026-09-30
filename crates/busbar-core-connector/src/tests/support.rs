@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::transport::{
-    FramePiece, FramerOut, FramerSink, PIECE_END_OF_FRAME, YIELD_ENDED, YIELD_HAS_DEADLINE,
-    YIELD_MORE,
+    FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, PIECE_END_OF_FRAME, YIELD_ENDED,
+    YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 
 use super::framer::{Call, Crossed, DoorFacts, FramerDoor};
@@ -30,6 +30,8 @@ pub struct Knobs {
     pub silence: Option<Duration>,
     /// `locate` answers this authority whatever the target.
     pub authority: Option<&'static str>,
+    /// `begin` yields one request head, `GET /v1` on stream `1`, as an accepted framing does.
+    pub head: bool,
 }
 
 #[derive(Default)]
@@ -200,6 +202,24 @@ impl FramerDoor for TestDoor {
                 let token = self.next.fetch_add(1, Ordering::Relaxed);
                 let mut st = State::default();
                 answer(&mut st, &i.sink, o, silence);
+                if self.knobs.head {
+                    let bytes = b"GET/v1";
+                    // SAFETY: host buffers; the frame holds at least these bytes, and a head is
+                    // written only where the host gave room for one.
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), i.sink.frame, bytes.len());
+                        if i.sink.heads_cap > 0 {
+                            i.sink.heads.write(HeadSlots {
+                                stream: 1,
+                                method: FrameSpan { offset: 0, len: 3 },
+                                target: FrameSpan { offset: 3, len: 3 },
+                                ..HeadSlots::default()
+                            });
+                        }
+                    }
+                    o.yielded.frame_len = bytes.len() as u64;
+                    o.yielded.heads_len = 1;
+                }
                 framings.insert(token, st);
                 o.framing = token;
                 ("begin", ok)

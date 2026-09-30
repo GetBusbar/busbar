@@ -14,9 +14,10 @@ use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::transport::{
     slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, ConnIn, ConnOut, DialIn,
-    EmitIn, EncodeIn, FinishIn, FramePiece, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
-    ListenIn, ListenOut, LocateIn, LocateOut, ReadIn, RefuseIn, ShutIn, WriteIn, CANCEL_COMPLETED,
-    CANCEL_NOTHING_MOVED, MAX_ADDR, PIECE_END_OF_FRAME, SLOTS, YIELD_MORE,
+    EmitIn, EncodeIn, FinishIn, FramePiece, FrameSpan, FramerOut, FramerSink, FramingIn, HeadSlots,
+    IngestIn, IoOut, ListenIn, ListenOut, LocateIn, LocateOut, ReadIn, RefuseIn, ShutIn, WriteIn,
+    CANCEL_COMPLETED, CANCEL_NOTHING_MOVED, MAX_ADDR, PIECE_END_OF_FRAME, PIECE_FIELDS, SLOTS,
+    YIELD_MORE,
 };
 
 use crate::dispatch::kinds::transport::Transport;
@@ -289,6 +290,64 @@ fn framer_pieces_one_past_the_cap_fault_before_any_slice() {
         assert_eq!(
             Transport::check(&a(&o, Outcome::Ready)),
             f(Rule::OverCap, "framer.pieces_len"),
+            "slot {slot}"
+        );
+    }
+}
+
+/// RED, through the one dispatcher: a field block carrying a pseudo-field (`:path`) is FAULT on
+/// every framer op, and an accepted stream's request head is held to its slots.
+#[test]
+fn a_pseudo_field_or_a_bad_request_head_faults_every_framer_op() {
+    let mut frame = *b":path: /\r\nx: 1\r\nGET/v1";
+    let mut pieces = [piece(0, 16)];
+    pieces[0].flags |= PIECE_FIELDS;
+    let mut heads = [HeadSlots {
+        stream: 0,
+        method: FrameSpan { offset: 16, len: 3 },
+        target: FrameSpan { offset: 19, len: 3 },
+        ..HeadSlots::default()
+    }];
+    let mut s = sink(&mut pieces);
+    s.frame = frame.as_mut_ptr();
+    s.frame_cap = frame.len();
+    s.heads = heads.as_mut_ptr();
+    s.heads_cap = heads.len();
+    for (slot, a) in &framer_ins(s) {
+        let mut o: FramerOut = z();
+        o.yielded.frame_len = 22;
+        o.yielded.pieces_len = 1;
+        o.yielded.heads_len = 1;
+        assert_eq!(
+            Transport::check(&a(&o, Outcome::Ready)),
+            f(Rule::Foreign, "framer.piece.pseudo_field"),
+            "slot {slot}"
+        );
+    }
+    pieces[0].offset = 10;
+    pieces[0].len = 6;
+    let s = {
+        let mut s = sink(&mut pieces);
+        s.frame = frame.as_mut_ptr();
+        s.frame_cap = frame.len();
+        s.heads = heads.as_mut_ptr();
+        s.heads_cap = heads.len();
+        s
+    };
+    for (slot, a) in &framer_ins(s) {
+        let mut o: FramerOut = z();
+        o.yielded.frame_len = 22;
+        o.yielded.pieces_len = 1;
+        o.yielded.heads_len = 1;
+        assert_eq!(
+            Transport::check(&a(&o, Outcome::Ready)),
+            Ok(()),
+            "slot {slot}"
+        );
+        o.yielded.frame_len = 21;
+        assert_eq!(
+            Transport::check(&a(&o, Outcome::Ready)),
+            f(Rule::SpanOutOfBounds, "framer.head.target"),
             "slot {slot}"
         );
     }

@@ -27,7 +27,7 @@ use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::transport::check::{
     check_accept, check_arrival, check_cancel, check_claims, check_composes_over, check_framer,
-    check_io, check_listen, check_locate, check_tail,
+    check_framer_fields, check_head_slots, check_io, check_listen, check_locate, check_tail,
 };
 use busbar_contract::abi::transport::{
     self, slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn,
@@ -276,5 +276,34 @@ fn framer(a: &Answer, sink: FramerSink) -> Result<(), Fault> {
         sink.wire_cap as u64,
         sink.frame_cap as u64,
         pieces_cap,
-    )
+    )?;
+    // Only a field block's bytes are read here; payload never is.
+    if pieces
+        .iter()
+        .any(|p| p.flags & transport::PIECE_FIELDS != 0)
+    {
+        // SAFETY: `sink.frame` is the host's own buffer of `frame_cap` bytes; `check_framer` held
+        // `frame_len` within it.
+        let frame = unsafe {
+            reported(
+                sink.frame.cast_const(),
+                o.yielded.frame_len,
+                sink.frame_cap as u64,
+                "framer.frame_len",
+            )
+        }?;
+        check_framer_fields(pieces, frame)?;
+    }
+    let heads_cap = sink.heads_cap as u64;
+    // SAFETY: `sink.heads` is the host's own buffer of `heads_cap` `HeadSlots`s (NULL with a
+    // capacity of `0` on a host that takes none).
+    let heads = unsafe {
+        reported(
+            sink.heads.cast_const(),
+            u64::from(o.yielded.heads_len),
+            heads_cap,
+            "framer.heads_len",
+        )
+    }?;
+    check_head_slots(o, heads, heads_cap)
 }
