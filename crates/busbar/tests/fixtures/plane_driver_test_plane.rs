@@ -766,7 +766,7 @@ extern "C" fn refusal(_: *mut c_void, input: *const c_void, out: *mut c_void) ->
         .concat();
         // The target crosses beside every refusal (one may precede `arrive`): this plane names it
         // when the target asks.
-        let target = unsafe { text(i.target) };
+        let target = text(i.target);
         if target == b"/target-echo" {
             body.extend_from_slice(b" for ");
             body.extend_from_slice(target);
