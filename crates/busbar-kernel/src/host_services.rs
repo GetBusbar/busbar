@@ -141,12 +141,9 @@ impl BlockingPool {
 
 impl Offload for BlockingPool {
     fn run(&self, job: Box<dyn FnOnce() + Send>) {
-        // The runtime panics when the OS will not give it a thread; the job is dropped unrun then,
-        // which answers FAILED, and the panic stops here.
-        let spawned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            drop(self.0.spawn_blocking(job));
-        }));
-        drop(spawned);
+        // A runtime shutting down drops the job unrun, which answers FAILED; so does one the OS
+        // will not give a thread, before the runtime's panic goes on.
+        drop(self.0.spawn_blocking(job));
     }
 }
 
