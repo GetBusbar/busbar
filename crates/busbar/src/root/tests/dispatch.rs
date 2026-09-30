@@ -5,9 +5,9 @@ use super::*;
 
 #[test]
 fn the_dispatcher_is_built_once_and_every_caller_shares_it() {
-    let a = boot(3);
+    let a = boot(3, crate::root::serve::LateServices::new());
     let b = dispatcher();
-    let c = boot(9);
+    let c = boot(9, crate::root::serve::LateServices::new());
     assert!(Arc::ptr_eq(&a, &b), "one dispatcher per process");
     assert!(Arc::ptr_eq(&a, &c), "the first build stands");
     assert!(a.workers() >= 1);
