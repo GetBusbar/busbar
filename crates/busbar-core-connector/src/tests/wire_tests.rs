@@ -319,3 +319,179 @@ fn a_reset_from_the_far_end_ends_the_frames_and_deregisters() {
         assert_eq!(w.live(), 0, "the reset connection is deregistered");
     });
 }
+
+/// The default dial budget is `DIAL_TIMEOUT` (ten seconds) and `with_dial_timeout` replaces it.
+#[test]
+fn the_dial_budget_defaults_to_the_constant_and_with_dial_timeout_replaces_it() {
+    assert_eq!(DIAL_TIMEOUT, Duration::from_secs(10));
+    let w = HostWire::new(Arc::new(TestDoor::identity("bytes"))).unwrap();
+    assert_eq!(w.dial_timeout, DIAL_TIMEOUT);
+    let w = w.with_dial_timeout(Duration::from_millis(250));
+    assert_eq!(w.dial_timeout, Duration::from_millis(250));
+}
+
+/// A dial to a non-routable address (TEST-NET-1) returns within a bound near the dial budget, not
+/// the ten-second default. Where the network hangs the handshake the error is `Timeout`; where the
+/// environment answers at once with an unreachable or refused error, the code maps that to `Closed`
+/// or `Refused` (no `Timeout`), so the test accepts exactly those three and still bounds the time.
+#[test]
+fn a_dial_to_a_non_routable_address_returns_within_the_bound_with_the_mapped_error() {
+    worker().block_on(async {
+        let w = HostWire::new(Arc::new(TestDoor::identity("bytes")))
+            .unwrap()
+            .with_dial_timeout(Duration::from_millis(200));
+        let started = std::time::Instant::now();
+        let r = tokio::time::timeout(Duration::from_secs(8), w.dial_authority("192.0.2.1:9"))
+            .await
+            .expect("the dial is bounded by its own budget, not left to the outer guard");
+        let took = started.elapsed();
+        assert!(
+            took < Duration::from_secs(5),
+            "the dial returned in {took:?}, far past a 200ms budget"
+        );
+        match r.map(|_| ()) {
+            Err(TransportError::Timeout) => {
+                assert!(
+                    took >= Duration::from_millis(150),
+                    "a Timeout came before the budget ran: {took:?}"
+                );
+            }
+            Err(TransportError::Closed | TransportError::Refused) => {}
+            other => panic!("unexpected dial outcome: {other:?}"),
+        }
+        assert_eq!(w.live(), 0, "a failed dial leaves no connection behind");
+    });
+}
+
+/// A Unit 0 refusal whose send fails (the write half is already shut) still finalises the
+/// connection, deregisters it and returns the send's error.
+#[test]
+fn a_unit0_refusal_whose_send_fails_still_finalises_and_returns_the_error() {
+    worker().block_on(async {
+        let w = wire();
+        let (_client, server, _l) = pair(&w).await;
+        let held = w.get(server.id()).expect("held");
+        held.socket()
+            .unwrap()
+            .get_ref()
+            .shutdown(std::net::Shutdown::Write)
+            .unwrap();
+        assert!(!held.closed.load(Ordering::Acquire));
+        let refusal = busbar_contract::unit::Refusal {
+            step: busbar_contract::unit::Step::Arrival,
+            reason: busbar_contract::unit::RefusalReason::CursorBudget,
+            retry_after_secs: None,
+            stream: None,
+            correlates: None,
+        };
+        let r = w
+            .unit0_refusal(
+                server.clone(),
+                None,
+                &refusal,
+                ScratchBytes::new(b"refused"),
+            )
+            .await;
+        assert_eq!(r, Err(TransportError::Closed), "the send's error returns");
+        assert!(held.closed.load(Ordering::Acquire), "finalised");
+        assert_eq!(w.live(), 1, "the refused connection is deregistered");
+        assert!(w.frames(server).next().await.is_none());
+    });
+}
+
+/// A detach while a reader still holds the socket returns None and puts the socket back: the
+/// connection is still registered and still carries bytes both ways, and detaches once released.
+#[test]
+fn detach_while_the_socket_is_held_elsewhere_returns_none_and_the_connection_still_works() {
+    worker().block_on(async {
+        let w = wire();
+        let (client, server, _l) = pair(&w).await;
+        let reader = w.get(server.id()).unwrap().socket().expect("socket");
+        assert!(
+            w.detach(&server).is_none(),
+            "a held socket is not handed up"
+        );
+        assert_eq!(w.live(), 2, "the connection stays registered");
+        assert!(
+            w.get(server.id()).unwrap().socket().is_some(),
+            "the socket was put back"
+        );
+        w.write(&client, StreamId(0), ScratchBytes::new(b"ping"))
+            .await
+            .unwrap();
+        assert_eq!(read_n(&w, &server, 4).await, b"ping");
+        w.write(&server, StreamId(0), ScratchBytes::new(b"pong"))
+            .await
+            .unwrap();
+        assert_eq!(read_n(&w, &client, 4).await, b"pong");
+        drop(reader);
+        assert!(w.detach(&server).is_some(), "handed up once released");
+    });
+}
+
+/// A read future dropped while pending loses nothing: the next read on the same connection gets
+/// the bytes that arrive afterwards, whole and in order.
+#[test]
+fn a_cancelled_pending_read_leaves_the_next_read_intact() {
+    worker().block_on(async {
+        let w = wire();
+        let (client, server, _l) = pair(&w).await;
+        w.write(&client, StreamId(0), ScratchBytes::new(b"first"))
+            .await
+            .unwrap();
+        assert_eq!(read_n(&w, &server, 5).await, b"first");
+        {
+            let mut frames = w.frames(server.clone());
+            let cancelled = tokio::time::timeout(Duration::from_millis(50), frames.next()).await;
+            assert!(cancelled.is_err(), "nothing to read: the read was pending");
+        }
+        w.write(&client, StreamId(0), ScratchBytes::new(b"second"))
+            .await
+            .unwrap();
+        w.write(&client, StreamId(0), ScratchBytes::new(b"-third"))
+            .await
+            .unwrap();
+        assert_eq!(read_n(&w, &server, 12).await, b"second-third");
+        assert_eq!(w.live(), 2, "the cancel did not close the connection");
+    });
+}
+
+/// Every frame the wire emits carries `meta.bytes` equal to its payload length and none exceeds
+/// one read chunk; a payload bigger than a chunk arrives as several frames that add up whole.
+#[test]
+fn emitted_frames_carry_their_payload_length_and_never_exceed_a_read_chunk() {
+    worker().block_on(async {
+        let w = wire();
+        let (client, server, _l) = pair(&w).await;
+        let payload: Vec<u8> = (0..=255_u8)
+            .cycle()
+            .take(3 * READ_CHUNK_BYTES + 123)
+            .collect();
+        w.write(&client, StreamId(0), ScratchBytes::new(&payload))
+            .await
+            .unwrap();
+        let mut frames = w.frames(server.clone());
+        let (mut got, mut count) = (Vec::new(), 0);
+        while got.len() < payload.len() {
+            let (_, f) = frames.next().await.expect("a frame").expect("no error");
+            assert_eq!(f.meta.bytes, f.bytes.as_slice().len() as u64);
+            assert!(f.bytes.as_slice().len() <= READ_CHUNK_BYTES);
+            got.extend_from_slice(f.bytes.as_slice());
+            count += 1;
+        }
+        assert!(
+            count >= 4,
+            "a payload of three chunks and more is several frames"
+        );
+        assert_eq!(got, payload);
+    });
+}
+
+/// The read chunk is sixteen KiB, and the Debug output names the wire and its key.
+#[test]
+fn the_read_chunk_is_sixteen_kib_and_debug_names_the_wire() {
+    assert_eq!(READ_CHUNK_BYTES, 16 * 1024);
+    let shown = format!("{:?}", *wire());
+    assert!(shown.contains("HostWire"), "{shown}");
+    assert!(shown.contains("bytes"), "{shown}");
+}
