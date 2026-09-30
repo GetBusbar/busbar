@@ -627,6 +627,12 @@ impl HostServices for KernelServices {
     }
 
     fn trust_sight(&self, caller: &Caller, counterparty: &str, hash: &str, later: Later) -> Ran {
+        // A durable record with no pool to write it on: nothing is judged.
+        let durable = match (self.demotions.as_ref(), self.pool.as_deref()) {
+            (Some(_), None) => return Ran::Now(Stored::refused(NO_POOL)),
+            (Some(d), Some(pool)) => Some((d, pool)),
+            (None, _) => None,
+        };
         let (sight, effect) =
             match self
                 .trust
@@ -638,30 +644,34 @@ impl HostServices for KernelServices {
                     return Ran::Now(Stored::refused(NOT_A_COUNTERPARTY))
                 }
             };
-        if let Some(d) = self.demotions.as_ref() {
-            let key = demotion_key(&caller.instance, counterparty);
-            let settle = |server: &str, state| {
-                crate::plane::quarantine::settle(&d.record, server, state);
-            };
-            match effect {
-                Effect::Demote => settle(&key, crate::trust::TrustState::Quarantined),
-                Effect::Clear => {
-                    settle(&key, crate::trust::TrustState::Approved);
-                    // The default instance also clears the unprefixed row it was replayed from.
-                    if caller.instance == d.default_instance {
-                        settle(counterparty, crate::trust::TrustState::Approved);
-                    }
-                }
-                Effect::None => {}
-            }
-        }
-        let _ = later;
-        Ran::Now(Stored::ready(match sight {
+        let answer = Stored::ready(match sight {
             Sight::New => svc::TRUST_NEW,
             Sight::Same => svc::TRUST_SAME,
             Sight::Drifted => svc::TRUST_DRIFTED,
             Sight::Quarantined => svc::TRUST_QUARANTINED,
-        }))
+        });
+        let Some((d, pool)) = durable.filter(|_| effect != Effect::None) else {
+            return Ran::Now(answer);
+        };
+        // The durable write runs on the pool; the sighting answers once it is written.
+        let record = Arc::clone(&d.record);
+        let key = demotion_key(&caller.instance, counterparty);
+        // The default instance also clears the unprefixed row it was replayed from.
+        let unprefixed = (caller.instance == d.default_instance).then(|| counterparty.to_string());
+        submit(pool, later, move || {
+            let settle = |server: &str, state| {
+                crate::plane::quarantine::settle(&record, server, state);
+            };
+            if effect == Effect::Demote {
+                settle(&key, crate::trust::TrustState::Quarantined);
+            } else {
+                settle(&key, crate::trust::TrustState::Approved);
+                if let Some(cp) = unprefixed {
+                    settle(&cp, crate::trust::TrustState::Approved);
+                }
+            }
+            answer
+        })
     }
 
     fn trust_due(&self, caller: &Caller) -> Stored {

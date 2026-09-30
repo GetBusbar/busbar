@@ -755,7 +755,9 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
 /// The rig's kernel after a restart: the same durable demotion record, nothing else.
 fn restarted(r: &Rig) -> KernelServices {
     let d = r.s.demotions.as_ref().unwrap();
-    services(Arc::default()).with_demotions(Arc::clone(&d.record), &d.default_instance)
+    services(Arc::default())
+        .with_demotions(Arc::clone(&d.record), &d.default_instance)
+        .with_pool(Arc::new(Inline))
 }
 
 /// One trust entry for `cp`, pinned to `fp` or unpinned.
@@ -958,4 +960,57 @@ fn a_store_call_the_pool_refuses_answers_failed_and_never_runs_inline() {
     let s = run(|l| s.records_get(&caller("inst"), "approval", b"k", l));
     assert_eq!((s.outcome, s.error), (Outcome::Failed, POOL_REFUSED));
     assert_eq!(gauge.most.load(Ordering::SeqCst), 0);
+}
+
+/// Holds every job until the test runs it.
+#[derive(Default)]
+struct Held(Mutex<Vec<Box<dyn FnOnce() + Send>>>);
+
+impl Held {
+    fn drain(&self) -> usize {
+        let jobs = std::mem::take(&mut *self.0.lock().unwrap());
+        let n = jobs.len();
+        jobs.into_iter().for_each(|job| job());
+        n
+    }
+}
+
+impl Offload for Arc<Held> {
+    fn run(&self, job: Box<dyn FnOnce() + Send>) {
+        self.0.lock().unwrap().push(job);
+    }
+}
+
+#[test]
+fn a_demotion_is_written_on_the_pool_and_the_sighting_answers_after_it() {
+    let r = rig();
+    let held = Arc::new(Held::default());
+    let s = restarted(&r).with_pool(Arc::new(Arc::clone(&held)));
+    s.admit("inst", trusting(Some("fp")));
+    let (slot, later) = recorder();
+    let ran = s.trust_sight(&caller("inst"), "cp", "moved", later);
+    // Nothing is written, nor answered, on the calling thread.
+    assert!(matches!(ran, Ran::Later));
+    assert!(slot.lock().unwrap().is_none());
+    assert!(r.s.demotions.as_ref().unwrap().record.list().is_empty());
+    assert_eq!(held.drain(), 1);
+    assert_eq!(
+        slot.lock().unwrap().take().unwrap().value,
+        svc::TRUST_DRIFTED
+    );
+    assert_eq!(r.s.demotions.as_ref().unwrap().record.list().len(), 1);
+    // A sighting with nothing to write answers at once.
+    let s2 = run(|l| s.trust_sight(&caller("inst"), "cp", "moved", l));
+    assert_eq!(s2.value, svc::TRUST_QUARANTINED);
+    assert_eq!(held.drain(), 0);
+}
+
+#[test]
+fn a_durable_record_with_no_pool_judges_nothing() {
+    let r = rig();
+    let d = r.s.demotions.as_ref().unwrap();
+    let s = services(Arc::default()).with_demotions(Arc::clone(&d.record), "legacy");
+    s.admit("inst", trusting(Some("fp")));
+    let a = run(|l| s.trust_sight(&caller("inst"), "cp", "moved", l));
+    assert_eq!((a.outcome, a.error), (Outcome::Refused, NO_POOL));
 }
