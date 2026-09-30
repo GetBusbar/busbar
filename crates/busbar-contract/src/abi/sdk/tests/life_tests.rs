@@ -79,12 +79,23 @@ impl SafeSlot for Resolve {
     type State = Held<Echo>;
     fn call(
         i: Instance<'_, Held<Echo>>,
-        _: Lent<'_, ResolveIn>,
+        input: Lent<'_, ResolveIn>,
         mut out: Out<'_, ResolveOut>,
     ) -> Outcome {
         let Some(h) = i.get() else {
             return Outcome::Fault;
         };
+        if h.life().0 == b"park" {
+            // The parking probe: on a ticket it parks and pends; on none it reports how many
+            // tickets hold parked state (in `error_kind`).
+            let ticket = input.head.ticket;
+            if !ticket.is_none() {
+                h.park(ticket, 1_u64);
+                return Outcome::Pending;
+            }
+            out.set(|o| &o.error_kind, h.parked_count() as u32);
+            return Outcome::Ready;
+        }
         out.lease_secret(|o| &o.secret, h.leases(), h.life().0.clone(), BLOB_OCTETS);
         Outcome::Ready
     }
@@ -428,4 +439,59 @@ fn validate_defaults_to_the_object_check_and_a_kind_may_answer_its_own_words() {
         Some("worded-hook: invalid plugin config: expected an object")
     );
     assert_eq!(worded.outcome(), Outcome::Failed);
+}
+
+fn resolve_on(inst: *mut c_void, ticket: Ticket) -> (Outcome, u32) {
+    let mut input: ResolveIn = zeroed();
+    input.head = in_head::<ResolveIn>(crate::abi::secret::slot::RESOLVE);
+    input.head.ticket = ticket;
+    let mut out: ResolveOut = zeroed();
+    out.head = out_head::<ResolveOut>();
+    let o = call(table().resolve, inst, &input, &mut out);
+    (o, out.error_kind)
+}
+
+#[test]
+fn state_parked_on_a_ticket_is_dropped_by_its_cancel() {
+    let parked = Ticket {
+        slot: 9,
+        generation: 1,
+    };
+    let (_, inst, _) = open(b"park", &[]);
+    assert_eq!(resolve_on(inst, parked).0, Outcome::Pending);
+    assert_eq!(resolve_on(inst, Ticket::NONE), (Outcome::Ready, 1));
+    let mut ci: CancelIn = zeroed();
+    ci.head = in_head::<CancelIn>(slot::CANCEL);
+    ci.ticket = parked;
+    let mut co: CancelOut = zeroed();
+    co.head = out_head::<CancelOut>();
+    assert_eq!(
+        call(table().head.cancel, inst, &ci, &mut co),
+        Outcome::Ready
+    );
+    assert_eq!(co.disposition, DISPOSITION);
+    assert_eq!(
+        resolve_on(inst, Ticket::NONE),
+        (Outcome::Ready, 0),
+        "the cancel dropped it"
+    );
+    assert_eq!(close(inst), Outcome::Ready);
+}
+
+#[test]
+fn a_parked_state_is_taken_back_by_its_own_type_only() {
+    let h = Held::new(Echo(Vec::new()), None);
+    let t = Ticket {
+        slot: 1,
+        generation: 2,
+    };
+    h.park(t, 5_u32);
+    assert!(
+        h.resume::<String>(t).is_none(),
+        "another type leaves it parked"
+    );
+    assert_eq!(h.parked_count(), 1);
+    assert_eq!(h.resume::<u32>(t).as_deref(), Some(&5));
+    assert_eq!(h.parked_count(), 0);
+    assert!(h.host().is_none());
 }
