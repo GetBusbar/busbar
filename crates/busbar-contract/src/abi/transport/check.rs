@@ -16,7 +16,7 @@ use super::{
     AcceptOut, ArrivalOut, Claim, ConnFacts, FramePiece, FramerOut, IoOut, ListenOut, LocateOut,
     SettingDecl, StatusRow, TransportTail, CANCEL_COMPLETED, CANCEL_NOTHING_MOVED,
     FACT_DECODES_PAYLOAD, FACT_SIGNS_NOTHING_AFTER_AUTH, FRAMING_DATAGRAM, FRAMING_STREAM,
-    MAX_ADDR, PIECE_END_OF_FRAME, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED,
+    MAX_ADDR, PIECE_END_OF_FRAME, PIECE_HAS_CODE, PIECE_FIELDS, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED,
     ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER,
     STATUS_SUCCESS, UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
@@ -217,10 +217,18 @@ pub fn check_framer(
         bits(
             u64::from(p.flags),
             u64::from(
-                PIECE_END_OF_FRAME | PIECE_HAS_CODE | PIECE_HAS_RETRY_AFTER | PIECE_STREAM_FAILED,
+                PIECE_END_OF_FRAME
+                    | PIECE_HAS_CODE
+                    | PIECE_HAS_RETRY_AFTER
+                    | PIECE_STREAM_FAILED
+                    | PIECE_FIELDS,
             ),
             "framer.piece.flags",
         )?;
+        // A field block is never a failure's reason.
+        if p.flags & PIECE_FIELDS != 0 && p.flags & PIECE_STREAM_FAILED != 0 {
+            return Err(fault(Rule::Contradiction, "framer.piece.fields_failed"));
+        }
         // An empty piece is a stream's end, so it completes its frame; a failed stream's piece is
         // its last, so it does too.
         if (p.len == 0 || p.flags & PIECE_STREAM_FAILED != 0) && p.flags & PIECE_END_OF_FRAME == 0 {

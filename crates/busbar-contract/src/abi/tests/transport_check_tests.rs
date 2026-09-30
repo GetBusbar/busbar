@@ -250,6 +250,55 @@ fn a_stream_end_or_failure_without_end_of_frame_is_fault() {
     );
 }
 
+/// A head is a FIELDS frame, framed even when empty (an empty fields piece is an empty head, not
+/// the stream's end); a field block is never a failure's reason.
+#[test]
+fn a_fields_piece_is_a_head_never_a_failure() {
+    let mut o: FramerOut = z();
+    o.yielded.frame_len = 4;
+    o.yielded.pieces_len = 1;
+    let mut head = piece(0, 4);
+    head.flags = PIECE_FIELDS | PIECE_END_OF_FRAME | PIECE_HAS_CODE;
+    assert_eq!(check_framer(Ready, &o, &[head], 8, 8, 8), Ok(()));
+    let mut empty = piece(4, 0);
+    empty.flags = PIECE_FIELDS | PIECE_END_OF_FRAME;
+    assert_eq!(check_framer(Ready, &o, &[empty], 8, 8, 8), Ok(()));
+    head.flags = PIECE_FIELDS | PIECE_STREAM_FAILED | PIECE_END_OF_FRAME;
+    assert_eq!(
+        check_framer(Ready, &o, &[head], 8, 8, 8),
+        f(Rule::Contradiction, "framer.piece.fields_failed")
+    );
+}
+
+/// The field block reads back line by line, in order, a repeated name on its own lines; a
+/// malformed tail ends the reading.
+#[test]
+fn a_field_block_reads_back_in_order() {
+    let block = b"x-b: 1\r\nx-b: 2\r\nx-a: v: w\r\nbroken";
+    let got: Vec<_> = fields::lines(block).collect();
+    assert_eq!(
+        got,
+        [
+            (&b"x-b"[..], &b"1"[..]),
+            (&b"x-b"[..], &b"2"[..]),
+            (&b"x-a"[..], &b"v: w"[..])
+        ]
+    );
+    assert_eq!(fields::lines(b"").count(), 0);
+}
+
+/// Hop-by-hop: the fixed list, and every field a `connection` field names, without case.
+#[test]
+fn hop_by_hop_is_the_list_and_what_connection_names() {
+    for name in fields::HOP_BY_HOP {
+        assert!(fields::hop_by_hop(name, []));
+    }
+    assert!(!fields::hop_by_hop("x-request-id", []));
+    let nominated: [&[u8]; 1] = [b"keep-alive, X-Hop"];
+    assert!(fields::hop_by_hop("x-hop", nominated));
+    assert!(!fields::hop_by_hop("x-request-id", nominated));
+}
+
 #[test]
 fn a_piece_outside_the_frame_or_with_unknown_codes_is_fault() {
     let mut o: FramerOut = z();

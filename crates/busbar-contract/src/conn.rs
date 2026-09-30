@@ -58,7 +58,11 @@ pub struct OpenDesc<'a> {
 pub enum PieceKind {
     /// Payload bytes.
     Body,
-    /// A head: the far end's fields (a response head, trailers), rendered as bytes.
+    /// A head: the far end's fields, as the field block
+    /// ([`crate::abi::transport::fields`]) renders them, hop-by-hop fields dropped. The far end's
+    /// HEAD is ONE fields frame, the answer's FIRST, carrying the status; it comes even when empty
+    /// (a `len` of `0`), so it always precedes the first [`PieceKind::Body`]. A fields frame after
+    /// the body is the far end's trailers.
     Fields,
     /// A hook's answer.
     HookReply,

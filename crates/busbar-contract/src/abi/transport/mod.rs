@@ -53,6 +53,14 @@
 //! A failed stream fails alone: its siblings on the connection carry on. [`YIELD_ENDED`] ends the
 //! CONNECTION, never one stream.
 //!
+//! FIELDS BY PIECE. A frame whose pieces carry [`PIECE_FIELDS`] is a FIELD BLOCK, never payload: the
+//! far end's HEAD (a response's head fields, a call's initial metadata) is ONE such frame, the
+//! stream's FIRST, carrying the status where the wire reports one there; it is framed even when no
+//! field is left in it (an EMPTY fields piece, with [`PIECE_END_OF_FRAME`], is an empty head, never
+//! the stream's end), so the head always precedes the first payload piece and a later fields frame
+//! is the far end's fields after its body (trailers). The block's bytes are [`fields`]' rendering;
+//! hop-by-hop fields never enter it: the framer drops them.
+//!
 //! EVERY REQUEST-PATH RESULT IS IN A HOST BUFFER (memory class (i)): a carrier's addresses and read
 //! bytes, a framer's wire bytes, frame bytes and pieces. The short-buffer rule is stated once,
 //! on [`OutHead`](crate::abi::mechanism::call::OutHead); this kind's cases:
@@ -358,6 +366,10 @@ pub const PIECE_HAS_RETRY_AFTER: u16 = 4;
 /// [`FramePiece::flags`]: the stream FAILED; the piece's bytes are the reason. Always with
 /// [`PIECE_END_OF_FRAME`]: it is the stream's last piece.
 pub const PIECE_STREAM_FAILED: u16 = 8;
+
+/// [`FramePiece::flags`]: the piece's bytes are a FIELD BLOCK (the far end's head or its trailers),
+/// never payload. Never with [`PIECE_STREAM_FAILED`].
+pub const PIECE_FIELDS: u16 = 16;
 
 /// [`FramerYield::flags`]: no frame follows on this connection.
 pub const YIELD_ENDED: u32 = 1;
