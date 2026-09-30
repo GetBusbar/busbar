@@ -323,6 +323,10 @@ pub const PIECE_FIELDS: u32 = 1 << 3;
 pub const EMIT_TO_FAR_END: u32 = 1;
 /// [`OnPieceOut::flags`]: the unit's reply is complete.
 pub const EMIT_DONE: u32 = 1 << 1;
+/// [`OnPieceOut::flags`]: the bytes this answer emits are ONE text message (a carrier with text and
+/// binary messages sends them as text). Only on an answer that emits at least one byte and
+/// completes its message (`more == 0`).
+pub const PIECE_OUT_TEXT: u32 = 1 << 2;
 
 /// [`OnPieceOut::verdict`]: no verdict; the walk's status table alone decides.
 pub const VERDICT_NONE: u32 = 0;
@@ -1107,6 +1111,20 @@ pub struct OnPieceIn {
     /// On an ATTEMPT piece: the operator's name for the pool the kernel picked `member` from (a
     /// member may shape its request differently in each pool it serves); absent otherwise.
     pub pool: AbiStr,
+    /// On every piece of a unit: the caller's opaque, stable, non-reversible per-principal
+    /// reference (lower-case hex), never the principal itself; absent when the node keeps no
+    /// signing material to derive it from.
+    pub caller_ref: AbiStr,
+    /// On every piece of a unit: the snapshot claim the unit arrived on (`ArriveIn::claim`).
+    pub claim: u32,
+    /// On every piece of a unit: the dialect `arrive` answered (`ArriveOut::dialect`).
+    pub dialect: u32,
+    /// With [`FROM_FAR_END`] on the answer's first piece: the far end's response head fields the
+    /// plane's need keeps (`Need::keep_response_headers`), in the far end's order, names lower-case;
+    /// no other response field ever crosses. NULL with `0` otherwise.
+    pub head_fields: *const Field,
+    /// How many.
+    pub head_fields_len: usize,
 }
 
 /// `on_piece`'s `out`.

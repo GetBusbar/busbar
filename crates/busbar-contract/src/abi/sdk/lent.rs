@@ -391,6 +391,7 @@ lend! {
         buf(units_buf, units_cap) -> UnitCount;
     }
     OnPieceIn {
+        list(head_fields, head_fields_len) -> PlaneField;
         buf(reply_buf, reply_cap) -> u8;
         buf(units_buf, units_cap) -> UnitCount;
         buf(records_buf, records_cap) -> RecordWrite;

@@ -1695,7 +1695,12 @@ fn compute_layout() -> String {
             member,
             attempt_no,
             _reserved,
-            pool
+            pool,
+            caller_ref,
+            claim,
+            dialect,
+            head_fields,
+            head_fields_len
         ]
     );
     record!(

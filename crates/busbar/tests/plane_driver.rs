@@ -362,6 +362,14 @@ fn the_crossing_is_under_a_microsecond() {
                     ptr: std::ptr::null(),
                     len: 0,
                 },
+                caller_ref: busbar_contract::abi::mechanism::call::AbiStr {
+                    ptr: std::ptr::null(),
+                    len: 0,
+                },
+                claim: 0,
+                dialect: 0,
+                head_fields: std::ptr::null(),
+                head_fields_len: 0,
             },
             zero_piece_out(),
         );

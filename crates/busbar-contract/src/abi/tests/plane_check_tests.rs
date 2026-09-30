@@ -224,7 +224,7 @@ fn a_streamed_reply_never_exceeds_its_buffer() {
 #[test]
 fn on_piece_unknown_flags_or_more_are_fault() {
     let mut o: OnPieceOut = z();
-    o.flags = 4;
+    o.flags = 8;
     assert_eq!(
         piece(&o, &[], &[], &[]),
         f(Rule::UnknownCode, "on_piece.flags")
@@ -235,6 +235,19 @@ fn on_piece_unknown_flags_or_more_are_fault() {
         piece(&o, &[], &[], &[]),
         f(Rule::UnknownCode, "on_piece.more")
     );
+}
+
+/// A text message is a whole message of at least one byte: PIECE_OUT_TEXT on an answer that
+/// emits nothing, or one that asks for more, is refused.
+#[test]
+fn a_text_message_is_whole_and_not_empty() {
+    let mut o: OnPieceOut = z();
+    o.flags = PIECE_OUT_TEXT;
+    assert_eq!(piece(&o, &[], &[], &[]), f(Rule::Contradiction, "on_piece.text"));
+    o.emitted = 3;
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+    o.more = 1;
+    assert_eq!(piece(&o, &[], &[], &[]), f(Rule::Contradiction, "on_piece.text"));
 }
 
 #[test]

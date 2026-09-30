@@ -266,6 +266,14 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
             ptr: std::ptr::null(),
             len: 0,
         },
+        caller_ref: AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        claim: 0,
+        dialect: 0,
+        head_fields: std::ptr::null(),
+        head_fields_len: 0,
         ..blank_in()
     };
     (input, blank_out())
