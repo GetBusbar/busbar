@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The host's UDP sockets — the DATAGRAM carrier. The host owns every OS socket; a plugin never
-//! binds one. The stream carriers (tcp, unix) are a separate path: a datagram has
+//! binds one. The stream carriers are a separate path: a datagram has
 //! a peer per read and no connection, so it is never folded into the stream socket types.
 //!
 //! One bound port serves every WebRTC association on it: each read answers the datagram AND the

@@ -209,7 +209,7 @@ pub enum SrtpProfile {
 }
 
 /// The DTLS-SRTP exporter's output (RFC 5764 §4.2): the profile and the keying material, zeroed
-/// on drop. The one secret the framer holds — it protects media, like the headers an http framer
+/// on drop. The one secret the framer holds — it protects media, like the headers a request framer
 /// sees.
 pub struct SrtpKeying {
     /// The negotiated profile.
