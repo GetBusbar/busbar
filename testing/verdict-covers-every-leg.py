@@ -18,6 +18,15 @@ So this is SET EQUALITY in both directions, not a floor and not a subset check:
 
 Plus a floor, because a workflow that parsed to two jobs would satisfy every equality above.
 
+THE FLOOR IS A BATTERY'S, NOT A REUSABLE WORKFLOW'S. A workflow whose ONLY trigger is
+`workflow_call` is not a battery: its status bubbles up into the CALLER's job, which is the
+aggregation point (.github/required-status-checks.md, "Reusable workflows"). plugin-conformance.yml
+is one: it runs the calling plugin repo's own `conformance` test target, which is one leg by
+construction. Such a workflow keeps every equality and read check above and is excused from the
+floor ONLY while a caller is found (a `uses:` reference under .github/, or plugin-ci.yml /
+xtask/src/fleet.rs naming it). The exemption is structural, never by name: a battery cannot dodge
+the floor by switching its trigger, because a callable nobody calls is floored like any battery.
+
 THE DENOMINATOR IS LEGS, NOT JOBS. Every rule above is about JOBS, and a battery's legs are not
 jobs: a battery that keeps its legs as `testing/<battery>/legs/<leg>.sh` files runs them through
 `--leg <name>` invocations inside jobs. A leg file that NO job invokes is not a job, so it is not in
@@ -87,6 +96,45 @@ def discover_batteries(root=ROOT):
 def claimed_batteries(text, batteries):
     """The batteries a workflow's text references as `testing/<battery>/`."""
     return {b for b in batteries if ("testing/%s/" % b) in text}
+
+
+def triggers(doc):
+    """The workflow's trigger names. PyYAML reads a bare `on:` key as the boolean True."""
+    on = doc.get("on", doc.get(True))
+    if isinstance(on, str):
+        return {on}
+    if isinstance(on, (list, dict)):
+        return set(on)
+    return set()
+
+
+def is_callable_only(doc):
+    return triggers(doc) == {"workflow_call"}
+
+
+# Where a reusable workflow's callers are named. `uses:` is the real call; plugin-ci.yml and
+# fleet.rs are where the plugin fleet names the reusable workflows every plugin repo takes.
+CALLER_NAMERS = (os.path.join(".github", "workflows", "plugin-ci.yml"),
+                 os.path.join("xtask", "src", "fleet.rs"))
+
+
+def callers_of(filename, root=ROOT):
+    """The files that call (or, for the fleet's own files, name) the reusable workflow `filename`."""
+    uses = re.compile(r"uses:\s*\S*\b%s\b" % re.escape(filename))
+    found = []
+    for path in sorted(glob.glob(os.path.join(root, ".github", "**", "*.yml"), recursive=True)):
+        if os.path.basename(path) == filename:
+            continue
+        with open(path) as fh:
+            if uses.search(fh.read()):
+                found.append(os.path.relpath(path, root))
+    for rel in CALLER_NAMERS:
+        path = os.path.join(root, rel)
+        if rel not in found and os.path.basename(path) != filename and os.path.exists(path):
+            with open(path) as fh:
+                if filename in fh.read():
+                    found.append(rel)
+    return found
 
 
 def _job_run_text(job):
@@ -189,8 +237,9 @@ def lint_orphans(batteries, claimed):
     return problems
 
 
-def lint_doc(doc, label, battery_legs=None):
-    """Return a list of problem strings for one parsed workflow document."""
+def lint_doc(doc, label, battery_legs=None, callers=None):
+    """Return a list of problem strings for one parsed workflow document. `callers` is the list of
+    files found calling this workflow; it matters only for a `workflow_call`-only workflow."""
     problems = []
     jobs = doc.get("jobs") or {}
     if VERDICT not in jobs:
@@ -203,11 +252,14 @@ def lint_doc(doc, label, battery_legs=None):
         needs = [needs]
     needs = set(needs)
 
-    if len(legs) < MIN_LEGS:
+    callable_only = is_callable_only(doc)
+    if len(legs) < MIN_LEGS and not (callable_only and callers):
         problems.append(
             "%s: FLOOR: the workflow declares only %d legs (minimum %d). Every equality below "
-            "would hold for a workflow that had been gutted, so the count is checked first."
-            % (label, len(legs), MIN_LEGS))
+            "would hold for a workflow that had been gutted, so the count is checked first.%s"
+            % (label, len(legs), MIN_LEGS,
+               " It is workflow_call-only, but no caller was found, so it is floored like a "
+               "battery." if callable_only else ""))
 
     for missing in sorted(legs - needs):
         problems.append(
@@ -269,6 +321,23 @@ def selftest():
         ("a gutted workflow below the leg floor",
          {"jobs": {"a": {}, "verdict": {"needs": ["a"], "steps": [{"run": "check a"}]}}}, 1),
     ]
+    # THE REUSABLE-WORKFLOW RULE. The floor is excused only for a workflow_call-only workflow that
+    # somebody calls, and nothing else is excused with it.
+    one_leg = {"a": {}, "verdict": {"needs": ["a"], "steps": [{"run": "check a"}]}}
+    called = ["caller.yml"]
+    reusable_cases = [
+        ("(a) a called workflow_call-only workflow with one judged leg",
+         {True: {"workflow_call": None}, "jobs": one_leg}, called, 0),
+        ("(b) a called workflow_call-only workflow with an unjudged leg",
+         {True: {"workflow_call": None}, "jobs": dict(one_leg, b={})}, called, "UNJUDGED LEG"),
+        ("(c) a workflow_run battery with one leg, callers or not",
+         {True: {"workflow_run": None}, "jobs": one_leg}, called, "FLOOR"),
+        ("(d) a workflow_call-only workflow nobody calls",
+         {True: {"workflow_call": None}, "jobs": one_leg}, [], "FLOOR"),
+        ("(e) a callable that is also dispatchable is a battery",
+         {True: {"workflow_call": None, "workflow_dispatch": None}, "jobs": one_leg}, called,
+         "FLOOR"),
+    ]
     # THE LEG DENOMINATOR. Each of these workflows is a clean, COMPLETE job set -- every check above
     # passes on it -- so the only thing that can refuse it is the leg-based rule. A lint whose
     # denominator is jobs accepts every one of them.
@@ -324,6 +393,36 @@ def selftest():
             failures += 1
         else:
             print("  ok: %s -> %s" % (name, "refused" if got else "accepted"))
+    for name, doc, callers, want_problems in reusable_cases:
+        got = lint_doc(doc, "selftest", None, callers)
+        if want_problems and not got:
+            print("  MISS: %s was accepted" % name)
+            failures += 1
+        elif isinstance(want_problems, str) and not any(want_problems in g for g in got):
+            print("  MISS: %s was refused, but not as %s (%s)" % (name, want_problems, got[0]))
+            failures += 1
+        elif not want_problems and got:
+            print("  MISS: %s was refused (%s)" % (name, got[0]))
+            failures += 1
+        else:
+            print("  ok: %s -> %s" % (name, "refused" if got else "accepted"))
+    # The caller detector reads a real `uses:` line and ignores a workflow naming itself.
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        wf = os.path.join(tmp, ".github", "workflows")
+        os.makedirs(wf)
+        with open(os.path.join(wf, "reuse.yml"), "w") as fh:
+            fh.write("# reuse.yml calls nothing\non: workflow_call\n")
+        with open(os.path.join(wf, "other.yml"), "w") as fh:
+            fh.write("jobs:\n  x:\n    uses: ./.github/workflows/other-thing.yml\n")
+        if callers_of("reuse.yml", tmp):
+            print("  MISS: callers_of found a caller where there is none")
+            failures += 1
+        with open(os.path.join(wf, "caller.yml"), "w") as fh:
+            fh.write("jobs:\n  x:\n    uses: GetBusbar/busbar/.github/workflows/reuse.yml@abc\n")
+        if callers_of("reuse.yml", tmp) != [os.path.join(".github", "workflows", "caller.yml")]:
+            print("  MISS: callers_of did not see a `uses:` caller")
+            failures += 1
     # The battery-level rule: a legs/ directory no workflow claims is refused; one claimed is not.
     for name, batteries, claimed, want in [
         ("an orphan battery no workflow claims", four, set(), 1),
@@ -344,7 +443,7 @@ def selftest():
     if failures:
         sys.stderr.write("\n%d selftest fixture(s) did not behave as declared\n" % failures)
         return 1
-    print("selftest: %d fixture(s) passed" % (len(fixtures) + 3))
+    print("selftest: %d fixture(s) passed" % (len(fixtures) + len(reusable_cases) + 5))
     return 0
 
 
@@ -368,8 +467,10 @@ def main(argv):
         with open(path) as fh:
             mine = claimed_batteries(fh.read(), batteries)
         claimed |= mine
-        problems += lint_doc(load(path), os.path.basename(path),
-                             {b: batteries[b] for b in mine})
+        doc = load(path)
+        callers = callers_of(os.path.basename(path)) if is_callable_only(doc) else None
+        problems += lint_doc(doc, os.path.basename(path),
+                             {b: batteries[b] for b in mine}, callers)
     # Only the full discovered set can say a battery is claimed by NO workflow; a hand-picked
     # subset of paths legitimately leaves the others' batteries unclaimed.
     if not explicit:
@@ -387,6 +488,9 @@ def main(argv):
         legs = sorted(set(doc.get("jobs") or {}) - {VERDICT})
         print("%s: %d legs, every one depended on and every one read."
               % (os.path.basename(path), len(legs)))
+        if is_callable_only(doc) and len(legs) < MIN_LEGS:
+            print("  reusable (workflow_call only), below the floor, aggregated by its caller(s): %s"
+                  % ", ".join(callers_of(os.path.basename(path))))
         for leg in legs:
             print("  %s" % leg)
         with open(path) as fh:
