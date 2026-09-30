@@ -16,7 +16,7 @@
 //!   250 ms, until an accept succeeds.
 
 use std::future::Future;
-use std::net::{SocketAddr, TcpListener};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -67,9 +67,35 @@ pub struct Accepted {
     pub peer: SocketAddr,
 }
 
-/// One listener, bound for one inbound need.
+/// One socket a stream listener admitted ([`Listening::poll_accept_stream`]).
+#[derive(Debug)]
+pub struct Handed {
+    /// The socket, non-blocking, on no reactor.
+    pub stream: TcpStream,
+    /// The far end.
+    pub peer: SocketAddr,
+    /// The listener's slot, freed when dropped.
+    pub slot: Slot,
+}
+
+/// The root's stream listener as the kernel's accept source: each admitted socket, with its slot
+/// held for as long as the kernel serves it.
+impl busbar_kernel::tls::Admits for Listening {
+    async fn admit(&mut self) -> busbar_kernel::tls::Admitted {
+        let h = futures::future::poll_fn(|cx| self.poll_accept_stream(cx)).await;
+        busbar_kernel::tls::Admitted {
+            stream: h.stream,
+            peer: h.peer,
+            hold: Some(Box::new(h.slot)),
+        }
+    }
+}
+
+/// One listener: bound for one inbound need (framed), or for one of the root's own binds (a
+/// stream listener, [`Listening::bind_stream`]).
 pub struct Listening {
-    door: Arc<dyn FramerDoor>,
+    /// The entry every connection is framed through; `None` = a stream listener.
+    door: Option<Arc<dyn FramerDoor>>,
     sock: Registered<TcpListener>,
     local: SocketAddr,
     accept: Accept,
@@ -82,7 +108,7 @@ pub struct Listening {
 impl std::fmt::Debug for Listening {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Listening")
-            .field("entry", &self.door.facts().name)
+            .field("entry", &self.door.as_ref().map(|d| d.facts().name.clone()))
             .field("local", &self.local)
             .finish_non_exhaustive()
     }
@@ -102,16 +128,35 @@ impl Listening {
         alpn: Vec<Vec<u8>>,
         limits: AcceptLimits,
     ) -> std::io::Result<Self> {
+        let mut l = Self::bind_stream(bind, limits)?;
+        l.door = Some(door);
+        l.accept.tls = tls;
+        l.accept.alpn = alpn;
+        Ok(l)
+    }
+
+    /// A STREAM LISTENER, for the root's own, NON-PLANE binds only (its data door and its admin
+    /// surface): bind `bind` (`ip:port`) on the calling worker's reactor, bounded by `limits`'
+    /// connection cap and 1.5.5's accept backoff, and hand each admitted socket up as it arrived
+    /// ([`Listening::poll_accept_stream`]) to be secured and served by the kernel's hardened HTTP
+    /// loop. The admin surface keeps it; the data door's use is TRANSITIONAL: once the plane
+    /// driver serves the data door (K1 U6/U7), its connections are framed ([`Listening::bind`])
+    /// and this hand-up stops being its path.
+    ///
+    /// # Errors
+    ///
+    /// The address does not parse or cannot be bound, or the caller is not on a worker.
+    pub fn bind_stream(bind: &str, limits: AcceptLimits) -> std::io::Result<Self> {
         let l = socket::listen(bind)?;
         let local = l.local_addr()?;
         let sock = reactor::register(l)?;
         Ok(Self {
-            door,
+            door: None,
             sock,
             local,
             accept: Accept {
-                tls,
-                alpn,
+                tls: None,
+                alpn: Vec::new(),
                 handshake_timeout: limits.handshake_timeout,
             },
             max_conns: limits.max_conns,
@@ -140,6 +185,33 @@ impl Listening {
     ///
     /// The accepted socket could not be composed (it is dropped; the listener stays up).
     pub fn poll_accept(&mut self, cx: &mut Context<'_>) -> Poll<Result<Accepted, Failure>> {
+        let Some(door) = self.door.clone() else {
+            return Poll::Ready(Err(Failure::Refused(
+                "a stream listener frames nothing".into(),
+            )));
+        };
+        let (stream, peer, slot) = std::task::ready!(self.poll_socket(cx));
+        Poll::Ready(
+            Connection::accepted(door, stream, &self.accept, Some(slot))
+                .map(|conn| Accepted { conn, peer }),
+        )
+    }
+
+    /// The next admitted socket of a STREAM listener ([`Listening::bind_stream`]), as it arrived:
+    /// non-blocking, on no reactor, with the listener's slot for it. For the root's own non-plane
+    /// binds only; a plane's connections are framed ([`Listening::poll_accept`]).
+    pub fn poll_accept_stream(&mut self, cx: &mut Context<'_>) -> Poll<Handed> {
+        loop {
+            let (stream, peer, slot) = std::task::ready!(self.poll_socket(cx));
+            if stream.set_nonblocking(true).is_ok() {
+                return Poll::Ready(Handed { stream, peer, slot });
+            }
+        }
+    }
+
+    /// The next socket under the cap: one past it is accepted and closed at once, no byte
+    /// written; an accept error backs off as 1.5.5's did.
+    fn poll_socket(&mut self, cx: &mut Context<'_>) -> Poll<(TcpStream, SocketAddr, Slot)> {
         loop {
             if let Some(sleep) = self.sleep.as_mut() {
                 std::task::ready!(sleep.as_mut().poll(cx));
@@ -154,15 +226,7 @@ impl Listening {
                         drop(stream);
                         continue;
                     };
-                    return Poll::Ready(
-                        Connection::accepted(
-                            Arc::clone(&self.door),
-                            stream,
-                            &self.accept,
-                            Some(slot),
-                        )
-                        .map(|conn| Accepted { conn, peer }),
-                    );
+                    return Poll::Ready((stream, peer, slot));
                 }
                 Poll::Ready(Err(e)) => {
                     if let Some(d) = self.next_delay(&e) {

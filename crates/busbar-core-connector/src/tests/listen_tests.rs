@@ -284,3 +284,51 @@ fn accept_errors_back_off_as_1_5_5s_did() {
         assert_eq!(l.next_delay(&emfile), Some(Duration::from_millis(5)));
     });
 }
+
+/// A STREAM listener (the root's own binds) hands each admitted socket up as it arrived, bytes
+/// untouched and nothing framed; the connection past the cap is closed without a byte; the slot
+/// the kernel holds frees when the served connection ends.
+#[test]
+fn a_stream_listener_hands_up_the_socket_as_it_arrived_under_the_cap() {
+    use busbar_kernel::tls::Admits;
+    worker().block_on(async {
+        let mut l = Listening::bind_stream(
+            "127.0.0.1:0",
+            AcceptLimits {
+                max_conns: 1,
+                ..AcceptLimits::default()
+            },
+        )
+        .unwrap();
+        let addr = l.local_addr();
+        let mut c = Client::connect(addr).await.unwrap();
+        c.write_all(b"GET / HTTP/1.1\r\n").await.unwrap();
+        let a = l.admit().await;
+        assert_eq!(a.peer.ip(), addr.ip());
+        assert_eq!(l.live(), 1, "the kernel holds the slot while it serves");
+        let mut s = tokio::net::TcpStream::from_std(a.stream).unwrap();
+        let mut got = [0_u8; 16];
+        s.read_exact(&mut got).await.unwrap();
+        assert_eq!(
+            &got, b"GET / HTTP/1.1\r\n",
+            "the bytes as the client sent them"
+        );
+        // One past the cap: accepted and closed, never admitted.
+        let mut past = Client::connect(addr).await.unwrap();
+        let polled = tokio::time::timeout(Duration::from_millis(300), l.admit()).await;
+        assert!(polled.is_err(), "the one past the cap is never admitted");
+        let mut buf = [0_u8; 4];
+        let n = tokio::time::timeout(Duration::from_secs(2), past.read(&mut buf))
+            .await
+            .expect("closed at once")
+            .unwrap_or(0);
+        assert_eq!(n, 0);
+        drop(a.hold);
+        assert_eq!(l.live(), 0, "the slot frees with the served connection");
+        let framed = futures::future::poll_fn(|cx| std::task::Poll::Ready(l.poll_accept(cx))).await;
+        assert!(
+            matches!(framed, std::task::Poll::Ready(Err(_))),
+            "a stream listener frames nothing"
+        );
+    });
+}
