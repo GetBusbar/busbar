@@ -763,13 +763,20 @@ async fn a_text_message_reaches_the_caller_as_text() {
             let units = r
                 .driver
                 .unit(&steps, &far, &caller, arrival("/call", b"p"), 0);
-            assert!(matches!(drive(&units).await, Outcome::Completed), "{way:?} {member}");
+            assert!(
+                matches!(drive(&units).await, Outcome::Completed),
+                "{way:?} {member}"
+            );
             let (t, w) = (
                 caller.texts.load(Ordering::SeqCst),
                 caller.writes.load(Ordering::SeqCst),
             );
             assert!(w > 0, "{way:?} {member}");
-            assert_eq!(t == w, texts, "{way:?} {member}: {t} of {w} writes were text");
+            assert_eq!(
+                t == w,
+                texts,
+                "{way:?} {member}: {t} of {w} writes were text"
+            );
         }
     }
 }

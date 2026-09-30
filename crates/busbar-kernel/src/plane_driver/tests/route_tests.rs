@@ -74,7 +74,10 @@ fn every_piece_lends_the_units_claim_dialect_and_caller_reference() {
 fn only_an_attempt_names_its_member_and_pool() {
     let mut b = bufs(0);
     let (i, _) = frame(&mut b, &piece(FROM_KERNEL, 1, false), 9);
-    assert_eq!((text(i.member), text(i.pool)), (b"m1".to_vec(), b"p1".to_vec()));
+    assert_eq!(
+        (text(i.member), text(i.pool)),
+        (b"m1".to_vec(), b"p1".to_vec())
+    );
     let (i, _) = frame(&mut b, &piece(FROM_CALLER, 0, false), 9);
     assert!(text(i.member).is_empty() && text(i.pool).is_empty());
 }
@@ -86,7 +89,10 @@ fn only_the_answers_first_piece_lends_the_kept_head() {
     assert_eq!(i.head_fields_len, 1);
     // SAFETY: one field in `b.head_list`.
     let f = unsafe { *i.head_fields };
-    assert_eq!((text(f.name), text(f.value)), (b"retry-after".to_vec(), b"7".to_vec()));
+    assert_eq!(
+        (text(f.name), text(f.value)),
+        (b"retry-after".to_vec(), b"7".to_vec())
+    );
     let (i, _) = frame(&mut b, &piece(FROM_FAR_END, 0, false), 9);
     assert!(i.head_fields.is_null() && i.head_fields_len == 0);
 }
@@ -106,6 +112,8 @@ fn the_caller_reference_is_never_the_principal() {
     let key = busbar_kernel_identity::caller_ref::CallerRefKey::derive(b"node signing material");
     let r = key.caller_ref("acct:alice@example.com");
     assert_eq!(r.len(), 64);
-    assert!(r.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    assert!(r
+        .bytes()
+        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
     assert!(!r.contains("alice"));
 }
