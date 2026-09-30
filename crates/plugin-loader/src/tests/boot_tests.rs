@@ -30,6 +30,7 @@ fn cand(kind: KindCode, name: &str, aliases: &[&str], sugar: &[&str], verbs: &[&
         sugar: sugar.iter().map(|s| s.to_string()).collect(),
         verbs: verbs.iter().map(|s| s.to_string()).collect(),
         schemes: Vec::new(),
+        needs: Vec::new(),
         stated: Vec::new(),
         origin: Origin::Dropped {
             file: format!("{name}.tar.gz"),
@@ -521,4 +522,215 @@ fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
         None,
     )
     .expect("the well-formed plane binds");
+}
+
+// ── INBOUND: listener needs and their binds ──
+
+fn need(direction: u32, transport: &str, target_from: &str) -> ReadNeed {
+    ReadNeed {
+        direction,
+        egress_class: 0,
+        transport: transport.into(),
+        auth: String::new(),
+        target_from: target_from.into(),
+        trust_from: String::new(),
+        details: busbar_contract::abi::mechanism::rendering::ReadBlob {
+            fmt: 0,
+            flags: 0,
+            bytes: Vec::new(),
+        },
+    }
+}
+
+fn listening(kind: KindCode, name: &str, verbs: &[&str], needs: Vec<ReadNeed>) -> Candidate {
+    Candidate {
+        needs,
+        ..cand(kind, name, &[], &[], verbs)
+    }
+}
+
+fn sel(candidate: usize, instance: &str) -> Selected {
+    Selected {
+        candidate,
+        instance: instance.into(),
+    }
+}
+
+use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+
+/// Every selected instance's INBOUND need is collected with the bind its settings block states — a
+/// plane's from its verb's section, an export's from its entry's `settings` — the TLS block kept raw
+/// (secret references unresolved), the cap defaulted; outbound needs and unselected plugins are not.
+#[test]
+fn inbound_needs_are_collected_with_their_binds_from_instance_settings() {
+    let d = doc(r#"{
+        "agents": {"ingress": {"grpc": {"listen": "127.0.0.1:9443",
+            "tls": {"cert": {"file": "/c.pem"}, "key": {"env": "K"}}}}},
+        "export": {"scrape": {"module": "prom",
+            "settings": {"serve": {"listen": "0.0.0.0:9100", "max_conns": 8}}}}
+    }"#);
+    let cands = vec![
+        listening(
+            KindCode::Plane,
+            "a2a",
+            &["agents"],
+            vec![
+                need(DIRECTION_OUTBOUND, "https", ""),
+                need(DIRECTION_INBOUND, "grpc", "ingress.grpc"),
+            ],
+        ),
+        listening(
+            KindCode::Export,
+            "prom",
+            &[],
+            vec![need(DIRECTION_INBOUND, "http", "serve")],
+        ),
+        listening(
+            KindCode::Plane,
+            "unused",
+            &["tools"],
+            vec![need(DIRECTION_INBOUND, "http", "nowhere")],
+        ),
+    ];
+    let got = inbound(&d, &cands, &[sel(0, "agents"), sel(1, "scrape")], &[]).unwrap();
+    assert_eq!(got.len(), 2);
+    assert_eq!(got[0].instance, "agents");
+    assert_eq!(got[0].need, 1, "the need's index in its Statement");
+    assert_eq!(got[0].transport, "grpc");
+    assert_eq!(got[0].at, "agents.ingress.grpc");
+    assert_eq!(got[0].listen, "127.0.0.1:9443".parse().unwrap());
+    assert_eq!(got[0].max_conns, DEFAULT_MAX_CONNS);
+    assert_eq!(
+        got[0].tls,
+        Some(doc(r#"{"cert": {"file": "/c.pem"}, "key": {"env": "K"}}"#)),
+        "the TLS block stays raw: its references resolve at stage 3f"
+    );
+    assert_eq!(got[1].at, "export.scrape.settings.serve");
+    assert_eq!(got[1].max_conns, 8);
+    assert_eq!(got[1].tls, None);
+}
+
+/// RED: an inbound need with no block, no `listen`, a bad address or a bad cap is refused, naming
+/// the setting.
+#[test]
+fn red_an_inbound_need_without_a_usable_bind_is_refused_by_its_setting() {
+    let one = |settings: &str, target_from: &str| {
+        let d = doc(&format!(r#"{{"agents": {settings}}}"#));
+        let c = vec![listening(
+            KindCode::Plane,
+            "a2a",
+            &["agents"],
+            vec![need(DIRECTION_INBOUND, "grpc", target_from)],
+        )];
+        inbound(&d, &c, &[sel(0, "agents")], &[]).unwrap_err()
+    };
+    assert!(one("{}", "").contains("names no settings block"));
+    assert_eq!(
+        one("{}", "ingress"),
+        "agents.ingress: not set; an inbound listener needs `listen`"
+    );
+    assert_eq!(
+        one(r#"{"ingress": {}}"#, "ingress"),
+        "agents.ingress.listen: not set"
+    );
+    assert_eq!(
+        one(r#"{"ingress": {"listen": "localhost"}}"#, "ingress"),
+        "agents.ingress.listen: `localhost` is not an ip:port address"
+    );
+    assert_eq!(
+        one(
+            r#"{"ingress": {"listen": "127.0.0.1:1", "max_conns": 0}}"#,
+            "ingress"
+        ),
+        "agents.ingress.max_conns: not a positive whole number"
+    );
+}
+
+/// RED: two listeners on one address, or a listener on an address the host's own listener takes
+/// (the root `listen`), are refused before anything binds; an unspecified IP takes the port on
+/// every address.
+#[test]
+fn red_two_listeners_on_one_address_are_refused() {
+    let d = doc(r#"{
+        "agents": {"a": {"listen": "0.0.0.0:9000"}, "b": {"listen": "127.0.0.1:9000"}}
+    }"#);
+    let c = vec![listening(
+        KindCode::Plane,
+        "a2a",
+        &["agents"],
+        vec![
+            need(DIRECTION_INBOUND, "grpc", "a"),
+            need(DIRECTION_INBOUND, "http", "b"),
+        ],
+    )];
+    assert_eq!(
+        inbound(&d, &c, &[sel(0, "agents")], &[]).unwrap_err(),
+        "agents.b.listen: 127.0.0.1:9000 is already taken by `agents.a.listen`"
+    );
+    let d = doc(r#"{"agents": {"a": {"listen": "127.0.0.1:8080"}}}"#);
+    let c = vec![listening(
+        KindCode::Plane,
+        "a2a",
+        &["agents"],
+        vec![need(DIRECTION_INBOUND, "grpc", "a")],
+    )];
+    let root = [("listen".to_string(), "0.0.0.0:8080".parse().unwrap())];
+    assert_eq!(
+        inbound(&d, &c, &[sel(0, "agents")], &root).unwrap_err(),
+        "agents.a.listen: 127.0.0.1:8080 is already taken by `listen`"
+    );
+    let d = doc(r#"{"agents": {"a": {"listen": "127.0.0.1:0"}, "b": {"listen": "127.0.0.1:0"}}}"#);
+    let c = vec![listening(
+        KindCode::Plane,
+        "a2a",
+        &["agents"],
+        vec![
+            need(DIRECTION_INBOUND, "grpc", "a"),
+            need(DIRECTION_INBOUND, "http", "b"),
+        ],
+    )];
+    assert_eq!(
+        inbound(&d, &c, &[sel(0, "agents")], &[]).unwrap().len(),
+        2,
+        "port 0 asks for a free one and never collides"
+    );
+}
+
+/// A Statement's needs are read off its rendering into the candidate.
+#[test]
+fn a_candidate_carries_its_statements_needs() {
+    use busbar_contract::abi::host::conn::connector::Need;
+    use busbar_contract::abi::mechanism::call::Blob;
+    const NEEDS: &[Need] = &[Need {
+        direction: DIRECTION_INBOUND,
+        egress_class: 0,
+        transport: abi_str("grpc"),
+        auth: abi_str(""),
+        target_from: abi_str("ingress"),
+        trust_from: abi_str(""),
+        details: Blob {
+            fmt: 0,
+            flags: 0,
+            len: 0,
+            ptr: core::ptr::null(),
+        },
+    }];
+    let st = busbar_contract::abi::mechanism::door::Statement {
+        kind: KindCode::Plane as u32,
+        needs: NEEDS.as_ptr(),
+        needs_len: NEEDS.len(),
+        ..statement("p", "1.0.0", 1)
+    };
+    // SAFETY: the list is a `'static` array of its stated count.
+    let stated = unsafe { render(&st) }.unwrap();
+    let c = Candidate::from_rendering(
+        stated,
+        None,
+        Origin::Dropped {
+            file: "f".into(),
+            bytes: Arc::new(Vec::new()),
+        },
+    )
+    .unwrap();
+    assert_eq!(c.needs, vec![need(DIRECTION_INBOUND, "grpc", "ingress")]);
 }

@@ -223,3 +223,63 @@ fn to_policy_still_returns_ok_for_a_malformed_floor() {
         "a malformed floor must not fail the boot — it is refused at the comparator instead"
     );
 }
+
+// ── INBOUND ──
+
+use std::sync::Arc;
+
+use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
+use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
+use busbar_contract::abi::mechanism::KindCode;
+
+
+fn listening_plane(target_from: &str) -> Candidate {
+    Candidate {
+        kind: KindCode::Plane,
+        name: "a2a".into(),
+        aliases: Vec::new(),
+        sugar: Vec::new(),
+        verbs: vec!["agents".into()],
+        schemes: Vec::new(),
+        needs: vec![ReadNeed {
+            direction: DIRECTION_INBOUND,
+            egress_class: 0,
+            transport: "grpc".into(),
+            auth: String::new(),
+            target_from: target_from.into(),
+            trust_from: String::new(),
+            details: ReadBlob {
+                fmt: 0,
+                flags: 0,
+                bytes: Vec::new(),
+            },
+        }],
+        stated: Vec::new(),
+        origin: Origin::Dropped {
+            file: "a2a.tar.gz".into(),
+            bytes: Arc::new(Vec::new()),
+        },
+    }
+}
+
+/// RED: the root's own listeners are reserved — a selected instance's inbound listener on the
+/// admin address is refused at validate, naming both settings.
+#[test]
+fn red_an_inbound_listener_on_the_roots_own_address_is_refused_at_validate() {
+    let doc: serde_json::Value =
+        serde_json::from_str(r#"{"agents": {"ingress": {"listen": "127.0.0.1:8081"}}}"#).unwrap();
+    let reserved = [
+        ("listen".to_string(), "0.0.0.0:8080".parse().unwrap()),
+        (
+            "admin_listen".to_string(),
+            "127.0.0.1:8081".parse().unwrap(),
+        ),
+    ];
+    let err = stages(&doc, vec![listening_plane("ingress")], &reserved)
+        .err()
+        .expect("refused");
+    assert_eq!(
+        err,
+        "agents.ingress.listen: 127.0.0.1:8081 is already taken by `admin_listen`"
+    );
+}

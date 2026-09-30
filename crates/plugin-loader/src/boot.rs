@@ -14,10 +14,11 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
 use busbar_contract::abi::mechanism::door::{
     DoorFn, REWRITE_ALIAS, REWRITE_SUGAR, SECTION_DECLARING,
 };
-use busbar_contract::abi::mechanism::rendering::{read, Read};
+use busbar_contract::abi::mechanism::rendering::{read, Read, ReadNeed};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::plugin::Kind;
 
@@ -190,6 +191,8 @@ pub struct Candidate {
     pub verbs: Vec<String>,
     /// The URL schemes it claims (its Statement's claims; a transport's).
     pub schemes: Vec<String>,
+    /// Its connection needs, in its Statement's order (a need's index is its place here).
+    pub needs: Vec<ReadNeed>,
     /// Its Statement rendering: what [`load`] admits it against.
     pub stated: Vec<u8>,
     /// Where it comes from.
@@ -238,6 +241,7 @@ impl Candidate {
                 .map(|(name, _)| name.clone())
                 .collect(),
             schemes: r.claims,
+            needs: r.needs,
             name: r.name,
             stated,
             origin,
@@ -451,6 +455,154 @@ pub fn load_planes(
             _ => Err(format!("{instance}: a plane door states another kind")),
         })
         .collect()
+}
+
+// ── INBOUND: every selected instance's listener needs and their binds ─────────────────────────────
+
+/// A listener's connection cap when its settings block names none (new in 1.6.0).
+pub const DEFAULT_MAX_CONNS: u64 = 1024;
+
+/// ONE INBOUND NEED'S BIND (THE DESIGN §3 stages 3f and 6, §5): the listener a selected instance's
+/// `DIRECTION_INBOUND` need asks for, read from the settings block its `target_from` names,
+/// `{listen, tls: {cert, key, client_ca?}, max_conns?}` — the 1.5.5 root `listen` / `tls` shape.
+/// The TLS block stays raw: its `cert` and `key` are secret references the root resolves through
+/// the secret kind at stage 3f.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InboundBind {
+    /// The instance (the selection's instance name).
+    pub instance: String,
+    /// Its kind.
+    pub kind: KindCode,
+    /// The need, by its index in the instance's Statement needs.
+    pub need: u32,
+    /// The transport claim the need names.
+    pub transport: String,
+    /// Where its block is, as the operator spells it (`<section>.<instance>.<path>`).
+    pub at: String,
+    /// The address to bind.
+    pub listen: std::net::SocketAddr,
+    /// The raw `tls` block; `None` = the listener is in the clear.
+    pub tls: Option<serde_json::Value>,
+    /// The most connections held at once.
+    pub max_conns: u64,
+}
+
+/// Where a selected instance's settings live in `doc`, and how the operator spells that place: a
+/// plane's is its verb's section; the store's, `store.settings`; a secret module's, its entry under
+/// `secrets`; a named auth, hook or export entry's, its `settings`. A transport has none.
+fn instance_settings<'d>(
+    doc: &'d serde_json::Value,
+    kind: KindCode,
+    instance: &str,
+) -> Option<(&'d serde_json::Value, String)> {
+    let at = |v: Option<&'d serde_json::Value>, spelled: String| v.map(|v| (v, spelled));
+    match kind {
+        KindCode::Transport => None,
+        KindCode::Plane => at(doc.get(instance), instance.to_string()),
+        KindCode::Secret => {
+            let key = kind_of(kind).root_key()?;
+            at(doc.get(key)?.get(instance), format!("{key}.{instance}"))
+        }
+        KindCode::Store => {
+            let key = kind_of(kind).root_key()?;
+            at(doc.get(key)?.get("settings"), format!("{key}.settings"))
+        }
+        KindCode::Auth | KindCode::Hook | KindCode::Export => {
+            let key = kind_of(kind).root_key()?;
+            at(
+                doc.get(key)?.get(instance)?.get("settings"),
+                format!("{key}.{instance}.settings"),
+            )
+        }
+    }
+}
+
+/// Whether two binds would take one address: the same port on the same IP, or on any IP when
+/// either is unspecified. Port `0` asks the OS for a free one and never collides.
+fn collide(a: std::net::SocketAddr, b: std::net::SocketAddr) -> bool {
+    a.port() != 0
+        && a.port() == b.port()
+        && (a.ip() == b.ip() || a.ip().is_unspecified() || b.ip().is_unspecified())
+}
+
+/// STAGE 3f's input, pure: every `DIRECTION_INBOUND` need of every selected instance, with its bind
+/// read from the settings block the need's `target_from` names. `reserved` are the addresses the
+/// host's own listeners take (`(what, address)`, e.g. the root `listen`); two listeners on one
+/// address, or one on a reserved address, are refused here, before anything binds.
+///
+/// # Errors
+///
+/// The first refusal, naming the setting: an inbound need that names no settings block, a block
+/// missing or without `listen`, an address that is not `ip:port`, a `max_conns` that is not a
+/// positive whole number, or an address taken twice.
+pub fn inbound(
+    doc: &serde_json::Value,
+    candidates: &[Candidate],
+    selected: &[Selected],
+    reserved: &[(String, std::net::SocketAddr)],
+) -> Result<Vec<InboundBind>, String> {
+    let mut out: Vec<InboundBind> = Vec::new();
+    for s in selected {
+        let Some(c) = candidates.get(s.candidate) else {
+            continue;
+        };
+        for (i, n) in c.needs.iter().enumerate() {
+            if n.direction != DIRECTION_INBOUND {
+                continue;
+            }
+            let who = format!("{} ({})", s.instance, c.name);
+            if n.target_from.is_empty() {
+                return Err(format!(
+                    "{who}: inbound need {i} over `{}` names no settings block to listen from",
+                    n.transport
+                ));
+            }
+            let (settings, base) = instance_settings(doc, c.kind, &s.instance)
+                .ok_or_else(|| format!("{who}: `{}` is not set", n.target_from))?;
+            let at = format!("{base}.{}", n.target_from);
+            let block = n
+                .target_from
+                .split('.')
+                .try_fold(settings, |v, k| v.get(k))
+                .ok_or_else(|| format!("{at}: not set; an inbound listener needs `listen`"))?;
+            let listen = block
+                .get("listen")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| format!("{at}.listen: not set"))?;
+            let listen: std::net::SocketAddr = listen
+                .parse()
+                .map_err(|_| format!("{at}.listen: `{listen}` is not an ip:port address"))?;
+            let max_conns = match block.get("max_conns") {
+                None => DEFAULT_MAX_CONNS,
+                Some(v) => v
+                    .as_u64()
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| format!("{at}.max_conns: not a positive whole number"))?,
+            };
+            if let Some((what, _)) = reserved.iter().find(|(_, a)| collide(*a, listen)) {
+                return Err(format!(
+                    "{at}.listen: {listen} is already taken by `{what}`"
+                ));
+            }
+            if let Some(o) = out.iter().find(|o| collide(o.listen, listen)) {
+                return Err(format!(
+                    "{at}.listen: {listen} is already taken by `{}.listen`",
+                    o.at
+                ));
+            }
+            out.push(InboundBind {
+                instance: s.instance.clone(),
+                kind: c.kind,
+                need: u32::try_from(i).unwrap_or(u32::MAX),
+                transport: n.transport.clone(),
+                at,
+                listen,
+                tls: block.get("tls").filter(|v| !v.is_null()).cloned(),
+                max_conns,
+            });
+        }
+    }
+    Ok(out)
 }
 
 // ── THE ONE LOAD ─────────────────────────────────────────────────────────────────────────────────
