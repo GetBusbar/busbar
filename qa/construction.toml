@@ -460,7 +460,14 @@ because = "OWNER GRANT 2026-09-29 (3), ARCHITECT approval: line-limit re-arm at 
 # the pair's next figure.
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY FOLD-MCP A4 (busbar_contract::jsonrpc, the JSON-RPC
-#    envelope reader moved out of the kernel) — measured by LANDER at the landed tip
+#    envelope reader moved out of the kernel) — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 23998 -> 24189. Its commit reached the base; struck by STEP-20's re-arm below, which declares the
+# pair's next figure.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY STEP-20 (the framer's ALPN offer, the emit deadline and
+#    the offer's safe lend) — measured at the tip
 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
@@ -475,18 +482,26 @@ because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan a
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 23998
-to      = 24189
-because = "The contract-pair exception for legacy fold ruling F4 (ARCHITECT 2026-09-29, FOLD-MCP Q-M1; OWNER GRANT 2026-09-29 (3)): the declared surface is busbar_contract::jsonrpc, the JSON-RPC envelope reader that moved out of busbar-kernel ingress/jsonrpc.rs (kernel lowered to the measurement in the previous commit). Measured by cargo xtask gate construction on METER-FIX's loc basis at the train tip: 23998 before, 24189 after, +191."
+from    = 24189
+to      = 24237
+because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception: STEP-20's transport-kind appends. The framer states its ALPN offer in locate (LocateIn.alpn_buf/alpn_cap, LocateOut.alpn_written/alpn_needed) and an emit carries its attempt's deadline (EmitIn.deadline_ns), with check_alpn/check_agreed in abi::transport::check (check.rs +42, transport/mod.rs +5; the layout pins bill as test on METER-FIX's basis); the safe surface lends the offer buffer (abi::sdk::lent LocateIn row, +1). +48, measured by cargo xtask gate construction on predev 9b279a546 (23998 -> 24046) and re-armed over FOLD-MCP A4's landed 24189: 24189 -> 24237."
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 23998
-to      = 24189
-because = "The contract-pair exception for legacy fold ruling F4 (ARCHITECT 2026-09-29, FOLD-MCP Q-M1; OWNER GRANT 2026-09-29 (3)): the declared surface is busbar_contract::jsonrpc, the JSON-RPC envelope reader that moved out of busbar-kernel ingress/jsonrpc.rs (kernel lowered to the measurement in the previous commit). Measured by cargo xtask gate construction on METER-FIX's loc basis at the train tip: 23998 before, 24189 after, +191."
+from    = 24189
+to      = 24237
+because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception: STEP-20's transport-kind appends. The framer states its ALPN offer in locate (LocateIn.alpn_buf/alpn_cap, LocateOut.alpn_written/alpn_needed) and an emit carries its attempt's deadline (EmitIn.deadline_ns), with check_alpn/check_agreed in abi::transport::check (check.rs +42, transport/mod.rs +5; the layout pins bill as test on METER-FIX's basis); the safe surface lends the offer buffer (abi::sdk::lent LocateIn row, +1). +48, measured by cargo xtask gate construction on predev 9b279a546 (23998 -> 24046) and re-armed over FOLD-MCP A4's landed 24189: 24189 -> 24237."
+
+# ── THE KIND-ISOLATION CELL busbar-transport-ws x transport, RAISED BY STEP-20 (the ALPN offer literal)
+
+[gate.ceiling_raises."cell[crate=busbar-transport-ws,kind=transport].count"]
+file    = "qa/kind-isolation.toml"
+from    = 23
+to      = 24
+because = "ARCHITECT 2026-09-30 (\"ws x transport 24 is approved and rides with A\"): the ws door's locate offers the ALPN id b\"\\x08http/1.1\" on a secured target (ARCHITECT ruling 2026-09-29; the opening handshake is HTTP/1.1), and METER-FIX's decoded scanner reads that wire literal as the http transport's name (door/mod.rs:378). Measured by cargo xtask gate kind-isolation --report on predev 9b279a546: 23 at the base, 24 at the tip, +1, that one line."
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY LANDER'S BATCH (XTASK-SPEED, KI-ABI-SCOPE, M3-SDK,
 #    M3-SHAPES AUTH, billing-cite) — EXPIRED AND STRUCK
@@ -766,8 +781,11 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # measure.
 # RE-ARMED 23998 -> 24189, AT THE MEASUREMENT (OWNER GRANT 2026-09-29 (3)), in its own commit after
 # FOLD-MCP A4 (busbar_contract::jsonrpc, the JSON-RPC envelope reader moved out of the kernel,
-# +191); the live declaration above carries the measure.
-contract_caps = 24189
+# +191); struck by STEP-20's re-arm.
+# RE-ARMED 24189 -> 24237, AT THE MEASUREMENT (OWNER GRANT 2026-09-29 (3)), in its own commit after
+# STEP-20 (the framer's ALPN offer, the emit deadline and the offer's safe lend, +48); the live
+# declaration above carries the measure.
+contract_caps = 24237
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1455,7 +1473,8 @@ contract_crate = "busbar-contract"
 # contract at abi::sdk::store_migrate, an F12 relocation netting 0 against the -61 deletion, +61).
 # RE-ARMED 23998 -> 24189 with its pair (FOLD-MCP A4: busbar_contract::jsonrpc, the JSON-RPC
 # envelope reader moved out of the kernel, +191).
-caps_contract_ceiling = 24189
+# RE-ARMED 24189 -> 24237 with its pair (STEP-20: the ALPN offer, the emit deadline, the lend, +48).
+caps_contract_ceiling = 24237
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
