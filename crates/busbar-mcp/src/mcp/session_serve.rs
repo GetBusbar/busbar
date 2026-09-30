@@ -78,7 +78,8 @@ impl SessionServe {
     }
 
     /// Opens a session, drawing fresh entropy for each attempt. `None` when no entropy could be
-    /// drawn: an id is never minted from a failed draw.
+    /// drawn (an id is never minted from a failed draw), or when the table is full and the caller
+    /// holds no session of its own that could give way (another owner's is never evicted).
     fn mint(
         &self,
         owner: &Owner,
@@ -97,7 +98,7 @@ impl SessionServe {
                     return Some(id.as_str().to_string());
                 }
                 Err(OpenRefused::Collision) => continue,
-                Err(OpenRefused::NoEntropy) => return None,
+                Err(OpenRefused::NoEntropy | OpenRefused::Full) => return None,
             }
         }
         None
@@ -172,11 +173,11 @@ fn version_disagrees() -> Response {
     )
 }
 
-fn no_entropy() -> Response {
+fn no_session() -> Response {
     refusal(
         StatusCode::SERVICE_UNAVAILABLE,
         "session_unavailable",
-        "No session id could be drawn; try again.",
+        "No session could be opened now; try again.",
     )
 }
 
@@ -238,7 +239,7 @@ async fn initialize(ctx: &PlaneReqCtx, body: &Value) -> Response {
             }
             let now = ctx.host.clock_now_ms();
             let Some(sid) = svc.mint(owner, revision, Carriage::Endpoint, now) else {
-                return Some(no_entropy());
+                return Some(no_session());
             };
             *lock(minted_ref) = Some(sid);
             Some(result(id, initialize_result(ctx, revision).await))
@@ -667,7 +668,7 @@ pub(crate) async fn get(ctx: PlaneReqCtx) -> Response {
         return super::envelope::legacy_verb(ctx).await;
     }
     let Some(sid) = svc.mint(&owner, Revision::R2024_11_05, Carriage::EventStream, now) else {
-        return no_entropy();
+        return no_session();
     };
     let (tx, rx) = tokio::sync::mpsc::channel(OUTLET_DEPTH);
     lock(&svc.outlets).insert(sid.clone(), tx);

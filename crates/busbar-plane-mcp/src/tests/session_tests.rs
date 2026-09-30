@@ -33,6 +33,8 @@ fn open(t: &mut SessionTable, n: u64, who: &str, now: u64) -> String {
 fn small(max_sessions: usize, per: usize, total: usize) -> SessionTable {
     SessionTable::new(Bounds {
         max_sessions,
+        max_owner_sessions: usize::MAX,
+        max_owner_bytes: usize::MAX,
         max_session_bytes: per,
         max_total_bytes: total,
         idle_ms: 1_000,
@@ -260,4 +262,87 @@ fn red_the_upstream_memory_is_bounded() {
         u.forget(k);
     }
     assert_eq!(u.bytes(), 0);
+}
+
+fn quotas(
+    max_sessions: usize,
+    owner_sessions: usize,
+    owner_bytes: usize,
+    total: usize,
+) -> SessionTable {
+    SessionTable::new(Bounds {
+        max_sessions,
+        max_owner_sessions: owner_sessions,
+        max_owner_bytes: owner_bytes,
+        max_session_bytes: 1 << 20,
+        max_total_bytes: total,
+        idle_ms: 1_000_000,
+        stream_cap: 4,
+    })
+}
+
+/// RED (reviewer follow-up 1): an owner at its session cap evicts its OWN oldest session, and an
+/// owner at the table's cap is refused rather than evicting anybody else's.
+#[test]
+fn red_an_owner_filling_its_cap_never_evicts_another_owners_session() {
+    let mut t = quotas(4, 2, usize::MAX, usize::MAX);
+    let b = open(&mut t, 100, "bob", 0);
+    let a1 = open(&mut t, 1, "alice", 1);
+    let _a2 = open(&mut t, 2, "alice", 2);
+    for n in 3..50 {
+        open(&mut t, n, "alice", n);
+        assert_eq!(
+            t.owner_sessions(&owner("alice")),
+            2,
+            "alice is held to her own cap"
+        );
+    }
+    assert!(
+        t.revision(&a1, &owner("alice"), 60).is_none(),
+        "alice's oldest gave way"
+    );
+    assert!(
+        t.revision(&b, &owner("bob"), 60).is_some(),
+        "bob's session is untouched"
+    );
+    // Fill the table with other owners; a newcomer with nothing of its own is refused.
+    open(&mut t, 200, "carol", 61);
+    assert_eq!(t.len(), 4);
+    let refused = t.open(
+        entropy(300),
+        owner("dave"),
+        Revision::R2025_11_25,
+        Carriage::Endpoint,
+        62,
+    );
+    assert_eq!(refused, Err(OpenRefused::Full));
+    assert!(
+        t.revision(&b, &owner("bob"), 63).is_some(),
+        "bob survives the table filling up"
+    );
+}
+
+/// RED (reviewer follow-up 1): an owner over its byte share, or pushing the table over its total,
+/// pays with its own sessions and events; another owner's session and replayable stream survive.
+#[test]
+fn red_an_owners_byte_pressure_never_costs_another_owner_a_stream() {
+    let mut t = quotas(100, 100, 3_000, 6_000);
+    let b = open(&mut t, 100, "bob", 0);
+    let bs = t.open_stream(&b, &owner("bob"), 0).unwrap();
+    let first = t.push(&b, &owner("bob"), bs, &"b".repeat(500), 0).unwrap();
+    for n in 1..40 {
+        let a = open(&mut t, n, "alice", n);
+        let s = t.open_stream(&a, &owner("alice"), n).unwrap();
+        t.push(&a, &owner("alice"), s, &"a".repeat(900), n).unwrap();
+        assert!(
+            t.owner_bytes(&owner("alice")) <= 3_000,
+            "alice over her share at {n}"
+        );
+        assert!(t.total_bytes() <= 6_000);
+    }
+    let r = t
+        .replay(&b, &owner("bob"), "0-0", 50)
+        .expect("bob's stream survives");
+    assert!(r.complete, "none of bob's events was trimmed for alice");
+    assert_eq!(r.events[0].0, first);
 }

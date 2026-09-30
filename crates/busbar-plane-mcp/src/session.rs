@@ -14,12 +14,20 @@
 //! A session costs memory for as long as it lives, and a client that never sends DELETE never gives
 //! it back. So every dimension has a ceiling in [`Bounds`]:
 //!
-//! - `max_sessions`: opening one more evicts the LEAST RECENTLY USED session.
+//! - `max_owner_sessions`: an owner opening one more evicts ITS OWN least recently used session.
+//! - `max_sessions`: when the whole table is full, the opener's own least recently used session
+//!   gives way; an opener with none is refused ([`OpenRefused::Full`]).
 //! - `idle_ms`: a session untouched for this long is gone at the next lookup or sweep.
 //! - `max_session_bytes`: a session's buffered events are trimmed OLDEST FIRST to fit. A trimmed
 //!   event can no longer be replayed; the replay says so instead of pretending the tail is whole.
-//! - `max_total_bytes`: the whole table is held under this by evicting least-recently-used OTHER
-//!   sessions first, then trimming the session being written.
+//! - `max_owner_bytes` and `max_total_bytes`: an owner over its byte share, or a table over its
+//!   total, is brought back under by evicting THAT OWNER'S other sessions, least recently used
+//!   first, then trimming the session being written.
+//!
+//! ONE OWNER'S PRESSURE NEVER EVICTS ANOTHER OWNER'S SESSION OR EVENTS (reviewer follow-up 1,
+//! ARCHITECT 2026-09-29). Every eviction and every trim above lands on the owner whose open or
+//! write caused it, so a caller filling its quota can cost itself sessions and replayable events and
+//! can cost nobody else anything.
 //! - `stream_cap`: how many resumable event stream cursors one session may hold; opening one more drops
 //!   the oldest.
 //!
@@ -59,6 +67,10 @@ use crate::revision::Revision;
 pub struct Bounds {
     /// Most sessions held at once.
     pub max_sessions: usize,
+    /// Most sessions one owner may hold at once.
+    pub max_owner_sessions: usize,
+    /// Most bytes one owner's sessions may hold together.
+    pub max_owner_bytes: usize,
     /// Most bytes of buffered events one session may hold.
     pub max_session_bytes: usize,
     /// Most bytes the whole table may hold.
@@ -73,6 +85,8 @@ impl Default for Bounds {
     fn default() -> Self {
         Self {
             max_sessions: 10_000,
+            max_owner_sessions: 100,
+            max_owner_bytes: 8 << 20,
             max_session_bytes: 1 << 20,
             max_total_bytes: 64 << 20,
             idle_ms: 30 * 60 * 1000,
@@ -89,7 +103,7 @@ const EVENT_OVERHEAD: usize = 32;
 
 /// The principal and credential a session is bound to. A session belongs to the credential (the
 /// virtual key) that opened it, never to a group of keys, so a sibling key cannot take it over.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Owner {
     /// The authenticated principal that opened the session.
     pub principal: String,
@@ -138,6 +152,16 @@ pub enum OpenRefused {
     NoEntropy,
     /// The id already names a live session. The caller draws fresh entropy and tries again.
     Collision,
+    /// The table is full and the opener holds no session that could give way. Another owner's
+    /// session is never evicted to make room.
+    Full,
+}
+
+/// What one owner holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Use {
+    sessions: usize,
+    bytes: usize,
 }
 
 #[derive(Debug)]
@@ -212,6 +236,7 @@ pub struct SessionTable {
     bounds: Bounds,
     sessions: BTreeMap<String, Session>,
     total_bytes: usize,
+    owners: BTreeMap<Owner, Use>,
 }
 
 /// Formats an event id: `<stream>-<seq>`, unique within the session.
@@ -233,6 +258,31 @@ impl SessionTable {
             bounds,
             sessions: BTreeMap::new(),
             total_bytes: 0,
+            owners: BTreeMap::new(),
+        }
+    }
+
+    /// Sessions `owner` holds.
+    #[must_use]
+    pub fn owner_sessions(&self, owner: &Owner) -> usize {
+        self.owners.get(owner).map_or(0, |u| u.sessions)
+    }
+
+    /// Bytes charged to `owner`.
+    #[must_use]
+    pub fn owner_bytes(&self, owner: &Owner) -> usize {
+        self.owners.get(owner).map_or(0, |u| u.bytes)
+    }
+
+    fn hold_bytes(&mut self, owner: &Owner, bytes: usize) {
+        self.total_bytes += bytes;
+        self.owners.entry(owner.clone()).or_default().bytes += bytes;
+    }
+
+    fn release_bytes(&mut self, owner: &Owner, bytes: usize) {
+        self.total_bytes -= bytes;
+        if let Some(u) = self.owners.get_mut(owner) {
+            u.bytes -= bytes;
         }
     }
 
@@ -264,7 +314,7 @@ impl SessionTable {
     ///
     /// # Errors
     /// [`OpenRefused::NoEntropy`] for an all-zero buffer, [`OpenRefused::Collision`] when the id is
-    /// already live.
+    /// already live, [`OpenRefused::Full`] when only another owner's session could make room.
     pub fn open(
         &mut self,
         entropy: [u8; 16],
@@ -285,13 +335,20 @@ impl SessionTable {
         if self.sessions.contains_key(&id) {
             return Err(OpenRefused::Collision);
         }
-        while self.sessions.len() >= self.bounds.max_sessions.max(1) {
-            if !self.evict_lru(None) {
+        while self.owner_sessions(&owner) >= self.bounds.max_owner_sessions.max(1) {
+            if !self.evict_lru_of(&owner, None) {
                 break;
             }
         }
+        while self.sessions.len() >= self.bounds.max_sessions.max(1) {
+            if !self.evict_lru_of(&owner, None) {
+                return Err(OpenRefused::Full);
+            }
+        }
         let bytes = Session::base_bytes(&owner);
-        self.total_bytes += bytes;
+        self.hold_bytes(&owner, bytes);
+        self.owners.entry(owner.clone()).or_default().sessions += 1;
+        let key = owner.clone();
         self.sessions.insert(
             id.clone(),
             Session {
@@ -306,7 +363,10 @@ impl SessionTable {
                 bytes,
             },
         );
-        self.enforce_total(&id);
+        if !self.enforce(&key, &id) {
+            self.remove(&id);
+            return Err(OpenRefused::Full);
+        }
         Ok(SessionId(id))
     }
 
@@ -381,7 +441,7 @@ impl SessionTable {
             trimmed_through: 0,
             events: VecDeque::new(),
         });
-        self.total_bytes -= freed;
+        self.release_bytes(owner, freed);
         Some(stream)
     }
 
@@ -419,8 +479,8 @@ impl SessionTable {
             }
             freed += f;
         }
-        self.total_bytes = self.total_bytes + cost - freed;
-        self.enforce_total(id);
+        self.hold_bytes(owner, cost - freed);
+        self.enforce(owner, id);
         Some(event_id(stream, seq))
     }
 
@@ -467,16 +527,24 @@ impl SessionTable {
 
     fn remove(&mut self, id: &str) {
         if let Some(s) = self.sessions.remove(id) {
-            self.total_bytes -= s.bytes;
+            self.release_bytes(&s.owner, s.bytes);
+            let empty = self.owners.get_mut(&s.owner).is_some_and(|u| {
+                u.sessions -= 1;
+                u.sessions == 0
+            });
+            if empty {
+                self.owners.remove(&s.owner);
+            }
         }
     }
 
-    /// Evicts the least recently used session other than `keep`. `false` when there is none.
-    fn evict_lru(&mut self, keep: Option<&str>) -> bool {
+    /// Evicts `owner`'s least recently used session other than `keep`. `false` when there is none.
+    /// Never another owner's.
+    fn evict_lru_of(&mut self, owner: &Owner, keep: Option<&str>) -> bool {
         let victim = self
             .sessions
             .iter()
-            .filter(|(k, _)| Some(k.as_str()) != keep)
+            .filter(|(k, s)| s.owner == *owner && Some(k.as_str()) != keep)
             .min_by_key(|(k, s)| (s.last_ms, (*k).clone()))
             .map(|(k, _)| k.clone());
         match victim {
@@ -488,18 +556,23 @@ impl SessionTable {
         }
     }
 
-    /// Holds the table under `max_total_bytes`: other sessions go first, then `keep`'s oldest
-    /// events.
-    fn enforce_total(&mut self, keep: &str) {
-        while self.total_bytes > self.bounds.max_total_bytes {
-            if self.evict_lru(Some(keep)) {
+    /// Holds `owner` under its byte share and the table under its total, at `owner`'s cost only:
+    /// its other sessions go first, then `keep`'s oldest events. `false` when that was not enough.
+    fn enforce(&mut self, owner: &Owner, keep: &str) -> bool {
+        loop {
+            let over = self.owner_bytes(owner) > self.bounds.max_owner_bytes
+                || self.total_bytes > self.bounds.max_total_bytes;
+            if !over {
+                return true;
+            }
+            if self.evict_lru_of(owner, Some(keep)) {
                 continue;
             }
             let freed = self.sessions.get_mut(keep).map_or(0, Session::trim_oldest);
             if freed == 0 {
-                break;
+                return false;
             }
-            self.total_bytes -= freed;
+            self.release_bytes(owner, freed);
         }
     }
 }
