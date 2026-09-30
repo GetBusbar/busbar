@@ -1142,71 +1142,92 @@ fn a_dialect_and_reason_are_stated_at_most_once() {
     );
 }
 
-/// A reason's ABI code is its place in the vocabulary, which only appends: every code is pinned
-/// to its spelling, so a reorder or an insertion is RED.
-#[test]
-fn every_reason_code_is_pinned_to_its_spelling() {
-    const PINNED: &[&str] = &[
-        "in_flight_cap",
-        "cursor_budget",
-        "credential_budget",
-        "session_budget",
-        "spill_budget",
-        "scratch_exhausted",
-        "rate_limited",
-        "body_too_large",
-        "open_slot_busy",
-        "decode_failed",
-        "scheme_not_declared",
-        "session_unbound",
-        "unauthenticated",
-        "challenge_exhausted",
-        "revoked",
-        "scope_denied",
-        "pool_not_permitted",
-        "no_rate",
-        "hook_veto",
-        "no_destination",
-        "over_budget",
-        "group_frozen",
-        "unpriced",
-        "overdraft_ceiling",
-        "stale_slice",
+/// THE WIRE CODE TABLE, pinned whole: every number to its code and its word. Renumbering one
+/// variant, reordering the table or giving a code another word is RED here.
+const PINNED: &[(u32, RefusalCode, &str)] = &[
+    (0, RefusalCode::InFlightCap, "in_flight_cap"),
+    (1, RefusalCode::CursorBudget, "cursor_budget"),
+    (2, RefusalCode::CredentialBudget, "credential_budget"),
+    (3, RefusalCode::SessionBudget, "session_budget"),
+    (4, RefusalCode::SpillBudget, "spill_budget"),
+    (5, RefusalCode::ScratchExhausted, "scratch_exhausted"),
+    (6, RefusalCode::RateLimited, "rate_limited"),
+    (7, RefusalCode::BodyTooLarge, "body_too_large"),
+    (8, RefusalCode::OpenSlotBusy, "open_slot_busy"),
+    (9, RefusalCode::DecodeFailed, "decode_failed"),
+    (10, RefusalCode::SchemeNotDeclared, "scheme_not_declared"),
+    (11, RefusalCode::SessionUnbound, "session_unbound"),
+    (12, RefusalCode::Unauthenticated, "unauthenticated"),
+    (13, RefusalCode::ChallengeExhausted, "challenge_exhausted"),
+    (14, RefusalCode::Revoked, "revoked"),
+    (15, RefusalCode::ScopeDenied, "scope_denied"),
+    (16, RefusalCode::PoolNotPermitted, "pool_not_permitted"),
+    (17, RefusalCode::NoRate, "no_rate"),
+    (18, RefusalCode::HookVeto, "hook_veto"),
+    (19, RefusalCode::NoDestination, "no_destination"),
+    (20, RefusalCode::OverBudget, "over_budget"),
+    (21, RefusalCode::GroupFrozen, "group_frozen"),
+    (22, RefusalCode::Unpriced, "unpriced"),
+    (23, RefusalCode::OverdraftCeiling, "overdraft_ceiling"),
+    (24, RefusalCode::StaleSlice, "stale_slice"),
+    (
+        25,
+        RefusalCode::DurabilityUnavailable,
         "durability_unavailable",
-        "tier_mismatch",
-        "replayed",
-        "in_flight",
+    ),
+    (26, RefusalCode::TierMismatch, "tier_mismatch"),
+    (27, RefusalCode::Replayed, "replayed"),
+    (28, RefusalCode::InFlight, "in_flight"),
+    (
+        29,
+        RefusalCode::DestinationBudgetExhausted,
         "destination_budget_exhausted",
-        "breaker_open",
+    ),
+    (30, RefusalCode::BreakerOpen, "breaker_open"),
+    (
+        31,
+        RefusalCode::DestinationUnreachable,
         "destination_unreachable",
-        "meter_disputed",
-        "handoff_mismatch",
-        "plane_panic",
-        "task_lost",
-        "stalled",
-        "secret_placeholder",
-        "drain",
-        "superseded",
-        "client_gone",
-        "deadline_exceeded",
-    ];
-    for (code, spelling) in PINNED.iter().enumerate() {
-        let reason = reason_of(code as u32).expect("a pinned code names a reason");
-        assert_eq!(reason.as_str(), *spelling, "code {code}");
-        assert_eq!(reason_code(reason), code as u32);
-    }
-    assert!(
-        ReasonCode::ALL.len() >= PINNED.len(),
-        "a reason left the vocabulary"
+    ),
+    (32, RefusalCode::MeterDisputed, "meter_disputed"),
+    (33, RefusalCode::HandoffMismatch, "handoff_mismatch"),
+    (34, RefusalCode::PlanePanic, "plane_panic"),
+    (35, RefusalCode::TaskLost, "task_lost"),
+    (36, RefusalCode::Stalled, "stalled"),
+    (37, RefusalCode::SecretPlaceholder, "secret_placeholder"),
+    (38, RefusalCode::Drain, "drain"),
+    (39, RefusalCode::Superseded, "superseded"),
+    (40, RefusalCode::ClientGone, "client_gone"),
+    (41, RefusalCode::DeadlineExceeded, "deadline_exceeded"),
+];
+
+#[test]
+fn every_wire_refusal_code_is_pinned_to_its_number_and_word() {
+    assert_eq!(
+        RefusalCode::ALL.len(),
+        PINNED.len(),
+        "a wire code without a pin: append it"
     );
-    for (code, reason) in ReasonCode::ALL.iter().enumerate().skip(PINNED.len()) {
-        panic!(
-            "reason {} (code {code}) is not pinned here: append it",
-            reason.as_str()
+    for (i, (number, code, word)) in PINNED.iter().enumerate() {
+        assert_eq!(code.code(), *number, "{word}: its number");
+        assert_eq!(RefusalCode::ALL[i], *code, "{word}: its place");
+        assert_eq!(RefusalCode::of(*number), Some(*code), "{word}: the reverse");
+        let reason = reason_of(*number).expect("a pinned code names a reason");
+        assert_eq!(reason.as_str(), *word, "code {number}");
+        assert_eq!(reason_code(reason), *number);
+    }
+    assert_eq!(RefusalCode::of(PINNED.len() as u32), None);
+    assert_eq!(reason_of(u32::MAX), None);
+    // Every reason in the kernel's vocabulary has a wire code, and none shares one.
+    for (i, r) in ReasonCode::ALL.iter().enumerate() {
+        let c = reason_code(*r);
+        assert!(
+            ReasonCode::ALL[..i].iter().all(|o| reason_code(*o) != c),
+            "{r:?}"
         );
     }
-    assert_eq!(reason_of(ReasonCode::ALL.len() as u32), None);
 }
+
 
 // ── project ──
 
