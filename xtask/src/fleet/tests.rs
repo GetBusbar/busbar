@@ -1007,6 +1007,29 @@ fn a_pending_crate_repo_is_skipped_with_its_reason_and_a_non_pending_empty_repo_
 }
 
 #[test]
+fn contributing_describes_the_layout_the_repo_really_has() {
+    let (fleet, t) = (registry(), templates());
+    let contributing = |repo: &str| {
+        let p = fleet.plugin(repo).unwrap();
+        render(&fleet, p, &t)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.path == "CONTRIBUTING.md")
+            .unwrap()
+            .content
+    };
+    // A single-crate hook repo (its cdylib crate IS the repo) is not told it is a workspace.
+    for repo in ["busbar-hook-headroom", "busbar-hook-webrequest"] {
+        let c = contributing(repo);
+        assert!(c.contains("single crate at the repo root"), "{repo}: {c}");
+        assert!(!c.contains("two-crate"), "{repo}: {c}");
+    }
+    let twin = contributing("busbar-store-sqlite");
+    assert!(twin.contains("two-crate Cargo workspace"), "{twin}");
+    assert!(twin.contains("`store-sqlite/`") && twin.contains("`store-sqlite-plugin/`"));
+}
+
+#[test]
 fn an_export_sinks_registry_alias_is_its_module_name() {
     // The dropped-in tarball resolves under the operator's `module:` spelling, exactly like the
     // linked row, only if the packed alias IS that module name.
