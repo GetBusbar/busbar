@@ -135,6 +135,32 @@ fn the_declared_trust_keys_match_the_grammar() {
     assert_eq!(unwritten.policy, bare.unwrap());
 }
 
+/// Each mechanism's SERIALIZED token is the token its declared `TRUST_KEYS` spells: the write path
+/// judges the serialized definition against the declaration, so a drift between the two would read a
+/// keyless root pin as no pin.
+#[test]
+fn every_serialized_pin_token_is_the_declared_trust_key_token() {
+    let declared: Vec<&str> = TRUST_KEYS[0].mechanisms.iter().map(|m| m.token).collect();
+    for m in [
+        PinMechanism::JwsIssuerKey,
+        PinMechanism::CertKeyPin,
+        PinMechanism::MutualTls,
+        PinMechanism::Unpinned,
+    ] {
+        let serialized = serde_yaml::to_value(m).expect("a mechanism serialises");
+        let token = serialized.as_str().expect("a mechanism is a string");
+        assert!(declared.contains(&token), "`{token}` is not declared");
+        assert_eq!(token, m.token());
+        let pin = serde_yaml::from_str::<serde_yaml::Value>(&format!(
+            "pin: {{ mechanism: {token}, key: K }}"
+        ))
+        .unwrap();
+        let read = parse_entry("`agents.x`", &pin, TRUST_KEYS);
+        // Strictly read, the token is known: only the root-ness rule may refuse it.
+        assert_eq!(read.is_ok(), m.is_a_root(), "{token}: {read:?}");
+    }
+}
+
 fn signed(fingerprint: Option<&str>) -> AgentDefCfg {
     AgentDefCfg {
         url: "https://a2a.vendor/planner".to_string(),

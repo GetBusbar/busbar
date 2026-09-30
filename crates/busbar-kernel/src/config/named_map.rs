@@ -376,10 +376,20 @@ fn plane_config_validate(
         decl.trust_keys,
         &crate::plane::config::config_sections(),
     )?;
-    match decl.config_validate {
-        Some(f) => f(name, def),
-        None => Ok(()),
+    if let Some(f) = decl.config_validate {
+        f(name, def)?;
     }
+    // THEN THE STRICT READING, the one boot's `parse_section` gives the section. The judgement above
+    // reads a malformed trust key as absent, leaving its refusal to the plane's own parse; a token the
+    // plane's serde accepts but its declared `trust_keys` do not spell (a drift between the two) would
+    // then read as NO pin, and a keyless root pin would be persisted. A write path that persists what
+    // boot refuses is the hole the ONE GRAMMAR, TWO PATHS rule closes: refuse here.
+    crate::trust::section::parse_entry(
+        &format!("`{}.{name}`", section.key()),
+        &entry,
+        decl.trust_keys,
+    )
+    .map(|_| ())
 }
 
 /// One successfully-parsed named-map definition, still un-installed. The intermediate value of

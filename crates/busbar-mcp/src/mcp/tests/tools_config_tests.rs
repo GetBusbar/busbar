@@ -39,6 +39,35 @@ fn the_declared_trust_keys_match_the_grammar() {
     }
 }
 
+/// Each mechanism's SERIALIZED token is the token the declared `TRUST_KEYS` spells: the write path
+/// judges the serialized definition against the declaration, so a drift between the two would read a
+/// keyless root pin as no pin.
+#[test]
+fn every_serialized_pin_token_is_the_declared_trust_key_token() {
+    use super::McpPinMechanism as M;
+    let declared: Vec<&str> = super::TRUST_KEYS[0]
+        .mechanisms
+        .iter()
+        .map(|m| m.token)
+        .collect();
+    let all = [
+        M::PinnedPubkey,
+        M::CertSpki,
+        M::ClientCertBinding,
+        M::Unpinned,
+    ];
+    assert_eq!(declared.len(), all.len());
+    for m in all {
+        let serialized = serde_yaml::to_value(m).expect("a mechanism serialises");
+        let token = serialized.as_str().expect("a mechanism is a string");
+        assert!(declared.contains(&token), "`{token}` is not declared");
+        let pin: serde_yaml::Value =
+            serde_yaml::from_str(&format!("pin: {{ mechanism: {token}, key: K }}")).unwrap();
+        let read = busbar_kernel::trust::section::parse_entry("`tools.x`", &pin, super::TRUST_KEYS);
+        assert_eq!(read.is_ok(), m.is_a_root(), "{token}: {read:?}");
+    }
+}
+
 /// THE LOCKED SECTION SHAPE, verbatim: the section knobs, the object pin, the
 /// `tools_allow` MAP, the per-server credential mode and the bare-name hook attach.
 const LOCKED_EXAMPLE: &str = r#"

@@ -145,6 +145,26 @@ fn the_admin_write_path_refuses_what_boot_refuses() {
         .expect("a well-formed definition is accepted");
 }
 
+/// A definition whose pin token the plane's own parse would accept but its declared `trust_keys` do
+/// not spell reads, non-strictly, as NO pin: the admin write path refuses it, as boot's strict
+/// reading does, instead of persisting a keyless root pin.
+#[test]
+fn the_admin_write_path_refuses_a_pin_token_the_declaration_does_not_spell() {
+    let _isolation = crate::plane::registry::TestRegistryIsolation::seeded(&[&BAYS_PLANE]);
+    let section = NamedMapSection::Plane("bays");
+    let err = section
+        .parse_def(
+            "dock",
+            &serde_json::json!({ "anchor": { "mechanism": "sealed-key" } }),
+        )
+        .err()
+        .expect("a drifted token must be refused on the write path");
+    assert_eq!(
+        err,
+        "`bays.dock`: `anchor.mechanism: sealed-key` is not one of `sealed_key`, `open`"
+    );
+}
+
 #[test]
 fn a_section_is_judged_per_registration_in_order_skipping_reserved_words() {
     let sections = ["bays", "export"];
