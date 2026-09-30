@@ -22,7 +22,9 @@ use busbar_core_connector::{
 };
 use busbar_kernel::host_services::KernelServices;
 
-use crate::root::loader::dispatch::{kinds::transport::Transport as TransportKind, load_linked};
+use crate::root::loader::dispatch::{
+    kinds::transport::Transport as TransportKind, load_linked, LinkedRow,
+};
 
 static ONE: OnceLock<Arc<Connector>> = OnceLock::new();
 
@@ -57,7 +59,8 @@ pub fn entries(doors: &[(&str, DoorFn)]) -> Result<Vec<Entry>, String> {
     doors
         .iter()
         .map(|(key, door)| {
-            let plugin = load_linked::<TransportKind>(*door, crate::root::doors::bind())
+            let plugin = LinkedRow::of(*door)
+                .and_then(|row| load_linked::<TransportKind>(&row, crate::root::doors::bind()))
                 .map_err(|e| format!("transport `{key}`: {e}"))?;
             let door: Arc<dyn FramerDoor> = Arc::new(crate::root::doors::Dispatched::open(plugin)?);
             Ok(Entry {

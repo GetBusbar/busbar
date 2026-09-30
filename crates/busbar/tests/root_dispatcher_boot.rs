@@ -116,7 +116,11 @@ fn boot(tag: &str, env: &[(&str, &str)]) -> (usize, String) {
     let threads = dispatcher_threads(child.id());
     let _ = child.kill();
     let _ = child.wait();
-    assert!(ready, "busbar never logged its listener; log:\n{}", log_text());
+    assert!(
+        ready,
+        "busbar never logged its listener; log:\n{}",
+        log_text()
+    );
     let out = log_text();
     let _ = std::fs::remove_dir_all(&dir);
     (threads, out)

@@ -161,14 +161,18 @@ impl std::fmt::Debug for Held {
     }
 }
 
+/// A need as an instance declared it, whole, and the answer its declaration got.
+type Declared = (ReadNeed, Result<(), ConnError>);
+
 /// THE CONNECTOR: the host side of the connection table.
 pub struct Connector {
     slab: ConnSlab<Held>,
     /// The transport each declared need names, the egress class its dials are judged under, and
     /// the target its config names (`target_from`), when it names one.
     over: Mutex<HashMap<(InstanceId, NeedId), DeclaredNeed>>,
-    /// Every need an instance declared through [`Conns::declare`], whole, and the answer it got.
-    declared: Mutex<HashMap<(InstanceId, NeedId), (ReadNeed, Result<(), ConnError>)>>,
+    /// Every need an instance declared through [`DeclaredConns::declare`], whole, and the answer
+    /// it got.
+    declared: Mutex<HashMap<(InstanceId, NeedId), Declared>>,
     transports: RwLock<Transports>,
     tls: Option<Arc<rustls::ClientConfig>>,
     wake: WakeTicket,
@@ -254,7 +258,7 @@ impl Connector {
         }
     }
 
-    /// The need `owner` declared as `need`, whole, as [`Conns::declare`] received it.
+    /// The need `owner` declared as `need`, whole, as [`DeclaredConns::declare`] received it.
     #[must_use]
     pub fn declared_spec(&self, owner: InstanceId, need: NeedId) -> Option<ReadNeed> {
         let declared = self.declared.lock().expect("declared needs");
