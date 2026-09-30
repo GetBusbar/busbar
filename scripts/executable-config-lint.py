@@ -304,6 +304,8 @@ class Doc:
 
     def __init__(self, source, target, kind, text, substituted, gate="full"):
         self.source = source          # the FILE (+ step) — the pairing key, see catalog_for()
+        self.target = target          # the basename the document is written to
+        self.upgrade = False          # put through the operator upgrade step before it runs (Q42)
         self.origin = f"{source} -> {target}" if target else source
         self.kind = kind              # "config" | "providers"
         self.text = text
@@ -629,7 +631,71 @@ def extract_printf(text, origin, scratch):
 
 def extract_documents(text, origin, scratch):
     """Every busbar document `text` WRITES, by any idiom this reader models."""
-    return extract_heredocs(text, origin, scratch) + extract_printf(text, origin, scratch)
+    docs = extract_heredocs(text, origin, scratch) + extract_printf(text, origin, scratch)
+    targets = upgraded_targets(text)
+    for d in docs:
+        d.upgrade = d.kind == "config" and (d.target in targets or "$positional" in targets)
+    return docs
+
+
+# ── THE OPERATOR UPGRADE STEP (owner ruling Q42) ────────────────────────────────────────────────────
+# A script that writes a 1.5.5-form config and then runs `busbar-oracle upgrade-config "$BIN" <file>`
+# does NOT hand the binary the text it wrote: the step adds, at 0, every billable class the build
+# names as unconfigured on a rate card (b126877e1, testing/shadow-oracle/oracle-rust.pin). The text
+# is kept in 1.5.5 form on purpose — the SAME script runs the 1.5.5 golden, which knows no such
+# class. So the config a machine RUNS is the upgraded one, and that is what this lint judges: it
+# applies the same step, from the same binary's own words, and validates the result. Only the one
+# refusal the step answers is rewritten; any other failure stays the document's own.
+UPGRADE_CALL = re.compile(r"upgrade-config\s+\S+\s+(?P<arg>\"[^\"]+\"|'[^']+'|\S+)")
+UNCONFIGURED_UNITS = re.compile(
+    r"(?P<section>[A-Za-z_][A-Za-z0-9_-]*)\.rate_card does not configure billable unit\(s\) "
+    r"(?P<units>[A-Za-z0-9_, ]+?) declared by this plane")
+
+
+def upgraded_targets(text):
+    """The basenames of the configs `text` puts through the upgrade step (`$positional` when the
+    argument is a function's positional parameter, which names whichever config it was handed)."""
+    out = set()
+    for m in UPGRADE_CALL.finditer(text):
+        arg = m.group("arg").strip("\"'")
+        out.add("$positional" if re.fullmatch(r"\$\{?[0-9]\}?", arg) else os.path.basename(arg))
+    return out
+
+
+def apply_upgrade_step(text, section, units):
+    """Add each of `units` at 0 to the first entry of the card the refusal names: the rate_card
+    nested under top-level `<section>:`, else the top-level (fallback plane's) `rate_card:`.
+    -> the rewritten text, or None when no card entry could be found (then nothing is excused)."""
+    lines = text.split("\n")
+    card = None
+    for i, l in enumerate(lines):
+        if l.rstrip() == section + ":":
+            for j in range(i + 1, len(lines)):
+                if lines[j].strip() and not lines[j].startswith((" ", "\t")):
+                    break
+                if lines[j].strip() == "rate_card:":
+                    card = j
+                    break
+    if card is None:
+        card = next((i for i, l in enumerate(lines) if l.rstrip() == "rate_card:"), None)
+    if card is None:
+        return None
+    base = len(lines[card]) - len(lines[card].lstrip(" "))
+    cell = ", ".join("%s: 0" % u for u in units)
+    for k in range(card + 1, len(lines)):
+        l = lines[k]
+        if not l.strip():
+            continue
+        ind = len(l) - len(l.lstrip(" "))
+        if ind <= base:
+            return None
+        flow = re.match(r"^(\s+[^:#]+:\s*\{)(.*)\}\s*$", l)
+        if flow:
+            lines[k] = "%s%s, units: { %s } }" % (flow.group(1), flow.group(2).rstrip(), cell)
+        else:
+            lines.insert(k + 1, " " * (ind + 2) + "units: { %s }" % cell)
+        return "\n".join(lines)
+    return None
 
 
 ALLOW = re.compile(r"executable-config-lint:\s*allow\s*(?P<until>until=(?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2}))?"
@@ -942,6 +1008,28 @@ def stub_config_for(catalog_text):
     return body
 
 
+def partner_config_for(catalog_text, partners):
+    """The config Doc a providers catalog is RUN with: a config document from the SAME source that
+    references one of the catalog's providers, or None. A catalog is not a document on its own —
+    its providers are read in the role the config gives them (the fallback plane's `models:`, or a
+    plane section's own, e.g. `decisions:`) — so when the source writes that config, the catalog is
+    validated beside it; only a catalog no config of its source names falls back to the stub."""
+    try:
+        names = {k for k in (yaml.safe_load(catalog_text) or {}) if isinstance(k, str)}
+    except Exception:
+        return None
+    # Only a config meant to BOOT as written: a waived (deliberately invalid) or test-literal config
+    # would lend the catalog a verdict about itself.
+    for partner in (p for p in partners if p.gate == "full"):
+        try:
+            named = (yaml.safe_load(partner.text) or {}).get("providers") or {}
+        except Exception:
+            continue
+        if isinstance(named, dict) and names & set(named):
+            return partner
+    return None
+
+
 def catalog_for(config_text, siblings):
     """The providers.yaml a config document is validated AGAINST.
 
@@ -1006,12 +1094,15 @@ def _point_file_refs_at(text, stand_in):
     return _FILE_REF.sub("file: " + stand_in, text or "")
 
 
-def validate(doc, busbar, scratch, siblings=()):
+def validate(doc, busbar, scratch, siblings=(), partners=()):
     """-> (verdict, detail): "ok" | "legacy" | "env" | "artifact" | "invalid" (see VERDICTS above)."""
     d = tempfile.mkdtemp(dir=scratch)
     cfg, prov = os.path.join(d, "config.yaml"), os.path.join(d, "providers.yaml")
+    upgrade = doc.upgrade
     if doc.kind == "providers":
-        cfg_text, prov_text = stub_config_for(doc.text), doc.text
+        partner = partner_config_for(doc.text, partners)
+        cfg_text = partner.text if partner else stub_config_for(doc.text)
+        prov_text, upgrade = doc.text, bool(partner and partner.upgrade)
     else:
         cfg_text, prov_text = doc.text, catalog_for(doc.text, siblings)
 
@@ -1029,17 +1120,26 @@ def validate(doc, busbar, scratch, siblings=()):
     cfg_text, prov_text = (_point_file_refs_at(cfg_text, stand_in),
                            _point_file_refs_at(prov_text, stand_in))
 
-    open(cfg, "w", encoding="utf-8").write(cfg_text)
     open(prov, "w", encoding="utf-8").write(prov_text)
     env = dict(os.environ, BUSBAR_CONFIG=cfg, BUSBAR_PROVIDERS=prov)
     env.pop("BUSBAR_CONFIG_OVERLAY", None)
     for name in _referenced_env_names(cfg_text, prov_text):
         env[name] = PLACEHOLDER_SECRET
-    try:
-        r = subprocess.run([busbar, "--validate"], env=env, capture_output=True, text=True,
-                           timeout=60)
-    except subprocess.TimeoutExpired:
-        return "invalid", "busbar --validate timed out"
+    # The upgrade step answers the build's own refusal, so it runs AFTER a first verdict and only
+    # on the refusal it exists for; once per plane section the build names, then the final verdict.
+    for _ in range(8):
+        open(cfg, "w", encoding="utf-8").write(cfg_text)
+        try:
+            r = subprocess.run([busbar, "--validate"], env=env, capture_output=True, text=True,
+                               timeout=60)
+        except subprocess.TimeoutExpired:
+            return "invalid", "busbar --validate timed out"
+        m = upgrade and r.returncode != 0 and UNCONFIGURED_UNITS.search(r.stdout + r.stderr)
+        upgraded = m and apply_upgrade_step(
+            cfg_text, m.group("section"), [u.strip() for u in m.group("units").split(",")])
+        if not upgraded:
+            break
+        cfg_text = upgraded
     if r.returncode == 0:
         return "ok", ""
     blob = r.stdout + r.stderr
@@ -1098,10 +1198,12 @@ def run_scan(root, busbar, quiet=False, out=sys.stdout):
         docs = collect(root, scratch)
         # Catalogs found alongside a config (same workflow step / script / test file) are what that
         # config is validated against — see catalog_for().
-        by_source = {}
+        by_source, configs_by_source = {}, {}
         for d in docs:
             if d.kind == "providers":
                 by_source.setdefault(d.source, []).append(d.text)
+            else:
+                configs_by_source.setdefault(d.source, []).append(d)
         # `judged` is the count the extraction FLOOR is taken over, and it is deliberately NOT
         # `len(docs)`. See the floor in main(): a document that was extracted and then allowed,
         # carved out or skipped was never put to `busbar --validate`, so counting it toward "this
@@ -1121,7 +1223,8 @@ def run_scan(root, busbar, quiet=False, out=sys.stdout):
                 if not quiet:
                     out.write(f"  allowed  {d.origin} ({d.kind}) — {d.gate[6:]}\n")
                 continue
-            verdict, detail = validate(d, busbar, scratch, by_source.get(d.source, ()))
+            verdict, detail = validate(d, busbar, scratch, by_source.get(d.source, ()),
+                                       configs_by_source.get(d.source, ()))
             if verdict in ("ok", "legacy") or (verdict == "invalid" and d.gate != "legacy"):
                 # A real verdict about the document's own text: it validated, or it failed for a
                 # reason attributable to the config. Only these count toward the floor.
@@ -1399,6 +1502,39 @@ def _floor_excludes_skips(busbar=None):
         shutil.rmtree(tree, ignore_errors=True)
 
 
+def _upgrade_step_is_modelled():
+    """THE UPGRADE STEP IS APPLIED WHERE A SCRIPT RUNS IT AND NOWHERE ELSE. A script that writes a
+    1.5.5-form card and runs `upgrade-config` on it is upgraded (flow and block entries both gain the
+    named class at 0); a script that writes the same card and never upgrades it is not — its refusal
+    stays its own."""
+    card = "rate_card:\n  m: { input_utok: 1 }\n"
+    block = "rate_card:\n  m:\n    input_utok: 1\n"
+    runs = 'cat > "$W/config.yaml" <<EOF\nlisten: x\n%sEOF\n"$ORACLE_BIN" upgrade-config "$BIN" "$W/config.yaml"\n'
+    plain = 'cat > "$W/config.yaml" <<EOF\nlisten: x\n%sEOF\n'
+    scratch = tempfile.mkdtemp(prefix=SCRATCH_PREFIX)
+    try:
+        up = extract_documents(runs % card, "up.sh", scratch)
+        no = extract_documents(plain % card, "no.sh", scratch)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    return (len(up) == 1 and up[0].upgrade and len(no) == 1 and not no[0].upgrade
+            and apply_upgrade_step(card, "pools", ["search_units"])
+            == "rate_card:\n  m: { input_utok: 1, units: { search_units: 0 } }\n"
+            and apply_upgrade_step(block, "pools", ["a", "b"])
+            == "rate_card:\n  m:\n    units: { a: 0, b: 0 }\n    input_utok: 1\n"
+            and apply_upgrade_step("listen: x\n", "pools", ["a"]) is None)
+
+
+def _catalog_meets_its_partner():
+    """A catalog pairs with the config of its source that names one of its providers, and with no
+    other; a source with no such config leaves the catalog to the stub."""
+    names_q = Doc("s", "config.yaml", "config", "providers:\n  q: {}\n", [])
+    names_p = Doc("s", "config.yaml", "config", "providers:\n  p: {}\n", [])
+    catalog = "p:\n  protocol: x\n"
+    return (partner_config_for(catalog, [names_q, names_p]) is names_p
+            and partner_config_for(catalog, [names_q]) is None)
+
+
 def _mirror_drift_is_red():
     """Plant a root key into a copy of the committed snapshot that CONFIG_ROOT_KEYS does not carry,
     and require `assert_key_mirror` to complain. This is the RED control for the rot that actually
@@ -1541,6 +1677,10 @@ def selftest(busbar, out=sys.stdout):
              judged + len(env_skipped) == len(docs)),
             ("a skipped document does not count toward the floor",
              _floor_excludes_skips()),
+            ("the upgrade step (Q42) is modelled for the configs a script upgrades, and no other",
+             _upgrade_step_is_modelled()),
+            ("a catalog is validated beside the config of its source that names its providers",
+             _catalog_meets_its_partner()),
             # THE KEY MIRROR.
             ("the root-key mirror matches the committed schema snapshot",
              assert_key_mirror(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) == []),
