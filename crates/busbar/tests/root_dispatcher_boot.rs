@@ -118,7 +118,11 @@ fn boot(tag: &str, env: &[(&str, &str)]) -> (usize, String) {
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let mut child = cmd.stdout(log).stderr(log_err).spawn().expect("spawn busbar");
+    let mut child = cmd
+        .stdout(log)
+        .stderr(log_err)
+        .spawn()
+        .expect("spawn busbar");
     let log_text = || std::fs::read_to_string(&log_path).unwrap_or_default();
     let ready = wait_for(Duration::from_secs(30), || {
         if let Some(status) = child.try_wait().expect("try_wait") {
@@ -143,7 +147,10 @@ fn the_binary_boots_with_the_root_dispatcher_installed() {
         WORKERS + 1,
         "the booted binary runs the root's dispatcher: {WORKERS} workers and the watchdog"
     );
-    assert!(!out.contains("worker-thread"), "no worker-count warning: {out}");
+    assert!(
+        !out.contains("worker-thread"),
+        "no worker-count warning: {out}"
+    );
 }
 
 /// THE WORKER-COUNT WARNINGS KEEP THEIR BYTES AND THEIR PLACE, now that the count is resolved at the
@@ -152,7 +159,11 @@ fn the_binary_boots_with_the_root_dispatcher_installed() {
 #[test]
 fn the_worker_count_warnings_print_as_before_and_the_dispatcher_is_full_size() {
     let (threads, out) = boot("invalid-env", &[("BUSBAR_WORKER_THREADS", "0")]);
-    assert_eq!(threads, WORKERS + 1, "the configured count sizes the dispatcher");
+    assert_eq!(
+        threads,
+        WORKERS + 1,
+        "the configured count sizes the dispatcher"
+    );
     let line = out
         .lines()
         .find(|l| l.contains("BUSBAR_WORKER_THREADS=\"0\""))
@@ -171,9 +182,12 @@ fn the_worker_count_warnings_print_as_before_and_the_dispatcher_is_full_size() {
         "the warning prints before the boot's own lines: {out}"
     );
     let (threads, out) = boot("deprecated-env", &[("BUSBAR_WORKER_THREADS", "2")]);
-    assert_eq!(threads, 2 + 1, "the deprecated knob still wins and sizes the dispatcher");
-    assert!(out.lines().any(|l| l
-        == "[warn] BUSBAR_WORKER_THREADS is DEPRECATED; set `advanced.worker_threads` in \
-            config.yaml instead (it is honored for now)."),
-        "{out}");
+    assert_eq!(
+        threads,
+        2 + 1,
+        "the deprecated knob still wins and sizes the dispatcher"
+    );
+    let deprecated = "[warn] BUSBAR_WORKER_THREADS is DEPRECATED; set `advanced.worker_threads` in \
+                      config.yaml instead (it is honored for now).";
+    assert!(out.lines().any(|l| l == deprecated), "{out}");
 }
