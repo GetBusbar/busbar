@@ -196,6 +196,11 @@ fn a_backoff_pends_until_the_host_clock_reaches_it() {
             o.head.wake_at_ns, until,
             "resume no earlier than the instant"
         );
+        assert_eq!(
+            c.issued(),
+            0,
+            "the clock is read on no ticket: no handle drawn, so a replay never reads a stored time"
+        );
     }
     MONO.store(until, Ordering::SeqCst);
     // SAFETY: as above.
