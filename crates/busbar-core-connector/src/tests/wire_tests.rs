@@ -207,7 +207,7 @@ fn an_entry_that_composes_over_a_layer_is_not_served_over_the_socket() {
     assert!(HostWire::new(door).is_err());
 }
 
-/// Every I/O error kind the seam spells, pinned per arm (the retired tcp transport's table).
+/// Every I/O error kind the seam spells, pinned per arm (the retired carrier's table).
 #[test]
 fn every_io_error_kind_maps_through_the_table() {
     use std::io::{Error, ErrorKind};
