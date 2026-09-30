@@ -1338,7 +1338,10 @@ kernel_crate = "busbar-kernel"
 # ── LOWERED 55337 -> 52187 by METER-FIX's loc basis, with RENAME (xtask loc bills test-gated
 # modules and const _ assertions as test; measured plus K2g's named 73-line reservation), the
 # measurement, -3150. Downward only.
-kernel_ceiling = 52187
+# ── LOWERED 52187 -> 52002 by FOLD-MCP A4 (the JSON-RPC envelope reader leaves ingress/jsonrpc.rs
+# for busbar_contract::jsonrpc; measured 51929 plus K2g's named 73-line reservation), the
+# measurement, -185. Downward only.
+kernel_ceiling = 52002
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
