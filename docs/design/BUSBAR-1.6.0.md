@@ -288,7 +288,7 @@ Every kind is on the memory ABI (§11.1); the Lane column is SUPERSEDED 2026-09-
 | hook | memory ~~COLD~~ | `HookHandler` | — |
 | export | memory ~~COLD~~ | `ExportHandler` | file destinations |
 | plane | memory ~~HOT~~ | `PlaneDecl` + resumable `on_piece` + `project` | the `HostSlots` families (§11.12): clock, records (reads and one-time claims), dest, sign, unit (nested dispatch), work (work handles), trust, verify, entitlement, content scan, `hook.call`. ~~`govern_admit(expected_units)`, `route.next` / `route.settle`, journal, approval~~ SUPERSEDED 2026-09-28 by THE DESIGN §11.12: expected units ride `arrive`'s answer, routing attempts are pushed to `on_piece` as ATTEMPT pieces, record writes ride `on_piece`'s answer, and approval redemption is a one-time record claim |
-| transport | memory ~~HOT~~ | `Carrier` or `Framer` | `io.*`, clock ~~, `auth.decorate` (framers)~~ |
+| transport | memory ~~HOT~~ | `Carrier` or `Framer` | `io.*`, clock, the host auth handle at its auth points (§6) ~~, `auth.decorate` (framers)~~ |
 
 **Dispatch.** Every call of every kind returns Ready or not-ready-with-a-wake (§11.2); a CPU-only call
 returns Ready inline on the worker, and slow I/O returns not-ready and fires the wake on completion. ~~**COLD dispatch.** A
@@ -772,7 +772,8 @@ plugins", and it routes each call by the style the provider entry resolves to. T
    framer's head is final — exactly as hyper will send it — the framer calls `auth.decorate(object,
    final head, body hash)`; the auth plugin returns the header; hyper encodes it; TLS sends it. The
    body hash is computed only for a style that needs it (SigV4).~~ SUPERSEDED 2026-09-27 by THE DESIGN
-   §11.6: the framer no longer calls a `decorate` crossing; the kernel makes the one call.
+   §11.6: the framer no longer calls a `decorate` crossing; the kernel makes the one call. The framer
+   now calls its bound auth through the host auth handle at its auth points (SUPERSEDED 2026-09-30 by THE DESIGN §6, "Auth points and guest lists").
 5. **Each style caches inside its plugin.** bearer and api-key build the header once, at `open`.
    jwt-bearer and oauth-client-credentials mint through the plugin's own `open-web` need and refresh
    ahead of expiry in the background on `tick`; the plugin holds the service-account file or client
@@ -819,7 +820,7 @@ its bench are gone.
 plugin abstained on: all-abstain is 401. **Replay refusal is kernel-side:** a verified identity may
 carry a `replay_key` and `replay_ttl_secs`, and the verify caller claims the record
 (`auth-replay`, plugin/key, ttl) through `records.claim` (§11.12) — already TAKEN is 401. An auth
-plugin that needs the request body declares the fact and receives the body, bounded (over the bound is
+plugin that needs the request body declares the fact (SUPERSEDED 2026-09-30 by THE DESIGN §6, "Auth points and guest lists": that plugin's style needs `HeadBody`) and receives the body, bounded (over the bound is
 a refusal). Webhook signatures are verified by ONE mechanism-named inbound auth plugin,
 `busbar-auth-webhook-signature` (scheme `webhook-signature`; variants Twilio — HMAC-SHA1
 `X-Twilio-Signature` — and Standard Webhooks); a missing signature is 401 end to end; a Standard
@@ -848,49 +849,58 @@ signs the real method and query of the walked request; the switch-over deletes t
 outbound-auth copies in the same train, so two implementations never ship together. No SigV4 crypto
 lives in the contract.
 
-**Auth points — how any transport applies any auth (OWNER-AGREED 2026-09-30).** A transport never
-names an auth and an auth never names a transport (Law 1). They meet on one shared vocabulary, the
-**auth point**: the moment in a transport's life at which it calls the auth bound to it.
+**Auth points and guest lists — how any transport applies any auth (OWNER-LOCKED 2026-09-30).** The
+picture: the kernel is a valet; the connector's listeners are its driveways; each transport is the
+interpreter that gets people in and out of cars; each plane's claim is a line on a driveway's guest
+list, naming the auth its guests must pass.
 
-| AuthPoint | the transport calls | the auth sees (neutral shapes, `abi/transport`) | used by (1.5.5 styles) |
-|---|---|---|---|
-| `Head` | once per request, after the head is final | method, target, field lines | bearer, api-key, x-api-key, x-goog-api-key, jwt-bearer and oauth-client-credentials bearers, a websocket handshake token, busbar client tokens inbound |
-| `HeadBody` | once per request, after the head is final and the whole body is held (bounded) | the head and the body | SigV4 on a unary request (outbound sign, inbound Bedrock-client verify), webhook-signature verify |
-| `Frame` | on every frame of a stream, as it is sent or received | the frame | chained per-frame signing on a streaming request |
-| `Peer` | once per connection, at connect or spawn | peer facts: the TLS peer certificate (from the connector), a spawn environment | mTLS client identity, stdio server credentials |
+1. **Auth points — the one vocabulary between transports and auths.** A transport never names an auth
+   and an auth never names a transport (Law 1). They meet on one locked vocabulary, defined once in
+   `busbar-contract/src/abi/auth` (to build; `abi/transport` refers to it). Only the owner and the
+   ARCHITECT add a point, and a new point changes the auth and transport kind ABIs.
 
-- **Defined once**, in `busbar-contract/src/abi/auth`: the auth kind owns the concept and
-  `abi/transport` refers to it, as `abi/auth` refers to `FrameSpan` and `RequestHead`. It is a locked
-  vocabulary, set by the owner and the ARCHITECT; adding a point changes both the auth and the
-  transport kind ABIs.
-- **Declared, never inferred.** A transport's Statement lists the points it offers. An auth plugin
-  declares, per style and per direction (verify, sign), the set of points it needs. At boot each need
-  (a plane's transport claim and auth style, per direction) is bound, and boot REFUSES when the
-  style's points are not all offered by the transport — e.g. a `HeadBody` style over a stream-only
-  transport. This replaces the fact "an auth plugin that needs the request body declares it": that
-  plugin needs `HeadBody`.
-- **The transport calls exactly the bound points.** It is initialised with the auth handle and the
-  point set and never calls a point the auth did not declare: no body is held for a `Head` style and
-  no per-frame call is made for it. The handle is a host service: its call crosses the one dispatcher
-  to the auth plugin, so "the kernel makes the one call" (§11.6) holds and no plugin calls another
-  (Law 2).
-- **Outbound order is fixed.** The transport finalises the head (its own lines: host, length,
-  framing), calls the auth at its points, then encodes. Nothing is added to the head after the auth
-  has run, so what a signing style signed is what is sent. A style emits named neutral lines (and,
-  where it names one, a query key); the transport encodes them in its own format.
-- **Inbound.** The transport decodes, then calls the auth's verify at its points. The verdict goes to
-  the kernel first-hand — identity drives admission and money, and a transport never carries or forges
-  it. The auth names its own credential lines and the transport strips them before the plane sees the
-  message; the kernel names no credential header, and its hard-coded credential header list is
-  deleted. A unit with no verdict is refused (fail closed); all-abstain stays 401.
-- **A style may need several points** (e.g. `{Peer, Head}`). Every call carries the connection id,
-  and the unit for `Head`, `HeadBody` and `Frame`, so the auth correlates them in its own cache. An
-  earlier point may refuse (a bad peer certificate drops the connection), but only the LAST point of
-  the set yields the unit's admitting verdict. `Peer` is per connection, so a `{Peer, Head}` style
-  is still one call per request.
-- **Placement stays in the style** (step 2 above): the plane's dialect names its default style, a
-  provider's `auth:` overrides it, and `caller-credential` (passthrough) is unchanged. 1.5.5's wire
-  bytes are the acceptance test for every style.
+   | AuthPoint | the transport calls | the auth sees |
+   |---|---|---|
+   | `Head` | once per request, when the head is final | method, target, field lines |
+   | `HeadBody` | once per request, with the whole body held (bounded) | the head and the body |
+   | `Peer` | once per connection, at connect or spawn | peer facts (the TLS peer certificate from the connector, a spawn environment) |
+   | `Frame` | reserved: named, not built until a style needs it | — |
+
+   A transport declares the points it offers; an auth style declares the points it needs.
+2. **Driveways are the kernel's.** The connector owns every listener, from config: each is a port
+   bound to one transport kind (e.g. https on 443). A transport never opens a port.
+3. **The kernel writes the guest lists.** Each plane declares, per dialect, its claims: a route, the
+   transport kind it arrives on, and the dialect's default auth style (e.g. one route of a dialect with
+   a token style, another dialect's route with a signing style). The operator's config may override a
+   claim's auth. At boot the kernel builds one guest list per listener — route → (plane, dialect,
+   auth) — and refuses to boot on: two claims on one route of one listener; a claim whose auth needs a
+   point the listener's transport does not offer; `Peer` on a listener shared by more than one plane.
+   A claim may list several auths; the kernel tries them in order behind the one handle.
+4. **Inbound.** The listener's transport decodes the head into a neutral request (method, target,
+   field lines), matches the route on its guest list, and calls that line's auth at its points; it
+   holds the body only when the line's auth needs `HeadBody`. The auth answers proceed or refuse and
+   names its credential lines; the transport strips them, so the plane never sees a credential. The
+   verdict goes to the kernel first-hand, never through the transport. The transport hands the request
+   in with the line it matched; the kernel checks that line is on that listener's list before any plane
+   receives it. The kernel renders every refusal. A listener with no auth configured admits anonymously.
+5. **Outbound.** Each outbound need (a plane's binding to a destination) gets its own transport
+   instance and auth. The transport finalises the head (its own lines: host, length, framing), calls
+   the auth at its points, adds the lines the auth returns — replacing any plane line of the same
+   name — and encodes. Nothing is added to the head after the auth has run, so what a signing style
+   signed is what is sent. A binding whose auth uses `Peer` has its own connection pool.
+6. **Tickets bring replies home.** Every request handed to the kernel carries its unit; the plane
+   replies to the kernel with it, and the kernel hands the reply to the transport, which knows the
+   unit's connection and stream.
+7. **Handles, pending, several points.** The auth is a host handle: the kernel makes every call
+   (§11.6) and no plugin calls another (Law 2). A pending answer parks only its own stream; the
+   connection's other streams keep flowing. Each call carries the connection and the unit, so an auth
+   that needs several points can correlate them; an earlier point may refuse, and the last point
+   decides.
+8. **Generations.** Guest lists and bindings belong to a generation. A reload builds and checks new
+   lists, swaps them in atomically — requests already inside finish on the old ones — and is refused,
+   leaving the running generation serving, if any check fails.
+9. **Placement stays in the auth style** (step 2 above). What a customer sees on the wire is each
+   style's own contract, proven by its conformance tests and the oracle, not by this design.
 
 ### 7. Money
 
@@ -3347,10 +3357,10 @@ The loader checks in this order:
 
 ##### B.3 auth (v3)
 
-**Tail:** `caps INBOUND|LOGIN|OUTBOUND`, `styles[]` with a per-style `needs_body_hash` fact, `cacheable`, aliases.
+**Tail:** `caps INBOUND|LOGIN|OUTBOUND`, `styles[]` with a per-style ~~`needs_body_hash` fact~~ auth-point set (SUPERSEDED 2026-09-30 by THE DESIGN §6, "Auth points and guest lists"), `cacheable`, aliases.
 
 - **`verify` (P).**
-  - In: the credential and the named carrier fields.
+  - In: ~~the credential and the named carrier fields~~ the neutral request at the style's auth points; the auth names its credential lines and the transport strips them (SUPERSEDED 2026-09-30 by THE DESIGN §6, "Auth points and guest lists").
   - Out: verdict IDENTITY, REJECT or PASS; identity `{subject, key_id, key_name, user, groups, provider, name, ttl_secs}`; a claims blob the kernel never reads on the request path.
   - **The kernel keeps the inbound `CredentialCache`** (Q-INCACHE):
     - consulted only for a `cacheable` plugin;
@@ -3373,7 +3383,7 @@ The loader checks in this order:
   - The `ready` fact is read by the health prober.
   - Expired with a failed refresh follows §6.5 (Q-EXPIRED).
   - Anthropic classification, `anthropic-version`, `x-api-key` trimming, `api-key` and `x-goog-api-key` are byte-for-byte.
-- **Framer fact** `signs_nothing_after_auth`, with a RED test.
+- ~~**Framer fact** `signs_nothing_after_auth`~~ a rule for every transport: nothing is added to the head after the auth has run (SUPERSEDED 2026-09-30 by THE DESIGN §6, "Auth points and guest lists"); with a RED test.
 - **Inbound SigV4** moves into an auth plugin's `verify` over a store-read host service, keeping the dummy-secret timing equivalence for an unknown AccessKeyId.
 
 ##### B.4 hook (v2)
@@ -3448,7 +3458,7 @@ The loader checks in this order:
 
 ##### B.7 transport (kind v1)
 
-- **Tables.** `CarrierSlots` and `FramerSlots` are re-headed with the per-connection token space; there is no framer auth service.
+- **Tables.** `CarrierSlots` and `FramerSlots` are re-headed with the per-connection token space; ~~there is no framer auth service~~ the framer calls its bound auth through the host auth handle (SUPERSEDED 2026-09-30 by THE DESIGN §6, "Auth points and guest lists").
 - **Status by crate:**
   - tcp, stdio and ws are re-headed.
   - **http is a sans-IO h1/h2/grpc framer rewrite**, with no tokio or hyper runtime. It is the largest transport item.
@@ -3710,7 +3720,7 @@ OWNER Q71(2)(3)(4) all YES (recommended). Mode: unattended.
 - 2026-09-27 ARCHITECT (WARDEN (4) kind-isolation-ship exemplar): option (a) — busbar-transport-tcp becomes the transport exemplar, so entry-count is enforced again. The http "implements Transport 3 times" finding is a real finding, ledgered as the Q68(1) fold consequence with its drain named: TRANSPORT-STACK's one-entry-per-plugin rule. It drains to 1 when the http framer entry lands. The plants stay on tcp.
 - 2026-09-27 ARCHITECT (PORT-EXT-A): the AUTH kind now has a real both-ways witness — plugin-loader auth_conformance_tests on GetBusbar/auth-oidc (linked vs dlopen), spec #2's missing witness closed by a real plugin, not a fixture. KI strikes -> WARDEN; the mcp_stdio_serve 1/7 flake -> WARDEN root-cause; the 4 repos' release workflows -> EXT-RELEASE.
 - 2026-09-27 ARCHITECT (EXT-RELEASE queue): (1) consumer-verify@dev and (3) scheduled runs reading main's workflows both resolve at plugin-repo promotion — logged, no action now. (2) wrong bundle_image and valkey prefix = defects, fixed. (4) release-on-upstream detects by commit sha, not by version string.
-- 2026-09-27 ARCHITECT (HOTDOOR-B queue 1, CRED-STRIP): a plane — linked OR dropped-in, identically — never sees the caller's credential. Governing: #65 zero trust, #40(b) (no raw secret to any plugin), the 2026-09-20 ruling "plane passes a credential-REF, never plaintext", and core owning auth verify. The host strips every header the auth gate consumed (the credential headers) from PlaneReqCtx.headers and the HOT head accessor before the plane sees the request. 1.5.5's UpstreamCreds::Passthrough (forward the caller's credential upstream) is served HOST-side: at egress the host injects the caller's verified credential when the pool's upstream_credentials = passthrough. The upstream bytes stay 1.5.5-identical (oracle-gated: passthrough and own cells). Witness: a plane that echoes all its headers gets no credential header, in both doors, with a RED arm; plus a passthrough cell showing the upstream receives the caller's credential byte-for-byte.
+- [Stripping mechanism SUPERSEDED 2026-09-30 by THE DESIGN §6, "Auth points and guest lists": the auth names its credential lines and the transport strips them.] 2026-09-27 ARCHITECT (HOTDOOR-B queue 1, CRED-STRIP): a plane — linked OR dropped-in, identically — never sees the caller's credential. Governing: #65 zero trust, #40(b) (no raw secret to any plugin), the 2026-09-20 ruling "plane passes a credential-REF, never plaintext", and core owning auth verify. The host strips every header the auth gate consumed (the credential headers) from PlaneReqCtx.headers and the HOT head accessor before the plane sees the request. 1.5.5's UpstreamCreds::Passthrough (forward the caller's credential upstream) is served HOST-side: at egress the host injects the caller's verified credential when the pool's upstream_credentials = passthrough. The upstream bytes stay 1.5.5-identical (oracle-gated: passthrough and own cells). Witness: a plane that echoes all its headers gets no credential header, in both doors, with a RED arm; plus a passthrough cell showing the upstream receives the caller's credential byte-for-byte.
 - 2026-09-27 ARCHITECT (HOTDOOR-B queue 2): HOT dispatch on spawn_blocking is a per-request thread hop on the #30 hot lane. Measure it (p50/p99 added latency per request, linked vs dropped). If the plane call is non-blocking by contract (blocking-ffi gate), dispatch inline on the worker; keep spawn_blocking only for a plane that declares blocking. Exit: the #30 crossing stays under 1µs, with the numbers recorded.
 - 2026-09-27 ARCHITECT (HOTDOOR-B queue 3): no stated head -> result-class status + application/json, unchanged = correct (1.5.5 shape).
 - 2026-09-27 ARCHITECT (EXT-TCP vs exemplar): e86acba07 made busbar-transport-tcp the KI transport exemplar. When tcp is extracted, the exemplar stays measurable: read from the pinned external checkout (cargo metadata), or the remaining in-tree single-entry transport. The transport kind is never left unmeasured.
@@ -4621,13 +4631,15 @@ Other rulings:
 - 2026-09-30 RULINGS: C2d plane-originated egress (a2a push, card fetch, admin connect/approve) = declared outbound NEED via HostConns (THE DESIGN §5), connector judges every open, plane keeps retry+queue, no unit/no billing; kernel-originated synthetic unit REFUSED; FarEnd = caller-unit only. C2a validate refusal uses sdk::life::fail (KIND-SHARE), no static placeholder; C2a REFUSED request ops = TRANSITIONAL with TODO row. H3 hold lifted (1.5.5 DeployCfg deny_unknown_fields verified). STEP-20 (A) net-zero at 48, drain in grpc deletion series with workspace-gate RED. DONE-HARNESS item2: accept BUSBAR_RELEASE_CHECKOUT only if git HEAD == full pinned sha + clean tree (no marker files); lk-cached diff applied by ARCHITECT. lk-cached.sh FIFO queue added. S3f text frames: EmitIn flags EMIT_TEXT + OnPieceOut PIECE_OUT_TEXT; no legacy write_typed. WIRE-AUTH admin saturation -> 1.5.5 401 (unsigned 503 register entry removed).
 
 ### 2026-09-30 — OWNER and ARCHITECT rulings (this session)
-- OWNER-AGREED (design session with the ARCHITECT): AUTH POINTS — Head, HeadBody, Frame, Peer — are
-  the one vocabulary between transports and auths (THE DESIGN §6, "Auth points"; defined in
-  `busbar-contract/src/abi/auth`). Transports offer points, auth styles need point sets, boot refuses
-  a mismatch, the transport calls only the bound points through the host auth handle, finalises the
-  head before auth and adds nothing after it, and inbound the auth names its credential lines and the
-  transport strips them (the kernel's credential header list goes). Law 1 gains: every layer
-  hard-codes a vocabulary, never an instance. Placement stays in auth styles (§6 step 2).
+- OWNER-LOCKED (design session with the ARCHITECT): AUTH POINTS AND GUEST LISTS (THE DESIGN §6). The
+  kernel owns the listeners (driveways) and writes one guest list per listener from each plane's
+  per-dialect claims (route, transport kind, default auth style; operator overrides); transports
+  decode, match the route, call that line's auth at its auth points (Head, HeadBody, Peer; Frame
+  reserved; defined in `busbar-contract/src/abi/auth`), strip the credential lines the auth names,
+  and hand the request in with the matched line; the kernel checks the line, owns the verdict and the
+  refusal. Outbound: each binding has its own transport and auth; finalise, auth, encode, nothing
+  after. Replies return by unit ticket; lists and bindings are per generation. Law 1 gains the
+  vocabulary rule.
 - OWNER: plugin repos are exact TWINS — public, Apache-2.0, default branch `dev`, identical skeleton,
   generated and checked by `cargo xtask fleet` from `plugins.yaml` + `.github/fleet/`. New repos:
   busbar-plane-{llm,mcp,a2a,streaming,decisions}, busbar-transport-{http,ws,stdio,grpc},
