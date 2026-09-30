@@ -112,7 +112,8 @@ unsafe impl AbiOut for CancelOut {}
 /// The implementor is `#[repr(C)]`, its first field is `head: OpsHead`, and every field after it is
 /// an `Option<Op>` — kind op `k` at slot index `LIFECYCLE_SLOTS + k`, contiguous (the mechanism's
 /// SLOT LAYOUT rule). Its `Lifecycle`'s `out` at slot `open` leads with the lifecycle's `OpenOut`
-/// (a [`Safe`](crate::abi::sdk::safe::Safe) `open` writes the instance there).
+/// (a [`Safe`](crate::abi::sdk::safe::Safe) `open` writes the instance there), and its `in` there
+/// with the lifecycle's `OpenIn` (a failed `open` writes its reason into `OpenIn::err_buf`).
 pub unsafe trait KindOps: Copy + 'static {
     /// The kind this table belongs to; the door's `kind` and `kind_abi` follow from it.
     const KIND: KindCode;

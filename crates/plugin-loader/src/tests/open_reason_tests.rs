@@ -17,14 +17,18 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::door::DoorFn;
+use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut, ValidateIn};
+use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::mechanism::{KindCode, MECHANISM_VERSION};
 
 use super::open_reason_plugins as witness;
 use super::OPEN_REASON_CAP;
+use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::kinds::store::Store;
 use crate::dispatch::{
-    load_dropped, load_linked, Bind, DispatchConfig, Dispatcher, ManifestFacts, NoSink,
+    load_dropped, load_linked, Bind, DispatchConfig, Dispatcher, Frame, ManifestFacts, NoSink,
 };
 use crate::store_v3::LoadedStore;
 
@@ -101,5 +105,42 @@ fn a_plugin_that_writes_no_reason_reads_as_a_stable_text() {
     assert_eq!(
         store_text(b""),
         "plugin 'open-reason-store' open failed: status 1"
+    );
+}
+
+fn octets(b: &[u8]) -> Blob {
+    Blob {
+        ptr: b.as_ptr(),
+        len: b.len(),
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    }
+}
+
+/// A kind on the SDK's generic lifecycle whose `validate` and `open` refuse in their own OWNED words
+/// (no instance exists to keep them): each crossing is lent the host's reason buffer, the SDK
+/// writes the words there, and the operator reads them byte for byte, with no per-thread slot on
+/// the plugin's side.
+#[test]
+fn an_sdk_validate_and_open_say_their_own_owned_words_through_the_lent_buffers() {
+    let d = dispatcher();
+    let door: DoorFn = witness::life::door;
+    let p = load_linked::<Secret>(door, bind(&d)).expect("the linked life door loads");
+
+    let mut vi: ValidateIn = blank_in();
+    vi.settings = octets(b"no port");
+    let mut v = Frame::new(vi, blank_out::<OutHead>());
+    let c = p.call(slot::VALIDATE, &mut v);
+    assert_eq!(c.outcome, Outcome::Failed);
+    assert_eq!(c.error.as_deref(), Some(&b"invalid: no port"[..]));
+
+    let mut oi: OpenIn = blank_in();
+    oi.settings = octets(b"boom: x");
+    let mut o = Frame::new(oi, blank_out::<OpenOut>());
+    let c = p.call(slot::OPEN, &mut o);
+    assert_eq!(c.outcome, Outcome::Failed);
+    assert_eq!(
+        c.open_failure(p.name()),
+        "plugin 'open-reason-life' open failed: boom: x"
     );
 }

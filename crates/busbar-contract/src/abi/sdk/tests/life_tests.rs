@@ -3,8 +3,10 @@
 
 //! The generic lifecycle through the real trampoline: one door built with `lifecycle: life(L)`,
 //! every slot answering what [`Life`] states, leases held until `release` and an unknown lease
-//! REFUSED, the refresh metric riding the envelope, and a failure's text living until the thread's
-//! next failure.
+//! REFUSED, the refresh metric riding the envelope, a failure's owned text and a body's envelope
+//! kept by THE INSTANCE THAT ANSWERED (never by the thread: two instances interleaved on one thread
+//! each read their own), and an instance-less failure's text written into the host's lent reason
+//! buffer.
 
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -13,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::abi::mechanism::call::{
     AbiStr, Blob, InHead, Op, OutHead, Outcome, RawOutcome, BLOB_ABSENT, BLOB_OCTETS, BLOB_SECRET,
-    FLAG_RESUME,
+    FLAG_RESUME, METRIC_ADD,
 };
 use crate::abi::mechanism::lifecycle::{
     slot, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn,
@@ -40,12 +42,25 @@ impl Life for Echo {
     const DRIVE: Outcome = Outcome::Refused;
 
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
+        if let Some(why) = settings.strip_prefix(b"worded:") {
+            // An owned text, as a 1.5.5 plugin's words often are.
+            return Err(Refusal::failed(format!(
+                "echo: invalid settings: {}",
+                String::from_utf8_lossy(why)
+            )));
+        }
         settings_object(settings).map(|_| ())
     }
 
     fn open(settings: &[u8], secrets: &[&[u8]], _: u64) -> Result<Self, Refusal> {
         if settings == b"refuse" {
             return Err(Refusal::refused("the echo refuses"));
+        }
+        if let Some(why) = settings.strip_prefix(b"boom:") {
+            return Err(Refusal::failed(format!(
+                "echo open failed:{}",
+                String::from_utf8_lossy(why)
+            )));
         }
         Ok(Echo(secrets.first().map_or(settings, |s| *s).to_vec()))
     }
@@ -86,6 +101,16 @@ impl SafeSlot for Resolve {
         let Some(h) = i.get() else {
             return Outcome::Fault;
         };
+        if h.life().0.starts_with(b"probe:") {
+            // The per-instance probe: a metric counting this instance's name, then a failure
+            // saying it, both in memory the SDK allocated for this answer.
+            let name = String::from_utf8_lossy(&h.life().0).into_owned();
+            let n = u32::try_from(name.len()).unwrap_or(u32::MAX);
+            assert!(out.metric(n, METRIC_ADD, f64::from(n)));
+            return out.fail(Refusal::failed(format!(
+                "{name} failed, in words its own instance keeps"
+            )));
+        }
         if h.life().0 == b"str" {
             // The leased-string probe: the answer's text, held under `head.lease`.
             out.lease_str(|o| &o.head.error, h.leases(), "a leased answer".to_string());
@@ -196,7 +221,7 @@ fn text(s: AbiStr) -> String {
     if s.ptr.is_null() {
         return String::new();
     }
-    // SAFETY: the plugin's error text, live until this thread's next failure.
+    // SAFETY: the plugin's error text: its instance's, or the lent buffer the test still holds.
     String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }).into_owned()
 }
 
@@ -394,28 +419,138 @@ fn a_refresh_reports_its_count_in_the_envelope_or_fails_with_its_text() {
     assert_eq!(close(inst), Outcome::Ready);
 }
 
+/// `resolve` on the probe instance `inst`: its outcome and its `out`.
+fn probe(inst: *mut c_void) -> (Outcome, ResolveOut) {
+    let mut input: ResolveIn = zeroed();
+    input.head = in_head::<ResolveIn>(crate::abi::secret::slot::RESOLVE);
+    let mut out: ResolveOut = zeroed();
+    out.head = out_head::<ResolveOut>();
+    let o = call(table().resolve, inst, &input, &mut out);
+    (o, out)
+}
+
+/// The metrics an answer's envelope names.
+fn metrics(out: &ResolveOut) -> Vec<(u32, f64)> {
+    let env = out.head.envelope;
+    if env.metrics.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: the envelope the answering instance keeps (until KEPT_RING newer ones).
+    unsafe { std::slice::from_raw_parts(env.metrics, env.metrics_len) }
+        .iter()
+        .map(|m| (m.family_idx, m.value))
+        .collect()
+}
+
+/// RED on a per-thread slot: TWO INSTANCES OF ONE PLUGIN, INTERLEAVED ON ONE THREAD, each read
+/// their own answer after the other has answered. A per-thread envelope is emptied and refilled
+/// by the second call, so the first answer's metrics would name the second instance's; a
+/// per-thread error slot would free the first text when the second failure replaced it.
 #[test]
-fn a_failure_text_lives_until_the_threads_next_failure() {
-    let mut first = out_head::<OutHead>();
+fn red_two_instances_interleaved_on_one_thread_never_see_each_others_answers() {
+    let (_, alpha, _) = open(b"probe:alpha", &[]);
+    let (_, bravo, _) = open(b"probe:bravo-bravo", &[]);
+    let (oa, a) = probe(alpha);
+    let (ob, b) = probe(bravo);
+    let (oa2, a2) = probe(alpha);
+    assert_eq!((oa, ob, oa2), (Outcome::Failed, Outcome::Failed, Outcome::Failed));
+    // The envelopes first: reading them is sound whatever holds them.
+    assert_eq!(metrics(&a), vec![(11, 11.0)], "alpha's envelope names alpha's metric");
+    assert_eq!(metrics(&b), vec![(17, 17.0)], "bravo's envelope names bravo's metric");
+    assert_eq!(metrics(&a2), vec![(11, 11.0)]);
+    assert_ne!(a.head.envelope.metrics, b.head.envelope.metrics, "one envelope each");
+    // Then the texts: each held by its own instance.
     assert_eq!(
-        fail(&mut first, Refusal::failed(String::from("one"))),
-        Outcome::Failed
+        text(a.head.error),
+        "probe:alpha failed, in words its own instance keeps"
     );
-    assert_eq!(text(first.error), "one");
-    let mut stat = out_head::<OutHead>();
     assert_eq!(
-        fail(&mut stat, Refusal::refused("static")),
-        Outcome::Refused
+        text(b.head.error),
+        "probe:bravo-bravo failed, in words its own instance keeps"
     );
-    assert_eq!(text(stat.error), "static");
+    assert_eq!(text(a2.head.error), text(a.head.error));
+    assert_ne!(a.head.error.ptr, a2.head.error.ptr, "each answer keeps its own text");
+    // Closing one instance leaves the other's answers readable.
+    assert_eq!(close(alpha), Outcome::Ready);
+    assert_eq!(metrics(&b), vec![(17, 17.0)]);
     assert_eq!(
-        text(first.error),
-        "one",
-        "a static text leaves the slot alone"
+        text(b.head.error),
+        "probe:bravo-bravo failed, in words its own instance keeps"
     );
-    let mut bare = out_head::<OutHead>();
-    assert_eq!(fail(&mut bare, Refusal::bare()), Outcome::Refused);
-    assert!(bare.error.ptr.is_null());
+    assert_eq!(close(bravo), Outcome::Ready);
+}
+
+/// `validate` through the door with the host's reason buffer `buf` lent (`None`: none lent).
+fn validate_lent(settings: &[u8], buf: Option<&mut [u8]>) -> (Outcome, OutHead) {
+    let mut input: ValidateIn = zeroed();
+    input.head = in_head::<ValidateIn>(slot::VALIDATE);
+    input.settings = blob(settings);
+    if let Some(b) = buf {
+        input.err_buf = b.as_mut_ptr();
+        input.err_cap = b.len();
+    }
+    let mut out = out_head::<OutHead>();
+    let o = call(table().head.validate, ptr::null_mut(), &input, &mut out);
+    (o, out)
+}
+
+/// `open` through the door with the host's reason buffer `buf` lent (`None`: none lent).
+fn open_lent(settings: &[u8], buf: Option<&mut [u8]>) -> (Outcome, OpenOut) {
+    let mut input: OpenIn = zeroed();
+    input.head = in_head::<OpenIn>(slot::OPEN);
+    input.settings = blob(settings);
+    input.generation = 1;
+    if let Some(b) = buf {
+        input.err_buf = b.as_mut_ptr();
+        input.err_cap = b.len();
+    }
+    let mut out: OpenOut = zeroed();
+    out.head = out_head::<OpenOut>();
+    let o = call(table().head.open, ptr::null_mut(), &input, &mut out);
+    (o, out)
+}
+
+/// An instance-less failure (`validate`, a failed `open`) has no instance to keep an owned text:
+/// it goes into the reason buffer the host lent the call, cut on a char boundary to its capacity
+/// (`open` states the length in `err_len`), byte for byte the plugin's words. Only when the host
+/// lent no buffer is the fixed text answered.
+#[test]
+fn an_instance_less_owned_text_rides_the_hosts_lent_buffer_and_only_else_a_fixed_text() {
+    let mut vbuf = [0_u8; 64];
+    let (o, out) = validate_lent(b"worded:no port", Some(&mut vbuf[..]));
+    assert_eq!(o, Outcome::Failed);
+    assert_eq!(text(out.error), "echo: invalid settings: no port");
+    assert_eq!(out.error.ptr, vbuf.as_ptr(), "named inside the host's buffer");
+    assert_eq!(&vbuf[..out.error.len], b"echo: invalid settings: no port");
+
+    let mut obuf = [0_u8; 64];
+    let (o, out) = open_lent(b"boom: x", Some(&mut obuf[..]));
+    assert_eq!(o, Outcome::Failed);
+    assert!(out.instance.is_null());
+    assert_eq!(&obuf[..out.err_len], b"echo open failed: x");
+    assert_eq!(text(out.head.error), "echo open failed: x");
+
+    // Cut to the capacity on a char boundary: `é` is two bytes and the cut falls inside one.
+    let mut small = [0_u8; 19];
+    let (_, out) = open_lent("boom: é".as_bytes(), Some(&mut small[..]));
+    assert_eq!(out.err_len, 18);
+    assert_eq!(&small[..18], b"echo open failed: ");
+    assert_eq!(small[18], 0, "nothing past the cut is written");
+
+    // No buffer lent: the fixed text, for both.
+    let (o, out) = validate_lent(b"worded:x", None);
+    assert_eq!(o, Outcome::Failed);
+    assert_eq!(text(out.error), crate::abi::sdk::out::NO_REASON_BUFFER);
+    let (o, out) = open_lent(b"boom: x", None);
+    assert_eq!(o, Outcome::Failed);
+    assert_eq!(out.err_len, 0);
+    assert_eq!(text(out.head.error), crate::abi::sdk::out::NO_REASON_BUFFER);
+
+    // A 'static text is named where it lives, buffer or not.
+    let (o, out) = validate_lent(b"[1]", Some(&mut vbuf[..]));
+    assert_eq!(o, Outcome::Failed);
+    assert_eq!(text(out.error), "settings: must be a JSON object");
+    assert_ne!(out.error.ptr, vbuf.as_ptr());
 }
 
 #[test]

@@ -10,6 +10,10 @@
 //!
 //! One source, compiled into plugin-loader's test build as a module (the LINKED door) and built as
 //! the `open_reason_store_door` example cdylib behind one `export_door!` line (the DROPPED door).
+//!
+//! The `life` witness is a kind built on the SDK's generic lifecycle (`lifecycle: life(L)`), whose
+//! `validate` and `open` both refuse with an OWNED reason: no instance exists to keep it, so the
+//! SDK writes it into the reason buffer the host lent the call.
 #![allow(dead_code)]
 
 /// The reason a witness fails its `open` with: its settings, verbatim; none for absent settings.
@@ -101,4 +105,62 @@ pub mod store {
     }
 
     busbar_contract::store_door!(NeverOpens, NAME, "0", 1);
+}
+
+/// The generic-lifecycle witness: a secret kind whose `validate` and `open` refuse in their own
+/// (owned) words.
+pub mod life {
+    use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
+    use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
+    use busbar_contract::abi::secret::{ResolveIn, ResolveOut};
+
+    /// Its Statement name: the name the host knows it by.
+    pub const NAME: &str = "open-reason-life";
+
+    /// A state that never opens.
+    pub struct Words;
+
+    impl Life for Words {
+        const CANCEL: u32 = 0;
+
+        fn validate(settings: &[u8]) -> Result<(), Refusal> {
+            Err(Refusal::failed(format!(
+                "invalid: {}",
+                String::from_utf8_lossy(settings)
+            )))
+        }
+
+        fn open(settings: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+            Err(Refusal::failed(super::reason(&String::from_utf8_lossy(
+                settings,
+            ))))
+        }
+
+        fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+            Ok(Refreshed::default())
+        }
+    }
+
+    /// `resolve`: unreachable, since no instance ever exists.
+    pub struct Resolve;
+    impl SafeSlot for Resolve {
+        type In = ResolveIn;
+        type Out = ResolveOut;
+        type State = Held<Words>;
+        fn call(
+            _: Instance<'_, Held<Words>>,
+            _: Lent<'_, ResolveIn>,
+            _: Out<'_, ResolveOut>,
+        ) -> Outcome {
+            Outcome::Refused
+        }
+    }
+
+    busbar_contract::plugin_door! {
+        ops: busbar_contract::abi::secret::Ops,
+        statement: busbar_contract::abi::sdk::door::statement(NAME, "0", 1),
+        lifecycle: life(Words),
+        kind_ops: { resolve: busbar_contract::abi::sdk::Safe<Resolve> },
+    }
 }

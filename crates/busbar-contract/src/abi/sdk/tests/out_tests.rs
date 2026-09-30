@@ -145,25 +145,89 @@ fn a_published_value_is_the_sdks_until_its_retire() {
 }
 
 #[test]
-fn a_failure_names_its_text_in_the_head() {
+fn a_failure_names_its_text_where_its_instance_keeps_it() {
+    let kept = Kept::default();
+    let reporting: Reporting = std::cell::Cell::new(None);
     let mut o: CancelOut = zeroed();
-    let answered = Out::new(&mut o).fail(Refusal::failed(String::from("no")));
+    let answered = Out::kept(&mut o, &kept, &reporting).fail(Refusal::failed(String::from("no")));
     assert_eq!(answered, Outcome::Failed);
     assert_eq!(read(o.head.error), b"no");
+    assert_eq!(kept.held(), (1, 0), "the instance holds the text");
+    let mut s: CancelOut = zeroed();
+    let answered = Out::kept(&mut s, &kept, &reporting).fail(Refusal::refused("static"));
+    assert_eq!(answered, Outcome::Refused);
+    assert_eq!(read(s.head.error), b"static");
+    assert_eq!(kept.held(), (1, 0), "a static text is named where it lives");
+    assert_eq!(read(o.head.error), b"no");
+}
+
+#[test]
+fn the_instance_keeps_a_bounded_ring_of_texts_each_readable_while_held() {
+    let kept = Kept::default();
+    let reporting: Reporting = std::cell::Cell::new(None);
+    let mut first: CancelOut = zeroed();
+    let _ = Out::kept(&mut first, &kept, &reporting).fail(Refusal::failed(String::from("first")));
+    for i in 0..KEPT_RING - 1 {
+        let mut o: CancelOut = zeroed();
+        let _ = Out::kept(&mut o, &kept, &reporting).fail(Refusal::failed(format!("n{i}")));
+    }
+    assert_eq!(read(first.head.error), b"first", "held until the ring wraps");
+    let mut o: CancelOut = zeroed();
+    let _ = Out::kept(&mut o, &kept, &reporting).fail(Refusal::failed(String::from("wrap")));
+    assert_eq!(kept.held().0, KEPT_RING, "the ring never grows past its bound");
+}
+
+#[test]
+fn an_instance_less_failure_writes_the_hosts_lent_buffer_and_else_a_fixed_text() {
+    // `validate`: the bytes, cut on a char boundary, named in `head.error` inside the buffer.
+    let mut buf = [0_u8; 4];
+    let lent = Reason {
+        buf: buf.as_mut_ptr(),
+        cap: buf.len(),
+        open: false,
+    };
+    let mut v: OutHead = zeroed();
+    let answered = Out::lent(&mut v, Some(lent)).fail(Refusal::failed(String::from("aéé")));
+    assert_eq!(answered, Outcome::Failed);
+    assert_eq!((v.error.ptr, v.error.len), (buf.as_ptr(), 3));
+    assert_eq!(&buf, b"a\xc3\xa9\0");
+    // `open`: the same, with the length in `err_len`.
+    let mut buf = [0_u8; 16];
+    let lent = Reason {
+        buf: buf.as_mut_ptr(),
+        cap: buf.len(),
+        open: true,
+    };
+    let mut o: OpenOut = zeroed();
+    let answered = Out::lent(&mut o, Some(lent)).fail(Refusal::refused(String::from("boom: x")));
+    assert_eq!(answered, Outcome::Refused);
+    assert_eq!(o.err_len, 7);
+    assert_eq!(&buf[..7], b"boom: x");
+    // No buffer lent: the fixed text, and nothing reported.
+    let mut n: OpenOut = zeroed();
+    let mut out = Out::lent(&mut n, None);
+    assert_eq!(out.fail(Refusal::failed(String::from("lost"))), Outcome::Failed);
+    assert!(!out.metric(0, crate::abi::mechanism::call::METRIC_ADD, 1.0));
+    assert!(!out.diag(0, 0, "lost"));
+    assert_eq!(read(n.head.error), NO_REASON_BUFFER.as_bytes());
+    assert_eq!(n.err_len, 0);
 }
 
 #[test]
 fn a_body_reports_metrics_and_declared_diagnostics_in_its_envelope() {
     use crate::abi::mechanism::call::{METRIC_ADD, METRIC_SET};
-    super::begin_call();
+    let kept = Kept::default();
+    let reporting: Reporting = std::cell::Cell::new(None);
     let mut o: CancelOut = zeroed();
-    let mut out = Out::new(&mut o);
+    let mut out = Out::kept(&mut o, &kept, &reporting);
     assert!(out.metric(2, METRIC_ADD, 1.0));
     assert!(out.metric(5, METRIC_SET, 7.5));
     assert!(out.diag(1, 2, String::from("BUSBAR-7070 the webhook refused")));
     let env = o.head.envelope;
     assert_eq!((env.metrics_len, env.diags_len), (2, 1));
-    // SAFETY: this thread's envelope, live until its next safe call begins.
+    // The call returns: its envelope goes to the instance, which keeps it.
+    kept.keep(reporting.take().expect("the call reported"));
+    // SAFETY: the instance's envelope, kept until KEPT_RING newer ones.
     let (m, d) = unsafe { (std::slice::from_raw_parts(env.metrics, 2), &*env.diags) };
     assert_eq!(
         (m[0].family_idx, m[0].kind, m[0].value),
@@ -178,23 +242,24 @@ fn a_body_reports_metrics_and_declared_diagnostics_in_its_envelope() {
         .all(|e| e.label_vals.is_null() && e.label_vals_len == 0));
     assert_eq!((d.id_idx, d.severity), (1, 2));
     assert_eq!(read(d.text), b"BUSBAR-7070 the webhook refused");
-    // The next safe call starts an empty envelope.
-    super::begin_call();
+    // The next call starts an empty envelope of its own; the first stays as it was.
     let mut o2: CancelOut = zeroed();
-    assert!(Out::new(&mut o2).metric(0, METRIC_ADD, 3.0));
+    assert!(Out::kept(&mut o2, &kept, &reporting).metric(0, METRIC_ADD, 3.0));
     assert_eq!(o2.head.envelope.metrics_len, 1);
+    assert_ne!(o2.head.envelope.metrics, env.metrics);
+    assert_eq!(m[0].family_idx, 2);
 }
 
 #[test]
 fn a_full_envelope_reports_no_more() {
     use crate::abi::mechanism::call::{MAX_ENVELOPE_ENTRIES, METRIC_ADD};
-    super::begin_call();
+    let kept = Kept::default();
+    let reporting: Reporting = std::cell::Cell::new(None);
     let mut o: CancelOut = zeroed();
-    let mut out = Out::new(&mut o);
+    let mut out = Out::kept(&mut o, &kept, &reporting);
     for _ in 0..MAX_ENVELOPE_ENTRIES {
         assert!(out.metric(0, METRIC_ADD, 1.0));
     }
     assert!(!out.metric(0, METRIC_ADD, 1.0), "the envelope is bounded");
     assert_eq!(o.head.envelope.metrics_len, MAX_ENVELOPE_ENTRIES);
-    super::begin_call();
 }

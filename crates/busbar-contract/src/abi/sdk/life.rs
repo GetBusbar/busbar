@@ -13,9 +13,10 @@
 //!
 //! * [`Leases`] — an answer's owned bytes, held under a lease (memory class iv) until `release`;
 //!   an unknown lease is REFUSED. Secret bytes are zeroized when released or dropped.
-//! * [`fail`] — a FAILED or REFUSED answer's text: ONE slot per thread, overwritten by the thread's
-//!   next failure and freed when the thread exits; the host copies it as the crossing returns,
-//!   before the thread can make another call. A `'static` text is not copied.
+//! * [`Refusal`] — a FAILED or REFUSED answer's text, answered through
+//!   [`Out::fail`](crate::abi::sdk::Out::fail): an owned text is kept by the instance that answered
+//!   (never by a thread or the process), or, before there is an instance (`validate`, `open`),
+//!   written into the reason buffer the host lent the call. A `'static` text is not copied.
 //! * [`settings_object`] — a settings blob as the JSON object it must be (`{}` when empty).
 //!
 //! ```
@@ -118,37 +119,11 @@ impl Refusal {
     pub fn text(&self) -> Option<&str> {
         self.text.as_deref()
     }
-}
 
-thread_local! {
-    /// The text of this thread's last failed answer: ONE slot per thread, overwritten by the
-    /// next, freed when the thread exits. It never grows with calls, instances or threads gone.
-    static LAST_ERROR: std::cell::RefCell<Box<str>> = std::cell::RefCell::new(Box::from(""));
-}
-
-/// Answer `refusal`: its outcome, with `head.error` naming its text until this thread's next
-/// failure (a `'static` text is named where it lives).
-pub fn fail(head: &mut OutHead, refusal: Refusal) -> Outcome {
-    head.error = match refusal.text {
-        None => AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
-        Some(Cow::Borrowed(s)) => AbiStr {
-            ptr: s.as_ptr(),
-            len: s.len(),
-        },
-        Some(Cow::Owned(s)) => {
-            let held: Box<str> = s.into();
-            let named = AbiStr {
-                ptr: held.as_ptr(),
-                len: held.len(),
-            };
-            LAST_ERROR.with(|e| *e.borrow_mut() = held);
-            named
-        }
-    };
-    refusal.outcome
+    /// Its outcome and its text, for the SDK's writer ([`Out::fail`]).
+    pub(crate) fn into_parts(self) -> (Outcome, Option<Cow<'static, str>>) {
+        (self.outcome, self.text)
+    }
 }
 
 /// A settings blob's bytes as the JSON object they must be; empty is `{}`.

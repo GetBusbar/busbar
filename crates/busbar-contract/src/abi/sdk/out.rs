@@ -8,13 +8,25 @@
 //! pointer-bearing field — a string, a blob, a list, a published value, a view into a host buffer —
 //! to an SDK writer that takes the memory it points into from a place that outlives the answer:
 //!
-//! * [`Out::fail`] — the answer's error text (`abi::sdk::life::fail`);
+//! * [`Out::fail`] — the answer's error text, kept where the answer's instance keeps it or, with no
+//!   instance yet (`validate`, `open`), written into the host's lent reason buffer;
 //! * [`Out::lease`] / [`Out::lease_secret`] — owned bytes, held under a lease until `release`;
 //! * [`Out::text`] / [`Out::list`] — `'static` strings and lists;
 //! * [`Out::publish`] — generation data the SDK owns until that generation's `retire`;
 //! * [`Out::host_str`] / [`Out::host_list`] — a view into a host buffer lent for the call.
 //!
 //! So safe code cannot store a pointer the host would read after its memory is gone.
+//!
+//! WHERE AN ANSWER'S OWN MEMORY LIVES. Nothing here is per thread or per process: the SDK holds no
+//! `static` and no `thread_local` (the ABI's shared mechanism: memory a plugin returns is
+//! plugin-owned and valid until that plugin's next refresh generation; no allocation on the hot
+//! path). What an answer names that the SDK allocated — a failure's owned text, the envelope's
+//! metrics and diagnostics — is kept by THE INSTANCE THAT ANSWERED ([`Kept`], in the SDK's instance
+//! box), in a bounded ring of the last [`KEPT_RING`] answers, so two instances of one plugin never
+//! share or overwrite each other's answers, on one thread or many. A call with no instance yet
+//! (`validate`, `open`) writes its owned text into the reason buffer the host lent it
+//! (`ValidateIn::err_buf`, `OpenIn::err_buf`), reports no envelope, and, only when the host lent
+//! no buffer, answers a fixed text.
 //!
 //! ```compile_fail,E0277
 //! use busbar_contract::abi::mechanism::call::{AbiStr, OutHead};
@@ -46,39 +58,123 @@
 //! }
 //! ```
 
+use std::borrow::Cow;
+use std::cell::Cell;
+use std::collections::VecDeque;
 use std::mem::size_of;
 use std::ptr;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Diag, MetricEntry, OutHead, Outcome, MAX_ENVELOPE_ENTRIES,
 };
+use crate::abi::mechanism::lifecycle::OpenOut;
 use crate::abi::sdk::door::AbiOut;
 use crate::abi::sdk::lent::HostBuf;
-use crate::abi::sdk::life::{fail, Leases, Refusal};
+use crate::abi::sdk::life::{Leases, Refusal};
 use crate::abi::sdk::publish::{Generations, Publish};
 
-/// THE ENVELOPE A SAFE BODY REPORTS (#85): the metrics and declared diagnostics it adds with
-/// [`Out::metric`] and [`Out::diag`]. ONE per thread, emptied as each safe call begins; the host
-/// copies the reply as the crossing returns, before the thread makes another call.
+/// How many answers one instance keeps alive at once, per kind of memory (owned failure texts;
+/// envelopes), oldest dropped first: the store door's and the hook door's bound. The host copies
+/// each as its crossing returns, so an answer is dropped only once this many newer answers of the
+/// same instance have been kept.
+pub const KEPT_RING: usize = 4096;
+
+/// A failure's owned text with no instance to keep it and no reason buffer lent by the host: the
+/// only case the SDK answers a fixed text for.
+pub const NO_REASON_BUFFER: &str = "the plugin's reason was not kept: the host lent no reason buffer";
+
+/// THE ENVELOPE ONE SAFE CALL REPORTS (#85): the metrics and declared diagnostics its body added
+/// with [`Out::metric`] and [`Out::diag`], with the texts the diagnostics point into.
 #[derive(Default)]
-struct Reported {
+pub(crate) struct Report {
     metrics: Vec<MetricEntry>,
     diags: Vec<Diag>,
     texts: Vec<Box<str>>,
 }
 
-thread_local! {
-    static REPORTED: std::cell::RefCell<Reported> = std::cell::RefCell::new(Reported::default());
+// SAFETY: a `Report` owns everything its entries point to (`label_vals` is always NULL; a `Diag`'s
+// text is one of its own `texts`), and it is only reached through the instance's lock.
+unsafe impl Send for Report {}
+
+impl Report {
+    fn clear(&mut self) {
+        self.metrics.clear();
+        self.diags.clear();
+        self.texts.clear();
+    }
 }
 
-/// Empty this thread's envelope: a safe call begins (`abi::sdk::safe::Safe`).
-pub(crate) fn begin_call() {
-    REPORTED.with(|r| {
-        let mut r = r.borrow_mut();
-        r.metrics.clear();
-        r.diags.clear();
-        r.texts.clear();
-    });
+/// What a call's body reported, held by the call until it returns: the SDK then hands it to the
+/// instance's [`Kept`].
+pub(crate) type Reporting = Cell<Option<Box<Report>>>;
+
+/// WHAT ONE INSTANCE'S ANSWERS NAME, kept by the instance (the SDK's instance box,
+/// `abi::sdk::safe`): the owned failure texts and the reported envelopes of its last [`KEPT_RING`]
+/// answers each. Dropped with the instance.
+#[derive(Default)]
+pub(crate) struct Kept {
+    texts: Mutex<VecDeque<Box<str>>>,
+    reports: Mutex<VecDeque<Box<Report>>>,
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl Kept {
+    /// Keep `text` and answer the string naming it, valid until [`KEPT_RING`] newer texts of this
+    /// instance.
+    pub(crate) fn text(&self, text: String) -> AbiStr {
+        let kept: Box<str> = text.into();
+        let named = AbiStr {
+            ptr: kept.as_ptr(),
+            len: kept.len(),
+        };
+        let mut ring = lock(&self.texts);
+        if ring.len() >= KEPT_RING {
+            ring.pop_front();
+        }
+        ring.push_back(kept);
+        named
+    }
+
+    /// An empty envelope for a call to fill: the oldest kept one, reused, once the ring is full
+    /// (no allocation from then on), else a new one.
+    fn report(&self) -> Box<Report> {
+        let mut ring = lock(&self.reports);
+        if ring.len() >= KEPT_RING {
+            if let Some(mut r) = ring.pop_front() {
+                r.clear();
+                return r;
+            }
+        }
+        Box::default()
+    }
+
+    /// Keep a returned call's envelope (its entries do not move: they live on the heap).
+    pub(crate) fn keep(&self, report: Box<Report>) {
+        let mut ring = lock(&self.reports);
+        if ring.len() >= KEPT_RING {
+            ring.pop_front();
+        }
+        ring.push_back(report);
+    }
+
+    /// How many texts and envelopes the instance holds.
+    #[cfg(test)]
+    pub(crate) fn held(&self) -> (usize, usize) {
+        (lock(&self.texts).len(), lock(&self.reports).len())
+    }
+}
+
+/// The host's reason buffer lent to an instance-less call (`validate`, `open`): its address and
+/// capacity, and whether the `out` is an `open`'s (which states the length in `err_len`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Reason {
+    pub(crate) buf: *mut u8,
+    pub(crate) cap: usize,
+    pub(crate) open: bool,
 }
 
 /// A value with no pointer in it, anywhere: a safe body may set it into an `out` directly.
@@ -109,14 +205,55 @@ unsafe impl Scalar for crate::abi::store::CellGrant {}
 
 /// A slot's `out`, as a safe body is handed it: read anything, set scalars, and hand pointers to
 /// the SDK's writers. Only the SDK makes one; it lives for the call.
-#[derive(Debug)]
 pub struct Out<'a, T> {
     out: &'a mut T,
+    /// The answering instance's memory; `None` with no instance yet.
+    kept: Option<&'a Kept>,
+    /// Where this call's envelope is built; `None` when there is no instance to keep it.
+    reporting: Option<&'a Reporting>,
+    /// The host's lent reason buffer, on an instance-less call that was lent one.
+    reason: Option<Reason>,
+}
+
+impl<T> std::fmt::Debug for Out<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Out")
+            .field("instance", &self.kept.is_some())
+            .field("reason", &self.reason)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a, T: AbiOut> Out<'a, T> {
+    /// An `out` with no instance and no lent reason buffer (the unit tests' writer).
+    #[cfg(test)]
     pub(crate) fn new(out: &'a mut T) -> Self {
-        Self { out }
+        Self {
+            out,
+            kept: None,
+            reporting: None,
+            reason: None,
+        }
+    }
+
+    /// An `out` answered for the instance that keeps `kept`, its envelope built in `reporting`.
+    pub(crate) fn kept(out: &'a mut T, kept: &'a Kept, reporting: &'a Reporting) -> Self {
+        Self {
+            out,
+            kept: Some(kept),
+            reporting: Some(reporting),
+            reason: None,
+        }
+    }
+
+    /// An instance-less `out` (`validate`, `open`) lent the host's reason buffer `reason`.
+    pub(crate) fn lent(out: &'a mut T, reason: Option<Reason>) -> Self {
+        Self {
+            out,
+            kept: None,
+            reporting: None,
+            reason,
+        }
     }
 
     /// The `out` as the SDK's own code writes it (the kind SDKs in this crate).
@@ -176,9 +313,64 @@ impl<'a, T: AbiOut> Out<'a, T> {
         self.head().wake_at_ns = mono_ns;
     }
 
-    /// Answer `refusal`: its outcome, the head's error naming its text (`abi::sdk::life::fail`).
+    /// Answer `refusal`: its outcome, the head's error naming its text. A `'static` text is named
+    /// where it lives. An owned text is kept by the answering instance until [`KEPT_RING`] newer
+    /// texts of it; with no instance yet it is written into the host's lent reason buffer (cut on a
+    /// char boundary to its capacity; an `open` states its length in `err_len`), and only when the
+    /// host lent none is it answered as [`NO_REASON_BUFFER`].
     pub fn fail(&mut self, refusal: Refusal) -> Outcome {
-        fail(self.head(), refusal)
+        let (outcome, text) = refusal.into_parts();
+        let error = match text {
+            None => AbiStr {
+                ptr: ptr::null(),
+                len: 0,
+            },
+            Some(Cow::Borrowed(s)) => AbiStr {
+                ptr: s.as_ptr(),
+                len: s.len(),
+            },
+            Some(Cow::Owned(s)) => self.owned_text(s),
+        };
+        self.head().error = error;
+        outcome
+    }
+
+    /// Where an owned failure text lives: the instance, else the host's lent reason buffer, else
+    /// nowhere (the fixed text).
+    fn owned_text(&mut self, text: String) -> AbiStr {
+        if let Some(kept) = self.kept {
+            return kept.text(text);
+        }
+        let Some(r) = self.reason else {
+            return AbiStr {
+                ptr: NO_REASON_BUFFER.as_ptr(),
+                len: NO_REASON_BUFFER.len(),
+            };
+        };
+        let mut end = text.len().min(r.cap);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        // SAFETY: `r.buf` is the host's reason buffer of `r.cap >= end` writable bytes, lent for
+        // this call and overlapping nothing the body holds (`ValidateIn::err_buf`,
+        // `OpenIn::err_buf`); `text` is the body's own.
+        unsafe { ptr::copy_nonoverlapping(text.as_ptr(), r.buf, end) };
+        if r.open {
+            // SAFETY: an `open`'s `out` leads with the lifecycle's `OpenOut` (`KindOps`'s
+            // contract), and `self.out` is the exclusive borrow of it.
+            unsafe { (*ptr::from_mut::<T>(self.out).cast::<OpenOut>()).err_len = end };
+        }
+        AbiStr {
+            ptr: r.buf.cast_const(),
+            len: end,
+        }
+    }
+
+    /// This call's envelope for a writer to fill (the call's own, or a fresh one from the
+    /// instance); `None` with no instance.
+    fn report(&self) -> Option<Box<Report>> {
+        let (kept, reporting) = (self.kept?, self.reporting?);
+        Some(reporting.take().unwrap_or_else(|| kept.report()))
     }
 
     /// Name `text`, which lives for the program, as the answer's error text; the outcome is the
@@ -192,14 +384,14 @@ impl<'a, T: AbiOut> Out<'a, T> {
 
     /// REPORT one metric in the reply's envelope: `value` for the family at `family_idx` in the
     /// Statement's `families`, as `kind` (`METRIC_ADD` | `METRIC_SET` | `METRIC_OBSERVE`), unlabelled.
-    /// `false` when the envelope is full ([`MAX_ENVELOPE_ENTRIES`]): the entry is not reported.
+    /// `false` when the envelope is full ([`MAX_ENVELOPE_ENTRIES`]), or when the call has no
+    /// instance to keep it (`validate`, `open`): the entry is not reported.
     pub fn metric(&mut self, family_idx: u32, kind: u8, value: f64) -> bool {
-        let head = self.head();
-        REPORTED.with(|r| {
-            let mut r = r.borrow_mut();
-            if r.metrics.len() >= MAX_ENVELOPE_ENTRIES {
-                return false;
-            }
+        let Some(mut r) = self.report() else {
+            return false;
+        };
+        let added = r.metrics.len() < MAX_ENVELOPE_ENTRIES;
+        if added {
             r.metrics.push(MetricEntry {
                 family_idx,
                 kind,
@@ -208,22 +400,23 @@ impl<'a, T: AbiOut> Out<'a, T> {
                 label_vals: ptr::null(),
                 label_vals_len: 0,
             });
+            let head = self.head();
             head.envelope.metrics = r.metrics.as_ptr();
             head.envelope.metrics_len = r.metrics.len();
-            true
-        })
+        }
+        self.hand_back(r);
+        added
     }
 
     /// REPORT one declared diagnostic in the reply's envelope: the id at `id_idx` in the
     /// Statement's `diag_ids`, its `severity` and `text`. The call capture's log records join after
     /// it. `false` when the envelope is full: the entry is not reported.
     pub fn diag(&mut self, id_idx: u32, severity: u8, text: impl Into<Box<str>>) -> bool {
-        let head = self.head();
-        REPORTED.with(|r| {
-            let mut r = r.borrow_mut();
-            if r.diags.len() >= MAX_ENVELOPE_ENTRIES {
-                return false;
-            }
+        let Some(mut r) = self.report() else {
+            return false;
+        };
+        let added = r.diags.len() < MAX_ENVELOPE_ENTRIES;
+        if added {
             let text: Box<str> = text.into();
             let named = AbiStr {
                 ptr: text.as_ptr(),
@@ -237,10 +430,19 @@ impl<'a, T: AbiOut> Out<'a, T> {
                 _reserved: [0; 3],
                 text: named,
             });
+            let head = self.head();
             head.envelope.diags = r.diags.as_ptr();
             head.envelope.diags_len = r.diags.len();
-            true
-        })
+        }
+        self.hand_back(r);
+        added
+    }
+
+    /// Hand the envelope back to the call (moving the box moves none of its entries).
+    fn hand_back(&self, r: Box<Report>) {
+        if let Some(reporting) = self.reporting {
+            reporting.set(Some(r));
+        }
     }
 
     /// Hold `bytes` in `leases` under a new lease (named in the head) and set the blob `pick`

@@ -27,6 +27,12 @@
 //! every answer that is not PENDING (READY or any failure: the op is over), and on `cancel` of that
 //! ticket. So a recycled ticket never resumes a finished op's state.
 //!
+//! AN ANSWER'S OWN MEMORY, KEPT BY ITS INSTANCE. The box also holds the instance's [`Kept`]: the
+//! owned failure texts and reported envelopes its answers name, a bounded ring of each
+//! (`abi::sdk::out`). Nothing is kept per thread or per process, so two instances of one plugin
+//! never see each other's answers. A call with no instance yet (`validate`, `open`) is handed the
+//! host's lent reason buffer instead.
+//!
 //! THE CALL CONTRACT this relies on (`Entry::enter`): the host passes back the pointer `open`
 //! answered READY, until `close` answers READY, and runs `close` with no other op in flight. The
 //! state is boxed behind its type's `TypeId`, so a slot naming a different `T` reads `None` rather
@@ -40,22 +46,23 @@ use std::marker::PhantomData;
 use std::mem::size_of;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use crate::abi::mechanism::call::{InHead, Outcome, FLAG_RESUME};
-use crate::abi::mechanism::lifecycle::{slot, CancelIn, OpenOut};
+use crate::abi::mechanism::call::{InHead, OutHead, Outcome, FLAG_RESUME};
+use crate::abi::mechanism::lifecycle::{slot, CancelIn, OpenIn, OpenOut, ValidateIn};
 use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::door::{AbiIn, AbiOut, Entry};
 use crate::abi::sdk::lent::Lent;
-use crate::abi::sdk::out::Out;
+use crate::abi::sdk::out::{Kept, Out, Reason, Reporting};
 
 /// What each ticket's op parked, by ticket.
 type Parked = HashMap<Ticket, Box<dyn Any + Send + Sync>>;
 
 /// What the SDK keeps in every instance box whatever the state's type: the tag, then the parked
-/// continuations.
+/// continuations, then what the instance's answers name.
 #[repr(C)]
 struct Head {
     tag: TypeId,
     parked: Mutex<Parked>,
+    kept: Kept,
 }
 
 impl Head {
@@ -143,6 +150,7 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
             head: Head {
                 tag: TypeId::of::<T>(),
                 parked: Mutex::new(HashMap::new()),
+                kept: Kept::default(),
             },
             state,
         })));
@@ -335,10 +343,21 @@ impl<S: SafeSlot> Entry for Safe<S> {
             resuming,
             opened: &opened,
         };
+        // What the body reports is built here and handed to the instance when it returns.
+        let reporting: Reporting = Cell::new(None);
+        let written = match parked {
+            Some(h) => Out::kept(&mut *out, &h.kept, &reporting),
+            // SAFETY: `input` is the trampoline's copy of the host's `in` for slot `index`.
+            None => Out::lent(&mut *out, unsafe { lent_reason(index, input) }),
+        };
         // SAFETY: `input` is the trampoline's copy of the host's `in`, whose every pointer is
         // valid for the call (`Entry::enter`'s contract), and it lives until this returns.
-        crate::abi::sdk::out::begin_call();
-        let answered = S::call(handle, unsafe { Lent::new(input) }, Out::new(&mut *out));
+        let answered = S::call(handle, unsafe { Lent::new(input) }, written);
+        let reported = reporting.take();
+        let kept_report = reported.is_some();
+        if let (Some(h), Some(r)) = (parked, reported) {
+            h.kept.keep(r);
+        }
         if let Some(h) = parked {
             if answered != Outcome::Pending {
                 // The op is over (READY or a failure): no RESUME will come for what it parked.
@@ -370,6 +389,15 @@ impl<S: SafeSlot> Entry for Safe<S> {
                     // Not this state's box: leave it rather than free it as another type.
                     return Outcome::Fault;
                 }
+                if kept_report {
+                    // What `close` reported lives in the box that goes now: it is not reported.
+                    // SAFETY: every `out` leads with its `OutHead` (`AbiOut`); `out` is live.
+                    let head = unsafe { &mut *std::ptr::from_mut(out).cast::<OutHead>() };
+                    head.envelope.metrics = std::ptr::null();
+                    head.envelope.metrics_len = 0;
+                    head.envelope.diags = std::ptr::null();
+                    head.envelope.diags_len = 0;
+                }
                 // SAFETY: the SDK's `Tagged<S::State>` box from `open`; `close` answered READY with
                 // no other op in flight, so the host never passes it again (the call contract).
                 drop(unsafe { Box::from_raw(instance.cast::<Tagged<S::State>>()) });
@@ -378,6 +406,30 @@ impl<S: SafeSlot> Entry for Safe<S> {
         }
         answered
     }
+}
+
+/// The reason buffer the host lent an instance-less call: `validate`'s and `open`'s (both
+/// `err_buf`/`err_cap`); `None` for any other slot or when none was lent.
+///
+/// # Safety
+/// `input` is the trampoline's copy of the host's `in` for slot `index`.
+unsafe fn lent_reason<I: 'static>(index: u32, input: &I) -> Option<Reason> {
+    let (buf, cap, open) = match index {
+        slot::VALIDATE => {
+            let v = (input as &dyn Any).downcast_ref::<ValidateIn>()?;
+            (v.err_buf, v.err_cap, false)
+        }
+        slot::OPEN => {
+            // Every kind's `open` `in` leads with the lifecycle's `OpenIn` (`KindOps`).
+            debug_assert!(size_of::<I>() >= size_of::<OpenIn>());
+            // SAFETY: at OPEN, `I` is the kind's `open` `in`, which leads with an `OpenIn`
+            // (`KindOps`'s contract).
+            let o = unsafe { &*std::ptr::from_ref(input).cast::<OpenIn>() };
+            (o.err_buf, o.err_cap, true)
+        }
+        _ => return None,
+    };
+    (!buf.is_null() && cap > 0).then_some(Reason { buf, cap, open })
 }
 
 #[cfg(test)]
