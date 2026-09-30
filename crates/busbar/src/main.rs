@@ -871,10 +871,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // same `request_body_max_bytes` the line above hands the served door, so a plane's transport and
     // the door in front of it cannot disagree about which bodies exist. Every build runs it, whatever
     // planes it links; a composition that does not seal exits 2 here, and success writes nothing.
-    // The rows are the linked wires and the ones dropped into `plugins.dir`, folded in one pass; the
-    // sealed registry names the wire under the data door when that wire came in dropped in.
-    let _sealed =
-        root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));
+    // The rows are the linked wires and the ones dropped into `plugins.dir`, folded in one pass.
+    let _sealed = root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));
     // THE PROCESS'S ONE CONNECTOR, right after the transport registry sealed: every linked
     // transport door as a framer entry, every dial judged by the kernel's one judge. Inbound
     // listening and outbound egress both take it from `root::connector::the()`.
