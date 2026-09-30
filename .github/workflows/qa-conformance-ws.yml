@@ -7,7 +7,7 @@ name: WS conformance
 # busbar is built and where a red blocks the release it is about (mirrors qa-conformance-mcp.yml).
 # The instrument here is Autobahn|Testsuite (`crossbario/autobahn-testsuite`, an independent
 # third-party fuzzingclient that ships as a Docker image), driven by
-# `testing/ws-conformance/scripts/run.sh` against `WsTransport::over(TcpTransport)` -- the same
+# `testing/ws-conformance/scripts/run.sh` against `WsTransport` over the `tcp` door -- the same
 # composition a battery test in `busbar-transport-tcp/src/tests/mod.rs` builds. The harness itself
 # carries no product knowledge: `testing/ws-conformance/subject` is a testkit binary that is not a
 # workspace member of the product build (`cargo build --bin busbar` never sees it) and is excused by

@@ -498,7 +498,7 @@ const OFF_TREE_MANIFESTS: &[(&str, &str)] = &[
     (
         "testing/ws-conformance/subject/Cargo.toml",
         "the Autobahn|Testsuite SUBJECT: a testkit binary that composes the same \
-         `WsTransport::over(TcpTransport)` chain a transport battery test composes, so the \
+         `WsTransport`-over-the-tcp-door chain the root folds, so the \
          fuzzingclient has a real busbar wire to point at. It is a workspace member so \
          `testing/ws-conformance/scripts/run.sh` can build it with `-p ws-conformance-subject`, and \
          it is not a crate of the product tree: it ships in no artifact, `cargo build --bin busbar` \

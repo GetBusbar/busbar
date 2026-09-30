@@ -20,20 +20,92 @@
 //! (the host's cap is at least `MAX_ADDR`), `read`/`write` partial I/O is not short, and a
 //! framer's full sink is backpressure (`YIELD_MORE`), never short.
 
-use busbar_contract::abi::mechanism::call::Outcome;
+use busbar_contract::abi::mechanism::call::{AbiStr, Outcome};
 use busbar_contract::abi::mechanism::check::{reported, Fault};
+use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::transport::check::{
-    check_accept, check_arrival, check_cancel, check_framer, check_io, check_listen, check_locate,
+    check_accept, check_arrival, check_cancel, check_claims, check_composes_over, check_framer,
+    check_io, check_listen, check_locate, check_tail,
 };
 use busbar_contract::abi::transport::{
-    self, slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, ConnIn, ConnOut,
+    self, slot, Claim, TransportTail, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, ConnIn, ConnOut,
     DialIn, EmitIn, EncodeIn, FinishIn, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
     ListenIn, ListenOut, LocateIn, LocateOut, ReadIn, RefuseIn, ShutIn, WriteIn,
 };
 
-use crate::dispatch::{lifecycle_name, Answer, InFrame, Kind, OutFrame};
+use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
+
+/// WHAT A TRANSPORT'S TAIL STATES, read once at bind and checked by the kind's own `check_tail`,
+/// `check_claims` and `check_composes_over`: its role, every scheme it answers for (the first is
+/// its own) and the claims it composes over. The host's registry view reads it through
+/// [`crate::dispatch::Plugin::context`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportFacts {
+    /// `ROLE_CARRIER` | `ROLE_FRAMER`.
+    pub role: u32,
+    /// Every scheme the entry answers for, in order (interned: one allocation per distinct name for
+    /// the process).
+    pub claims: Vec<&'static str>,
+    /// The claims it composes over; empty = directly over the host's socket (a framer) or the
+    /// bottom of its stack (a carrier).
+    pub composes_over: Vec<&'static str>,
+}
+
+/// A plugin string, interned.
+fn owned(s: AbiStr, field: &str) -> Result<&'static str, String> {
+    if s.len == 0 {
+        return Ok("");
+    }
+    // SAFETY: a tail string is `'static` plugin data; `check_tail`/`check_claims` refused a NULL
+    // pointer with a count before this reads it.
+    let bytes = unsafe { std::slice::from_raw_parts(s.ptr, s.len) };
+    std::str::from_utf8(bytes)
+        .map(crate::intern_name)
+        .map_err(|_| format!("the transport tail's {field} is not UTF-8"))
+}
+
+/// The transport's tail, read from the Statement and checked.
+fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
+    let p = st.kind_tail;
+    if p.is_null() {
+        return Err("a transport states no kind tail".into());
+    }
+    // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`; the
+    // whole tail is read only once its size covers this host's `TransportTail`.
+    let size = unsafe { (*p).size };
+    if (size as usize) < std::mem::size_of::<TransportTail>() {
+        return Err(format!(
+            "the transport tail is {size} bytes, smaller than this host's"
+        ));
+    }
+    // SAFETY: as above.
+    let tail = unsafe { p.cast::<TransportTail>().read_unaligned() };
+    let broke = |f: Fault| format!("the transport tail breaks {:?} at {}", f.rule, f.field);
+    check_tail(&tail).map_err(broke)?;
+    // SAFETY: `check_tail` refused a NULL list with a count; both lists are `'static` plugin data.
+    let claims: &[Claim] = unsafe { std::slice::from_raw_parts(tail.claims, tail.claims_len) };
+    check_claims(claims).map_err(broke)?;
+    let under: &[AbiStr] = if tail.composes_over_len == 0 {
+        &[]
+    } else {
+        // SAFETY: as above.
+        unsafe { std::slice::from_raw_parts(tail.composes_over, tail.composes_over_len) }
+    };
+    check_composes_over(under).map_err(broke)?;
+    Ok(TransportFacts {
+        role: tail.role,
+        claims: claims
+            .iter()
+            .map(|c| owned(c.key, "claim"))
+            .collect::<Result<_, _>>()?,
+        composes_over: under
+            .iter()
+            .map(|s| owned(*s, "composes_over"))
+            .collect::<Result<_, _>>()?,
+    })
+}
 
 /// The transport kind.
 #[derive(Debug, Clone, Copy)]
@@ -70,6 +142,10 @@ impl Kind for Transport {
     const CODE: KindCode = KindCode::Transport;
     type Ops = transport::Ops;
     const TIMEOUT: Outcome = Outcome::Failed;
+
+    fn context(st: &Statement) -> Result<Option<Box<Context>>, String> {
+        Ok(Some(Box::new(tail_facts(st)?)))
+    }
 
     fn op_name(s: u32) -> &'static str {
         match s {

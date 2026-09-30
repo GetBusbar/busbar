@@ -4,39 +4,28 @@ version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 rust-version = "1.97"
-description = "The tcp transport: a byte stream, the base every session transport composes over."
+description = "The tcp transport: an identity framer over the host's byte stream."
 license = "Apache-2.0"
 
 [lib]
-# rlib: the linked door (a build that links this crate holds its `TcpCarrier` as the contract's
-# `Carrier`) and the tests. cdylib: the dropped-in door — the same carrier lowered by the contract's
-# `export_carrier!` to the HOT decl, exported as `busbar_transport_decl` for the
-# loader to `dlopen` (#3: a transport is swappable, compiled in OR dropped in, over the HOT lane).
+# rlib: the linked door (`linked::door`) and the tests. cdylib: the dropped-in door — the same door
+# exported through the one symbol (`exports`, feature `dropped-in`).
 crate-type = ["rlib", "cdylib"]
 
-# DEPENDENCY POLICY. A transport is a plugin (#3), so its closure is `busbar-contract` plus the async
-# runtime and stream plumbing it actually needs: no plane, no kernel crate, no capability crate. Its
-# HOT-lane door is the contract's own lowering of its `Carrier` (`export_carrier!`), so no layout is
-# restated here (#84).
+# DEPENDENCY POLICY. A transport is a plugin, so its closure is `busbar-contract` and nothing else it
+# does not need. This one needs nothing else: the socket, its readiness and its clock are the host's.
 [features]
-# THE DROPPED-IN DOOR (`exports`): this crate's carrier, lowered and registered as its image's one door through
-# the contract's SHARED door (`busbar_contract::export_transport!`, the #84 merge). The frozen symbols
-# (`busbar_abi`, `busbar_plugin_kind`, `busbar_transport_decl`) are defined ONCE, in the contract, so
-# this crate defines none and a link holding it beside the other plugins holds one definition of each
-# (the fat-LTO "symbol multiply defined" refusal the per-crate symbols caused). OFF in a build that
-# links this crate (the linked door is `TcpCarrier` itself); the dropped-in artifact is built on its
-# own: `cargo build -p busbar-transport-tcp --release --features dropped-in`.
+# THE DROPPED-IN DOOR (`exports`): the door exported as its image's one symbol through the contract's
+# `export_door!`. OFF in a build that links this crate (the linked door is `linked::door`); the
+# dropped-in artifact is built on its own: `cargo build -p busbar-transport-tcp --release --features
+# dropped-in`.
 dropped-in = []
 
 [dependencies]
-tokio-util = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
-futures = { workspace = true }
-tokio = { workspace = true, features = ["net", "rt", "sync", "io-util", "time"] }
 
 [dev-dependencies]
-# The TEST-ONLY seal (#65). `busbar_contract::plugin::TestKernelSeal` is the one blessed
-# fixture implementor of the SEALED `KernelSeal` trait; this crate's test harnesses used to
-# forge their own. Dev-only and feature-gated, so it is absent from every release build.
-busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
-tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "io-util", "time", "macros", "test-util"] }
+# THE BOTH-WAYS WITNESS (`tests/conformance.rs`): the linked door and this crate's own dropped-in
+# image, admitted through the one loader and driven through the one dispatcher.
+busbar-plugin-loader = { path = "../plugin-loader" }
+busbar-transport-tcp = { path = ".", features = ["dropped-in"] }

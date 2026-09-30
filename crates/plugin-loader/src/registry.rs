@@ -688,6 +688,43 @@ impl PluginRegistry {
             .collect()
     }
 
+    /// Open EVERY loadable transport, in scan order, each through the lane its image speaks: a
+    /// library with the memory-ABI door ([`busbar_contract::abi::mechanism::DOOR_SYMBOL`]) is
+    /// admitted through the one dispatcher's door validation and bound with `bind`; any other through
+    /// the HOT decl ([`Self::open_transport`]'s lane). Each image is staged and opened once. The
+    /// first that will not load fails the whole set, naming it.
+    ///
+    /// # Errors
+    ///
+    /// The plugin that would not load, and why.
+    pub fn open_transport_entries(
+        &self,
+        bind: &crate::dispatch::Bind,
+    ) -> Result<TransportEntries, String> {
+        use crate::dispatch::load::{load_staged, Staging};
+        let mut entries = TransportEntries::default();
+        for p in self
+            .loadable()
+            .iter()
+            .filter(|p| p.manifest.kind == busbar_contract::abi::cold::kind::TRANSPORT)
+        {
+            let name = &p.manifest.name;
+            let (lib, staged) = crate::stage::load_library_from_bytes(&p.lib_bytes, name)?;
+            match load_staged::<crate::dispatch::kinds::transport::Transport>(lib, staged, bind.clone())
+                .map_err(|e| format!("transport plugin '{name}' refused at its door: {e}"))?
+            {
+                Staging::Door(plugin) => entries.doors.push(plugin),
+                Staging::NotADoor(lib, staged) => entries.hot.push(crate::transport::wire_up_transport(
+                    lib,
+                    name.clone(),
+                    &p.manifest.kind,
+                    Some(staged),
+                )?),
+            }
+        }
+        Ok(entries)
+    }
+
     /// Open EVERY loadable plane, in scan (filename) order, through [`Self::open_plane`] — the planes
     /// a dropped-in plugins directory contributes to the plane axis. The first that will not load
     /// fails the whole set, naming it: a trusted plane that cannot be admitted is not skipped.
@@ -698,6 +735,16 @@ impl PluginRegistry {
             .map(|p| self.open_plane(&p.manifest.name))
             .collect()
     }
+}
+
+/// The transports a plugins directory contributes, by the lane each image speaks
+/// ([`PluginRegistry::open_transport_entries`]).
+#[derive(Default)]
+pub struct TransportEntries {
+    /// HOT-decl wires.
+    pub hot: Vec<crate::DynTransport>,
+    /// Memory-ABI transport doors, bound.
+    pub doors: Vec<crate::dispatch::Plugin<crate::dispatch::kinds::transport::Transport>>,
 }
 
 /// Discover plugin tarballs (`*.tar.gz` / `*.tgz`) in `dir`, sorted by filename. A missing

@@ -66,6 +66,11 @@ pub(crate) const AXES: &[(&str, &str, &str)] = &[
 /// it declares and `build(lower, &TransportSettings)`; the root folds the rows bottom-up.
 const TRANSPORT_AXIS: &str = "transport";
 
+/// Beside `transport`: the row's entry exports its memory-ABI `door` instead of a `build`, and the
+/// root builds it (`crate::root::doors::build`) — admitted through the one dispatcher and served over
+/// the host's sockets by the connector.
+pub(crate) const DOOR_AXIS: &str = "transport-door";
+
 /// The claims axis: each row's entry exports the pure plane the boot seal registers (`PLANE`) and
 /// the claims it declares (`CLAIMS`); rides on `plane`.
 const CLAIMS_AXIS: &str = "claims";
@@ -235,6 +240,7 @@ pub(crate) fn linked_source(
                 axis == "plane"
                     || axis == "hot-plane"
                     || axis == TRANSPORT_AXIS
+                    || axis == DOOR_AXIS
                     || axis == AUTH_AXIS
                     || axis == CLAIMS_AXIS
                     || AXES.iter().any(|(a, _, _)| a == axis)
@@ -313,10 +319,26 @@ pub(crate) fn linked_source(
     }
     out.push_str("],\n");
     out.push_str("    transports: &[");
-    for e in on_axis(TRANSPORT_AXIS) {
+    let mut door_builds = String::new();
+    for (n, (e, axes)) in linked
+        .iter()
+        .filter(|(_, a)| a.iter().any(|x| x == TRANSPORT_AXIS))
+        .enumerate()
+    {
+        let build = if axes.iter().any(|x| x == DOOR_AXIS) {
+            door_builds.push_str(&format!(
+                "fn __door_build_{n}(\n    lower: Option<std::sync::Arc<dyn busbar_contract::Transport>>,\n    \
+                 settings: &busbar_contract::transport::TransportSettings,\n\
+                 ) -> std::sync::Arc<dyn busbar_contract::Transport> {{\n    \
+                 crate::root::doors::build({e}::door, lower, settings)\n}}\n"
+            ));
+            format!("__door_build_{n}")
+        } else {
+            format!("{e}::build")
+        };
         out.push_str(&format!(
             "crate::root::linked::LinkedTransport {{ key: {e}::KEY, composes_over: \
-             {e}::COMPOSES_OVER, build: {e}::build }}, "
+             {e}::COMPOSES_OVER, build: {build} }}, "
         ));
     }
     out.push_str("],\n");
@@ -350,6 +372,7 @@ pub(crate) fn linked_source(
         out.push_str("],\n");
     }
     out.push_str("};\n");
+    out.push_str(&door_builds);
     // Test builds only: each gauntlet row's declaration key beside the key its plane's gauntlet asks
     // the host-selection seam for (`<crate>::PLANE_KEY`), so the flip is proven to land where the
     // plane looks.

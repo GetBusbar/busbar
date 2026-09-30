@@ -291,6 +291,8 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
     let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
     let entries = metadata_map(manifest, "package.metadata.busbar.linked-entry");
     let mut rows = String::new();
+    let mut door_builds = String::new();
+    let mut doors_used = false;
     let mut off = 0;
     for (key, krate) in metadata_map(manifest, "package.metadata.busbar.linked") {
         let is_wire = axes
@@ -310,9 +312,25 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
             .or_else(|| entries.iter().find(|(k, _)| *k == krate))
             .map(|(_, path)| path.clone())
             .unwrap_or_else(|| format!("{}::linked", ident(&krate)));
+        let door = axes.iter().any(|(f, a)| {
+            *f == key && a.split_whitespace().any(|x| x == DOOR_AXIS)
+        });
+        let build = if door {
+            // A door row's entry exports its memory-ABI `door`; the root's doors module (mounted
+            // here under its own name, the tests including this file have no root) builds it.
+            doors_used = true;
+            let n = rows.matches("LinkedWire {").count();
+            door_builds.push_str(&format!(
+                "fn __door_build_{n}(lower: Option<Wire>, settings: &::busbar_contract::transport::TransportSettings) -> Wire {{\n    \
+                 self::__busbar_doors::build(::{entry}::door, lower, settings)\n}}\n"
+            ));
+            format!("__door_build_{n}")
+        } else {
+            format!("::{entry}::build")
+        };
         rows.push_str(&format!(
             "    LinkedWire {{ key: ::{entry}::KEY, composes_over: ::{entry}::COMPOSES_OVER, \
-             session: ::{entry}::SESSION, build: ::{entry}::build }},\n"
+             session: ::{entry}::SESSION, build: {build} }},\n"
         ));
     }
     let source = format!(
@@ -363,5 +381,18 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
              built\n\
          }}\n"
     );
+    let mut source = source;
+    source.push_str(&door_builds);
+    if doors_used {
+        let doors = std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir"))
+            .join("src/root/doors.rs");
+        source.push_str(&format!(
+            "/// The root's transport doors, mounted for this file's door rows.\n\
+             #[allow(dead_code)]\n\
+             #[path = {:?}]\n\
+             mod __busbar_doors;\n",
+            doors.display().to_string()
+        ));
+    }
     (source, off)
 }

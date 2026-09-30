@@ -9,8 +9,8 @@ description = "Autobahn|Testsuite subject: busbar's ws transport composed over t
 # TESTKIT, NOT PRODUCT PATH. This binary exists only so the Autobahn|Testsuite fuzzingclient has a
 # real busbar transport to point at. It is not shipped, not built by `cargo build --bin busbar`,
 # and carries no plane/protocol meaning of its own -- it composes the SAME
-# `WsTransport::over(TcpTransport)` chain the architecture names, the way a battery test in
-# `busbar-transport-tcp/src/tests/mod.rs` composes the identical pair.
+# chain the root folds: `WsTransport` over the `tcp` door, served over the host's sockets by the
+# connector.
 [[bin]]
 name = "ws-conformance-subject"
 path = "src/main.rs"
@@ -19,5 +19,9 @@ path = "src/main.rs"
 busbar-contract = { path = "../../../crates/busbar-contract" }
 busbar-transport-ws = { path = "../../../crates/busbar-transport-ws" }
 busbar-transport-tcp = { path = "../../../crates/busbar-transport-tcp" }
+# The root's transport doors (`crates/busbar/src/root/doors.rs`, mounted by path): the tcp door
+# admitted through the one dispatcher and served over the host's sockets by the connector.
+busbar-core-connector = { path = "../../../crates/busbar-core-connector" }
+busbar-plugin-loader = { path = "../../../crates/plugin-loader" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
 futures = { workspace = true }

@@ -19,10 +19,13 @@
 
 use busbar_contract::abi::cold::export::ExportStream;
 use busbar_plugin_loader::sign::{sha256_hex, sign, Manifest, SigningKey, TrustPolicy};
+use busbar_plugin_loader::dispatch::kinds::transport::{Transport, TransportFacts};
+use busbar_plugin_loader::dispatch::{
+    load_dropped, Bind, DispatchConfig, Dispatcher, ManifestFacts, NoSink, Plugin,
+};
 use busbar_plugin_loader::{
-    list_plugin_files, load_export_from_bytes, load_transport, load_transport_from_bytes,
-    plugin_library_filename, scan_and_validate, scrape, supported_abi, tarball, DynTransport,
-    PluginRegistry,
+    list_plugin_files, load_export_from_bytes, plugin_library_filename, scan_and_validate, scrape,
+    supported_abi, tarball, PluginRegistry,
 };
 use std::path::{Path, PathBuf};
 
@@ -159,13 +162,32 @@ fn libraries() -> Vec<PathBuf> {
     found.into_iter().map(|(_, p)| p).collect()
 }
 
-/// An in-tree transport `cdylib`, found by its KIND (the library the loader admits as
-/// `kind: transport`), and the key its decl declares — the test names no wire.
+/// A transport door `cdylib` at `path`, admitted through the one dispatcher's door validation, and
+/// the key its tail states (its own claim); `None` for any other library.
+fn transport_door(path: &Path) -> Option<(Plugin<Transport>, &'static str)> {
+    static ONE: std::sync::OnceLock<Dispatcher> = std::sync::OnceLock::new();
+    let d = ONE.get_or_init(|| Dispatcher::new(DispatchConfig::default()));
+    let facts = ManifestFacts {
+        mechanism_version: busbar_contract::abi::mechanism::MECHANISM_VERSION,
+        kind: busbar_contract::abi::mechanism::KindCode::Transport,
+        kind_abi: busbar_contract::abi::mechanism::KindCode::Transport.abi_version(),
+    };
+    let bind = Bind {
+        max_inflight_cap: 64,
+        sink: std::sync::Arc::new(NoSink),
+        dispatcher: d.adopter(),
+    };
+    let plugin = load_dropped::<Transport>(path, &facts, bind).ok()?;
+    let key = *plugin.context::<TransportFacts>()?.claims.first()?;
+    Some((plugin, key))
+}
+
+/// An in-tree transport door `cdylib`, found by its KIND (a library the one dispatcher admits as a
+/// transport door), and the key its tail states — the test names no transport.
 pub fn transport_cdylib() -> Option<(Vec<u8>, &'static str)> {
     libraries().into_iter().find_map(|p| {
-        let bytes = std::fs::read(&p).ok()?;
-        let wire = load_transport_from_bytes(&bytes, "probe", "transport").ok()?;
-        Some((bytes, wire.key()))
+        let (_, key) = transport_door(&p)?;
+        Some((std::fs::read(&p).ok()?, key))
     })
 }
 
@@ -187,24 +209,21 @@ pub fn render_snapshot(lib: &[u8], name: &str, exposition: &str) -> (String, Str
     sink.scrape(families).expect("the sink renders")
 }
 
-/// The in-tree transport `cdylib`s beside the test binary, loaded once for the process, one per key.
-pub fn transport_wires() -> &'static [DynTransport] {
-    static WIRES: std::sync::OnceLock<Vec<DynTransport>> = std::sync::OnceLock::new();
-    WIRES.get_or_init(|| {
-        let exe = std::env::current_exe().expect("the test binary");
-        let dir = exe.parent().expect("its directory");
-        let mut wires: Vec<DynTransport> = Vec::new();
-        for file in list_plugin_files(dir) {
-            if !file.contains("transport") {
-                continue;
-            }
-            let Ok(wire) = load_transport(&dir.join(file)) else {
+/// The in-tree transport door `cdylib`s beside the test binary, admitted once for the process, one
+/// per key.
+pub fn transport_doors() -> &'static [(Plugin<Transport>, &'static str)] {
+    static DOORS: std::sync::OnceLock<Vec<(Plugin<Transport>, &'static str)>> =
+        std::sync::OnceLock::new();
+    DOORS.get_or_init(|| {
+        let mut doors: Vec<(Plugin<Transport>, &'static str)> = Vec::new();
+        for p in libraries() {
+            let Some((plugin, key)) = transport_door(&p) else {
                 continue;
             };
-            if !wires.iter().any(|w| w.key() == wire.key()) {
-                wires.push(wire);
+            if !doors.iter().any(|(_, k)| *k == key) {
+                doors.push((plugin, key));
             }
         }
-        wires
+        doors
     })
 }

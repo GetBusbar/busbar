@@ -370,3 +370,65 @@ fn the_kind_is_transport_and_times_out_failed() {
     assert_eq!(Transport::CODE, KindCode::Transport);
     assert_eq!(Transport::TIMEOUT, Outcome::Failed);
 }
+
+// ── the tail the registry view reads ──
+
+/// A transport's tail is read and checked at bind: none refuses the load; a framer over the host's
+/// socket states its claims and no layer.
+#[test]
+fn the_tail_is_read_at_bind_and_a_missing_one_refuses() {
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    use busbar_contract::abi::sdk::door::{abi_str, statement};
+    use busbar_contract::abi::transport::{Claim, TransportTail, ROLE_FRAMER};
+
+    use crate::dispatch::kinds::transport::TransportFacts;
+
+    let bare: Statement = statement("t", "0", 1);
+    assert!(Transport::context(&bare).is_err(), "no tail, no load");
+
+    let claims: [Claim; 2] = [
+        Claim {
+            key: abi_str("one"),
+            selector_forms: abi_str(""),
+            egress_selector_forms: abi_str(""),
+            facts: std::ptr::null(),
+            facts_len: 0,
+            status_namespace: abi_str(""),
+            session: 0,
+            session_bound: 0,
+            unit0_trigger: 0,
+            status_at: 0,
+            _reserved: 0,
+        },
+        Claim {
+            key: abi_str("two"),
+            selector_forms: abi_str(""),
+            egress_selector_forms: abi_str(""),
+            facts: std::ptr::null(),
+            facts_len: 0,
+            status_namespace: abi_str(""),
+            session: 0,
+            session_bound: 0,
+            unit0_trigger: 0,
+            status_at: 0,
+            _reserved: 0,
+        },
+    ];
+    let mut tail: TransportTail = z();
+    tail.head = KindTailHead {
+        size: size_of::<TransportTail>() as u32,
+        _reserved: 0,
+    };
+    tail.role = ROLE_FRAMER;
+    tail.claims = claims.as_ptr();
+    tail.claims_len = 2;
+    let st = Statement {
+        kind_tail: std::ptr::from_ref(&tail).cast::<KindTailHead>(),
+        ..bare
+    };
+    let ctx = Transport::context(&st).expect("a framer tail binds").expect("a context");
+    let facts = ctx.downcast_ref::<TransportFacts>().expect("the transport facts");
+    assert_eq!(facts.claims, ["one", "two"]);
+    assert!(facts.composes_over.is_empty());
+    assert_eq!(facts.role, ROLE_FRAMER);
+}

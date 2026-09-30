@@ -940,6 +940,3 @@ impl Transport for WireTransport {
     }
 }
 
-#[cfg(test)]
-#[path = "tests/transport_adapter_tests.rs"]
-mod tests;

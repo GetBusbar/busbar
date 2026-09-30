@@ -10,7 +10,6 @@
 #
 # `carrier<TAB>crate` exempts a transport CARRIER, whose whole job is the socket. The connector is a
 # cleanliness crate and never in scope.
-carrier	busbar-transport-tcp
 carrier	busbar-transport-stdio
 busbar-a2a	hyper-util
 busbar-a2a	reqwest

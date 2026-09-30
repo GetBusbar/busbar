@@ -1674,7 +1674,6 @@ busbar-transport-stdio = ["tokio", "futures"]
 # The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
 busbar-plane-mcp = ["base64"]
-busbar-transport-tcp = ["tokio-util", "futures", "tokio"]
 busbar-transport-ws = [
   "tokio-util", "tokio", "tokio-tungstenite", "tokio-rustls", "rustls", "rustls-pki-types",
   "webpki-roots", "futures",
@@ -2007,7 +2006,6 @@ known_sites = [
   "crates/busbar-transport-http/src/grpc/tests/battery.rs",
   "crates/busbar-transport-http/src/tests/mod.rs",
   "crates/busbar-transport-stdio/src/tests/battery.rs",
-  "crates/busbar-transport-tcp/src/tests/mod.rs",
   "crates/busbar-transport-ws/src/tests/battery.rs",
   "crates/busbar-transport-ws/src/transport.rs",
   "crates/busbar-kernel-egress/src/tests/harness.rs",

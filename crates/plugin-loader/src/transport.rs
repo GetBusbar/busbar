@@ -331,15 +331,6 @@ impl DynTransport {
         Ok(Image { wire: self, state })
     }
 
-    /// The decl-backed carrier itself, for a test that crosses one slot with nothing around it.
-    #[cfg(test)]
-    pub(crate) fn decl_carrier(&'static self, settings: &WireSettings) -> DeclCarrier {
-        DeclCarrier {
-            image: self.init(settings).expect("the carrier builds"),
-            slots: self.carrier.expect("a carrier"),
-            tokens: Mutex::new(HashMap::new()),
-        }
-    }
 }
 
 /// One built transport's state, freed through its own `free` on drop.
@@ -460,16 +451,6 @@ impl DeclCarrier {
         for dir in [READ, WRITE, CLOSE] {
             tokens.remove(&(handle, dir));
         }
-    }
-}
-
-#[cfg(test)]
-impl DeclCarrier {
-    /// One `poll_flush` crossing, nothing around it: the #30 measurement's floor.
-    pub(crate) fn raw_poll_flush(&self, conn: u64) -> WireOutcome {
-        let f = self.slots.poll_flush.expect("the carrier flushes");
-        let state = self.image.state.ptr;
-        f(state, conn, NO_WAKER).outcome()
     }
 }
 
@@ -1110,7 +1091,7 @@ pub unsafe fn link_transport(
 }
 
 /// The handshake, the kind, then the decl — the plane's `wire_up_plane`, for a transport.
-fn wire_up_transport(
+pub(crate) fn wire_up_transport(
     lib: Library,
     display: String,
     manifest_kind: &str,
@@ -1467,7 +1448,7 @@ fn decl_str(d: DeclStr, display: &str) -> Result<Option<&'static str>, String> {
 }
 
 #[cfg(test)]
-#[path = "tests/transport_conformance_tests.rs"]
+#[path = "tests/transport_door_tests.rs"]
 mod tests;
 
 #[cfg(test)]

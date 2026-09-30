@@ -2454,19 +2454,17 @@ jobs:
           path: target/release/busbar
           if-no-files-found: error
           retention-days: 7
-      # THE DROPPED-IN TCP TRANSPORT, IN ITS OWN INVOCATION. Its door registration
-      # (`busbar_contract::export_transport!`) is compiled only under `--features dropped-in`; the
-      # frozen symbols it answers through (`busbar_abi`, `busbar_plugin_kind`, `busbar_transport_decl`)
-      # are the contract's shared door, defined once (the #84 merge), so no crate the binary links
-      # defines a second copy and fat LTO has nothing to refuse. The other plugins' `cdylib`s come out
-      # of the build above with their door; this is the one artifact built separately, and it must
-      # still carry its three.
+      # THE DROPPED-IN TCP TRANSPORT, IN ITS OWN INVOCATION. Its door (`busbar_contract::export_door!`,
+      # the memory ABI's one symbol) is compiled only under `--features dropped-in`, so no crate the
+      # binary links defines a second copy and fat LTO has nothing to refuse. The other plugins'
+      # `cdylib`s come out of the build above with their door; this is the one artifact built
+      # separately, and it must still carry its door.
       - name: Build the tcp transport's dropped-in artifact (feature dropped-in, its own invocation)
         run: |
           set -euo pipefail
           cargo build -p busbar-transport-tcp --release --locked --features dropped-in
           lib=target/release/libbusbar_transport_tcp.so
-          for sym in busbar_abi busbar_plugin_kind busbar_transport_decl; do
+          for sym in busbar_plugin_door; do
             nm -D --defined-only "$lib" | grep -qw "$sym" || { echo "::error::$lib does not export $sym"; exit 1; }
           done
       - name: Latchkey Fast Cache (cargo registry + target, save)
@@ -2655,7 +2653,7 @@ jobs:
   # feature-covered: busbar-core-admin/openapi-schema -- openapi-schema -- the job clippies and tests -p busbar-core-admin with the feature named
   # feature-covered: busbar-contract/dispatch -- check -- reached from busbar-kernel/dispatch in the workspace default build (transport axis folded into busbar-contract, DECISIONS #38)
   # feature-covered: busbar-contract/runtime -- check -- reached from busbar-kernel/runtime in the workspace default build (transport axis folded into busbar-contract, DECISIONS #38)
-  # feature-covered: busbar-transport-tcp/dropped-in -- build-release -- the tcp transport's dropped-in artifact is built in its own invocation after the canonical binary, and its three door symbols are asserted
+  # feature-covered: busbar-transport-tcp/dropped-in -- build-release -- the tcp transport's dropped-in artifact is built in its own invocation after the canonical binary, and its door symbol is asserted
 
   # THE MECHANICAL DEFINITION OF "PLUGIN". Anything busbar calls a plugin must be 100% a plugin: make
   # it downloadable-only tomorrow, ship it uninstalled, and CORE MUST STILL WORK. If core stops

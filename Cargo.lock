@@ -1059,9 +1059,8 @@ name = "busbar-transport-tcp"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "futures",
- "tokio",
- "tokio-util",
+ "busbar-plugin-loader",
+ "busbar-transport-tcp",
 ]
 
 [[package]]
@@ -5021,6 +5020,8 @@ name = "ws-conformance-subject"
 version = "0.0.0"
 dependencies = [
  "busbar-contract",
+ "busbar-core-connector",
+ "busbar-plugin-loader",
  "busbar-transport-tcp",
  "busbar-transport-ws",
  "futures",

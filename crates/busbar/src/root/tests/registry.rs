@@ -13,7 +13,7 @@ fn linked_claims() -> Vec<PlaneClaim> {
 
 /// The linked transports folded bottom-up, as the boot seal folds them.
 fn linked_fold() -> Vec<Built> {
-    compose(crate::LINKED.transports, &[], &TransportSettings::default())
+    compose(crate::LINKED.transports, Dropped::NONE, &TransportSettings::default())
         .expect("the stack composes")
 }
 
@@ -605,7 +605,7 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
 #[cfg(linked_every_plane)]
 #[test]
 fn the_seal_answers_now_that_every_claim_names_a_registered_transport() {
-    let sealed = seal(&crate::LINKED, &[], TransportSettings::default())
+    let sealed = seal(&crate::LINKED, Dropped::NONE, TransportSettings::default())
         .expect("every claim names a live transport");
     assert_eq!(sealed.claims.len(), 51);
     assert_eq!(sealed.precedence.len(), 51);
@@ -647,7 +647,7 @@ fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
             ..*row
         })
         .collect();
-    compose(&rows, &[], &crate::root::policy::client_settings(&limits))
+    compose(&rows, Dropped::NONE, &crate::root::policy::client_settings(&limits))
         .expect("the stack composes");
     assert_eq!(
         *SEEN.lock().expect("seen"),
@@ -657,7 +657,7 @@ fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
 
     seal(
         &crate::LINKED,
-        &[],
+        Dropped::NONE,
         crate::root::policy::client_settings(&limits),
     )
     .expect("the capped composition seals");
@@ -695,7 +695,7 @@ fn the_fold_builds_bottom_up_in_composes_over_order() {
 
     let mut reversed = crate::LINKED.transports.to_vec();
     reversed.reverse();
-    let refolded: Vec<Registered> = compose(&reversed, &[], &TransportSettings::default())
+    let refolded: Vec<Registered> = compose(&reversed, Dropped::NONE, &TransportSettings::default())
         .expect("the reversed table composes")
         .into_iter()
         .map(|(row, _)| row)
@@ -736,7 +736,7 @@ fn transports_layered_over_each_other_refuse_at_boot() {
             ..own
         },
     ];
-    let refusal = compose(&rows, &[], &TransportSettings::default())
+    let refusal = compose(&rows, Dropped::NONE, &TransportSettings::default())
         .err()
         .expect("no order builds either");
     assert!(matches!(
@@ -804,16 +804,34 @@ fn the_boot_path_seals_the_composition_in_every_build() {
 
 // ── BOTH DOORS, ONE FOLD ────────────────────────────────────────────────────────────────────────
 
-/// The in-tree transport `cdylib`s, found by KIND: of the libraries beside this test binary, every
-/// one the loader admits as `kind: transport`, one per key, loaded once for the process (the root
-/// names no wire). Under CI a missing artifact is a hard failure, never a silent skip.
-fn dropped_wires() -> &'static [DynTransport] {
-    let wires = crate::root::test_plugins::transport_wires();
+/// The in-tree transport door `cdylib`s, found by KIND: of the libraries beside this test binary,
+/// every one the one dispatcher admits as a transport door, one per key, served over the host's
+/// sockets as the boot serves a dropped-in door, once for the process (the root names no transport).
+/// Under CI a missing artifact is a hard failure, never a silent skip.
+fn dropped_doors() -> &'static [DroppedDoor] {
+    static DOORS: std::sync::OnceLock<Vec<DroppedDoor>> = std::sync::OnceLock::new();
+    let doors = DOORS.get_or_init(|| {
+        crate::root::test_plugins::transport_doors()
+            .iter()
+            .map(|(plugin, key)| DroppedDoor {
+                key,
+                composes_over: Vec::new(),
+                wire: crate::root::doors::host_wire(plugin.clone()).expect("the door serves"),
+            })
+            .collect()
+    });
     assert!(
-        !wires.is_empty() || std::env::var_os("CI").is_none(),
-        "no in-tree transport cdylib is built beside the test binary under CI"
+        !doors.is_empty() || std::env::var_os("CI").is_none(),
+        "no in-tree transport door cdylib is built beside the test binary under CI"
     );
-    wires
+    doors
+}
+
+fn one_door() -> Dropped {
+    Dropped {
+        hot: &[],
+        doors: &dropped_doors()[..1],
+    }
 }
 
 /// A table of linked rows held for the process, as `Linked::transports` holds its own.
@@ -830,25 +848,25 @@ fn rows_of(
 /// registration, answers the registry by its key, and is the wire under the data door.
 #[test]
 fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
-    let Some(wire) = dropped_wires().first() else {
+    let Some(wire) = dropped_doors().first() else {
         eprintln!("skip: no in-tree transport cdylib is built beside the test binary");
         return;
     };
-    if !crate::LINKED.transports.iter().any(|r| r.key == wire.key()) {
+    if !crate::LINKED.transports.iter().any(|r| r.key == wire.key) {
         return;
     }
     static ROWS: std::sync::OnceLock<Vec<LinkedTransport>> = std::sync::OnceLock::new();
     let rows = rows_of(&ROWS, || {
         let rows = crate::LINKED.transports.iter();
-        rows.filter(|r| r.key != wire.key()).copied().collect()
+        rows.filter(|r| r.key != wire.key).copied().collect()
     });
     let without = crate::root::linked::Linked {
         transports: rows,
         ..crate::LINKED
     };
-    let one = &dropped_wires()[..1];
-    let sealed = seal(&without, one, TransportSettings::default()).expect("the composition seals");
-    let linked = seal(&crate::LINKED, &[], TransportSettings::default()).expect("it seals linked");
+    let sealed =
+        seal(&without, one_door(), TransportSettings::default()).expect("the composition seals");
+    let linked = seal(&crate::LINKED, Dropped::NONE, TransportSettings::default()).expect("it seals linked");
 
     let by_key = |mut rows: Vec<Registered>| {
         rows.sort_by_key(|r| r.key);
@@ -859,16 +877,16 @@ fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
         by_key(linked.registered.clone()),
         "the dropped-in wire takes its linked row's place in the one composition"
     );
-    assert_eq!(sealed.dropped, [wire.key()]);
+    assert_eq!(sealed.dropped, [wire.key]);
     assert!(linked.dropped.is_empty());
     assert!(sealed
         .registry
-        .resolve(PluginKind::Transport, wire.key())
+        .resolve(PluginKind::Transport, wire.key)
         .is_some());
     let door = sealed
         .dropped_door()
         .expect("the data door rests on the dropped-in wire");
-    assert_eq!(door.key(), wire.key());
+    assert_eq!(door.key(), wire.key);
     assert!(
         linked.dropped_door().is_none(),
         "a linked wire under the door is served by the kernel's own listener"
@@ -879,18 +897,18 @@ fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
 /// refusal, from the same registration, naming the same key.
 #[test]
 fn a_dropped_in_wire_on_a_linked_key_is_refused_as_a_second_linked_row_is() {
-    let Some(wire) = dropped_wires().first() else {
+    let Some(wire) = dropped_doors().first() else {
         eprintln!("skip: no in-tree transport cdylib is built beside the test binary");
         return;
     };
     let Some(row) = crate::LINKED
         .transports
         .iter()
-        .find(|r| r.key == wire.key())
+        .find(|r| r.key == wire.key)
     else {
         return;
     };
-    let dropped = seal(&crate::LINKED, &dropped_wires()[..1], Default::default())
+    let dropped = seal(&crate::LINKED, one_door(), Default::default())
         .err()
         .expect("a dropped-in wire on a linked key is refused");
     static TWICE: std::sync::OnceLock<Vec<LinkedTransport>> = std::sync::OnceLock::new();
@@ -898,7 +916,7 @@ fn a_dropped_in_wire_on_a_linked_key_is_refused_as_a_second_linked_row_is() {
         transports: rows_of(&TWICE, || [crate::LINKED.transports, &[*row]].concat()),
         ..crate::LINKED
     };
-    let linked = seal(&twice, &[], Default::default())
+    let linked = seal(&twice, Dropped::NONE, Default::default())
         .err()
         .expect("a second linked row on one key is refused");
     assert!(
@@ -907,7 +925,7 @@ fn a_dropped_in_wire_on_a_linked_key_is_refused_as_a_second_linked_row_is() {
             BootRefusal::Registry(busbar_kernel::registry::RegistryError::DuplicateKey {
                 kind: PluginKind::Transport,
                 key,
-            }) if *key == wire.key()
+            }) if *key == wire.key
         ),
         "{dropped}"
     );
