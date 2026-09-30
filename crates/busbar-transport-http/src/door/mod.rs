@@ -599,7 +599,17 @@ impl SafeSlot for Encode {
         mut o: Out<'_, FramerOut>,
     ) -> Outcome {
         let fields = i.fields();
-        let mut pairs = Vec::with_capacity(fields.len());
+        let mut pairs = Vec::with_capacity(fields.len() + 2);
+        // The head words, where the host states them, ARE the request line: they lead, so they win
+        // over any same-named envelope field.
+        let method = i.field(|x| &x.method).bytes();
+        let target = i.field(|x| &x.target).bytes();
+        if !method.is_empty() {
+            pairs.push(("method", method));
+        }
+        if !target.is_empty() {
+            pairs.push(("path", target));
+        }
         for f in fields.iter() {
             let Ok(name) = f.field(|x| &x.name).as_str() else {
                 o.error("encode: a field name is not text");

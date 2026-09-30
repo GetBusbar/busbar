@@ -171,6 +171,8 @@ struct Held {
     judging: Mutex<Option<Judging>>,
     /// The piece a short caller buffer left, and whether the end was answered.
     rest: Mutex<(Option<Piece>, Vec<u8>, bool)>,
+    /// The far end's reason phrase, held until its head's last piece is read.
+    reason: Mutex<Option<Vec<u8>>>,
 }
 
 impl std::fmt::Debug for Held {
@@ -420,8 +422,11 @@ impl Connector {
                     }
                     // The far end's head (and its trailers) arrive as the framer's field block:
                     // a Fields piece, the head ahead of the first Body piece.
-                    Poll::Ready(Ok(Some(got))) => (
-                        Piece {
+                    Poll::Ready(Ok(Some(got))) => {
+                        if got.reason.is_some() {
+                            held.reason.lock().expect("reason").clone_from(&got.reason);
+                        }
+                        (Piece {
                             kind: if got.fields {
                                 PieceKind::Fields
                             } else {
@@ -436,8 +441,8 @@ impl Connector {
                             retry_after_secs: got.retry_after_secs,
                             reason: None,
                         },
-                        got.bytes,
-                    ),
+                        got.bytes)
+                    }
                 }
             }
         };
@@ -451,6 +456,15 @@ impl Connector {
             out.end = false;
             rest.0 = Some(piece);
             rest.1 = bytes[n..].to_vec();
+        } else if out.kind == PieceKind::Fields && out.end {
+            // The head's last piece: its reason phrase follows the field block in the caller's
+            // buffer, where the buffer holds it too.
+            if let Some(reason) = held.reason.lock().expect("reason").take() {
+                if let Some(to) = buf.get_mut(n..n + reason.len()) {
+                    to.copy_from_slice(&reason);
+                    out.reason = Some(n..n + reason.len());
+                }
+            }
         }
         Ok(out)
     }
@@ -605,6 +619,7 @@ impl Conns for Connector {
                 conn: Mutex::new(conn),
                 judging: Mutex::new(judging),
                 rest: Mutex::new((None, Vec::new(), false)),
+                reason: Mutex::new(None),
             },
         )
     }

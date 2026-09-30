@@ -112,6 +112,9 @@ pub struct Got {
     pub retry_after_secs: Option<u64>,
     /// The bytes are a field block (`PIECE_FIELDS`): the far end's head, or its trailers.
     pub fields: bool,
+    /// On the head's first piece: the far end's reason phrase, exactly as sent (the stream's head
+    /// slots), where the wire has one.
+    pub reason: Option<Vec<u8>>,
 }
 
 /// A stream's head typed slots (`HeadSlots`), copied out of the host's buffers: an accepted
@@ -354,6 +357,7 @@ impl Buffers {
             .pieces
             .get(..y.pieces_len as usize)
             .ok_or_else(|| bad("pieces"))?;
+        let first_piece = into.pieces.len();
         for p in pieces {
             let at = usize::try_from(p.offset).map_err(|_| bad("piece"))?;
             let len = usize::try_from(p.len).map_err(|_| bad("piece"))?;
@@ -385,6 +389,7 @@ impl Buffers {
                 retry_after_secs: (p.flags & PIECE_HAS_RETRY_AFTER != 0)
                     .then_some(p.retry_after_secs),
                 fields: p.flags & PIECE_FIELDS != 0,
+                reason: None,
             });
         }
         let heads = self
@@ -417,6 +422,16 @@ impl Buffers {
             };
             if !fits {
                 return Err(bad("head slots of the other side"));
+            }
+            // A dialled answer's reason rides its stream's head: the first field-block piece of
+            // the stream in this answer.
+            if let Some(reason) = head.reason.clone() {
+                if let Some(g) = into.pieces[first_piece..]
+                    .iter_mut()
+                    .find(|g| g.stream == head.stream && g.fields)
+                {
+                    g.reason = Some(reason);
+                }
             }
             into.heads.push(head);
         }
@@ -583,6 +598,22 @@ pub fn encode(
     fields: &[(&str, &[u8])],
     body: &[u8],
 ) -> Result<Vec<u8>, Refused> {
+    encode_head(door, b"", b"", fields, body)
+}
+
+/// `encode` with the request's head words, `method` and `target` (empty = none): a framer whose
+/// wire has head words takes them as the request's own, byte for byte; one without ignores them.
+///
+/// # Errors
+///
+/// The entry refused to render it.
+pub fn encode_head(
+    door: &dyn FramerDoor,
+    method: &[u8],
+    target: &[u8],
+    fields: &[(&str, &[u8])],
+    body: &[u8],
+) -> Result<Vec<u8>, Refused> {
     let fields: Vec<Field> = fields
         .iter()
         .map(|(n, v)| Field {
@@ -596,8 +627,10 @@ pub fn encode(
             .iter()
             .map(|f| f.name.len + f.value.len + 8)
             .sum::<usize>();
-    let mut bufs = Buffers::new(room + 4096, 1, 1);
+    let mut bufs = Buffers::new(room + method.len() + target.len() + 4096, 1, 1);
     let mut i: EncodeIn = blank_in();
+    i.method = abi(method);
+    i.target = abi(target);
     i.fields = fields.as_ptr();
     i.fields_len = fields.len();
     i.body = body.as_ptr();
