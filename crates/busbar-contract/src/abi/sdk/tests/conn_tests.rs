@@ -43,24 +43,6 @@ static SLOTS: ConnectorSlots = ConnectorSlots {
     write_request: None,
 };
 
-/// The host services: only `disk.append`, which records its handle and lands every byte.
-extern "C" fn disk_append(_: HostCtx, i: *const c_void, o: *mut ServiceOut) -> RawOutcome {
-    use crate::abi::host::service::{DiskAppendIn, DiskWritten, DISK_ROTATED};
-    // SAFETY: a `DiskAppendIn`.
-    let input = unsafe { *i.cast::<DiskAppendIn>() };
-    SEEN.lock().unwrap().push(input.head.handle.seq);
-    // SAFETY: the SDK's parked result, live until the append completes.
-    unsafe {
-        input.result.write(DiskWritten {
-            size: std::mem::size_of::<DiskWritten>() as u32,
-            rotated: DISK_ROTATED,
-            _reserved: [0; 3],
-            written: input.bytes.len as u64,
-        });
-    }
-    RawOutcome::of(Outcome::Ready)
-}
-
 /// The host clock the tests set.
 static MONO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -84,7 +66,6 @@ fn services() -> &'static crate::abi::host::service::HostSlots {
         let mut t: HostSlots = unsafe { std::mem::zeroed() };
         t.size = std::mem::size_of::<HostSlots>() as u32;
         t.slots = crate::abi::host::service::SERVICES;
-        t.disk_append = Some(disk_append);
         t.clock_now = Some(clock_now);
         t
     })
@@ -143,28 +124,6 @@ fn a_connector_resumed_from_a_parked_count_issues_on_from_it() {
     assert_eq!(resumed.establish(0, None), Poll::Ready(Ok(7)));
     assert_eq!(*SEEN.lock().unwrap(), vec![0, 1, 2]);
     assert_eq!(h.connector(TICKET).within(5).budget_ms(), Some(5));
-}
-
-/// One op making a connector service and a host service: both draw on ONE handle count, so a
-/// replay never confuses them; `disk.append` answers what the host wrote.
-#[test]
-fn connector_and_host_services_share_one_handle_count() {
-    let _g = SERIAL
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    use crate::abi::host::service::{DiskWritten, DISK_ROTATED};
-    SEEN.lock().unwrap().clear();
-    let h = host(&SLOTS);
-    let mut c = h.connector(TICKET);
-    assert_eq!(c.establish(0, None), Poll::Ready(Ok(7)));
-    let bytes = b"{\"line\":1}\n".to_vec();
-    // SAFETY: plain integers; all-zero is valid.
-    let mut result: DiskWritten = unsafe { std::mem::zeroed() };
-    let Poll::Ready(Ok(w)) = c.disk_append("requests", &bytes, &mut result) else {
-        panic!("the append lands");
-    };
-    assert_eq!((w.written, w.rotated), (bytes.len() as u64, DISK_ROTATED));
-    assert_eq!(*SEEN.lock().unwrap(), vec![0, 1]);
 }
 
 /// RED: a backoff pends until the host's clock reaches its instant — asking for no resume before
