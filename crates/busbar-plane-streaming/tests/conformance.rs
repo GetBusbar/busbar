@@ -312,7 +312,7 @@ fn the_streaming_plane_declares_its_full_dialect_and_meter_roster() {
 }
 
 /// Twilio Media Streams is a streaming DIALECT carried by the WebSocket transport, not a transport
-/// of its own (ARCHITECT ruling 2026-09-29, TWILIO-DOOR; the design lists five transports). Its
+/// of its own (the design lists five transports and no telephony one). Its
 /// claim is on the WebSocket transport, one path level under `/twilio`, and authenticates under the
 /// `webhook-signature` alternative alone — Twilio holds no busbar bearer or API key. Without the
 /// claim the dialect's reader, codec and µ-law transform are unreachable: no arrival ever names it.
