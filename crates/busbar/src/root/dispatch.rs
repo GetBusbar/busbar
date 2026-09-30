@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PROCESS'S ONE DISPATCHER (`BUSBAR-1.6.0.md` THE DESIGN §11.2: one entry point per plugin,
+//! THE PROCESS'S ONE DISPATCHER (BUSBAR-1.6.0.md THE DESIGN, §11.2: one entry point per plugin,
 //! one loading path, one dispatcher). The composition root builds it at boot, one plugin worker per
 //! data worker, and every kind's wiring reaches its plugins through it: the root opens each kind's
 //! instances on it and hands the kernel contract-level per-kind handles (`busbar_contract::*_calls`),
@@ -17,7 +17,8 @@ use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
 static DISPATCHER: OnceLock<Arc<Dispatcher>> = OnceLock::new();
 
 /// The dispatcher's shape for `workers` data workers: one plugin worker each, the default watchdog
-/// budgets. Host services are bound when the kernel serves them (THE DESIGN §11.5, `abi/host/`).
+/// budgets. Host services are bound when the kernel serves them (BUSBAR-1.6.0.md THE DESIGN, §11.5,
+/// `abi/host/`).
 #[must_use]
 pub fn config(workers: usize) -> DispatchConfig {
     DispatchConfig {
