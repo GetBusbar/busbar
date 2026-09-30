@@ -1005,3 +1005,16 @@ fn a_pending_crate_repo_is_skipped_with_its_reason_and_a_non_pending_empty_repo_
     fake.unreadable.push(a.into());
     one(&run(&pending, &t, &fake), a, "repo", "could not read");
 }
+
+#[test]
+fn an_export_sinks_registry_alias_is_its_module_name() {
+    // The dropped-in tarball resolves under the operator's `module:` spelling, exactly like the
+    // linked row, only if the packed alias IS that module name.
+    let fleet = registry();
+    for (repo, module) in [
+        ("busbar-export-file", "request-log-file"),
+        ("busbar-export-webhook", "request-log-webhook"),
+    ] {
+        assert_eq!(fleet.plugin(repo).unwrap().alias, module, "{repo}");
+    }
+}

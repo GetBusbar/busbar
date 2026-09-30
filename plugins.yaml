@@ -272,7 +272,7 @@ plugins:
     # is precisely the reading that cost qa-gate run 31059945604 five legs.
   - repo: busbar-export-file
     kind: export
-    alias: file
+    alias: request-log-file
     crate: busbar-export-file-plugin
     version_line: "1.0"
     service: none
@@ -311,7 +311,7 @@ plugins:
     released: false
   - repo: busbar-export-webhook
     kind: export
-    alias: webhook
+    alias: request-log-webhook
     crate: busbar-export-webhook-plugin
     version_line: "1.0"
     service: none
