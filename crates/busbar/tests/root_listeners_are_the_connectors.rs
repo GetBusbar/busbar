@@ -43,7 +43,8 @@ fn fixture_dir(tag: &str) -> PathBuf {
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16, extra: &str) {
     std::fs::write(
         dir.join("providers.yaml"),
-        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
+        // The provider catalog row is test data (`fixtures/mock_provider.yaml`), not a literal here.
+        include_str!("fixtures/mock_provider.yaml"),
     )
     .unwrap();
     std::fs::write(
