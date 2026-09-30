@@ -422,6 +422,10 @@ impl KernelServices {
     /// caller-scoped service answers from this; its trust entries are admitted to the trust state,
     /// and its own durable demotions replayed.
     ///
+    /// `facts` are what the HOST read from the instance's signed Statement and its configured
+    /// section, never bytes the plugin supplied: in particular the signing domain is the one the
+    /// Statement declares, so no plugin names a domain it did not declare.
+    ///
     /// # Errors
     ///
     /// [`AdmitRefused::LabelUnfit`] for a label longer than 65535 bytes or holding a control
