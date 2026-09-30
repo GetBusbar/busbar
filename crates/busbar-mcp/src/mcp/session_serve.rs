@@ -31,6 +31,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use super::{adapt, plane_codec as codec, revision, session_rules as session};
+use crate::plane_client::jsonrpc::encode_sentinel;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use busbar_kernel::{
@@ -38,7 +40,6 @@ use busbar_kernel::{
     plane_host::EngineHost,
     plane_routes::PlaneReqCtx,
 };
-use busbar_plane_mcp::{adapt, client::jsonrpc::encode_sentinel, codec, revision, session};
 use serde_json::Value;
 
 use adapt::{PostKind, SessionMethod};

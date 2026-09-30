@@ -946,6 +946,10 @@ pub(crate) use busbar_plane_mcp::sanitize;
 /// THE POST's SSE RESPONSE FRAMING and the `notifications/message` records that ride it. This
 /// revision removed the GET stream, not Server-Sent Events — see the module header.
 pub(crate) mod session_serve;
+/// The plane's session-revision rules, reached by `session_serve` through this ledgered door.
+pub(crate) use busbar_plane_mcp::{
+    adapt, codec as plane_codec, revision, session as session_rules,
+};
 pub(crate) mod sse;
 /// THE STDIO SERVE MODE: busbar as an MCP server on its own stdin/stdout — the same serve
 /// sequence, the same dispatch, a second transport binding. See the module header for the
