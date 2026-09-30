@@ -94,6 +94,12 @@ pub trait AuthCalls: Send + Sync {
     /// The tail's facts (`abi::auth::FACT_*`).
     fn facts(&self) -> u32;
 
+    /// `verify` ON THE SPOT: one ticket-less crossing on the caller's thread, bounded by the
+    /// dispatcher's watchdog (THE DESIGN §12: a crossing that cannot wait needs no ticket). A
+    /// plugin whose `verify` must wait on I/O answers REFUSED there (`abi::auth`), and this answers
+    /// `None`: the caller then [`AuthCalls::verify`]s, awaiting it. A short answer is re-called once.
+    fn verify_now(&self, request: &VerifyRequest) -> Option<Verified>;
+
     /// Submit `verify`; it crosses on a dispatcher worker and its answer is a future, so no thread
     /// is parked. A short answer is re-called once with the buffers it named; a second is
     /// [`Verified::Failed`].
@@ -115,19 +121,15 @@ pub trait AuthAxis: Send + Sync {
     /// The config keys of the auth rows this build LINKS, in registration order.
     fn linked_names(&self) -> Vec<String>;
 
-    /// Whether a door answers the module key `module` (a linked row, or a dropped-in door).
+    /// Whether a `kind: auth` row answers the module key `module` (linked or dropped in).
     fn answers(&self, module: &str) -> bool;
 
     /// Whether `module` names a row this build LINKS.
     fn linked(&self, module: &str) -> bool;
 
-    /// The settings keys `module`'s Statement names as secret-refs, in order; `None` when no door
-    /// answers `module`.
-    fn secret_refs(&self, module: &str) -> Option<Vec<String>>;
-
-    /// OPEN one instance of `module` over `settings` (the provider's settings, one JSON document)
-    /// and the resolved `secrets` (one per [`AuthAxis::secret_refs`] key, in that order), under the
-    /// host's instance `label` (unique per opened instance).
+    /// OPEN one instance of `module` over `settings` (the provider's settings, one JSON document,
+    /// its secret-refs already resolved), under the host's instance `label` (unique per opened
+    /// instance: the name every host service keys its caller by).
     ///
     /// # Errors
     /// Why it will not open, naming the module: no door answers it, the door refused the load, or
@@ -137,6 +139,5 @@ pub trait AuthAxis: Send + Sync {
         module: &str,
         label: &str,
         settings: &serde_json::Value,
-        secrets: Vec<Vec<u8>>,
     ) -> Result<Arc<dyn AuthCalls>, String>;
 }

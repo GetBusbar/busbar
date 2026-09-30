@@ -26,6 +26,11 @@
 //! as 1.5.5's `STATUS_ERR`. `FAILED` on `complete_login` is [`LOGIN_OUTAGE`]. Both exclude the
 //! short-buffer answer ([`IdentifyOut`]).
 //!
+//! `verify` ON THE SPOT. The host may call `verify` TICKET-LESS (`Ticket::NONE`, on its own
+//! thread, which cannot wait): a plugin that can judge the credential without waiting answers as it
+//! would on a ticket; one whose `verify` must wait on I/O answers `REFUSED` there, never `PENDING`
+//! (a ticket-less `PENDING` is FAULT), and the host submits the same `verify` on a ticket.
+//!
 //! DEADLINES ARE HOST-OWNED. No op carries a timeout of its own: the host stamps
 //! `InHead.deadline_ns`, bounds every read on a need's connection, and calls `cancel` at expiry.
 //!
