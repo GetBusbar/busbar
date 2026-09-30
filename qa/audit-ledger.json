@@ -343,24 +343,6 @@
    ]
   },
   {
-   "id": "crates/busbar-kernel-budget/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-kernel-budget/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-kernel-budget/src/tests"
-   ]
-  },
-  {
    "id": "crates/busbar-kernel-egress/src",
    "kind": "production",
    "paths": [
@@ -1037,21 +1019,6 @@
    "kind": "test",
    "paths": [
     "crates/busbar-kernel-breaker/src/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/busbar-kernel-budget/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-kernel-budget/src/tests"
    ],
    "tree_hash": null,
    "audited_at": null,

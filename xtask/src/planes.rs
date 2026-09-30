@@ -121,7 +121,6 @@ pub fn neutral_src_roots() -> Vec<String> {
         "crates/busbar-kernel/src",
         "crates/busbar-kernel-audit/src",
         "crates/busbar-kernel-breaker/src",
-        "crates/busbar-kernel-budget/src",
         "crates/busbar-kernel-egress/src",
         "crates/busbar-kernel-identity/src",
         // THE MONEY PATH. `plane-purity`'s claim is that a plane's name does not reach a neutral

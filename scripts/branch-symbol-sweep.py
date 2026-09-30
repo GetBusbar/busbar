@@ -84,7 +84,7 @@ GENERATED_GLOBS = (
 
 # money paths — a survivor here is a PARK, never a self-approval.
 MONEY_PREFIXES = (
-    "crates/busbar-kernel-ledger/", "crates/busbar-kernel-budget/",
+    "crates/busbar-kernel-ledger/", "crates/busbar-kernel/src/governance/",
     "crates/busbar-kernel/src/cost.rs", "crates/busbar-kernel/src/billing.rs",
     "crates/busbar-contract/src/count.rs",
     "crates/busbar/src/root/durability.rs",

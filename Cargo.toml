@@ -15,7 +15,6 @@ members = [
     "crates/busbar-kernel",
     "crates/busbar-kernel-identity",
     "crates/busbar-kernel-scope",
-    "crates/busbar-kernel-budget",
     "crates/busbar-kernel-ledger",
     "crates/busbar-kernel-egress",
     "crates/busbar-kernel-breaker",
