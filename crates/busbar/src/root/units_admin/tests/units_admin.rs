@@ -216,7 +216,7 @@ async fn a_body_the_wrap_will_not_read_is_refused_rather_than_emptied() {
         inner,
         busbar_kernel::teller::Kernel::new(),
         4,
-        crate::root::kernel::ProductionUnits::admin_only,
+        |dispatch| crate::root::kernel::ProductionUnits::admin_only(dispatch, open_door()),
     );
 
     // Longer than the cap and no declared length: the read stops at the cap and the request is
@@ -341,7 +341,7 @@ fn a_header_count_larger_than_the_frame_is_refused_not_reserved() {
 #[test]
 fn the_audit_doors_carry_no_credential_into_the_sealed_facts() {
     let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
-    let binding = AdminBinding::new(Arc::new(RefusingDispatch));
+    let binding = AdminBinding::new(Arc::new(RefusingDispatch), open_door());
 
     for completed in [true, false] {
         let key = UnitKey::new(1);
@@ -414,8 +414,8 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
     let admin = crate::root::kernel::new_kernel().admin_token();
 
     let under = |path: &str, sealed: Sealed| -> Result<(), ReasonCode> {
-        let binding =
-            AdminBinding::new(Arc::new(AnsweringDispatch)).with_posture_view(Arc::new(sealed));
+        let binding = AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
+            .with_posture_view(Arc::new(sealed));
         let key = UnitKey::new(1);
         let mut request = a_request();
         request.method = "POST".to_string();
@@ -914,11 +914,13 @@ fn a_door_that_identifies_the_operator() -> busbar_kernel_identity::AuthChain {
 /// credential and whose directory then revokes everything, or nothing.
 #[cfg(feature = "root-admin")]
 fn answer_under_denylist(revoked: bool) -> AdminAnswer {
-    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch))
-        .with_auth_chain(a_door_that_identifies_the_operator())
-        .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
-            Denylist(revoked),
-        )));
+    let units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(AnsweringDispatch),
+        door_of_chain(a_door_that_identifies_the_operator()),
+    )
+    .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+        Denylist(revoked),
+    )));
     AdminNode::new(crate::root::kernel::new_kernel(), units).answer(a_request())
 }
 
@@ -954,10 +956,11 @@ fn a_revoked_credential_is_refused_before_the_operation_runs() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn an_open_door_does_not_consult_the_denylist_for_a_string_it_never_identified() {
-    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch))
-        .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
-            Denylist(true),
-        )));
+    let units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
+            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+                Denylist(true),
+            )));
     let answer = AdminNode::new(crate::root::kernel::new_kernel(), units).answer(a_request());
     assert_eq!(
         answer.status, 200,
@@ -1001,11 +1004,13 @@ fn answer_at_the_closed_door(
     door: busbar_kernel_identity::AuthChain,
     credential: Option<&str>,
 ) -> AdminAnswer {
-    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch))
-        .with_auth_chain(door)
-        .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
-            Denylist(false),
-        )));
+    let units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(AnsweringDispatch),
+        door_of_chain(door),
+    )
+    .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+        Denylist(false),
+    )));
     let mut request = a_request();
     request.credential = credential.map(str::to_string);
     AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
@@ -1121,7 +1126,7 @@ fn a_caller_the_door_identifies_as_somebody_else_is_answered_with_the_scope_it_n
 fn a_bound_unit(
     request: AdminRequest,
 ) -> (AdminBinding, UnitCtx, busbar_contract::caps::KernelSeal) {
-    let binding = AdminBinding::new(Arc::new(AnsweringDispatch));
+    let binding = AdminBinding::new(Arc::new(AnsweringDispatch), open_door());
     let key = UnitKey::new(1);
     binding.units.open(key, request);
     let ctx = UnitCtx {
@@ -1166,7 +1171,8 @@ fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
     use busbar_contract::caps::{OriginKind, StepName};
     use busbar_kernel::inflight::{arrival_hold, cap_refusal_step, Enter};
 
-    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
+    let units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
     assert_eq!(
         node.inflight.cap(),
@@ -1608,8 +1614,8 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
         ),
     ] {
         let store = Arc::new(RecordingStore::default());
-        let binding =
-            AdminBinding::new(Arc::new(NeverDispatched)).with_posture_view(ceremony_run());
+        let binding = AdminBinding::new(Arc::new(NeverDispatched), open_door())
+            .with_posture_view(ceremony_run());
         let key = UnitKey::new(1);
         let mut request = a_request();
         request.method = "POST".to_string();
@@ -2024,9 +2030,10 @@ fn a_ledger_request(path: &str) -> AdminRequest {
 /// Walk one request through the whole loop against a node whose ledger holds the fixture.
 #[cfg(feature = "root-admin")]
 fn answer_over_seeded_ledger(request: AdminRequest) -> AdminAnswer {
-    let mut units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
-    units.admin =
-        AdminBinding::new(Arc::new(AnsweringDispatch)).with_ledger_view(Arc::new(SeededLedger));
+    let mut units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
+        .with_ledger_view(Arc::new(SeededLedger));
     AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
 }
 
@@ -2202,6 +2209,7 @@ fn a_ledger_view_reads_the_history_without_copying_it() {
 
     let units = crate::root::kernel::ProductionUnits::admin_only_over(
         Arc::new(AnsweringDispatch),
+        open_door(),
         Box::new(rows),
         read,
     );
@@ -2252,7 +2260,8 @@ impl AdminDispatch for PanickingDispatch {
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_panicking_step_leaves_both_tables_empty() {
-    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(PanickingDispatch));
+    let units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(PanickingDispatch), open_door());
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
 
     let previous = std::panic::take_hook();
@@ -2278,7 +2287,8 @@ fn a_panicking_step_leaves_both_tables_empty() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn an_unopened_ledger_answers_empty_rather_than_absent() {
-    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
+    let units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
     let body = |path: &str| -> serde_json::Value {
         let answer = node.answer(a_ledger_request(path));
@@ -2468,6 +2478,7 @@ fn a_node_that_settled(lose: Option<&'static str>) -> crate::root::kernel::Produ
             let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
             crate::root::kernel::ProductionUnits::admin_only_over(
                 Arc::new(AnsweringDispatch),
+                open_door(),
                 Box::new(rows.clone()),
                 Arc::new(rows),
             )
@@ -2476,6 +2487,7 @@ fn a_node_that_settled(lose: Option<&'static str>) -> crate::root::kernel::Produ
             let rows = RowsThatLose::new(bucket);
             crate::root::kernel::ProductionUnits::admin_only_over(
                 Arc::new(AnsweringDispatch),
+                open_door(),
                 Box::new(rows.clone()),
                 Arc::new(rows),
             )
@@ -2686,7 +2698,8 @@ fn the_seal_and_the_marker_this_node_made_are_the_ones_it_serves() {
     use busbar_kernel_ledger::migration::MigrationRecords as _;
     use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
 
-    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
+    let units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
     let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let token = busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal);
     let marker = busbar_kernel_ledger::migration::MigrationMarker {
@@ -2768,7 +2781,8 @@ fn the_seal_and_the_marker_this_node_made_are_the_ones_it_serves() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn the_checkpoints_read_serves_whether_each_seal_verifies_against_the_audit_keyset() {
-    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
+    let units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
     let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let token = busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal);
     {
@@ -2848,15 +2862,17 @@ fn a_ledger_view_answers_an_unauthenticated_caller_exactly_as_the_legacy_usage_r
     let under = |path: &str, credential: Option<&str>, revoked: bool| -> AdminAnswer {
         let mut request = a_ledger_request(path);
         request.credential = credential.map(ToString::to_string);
-        let mut units =
-            crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch))
+        // The revocation withdraws an identification, so when it is on, the door must identify first.
+        let door = if revoked {
+            door_of_chain(a_door_that_identifies_the_operator())
+        } else {
+            open_door()
+        };
+        let units =
+            crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), door)
                 .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
                     Denylist(revoked),
                 )));
-        if revoked {
-            // The revocation withdraws an identification, so the door must identify first.
-            units = units.with_auth_chain(a_door_that_identifies_the_operator());
-        }
         AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
     };
 
@@ -2895,7 +2911,7 @@ fn a_ledger_view_answers_an_unauthenticated_caller_exactly_as_the_legacy_usage_r
 /// first.
 #[test]
 fn a_read_only_credential_reaches_every_view_and_still_no_mutation() {
-    let binding = AdminBinding::new(Arc::new(RefusingDispatch));
+    let binding = AdminBinding::new(Arc::new(RefusingDispatch), open_door());
     let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
 
     let decide = |path: &str, method: &str, granted: VerbScope| -> bool {
@@ -3189,8 +3205,9 @@ fn a_sealed_chain() -> SealedChain {
 /// Walk one request through the whole loop against a node whose chain holds those three records.
 #[cfg(feature = "root-admin")]
 fn answer_over_a_sealed_chain(request: AdminRequest) -> AdminAnswer {
-    let mut units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
-    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch))
+    let mut units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
         .with_audit_view(Arc::new(a_sealed_chain()) as Arc<dyn AuditView>);
     AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
 }
@@ -3279,11 +3296,12 @@ fn the_three_chain_reads_answer_with_the_chains_own_bytes() {
 #[test]
 #[cfg(feature = "root-admin")]
 fn an_unbound_chain_refuses_rather_than_answering_an_empty_head() {
-    let mut units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
+    let mut units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
     // `AnsweringDispatch` answers 200 to ANYTHING, which is what makes this a real test: if the
     // audit verbs fell through to the legacy catch-all — the defect this slice fixes — they would
     // come back 200 with `{"entries":[]}` and look like they worked.
-    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch));
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door());
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
     for path in AUDIT_PATHS {
         let answer = node.answer(a_ledger_request(path));
@@ -4535,8 +4553,9 @@ impl LedgerView for PricedLedger {
 /// comparison of two parsed documents would absorb exactly the difference it is meant to catch.
 #[cfg(feature = "root-admin")]
 fn totals_bytes_over(view: &Arc<PricedLedger>) -> Vec<u8> {
-    let mut units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
-    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch))
+    let mut units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
         .with_ledger_view(Arc::clone(view) as Arc<dyn LedgerView>);
     let answer = AdminNode::new(crate::root::kernel::new_kernel(), units)
         .answer(a_ledger_request("/api/v1/admin/ledger/totals"));
@@ -5062,7 +5081,7 @@ fn adjust_through_route(
 #[cfg(feature = "root-admin")]
 fn an_adjusting_binding(book: &crate::root::durability::NodeBook) -> AdminBinding {
     let legacy: Arc<dyn LegacyRowsRead> = book.rows.clone();
-    AdminBinding::new(Arc::new(AnsweringDispatch))
+    AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
         .with_ledger_view(Arc::new(NodeLedger::new(
             Arc::clone(&book.durability),
             legacy,
@@ -5399,6 +5418,7 @@ fn the_admin_listener_binds_its_claim_journal_on_a_data_dir_node_only() {
         .expect("the journal opens");
         crate::root::kernel::ProductionUnits::admin_only_sharing(
             Arc::new(AnsweringDispatch),
+            open_door(),
             Arc::new(Mutex::new(durability)),
             Arc::new(rows),
         )
@@ -5486,7 +5506,8 @@ fn a_signed_record_and_a_signed_checkpoint_verify_against_the_served_audit_keys(
     };
 
     // RED ARM: no keyset bound — nothing published, both seals unsigned.
-    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
+    let units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
     let (record, checkpoint) = {
         let mut durability = units.durability.lock().expect("durability lock");
         let record = durability.record.seal(inputs(), &audit_token);
@@ -5506,7 +5527,8 @@ fn a_signed_record_and_a_signed_checkpoint_verify_against_the_served_audit_keys(
     assert!(record.signature.is_none() && checkpoint.signature.is_none());
 
     // THE KEYSET BOUND, as the boot binds it.
-    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
+    let units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
     let (record, checkpoint) = {
         let mut durability = units.durability.lock().expect("durability lock");
         crate::root::keyset::bind_ephemeral(&mut durability).expect("the keyset binds");

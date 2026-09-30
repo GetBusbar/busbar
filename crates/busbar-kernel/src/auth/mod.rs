@@ -11,6 +11,7 @@ use axum::{
 };
 
 use crate::config::AuthCfg;
+use crate::state::App;
 use crate::diagnostics::{
     diag_debug, diag_error, diag_warn, ADMIN_AUTH_CHAIN_EMPTY, ADMIN_CHAIN_STALLED,
     ADMIN_FORBIDDEN_SUPPRESSED, ADMIN_MODULE_UNRESOLVED, ADMIN_OFFLOAD_SATURATED,
@@ -882,20 +883,17 @@ fn unauthorized_response(app: &crate::state::App, path: &str) -> Response {
     crate::ingress::native::native_error(ingress, status, kind, message)
 }
 
-/// Extract the operator admin token from the `x-admin-token` header, treating a present-but-blank
-/// value as ABSENT. This mirrors the empty-filter (`.filter(|t| !t.is_empty())`) that
-/// `extract_client_token` applies to the `x-api-key` / `x-goog-api-key` carriers, closing the same
-/// class of empty-credential bug on the admin carrier: a blank header never reaches the constant-time
-/// compare below, so it cannot match even if a future change paired the configured admin token with
-/// an empty string (the empty-token collision the `GovState` constructor guard in `governance.rs` is
-/// separately meant to prevent — that guard is not owned here). `None` when the header is absent,
-/// non-UTF-8, or blank.
-fn extract_admin_header_token(req: &Request<Body>) -> Option<String> {
-    req.headers()
-        .get(X_ADMIN_TOKEN)
-        .and_then(|v| v.to_str().ok())
-        .filter(|t| !t.is_empty())
-        .map(String::from)
+/// THE TWO ADMIN CARRIERS, as every admin door reads them: `Authorization: Bearer` (another scheme
+/// is absent) and `x-admin-token`, a present-but-blank value ABSENT — the empty-filter
+/// `extract_client_token` applies to the vendor carriers, so a blank header never reaches the
+/// constant-time compare. Only the admin Bearer: the multi-scheme client carriers can never present
+/// an operator token via `x-api-key`/`x-goog-api-key`.
+pub fn admin_carriers(headers: &HeaderMap) -> (Option<String>, Option<String>) {
+    let text = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    (
+        text(AUTHORIZATION.as_str()).and_then(AuthMiddleware::extract_bearer_token),
+        text(X_ADMIN_TOKEN).filter(|t| !t.is_empty()).map(String::from),
+    )
 }
 
 /// Request-extension carrier for the authenticated [`Principal`]. Relocated to `busbar-api` in
@@ -1121,15 +1119,15 @@ fn run_admin_chain(
 /// microsecond constant-time compares and runs INLINE. FAIL-CLOSED at every failure: a permit that
 /// cannot be acquired in time, a chain that does not finish in time, and a panicking plugin (join
 /// error) are all `Denied`, never an admit.
-async fn run_admin_chain_maybe_offloaded(
+async fn admin_door_maybe_offloaded(
     app: &std::sync::Arc<crate::state::App>,
     bearer: Option<String>,
     header: Option<String>,
-) -> (ChainVerdict, Option<busbar_contract::authz::Scope>) {
+) -> AdminDoor {
     if !app.admin_modules.has_plugin {
         // No blocking admin plugin: run inline (the operator credential + any compiled-in test
         // stand-in).
-        return run_admin_chain(app, bearer.as_deref(), header.as_deref());
+        return admin_door(app, bearer.as_deref(), header.as_deref());
     }
     // Warn-once transition latch: a saturated admin offload persists per request until the wedged
     // plugin recovers. Warn on the transition; hold the rest at debug; reset on a fresh permit.
@@ -1158,12 +1156,12 @@ async fn run_admin_chain_maybe_offloaded(
                      returning. Denying (fail-closed) rather than admitting unverified."
                 );
             }
-            return (ChainVerdict::Denied, None);
+            return AdminDoor::Denied;
         }
     };
     let app = app.clone();
     let joined = tokio::task::spawn_blocking(move || {
-        let verdict = run_admin_chain(&app, bearer.as_deref(), header.as_deref());
+        let verdict = admin_door(&app, bearer.as_deref(), header.as_deref());
         // Release the permit when the blocking work is DONE, not when the awaiting future is dropped
         // — a request that timed out (below) must not hand its slot to another while the plugin
         // thread it started is still wedged.
@@ -1195,7 +1193,7 @@ async fn run_admin_chain_maybe_offloaded(
                  denying (fail-closed)."
                 );
             }
-            (ChainVerdict::Denied, None)
+            AdminDoor::Denied
         }
     }
 }
@@ -1248,21 +1246,40 @@ pub fn dry_run_admin_scope(
         );
         return busbar_contract::authz::Grants::default();
     }
+    match admin_door(app, bearer, header) {
+        AdminDoor::Identified(_, grants) => grants,
+        // `Open` is unreachable past the early return above, and is no earned grant if reached.
+        AdminDoor::Open | AdminDoor::Denied => busbar_contract::authz::Grants::default(),
+    }
+}
+
+/// THE ADMIN DOOR'S VERDICT for one request, on the snapshot it is handed: the chain (1.5.5
+/// `auth/mod.rs:847-948`), then the scope its principal earns (`:1061-1100`), capped by the
+/// identifying module's ceiling. What every admin door answers from — this middleware, the
+/// dry-run, and the root's admin loop — so there is one admin chain, read live.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdminDoor {
+    /// The explicit `admin_auth: []` open posture: anonymous, full authority.
+    Open,
+    /// Identified: who the chain identified, and the grants it earns (empty = authenticated, not
+    /// authorized).
+    Identified(Principal, busbar_contract::authz::Grants),
+    /// Refused, a module error (fail-closed `Reject`) included: 1.5.5 had no other verdict.
+    Denied,
+}
+
+/// Judge `bearer`/`header` (the [`admin_carriers`]) on `app`'s live admin chain. See [`AdminDoor`].
+pub fn admin_door(app: &App, bearer: Option<&str>, header: Option<&str>) -> AdminDoor {
     let (verdict, cap) = run_admin_chain(app, bearer, header);
-    let (module, principal) = match verdict {
+    match verdict {
+        ChainVerdict::Open => AdminDoor::Open,
+        ChainVerdict::Denied => AdminDoor::Denied,
         ChainVerdict::Identified {
             module, principal, ..
-        } => (Some(module), Some(principal)),
-        // Unreachable given the empty-chain early return above (an empty chain is `run_admin_chain`'s
-        // ONLY producer of `Open`), but were it ever reached it is the open posture — no earned
-        // grant, never Full, so it can never mask a fail-open here.
-        ChainVerdict::Open => return busbar_contract::authz::Grants::default(),
-        ChainVerdict::Denied => return busbar_contract::authz::Grants::default(),
-    };
-    let grants = admin_scope_for(app, module.as_deref(), principal.as_ref());
-    match cap {
-        Some(c) => grants.capped_by(c),
-        None => grants,
+        } => {
+            let grants = admin_scope_for(app, Some(&module), Some(&principal));
+            AdminDoor::Identified(principal, cap.map_or(grants, |c| grants.capped_by(c)))
+        }
     }
 }
 
@@ -1505,7 +1522,6 @@ pub(crate) async fn auth_middleware(
     // leaking that the path was treated as admin-protected. Require either the exact `/api` segment
     // or an `/api/` delimiter so only the native-API root (`/api/<version>/<area>/…`) matches.
     let is_admin = path == ADMIN_PATH || path.starts_with(ADMIN_PATH_PREFIX) || declared_admin;
-    let admin_header_token = extract_admin_header_token(&req);
     // The busbar client token, taken from whichever carrier the SDK used (Authorization: Bearer,
     // then x-api-key, then x-goog-api-key). This single value drives BOTH the static-allowlist
     // check and the governance virtual-key lookup, so every scheme is validated identically and in
@@ -1541,40 +1557,25 @@ pub(crate) async fn auth_middleware(
     // and NOT the native-SDK carriers (admin is a busbar operator surface, not a native SDK
     // ingress). The chain authenticates (WHO); the principal's admin SCOPE then authorizes against
     // the endpoint's required scope (WHAT) — the matrix, checked here at the one chokepoint
-    // every /admin path crosses. Extract the admin Bearer separately so the multi-scheme
-    // client-token carriers can't present an operator token via `x-api-key`/`x-goog-api-key`.
+    // every /admin path crosses, over the two admin carriers (`admin_carriers`).
     if is_admin {
-        let admin_bearer = req
-            .headers()
-            .get(AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(AuthMiddleware::extract_bearer_token);
+        let (admin_bearer, admin_header_token) = admin_carriers(req.headers());
         req.extensions_mut().insert(consumed);
-        let (verdict, scope_cap) =
-            run_admin_chain_maybe_offloaded(&app, admin_bearer, admin_header_token.clone()).await;
-        let (id_module, principal) = match verdict {
-            ChainVerdict::Identified {
-                module, principal, ..
-            } => (Some(module), Some(principal)),
-            // The explicit `admin_auth: []` OPEN posture (dev): anonymous, full authority —
-            // symmetric with the data plane's empty chain. The default config never lands here.
-            ChainVerdict::Open => (None, None),
-            // The ADMIN plane 401 speaks the frozen v1 envelope ({error:{code:"unauthorized"}}) —
-            // the most frequent error a tooling consumer hits (setup/rotation) must branch on the
-            // SAME `code` seam as every other admin error, never a protocol-shaped body (the
-            // protocol-native shaping below is for the DATA plane, whose SDKs must parse it).
-            ChainVerdict::Denied => return Err(admin_unauthorized_response()),
-        };
-        // AUTHORIZATION: resolve the principal's admin scope (module-intrinsic for the operator
-        // token; `role_bindings:` for group-carrying principals: the UNION of what its bound roles
-        // grant, unmapped groups grant nothing), CAPPED by the identifying module's
-        // `max_admin_scope:` ceiling, and check it against the endpoint's required scope. An
-        // identified principal with NO grant is 403, never 401 — authenticated but not authorized.
-        let scope = admin_scope_for(&app, id_module.as_deref(), principal.as_ref());
-        let scope = match scope_cap {
-            Some(cap) => scope.capped_by(cap),
-            None => scope,
-        };
+        // AUTHORIZATION rides the door's verdict: the principal's admin scope (module-intrinsic for
+        // the operator token; `role_bindings:` for group-carrying principals, unmapped groups grant
+        // nothing), CAPPED by the identifying module's `max_admin_scope:` ceiling. An identified
+        // principal with NO grant is 403, never 401 — authenticated but not authorized.
+        let (principal, scope) =
+            match admin_door_maybe_offloaded(&app, admin_bearer, admin_header_token).await {
+                AdminDoor::Identified(principal, grants) => (Some(principal), grants),
+                // The explicit `admin_auth: []` OPEN posture (dev): anonymous, full authority —
+                // symmetric with the data plane's empty chain. The default config never lands here.
+                AdminDoor::Open => (None, admin_scope_for(&app, None, None)),
+                // The ADMIN plane 401 speaks the frozen v1 envelope ({error:{code:"unauthorized"}})
+                // — tooling branches on the SAME `code` seam as every other admin error, never a
+                // protocol-shaped body (that shaping is for the DATA plane, whose SDKs parse it).
+                AdminDoor::Denied => return Err(admin_unauthorized_response()),
+            };
         let required = crate::admin::v1::contract::required_scope(req.method(), &path);
         if !scope.allows(required) {
             // Denied authorization is AUDITED (a credential probing beyond its scope is exactly what

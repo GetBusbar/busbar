@@ -731,7 +731,7 @@ fn test_extract_admin_header_token_empty_filtered() {
     // unit test fails against it; the filtered helper now yields `None`.
     let blank = req_with(X_ADMIN_TOKEN, "");
     assert_eq!(
-        extract_admin_header_token(&blank),
+        admin_carriers(blank.headers()).1,
         None,
         "a blank x-admin-token must be treated as absent (None)"
     );
@@ -741,7 +741,7 @@ fn test_extract_admin_header_token_empty_filtered() {
     // trim, matching extract_client_token's carrier filter exactly.
     let present = req_with(X_ADMIN_TOKEN, "admintok");
     assert_eq!(
-        extract_admin_header_token(&present),
+        admin_carriers(present.headers()).1,
         Some("admintok".to_string()),
         "a non-empty x-admin-token must be carried verbatim"
     );
@@ -751,7 +751,7 @@ fn test_extract_admin_header_token_empty_filtered() {
         .uri("/api/v1/admin/keys")
         .body(Body::empty())
         .expect("test request must build");
-    assert_eq!(extract_admin_header_token(&absent), None);
+    assert_eq!(admin_carriers(absent.headers()).1, None);
 }
 
 /// The `admin.forbidden` audit is bounded by the SAME per-(principal, window) counter

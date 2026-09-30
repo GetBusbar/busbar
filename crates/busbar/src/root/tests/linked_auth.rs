@@ -638,3 +638,170 @@ async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that
         "the operator token is not judged by the operator credential here: {body}"
     );
 }
+
+// ── THE ROOT-ADMIN LOOP'S DOOR IS THE SAME LIVE ADMIN CHAIN (DONE-BUILD, ARCHITECT 2026-09-30) ──────
+// The loop's authenticate step used to run a hardcoded `[admin-tokens]` chain built once at boot,
+// whatever `admin_auth` said: `admin_auth: []` answered 401 where 1.5.5 answered 200 (1.5.5
+// `auth/mod.rs:847-848`, scope Full at `:1067-1068`), an external admin module was never asked, and
+// `PUT /api/v1/admin/admin-auth` never reached it. Each cell below walks the WHOLE loop over the
+// production door (`live_admin_door`) on a live `AppHandle`.
+
+/// The answer the mounted surface gives once the loop admits: a 200 the door could not have written.
+#[cfg(feature = "root-admin")]
+struct Answers200;
+
+#[cfg(feature = "root-admin")]
+impl crate::root::units_admin::AdminDispatch for Answers200 {
+    fn execute(
+        &self,
+        _verb: busbar_core_admin::KernelVerb,
+        _request: &crate::root::units_admin::AdminRequest,
+    ) -> crate::root::units_admin::AdminAnswer {
+        crate::root::units_admin::AdminAnswer {
+            status: 200,
+            headers: Vec::new(),
+            body: b"{}".to_vec(),
+        }
+    }
+}
+
+/// 1.5.5's admin 401 body, the frozen envelope the loop writes at its door.
+#[cfg(feature = "root-admin")]
+const DOOR_401: &str = r#"{"error":{"code":"unauthorized","message":"missing or invalid admin credential (Bearer or x-admin-token)"}}"#;
+
+/// Walk `method path` with the given carriers through the root-admin loop whose door is the live
+/// chain on `handle`: (status, body).
+#[cfg(feature = "root-admin")]
+fn through_the_loop(
+    handle: &Arc<busbar_kernel::state::AppHandle>,
+    (method, path): (&str, &str),
+    bearer: Option<&str>,
+    header: Option<&str>,
+) -> (u16, String) {
+    busbar_kernel::metrics::init();
+    let units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(Answers200),
+        crate::root::units_admin::live_admin_door(Arc::clone(handle)),
+    );
+    let node = crate::root::units_admin::AdminNode::new(crate::root::kernel::new_kernel(), units);
+    let mut headers = Vec::new();
+    if let Some(b) = bearer {
+        headers.push(("authorization".to_string(), format!("Bearer {b}")));
+    }
+    if let Some(h) = header {
+        headers.push(("x-admin-token".to_string(), h.to_string()));
+    }
+    let map: axum::http::HeaderMap = (headers.iter())
+        .map(|(n, v)| (n.parse().unwrap(), v.parse().unwrap()))
+        .collect();
+    let answer = node.answer(crate::root::units_admin::AdminRequest {
+        method: method.to_string(),
+        path: path.to_string(),
+        credential: crate::root::units_admin::presented_credential(&map),
+        headers,
+        body: Vec::new(),
+        at: 1_700_000_000,
+        unit: node.next_unit(),
+    });
+    (answer.status, String::from_utf8(answer.body).unwrap())
+}
+
+#[cfg(feature = "root-admin")]
+const INFO: (&str, &str) = ("GET", "/api/v1/admin/info");
+
+/// (a) `admin_auth: []` IS OPEN on the loop, as in 1.5.5: a read and a write answer, with no
+/// credential, even on a node whose governance holds an operator token.
+#[cfg(feature = "root-admin")]
+#[test]
+fn an_empty_admin_chain_is_the_open_posture_on_the_loop() {
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app(&[], Vec::new())));
+    assert_eq!(through_the_loop(&handle, INFO, None, None).0, 200);
+    let write = ("POST", "/api/v1/admin/keys");
+    assert_eq!(through_the_loop(&handle, write, None, None).0, 200);
+}
+
+/// (b) + (3) THE OPERATOR TOKEN ON THE LOOP, BOTH CARRIERS, AS 1.5.5 JUDGED THEM: no credential is
+/// the door's 401 in 1.5.5's bytes; either carrier admits; a request carrying both is judged on
+/// both (the right header admits past a wrong Bearer and past a Bearer in another grammar).
+#[cfg(feature = "root-admin")]
+#[test]
+fn the_loop_judges_the_operator_token_on_both_carriers_as_1_5_5_did() {
+    let op = config::operator_provider();
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app(&[op], Vec::new())));
+    let jws = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcGVyYXRvciJ9.c2ln";
+    let cases: [(Option<&str>, Option<&str>, u16); 9] = [
+        (None, None, 401),
+        (Some(TOKEN), None, 200),
+        (None, Some(TOKEN), 200),
+        (Some("wrong"), None, 401),
+        (None, Some("wrong"), 401),
+        (Some("wrong"), Some(TOKEN), 200),
+        (Some(TOKEN), Some("wrong"), 200),
+        (Some(jws), Some(TOKEN), 200),
+        (Some(jws), None, 401),
+    ];
+    for (bearer, header, want) in cases {
+        let (status, body) = through_the_loop(&handle, INFO, bearer, header);
+        assert_eq!(status, want, "bearer={bearer:?} header={header:?}: {body}");
+        if want == 401 {
+            assert_eq!(body, DOOR_401, "bearer={bearer:?} header={header:?}");
+        }
+    }
+}
+
+/// (c) AN EXTERNAL ADMIN MODULE ON THE CHAIN IS CONSULTED BY THE LOOP, and its verdict decides: a
+/// credential it identifies (roleless, so no grant) is the authorization ending, 403 — not the
+/// door's 401 the hardcoded chain answered — and one the chain refuses is still the door's 401.
+#[cfg(feature = "root-admin")]
+#[test]
+fn an_external_admin_module_is_consulted_by_the_loop() {
+    let op = config::operator_provider();
+    let chain = [op, "any-credential"];
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app(
+        &chain,
+        vec![("any-credential", Box::new(AnyCredential))],
+    )));
+    let jws = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcGVyYXRvciJ9.c2ln";
+    assert_eq!(through_the_loop(&handle, INFO, Some(jws), None).0, 403);
+    assert_eq!(through_the_loop(&handle, INFO, Some(TOKEN), None).0, 200);
+    assert_eq!(
+        through_the_loop(&handle, INFO, Some("wrong-opaque-token"), None),
+        (401, DOOR_401.to_string())
+    );
+}
+
+/// (d) THE CHAIN IS READ LIVE: swapping the snapshot's admin chain (what `PUT
+/// /api/v1/admin/admin-auth` applies) changes the loop's next answer, with no new node.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_swapped_admin_chain_is_the_loops_next_door() {
+    let op = config::operator_provider();
+    busbar_kernel::metrics::init();
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app(&[op], Vec::new())));
+    let units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(Answers200),
+        crate::root::units_admin::live_admin_door(Arc::clone(&handle)),
+    );
+    let node = crate::root::units_admin::AdminNode::new(crate::root::kernel::new_kernel(), units);
+    let ask = |node: &crate::root::units_admin::AdminNode| {
+        node.answer(crate::root::units_admin::AdminRequest {
+            method: INFO.0.to_string(),
+            path: INFO.1.to_string(),
+            credential: None,
+            headers: Vec::new(),
+            body: Vec::new(),
+            at: 1_700_000_000,
+            unit: node.next_unit(),
+        })
+        .status
+    };
+    assert_eq!(ask(&node), 401, "the operator chain, no credential");
+    handle.swap(app(&[], Vec::new()));
+    assert_eq!(
+        ask(&node),
+        200,
+        "the swapped-in empty chain opens the SAME node's door"
+    );
+    handle.swap(app(&[op], Vec::new()));
+    assert_eq!(ask(&node), 401, "and swapping it back closes it");
+}
