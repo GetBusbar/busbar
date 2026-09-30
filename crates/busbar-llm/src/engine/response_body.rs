@@ -402,7 +402,7 @@ where
                     // Stream ended. A clean end is NOT a failure (success was recorded at headers
                     // time); the breaker hears only a stream the relay saw fail after its first
                     // byte, and a same-protocol non-stream body whose own stop reason says the
-                    // generation failed (Q31).
+                    // generation failed (owner ruling Q31).
                     let end = this.relay.end();
                     if let Some(reason) = end.stream_fault {
                         this.record_transient(reason);
