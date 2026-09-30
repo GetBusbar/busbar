@@ -675,8 +675,15 @@ fn red_a_tail_trust_key_that_breaks_its_element_rule_does_not_bind() {
         t.dispatch_shape = SHAPE_WHOLE;
         t.trust_keys = keys.as_ptr();
         t.trust_keys_len = keys.len();
+        let sections = [busbar_contract::abi::mechanism::door::Section {
+            name: abi("door"),
+            flags: busbar_contract::abi::mechanism::door::SECTION_DECLARING,
+            _reserved: 0,
+        }];
         let mut st: Statement = z();
         st.kind_tail = std::ptr::from_ref(&t).cast();
+        st.sections = sections.as_ptr();
+        st.sections_len = sections.len();
         Plane::context(&st).map(|_| ())
     }
     let good = [PinMechanism {
