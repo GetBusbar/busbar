@@ -35,7 +35,7 @@ kind-isolation:matrix	ratchet	busbar-llm × plane	784
 kind-isolation:matrix	ratchet	busbar-mcp × cleanliness	5
 kind-isolation:matrix	ratchet	busbar-mcp × legacy	8
 kind-isolation:matrix	ratchet	busbar-mcp × plugin-tooling	10
-kind-isolation:matrix	ratchet	busbar-plane-llm × plane	599
+kind-isolation:matrix	ratchet	busbar-plane-llm × plane	600
 kind-isolation:matrix	ratchet	busbar-plane-llm × transport	599
 kind-isolation:matrix	ratchet	busbar-plane-mcp × legacy	11
 kind-isolation:matrix	ratchet	busbar-plugin-loader × hooks	3
