@@ -502,6 +502,16 @@ extern "C" fn on_piece(
                 if i.flags & PIECE_LAST == 0 {
                     return say(out, Outcome::Ready);
                 }
+                if head.as_slice() == b"/local" {
+                    // A LOCAL ANSWER: the plane answers the caller itself (an echo of the body),
+                    // with nothing for the far end.
+                    o.reply_status = 200;
+                    let n = u.body.len().min(i.reply_cap);
+                    std::ptr::copy_nonoverlapping(u.body.as_ptr(), i.reply_buf, n);
+                    o.emitted = n as u64;
+                    o.flags = EMIT_DONE;
+                    return say(out, Outcome::Ready);
+                }
                 let mut at = 0;
                 o.verb = put(i, &mut at, b"POST");
                 let target = [b"/far/".as_slice(), &u.mode, &head].concat();

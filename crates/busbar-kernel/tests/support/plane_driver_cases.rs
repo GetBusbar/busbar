@@ -505,6 +505,68 @@ async fn a_wedged_on_piece_keeps_the_units_buffers_until_it_returns() {
     }
 }
 
+/// A LOCAL ANSWER (the owner's rule: a plane's local answer from on_piece ends the unit): a plane
+/// that answers the caller's body with its reply done and nothing for the far end finishes the unit
+/// itself. Its bytes reach the caller, and the far end is never sent to, whether or not the walk
+/// had a member to offer.
+#[tokio::test]
+async fn a_local_answer_ends_the_unit_without_the_far_end() {
+    for way in ways() {
+        for members in [&["ok"][..], &[][..]] {
+            let r = rig(way, BufferCaps::default(), Book::default());
+            let (steps, far, caller) = (
+                TestUnits::passing(),
+                Far::new(members, CHUNKS),
+                Caller::default(),
+            );
+            let units = r.driver.unit(
+                &steps,
+                &far,
+                &caller,
+                arrival("/local", b"answered here"),
+                0,
+            );
+            let outcome = drive(&units).await;
+            assert!(
+                matches!(outcome, Outcome::Completed),
+                "{way:?} {members:?}: {outcome:?}"
+            );
+            assert_eq!(caller.text(), "answered here", "{way:?} {members:?}");
+            assert_eq!(caller.status(), Some(200), "{way:?} {members:?}");
+            assert!(
+                far.sent().is_empty(),
+                "{way:?} {members:?}: the far end is never sent to"
+            );
+        }
+    }
+}
+
+/// With no member and no local answer the unit has nowhere to go: it fails as unreachable, and the
+/// far end is never sent to.
+#[tokio::test]
+async fn with_no_member_a_far_bound_unit_is_unreachable() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), Book::default());
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&[], CHUNKS),
+            Caller::default(),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival("/call", b"x"), 0);
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(
+                outcome,
+                Outcome::Failed(StepName::Route, ReasonCode::DestinationUnreachable)
+            ),
+            "{way:?}: {outcome:?}"
+        );
+        assert!(far.sent().is_empty(), "{way:?}");
+    }
+}
+
 #[tokio::test]
 async fn a_retry_verdict_before_the_first_byte_fails_over() {
     for way in ways() {

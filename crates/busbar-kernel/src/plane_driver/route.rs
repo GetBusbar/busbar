@@ -509,17 +509,22 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
         let mut attempt_no = 0;
         'attempt: loop {
             attempt_no += 1;
-            let Some(member) = self.far.member(attempt_no) else {
+            let member = self.far.member(attempt_no);
+            if member.is_none() && attempt_no > 1 {
                 return End::Failed(ReasonCode::DestinationUnreachable);
-            };
+            }
+            let member = member.unwrap_or_default();
             run.bufs.member.clear();
             run.bufs.member.extend_from_slice(member.as_bytes());
+            let far_bound = !member.is_empty();
             let mut request = OutboundRequest {
                 member,
                 attempt_no,
                 ..OutboundRequest::default()
             };
             // THE ATTEMPT PIECE, then the caller's body the kernel kept, re-pushed on every attempt.
+            // With no member for the first attempt there is no ATTEMPT piece: the body alone, which
+            // a plane may answer itself (a local answer); otherwise the unit has nowhere to go.
             let attempt = Piece {
                 from: FROM_KERNEL,
                 flags: 0,
@@ -534,13 +539,24 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 src: Src::Body,
                 ..attempt
             };
-            for piece in [attempt, body] {
-                if let Step::End(end) = self
-                    .push(run, piece, &mut Toward::FarEnd(&mut request))
-                    .await
-                {
-                    return end;
+            let pieces: &[Piece] = if far_bound { &[attempt, body] } else { &[body] };
+            let local = {
+                let mut toward = Toward::FarEnd(&mut request);
+                for piece in pieces {
+                    if let Step::End(end) = self.push(run, *piece, &mut toward).await {
+                        return end;
+                    }
+                    if matches!(toward, Toward::Caller) {
+                        break;
+                    }
                 }
+                matches!(toward, Toward::Caller)
+            };
+            if local {
+                return End::Done;
+            }
+            if !far_bound {
+                return End::Failed(ReasonCode::DestinationUnreachable);
             }
             match guarded_run(run, self.far.send(request)).await {
                 Ok(true) => {}
@@ -623,6 +639,15 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 self.driver.money.checkpoint(run.ctx, units)
             };
             let emitted = &bufs.reply[..(out.emitted as usize).min(bufs.reply.len())];
+            // A LOCAL ANSWER: the plane answered a piece bound for the far end with its reply done
+            // and nothing for the far end. The unit is the plane's to finish: its bytes go to the
+            // caller, and no far end is sent to.
+            if matches!(toward, Toward::FarEnd(_))
+                && out.flags & EMIT_TO_FAR_END == 0
+                && out.flags & EMIT_DONE != 0
+            {
+                *toward = Toward::Caller;
+            }
             match toward {
                 Toward::FarEnd(request) => {
                     if out.flags & EMIT_TO_FAR_END != 0 {
