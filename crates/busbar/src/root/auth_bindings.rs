@@ -231,6 +231,28 @@ impl VirtualKeyDirectory for GovernanceDirectory {
 /// as is a constant of the surface rather than a value a configuration picks.
 pub const ADMIN_PRINCIPAL_ID: &str = "admin";
 
+/// THE ROOT LEGACY TABLE: the operator credential's provider, as configuration spells it (the
+/// `auth.admin_auth:` default, the one `module:` whose definition may carry `token:`, and a reserved
+/// hook name). Frozen operator-visible config text naming an auth module no crate in this tree
+/// declares (GetBusbar/busbar-auth-admin-tokens); the root hands it to the kernel with its linked
+/// auth rows, so the kernel spells it nowhere (ARCHITECT 2026-09-30, KERNEL-AUTH-ZERO Q2;
+/// BUSBAR-1.6.0.md:173, "sit in the root legacy table"). Moved from busbar-kernel's
+/// `data/operator_credential.toml`, value unchanged. A module name a build compiles in is declared
+/// as a `*_MODULE` constant, which is how the kind-isolation instance axis learns it.
+/// v1.5.5:crates/busbar/src/config/mod.rs:795 (ADMIN_TOKENS_MODULE); :1874,1891 (the hook-name
+/// reservation).
+pub const OPERATOR_AUTH_MODULE: &str = "admin-tokens";
+
+/// THE OPERATOR CREDENTIAL'S WORDS, off the root legacy table: [`OPERATOR_AUTH_MODULE`] and
+/// [`ADMIN_PRINCIPAL_ID`] (v1.5.5:crates/auth-admin-tokens/src/lib.rs:19, ADMIN_TOKENS_PRINCIPAL_ID).
+#[must_use]
+pub fn operator_words() -> busbar_kernel_identity::operator::OperatorWords {
+    busbar_kernel_identity::operator::OperatorWords {
+        provider: OPERATOR_AUTH_MODULE,
+        principal_id: ADMIN_PRINCIPAL_ID,
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/auth_bindings.rs"]
 mod tests;

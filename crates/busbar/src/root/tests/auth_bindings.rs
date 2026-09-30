@@ -187,3 +187,124 @@ fn the_facade_names_the_relocated_authenticate_step_it_does_not_point_at() {
         "drain.rs's authenticate step must say it already runs from `busbar-kernel-identity`"
     );
 }
+
+// ------------------------------------------------------------------------------------------------
+// THE ROOT LEGACY TABLE'S OPERATOR WORDS — 1.5.5's bytes, pinned where the words live (ARCHITECT
+// 2026-09-30, KERNEL-AUTH-ZERO Q2: the byte-pin tests move to crates/busbar). The kernel's own tests
+// run on a kind-neutral double; these run on the words this root hands in at boot.
+// ------------------------------------------------------------------------------------------------
+
+/// Hand the root's words in with its linked auth rows, as `register_planes` does at boot (the first
+/// install stands, and every install in this binary is this one).
+fn hand_in_the_root_words() {
+    busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths, operator_words());
+}
+
+#[test]
+fn the_legacy_table_spells_the_operator_credential_as_1_5_5_did() {
+    let words = operator_words();
+    assert_eq!(words.provider, "admin-tokens");
+    assert_eq!(words.principal_id, "admin");
+    assert_eq!(
+        (words.provider, words.principal_id),
+        (ADMIN_TOKENS_MODULE, ADMIN_PRINCIPAL_ID),
+        "the legacy table and the module's own report must not drift"
+    );
+}
+
+#[test]
+fn the_kernel_answers_to_the_root_words_once_handed_in() {
+    hand_in_the_root_words();
+    assert_eq!(busbar_kernel::config::operator_provider(), "admin-tokens");
+    assert_eq!(busbar_kernel::config::operator_principal_id(), "admin");
+    // The `auth.admin_auth:` default: the operator credential, referenced bare.
+    assert_eq!(
+        busbar_kernel::config::default_admin_auth_names(),
+        ["admin-tokens"]
+    );
+    assert_eq!(
+        busbar_kernel::config::builtin_identity_providers(),
+        ["keys", "admin-tokens"]
+    );
+}
+
+/// The 1.5.3 hook-name word space, WHOLE: the kernel's frozen words and the root's operator word.
+/// Exactly 1.5.5's set (v1.5.5:crates/busbar/src/config/mod.rs:1891).
+#[test]
+fn the_frozen_hook_name_word_space_is_1_5_5_s() {
+    hand_in_the_root_words();
+    let mut space: Vec<&str> = busbar_kernel::config::FROZEN_HOOK_NAME_WORD_SPACE.to_vec();
+    space.push(busbar_kernel::config::operator_provider());
+    space.sort_unstable();
+    assert_eq!(
+        space,
+        [
+            "admin-tokens",
+            "cheapest",
+            "fastest",
+            "first",
+            "least_busy",
+            "nothing",
+            "reject",
+            "tokens",
+            "usage",
+            "weighted",
+        ]
+    );
+    assert!(busbar_kernel::config::is_reserved_hook_name("admin-tokens"));
+    assert!(busbar_kernel::config::is_reserved_hook_name("tokens"));
+    assert!(!busbar_kernel::config::is_reserved_hook_name("admin-tokens-2"));
+}
+
+/// Walk `path` down a migrated document.
+fn dig<'a>(doc: &'a serde_yaml::Value, path: &[&str]) -> Option<&'a serde_yaml::Value> {
+    let mut cur = doc;
+    for k in path {
+        cur = cur.as_mapping()?.get(serde_yaml::Value::from(*k))?;
+    }
+    Some(cur)
+}
+
+/// 1.4.x `governance.admin_token: ${VAR}` migrates onto the operator credential as 1.5.5 wrote it:
+/// `auth.admin_auth: [admin-tokens]` and the secret ref on `identity-providers.admin-tokens`.
+#[test]
+fn migration_writes_the_14x_admin_token_as_1_5_5_did() {
+    hand_in_the_root_words();
+    let raw = "governance:\n  enabled: true\n  admin_token: \"${BUSBAR_ADMIN_TOKEN}\"\n\
+               providers: {}\nmodels: {}\n";
+    let out = busbar_kernel::config::migrate::migrate_config(raw).expect("migrates");
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
+    assert_eq!(
+        dig(&doc, &["auth", "admin_auth"])
+            .and_then(|v| v.as_sequence())
+            .and_then(|s| s.first())
+            .and_then(|v| v.as_str()),
+        Some("admin-tokens")
+    );
+    assert_eq!(
+        dig(&doc, &["identity-providers", "admin-tokens", "token", "env"]).and_then(|v| v.as_str()),
+        Some("BUSBAR_ADMIN_TOKEN")
+    );
+}
+
+/// A 1.5.x inline admin chain entry for the operator credential lifts onto its definition, and the
+/// chain keeps the bare name, as 1.5.5 wrote it.
+#[test]
+fn migration_lifts_the_inline_operator_entry_as_1_5_5_did() {
+    hand_in_the_root_words();
+    let raw = "auth:\n  admin_auth:\n    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }\n\
+               providers: {}\nmodels: {}\n";
+    let out = busbar_kernel::config::migrate::migrate_config(raw).expect("migrates");
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
+    let chain: Vec<&str> = dig(&doc, &["auth", "admin_auth"])
+        .and_then(|v| v.as_sequence())
+        .expect("an admin chain")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert_eq!(chain, ["admin-tokens"]);
+    assert_eq!(
+        dig(&doc, &["identity-providers", "admin-tokens", "token", "env"]).and_then(|v| v.as_str()),
+        Some("BUSBAR_ADMIN_TOKEN")
+    );
+}

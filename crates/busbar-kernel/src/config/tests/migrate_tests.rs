@@ -166,15 +166,17 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
         Some("day")
     );
     assert_eq!(get(&["groups", "growth", "parent"]).as_str(), Some("acme"));
-    // admin_token ${VAR} -> the operator credential's secret ref.
+    // admin_token ${VAR} -> the operator credential's secret ref, under the provider word the root
+    // hands in (this build's double; the root pins 1.5.5's bytes: `root::tests::legacy_table`).
+    let op = crate::config::operator_provider();
     let admin_auth = get(&["auth", "admin_auth"]);
     assert_eq!(
         admin_auth.as_sequence().unwrap()[0].as_str(),
-        Some("admin-tokens"),
+        Some(op),
         "a 1.5.3 admin chain is a list of bare PROVIDER NAMES"
     );
     // The operator credential rode along onto the `identity-providers:` DEFINITION.
-    let token_env = get(&["identity-providers", "admin-tokens", "token", "env"])
+    let token_env = get(&["identity-providers", op, "token", "env"])
         .as_str()
         .map(str::to_string);
     assert_eq!(token_env.as_deref(), Some("BUSBAR_ADMIN_TOKEN"));
@@ -1535,18 +1537,24 @@ fn golden_migrate_type_keyed_export_becomes_a_named_map() {
 #[test]
 fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
     crate::test_support::register_neutral_test_plane();
-    let raw = "auth:\n\
-               \x20 chain:\n\
-               \x20   - keys\n\
-               \x20   - test-idp-double: { settings: { issuer: \"https://idp.example/\" } }\n\
-               \x20 admin_auth:\n\
-               \x20   - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }\n\
-               \x20   - test-idp-double: { max_admin_scope: full }\n\
-               \x20 methods:\n\
-               \x20   test-idp-double:\n\
-               \x20     audience: busbar\n\
-               \x20     browser_login: { client_id: busbar-web }\n\
-               providers: {}\nmodels: {}\npools: {}\n";
+    // The operator credential's provider is the word the root hands in (this build's double; the
+    // root pins 1.5.5's bytes: `root::tests::legacy_table`).
+    let op = crate::config::operator_provider();
+    let raw = format!(
+        "auth:\n\
+         \x20 chain:\n\
+         \x20   - keys\n\
+         \x20   - test-idp-double: {{ settings: {{ issuer: \"https://idp.example/\" }} }}\n\
+         \x20 admin_auth:\n\
+         \x20   - {op}: {{ token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n\
+         \x20   - test-idp-double: {{ max_admin_scope: full }}\n\
+         \x20 methods:\n\
+         \x20   test-idp-double:\n\
+         \x20     audience: busbar\n\
+         \x20     browser_login: {{ client_id: busbar-web }}\n\
+         providers: {{}}\nmodels: {{}}\npools: {{}}\n"
+    );
+    let raw = raw.as_str();
     assert_loud_fail_with_breadcrumb(raw, "INLINE module entries");
     assert_loud_fail_with_breadcrumb(raw, "auth.methods");
 
@@ -1569,7 +1577,7 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
             .iter()
             .filter_map(|v| v.as_str().map(str::to_string))
             .collect::<Vec<_>>(),
-        ["admin-tokens", "test-idp-double"]
+        [op, "test-idp-double"]
     );
     assert!(
         dig(&doc, &["auth", "methods"]).is_none(),
@@ -1623,7 +1631,7 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
     assert_eq!(
         dig(
             &doc,
-            &["identity-providers", "admin-tokens", "token", "env"]
+            &["identity-providers", op, "token", "env"]
         )
         .and_then(|v| v.as_str()),
         Some("BUSBAR_ADMIN_TOKEN")

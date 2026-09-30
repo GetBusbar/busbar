@@ -3352,12 +3352,13 @@ fn reserved_hook_names_are_frozen() {
     let mut frozen: Vec<&str> = crate::config::FROZEN_HOOK_NAME_WORD_SPACE.to_vec();
     frozen.sort_unstable();
 
-    // (a) The declared frozen list is EXACTLY these eleven words — spelled out literally so a
-    //     diff shows a reviewer precisely which word someone tried to add.
+    // (a) The kernel's declared frozen list is EXACTLY these words — spelled out literally so a
+    //     diff shows a reviewer precisely which word someone tried to add. The operator
+    //     credential's provider completes the 1.5.3 space; it is the root legacy table's word, and
+    //     the root pins the whole space with it (`root::tests::legacy_table`).
     assert_eq!(
         frozen,
         [
-            "admin-tokens",
             "cheapest",
             "fastest",
             "first",
@@ -3401,6 +3402,23 @@ fn reserved_hook_names_are_frozen() {
     assert!(
         errs.iter()
             .any(|e| e.contains("cheapest") && e.contains("reserved")),
+        "the error must name the reserved word: {errs:?}"
+    );
+
+    // (d) The operator credential's provider — the word the root hands in (this build's double) —
+    //     is reserved on the same path, without the kernel spelling it.
+    let operator = crate::config::operator_provider();
+    assert!(crate::config::is_reserved_hook_name(operator));
+    let mut deploy = base_deploy();
+    deploy.hooks.insert(
+        operator.to_string(),
+        serde_yaml::from_str("module: some-hook-plugin").expect("hook def parses"),
+    );
+    let errs = resolve(&deploy, &HashMap::new())
+        .expect_err("a hook named with the operator credential's provider must refuse to boot");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains(operator) && e.contains("reserved")),
         "the error must name the reserved word: {errs:?}"
     );
 }

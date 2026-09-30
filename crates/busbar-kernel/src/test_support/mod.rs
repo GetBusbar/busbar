@@ -2281,15 +2281,32 @@ impl Drop for EnvVarGuard {
     }
 }
 
+/// THE OPERATOR DOUBLE: the kernel-neutral words a test build's operator credential answers to
+/// (BUSBAR-1.6.0.md:175, "Kernel tests use kind-neutral doubles"). The provider is a double; the
+/// principal is the id the operator auth plugin a test binary links identifies as, so the double's
+/// operator is that plugin's. The shipped words are the composition root's legacy table's, handed
+/// in with its linked auth rows; the kernel spells none of them.
+pub const OPERATOR_DOUBLE: OperatorWords = OperatorWords {
+    provider: "test-operator-double",
+    principal_id: "admin",
+};
+
 /// TEST REGISTRY ROW — link the operator credential's auth row into this test binary's auth axis,
 /// as the composition root links it into the shipped one: `entry` is the SDK boundary
 /// (`BUSBAR_COLD_ENTRY`) of whichever auth plugin the test binary links for the purpose, registered
-/// under [`crate::config::operator_provider`]. The first install stands (the axis is process-wide).
+/// under the [`OPERATOR_DOUBLE`]'s provider. The first install stands (the axis is process-wide).
 /// A test crate names that plugin only in its manifest; its build script turns the manifest row into
 /// the `entry` it hands here.
-pub fn install_operator_auth_row(entry: busbar_kernel_identity::operator::AuthBoundary) {
-    busbar_kernel_identity::operator::install_row(crate::config::operator_provider(), entry)
+pub fn install_operator_auth_row(entry: AuthBoundary) {
+    install_operator_auth_row_as(OPERATOR_DOUBLE, entry)
 }
+
+/// `install_operator_auth_row_as(words, entry)`: [`install_operator_auth_row`] under a test binary's
+/// OWN operator words — a binary that links the operator plugin the composition root links, and pins
+/// the root's bytes, hands in the root's words as the root does. The first install stands.
+pub use busbar_kernel_identity::operator::{
+    install_row as install_operator_auth_row_as, AuthBoundary, OperatorWords,
+};
 
 /// The builtin-only `SecretResolver` (env/file sugar, no plugin modules) for a dependent crate's
 /// tests — `SecretResolver::builtins_only` itself stays crate-private; this is the one doorway.

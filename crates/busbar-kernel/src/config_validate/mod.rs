@@ -744,7 +744,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // a built-in answers to or an `on_error` terminal word. Registry uniqueness + the closed
     // `on_error` string union (see the const's doc). A collision is a boot error naming the offender.
     for hook_name in cfg.hooks.keys() {
-        if crate::config::RESERVED_HOOK_NAMES.contains(&hook_name.as_str()) {
+        if crate::config::is_reserved_hook_name(hook_name) {
             errors.push(format!(
                 "hook '{hook_name}' uses a reserved name (a built-in ranking strategy, auth module, \
                  or on_error terminal); rename the hook — a hook can never shadow a reserved word"

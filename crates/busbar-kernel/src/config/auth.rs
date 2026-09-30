@@ -451,19 +451,29 @@ impl AuthCfg {
 /// The built-in signed-key verifier module name (`auth.chain: [keys]`).
 pub const KEYS_MODULE: &str = "keys";
 /// THE OPERATOR CREDENTIAL'S PROVIDER, as configuration spells it: the `auth.admin_auth:` default,
-/// referenced bare, and the one `module:` whose definition may carry `token:` — frozen config text
-/// read off `data/operator_credential.toml` (ARCHITECT 2026-09-27 AUTH-ROW, ruling F-D's terms).
-/// Which module answers it is the auth axis's business.
+/// referenced bare, the one `module:` whose definition may carry `token:`, and a reserved hook
+/// name. Frozen config text the composition root's legacy table holds and hands in with its linked
+/// auth rows (ARCHITECT 2026-09-30, KERNEL-AUTH-ZERO Q2; BUSBAR-1.6.0.md:173); the kernel never
+/// spells it. Which module answers it is the auth axis's business.
 pub fn operator_provider() -> &'static str {
-    crate::config::migrate::frozen_row(OPERATOR_TEXT, "provider")
+    operator_words().provider
 }
 
 /// The fixed principal id the operator credential's module identifies the operator as.
 pub fn operator_principal_id() -> &'static str {
-    crate::config::migrate::frozen_row(OPERATOR_TEXT, "principal_id")
+    operator_words().principal_id
 }
 
-const OPERATOR_TEXT: &str = include_str!("../../data/operator_credential.toml");
+/// The words the root handed in. A test build has no root: the kernel-neutral operator double
+/// stands in (BUSBAR-1.6.0.md:175, "Kernel tests use kind-neutral doubles"), the way `preflight`'s
+/// stand-in rows stand in for its stores. A build no root handed words to links no operator.
+fn operator_words() -> busbar_kernel_identity::operator::OperatorWords {
+    #[cfg(any(test, feature = "test-support"))]
+    let unhanded = crate::test_support::OPERATOR_DOUBLE;
+    #[cfg(not(any(test, feature = "test-support")))]
+    let unhanded = Default::default();
+    busbar_kernel_identity::operator::words().unwrap_or(unhanded)
+}
 
 /// The BUILT-IN identity providers, referenced BARE from `auth.chain:`/`auth.admin_auth:` with no
 /// `identity-providers:` definition at all: the signed-key verifier and the operator credential. A

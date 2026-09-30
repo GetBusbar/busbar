@@ -944,7 +944,7 @@ pub fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result<App, A
     // runtime-registered hook can neither shadow a built-in nor collide with an `on_error` terminal
     // word (which would make the on_error string union ambiguous for every consumer). Previously
     // only the boot/apply path checked this — the register API was the one write path missing it.
-    if busbar_kernel::config::RESERVED_HOOK_NAMES.contains(&name) {
+    if busbar_kernel::config::is_reserved_hook_name(name) {
         return Err(AdminError::Validation(format!(
             "hook name `{name}` is reserved (a built-in ranking strategy, auth module, or on_error \
              terminal); pick another name"

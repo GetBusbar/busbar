@@ -328,6 +328,11 @@ pub fn on_error_terminal(name: &str) -> Option<PolicyOnError> {
 ///
 /// Pinned by `reserved_hook_names_are_frozen` in the config tests, which asserts the EXACT contents
 /// (not a subset) so that adding a word here fails a test that points back at this comment.
+///
+/// ONE FROZEN WORD IS NOT HERE: the operator credential's provider, the built-in auth module the
+/// 1.5.3 word space reserves. It is the root legacy table's word, handed in with the linked auth
+/// rows (ARCHITECT 2026-09-30, KERNEL-AUTH-ZERO Q2), so the kernel reserves it through
+/// [`is_reserved_hook_name`] without spelling it. Every write path asks that function.
 pub const RESERVED_HOOK_NAMES: &[&str] = &[
     // on_error terminals (see ON_ERROR_*) — includes `weighted`, which is ALSO the native floor.
     ON_ERROR_WEIGHTED,
@@ -339,10 +344,16 @@ pub const RESERVED_HOOK_NAMES: &[&str] = &[
     STRATEGY_FASTEST,
     STRATEGY_LEAST_BUSY,
     STRATEGY_USAGE,
-    // built-in auth modules (AuthModule::name)
+    // built-in auth modules (AuthModule::name); the operator credential's provider is reserved by
+    // `is_reserved_hook_name`
     "tokens",
-    "admin-tokens",
 ];
+
+/// Whether `name` is a reserved hook name on every hook-write path: a word of
+/// [`RESERVED_HOOK_NAMES`], or the operator credential's provider the root handed in.
+pub fn is_reserved_hook_name(name: &str) -> bool {
+    RESERVED_HOOK_NAMES.contains(&name) || (!name.is_empty() && name == super::operator_provider())
+}
 
 /// The FROZEN 1.5.3 hook-name word space (freeze blocker) — the UNION of [`RESERVED_HOOK_NAMES`]
 /// and the pool-`hooks:` strategy keywords accepted bare by `is_strategy_name`. This is the exact
@@ -351,12 +362,12 @@ pub const RESERVED_HOOK_NAMES: &[&str] = &[
 ///
 /// Kept as its own constant, rather than derived, so the freeze is a VALUE a test can pin literally:
 /// `hook_name_word_space_is_frozen` asserts both that this equals the runtime union AND that its
-/// contents are exactly these eleven words.
+/// contents are exactly these words. The operator credential's provider completes the space; it is
+/// the root legacy table's word, and the root's tests pin the whole space with it.
 // Consumed by the freeze test (`reserved_hook_names_are_frozen`) rather than by runtime code — that
 // is the POINT: it is the declared, reviewable VALUE of the freeze, and the test proves it equals
 // the runtime union.
 pub const FROZEN_HOOK_NAME_WORD_SPACE: &[&str] = &[
-    "admin-tokens",
     "cheapest",
     "fastest",
     "first",

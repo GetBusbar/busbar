@@ -849,7 +849,8 @@ pub use busbar_kernel::config::providers::{
 pub use busbar_kernel::config::hooks::{
     caller_in_hook_groups, default_on_error, default_policy_timeout_ms, on_error_terminal, HookCfg,
     HookDefCfg, HookDefs, HookKind, HookStage, OnErrorCfg, PromptAccess, UserAccess,
-    ALL_HOOK_STAGES, CORE_HOOK_PHASES, DEFAULT_POLICY_TIMEOUT_MS, FROZEN_HOOK_NAME_WORD_SPACE,
+    is_reserved_hook_name, ALL_HOOK_STAGES, CORE_HOOK_PHASES, DEFAULT_POLICY_TIMEOUT_MS,
+    FROZEN_HOOK_NAME_WORD_SPACE,
     ON_ERROR_FIRST, ON_ERROR_NOTHING, ON_ERROR_REJECT, ON_ERROR_WEIGHTED, RESERVED_HOOK_NAMES,
 };
 pub use busbar_kernel::config::pools::{
@@ -2373,7 +2374,7 @@ pub fn resolve(
         }
     }
     for (name, def) in &deploy.hooks {
-        if RESERVED_HOOK_NAMES.contains(&name.as_str()) {
+        if is_reserved_hook_name(name) {
             errors.push(format!(
                 "hooks.{name}: '{name}' is a reserved name (an on_error terminal, built-in ranking \
                  strategy, or built-in auth module) and cannot name a hook definition"
