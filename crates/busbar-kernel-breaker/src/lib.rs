@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-//! # busbar-kernel-breaker — the breaker unit
+//! # The breaker unit
 //!
 //! The design (`docs/design/BUSBAR-1.6.0.md` THE DESIGN, §1, §5) splits egress into two units: the EGRESS
 //! unit owns the pool per `(transport, destination)` — selection, weighting, concurrency; the

@@ -53,7 +53,7 @@ pub enum UpstreamCode {
 /// `status.code`, when it is an [`UpstreamCode::Http`], stands in for BOTH the HTTP status and the
 /// provider error code an `error_map` entry is keyed on — the config grammar accepts a plain
 /// HTTP-status string as a key (`error_map: { "400": client_error }`), which is the one signal a
-/// caller that reads no response body (per `// contract:` in `busbar-kernel-egress`'s `ports.rs`) can
+/// caller that reads no response body (per `// contract:` in the egress unit's `ports.rs`) can
 /// supply. A gRPC code is NOT offered to the `error_map` as a provider code: those keys are
 /// HTTP-status strings by the config grammar, and feeding `14` in would let an operator's rule for
 /// HTTP `14` — a status that does not exist — silently claim a gRPC `UNAVAILABLE`.

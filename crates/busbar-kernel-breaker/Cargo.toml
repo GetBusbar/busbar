@@ -1,4 +1,4 @@
-# busbar-kernel-breaker — the breaker unit: trip / cooldown / fast-fail per (pool, destination).
+# The breaker unit: trip / cooldown / fast-fail per (pool, destination).
 #
 # WHAT THIS CRATE IS. The design (docs/design/BUSBAR-1.6.0.md THE DESIGN, §1, §5) names a `Breaker` unit
 # trait (`observe`/`state`) separate from the egress unit that owns the pool. This crate is that
