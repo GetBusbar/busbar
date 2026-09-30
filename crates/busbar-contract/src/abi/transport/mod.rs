@@ -118,6 +118,7 @@
 //! ```
 
 pub mod check;
+pub mod fields;
 
 use super::mechanism::call::{AbiStr, Field, InHead, Op, OutHead};
 use super::mechanism::check::{contract, OpContract};
