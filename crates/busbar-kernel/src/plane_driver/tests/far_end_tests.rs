@@ -1,0 +1,680 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE PRODUCTION FAR END over kind-neutral doubles of its ports: a scripted connection table, a
+//! breaker that classifies by 1.5.5's status table and records what it is told, an auth binding
+//! that counts its calls. Proven: one attempt end to end (the joined target, the head the framer
+//! gets with the ONE auth call's fields after the plane's, the success recorded and its budget unit
+//! spent); the step-24 Disposition (529 fails over with its Retry-After, 401 takes the member down,
+//! a caller fault is relayed); the exhaustion terminal's Retry-After floor; the attempt cap; the
+//! unit deadline stamped from the pool's request timeout.
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
+
+use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, OutboundAuth};
+use busbar_contract::caps::{Pass, Route};
+use busbar_contract::conn::{
+    ConnError, ConnId, Conns, InstanceId, NeedId, OpenDesc, Piece, PieceKind, PollConns, Ticket,
+};
+use busbar_contract::ids::StreamId;
+use busbar_contract::transport::wire::WireStatusClass;
+use busbar_contract::transport::ConnFacts;
+use busbar_kernel_egress::ports::{
+    Admit, BoxFut, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched, Disposition,
+    DurabilityUnavailable, Journal, Outcome, Permit, PermitHandle, Telemetry, Unavailable,
+    UpstreamStatus,
+};
+use busbar_kernel_egress::{Failover, Member, OnExhausted, Pool, WeightedFloor};
+
+use super::*;
+use crate::plane_driver::{FarEnd, OutboundRequest, Pick};
+
+// ── the doubles ─────────────────────────────────────────────────────────────────────────────────
+
+/// What a scripted far end answers: its status and body pieces, or nothing at all.
+#[derive(Clone)]
+enum Script {
+    Answer(u32, Option<u64>, Vec<&'static [u8]>),
+    Silent,
+    Refused,
+}
+
+/// One open: its target, head, body and timeout.
+type Opened = (String, Vec<(String, Vec<u8>)>, Vec<u8>, u64);
+/// The facts one auth call saw: method, authority, path.
+type Facts = (Vec<u8>, String, Vec<u8>);
+
+/// A connection table whose far ends answer from `scripts`, by the target's host.
+#[derive(Default)]
+struct Table {
+    scripts: HashMap<&'static str, Script>,
+    opened: Mutex<Vec<Opened>>,
+    live: Mutex<HashMap<u64, VecDeque<Piece>>>,
+    bytes: Mutex<HashMap<u64, VecDeque<Vec<u8>>>>,
+    next: AtomicU64,
+    closed: AtomicU64,
+}
+
+fn piece(kind: PieceKind, len: usize, status: Option<(u32, Option<u64>)>) -> Piece {
+    Piece {
+        kind,
+        stream: StreamId(0),
+        len,
+        end: kind == PieceKind::Completion,
+        status: status.map(|(c, _)| match c {
+            200..=299 => WireStatusClass::Success,
+            400..=499 => WireStatusClass::CallerFault,
+            _ => WireStatusClass::FarEndFault,
+        }),
+        status_code: status.map(|(c, _)| c),
+        status_namespace: None,
+        retry_after_secs: status.and_then(|(_, r)| r),
+    }
+}
+
+impl Conns for Table {
+    fn open(&self, _: InstanceId, _: NeedId, d: &OpenDesc<'_>) -> Result<ConnId, ConnError> {
+        let host = d
+            .target
+            .split("://")
+            .nth(1)
+            .and_then(|r| r.split('/').next())
+            .unwrap_or_default()
+            .to_string();
+        self.opened.lock().unwrap().push((
+            d.target.to_string(),
+            d.fields
+                .iter()
+                .map(|(n, v)| ((*n).to_string(), v.to_vec()))
+                .collect(),
+            d.body.to_vec(),
+            d.timeout_ms,
+        ));
+        let script = self
+            .scripts
+            .iter()
+            .find(|(h, _)| **h == host)
+            .map(|(_, s)| s.clone())
+            .unwrap_or(Script::Refused);
+        let id = self.next.fetch_add(1, Ordering::SeqCst) + 1;
+        let (pieces, bytes) = match script {
+            Script::Refused => return Err(ConnError::Refused),
+            Script::Silent => (VecDeque::new(), VecDeque::new()),
+            Script::Answer(status, retry, chunks) => {
+                let mut pieces = VecDeque::new();
+                let mut bytes = VecDeque::new();
+                for (k, c) in chunks.iter().enumerate() {
+                    let s = (k == 0).then_some((status, retry));
+                    pieces.push_back(piece(PieceKind::Body, c.len(), s));
+                    bytes.push_back(c.to_vec());
+                }
+                pieces.push_back(piece(PieceKind::Completion, 0, None));
+                bytes.push_back(Vec::new());
+                (pieces, bytes)
+            }
+        };
+        self.live.lock().unwrap().insert(id, pieces);
+        self.bytes.lock().unwrap().insert(id, bytes);
+        Ok(ConnId(id))
+    }
+    fn write(&self, _: InstanceId, _: ConnId, b: &[u8], _: bool) -> Result<usize, ConnError> {
+        Ok(b.len())
+    }
+    fn read(&self, _: InstanceId, _: ConnId, _: Ticket, _: &mut [u8]) -> Result<Piece, ConnError> {
+        Err(ConnError::Pending)
+    }
+    fn wait(&self, _: InstanceId, _: &[ConnId], _: Ticket) -> Result<usize, ConnError> {
+        Err(ConnError::Pending)
+    }
+    fn facts(&self, _: InstanceId, _: ConnId) -> Result<ConnFacts, ConnError> {
+        Ok(ConnFacts::default())
+    }
+    fn close(&self, _: InstanceId, _: ConnId) -> Result<(), ConnError> {
+        self.closed.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+impl PollConns for Table {
+    fn poll_read(
+        &self,
+        _: InstanceId,
+        conn: ConnId,
+        _: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Result<Piece, ConnError>> {
+        let Some(p) = self
+            .live
+            .lock()
+            .unwrap()
+            .get_mut(&conn.0)
+            .and_then(VecDeque::pop_front)
+        else {
+            // A silent far end never answers (and never wakes).
+            return Poll::Pending;
+        };
+        let b = self
+            .bytes
+            .lock()
+            .unwrap()
+            .get_mut(&conn.0)
+            .and_then(VecDeque::pop_front)
+            .unwrap_or_default();
+        buf[..b.len()].copy_from_slice(&b);
+        Poll::Ready(Ok(p))
+    }
+}
+
+/// A breaker that classifies by 1.5.5's status table and records every outcome it is told.
+#[derive(Default)]
+struct Book {
+    observed: Mutex<Vec<(DestinationId, Outcome)>>,
+    cooldown: Mutex<HashMap<DestinationId, u64>>,
+    spent: AtomicU64,
+    refunded: AtomicU64,
+}
+
+impl Breaker for Book {
+    fn try_admit(&self, _: &str, d: DestinationId, _: u64) -> Result<Admit, Unavailable> {
+        match self.cooldown.lock().unwrap().get(&d) {
+            Some(until) => Err(Unavailable::BreakerOpen { until: *until }),
+            None => Ok(Admit { probe_epoch: None }),
+        }
+    }
+    fn ready(&self, _: &str, _: DestinationId, _: u64, _: &Pass<Route>) -> bool {
+        true
+    }
+    fn admissible(&self, _: DestinationId) -> bool {
+        true
+    }
+    fn cooldown_remaining(&self, _: &str, d: DestinationId, _: u64, _: &Pass<Route>) -> u64 {
+        self.cooldown.lock().unwrap().get(&d).copied().unwrap_or(0)
+    }
+    fn classify(&self, _: DestinationId, s: UpstreamStatus) -> Classified {
+        let code = s.code.and_then(|c| c.http()).unwrap_or(500);
+        let (disposition, outcome, label) = match code {
+            401 | 403 => (Disposition::HardDown, Outcome::HardDown, "hard_down"),
+            408 | 429 | 500..=599 => (
+                Disposition::TransientUpstream,
+                Outcome::Transient {
+                    retry_after: s.retry_after,
+                },
+                "transient",
+            ),
+            _ => (
+                Disposition::ClientFault,
+                Outcome::RecordNothing,
+                "client_fault",
+            ),
+        };
+        Classified {
+            disposition,
+            outcome,
+            label,
+        }
+    }
+    fn observe(&self, _: &str, d: DestinationId, o: Outcome, _: u64, _: &Pass<Route>) -> bool {
+        self.observed.lock().unwrap().push((d, o));
+        false
+    }
+    fn release_probe(&self, _: &str, _: DestinationId, _: u64, _: u64) {}
+    fn spend_budget(&self, _: DestinationId) -> bool {
+        self.spent.fetch_add(1, Ordering::SeqCst);
+        true
+    }
+    fn refund_budget(&self, _: DestinationId) {
+        self.refunded.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[derive(Debug)]
+struct Slot(DestinationId);
+impl PermitHandle for Slot {
+    fn destination(&self) -> DestinationId {
+        self.0
+    }
+}
+
+struct Free;
+impl Capacity for Free {
+    fn try_acquire(&self, d: DestinationId) -> Option<Permit> {
+        Some(Permit::new(Box::new(Slot(d))))
+    }
+    fn acquire_any<'a>(
+        &'a self,
+        _: &'a [DestinationId],
+    ) -> BoxFut<'a, Option<(DestinationId, Permit)>> {
+        Box::pin(async { None })
+    }
+}
+
+struct Wall;
+impl Clock for Wall {
+    fn now_secs(&self) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+    fn now_millis(&self) -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    }
+    fn sleep(&self, ms: u64) -> BoxFut<'_, ()> {
+        Box::pin(tokio::time::sleep(std::time::Duration::from_millis(ms)))
+    }
+}
+
+struct Quiet;
+impl Journal for Quiet {
+    fn dispatched(&self, _: &Dispatched) -> Result<(), DurabilityUnavailable> {
+        Ok(())
+    }
+    fn abandoned(&self, _: &Dispatched) {}
+}
+impl Telemetry for Quiet {
+    fn upstream_attempt(&self, _: &str, _: DestinationId) {}
+    fn upstream_failure(&self, _: &str, _: DestinationId, _: &'static str) {}
+    fn failover(&self, _: &str, _: &'static str) {}
+    fn breaker_trip(&self, _: &str, _: DestinationId) {}
+    fn queued(&self, _: &str, _: i64) {}
+}
+
+/// An auth binding answering `authorization: Bearer <credential>`, counting its calls.
+#[derive(Default)]
+struct Bearer {
+    calls: AtomicU64,
+    facts: Mutex<Vec<Facts>>,
+}
+struct Done(Fields);
+impl std::future::Future for Done {
+    type Output = Fields;
+    fn poll(self: std::pin::Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Fields> {
+        Poll::Ready(self.0.clone())
+    }
+}
+impl Fielding for Done {
+    fn settled(&mut self) -> Option<Fields> {
+        Some(self.0.clone())
+    }
+}
+impl OutboundAuth for Bearer {
+    fn open_outbound(&self, _: &str, _: &[u8], _: &serde_json::Value) -> Result<u64, String> {
+        Ok(1)
+    }
+    fn fields_now(&self, _: u64, r: &FieldsRequest) -> Option<Fields> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.facts
+            .lock()
+            .unwrap()
+            .push((r.method.clone(), r.authority.clone(), r.path.clone()));
+        Some(Fields::Ready(vec![AuthField {
+            name: b"authorization".to_vec(),
+            value: b"Bearer sk-test".to_vec(),
+            sensitive: true,
+        }]))
+    }
+    fn fields(&self, h: u64, r: FieldsRequest, _: u64) -> Box<dyn Fielding> {
+        Box::new(Done(self.fields_now(h, &r).unwrap_or(Fields::Failed)))
+    }
+}
+
+// ── the rig ─────────────────────────────────────────────────────────────────────────────────────
+
+const POOL: &str = "p";
+
+struct Rig {
+    table: Arc<Table>,
+    book: Arc<Book>,
+    auth: Arc<Bearer>,
+    egress: Egress,
+}
+
+/// A pool of `hosts`, one member each (`m0`, `m1`, ...), with `attempt_ms` as every member's cap.
+fn rig(
+    hosts: &[(&'static str, Script)],
+    on_exhausted: OnExhausted,
+    attempt_ms: Option<u64>,
+) -> Rig {
+    let table = Arc::new(Table {
+        scripts: hosts.iter().cloned().collect(),
+        ..Table::default()
+    });
+    let book = Arc::new(Book::default());
+    let auth = Arc::new(Bearer::default());
+    let members: Vec<Member> = hosts
+        .iter()
+        .enumerate()
+        .map(|(k, _)| Member {
+            attempt_timeout_ms: attempt_ms,
+            // The first host weighs most, so the weighted walk tries it first.
+            ..Member::new(
+                DestinationId::new(k as u64 + 1),
+                format!("m{k}"),
+                (hosts.len() - k) as u32,
+            )
+        })
+        .collect();
+    let routes = hosts
+        .iter()
+        .enumerate()
+        .map(|(k, (host, _))| {
+            (
+                DestinationId::new(k as u64 + 1),
+                MemberRoute {
+                    need: NeedId(0),
+                    base_url: format!("https://{host}/v1/"),
+                    auth: Some(AuthBinding {
+                        auth: auth.clone() as Arc<dyn OutboundAuth>,
+                        handle: 1,
+                        style_flags: 0,
+                    }),
+                },
+            )
+        })
+        .collect();
+    let pool = Pool {
+        name: POOL.into(),
+        members,
+        failover: Failover {
+            timeout_secs: 30,
+            max_hops: 3,
+            exclusions: Vec::new(),
+        },
+        on_exhausted,
+    };
+    let egress = Egress {
+        caller: InstanceId(9),
+        conns: table.clone(),
+        breaker: book.clone(),
+        capacity: Arc::new(Free),
+        clock: Arc::new(Wall),
+        journal: Arc::new(Quiet),
+        telemetry: Arc::new(Quiet),
+        floor: WeightedFloor::new(),
+        pools: HashMap::from([(POOL.to_string(), pool)]),
+        routes,
+        stream_ceiling_secs: 600,
+    };
+    Rig {
+        table,
+        book,
+        auth,
+        egress,
+    }
+}
+
+fn token() -> Pass<Route> {
+    let kernel = crate::teller::Kernel::new();
+    Pass::mint(kernel.seal())
+}
+
+fn request() -> OutboundRequest {
+    OutboundRequest {
+        member: String::new(),
+        attempt_no: 1,
+        verb: b"POST".to_vec(),
+        target: b"/chat".to_vec(),
+        fields: vec![(b"content-type".to_vec(), b"application/json".to_vec())],
+        body: b"{}".to_vec(),
+    }
+}
+
+/// Drain one attempt's answer: its pieces until the last.
+async fn drain(far: &EgressFarEnd<'_>, t: &Pass<Route>) -> Vec<FarPiece> {
+    let mut out = Vec::new();
+    while let Some(p) = far.next(t).await {
+        let last = p.last;
+        out.push(p);
+        if last {
+            break;
+        }
+    }
+    out
+}
+
+fn route() -> UnitRoute {
+    UnitRoute {
+        pool: POOL.into(),
+        ..UnitRoute::default()
+    }
+}
+
+// ── the cases ───────────────────────────────────────────────────────────────────────────────────
+
+/// One attempt, kernel to wire: the joined target, the plane's head then the ONE auth call's
+/// fields, the body; the success recorded and one budget unit spent; the pieces relayed.
+#[tokio::test]
+async fn one_attempt_end_to_end() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"hel", b"lo"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    assert_eq!(far.member(&t, 1).await, Pick::Member("m0".into()));
+    assert!(far.send(&t, request()).await);
+    let pieces = drain(&far, &t).await;
+    assert_eq!(pieces[0].status, Some((200, 1)));
+    assert!(!pieces[0].fail_over);
+    let body: Vec<u8> = pieces.iter().flat_map(|p| p.bytes.clone()).collect();
+    assert_eq!(body, b"hello");
+    assert!(pieces.last().unwrap().last);
+    let opened = r.table.opened.lock().unwrap().clone();
+    assert_eq!(opened.len(), 1);
+    let (target, head, body, _) = &opened[0];
+    assert_eq!(
+        target, "https://a.test/v1/chat",
+        "base_url joined with the plane's path"
+    );
+    let names: Vec<&str> = head.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["method", "path", "content-type", "authorization"]);
+    assert_eq!(head[1].1, b"/v1/chat");
+    assert_eq!(head[3].1, b"Bearer sk-test");
+    assert_eq!(body, b"{}");
+    assert_eq!(
+        r.auth.calls.load(Ordering::SeqCst),
+        1,
+        "ONE auth call per attempt"
+    );
+    assert_eq!(
+        r.auth.facts.lock().unwrap()[0],
+        (b"POST".to_vec(), "a.test".to_string(), b"/v1/chat".to_vec())
+    );
+    assert_eq!(
+        *r.book.observed.lock().unwrap(),
+        vec![(DestinationId::new(1), Outcome::Success)]
+    );
+    assert_eq!(r.book.spent.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        r.book.refunded.load(Ordering::SeqCst),
+        0,
+        "a clean end keeps the charge"
+    );
+    drop(far);
+    assert_eq!(r.table.closed.load(Ordering::SeqCst), 1);
+}
+
+/// STEP 24, CAP 529: an overloaded far end is a transient failure with its Retry-After recorded,
+/// and the attempt fails over to the next member; the next attempt re-calls auth once more.
+#[tokio::test]
+async fn a_529_fails_over_with_its_retry_after() {
+    let r = rig(
+        &[
+            ("a.test", Script::Answer(529, Some(7), vec![b"overloaded"])),
+            ("b.test", Script::Answer(200, None, vec![b"ok"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    let Pick::Member(first) = far.member(&t, 1).await else {
+        panic!("a member")
+    };
+    assert!(far.send(&t, request()).await);
+    let p = far.next(&t).await.expect("a piece");
+    assert!(p.fail_over && p.last, "{p:?}");
+    assert!(p.bytes.is_empty(), "the 529's bytes never reach the plane");
+    let Pick::Member(second) = far.member(&t, 2).await else {
+        panic!("a second member")
+    };
+    assert_ne!(first, second, "a tried member is never offered again");
+    assert!(far.send(&t, request()).await);
+    let pieces = drain(&far, &t).await;
+    assert_eq!(pieces[0].status, Some((200, 1)));
+    let observed = r.book.observed.lock().unwrap().clone();
+    assert!(observed.contains(&(
+        DestinationId::new(if first == "m0" { 1 } else { 2 }),
+        Outcome::Transient {
+            retry_after: Some(7)
+        }
+    )));
+    assert_eq!(
+        r.auth.calls.load(Ordering::SeqCst),
+        2,
+        "one auth call per attempt"
+    );
+}
+
+/// STEP 24, member-401: a withdrawn credential takes the member down (HardDown), and fails over.
+#[tokio::test]
+async fn a_401_takes_the_member_down_and_fails_over() {
+    let r = rig(
+        &[("a.test", Script::Answer(401, None, vec![b"no"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    assert_eq!(far.member(&t, 1).await, Pick::Member("m0".into()));
+    assert!(far.send(&t, request()).await);
+    assert!(far.next(&t).await.expect("a piece").fail_over);
+    assert_eq!(
+        *r.book.observed.lock().unwrap(),
+        vec![(DestinationId::new(1), Outcome::HardDown)]
+    );
+}
+
+/// A caller fault is not the destination's: nothing is recorded against it, and the far end's
+/// answer reaches the plane as it came, with its status.
+#[tokio::test]
+async fn a_caller_fault_is_relayed_as_it_came() {
+    let r = rig(
+        &[("a.test", Script::Answer(400, None, vec![b"bad request"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    let _ = far.member(&t, 1).await;
+    assert!(far.send(&t, request()).await);
+    let p = far.next(&t).await.expect("a piece");
+    assert!(!p.fail_over);
+    assert_eq!(p.status, Some((400, 2)));
+    assert_eq!(p.bytes, b"bad request");
+    assert_eq!(
+        *r.book.observed.lock().unwrap(),
+        vec![(DestinationId::new(1), Outcome::RecordNothing)]
+    );
+}
+
+/// STEP 24, exhausted-retry-after-floor: with every member spent the pool's shed answers 503 and a
+/// Retry-After of at least the floor (2 s with no cooldown to quote), or the soonest genuine
+/// cooldown when one is running.
+#[tokio::test]
+async fn exhaustion_sheds_with_the_retry_after_floor() {
+    let r = rig(
+        &[("a.test", Script::Answer(503, None, vec![b"x"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    let _ = far.member(&t, 1).await;
+    assert!(far.send(&t, request()).await);
+    assert!(far.next(&t).await.unwrap().fail_over);
+    assert_eq!(
+        far.member(&t, 2).await,
+        Pick::Exhausted {
+            status: 503,
+            retry_after: Some(2)
+        }
+    );
+    // A genuine cooldown is quoted instead of the floor.
+    r.book
+        .cooldown
+        .lock()
+        .unwrap()
+        .insert(DestinationId::new(1), 9);
+    let far = r.egress.unit(route());
+    assert_eq!(
+        far.member(&t, 1).await,
+        Pick::Exhausted {
+            status: 503,
+            retry_after: Some(9)
+        }
+    );
+}
+
+/// The member's attempt cap bounds the wait for the first answer: a silent far end is a transient
+/// failure and the attempt fails over; a refused dial likewise, never reaching the plane.
+#[tokio::test]
+async fn the_attempt_cap_and_a_refused_dial_fail_over() {
+    let r = rig(
+        &[("a.test", Script::Silent), ("b.test", Script::Refused)],
+        OnExhausted::Status503,
+        Some(50),
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    let mut failed = 0;
+    for n in 1..=2 {
+        let Pick::Member(_) = far.member(&t, n).await else {
+            panic!("a member")
+        };
+        if far.send(&t, request()).await {
+            let p = far.next(&t).await.expect("a piece");
+            assert!(p.fail_over, "{p:?}");
+        }
+        failed += 1;
+    }
+    assert_eq!(failed, 2);
+    let observed = r.book.observed.lock().unwrap().clone();
+    assert_eq!(observed.len(), 2, "{observed:?}");
+    assert!(observed
+        .iter()
+        .all(|(_, o)| *o == Outcome::Transient { retry_after: None }));
+    let opened = r.table.opened.lock().unwrap().clone();
+    assert!(
+        opened.iter().all(|o| o.3 <= 50),
+        "the open is bounded by the attempt cap: {:?}",
+        opened.iter().map(|o| o.3).collect::<Vec<_>>()
+    );
+}
+
+/// Q5: the unit's deadline is stamped from the pool's request timeout (non-zero), and from the
+/// stream ceiling for a streamed answer.
+#[test]
+fn the_unit_deadline_is_the_pools_request_timeout() {
+    let r = rig(&[("a.test", Script::Silent)], OnExhausted::Status503, None);
+    let now = 5_000_000_000;
+    assert_eq!(
+        r.egress.deadline_ns(&route(), now),
+        now + 30 * 1_000_000_000
+    );
+    let streamed = UnitRoute {
+        wants_stream: true,
+        ..route()
+    };
+    assert_eq!(
+        r.egress.deadline_ns(&streamed, now),
+        now + 600 * 1_000_000_000
+    );
+}

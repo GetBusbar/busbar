@@ -28,6 +28,7 @@
 
 mod cancel;
 mod epoch;
+mod far_end;
 mod route;
 
 use std::sync::{Arc, Mutex};
@@ -51,6 +52,7 @@ use tokio::sync::watch;
 
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
 pub use epoch::FlushEpoch;
+pub use far_end::{AuthBinding, Egress, EgressFarEnd, MemberRoute, UnitRoute};
 pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick};
 
 use crate::slice::GroupLeaseSlip;
@@ -480,6 +482,7 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         };
         let mut run = route::Pumping::new(
             d,
+            token,
             &self.state,
             ctx,
             ticket,

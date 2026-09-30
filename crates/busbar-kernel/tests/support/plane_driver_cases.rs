@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use busbar_contract::abi::plane::{
     reason_code, RefusalStatus, UnitCount, CANCEL_FAILED, CANCEL_OK_PARTIAL, REFUSAL_ANY_DIALECT,
 };
-use busbar_contract::caps::{Canary, Outcome, ReasonCode, StepName};
+use busbar_contract::caps::{Canary, Outcome, Pass, ReasonCode, Route, StepName};
 use busbar_kernel::plane_driver::{
     Arrival, BufferCaps, CallerEnd, CancelBill, Checkpoint, FarEnd, FarPiece, MoneySeam,
     OutboundRequest, Pick, PlaneUnits,
@@ -97,7 +97,11 @@ impl Far {
 const OVERLOADED: &str = "overloaded";
 
 impl FarEnd for Far {
-    fn member(&self, attempt_no: u32) -> impl Future<Output = Pick> + Send + '_ {
+    fn member<'a>(
+        &'a self,
+        _: &'a Pass<Route>,
+        attempt_no: u32,
+    ) -> impl Future<Output = Pick> + Send + 'a {
         let pick = match self.members.get(attempt_no as usize - 1) {
             Some(m) => Pick::Member((*m).to_string()),
             None => Pick::Exhausted {
@@ -108,7 +112,11 @@ impl FarEnd for Far {
         async move { pick }
     }
 
-    fn send(&self, request: OutboundRequest) -> impl Future<Output = bool> + Send + '_ {
+    fn send<'a>(
+        &'a self,
+        _: &'a Pass<Route>,
+        request: OutboundRequest,
+    ) -> impl Future<Output = bool> + Send + 'a {
         let script = if request.member == OVERLOADED {
             vec![FarPiece {
                 bytes: b"overloaded".to_vec(),
@@ -124,7 +132,10 @@ impl FarEnd for Far {
         async { true }
     }
 
-    fn next(&self) -> impl Future<Output = Option<FarPiece>> + Send + '_ {
+    fn next<'a>(
+        &'a self,
+        _: &'a Pass<Route>,
+    ) -> impl Future<Output = Option<FarPiece>> + Send + 'a {
         let piece = self.current.lock().unwrap().pop_front();
         async move {
             tokio::task::yield_now().await;

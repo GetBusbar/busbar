@@ -30,7 +30,7 @@ use busbar_contract::abi::plane::{
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
-use busbar_contract::caps::ReasonCode;
+use busbar_contract::caps::{Pass, ReasonCode, Route};
 use busbar_contract::plane_calls::{Answered, Lent, PieceInFlight};
 use tokio::sync::watch;
 
@@ -91,11 +91,24 @@ pub struct OutboundRequest {
 pub trait FarEnd: Sync {
     /// The member for attempt `attempt_no` (from `1`), or the walk's exhaustion terminal. May await
     /// (the walk's backoff and queue terminals); the pump bounds it by the unit's deadline.
-    fn member(&self, attempt_no: u32) -> impl Future<Output = Pick> + Send + '_;
+    ///
+    /// Every method is handed the route step's pass, which the walk's breaker records under.
+    fn member<'a>(
+        &'a self,
+        token: &'a Pass<Route>,
+        attempt_no: u32,
+    ) -> impl Future<Output = Pick> + Send + 'a;
     /// Send one attempt's request; `false` when it could not be sent.
-    fn send(&self, request: OutboundRequest) -> impl Future<Output = bool> + Send + '_;
+    fn send<'a>(
+        &'a self,
+        token: &'a Pass<Route>,
+        request: OutboundRequest,
+    ) -> impl Future<Output = bool> + Send + 'a;
     /// The current attempt's next reply piece; `None` once the reply has ended.
-    fn next(&self) -> impl Future<Output = Option<FarPiece>> + Send + '_;
+    fn next<'a>(
+        &'a self,
+        token: &'a Pass<Route>,
+    ) -> impl Future<Output = Option<FarPiece>> + Send + 'a;
 }
 
 /// THE CALLER'S SIDE of the unit: the reply head, then the reply bytes.
@@ -323,6 +336,7 @@ type Keep = Arc<Mutex<Option<Box<PieceBufs>>>>;
 /// sweep's ticketless `cancel`.
 pub(crate) struct Pumping<'u> {
     driver: &'u PlaneDriver,
+    token: &'u Pass<Route>,
     state: &'u Mutex<UnitState>,
     ctx: &'u UnitCtx,
     ticket: Ticket,
@@ -335,8 +349,10 @@ pub(crate) struct Pumping<'u> {
 }
 
 impl<'u> Pumping<'u> {
+    #[allow(clippy::too_many_arguments)] // the unit's pass beside its six
     pub(crate) fn new(
         driver: &'u PlaneDriver,
+        token: &'u Pass<Route>,
         state: &'u Mutex<UnitState>,
         ctx: &'u UnitCtx,
         ticket: Ticket,
@@ -345,6 +361,7 @@ impl<'u> Pumping<'u> {
     ) -> Self {
         Pumping {
             driver,
+            token,
             state,
             ctx,
             ticket,
@@ -493,10 +510,8 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
         let mut attempt_no = 0;
         'attempt: loop {
             attempt_no += 1;
-            // The walk's pick. With no member for the FIRST attempt the plane may still answer the
-            // caller's body itself (a local answer); otherwise the walk's exhaustion terminal ends
-            // the unit. A later attempt with no member left ends it at once.
-            let (member, terminal) = match guarded_run(run, self.far.member(attempt_no)).await {
+            let picked = guarded_run(run, self.far.member(run.token, attempt_no)).await;
+            let (member, terminal) = match picked {
                 Ok(Pick::Member(member)) => (member, None),
                 Ok(Pick::Exhausted {
                     status,
@@ -555,7 +570,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     None => End::Failed(ReasonCode::DestinationUnreachable),
                 };
             }
-            match guarded_run(run, self.far.send(request)).await {
+            match guarded_run(run, self.far.send(run.token, request)).await {
                 Ok(true) => {}
                 // Not sent, so nothing reached the caller: fail over.
                 Ok(false) => continue 'attempt,
@@ -563,7 +578,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             }
             let mut first = true;
             loop {
-                let piece = match guarded_run(run, self.far.next()).await {
+                let piece = match guarded_run(run, self.far.next(run.token)).await {
                     Ok(Some(piece)) => piece,
                     Ok(None) => FarPiece {
                         last: true,
