@@ -2015,4 +2015,13 @@ fn a_transport_tail_with_a_row_per_claimed_name_is_admitted_and_no_other() {
         Err(LoadError::KindTail(why)) if why.contains("tail.claim_rows")
     ));
     assert!(crate::dispatch::load::kind_tail(&st(0, KindCode::Plane)).is_ok());
+    // A transport naming claims with no tail at all has no rows: refused, not skipped.
+    let untailed = Statement {
+        kind_tail: std::ptr::null(),
+        ..st(1, KindCode::Transport)
+    };
+    assert!(matches!(
+        crate::dispatch::load::kind_tail(&untailed),
+        Err(LoadError::KindTail(_))
+    ));
 }

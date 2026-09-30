@@ -684,6 +684,12 @@ fn statement(door: &Door) -> Result<Statement, LoadError> {
 /// are the Statement's alone).
 pub(crate) fn kind_tail(st: &Statement) -> Result<(), LoadError> {
     if st.kind_tail.is_null() {
+        // A transport that names claims has a row per name, so it has a tail.
+        if st.kind == KindCode::Transport as u32 && st.claims_len != 0 {
+            return Err(LoadError::KindTail(
+                "a transport names claims but states no tail for their rows".into(),
+            ));
+        }
         return Ok(());
     }
     // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`.
