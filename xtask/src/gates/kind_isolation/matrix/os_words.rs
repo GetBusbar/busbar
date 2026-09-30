@@ -386,7 +386,10 @@ pub(super) fn mask_os_words<'a>(rel: &str, text: &'a str) -> Cow<'a, str> {
 /// context is read off `original`, and the filler goes into `masked` at the same bytes.
 pub(super) fn mask_os_words_in<'a>(rel: &str, original: &str, masked: &'a str) -> Cow<'a, str> {
     let lower = masked.to_ascii_lowercase();
-    if !OS_WORDS.iter().chain(SOCKET_WORDS).any(|w| lower.contains(w))
+    if !OS_WORDS
+        .iter()
+        .chain(SOCKET_WORDS)
+        .any(|w| lower.contains(w))
         || original.len() != masked.len()
     {
         return Cow::Borrowed(masked);
@@ -511,8 +514,8 @@ mod tests {
     }
 
     fn socket_masked(s: &str) -> bool {
-        let low = mask_os_words("crates/busbar-core-connector/src/listen.rs", s)
-            .to_ascii_lowercase();
+        let low =
+            mask_os_words("crates/busbar-core-connector/src/listen.rs", s).to_ascii_lowercase();
         !low.contains("tcp") && !low.contains("udp")
     }
 
