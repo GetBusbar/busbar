@@ -24,16 +24,25 @@ use busbar_core_connector::{
     framer::{Call, Crossed, DoorFacts, FramerDoor},
     wire::HostWire,
 };
-use crate::root::loader::dispatch::{
+use super::loader::dispatch::{
     kinds::transport::{Transport as TransportKind, TransportFacts},
     load_linked, Bind, DispatchConfig, Dispatcher, Frame, InFrame, LinkedRow, NoSink, OutFrame,
     Plugin,
 };
 
-/// The one dispatcher every transport door is adopted by: its watchdog watches every crossing.
+/// The dispatcher every transport door is adopted by (its watchdog watches every crossing).
+static ONE: OnceLock<Arc<Dispatcher>> = OnceLock::new();
+
+/// Hand the doors the process's one dispatcher (`root::dispatch`), before any door binds; the first
+/// install stands. A mount of this file with no composition root (a test, the conformance
+/// subject) builds its own on first use.
+pub fn install_dispatcher(d: Arc<Dispatcher>) {
+    let _ = ONE.set(d);
+}
+
+/// The dispatcher every transport door is adopted by.
 pub fn dispatcher() -> &'static Dispatcher {
-    static ONE: OnceLock<Dispatcher> = OnceLock::new();
-    ONE.get_or_init(|| Dispatcher::new(DispatchConfig::default()))
+    ONE.get_or_init(|| Arc::new(Dispatcher::new(DispatchConfig::default())))
 }
 
 /// What a transport door is bound to. The instance label is the transport lane's own; every door

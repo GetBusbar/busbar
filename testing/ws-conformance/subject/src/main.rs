@@ -27,6 +27,12 @@ use futures::StreamExt;
 #[path = "../../../../crates/busbar/src/root/doors.rs"]
 mod doors;
 
+/// The loader, as the mounted doors reach it (`super::loader`).
+#[allow(unused_imports)]
+mod loader {
+    pub use busbar_plugin_loader::*;
+}
+
 struct SubjectCfg;
 
 impl ConfigView for SubjectCfg {
