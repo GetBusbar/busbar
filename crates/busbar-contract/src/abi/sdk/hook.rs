@@ -25,7 +25,7 @@
 //! No slot ever answers PENDING, so every answer is complete when the crossing returns.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -43,7 +43,9 @@ use crate::abi::hook::{
     VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE,
     VIEW_HAS_BUDGET_REMAINING, VIEW_HAS_PROMPT, VIEW_HAS_USER,
 };
-use crate::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON};
+use crate::abi::mechanism::call::{
+    AbiStr, Blob, InHead, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON, MAX_TEXT,
+};
 use crate::abi::mechanism::door::{KindTailHead, Statement};
 use crate::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn, TickOut,
@@ -834,14 +836,20 @@ pub const fn statement_with_tail(base: Statement, tail: &'static Tail) -> Statem
 // Every slot is a [`SafeSlot`] (SDK-SAFE): the instance is the SDK's [`Instance<HookState>`], boxed
 // at `open` and dropped at `close` by the safe layer; the `in` is [`Lent`]. What is left here is the
 // hook kind's own: the typed hook behind a lock, the status/describe blobs held under a lease, and
-// the per-thread error text.
+// the instance's error texts (a bounded ring, as the store door keeps its own).
 
 /// One open hook instance's state.
 pub struct HookState {
     hook: RwLock<Arc<dyn Hook>>,
     leases: Mutex<HashMap<u64, Vec<u8>>>,
     next_lease: AtomicU64,
+    /// The last [`ERROR_RING`] failure texts, oldest dropped first; the host copies one as the
+    /// crossing returns.
+    texts: Mutex<VecDeque<Box<str>>>,
 }
+
+/// How many failure texts an instance keeps alive at once.
+const ERROR_RING: usize = 4096;
 
 impl std::fmt::Debug for HookState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -873,6 +881,26 @@ impl HookState {
         head.lease = id;
         blob
     }
+
+    /// Point `head.error` at `text`, kept in the ring until [`ERROR_RING`] later failures have
+    /// pushed it out: the host copies it as the crossing returns.
+    fn fail(&self, head: &mut OutHead, text: String) -> Outcome {
+        let mut end = text.len().min(MAX_TEXT);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let kept: Box<str> = text[..end].into();
+        head.error = AbiStr {
+            ptr: kept.as_ptr(),
+            len: kept.len(),
+        };
+        let mut ring = self.texts.lock().unwrap_or_else(|e| e.into_inner());
+        if ring.len() == ERROR_RING {
+            ring.pop_front();
+        }
+        ring.push_back(kept);
+        Outcome::Failed
+    }
 }
 
 const NO_BLOB: Blob = Blob {
@@ -891,22 +919,16 @@ fn settings_text(b: Lent<'_, Blob>) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-thread_local! {
-    /// The error text of this thread's last failed call: ONE slot per thread, overwritten by the
-    /// next failure (the previous text is dropped then), freed when the thread exits. It never
-    /// grows with calls, instances or threads that have gone.
-    static LAST_ERROR: std::cell::RefCell<Box<str>> = std::cell::RefCell::new(Box::from(""));
-}
+/// An instance-less `open` that failed: the reason stays with the plugin, as the store door's does.
+const OPEN_FAILED: &str = "hook: the settings cannot open an instance";
 
-/// Point `head.error` at `text`, held as this thread's last error until its next failure: the
-/// host copies it as the crossing returns, before the thread can make another call.
-fn thread_error(head: &mut OutHead, text: String) -> Outcome {
-    let text: Box<str> = text.into();
+/// Point `head.error` at a fixed text: an instance-less failure (`validate`, a failed `open`) has
+/// no instance to hold a dynamic one, so its reason is one of these, as the store door's is bare.
+fn fixed_error(head: &mut OutHead, text: &'static str) -> Outcome {
     head.error = AbiStr {
         ptr: text.as_ptr(),
         len: text.len(),
     };
-    LAST_ERROR.with(|e| *e.borrow_mut() = text);
     Outcome::Failed
 }
 
@@ -934,7 +956,7 @@ hook_slot!(
         let _ = PhantomData::<P>;
         match serde_json::from_str::<serde_json::Value>(&settings_text(input.field(|i| &i.settings))) {
             Ok(serde_json::Value::Object(_)) => Outcome::Ready,
-            _ => thread_error(out, "settings: must be a JSON object".to_string()),
+            _ => fixed_error(out, "settings: must be a JSON object"),
         }
     }
 );
@@ -948,10 +970,11 @@ hook_slot!(
                     hook: RwLock::new(Arc::from(hook)),
                     leases: Mutex::new(HashMap::new()),
                     next_lease: AtomicU64::new(0),
+                    texts: Mutex::new(VecDeque::new()),
                 });
                 Outcome::Ready
             }
-            Err(e) => thread_error(&mut out.head, e),
+            Err(_) => fixed_error(&mut out.head, OPEN_FAILED),
         }
     }
 );
@@ -967,7 +990,7 @@ hook_slot!(
                 *st.hook.write().unwrap_or_else(|e| e.into_inner()) = Arc::from(hook);
                 Outcome::Ready
             }
-            Err(e) => thread_error(out, e),
+            Err(e) => st.fail(out, e),
         }
     }
 );
@@ -1027,7 +1050,7 @@ hook_slot!(
         let v = st.hook().decide(&Decoded::of(input));
         let outcome = write_verdict(&v, input, out);
         match v {
-            Verdict::Failed(m) if outcome == Outcome::Failed => thread_error(&mut out.head, m),
+            Verdict::Failed(m) if outcome == Outcome::Failed => st.fail(&mut out.head, m),
             _ => outcome,
         }
     }
@@ -1046,7 +1069,7 @@ hook_slot!(
         let outcome = write_rewrite(&v, input, out);
         match v {
             RewriteVerdict::Failed(m) if outcome == Outcome::Failed => {
-                thread_error(&mut out.head, m)
+                st.fail(&mut out.head, m)
             }
             _ => outcome,
         }
@@ -1075,13 +1098,13 @@ hook_slot!(
         };
         let settings = match serde_json::from_str(&settings_text(input.field(|i| &i.settings))) {
             Ok(serde_json::Value::Object(m)) => m,
-            _ => return thread_error(&mut out.head, "settings: must be a JSON object".into()),
+            _ => return st.fail(&mut out.head, "settings: must be a JSON object".into()),
         };
         if st.hook().configure(&settings, input.version) {
             out.acked_version = input.version;
             Outcome::Ready
         } else {
-            thread_error(
+            st.fail(
                 &mut out.head,
                 format!("hook did not acknowledge settings_version {}", input.version),
             )

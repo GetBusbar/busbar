@@ -618,16 +618,31 @@ fn red_the_prompt_body_a_hook_sees_is_the_hosts_own_bytes() {
     closed(open_out.instance);
 }
 
-/// A failure's text is held in ONE per-thread slot, overwritten by the next failure: the host reads
-/// the latest text, and the slot holds nothing else.
+/// A failure's text is held by the instance in a bounded ring: each text stays readable while the
+/// ring holds it, and the ring never grows past its bound.
 #[test]
-fn the_error_slot_is_one_per_thread_and_overwritten_by_the_next_failure() {
+fn the_error_ring_is_bounded_and_keeps_each_text_readable() {
+    let state = HookState {
+        hook: RwLock::new(Arc::from(OpenReverse::open("{}").expect("opens"))),
+        leases: Mutex::new(HashMap::new()),
+        next_lease: AtomicU64::new(0),
+        texts: Mutex::new(VecDeque::new()),
+    };
     let mut a: OutHead = zeroed();
-    let _ = thread_error(&mut a, "first".into());
+    assert_eq!(state.fail(&mut a, "first".into()), Outcome::Failed);
     let mut b: OutHead = zeroed();
-    let _ = thread_error(&mut b, "second failure".into());
-    // SAFETY: the latest text, held for this thread.
-    let text = unsafe { std::slice::from_raw_parts(b.error.ptr, b.error.len) };
-    assert_eq!(text, b"second failure");
-    LAST_ERROR.with(|e| assert_eq!(&**e.borrow(), "second failure"));
+    assert_eq!(state.fail(&mut b, "second failure".into()), Outcome::Failed);
+    // SAFETY: both texts are held by the ring, which has not wrapped.
+    let (first, second) = unsafe {
+        (
+            std::slice::from_raw_parts(a.error.ptr, a.error.len),
+            std::slice::from_raw_parts(b.error.ptr, b.error.len),
+        )
+    };
+    assert_eq!(first, b"first");
+    assert_eq!(second, b"second failure");
+    for _ in 0..ERROR_RING + 10 {
+        state.fail(&mut b, "again".into());
+    }
+    assert_eq!(state.texts.lock().unwrap().len(), ERROR_RING);
 }

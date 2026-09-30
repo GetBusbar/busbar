@@ -8,10 +8,10 @@
 //! Nothing here crosses the plugin boundary: the hook kind's ABI is `abi::hook`, and its views are
 //! built by `abi::host::hook`.
 //!
-//! Every call runs on the dispatcher's workers, off the caller's own (R1), and is bounded by the
+//! Every call runs on the dispatcher's workers, off the caller's own, and is bounded by the
 //! call's `budget` — the hook's `timeout_ms` — which is also the crossing watchdog's budget for the
 //! instance: a crossing that outlives it quarantines the instance, and the implementation brings a
-//! FRESH instance back after a backoff through one trial call (R2). A call made while quarantined
+//! FRESH instance back after a backoff through one trial call. A call made while quarantined
 //! waits for the trial window within its own budget, never beyond it.
 
 use std::future::Future;
