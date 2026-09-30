@@ -344,8 +344,8 @@ pub struct ReplyPiece {
     pub code: u32,
     /// The text the peer sent with the code, exactly as sent; empty when the transport has none.
     pub reason: crate::abi::transport::FrameSpan,
-    /// The reply's metadata, ONE field block (`abi::transport::fields`); empty = none. On
-    /// [`REPLY_HEAD`].
+    /// The reply's metadata, ONE field block (a `name: value` line per field, each ending CR LF);
+    /// empty = none. On [`REPLY_HEAD`].
     pub fields: crate::abi::transport::FrameSpan,
 }
 
@@ -378,7 +378,7 @@ pub const REQUEST_END: u32 = 3;
 /// of [`ReplyPiece`]. A request is one [`REQUEST_HEAD`], its [`REQUEST_BODY`] pieces and one
 /// [`REQUEST_END`]. The spans are ranges of the WRITE_REQUEST buffer; the words are the approved
 /// per-stream head slots (`method`, `target`), and the fields ONE field block
-/// (`abi::transport::fields`, no pseudo-field).
+/// (a `name: value` line per field, each ending CR LF; no pseudo-field).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RequestPiece {

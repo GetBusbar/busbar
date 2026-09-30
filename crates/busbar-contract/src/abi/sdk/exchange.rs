@@ -19,7 +19,7 @@ use crate::abi::host::conn::connector::{
     REQUEST_END, REQUEST_HEAD,
 };
 use crate::abi::sdk::conn::{Answer, ConnFailure, Connector};
-use crate::abi::transport::{fields, FrameSpan};
+use crate::abi::transport::FrameSpan;
 
 /// How much one read of a reply asks for.
 pub const READ_CHUNK: usize = 16 * 1024;
@@ -329,6 +329,29 @@ pub fn send_and_ack(
         code: state.code,
         reason: state.reply.reason.take().unwrap_or_default(),
     }))
+}
+
+/// THE FIELD BLOCK a request's head and a reply's metadata carry: one line per field,
+/// `name ": " value "\r\n"`, in order, and nothing else.
+mod fields {
+    /// Between a field's name and its value.
+    pub(super) const SEPARATOR: &[u8] = b": ";
+
+    /// After a field's value.
+    pub(super) const LINE_END: &[u8] = b"\r\n";
+
+    /// A field block's fields, `(name, value)`, in order. A line without [`SEPARATOR`] or
+    /// [`LINE_END`] ends the reading: a malformed tail is dropped rather than guessed at.
+    pub(super) fn lines(block: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> {
+        let mut rest = block;
+        std::iter::from_fn(move || {
+            let end = rest.windows(LINE_END.len()).position(|w| w == LINE_END)?;
+            let line = &rest[..end];
+            let at = line.windows(SEPARATOR.len()).position(|w| w == SEPARATOR)?;
+            rest = &rest[end + LINE_END.len()..];
+            Some((&line[..at], &line[at + SEPARATOR.len()..]))
+        })
+    }
 }
 
 #[cfg(test)]
