@@ -204,8 +204,9 @@ impl SupportedDtls13CipherSuite for ChaCha13 {
         Ok(Box::new(Aead::new(&aead::CHACHA20_POLY1305, key)?))
     }
     fn encrypt_sn(&self, sn_key: &[u8], sample: &[u8; 16]) -> [u8; 16] {
-        // The record-number mask is the QUIC header-protection mask (RFC 9147 §4.2.3 / RFC 9001
-        // §5.4.4); a DTLS 1.3 record number is at most 2 bytes, well inside the 5 ring returns.
+        // The record-number mask is the QUIC header-protection mask (RFC 9147 §4.2.3,
+        // RFC 9001 §5.4.4); a DTLS 1.3 record number is at most 2 bytes, well inside the 5 ring
+        // returns.
         let mut out = [0_u8; 16];
         if let Ok(hp) = aead::quic::HeaderProtectionKey::new(&aead::quic::CHACHA20, sn_key) {
             if let Ok(mask) = hp.new_mask(sample) {
