@@ -138,6 +138,8 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate kind-abi-lane",
     "cargo xtask gate abi-location --selftest",
     "cargo xtask gate abi-location",
+    "cargo xtask gate abi-freeze --selftest",
+    "cargo xtask gate abi-freeze",
     "cargo xtask gate duplex-ws-default-edge --selftest",
     "cargo xtask gate duplex-ws-default-edge",
     "cargo xtask gate teller-steps --selftest",
