@@ -232,7 +232,6 @@ use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
 use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
 use busbar_contract::abi::mechanism::KindCode;
 
-
 fn listening_plane(target_from: &str) -> Candidate {
     Candidate {
         kind: KindCode::Plane,

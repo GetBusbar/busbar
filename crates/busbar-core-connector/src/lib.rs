@@ -370,7 +370,7 @@ impl Connector {
         limits: AcceptLimits,
     ) -> Result<SocketAddr, ConnError> {
         self.slab.check_need(owner, need)?;
-        let scheme = self
+        let (scheme, _) = self
             .over
             .lock()
             .expect("needs")
