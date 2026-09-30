@@ -28,8 +28,8 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, RefusalIn, RefusalOut, UnitCount,
     CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER,
-    FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_OPTIONAL, UNITS_ESTIMATED,
-    UNITS_REPORTED, VERDICT_RETRY,
+    FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_OPTIONAL,
+    UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };
 use busbar_contract::caps::OpClassId;
 use busbar_contract::plane_calls::{Answered, Grow, Lent, PieceInFlight, PlaneCalls};
@@ -336,7 +336,14 @@ impl Double {
                 }
                 _ => {}
             }
-            u.pending.extend_from_slice(piece);
+            if i.flags & PIECE_FIELDS == 0 {
+                u.pending.extend_from_slice(piece);
+            } else if u.mode == b"trailers" {
+                // A plane that reads the far end's trailers.
+                u.pending.push(b'[');
+                u.pending.extend_from_slice(piece);
+                u.pending.push(b']');
+            }
             if u.mode == b"retry-late" && u.far_pieces == 2 {
                 o.verdict = VERDICT_RETRY;
             }

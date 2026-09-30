@@ -27,7 +27,8 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span}
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, EMIT_DONE, EMIT_TO_FAR_END,
-    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, VERDICT_RETRY,
+    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
+    VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, ReasonCode, Route};
@@ -47,6 +48,9 @@ pub struct FarPiece {
     pub status: Option<(u32, u32)>,
     /// No piece follows.
     pub last: bool,
+    /// The bytes are the far end's fields after its body (trailers): pushed with `PIECE_FIELDS`,
+    /// and the plane decides what they mean.
+    pub fields: bool,
     /// The walk's own status table (the breaker's `Disposition` of this piece's status) says this
     /// attempt fails over: the pump moves to the next member WITHOUT pushing the piece to the
     /// plane, while no byte has reached the caller.
@@ -613,6 +617,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 let far = Piece {
                     from: FROM_FAR_END,
                     flags: if piece.last { PIECE_LAST } else { 0 }
+                        | if piece.fields { PIECE_FIELDS } else { 0 }
                         | if status.is_some() {
                             PIECE_HAS_STATUS
                         } else {

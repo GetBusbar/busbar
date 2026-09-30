@@ -38,6 +38,8 @@ use crate::plane_driver::{FarEnd, OutboundRequest, Pick};
 #[derive(Clone)]
 enum Script {
     Answer(u32, Option<u64>, Vec<&'static [u8]>),
+    /// An answer whose body is followed by the far end's trailers.
+    Trailed(u32, Vec<&'static [u8]>, &'static [u8]),
     Silent,
     Refused,
 }
@@ -103,6 +105,20 @@ impl Conns for Table {
         let (pieces, bytes) = match script {
             Script::Refused => return Err(ConnError::Refused),
             Script::Silent => (VecDeque::new(), VecDeque::new()),
+            Script::Trailed(status, chunks, trailers) => {
+                let mut pieces = VecDeque::new();
+                let mut bytes = VecDeque::new();
+                for (k, c) in chunks.iter().enumerate() {
+                    let s = (k == 0).then_some((status, None));
+                    pieces.push_back(piece(PieceKind::Body, c.len(), s));
+                    bytes.push_back(c.to_vec());
+                }
+                pieces.push_back(piece(PieceKind::Fields, trailers.len(), None));
+                bytes.push_back(trailers.to_vec());
+                pieces.push_back(piece(PieceKind::Completion, 0, None));
+                bytes.push_back(Vec::new());
+                (pieces, bytes)
+            }
             Script::Answer(status, retry, chunks) => {
                 let mut pieces = VecDeque::new();
                 let mut bytes = VecDeque::new();
@@ -793,4 +809,26 @@ fn auth_material_never_prints() {
         !printed.contains("sk-test") && !printed.contains("caller-key"),
         "{printed}"
     );
+}
+
+/// The far end's trailers are handed on, flagged as fields, never dropped: the plane decides.
+#[tokio::test]
+async fn trailers_are_handed_to_the_plane() {
+    let r = rig(
+        &[(
+            "a.test",
+            Script::Trailed(200, vec![b"ok"], b"grpc-status: 0"),
+        )],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    let _ = far.member(&t, 1).await;
+    assert!(far.send(&t, request()).await);
+    let pieces = drain(&far, &t).await;
+    let trailers: Vec<&FarPiece> = pieces.iter().filter(|p| p.fields).collect();
+    assert_eq!(trailers.len(), 1, "{pieces:?}");
+    assert_eq!(trailers[0].bytes, b"grpc-status: 0");
+    assert!(pieces.last().unwrap().last);
 }

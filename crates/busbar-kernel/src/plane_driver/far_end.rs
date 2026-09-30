@@ -860,21 +860,11 @@ impl EgressFarEnd<'_> {
             (conn, live.answered, wait)
         };
         let mut buf = vec![0u8; READ_BYTES];
-        let started = e.clock.now_millis();
-        let read = loop {
-            let spent = u64::try_from(e.clock.now_millis().saturating_sub(started)).unwrap_or(0);
-            let read = tokio::time::timeout(
-                Duration::from_millis(wait_ms.saturating_sub(spent)),
-                std::future::poll_fn(|cx| e.conns.poll_read(e.caller, conn, cx, &mut buf)),
-            )
-            .await;
-            match read {
-                // The far end's trailers: the llm path drops them (1.5.5); nothing reaches the
-                // plane, and the read goes on.
-                Ok(Ok(p)) if matches!(p.kind, PieceKind::Fields | PieceKind::HookReply) => {}
-                other => break other,
-            }
-        };
+        let read = tokio::time::timeout(
+            Duration::from_millis(wait_ms),
+            std::future::poll_fn(|cx| e.conns.poll_read(e.caller, conn, cx, &mut buf)),
+        )
+        .await;
         let piece = match read {
             Err(_elapsed) if !answered => {
                 return Some(self.no_answer(token, disposition::ATTEMPT_TIMEOUT));
@@ -894,7 +884,13 @@ impl EgressFarEnd<'_> {
         };
         match piece.kind {
             PieceKind::Completion => Some(self.end(true)),
-            PieceKind::Fields | PieceKind::HookReply => None,
+            // The far end's fields after its body (trailers): handed to the plane, which decides
+            // what they mean (one that reads a trailer status reads it; any other ignores them).
+            PieceKind::Fields | PieceKind::HookReply => Some(FarPiece {
+                bytes: buf[..piece.len].to_vec(),
+                fields: true,
+                ..FarPiece::default()
+            }),
             PieceKind::Body if answered => Some(FarPiece {
                 bytes: buf[..piece.len].to_vec(),
                 ..FarPiece::default()
@@ -958,6 +954,7 @@ impl EgressFarEnd<'_> {
                 status: far_status,
                 last: false,
                 fail_over: false,
+                fields: false,
             };
         }
         let classified = e.breaker.classify(destination, status);
@@ -979,6 +976,7 @@ impl EgressFarEnd<'_> {
                 status: far_status,
                 last: false,
                 fail_over: false,
+                fields: false,
             };
         }
         e.telemetry

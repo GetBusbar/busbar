@@ -78,6 +78,7 @@ impl Far {
                 status: (k == 0).then_some((200, 2)),
                 last: k + 1 == n,
                 fail_over: false,
+                fields: false,
             })
             .collect();
         Far {
@@ -129,7 +130,21 @@ impl FarEnd for Far {
                 status: Some((529, 5)),
                 last: true,
                 fail_over: true,
+                fields: false,
             }]
+        } else if request.member.starts_with("trailers") {
+            // The body, then the far end's trailers after it.
+            let mut script = self.script.clone();
+            if let Some(last) = script.last_mut() {
+                last.last = false;
+            }
+            script.push(FarPiece {
+                bytes: b"grpc-status: 0".to_vec(),
+                last: true,
+                fields: true,
+                ..FarPiece::default()
+            });
+            script
         } else {
             self.script.clone()
         };
@@ -693,6 +708,34 @@ async fn the_walks_status_table_fails_over_before_the_plane_sees_the_piece() {
             2 + 2 + 3,
             "{way:?}: ATTEMPT + body twice, then the second far end's three pieces; never the 529"
         );
+    }
+}
+
+/// The far end's trailers reach the plane, flagged as fields: a plane that reads them (mode
+/// `trailers`: it renders them in brackets) gets their bytes; a plane that does not (any other)
+/// ignores them. The kernel drops nothing.
+#[tokio::test]
+async fn trailers_reach_the_plane_which_decides() {
+    for way in ways() {
+        for (member, expect) in [
+            ("trailers", "hello far end[grpc-status: 0]"),
+            ("trailers-ignored", "hello far end"),
+        ] {
+            let r = rig(way, BufferCaps::default(), Book::default());
+            let (steps, far, caller) = (
+                TestUnits::passing(),
+                Far::new(&[member], CHUNKS),
+                Caller::default(),
+            );
+            let units = r
+                .driver
+                .unit(&steps, &far, &caller, arrival("/call", b"p"), 0);
+            assert!(
+                matches!(drive(&units).await, Outcome::Completed),
+                "{way:?} {member}"
+            );
+            assert_eq!(caller.text(), expect, "{way:?} {member}");
+        }
     }
 }
 

@@ -41,8 +41,9 @@ use busbar_contract::abi::plane::{
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneSnapshot, PlaneTail, RefusalIn,
     RefusalOut, RefusalStatus, Section, UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL,
     EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE,
-    INGRESS_RESPONSE_STREAM, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT,
-    SECTION_DECLARING, SHAPE_WHOLE, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    INGRESS_RESPONSE_STREAM, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_OPTIONAL,
+    REFUSAL_ANY_DIALECT, SECTION_DECLARING, SHAPE_WHOLE, UNITS_ESTIMATED, UNITS_REPORTED,
+    VERDICT_RETRY,
 };
 
 /// The counters `/stats` answers, in this order.
@@ -644,7 +645,14 @@ extern "C" fn on_piece(
                 }
                 _ => {}
             }
-            u.pending.extend_from_slice(piece);
+            if i.flags & PIECE_FIELDS == 0 {
+                u.pending.extend_from_slice(piece);
+            } else if u.mode.as_slice() == b"trailers" {
+                // A plane that reads the far end's trailers.
+                u.pending.push(b'[');
+                u.pending.extend_from_slice(piece);
+                u.pending.push(b']');
+            }
             if u.mode.as_slice() == b"retry-late" && u.far_pieces == 2 {
                 o.verdict = VERDICT_RETRY;
             }

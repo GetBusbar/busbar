@@ -313,6 +313,11 @@ pub const PIECE_END_OF_FRAME: u32 = 1;
 pub const PIECE_LAST: u32 = 1 << 1;
 /// [`OnPieceIn::flags`]: `status_code`/`status_class` are set.
 pub const PIECE_HAS_STATUS: u32 = 1 << 2;
+/// [`OnPieceIn::flags`], [`FROM_FAR_END`]: the bytes are a head of the far end's fields that
+/// follows its body (trailers), as the transport rendered them. The plane decides: one whose far
+/// end reports its outcome there (a trailer status) reads it, any other ignores the piece. The
+/// kernel never drops or reads it.
+pub const PIECE_FIELDS: u32 = 1 << 3;
 
 /// [`OnPieceOut::flags`]: the emitted bytes go to the far end (else to the caller).
 pub const EMIT_TO_FAR_END: u32 = 1;
