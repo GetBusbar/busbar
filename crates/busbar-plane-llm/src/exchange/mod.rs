@@ -4,3 +4,4 @@
 
 pub mod arrive;
 pub mod multipart;
+pub mod shaping;
