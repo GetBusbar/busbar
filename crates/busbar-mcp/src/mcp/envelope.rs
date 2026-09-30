@@ -47,7 +47,13 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 
 use super::sse;
-use busbar_kernel::ingress::{jsonrpc::error_body, protocol::CoreRefusal};
+// The kernel seams this file and `super::session_serve` both use, named in ONE line so the
+// session revisions' glue adds no kernel reach of its own (ports-only).
+pub(in crate::mcp) use busbar_kernel::{
+    ingress::{jsonrpc::error_body, protocol, protocol::CoreRefusal},
+    plane_host::EngineHost,
+    plane_routes::PlaneReqCtx,
+};
 
 /// The single MCP protocol revision busbar implements — MOVED to the plane crate with the rest
 /// of the protocol vocabulary and re-exported here, so `busbar_mcp::mcp::envelope::PROTOCOL_VERSION`

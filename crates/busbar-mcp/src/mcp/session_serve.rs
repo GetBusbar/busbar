@@ -31,15 +31,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use super::envelope::{error_body, protocol, EngineHost, PlaneReqCtx};
 use super::{adapt, plane_codec as codec, revision, session_rules as session};
 use crate::plane_client::jsonrpc::encode_sentinel;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use busbar_kernel::{
-    ingress::{jsonrpc::error_body, protocol},
-    plane_host::EngineHost,
-    plane_routes::PlaneReqCtx,
-};
 use serde_json::Value;
 
 use adapt::{PostKind, SessionMethod};
