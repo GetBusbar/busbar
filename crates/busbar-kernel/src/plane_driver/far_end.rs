@@ -298,7 +298,7 @@ fn shed_phase(shed: &Pick) -> Phase {
             u16::try_from(*status).unwrap_or(503),
             retry_after.map(u64::from),
         ),
-        Pick::Member(_) => Phase::Shed(503, None),
+        Pick::Member { .. } => Phase::Shed(503, None),
     }
 }
 
@@ -393,7 +393,10 @@ impl EgressFarEnd<'_> {
             spent: false,
             ended: false,
         });
-        Pick::Member(name)
+        Pick::Member {
+            name,
+            pool: pool.to_string(),
+        }
     }
 
     /// One pick over `pool`'s members, the ones this unit has not tried.

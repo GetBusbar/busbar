@@ -56,8 +56,14 @@ pub struct FarPiece {
 /// What the walk answers for an attempt: the member to try, or the pool's exhaustion terminal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pick {
-    /// The member the walk picked and admitted through its breaker.
-    Member(String),
+    /// The member the walk picked and admitted through its breaker, and the pool it picked it
+    /// from (a member shapes its request per pool).
+    Member {
+        /// The member's configured name.
+        name: String,
+        /// The pool's configured name.
+        pool: String,
+    },
     /// No member is left: the walk's exhaustion terminal, the status the caller is told and its
     /// Retry-After seconds (the floor the walk applies), when it names one.
     Exhausted {
@@ -73,6 +79,8 @@ pub enum Pick {
 pub struct OutboundRequest {
     /// The member the walk picked.
     pub member: String,
+    /// The pool the walk picked it from.
+    pub pool: String,
     /// The attempt's number, from `1`.
     pub attempt_no: u32,
     /// The verb.
@@ -134,6 +142,8 @@ pub(crate) struct PieceBufs {
     input: Vec<u8>,
     /// The current attempt's member.
     member: Vec<u8>,
+    /// The pool the current attempt's member was picked from.
+    pool: Vec<u8>,
 }
 
 impl PieceBufs {
@@ -147,6 +157,7 @@ impl PieceBufs {
             body,
             input: Vec::new(),
             member: Vec::new(),
+            pool: Vec::new(),
         };
         bufs.grow(caps.units, caps.records, caps.fields, caps.arena);
         bufs
@@ -511,12 +522,12 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
         'attempt: loop {
             attempt_no += 1;
             let picked = guarded_run(run, self.far.member(run.token, attempt_no)).await;
-            let (member, terminal) = match picked {
-                Ok(Pick::Member(member)) => (member, None),
+            let ((member, pool), terminal) = match picked {
+                Ok(Pick::Member { name, pool }) => ((name, pool), None),
                 Ok(Pick::Exhausted {
                     status,
                     retry_after,
-                }) if attempt_no == 1 => (String::new(), Some((status, retry_after))),
+                }) if attempt_no == 1 => ((String::new(), String::new()), Some((status, retry_after))),
                 Ok(Pick::Exhausted {
                     status,
                     retry_after,
@@ -525,9 +536,12 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             };
             run.bufs.member.clear();
             run.bufs.member.extend_from_slice(member.as_bytes());
+            run.bufs.pool.clear();
+            run.bufs.pool.extend_from_slice(pool.as_bytes());
             let far_bound = !member.is_empty();
             let mut request = OutboundRequest {
                 member,
+                pool,
                 attempt_no,
                 ..OutboundRequest::default()
             };

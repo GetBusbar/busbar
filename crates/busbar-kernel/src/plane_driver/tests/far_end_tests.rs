@@ -417,6 +417,7 @@ fn token() -> Pass<Route> {
 fn request() -> OutboundRequest {
     OutboundRequest {
         member: String::new(),
+        pool: String::new(),
         attempt_no: 1,
         verb: b"POST".to_vec(),
         target: b"/chat".to_vec(),
@@ -458,7 +459,13 @@ async fn one_attempt_end_to_end() {
     );
     let t = token();
     let far = r.egress.unit(route());
-    assert_eq!(far.member(&t, 1).await, Pick::Member("m0".into()));
+    assert_eq!(
+        far.member(&t, 1).await,
+        Pick::Member {
+            name: "m0".into(),
+            pool: POOL.into()
+        }
+    );
     assert!(far.send(&t, request()).await);
     let pieces = drain(&far, &t).await;
     assert_eq!(pieces[0].status, Some((200, 1)));
@@ -515,14 +522,14 @@ async fn a_529_fails_over_with_its_retry_after() {
     );
     let t = token();
     let far = r.egress.unit(route());
-    let Pick::Member(first) = far.member(&t, 1).await else {
+    let Pick::Member { name: first, .. } = far.member(&t, 1).await else {
         panic!("a member")
     };
     assert!(far.send(&t, request()).await);
     let p = far.next(&t).await.expect("a piece");
     assert!(p.fail_over && p.last, "{p:?}");
     assert!(p.bytes.is_empty(), "the 529's bytes never reach the plane");
-    let Pick::Member(second) = far.member(&t, 2).await else {
+    let Pick::Member { name: second, .. } = far.member(&t, 2).await else {
         panic!("a second member")
     };
     assert_ne!(first, second, "a tried member is never offered again");
@@ -553,7 +560,13 @@ async fn a_401_takes_the_member_down_and_fails_over() {
     );
     let t = token();
     let far = r.egress.unit(route());
-    assert_eq!(far.member(&t, 1).await, Pick::Member("m0".into()));
+    assert_eq!(
+        far.member(&t, 1).await,
+        Pick::Member {
+            name: "m0".into(),
+            pool: POOL.into()
+        }
+    );
     assert!(far.send(&t, request()).await);
     assert!(far.next(&t).await.expect("a piece").fail_over);
     assert_eq!(
@@ -636,7 +649,7 @@ async fn the_attempt_cap_and_a_refused_dial_fail_over() {
     let far = r.egress.unit(route());
     let mut failed = 0;
     for n in 1..=2 {
-        let Pick::Member(_) = far.member(&t, n).await else {
+        let Pick::Member { .. } = far.member(&t, n).await else {
             panic!("a member")
         };
         if far.send(&t, request()).await {

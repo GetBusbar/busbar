@@ -93,6 +93,9 @@ impl Far {
     }
 }
 
+/// The pool the test walk picks every member from.
+const POOL: &str = "pool-a";
+
 /// The member whose far end answers 529, which the walk's status table fails over.
 const OVERLOADED: &str = "overloaded";
 
@@ -103,7 +106,10 @@ impl FarEnd for Far {
         attempt_no: u32,
     ) -> impl Future<Output = Pick> + Send + 'a {
         let pick = match self.members.get(attempt_no as usize - 1) {
-            Some(m) => Pick::Member((*m).to_string()),
+            Some(m) => Pick::Member {
+                name: (*m).to_string(),
+                pool: POOL.to_string(),
+            },
             None => Pick::Exhausted {
                 status: 503,
                 retry_after: Some(2),
@@ -629,6 +635,29 @@ async fn a_retry_verdict_before_the_first_byte_fails_over() {
         );
         assert_eq!(sent[1].fields, vec![(b"x-attempt".to_vec(), b"2".to_vec())]);
         assert_eq!(caller.text(), "hello far end");
+    }
+}
+
+/// An attempt names the pool the walk picked its member from: the far end is sent both.
+#[tokio::test]
+async fn an_attempt_carries_the_pool_the_walk_picked() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), Book::default());
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], CHUNKS),
+            Caller::default(),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival("/call", b"p"), 0);
+        assert!(matches!(drive(&units).await, Outcome::Completed));
+        let sent = far.sent();
+        assert_eq!(
+            (sent[0].member.as_str(), sent[0].pool.as_str()),
+            ("ok", POOL),
+            "{way:?}"
+        );
     }
 }
 
