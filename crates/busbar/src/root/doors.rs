@@ -55,6 +55,7 @@ pub fn bind() -> Bind {
         max_inflight_cap: 1024,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher().adopter(),
+        conns: None,
     }
 }
 

@@ -198,6 +198,7 @@ fn transport_door(path: &Path) -> Option<(Plugin<Transport>, &'static str)> {
         max_inflight_cap: 64,
         sink: std::sync::Arc::new(NoSink),
         dispatcher: d.adopter(),
+        conns: None,
     };
     let plugin = load_dropped::<Transport>(path, &stated, bind).ok()?;
     let key = *plugin.context::<TransportFacts>()?.claims.first()?;

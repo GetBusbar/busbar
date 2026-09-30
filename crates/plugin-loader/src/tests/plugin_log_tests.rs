@@ -76,6 +76,7 @@ fn bind(sink: Arc<dyn EnvelopeSink>) -> Bind {
         max_inflight_cap: 4,
         sink,
         dispatcher: Adopter::unwatched(),
+        conns: None,
     }
 }
 

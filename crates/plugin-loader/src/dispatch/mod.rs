@@ -27,6 +27,7 @@
 
 pub mod answer;
 pub mod auth_outbound;
+pub mod conn_services;
 pub mod kinds;
 pub mod load;
 pub mod log_file;
@@ -42,6 +43,7 @@ use std::mem::{offset_of, size_of};
 use std::sync::OnceLock;
 use std::time::Instant;
 
+use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::mechanism::call::{
     Blob, InHead, Op, OutHead, Outcome, RawOutcome, BLOB_ABSENT,
 };
@@ -52,7 +54,6 @@ use busbar_contract::abi::mechanism::lifecycle::{
     TickOut, ValidateIn,
 };
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
-use busbar_contract::abi::mechanism::KindCode;
 
 pub use answer::{Answer, Context};
 pub use load::{

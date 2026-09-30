@@ -21,6 +21,7 @@ use std::task::{Context, Poll};
 
 use crate::ids::StreamId;
 use crate::transport::wire::WireStatusClass;
+use crate::abi::mechanism::rendering::ReadNeed;
 use crate::transport::ConnFacts;
 
 /// A plugin instance, as the host numbers it. Never stated by a plugin: the host reads it off the
@@ -112,9 +113,11 @@ pub enum ConnError {
     Unarmed,
 }
 
-impl std::fmt::Display for ConnError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
+impl ConnError {
+    /// The refusal's text, as an operator reads it.
+    #[must_use]
+    pub const fn text(self) -> &'static str {
+        match self {
             Self::Pending => "nothing is ready on the connection yet",
             Self::Timeout => "the connection's deadline passed",
             Self::Closed => "the connection is closed",
@@ -123,7 +126,13 @@ impl std::fmt::Display for ConnError {
             Self::Refused => "the connection was refused",
             Self::Fault => "the host failed the connection call",
             Self::Unarmed => "this plugin was handed no connection table",
-        })
+        }
+    }
+}
+
+impl std::fmt::Display for ConnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.text())
     }
 }
 
@@ -143,6 +152,18 @@ pub const NO_TICKET: Ticket = 0;
 /// THE HOST'S CONNECTION TABLE, as the host implements it. Every method names the `caller`, which
 /// the host reads off the instance's own context.
 pub trait Conns: Send + Sync {
+    /// Record that `owner` declared `need` (its index in the instance's Statement), as the Statement
+    /// states it: the whole need — direction, transport, auth, egress class, target and trust
+    /// sources, details. The answer is kept: [`Conns::declared`] reads it back.
+    ///
+    /// # Errors
+    ///
+    /// [`ConnError::Refused`] when the host will not carry the need as declared.
+    fn declare(&self, owner: InstanceId, need: NeedId, spec: &ReadNeed) -> Result<(), ConnError>;
+
+    /// What [`Conns::declare`] answered for `owner`'s `need`; `None` when it never declared it.
+    fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>>;
+
     /// Open a connection for the caller's declared `need`.
     ///
     /// # Errors

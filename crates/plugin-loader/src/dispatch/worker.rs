@@ -1105,6 +1105,18 @@ impl Dispatcher {
         Self::build(config, None)
     }
 
+    /// The connection table's wake: its wake number ([`super::conn_services::conn_ticket`]) routed to
+    /// the worker whose ticket it names. The root hands it to its one connector.
+    #[must_use]
+    pub fn conn_waker(&self) -> Arc<dyn Fn(u64) + Send + Sync> {
+        let pool = Arc::downgrade(&self.pool);
+        Arc::new(move |n| {
+            if let Some(pool) = pool.upgrade() {
+                pool.wake(super::conn_services::ticket_of(n));
+            }
+        })
+    }
+
     /// Workers and a watchdog, per `config`, serving the host services the kernel implements.
     pub fn with_services(config: DispatchConfig, provider: Arc<dyn HostServices>) -> Self {
         Self::build(config, Some(provider))

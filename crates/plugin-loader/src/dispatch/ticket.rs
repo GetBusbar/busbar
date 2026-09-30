@@ -63,6 +63,12 @@ pub(crate) struct InstanceWake {
     pub(crate) route: OnceLock<Weak<dyn WakeRoute>>,
     /// The instance as the host services see it, stated once at bind.
     pub(crate) caller: OnceLock<busbar_contract::services::Caller>,
+    /// The instance's identity on the host's connection table and the table itself, set at bind
+    /// when the instance's Statement declares a need (the connector slots read it).
+    pub(crate) conn: OnceLock<(
+        busbar_contract::conn::InstanceId,
+        std::sync::Arc<dyn busbar_contract::conn::Conns>,
+    )>,
 }
 
 /// THE HOST'S WAKE (`abi::mechanism::ticket::WakeFn`). Any thread; never blocks on the plugin;

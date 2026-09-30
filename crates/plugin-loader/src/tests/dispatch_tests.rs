@@ -44,7 +44,7 @@ struct TestContext(u32);
 
 /// The test plugin's kind, as the dispatcher sees it: its code, the lifecycle skeleton for a table
 /// (a test kind with no ops of its own), FAILED on a timeout.
-struct TestKind;
+pub(crate) struct TestKind;
 impl Kind for TestKind {
     const CODE: KindCode = plug::KIND;
     type Ops = OpsHead;
@@ -135,6 +135,7 @@ fn bind(sink: Arc<Recorder>) -> Bind {
         max_inflight_cap: 64,
         sink,
         dispatcher: crate::dispatch::Adopter::unwatched(),
+        conns: None,
     }
 }
 
@@ -1658,6 +1659,7 @@ fn red_a_hung_ticketless_open_is_watched_from_bind() {
         &row(),
         Bind {
             dispatcher: d.adopter(),
+            conns: None,
             ..bind(sink)
         },
     )

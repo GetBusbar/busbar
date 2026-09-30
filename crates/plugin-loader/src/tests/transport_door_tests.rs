@@ -68,6 +68,7 @@ fn bind() -> Bind {
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),
         dispatcher: Adopter::unwatched(),
+        conns: None,
     }
 }
 

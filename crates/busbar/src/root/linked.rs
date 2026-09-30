@@ -1004,15 +1004,20 @@ pub type DoorPlane =
 /// THE DOOR PLANES' ONE LOAD, run once the process's dispatcher is built
 /// ([`crate::root::dispatch::boot`]): every plane [`dropped_planes_of`] discovered, linked and
 /// dropped alike, bound through the loader's one load on that dispatcher, each to its own log sink
-/// under the configured `plugins.logs`. A plane that will not bind refuses the boot (exit 2).
+/// under the configured `plugins.logs`, each declaring its needs on the process's one connection
+/// table (`root::connector::the()`). A plane that will not bind refuses the boot (exit 2).
 pub fn load_door_planes() {
     let doors = DOOR_CANDIDATES.get().map_or(&[][..], Vec::as_slice);
+    // The process's ONE connection table: a plane that declares a need is declared on it.
+    let conns: std::sync::Arc<dyn busbar_contract::conn::Conns> =
+        crate::root::connector::the().clone();
     let bound = crate::root::loader::boot::load_planes(
         doors,
         plugin_logs(),
         std::sync::Arc::new(crate::root::loader::dispatch::NoSink),
         crate::root::dispatch::dispatcher().adopter(),
         u32::MAX,
+        Some(conns),
     )
     .unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");

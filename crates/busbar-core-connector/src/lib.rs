@@ -55,6 +55,8 @@ use busbar_contract::conn::{
     ConnError, ConnId, ConnSlab, Conns, InstanceId, NeedId, OpenDesc, Piece, PieceKind, PollConns,
     Ticket, NO_TICKET,
 };
+use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::transport::ConnFacts;
@@ -165,6 +167,8 @@ pub struct Connector {
     /// The transport each declared need names, the egress class its dials are judged under, and
     /// the target its config names (`target_from`), when it names one.
     over: Mutex<HashMap<(InstanceId, NeedId), DeclaredNeed>>,
+    /// Every need an instance declared through [`Conns::declare`], whole, and the answer it got.
+    declared: Mutex<HashMap<(InstanceId, NeedId), (ReadNeed, Result<(), ConnError>)>>,
     transports: RwLock<Transports>,
     tls: Option<Arc<rustls::ClientConfig>>,
     wake: WakeTicket,
@@ -182,6 +186,7 @@ impl Default for Connector {
         Self {
             slab: ConnSlab::default(),
             over: Mutex::new(HashMap::new()),
+            declared: Mutex::new(HashMap::new()),
             transports: RwLock::new(Transports::default()),
             tls: None,
             wake: Arc::new(|_| {}),
@@ -247,6 +252,13 @@ impl Connector {
             judge,
             ..Self::default()
         }
+    }
+
+    /// The need `owner` declared as `need`, whole, as [`Conns::declare`] received it.
+    #[must_use]
+    pub fn declared_spec(&self, owner: InstanceId, need: NeedId) -> Option<ReadNeed> {
+        let declared = self.declared.lock().expect("declared needs");
+        declared.get(&(owner, need)).map(|(spec, _)| spec.clone())
     }
 
     /// Record that `owner` declared `need` — the only needs it may open. A need declared without a
@@ -419,6 +431,31 @@ impl Connector {
 }
 
 impl Conns for Connector {
+    fn declare(&self, owner: InstanceId, need: NeedId, spec: &ReadNeed) -> Result<(), ConnError> {
+        // An outbound need is carried over the transport its claim names, its dials judged in its
+        // own egress class; an inbound need is recorded (the listener binds it).
+        let answer = if spec.direction == DIRECTION_OUTBOUND && spec.transport.is_empty() {
+            Err(ConnError::Refused)
+        } else {
+            if spec.direction == DIRECTION_OUTBOUND {
+                self.declare_need(owner, need, &spec.transport, spec.egress_class);
+            } else {
+                self.slab.declare(owner, need);
+            }
+            Ok(())
+        };
+        self.declared
+            .lock()
+            .expect("declared needs")
+            .insert((owner, need), (spec.clone(), answer));
+        answer
+    }
+
+    fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>> {
+        let declared = self.declared.lock().expect("declared needs");
+        declared.get(&(owner, need)).map(|(_, answer)| *answer)
+    }
+
     fn open(
         &self,
         caller: InstanceId,

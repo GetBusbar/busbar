@@ -668,9 +668,6 @@ async fn run(
 ) {
     // THE PLUGIN OBSERVABILITY ENVELOPE, before any plugin loads (`root::observe`).
     root::observe::install();
-    // The planes that state themselves through a door bind on the process's one dispatcher, built
-    // full-size as `main()`'s first act (`root::dispatch`), linked and dropped alike.
-    root::linked::load_door_planes();
     // Metrics are configured AFTER the config loads (below, via `metrics::configure`) because they
     // are 100% OPT-IN: `observability.metrics` absent ⇒ no recorder, no `/metrics`, nothing recorded
     // and nothing retained. Nothing may install a recorder before that decision is read.
@@ -877,6 +874,10 @@ async fn run(
             cfg.allow_all_metadata,
         ),
     );
+    // The planes that state themselves through a door bind on the process's one dispatcher (built
+    // full-size as `main()`'s first act), linked and dropped alike, each declaring its needs on the
+    // one connector just built.
+    root::linked::load_door_planes();
     let door = boot.dropped_door();
     // THE ROOT UNITS' CONFIGURATION STEP, in the same slot: the card repricer is installed BEFORE the
     // first app build below, so the boot's own rate resolution is the history's OPENING ENTRY and

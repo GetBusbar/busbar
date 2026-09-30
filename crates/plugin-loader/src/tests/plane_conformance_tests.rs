@@ -1311,6 +1311,7 @@ mod door {
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: Adopter::unwatched(),
+            conns: None,
         }
     }
 

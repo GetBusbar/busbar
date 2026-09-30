@@ -306,6 +306,7 @@ fn the_one_load_binds_each_selected_instance_to_its_own_log_sink() {
         logs: &logs,
         metrics: Arc::new(NoSink),
         dispatcher: Adopter::unwatched(),
+        conns: None,
         max_inflight_cap: 8,
     })
     .expect("every selected instance binds");
@@ -349,6 +350,7 @@ fn red_an_instance_that_will_not_bind_is_named() {
         logs: &logs,
         metrics: Arc::new(NoSink),
         dispatcher: Adopter::unwatched(),
+        conns: None,
         max_inflight_cap: 8,
     })
     .unwrap_err();
@@ -418,7 +420,7 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
     let bind = |set: crate::boot::PlaneSet| {
         assert!(set.hot.is_empty(), "a door plane is never a HOT-lane plane");
         let stated: Vec<Vec<u8>> = set.doors.iter().map(|c| c.stated.clone()).collect();
-        let bound = load_planes(&set.doors, &logs, Arc::new(NoSink), Adopter::unwatched(), 8)
+        let bound = load_planes(&set.doors, &logs, Arc::new(NoSink), Adopter::unwatched(), 8, None)
             .expect("the plane binds");
         (stated, bound)
     };
@@ -489,13 +491,13 @@ fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
     let set = crate::PluginRegistry::empty()
         .open_planes(&[bad_door])
         .expect("the plane states itself");
-    let err = load_planes(&set.doors, &logs, Arc::new(NoSink), Adopter::unwatched(), 8)
+    let err = load_planes(&set.doors, &logs, Arc::new(NoSink), Adopter::unwatched(), 8, None)
         .expect_err("a pin naming no mechanism must refuse the boot");
     assert!(err.contains("trust_key.mechanisms"), "{err}");
     // The GREEN twin: the unmodified door binds.
     let ok = crate::PluginRegistry::empty()
         .open_planes(&[plug::door])
         .unwrap();
-    load_planes(&ok.doors, &logs, Arc::new(NoSink), Adopter::unwatched(), 8)
+    load_planes(&ok.doors, &logs, Arc::new(NoSink), Adopter::unwatched(), 8, None)
         .expect("the well-formed plane binds");
 }
