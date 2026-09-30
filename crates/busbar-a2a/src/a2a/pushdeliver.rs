@@ -67,7 +67,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use busbar_kernel::plane_host::EngineHost;
+/// The engine seam every delivery reaches the task chain through, named once for this module and
+/// its tests.
+pub(super) use busbar_kernel::plane_host::EngineHost;
 
 use super::pushnotify::{self, PinnedCallback, PushNotifyError};
 use super::relay::RelaySeam;
@@ -358,7 +360,7 @@ pub(crate) fn notification_body(task: &Task) -> Vec<u8> {
 ///
 /// The record is written BEFORE the outcome is returned, so no caller can decide not to be audited.
 pub(crate) fn deliver(
-    engine_host: &dyn busbar_kernel::plane_host::EngineHost,
+    engine_host: &dyn EngineHost,
     seam: &dyn RelaySeam,
     task: &Task,
 ) -> Result<(), PushRefusal> {
@@ -378,11 +380,7 @@ pub(crate) fn deliver(
 /// never touches the task"), and turning a bookkeeping problem into a failed task would be exactly
 /// the harm that posture exists to prevent — but it is logged at WARN rather than swallowed, because
 /// a missing audit record is itself the thing this file was changed to stop.
-fn record_attempt(
-    engine_host: &dyn busbar_kernel::plane_host::EngineHost,
-    task: &Task,
-    outcome: &Result<(), PushRefusal>,
-) {
+fn record_attempt(engine_host: &dyn EngineHost, task: &Task, outcome: &Result<(), PushRefusal>) {
     let kind = match outcome {
         Ok(()) => provenance::EV_PUSH_DELIVERED,
         // NOTHING WENT OUT — busbar's own guard, the resolver, or the stored URL stopped it.
@@ -499,7 +497,7 @@ const MAX_DELIVERY_ATTEMPTS: u32 = 3;
 
 /// The delay BEFORE the 2nd and 3rd attempts (index 0 and 1), before jitter is applied.
 ///
-/// FIXED rather than driven by the receiver's own `Retry-After`: `busbar_kernel::egress::Response`
+/// FIXED rather than driven by the receiver's own `Retry-After`: the egress response
 /// (this plane's `HttpResponse`) carries `status, location, body, peer_spki,
 /// client_identity_offered` and NO header map at all, so a `Retry-After` value cannot be read off a
 /// real delivery response today. That type is the LEGACY egress path step 36 deletes, and growing it

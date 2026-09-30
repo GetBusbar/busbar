@@ -906,7 +906,7 @@ async fn until(limit: Duration, cond: impl Fn() -> bool) -> bool {
     cond()
 }
 
-fn host() -> Arc<dyn busbar_kernel::plane_host::EngineHost> {
+fn host() -> Arc<dyn pushdeliver::EngineHost> {
     let app = engine().new_app_plus().build();
     Arc::clone(&app).engine_host()
 }
