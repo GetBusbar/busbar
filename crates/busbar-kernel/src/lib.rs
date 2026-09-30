@@ -132,6 +132,7 @@ mod alloc_gate_instrument {
 // plus the settlement table the loop re-exports (`teller::settle_written` and its evidence).
 pub mod door;
 pub mod grammar;
+pub mod guest;
 pub mod inflight;
 pub mod plane_driver;
 pub mod pump;
