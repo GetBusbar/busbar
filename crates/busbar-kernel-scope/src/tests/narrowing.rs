@@ -128,20 +128,3 @@ fn a_union_authorizes_exactly_what_one_or_the_other_role_authorized() {
         }
     }
 }
-
-/// The refusal that comes out of a narrowed principal names the scope that would have sufficed —
-/// the scope the OPERATION needed, never the one the ceiling left.
-///
-/// A refusal naming the held scope instead would tell an operator to raise the ceiling when what
-/// they have to change is the binding, and vice versa.
-#[test]
-fn a_refusal_after_narrowing_names_the_scope_the_operation_needed() {
-    let capped = Grants::of(Scope::Full).capped_by(Scope::ReadOnly);
-    assert_eq!(
-        approve(capped, Scope::Full),
-        Err(Refused::InsufficientScope {
-            needed: Scope::Full
-        })
-    );
-    assert!(approve(capped, Scope::ReadOnly).is_ok());
-}

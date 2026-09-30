@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! # busbar-unit-scope — the APPROVE step
+//! # busbar-kernel-scope — the APPROVE step
 //!
 //! The kernel loop's third step asks one question: does the principal hold enough scope for what
 //! this operation needs? The APPROVE step looks up the required scope from `(claim, op_class)` in
@@ -23,11 +23,6 @@
 //! - [`ADMIN_SCOPE_TABLE`] — the 66 operations that matrix was mechanically extracted from at the
 //!   1.5.5 tag (`v1.5.5`, `crates/busbar/src/admin/v1/json/openapi.json`), kept here as DATA so the
 //!   rule above can be proven against every one of them instead of a hand-picked sample.
-//! - [`KERNEL_GRANTED_DATA_LISTENER_ROUTES`] and [`is_kernel_granted`] — the scopes every principal holds without
-//!   a `Policy` entry at all: the handshake scope every transport needs before it has authenticated
-//!   anyone, and the data-listener operational routes that answer even when nothing else can.
-//! - [`approve`] — the step itself: does a principal's [`Grants`] satisfy the [`Scope`] an
-//!   operation requires.
 //!
 //! ## What is deliberately absent
 //!
@@ -36,23 +31,14 @@
 //! into the plane host, the policy store and the hook seat machinery, none of which this crate
 //! depends on. What is here is the part that is pure data plus a pure function: the admin-API scope
 //! table (a concrete, already-migrated instance of "required scope from (claim, op_class)") and the
-//! two-rung authorization chain every caller of that lookup is checked against. `// contract:` marks
+//! two-rung authorization chain every caller of that lookup is checked against.
 //! - [`PolicyView`] and [`required_scope`] — the `(claim, op_class)` lookup a 1.6.0-native plane's
 //!   `Policy` entries are read through. The contract crate now carries a claim's name, so the pair
 //!   the design makes the lookup key can finally be spelled; without the claim half, a native plane
 //!   had no way to be scoped at all.
-//!
-//! The hook-veto seat is [`hook_veto`]: it reaches into no hook seat machinery — that stays in the
-//! plane host, and only the VERDICT reaches this crate — so a veto composes with the scope check the
-//! way the design says. The scope check runs first, and a veto after it wins regardless of what it
-//! returned; the first veto at any seat wins.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
-
-pub mod hook_veto;
-
-pub use hook_veto::{gate, Approval, HookGate, Veto};
 
 use busbar_contract::{ClaimKey, OpClassId};
 
@@ -173,26 +159,6 @@ impl Grants {
     pub fn contains(self, s: Scope) -> bool {
         self.0 & s.bit() != 0
     }
-}
-
-/// The kernel-granted scope every principal holds before Policy has ever been consulted — including
-/// `Principal::Anonymous`. It is never a `Policy` key: a transport needs it to run its handshake
-/// before anyone has been authenticated at all, so making it a grant a config could omit would leave
-/// the very first frame of every connection with no scope to check against.
-pub const TRANSPORT_HANDSHAKE: &str = "transport:handshake";
-
-/// The data-listener operational routes that carry a kernel-granted scope and 1.5.5's own auth rule
-/// rather than an admin credential: they answer even when the admin credential store, or the whole
-/// governance posture, is unavailable, because they are what an operator or a load balancer polls to
-/// find out whether anything else can answer at all.
-pub const KERNEL_GRANTED_DATA_LISTENER_ROUTES: &[&str] =
-    &["/healthz", "/stats", "/metrics", "/metrics/hooks"];
-
-/// Whether `path` is one of the kernel-granted data-listener routes — present on both listeners,
-/// bypassing the ordinary admin-scope check entirely. Matched on the exact path, the same
-/// way the routes are mounted; a path with a differing prefix or suffix is not one of these.
-pub fn is_kernel_granted(path: &str) -> bool {
-    KERNEL_GRANTED_DATA_LISTENER_ROUTES.contains(&path)
 }
 
 /// The frozen Admin API v1 path prefix every operation in [`ADMIN_SCOPE_TABLE`] is mounted under.
@@ -365,16 +331,6 @@ const fn op(method: &'static str, path: &'static str, scope: Scope) -> AdminOper
     }
 }
 
-/// Why the APPROVE step refused a unit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Refused {
-    /// The principal's held [`Grants`] do not satisfy the required [`Scope`].
-    InsufficientScope {
-        /// The scope that would have sufficed.
-        needed: Scope,
-    },
-}
-
 /// Where the required scope for a claim's operation class is read from.
 ///
 /// A trait rather than a table, because the entries live in the sealed `Policy` the composition
@@ -387,31 +343,12 @@ pub trait PolicyView {
 
 /// The APPROVE step's lookup: the scope a claim's operation class requires.
 ///
-/// A kernel-granted operation needs no policy entry at all and answers before the policy is asked —
-/// that is what lets a transport hand shake before it has authenticated anyone, and what keeps the
-/// data listener's operational routes answering when nothing else can.
-///
-/// Everything else is a policy question, and a pair the policy says nothing about has NO required
+/// A pair the policy says nothing about has NO required
 /// scope. That is a refusal rather than a pass: an operation nobody wrote a policy entry for has
 /// not been authorized, and a plane that could be scoped by silence could be scoped by omission.
 #[must_use]
 pub fn required_scope(claim: ClaimKey, op: OpClassId, policy: &dyn PolicyView) -> Option<Scope> {
     policy.required_scope(claim, op)
-}
-
-/// The APPROVE step: does `held` satisfy `needed`? Kernel-granted operations
-/// ([`TRANSPORT_HANDSHAKE`], [`is_kernel_granted`]) are checked by the caller before reaching here —
-/// this function is the ordinary `Policy`-scope comparison for everything else. Resource locators
-/// and hook facts (the rest of APPROVE) are the plane's and the hook seats' concern; `// contract:`
-/// once those live in the contract crate, they compose with this the same way `plane.approve()`
-/// composes with the scope lookup in the kernel loop: this check runs first, and a hook veto after
-/// it wins regardless of what this returns.
-pub fn approve(held: Grants, needed: Scope) -> Result<(), Refused> {
-    if held.allows(needed) {
-        Ok(())
-    } else {
-        Err(Refused::InsufficientScope { needed })
-    }
 }
 
 #[cfg(test)]
