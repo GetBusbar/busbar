@@ -164,7 +164,7 @@ fn child_outliving_its_parent(door_backs: Option<ReasonCode>) -> (Ended, HoldCel
             door: Door::Accrual(Arc::clone(&parent), 250),
             spend: 400,
             evidence: Evidence {
-                located: Some(400),
+                reported: Some(400),
                 ..Evidence::default()
             },
             ..TestUnits::default()

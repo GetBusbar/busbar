@@ -129,7 +129,7 @@ mod alloc_gate_instrument {
 // busbar-kernel now IS the engine: the Teller loop plus everything the busbar-core engine held.
 // These modules are the original busbar-kernel's own — the loop, the pump, the in-flight/session
 // tables, recovery, the registry, the closed grammars, the ticks and the per-unit scratch pad —
-// plus the settlement table the loop re-exports (`teller::settle_amount` and its evidence).
+// plus the settlement table the loop re-exports (`teller::settle_written` and its evidence).
 pub mod door;
 pub mod grammar;
 pub mod inflight;

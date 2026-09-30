@@ -1227,7 +1227,7 @@ async fn a_provider_origin_unit_posts_no_flat_fee() {
             admin_listener: false,
             kernel_verb_only: false,
         };
-        busbar_kernel::teller::fee_count(&unit.evidence(&ctx).fee).0
+        unit.evidence(&ctx).fee_units
     };
     assert_eq!(
         fee(OriginKind::Client),

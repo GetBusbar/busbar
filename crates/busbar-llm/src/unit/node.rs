@@ -116,7 +116,7 @@ use busbar_kernel::{
     plane_host::PlaneAnswer,
     proxy::POOL_LABEL_UNRESOLVED,
     store::now,
-    teller::{Ended, Evidence, FeeEvidence, RouteAwait, RouteLeg, UnitCtx, Units},
+    teller::{Ended, Evidence, RouteAwait, RouteLeg, UnitCtx, Units},
 };
 
 use crate::arrival::PathArrivalFacts;
@@ -695,57 +695,32 @@ impl Units for LlmUnit {
     }
 
     fn evidence(&self, ctx: &UnitCtx) -> Evidence {
-        let status = self.walk.served_status();
         Evidence {
-            // WHAT THIS UNIT SPENT IS NOT LOCATED HERE, and the settlement table therefore posts
+            // WHAT THIS UNIT SPENT IS NOT REPORTED HERE, and the settlement writer therefore writes
             // zero. The figure exists — the walk's tap prices it and puts it on the governance
             // ledger — but it exists LATER: the tap fills its cell when the response body is
             // consumed, which is after this unit has ended. So there is no reading of it a unit's
-            // own evidence could take, and a floor invented in its place would be a number the
-            // books could not defend.
+            // own report could carry, and the kernel adds no floor in its place (`BUSBAR-1.6.0.md` §7).
             //
             // This is what keeps the root's ledger empty for this plane. A settlement of zero is not
             // a row, so the totals view answers over nothing and the identity holds vacuously; the
             // exit arm below is bound and does reach the book, and what it carries is the kernel's
             // record that a unit ran and ended. Carrying the money as well needs the settlement to
             // happen where the figure is, which is past this unit's terminal.
-            located: None,
-            locator_required: false,
-            terminal_error: status.is_some_and(|s| !(200..300).contains(&s)),
-            recovered: false,
-            dispatched: status.is_some(),
-            checkpointed: 0,
-            variance: None,
-            lane_mismatch: None,
-            settle_record_lost: false,
-            class: None,
+            reported: None,
+            // THE FEE UNIT IS THIS PLANE'S REPORT (`BUSBAR-1.6.0.md` §7, #44): the Meter step decided it once, from
+            // the kind of leg and the client-facing status, and the kernel writes it as told. A
+            // unit that never reached the Meter step reports none. And it is a CLIENT'S fee, read
+            // off the origin the kernel sealed, never asserted: a unit the node runs for a provider,
+            // a tick or a nested call is nobody's request and reports no fee unit.
+            fee_units: if ctx.origin == OriginKind::Client {
+                self.walk.fee_count()
+            } else {
+                0
+            },
             // A verified set with an upstream in it is what makes a client unit draw a request slot,
             // and the slot is drawn at the door and never released.
             upstream_candidate: self.walk.upstream_candidate(),
-            fee: FeeEvidence {
-                // READ OFF THE UNIT'S ORIGIN, never asserted. The flat fee is a CLIENT'S fee: it is
-                // what a caller pays for a request the node carried on its behalf, and a unit the
-                // node runs for any other reason is not a caller's request. Hard-coded true, every
-                // origin this loop could ever carry would post one — a provider push, a tick, a
-                // nested unit — and the sibling planes, which read the same field off the same
-                // context, would price the same traffic differently. The origin the kernel sealed is
-                // the one fact that answers this, so it is the one thing read.
-                client_open_or_one_shot: ctx.origin == OriginKind::Client,
-                selected_upstream: self.walk.upstream_candidate(),
-                relayed_first_response_frame: status.is_some(),
-                // This transport reports no status leg of its own: the response IS the status, and
-                // the plane's finish is decided from the frame the client saw.
-                status_at: None,
-                status: None,
-                finish: status.map(|s| {
-                    if (200..300).contains(&s) {
-                        busbar_contract::FinishClass::Complete
-                    } else {
-                        busbar_contract::FinishClass::Error
-                    }
-                }),
-            },
-            // The accrued floor is the kernel's, filled at the exit from the loop's own meter.
             ..Evidence::default()
         }
     }

@@ -60,14 +60,6 @@ fn usage(
 }
 
 #[test]
-fn the_fee_is_one_per_delivered_request_that_routed_upstream() {
-    assert_eq!(fee_count(true, true), 1);
-    assert_eq!(fee_count(true, false), 0);
-    assert_eq!(fee_count(false, true), 0);
-    assert_eq!(fee_count(false, false), 0);
-}
-
-#[test]
 fn usage_lines_are_the_non_zero_tiers_in_canonical_order() {
     let u = usage(10, 5, Some(0), Some(3));
     let lines = usage_lines(Some(&u));

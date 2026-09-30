@@ -294,11 +294,11 @@ impl AccrualMeter {
     }
 }
 
-/// The settlement table and the fee rule the exit, the sweep and recovery all settle by. Pure data
-/// and pure functions, kept in their own module and re-exported here so every path is unchanged.
+/// The settlement writer the exit, the sweep and recovery all settle by. Pure data and pure
+/// functions, kept in their own module and re-exported here so every path is unchanged.
 pub use crate::settlement::{
-    fee_count, requests_drawn, requests_settled, settle_amount, Evidence, FeeEvidence, FinishClass,
-    StatusAt, WireStatusClass, KERNEL_ACCRUAL_CLASS,
+    requests_drawn, requests_settled, settle_written, Evidence, FinishClass, StatusAt,
+    WireStatusClass, Written, KERNEL_ACCRUAL_CLASS,
 };
 
 /// The seam every unit behind a sealed trait is reached through.
@@ -1182,14 +1182,10 @@ pub fn exit<U: Units>(
     match taken {
         None => Ended::AlreadySettled,
         Some(mut hold) => {
-            // The floor is what the loop's own meter counted: the kernel's reading, not a plane's.
-            let evidence = Evidence {
-                accrued_floor: run.meter.total(),
-                ..units.evidence(ctx)
-            };
-            let (amount, table_flags) = settle_amount(&outcome, &evidence);
-            let (fee, fee_flags) = fee_count(&evidence.fee);
-            let flags = table_flags.with(fee_flags);
+            // The plane reported; the kernel writes what it was told (`BUSBAR-1.6.0.md` §7). No floor, no fee of the
+            // kernel's own: the fee units are the plane's.
+            let evidence = units.evidence(ctx);
+            let Written { amount, flags, fee } = settle_written(&outcome, &evidence);
             let drawn = requests_drawn(ctx.origin, evidence.upstream_candidate);
             let requests = requests_settled(reached_admitted, drawn);
             // What the unit spent while it ran is applied to the hold here, where the hold is
@@ -1202,8 +1198,7 @@ pub fn exit<U: Units>(
             let lines = vec![UsageLine {
                 class,
                 quantity: amount,
-                // The exit path settles what the accrual meter counted while the unit ran, which
-                // is the kernel's own figure, not one a destination reported.
+                // The figure the plane reported, written as it was told.
                 source: QuantitySource::Count,
                 estimated: flags.contains(PostingFlags::ESTIMATED),
             }];
@@ -1215,7 +1210,7 @@ pub fn exit<U: Units>(
             };
             let posted = match usage {
                 Ok(usage) => {
-                    // `amount` is the settlement table's money figure, in nano-units; the line
+                    // `amount` is the settlement writer's money figure, in nano-units; the line
                     // above carries it as a quantity against whichever class the unit metered on.
                     // The posting settles the money, and reads the report for its evidence.
                     Ok(Posted::settle(

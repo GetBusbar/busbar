@@ -3,7 +3,7 @@
 
 //! The settlement table is ONE function, and it is not in this crate.
 //!
-//! The live table is `busbar_kernel::teller::settle_amount`, reached from the teller's one exit
+//! The live writer is `busbar_kernel::teller::settle_written`, reached from the teller's one exit
 //! path. This unit used to ship a second table — `settle` over an end kind, with its own flag
 //! vocabulary and its own request-slot rule — that nothing in production called. The two disagreed:
 //! a completed unit whose settle record was lost and whose destination reported nothing billed the
@@ -25,7 +25,7 @@ fn the_usage_unit_ships_no_second_settlement_table() {
     ] {
         assert!(
             !unit.contains(needle),
-            "usage/mod.rs carries `{needle}`: the settlement table is the teller's settle_amount, \
+            "usage/mod.rs carries `{needle}`: the settlement writer is the teller's settle_written, \
              and a second one here is a billing rule nothing in production runs"
         );
     }

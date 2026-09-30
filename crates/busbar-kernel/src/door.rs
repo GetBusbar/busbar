@@ -70,12 +70,6 @@ pub fn admit_verdict(
     }
 }
 
-/// THE FEE the METER step decides: one per delivered client request that routed to an upstream.
-/// The kind of leg and the client-facing status decide it, and nothing else.
-pub fn fee_count(delivered: bool, upstream_leg: bool) -> u32 {
-    u32::from(delivered && upstream_leg)
-}
-
 /// The unit's usage lines: one per non-zero tier, in canonical order. A response that reported
 /// nothing reports no lines: zero, not a floor.
 pub fn usage_lines(reported: Option<&busbar_contract::billing::TokenUsage>) -> Vec<UsageLine> {

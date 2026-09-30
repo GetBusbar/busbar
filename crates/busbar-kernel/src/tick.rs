@@ -28,7 +28,7 @@ use busbar_contract::caps::{
 
 use crate::inflight::UnitSlot;
 use crate::slice::ConcurrencyGauge;
-use crate::teller::{settle_amount, Evidence, Kernel, KERNEL_ACCRUAL_CLASS};
+use crate::teller::{settle_written, Evidence, Kernel, Written, KERNEL_ACCRUAL_CLASS};
 use crate::Millis;
 
 /// How long a session may go without a non-tick unit before it is closed.
@@ -304,10 +304,10 @@ pub fn sweep_settle(
             // handed a set that a gone task took with it.
             slot.leases().release_all(gauge);
             taken.map(|hold| {
-                let (amount, flags) = settle_amount(&outcome, evidence);
-                // Estimated or reported is the settlement table's answer, not the sweep's: a unit
-                // whose locator DID arrive before its task disappeared is settled at the figure
-                // the destination reported, unflagged, exactly as the table says.
+                let Written { amount, flags, .. } = settle_written(&outcome, evidence);
+                // Estimated or reported is the settlement writer's answer, not the sweep's: a unit
+                // whose plane DID report before its task disappeared is settled at the figure it
+                // reported, unflagged, exactly as the writer says.
                 let estimated = flags.contains(PostingFlags::ESTIMATED);
                 let lines = vec![UsageLine {
                     class: KERNEL_ACCRUAL_CLASS,
@@ -322,7 +322,7 @@ pub fn sweep_settle(
                     Usage::report(&token, lines)
                 }
                 .expect("one usage line is always within the record's bound");
-                // As every other settling site: the table's `amount` is the money, and the one
+                // As every other settling site: the writer's `amount` is the money, and the one
                 // line is the evidence it was derived from.
                 let ledger = Grant::<WriteMoney>::mint(kernel.seal());
                 let posted =

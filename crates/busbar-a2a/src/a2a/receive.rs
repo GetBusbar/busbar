@@ -718,11 +718,11 @@ fn governance_required() -> Response {
 /// attribution tail carries those exact three words, and the amount-0 charge validates an empty
 /// breakdown and always accrues ONE REQUEST. Fire-and-forget, exactly as the direct call was.
 ///
-/// **The amount is zero and that is the kernel's reading, not an omission.** The kernel's flat
-/// per-request fee needs three facts true together — a client origin, a SELECTED UPSTREAM, and a
-/// relayed first response frame (`busbar_kernel::teller::fee_count`, and the root's `fee_evidence`
-/// over this plane's draft). A verb busbar answers out of its own state selects no upstream and
-/// relays no frame, so its `fee_count` is zero however it is asked; what it draws is the request
+/// **The amount is zero and that is the plane's report, not an omission.** A flat per-request fee
+/// unit is reported only for a client's request that SELECTED AN UPSTREAM and relayed a response
+/// (the plane reports its fee units; the kernel writes them, `busbar_kernel::teller::settle_written`).
+/// A verb busbar answers out of its own state selects no upstream and relays no frame, so it
+/// reports no fee unit however it is asked; what it draws is the request
 /// accrual, which is what this charge is. A locally-answered call is therefore not free and not
 /// double-charged: it is the same one row every other call posts, with nothing priced on a hop that
 /// did not happen.
