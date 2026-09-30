@@ -3145,6 +3145,58 @@ pub fn selftest<'a>(
         ],
     ));
 
+    // AN OS SOCKET TYPE IS NOT THE CARRIER ([`os_words`]; ARCHITECT ruling 2026-09-30, option A,
+    // a measurement correction). The connector owns every listener and every dialled socket
+    // (BUSBAR-1.6.0.md THE DESIGN, section 8), so its listener file names the standard library's
+    // and tokio's `TcpStream`, `TcpListener` and `UdpSocket` as `UnixStream` is named: the
+    // operating system's socket, not the `tcp` transport. The fixture's only real hit is the claim
+    // literal `"tcp"`, recorded at 1; its socket types leave the cell there. The carrier's crate
+    // path and an identifier naming the carrier each RAISE it.
+    let socket_fixture = |extra: Option<(&'static str, &'static str)>| {
+        let mut files = vec![
+            ("wiring.rs", "pub const CLAIM: &str = \"tcp\";\n"),
+            (
+                "listen.rs",
+                "use std::net::{TcpListener, TcpStream, UdpSocket};\n\
+                 pub fn accept(l: &tokio::net::TcpListener) -> Option<std::net::TcpStream> { None }\n\
+                 pub fn bound(l: TcpListener, s: TcpStream, u: UdpSocket) {}\n",
+            ),
+        ];
+        files.extend(extra);
+        fixture_cell(cx, "transport", "1", &files, true)
+    };
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a connector file naming `TcpStream`, `TcpListener` or `UdpSocket` is not naming the tcp transport",
+        &[ROW_MATRIX],
+        socket_fixture(None),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "beside the socket types, the tcp carrier's crate path still counts",
+        &[ROW_MATRIX],
+        socket_fixture(Some(("dial.rs", "use busbar_transport_tcp::Carrier;\n"))),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
+            "RAISED",
+        ],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "beside the socket types, an identifier naming the tcp carrier (`TcpCarrier`) still counts",
+        &[ROW_MATRIX],
+        socket_fixture(Some(("carrier.rs", "pub struct TcpCarrier;\n"))),
+        &[
+            "ratchet",
+            &format!("{} \u{d7} transport", instances::FIXTURE_CRATE),
+            "RAISED",
+        ],
+    ));
+
     // A CONTRACT IDENTIFIER IS THE CONTRACT'S SHAPE, NOT A PLANE'S NAME (the Q77a measurement
     // correction, [`contract_identifiers`]). The fixture's plane cell is recorded at its one hit;
     // naming the hook contract's `RoutingDecision` — whose camel half reads as the `decision`

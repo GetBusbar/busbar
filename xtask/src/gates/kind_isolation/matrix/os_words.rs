@@ -31,6 +31,14 @@
 //! `mod unix`, a crate-rooted path
 //! (`crate::carrier::unix::open`), and an identifier whose `unix` is its first or last segment
 //! with no clock beside it (`connect_unix`, `UnixCarrier`).
+//!
+//! THE OTHER SOCKET WORDS ([`SOCKET_WORDS`]: `tcp`, `udp`). The standard library's and tokio's
+//! `TcpStream`, `TcpListener` and `UdpSocket` are the operating system's sockets exactly as
+//! `UnixStream` is (ARCHITECT ruling 2026-09-30, option A, a measurement correction): the connector
+//! owns every listener and every dialled socket (`BUSBAR-1.6.0.md` THE DESIGN, section 8), and
+//! naming the socket type it holds is not naming the `tcp` transport. For these words ONLY the
+//! whole socket type is masked; every other spelling counts as it did (`busbar_transport_tcp::`,
+//! the claim literal `"tcp"`, `TcpCarrier`, "the tcp carrier").
 
 use std::borrow::Cow;
 
@@ -43,7 +51,25 @@ const OS_PATH_HEADS: &[&str] = &[
 ];
 
 /// Standard-library, tokio and mio socket types that carry the OS word, matched WHOLE.
-const OS_SOCKET_TYPES: &[&str] = &["UnixStream", "UnixListener", "UnixDatagram", "UnixSocket"];
+const OS_SOCKET_TYPES: &[&str] = &[
+    "UnixStream",
+    "UnixListener",
+    "UnixDatagram",
+    "UnixSocket",
+    "TcpStream",
+    "TcpListener",
+    "UdpSocket",
+];
+
+/// Carrier words the operating system's socket types also carry. Unlike [`OS_WORDS`], one of these
+/// is masked only inside a whole [`OS_SOCKET_TYPES`] identifier and nowhere else.
+const SOCKET_WORDS: &[&str] = &["tcp", "udp"];
+
+/// Whether the socket word at `b[i..j]` is the head of a whole [`OS_SOCKET_TYPES`] identifier.
+fn is_os_socket_type(b: &[u8], i: usize, j: usize) -> bool {
+    let (s, e) = ident_around(b, i, j);
+    s == i && OS_SOCKET_TYPES.contains(&String::from_utf8_lossy(&b[s..e]).as_ref())
+}
 
 /// A neighbour that makes `unix` the clock.
 const TIME_WORDS: &[&str] = &[
@@ -360,7 +386,9 @@ pub(super) fn mask_os_words<'a>(rel: &str, text: &'a str) -> Cow<'a, str> {
 /// context is read off `original`, and the filler goes into `masked` at the same bytes.
 pub(super) fn mask_os_words_in<'a>(rel: &str, original: &str, masked: &'a str) -> Cow<'a, str> {
     let lower = masked.to_ascii_lowercase();
-    if !OS_WORDS.iter().any(|w| lower.contains(w)) || original.len() != masked.len() {
+    if !OS_WORDS.iter().chain(SOCKET_WORDS).any(|w| lower.contains(w))
+        || original.len() != masked.len()
+    {
         return Cow::Borrowed(masked);
     }
     let mut out = String::with_capacity(masked.len());
@@ -383,6 +411,18 @@ pub(super) fn mask_os_words_in<'a>(rel: &str, original: &str, masked: &'a str) -
                 let j = i + word.len();
                 from = j;
                 if is_os_context(rel, b, i, j) {
+                    buf[i..j].fill(b'x');
+                    touched = true;
+                }
+            }
+        }
+        for word in SOCKET_WORDS {
+            let mut from = 0;
+            while let Some(off) = low[from..].find(word) {
+                let i = from + off;
+                let j = i + word.len();
+                from = j;
+                if is_os_socket_type(b, i, j) {
                     buf[i..j].fill(b'x');
                     touched = true;
                 }
@@ -467,6 +507,41 @@ mod tests {
             "busbar-transport-unix = { path = \"../busbar-transport-unix\" }",
         ] {
             assert!(!masked("crates/busbar-kernel/src/a.rs", s), "{s}");
+        }
+    }
+
+    fn socket_masked(s: &str) -> bool {
+        let low = mask_os_words("crates/busbar-core-connector/src/listen.rs", s)
+            .to_ascii_lowercase();
+        !low.contains("tcp") && !low.contains("udp")
+    }
+
+    #[test]
+    fn the_operating_systems_socket_types_are_masked() {
+        for s in [
+            "use std::net::{TcpListener, TcpStream, UdpSocket};",
+            "let s = tokio::net::TcpStream::connect(a).await?;",
+            "fn accept(l: &TcpListener) -> std::io::Result<TcpStream> {",
+            "let u: UdpSocket = socket.into();",
+            "/// A [`TcpStream`] the listener accepted.",
+        ] {
+            assert!(socket_masked(s), "{s}");
+        }
+    }
+
+    #[test]
+    fn the_tcp_carrier_still_counts() {
+        for s in [
+            "use busbar_transport_tcp::Carrier;",
+            "pub const TRANSPORT: &str = \"tcp\";",
+            "struct TcpCarrier;",
+            "fn connect_tcp() {}",
+            "// dial the tcp carrier",
+            "let target = \"tcp://127.0.0.1:1\";",
+            "struct MyTcpStream;",
+            "struct TcpStreamer;",
+        ] {
+            assert!(!socket_masked(s), "{s}");
         }
     }
 
