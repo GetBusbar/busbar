@@ -596,9 +596,9 @@ impl std::fmt::Debug for CredentialSecret {
 /// THE CANONICAL RESERVED UNIT NAMES (1.6.0 M1b). The reserved four pricing tiers are no longer a
 /// distinct `TierTokens` struct; they are PLAIN KEYS in the name-keyed `usage_units` ledger, sharing
 /// the one map with every open (operator/plane) unit. These constants are the single source of truth
-/// for those four names, so the pricer, the ledger, the flush primitive, and the boot migration can
-/// never disagree on the spelling. `UNIT_CACHE_WRITE` is the canonical spelling; the older
-/// `cache_creation` name is folded onto it at migration (see the usage-ledger migration (`busbar_kernel_ledger::usage_migration`)).
+/// for those four names, so the pricer, the ledger and the flush primitive can never disagree on the
+/// spelling. `UNIT_CACHE_WRITE` is the canonical spelling; the older `cache_creation` name is a
+/// 1.5.x row's, and upgrading such a row is its store plugin's own `migrate()` (#33).
 pub const UNIT_INPUT: &str = "input";
 pub const UNIT_OUTPUT: &str = "output";
 pub const UNIT_CACHE_READ: &str = "cache_read";
@@ -646,9 +646,9 @@ pub const PER_PLUGIN_PRICING_IS_UNREPRESENTABLE: () = ();
 /// (1.6.0 M1b) `usage_units` is the SOLE neutral usage representation: the reserved four
 /// (`input`/`output`/`cache_read`/`cache_write`) ride as ordinary map keys BESIDE every open
 /// (non-reserved) keyed count. Opaque `key → count` DATA the store never interprets. An
-/// all-empty row serializes to `{"model":…}` (the map is skipped when empty); a pre-M1b persisted
-/// row with the old scalar `tokens` field is folded into this map ONCE by the store-versioned boot
-/// migration (see the usage-ledger migration (`busbar_kernel_ledger::usage_migration`)).
+/// all-empty row serializes to `{"model":…}` (the map is skipped when empty); a 1.5.x persisted row
+/// with the old scalar `tokens` field is read through plugin-loader's legacy adapter on a 1.5.x
+/// store, and upgraded on disk by the store plugin's own `migrate()` (#33).
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct ModelTokens {
     pub model: String,
@@ -780,99 +780,20 @@ impl UsageLedger {
     }
 }
 
-// ── THE PRE-M1b ROW SHAPES — FROZEN, DESERIALIZATION-ONLY ───────────────────────────────────────
+// ── THE PRE-M1b ROW FOLD IS NOT HERE, AND THE ENGINE HAS NONE (#33, ARCHITECT 2026-09-29) ─────────
 //
-// What a usage-ledger row LOOKED LIKE on a disk before M1b dissolved `TierTokens` into the one
-// name-keyed `usage_units` map. They are SHAPES (every implementation must read the old bytes the
-// same way), so they live here beside the live shapes, with the one-shot fold that turns them into
-// the live shapes; the ledger's schema gate (`busbar_kernel_ledger::usage_migration`) re-exports both.
-// They moved here verbatim when `busbar-api` retired, because the ledger crate defines what money
-// MEANS and carries no serializer.
-
-/// FROZEN, deserialization-only. The pre-M1b `TierTokens` shape. Every field `#[serde(default)]` so
-/// an already-migrated row (no `tokens` object on disk) deserializes to all-zero — the identity the
-/// idempotent re-fold depends on.
-#[derive(Debug, Clone, Copy, Default, serde::Deserialize)]
-pub struct TierTokensV1 {
-    #[serde(default)]
-    pub input: u64,
-    #[serde(default)]
-    pub output: u64,
-    #[serde(default)]
-    pub cache_read: u64,
-    #[serde(default)]
-    pub cache_write: u64,
-}
-
-/// FROZEN, deserialization-only. The pre-M1b per-model row: the scalar `tokens` PLUS any open
-/// `usage_units` that already rode beside it (M1 additive rows).
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub struct ModelTokensV1 {
-    pub model: String,
-    #[serde(default)]
-    pub tokens: TierTokensV1,
-    #[serde(default)]
-    pub usage_units: std::collections::BTreeMap<String, u64>,
-}
-
-/// FROZEN, deserialization-only. The pre-M1b bucket ledger.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub struct UsageLedgerV1 {
-    #[serde(default)]
-    pub requests: u64,
-    #[serde(default)]
-    pub billable_requests: u64,
-    #[serde(default)]
-    pub models: Vec<ModelTokensV1>,
-}
-
-// The one-shot fold of those rows onto the live shapes. A pure SHAPE transform: the mapping is
-// fixed byte for byte by the frozen layouts above and the live ones, so it lives beside both.
-
-/// Fold `add` into `out[unit]`, canonicalizing the legacy `cache_creation` spelling onto
-/// [`UNIT_CACHE_WRITE`] so the two names never split one concept across two keys. A zero add is a
-/// no-op (the idempotent-re-fold identity; also keeps the sparse map free of zero entries).
-fn fold_unit(out: &mut std::collections::BTreeMap<String, u64>, unit: &str, add: u64) {
-    if add == 0 {
-        return;
-    }
-    let canon = if unit == "cache_creation" {
-        UNIT_CACHE_WRITE
-    } else {
-        unit
-    };
-    let slot = out.entry(canon.to_string()).or_insert(0);
-    *slot = slot.saturating_add(add);
-}
-
-/// Fold one pre-M1b per-model row onto the name-keyed representation: the four `tokens` fields land
-/// on the reserved keys, every open unit is carried through (canonicalized). Idempotent: a row whose
-/// `tokens` are all zero (an already-migrated row re-read) folds to exactly its existing units.
-pub fn fold_v1_model(v1: ModelTokensV1) -> ModelTokens {
-    let mut units: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
-    fold_unit(&mut units, UNIT_INPUT, v1.tokens.input);
-    fold_unit(&mut units, UNIT_OUTPUT, v1.tokens.output);
-    fold_unit(&mut units, UNIT_CACHE_READ, v1.tokens.cache_read);
-    fold_unit(&mut units, UNIT_CACHE_WRITE, v1.tokens.cache_write);
-    for (k, v) in v1.usage_units {
-        fold_unit(&mut units, &k, v);
-    }
-    ModelTokens {
-        model: v1.model,
-        usage_units: units,
-    }
-}
-
-/// Fold one pre-M1b bucket ledger onto the name-keyed representation (see [`fold_v1_model`]). The
-/// request counters pass through unchanged. This is the per-row unit a backend applies under the
-/// usage-ledger schema gate (`busbar_kernel_ledger::usage_migration::USAGE_SCHEMA_V2`).
-pub fn fold_v1_ledger(v1: UsageLedgerV1) -> UsageLedger {
-    UsageLedger {
-        requests: v1.requests,
-        billable_requests: v1.billable_requests,
-        models: v1.models.into_iter().map(fold_v1_model).collect(),
-    }
-}
+// What stood here: frozen `TierTokensV1`/`ModelTokensV1`/`UsageLedgerV1` shapes and
+// `fold_v1_ledger`, a one-shot fold of a 1.5.x usage-ledger row (scalar `tokens`) onto the
+// name-keyed `usage_units` map, "for a backend to run under its schema gate". Nothing ever called
+// it, and nothing on this side of the seam could: a 1.5.x usage row lives in the store plugin's own
+// database, and the engine never holds those bytes.
+//
+// WHAT COVERS A 1.5.x ROW INSTEAD. (1) A published 1.5.x store (payload schema below 4) is read
+// through plugin-loader's legacy adapter (`DynStore::get_usage` -> `legacy_usage::ledger_from_legacy`),
+// which decodes the 1.5.5 wire shape on every read. (2) Upgrading the rows on disk is each STORE
+// PLUGIN's own `migrate()` job, proven per backend by the 1.5.5 golden the store conformance suite
+// owes (docs/design/1.6.0-TODO.md, the store rows). A fold here would have been a third reading of
+// a row shape the engine does not own.
 
 /// One model's signed unit delta inside a [`UsageDelta`] — the fleet-additive flush primitive's
 /// per-model payload. (1.6.0 M1b) The signed twin of [`ModelTokens::usage_units`]: one name-keyed

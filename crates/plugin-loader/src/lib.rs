@@ -392,11 +392,11 @@ impl RawPlugin {
     /// forms are disjoint and the discrimination is total rather than a guess.
     ///
     /// **Why an adapter and not a floor raise.** Refusing the bare form would refuse every published
-    /// first-party plugin at load — the outcome `usage_migration` names as the one thing a migration
-    /// may not produce. This is the same per-kind ADAPTER the tree already runs on the store's
-    /// usage-ledger ops: the engine keeps ONE internal shape and the wire meets a plugin where it
-    /// is. When a kind's supported FLOOR eventually rises past its envelope version, the bare arm
-    /// here becomes dead and is deleted — it is a migration window, not a permanent fork.
+    /// first-party plugin at load — the one thing a migration may not produce. This is the same
+    /// per-kind ADAPTER the tree already runs on the store's usage-ledger ops: the engine keeps ONE
+    /// internal shape and the wire meets a plugin where it is. When a kind's supported FLOOR
+    /// eventually rises past its envelope version, the bare arm here becomes dead and is deleted —
+    /// it is a migration window, not a permanent fork.
     ///
     /// **THE PROBE RUNS ONCE PER LOAD, NEVER PER CALL.** A plugin does not change its mind about
     /// which wire it speaks, so the first successful decode LATCHES the shape and every later call
