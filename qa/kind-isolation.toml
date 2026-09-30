@@ -583,7 +583,7 @@ count = "2"
 [[cell]]
 crate = "busbar-mcp"
 kind = "plane"
-count = "3704"
+count = "3705"
 
 [[cell]]
 crate = "busbar-mcp"
