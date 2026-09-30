@@ -272,6 +272,15 @@ fn register_planes() {
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.
     let dropped = root::linked::dropped_from_config(&LINKED);
+    if let Some(registry) = dropped {
+        let path = root::cli::resolve_config_path(root::cli::config_path_flag().as_deref());
+        if let Err(refusal) =
+            root::boot::refuse_unserved_inbound(std::path::Path::new(&path), registry)
+        {
+            eprintln!("busbar: {refusal}");
+            std::process::exit(2);
+        }
+    }
     root::linked::register_planes(&LINKED, root::linked::dropped_planes_of(&LINKED, dropped));
     root::linked::register_exports(dropped);
 

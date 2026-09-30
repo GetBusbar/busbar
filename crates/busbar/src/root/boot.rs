@@ -235,6 +235,7 @@ pub fn stages(
 ) -> Result<Stages, String> {
     let uses = Uses::of(doc);
     let selected = select(&uses, &candidates);
+    refuse_inbound(&candidates, &selected)?;
     let inbound = inbound(doc, &candidates, &selected, reserved)?;
     for s in &selected {
         let c = &candidates[s.candidate];
@@ -264,6 +265,50 @@ pub fn stages(
         selected,
         inbound,
     })
+}
+
+/// NO ACCEPTED CONNECTION HAS A CONSUMER YET (ARCHITECT ruling 2026-09-30): a selected plugin
+/// that declares an inbound need is refused, naming the need, rather than bound and closed. The
+/// driver binding that serves an accepted connection removes this refusal.
+///
+/// # Errors
+///
+/// The first selected instance with an inbound need.
+fn refuse_inbound(candidates: &[Candidate], selected: &[Selected]) -> Result<(), String> {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
+    for s in selected {
+        let Some(c) = candidates.get(s.candidate) else {
+            continue;
+        };
+        if let Some((i, n)) = c
+            .needs
+            .iter()
+            .enumerate()
+            .find(|(_, n)| n.direction == DIRECTION_INBOUND)
+        {
+            return Err(format!(
+                "{} ({}): inbound need {i} over `{}` cannot be served by this build (nothing \
+                 serves an accepted connection yet); remove the plugin from the configuration",
+                s.instance, c.name, n.transport
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// BOOT'S HALF OF [`refuse_inbound`]: the configuration at `path` over the dropped-in plugins
+/// `registry` admitted, discovered and selected as `--validate` does, refused the same way.
+///
+/// # Errors
+///
+/// A Statement that does not read back, or a selected plugin with an inbound need.
+pub fn refuse_unserved_inbound(
+    path: &std::path::Path,
+    registry: &PluginRegistry,
+) -> Result<(), String> {
+    let doc = document(path).unwrap_or_default();
+    let candidates = discover(registry)?;
+    refuse_inbound(&candidates, &select(&Uses::of(&doc), &candidates))
 }
 
 #[cfg(test)]

@@ -262,24 +262,23 @@ fn listening_plane(target_from: &str) -> Candidate {
     }
 }
 
-/// RED: the root's own listeners are reserved — a selected instance's inbound listener on the
-/// admin address is refused at validate, naming both settings.
+/// RED (ARCHITECT ruling 2026-09-30): until an accepted connection has a consumer, a selected
+/// plugin that declares an inbound need is refused at validate, naming the instance, the plugin and
+/// the need, before its bind is even read, never bound and closed.
 #[test]
-fn red_an_inbound_listener_on_the_roots_own_address_is_refused_at_validate() {
+fn red_a_selected_plugin_with_an_inbound_need_is_refused_until_it_can_be_served() {
     let doc: serde_json::Value =
         serde_json::from_str(r#"{"agents": {"ingress": {"listen": "127.0.0.1:8081"}}}"#).unwrap();
-    let reserved = [
-        ("listen".to_string(), "0.0.0.0:8080".parse().unwrap()),
-        (
-            "admin_listen".to_string(),
-            "127.0.0.1:8081".parse().unwrap(),
-        ),
-    ];
-    let err = stages(&doc, vec![listening_plane("ingress")], &reserved)
+    let err = stages(&doc, vec![listening_plane("ingress")], &[])
         .err()
         .expect("refused");
-    assert_eq!(
-        err,
-        "agents.ingress.listen: 127.0.0.1:8081 is already taken by `admin_listen`"
+    assert!(
+        err.starts_with(
+            "agents (p1): inbound need 0 over `scheme-a` cannot be served by this build"
+        ),
+        "{err}"
     );
+    // Not selected, not refused: the refusal is the configuration's use, not the plugin's presence.
+    let unused: serde_json::Value = serde_json::from_str(r#"{}"#).unwrap();
+    assert!(stages(&unused, vec![listening_plane("ingress")], &[]).is_ok());
 }
