@@ -278,7 +278,7 @@ loom-model = ["dep:loom"]
 # Exposes `test_support` to a DEPENDENT crate's tests (the bin's). Never on in a normal build;
 # the bin enables it from its [dev-dependencies] edge only. The contract's test double (its warn
 # capture) is always compiled (ARCHITECT SD-3 queue (4)), so nothing forwards there.
-test-support = ["dep:rmcp", "dep:reqwest", "dep:rcgen", "dep:fixture-store", "dep:fixture-hook", "busbar-kernel-audit/test-support"]
+test-support = ["dep:rmcp", "dep:reqwest", "dep:rcgen", "dep:fixture-store", "dep:fixture-hook"]
 # The debug-only per-method micro-timing in `src/timing` (folded from busbar-timing, OWNER Q70).
 # DEFAULT OFF: with this off, `timeit!` expands to `()` and the RAII guards it produces are
 # zero-sized no-ops, so the `drop(_guard)` calls that end a timed span are compiled in ONLY under this
