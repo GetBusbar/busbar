@@ -232,7 +232,7 @@ impl Connector<'_> {
         &mut self,
         op: u32,
         f: Option<ServiceFn>,
-        mut input: I,
+        input: I,
     ) -> Answer<ServiceOut> {
         let Some(f) = f else {
             return Poll::Ready(Err(ConnFailure::Unarmed));
@@ -242,14 +242,26 @@ impl Connector<'_> {
         }
         let seq = self.issued;
         self.issued += 1;
+        let handle = CompletionHandle {
+            ticket: self.ticket,
+            seq,
+            _reserved: 0,
+        };
+        self.cross(op, f, input, handle)
+    }
+
+    /// Cross into service `op` through `f` with `input`, under `handle`.
+    fn cross<I: ServiceIn>(
+        &self,
+        op: u32,
+        f: ServiceFn,
+        mut input: I,
+        handle: CompletionHandle,
+    ) -> Answer<ServiceOut> {
         *input.head() = ServiceHead {
             size: std::mem::size_of::<I>() as u32,
             op,
-            handle: CompletionHandle {
-                ticket: self.ticket,
-                seq,
-                _reserved: 0,
-            },
+            handle,
         };
         let mut out = ServiceOut {
             size: std::mem::size_of::<ServiceOut>() as u32,
@@ -381,7 +393,19 @@ impl Connector<'_> {
             head: blank_head(),
             reading: std::ptr::from_mut(&mut reading),
         };
-        match self.call_service(op::CLOCK_NOW, |s| s.clock_now, input) {
+        // SAFETY: NULL, or the host's services table, valid for the instance's life.
+        let Some(f) = unsafe { self.host.services.as_ref() }.and_then(|s| s.clock_now) else {
+            return Poll::Ready(Err(ConnFailure::Unarmed));
+        };
+        // A service that never pends is made on NO ticket: the host keeps no stored result for
+        // it, so every entry of the op reads the clock afresh, and it draws no handle from the
+        // op's count (the replay rule is untouched).
+        let none = CompletionHandle {
+            ticket: Ticket::NONE,
+            seq: 0,
+            _reserved: 0,
+        };
+        match self.cross(op::CLOCK_NOW, f, input, none) {
             Poll::Ready(Ok(_)) => Poll::Ready(Ok(reading)),
             Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
             // It never pends: a host that says so broke the service's rule.
