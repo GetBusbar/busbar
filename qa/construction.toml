@@ -435,19 +435,27 @@ because = "ARCHITECT 2026-09-28: R-KERNEL, KERNEL-VALIDATE (BUSBAR-1.6.0.md THE 
 # the pair's next figure.
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY SDK-SAFE (the SDK's safe surface and the plane Claim
-#    flags) — measured by LANDER at the rebased tip ─────────────────────────────────────────────────────
+#    flags) — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 25082 -> 25543. Its commit reached the base; struck by KERNEL-VALIDATE's re-arm below, which
+# declares the pair's next figure.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY KERNEL-VALIDATE (the section split moves into the
+#    contract; the plane tail declares its kernel-owned trust keys) — measured by LANDER at the
+#    rebased tip ───────────────────────────────────────────────────────────────────────────────
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 25082
-to      = 25543
-because = "ARCHITECT ruling 2026-09-29 (SDK-SAFE), the standing contract-pair exception: the step's declared surface is the SDK's safe surface in abi::sdk (Entry, SafeSlot, Safe<S>, Instance<T>, Published<T>/Plain in safe.rs; Lent, LentList, HostBuf and the per-in accessor table in lent.rs; the plugin_door! Safe-open assertion) and the plane Claim flags word with CLAIM_OPEN/CLAIM_EXACT and its check_claims rule (OWNER D1 ruling 2026-09-28), +461, rebased by LANDER over the 25143 -> 25082 lowering that deleted fold_v1_ledger and re-measured at the rebased tip. Measured by cargo xtask gate construction: 25082 before, 25543 after."
+from    = 25543
+to      = 25712
+because = "OWNER RULING Q68(3): contract_caps re-arms at the MEASURED value, in its own commit. Growth is exactly KERNEL-VALIDATE's declared surface (BUSBAR-1.6.0.md THE DESIGN, §11.12; rulings F4/F5): busbar_contract::section (split_section, Section, RESERVED_SECTION_KEYS, moved out of busbar-kernel as a stateless pure helper), the plane tail's kernel-owned trust keys (abi/plane TrustKey, PinMechanism, TRUST_*/PIN_FINGERPRINT/MECHANISM_ROOT, PlaneTail.trust_keys, check_trust_keys, check_pin_mechanisms) and their Rust mirror on PlaneDeclaration (trust_keys, TrustKeyDecl, TrustRole, PinMechanismDecl). Measured by cargo xtask gate construction: 25543 before, 25712 after, +169."
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 25082
-to      = 25543
-because = "ARCHITECT ruling 2026-09-29 (SDK-SAFE), the standing contract-pair exception: the step's declared surface is the SDK's safe surface in abi::sdk (Entry, SafeSlot, Safe<S>, Instance<T>, Published<T>/Plain in safe.rs; Lent, LentList, HostBuf and the per-in accessor table in lent.rs; the plugin_door! Safe-open assertion) and the plane Claim flags word with CLAIM_OPEN/CLAIM_EXACT and its check_claims rule (OWNER D1 ruling 2026-09-28), +461, rebased by LANDER over the 25143 -> 25082 lowering that deleted fold_v1_ledger and re-measured at the rebased tip. Measured by cargo xtask gate construction: 25082 before, 25543 after."
+from    = 25543
+to      = 25712
+because = "OWNER RULING Q68(3): contract_caps re-arms at the MEASURED value, in its own commit. Growth is exactly KERNEL-VALIDATE's declared surface (BUSBAR-1.6.0.md THE DESIGN, §11.12; rulings F4/F5): busbar_contract::section (split_section, Section, RESERVED_SECTION_KEYS, moved out of busbar-kernel as a stateless pure helper), the plane tail's kernel-owned trust keys (abi/plane TrustKey, PinMechanism, TRUST_*/PIN_FINGERPRINT/MECHANISM_ROOT, PlaneTail.trust_keys, check_trust_keys, check_pin_mechanisms) and their Rust mirror on PlaneDeclaration (trust_keys, TrustKeyDecl, TrustRole, PinMechanismDecl). Measured by cargo xtask gate construction: 25543 before, 25712 after, +169."
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY LANDER'S BATCH (XTASK-SPEED, KI-ABI-SCOPE, M3-SDK,
 #    M3-SHAPES AUTH, billing-cite) — EXPIRED AND STRUCK
@@ -715,8 +723,11 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # LOWERED 25143 -> 25082, the measurement: the contract's frozen pre-M1b usage-row shapes and
 # fold_v1_ledger are deleted (-61). Downward only.
 # RE-ARMED 25082 -> 25543, AT THE MEASUREMENT, in its own commit after SDK-SAFE (the SDK's safe
-# surface and the plane Claim flags, +461); the live declaration above carries the measure.
-contract_caps = 25543
+# surface and the plane Claim flags, +461); struck by KERNEL-VALIDATE's re-arm.
+# RE-ARMED 25543 -> 25712, AT THE MEASUREMENT (OWNER RULING Q68(3)), in its own commit after
+# KERNEL-VALIDATE (the contract section split and the plane tail's trust keys, +169); the live
+# declaration above carries the measure.
+contract_caps = 25712
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1386,7 +1397,9 @@ contract_crate = "busbar-contract"
 # RE-ARMED 24909 -> 25143 with its pair (LOG-BRIDGE plugin logging #85, +234).
 # LOWERED 25143 -> 25082 with its pair (fold_v1_ledger and the frozen usage-row shapes deleted, -61).
 # RE-ARMED 25082 -> 25543 with its pair (SDK-SAFE: the SDK's safe surface and the Claim flags, +461).
-caps_contract_ceiling = 25543
+# RE-ARMED 25543 -> 25712 with its pair (OWNER RULING Q68(3); KERNEL-VALIDATE, the contract
+# section split and the plane tail's trust keys, +169).
+caps_contract_ceiling = 25712
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
