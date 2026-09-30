@@ -6,42 +6,28 @@
 //! `openai-realtime, gemini-live, twilio-media-streams, one-shot transcribe/tts` over
 //! `ws, webrtc, twilio-media, http`.
 //!
-//! This module claims two of those four transports today: `ws` (both duplex JSON dialects) and
-//! `http` (the two one-shot operations). Two are deliberately unclaimed, for the same reason stated
-//! twice:
+//! Three transports carry those four dialects: `ws` (both duplex JSON dialects AND the Twilio
+//! telephony dialect), `http` (the two one-shot operations) and `webrtc` (unclaimed, below).
 //!
+//! * **Twilio Media Streams rides `ws`.** Its wire is one JSON event per WebSocket message
+//!   (`connected`/`start`/`media`/`mark`/`dtmf`/`stop`), so the carrier is the ws transport and the
+//!   event envelope is this plane's dialect ([`crate::twilio`], [`crate::ulaw`]). the design lists
+//!   five transports (tcp, stdio, unix, http, ws) and no telephony one (ARCHITECT ruling
+//!   2026-09-29, TWILIO-DOOR). Twilio cannot present a busbar bearer or API key, so its claim
+//!   authenticates under the `webhook-signature` alternative alone: the `X-Twilio-Signature`
+//!   HMAC over the request URL, verified by the auth kind's inbound verify (D4), never by this plane.
 //! * **`webrtc`** — no codec surface for the RTP media plane exists anywhere in this crate's closure
 //!   (busbar-voice's WebRTC topology is `runtime`-gated and, per its own module documentation, is a
 //!   browser-sideband ferry over the same JSON event vocabulary rather than a distinct wire format —
 //!   but a plane cannot claim a transport it cannot decode frames from without lying about what it
-//!   reads).
-//! * **`twilio-media`** — the telephony transport has **no crate in the tree**. The architecture's
-//!   transport table lists thirteen and seven exist; `twilio-media` is one of the six that do not,
-//!   and a claim on a transport nothing registers is a boot refusal, not a silent 404. Until that
-//!   transport crate lands (the same phase the `webrtc` leg and the real one-shot wire shape are
-//!   scheduled for) the claim is dropped rather than declared and refused: a node whose composition
-//!   root cannot seal is a node that does not boot, and the telephony *codec* below
-//!   ([`Dialect::TwilioMediaStreams`], [`crate::twilio`], [`crate::ulaw`]) is complete and untouched
-//!   — it is the arrival path, not the reader, that is missing. Restoring the claim is one entry in
-//!   [`DIALECT_CLAIMS`] on the day `busbar-transport-twilio-media` registers a key.
-//!
-//! Leaving either unclaimed is an honest, documented gap, not a silent one: a future pass that gives
-//! this crate an RTP data-channel reader, or the tree a telephony transport, can add the claim
-//! without touching any other one, because claims are declared independently and the boot's own
-//! overlap check is what proves they stay disjoint.
+//!   reads). It is unclaimed: a claim is declared independently, and the boot's own overlap check
+//!   is what proves the claims stay disjoint when it is added.
 
 use busbar_contract::grammar::{one_level_under, Claim, Selector};
 
-/// The transport both JSON duplex dialects (`openai-realtime`, `gemini-live`) are claimed against.
+/// The transport the three WebSocket dialects (`openai-realtime`, `gemini-live`,
+/// `twilio-media-streams`) are claimed against.
 pub const WS_TRANSPORT: &str = "ws";
-
-/// The transport the telephony dialect (`twilio-media-streams`) *would* be claimed against, kept as
-/// the name the restored claim will use rather than as a live one.
-///
-/// No claim in [`DIALECT_CLAIMS`] names it: see this module's own header for why, and for what has
-/// to exist before one does. It is a `&'static str` and nothing else — naming a transport is not
-/// claiming it.
-pub const TWILIO_TRANSPORT: &str = "twilio-media";
 
 /// The transport the two one-shot operations (`transcribe`, `tts`) are claimed against.
 pub const HTTP_TRANSPORT: &str = "http";
@@ -55,6 +41,11 @@ pub(crate) const SCHEME: &str = "streaming-key";
 /// The alternatives a duplex-session unit (`ws`) may narrow to: a bearer token or a vendor API-key
 /// header, presented once at session open and cached for the life of the session.
 const WS_SCHEME_ALTS: &[&str] = &["bearer", "api-key"];
+
+/// The one alternative a Twilio Media Streams unit may narrow to: the webhook signature Twilio puts
+/// on the WebSocket upgrade (`X-Twilio-Signature`). Twilio holds no busbar credential, so a bearer or
+/// API-key alternative here would be either unusable or unauthenticated.
+const TWILIO_SCHEME_ALTS: &[&str] = &["webhook-signature"];
 
 /// The alternatives a one-shot HTTP unit may narrow to — the same two an ordinary API caller uses.
 const HTTP_SCHEME_ALTS: &[&str] = &["bearer", "api-key"];
@@ -134,7 +125,7 @@ const fn claim(
         selector,
         scheme: Some(SCHEME),
         scheme_alternatives: alts,
-        // None of the four dialects' claims declares an idempotency location: a duplex session has
+        // None of this plane's claims declares an idempotency location: a duplex session has
         // no single request body to key a replay on, and the two one-shot operations are read
         // straight through rather than replay-cached, matching the previous release's behaviour.
         idempotency: None,
@@ -159,12 +150,14 @@ pub const DIALECT_CLAIMS: &[DialectClaim] = &[
             WS_SCHEME_ALTS,
         ),
     },
-    // The telephony claim used to sit here, on `twilio-media` over `PrefixOneLevel("/twilio")`,
-    // under a `twilio-signature` alternative. It is dropped, not commented out for later: the
-    // transport it named has no crate, and a claim whose transport nothing registers is a boot
-    // refusal that stops the whole node rather than one plane. The header says what has to exist
-    // before it comes back, and `Dialect::TwilioMediaStreams` below is untouched so the codec that
-    // reads the wire is still here when it does.
+    DialectClaim {
+        dialect: Dialect::TwilioMediaStreams,
+        claim: claim(
+            WS_TRANSPORT,
+            Selector::PrefixOneLevel("/twilio"),
+            TWILIO_SCHEME_ALTS,
+        ),
+    },
     DialectClaim {
         dialect: Dialect::OneShotTranscribe,
         claim: claim(
@@ -192,6 +185,7 @@ pub const CLAIMS: &[Claim] = &[
     DIALECT_CLAIMS[1].claim,
     DIALECT_CLAIMS[2].claim,
     DIALECT_CLAIMS[3].claim,
+    DIALECT_CLAIMS[4].claim,
 ];
 
 /// The two lists cannot drift: one is the other with a field dropped, and a constant cannot loop

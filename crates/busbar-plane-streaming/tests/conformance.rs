@@ -287,12 +287,12 @@ fn a_realtime_voice_session_reserves_takes_turns_and_settles() {
 /// changes the plane's identity, never the claims the boot's overlap check reads.
 #[test]
 fn the_streaming_plane_declares_its_full_dialect_and_meter_roster() {
-    // Two WS duplex claims (openai-realtime + gemini-live) and two one-shot HTTP claims (transcribe +
-    // tts); twilio's claim is dropped until its transport lands (see `claims`).
+    // Three WS claims (openai-realtime + gemini-live + twilio-media-streams) and two one-shot HTTP
+    // claims (transcribe + tts).
     assert_eq!(
         <StreamingPlane as PlaneMeta>::CLAIMS.len(),
-        4,
-        "streaming claims its four live dialect surfaces"
+        5,
+        "streaming claims its five live dialect surfaces"
     );
     // The six BILLABLE per-turn meter classes this plane declares (architect ruling #71: a plane's
     // declared billable classes must be pairwise disjoint, so `cached_tokens` — a subset of the input
@@ -309,4 +309,35 @@ fn the_streaming_plane_declares_its_full_dialect_and_meter_roster() {
         .upstream_for_dialect(Dialect::OpenaiRealtime)
         .is_some());
     assert!(plane.upstream_for_dialect(Dialect::GeminiLive).is_none());
+}
+
+/// Twilio Media Streams is a streaming DIALECT carried by the `ws` transport, not a transport of its
+/// own (ARCHITECT ruling 2026-09-29, TWILIO-DOOR; the design lists five transports). Its claim is
+/// on `ws`, one path level under `/twilio`, and authenticates under the `webhook-signature`
+/// alternative alone — Twilio holds no busbar bearer or API key. Without the claim the dialect's
+/// reader, codec and µ-law transform are unreachable: no arrival ever names the dialect.
+#[test]
+fn twilio_media_streams_is_claimed_on_ws_under_the_webhook_signature() {
+    use busbar_contract::grammar::Selector;
+    use busbar_plane_streaming::claims::{dialect_for, DIALECT_CLAIMS, WS_TRANSPORT};
+
+    let twilio: Vec<_> = DIALECT_CLAIMS
+        .iter()
+        .filter(|c| c.dialect == Dialect::TwilioMediaStreams)
+        .collect();
+    assert_eq!(twilio.len(), 1, "exactly one claim names the Twilio dialect");
+    let claim = &twilio[0].claim;
+    assert_eq!(claim.transport, WS_TRANSPORT, "Twilio rides the ws transport");
+    assert_eq!(claim.selector, Selector::PrefixOneLevel("/twilio"));
+    assert_eq!(claim.scheme_alternatives, &["webhook-signature"]);
+    assert!(
+        <StreamingPlane as PlaneMeta>::CLAIMS.contains(claim),
+        "the declared claim is one the boot seal reads"
+    );
+    // An arrival one level under `/twilio` names the dialect; the prefix alone and a deeper path do
+    // not, and neither does another dialect's path.
+    assert_eq!(dialect_for("/twilio/inbound"), Some(Dialect::TwilioMediaStreams));
+    assert_eq!(dialect_for("/twilio"), None);
+    assert_eq!(dialect_for("/twilio/a/b"), None);
+    assert_eq!(dialect_for("/v1/realtime"), Some(Dialect::OpenaiRealtime));
 }
