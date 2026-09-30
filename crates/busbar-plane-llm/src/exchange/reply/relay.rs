@@ -167,15 +167,18 @@ pub type Parts = (
 /// for its stream as an array.
 #[must_use]
 pub fn parts(ctx: &RelayCtx<'_>) -> Parts {
-    let translate =
-        crate::codec::proto_stream::new_stream_translator(ctx.ingress, ctx.egress, ctx.far_is_stream)
-            .map(|mut t| {
-                t.set_client_include_usage(ctx.client_include_usage);
-                if let Some(body) = ctx.request {
-                    t.set_request_echo(body);
-                }
-                t
-            });
+    let translate = crate::codec::proto_stream::new_stream_translator(
+        ctx.ingress,
+        ctx.egress,
+        ctx.far_is_stream,
+    )
+    .map(|mut t| {
+        t.set_client_include_usage(ctx.client_include_usage);
+        if let Some(body) = ctx.request {
+            t.set_request_echo(body);
+        }
+        t
+    });
     let json_array = (ctx.json_array && ctx.far_is_stream)
         .then(|| {
             decl(ctx.ingress)
