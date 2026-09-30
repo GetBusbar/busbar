@@ -100,22 +100,28 @@ fn the_default_egress_class_is_the_deployments_security_stance() {
         busbar_contract::abi::mechanism::call::Outcome::Refused,
         "an unmapped class is refused"
     );
-    // `allow_all_metadata` lifts the denylist (the operator's additions with it); the address
-    // guard's own metadata refusal is the guard's, and no deployment setting speaks for it.
+    // `allow_all_metadata` is 1.5.5's nuclear override: the metadata guard is fully disabled, the
+    // operator's additions and the metadata address alike; with it off the address stays refused.
     let open = kernel(&["metadata.corp.example"], true);
+    let admitted = |dest| verdict(&open, dest, DEFAULT_EGRESS_CLASS).value;
+    assert_eq!(
+        admitted("https://metadata.corp.example/"),
+        svc::DEST_ALLOWED
+    );
+    assert_eq!(
+        admitted("https://169.254.169.254/latest/meta-data/"),
+        svc::DEST_ALLOWED,
+        "allow_all_metadata admits the metadata address, as 1.5.5 did"
+    );
+    let shut = kernel(&[], false);
     assert_eq!(
         verdict(
-            &open,
-            "https://metadata.corp.example/",
+            &shut,
+            "https://169.254.169.254/latest/meta-data/",
             DEFAULT_EGRESS_CLASS
         )
         .value,
-        svc::DEST_ALLOWED,
-        "allow_all_metadata lifts the denylist"
-    );
-    assert_eq!(
-        verdict(&open, "https://169.254.169.254/", DEFAULT_EGRESS_CLASS).value,
         svc::DEST_METADATA,
-        "the address guard still refuses the metadata address"
+        "without the override the metadata address is refused"
     );
 }
