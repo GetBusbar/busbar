@@ -317,7 +317,7 @@ fn the_streaming_plane_declares_its_full_dialect_and_meter_roster() {
 /// `webhook-signature` alternative alone — Twilio holds no busbar bearer or API key. Without the
 /// claim the dialect's reader, codec and µ-law transform are unreachable: no arrival ever names it.
 #[test]
-fn twilio_media_streams_is_claimed_on_ws_under_the_webhook_signature() {
+fn twilio_media_streams_is_claimed_on_the_websocket_carrier_under_the_webhook_signature() {
     use busbar_contract::grammar::Selector;
     use busbar_plane_streaming::claims::{dialect_for, DIALECT_CLAIMS, WS_TRANSPORT};
 
