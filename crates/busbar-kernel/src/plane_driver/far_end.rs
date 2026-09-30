@@ -44,7 +44,7 @@ use busbar_contract::abi::auth::{STYLE_NEEDS_BODY_HASH, STYLE_NEEDS_HEADERS};
 use busbar_contract::abi::transport::{
     STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT, STATUS_OTHER, STATUS_SUCCESS,
 };
-use busbar_contract::auth_calls::{Fields, FieldsRequest, OutboundAuth};
+use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::caps::{Pass, Route};
 use busbar_contract::conn::{
     ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
@@ -299,6 +299,24 @@ fn shed_phase(shed: &Pick) -> Phase {
             retry_after.map(u64::from),
         ),
         Pick::Member { .. } => Phase::Shed(503, None),
+    }
+}
+
+/// A head the framer encodes. It carries auth values (credential material), so its bytes are
+/// zeroised when it drops, once the connector's open has taken its copy.
+struct Head(Vec<(String, Vec<u8>)>);
+
+impl Head {
+    fn wipe(&mut self) {
+        for (_, v) in &mut self.0 {
+            zeroize::Zeroize::zeroize(v);
+        }
+    }
+}
+
+impl Drop for Head {
+    fn drop(&mut self) {
+        self.wipe();
     }
 }
 
@@ -656,7 +674,7 @@ impl EgressFarEnd<'_> {
         binding: &AuthBinding,
         request: &OutboundRequest,
         url: &str,
-    ) -> Option<Vec<(Vec<u8>, Vec<u8>)>> {
+    ) -> Option<Vec<AuthField>> {
         let (authority, path_query) = split(url);
         let (path, query) = match path_query.split_once('?') {
             Some((p, q)) => (p, Some(q.as_bytes().to_vec())),
@@ -693,12 +711,7 @@ impl EgressFarEnd<'_> {
             .unwrap_or(Fields::Failed),
         };
         match answer {
-            Fields::Ready(fields) => Some(
-                fields
-                    .into_iter()
-                    .map(|f| (f.name.clone(), f.value.clone()))
-                    .collect(),
-            ),
+            Fields::Ready(fields) => Some(fields),
             Fields::Refused | Fields::Failed => None,
         }
     }
@@ -739,10 +752,10 @@ impl EgressFarEnd<'_> {
         }
         let url = join(&route.base_url, &request.target);
         // 2. The one auth call; its fields join the head after the plane's.
-        let mut fields = request.fields.clone();
+        let mut auth = Vec::new();
         if let Some(binding) = &route.auth {
             match self.auth_fields(binding, &request, &url).await {
-                Some(auth) => fields.extend(auth),
+                Some(fields) => auth = fields,
                 None => {
                     // Not the destination's fault: nothing recorded against it; the next member.
                     let mut w = self.lock();
@@ -752,15 +765,26 @@ impl EgressFarEnd<'_> {
             }
         }
         let (_, path) = split(&url);
-        let mut head: Vec<(String, Vec<u8>)> = Vec::with_capacity(fields.len() + 2);
-        head.push(("method".into(), request.verb.clone()));
-        head.push(("path".into(), path.as_bytes().to_vec()));
-        head.extend(
-            fields
+        // The head the framer encodes: method, path, the plane's fields, then the auth fields. It
+        // holds the auth values, so it wipes itself when the open has taken it.
+        let mut head = Head(Vec::with_capacity(request.fields.len() + auth.len() + 2));
+        head.0.push(("method".into(), request.verb.clone()));
+        head.0.push(("path".into(), path.as_bytes().to_vec()));
+        head.0.extend(
+            request
+                .fields
                 .iter()
                 .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone())),
         );
+        head.0.extend(auth.iter().map(|f| {
+            (
+                String::from_utf8_lossy(&f.name).into_owned(),
+                f.value.expose_secret().clone(),
+            )
+        }));
+        drop(auth);
         let borrowed: Vec<(&str, &[u8])> = head
+            .0
             .iter()
             .map(|(n, v)| (n.as_str(), v.as_slice()))
             .collect();

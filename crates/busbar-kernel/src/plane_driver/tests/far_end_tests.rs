@@ -333,7 +333,7 @@ impl OutboundAuth for Bearer {
             .push((r.method.clone(), r.authority.clone(), r.path.clone()));
         Some(Fields::Ready(vec![AuthField {
             name: b"authorization".to_vec(),
-            value: b"Bearer sk-test".to_vec(),
+            value: b"Bearer sk-test".to_vec().into(),
             sensitive: true,
         }]))
     }
@@ -759,4 +759,34 @@ async fn a_stalled_auth_call_is_bounded_by_the_attempt_cap() {
     assert!(started.elapsed() < std::time::Duration::from_secs(2));
     assert!(r.table.opened.lock().unwrap().is_empty());
     assert!(r.book.observed.lock().unwrap().is_empty());
+}
+
+/// The head the framer encodes carries the auth values: it wipes them when it drops.
+#[test]
+fn the_head_wipes_its_auth_values() {
+    let mut head = Head(vec![
+        ("method".into(), b"POST".to_vec()),
+        ("authorization".into(), b"Bearer sk-test".to_vec()),
+    ]);
+    head.wipe();
+    assert!(head.0.iter().all(|(_, v)| v.iter().all(|b| *b == 0)));
+}
+
+/// An auth field and a request print no credential.
+#[test]
+fn auth_material_never_prints() {
+    let field = AuthField {
+        name: b"authorization".to_vec(),
+        value: b"Bearer sk-test".to_vec().into(),
+        sensitive: true,
+    };
+    let request = FieldsRequest {
+        caller_credential: Some(b"caller-key".to_vec().into()),
+        ..FieldsRequest::default()
+    };
+    let printed = format!("{field:?} {request:?}");
+    assert!(
+        !printed.contains("sk-test") && !printed.contains("caller-key"),
+        "{printed}"
+    );
 }

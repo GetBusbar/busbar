@@ -27,6 +27,7 @@ use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
 use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, OutboundAuth};
+use busbar_contract::redacted::Redacted;
 
 use super::kinds::auth::Auth;
 use super::{in_head, out_head, Dispatcher, Frame, Plugin};
@@ -107,9 +108,7 @@ impl Drop for Lend {
     /// The caller's credential and the auth fields are credential material: zeroised once the
     /// crossing's memory is dropped (after the op's last crossing and the host's copy-out).
     fn drop(&mut self) {
-        if let Some(c) = self.request.caller_credential.as_mut() {
-            c.fill(0);
-        }
+        // The caller's credential zeroises itself (`Redacted`); the field bytes are wiped here.
         self.field_buf.fill(0);
     }
 }
@@ -155,10 +154,9 @@ impl Lend {
                 body_hash_present: present,
                 _reserved: 0,
             },
-            caller_credential: r
-                .caller_credential
-                .as_deref()
-                .map_or(NO_BLOB, |c| blob(c, BLOB_OCTETS, BLOB_SECRET)),
+            caller_credential: r.caller_credential.as_ref().map_or(NO_BLOB, |c| {
+                blob(c.expose_secret(), BLOB_OCTETS, BLOB_SECRET)
+            }),
             field_buf: self.field_buf.as_mut_ptr(),
             field_buf_cap: self.field_buf.len(),
             fields: self.fields.as_mut_ptr(),
@@ -189,7 +187,7 @@ impl Lend {
                 .take(out.fields_len as usize)
                 .map(|f| AuthField {
                     name: take(f.name),
-                    value: take(f.value),
+                    value: Redacted::new(take(f.value)),
                     sensitive: f.flags & FIELD_SENSITIVE != 0,
                 })
                 .collect(),

@@ -265,7 +265,7 @@ fn request() -> FieldsRequest {
 fn bearer() -> Fields {
     Fields::Ready(vec![AuthField {
         name: b"authorization".to_vec(),
-        value: b"Bearer POST far.example:443/v1/call".to_vec(),
+        value: b"Bearer POST far.example:443/v1/call".to_vec().into(),
         sensitive: true,
     }])
 }
@@ -308,12 +308,12 @@ fn a_short_fields_answer_is_recalled_once_with_what_it_needs() {
 fn a_refused_fields_is_refused_on_a_ticket_and_left_to_it_on_the_spot() {
     let a = opened();
     let passthrough = FieldsRequest {
-        caller_credential: Some(b"caller-key".to_vec()),
+        caller_credential: Some(b"caller-key".to_vec().into()),
         ..request()
     };
     assert_eq!(a.fields_now(1, &passthrough), None);
     let passthrough = FieldsRequest {
-        caller_credential: Some(b"caller-key".to_vec()),
+        caller_credential: Some(b"caller-key".to_vec().into()),
         ..request()
     };
     assert_eq!(

@@ -13,6 +13,8 @@
 //! caches inside itself (R3), and drops that cache on `refresh` ([`AuthCalls::refresh`]).
 
 use std::future::Future;
+
+use crate::redacted::Redacted;
 use std::sync::Arc;
 
 /// One inbound request's facts, as the kernel hands them to `verify`. Owned: the answer is
@@ -169,8 +171,8 @@ pub struct FieldsRequest {
     /// `abi::auth::STYLE_NEEDS_HEADERS`; empty otherwise.
     pub headers: Vec<(Vec<u8>, Vec<u8>)>,
     /// The caller's verified credential, for a passthrough binding (`abi::auth::MODE_PASSTHROUGH`).
-    /// Secret: zeroised when the call ends.
-    pub caller_credential: Option<Vec<u8>>,
+    /// Secret: zeroised when it drops (every copy is its own [`Redacted`]).
+    pub caller_credential: Option<Redacted<Vec<u8>>>,
 }
 
 impl std::fmt::Debug for FieldsRequest {
@@ -188,12 +190,12 @@ impl std::fmt::Debug for FieldsRequest {
 }
 
 /// One auth field that joins the head before the framer encodes it.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct AuthField {
     /// The field name.
     pub name: Vec<u8>,
-    /// The value. Credential material when [`AuthField::sensitive`].
-    pub value: Vec<u8>,
+    /// The value: credential material, zeroised when it drops, whichever copy it is.
+    pub value: Redacted<Vec<u8>>,
     /// `abi::auth::FIELD_SENSITIVE`: never logged, zeroised once the head is encoded.
     pub sensitive: bool,
 }
@@ -203,7 +205,7 @@ impl std::fmt::Debug for AuthField {
         let value = if self.sensitive {
             "<redacted>".to_string()
         } else {
-            String::from_utf8_lossy(&self.value).into_owned()
+            String::from_utf8_lossy(self.value.expose_secret()).into_owned()
         };
         f.debug_struct("AuthField")
             .field("name", &String::from_utf8_lossy(&self.name))
@@ -211,6 +213,16 @@ impl std::fmt::Debug for AuthField {
             .finish()
     }
 }
+
+impl PartialEq for AuthField {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.value.expose_secret() == other.value.expose_secret()
+            && self.sensitive == other.sensitive
+    }
+}
+
+impl Eq for AuthField {}
 
 /// One `fields`' answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
