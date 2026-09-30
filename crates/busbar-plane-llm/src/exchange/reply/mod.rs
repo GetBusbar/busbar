@@ -3,4 +3,5 @@
 //! the walk.
 
 pub mod failure;
+pub mod whole;
 pub mod wire;

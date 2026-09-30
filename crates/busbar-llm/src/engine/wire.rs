@@ -134,12 +134,21 @@ pub(crate) fn answer_response(
 /// An answer the plane rendered (its status, head fields in order, and body) as the client's
 /// response.
 pub(crate) fn rendered_response(r: crate::engine::xchg::refuse::Rendered) -> Response {
+    rendered_response_via(r, |rb| rb)
+}
+
+/// [`rendered_response`], with `more` head fields appended after the plane's.
+pub(crate) fn rendered_response_via(
+    r: crate::engine::xchg::refuse::Rendered,
+    more: impl FnOnce(axum::http::response::Builder) -> axum::http::response::Builder,
+) -> Response {
     let status = StatusCode::from_u16(r.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let mut rb = Response::builder().status(status);
     for (name, value) in r.fields {
         rb = rb.header(name, value);
     }
-    rb.body(Body::from(r.body))
+    more(rb)
+        .body(Body::from(r.body))
         .unwrap_or_else(|_| status.into_response())
 }
 
@@ -384,6 +393,7 @@ pub(crate) const DETAIL_REQUEST_TIMEOUT: &str = "The request timed out. Please r
 /// client's native error envelope, so it must NOT disclose the existence of a translating
 /// intermediary ("translate"/"untranslatable") or proxy vocabulary ("upstream"); a native vendor
 /// returns a generic internal-error message here. The precise cause is logged server-side.
+#[cfg(test)]
 pub(crate) use crate::engine::xchg::reply::wire::GENERIC_RESPONSE_ERROR_DETAIL;
 
 /// Build the bytes for a mid-stream error to send to the CLIENT, framed in the INGRESS protocol.

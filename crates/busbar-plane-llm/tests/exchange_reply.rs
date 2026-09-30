@@ -223,3 +223,138 @@ fn a_verbatim_relay_carries_the_native_head_fields() {
     let openai = relay_verbatim("openai", &far);
     assert_eq!(openai.fields.len(), 1, "{:?}", openai.fields);
 }
+
+// ── a whole answer ──────────────────────────────────────────────────────────────────────────────
+
+use busbar_plane_llm::exchange::reply::whole::{self, WholeCtx, WholeEnd};
+
+/// The letter the codec's golden corpus names each dialect by.
+fn letter(dialect: &str) -> char {
+    match dialect {
+        "anthropic" => 'a',
+        "openai" => 'o',
+        "gemini" => 'g',
+        "bedrock" => 'b',
+        "responses" => 'r',
+        "cohere" => 'c',
+        other => panic!("{other}"),
+    }
+}
+
+/// Every native answer of `dialect` the codec's golden corpus holds: each `resp_X2Y_*.json` is a
+/// body written in dialect Y, so it is also a far end of dialect Y answering.
+pub fn native_answers(dialect: &str) -> Vec<(String, Vec<u8>)> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/codec/tests/proto/golden");
+    let infix = format!("2{}_", letter(dialect));
+    let mut out: Vec<(String, Vec<u8>)> = std::fs::read_dir(&dir)
+        .expect("the golden corpus is readable")
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("resp_") && n.ends_with(".json") && n[6..].starts_with(&infix))
+        .map(|n| {
+            let bytes = std::fs::read(dir.join(&n)).expect("a golden is readable");
+            (n, bytes)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+fn ctx<'a>(
+    ingress: &'a str,
+    egress: &'a str,
+    wants_stream: bool,
+    json_array: bool,
+) -> WholeCtx<'a> {
+    WholeCtx {
+        ingress,
+        egress,
+        operation: OpVerb::CHAT,
+        model: "m-1",
+        wants_stream,
+        json_array,
+        request: None,
+        now_s: 1_752_000_000,
+        elapsed_ms: Some(12),
+    }
+}
+
+/// Every far end's native answer, for a caller of every other dialect, is delivered in the
+/// caller's own dialect under `application/json`, with the usage the far end reported.
+#[test]
+fn a_whole_answer_is_delivered_in_the_callers_dialect() {
+    let mut checked = 0;
+    for egress in SIX {
+        let answers = native_answers(egress);
+        assert!(
+            !answers.is_empty(),
+            "{egress}: no native answer in the corpus"
+        );
+        for (name, body) in &answers {
+            for ingress in SIX.iter().copied().filter(|i| *i != egress) {
+                let w = whole::translate(&ctx(ingress, egress, false, false), 200, body);
+                assert_eq!(
+                    w.end,
+                    WholeEnd::Delivered,
+                    "{ingress}<-{egress} {name}: {:?}",
+                    w.refused
+                );
+                assert_eq!(w.answer.status, 200);
+                assert_eq!(
+                    field(&w.answer.fields, "content-type"),
+                    Some(b"application/json".as_slice()),
+                    "{ingress}<-{egress} {name}"
+                );
+                let _: Value = serde_json::from_slice(&w.answer.body).expect("a JSON answer");
+                assert!(w.usage.is_some(), "{ingress}<-{egress} {name}: usage");
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked >= 6 * 5, "{checked}");
+}
+
+/// A generation the far end reports as failed is a 502 that still carries the usage it reported.
+#[test]
+fn a_failed_generation_is_a_502_that_keeps_its_usage() {
+    let body = br#"{"id":"c-1","finish_reason":"ERROR","message":{"role":"assistant","content":[{"type":"text","text":"x"}]},"usage":{"tokens":{"input_tokens":10,"output_tokens":5}}}"#;
+    let w = whole::translate(&ctx("openai", "cohere", false, false), 200, body);
+    assert_eq!(w.end, WholeEnd::FailedGeneration);
+    assert_eq!(w.answer.status, 502);
+    assert!(w.usage.is_some());
+}
+
+/// An answer the caller's dialect cannot be written from is a 500 in the caller's envelope; the
+/// cap and the cut are the 500 and the 502 of the same envelope.
+#[test]
+fn an_untranslatable_answer_is_the_callers_500() {
+    for ingress in SIX {
+        let w = whole::translate(
+            &ctx(ingress, "anthropic", false, false),
+            200,
+            b"not json at all",
+        );
+        assert_eq!(w.end, WholeEnd::NotTranslatable, "{ingress}");
+        assert_eq!(w.answer.status, 500);
+        assert!(w.usage.is_none());
+        assert_eq!(whole::over_cap(ingress).answer.status, 500);
+        assert_eq!(whole::over_cap(ingress).end, WholeEnd::OverCap);
+        assert_eq!(whole::cut(ingress).answer.status, 502);
+        assert_eq!(whole::cut(ingress).end, WholeEnd::Cut);
+    }
+}
+
+/// A caller that asked for a JSON-array stream from a far end that answered one body reads a
+/// one-element array under `application/json`, and no request id.
+#[test]
+fn a_json_array_caller_reads_a_one_element_array() {
+    let (_, body) = native_answers("openai")
+        .into_iter()
+        .next()
+        .expect("an openai answer");
+    let w = whole::translate(&ctx("gemini", "openai", true, true), 200, &body);
+    assert_eq!(w.end, WholeEnd::Delivered);
+    let v: Value = serde_json::from_slice(&w.answer.body).expect("JSON");
+    assert_eq!(v.as_array().map(Vec::len), Some(1), "{v}");
+    assert_eq!(w.answer.fields.len(), 1, "{:?}", w.answer.fields);
+}
