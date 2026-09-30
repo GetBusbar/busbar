@@ -6,6 +6,13 @@ use super::*;
 const OWNER: InstanceId = InstanceId(1);
 const OTHER: InstanceId = InstanceId(2);
 
+/// A far end on loopback: the bound listener, and the address a need dials to reach it.
+async fn far_end() -> (tokio::net::TcpListener, String) {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap().to_string();
+    (l, addr)
+}
+
 /// A declared need is answered with the shell's refusal, never a silent success; an undeclared one
 /// is refused as undeclared.
 #[test]
@@ -88,8 +95,7 @@ fn serving(wakes: Arc<AtomicU64>) -> Connector {
 #[test]
 fn a_need_over_a_served_transport_reaches_a_real_far_end() {
     worker().block_on(async {
-        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let far = l.local_addr().unwrap().to_string();
+        let (l, far) = far_end().await;
         let (tx, rx) = tokio::sync::oneshot::channel::<Vec<u8>>();
         tokio::spawn(async move {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -170,8 +176,7 @@ const RESTRICTED: u32 = 7;
 #[test]
 fn a_need_in_a_restricted_class_is_refused_a_target_that_class_forbids() {
     worker().block_on(async {
-        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let far = l.local_addr().unwrap().to_string();
+        let (_listening, far) = far_end().await;
         let view = Transports::new(vec![Entry {
             door: Arc::new(TestDoor::identity("bytes")),
             alpn: Vec::new(),
@@ -271,8 +276,7 @@ fn literal_connector() -> Connector {
 #[test]
 fn a_config_targeted_need_dialing_elsewhere_is_refused() {
     worker().block_on(async {
-        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let declared = l.local_addr().unwrap().to_string();
+        let (_listening, declared) = far_end().await;
         let c = literal_connector();
         c.declare_need_to(OWNER, NeedId(0), "bytes", crate::DEFAULT_CLASS, &declared);
         let open = |target: &str| {
@@ -301,8 +305,7 @@ fn a_config_targeted_need_dialing_elsewhere_is_refused() {
 #[test]
 fn a_plugin_named_need_to_a_class_legal_host_is_allowed() {
     worker().block_on(async {
-        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let far = l.local_addr().unwrap().to_string();
+        let (_listening, far) = far_end().await;
         let c = literal_connector();
         c.declare_over(OWNER, NeedId(0), "bytes");
         let id = c
