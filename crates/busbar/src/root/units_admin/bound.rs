@@ -89,7 +89,7 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
     if ledger.has_refused_rows() {
         return Err(GovernanceError::Store);
     }
-    let (checkpoints, book) = ledger.verify_snapshot();
+    let (checkpoints, book, anchored) = ledger.verify_snapshot_anchored();
     let mut findings: Vec<Finding> = Vec::new();
     for checkpoint in &checkpoints {
         if !checkpoint.body_hash_verifies() {
@@ -106,7 +106,7 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
         (Some(since), Some(now)) => {
             // The checkpoint's own digest was checked above with every other one.
             findings.extend(
-                verify(since, now, &AllWindowsOpen, None)
+                verify(since, now, &AllWindowsOpen, anchored.as_ref())
                     .into_iter()
                     .filter(|f| !matches!(f, Finding::CheckpointEdited { .. })),
             );

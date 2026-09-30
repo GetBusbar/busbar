@@ -7,7 +7,10 @@
 use super::*;
 use busbar_contract::caps::KernelSeal;
 use busbar_kernel_audit::AuditSigningKey;
-use busbar_kernel_ledger::legacy::RecordingRows;
+use busbar_kernel_ledger::{
+    checkpoint::{AnchoredHead, CheckpointAnchor},
+    legacy::RecordingRows,
+};
 use busbar_kernel_wal::NullShipper;
 
 fn token() -> Grant<DurableWrite> {
@@ -302,5 +305,87 @@ fn the_checkpoint_ring_holds_the_latest_1024_and_evicts_the_oldest_at_1025() {
         durability.journal.next_seq(),
         1_026,
         "the journal is the durable record: it took every seal, the evicted one included"
+    );
+}
+
+/// U12: A REWOUND CHECKPOINT IS A `/verify` FINDING. Two checkpoints are sealed and the second is
+/// anchored; the ring is then rewound to the first (what a node restored from an older copy of its
+/// own state holds). `GET /admin/verify` compares the anchored head with the checkpoint it verifies
+/// against and reports that they differ. With the anchor passed as `None` (before U12) the rewound
+/// book verified clean against the older checkpoint.
+#[test]
+fn verify_reports_a_rewound_checkpoint_against_the_anchored_head() {
+    use crate::root::units_admin::{LegacyRowsRead, NodeLedger};
+    let token = token();
+    let node_book = crate::root::durability::node_book();
+    let book = std::sync::Arc::clone(&node_book.durability);
+    let legacy: std::sync::Arc<dyn LegacyRowsRead> = node_book.rows.clone();
+    let view = NodeLedger::new(std::sync::Arc::clone(&book), legacy);
+    let verify = || {
+        String::from_utf8(
+            crate::root::units_admin::bound::verify_effect(&view)
+                .expect("verify answers")
+                .body,
+        )
+        .expect("utf-8")
+    };
+    {
+        let mut durability = book.lock().expect("unpoisoned");
+        durability.arm_checkpoints(NOW);
+        for _ in 0..2 {
+            durability
+                .seal_checkpoint(&token, StepName::Meter, NOW)
+                .expect("sealed");
+        }
+    }
+    let clean = verify();
+    assert!(
+        clean.contains(r#""ok":true"#) && !clean.contains("the anchor holds"),
+        "a book at its anchored head verifies clean: {clean}"
+    );
+    book.lock().expect("unpoisoned").checkpoints.pop();
+    let rewound = verify();
+    assert!(
+        rewound.contains("the anchor holds checkpoint 2, not 1")
+            && rewound.contains(r#""ok":false"#),
+        "a checkpoint rewound behind the anchored head must be a finding: {rewound}"
+    );
+}
+
+/// U12: THE ANCHOR IS SEEDED FROM THE CHAIN AT BOOT. A node that restarts over its own journal holds
+/// the last checkpoint that journal anchored, not an empty head.
+#[test]
+fn the_anchor_is_seeded_from_the_chain_at_boot() {
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-root-anchor-seed-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    let cfg = DurabilityConfig {
+        data_dir: Some(dir.clone()),
+    };
+    let token = token();
+    let second = {
+        let mut durability = node(&cfg);
+        durability.arm_checkpoints(NOW);
+        let _first = durability
+            .seal_checkpoint(&token, StepName::Meter, NOW)
+            .expect("sealed");
+        durability
+            .seal_checkpoint(&token, StepName::Meter, NOW)
+            .expect("sealed")
+    };
+    let again = node(&cfg);
+    let head = again.anchor.head().expect("reads");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        head,
+        Some(AnchoredHead {
+            checkpoint_seq: second.checkpoint_seq,
+            body_hash: second.body_hash,
+        }),
+        "the restarted node's anchor holds the chain's last checkpoint"
     );
 }

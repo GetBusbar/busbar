@@ -95,7 +95,9 @@ use crate::root::kernel::PinnedHistory;
 
 use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, PostingFlags, StepName};
 use busbar_kernel_audit::{AuditChain, AuditRecord};
-use busbar_kernel_ledger::checkpoint::Checkpoint;
+use busbar_kernel_ledger::checkpoint::{
+    AnchoredHead, Checkpoint, CheckpointAnchor, SelfAttestingAnchor,
+};
 use busbar_kernel_ledger::cost::{HistoryView, MoneyError};
 use busbar_kernel_ledger::legacy::{LegacyRows, RecordingRows};
 use busbar_kernel_ledger::migration::{MigrationError, MigrationMarker, MigrationRecords};
@@ -175,6 +177,11 @@ pub struct Durability {
     /// record of every seal; the audit chain's head history (#82(d)) is kept forever on its own.
     /// The checkpoints read serves this ring.
     pub checkpoints: Vec<Checkpoint>,
+    /// WHERE EVERY SEALED CHECKPOINT IS ANCHORED, and the head `GET /admin/verify` compares the
+    /// checkpoint it verifies against: a rewound checkpoint reads as `AnchorHeadDiffers`. The
+    /// default is the self-attesting in-memory anchor, seeded at boot from the last checkpoint the
+    /// chain carries, and labelled self-attesting wherever it is reported.
+    pub anchor: SelfAttestingAnchor,
     /// WHICH BOOT OF THIS JOURNAL this process is: one more than the highest any record on the
     /// chain was written under, and 1 on a chain that holds none.
     ///
@@ -312,6 +319,13 @@ impl Durability {
         self.journal.append(token, at, &[entry])
     }
 
+    /// The head the checkpoint anchor holds: what `GET /admin/verify` compares the checkpoint it
+    /// verifies against. `None` when nothing has been anchored.
+    #[must_use]
+    pub fn anchored_head(&self) -> Option<AnchoredHead> {
+        self.anchor.head().ok().flatten()
+    }
+
     /// Put a sealed checkpoint on the journal.
     ///
     /// The checkpoint already carries its own body digest and its signature; what the journal adds
@@ -331,6 +345,10 @@ impl Durability {
         let entry =
             Entry::new(RecordClass::Checkpoint, checkpoint_body(checkpoint)).at(checkpoint.wall, 0);
         let ack = self.journal.append(token, at, &[entry])?;
+        // ANCHORED once it has a position on the chain. The self-attesting anchor cannot refuse; a
+        // sink that could would leave the head where it was, and `/verify` then reports the head
+        // that differs rather than a checkpoint nobody anchored.
+        let _anchored = self.anchor.anchor(checkpoint);
         self.checkpoints.push(checkpoint.clone());
         // The ring: the oldest seal goes once the latest CHECKPOINT_RING are held.
         let over = self.checkpoints.len().saturating_sub(CHECKPOINT_RING);
@@ -2013,6 +2031,26 @@ pub fn checkpoint_body(checkpoint: &Checkpoint) -> Vec<u8> {
     body.finish()
 }
 
+/// THE HEAD A CHAIN ANCHORED LAST: the newest checkpoint record's sequence and body digest, read off
+/// its [`checkpoint_body`] (which carries both), or `None` for a chain that has sealed none.
+fn last_anchored_on(records: &[JournalRecord]) -> Option<AnchoredHead> {
+    records
+        .iter()
+        .filter(|r| r.class == RecordClass::Checkpoint)
+        .filter_map(|r| {
+            let mut body = BodyReader::new(&r.body);
+            let checkpoint_seq = body.num()?;
+            let _node = body.num()?;
+            let _wall = body.num()?;
+            let body_hash: [u8; 32] = body.bytes()?.try_into().ok()?;
+            Some(AnchoredHead {
+                checkpoint_seq,
+                body_hash,
+            })
+        })
+        .max_by_key(|head| head.checkpoint_seq)
+}
+
 /// How many bytes a migration marker takes on the journal. Fixed, because every field of it is.
 const MIGRATION_MARKER_BYTES: usize = 8 * 6 + 8 + 32;
 
@@ -2258,6 +2296,8 @@ pub fn build_with_cards(
         ledger: Ledger::dual_writing(legacy_rows),
         record: AuditChain::new(),
         checkpoints: Vec::new(),
+        // Seeded from the chain below, with everything else the chain rebuilds.
+        anchor: SelfAttestingAnchor::new(),
         // Set from the chain below, before anything can write under it.
         incarnation: 0,
         restart_findings: Vec::new(),
@@ -2310,10 +2350,13 @@ pub fn build_with_cards(
     let pinned = (durability.history)();
     let view = pinned.as_ref().map(PinnedHistory::view);
     let (replayed, unreadable) = match chain {
-        Ok(Ok(records)) => (
-            replay_into(&mut durability.ledger, &records, view.as_ref(), false),
-            None,
-        ),
+        Ok(Ok(records)) => {
+            durability.anchor = SelfAttestingAnchor::seeded(last_anchored_on(&records));
+            (
+                replay_into(&mut durability.ledger, &records, view.as_ref(), false),
+                None,
+            )
+        }
         Ok(Err(broken)) => (
             Replayed::nothing(),
             Some(format!("the journal does not verify: {broken:?}")),

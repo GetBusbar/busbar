@@ -57,7 +57,10 @@ use busbar_core_admin::{
     verb_name, ApprovalState, KernelVerb, PostureCtx, VerbScope, AUDIT_VERBS, LEDGER_VERBS,
     LEGACY_VERBS, NAMED_SURFACES, NEW_VERBS,
 };
-use busbar_kernel_ledger::cost::{Money, MoneyError};
+use busbar_kernel_ledger::{
+    checkpoint::{AnchoredHead, Checkpoint, CheckpointVerifier},
+    cost::{Money, MoneyError},
+};
 
 /// The transport an admin claim is declared over, and therefore the one a sealed destination for an
 /// admin verb carries.
@@ -292,7 +295,7 @@ pub trait LedgerView: Send + Sync {
     fn legacy_rows(&self) -> Result<crate::root::ledger_identity::LegacySnapshot, MoneyError>;
 
     /// The sealed checkpoints, oldest first.
-    fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint>;
+    fn checkpoints(&self) -> Vec<Checkpoint>;
 
     /// The keyset a checkpoint's seal is verified against — the audit chain's own (Q71(3): one
     /// keyset, #82). Empty by default: a view bound to no chain vouches for no signature.
@@ -388,13 +391,17 @@ pub trait LedgerView: Send + Sync {
     /// The book is an option, and `None` is "this view holds no book", NEVER "the book is empty":
     /// the verifier then checks the checkpoints alone and says it did not verify a book. The default
     /// is exactly that, which is the true answer for a view with no book behind it.
-    fn verify_snapshot(
-        &self,
-    ) -> (
-        Vec<busbar_kernel_ledger::checkpoint::Checkpoint>,
-        Option<BookTotals>,
-    ) {
+    fn verify_snapshot(&self) -> (Vec<Checkpoint>, Option<BookTotals>) {
         (self.checkpoints(), None)
+    }
+
+    /// [`LedgerView::verify_snapshot`] with the anchor's head, all as of one moment. `None`
+    /// is "this view holds no anchor", which the verifier writes down as such; the default is that.
+    fn verify_snapshot_anchored(
+        &self,
+    ) -> (Vec<Checkpoint>, Option<BookTotals>, Option<AnchoredHead>) {
+        let (checkpoints, book) = self.verify_snapshot();
+        (checkpoints, book, None)
     }
 }
 
@@ -429,7 +436,7 @@ impl LedgerView for UnopenedLedger {
         Ok(crate::root::ledger_identity::LegacySnapshot::new())
     }
 
-    fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
+    fn checkpoints(&self) -> Vec<Checkpoint> {
         Vec::new()
     }
 
@@ -623,7 +630,7 @@ impl LedgerView for NodeLedger {
         ))
     }
 
-    fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
+    fn checkpoints(&self) -> Vec<Checkpoint> {
         self.lock().checkpoints.clone()
     }
 
@@ -678,16 +685,24 @@ impl LedgerView for NodeLedger {
     }
 
     /// Both halves under ONE hold of the lock a settlement takes.
-    fn verify_snapshot(
-        &self,
-    ) -> (
-        Vec<busbar_kernel_ledger::checkpoint::Checkpoint>,
-        Option<BookTotals>,
-    ) {
+    fn verify_snapshot(&self) -> (Vec<Checkpoint>, Option<BookTotals>) {
         let durability = self.lock();
         (
             durability.checkpoints.clone(),
             Some(durability.ledger.book().snapshot()),
+        )
+    }
+
+    /// All three under ONE hold of the lock a seal takes, so a checkpoint sealed between reads
+    /// cannot read as a head that differs.
+    fn verify_snapshot_anchored(
+        &self,
+    ) -> (Vec<Checkpoint>, Option<BookTotals>, Option<AnchoredHead>) {
+        let durability = self.lock();
+        (
+            durability.checkpoints.clone(),
+            Some(durability.ledger.book().snapshot()),
+            durability.anchored_head(),
         )
     }
 }
@@ -2154,13 +2169,10 @@ fn render_totals(
 /// auditor re-derives independently; the boolean is this node's own answer for the same question,
 /// and serving both is what lets the two be compared rather than trusted.
 ///
-/// `seal_verifies` is [`busbar_kernel_ledger::checkpoint::Checkpoint::verify_seal`] against the
+/// `seal_verifies` is [`Checkpoint::verify_seal`] against the
 /// audit keyset (Q71(3): one keyset), and `seal_refusal` is its refusal in its own words — EDITED,
 /// UNSIGNED or a signature the keyset rejects — or `null` when the seal verifies.
-fn render_checkpoints(
-    checkpoints: &[busbar_kernel_ledger::checkpoint::Checkpoint],
-    keys: &dyn busbar_kernel_ledger::checkpoint::CheckpointVerifier,
-) -> String {
+fn render_checkpoints(checkpoints: &[Checkpoint], keys: &dyn CheckpointVerifier) -> String {
     let mut out = String::from("{\"checkpoints\":[");
     for (i, cp) in checkpoints.iter().enumerate() {
         if i > 0 {
