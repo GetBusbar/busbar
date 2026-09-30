@@ -79,3 +79,46 @@ count = 2
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 
+
+# ── TEST-ANCHOR ROWS, ARCHITECT RULING 2026-09-30 (T13b): the Q77-PENDING (b) witness/test-anchor
+#    class, extended to this gate for EXACTLY these two files. Test-only: the store v3 door fixture
+#    and the store money acceptance test name the memory store (`busbar_store_memory`) as their
+#    test double. EXPIRES WITH THE WIRE-STORE TRAIN, which moves both into crates/store-memory/tests
+#    (the noun in its own family) or onto a kind-neutral store double (spec §1, "tests use
+#    kind-neutral doubles"), and deletes these four rows in the same train.
+
+# TEST-ANCHOR (ARCHITECT 2026-09-30, T13b); expires with the WIRE-STORE train.
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/plugin-loader/tests/fixtures/store_v3_door.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+# TEST-ANCHOR (ARCHITECT 2026-09-30, T13b); expires with the WIRE-STORE train.
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/plugin-loader/tests/store_money_acceptance.rs"
+count = 2
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+# TEST-ANCHOR (ARCHITECT 2026-09-30, T13b); expires with the WIRE-STORE train.
+[[leak]]
+noun = "store"
+kind = "store"
+file = "crates/plugin-loader/tests/fixtures/store_v3_door.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+# TEST-ANCHOR (ARCHITECT 2026-09-30, T13b); expires with the WIRE-STORE train.
+[[leak]]
+noun = "store"
+kind = "store"
+file = "crates/plugin-loader/tests/store_money_acceptance.rs"
+count = 2
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
