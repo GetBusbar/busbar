@@ -36,7 +36,9 @@ use crate::abi::hook::{
     signal, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
     SIGNAL_TAG_BOOL, SIGNAL_TAG_STR, SIGNAL_TAG_U64,
 };
-use crate::abi::host::conn::connector::{Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND};
+use crate::abi::host::conn::connector::{
+    Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND, KEEP_RESPONSE_HEADERS_MAX, NEVER_KEPT,
+};
 use crate::abi::mechanism::call::{AbiStr, Outcome};
 use crate::abi::mechanism::check::{
     bits, code, fault, first, index, listed, range, result, results, span, text, weight, Dim,
@@ -747,6 +749,40 @@ pub fn check_needs(needs: &[Need]) -> Result<(), Fault> {
         text(n.target_from, "need.target_from")?;
         text(n.trust_from, "need.trust_from")?;
         listed(n.details.ptr, n.details.len, "need.details")?;
+        keep_response_headers(n)?;
+    }
+    Ok(())
+}
+
+/// A need's kept response head fields: a bounded list of lower-case tokens, none hop-by-hop or
+/// credential-bearing ([`NEVER_KEPT`]: [`Rule::Foreign`], a field that is not the plugin's to read).
+fn keep_response_headers(n: &Need) -> Result<(), Fault> {
+    const FIELD: &str = "need.keep_response_headers";
+    listed(n.keep_response_headers, n.keep_response_headers_len, FIELD)?;
+    if n.keep_response_headers_len > KEEP_RESPONSE_HEADERS_MAX {
+        return Err(fault(Rule::OverMax, FIELD));
+    }
+    if n.keep_response_headers_len == 0 {
+        return Ok(());
+    }
+    // SAFETY: a non-NULL list of `keep_response_headers_len` strings the plugin's door states as
+    // `'static` data (checked non-NULL above), bounded by `KEEP_RESPONSE_HEADERS_MAX`.
+    let names = unsafe {
+        core::slice::from_raw_parts(n.keep_response_headers, n.keep_response_headers_len)
+    };
+    for s in names {
+        named(*s, FIELD)?;
+        // SAFETY: `named` checked the string non-NULL with its length; the plugin's static bytes.
+        let name = unsafe { core::slice::from_raw_parts(s.ptr, s.len) };
+        let token = name
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-' || *b == b'_');
+        if !token {
+            return Err(fault(Rule::UnknownCode, FIELD));
+        }
+        if NEVER_KEPT.iter().any(|k| k.as_bytes() == name) {
+            return Err(fault(Rule::Foreign, FIELD));
+        }
     }
     Ok(())
 }

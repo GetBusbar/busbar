@@ -9,7 +9,7 @@ use std::ptr::null;
 
 use super::*;
 use crate::abi::hook::{SignalEntry, SignalValue, SIGNAL_TAG_BOOL, SIGNAL_TAG_STR};
-use crate::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND};
+use crate::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, KEEP_RESPONSE_HEADERS_MAX};
 use crate::abi::mechanism::call::AbiStr;
 use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::call::Outcome::{Failed, Pending, Ready, Refused};
@@ -680,6 +680,62 @@ fn needs_have_a_known_direction_and_a_transport() {
     bad.details.ptr = null();
     bad.details.len = 1;
     assert_eq!(check_needs(&[bad]), f(Rule::NullWithCount, "need.details"));
+}
+
+/// A need's kept response head fields: lower-case tokens, bounded; a hop-by-hop or credential
+/// field is refused at boot, so it never crosses to a plugin.
+#[test]
+fn a_need_keeps_only_declarable_response_fields() {
+    let mut n: Need = z();
+    n.direction = DIRECTION_OUTBOUND;
+    n.transport = s("t");
+    let kept = [
+        s("mcp-session-id"),
+        s("retry-after"),
+        s("x-ratelimit-remaining"),
+    ];
+    n.keep_response_headers = kept.as_ptr();
+    n.keep_response_headers_len = kept.len();
+    assert_eq!(check_needs(&[n]), Ok(()));
+    for name in [
+        "authorization",
+        "connection",
+        "set-cookie",
+        "transfer-encoding",
+    ] {
+        let bad = [s(name)];
+        let mut b = n;
+        b.keep_response_headers = bad.as_ptr();
+        b.keep_response_headers_len = 1;
+        assert_eq!(
+            check_needs(&[b]),
+            f(Rule::Foreign, "need.keep_response_headers"),
+            "{name}"
+        );
+    }
+    let upper = [s("Retry-After")];
+    let mut b = n;
+    b.keep_response_headers = upper.as_ptr();
+    b.keep_response_headers_len = 1;
+    assert_eq!(
+        check_needs(&[b]),
+        f(Rule::UnknownCode, "need.keep_response_headers")
+    );
+    let many: Vec<AbiStr> = (0..=KEEP_RESPONSE_HEADERS_MAX).map(|_| s("x")).collect();
+    let mut b = n;
+    b.keep_response_headers = many.as_ptr();
+    b.keep_response_headers_len = many.len();
+    assert_eq!(
+        check_needs(&[b]),
+        f(Rule::OverMax, "need.keep_response_headers")
+    );
+    let mut b = n;
+    b.keep_response_headers = null();
+    b.keep_response_headers_len = 1;
+    assert_eq!(
+        check_needs(&[b]),
+        f(Rule::NullWithCount, "need.keep_response_headers")
+    );
 }
 
 #[test]

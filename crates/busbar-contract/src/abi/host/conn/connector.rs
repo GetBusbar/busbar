@@ -76,7 +76,38 @@ pub struct Need {
     pub trust_from: AbiStr,
     /// The need's details, validated only by the claiming transport.
     pub details: Blob,
+    /// The far end's RESPONSE head fields the plugin reads (lower-case names), for an outbound
+    /// need: the kernel copies ONLY these into the answer's head it hands the plugin; no other
+    /// response header ever crosses. Validated at boot: at most [`KEEP_RESPONSE_HEADERS_MAX`]
+    /// names, each a lower-case token, none hop-by-hop or credential-bearing ([`NEVER_KEPT`]).
+    pub keep_response_headers: *const AbiStr,
+    /// How many.
+    pub keep_response_headers_len: usize,
 }
+
+/// The most response head fields one need may keep.
+pub const KEEP_RESPONSE_HEADERS_MAX: usize = 32;
+
+/// The response head fields no need may keep: hop-by-hop fields (the connection's, not the
+/// answer's) and fields that carry a credential or a session secret.
+pub const NEVER_KEPT: &[&str] = &[
+    "connection",
+    "keep-alive",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "authorization",
+    "proxy-authorization",
+    "proxy-authenticate",
+    "cookie",
+    "set-cookie",
+    "x-api-key",
+    "api-key",
+    "x-goog-api-key",
+    "x-amz-security-token",
+];
 
 /// The index of each connector service in [`ConnectorSlots`], in table order.
 pub mod service {

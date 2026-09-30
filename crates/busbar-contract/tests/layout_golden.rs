@@ -1826,7 +1826,9 @@ fn compute_layout() -> String {
             auth,
             target_from,
             trust_from,
-            details
+            details,
+            keep_response_headers,
+            keep_response_headers_len
         ]
     );
     record!(s, hconn::EstablishIn, [head, need, _reserved, target]);
