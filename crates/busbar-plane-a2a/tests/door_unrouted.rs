@@ -4,7 +4,7 @@
 //! TRANSITIONAL: deleted when the kernel's plane driver serves the door's request path. Until the flip, the plane's door answers REFUSED on every
 //! request-path op, so no production path may load it: the engine serves every request. This test
 //! holds that. No production source outside this crate names the door; only the root's both-ways
-//! test (`crates/busbar/tests/a2a_plane_door.rs`) and its example reach it.
+//! test (`crates/busbar/src/root/tests/a2a_plane_door.rs`) and its example reach it.
 
 use std::path::{Path, PathBuf};
 
