@@ -433,3 +433,42 @@ impl ItemSpan {
         }
     }
 }
+
+/// THE SLOT ORDER, pinned: each service's field sits at the table index its `op` constant names,
+/// one function pointer apart after the two `u32` heads. Services are appended in landing order;
+/// a later append that reorders an earlier one fails here, and the loader's table (built field by
+/// field) follows the same order.
+#[test]
+fn every_service_field_sits_at_its_op_index() {
+    use core::mem::{offset_of, size_of};
+    let slot = |op: u32| 8 + op as usize * size_of::<Option<ServiceFn>>();
+    let table = [
+        (offset_of!(HostSlots, clock_now), op::CLOCK_NOW),
+        (offset_of!(HostSlots, records_get), op::RECORDS_GET),
+        (offset_of!(HostSlots, records_list), op::RECORDS_LIST),
+        (offset_of!(HostSlots, records_claim), op::RECORDS_CLAIM),
+        (offset_of!(HostSlots, dest_judge), op::DEST_JUDGE),
+        (offset_of!(HostSlots, sign), op::SIGN),
+        (offset_of!(HostSlots, unit_nest), op::UNIT_NEST),
+        (offset_of!(HostSlots, work_open), op::WORK_OPEN),
+        (offset_of!(HostSlots, work_find), op::WORK_FIND),
+        (offset_of!(HostSlots, work_settle), op::WORK_SETTLE),
+        (offset_of!(HostSlots, work_resume), op::WORK_RESUME),
+        (offset_of!(HostSlots, trust_sight), op::TRUST_SIGHT),
+        (offset_of!(HostSlots, trust_due), op::TRUST_DUE),
+        (offset_of!(HostSlots, verify_lookup), op::VERIFY_LOOKUP),
+        (offset_of!(HostSlots, verify_store), op::VERIFY_STORE),
+        (
+            offset_of!(HostSlots, entitlement_check),
+            op::ENTITLEMENT_CHECK,
+        ),
+        (offset_of!(HostSlots, content_scan), op::CONTENT_SCAN),
+        (offset_of!(HostSlots, hook_call), op::HOOK_CALL),
+    ];
+    for (i, (offset, op)) in table.iter().enumerate() {
+        assert_eq!(*op as usize, i, "op constants run 0.. in table order");
+        assert_eq!(*offset, slot(*op), "field of op {op} sits at its index");
+    }
+    assert_eq!(table.len(), SERVICES as usize);
+    assert_eq!(size_of::<HostSlots>(), slot(SERVICES));
+}
