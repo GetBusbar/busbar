@@ -27,30 +27,41 @@ fn webpki_roots_store() -> rustls::RootCertStore {
     roots
 }
 
+/// A client identity (the key and chain a mutual handshake presents) the TLS stack cannot use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BadClientIdentity(pub String);
+
+impl std::fmt::Display for BadClientIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the mTLS client identity does not parse: {}", self.0)
+    }
+}
+
+impl std::error::Error for BadClientIdentity {}
+
 /// The client TLS config an outbound connection is secured with, given the host's outbound trust.
 ///
 /// The unset case is spelled FIRST and returns early down the exact branch every outbound connection
 /// has always taken — platform roots, no client auth — so a caller that decided nothing is provably
 /// unchanged rather than merely equal to what it was.
-#[must_use]
-pub fn build_client_config(trust: &EgressTrust) -> rustls::ClientConfig {
+///
+/// # Errors
+///
+/// A configured client identity whose private key does not parse, or whose chain the stack will not
+/// accept. Never a silent fallback to no client auth: a mutual peer would then see an anonymous
+/// client the operator configured to present an identity.
+pub fn build_client_config(trust: &EgressTrust) -> Result<rustls::ClientConfig, BadClientIdentity> {
     install_crypto_provider();
     if trust.is_unset() {
-        return rustls::ClientConfig::builder()
+        return Ok(rustls::ClientConfig::builder()
             .with_root_certificates(webpki_roots_store())
-            .with_no_client_auth();
+            .with_no_client_auth());
     }
     match &trust.client_identity {
-        None => wants_client_cert(trust).with_no_client_auth(),
+        None => Ok(wants_client_cert(trust).with_no_client_auth()),
         Some(identity) => {
-            // A private key the stack cannot parse, or a chain it will not accept, is the honest
-            // "present no identity" outcome — the mutual peer closes its own handshake rather than
-            // this side forging one — so a bad identity falls back to no client auth instead of
-            // panicking a boot path.
-            let Ok(key) = rustls_pki_types::PrivateKeyDer::try_from(identity.private_key.clone())
-            else {
-                return wants_client_cert(trust).with_no_client_auth();
-            };
+            let key = rustls_pki_types::PrivateKeyDer::try_from(identity.private_key.clone())
+                .map_err(|e| BadClientIdentity(format!("private key: {e}")))?;
             let chain: Vec<rustls_pki_types::CertificateDer<'static>> = identity
                 .cert_chain
                 .iter()
@@ -59,9 +70,19 @@ pub fn build_client_config(trust: &EgressTrust) -> rustls::ClientConfig {
                 .collect();
             wants_client_cert(trust)
                 .with_client_auth_cert(chain, key)
-                .unwrap_or_else(|_| wants_client_cert(trust).with_no_client_auth())
+                .map_err(|e| BadClientIdentity(format!("certificate chain: {e}")))
         }
     }
+}
+
+/// [`build_client_config`] for one declared need, at boot: a bad client identity refuses the boot,
+/// naming the need.
+///
+/// # Errors
+///
+/// The need's client identity does not parse; the text names the need.
+pub fn need_client_config(need: &str, trust: &EgressTrust) -> Result<rustls::ClientConfig, String> {
+    build_client_config(trust).map_err(|e| format!("need `{need}`: {e}; refusing to boot"))
 }
 
 /// The verifier half of the client config, before the client-auth choice: platform roots plus any
