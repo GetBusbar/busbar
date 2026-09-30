@@ -458,6 +458,14 @@ because = "OWNER GRANT 2026-09-29 (3), ARCHITECT approval: line-limit re-arm at 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
 
+# ── THE KIND-ISOLATION CELL busbar-plane-mcp x transport, RAISED BY FOLD-MCP A3 (an F12 relocation)
+
+[gate.ceiling_raises."cell[crate=busbar-plane-mcp,kind=transport].count"]
+file    = "qa/kind-isolation.toml"
+from    = 60
+to      = 66
+because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan approved 2026-09-29): fold A3 moved the MCP diagnostics catalog from busbar-mcp into busbar-plane-mcp, and the catalog's stdio diagnostic (MCP_STDIO_READ_ERROR, its slug and customer-visible text) names the transport vocabulary. The pair nets down in that commit: busbar-plane-mcp x transport 60 -> 66 (+6), busbar-mcp x plane 3822 -> 3761 (-61), busbar-mcp x transport 583 -> 577 (-6), busbar-mcp x contract 306 -> 305 (-1) (net -62). Measured by cargo xtask gate kind-isolation (the METER-FIX meter): 60 before, 66 after."
+
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
 from    = 23937
