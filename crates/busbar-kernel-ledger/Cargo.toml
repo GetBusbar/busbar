@@ -1,4 +1,4 @@
-# busbar-unit-ledger — the ledger unit.
+# busbar-kernel-ledger — the ledger unit.
 #
 # WHAT IT OWNS. Turning a hold and a usage report into a posting; folding postings into the totals a
 # checkpoint seals; the one identity those totals have to satisfy; the recompute that checks a
@@ -9,8 +9,8 @@
 # posting exists here because a hold was settled, and a hold exists because the door said yes — the
 # capability crate makes both of those statements enforceable rather than conventional.
 #
-# DEPENDENCIES. `busbar-caps`; `sha2` because a checkpoint's body is digested before it is signed
-# and a digest is not a thing to hand-roll; and `busbar-unit-cost` because money is a lookup over
+# DEPENDENCIES. `busbar-contract`; `sha2` because a checkpoint's body is digested before it is signed
+# and a digest is not a thing to hand-roll; and its own `cost` module because money is a lookup over
 # quantities against a dated rate-card history, and the ledger performs that lookup. The cost unit
 # is the ONE place the multiply-and-sum lives, so the alternative to depending on it is a second
 # copy of the arithmetic here — which is how a request comes to be judged at one figure and billed
@@ -42,6 +42,6 @@ serde = { workspace = true }
 
 [dev-dependencies]
 # The folded `cost` module's rate-conversion agreement test cross-checks against the budget crate's
-# `RateNanos` (former busbar-unit-cost dev-dep on busbar-unit-admission, #36). Dev-only, so the
+# `RateNanos` (the former cost crate's dev-dep on the budget crate, #36). Dev-only, so the
 # budget -> ledger production edge is not made cyclic.
 busbar-kernel-budget = { path = "../busbar-kernel-budget" }
