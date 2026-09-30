@@ -18,6 +18,18 @@ use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::ROLE_FRAMER;
 
+/// The test-only HOT carrier the conformance and stack witnesses below drive.
+#[path = "mem_carrier.rs"]
+mod mem_carrier;
+
+/// A HOT decl's admission and its decl-backed carrier, against the linked carrier.
+#[path = "transport_conformance_tests.rs"]
+mod conformance;
+
+/// The HOT carrier stacked as the host's `Transport` (`WireTransport`).
+#[path = "transport_adapter_tests.rs"]
+mod adapter;
+
 /// The transport fixture's dropped-in image: this crate's `transport_door` example `cdylib`, which
 /// `cargo test` builds. Under CI a missing artifact is a failure, never a skip.
 fn fixture() -> Option<Vec<u8>> {
