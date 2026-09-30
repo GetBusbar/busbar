@@ -1,6 +1,9 @@
 //! `fleet sync`: make each repo match the render and the policy. It pushes `dev` ONLY. It creates a
 //! missing release branch from `dev` (the owner-approved design) and applies the protection; it never
-//! pushes to `qa` or `main` otherwise. A branch outside the release set is deleted only when it is
+//! pushes to `qa` or `main` otherwise. A registered repo that does not exist yet is CREATED (public,
+//! seeded with the render on `dev`, `dev` made its default branch): the registry entry is the
+//! decision to have it. It never overwrites a root `Cargo.toml` that is not a twin's (a repo whose
+//! crates are not the two twin crate dirs needs its code moved first); that repo is reported. A branch outside the release set is deleted only when it is
 //! FULLY MERGED into `dev`, `qa` or `main` (GitHub's compare says it is behind or identical); an
 //! unmerged branch is reported and never touched.
 
@@ -11,7 +14,7 @@ use crate::ctx::Ctx;
 use crate::fleet::check::DEV;
 use crate::fleet::registry::{Fleet, Plugin};
 use crate::fleet::remote::{gh, ORG};
-use crate::fleet::render::{apply_region, render, Mode, Templates};
+use crate::fleet::render::{apply_readme, readme_skeleton, render, Mode, Templates};
 
 /// One repo's outcome, printed as a row.
 #[derive(Debug, Default)]
@@ -19,6 +22,8 @@ pub struct Outcome {
     pub repo: String,
     pub dev_sha: String,
     pub committed: bool,
+    /// The repo itself was created by this run.
+    pub seeded: bool,
     pub created: Vec<String>,
     pub deleted: Vec<String>,
     pub left: Vec<String>,
@@ -77,18 +82,19 @@ pub fn sync(
         }
         outcomes.push(o);
     }
-    println!("\nrepo\tdev\tcommitted\tcreated\tdeleted\tleft (unmerged)\terrors");
+    println!("\nrepo\tdev\tseeded\tcommitted\tcreated\tdeleted\tleft (unmerged)\terrors");
     let mut failed = false;
     for o in &outcomes {
         failed |= !o.errors.is_empty();
         println!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             o.repo,
             if o.dev_sha.is_empty() {
                 "-"
             } else {
                 &o.dev_sha
             },
+            o.seeded,
             o.committed,
             join(&o.created),
             join(&o.deleted),
@@ -119,6 +125,21 @@ fn sync_repo(
     let repo = &p.repo;
     let dir: PathBuf = workdir.join(repo);
     let url = format!("https://github.com/{ORG}/{repo}.git");
+    // 0. A registered repo that does not exist is created, empty; step 1 seeds it.
+    let (exists_ok, exists_out, exists_err) = gh(&["api", &format!("repos/{ORG}/{repo}"), "--jq", ".name"])?;
+    if !exists_ok {
+        let both = format!("{exists_out}{exists_err}");
+        if !(both.contains("HTTP 404") || both.contains("Not Found")) {
+            return Err(format!("gh api repos/{ORG}/{repo}: {}", exists_err.trim()));
+        }
+        if dry_run {
+            println!("== {repo}: does not exist; a real run creates it (public) and seeds dev");
+            o.seeded = true;
+            return Ok(());
+        }
+        gh_ok(&["repo", "create", &format!("{ORG}/{repo}"), "--public"])?;
+        o.seeded = true;
+    }
     if !dir.join(".git").exists() {
         let st = Command::new("git")
             .args(["clone", "-q", &url])
@@ -131,31 +152,59 @@ fn sync_repo(
     }
     git(&dir, &["remote", "set-url", "origin", &url])?;
     git(&dir, &["fetch", "-q", "--prune", "origin"])?;
-    // The workdir clone is the sync's own: whatever an earlier (dry) run left in it is discarded,
-    // and the render starts from the remote's dev.
-    git(&dir, &["reset", "-q", "--hard"])?;
-    git(&dir, &["clean", "-q", "-fd"])?;
-    git(
+    let has_dev = git(
         &dir,
-        &["checkout", "-q", "-B", DEV, &format!("origin/{DEV}")],
-    )?;
+        &["rev-parse", "--verify", "-q", &format!("refs/remotes/origin/{DEV}")],
+    )
+    .is_ok();
+    if has_dev {
+        // The workdir clone is the sync's own: whatever an earlier (dry) run left in it is
+        // discarded, and the render starts from the remote's dev.
+        git(&dir, &["reset", "-q", "--hard"])?;
+        git(&dir, &["clean", "-q", "-fd"])?;
+        git(
+            &dir,
+            &["checkout", "-q", "-B", DEV, &format!("origin/{DEV}")],
+        )?;
+    } else if git(&dir, &["branch", "-r"])?.trim().is_empty() {
+        // An empty repo (just created, or created by hand): dev starts as an orphan.
+        git(&dir, &["checkout", "-q", "--orphan", DEV])?;
+        git(&dir, &["clean", "-q", "-fd"])?;
+    } else {
+        return Err(format!("{repo} has branches but no `{DEV}`; not seeding over them"));
+    }
 
     // 1. The render, and nothing unmanaged beside it.
     let files = render(fleet, p, t)?;
+    let skeleton = readme_skeleton(fleet, p, t)?;
+    let twin = p
+        .crate_dirs()
+        .iter()
+        .all(|d| dir.join(d).join("Cargo.toml").is_file());
     for r in &files {
         let path = dir.join(&r.path);
+        if r.path == "Cargo.toml" && path.is_file() && !twin {
+            o.errors.push(format!(
+                "Cargo.toml left as is: the crates are not the twin crate dirs `{}/` + `{}/` (move the code first)",
+                p.crate_dirs()[0],
+                p.crate_dirs()[1]
+            ));
+            continue;
+        }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
         let text = match r.mode {
             Mode::Whole => r.content.clone(),
-            Mode::Region => {
-                apply_region(std::fs::read_to_string(&path).ok().as_deref(), &r.content)
-            }
+            Mode::Region => apply_readme(
+                std::fs::read_to_string(&path).ok().as_deref(),
+                &r.content,
+                &skeleton,
+            ),
         };
         std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
     }
-    let tracked = git(&dir, &["ls-files", ".github/workflows", ".github/scripts"])?;
+    let tracked = git(&dir, &["ls-files", ".github"])?;
     for path in tracked.lines().filter(|l| !l.is_empty()) {
         if !files.iter().any(|r| r.path == path) && !p.keep.iter().any(|k| k == path) {
             git(&dir, &["rm", "-q", "--", path])?;
@@ -165,15 +214,18 @@ fn sync_repo(
     // with pin-check.sh, which also holds every caller's reusable-workflow ref to the pin: an old
     // caller still taking a workflow `@dev` would fail it.
     // Always run: the render has already written `.busbar-ref`, so the record cannot say whether the
-    // manifests and the lock moved; repin.sh is a no-op when they already name the pin.
-    let st = Command::new("bash")
-        .arg(repin)
-        .args([&fleet.pin_sha, &fleet.pin_version])
-        .current_dir(&dir)
-        .status()
-        .map_err(|e| format!("repin: {e}"))?;
-    if !st.success() {
-        return Err("scripts/fleet/repin.sh failed".to_string());
+    // manifests and the lock moved; repin.sh is a no-op when they already name the pin. A repo with
+    // no Cargo.lock has no crates yet (a seed): nothing is resolved, so there is nothing to move.
+    if dir.join("Cargo.lock").is_file() {
+        let st = Command::new("bash")
+            .arg(repin)
+            .args([&fleet.pin_sha, &fleet.pin_version])
+            .current_dir(&dir)
+            .status()
+            .map_err(|e| format!("repin: {e}"))?;
+        if !st.success() {
+            return Err("scripts/fleet/repin.sh failed".to_string());
+        }
     }
 
     git(&dir, &["add", "-A"])?;
@@ -183,8 +235,9 @@ fn sync_repo(
         if !dry_run {
             let msg = format!(
                 "fleet: busbar's render (plugins.yaml + .github/fleet/) at busbar {} {}\n\n\
-                 The CI, release and repin callers take busbar's reusable workflows at the pin; the toolchain,\n\
-                 lint config, LICENSE and README header are the fleet's. Rendered by `cargo xtask fleet sync`.",
+                 The CI, release and repin callers take busbar's reusable workflows at the pin; the whole\n\
+                 skeleton (workspace manifest, toolchain, lint config, LICENSE, NOTICE, community files,\n\
+                 README header and sections) is the fleet's. Rendered by `cargo xtask fleet sync`.",
                 &fleet.pin_sha[..12],
                 fleet.pin_version
             );
@@ -196,7 +249,21 @@ fn sync_repo(
             o.committed = true;
         }
     }
+    if !o.committed && dry_run && !has_dev {
+        return Ok(());
+    }
     o.dev_sha = git(&dir, &["rev-parse", "HEAD"])?;
+    // A repo this run seeded takes `dev` as its default branch (the fleet norm `fleet check` holds).
+    if !has_dev && !dry_run {
+        gh_ok(&[
+            "api",
+            "-X",
+            "PATCH",
+            &format!("repos/{ORG}/{repo}"),
+            "-f",
+            &format!("default_branch={DEV}"),
+        ])?;
+    }
 
     // 3. Release branches: a missing one is created from dev.
     let branches: Vec<String> = gh_ok(&[

@@ -7,7 +7,19 @@ use serde_json::Value;
 
 pub const ORG: &str = "GetBusbar";
 
+/// A repo's own settings, as the fleet norm reads them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Settings {
+    /// `public` / `private` / `internal`.
+    pub visibility: String,
+    /// The SPDX id GitHub detects from the LICENSE file (`none` when it detects none).
+    pub license: String,
+    pub default_branch: String,
+}
+
 pub trait Remote {
+    /// The repo's visibility, detected license and default branch.
+    fn settings(&self, repo: &str) -> Result<Settings, String>;
     /// Every file path on `branch` (blobs only).
     fn files(&self, repo: &str, branch: &str) -> Result<Vec<String>, String>;
     /// A file's text on `branch`; `None` when it does not exist.
@@ -42,6 +54,31 @@ fn not_found(stdout: &str, stderr: &str) -> bool {
 }
 
 impl Remote for Gh {
+    fn settings(&self, repo: &str) -> Result<Settings, String> {
+        let api = format!("repos/{ORG}/{repo}");
+        let (ok, out, err) = gh(&["api", &api])?;
+        if !ok {
+            return Err(format!("`gh api {api}`: {}", err.trim()));
+        }
+        let v: Value = serde_json::from_str(&out).map_err(|e| format!("{api}: {e}"))?;
+        let field = |k: &str| {
+            v.get(k)
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| format!("{api}: no `{k}`"))
+        };
+        Ok(Settings {
+            visibility: field("visibility")?,
+            license: v
+                .get("license")
+                .and_then(|l| l.get("spdx_id"))
+                .and_then(Value::as_str)
+                .unwrap_or("none")
+                .to_string(),
+            default_branch: field("default_branch")?,
+        })
+    }
+
     fn files(&self, repo: &str, branch: &str) -> Result<Vec<String>, String> {
         let path = format!("repos/{ORG}/{repo}/git/trees/{branch}?recursive=1");
         let (ok, out, err) = gh(&["api", &path])?;

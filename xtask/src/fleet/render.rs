@@ -1,7 +1,14 @@
 //! The render: the files the fleet OWNS in a plugin repo, as a pure function of the registry entry,
-//! the fleet pin and the templates in `.github/fleet/` (plus busbar's own LICENSE and toolchain
-//! channel, which the plugins share by construction). Placeholders are `@@name@@`; a template that
-//! names a placeholder the render does not define is an error, never an empty substitution.
+//! the fleet pin and the templates in `.github/fleet/` (plus busbar's own LICENSE, code of conduct
+//! and toolchain channel, which the plugins share by construction). Placeholders are `@@name@@`; a
+//! template that names a placeholder the render does not define is an error, never an empty
+//! substitution.
+//!
+//! The render owns the WHOLE skeleton of a plugin repo (owner, 2026-09-30: "25 repos that are
+//! TWINS"): every top-level file, the workspace `Cargo.toml` over the two crate dirs, `.github/`,
+//! and the README's header region plus its fixed section headings. What a repo may hold beyond the
+//! render is its two crate dirs (`<kind>-<name>/`, `<kind>-<name>-plugin/`), its `Cargo.lock`, and
+//! what its registry entry declares (`keep`, `gitignore`, `notice`).
 
 use crate::ctx::Ctx;
 use crate::fleet::registry::{Fleet, Plugin};
@@ -9,6 +16,9 @@ use crate::fleet::registry::{Fleet, Plugin};
 pub const TEMPLATE_DIR: &str = ".github/fleet";
 pub const REGION_BEGIN: &str = "<!-- fleet:header:begin";
 pub const REGION_END: &str = "<!-- fleet:header:end -->";
+
+/// A README heading a repo wrote before the skeleton, and the skeleton section it is.
+const HEADING_ALIASES: &[(&str, &str)] = &[("Configuration", "Config"), ("Testing", "Tests")];
 
 /// How a rendered file is compared and applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,8 +48,18 @@ pub struct Templates {
     pub clippy: String,
     pub deny: String,
     pub readme_header: String,
+    pub readme_skeleton: String,
+    pub gitignore: String,
+    pub mailmap: String,
+    pub workspace: String,
+    pub notice: String,
+    pub codecov: String,
+    pub security: String,
+    pub contributing: String,
     pub protection: String,
     pub license: String,
+    /// busbar's own `CODE_OF_CONDUCT.md`.
+    pub code_of_conduct: String,
     /// busbar's own `rust-toolchain.toml` channel.
     pub channel: String,
 }
@@ -56,8 +76,17 @@ impl Templates {
             clippy: t("clippy.toml")?,
             deny: t("deny.toml")?,
             readme_header: t("README-header.md")?,
+            readme_skeleton: t("README-skeleton.md")?,
+            gitignore: t("gitignore")?,
+            mailmap: t("mailmap")?,
+            workspace: t("workspace-Cargo.toml")?,
+            notice: t("NOTICE")?,
+            codecov: t("codecov.yml")?,
+            security: t("SECURITY.md")?,
+            contributing: t("CONTRIBUTING.md")?,
             protection: t("protection.json")?,
             license: cx.read("LICENSE")?,
+            code_of_conduct: cx.read("CODE_OF_CONDUCT.md")?,
             channel: channel_of(&cx.read("rust-toolchain.toml")?)?,
         })
     }
@@ -81,6 +110,29 @@ pub fn channel_of(toolchain: &str) -> Result<String, String> {
         .ok_or_else(|| "rust-toolchain.toml names no `channel`".to_string())
 }
 
+/// `1.98` of a `1.98.0` channel: the workspace's `rust-version`.
+pub fn rust_version_of(channel: &str) -> Result<String, String> {
+    let mut it = channel.split('.');
+    match (it.next(), it.next()) {
+        (Some(a), Some(b))
+            if !a.is_empty()
+                && !b.is_empty()
+                && a.bytes().all(|c| c.is_ascii_digit())
+                && b.bytes().all(|c| c.is_ascii_digit()) =>
+        {
+            Ok(format!("{a}.{b}"))
+        }
+        _ => Err(format!(
+            "toolchain channel {channel:?} is not a `<major>.<minor>[.<patch>]` version"
+        )),
+    }
+}
+
+/// Lines, each newline-terminated (empty when there are none).
+fn lines(v: &[String]) -> String {
+    v.iter().map(|l| format!("{l}\n")).collect()
+}
+
 /// A YAML double-quoted scalar (JSON string syntax is a subset of it).
 fn q(s: &str) -> String {
     serde_json::Value::String(s.to_string()).to_string()
@@ -90,8 +142,8 @@ fn yes(b: bool) -> String {
     if b { "true" } else { "false" }.to_string()
 }
 
-fn vars(fleet: &Fleet, p: &Plugin, channel: &str) -> Vec<(&'static str, String)> {
-    vec![
+fn vars(fleet: &Fleet, p: &Plugin, channel: &str) -> Result<Vec<(&'static str, String)>, String> {
+    Ok(vec![
         ("repo", p.repo.clone()),
         ("pin", fleet.pin_sha.clone()),
         ("version", fleet.pin_version.clone()),
@@ -115,7 +167,18 @@ fn vars(fleet: &Fleet, p: &Plugin, channel: &str) -> Vec<(&'static str, String)>
         ("bundle_env", q(&p.bundle_env)),
         // Daily, staggered by registry position so the fleet's schedules do not all fire at once.
         ("cron", format!("{} 9 * * *", (p.index * 7 + 3) % 60)),
-    ]
+        ("stem", p.stem().to_string()),
+        ("rust_version", rust_version_of(channel)?),
+        ("gitignore", lines(&p.gitignore)),
+        (
+            "notice",
+            if p.notice.is_empty() {
+                String::new()
+            } else {
+                format!("\n{}", lines(&p.notice))
+            },
+        ),
+    ])
 }
 
 /// Substitute every `@@name@@`; an unknown or unterminated placeholder is an error naming it.
@@ -152,7 +215,7 @@ pub fn fill(template: &str, vars: &[(&str, String)], what: &str) -> Result<Strin
 
 /// Everything the fleet owns in `p`'s repo, sorted by path.
 pub fn render(fleet: &Fleet, p: &Plugin, t: &Templates) -> Result<Vec<Rendered>, String> {
-    let v = vars(fleet, p, &t.channel);
+    let v = vars(fleet, p, &t.channel)?;
     let whole = |path: &str, tpl: &str| -> Result<Rendered, String> {
         Ok(Rendered {
             path: path.to_string(),
@@ -164,6 +227,18 @@ pub fn render(fleet: &Fleet, p: &Plugin, t: &Templates) -> Result<Vec<Rendered>,
         Rendered {
             path: ".busbar-ref".into(),
             content: fleet.busbar_ref(),
+            mode: Mode::Whole,
+        },
+        whole(".gitignore", &t.gitignore)?,
+        whole(".mailmap", &t.mailmap)?,
+        whole("Cargo.toml", &t.workspace)?,
+        whole("NOTICE", &t.notice)?,
+        whole("codecov.yml", &t.codecov)?,
+        whole("SECURITY.md", &t.security)?,
+        whole("CONTRIBUTING.md", &t.contributing)?,
+        Rendered {
+            path: "CODE_OF_CONDUCT.md".into(),
+            content: t.code_of_conduct.clone(),
             mode: Mode::Whole,
         },
         whole(".github/workflows/ci.yml", &t.ci)?,
@@ -226,4 +301,134 @@ pub fn apply_region(existing: Option<&str>, region: &str) -> String {
             }
         }
     }
+}
+
+/// The README's fixed section skeleton for `p`, filled: every section's heading and the body a
+/// fresh repo starts with.
+pub fn readme_skeleton(fleet: &Fleet, p: &Plugin, t: &Templates) -> Result<String, String> {
+    let v = vars(fleet, p, &t.channel)?;
+    fill(&t.readme_skeleton, &v, &format!("{} (README skeleton)", p.repo))
+}
+
+/// Whether `line` opens or closes a fenced code block.
+fn is_fence(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with("```") || t.starts_with("~~~")
+}
+
+/// A level-1 or level-2 ATX heading's text (`# X`, `## X`), outside a code fence.
+fn top_heading(line: &str) -> Option<(usize, &str)> {
+    for (level, prefix) in [(2, "## "), (1, "# ")] {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            return Some((level, rest.trim()));
+        }
+    }
+    None
+}
+
+/// The `#`/`##` headings of `text`, outside code fences and outside the managed header region, as
+/// written (`## Config`).
+pub fn readme_headings(text: &str) -> Vec<String> {
+    let body = match region_of(text) {
+        Some(r) => text.replacen(r, "", 1),
+        None => text.to_string(),
+    };
+    let mut fenced = false;
+    let mut out = Vec::new();
+    for line in body.lines() {
+        if is_fence(line) {
+            fenced = !fenced;
+            continue;
+        }
+        if !fenced && top_heading(line).is_some() {
+            out.push(line.trim_end().to_string());
+        }
+    }
+    out
+}
+
+/// The skeleton's sections: `(heading text, default body)`, in order.
+fn skeleton_sections(skeleton: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut fenced = false;
+    for line in skeleton.lines() {
+        if is_fence(line) {
+            fenced = !fenced;
+        } else if !fenced {
+            if let Some((2, h)) = top_heading(line) {
+                out.push((h.to_string(), String::new()));
+                continue;
+            }
+        }
+        if let Some((_, body)) = out.last_mut() {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    out
+}
+
+/// A README body (the text outside the header region) rewritten into the skeleton's sections,
+/// mechanically and without dropping prose: a section whose heading is a skeleton heading (or its
+/// alias) becomes that section; every other `#`/`##` heading is demoted to `###` and stays, in
+/// order, inside the skeleton section it sits in (text before the first skeleton heading opens the
+/// first section); a second `#` title is dropped (the header region is the title); a skeleton section the body has no text for takes the skeleton's default body.
+pub fn restructure(body: &str, skeleton: &str) -> String {
+    let sections = skeleton_sections(skeleton);
+    if sections.is_empty() {
+        return body.to_string();
+    }
+    let index_of = |name: &str| {
+        let name = HEADING_ALIASES
+            .iter()
+            .find(|(from, _)| from.eq_ignore_ascii_case(name))
+            .map_or(name, |(_, to)| to);
+        sections
+            .iter()
+            .position(|(h, _)| h.eq_ignore_ascii_case(name))
+    };
+    let mut chunks = vec![String::new(); sections.len()];
+    let mut at = 0;
+    let mut fenced = false;
+    for line in body.lines() {
+        if is_fence(line) {
+            fenced = !fenced;
+        } else if !fenced {
+            if let Some((level, h)) = top_heading(line) {
+                // A second title: the header region carries the repo's one `#` title.
+                if level == 1 {
+                    continue;
+                }
+                match index_of(h) {
+                    Some(i) => at = i,
+                    None => chunks[at].push_str(&format!("### {h}\n")),
+                }
+                continue;
+            }
+        }
+        chunks[at].push_str(line);
+        chunks[at].push('\n');
+    }
+    let mut out = String::new();
+    for (i, (h, default)) in sections.iter().enumerate() {
+        let own = chunks[i].trim_matches('\n');
+        let text = if own.trim().is_empty() {
+            default.trim_matches('\n')
+        } else {
+            own
+        };
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&format!("## {h}\n\n{text}\n"));
+    }
+    out
+}
+
+/// A whole README: the header region (applied as [`apply_region`] does), then the body restructured
+/// into the skeleton. A repo with no README gets the region and the skeleton's defaults.
+pub fn apply_readme(existing: Option<&str>, region: &str, skeleton: &str) -> String {
+    let with_region = apply_region(existing, region);
+    let body = with_region.replacen(region, "", 1);
+    format!("{region}\n{}", restructure(&body, skeleton))
 }

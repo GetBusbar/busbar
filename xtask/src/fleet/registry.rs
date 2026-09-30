@@ -30,6 +30,10 @@ pub struct Plugin {
     pub bundle_image: String,
     pub bundle_env: String,
     pub keep: Vec<String>,
+    /// Lines the rendered `.gitignore` carries after the fleet's own.
+    pub gitignore: Vec<String>,
+    /// Lines the rendered `NOTICE` carries after the fleet's own (a third-party credit).
+    pub notice: Vec<String>,
     /// Position in the registry (the consumer-verify cron is staggered by it).
     pub index: usize,
 }
@@ -41,6 +45,19 @@ pub struct Fleet {
     pub name_pattern: String,
     pub branches: Vec<String>,
     pub plugins: Vec<Plugin>,
+}
+
+impl Plugin {
+    /// `<kind>-<name>`: the repo name without `busbar-`, and the logic crate's directory (the cdylib's
+    /// is `<stem>-plugin`). Every plugin repo is exactly these two crate dirs.
+    pub fn stem(&self) -> &str {
+        self.repo.strip_prefix("busbar-").unwrap_or(&self.repo)
+    }
+
+    /// The two crate directories of a twin repo.
+    pub fn crate_dirs(&self) -> [String; 2] {
+        [self.stem().to_string(), format!("{}-plugin", self.stem())]
+    }
 }
 
 impl Fleet {
@@ -170,6 +187,8 @@ pub fn parse(text: &str) -> Result<Fleet, String> {
             bundle_image: s(e, "bundle_image", &who)?.unwrap_or("").to_string(),
             bundle_env: s(e, "bundle_env", &who)?.unwrap_or("").to_string(),
             keep: list(e, "keep", &who)?,
+            gitignore: list(e, "gitignore", &who)?,
+            notice: list(e, "notice", &who)?,
             crate_name,
             repo,
             index,

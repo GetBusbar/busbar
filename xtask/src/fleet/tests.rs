@@ -9,8 +9,11 @@ use serde_json::Value;
 
 use super::check::{busbar_revs, check, contract_abi_of, Finding};
 use super::registry::{parse, Fleet};
-use super::remote::Remote;
-use super::render::{apply_region, fill, region_of, render, Mode, Templates};
+use super::remote::{Remote, Settings};
+use super::render::{
+    apply_readme, apply_region, fill, readme_headings, readme_skeleton, region_of, render,
+    restructure, rust_version_of, Mode, Templates,
+};
 use crate::ctx::Ctx;
 
 const PIN: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -43,27 +46,46 @@ plugins:
   - repo: busbar-hook-beta
     kind: hook
     alias: beta
-    crate: beta-hook
+    crate: busbar-hook-beta-plugin
     service: none
     released: false
     description: "The beta hook."
     manifest_name: "busbar-beta"
     lib_only: true
     needs_prompt: "rw"
-    declares: "declares.json"
+    declares: "hook-beta/declares.json"
     keep:
       - .github/workflows/docker.yml
+      - Dockerfile
+      - docker/
 "#
     ))
     .expect("fixture parses")
 }
 
 /// A repo as the checker sees it, planted file by file.
-#[derive(Default, Clone)]
+#[derive(Clone)]
 struct Repo {
     files: BTreeMap<String, String>,
     branches: Vec<String>,
     protection: BTreeMap<String, Value>,
+    settings: Settings,
+}
+
+impl Default for Repo {
+    /// The fleet norm's settings: public, Apache-2.0, `dev` the default branch.
+    fn default() -> Repo {
+        Repo {
+            files: BTreeMap::new(),
+            branches: Vec::new(),
+            protection: BTreeMap::new(),
+            settings: Settings {
+                visibility: "public".into(),
+                license: "Apache-2.0".into(),
+                default_branch: "dev".into(),
+            },
+        }
+    }
 }
 
 #[derive(Default)]
@@ -73,6 +95,12 @@ struct Fake {
 }
 
 impl Remote for Fake {
+    fn settings(&self, repo: &str) -> Result<Settings, String> {
+        if self.unreadable.iter().any(|r| r == repo) {
+            return Err("HTTP 401: Bad credentials".into());
+        }
+        Ok(self.repos.borrow()[repo].settings.clone())
+    }
     fn files(&self, repo: &str, _b: &str) -> Result<Vec<String>, String> {
         if self.unreadable.iter().any(|r| r == repo) {
             return Err("HTTP 401: Bad credentials".into());
@@ -126,17 +154,31 @@ fn conforming(fleet: &Fleet, t: &Templates) -> Fake {
         for b in &r.branches.clone() {
             r.protection.insert(b.clone(), as_github_reports(&spec));
         }
+        let skeleton = readme_skeleton(fleet, p, t).unwrap();
         for f in render(fleet, p, t).unwrap() {
             let text = match f.mode {
                 Mode::Whole => f.content,
-                Mode::Region => format!("{}\nThe plugin's own README body.\n", f.content),
+                Mode::Region => format!(
+                    "{}\n{}",
+                    f.content,
+                    skeleton.replacen(
+                        "## What it is for\n",
+                        "## What it is for\n\nThe plugin's own README body.\n",
+                        1
+                    )
+                ),
             };
             r.files.insert(f.path, text);
         }
-        r.files.insert(
-            "Cargo.toml".into(),
-            format!("[workspace]\n[workspace.dependencies]\nbusbar-contract = {{ git = \"https://github.com/GetBusbar/busbar\", rev = \"{PIN}\" }}\n"),
-        );
+        // The two twin crate dirs, and the lock: the repo's own.
+        for d in p.crate_dirs() {
+            r.files.insert(
+                format!("{d}/Cargo.toml"),
+                "[package]\nedition.workspace = true\n".into(),
+            );
+            r.files.insert(format!("{d}/src/lib.rs"), "\n".into());
+        }
+        r.files.insert("Cargo.lock".into(), "version = 4\n".into());
         r.files.insert(
             p.declares.clone(),
             r#"{"contract_abi": {"min": 4, "max": 4}}"#.into(),
@@ -227,9 +269,17 @@ fn the_render_is_a_pure_function_of_the_registry_and_the_templates() {
             ".github/workflows/consumer-verify.yml",
             ".github/workflows/release.yml",
             ".github/workflows/repin.yml",
+            ".gitignore",
+            ".mailmap",
+            "CODE_OF_CONDUCT.md",
+            "CONTRIBUTING.md",
+            "Cargo.toml",
             "LICENSE",
+            "NOTICE",
             "README.md",
+            "SECURITY.md",
             "clippy.toml",
+            "codecov.yml",
             "deny.toml",
             "rust-toolchain.toml",
         ]
@@ -408,13 +458,23 @@ fn what_the_repo_owns_is_not_drift() {
         let r = repos.get_mut("busbar-store-alpha").unwrap();
         let readme = r.files["README.md"].replace(
             "The plugin's own README body.",
-            "Rewritten body, not the fleet's.",
+            "Rewritten body, not the fleet's.\n\n### A subsection of its own\n\nMore prose.",
         );
         r.files.insert("README.md".into(), readme);
         r.files
             .insert("store-alpha/src/lib.rs".into(), "pub fn x() {}\n".into());
+        r.files.insert(
+            "store-alpha-plugin/tests/conformance.rs".into(),
+            "#[test]\nfn t() {}\n".into(),
+        );
+        let hook = repos.get_mut("busbar-hook-beta").unwrap();
+        hook.files
+            .insert("Dockerfile".into(), "FROM scratch\n".into());
+        hook.files
+            .insert("docker/entry.sh".into(), "#!/bin/sh\n".into());
     }
-    // The hook KEEPS its docker workflow (planted by `conforming`): not drift.
+    // The hook KEEPS its docker workflow (planted by `conforming`) and its top-level Dockerfile and
+    // docker/ (declared in its `keep`): not drift.
     assert!(run(&fleet, &t, &fake).is_empty());
 }
 
@@ -477,4 +537,277 @@ fn a_registry_without_the_pin_policy_or_with_a_short_pin_is_refused() {
     assert!(parse(short)
         .unwrap_err()
         .contains("not a full 40-hex commit"));
+}
+
+#[test]
+fn every_skeleton_file_is_rendered_and_its_drift_is_red() {
+    let (fleet, t) = (fixture(), templates());
+    let a = "busbar-store-alpha";
+    let plant = |edit: &dyn Fn(&mut Repo)| {
+        let fake = conforming(&fleet, &t);
+        edit(fake.repos.borrow_mut().get_mut(a).unwrap());
+        run(&fleet, &t, &fake)
+    };
+    for path in [
+        ".gitignore",
+        ".mailmap",
+        "Cargo.toml",
+        "NOTICE",
+        "codecov.yml",
+        "SECURITY.md",
+        "CONTRIBUTING.md",
+        "CODE_OF_CONDUCT.md",
+    ] {
+        let f = plant(&|r| {
+            let edited = format!("{}# a repo's own edit\n", r.files[path]);
+            r.files.insert(path.into(), edited);
+        });
+        one(&f, a, path, "differs from the render");
+        let f = plant(&|r| {
+            r.files.remove(path);
+        });
+        one(&f, a, path, "missing (the render owns it)");
+    }
+    // The workspace manifest is the twin's: the two crate dirs, the shared package, the pin.
+    let files = render(&fleet, &fleet.plugins[0], &t).unwrap();
+    let ws = &files.iter().find(|f| f.path == "Cargo.toml").unwrap().content;
+    assert!(
+        ws.contains("members = [\n    \"store-alpha\",\n    \"store-alpha-plugin\",\n]\n")
+            && ws.contains("[workspace.package]\n")
+            && ws.contains(&format!("rust-version = \"{}\"\n", rust_version_of(&t.channel).unwrap()))
+            && busbar_revs(ws) == vec![PIN.to_string(), PIN.to_string()],
+        "{ws}"
+    );
+    // A declared `.gitignore` line and `NOTICE` credit are the entry's; the rest is the fleet's.
+    let mut declared = fleet.clone();
+    declared.plugins[0].gitignore = vec!["busbar-governance.db*".into()];
+    declared.plugins[0].notice = vec!["It links x.".into()];
+    let files = render(&declared, &declared.plugins[0], &t).unwrap();
+    let gi = &files.iter().find(|f| f.path == ".gitignore").unwrap().content;
+    assert!(gi.ends_with("/target\n/mutants.out*\nbusbar-governance.db*\n"), "{gi}");
+    let notice = &files.iter().find(|f| f.path == "NOTICE").unwrap().content;
+    assert!(notice.starts_with("busbar-store-alpha\n") && notice.ends_with("(https://getbusbar.com).\n\nIt links x.\n"), "{notice}");
+    let plain = render(&fleet, &fleet.plugins[0], &t).unwrap();
+    let gi = &plain.iter().find(|f| f.path == ".gitignore").unwrap().content;
+    assert!(gi.ends_with("/mutants.out*\n"), "{gi}");
+}
+
+#[test]
+fn a_top_level_path_outside_the_twin_shape_is_red() {
+    let (fleet, t) = (fixture(), templates());
+    let a = "busbar-store-alpha";
+    let plant = |edit: &dyn Fn(&mut Repo)| {
+        let fake = conforming(&fleet, &t);
+        edit(fake.repos.borrow_mut().get_mut(a).unwrap());
+        run(&fleet, &t, &fake)
+    };
+    // (a) a top-level file or dir the render does not write and the entry does not keep.
+    let f = plant(&|r| {
+        r.files.insert("RELEASING.md".into(), "notes\n".into());
+    });
+    one(&f, a, "RELEASING.md", "unmanaged top-level path");
+    assert_eq!(f.len(), 1, "{f:#?}");
+    let f = plant(&|r| {
+        r.files.insert("bench/run.py".into(), "print()\n".into());
+    });
+    one(&f, a, "bench", "unmanaged top-level path");
+    // A kept top-level path is the hook's, not the store's: `keep` is per entry.
+    let f = plant(&|r| {
+        r.files.insert("Dockerfile".into(), "FROM scratch\n".into());
+    });
+    one(&f, a, "Dockerfile", "unmanaged top-level path");
+    // ...and anything under .github/ the render does not produce, not just workflows and scripts.
+    let f = plant(&|r| {
+        r.files
+            .insert(".github/dependabot.yml".into(), "version: 2\n".into());
+    });
+    one(&f, a, ".github/dependabot.yml", "unmanaged");
+}
+
+#[test]
+fn crate_dirs_other_than_the_two_twin_dirs_are_red() {
+    let (fleet, t) = (fixture(), templates());
+    let a = "busbar-store-alpha";
+    let plant = |edit: &dyn Fn(&mut Repo)| {
+        let fake = conforming(&fleet, &t);
+        edit(fake.repos.borrow_mut().get_mut(a).unwrap());
+        run(&fleet, &t, &fake)
+    };
+    // (b) a crate dir named after the repo, not <kind>-<name>: the wrong dir AND the missing one.
+    let f = plant(&|r| {
+        let moved: Vec<(String, String)> = r
+            .files
+            .iter()
+            .filter(|(k, _)| k.starts_with("store-alpha/"))
+            .map(|(k, v)| (k.replacen("store-alpha/", "busbar-store-alpha/", 1), v.clone()))
+            .collect();
+        r.files.retain(|k, _| !k.starts_with("store-alpha/"));
+        r.files.extend(moved);
+    });
+    one(&f, a, "busbar-store-alpha/", "a crate dir outside the twin layout");
+    one(&f, a, "store-alpha/", "missing: the twin crate dir");
+    // A single crate at the repo root: no crate dirs, and its src/ is unmanaged.
+    let f = plant(&|r| {
+        r.files.retain(|k, _| !k.starts_with("store-alpha"));
+        r.files.insert("src/lib.rs".into(), "\n".into());
+    });
+    one(&f, a, "store-alpha/", "missing");
+    one(&f, a, "store-alpha-plugin/", "missing");
+    one(&f, a, "src", "unmanaged top-level path");
+    // A third crate dir.
+    let f = plant(&|r| {
+        r.files
+            .insert("store-alpha-extra/Cargo.toml".into(), "[package]\n".into());
+    });
+    one(&f, a, "store-alpha-extra/", "a crate dir outside the twin layout");
+    assert_eq!(f.len(), 1, "{f:#?}");
+    // The cdylib crate is <repo>-plugin.
+    let mut single = fixture();
+    single.plugins[0].crate_name = "busbar-store-alpha".into();
+    let fake = conforming(&single, &t);
+    let f = run(&single, &t, &fake);
+    one(&f, a, "crate", "a twin's is `busbar-store-alpha-plugin`");
+}
+
+#[test]
+fn settings_outside_the_fleet_norm_are_red() {
+    let (fleet, t) = (fixture(), templates());
+    let a = "busbar-store-alpha";
+    let plant = |edit: &dyn Fn(&mut Repo)| {
+        let fake = conforming(&fleet, &t);
+        edit(fake.repos.borrow_mut().get_mut(a).unwrap());
+        run(&fleet, &t, &fake)
+    };
+    // (c) visibility, license, default branch: each alone is exactly one finding.
+    let f = plant(&|r| r.settings.visibility = "private".into());
+    one(&f, a, "visibility", "is `private`, the fleet norm is `public`");
+    assert_eq!(f.len(), 1, "{f:#?}");
+    let f = plant(&|r| r.settings.license = "MIT".into());
+    one(&f, a, "license", "is `MIT`, the fleet norm is `Apache-2.0`");
+    assert_eq!(f.len(), 1, "{f:#?}");
+    let f = plant(&|r| r.settings.license = "none".into());
+    one(&f, a, "license", "is `none`");
+    let f = plant(&|r| r.settings.default_branch = "main".into());
+    one(&f, a, "default branch", "is `main`, the fleet norm is `dev`");
+    assert_eq!(f.len(), 1, "{f:#?}");
+    // Settings that cannot be read are a finding, not a pass.
+    let mut fake = conforming(&fleet, &t);
+    fake.unreadable.push(a.into());
+    one(&run(&fleet, &t, &fake), a, "settings", "could not read");
+}
+
+#[test]
+fn a_readme_off_the_section_skeleton_is_red_and_sync_restructures_it_without_dropping_prose() {
+    let (fleet, t) = (fixture(), templates());
+    let a = "busbar-store-alpha";
+    let p = &fleet.plugins[0];
+    let skeleton = readme_skeleton(&fleet, p, &t).unwrap();
+    let want = readme_headings(&skeleton);
+    assert_eq!(
+        want,
+        ["## What it is for", "## Config", "## Build", "## Tests", "## License"]
+    );
+    let plant = |edit: &dyn Fn(&mut Repo)| {
+        let fake = conforming(&fleet, &t);
+        edit(fake.repos.borrow_mut().get_mut(a).unwrap());
+        run(&fleet, &t, &fake)
+    };
+    let f = plant(&|r| {
+        let readme = r.files["README.md"].replace("## Tests\n", "## Testing notes\n");
+        r.files.insert("README.md".into(), readme);
+    });
+    one(&f, a, "README.md", "the section skeleton differs");
+    let f = plant(&|r| {
+        let readme = format!("{}\n# A second title\n", r.files["README.md"]);
+        r.files.insert("README.md".into(), readme);
+    });
+    one(&f, a, "README.md", "the section skeleton differs");
+    // A heading inside a code fence is not a section.
+    let f = plant(&|r| {
+        let readme = r.files["README.md"].replace(
+            "## Build\n",
+            "## Build\n\n```bash\n# a shell comment\n## another\n```\n",
+        );
+        r.files.insert("README.md".into(), readme);
+    });
+    assert!(f.is_empty(), "{f:#?}");
+
+    // The restructure: a README written before the skeleton becomes the skeleton, every line kept.
+    let region = &render(&fleet, p, &t)
+        .unwrap()
+        .into_iter()
+        .find(|f| f.path == "README.md")
+        .unwrap()
+        .content;
+    let old = "# busbar-store-alpha\n\nIntro prose.\n\n## Versioning\n\nSemver.\n\n## Configuration\n\n```yaml\n# not a heading\nstore: alpha\n```\n\n## Testing\n\nRun it.\n\n## Design\n\nWhy.\n";
+    let new = apply_readme(Some(old), region, &skeleton);
+    assert_eq!(readme_headings(&new), want, "{new}");
+    for kept in ["Intro prose.", "### Versioning", "Semver.", "# not a heading", "store: alpha", "Run it.", "### Design", "Why."] {
+        assert!(new.contains(kept), "{kept:?} dropped:\n{new}");
+    }
+    // Design sat under Testing, so it stays in Tests; Versioning sat before any skeleton section.
+    let tests_at = new.find("## Tests").unwrap();
+    assert!(new.find("### Design").unwrap() > tests_at);
+    assert!(new.find("### Versioning").unwrap() < new.find("## Config").unwrap());
+    // A section the README has no text for takes the skeleton's default body.
+    assert!(new.contains("## License\n\nApache-2.0. See [LICENSE](LICENSE).\n"), "{new}");
+    // Idempotent: restructuring a restructured README changes nothing.
+    assert_eq!(apply_readme(Some(&new), region, &skeleton), new);
+    // A fresh repo: the region and the skeleton's defaults.
+    let fresh = apply_readme(None, region, &skeleton);
+    assert_eq!(readme_headings(&fresh), want);
+    assert_eq!(restructure("", &skeleton), restructure("\n\n", &skeleton));
+}
+
+#[test]
+fn the_committed_registry_is_twenty_four_twins() {
+    let (fleet, t) = (registry(), templates());
+    for repo in [
+        "busbar-plane-llm",
+        "busbar-plane-mcp",
+        "busbar-plane-a2a",
+        "busbar-plane-streaming",
+        "busbar-plane-decisions",
+        "busbar-transport-http",
+        "busbar-transport-ws",
+        "busbar-transport-stdio",
+        "busbar-transport-tcp",
+    ] {
+        fleet.plugin(repo).unwrap_or_else(|e| panic!("{e}"));
+    }
+    // Every repo's render has the same shape: the same paths (the daily consumer check only once a
+    // plugin has released), each workspace over its own two twin crate dirs.
+    let shape = |p: &super::registry::Plugin| -> Vec<String> {
+        render(&fleet, p, &t)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.path)
+            .filter(|x| !x.ends_with("consumer-verify.yml"))
+            .collect()
+    };
+    let first = shape(&fleet.plugins[0]);
+    for p in &fleet.plugins {
+        assert_eq!(shape(p), first, "{}: not a twin of {}", p.repo, fleet.plugins[0].repo);
+        let ws = render(&fleet, p, &t).unwrap();
+        let ws = &ws.iter().find(|f| f.path == "Cargo.toml").unwrap().content;
+        let [logic, cdylib] = p.crate_dirs();
+        assert!(
+            ws.contains(&format!("    \"{logic}\",\n    \"{cdylib}\",\n")),
+            "{}: {ws}",
+            p.repo
+        );
+    }
+    // The new repos are twins in the registry too: <repo>-plugin, declares in the logic crate.
+    for p in fleet.plugins.iter().filter(|p| p.kind == "plane" || p.repo.starts_with("busbar-transport-")) {
+        assert_eq!(p.crate_name, format!("{}-plugin", p.repo));
+        assert_eq!(p.declares, format!("{}/declares.json", p.stem()));
+    }
+}
+
+#[test]
+fn the_workspace_rust_version_is_the_toolchain_channels_minor() {
+    assert_eq!(rust_version_of("1.98.0").unwrap(), "1.98");
+    assert_eq!(rust_version_of("1.98").unwrap(), "1.98");
+    assert!(rust_version_of("stable").is_err());
+    assert!(rust_version_of("nightly-2026-01-01").is_err());
 }

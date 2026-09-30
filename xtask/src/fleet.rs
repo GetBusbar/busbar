@@ -3,8 +3,10 @@
 //! Every first-party plugin lives in its own repo (owner ruling: one repo per plugin), and the repos
 //! drifted the way copies drift: four different busbar pins, five shapes of the same pin check, a
 //! macOS leg on some and not others, stale branches by the dozen, protection on `main` only. The fix
-//! is at the root: what a plugin repo's CI, release, repin, toolchain, lint config, LICENSE and README
-//! header ARE is a pure function of `plugins.yaml` plus the templates in `.github/fleet/`, and the CI
+//! is at the root: what a plugin repo's skeleton IS (owner, 2026-09-30: "25 repos that are TWINS") —
+//! CI, release, repin, toolchain, lint config, workspace manifest, .gitignore, .mailmap, LICENSE,
+//! NOTICE, community files, the README header and its section headings — is a pure function of
+//! `plugins.yaml` plus the templates in `.github/fleet/`, and the CI
 //! logic itself lives once, in busbar's reusable workflows (`plugin-ci.yml`, `plugin-release.yml`,
 //! `plugin-repin.yml`, `plugin-conformance.yml`), taken by each repo at the busbar commit it pins.
 //!
@@ -13,11 +15,15 @@
 //! * `fleet check [--repo <repo>]...` — every registered repo's `dev` against its render, plus: the
 //!   release branches (`fleet.branches`) exist with IDENTICAL protection (`.github/fleet/protection.json`),
 //!   no other branch remains, `.busbar-ref` and every manifest's busbar rev are the fleet pin, the
-//!   repo is named `busbar-<kind>-<name>` for its own kind, and no workflow or script under `.github/`
-//!   exists that the render does not produce or the entry does not `keep`. Any drift exits 1, one
+//!   repo is named `busbar-<kind>-<name>` for its own kind, no file under `.github/` exists that the
+//!   render does not produce or the entry does not `keep`, every top-level path is the render's, one
+//!   of the two crate dirs (`<kind>-<name>/`, `<kind>-<name>-plugin/`), `Cargo.lock` or kept, both
+//!   crate dirs exist, the README carries the skeleton's sections, and the repo is public,
+//!   Apache-2.0 and defaults to `dev`. Any drift exits 1, one
 //!   line per finding naming the repo and the file (or branch). Reads GitHub through `gh`.
 //! * `fleet sync [--repo <repo>]... [--workdir <dir>] [--dry-run]` — applies the render to each
-//!   repo's `dev` (moving the pin with scripts/fleet/repin.sh first when it differs), commits and
+//!   repo's `dev` (creating and seeding a registered repo that does not exist yet; moving the pin
+//!   with scripts/fleet/repin.sh), commits and
 //!   pushes `dev` ONLY, creates a missing release branch from `dev`, applies the protection, and
 //!   lists every other branch: one fully merged into `dev`, `qa` or `main` is deleted, an unmerged
 //!   one is reported and never touched.
@@ -83,13 +89,22 @@ fn run(cx: &Ctx, args: &[String]) -> Result<i32, String> {
                     // an arbitrary CLI argument (a satellite plugin repo's own checkout, never
                     // this tree) and is never resolved through `cx.abs`/`cx.root` — a fleet
                     // render never writes under, or is ever read back through, THIS `Ctx`.
+                    let skeleton = render::readme_skeleton(&fleet, fleet.plugin(repo)?, &templates)?;
                     for f in &files {
                         let p = std::path::Path::new(&dir).join(&f.path);
                         if let Some(parent) = p.parent() {
                             std::fs::create_dir_all(parent)
                                 .map_err(|e| format!("{}: {e}", parent.display()))?;
                         }
-                        std::fs::write(&p, f.content.as_bytes())
+                        let text = match f.mode {
+                            render::Mode::Whole => f.content.clone(),
+                            render::Mode::Region => render::apply_readme(
+                                std::fs::read_to_string(&p).ok().as_deref(),
+                                &f.content,
+                                &skeleton,
+                            ),
+                        };
+                        std::fs::write(&p, text.as_bytes())
                             .map_err(|e| format!("{}: {e}", p.display()))?;
                         println!("wrote {}", p.display());
                     }
