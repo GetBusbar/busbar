@@ -692,7 +692,10 @@ fn a_recycled_ticket_drops_its_stored_service_results() {
     let t = d.mint(0).expect("a ticket");
     let store = d.service_store();
     let runs = AtomicUsize::new(0);
-    let heads = [head(op::RECORDS_GET, t, 0, 0), head(op::RECORDS_GET, t, 1, 0)];
+    let heads = [
+        head(op::RECORDS_GET, t, 0, 0),
+        head(op::RECORDS_GET, t, 1, 0),
+    ];
     for h in &heads {
         let (mut b, mut s) = ([0u8; 8], [SPAN; 1]);
         let into = bufs(&mut b, &mut s);
@@ -706,7 +709,11 @@ fn a_recycled_ticket_drops_its_stored_service_results() {
     // SAFETY: as above.
     let replay = unsafe { serve(&store, &nowhere(), &heads[0], Some(&into), eight(&runs)) };
     assert_eq!(replay.outcome, Outcome::Ready);
-    assert_eq!(runs.load(Ordering::SeqCst), 2, "a replay before the recycle reads, not runs");
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        2,
+        "a replay before the recycle reads, not runs"
+    );
 
     d.recycle(t);
     let start = std::time::Instant::now();

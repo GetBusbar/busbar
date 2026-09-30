@@ -99,8 +99,8 @@ impl SafeSlot for Resolve {
                 if i.resume::<String>().is_some() {
                     return Outcome::Fault;
                 }
-                let found = i.resume::<u64>().map_or(0, |b| u32::try_from(*b).unwrap_or(0));
-                out.set(|o| &o.error_kind, found);
+                let found = i.resume::<u64>().map_or(0, |b| *b);
+                out.set(|o| &o.error_kind, u32::try_from(found).unwrap_or(0));
                 return Outcome::Ready;
             }
             return match input.head.deadline_class {
