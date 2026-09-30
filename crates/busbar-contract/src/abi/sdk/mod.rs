@@ -57,6 +57,9 @@ pub use safe::{Instance, Plain, Published, Safe, SafeSlot};
 // THE HOST SERVICES, PLUGIN SIDE: the one home of every safe host-service wrapper.
 pub mod services;
 pub use services::{ServiceError, Services};
+// THE AUTH KIND'S VERIFY DOOR over the safe layer (`auth_verify_door!`). An auth plugin keeps its
+// inbound verdict cache inside itself (THE DESIGN §11.11 R3).
+pub mod auth_door;
 // THE STORE KIND'S TYPED SDK: the trait a store implements to be served through the store v3 table.
 pub mod store;
 

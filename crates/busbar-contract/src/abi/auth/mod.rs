@@ -32,7 +32,8 @@
 //! A slot for a capability the tail does not declare is never called. The plugin still fills it
 //! (a NULL slot refuses the load) and answers `REFUSED`.
 //!
-//! The one dispatcher calls this table (`busbar-plugin-loader`, `dispatch::kinds::auth`).
+//! The host side is `busbar_contract::auth_calls`: the kernel's identity chain calls `verify` through
+//! it, the loader dispatching it through the one dispatcher.
 
 use super::mechanism::call::{AbiStr, Op};
 use super::mechanism::door::KindTailHead;
@@ -165,6 +166,12 @@ pub const FACT_INBOUND_NEEDS_BODY_HASH: u32 = 2;
 /// kernel passes them all in [`VerifyIn::carrier`]. An inbound signature check needs it: the set of
 /// signed headers varies per request.
 pub const FACT_INBOUND_ALL_HEADERS: u32 = 4;
+
+/// THE CACHE-FLUSH COUNT's metric family name. An auth plugin that caches verdicts declares a
+/// counter family of this name (no labels) in its Statement, and on `refresh` adds to it the number
+/// of inbound cache entries it dropped. The host sums it across auth plugins into the admin cache
+/// flush's `{"flushed": N}` (1.5.5's count). A plugin that caches nothing declares nothing.
+pub const METRIC_CACHE_FLUSHED: &str = "busbar_auth_cache_flushed_total";
 
 /// [`AuthTail::login_kind`]: no login ([`CAP_LOGIN`] not declared).
 pub const LOGIN_KIND_NONE: u32 = 0;

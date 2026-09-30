@@ -1,0 +1,142 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE AUTH KIND'S CALLS, AS THE HOST'S TWO HALVES SHARE THEM (`BUSBAR-1.6.0.md` THE DESIGN §6,
+//! §11.4, §11.6, §11.11 R3): the [`AuthCalls`] trait the plugin loader implements over one loaded
+//! auth instance, and the [`AuthAxis`] the composition root hands the kernel to open them. The
+//! kernel's identity chain calls every auth plugin's `verify` through these, so a compiled-in and a
+//! dropped-in auth plugin are reached through the same table. The kernel names this, the loader
+//! names this, and neither names the other. Nothing here crosses the plugin boundary: the auth
+//! kind's ABI is `abi::auth`.
+//!
+//! ONE CALL PER REQUEST PER CHAIN POSITION, and no verdict cache in the kernel: each auth plugin
+//! caches inside itself (R3), and drops that cache on `refresh` ([`AuthCalls::refresh`]).
+
+use std::future::Future;
+use std::sync::Arc;
+
+/// One inbound request's facts, as the kernel hands them to `verify`. Owned: the answer is
+/// awaited, so nothing here borrows the request.
+#[derive(Default)]
+pub struct VerifyRequest {
+    /// The method.
+    pub method: String,
+    /// The authority (host\[:port\]).
+    pub authority: String,
+    /// The path, raw as received.
+    pub path: String,
+    /// The query without `?`, raw as received; `None` = none.
+    pub query: Option<String>,
+    /// Wall-clock seconds since the Unix epoch, read once for this call.
+    pub timestamp: u64,
+    /// SHA-256 of the body, when the plugin's tail states it reads it.
+    pub body_hash: Option<[u8; 32]>,
+}
+
+impl std::fmt::Debug for VerifyRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VerifyRequest")
+            .field("method", &self.method)
+            .finish_non_exhaustive()
+    }
+}
+
+/// WHO a `verify` identified, copied out of the host's identity buffer.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VerifiedIdentity {
+    /// The stable subject.
+    pub subject: String,
+    /// The governance virtual-key id, if any.
+    pub key_id: Option<String>,
+    /// The governance virtual-key display name, if any.
+    pub key_name: Option<String>,
+    /// The end-user identifier, if any.
+    pub user: Option<String>,
+    /// The asserting provider, if any.
+    pub provider: Option<String>,
+    /// The display name, if any.
+    pub name: Option<String>,
+    /// The asserted groups (roles), in the plugin's order.
+    pub groups: Vec<String>,
+    /// The suggested cache TTL, seconds.
+    pub ttl_secs: Option<u64>,
+}
+
+/// One `verify`'s answer, as the kernel's chain reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verified {
+    /// Identified.
+    Identity(VerifiedIdentity),
+    /// A credential was presented and is invalid: the chain stops, denied.
+    Reject,
+    /// Not this plugin's credential: the chain tries the next.
+    Pass,
+    /// The call did not answer a verdict (FAILED, FAULT, REFUSED, a timeout or a second short
+    /// answer): the chain's error path, fail-closed as 1.5.5's module failure.
+    Failed,
+    /// The instance's `max_inflight` is full: the call was not queued. The host answers the
+    /// request 503 (THE DESIGN §11.11 R8, an accepted difference from 1.5.5).
+    Overloaded,
+}
+
+/// One `verify` in flight. Dropping it before it answered is a client drop.
+pub trait Verifying: Future<Output = Verified> + Send + Unpin {
+    /// The answer, if it has arrived; never waits. A SYNC caller polls this once and fails closed
+    /// on `None` rather than block a thread.
+    fn settled(&mut self) -> Option<Verified>;
+}
+
+/// ONE AUTH INSTANCE'S CALLS, as the kernel's identity chain makes them.
+pub trait AuthCalls: Send + Sync {
+    /// The name the plugin's Statement states.
+    fn name(&self) -> &str;
+
+    /// The tail's facts (`abi::auth::FACT_*`).
+    fn facts(&self) -> u32;
+
+    /// Submit `verify`; it crosses on a dispatcher worker and its answer is a future, so no thread
+    /// is parked. A short answer is re-called once with the buffers it named; a second is
+    /// [`Verified::Failed`].
+    fn verify(&self, request: VerifyRequest) -> Box<dyn Verifying>;
+
+    /// `refresh` with a NEW generation and unchanged settings: the admin cache flush. The plugin
+    /// drops its inbound cache. Answers how many entries it dropped, as the plugin reported them
+    /// under [`crate::abi::auth::METRIC_CACHE_FLUSHED`] (`0` when it reported none).
+    ///
+    /// # Errors
+    /// The refresh did not answer READY.
+    fn refresh(&self) -> Result<u64, String>;
+}
+
+/// THE AUTH AXIS, as the composition root hands it to the kernel (the shape of the export kind's
+/// `ExportAxis`): which auth modules a door answers, and opening one on the process's one
+/// dispatcher. Installed once through the root's rows (`busbar_kernel::preflight::RootRows`).
+pub trait AuthAxis: Send + Sync {
+    /// The config keys of the auth rows this build LINKS, in registration order.
+    fn linked_names(&self) -> Vec<String>;
+
+    /// Whether a door answers the module key `module` (a linked row, or a dropped-in door).
+    fn answers(&self, module: &str) -> bool;
+
+    /// Whether `module` names a row this build LINKS.
+    fn linked(&self, module: &str) -> bool;
+
+    /// The settings keys `module`'s Statement names as secret-refs, in order; `None` when no door
+    /// answers `module`.
+    fn secret_refs(&self, module: &str) -> Option<Vec<String>>;
+
+    /// OPEN one instance of `module` over `settings` (the provider's settings, one JSON document)
+    /// and the resolved `secrets` (one per [`AuthAxis::secret_refs`] key, in that order), under the
+    /// host's instance `label` (unique per opened instance).
+    ///
+    /// # Errors
+    /// Why it will not open, naming the module: no door answers it, the door refused the load, or
+    /// `open` did not answer READY.
+    fn open(
+        &self,
+        module: &str,
+        label: &str,
+        settings: &serde_json::Value,
+        secrets: Vec<Vec<u8>>,
+    ) -> Result<Arc<dyn AuthCalls>, String>;
+}

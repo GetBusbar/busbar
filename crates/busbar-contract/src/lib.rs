@@ -28,6 +28,7 @@
 // the moved surface.
 #[allow(missing_docs)]
 pub mod auth;
+pub mod auth_calls;
 pub mod authz;
 // THE PLUGIN ABI AND ITS AUTHOR-SIDE SDK (DECISIONS #84: the SDK and the contract share one definition,
 // "the plugin contract", so they MERGE; #83: contract = shapes). `abi` is the former `busbar-plugin`
