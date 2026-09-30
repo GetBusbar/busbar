@@ -523,3 +523,192 @@ fn a_json_array_caller_reads_its_stream_as_one_array() {
     assert!(!relay::takes_whole("openai", "openai", false, false));
     assert!(!relay::takes_whole("openai", "anthropic", true, true));
 }
+
+// ── the reply ───────────────────────────────────────────────────────────────────────────────────
+
+use busbar_plane_llm::exchange::arrive::Arrived;
+use busbar_plane_llm::exchange::attempt::stream_intent;
+use busbar_plane_llm::exchange::reply::{At, Fault, Reply, ReplyCtx, Verdict};
+use busbar_plane_llm::exchange::shaping::Lane;
+
+fn lane(dialect: &'static str) -> Lane {
+    Lane {
+        model: "m-1".to_string(),
+        provider: "p".to_string(),
+        dialect,
+        path: None,
+        path_base: None,
+        upstream_model: None,
+        default_max_tokens: None,
+        context_max: None,
+        reasoning: false,
+        prompt_caching: false,
+        caps: Default::default(),
+        error_map: Default::default(),
+    }
+}
+
+fn arrival(dialect: &'static str, stream: bool) -> Arrived {
+    let body = serde_json::json!({"model": "p", "stream": stream,
+        "messages": [{"role": "user", "content": "hi"}]});
+    Arrived {
+        dialect,
+        operation: OpVerb::CHAT,
+        model: "p".to_string(),
+        content_type: "application/json".to_string(),
+        body: serde_json::to_vec(&body).unwrap(),
+        parsed: Some(body),
+        path: "/v1/chat/completions".to_string(),
+        query: None,
+        path_model: None,
+    }
+}
+
+const AT: At = At {
+    now_s: 1_752_000_000,
+    elapsed_ms: Some(3),
+};
+
+/// A relayed stream: the caller's head on the first piece with an `Ok`, the bytes as frames
+/// complete, the usage cumulative, and the end on the last piece.
+#[test]
+fn a_reply_relays_a_stream_piece_by_piece() {
+    let arrived = arrival("openai", true);
+    let lane = lane("anthropic");
+    let ctx = ReplyCtx {
+        arrived: &arrived,
+        lane: &lane,
+        intent: stream_intent(chat_handler("openai"), arrived.parsed.as_ref()),
+        passthrough: false,
+    };
+    let far = native_stream("anthropic");
+    let head: &[(&[u8], &[u8])] = &[(b"content-type", b"text/event-stream")];
+    let mut reply = Reply::new(&ctx, 200, head);
+    let pieces: Vec<&[u8]> = far.chunks(40).collect();
+    let mut body = Vec::new();
+    for (i, p) in pieces.iter().enumerate() {
+        let last = i + 1 == pieces.len();
+        let piece = reply.feed(&ctx, p, last, AT);
+        if i == 0 {
+            let h = piece.head.clone().expect("the head rides the first piece");
+            assert_eq!(h.status, 200);
+            assert_eq!(
+                field(&h.fields, "content-type"),
+                Some(b"text/event-stream".as_slice())
+            );
+            assert_eq!(piece.verdict, Verdict::Ok);
+        } else {
+            assert!(piece.head.is_none());
+        }
+        assert_eq!(piece.done, last);
+        body.extend_from_slice(&piece.bytes);
+        if last {
+            assert_eq!(piece.verdict, Verdict::Ok);
+            assert_eq!(piece.fault, None);
+            assert_eq!((piece.units.tokens_in, piece.units.tokens_out), (11, 7));
+        }
+    }
+    let text = String::from_utf8(body).expect("event text");
+    assert!(
+        text.starts_with("data: ") && text.ends_with("data: [DONE]\n\n"),
+        "{text}"
+    );
+}
+
+/// A whole answer: nothing for the caller until the last piece, then the head, the translated
+/// body, the usage and `Ok`; over the cap, the caller's 500 at once.
+#[test]
+fn a_reply_takes_a_whole_answer_whole() {
+    let arrived = arrival("openai", false);
+    let lane = lane("cohere");
+    let ctx = ReplyCtx {
+        arrived: &arrived,
+        lane: &lane,
+        intent: stream_intent(chat_handler("openai"), arrived.parsed.as_ref()),
+        passthrough: false,
+    };
+    let (_, far) = native_answers("cohere")
+        .into_iter()
+        .next()
+        .expect("an answer");
+    let head: &[(&[u8], &[u8])] = &[(b"content-type", b"application/json")];
+    let mut reply = Reply::new(&ctx, 200, head);
+    let (a, b) = far.split_at(far.len() / 2);
+    let first = reply.feed(&ctx, a, false, AT);
+    assert!(first.head.is_none() && first.bytes.is_empty() && !first.done);
+    assert_eq!(first.verdict, Verdict::None);
+    let last = reply.feed(&ctx, b, true, AT);
+    assert_eq!(last.head.map(|h| h.status), Some(200));
+    assert!(last.done);
+    assert_eq!(last.verdict, Verdict::Ok);
+    assert!(last.units.tokens_in > 0 && last.units.tokens_out > 0);
+    let v: Value = serde_json::from_slice(&last.bytes).expect("JSON");
+    assert_eq!(v["object"], "chat.completion", "{v}");
+}
+
+/// A far-end error: a client fault is `Hard` with the caller's answer; a transient is `Retry`
+/// with the relay the walk ends on; the fault names the disposition and the class.
+#[test]
+fn a_reply_judges_a_far_end_error() {
+    let arrived = arrival("openai", false);
+    let lane = lane("anthropic");
+    let ctx = ReplyCtx {
+        arrived: &arrived,
+        lane: &lane,
+        intent: stream_intent(chat_handler("openai"), arrived.parsed.as_ref()),
+        passthrough: false,
+    };
+    let body = br#"{"type":"error","error":{"type":"invalid_request_error","message":"too long"}}"#;
+    for (status, verdict, disposition) in [
+        (400, Verdict::Hard, Disposition::ClientFault),
+        (529, Verdict::Retry, Disposition::TransientUpstream),
+        (401, Verdict::Hard, Disposition::HardDown),
+    ] {
+        let mut reply = Reply::new(&ctx, status, JSON_HEAD);
+        let (a, b) = body.split_at(10);
+        assert!(!reply.feed(&ctx, a, false, AT).done);
+        let piece = reply.feed(&ctx, b, true, AT);
+        assert!(piece.done);
+        assert_eq!(piece.verdict, verdict, "{status}");
+        assert!(matches!(
+            piece.fault,
+            Some(Fault::Judged { disposition: d, class: Some(_) }) if d == disposition
+        ));
+        assert!(piece.head.is_some());
+    }
+}
+
+/// A cut: a stream after its first byte ends on the caller's error frame, `Hard`, the far end's
+/// transfer at fault; a whole answer cut is the caller's 502.
+#[test]
+fn a_reply_that_is_cut_says_so() {
+    let arrived = arrival("openai", true);
+    let lane = lane("anthropic");
+    let ctx = ReplyCtx {
+        arrived: &arrived,
+        lane: &lane,
+        intent: stream_intent(chat_handler("openai"), arrived.parsed.as_ref()),
+        passthrough: false,
+    };
+    let far = native_stream("anthropic");
+    let head: &[(&[u8], &[u8])] = &[(b"content-type", b"text/event-stream")];
+    let mut reply = Reply::new(&ctx, 200, head);
+    let _ = reply.feed(&ctx, &far[..far.len() / 2], false, AT);
+    let cut = reply.cut(&ctx, true);
+    assert!(cut.done && !cut.bytes.is_empty());
+    assert_eq!(cut.verdict, Verdict::Hard);
+    assert_eq!(cut.fault, Some(Fault::Transient("mid-stream")));
+
+    let arrived = arrival("openai", false);
+    let ctx = ReplyCtx {
+        arrived: &arrived,
+        lane: &lane,
+        intent: stream_intent(chat_handler("openai"), arrived.parsed.as_ref()),
+        passthrough: false,
+    };
+    let mut reply = Reply::new(&ctx, 200, JSON_HEAD);
+    let _ = reply.feed(&ctx, b"{\"id\":", false, AT);
+    let cut = reply.cut(&ctx, true);
+    assert_eq!(cut.head.map(|h| h.status), Some(502));
+    assert_eq!(cut.fault, Some(Fault::Transient("transport")));
+}

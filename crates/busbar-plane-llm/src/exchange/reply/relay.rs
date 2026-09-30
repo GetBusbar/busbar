@@ -424,6 +424,13 @@ impl Relay {
         }
     }
 
+    /// The usage a stream's readers have read so far (cheap: nothing is scanned); `None` for a
+    /// relay that reads its usage only at the end.
+    #[must_use]
+    pub fn streamed_usage(&self) -> Option<TokenUsage> {
+        self.translate.as_ref().and_then(|t| t.usage())
+    }
+
     /// The usage an answer that ended early had incurred: what a stream's readers accumulated;
     /// for a same-dialect whole body, the usage the bytes in hand report, else the floor over them
     /// (a failed far-end transfer bills only what the far end reported, never the floor).
