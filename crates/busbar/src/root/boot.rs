@@ -158,7 +158,8 @@ pub struct Stages {
     pub candidates: Vec<Candidate>,
     /// The instances selected over them.
     pub selected: Vec<Selected>,
-    /// Every selected instance's inbound listener, with its bind (boot stage 3f's input).
+    /// THE ONE LIST OF LISTENERS (boot stage 3f's input): the root's own, then every selected
+    /// instance's inbound listener, each with its bind.
     pub inbound: Vec<InboundBind>,
 }
 
@@ -188,13 +189,18 @@ impl Stages {
                     kind_word(c.kind)
                 )
             })
-            .chain(self.inbound.iter().map(|b| {
-                let tls = if b.tls.is_some() { "tls" } else { "clear" };
-                format!(
-                    "    listens: {} on {} over {} ({tls}, at most {} connections)",
-                    b.at, b.listen, b.transport, b.max_conns
-                )
-            }))
+            .chain(
+                self.inbound
+                    .iter()
+                    .filter(|b| b.owner != BindOwner::Root)
+                    .map(|b| {
+                        let tls = if b.tls.is_some() { "tls" } else { "clear" };
+                        format!(
+                            "    listens: {} on {} over {} ({tls}, at most {} connections)",
+                            b.at, b.listen, b.transport, b.max_conns
+                        )
+                    }),
+            )
             .collect()
     }
 }
@@ -204,8 +210,8 @@ fn kind_word(k: KindCode) -> String {
 }
 
 /// `--validate`'s STAGES 0-2 over the configuration at `path` and the dropped-in plugins the
-/// preflight admitted: Plan, Discover, Select — see [`stages`]. `reserved` are the addresses the
-/// host's own listeners take. Nothing is opened.
+/// preflight admitted: Plan, Discover, Select — see [`stages`]. `root` are the host's own listeners
+/// ([`root_binds`]). Nothing is opened.
 ///
 /// # Errors
 ///
@@ -213,15 +219,49 @@ fn kind_word(k: KindCode) -> String {
 pub fn validate(
     path: &std::path::Path,
     registry: &PluginRegistry,
-    reserved: &[(String, std::net::SocketAddr)],
+    root: &RootListens<'_>,
 ) -> Result<Stages, String> {
     let doc = document(path).unwrap_or_default();
-    stages(&doc, discover(registry)?, reserved)
+    let root = root_binds(&doc, root);
+    stages(&doc, discover(registry)?, root)
 }
 
-/// STAGES 0 and 2 over `doc` and the discovered `candidates`: Select; every selected instance's
-/// inbound listener read from its settings — two listeners on one address, or one on an address in
-/// `reserved`, are refused here, before anything binds; and the loader's version refusal for every
+/// The addresses the host's own listeners take, as the resolved configuration states them.
+#[derive(Debug, Clone, Copy)]
+pub struct RootListens<'a> {
+    /// The data door (`listen`).
+    pub listen: &'a str,
+    /// The admin surface (`admin_listen`).
+    pub admin_listen: &'a str,
+}
+
+/// THE ROOT'S OWN LISTENERS AS BINDS, the head of the one list: the data door at `listen` with the
+/// raw `tls` block, and the admin surface at `admin_listen` with the raw `admin_tls` block. They
+/// keep 1.5.5's bound: no connection cap. An address that does not parse as `ip:port` is left to
+/// the configuration's own validation and binds nothing here.
+#[must_use]
+pub fn root_binds(doc: &serde_json::Value, root: &RootListens<'_>) -> Vec<InboundBind> {
+    [
+        ("listen", root.listen, "tls"),
+        ("admin_listen", root.admin_listen, "admin_tls"),
+    ]
+    .into_iter()
+    .filter_map(|(setting, addr, tls)| {
+        Some(InboundBind {
+            owner: BindOwner::Root,
+            transport: String::new(),
+            at: setting.to_string(),
+            listen: addr.parse().ok()?,
+            tls: doc.get(tls).filter(|v| !v.is_null()).cloned(),
+            max_conns: u64::MAX,
+        })
+    })
+    .collect()
+}
+
+/// STAGES 0 and 2 over `doc` and the discovered `candidates`: Select; the one list of listeners,
+/// `root` first, then every selected instance's inbound listener read from its settings — two
+/// listeners on one address are refused here, before anything binds; and the loader's version refusal for every
 /// SELECTED plugin whose Statement states a mechanism or kind ABI version other than this host's,
 /// naming the rebuild (THE DESIGN §11.8).
 ///
@@ -231,12 +271,12 @@ pub fn validate(
 pub fn stages(
     doc: &serde_json::Value,
     candidates: Vec<Candidate>,
-    reserved: &[(String, std::net::SocketAddr)],
+    root: Vec<InboundBind>,
 ) -> Result<Stages, String> {
     let uses = Uses::of(doc);
     let selected = select(&uses, &candidates);
     refuse_inbound(&candidates, &selected)?;
-    let inbound = inbound(doc, &candidates, &selected, reserved)?;
+    let inbound = inbound(doc, &candidates, &selected, root)?;
     for s in &selected {
         let c = &candidates[s.candidate];
         let facts =

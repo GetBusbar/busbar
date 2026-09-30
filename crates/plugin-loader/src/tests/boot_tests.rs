@@ -592,10 +592,23 @@ fn inbound_needs_are_collected_with_their_binds_from_instance_settings() {
             vec![need(DIRECTION_INBOUND, "scheme-b", "nowhere")],
         ),
     ];
-    let got = inbound(&d, &cands, &[sel(0, "agents"), sel(1, "scrape")], &[]).unwrap();
+    let got = inbound(
+        &d,
+        &cands,
+        &[sel(0, "agents"), sel(1, "scrape")],
+        Vec::new(),
+    )
+    .unwrap();
     assert_eq!(got.len(), 2);
-    assert_eq!(got[0].instance, "agents");
-    assert_eq!(got[0].need, 1, "the need's index in its Statement");
+    assert_eq!(
+        got[0].owner,
+        BindOwner::Need {
+            instance: "agents".into(),
+            kind: KindCode::Plane,
+            need: 1,
+        },
+        "the need's index in its Statement"
+    );
     assert_eq!(got[0].transport, "scheme-a");
     assert_eq!(got[0].at, "agents.ingress.edge");
     assert_eq!(got[0].listen, "127.0.0.1:9443".parse().unwrap());
@@ -622,7 +635,7 @@ fn red_an_inbound_need_without_a_usable_bind_is_refused_by_its_setting() {
             &["agents"],
             vec![need(DIRECTION_INBOUND, "scheme-a", target_from)],
         )];
-        inbound(&d, &c, &[sel(0, "agents")], &[]).unwrap_err()
+        inbound(&d, &c, &[sel(0, "agents")], Vec::new()).unwrap_err()
     };
     assert!(one("{}", "").contains("names no settings block"));
     assert_eq!(
@@ -664,7 +677,7 @@ fn red_two_listeners_on_one_address_are_refused() {
         ],
     )];
     assert_eq!(
-        inbound(&d, &c, &[sel(0, "agents")], &[]).unwrap_err(),
+        inbound(&d, &c, &[sel(0, "agents")], Vec::new()).unwrap_err(),
         "agents.b.listen: 127.0.0.1:9000 is already taken by `agents.a.listen`"
     );
     let d = doc(r#"{"agents": {"a": {"listen": "127.0.0.1:8080"}}}"#);
@@ -674,9 +687,16 @@ fn red_two_listeners_on_one_address_are_refused() {
         &["agents"],
         vec![need(DIRECTION_INBOUND, "scheme-a", "a")],
     )];
-    let root = [("listen".to_string(), "0.0.0.0:8080".parse().unwrap())];
+    let root = vec![InboundBind {
+        owner: BindOwner::Root,
+        transport: String::new(),
+        at: "listen".into(),
+        listen: "0.0.0.0:8080".parse().unwrap(),
+        tls: None,
+        max_conns: u64::MAX,
+    }];
     assert_eq!(
-        inbound(&d, &c, &[sel(0, "agents")], &root).unwrap_err(),
+        inbound(&d, &c, &[sel(0, "agents")], root).unwrap_err(),
         "agents.a.listen: 127.0.0.1:8080 is already taken by `listen`"
     );
     let d = doc(r#"{"agents": {"a": {"listen": "127.0.0.1:0"}, "b": {"listen": "127.0.0.1:0"}}}"#);
@@ -690,7 +710,9 @@ fn red_two_listeners_on_one_address_are_refused() {
         ],
     )];
     assert_eq!(
-        inbound(&d, &c, &[sel(0, "agents")], &[]).unwrap().len(),
+        inbound(&d, &c, &[sel(0, "agents")], Vec::new())
+            .unwrap()
+            .len(),
         2,
         "port 0 asks for a free one and never collides"
     );

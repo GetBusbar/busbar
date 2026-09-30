@@ -269,7 +269,7 @@ fn listening_plane(target_from: &str) -> Candidate {
 fn red_a_selected_plugin_with_an_inbound_need_is_refused_until_it_can_be_served() {
     let doc: serde_json::Value =
         serde_json::from_str(r#"{"agents": {"ingress": {"listen": "127.0.0.1:8081"}}}"#).unwrap();
-    let err = stages(&doc, vec![listening_plane("ingress")], &[])
+    let err = stages(&doc, vec![listening_plane("ingress")], Vec::new())
         .err()
         .expect("refused");
     assert!(
@@ -280,5 +280,58 @@ fn red_a_selected_plugin_with_an_inbound_need_is_refused_until_it_can_be_served(
     );
     // Not selected, not refused: the refusal is the configuration's use, not the plugin's presence.
     let unused: serde_json::Value = serde_json::from_str(r#"{}"#).unwrap();
-    assert!(stages(&unused, vec![listening_plane("ingress")], &[]).is_ok());
+    assert!(stages(&unused, vec![listening_plane("ingress")], Vec::new()).is_ok());
+}
+
+/// RED (ARCHITECT ruling 2026-09-30, H5 (a)): the root's own listeners head THE ONE LIST: the data
+/// door at `listen` with its raw `tls` block and the admin surface at `admin_listen` with its raw
+/// `admin_tls`, uncapped as in 1.5.5; `--validate` reports only plugin listeners.
+#[test]
+fn red_the_roots_listeners_head_the_one_list_of_listeners() {
+    let doc: serde_json::Value = serde_json::from_str(
+        r#"{"listen": "0.0.0.0:8080", "tls": {"cert": {"ref": "c"}, "key": {"ref": "k"}}}"#,
+    )
+    .unwrap();
+    let root = root_binds(
+        &doc,
+        &RootListens {
+            listen: "0.0.0.0:8080",
+            admin_listen: "127.0.0.1:8081",
+        },
+    );
+    let got = stages(&doc, Vec::new(), root)
+        .map(|s| s.inbound)
+        .ok()
+        .unwrap();
+    let seen: Vec<(String, String, bool, u64)> = got
+        .iter()
+        .map(|b| {
+            assert_eq!(b.owner, BindOwner::Root);
+            (
+                b.listen_setting(),
+                b.listen.to_string(),
+                b.tls.is_some(),
+                b.max_conns,
+            )
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            (
+                "listen".to_string(),
+                "0.0.0.0:8080".to_string(),
+                true,
+                u64::MAX
+            ),
+            (
+                "admin_listen".to_string(),
+                "127.0.0.1:8081".to_string(),
+                false,
+                u64::MAX
+            ),
+        ]
+    );
+    let report = stages(&doc, Vec::new(), got).ok().unwrap().lines();
+    assert!(report.iter().all(|l| !l.contains("listens:")), "{report:?}");
 }

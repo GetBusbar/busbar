@@ -462,22 +462,36 @@ pub fn load_planes(
 /// A listener's connection cap when its settings block names none (new in 1.6.0).
 pub const DEFAULT_MAX_CONNS: u64 = 1024;
 
-/// ONE INBOUND NEED'S BIND (boot stages 3f and 6): the listener a selected instance's
-/// `DIRECTION_INBOUND` need asks for, read from the settings block its `target_from` names,
+/// Whose listener a bind is.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BindOwner {
+    /// The host's own: the root data door (`listen`) or the admin surface (`admin_listen`).
+    Root,
+    /// A selected instance's `DIRECTION_INBOUND` need.
+    Need {
+        /// The instance (the selection's instance name).
+        instance: String,
+        /// Its kind.
+        kind: KindCode,
+        /// The need, by its index in the instance's Statement needs.
+        need: u32,
+    },
+}
+
+/// ONE LISTENER'S BIND (boot stages 3f and 6), from the one list every listener comes from: the
+/// root's own (its `listen` and `admin_listen`, which the root synthesises) and each selected
+/// instance's `DIRECTION_INBOUND` need, read from the settings block its `target_from` names,
 /// `{listen, tls: {cert, key, client_ca?}, max_conns?}` — the 1.5.5 root `listen` / `tls` shape.
 /// The TLS block stays raw: its `cert` and `key` are secret references the root resolves through
 /// the secret kind at stage 3f.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InboundBind {
-    /// The instance (the selection's instance name).
-    pub instance: String,
-    /// Its kind.
-    pub kind: KindCode,
-    /// The need, by its index in the instance's Statement needs.
-    pub need: u32,
-    /// The transport claim the need names.
+    /// Whose listener it is.
+    pub owner: BindOwner,
+    /// The transport claim the need names; empty for the root's own.
     pub transport: String,
-    /// Where its block is, as the operator spells it (`<section>.<instance>.<path>`).
+    /// Where its block is, as the operator spells it: `<section>.<instance>.<path>` for a need,
+    /// the root setting (`listen`, `admin_listen`) for the root's own.
     pub at: String,
     /// The address to bind.
     pub listen: std::net::SocketAddr,
@@ -485,6 +499,17 @@ pub struct InboundBind {
     pub tls: Option<serde_json::Value>,
     /// The most connections held at once.
     pub max_conns: u64,
+}
+
+impl InboundBind {
+    /// The setting that states the address, as the operator spells it.
+    #[must_use]
+    pub fn listen_setting(&self) -> String {
+        match self.owner {
+            BindOwner::Root => self.at.clone(),
+            BindOwner::Need { .. } => format!("{}.listen", self.at),
+        }
+    }
 }
 
 /// Where a selected instance's settings live in `doc`, and how the operator spells that place: a
@@ -525,10 +550,10 @@ fn collide(a: std::net::SocketAddr, b: std::net::SocketAddr) -> bool {
         && (a.ip() == b.ip() || a.ip().is_unspecified() || b.ip().is_unspecified())
 }
 
-/// STAGE 3f's input, pure: every `DIRECTION_INBOUND` need of every selected instance, with its bind
-/// read from the settings block the need's `target_from` names. `reserved` are the addresses the
-/// host's own listeners take (`(what, address)`, e.g. the root `listen`); two listeners on one
-/// address, or one on a reserved address, are refused here, before anything binds.
+/// STAGE 3f's input, pure: THE ONE LIST OF LISTENERS — `root`, the host's own binds, then every
+/// `DIRECTION_INBOUND` need of every selected instance, with its bind read from the settings block
+/// the need's `target_from` names. Two listeners on one address are refused here, before anything
+/// binds.
 ///
 /// # Errors
 ///
@@ -539,9 +564,9 @@ pub fn inbound(
     doc: &serde_json::Value,
     candidates: &[Candidate],
     selected: &[Selected],
-    reserved: &[(String, std::net::SocketAddr)],
+    root: Vec<InboundBind>,
 ) -> Result<Vec<InboundBind>, String> {
-    let mut out: Vec<InboundBind> = Vec::new();
+    let mut out = root;
     for s in selected {
         let Some(c) = candidates.get(s.candidate) else {
             continue;
@@ -579,21 +604,18 @@ pub fn inbound(
                     .filter(|n| *n > 0)
                     .ok_or_else(|| format!("{at}.max_conns: not a positive whole number"))?,
             };
-            if let Some((what, _)) = reserved.iter().find(|(_, a)| collide(*a, listen)) {
-                return Err(format!(
-                    "{at}.listen: {listen} is already taken by `{what}`"
-                ));
-            }
             if let Some(o) = out.iter().find(|o| collide(o.listen, listen)) {
                 return Err(format!(
-                    "{at}.listen: {listen} is already taken by `{}.listen`",
-                    o.at
+                    "{at}.listen: {listen} is already taken by `{}`",
+                    o.listen_setting()
                 ));
             }
             out.push(InboundBind {
-                instance: s.instance.clone(),
-                kind: c.kind,
-                need: u32::try_from(i).unwrap_or(u32::MAX),
+                owner: BindOwner::Need {
+                    instance: s.instance.clone(),
+                    kind: c.kind,
+                    need: u32::try_from(i).unwrap_or(u32::MAX),
+                },
                 transport: n.transport.clone(),
                 at,
                 listen,
