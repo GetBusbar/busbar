@@ -100,10 +100,17 @@ fn the_default_egress_class_is_the_deployments_security_stance() {
         busbar_contract::abi::mechanism::call::Outcome::Refused,
         "an unmapped class is refused"
     );
-    let open = kernel(&[], true);
+    // `allow_all_metadata` lifts the denylist (the operator's additions with it); the address
+    // guard's own metadata refusal is the guard's, and no deployment setting speaks for it.
+    let open = kernel(&["metadata.corp.example"], true);
+    assert_eq!(
+        verdict(&open, "https://metadata.corp.example/", DEFAULT_EGRESS_CLASS).value,
+        svc::DEST_ALLOWED,
+        "allow_all_metadata lifts the denylist"
+    );
     assert_eq!(
         verdict(&open, "https://169.254.169.254/", DEFAULT_EGRESS_CLASS).value,
-        svc::DEST_ALLOWED,
-        "allow_all_metadata turns the metadata guard off"
+        svc::DEST_METADATA,
+        "the address guard still refuses the metadata address"
     );
 }
