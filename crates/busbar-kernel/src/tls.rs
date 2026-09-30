@@ -109,10 +109,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use axum::Router;
-use busbar_contract::transport::wire::{
-    CloseReason, ConnectionSecurity, Listener, RawIo, TransportError,
-};
-use busbar_contract::transport::Transport;
+use busbar_contract::transport::wire::{ConnectionSecurity, RawIo};
 use bytes::Buf;
 use http_body::{Body, Frame, SizeHint};
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -234,11 +231,24 @@ pub trait Admits: Send {
 }
 
 /// A tokio socket listener as an accept source, its accept errors absorbed by [`AcceptBackoff`]:
-/// what [`serve`] and [`serve_plain`] are handed.
-struct SocketAdmits {
+/// what [`serve`] and [`serve_plain`] are handed, and what a build without the connector's
+/// listener serves on.
+pub struct SocketAdmits {
     listener: TcpListener,
     backoff: AcceptBackoff,
     scheme: &'static str,
+}
+
+impl SocketAdmits {
+    /// `listener` as an accept source.
+    #[must_use]
+    pub fn new(listener: TcpListener) -> Self {
+        Self {
+            listener,
+            backoff: AcceptBackoff::new(),
+            scheme: "http",
+        }
+    }
 }
 
 impl Admits for SocketAdmits {
@@ -499,46 +509,6 @@ async fn accept_loop(
     // their requests finish or their clients hang up).
     graceful.shutdown().await;
     Ok(())
-}
-
-/// Serve `router` over the connections a TRANSPORT accepts on `listener`, each detached to its byte
-/// stream, until `shutdown` resolves or the wire closes the listener, then drain: the listener the
-/// host serves when the wire under its data door came in over the plugin ABI rather than being this
-/// process's own socket (#3). `security` wraps each stream as [`serve`] does; `None` serves it plain.
-/// Every connection gets the same hardened builder and body bounds the two socket loops give
-/// theirs, and an accept error is absorbed as theirs are.
-pub async fn serve_wire(
-    wire: Arc<dyn Transport>,
-    listener: Listener,
-    router: Router,
-    security: Option<Arc<dyn ConnectionSecurity>>,
-    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
-) {
-    let (graceful, served) = (GracefulShutdown::new(), Served::new(router, security));
-    let (mut shutdown, mut backoff) = (std::pin::pin!(shutdown), AcceptBackoff::new());
-    loop {
-        let conn = tokio::select! {
-            biased;
-            () = &mut shutdown => break,
-            accepted = wire.accept(&listener) => match accepted {
-                Ok(conn) => { backoff.reset(); conn }
-                // The wire closed its listener: nothing more arrives.
-                Err(TransportError::Closed) => break,
-                Err(e) => {
-                    backoff.absorb("wire", &io::Error::other(format!("{e:?}"))).await;
-                    continue;
-                }
-            },
-        };
-        match wire.detach(&conn) {
-            Some(stream) => {
-                let (peer, io) = (stream.peer().to_string(), stream.into_io());
-                tokio::spawn(served.clone().raw(io, peer, graceful.watcher()));
-            }
-            None => wire.close(conn, CloseReason::Normal),
-        }
-    }
-    graceful.shutdown().await;
 }
 
 /// An inbound-body wrapper that bounds the wall-clock time a request body may occupy a connection,

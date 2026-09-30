@@ -389,6 +389,7 @@ dependencies = [
  "metrics",
  "opentelemetry-proto",
  "prost",
+ "rcgen",
  "reqwest 0.12.28",
  "rustls",
  "serde_json",

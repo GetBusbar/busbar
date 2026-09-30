@@ -266,12 +266,16 @@ async fn shutdown_signal_blocks_when_no_signal_is_delivered() {
 }
 
 /// `serve_listener`: a `-> ()` mutant would never actually accept connections. Bind a real
-/// listener, serve a trivial router through `serve_listener`, and confirm a real HTTP request
-/// against it succeeds before the shutdown future fires.
+/// listener (the connector's, as the root binds its own), serve a trivial router through
+/// `serve_listener`, and confirm a real HTTP request against it succeeds before the shutdown
+/// future fires.
+#[cfg(unix)]
 #[tokio::test]
 async fn serve_listener_actually_serves_real_http_traffic() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener =
+        busbar_core_connector::listen::Listening::bind_stream("127.0.0.1:0", ROOT_BIND_LIMITS)
+            .unwrap();
+    let addr = listener.local_addr();
     let router = Router::new().route("/probe", axum::routing::get(|| async { "ok" }));
     let secret_resolver = Arc::new(busbar_kernel::test_support::builtins_only_secret_resolver());
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);

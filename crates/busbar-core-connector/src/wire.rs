@@ -16,21 +16,21 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
-use busbar_contract::abi::transport::{CLOSE_NORMAL, SIDE_ACCEPT, SIDE_DIAL};
+use busbar_contract::abi::transport::{CLOSE_NORMAL, SIDE_DIAL};
 use busbar_contract::transport::wire::{
-    ArrivalRecord, CloseReason, Conn, ConnHandle, Direction as FrameDirection, FrameMeta, Listener,
-    ListenerHandle, RawStream, TransportError,
+    ArrivalRecord, CloseReason, Conn, ConnHandle, Direction as FrameDirection, FrameMeta,
+    RawStream, TransportError,
 };
 use busbar_contract::transport::FrameStream;
 use busbar_contract::{
-    DestinationFacts, Frame, Fut, Refusal, ScratchBytes, SlabBytes, StreamId, TransportConfigView,
-    TransportKeyHandle, VerifiedDestination,
+    DestinationFacts, Frame, Fut, Refusal, ScratchBytes, SlabBytes, StreamId, TransportKeyHandle,
+    VerifiedDestination,
 };
 
 use crate::framer::{self, Established, FramerDoor, Framing, Got};
@@ -49,7 +49,6 @@ pub struct HostWire {
     door: Arc<dyn FramerDoor>,
     key: &'static str,
     conns: Arc<Mutex<HashMap<u64, Arc<HostConn>>>>,
-    listeners: Mutex<HashMap<u64, Arc<Registered<TcpListener>>>>,
     next: AtomicU64,
     dial_timeout: Duration,
 }
@@ -140,16 +139,6 @@ impl ConnHandle for Handle {
     }
 }
 
-struct Bound {
-    addr: String,
-}
-
-impl ListenerHandle for Bound {
-    fn local_addr(&self) -> String {
-        self.addr.clone()
-    }
-}
-
 /// An I/O error as the transport seam spells it.
 #[must_use]
 pub fn map_io_err(e: &io::Error) -> TransportError {
@@ -186,7 +175,6 @@ impl HostWire {
             door,
             key,
             conns: Arc::new(Mutex::new(HashMap::new())),
-            listeners: Mutex::new(HashMap::new()),
             next: AtomicU64::new(1),
             dial_timeout: DIAL_TIMEOUT,
         })
@@ -203,6 +191,7 @@ impl HostWire {
         self.conns.lock().expect("conns").get(&id).cloned()
     }
 
+    #[cfg(test)]
     fn hold(
         &self,
         stream: TcpStream,
@@ -304,46 +293,17 @@ impl HostWire {
         }
     }
 
-    /// Bind a listener on the configured address (loopback, any port, when none is configured).
-    pub fn listen<'a>(
-        &'a self,
-        cfg: &'a dyn TransportConfigView,
-        _keys: &'a TransportKeyHandle,
-    ) -> Fut<'a, Listener> {
-        Box::pin(async move {
-            let listener =
-                socket::listen(cfg.bind().unwrap_or("127.0.0.1:0")).map_err(|e| map_io_err(&e))?;
-            let addr = listener
-                .local_addr()
-                .map_err(|e| map_io_err(&e))?
-                .to_string();
-            let reg = reactor::register(listener).map_err(|e| map_io_err(&e))?;
-            let l = Listener::new(Arc::new(Bound { addr }));
-            self.listeners
-                .lock()
-                .expect("listeners")
-                .insert(l.id(), Arc::new(reg));
-            Ok(l)
-        })
-    }
-
-    /// The next connection on `l`, held and framed.
-    pub fn accept<'a>(&'a self, l: &'a Listener) -> Fut<'a, Conn> {
-        Box::pin(async move {
-            let reg = self
-                .listeners
-                .lock()
-                .expect("listeners")
-                .get(&l.id())
-                .cloned()
-                .ok_or(TransportError::Closed)?;
-            let (stream, peer) = futures::future::poll_fn(|cx| {
-                reg.poll_io(Direction::Read, cx, TcpListener::accept)
-            })
-            .await
-            .map_err(|e| map_io_err(&e))?;
-            self.hold(stream, peer.to_string(), SIDE_ACCEPT, "")
-        })
+    /// Hold an accepted socket as a framed connection, begun on the accept side: the tests' far
+    /// end. Nothing listens through this seam in the product: an inbound socket is the
+    /// connector's listener's ([`crate::listen::Listening`], the one listener source).
+    #[cfg(test)]
+    pub(crate) fn accepted(&self, stream: TcpStream, peer: String) -> Result<Conn, TransportError> {
+        self.hold(
+            stream,
+            peer,
+            busbar_contract::abi::transport::SIDE_ACCEPT,
+            "",
+        )
     }
 
     /// Dial a verified upstream destination: its authority, as [`Self::dial_authority`] does.

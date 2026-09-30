@@ -171,19 +171,21 @@ impl busbar_contract::Transport for RootWire {
         self.0.arrival(conn)
     }
 
+    /// Nothing listens through this seam: every inbound socket is the connector's listener's (the
+    /// one listener source, ARCHITECT ruling 2026-09-30 H5).
     fn listen<'a>(
         &'a self,
-        cfg: &'a dyn busbar_contract::TransportConfigView,
-        keys: &'a busbar_contract::TransportKeyHandle,
+        _cfg: &'a dyn busbar_contract::TransportConfigView,
+        _keys: &'a busbar_contract::TransportKeyHandle,
     ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Listener> {
-        self.0.listen(cfg, keys)
+        Box::pin(async { Err(busbar_contract::transport::wire::TransportError::Refused) })
     }
 
     fn accept<'a>(
         &'a self,
-        l: &'a busbar_contract::transport::wire::Listener,
+        _l: &'a busbar_contract::transport::wire::Listener,
     ) -> busbar_contract::Fut<'a, busbar_contract::transport::wire::Conn> {
-        self.0.accept(l)
+        Box::pin(async { Err(busbar_contract::transport::wire::TransportError::Closed) })
     }
 
     fn dial<'a>(

@@ -237,8 +237,8 @@ pub struct RootListens<'a> {
 
 /// THE ROOT'S OWN LISTENERS AS BINDS, the head of the one list: the data door at `listen` with the
 /// raw `tls` block, and the admin surface at `admin_listen` with the raw `admin_tls` block. They
-/// keep 1.5.5's bound: no connection cap. An address that does not parse as `ip:port` is left to
-/// the configuration's own validation and binds nothing here.
+/// keep 1.5.5's bound: no connection cap. An address is a socket address or a name it resolves to
+/// (its first address, as 1.5.5's listener bound); one that resolves to none binds nothing here.
 #[must_use]
 pub fn root_binds(doc: &serde_json::Value, root: &RootListens<'_>) -> Vec<InboundBind> {
     [
@@ -251,7 +251,10 @@ pub fn root_binds(doc: &serde_json::Value, root: &RootListens<'_>) -> Vec<Inboun
             owner: BindOwner::Root,
             transport: String::new(),
             at: setting.to_string(),
-            listen: addr.parse().ok()?,
+            listen: addr
+                .parse()
+                .ok()
+                .or_else(|| std::net::ToSocketAddrs::to_socket_addrs(addr).ok()?.next())?,
             tls: doc.get(tls).filter(|v| !v.is_null()).cloned(),
             max_conns: u64::MAX,
         })

@@ -9,51 +9,27 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use busbar_contract::transport::wire::{CloseReason, Listener, TransportError};
-use busbar_contract::{
-    ConfigView, ScratchBytes, StreamId, TransportConfigView, TransportKeyHandle,
-};
+use busbar_contract::transport::wire::{CloseReason, TransportError};
+use busbar_contract::{ScratchBytes, StreamId};
 use futures::StreamExt;
 
 use super::*;
 use crate::support::{worker, Knobs, TestDoor};
 
-struct At(String);
-
-impl ConfigView for At {
-    fn get_str(&self, _: &str) -> Option<&str> {
-        None
-    }
-    fn get_int(&self, _: &str) -> Option<i64> {
-        None
-    }
-    fn get_bool(&self, _: &str) -> Option<bool> {
-        None
-    }
-}
-
-impl TransportConfigView for At {
-    fn bind(&self) -> Option<&str> {
-        Some(&self.0)
-    }
-}
-
 fn wire() -> Arc<HostWire> {
     Arc::new(HostWire::new(Arc::new(TestDoor::identity("bytes"))).unwrap())
 }
 
-async fn bound(w: &HostWire) -> Listener {
-    w.listen(&At("127.0.0.1:0".into()), &TransportKeyHandle::keyless())
-        .await
-        .unwrap()
-}
-
-/// A dialled and an accepted end of one connection.
-async fn pair(w: &Arc<HostWire>) -> (Conn, Conn, Listener) {
-    let l = bound(w).await;
-    let addr = l.local_addr();
-    let (client, server) = tokio::join!(w.dial_authority(&addr), w.accept(&l));
-    (client.unwrap(), server.unwrap(), l)
+/// A dialled and an accepted end of one connection, and the address dialled.
+async fn pair(w: &Arc<HostWire>) -> (Conn, Conn, String) {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap().to_string();
+    let (client, far) = tokio::join!(w.dial_authority(&addr), l.accept());
+    let (far, peer) = far.unwrap();
+    let server = w
+        .accepted(far.into_std().unwrap(), peer.to_string())
+        .unwrap();
+    (client.unwrap(), server, addr)
 }
 
 async fn read_n(w: &HostWire, c: &Conn, n: usize) -> Vec<u8> {
@@ -203,20 +179,6 @@ fn a_unit0_refusal_is_delivered_and_finalises_the_connection() {
 }
 
 #[test]
-fn each_acceptor_binds_its_own_listener_on_one_address() {
-    worker().block_on(async {
-        let w = wire();
-        let first = bound(&w).await;
-        let again = w
-            .listen(&At(first.local_addr()), &TransportKeyHandle::keyless())
-            .await
-            .expect("a second acceptor binds the same address");
-        assert_eq!(first.local_addr(), again.local_addr());
-        assert_ne!(first.id(), again.id());
-    });
-}
-
-#[test]
 fn a_dial_to_a_metadata_host_or_a_name_is_refused() {
     worker().block_on(async {
         let w = wire();
@@ -276,12 +238,8 @@ fn a_dial_to_nothing_is_refused_and_a_closed_connection_takes_no_write() {
             w.dial_authority(&nothing).await.map(|_| ()),
             Err(TransportError::Refused)
         );
-        let (client, _server, l) = pair(&w).await;
-        assert_eq!(
-            client.peer(),
-            l.local_addr(),
-            "the peer is the address dialled"
-        );
+        let (client, _server, addr) = pair(&w).await;
+        assert_eq!(client.peer(), addr, "the peer is the address dialled");
         w.close(client.clone(), CloseReason::Normal);
         assert_eq!(
             w.write(&client, StreamId(0), ScratchBytes::new(b"late"))
