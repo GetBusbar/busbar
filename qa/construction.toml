@@ -379,8 +379,8 @@ abi = ["crates/busbar-contract"]
 [gate.ceiling_raises."rules.ports-only-tests.max_per_crate.busbar-llm"]
 file    = "qa/construction.toml"
 from    = 990
-to      = 995
-because = "Test anchors for the failover-after-refusal test the ARCHITECT asked for (RESOLVE-PIN; ARCHITECT 2026-10-01, approved as test-only re-pins at the measured figures). Expires at LLM-ENGINE-DELETE: busbar-llm goes, and these lines with it. The five lines: crates/busbar-llm/src/engine/tests/dial_refusal_failover_tests.rs:19 (busbar_kernel::egress::engine::{with_scoped_dial, DialTable}), :20 (egress::fixtures::RebindingResolver), :21 (net_guard::DialDenylist), :22 (store::now), :64 (test_support::BuiltAppSeam). Measured by cargo xtask gate construction: 990 on url-seam-final 9f2563a05, 995 at the tip."
+to      = 996
+because = "Test anchors for the failover-after-refusal test the ARCHITECT asked for (RESOLVE-PIN; ARCHITECT 2026-10-01, approved as test-only re-pins at the measured figures). Expires at LLM-ENGINE-DELETE: busbar-llm goes, and these lines with it. The five lines: crates/busbar-llm/src/engine/tests/dial_refusal_failover_tests.rs:19 (busbar_kernel::egress::engine::{with_scoped_dial, DialTable}), :20 (egress::fixtures::RebindingResolver), :21 (net_guard::DialDenylist), :22 (store::now), :64 (test_support::BuiltAppSeam). Measured by cargo xtask gate construction: 990 on url-seam-final 9f2563a05, 995 at the tip. Then the step-34a proof test (the plane driver's DriverConfig::status over the llm plane's refusal rows against 64 golden/1.5.5 cells) moved from the root into crates/busbar-llm/tests (ARCHITECT ruling under GRANT 2, 2026-09-30): it names busbar_kernel::plane_driver once, +1: 995 -> 996. Drains at D3."
 
 [gate.ceiling_raises."cell[crate=busbar-llm,kind=transport].count"]
 file    = "qa/kind-isolation.toml"
@@ -398,8 +398,8 @@ because = "Test anchors for the failover-after-refusal test the ARCHITECT asked 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
 file    = "qa/construction.toml"
 from    = 53148
-to      = 54254
-because = "OWNER GRANT 2026-09-29 (3) / ARCHITECT GRANT 3, kernel line-limit at the measured value, itemised per lane over predev 53148: E12 (SWEEP-KERNEL + LLM-CLEAN, lower-only) measured 52945 (-203); URL-SEAM -17 and RESOLVE-PIN +66 (the pooled client's dial judge; ARCHITECT approved) = +49; H2 host services +1260 (ARCHITECT approved 2026-10-01). 53148 - 203 + 49 + 1260 = 54254."
+to      = 54295
+because = "OWNER GRANT 2026-09-29 (3) / ARCHITECT GRANT 3, kernel line-limit at the measured value, itemised per lane over predev 53148: E12 (SWEEP-KERNEL + LLM-CLEAN, lower-only) measured 52945 (-203); URL-SEAM -17 and RESOLVE-PIN +66 (the pooled client's dial judge; ARCHITECT approved) = +49; H2 host services +1260 (ARCHITECT approved 2026-10-01). 53148 - 203 + 49 + 1260 = 54254. Then FOLD-LLM2 (step 34a and the plane ABI v1 refusal/arrival edits: the plane driver chooses a refusal's status from the plane's stated rows, keeps a refused arrive's own code and 4xx and the unit key, and hands refusal the reason, unit, code, target and the method on arrive), +41 measured over K1: 54254 + 41 = 54295."
 
 # ── THE KERNEL CEILING, RE-ARMED BY T13b (WIRE-STORE C1 + CONNECTOR-19 + T13B-FIX) — EXPIRED AND STRUCK
 #
@@ -518,8 +518,8 @@ because = "OWNER GRANT 2026-09-29 (3), ARCHITECT approval: line-limit re-arm at 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
 from    = 25682
-to      = 26157
-because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception at the measure, itemised per lane over predev 25682: E12 (SWEEP-L2 -186 kinds.rs traits, SWEEP-L3 -57) measured 25439 (-243); URL-SEAM busbar_contract::net +489; H2 Caller, caller-scoped host services, merge_list, entitlement and random.fill wrappers +229. 25682 - 243 + 489 + 229 = 26157."
+to      = 26458
+because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception at the measure, itemised per lane over predev 25682: E12 (SWEEP-L2 -186 kinds.rs traits, SWEEP-L3 -57) measured 25439 (-243); URL-SEAM busbar_contract::net +489; H2 Caller, caller-scoped host services, merge_list, entitlement and random.fill wrappers +229. 25682 - 243 + 489 + 229 = 26157. Then FOLD-LLM2, plane ABI v1 pre-tag edits (abi/plane/mod.rs RefusalStatus, REFUSAL_ANY_DIALECT, the tail's refusal_statuses, the RefusalIn/ArriveIn/ArriveOut/OnPieceIn/Claim fields and the wire refusal-code table; abi/plane/check.rs; layout pins; the TRANSITIONAL head seam, 1.6.0-TODO.md row 34c), +301 measured over K1: 26157 + 301 = 26458."
 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
@@ -542,8 +542,8 @@ because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan a
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
 from    = 25682
-to      = 26157
-because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception at the measure, itemised per lane over predev 25682: E12 (SWEEP-L2 -186 kinds.rs traits, SWEEP-L3 -57) measured 25439 (-243); URL-SEAM busbar_contract::net +489; H2 Caller, caller-scoped host services, merge_list, entitlement and random.fill wrappers +229. 25682 - 243 + 489 + 229 = 26157."
+to      = 26458
+because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception at the measure, itemised per lane over predev 25682: E12 (SWEEP-L2 -186 kinds.rs traits, SWEEP-L3 -57) measured 25439 (-243); URL-SEAM busbar_contract::net +489; H2 Caller, caller-scoped host services, merge_list, entitlement and random.fill wrappers +229. 25682 - 243 + 489 + 229 = 26157. Then FOLD-LLM2, plane ABI v1 pre-tag edits (abi/plane/mod.rs RefusalStatus, REFUSAL_ANY_DIALECT, the tail's refusal_statuses, the RefusalIn/ArriveIn/ArriveOut/OnPieceIn/Claim fields and the wire refusal-code table; abi/plane/check.rs; layout pins; the TRANSITIONAL head seam, 1.6.0-TODO.md row 34c), +301 measured over K1: 26157 + 301 = 26458."
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
@@ -859,7 +859,9 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # LOWERED 25682 -> 25496 with its pair (SWEEP-L2: the unimplemented kinds.rs traits and their shapes deleted, -186), at the measurement. Downward only.
 # LOWERED 25496 -> 25439 with its pair (SWEEP-L3: InboundTrust, transport/config_handle.rs and observer_installed leave production, -57), at the measurement. Downward only.
 # RE-ARMED 25439 -> 26157 with its pair (URL-SEAM +489, H2 +229), declared above.
-contract_caps = 26157
+# RE-ARMED 26157 -> 26458 with its pair (FOLD-LLM2: plane ABI v1 refusal/arrival edits, the wire
+# refusal codes, and the TRANSITIONAL head seam, +301), declared above.
+contract_caps = 26458
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -927,7 +929,7 @@ needle = "busbar_kernel::"
 # measurement on the committed tree (HEAD b091b4e83), a raise the owner ruled is a needle repair
 # arming the true count, not a relaxation of what the instrument ever saw. Downward only from here.
 [rules.ports-only.max_per_crate]
-busbar-llm = 251
+busbar-llm = 244
 # LOWERED 283 -> 282 by fold A5: the outbound wire moved to busbar-plane-mcp and reads the
 # contract's JSON-RPC reader, not the kernel's. Downward only.
 # LOWERED 282 -> 281 at the measure on the MCP-COMPAT train (T12, lk cli-5acd1cc0). Downward only.
@@ -944,7 +946,9 @@ counts can trend to zero at their own pace."""
 # item 376 (Q11/Q32, owner-signed 2026-09-24): same needle repair as ports-only above, pinned at
 # TODAY's measurement on the committed tree (HEAD b091b4e83). Downward only from here.
 [rules.ports-only-tests.max_per_crate]
-busbar-llm = 995
+# RAISED 995 -> 996 (the step-34a proof test's one busbar_kernel line; GRANT 2, declared above;
+# drains at D3).
+busbar-llm = 996
 busbar-mcp = 185
 busbar-a2a = 98
 busbar-voice = 43
@@ -1460,7 +1464,9 @@ kernel_crate = "busbar-kernel"
 # ── LOWERED 53038 -> 52945 at the train's measurement (SWEEP-KERNEL -110 with LLM-CLEAN's kernel forwarder
 # sweep -93 on top of K1-DEDUP's 53148; cargo xtask gate construction on lander8-e2). Downward only.
 # ── RE-ARMED 52945 -> 54254 for URL-SEAM + RESOLVE-PIN (+49) and H2 (+1260), declared above.
-kernel_ceiling = 54254
+# ── RE-ARMED 54254 -> 54295 for the plane driver's refusal statuses and arrival refusals (FOLD-LLM2,
+# step 34a, plane ABI v1), declared above, +41.
+kernel_ceiling = 54295
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -1571,7 +1577,8 @@ contract_crate = "busbar-contract"
 # LOWERED 25682 -> 25496 with its pair (SWEEP-L2: the unimplemented kinds.rs traits and their shapes deleted, -186), at the measurement. Downward only.
 # LOWERED 25496 -> 25439 with its pair (SWEEP-L3: InboundTrust, transport/config_handle.rs and observer_installed leave production, -57), at the measurement. Downward only.
 # RE-ARMED 25439 -> 26157 with its pair (URL-SEAM +489, H2 +229).
-caps_contract_ceiling = 26157
+# RE-ARMED 26157 -> 26458 with its pair (FOLD-LLM2: plane ABI v1 refusal/arrival edits, +301).
+caps_contract_ceiling = 26458
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
