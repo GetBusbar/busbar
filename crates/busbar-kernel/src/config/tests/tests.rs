@@ -2592,7 +2592,7 @@ advanced:
     );
     // StoreCfg's own module default is the linked row that declares itself the default.
     let declaring = crate::preflight::root_rows()
-        .0
+        .stores
         .iter()
         .find(|s| s.2)
         .map(|s| s.0);
@@ -2611,7 +2611,7 @@ advanced:
 #[test]
 fn an_omitted_store_module_reads_back_as_the_declaring_row() {
     let declaring = crate::preflight::root_rows()
-        .0
+        .stores
         .iter()
         .find(|s| s.2)
         .map(|s| s.0);

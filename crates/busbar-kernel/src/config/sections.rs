@@ -108,7 +108,9 @@ impl Default for StoreCfg {
 /// its linked rows' claims (empty when the build links no row that claims it). The kernel names no
 /// store instance.
 pub fn default_governance_store() -> String {
-    crate::preflight::root_rows().2.to_owned()
+    crate::preflight::root_rows()
+        .default_store_module
+        .to_owned()
 }
 
 /// A top-level `secrets:` entry — MODULE-LEVEL initialization config for a `kind: secret` plugin,

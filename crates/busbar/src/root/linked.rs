@@ -41,6 +41,7 @@ use busbar_kernel::plane::registry::{BillableClass, BuildCtx, PlaneDeclaration, 
 use busbar_kernel::plane::PlaneAdmission;
 use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneResponse, PlaneRouteSpec};
+use busbar_kernel::preflight::{LinkedStore, RootInstall};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
 /// run once the deployment's secret resolver exists.
@@ -293,12 +294,12 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
 /// default refuse the boot (exit 2) before anything resolves a store.
 pub fn register_stores(linked: &Linked) {
     match default_store(linked.stores) {
-        Ok(default) => busbar_kernel::preflight::install_linked_rows((
-            linked.stores,
-            linked.hooks,
-            default.unwrap_or_default(),
-            crate::root::boot::registry,
-        )),
+        Ok(default) => busbar_kernel::preflight::install_linked_rows(RootInstall {
+            stores: linked.stores,
+            hooks: linked.hooks,
+            default_store_module: default.unwrap_or_default(),
+            registry_build: crate::root::boot::registry,
+        }),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
             std::process::exit(2);
@@ -310,9 +311,7 @@ pub fn register_stores(linked: &Linked) {
 /// store a deployment that configures no `store.module` runs on. The root holds no store name: it
 /// asks each row what it claims. No claim is `None`; two claims are refused, naming both rows —
 /// ambiguity is never resolved by picking a winner.
-pub fn default_store(
-    stores: &[busbar_kernel::preflight::LinkedStore],
-) -> Result<Option<&'static str>, String> {
+pub fn default_store(stores: &[LinkedStore]) -> Result<Option<&'static str>, String> {
     let mut claims = stores.iter().filter(|s| s.2).map(|s| s.0);
     let first = claims.next();
     match (first, claims.next()) {

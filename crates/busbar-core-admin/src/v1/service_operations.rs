@@ -1670,7 +1670,7 @@ impl AdminService {
 /// the root's table order (the declared default among them). Read off the kernel's installed root
 /// rows, so admin names no store instance.
 fn linked_store_rows() -> Vec<PluginView> {
-    let (stores, _, _, _) = busbar_kernel::preflight::root_rows();
+    let stores = busbar_kernel::preflight::root_rows().stores;
     let row = |s: &busbar_kernel::preflight::LinkedStore| {
         PluginView::basic(s.0.to_string(), "store", "compiled-in", None, None)
     };

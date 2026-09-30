@@ -57,15 +57,32 @@ use busbar_plugin_loader::{boot, dispatch::PluginLogConfig, LinkedPlugin, Plugin
 /// of it, each step noted so the preflight's log lines keep their order.
 pub type RegistryBuild =
     fn(boot::Build<'_>, &mut dyn FnMut(boot::Note<'_>)) -> Result<PluginRegistry, String>;
-/// The root's linked entries: its `stores`, its `hooks`, the name of the default governance store
-/// it resolved from the store rows' own claims (empty when no linked row claims it), and its
-/// registry build.
-pub type RootRows = (
-    &'static [LinkedStore],
-    &'static [LinkedHook],
-    &'static str,
-    RegistryBuild,
-);
+/// WHAT THE COMPOSITION ROOT INSTALLS into the kernel, by name: its linked entries, the default
+/// store it resolved and its registry build — and, as each kind's axis lands, that kind's
+/// `<kind>_axis` field (ARCHITECT ruling Q8: the kernel receives contract `<Kind>Axis` seams from
+/// the root, never the loader). A field is added by name; nothing is positional.
+#[derive(Clone, Copy)]
+pub struct RootInstall {
+    /// The build's linked in-process stores.
+    pub stores: &'static [LinkedStore],
+    /// The build's linked ranking hooks.
+    pub hooks: &'static [LinkedHook],
+    /// The governance store a deployment that configures none runs on: the linked store row that
+    /// declares itself the default (empty when no row claims it).
+    pub default_store_module: &'static str,
+    /// The root's registry build.
+    pub registry_build: RegistryBuild,
+}
+
+impl RootInstall {
+    /// Nothing installed: no linked rows, no default store, and a registry build that refuses.
+    pub const NONE: Self = Self {
+        stores: &[],
+        hooks: &[],
+        default_store_module: "",
+        registry_build: no_root,
+    };
+}
 
 /// No root installed a registry build: every build refuses, naming the missing root.
 fn no_root(
@@ -78,36 +95,36 @@ fn no_root(
 /// A test build has no root: its store and ranking fixtures stand in for the root's entries, the
 /// stand-in store (which claims the default) as the default.
 #[cfg(any(test, feature = "test-support"))]
-const STAND_IN: RootRows = (
-    &[fixture_store::linked::STORE],
-    &[
+const STAND_IN: RootInstall = RootInstall {
+    stores: &[fixture_store::linked::STORE],
+    hooks: &[
         #[cfg(feature = "hooks-ranking")]
         fixture_hook::linked::HOOK,
     ],
-    fixture_store::linked::STORE.0,
-    boot::registry,
-);
+    default_store_module: fixture_store::linked::STORE.0,
+    registry_build: boot::registry,
+};
 
 /// The composition root's linked store and hook entries (the build's in-process stores and, when
 /// compiled in, its ranking hooks), its resolved default store and its registry build, installed
 /// once before the first resolution.
-static ROOT_ROWS: std::sync::OnceLock<RootRows> = std::sync::OnceLock::new();
+static ROOT_ROWS: std::sync::OnceLock<RootInstall> = std::sync::OnceLock::new();
 
 /// THE ROOT'S DOOR onto the cold-kind axis: its linked tables' `stores` and `hooks` entries, the
 /// default store the root resolved from the stores' claims and the root's registry build (the first
 /// install stands). The kernel names none of the plugins it registers, and no default store (#2
 /// rule (1), #40).
-pub fn install_linked_rows(rows: RootRows) {
+pub fn install_linked_rows(rows: RootInstall) {
     let _ = ROOT_ROWS.set(rows);
 }
 
 /// The installed root rows (a test build stands its fixtures in). `.2` is the governance store a
 /// deployment that configures none runs on: the linked row that declares itself the default. Admin's
 /// store catalog lists `.0`, the stores this build links.
-pub fn root_rows() -> RootRows {
+pub fn root_rows() -> RootInstall {
     #[cfg(any(test, feature = "test-support"))]
     let _ = ROOT_ROWS.set(STAND_IN);
-    ROOT_ROWS.get().copied().unwrap_or((&[], &[], "", no_root))
+    ROOT_ROWS.get().copied().unwrap_or(RootInstall::NONE)
 }
 
 /// THE ROOT'S DOOR onto the auth axis: its linked table's `auths` entries (the first install
@@ -123,7 +140,7 @@ pub use busbar_kernel_identity::operator::{
 /// fixture entries in. Registered through `PluginRegistry::link`, the admission a dropped-in row
 /// takes (DECISIONS #2 rule (1)).
 fn linked_rows() -> Vec<LinkedPlugin> {
-    let (stores, hooks, _, _) = root_rows();
+    let RootInstall { stores, hooks, .. } = root_rows();
     let store = |s: &LinkedStore| LinkedPlugin::store(s.0, s.3, s.1);
     let hook = |&(name, aliases, open): &LinkedHook| LinkedPlugin::ranking(name, aliases, open);
     let own = [
@@ -210,7 +227,7 @@ pub(crate) fn linked() -> Result<busbar_plugin_loader::PluginRegistry, String> {
         linked: linked_rows(),
         scan: None,
     };
-    root_rows().3(build, &mut |_| {})
+    (root_rows().registry_build)(build, &mut |_| {})
 }
 
 /// Build a complete `App` from a RESOLVED config — the ONE construction path shared by boot
@@ -396,7 +413,7 @@ pub fn plugins_preflight(
             dir: plugins_cfg.enabled.then_some(dir),
         }),
     };
-    let registry = root_rows().3(build, &mut |n| log_build(n, &plugins_cfg.dir))?;
+    let registry = (root_rows().registry_build)(build, &mut |n| log_build(n, &plugins_cfg.dir))?;
     if !plugins_cfg.enabled {
         return Ok(registry);
     }

@@ -877,7 +877,7 @@ fn the_registry_build_keeps_the_preflights_boot_lines_in_order() {
 #[test]
 fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
     let name = crate::preflight::root_rows()
-        .0
+        .stores
         .iter()
         .find(|s| s.2)
         .map(|s| s.0);
