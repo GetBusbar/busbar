@@ -155,17 +155,18 @@ pub struct RelayCtx<'a> {
     pub meter: bool,
 }
 
+/// A relay's translator and JSON-array framer, before the relay is opened over them.
+pub type Parts = (
+    Option<Box<dyn StreamTranslator>>,
+    Option<Box<dyn ArrayStreamFramer>>,
+);
+
 /// The translator the pair of dialects names for a far end's answer (a stream reframed across
 /// dialects, re-emitted byte-exact within one, or a same-dialect whole body a dialect completes),
 /// told the caller's usage opt-in and request; and the JSON-array framer for a caller that asked
 /// for its stream as an array.
 #[must_use]
-pub fn parts(
-    ctx: &RelayCtx<'_>,
-) -> (
-    Option<Box<dyn StreamTranslator>>,
-    Option<Box<dyn ArrayStreamFramer>>,
-) {
+pub fn parts(ctx: &RelayCtx<'_>) -> Parts {
     let translate =
         crate::codec::proto_stream::new_stream_translator(ctx.ingress, ctx.egress, ctx.far_streams)
             .map(|mut t| {
