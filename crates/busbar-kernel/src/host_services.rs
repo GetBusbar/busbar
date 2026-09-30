@@ -17,7 +17,7 @@
 //!   1.5.5 judgement of a destination named in a request argument, which resolved nothing).
 //!
 //! * `records.get` / `records.list` — the caller's records of a kind it declared, through the
-//!   store's typed record reads ([`RecordReads`]), its own unacknowledged writes laid over them
+//!   store's typed record reads ([`RecordRows`]), its own unacknowledged writes laid over them
 //!   ([`PendingRecords`]): an instance reads what it wrote.
 //! * `records.claim` — the ONE approval-redemption and replay-refusal path: a one-time put-if-absent
 //!   with an expiry, through the store's single-use redemption (store v3 `REDEEM_PLANE_TOKEN`, which
@@ -51,11 +51,12 @@ use busbar_contract::abi::host::service::{self as svc, ItemSpan, MAX_SPANS};
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::caps::{IdempotencyKey, KernelSeal};
 use busbar_contract::ids::RecordSchemaId;
+use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::RecordStore;
 use busbar_contract::services::{Caller, HostServices, Later, Ran, Reading, RecordsList, Stored};
 use sha2::{Digest, Sha256};
 
-use crate::host_records::{merge_list, record_key, PendingRecords, RecordReads};
+use crate::host_records::{merge_list, record_key, PendingRecords, RecordRows, Write, WriteBehind};
 use crate::plane::quarantine::DemotionRecord;
 use crate::trust::book::{Effect, Sight, TrustBook, Unjudged};
 use crate::trust::section::TrustEntry;
@@ -167,6 +168,24 @@ impl Drop for Owed {
     }
 }
 
+/// A flush the pool has not run yet. Dropped unrun (the pool refused it) it abandons the flush, so
+/// the next write starts another.
+struct Unrun(Option<Arc<WriteBehind>>);
+
+impl Unrun {
+    fn run(mut self) -> Option<Arc<WriteBehind>> {
+        self.0.take()
+    }
+}
+
+impl Drop for Unrun {
+    fn drop(&mut self) {
+        if let Some(batcher) = self.0.take() {
+            batcher.abandon();
+        }
+    }
+}
+
 /// Run `job` on `pool` and answer what it returns through `later`; FAILED if the pool refuses it.
 fn submit(pool: &dyn Offload, later: Later, job: impl FnOnce() -> Stored + Send + 'static) -> Ran {
     let owed = Owed(Some(later));
@@ -242,7 +261,7 @@ impl std::error::Error for AdmitRefused {}
 
 /// The stores the records services reach.
 struct Records {
-    reads: Arc<dyn RecordReads>,
+    reads: Arc<dyn RecordRows>,
     claims: Arc<dyn RecordStore>,
 }
 
@@ -265,6 +284,7 @@ pub struct KernelServices {
     records: Option<Records>,
     pool: Option<Arc<dyn Offload>>,
     pending: Arc<PendingRecords>,
+    batcher: Arc<WriteBehind>,
     signer: Option<Arc<dyn SignKey>>,
     trust: TrustBook,
     demotions: Option<Demotions>,
@@ -298,6 +318,7 @@ impl KernelServices {
             records: None,
             pool: None,
             pending: Arc::default(),
+            batcher: Arc::default(),
             signer: None,
             trust: TrustBook::default(),
             demotions: None,
@@ -309,7 +330,7 @@ impl KernelServices {
     #[must_use]
     pub fn with_records(
         mut self,
-        reads: Arc<dyn RecordReads>,
+        reads: Arc<dyn RecordRows>,
         claims: Arc<dyn RecordStore>,
     ) -> Self {
         self.records = Some(Records { reads, claims });
@@ -397,11 +418,47 @@ impl KernelServices {
         Ok(())
     }
 
-    /// The overlay of every instance's unacknowledged record writes, which the plane driver's
-    /// write-behind batcher fills and drains.
+    /// The overlay of every instance's record writes the store has not yet taken.
     #[must_use]
     pub fn pending(&self) -> &Arc<PendingRecords> {
         &self.pending
+    }
+
+    /// WRITE `value` under `key` of the caller's record kind `kind`, behind: the instance reads it
+    /// at once, and the store takes it in the next batch, on the pool.
+    ///
+    /// # Errors
+    ///
+    /// The refusal: an instance never admitted, a kind it did not declare, or no store or pool.
+    pub fn record_write(
+        &self,
+        caller: &Caller,
+        kind: &str,
+        key: &[u8],
+        value: RecordBytes,
+    ) -> Result<(), &'static str> {
+        let (schema, records, pool) = self.scope(caller, kind).map_err(|s| s.error)?;
+        let seq =
+            self.pending
+                .enqueue(&caller.instance, kind, key, Some(value.as_slice().to_vec()));
+        let write = Write {
+            instance: Arc::clone(&caller.instance),
+            schema,
+            key: key.to_vec(),
+            value,
+            seq,
+        };
+        if self.batcher.push(write) {
+            let unrun = Unrun(Some(Arc::clone(&self.batcher)));
+            let pending = Arc::clone(&self.pending);
+            let rows = Arc::clone(&records.reads);
+            pool.run(Box::new(move || {
+                if let Some(batcher) = unrun.run() {
+                    batcher.flush(&pending, &*rows);
+                }
+            }));
+        }
+        Ok(())
     }
 
     /// The kernel tick's re-verification mark, at the wall clock.

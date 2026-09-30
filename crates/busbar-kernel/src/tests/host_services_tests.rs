@@ -353,7 +353,16 @@ use crate::trust::section::{DeclaredPin, TrustEntry};
 /// The memory store's typed record reads.
 struct Mem(Arc<MemoryStore>);
 
-impl RecordReads for Mem {
+impl RecordRows for Mem {
+    fn record_put(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+        value: &RecordBytes,
+    ) -> Result<(), StoreError> {
+        self.0.record_put(schema, key, value)
+    }
+
     fn record_get(
         &self,
         schema: RecordSchemaId,
@@ -522,7 +531,7 @@ fn records_get_reads_the_store_and_the_instances_own_queued_writes_first() {
         run(|l| r.s.records_get(&me, "approval", b"k", l)).value,
         svc::ABSENT
     );
-    r.s.pending().acked("inst", seq);
+    r.s.pending().acked("inst", "approval", b"k", seq);
     assert_eq!(
         run(|l| r.s.records_get(&me, "approval", b"k", l)).bytes,
         b"stored"
@@ -892,7 +901,16 @@ struct Gauge {
     most: AtomicUsize,
 }
 
-impl RecordReads for Gauge {
+impl RecordRows for Gauge {
+    fn record_put(
+        &self,
+        _schema: RecordSchemaId,
+        _key: &[u8],
+        _value: &RecordBytes,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
     fn record_get(
         &self,
         _schema: RecordSchemaId,
@@ -916,7 +934,7 @@ impl RecordReads for Gauge {
 }
 
 /// Kernel services over `reads`, on the blocking pool of `rt`, with "inst" admitted.
-fn pooled(rt: &tokio::runtime::Runtime, reads: Arc<dyn RecordReads>) -> KernelServices {
+fn pooled(rt: &tokio::runtime::Runtime, reads: Arc<dyn RecordRows>) -> KernelServices {
     let s = services(Arc::default())
         .with_records(reads, Arc::new(MemoryStore::new()))
         .with_pool(Arc::new(BlockingPool::new(rt.handle().clone())));
@@ -1058,4 +1076,80 @@ fn an_instance_declaring_a_signing_domain_another_holds_is_refused() {
         },
     )
     .unwrap();
+}
+
+#[test]
+fn a_burst_of_writes_is_one_batch_and_the_writer_reads_it_at_once() {
+    let r = rig();
+    let held = Arc::new(Held::default());
+    let s = services(Arc::default())
+        .with_records(Arc::new(Mem(Arc::clone(&r.store))), r.store.clone())
+        .with_pool(Arc::new(Arc::clone(&held)));
+    let declares = || InstanceFacts {
+        record_kinds: vec![KIND],
+        ..InstanceFacts::default()
+    };
+    s.admit("inst", declares()).unwrap();
+    s.admit("other", declares()).unwrap();
+    let me = caller("inst");
+    let bytes = |v: String| RecordBytes::new(v.into_bytes()).unwrap();
+    for i in 0..50 {
+        let key = format!("k{i:02}");
+        s.record_write(&me, "approval", key.as_bytes(), bytes(format!("v{i}")))
+            .unwrap();
+    }
+    // The writer reads its writes before the store has any of them.
+    assert_eq!(
+        run(|l| s.records_get(&me, "approval", b"k07", l)).bytes,
+        b"v7"
+    );
+    let stored = |who: &str, key: &[u8]| {
+        r.store
+            .record_get(KIND, &record_key(who, key))
+            .unwrap()
+            .map(|v| v.as_slice().to_vec())
+    };
+    assert_eq!(stored("inst", b"k07"), None);
+    // Another instance writing the same key writes its own record.
+    s.record_write(&caller("other"), "approval", b"k07", bytes("theirs".into()))
+        .unwrap();
+    // One flush carried the whole burst.
+    assert_eq!(held.drain(), 1);
+    assert_eq!(s.pending().queued(), 0);
+    assert_eq!(stored("inst", b"k07"), Some(b"v7".to_vec()));
+    assert_eq!(stored("inst", b"k49"), Some(b"v49".to_vec()));
+    assert_eq!(stored("other", b"k07"), Some(b"theirs".to_vec()));
+    // The next write starts the next flush.
+    s.record_write(&me, "approval", b"k50", bytes("v50".into()))
+        .unwrap();
+    assert_eq!(held.drain(), 1);
+    assert_eq!(stored("inst", b"k50"), Some(b"v50".to_vec()));
+}
+
+#[test]
+fn a_flush_the_pool_refuses_leaves_the_writes_readable_and_queued_for_the_next() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .build()
+        .unwrap();
+    let store = Arc::new(MemoryStore::new());
+    let s = services(Arc::default())
+        .with_records(Arc::new(Mem(Arc::clone(&store))), store.clone())
+        .with_pool(Arc::new(BlockingPool::new(rt.handle().clone())));
+    s.admit(
+        "inst",
+        InstanceFacts {
+            record_kinds: vec![KIND],
+            ..InstanceFacts::default()
+        },
+    )
+    .unwrap();
+    rt.shutdown_background();
+    let me = caller("inst");
+    let v = RecordBytes::new(b"v".to_vec()).unwrap();
+    s.record_write(&me, "approval", b"k", v.clone()).unwrap();
+    assert_eq!(run(|l| s.records_get(&me, "approval", b"k", l)).bytes, b"v");
+    // The refused flush was abandoned: the next write starts one again (refused too, here).
+    s.record_write(&me, "approval", b"k2", v).unwrap();
+    assert_eq!(s.pending().queued(), 2);
 }

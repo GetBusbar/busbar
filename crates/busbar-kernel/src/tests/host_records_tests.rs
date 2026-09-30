@@ -17,17 +17,17 @@ fn a_queued_write_reads_back_until_its_batch_is_acknowledged() {
     assert_eq!(p.get("i", "k", b"a"), Some(Some(b"1".to_vec())));
     assert_eq!(p.get("other", "k", b"a"), None);
     assert_eq!(p.get("i", "other", b"a"), None);
-    p.acked("i", seq);
+    p.acked("i", "k", b"a", seq);
     assert_eq!(p.get("i", "k", b"a"), None);
     assert_eq!(p.queued(), 0);
 }
 
 #[test]
-fn a_later_write_outlives_the_acknowledgement_of_an_earlier_one() {
+fn a_second_write_outlives_the_acknowledgement_of_the_first() {
     let p = PendingRecords::default();
     let first = p.enqueue("i", "k", b"a", Some(b"1".to_vec()));
     p.enqueue("i", "k", b"a", None);
-    p.acked("i", first);
+    p.acked("i", "k", b"a", first);
     assert_eq!(p.get("i", "k", b"a"), Some(None));
 }
 

@@ -5,12 +5,16 @@
 //! the store's typed record surface a caller's records are read through, and the kernel-owned
 //! overlay of each instance's queued writes that makes those reads see the instance's own writes.
 //!
-//! * [`RecordReads`] is the store kind's `record_get` / `record_scan` pair (store v3 slots
-//!   `RECORD_GET` / `RECORD_SCAN`), keyed by the caller's declared record kind as the schema.
+//! * [`RecordRows`] is the store kind's `record_put` / `record_get` / `record_scan` (store v3 slots
+//!   `RECORD_PUT` / `RECORD_GET` / `RECORD_SCAN`), keyed by the caller's declared record kind as the
+//!   schema.
 //! * [`PendingRecords`] holds what an instance wrote and the store has not yet acknowledged:
-//!   `(kind, key)` to the bytes, or a tombstone. The plane driver's write-behind batcher enqueues each
-//!   write and drains through [`PendingRecords::acked`] when the store acknowledges its batch; a read
-//!   consults it first, so an instance always reads what it wrote.
+//!   `(kind, key)` to the bytes, or a tombstone. Each write is enqueued here and drained through
+//!   [`PendingRecords::acked`] once the store took it; a read consults it first, so an instance
+//!   always reads what it wrote.
+//! * [`WriteBehind`] batches the writes to the store: a burst queues behind the one flush that is
+//!   running, which writes everything queued, batch after batch, then ends; a write the store
+//!   refuses stays queued, first in line for the next flush.
 //! * [`record_key`] scopes every stored key by the instance's LABEL: two instances declaring one
 //!   kind (of one plugin or of two) never read or write each other's records.
 //! * [`merge_list`] is the one list rule: the store's rows under the prefix, the overlay laid over
@@ -24,8 +28,20 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::{RecordBytes, Store, StoreError};
 
-/// The store kind's typed record reads.
-pub trait RecordReads: Send + Sync {
+/// The store kind's typed records.
+pub trait RecordRows: Send + Sync {
+    /// Write one record.
+    ///
+    /// # Errors
+    ///
+    /// The store's.
+    fn record_put(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+        value: &RecordBytes,
+    ) -> Result<(), StoreError>;
+
     /// One record, or `None`.
     ///
     /// # Errors
@@ -50,7 +66,16 @@ pub trait RecordReads: Send + Sync {
     ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError>;
 }
 
-impl<T: Store> RecordReads for T {
+impl<T: Store> RecordRows for T {
+    fn record_put(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+        value: &RecordBytes,
+    ) -> Result<(), StoreError> {
+        Store::record_put(self, schema, key, value)
+    }
+
     fn record_get(
         &self,
         schema: RecordSchemaId,
@@ -112,12 +137,15 @@ impl PendingRecords {
         seq
     }
 
-    /// The store acknowledged `instance`'s writes up to `upto`: they read from the store from now
-    /// on. A write to the same key queued after `upto` stays queued.
-    pub fn acked(&self, instance: &str, upto: u64) {
+    /// The store took `instance`'s write `seq` of `(kind, key)`: it reads from the store from now
+    /// on. A write to the same key queued after it stays queued.
+    pub fn acked(&self, instance: &str, kind: &str, key: &[u8], seq: u64) {
         let mut map = self.lock();
         if let Some(q) = map.get_mut(instance) {
-            q.retain(|_, (seq, _)| *seq > upto);
+            let at = (kind.to_string(), key.to_vec());
+            if q.get(&at).is_some_and(|(queued, _)| *queued == seq) {
+                q.remove(&at);
+            }
             if q.is_empty() {
                 map.remove(instance);
             }
@@ -154,6 +182,82 @@ impl PendingRecords {
     #[must_use]
     pub fn queued(&self) -> usize {
         self.lock().values().map(BTreeMap::len).sum()
+    }
+}
+
+/// One write on its way to the store.
+#[derive(Debug)]
+pub struct Write {
+    /// The writer's label.
+    pub instance: Arc<str>,
+    /// The record kind's schema.
+    pub schema: RecordSchemaId,
+    /// The writer's key, unscoped.
+    pub key: Vec<u8>,
+    /// The bytes.
+    pub value: RecordBytes,
+    /// Its sequence in [`PendingRecords`].
+    pub seq: u64,
+}
+
+#[derive(Debug, Default)]
+struct Queue {
+    writes: Vec<Write>,
+    flushing: bool,
+}
+
+/// THE WRITE-BEHIND BATCHER of record writes: at most one flush runs at a time.
+#[derive(Debug, Default)]
+pub struct WriteBehind {
+    queue: Mutex<Queue>,
+}
+
+impl WriteBehind {
+    fn lock(&self) -> MutexGuard<'_, Queue> {
+        self.queue.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Queue `write`. `true` when no flush is running: the caller starts one.
+    pub fn push(&self, write: Write) -> bool {
+        let mut q = self.lock();
+        q.writes.push(write);
+        !std::mem::replace(&mut q.flushing, true)
+    }
+
+    /// The flush that was to run will not: the next write starts one.
+    pub fn abandon(&self) {
+        self.lock().flushing = false;
+    }
+
+    /// THE FLUSH: write every queued write to `rows`, batch after batch, and acknowledge each in
+    /// `pending`; end when nothing is queued. A write the store refuses ends the flush and stays
+    /// queued ahead of the rest, in order, for the next.
+    pub fn flush(&self, pending: &PendingRecords, rows: &dyn RecordRows) {
+        loop {
+            let batch = {
+                let mut q = self.lock();
+                let batch = std::mem::take(&mut q.writes);
+                if batch.is_empty() {
+                    q.flushing = false;
+                    return;
+                }
+                batch
+            };
+            let mut writes = batch.into_iter();
+            for w in writes.by_ref() {
+                let key = record_key(&w.instance, &w.key);
+                if rows.record_put(w.schema, &key, &w.value).is_err() {
+                    let mut q = self.lock();
+                    let mut kept = vec![w];
+                    kept.extend(writes);
+                    kept.append(&mut q.writes);
+                    q.writes = kept;
+                    q.flushing = false;
+                    return;
+                }
+                pending.acked(&w.instance, w.schema.as_str(), &w.key, w.seq);
+            }
+        }
     }
 }
 
