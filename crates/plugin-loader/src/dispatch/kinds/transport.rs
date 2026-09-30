@@ -37,9 +37,9 @@ use busbar_contract::abi::transport::{
 
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
 
-/// WHAT A TRANSPORT'S TAIL STATES, read once at bind and checked by the kind's own `check_tail`,
-/// `check_claims` and `check_composes_over`: its role, every scheme it answers for (the first is
-/// its own) and the claims it composes over. The host's registry view reads it through
+/// WHAT A TRANSPORT STATES, read once at bind and checked by the kind's own `check_tail`,
+/// `check_claims`, `check_claim_rows` and `check_composes_over`: its role, every scheme it answers
+/// for (the Statement's `claims`, the first its own) and the claims it composes over. The host's registry view reads it through
 /// [`crate::dispatch::Plugin::context`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransportFacts {
@@ -85,8 +85,20 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     let broke = |f: Fault| format!("the transport tail breaks {:?} at {}", f.rule, f.field);
     check_tail(&tail).map_err(broke)?;
     // SAFETY: `check_tail` refused a NULL list with a count; both lists are `'static` plugin data.
-    let claims: &[Claim] = unsafe { std::slice::from_raw_parts(tail.claims, tail.claims_len) };
-    check_claims(claims).map_err(broke)?;
+    let rows: &[Claim] =
+        unsafe { std::slice::from_raw_parts(tail.claim_rows, tail.claim_rows_len) };
+    check_claims(rows).map_err(broke)?;
+    // The scheme NAMES are the Statement's alone (signed, and byte-compared at admit); the tail has
+    // one row per name.
+    busbar_contract::abi::transport::check::check_claim_rows(st.claims_len, &tail)
+        .map_err(broke)?;
+    let names: &[AbiStr] = if st.claims_len == 0 {
+        &[]
+    } else {
+        // SAFETY: the loader's Statement check refused a NULL `claims` with a count; the list is
+        // `'static` plugin data.
+        unsafe { std::slice::from_raw_parts(st.claims, st.claims_len) }
+    };
     let under: &[AbiStr] = if tail.composes_over_len == 0 {
         &[]
     } else {
@@ -96,9 +108,9 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     check_composes_over(under).map_err(broke)?;
     Ok(TransportFacts {
         role: tail.role,
-        claims: claims
+        claims: names
             .iter()
-            .map(|c| owned(c.key, "claim"))
+            .map(|c| owned(*c, "claim"))
             .collect::<Result<_, _>>()?,
         composes_over: under
             .iter()

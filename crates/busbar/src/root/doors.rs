@@ -26,7 +26,8 @@ use busbar_core_connector::{
 };
 use busbar_plugin_loader::dispatch::{
     kinds::transport::{Transport as TransportKind, TransportFacts},
-    load_linked, Bind, DispatchConfig, Dispatcher, Frame, InFrame, NoSink, OutFrame, Plugin,
+    load_linked, Bind, DispatchConfig, Dispatcher, Frame, InFrame, LinkedRow, NoSink, OutFrame,
+    Plugin,
 };
 
 /// The one dispatcher every transport door is adopted by: its watchdog watches every crossing.
@@ -272,7 +273,8 @@ pub fn build(
     _lower: Option<Arc<dyn busbar_contract::Transport>>,
     _settings: &busbar_contract::transport::TransportSettings,
 ) -> Arc<dyn busbar_contract::Transport> {
-    load_linked::<TransportKind>(door, row_bind(row))
+    LinkedRow::of(door)
+        .and_then(|linked| load_linked::<TransportKind>(&linked, row_bind(row)))
         .map_err(|e| e.to_string())
         .and_then(host_wire)
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))

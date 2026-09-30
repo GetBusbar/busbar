@@ -483,11 +483,13 @@ pub(crate) enum Staging<K: Kind> {
 }
 
 /// THE DROPPED-IN DOOR OF A STAGED LIBRARY: `lib` (already `dlopen`ed from its signed tarball's
-/// verified bytes, `staged` its backing) through [`DOOR_SYMBOL`] and the same [`validate`]. The
-/// backing is held for the process once the plugin binds: a plugin's image stays resident.
+/// verified bytes, `staged` its backing) through [`DOOR_SYMBOL`] and the same [`validate`], its
+/// door's Statement compared with the `stated` rendering its signed manifest carries — a door whose
+/// manifest states none is refused. The backing lives as long as the instance, image first.
 pub(crate) fn load_staged<K: Kind>(
     lib: Library,
     staged: crate::stage::Staged,
+    stated: Option<&[u8]>,
     bind: Bind,
 ) -> Result<Staging<K>, LoadError> {
     // SAFETY: `DOOR_SYMBOL` is typed `DoorFn` by the mechanism; the symbol is copied out as a plain
@@ -496,12 +498,13 @@ pub(crate) fn load_staged<K: Kind>(
     let Ok(door) = door else {
         return Ok(Staging::NotADoor(lib, staged));
     };
-    let plugin = Plugin::bind(validate::<K>(door)?, Some(Lib(Some(lib))), bind)?;
-    static HELD: std::sync::Mutex<Vec<crate::stage::Staged>> = std::sync::Mutex::new(Vec::new());
-    HELD.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(staged);
-    Ok(Staging::Door(plugin))
+    let stated = stated.ok_or(LoadError::StatementMismatch)?;
+    let lib = Lib(Some(lib), Some(staged));
+    Ok(Staging::Door(Plugin::bind(
+        admitted::<K>(door, stated)?,
+        Some(lib),
+        bind,
+    )?))
 }
 
 /// THE LINKED DOOR: a compiled-in row's [`DoorFn`], through the same [`validate`] and the same

@@ -21,7 +21,8 @@ use busbar_contract::abi::cold::export::ExportStream;
 use busbar_plugin_loader::{
     dispatch::{
         kinds::transport::{Transport, TransportFacts},
-        load_dropped, Bind, DispatchConfig, Dispatcher, ManifestFacts, NoSink, Plugin,
+        load_dropped, load_linked, rendering_of_library, Bind, DispatchConfig, Dispatcher,
+        LinkedRow, NoSink, Plugin,
     },
     list_plugin_files, load_export_from_bytes, plugin_library_filename, scan_and_validate, scrape,
     sign::{sha256_hex, sign, Manifest, SigningKey, TrustPolicy},
@@ -174,20 +175,27 @@ fn libraries() -> Vec<PathBuf> {
 fn transport_door(path: &Path) -> Option<(Plugin<Transport>, &'static str)> {
     static ONE: std::sync::OnceLock<Dispatcher> = std::sync::OnceLock::new();
     let d = ONE.get_or_init(|| Dispatcher::new(DispatchConfig::default()));
-    let facts = ManifestFacts {
-        mechanism_version: busbar_contract::abi::mechanism::MECHANISM_VERSION,
-        kind: busbar_contract::abi::mechanism::KindCode::Transport,
-        kind_abi: busbar_contract::abi::mechanism::KindCode::Transport.abi_version(),
-    };
+    // The library's own Statement rendering, as its signed manifest would state it.
+    let stated = rendering_of_library(path).ok()??;
     let bind = Bind {
         instance: std::sync::Arc::from("the-instance"),
         max_inflight_cap: 64,
         sink: std::sync::Arc::new(NoSink),
         dispatcher: d.adopter(),
     };
-    let plugin = load_dropped::<Transport>(path, &facts, bind).ok()?;
+    let plugin = load_dropped::<Transport>(path, &stated, bind).ok()?;
     let key = *plugin.context::<TransportFacts>()?.claims.first()?;
     Some((plugin, key))
+}
+
+/// A compiled-in transport door (a linked row's door function), admitted through the same door
+/// validation as a dropped-in one and bound with `bind`.
+pub fn linked_transport(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+    bind: Bind,
+) -> Plugin<Transport> {
+    let row = LinkedRow::of(door).expect("the linked door states itself");
+    load_linked::<Transport>(&row, bind).expect("the linked door loads")
 }
 
 /// An in-tree transport door `cdylib` that frames the host's socket (the wire at the floor of a

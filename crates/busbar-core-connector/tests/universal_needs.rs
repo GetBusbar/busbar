@@ -223,18 +223,14 @@ fn open_door(
     path: &std::path::Path,
 ) -> Option<std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>> {
     use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
-    use busbar_contract::abi::mechanism::{KindCode, MECHANISM_VERSION};
     use busbar_contract::abi::sdk::door::{blank_in, blank_out};
     use busbar_plugin_loader::dispatch::kinds::transport::{Transport, TransportFacts};
     use busbar_plugin_loader::dispatch::{
-        load_dropped, Bind, DispatchConfig, Dispatcher, Frame, ManifestFacts, NoSink,
+        load_dropped, rendering_of_library, Bind, DispatchConfig, Dispatcher, Frame, NoSink,
     };
     static ONE: OnceLock<Dispatcher> = OnceLock::new();
-    let facts = ManifestFacts {
-        mechanism_version: MECHANISM_VERSION,
-        kind: KindCode::Transport,
-        kind_abi: KindCode::Transport.abi_version(),
-    };
+    // The library's own Statement rendering, as its signed manifest would state it.
+    let rendering = rendering_of_library(path).ok()??;
     let bind = Bind {
         instance: std::sync::Arc::from("the-instance"),
         max_inflight_cap: 64,
@@ -243,7 +239,7 @@ fn open_door(
             .get_or_init(|| Dispatcher::new(DispatchConfig::default()))
             .adopter(),
     };
-    let plugin = load_dropped::<Transport>(path, &facts, bind).ok()?;
+    let plugin = load_dropped::<Transport>(path, &rendering, bind).ok()?;
     let stated = plugin.context::<TransportFacts>().cloned()?;
     let mut f = Frame::new(blank_in::<OpenIn>(), blank_out::<OpenOut>());
     assert_eq!(

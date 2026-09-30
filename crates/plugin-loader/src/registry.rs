@@ -711,10 +711,12 @@ impl PluginRegistry {
             .filter(|p| p.manifest.kind == busbar_contract::abi::cold::kind::TRANSPORT)
         {
             let name = &p.manifest.name;
+            let stated = p.manifest.stated_rendering()?;
             let (lib, staged) = crate::stage::load_library_from_bytes(&p.lib_bytes, name)?;
             match load_staged::<crate::dispatch::kinds::transport::Transport>(
                 lib,
                 staged,
+                stated.as_deref(),
                 crate::dispatch::Bind {
                     instance: std::sync::Arc::from(name.as_str()),
                     ..bind.clone()

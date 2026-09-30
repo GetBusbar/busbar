@@ -388,7 +388,6 @@ fn the_tail_is_read_at_bind_and_a_missing_one_refuses() {
 
     let claims: [Claim; 2] = [
         Claim {
-            key: abi_str("one"),
             selector_forms: abi_str(""),
             egress_selector_forms: abi_str(""),
             facts: std::ptr::null(),
@@ -401,7 +400,6 @@ fn the_tail_is_read_at_bind_and_a_missing_one_refuses() {
             _reserved: 0,
         },
         Claim {
-            key: abi_str("two"),
             selector_forms: abi_str(""),
             egress_selector_forms: abi_str(""),
             facts: std::ptr::null(),
@@ -420,10 +418,13 @@ fn the_tail_is_read_at_bind_and_a_missing_one_refuses() {
         _reserved: 0,
     };
     tail.role = ROLE_FRAMER;
-    tail.claims = claims.as_ptr();
-    tail.claims_len = 2;
+    tail.claim_rows = claims.as_ptr();
+    tail.claim_rows_len = 2;
+    let names = [abi_str("one"), abi_str("two")];
     let st = Statement {
         kind_tail: std::ptr::from_ref(&tail).cast::<KindTailHead>(),
+        claims: names.as_ptr(),
+        claims_len: names.len(),
         ..bare
     };
     let ctx = Transport::context(&st)
@@ -435,4 +436,10 @@ fn the_tail_is_read_at_bind_and_a_missing_one_refuses() {
     assert_eq!(facts.claims, ["one", "two"]);
     assert!(facts.composes_over.is_empty());
     assert_eq!(facts.role, ROLE_FRAMER);
+    // The names are the Statement's: a tail whose rows outnumber them is refused at bind.
+    let one_name = Statement {
+        claims_len: 1,
+        ..st
+    };
+    assert!(Transport::context(&one_name).is_err(), "two rows, one name");
 }

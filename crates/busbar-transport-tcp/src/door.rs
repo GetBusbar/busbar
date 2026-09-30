@@ -61,8 +61,11 @@ const NONE: AbiStr = AbiStr {
     len: 0,
 };
 
+/// The schemes `tcp` claims, by name: the Statement's `claims`, the one place they are stated.
+const CLAIM_NAMES: &[AbiStr] = &[abi_str(KEY)];
+
+/// Each claimed scheme's row, by index into [`CLAIM_NAMES`].
 const CLAIMS: &[Claim] = &[Claim {
-    key: abi_str(KEY),
     selector_forms: AbiStr {
         ptr: SELECTOR_CODES.as_ptr(),
         len: SELECTOR_CODES.len(),
@@ -89,8 +92,8 @@ const TAIL: TransportTail = TransportTail {
     handshake_max_steps: 0,
     composes_over: std::ptr::null(),
     composes_over_len: 0,
-    claims: CLAIMS.as_ptr(),
-    claims_len: CLAIMS.len(),
+    claim_rows: CLAIMS.as_ptr(),
+    claim_rows_len: CLAIMS.len(),
     upgrades_to: std::ptr::null(),
     upgrades_to_len: 0,
     handoff_from: NONE,
@@ -106,6 +109,8 @@ const TAIL: TransportTail = TransportTail {
 /// The door's Statement: the `tcp` identity framer.
 pub const STATEMENT: Statement = Statement {
     kind_tail: (&TAIL as *const TransportTail).cast::<KindTailHead>(),
+    claims: CLAIM_NAMES.as_ptr(),
+    claims_len: CLAIM_NAMES.len(),
     ..statement(KEY, env!("CARGO_PKG_VERSION"), 64)
 };
 

@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::call::{Blob, Outcome, BLOB_ABSENT};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
-use busbar_contract::abi::mechanism::{KindCode, MECHANISM_VERSION};
 use busbar_contract::abi::transport::{
     slot, BeginIn, EmitIn, FramePiece, FramerOut, FramerSink, IngestIn, PIECE_END_OF_FRAME,
     SIDE_DIAL, YIELD_ENDED,
@@ -19,7 +18,7 @@ use busbar_contract::abi::transport::{
 use busbar_plugin_loader::dispatch::kinds::transport::Transport;
 use busbar_plugin_loader::dispatch::{
     in_head, load_dropped, load_linked, out_head, Bind, DispatchConfig, Dispatcher, Frame,
-    ManifestFacts, NoSink, Plugin,
+    LinkedRow, NoSink, Plugin,
 };
 
 fn z<T>() -> T {
@@ -150,15 +149,16 @@ fn script(p: &Plugin<Transport>) -> Script {
 #[test]
 fn the_linked_and_the_dropped_in_door_are_one_framer() {
     let d = Dispatcher::new(DispatchConfig::default());
-    let linked: Plugin<Transport> =
-        load_linked(busbar_transport_tcp::linked::door, bind(&d)).expect("the linked door loads");
-    let facts = ManifestFacts {
-        mechanism_version: MECHANISM_VERSION,
-        kind: KindCode::Transport,
-        kind_abi: KindCode::Transport.abi_version(),
-    };
+    let linked: Plugin<Transport> = load_linked(
+        &LinkedRow::of(busbar_transport_tcp::linked::door).expect("the door states itself"),
+        bind(&d),
+    )
+    .expect("the linked door loads");
+    let stated = LinkedRow::of(busbar_transport_tcp::linked::door)
+        .expect("the door states itself")
+        .statement;
     let dropped: Plugin<Transport> =
-        load_dropped(&cdylib(), &facts, bind(&d)).expect("the dropped-in door loads");
+        load_dropped(&cdylib(), &stated, bind(&d)).expect("the dropped-in door loads");
     assert_eq!(linked.name(), "tcp");
     assert_eq!(dropped.name(), linked.name());
     open(&linked);
