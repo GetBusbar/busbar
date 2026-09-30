@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `multipart_model` (relocated with the body-model ingress into `native_ingress`).
+//! Tests for `multipart_model` (moved with it from the legacy engine's ingress).
 
-use super::multipart_model;
+use busbar_plane_llm::exchange::multipart::multipart_model;
 
 /// The `Content-Type` each body below arrives under. The boundary is not decoration: it is the only
 /// thing that says where a part begins, so every case names the one its bytes were written with.

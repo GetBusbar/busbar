@@ -32,6 +32,7 @@ pub mod claims;
 #[allow(missing_docs)]
 pub mod codec;
 pub mod dialect;
+pub mod exchange;
 pub mod meta;
 pub mod plane;
 pub mod refusal;
