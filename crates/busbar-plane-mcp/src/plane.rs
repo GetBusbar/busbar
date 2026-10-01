@@ -338,6 +338,20 @@ fn skip_value(bytes: &[u8], mut i: usize) -> Option<usize> {
     }
 }
 
+/// A JSON boolean literal, and nothing else.
+///
+/// `isError` is a boolean in the specification. A value that is not one (the string `"true"`, a
+/// number, an object) says nothing either way, so it yields NO fact rather than `false`: reading it
+/// as `false` reported a failing tool as a succeeding one. The answer itself is relayed unchanged,
+/// as the served engine relays it; only the fact changes.
+fn bool_literal(raw: &[u8]) -> Option<bool> {
+    match raw {
+        b"true" => Some(true),
+        b"false" => Some(false),
+        _ => None,
+    }
+}
+
 /// Which code and words this dialect answers one refusal reason with.
 ///
 /// ## What this mapping is, and what it is not
@@ -664,8 +678,8 @@ impl Plane for McpPlane {
         if let Some(kind) = read_str(body, jsonrpc::PTR_RESULT_TYPE) {
             let _ = facts.set(f::FACT_RESULT_TYPE, FactValue::Str(kind));
         }
-        if let Some(flag) = read_raw(body, jsonrpc::PTR_IS_ERROR) {
-            let _ = facts.set(f::FACT_IS_ERROR, FactValue::Bool(flag == b"true"));
+        if let Some(flag) = read_raw(body, jsonrpc::PTR_IS_ERROR).and_then(bool_literal) {
+            let _ = facts.set(f::FACT_IS_ERROR, FactValue::Bool(flag));
         }
         if let Some(code) = read_raw(body, jsonrpc::PTR_ERROR_CODE) {
             if let Ok(text) = core::str::from_utf8(code) {
@@ -1060,8 +1074,8 @@ impl Plane for McpPlane {
         if let Some(kind) = read_str(body, jsonrpc::PTR_RESULT_TYPE) {
             let _ = facts.set(f::FACT_RESULT_TYPE, FactValue::Str(kind));
         }
-        if let Some(flag) = read_raw(body, jsonrpc::PTR_IS_ERROR) {
-            let _ = facts.set(f::FACT_IS_ERROR, FactValue::Bool(flag == b"true"));
+        if let Some(flag) = read_raw(body, jsonrpc::PTR_IS_ERROR).and_then(bool_literal) {
+            let _ = facts.set(f::FACT_IS_ERROR, FactValue::Bool(flag));
         }
         if let Some(code) = read_raw(body, jsonrpc::PTR_ERROR_CODE) {
             if let Ok(text) = core::str::from_utf8(code) {

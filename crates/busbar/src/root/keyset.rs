@@ -10,7 +10,7 @@
 //! - The keyset is MINTED at the first boot's `Bootstrap`: a fresh ed25519 seed from the OS CSPRNG.
 //! - It is SEALED IN THE STORE where the store's ABI can hold it. **No store this binary can load
 //!   can hold it today**: the native store verbs that would carry it (`record_put` / `record_get`
-//!   on `busbar_contract::kinds::Store`) have no wire below [`STORE_ABI_WITH_NEW_OPS`], which is
+//!   on `busbar_contract::abi::sdk::store::StoreSlots`) have no wire below [`STORE_ABI_WITH_NEW_OPS`], which is
 //!   above the top of this binary's store window, so the store adapter's node-local shim answers
 //!   them and nothing survives the process. The store half therefore has no carrier yet, and this
 //!   module implements only the two halves that do.

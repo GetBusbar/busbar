@@ -1702,7 +1702,9 @@ fn compute_layout() -> String {
             units_needed,
             refusal,
             refusal_status,
-            _reserved
+            _reserved,
+            correlation,
+            cancels
         ]
     );
     record!(
@@ -1796,7 +1798,7 @@ fn compute_layout() -> String {
             marker,
             fields_written,
             fields_needed,
-            _reserved
+            status
         ]
     );
     record!(

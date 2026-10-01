@@ -3,13 +3,8 @@
 
 //! The clock's work: what a node does when nothing arrived.
 //!
-//! Three jobs, all of them the same idea — a thing that is not happening still has to be accounted
+//! Two jobs, both of them the same idea — a thing that is not happening still has to be accounted
 //! for.
-//!
-//! **The session tick** checkpoints what a live session has accrued, and where session time is
-//! priced it opens a small unit that holds and settles one interval of it. It also closes a session
-//! that has gone quiet, and one whose budget has run dry — priced seconds are never accrued
-//! unmetered.
 //!
 //! **The node tick** sweeps. A task can disappear: a runtime shuts down, a thread is cancelled, a
 //! future is dropped. The unit it was running still has a hold in its cell, and the sweep is the
@@ -30,91 +25,6 @@ use crate::inflight::UnitSlot;
 use crate::slice::ConcurrencyGauge;
 use crate::teller::{settle_written, Evidence, Kernel, Written, KERNEL_ACCRUAL_CLASS};
 use crate::Millis;
-
-/// How long a session may go without a non-tick unit before it is closed.
-pub const SESSION_IDLE_MAX_MS: Millis = 300_000;
-
-/// What a session tick decided.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionTick {
-    /// Nothing to do.
-    Idle,
-    /// Checkpoint the accrued figure, because it changed since the last tick.
-    Checkpoint {
-        /// What has accrued so far.
-        accrued: u64,
-    },
-    /// Open a priced accrual unit for this many milliseconds of session time, and — where the
-    /// accrued figure moved as well — checkpoint it in the same breath.
-    Accrue {
-        /// How much time to price. Normally one interval; after a tick that could not run, the
-        /// elapsed time since the last SETTLED tick, so priced time is never simply dropped.
-        elapsed: Millis,
-        /// Whether the catch-up spans more than one interval, which marks the posting late.
-        late: bool,
-        /// Whether the catch-up was clipped at the idle bound, which marks it estimated and closes
-        /// the session.
-        clipped: bool,
-        /// What to write down as accrued, where it changed since the last tick. Pricing an interval
-        /// and recording the running figure are two jobs and not two branches: a session that does
-        /// the first still owes the second, and the checkpoint is what a crash pays out on.
-        checkpoint: Option<u64>,
-    },
-    /// Close the session — and settle what it still owes on the way out. A close is an end, not a
-    /// pardon: the two jobs a tick does are not skipped because this tick is the last one.
-    Close {
-        /// Why.
-        reason: ReasonCode,
-        /// The priced session time since the last SETTLED tick, clipped at the idle bound exactly as
-        /// [`SessionTick::Accrue`] clips it; zero where session time is not priced.
-        elapsed: Millis,
-        /// What to write down as accrued, where it changed since the last tick: the checkpoint a
-        /// crash pays out on.
-        checkpoint: Option<u64>,
-    },
-}
-
-/// What one session tick should do.
-///
-/// `since_settled` is the time since the last accrual tick that actually settled, which is what
-/// makes a tick refused at the in-flight cap cost nothing: the next one prices the whole gap.
-pub fn session_tick(
-    interval: Millis,
-    since_settled: Millis,
-    idle_for: Millis,
-    accrued_changed: Option<u64>,
-    priced_seconds: bool,
-    budget_dry: bool,
-    revoked: bool,
-) -> SessionTick {
-    // Priced time is owed on every branch that prices, the closing ones included (item 284), and
-    // it is clipped at the idle bound on all of them alike. Unpriced session time owes nothing.
-    let owed = since_settled.min(SESSION_IDLE_MAX_MS) * Millis::from(priced_seconds);
-    let close = |reason| SessionTick::Close {
-        reason,
-        elapsed: owed,
-        checkpoint: accrued_changed,
-    };
-    if revoked {
-        close(ReasonCode::Revoked)
-    } else if budget_dry {
-        close(ReasonCode::OverBudget)
-    } else if idle_for >= SESSION_IDLE_MAX_MS {
-        close(ReasonCode::DeadlineExceeded)
-    } else if priced_seconds {
-        SessionTick::Accrue {
-            elapsed: owed,
-            late: since_settled > interval,
-            clipped: since_settled > SESSION_IDLE_MAX_MS,
-            checkpoint: accrued_changed,
-        }
-    } else {
-        match accrued_changed {
-            Some(accrued) => SessionTick::Checkpoint { accrued },
-            None => SessionTick::Idle,
-        }
-    }
-}
 
 /// What the sweep decided about one unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -333,7 +243,3 @@ pub fn sweep_settle(
         }
     }
 }
-
-#[cfg(test)]
-#[path = "tests/tick_tests.rs"]
-mod tick_tests;

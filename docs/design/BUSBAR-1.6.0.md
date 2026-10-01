@@ -1071,8 +1071,8 @@ list, naming the auth its guests must pass.
   overflow is Exhausted.
 - **1.5.x usage rows (#33; OWNER rulings 2026-09-29).** The engine holds no fold: 1.5.x rows live in
   the store plugins' own databases, so each store plugin's `migrate()` upgrades them (scalar `tokens`
-  onto `usage_units`) through ONE shared fold in the contract's store SDK (`abi::sdk::store_migrate`),
-  crash-idempotent, proven per backend against rows written by the pinned 1.5.5 binary read back
+  onto `usage_units`) in its own crate; the contract carries no fold (`abi::sdk::store_migrate` was
+  deleted by ABI-TRIM F10b, 3387366e3), crash-idempotent, proven per backend against rows written by the pinned 1.5.5 binary read back
   byte-identically. This migration conformance is a HARD gate (M5): no store sibling opens a 1.5.x
   database, and the legacy 1.5.5 store wire does not retire (M6), until every backend passes it; CI
   fails on a missing fixture or cdylib and runs the migration-fixture script; network backends run in

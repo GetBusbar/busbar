@@ -142,42 +142,6 @@ fn a_narrowed_grant_is_caught_at_revalidation_even_though_the_catalogue_did_not_
     );
 }
 
-/// THE HASH-PIN GATE IS A SEPARATE LAYER FROM THE TRUST STATE, and this is the case that shows it:
-/// a REJECTED tool leaves the served set without putting the server into quarantine (a rejection is
-/// a standing operator instruction about a NAME, not drift). The server is `Approved`, the tool is
-/// still observed, and dispatching to it must still be refused, by `Approval::serves` and by
-/// nothing else.
-#[test]
-fn a_rejected_tool_is_refused_at_dispatch_even_though_its_server_is_approved() {
-    let cache = seeded();
-    let caller = key_wildcard("k");
-    cache.apply(|servers| {
-        servers
-            .get_mut("fs")
-            .unwrap()
-            .approval
-            .reject_capability("write");
-    });
-    let snapshot = cache.load();
-    assert_eq!(
-        snapshot
-            .server(&crate::mcp::client::support::sid("fs"))
-            .unwrap()
-            .state(),
-        TrustState::Approved,
-        "a rejection is not drift, so the server stays approved"
-    );
-    // The sibling tool still dispatches, so the refusal below is about the rejected tool and not
-    // about the server having stopped working.
-    assert!(resolve(&snapshot, "fs_read", &caller).is_ok());
-    let err =
-        resolve(&snapshot, "fs_write", &caller).expect_err("a rejected tool must not dispatch");
-    assert!(
-        matches!(err, DispatchRefusal::SchemaDrift { ref tool, .. } if tool == "fs_write"),
-        "got {err:?}"
-    );
-}
-
 /// REFUSAL ORDER: an ungranted caller learns it is ungranted, and nothing about the upstream's
 /// current schema. A refusal that leaks what it is refusing access to has failed at half its job.
 #[test]

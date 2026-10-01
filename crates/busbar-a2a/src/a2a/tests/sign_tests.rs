@@ -384,7 +384,7 @@ fn the_derivation_is_deterministic_and_domain_separated() {
 fn rotating_the_token_key_rotates_the_card_key_with_it() {
     // Stated as a property rather than left to be discovered: an operator rotating the signing key
     // is also rotating what external callers pinned, and they will see it as a kid whose signature
-    // no longer verifies — which is the signal `approve-pin` exists to absorb.
+    // no longer verifies — which is the signal `approve` exists to absorb.
     let before_app = app_signed_by(7);
     let after_app = app_signed_by(8);
     let before_host = std::sync::Arc::clone(&before_app).engine_host();

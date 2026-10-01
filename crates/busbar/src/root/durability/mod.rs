@@ -89,7 +89,7 @@
 //! Journalling a sealed record does not touch the administrative ring: the journal carries only
 //! its own record classes, and there is a test below that says so.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::root::kernel::PinnedHistory;
 
@@ -2400,16 +2400,6 @@ pub fn build_with_cards(
     }
     durability.restart_findings = findings;
     Ok(durability)
-}
-
-/// Every path this node may write to, given its configuration.
-///
-/// Empty when no data directory was configured, which is the machine-checkable form of *no
-/// directory, no files*. A caller that wants to assert the absence has something to assert against
-/// rather than a sentence to trust.
-#[must_use]
-pub fn writable_paths(cfg: &DurabilityConfig) -> Vec<&Path> {
-    cfg.data_dir.as_deref().into_iter().collect()
 }
 
 #[cfg(test)]

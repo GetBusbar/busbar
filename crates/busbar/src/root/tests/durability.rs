@@ -183,10 +183,6 @@ fn no_data_dir_creates_no_file() {
         "a node with no configured data directory wrote a file into the directory it was \
          started in"
     );
-    assert!(
-        writable_paths(&cfg).is_empty(),
-        "no data directory means no writable path at all"
-    );
 }
 
 /// And writing every kind of record to it still creates nothing. The branch above says the
@@ -479,7 +475,6 @@ fn a_configured_data_dir_opens_a_journal_on_disk() {
         !scratch.entries().is_empty(),
         "a configured data directory should hold the journal's first segment"
     );
-    assert_eq!(writable_paths(&cfg), vec![scratch.path.as_path()]);
 }
 
 /// The two branches build the same stack. A node without a data directory is not running a

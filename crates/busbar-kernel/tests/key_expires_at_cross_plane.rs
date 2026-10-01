@@ -65,7 +65,7 @@ fn mint_then_expire_the_row(
     row.expires_at = Some(row_expired_at);
     store.put_key(&row).expect("rewrite the row");
     gov.refresh().expect("reload caches");
-    token
+    token.expose_secret().clone()
 }
 
 /// End to end on the data plane through the `keys` chain: the request is admitted (200 from the

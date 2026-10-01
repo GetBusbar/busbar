@@ -21,6 +21,7 @@
 //! cross-check test that keeps them from silently drifting apart.
 
 use crate::verb::KernelVerb;
+use busbar_contract::surface::ADMIN_PREFIX;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -89,10 +90,6 @@ pub const CONFIG_CLASS_RULES: &[ConfigClassRule] = &[
     ConfigClassRule::Prefix("/identity-providers"),
     ConfigClassRule::Prefix("/export"),
 ];
-
-/// The ADMIN_PREFIX 1.5.5's `LEGACY_VERBS` paths carry, stripped by [`relative_admin_path`] so a
-/// [`ConfigClassRule`] can be written against the same relative strings 1.5.5's table used.
-const ADMIN_PREFIX: &str = "/api/v1/admin";
 
 /// The ADMIN_PREFIX-relative path for a legacy verb, or `None` for a verb with no fixed path (every
 /// 1.6.0 new verb, and the named non-admin surfaces) — those never match a [`ConfigClassRule`] and

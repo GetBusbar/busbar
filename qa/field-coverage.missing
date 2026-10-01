@@ -7,7 +7,7 @@
 # (WIRE-GEN, DIALECT-SCHEMA design C stage S1). This is the #76 carry work queue: the carry lanes
 # are staffed from it, top first.
 #
-# crates/busbar/tests/field_coverage.rs asserts the computed list EQUALS this file, in both
+# crates/busbar-plane-llm/tests/field_coverage.rs asserts the computed list EQUALS this file, in both
 # directions and in rank order:
 #
 #   a path here that becomes carried/waived -> red. Delete the line in the SAME commit that lands

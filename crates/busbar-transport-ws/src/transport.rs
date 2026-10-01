@@ -238,21 +238,6 @@ impl WsTransport {
         }
     }
 
-    /// A transport with no layer under it, carrying the message ceiling its embedder named.
-    ///
-    /// The no-lower twin of [`WsTransport::over_with_max_message_bytes`]. An instance driven only
-    /// through [`WsTransport::handshake_over`] or [`WsTransport::adopt`] never reaches
-    /// [`Transport::listen`] — nothing binds it, so nothing hands it a configuration view — so the
-    /// one place its message ceiling can arrive is the embedder that constructs it. The plain
-    /// [`WsTransport::new`] leaves the number zero and tungstenite's own default stands, which is the
-    /// behaviour that constructor keeps.
-    #[must_use]
-    pub fn with_max_message_bytes(max: usize) -> Self {
-        let t = Self::new();
-        t.max_message_bytes.store(max, Ordering::Relaxed);
-        t
-    }
-
     /// A transport composed over `lower` — the layer that binds, accepts and dials on its behalf.
     ///
     /// The design's own stack is `tcp → http → ws`, with core's connection security wrapped around

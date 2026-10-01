@@ -122,14 +122,3 @@ file = "crates/plugin-loader/tests/store_money_acceptance.rs"
 count = 2
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-# ── TEST-PATH ANCHOR, Q77-PENDING (b) (ARCHITECT 2026-10-01): the root's field-coverage test helper
-#    names the wire-lock directory `testing/llm-conformance/wire` (WIRE-GEN). Expires when the
-#    field-coverage reader moves out of the busbar crate (WIRE-GEN-FOLLOW), which deletes this row.
-[[leak]]
-noun = "llm"
-kind = "plane"
-file = "crates/busbar/tests/common/coverage.rs"
-count = 1
-category = "composition-root"
-wave = "keystone / composition-root — register_planes both-ways self-registration"

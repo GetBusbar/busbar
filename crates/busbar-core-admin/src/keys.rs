@@ -10,6 +10,7 @@ use axum::body::Bytes;
 use axum::extract::Path;
 use axum::http::{header::CONTENT_TYPE, StatusCode};
 use axum::response::{IntoResponse, Response};
+use busbar_contract::redacted::Redacted;
 use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 
@@ -851,13 +852,13 @@ pub(crate) async fn create_key(
     /// What the mint's blocking half produced: the key (bearer-only or with AWS credentials), or the
     /// anti-sprawl ceiling it hit.
     enum MintOutcome {
-        TokenOnly(Box<(busbar_kernel::governance::VirtualKey, String)>),
+        TokenOnly(Box<(busbar_kernel::governance::VirtualKey, Redacted<String>)>),
         Aws(
             Box<(
                 busbar_kernel::governance::VirtualKey,
+                Redacted<String>,
                 String,
-                String,
-                String,
+                Redacted<String>,
             )>,
         ),
         AtCap {
@@ -1059,7 +1060,7 @@ pub(crate) async fn create_key(
     // needed (and `gov` is not in scope here — moved into the mint closure above).
     body["state"] = json!("active");
     // The busbar-SIGNED token IS the key credential, shown exactly once.
-    body["token"] = json!(token);
+    body["token"] = json!(token.expose_secret());
     body["expires_at"] = json!(exp);
     // Tell the caller whether this mint AUTO-PROVISIONED its group leaf (self-service), so a
     // portal can distinguish "bound to an existing bucket" from "created your personal bucket + bound".
@@ -1068,7 +1069,7 @@ pub(crate) async fn create_key(
         // The AccessKeyId is NOT secret (it travels in plaintext in the SigV4 header); the AWS SECRET
         // access key is shown ONCE here only, mirroring the token.
         body["aws_access_key_id"] = json!(access_key_id);
-        body["aws_secret_access_key"] = json!(secret_access_key);
+        body["aws_secret_access_key"] = json!(secret_access_key.expose_secret());
     }
     if let Some(ref ck) = idem_ckey {
         app.idempotency_cache

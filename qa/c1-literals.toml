@@ -96,11 +96,6 @@ item = "github"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/hooks.rs"
-item = "admin-tokens"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/config/migrate.rs"
 item = "otlp"
 

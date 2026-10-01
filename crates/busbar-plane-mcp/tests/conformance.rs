@@ -549,6 +549,47 @@ fn only_a_real_result_bills_complete() {
     }
 }
 
+/// `isError` yields a fact only when it is a JSON boolean.
+///
+/// A non-boolean `isError` (the string `"true"`, a number) used to read as `false`, reporting a
+/// failing tool as a succeeding one. It now yields no fact at all; a real boolean still yields
+/// itself. The answer is relayed unchanged either way, as predev relays it.
+#[test]
+fn a_non_boolean_is_error_is_not_read_as_success() {
+    let plane = McpPlane::EMPTY;
+    // Reading an answer consults no carrier, so the scaffold names none.
+    let scaffold = Scaffold::new("");
+    let ctx = scaffold.ctx();
+    for (flag, expected) in [
+        ("true", Some(true)),
+        ("false", Some(false)),
+        ("\"true\"", None),
+        ("\"false\"", None),
+        ("1", None),
+        ("{}", None),
+    ] {
+        let answer =
+            format!(r#"{{"id":1,"jsonrpc":"2.0","result":{{"content":[],"isError":{flag}}}}}"#)
+                .into_bytes();
+        let frames = vec![response_frame(&answer)];
+        let mut cursor = FrameCursor::new(&frames);
+        match plane
+            .decode_response(&mut cursor, &sealed_destination(), None, &ctx)
+            .expect("an answer decodes")
+        {
+            Progress::Terminal { r, .. } => {
+                let read = match r.facts.get(facts::FACT_IS_ERROR) {
+                    Some(busbar_contract::bounded::FactValue::Bool(b)) => Some(b),
+                    None => None,
+                    other => panic!("isError {flag} read as {other:?}"),
+                };
+                assert_eq!(read, expected, "isError {flag}");
+            }
+            other => panic!("isError {flag} decoded as {other:?}"),
+        }
+    }
+}
+
 /// A refusal is rendered as this dialect's error envelope, with the caller's identifier.
 #[test]
 fn a_refusal_is_rendered_in_this_dialect() {

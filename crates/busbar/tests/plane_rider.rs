@@ -164,6 +164,8 @@ fn arrive(plugin: &Plugin<Plane>, target: &[u8]) -> (AbiOutcome, Vec<u64>) {
             refusal: 0,
             refusal_status: 0,
             _reserved: 0,
+            correlation: 0,
+            cancels: 0,
         },
     );
     let outcome = plugin.call(slot::ARRIVE, &mut frame).outcome;

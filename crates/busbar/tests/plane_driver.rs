@@ -168,6 +168,8 @@ fn stats(plugin: &Plugin<Plane>) -> [u64; cases::stat::COUNT] {
             refusal: 0,
             refusal_status: 0,
             _reserved: 0,
+            correlation: 0,
+            cancels: 0,
         },
     );
     assert_eq!(
@@ -313,6 +315,8 @@ fn zero_arrive_out() -> ArriveOut {
         refusal: 0,
         refusal_status: 0,
         _reserved: 0,
+        correlation: 0,
+        cancels: 0,
     }
 }
 

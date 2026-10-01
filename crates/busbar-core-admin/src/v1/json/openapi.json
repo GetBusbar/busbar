@@ -3433,7 +3433,7 @@
             "type": "string"
           },
           "restart_required_default": {
-            "description": "The kind-derived restart-scoping default (`busbar_plugin_loader::sign::kind_restart_default`), so\nbusbar-ui need not hardcode the kind→default table. Emitted by both schema endpoints (`null`\nonly when the plugin has no resolvable manifest/kind). Declared so codegen'd clients keep it.",
+            "description": "The kind-derived restart-scoping default (`busbar_plugin_sign::kind_restart_default`), so\nbusbar-ui need not hardcode the kind→default table. Emitted by both schema endpoints (`null`\nonly when the plugin has no resolvable manifest/kind). Declared so codegen'd clients keep it.",
             "type": [
               "boolean",
               "null"

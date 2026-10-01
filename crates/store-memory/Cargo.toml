@@ -25,7 +25,7 @@ dropped-in = []
 cold-dropped-in = []
 
 [dependencies]
-# The record half of the store protocol. `busbar_contract::kinds::Store` declares `record_put`,
+# The record half of the store protocol. `busbar_contract::abi::sdk::store::StoreSlots` declares `record_put`,
 # `record_get` and `record_scan` for a plane's kernel-held durable records, and this backend answers
 # them at the contract's own spelling. A plugin-kind crate may name the contract freely (the
 # manifest allow-list's own rule), which is exactly why the record verbs are shaped against it and

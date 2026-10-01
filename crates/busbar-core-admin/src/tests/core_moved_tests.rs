@@ -481,5 +481,5 @@ fn dp_gov_with_key() -> (std::sync::Arc<busbar_kernel::governance::GovState>, St
             1_000_000_000,
         )
         .unwrap();
-    (gov, secret.as_str().to_string())
+    (gov, secret.expose_secret().as_str().to_string())
 }

@@ -44,8 +44,6 @@
 //! exhausted. It knows that bytes arrived, which declared address they named, and — from the eight
 //! words the driver answers with — which status its own wire should put on the way out.
 
-use std::collections::HashMap;
-
 use busbar_contract::transport::driver::{Answer, Arrival, Outcome, UnitDriver};
 use busbar_contract::transport::registry::facts as tfacts;
 use busbar_contract::transport::surface::{
@@ -170,15 +168,6 @@ pub fn document_bar(surface: &WireSurface, binding: &str) -> Bar {
     }
 }
 
-/// The operation a class name addresses.
-///
-/// The tie-back a document binding needs on the way back out: the transport could not know the
-/// operation before the document was read, and the driver hands the resolved one back on the answer.
-#[must_use]
-pub fn operation_of<'s>(surface: &'s WireSurface, op: &str) -> Option<&'s Operation> {
-    surface.operations.iter().find(|o| o.op == op)
-}
-
 // ── what this transport publishes about an arrival ──────────────────────────────────────────────
 
 /// The reserved fact keys a mounted request publishes.
@@ -218,17 +207,6 @@ pub fn published_facts<'a>(
         facts.push((c.name, c.value));
     }
     facts
-}
-
-/// The captures a matched template yielded, as a map, for a caller that wants one.
-///
-/// Offered beside [`published_facts`] rather than instead of it, and the difference is the whole
-/// reason the fact list is ordered: a map is the right shape for "what did the template capture"
-/// and the wrong shape for "what does this arrival publish", because the second question has a
-/// precedence in it and a map has none.
-#[must_use]
-pub fn captures_map<'a>(captures: &'a [Capture<'a>]) -> HashMap<&'a str, &'a str> {
-    captures.iter().map(|c| (c.name, c.value)).collect()
 }
 
 // ── running one arrival, on the far side of the seam ────────────────────────────────────────────

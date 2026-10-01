@@ -183,7 +183,7 @@ impl GovKit for crate::governance::GovState {
         spec: NewKeySpec,
         exp: u64,
         now: u64,
-    ) -> Result<(VirtualKey, String), String> {
+    ) -> Result<(VirtualKey, busbar_contract::redacted::Redacted<String>), String> {
         crate::governance::GovState::mint_signed(self, spec, exp, now).map_err(|e| e.to_string())
     }
     fn create_key_with_aws(

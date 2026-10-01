@@ -221,22 +221,6 @@ fn a_binding_whose_rows_are_all_open_reads_as_open() {
     assert_eq!(document_bar(&OPEN_ENVELOPE, ENVELOPE), Bar::Open);
 }
 
-/// The tie-back a document binding needs: a class name finds its operation.
-#[test]
-fn an_operation_is_found_by_the_class_the_plane_named() {
-    assert_eq!(
-        operation_of(&SURFACE, "watch").expect("declared").answering,
-        Answering::Stream
-    );
-    assert_eq!(
-        operation_of(&SURFACE, "watch")
-            .expect("declared")
-            .response_media,
-        "text/event-stream"
-    );
-    assert!(operation_of(&SURFACE, "not-a-class").is_none());
-}
-
 /// The published facts are the reserved keys, then the captures, in that order.
 #[test]
 fn the_published_facts_are_the_reserved_keys_then_the_captures() {
@@ -312,16 +296,6 @@ fn every_published_reserved_key_is_declared() {
     assert!(
         busbar_contract::transport::registry::facts::undeclared(MOUNT_FACTS, &published).is_none()
     );
-}
-
-/// The captures are also offered as a map, for the question a map is the right shape for.
-#[test]
-fn the_captures_are_offered_as_a_map_too() {
-    let r = request("/things/t-7", "GET");
-    let addressed = resolve(&SURFACE, &r).expect("a declared target");
-    let map = captures_map(&addressed.captures);
-    assert_eq!(map.get("id"), Some(&"t-7"));
-    assert_eq!(map.len(), 1);
 }
 
 /// Serving hands the driver the facts, the bytes, the stack and the addressing — and nothing else.

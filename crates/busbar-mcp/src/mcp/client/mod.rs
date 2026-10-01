@@ -44,9 +44,9 @@
 //! `busbar_kernel::trust` already landed the plane-neutral `Approval` / `Sighting` / `TrustState` /
 //! `Drift` machine, generic over its pinned artifact, with the state DERIVED rather than stored.
 //! This plane supplies one adapter, [`catalogue::TransportPin`], and gets the whole lifecycle:
-//! register, connect, approve, per-capability approve/reject, `approve_pin`, suspend, unpin,
-//! quarantine-on-drift and the changes queue. Nothing here re-implements a transition, which is
-//! also what choke point F in the `structure-lint` gate exists to keep true.
+//! register, connect, approve, suspend, unpin, quarantine-on-drift and the changes queue. Nothing
+//! here re-implements a transition, which is also what choke point F in the `structure-lint` gate
+//! exists to keep true.
 //!
 //! ## WHAT IS AND IS NOT WIRED, stated plainly so nobody plans against it
 //!

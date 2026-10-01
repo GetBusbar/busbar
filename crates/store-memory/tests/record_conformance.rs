@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The record half of the store protocol, held to what `busbar_contract::kinds::Store` declares.
+//! The record half of the store protocol, held to what `busbar_contract::abi::sdk::store::StoreSlots` declares.
 //!
 //! `record_put`, `record_get` and `record_scan` are the three verbs a plane's kernel-held durable
 //! records are reached through, and until they were written here nothing in the workspace

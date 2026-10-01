@@ -16,8 +16,8 @@ use busbar_kernel::recovery::{
 use busbar_kernel::slice::{bucket_all, ConcurrencyGauge, Epoch};
 use busbar_kernel::teller::{Evidence, Kernel};
 use busbar_kernel::tick::{
-    drain_outcome, drain_verdict, fleet_action, session_tick, sweep, sweep_settle, DrainVerdict,
-    FleetAction, SessionTick, Sweep, MIN_QUORUM_PEERS, SESSION_IDLE_MAX_MS,
+    drain_outcome, drain_verdict, fleet_action, sweep, sweep_settle, DrainVerdict, FleetAction,
+    Sweep, MIN_QUORUM_PEERS,
 };
 
 use common::{principal, TestDoor};
@@ -705,119 +705,6 @@ fn a_stalled_unit_posts_its_floor_and_gives_its_lease_back() {
     // And the second key to the slot finds it empty.
     assert!(sweep_settle(&kernel, &slot, verdict, &evidence, &canary, &gauge).is_none());
     assert_eq!(canary.counts().settlements, 1);
-}
-
-#[test]
-fn the_session_tick_prices_time_it_could_not_price_last_time() {
-    // Nothing priced, nothing changed: nothing to do.
-    assert_eq!(
-        session_tick(1_000, 1_000, 0, None, false, false, false),
-        SessionTick::Idle
-    );
-    // Nothing priced, but the accrued figure moved: checkpoint it.
-    assert_eq!(
-        session_tick(1_000, 1_000, 0, Some(77), false, false, false),
-        SessionTick::Checkpoint { accrued: 77 }
-    );
-    // Priced seconds, one clean interval.
-    assert_eq!(
-        session_tick(1_000, 1_000, 0, None, true, false, false),
-        SessionTick::Accrue {
-            elapsed: 1_000,
-            late: false,
-            clipped: false,
-            checkpoint: None,
-        }
-    );
-    // A tick that could not run: the next one prices the whole gap, marked late.
-    assert_eq!(
-        session_tick(1_000, 3_000, 0, None, true, false, false),
-        SessionTick::Accrue {
-            elapsed: 3_000,
-            late: true,
-            clipped: false,
-            checkpoint: None,
-        }
-    );
-    // A gap longer than the idle bound is clipped at it rather than posted in full.
-    assert_eq!(
-        session_tick(1_000, SESSION_IDLE_MAX_MS + 1, 0, None, true, false, false),
-        SessionTick::Accrue {
-            elapsed: SESSION_IDLE_MAX_MS,
-            late: true,
-            clipped: true,
-            checkpoint: None,
-        }
-    );
-}
-
-/// A priced session checkpoints what it has accrued, exactly as an unpriced one does.
-///
-/// The two jobs of a session tick are not alternatives: pricing an interval of session time and
-/// writing down what has accrued so far are different things, and a session that does the first
-/// still has to do the second. Deciding them as one if/else meant a priced session NEVER
-/// checkpointed, so its journal record carried a checkpoint of zero — and recovery, which posts the
-/// last checkpointed figure, posted nothing for a session that had been billing all along.
-#[test]
-fn a_priced_session_still_checkpoints_what_it_accrued() {
-    let verdict = session_tick(1_000, 1_000, 0, Some(4_200), true, false, false);
-    assert_eq!(
-        verdict,
-        SessionTick::Accrue {
-            elapsed: 1_000,
-            late: false,
-            clipped: false,
-            checkpoint: Some(4_200),
-        },
-        "the priced branch swallowed the checkpoint"
-    );
-
-    // And what the tick checkpointed is what a crash pays out on.
-    let kernel = Kernel::new();
-    let canary = Canary::new();
-    let checkpointed = match verdict {
-        SessionTick::Accrue {
-            checkpoint: Some(accrued),
-            ..
-        } => accrued,
-        other => panic!("the tick answered {other:?}"),
-    };
-    let postings = recover_all(&kernel, &[record(true, checkpointed)], Epoch(2), &canary);
-    assert_eq!(postings.len(), 1);
-    assert_eq!(
-        postings[0].settled(),
-        4_200,
-        "recovery posted a figure the tick never wrote down"
-    );
-    assert!(postings[0].flags().contains(PostingFlags::RECOVERED));
-}
-
-#[test]
-fn a_session_closes_when_it_goes_quiet_or_its_budget_runs_dry() {
-    assert_eq!(
-        session_tick(1_000, 0, SESSION_IDLE_MAX_MS, None, false, false, false),
-        SessionTick::Close {
-            reason: ReasonCode::DeadlineExceeded,
-            elapsed: 0,
-            checkpoint: None,
-        }
-    );
-    assert_eq!(
-        session_tick(1_000, 0, 0, None, true, true, false),
-        SessionTick::Close {
-            reason: ReasonCode::OverBudget,
-            elapsed: 0,
-            checkpoint: None,
-        }
-    );
-    assert_eq!(
-        session_tick(1_000, 0, 0, None, false, false, true),
-        SessionTick::Close {
-            reason: ReasonCode::Revoked,
-            elapsed: 0,
-            checkpoint: None,
-        }
-    );
 }
 
 #[test]

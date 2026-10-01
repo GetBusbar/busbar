@@ -23,8 +23,15 @@
 //!
 //! ERROR TEXT. A FAILED or REFUSED answer's `error` points at text the instance keeps in a
 //! bounded ring of the last [`TEXT_RING`] texts; the host copies it when the op returns.
+//!
+//! NO ALLOCATION ON THE REQUEST PATH (THE DESIGN §11, A.8 "Zero allocation on the READY path"):
+//! the door's own work on a request-path slot touches no heap. Rows are written straight from
+//! the store's answer into the host's buffers; a refusal is a fixed text, or one rendered into a
+//! fixed buffer; a store's failure text is moved into the ring, never copied; and the ring is
+//! sized once, at `open`.
 
 use std::collections::{HashMap, VecDeque};
+use std::fmt::Write as _;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -58,6 +65,7 @@ use crate::abi::store::{
     RESERVE_NO_FAILED_CELL, RESERVE_OK, RESERVE_STALE_EPOCH, RESERVE_UNAVAILABLE, SELECT_ALL,
     SELECT_PARENT, VERDICT_NO, VERDICT_YES,
 };
+use crate::bounded::MAX_RECORD_BYTES;
 use crate::kinds::RecordBytes;
 use crate::records::{
     AuditRecord, CredentialSecret, MeteringDelta, PlaneDisposition, PlaneRecord, PlaneSelector,
@@ -141,13 +149,77 @@ impl Drop for Leased {
     }
 }
 
+/// The longest refusal text the door renders itself: a fixed phrase and at most two numbers
+/// (the longest, a UTF-8 refusal naming a 20-digit index, is 88 bytes).
+const RENDERED: usize = 96;
+
+/// A refusal text rendered into a fixed buffer, so a number in it costs no heap.
+#[derive(Clone, Copy)]
+struct Rendered {
+    bytes: [u8; RENDERED],
+    len: usize,
+}
+
+impl Rendered {
+    fn of(args: std::fmt::Arguments<'_>) -> Self {
+        let mut r = Self {
+            bytes: [0; RENDERED],
+            len: 0,
+        };
+        // A text longer than the buffer stops at its last whole character.
+        let _ = r.write_fmt(args);
+        r
+    }
+
+    fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.bytes[..self.len]).unwrap_or_default()
+    }
+}
+
+impl std::fmt::Write for Rendered {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        let mut n = s.len().min(RENDERED - self.len);
+        while !s.is_char_boundary(n) {
+            n -= 1;
+        }
+        self.bytes[self.len..self.len + n].copy_from_slice(&s.as_bytes()[..n]);
+        self.len += n;
+        if n == s.len() {
+            Ok(())
+        } else {
+            Err(std::fmt::Error)
+        }
+    }
+}
+
+/// A FAILED or REFUSED answer's text: a fixed one, one the door rendered, or the store's own.
+enum Text {
+    Fixed(&'static str),
+    Rendered(Rendered),
+    Owned(String),
+}
+
+impl Text {
+    fn render(args: std::fmt::Arguments<'_>) -> Self {
+        Self::Rendered(Rendered::of(args))
+    }
+
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Fixed(t) => t,
+            Self::Rendered(r) => r.as_str(),
+            Self::Owned(t) => t.as_str(),
+        }
+    }
+}
+
 /// One store instance as the door serves it: the backend, the leases it has handed out and the
 /// error texts it keeps for the host.
 pub struct Served<B> {
     store: B,
     leases: Mutex<HashMap<u64, Leased>>,
     next_lease: AtomicU64,
-    texts: Mutex<VecDeque<Box<str>>>,
+    texts: Mutex<VecDeque<Text>>,
 }
 
 impl<B> std::fmt::Debug for Served<B> {
@@ -162,7 +234,8 @@ impl<B: StoreSlots> Served<B> {
             store,
             leases: Mutex::new(HashMap::new()),
             next_lease: AtomicU64::new(0),
-            texts: Mutex::new(VecDeque::new()),
+            // Sized here, once: keeping a text never grows the ring.
+            texts: Mutex::new(VecDeque::with_capacity(TEXT_RING)),
         }
     }
 
@@ -176,23 +249,33 @@ impl<B: StoreSlots> Served<B> {
         self.leases.lock().unwrap_or_else(|p| p.into_inner()).len()
     }
 
-    /// Keep `text` alive in the ring and answer it as an [`AbiStr`].
-    fn text(&self, text: &str) -> AbiStr {
-        let mut end = text.len().min(MAX_TEXT);
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        let kept: Box<str> = text[..end].into();
-        let s = AbiStr {
-            ptr: kept.as_ptr(),
-            len: kept.len(),
+    /// Keep `text` alive in the ring (a fixed text needs no keeping), cut to [`MAX_TEXT`] on a
+    /// character boundary, and answer it as an [`AbiStr`]. Allocates nothing: an owned text is
+    /// moved in, and the ring never grows past the capacity it was opened with.
+    fn text(&self, text: Text) -> AbiStr {
+        let text = match text {
+            Text::Fixed(t) => return abi_str(t),
+            Text::Owned(mut t) => {
+                let mut end = t.len().min(MAX_TEXT);
+                while !t.is_char_boundary(end) {
+                    end -= 1;
+                }
+                t.truncate(end);
+                Text::Owned(t)
+            }
+            rendered @ Text::Rendered(_) => rendered,
         };
         let mut ring = self.texts.lock().unwrap_or_else(|p| p.into_inner());
         if ring.len() == TEXT_RING {
             ring.pop_front();
         }
-        ring.push_back(kept);
-        s
+        ring.push_back(text);
+        // A rendered text lives in the ring's own slot, which stays put until it is overwritten.
+        let kept = ring.back().map_or("", Text::as_str);
+        AbiStr {
+            ptr: kept.as_ptr(),
+            len: kept.len(),
+        }
     }
 
     fn lease(&self, held: Leased) -> u64 {
@@ -236,12 +319,13 @@ impl Head for OutHead {
     }
 }
 
-fn failed<B: StoreSlots>(s: &Served<B>, out: &mut impl Head, text: &str) -> Outcome {
-    out.head().error = s.text(text);
+/// FAILED with the store's own text, moved into the ring.
+fn failed<B: StoreSlots>(s: &Served<B>, out: &mut impl Head, text: String) -> Outcome {
+    out.head().error = s.text(Text::Owned(text));
     Outcome::Failed
 }
 
-fn refused<B: StoreSlots>(s: &Served<B>, out: &mut impl Head, text: &str) -> Outcome {
+fn refused<B: StoreSlots>(s: &Served<B>, out: &mut impl Head, text: Text) -> Outcome {
     out.head().error = s.text(text);
     Outcome::Refused
 }
@@ -262,7 +346,7 @@ fn op_answer<B: StoreSlots>(
     match r {
         Ok(()) => Outcome::Ready,
         Err(OpRefused::Conflict) => conflict(out),
-        Err(OpRefused::Failed(t)) => failed(s, out, &t),
+        Err(OpRefused::Failed(t)) => failed(s, out, t),
     }
 }
 
@@ -273,24 +357,27 @@ fn done<B: StoreSlots>(
 ) -> Outcome {
     match r {
         Ok(()) => Outcome::Ready,
-        Err(e) => failed(s, out, &e.0),
+        Err(e) => failed(s, out, e.0),
     }
 }
 
-fn text_of(l: Lent<'_, AbiStr>) -> Result<&str, String> {
+fn text_of(l: Lent<'_, AbiStr>) -> Result<&str, Text> {
     l.as_str()
-        .map_err(|e| format!("a string is not UTF-8: {e}"))
+        .map_err(|e| Text::render(format_args!("a string is not UTF-8: {e}")))
 }
 
-fn opt_text(l: Lent<'_, AbiStr>) -> Result<Option<&str>, String> {
+fn opt_text(l: Lent<'_, AbiStr>) -> Result<Option<&str>, Text> {
     if l.ptr.is_null() {
         return Ok(None);
     }
     text_of(l).map(Some)
 }
 
-fn json<T: DeserializeOwned>(l: Lent<'_, Blob>) -> Result<T, String> {
-    serde_json::from_slice(l.bytes()).map_err(|e| format!("a record blob does not decode: {e}"))
+/// A record blob decoded. Its refusal carries the decoder's own words, so it is an owned text;
+/// no request-path slot decodes a blob.
+fn json<T: DeserializeOwned>(l: Lent<'_, Blob>) -> Result<T, Text> {
+    serde_json::from_slice(l.bytes())
+        .map_err(|e| Text::Owned(format!("a record blob does not decode: {e}")))
 }
 
 fn to_json<T: Serialize>(v: &T) -> Box<[u8]> {
@@ -395,7 +482,7 @@ fn listed<T: Serialize, B: StoreSlots>(
 ) -> Outcome {
     match r {
         Ok(v) => lease_list(s, out, v.iter().map(to_json).collect(), secret),
-        Err(e) => failed(s, out, &e.0),
+        Err(e) => failed(s, out, e.0),
     }
 }
 
@@ -417,25 +504,23 @@ fn bytes_into(out: &mut HostBytesOut, mut buf: HostBuf<'_, u8>, value: Option<&[
     }
 }
 
-/// A list into host buffers: `items` rows and one byte buffer they point into. `row` builds each
-/// row from the addresses its byte runs landed at (NULL for an absent run). READY, or the short
-/// FAILED with every dimension's full size (the multi-dimension M-SB).
-fn list_into<T: Copy>(
+/// A list into host buffers: `items` rows and one byte buffer they point into. Each row has `N`
+/// byte runs, borrowed from the store's answer; `row` builds the row from the addresses they
+/// landed at. Nothing is collected on the way. READY, or the short FAILED with every dimension's
+/// full size (the multi-dimension M-SB).
+fn list_into<'r, T: Copy, const N: usize>(
     out: &mut HostListOut,
     mut items: HostBuf<'_, T>,
     mut bytes: HostBuf<'_, u8>,
-    runs: &[Vec<Option<&[u8]>>],
-    row: impl Fn(usize, &[Option<(*const u8, usize)>]) -> T,
+    runs: impl Iterator<Item = [&'r [u8]; N]>,
+    row: impl Fn(usize, [(*const u8, usize); N]) -> T,
 ) -> Outcome {
-    for (n, parts) in runs.iter().enumerate() {
-        let mut at = Vec::with_capacity(parts.len());
-        for p in parts {
-            at.push(p.map(|b| {
-                let off = bytes.extend(b);
-                (bytes.as_ptr().wrapping_add(off).cast_const(), b.len())
-            }));
-        }
-        items.push_row(row(n, &at));
+    for (n, parts) in runs.enumerate() {
+        let at = parts.map(|b| {
+            let off = bytes.extend(b);
+            (bytes.as_ptr().wrapping_add(off).cast_const(), b.len())
+        });
+        items.push_row(row(n, at));
     }
     let short = !items.fits() || !bytes.fits();
     let (iw, ineed) = items.settle(short);
@@ -451,29 +536,16 @@ fn list_into<T: Copy>(
     }
 }
 
-fn span_blob(at: Option<(*const u8, usize)>, fmt: u32) -> Blob {
-    match at {
-        None => Blob::ABSENT,
-        Some((ptr, len)) => Blob {
-            ptr,
-            len,
-            fmt,
-            flags: 0,
-        },
+fn span_blob((ptr, len): (*const u8, usize)) -> Blob {
+    Blob {
+        ptr,
+        len,
+        fmt: BLOB_OCTETS,
+        flags: 0,
     }
 }
 
-fn span_str(at: Option<(*const u8, usize)>) -> AbiStr {
-    match at {
-        None => AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
-        Some((ptr, len)) => AbiStr { ptr, len },
-    }
-}
-
-fn plane_record(row: Lent<'_, PlaneRecordRow>) -> Result<PlaneRecord, String> {
+fn plane_record(row: Lent<'_, PlaneRecordRow>) -> Result<PlaneRecord, Text> {
     Ok(PlaneRecord {
         kind: text_of(row.field(|r| &r.kind))?.to_string(),
         id: text_of(row.field(|r| &r.id))?.to_string(),
@@ -495,13 +567,13 @@ fn cell_key<'a>(
     dimension: u32,
     class_key: Lent<'a, AbiStr>,
     window_start: u64,
-) -> Result<CellKey<'a>, String> {
+) -> Result<CellKey<'a>, Text> {
     let dimension = match dimension {
         DIM_NANO_UNITS => Dimension::NanoUnits,
         DIM_REQUESTS => Dimension::Requests,
         DIM_CONCURRENCY => Dimension::Concurrency,
         DIM_CLASS => Dimension::Class(text_of(class_key)?),
-        d => return Err(format!("dimension {d} is not a store dimension")),
+        d => return Err(Text::render(format_args!("dimension {d} is not a store dimension"))),
     };
     Ok(CellKey {
         bucket: text_of(bucket)?,
@@ -511,9 +583,9 @@ fn cell_key<'a>(
     })
 }
 
-fn unit_cell(c: Lent<'_, UnitCell>) -> Result<Cell<'_>, String> {
+fn unit_cell(c: Lent<'_, UnitCell>) -> Result<Cell<'_>, Text> {
     if c.amount == 0 {
-        return Err("a reserve cell's amount is 0".to_string());
+        return Err(Text::Fixed("a reserve cell's amount is 0"));
     }
     Ok(Cell {
         key: cell_key(
@@ -527,7 +599,7 @@ fn unit_cell(c: Lent<'_, UnitCell>) -> Result<Cell<'_>, String> {
     })
 }
 
-fn window_cap(c: Lent<'_, WindowCap>) -> Result<Cap<'_>, String> {
+fn window_cap(c: Lent<'_, WindowCap>) -> Result<Cap<'_>, Text> {
     Ok(Cap {
         key: cell_key(
             c.field(|c| &c.bucket),
@@ -541,9 +613,13 @@ fn window_cap(c: Lent<'_, WindowCap>) -> Result<Cap<'_>, String> {
     })
 }
 
-fn record_bytes(bytes: &[u8]) -> Result<RecordBytes, String> {
-    RecordBytes::new(bytes.to_vec())
-        .map_err(|n| format!("a record of {n} bytes is over the ceiling"))
+/// A record taken as [`RecordBytes`]. One over the ceiling is refused before it is copied.
+fn record_bytes(bytes: &[u8]) -> Result<RecordBytes, Text> {
+    let over = |n: usize| Text::render(format_args!("a record of {n} bytes is over the ceiling"));
+    if bytes.len() > MAX_RECORD_BYTES {
+        return Err(over(bytes.len()));
+    }
+    RecordBytes::new(bytes.to_vec()).map_err(over)
 }
 
 /// The host's grants array as `reserve`'s sink: each grant goes straight into the host's memory.
@@ -701,17 +777,17 @@ slot!(
     PutKey(BlobIn, OutHead) |s, i, o| {
         match json::<VirtualKey>(i.field(|i| &i.record)) {
             Ok(k) => done(s, o, s.store.put_key(&k)),
-            Err(e) => refused(s, o, &e),
+            Err(e) => refused(s, o, e),
         }
     }
 );
 slot!(
     /// `get_key` (slot 1).
     GetKey(IdIn, LeasedBlobOut) |s, i, o| {
-        let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
+        let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match s.store.get_key(id) {
             Ok(k) => lease_one(s, o, k.as_ref().map(to_json), false),
-            Err(e) => failed(s, o, &e.0),
+            Err(e) => failed(s, o, e.0),
         }
     }
 );
@@ -724,7 +800,7 @@ slot!(
     DeleteKey(IdIn, OutHead) |s, i, o| {
         match text_of(i.field(|i| &i.id)) {
             Ok(id) => done(s, o, s.store.delete_key(id)),
-            Err(e) => refused(s, o, &e),
+            Err(e) => refused(s, o, e),
         }
     }
 );
@@ -733,7 +809,7 @@ slot!(
     ScrubKey(IdIn, OutHead) |s, i, o| {
         match text_of(i.field(|i| &i.id)) {
             Ok(id) => done(s, o, s.store.scrub_key(id)),
-            Err(e) => refused(s, o, &e),
+            Err(e) => refused(s, o, e),
         }
     }
 );
@@ -746,20 +822,20 @@ slot!(
 slot!(
     /// `get_usage` (slot 6): an untouched cell is the empty ledger, FOUND.
     GetUsage(WindowIn, LeasedBlobOut) |s, i, o| {
-        let bucket = match text_of(i.field(|i| &i.bucket)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
+        let bucket = match text_of(i.field(|i| &i.bucket)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match s.store.get_usage(bucket, i.window_start) {
             Ok(l) => lease_one(s, o, Some(to_json(&l)), false),
-            Err(e) => failed(s, o, &e.0),
+            Err(e) => failed(s, o, e.0),
         }
     }
 );
 slot!(
     /// `put_usage` (slot 7).
     PutUsage(PutUsageIn, OutHead) |s, i, o| {
-        let bucket = match text_of(i.field(|i| &i.bucket)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
+        let bucket = match text_of(i.field(|i| &i.bucket)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match json::<UsageLedger>(i.field(|i| &i.ledger)) {
             Ok(l) => done(s, o, s.store.put_usage(bucket, i.window_start, &l)),
-            Err(e) => refused(s, o, &e),
+            Err(e) => refused(s, o, e),
         }
     }
 );
@@ -767,10 +843,10 @@ slot!(
     /// `add_usage` (slot 8), deduped on its `op_id`.
     AddUsage(AddUsageIn, OutHead) |s, i, o| {
         let cell = i.field(|i| &i.cell);
-        let bucket = match text_of(cell.field(|c| &c.bucket)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
+        let bucket = match text_of(cell.field(|c| &c.bucket)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match json::<UsageDelta>(cell.field(|c| &c.delta)) {
             Ok(d) => op_answer(s, o, s.store.add_usage_op(i.op_id, bucket, cell.window_start, &d)),
-            Err(e) => refused(s, o, &e),
+            Err(e) => refused(s, o, e),
         }
     }
 );
@@ -779,7 +855,7 @@ slot!(
     AddMetering(OpBlobIn, OutHead) |s, i, o| {
         match json::<MeteringDelta>(i.field(|i| &i.record)) {
             Ok(d) => op_answer(s, o, s.store.add_metering_op(i.op_id, &d)),
-            Err(e) => refused(s, o, &e),
+            Err(e) => refused(s, o, e),
         }
     }
 );
@@ -794,17 +870,17 @@ slot!(
     PurgeWindowsBefore(U64In, CountOut) |s, i, o| {
         match s.store.purge_windows_before(i.value) {
             Ok(n) => { o.count = n; Outcome::Ready }
-            Err(e) => failed(s, o, &e.0),
+            Err(e) => failed(s, o, e.0),
         }
     }
 );
 slot!(
     /// `purge_metering_before` (slot 12).
     PurgeMeteringBefore(IdIn, CountOut) |s, i, o| {
-        let bucket = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
+        let bucket = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match s.store.purge_metering_before(bucket) {
             Ok(n) => { o.count = n; Outcome::Ready }
-            Err(e) => failed(s, o, &e.0),
+            Err(e) => failed(s, o, e.0),
         }
     }
 );
@@ -813,45 +889,45 @@ slot!(
     PutCredential(BlobIn, OutHead) |s, i, o| {
         match json::<CredentialSecret>(i.field(|i| &i.record)) {
             Ok(c) => done(s, o, s.store.put_credential(&c)),
-            Err(e) => refused(s, o, &e),
+            Err(e) => refused(s, o, e),
         }
     }
 );
 slot!(
     /// `put_key_with_credential` (slot 14): both rows or neither.
     PutKeyWithCredential(KeyWithCredentialIn, OutHead) |s, i, o| {
-        let k = match json::<VirtualKey>(i.field(|i| &i.key)) { Ok(k) => k, Err(e) => return refused(s, o, &e) };
+        let k = match json::<VirtualKey>(i.field(|i| &i.key)) { Ok(k) => k, Err(e) => return refused(s, o, e) };
         match json::<CredentialSecret>(i.field(|i| &i.credential)) {
             Ok(c) => done(s, o, s.store.put_key_with_credential(&k, &c)),
-            Err(e) => refused(s, o, &e),
+            Err(e) => refused(s, o, e),
         }
     }
 );
 slot!(
     /// `list_credentials` (slot 15): metadata, never a secret.
     ListCredentials(IdIn, LeasedListOut) |s, i, o| {
-        let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
+        let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         listed(s, o, s.store.list_credentials(id), false)
     }
 );
 slot!(
     /// `lookup_credential_secret` (slot 16): a secret blob; unknown is ABSENT.
     LookupCredentialSecret(KindIdIn, LeasedBlobOut) |s, i, o| {
-        let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
-        let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
+        let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
+        let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match s.store.lookup_credential_secret(kind, id) {
             Ok(c) => lease_one(s, o, c.as_ref().map(to_json), true),
-            Err(e) => failed(s, o, &e.0),
+            Err(e) => failed(s, o, e.0),
         }
     }
 );
 slot!(
     /// `revoke_credential` (slot 17).
     RevokeCredential(IdReasonIn, OutHead) |s, i, o| {
-        let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
+        let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match text_of(i.field(|i| &i.reason)) {
             Ok(r) => done(s, o, s.store.revoke_credential(id, r)),
-            Err(e) => refused(s, o, &e),
+            Err(e) => refused(s, o, e),
         }
     }
 );
@@ -866,7 +942,7 @@ slot!(
     AppendAudit(OpBlobIn, OutHead) |s, i, o| {
         match json::<AuditRecord>(i.field(|i| &i.record)) {
             Ok(a) => op_answer(s, o, s.store.append_audit_op(i.op_id, &a)),
-            Err(e) => refused(s, o, &e),
+            Err(e) => refused(s, o, e),
         }
     }
 );
@@ -877,10 +953,10 @@ slot!(
 slot!(
     /// `add_denylist` (slot 21).
     AddDenylist(IdReasonIn, OutHead) |s, i, o| {
-        let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
+        let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match text_of(i.field(|i| &i.reason)) {
             Ok(r) => done(s, o, s.store.add_denylist(id, r)),
-            Err(e) => refused(s, o, &e),
+            Err(e) => refused(s, o, e),
         }
     }
 );
@@ -889,7 +965,7 @@ slot!(
     ListDenylist(InHead, LeasedStrListOut) |s, i, o| {
         match s.store.list_denylist() {
             Ok(v) => lease_strs(s, o, v),
-            Err(e) => failed(s, o, &e.0),
+            Err(e) => failed(s, o, e.0),
         }
     }
 );
@@ -907,18 +983,18 @@ slot!(
     UpsertPlaneRecord(UpsertPlaneRecordIn, OutHead) |s, i, o| {
         match plane_record(i.field(|i| &i.record)) {
             Ok(r) => done(s, o, s.store.upsert_plane_record(&r)),
-            Err(e) => refused(s, o, &e),
+            Err(e) => refused(s, o, e),
         }
     }
 );
 slot!(
     /// `get_plane_record` (slot 25): the body into the host buffer.
     GetPlaneRecord(GetPlaneRecordIn, HostBytesOut) |s, i, o| {
-        let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
-        let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
+        let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
+        let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match s.store.get_plane_record(kind, id) {
             Ok(body) => bytes_into(o, i.field(|i| &i.body).ptr(), body.as_deref()),
-            Err(e) => failed(s, o, &e.0),
+            Err(e) => failed(s, o, e.0),
         }
     }
 );
@@ -927,84 +1003,83 @@ slot!(
     AppendPlaneRecord(AppendPlaneRecordIn, OutHead) |s, i, o| {
         match plane_record(i.field(|i| &i.record)) {
             Ok(r) => op_answer(s, o, s.store.append_plane_record_op(i.op_id, &r)),
-            Err(e) => refused(s, o, &e),
+            Err(e) => refused(s, o, e),
         }
     }
 );
 slot!(
     /// `list_plane_records` (slot 27): bodies into the host's blobs.
     ListPlaneRecords(ListPlaneRecordsIn, HostListOut) |s, i, o| {
-        let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
+        let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         let selector = match i.selector {
             SELECT_ALL => PlaneSelector::All,
             SELECT_PARENT => match text_of(i.field(|i| &i.parent)) {
                 Ok(p) => PlaneSelector::Parent(p.to_string()),
-                Err(e) => return refused(s, o, &e),
+                Err(e) => return refused(s, o, e),
             },
-            n => return refused(s, o, &format!("selector {n} is not a plane selector")),
+            n => return refused(s, o, Text::render(format_args!("selector {n} is not a plane selector"))),
         };
         match s.store.list_plane_records(kind, &selector) {
             Ok(bodies) => {
-                let runs: Vec<Vec<Option<&[u8]>>> =
-                    bodies.iter().map(|b| vec![Some(b.as_slice())]).collect();
+                let runs = bodies.iter().map(|b| [b.as_slice()]);
                 let host = i.field(|i| &i.out);
-                list_into(o, host.items(), host.field(|h| &h.bytes).ptr(), &runs, |_, at| {
-                    span_blob(at[0], BLOB_OCTETS)
+                list_into(o, host.items(), host.field(|h| &h.bytes).ptr(), runs, |_, [body]| {
+                    span_blob(body)
                 })
             }
-            Err(e) => failed(s, o, &e.0),
+            Err(e) => failed(s, o, e.0),
         }
     }
 );
 slot!(
     /// `list_plane_record_parents` (slot 28).
     ListPlaneRecordParents(IdIn, LeasedStrListOut) |s, i, o| {
-        let kind = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
+        let kind = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match s.store.list_plane_record_parents(kind) {
             Ok(v) => lease_strs(s, o, v),
-            Err(e) => failed(s, o, &e.0),
+            Err(e) => failed(s, o, e.0),
         }
     }
 );
 slot!(
     /// `purge_plane_records_before` (slot 29).
     PurgePlaneRecordsBefore(KindBeforeIn, CountOut) |s, i, o| {
-        let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
+        let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match s.store.purge_plane_records_before(kind, i.before) {
             Ok(n) => { o.count = n; Outcome::Ready }
-            Err(e) => failed(s, o, &e.0),
+            Err(e) => failed(s, o, e.0),
         }
     }
 );
 slot!(
     /// `delete_plane_record` (slot 30); absent is READY.
     DeletePlaneRecord(KindIdIn, OutHead) |s, i, o| {
-        let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
+        let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match text_of(i.field(|i| &i.id)) {
             Ok(id) => done(s, o, s.store.delete_plane_record(kind, id)),
-            Err(e) => refused(s, o, &e),
+            Err(e) => refused(s, o, e),
         }
     }
 );
 slot!(
     /// `redeem_plane_token` (slot 31): YES = this call was the first redemption.
     RedeemPlaneToken(TokenIn, VerdictOut) |s, i, o| {
-        let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
-        let token = match text_of(i.field(|i| &i.token)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
+        let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
+        let token = match text_of(i.field(|i| &i.token)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match s.store.redeem_plane_token(kind, token, i.expires_at, i.now) {
             Ok(y) => { o.verdict = if y { VERDICT_YES } else { VERDICT_NO }; Outcome::Ready }
-            Err(e) => failed(s, o, &e.0),
+            Err(e) => failed(s, o, e.0),
         }
     }
 );
 slot!(
     /// `plane_token_live` (slot 32): spends nothing.
     PlaneTokenLive(TokenIn, VerdictOut) |s, i, o| {
-        let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
-        let token = match text_of(i.field(|i| &i.token)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
+        let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
+        let token = match text_of(i.field(|i| &i.token)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match s.store.plane_token_live(kind, token, i.expires_at, i.now) {
             Ok(y) => { o.verdict = if y { VERDICT_YES } else { VERDICT_NO }; Outcome::Ready }
-            Err(e) => failed(s, o, &e.0),
+            Err(e) => failed(s, o, e.0),
         }
     }
 );
@@ -1014,18 +1089,18 @@ slot!(
 slot!(
     /// `append_batch` (slot 33): the head the stream reached.
     AppendBatch(AppendBatchIn, HeadOut) |s, i, o| {
-        let stream = match text_of(i.field(|i| &i.stream)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
+        let stream = match text_of(i.field(|i| &i.stream)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         let mut records = Vec::with_capacity(i.records().len());
         for r in i.records().iter() {
             match record_bytes(r.bytes()) {
                 Ok(b) => records.push(b),
-                Err(e) => return refused(s, o, &e),
+                Err(e) => return refused(s, o, e),
             }
         }
         match s.store.append_batch(i.op_id, stream, &records) {
             Ok(h) => { o.seq = h.seq; o.epoch = h.epoch; Outcome::Ready }
             Err(OpRefused::Conflict) => conflict(o),
-            Err(OpRefused::Failed(t)) => failed(s, o, &t),
+            Err(OpRefused::Failed(t)) => failed(s, o, t),
         }
     }
 );
@@ -1044,7 +1119,7 @@ slot!(
         // its grants go straight into the host's array: nothing is allocated here.
         for c in cells_in.iter() {
             if let Err(e) = unit_cell(c) {
-                return refused(s, o, &e);
+                return refused(s, o, e);
             }
         }
         let mut grants = GrantsInto(grants_buf);
@@ -1090,7 +1165,7 @@ slot!(
             }
             Ok(()) => Outcome::Fault, // committed: never FAILED (`StoreSlots::slice_release`)
             Err(OpRefused::Conflict) => conflict(o),
-            Err(OpRefused::Failed(t)) => failed(s, o, &t),
+            Err(OpRefused::Failed(t)) => failed(s, o, t),
         }
     }
 );
@@ -1125,18 +1200,18 @@ slot!(
                 });
                 Outcome::Ready
             }
-            Err(e) => failed(s, o, &e),
+            Err(e) => failed(s, o, e),
         }
     }
 );
 slot!(
     /// `session_put` (slot 37).
     SessionPut(SessionPutIn, OutHead) |s, i, o| {
-        let node = match text_of(i.field(|i| &i.node)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
-        let principal = match text_of(i.field(|i| &i.principal)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
+        let node = match text_of(i.field(|i| &i.node)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
+        let principal = match text_of(i.field(|i| &i.principal)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match s.store.session_put(i.session, node, principal) {
             Ok(()) => Outcome::Ready,
-            Err(e) => failed(s, o, &e),
+            Err(e) => failed(s, o, e),
         }
     }
 );
@@ -1145,68 +1220,61 @@ slot!(
     SessionRemove(U64In, OutHead) |s, i, o| {
         match s.store.session_remove(i.value) {
             Ok(()) => Outcome::Ready,
-            Err(e) => failed(s, o, &e),
+            Err(e) => failed(s, o, e),
         }
     }
 );
 slot!(
     /// `sessions_for` (slot 39): rows into the host's sessions.
     SessionsFor(SessionsForIn, HostListOut) |s, i, o| {
-        let principal = match text_of(i.field(|i| &i.principal)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
+        let principal = match text_of(i.field(|i| &i.principal)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match s.store.sessions_for(principal) {
             Ok(rows) => {
-                let runs: Vec<Vec<Option<&[u8]>>> =
-                    rows.iter().map(|(_, n)| vec![Some(n.as_bytes())]).collect();
+                let runs = rows.iter().map(|(_, n)| [n.as_bytes()]);
                 let host = i.field(|i| &i.out);
-                list_into(o, host.items(), host.field(|h| &h.bytes).ptr(), &runs, |n, at| {
-                    SessionRow { session: rows[n].0, node: span_str(at[0]) }
+                list_into(o, host.items(), host.field(|h| &h.bytes).ptr(), runs, |n, [(ptr, len)]| {
+                    SessionRow { session: rows[n].0, node: AbiStr { ptr, len } }
                 })
             }
-            Err(e) => failed(s, o, &e),
+            Err(e) => failed(s, o, e),
         }
     }
 );
 slot!(
     /// `record_put` (slot 40).
     RecordPut(RecordPutIn, OutHead) |s, i, o| {
-        let schema = match text_of(i.field(|i| &i.schema)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
-        let value = match record_bytes(i.field(|i| &i.value).bytes()) { Ok(v) => v, Err(e) => return refused(s, o, &e) };
+        let schema = match text_of(i.field(|i| &i.schema)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
+        let value = match record_bytes(i.field(|i| &i.value).bytes()) { Ok(v) => v, Err(e) => return refused(s, o, e) };
         match s.store.record_put(schema, i.field(|i| &i.key).bytes(), &value) {
             Ok(()) => Outcome::Ready,
-            Err(e) => failed(s, o, &e),
+            Err(e) => failed(s, o, e),
         }
     }
 );
 slot!(
     /// `record_get` (slot 41): the value into the host buffer.
     RecordGet(RecordGetIn, HostBytesOut) |s, i, o| {
-        let schema = match text_of(i.field(|i| &i.schema)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
+        let schema = match text_of(i.field(|i| &i.schema)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match s.store.record_get(schema, i.field(|i| &i.key).bytes()) {
             Ok(v) => bytes_into(o, i.field(|i| &i.value).ptr(), v.as_ref().map(RecordBytes::as_slice)),
-            Err(e) => failed(s, o, &e),
+            Err(e) => failed(s, o, e),
         }
     }
 );
 slot!(
     /// `record_scan` (slot 42): entries into the host's records; `limit` 0 is nothing.
     RecordScan(RecordScanIn, HostListOut) |s, i, o| {
-        let schema = match text_of(i.field(|i| &i.schema)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
+        let schema = match text_of(i.field(|i| &i.schema)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match s.store.record_scan(schema, i.field(|i| &i.prefix).bytes(), i.limit) {
             Ok(rows) => {
                 let rows = &rows[..rows.len().min(i.limit as usize)];
-                let runs: Vec<Vec<Option<&[u8]>>> = rows
-                    .iter()
-                    .map(|(k, v)| vec![Some(k.as_slice()), Some(v.as_slice())])
-                    .collect();
+                let runs = rows.iter().map(|(k, v)| [k.as_slice(), v.as_slice()]);
                 let host = i.field(|i| &i.out);
-                list_into(o, host.items(), host.field(|h| &h.bytes).ptr(), &runs, |_, at| {
-                    RecordEntry {
-                        key: span_blob(at[0], BLOB_OCTETS),
-                        value: span_blob(at[1], BLOB_OCTETS),
-                    }
+                list_into(o, host.items(), host.field(|h| &h.bytes).ptr(), runs, |_, [k, v]| {
+                    RecordEntry { key: span_blob(k), value: span_blob(v) }
                 })
             }
-            Err(e) => failed(s, o, &e),
+            Err(e) => failed(s, o, e),
         }
     }
 );
@@ -1218,10 +1286,10 @@ slot!(
     AddUsageBatch(AddUsageBatchIn, OutHead) |s, i, o| {
         let mut cells = Vec::with_capacity(i.cells().len());
         for c in i.cells().iter() {
-            let bucket = match text_of(c.field(|c| &c.bucket)) { Ok(t) => t, Err(e) => return refused(s, o, &e) };
+            let bucket = match text_of(c.field(|c| &c.bucket)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
             match json::<UsageDelta>(c.field(|c| &c.delta)) {
                 Ok(d) => cells.push((bucket, c.window_start, d)),
-                Err(e) => return refused(s, o, &e),
+                Err(e) => return refused(s, o, e),
             }
         }
         op_answer(s, o, s.store.add_usage_batch(i.op_id, &cells))
@@ -1234,7 +1302,7 @@ slot!(
         for r in i.records().iter() {
             match json::<MeteringDelta>(r) {
                 Ok(d) => rows.push(d),
-                Err(e) => return refused(s, o, &e),
+                Err(e) => return refused(s, o, e),
             }
         }
         op_answer(s, o, s.store.add_metering_batch(i.op_id, &rows))
@@ -1247,7 +1315,7 @@ slot!(
         for r in i.records().iter() {
             match json::<AuditRecord>(r) {
                 Ok(d) => rows.push(d),
-                Err(e) => return refused(s, o, &e),
+                Err(e) => return refused(s, o, e),
             }
         }
         op_answer(s, o, s.store.append_audit_batch(i.op_id, &rows))
@@ -1260,19 +1328,19 @@ slot!(
         for c in i.caps().iter() {
             match window_cap(c) {
                 Ok(c) => caps.push(c),
-                Err(e) => return refused(s, o, &e),
+                Err(e) => return refused(s, o, e),
             }
         }
         match s.store.window_caps(i.op_id, &caps) {
             Ok(()) => Outcome::Ready,
             Err(CapsRefused::CapConflict { index }) => {
-                o.error = s.text(&format!("{index}: {DIAG_CAP_CONFLICT}"));
+                o.error = s.text(Text::render(format_args!("{index}: {DIAG_CAP_CONFLICT}")));
                 o.envelope.diags = DIAG_CAP.as_ptr();
                 o.envelope.diags_len = DIAG_CAP.len();
                 Outcome::Refused
             }
             Err(CapsRefused::Conflict) => conflict(o),
-            Err(CapsRefused::Failed(t)) => failed(s, o, &t),
+            Err(CapsRefused::Failed(t)) => failed(s, o, t),
         }
     }
 );

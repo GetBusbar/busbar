@@ -181,15 +181,6 @@ fn verify_decide_q_marshals_the_full_due_reason() {
                 got, want,
                 "verify_decide_q reason for last={last:?} ttl={ttl_ms} now={now}"
             );
-            // And it round-trips back to the SAME rich `Due` the relaying plane audits (the
-            // reconstruction is the `relay`-gated inbound half of the mapping — the neutral marker
-            // `Due::from_verify_decision` itself is compiled under).
-            #[cfg(feature = "relay")]
-            assert_eq!(
-                crate::trust::reverify::Due::from_verify_decision(got),
-                due(&ledger, &policy, now, false),
-                "reconstructed Due for last={last:?} ttl={ttl_ms} now={now}"
-            );
         }
     });
 }

@@ -758,7 +758,7 @@ async fn harness_core(
         )
         .expect("mint");
     let generation = TokenVerifier::single(signer.kid(), signer.verifying_key())
-        .verify(plain.as_str(), crate::host_now(), None)
+        .verify(plain.expose_secret().as_str(), crate::host_now(), None)
         .expect("the plain token verifies")
         .generation;
     // THE GRANT. `agent:<id>` is what `inbound::authorize`, the catalogue and the EGRESS gate all

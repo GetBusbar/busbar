@@ -216,7 +216,7 @@ impl Fleet {
             .expect("a signed key");
         let signer = TokenSigner::from_secret_bytes(&KEY, DEFAULT_KID);
         let generation = TokenVerifier::single(signer.kid(), signer.verifying_key())
-            .verify(plain.as_str(), 1_000_000_000, None)
+            .verify(plain.expose_secret().as_str(), 1_000_000_000, None)
             .expect("plain claims")
             .generation;
         let token = signer.mint_for_audience(

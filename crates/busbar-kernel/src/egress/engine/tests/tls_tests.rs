@@ -76,8 +76,7 @@ azIEjY3bAGG06Ty/5mupuPP8ELc8c/UvwKs5C5erzjareg87DlPbdfNXFmyGqngY
 ///    elements, drops the length to zero and then zeroes the spare capacity, so a wiped key reads
 ///    back EMPTY — the key material is not merely absent from the answer, there is no answer left.
 /// 2. **That `Drop` is wired to it** — by source review, the technique this tree already uses for
-///    guarantees that cannot be observed at runtime (`mask_tests.rs`'s
-///    `clear_zeroizes_rather_than_merely_truncating`).
+///    guarantees that cannot be observed at runtime.
 ///
 /// The key is a real rcgen-minted fixture, so what is asserted absent is the actual DER the parser
 /// produced rather than a marker the test could have arranged to find.

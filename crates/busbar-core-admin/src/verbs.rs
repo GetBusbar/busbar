@@ -38,7 +38,7 @@
 //! and nothing in the type system would have asked it not to.
 
 use crate::governance::{Governance, GovernanceError, RotateOutcome};
-use crate::idempotency::{ClaimJournal, IdempotencyCache, Probe, ReplayEncoder};
+use crate::idempotency::{ClaimJournal, IdempotencyCache, Probe, ReplayEncoder, Reservation};
 use crate::mint::{plan_mint_group, GroupLookup, MintPlan};
 use crate::posture::{ApprovalState, PostureCtx};
 use crate::rate::{ConfigClassRule, MutationClass, MutationLimiter, RateCheck};
@@ -48,6 +48,7 @@ use crate::verb::{
 };
 use busbar_contract::caps::{AdminVerb, Grant, SecretOnce, UnitKey};
 use busbar_contract::verb_store::Store;
+use std::ops::ControlFlow;
 use std::sync::Arc;
 
 /// The nonce seam. This crate has no CSPRNG dependency of its own, so the 128-bit nonce a
@@ -141,20 +142,26 @@ impl MintOutcome {
             MintOutcome::Replayed { body } => body,
         }
     }
+}
 
-    /// Whether this outcome is a replay (no fresh secret was minted).
-    pub fn is_replay(&self) -> bool {
-        matches!(self, MintOutcome::Replayed { .. })
-    }
-
-    /// The freshly minted or rotated capability, or `None` for a replay — a replay never carries
-    /// one: there is no decode step that could reconstruct, and thereby re-mint, a fresh
-    /// `SecretOnce`.
-    pub fn minted_outcome(&self) -> Option<&MintedKeyOutcome> {
-        match self {
-            MintOutcome::Minted { outcome, .. } => Some(outcome),
-            MintOutcome::Replayed { .. } => None,
-        }
+/// Probe a mint verb's replay cache: a cached body or an in-flight claim ends the call (`Break`),
+/// anything else continues with the reservation this call now owns, if it presented a key.
+fn claim_mint_slot(
+    cache: &IdempotencyCache<Vec<u8>>,
+    key: Option<(String, String)>,
+    now: u64,
+) -> ControlFlow<Result<MintOutcome, Refusal>, Option<Reservation<'_, Vec<u8>>>> {
+    let Some(key) = key else {
+        return ControlFlow::Continue(None);
+    };
+    match cache.probe(key, now) {
+        Probe::NoKey => ControlFlow::Continue(None),
+        Probe::Replay(body) => ControlFlow::Break(Ok(MintOutcome::Replayed { body })),
+        Probe::InFlight => ControlFlow::Break(Err(Refusal::new(
+            RefusalStep::Admit,
+            ReasonCode::IdempotencyInFlight,
+        ))),
+        Probe::Reserved(r) => ControlFlow::Continue(Some(r)),
     }
 }
 
@@ -333,19 +340,9 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
             return Err(Refusal::new(RefusalStep::Verify, ReasonCode::Validation));
         }
         let ck = idempotency_key.map(|k| (actor.to_string(), k.to_string()));
-        let reservation = match ck.clone() {
-            None => None,
-            Some(key) => match self.create_key_cache.probe(key, now) {
-                Probe::NoKey => None,
-                Probe::Replay(body) => return Ok(MintOutcome::Replayed { body }),
-                Probe::InFlight => {
-                    return Err(Refusal::new(
-                        RefusalStep::Admit,
-                        ReasonCode::IdempotencyInFlight,
-                    ))
-                }
-                Probe::Reserved(r) => Some(r),
-            },
+        let reservation = match claim_mint_slot(&self.create_key_cache, ck.clone(), now) {
+            ControlFlow::Break(answer) => return answer,
+            ControlFlow::Continue(reservation) => reservation,
         };
 
         let plan = plan_mint_group(
@@ -409,19 +406,9 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
     ) -> Result<MintOutcome, Refusal> {
         self.admit(KernelVerb::PostKeysIdRotate, actor, granted, now)?;
         let ck = idempotency_key.map(|k| (actor.to_string(), rotate_replay_key(id, k)));
-        let reservation = match ck {
-            None => None,
-            Some(key) => match self.rotate_key_cache.probe(key, now) {
-                Probe::NoKey => None,
-                Probe::Replay(body) => return Ok(MintOutcome::Replayed { body }),
-                Probe::InFlight => {
-                    return Err(Refusal::new(
-                        RefusalStep::Admit,
-                        ReasonCode::IdempotencyInFlight,
-                    ))
-                }
-                Probe::Reserved(r) => Some(r),
-            },
+        let reservation = match claim_mint_slot(&self.rotate_key_cache, ck, now) {
+            ControlFlow::Break(answer) => return answer,
+            ControlFlow::Continue(reservation) => reservation,
         };
         match self.governance.rotate_key(admin, id) {
             Ok(RotateOutcome::NotFound) => {

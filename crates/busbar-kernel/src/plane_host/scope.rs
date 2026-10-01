@@ -226,68 +226,6 @@ impl DispatchScope {
         }
     }
 
-    /// Register a settle-capable breaker admission under a CALLER-SUPPLIED raw id rather than a
-    /// freshly-minted one — the receiving half of the [`DurableScope`] handoff (see
-    /// [`handoff_settling_to`](Self::handoff_settling_to)). The monotonic `next` counter is advanced
-    /// past `raw` so a later mint in this arena cannot collide with the adopted id.
-    ///
-    /// Returns the [`AdmissionId`] the entry now answers to, which is NOT always `AdmissionId(raw)`:
-    /// an id an already-live entry answers to is not adoptable, because every lookup here
-    /// ([`settle_admission`](Self::settle_admission), [`handoff_settling_to`](Self::handoff_settling_to))
-    /// resolves an id to the FIRST entry carrying it. A second entry under the same raw would settle
-    /// the wrong probe and strand the other one until scope drop. A collision therefore mints a fresh
-    /// id instead — callers consume the RETURNED id, so the handle they go on to hold still resolves
-    /// to the guard they adopted.
-    pub fn adopt_settling_admission(
-        &self,
-        raw: u64,
-        guard: Box<dyn SettleAdmission>,
-    ) -> AdmissionId {
-        let mut reg = self.lock();
-        let raw = if reg.entries.iter().any(|e| e.raw == raw) {
-            Self::next_raw(&mut reg)
-        } else {
-            if raw > reg.next {
-                reg.next = raw;
-            }
-            raw
-        };
-        reg.entries.push(Entry {
-            kind: HandleKind::Admission,
-            raw,
-            res: Resource::Admission(guard),
-        });
-        AdmissionId(raw)
-    }
-
-    /// HAND OFF the settling admission `id` from THIS (per-request) arena into `dst`, a
-    /// [`DurableScope`] whose lifetime is the unit of work's — WITHOUT losing settle-ability. The
-    /// `Box<dyn SettleAdmission>` (its real single-flight probe hold) is REMOVED from this arena so
-    /// the per-request future's drop no longer reclaims it, and re-homed into `dst` under the SAME
-    /// [`AdmissionId`] so a later [`DurableScope::settle`] still resolves it. Returns the preserved
-    /// id on success, `None` when `id` names no live settling admission here (stale / already handed).
-    ///
-    /// This is the durable handoff at the arena level: the breaker probe-hold leaves request scope
-    /// and joins the durable scope, so its owner-checked release fires at TASK end, not request end.
-    pub fn handoff_settling_to(&self, id: AdmissionId, dst: &DurableScope) -> Option<AdmissionId> {
-        if id.is_none() {
-            return None;
-        }
-        let entry = {
-            let mut reg = self.lock();
-            let pos = reg
-                .entries
-                .iter()
-                .position(|e| e.raw == id.0 && matches!(e.res, Resource::Admission(_)))?;
-            reg.entries.remove(pos)
-        };
-        match entry.res {
-            Resource::Admission(guard) => Some(dst.adopt_settling(id, guard)),
-            // Unreachable: the `position` above selected an `Admission` entry.
-            _ => None,
-        }
-    }
-
     /// Register an open governed egress with the `reclaim` that closes it (Phase 2: `egress_close`).
     pub fn register_egress(&self, reclaim: Reclaim) -> EgressId {
         let mut reg = self.lock();
@@ -536,38 +474,10 @@ impl DurableScope {
         }
     }
 
-    /// Open a durable scope that already owns a DROP-ONLY `guard` in one step (the guard's `Drop`
-    /// reclaims at TASK end). Prefer [`register_settling`](Self::register_settling) when the moved
-    /// resource is a breaker admission that a detached leg may still want to settle.
-    #[must_use]
-    pub fn with_handoff(guard: Box<dyn Send>) -> Self {
-        let dur = DurableScope::new();
-        dur.handoff(guard);
-        dur
-    }
-
     /// Take DROP-ONLY durable ownership of `guard`: its `Drop` now reclaims when this scope drops
     /// (task end), NOT at dispatch-future drop.
     pub fn handoff(&self, guard: Box<dyn Send>) {
         self.arena.register_admission(guard);
-    }
-
-    /// Take SETTLE-CAPABLE durable ownership of `guard` and return the [`AdmissionId`] it answers to.
-    /// Its probe-release `Drop` runs at scope drop unless [`settle`](Self::settle) records an outcome
-    /// first; this is the reroute path's handoff, which owns a bare probe hold rather than one already
-    /// registered in a [`DispatchScope`].
-    pub fn register_settling(&self, guard: Box<dyn SettleAdmission>) -> AdmissionId {
-        self.arena.register_settling_admission(guard)
-    }
-
-    /// Adopt a settling admission under a caller-supplied `id` — the receiving half of
-    /// [`DispatchScope::handoff_settling_to`], preserving the id across the arena move.
-    pub(super) fn adopt_settling(
-        &self,
-        id: AdmissionId,
-        guard: Box<dyn SettleAdmission>,
-    ) -> AdmissionId {
-        self.arena.adopt_settling_admission(id.0, guard)
     }
 
     /// SETTLE the durable breaker admission `id`: record `signal` against the breaker exactly once and

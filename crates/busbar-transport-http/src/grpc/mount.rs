@@ -109,26 +109,6 @@ pub fn resolve<'s>(surface: &'s WireSurface, target: &str) -> Result<Addressed<'
     })
 }
 
-/// Every framed call one surface declares, as the paths a client will send.
-///
-/// What a mount registers, and what a boot log can print so an operator can see the served set
-/// rather than infer it.
-#[must_use]
-pub fn declared_calls(surface: &WireSurface) -> Vec<String> {
-    let mut out = Vec::new();
-    for operation in surface.operations {
-        for d in operation.dispatch {
-            if let Dispatch::Service {
-                service, method, ..
-            } = d
-            {
-                out.push(call_path(service, method));
-            }
-        }
-    }
-    out
-}
-
 /// This wire's own status for one outcome, in its numbering.
 ///
 /// Eight words in, one code out. The input is the CLOSED vocabulary the driver answers with and not

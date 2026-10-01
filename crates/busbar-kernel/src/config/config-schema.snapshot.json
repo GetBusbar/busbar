@@ -2573,9 +2573,17 @@
       "kind": "alias",
       "target": "indexmap::IndexMap<String, AuthMethodCfg>"
     },
+    "type Declared": {
+      "kind": "alias",
+      "target": "(ReadNeed, Result<(), ConnError>)"
+    },
     "type ExportDefs": {
       "kind": "alias",
       "target": "indexmap::IndexMap<String, ExportDefCfg>"
+    },
+    "type HeadWords": {
+      "kind": "alias",
+      "target": "(Vec<u8>, Vec<u8>)"
     },
     "type HookDefs": {
       "kind": "alias",

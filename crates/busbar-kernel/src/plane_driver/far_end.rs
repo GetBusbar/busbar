@@ -62,7 +62,7 @@ use busbar_contract::conn::{
     ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
 use busbar_contract::redacted::Redacted;
-use busbar_contract::transport::registry::{facts, status_ns};
+use busbar_contract::transport::registry::status_ns;
 use busbar_contract::transport::wire::{WireStatus, WireStatusClass};
 
 use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
@@ -771,12 +771,13 @@ impl EgressFarEnd<'_> {
                 }
             }
         }
+        // The method and the path (with its query) are the request's head words
+        // (`OpenDesc::method`, `OpenDesc::head_target`), never fields: the framer writes its own
+        // wire head from them.
         let (_, path) = split(&url);
-        // The head the framer encodes: method, path, the auth fields, then the plane's fields. It
-        // holds the auth values, so it wipes itself when the open has taken it.
-        let mut head = Head(Vec::with_capacity(request.fields.len() + auth.len() + 2));
-        head.0.push((facts::METHOD.into(), request.verb.clone()));
-        head.0.push((facts::PATH.into(), path.as_bytes().to_vec()));
+        // The head's fields the framer encodes: the auth fields, then the plane's. It holds the
+        // auth values, so it wipes itself when the open has taken it.
+        let mut head = Head(Vec::with_capacity(request.fields.len() + auth.len()));
         // The auth fields FIRST, then the plane's: 1.5.5's egress header order.
         head.0.extend(auth.iter().map(|f| {
             (
@@ -814,7 +815,8 @@ impl EgressFarEnd<'_> {
                 fields: &borrowed,
                 body: &request.body,
                 timeout_ms: cap_ms,
-                ..OpenDesc::default()
+                method: &request.verb,
+                head_target: path.as_bytes(),
             },
         );
         let now_ms = e.clock.now_millis();

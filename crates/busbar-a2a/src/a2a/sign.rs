@@ -41,7 +41,7 @@
 //!   a second key an operator can fail to rotate, and a first-boot zero-config deployment that
 //!   generates one key still serves signed cards. Rotating the token key rotates the card key with
 //!   it, which is visible to callers as a `kid` change — the same rotation signal busbar's own
-//!   `approve-pin` path is built to absorb.
+//!   `approve` path is built to absorb.
 //!
 //! ## THE WIRE FORMAT IS THE ONE BUSBAR ALREADY VERIFIES
 //!

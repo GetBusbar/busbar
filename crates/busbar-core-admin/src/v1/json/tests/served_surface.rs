@@ -643,3 +643,44 @@ async fn served_openapi_lists_only_the_configured_planes() {
         "a node that did not configure `agents:` must not describe the agents operations"
     );
 }
+
+/// A NAMED-MAP SECTION ANSWERS ITS OWN WRONG METHOD, ITS UNKNOWN NAME AND ITS MALFORMED BODY.
+///
+/// The five section routes share one router loop and one section value per mount; this pins what
+/// each of the shapes answers (`405`, `404`, `400`, `200`) so a change to how the section reaches
+/// the handlers shows as a status change here.
+#[tokio::test]
+async fn named_map_section_routes_answer_wrong_method_unknown_name_and_bad_body() {
+    busbar_kernel::metrics::init();
+    const TOKEN: &str = "served-surface-token";
+    let app = crate::new_test_app().governance(gov(TOKEN)).build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let ask = |method: reqwest::Method, path: &str, body: &'static str| {
+        let req = client
+            .request(method, format!("http://{addr}{path}"))
+            .header("x-admin-token", TOKEN)
+            .header("content-type", "application/json")
+            .body(body);
+        async move { req.send().await.unwrap().status().as_u16() }
+    };
+    use reqwest::Method as M;
+    let (root, item) = (abs("/export"), abs("/export/served-surface-probe"));
+    let settings = format!("{item}/settings");
+    let cases = [
+        (M::GET, &root, "", 200, "list"),
+        (M::POST, &root, "", 405, "wrong method on the root"),
+        (M::POST, &item, "", 405, "wrong method on one name"),
+        (M::PUT, &settings, "", 405, "wrong method on settings"),
+        (M::GET, &item, "", 404, "unknown name"),
+        (M::PUT, &item, "{", 400, "malformed definition body"),
+        (M::PATCH, &settings, "{", 400, "malformed settings body"),
+    ];
+    for (method, path, body, want, what) in cases {
+        assert_eq!(ask(method, path, body).await, want, "{what}");
+    }
+    handle.abort();
+}

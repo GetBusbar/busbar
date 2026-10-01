@@ -75,9 +75,6 @@ pub trait PinnedArtifact: Clone + PartialEq + std::fmt::Debug {
 pub enum CapabilityApproval {
     /// Approved AT this digest. Serving requires the observed digest to still match it.
     At(String),
-    /// Refused. Never served, and never drift again: the operator has already ruled, so a rejected
-    /// capability must not keep re-raising an alarm every refresh.
-    Rejected,
 }
 
 /// What an upstream was observed to OFFER at one moment: its presented identity and its capability
@@ -192,9 +189,6 @@ impl Drift {
 pub enum TrustError {
     /// Approve was asked to lock a pin when neither the operator nor the endpoint supplied one.
     NoPinToLock,
-    /// A capability was named that the endpoint is not currently offering, so there is no digest to
-    /// adopt.
-    CapabilityNotObserved(String),
 }
 
 impl std::fmt::Display for TrustError {
@@ -203,10 +197,6 @@ impl std::fmt::Display for TrustError {
             TrustError::NoPinToLock => write!(
                 f,
                 "cannot approve: no identity pin was supplied and none was observed"
-            ),
-            TrustError::CapabilityNotObserved(name) => write!(
-                f,
-                "cannot approve `{name}`: it is not in the last observed capability set"
             ),
         }
     }
@@ -263,11 +253,11 @@ impl<A: PinnedArtifact> Approval<A> {
 
     /// EVERY STANDING PER-CAPABILITY DECISION, in name order.
     ///
-    /// A READ, not a transition — which is the point. A trust view has to render three distinct
-    /// answers per capability (approved at a digest, rejected, or absent-and-therefore-pending) and
-    /// with no accessor the only way to distinguish the first two from outside is to re-derive them
-    /// from a sighting, which answers a different question and gets `Rejected` wrong. Nothing here
-    /// can change a decision; the transitions above remain the only way in.
+    /// A READ, not a transition — which is the point. A trust view has to render two distinct
+    /// answers per capability (approved at a digest, or absent-and-therefore-pending) and with no
+    /// accessor the only way to tell them apart from outside is to re-derive them from a sighting,
+    /// which answers a different question. Nothing here can change a decision; the transitions
+    /// below remain the only way in.
     pub fn capabilities(&self) -> impl Iterator<Item = (&str, &CapabilityApproval)> {
         self.capabilities.iter().map(|(k, v)| (k.as_str(), v))
     }
@@ -324,17 +314,13 @@ impl<A: PinnedArtifact> Approval<A> {
         };
         for (name, digest) in &obs.capabilities {
             match self.capabilities.get(name) {
-                // Settled by the operator: refused capabilities are not drift, whatever their
-                // digest does afterwards.
-                Some(CapabilityApproval::Rejected) => {}
                 Some(CapabilityApproval::At(approved)) if approved == digest => {}
                 Some(CapabilityApproval::At(_)) => d.changed.push(name.clone()),
                 None => d.added.push(name.clone()),
             }
         }
-        for (name, approval) in &self.capabilities {
-            if matches!(approval, CapabilityApproval::At(_)) && !obs.capabilities.contains_key(name)
-            {
+        for name in self.capabilities.keys() {
+            if !obs.capabilities.contains_key(name) {
                 d.removed.push(name.clone());
             }
         }
@@ -357,12 +343,20 @@ impl<A: PinnedArtifact> Approval<A> {
         )
     }
 
-    /// APPROVE: lock the identity and adopt the currently offered digests.
+    /// APPROVE: lock the identity and adopt EXACTLY the catalogue currently offered.
     ///
     /// `pin_override` is the operator's out-of-band value and WINS over the observed candidate,
     /// which is what keeps this a real authenticity root rather than trust-on-first-use with a human
-    /// in it. A capability the operator has REJECTED stays rejected: a bulk approval must not
-    /// quietly reinstate a standing refusal.
+    /// in it.
+    ///
+    /// Trust is judged over the offered catalogue (`docs/design/BUSBAR-1.6.0.md` §11, trust slot:
+    /// approving pins what is offered now, and re-sighting the pinned catalogue clears the
+    /// quarantine). So a successful sighting REPLACES the approved set rather than merging into it:
+    /// a capability the counterparty no longer offers leaves the approval with it, and the
+    /// `removed` drift axis is settled by the same act that settles `added` and `changed`. Merging
+    /// left every removed capability approved-and-absent, so the record answered "approved" to the
+    /// operator and stayed quarantined forever. With no successful sighting there is no catalogue to
+    /// adopt, and the approved set is left as it was.
     pub fn approve(
         &mut self,
         sighting: &Sighting<A>,
@@ -373,54 +367,13 @@ impl<A: PinnedArtifact> Approval<A> {
             .ok_or(TrustError::NoPinToLock)?;
         self.pin = Some(pin);
         if let Some(obs) = sighting.observation() {
-            for (name, digest) in &obs.capabilities {
-                if matches!(
-                    self.capabilities.get(name),
-                    Some(CapabilityApproval::Rejected)
-                ) {
-                    continue;
-                }
-                self.capabilities
-                    .insert(name.clone(), CapabilityApproval::At(digest.clone()));
-            }
+            self.capabilities = obs
+                .capabilities
+                .iter()
+                .map(|(name, digest)| (name.clone(), CapabilityApproval::At(digest.clone())))
+                .collect();
         }
         Ok(())
-    }
-
-    /// APPROVE-PIN: adopt the presented identity as the new locked pin, and touch nothing else. A
-    /// separate act from approving content, so that accepting a rotated certificate can never smuggle
-    /// a changed tool through with it.
-    pub fn approve_pin(&mut self, sighting: &Sighting<A>) -> Result<(), TrustError> {
-        let pin = sighting
-            .observation()
-            .and_then(|o| o.pin.clone())
-            .ok_or(TrustError::NoPinToLock)?;
-        self.pin = Some(pin);
-        Ok(())
-    }
-
-    /// Adopt the currently offered digest for ONE capability: the changes queue worked a row at a
-    /// time, so every acceptance is its own auditable act.
-    pub fn approve_capability(
-        &mut self,
-        capability: &str,
-        sighting: &Sighting<A>,
-    ) -> Result<(), TrustError> {
-        let digest = sighting
-            .observation()
-            .and_then(|o| o.capabilities.get(capability))
-            .ok_or_else(|| TrustError::CapabilityNotObserved(capability.to_string()))?;
-        self.capabilities.insert(
-            capability.to_string(),
-            CapabilityApproval::At(digest.clone()),
-        );
-        Ok(())
-    }
-
-    /// Refuse a capability permanently. It leaves the served set and stops being drift.
-    pub fn reject_capability(&mut self, capability: &str) {
-        self.capabilities
-            .insert(capability.to_string(), CapabilityApproval::Rejected);
     }
 
     /// SUSPEND with an operator-visible reason. Outranks every other state and serves nothing.
@@ -437,14 +390,9 @@ impl<A: PinnedArtifact> Approval<A> {
     /// UNPIN: the endpoint or the pin changed, so force re-approval. The locked pin and every
     /// capability APPROVAL are discarded, because they were assertions about a different upstream and
     /// an identity change must never ride the old approval.
-    ///
-    /// REJECTIONS survive. "Never serve this capability" is a standing instruction about a name, not
-    /// a fact about the endpoint's current identity, and discarding it here is how a rejected
-    /// capability comes back at the next bulk approval.
     pub fn unpin(&mut self) {
         self.pin = None;
-        self.capabilities
-            .retain(|_, v| matches!(v, CapabilityApproval::Rejected));
+        self.capabilities.clear();
     }
 }
 

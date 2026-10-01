@@ -1,6 +1,6 @@
 # OFF-SPEC FIELD IDS -- claimed in qa/field-coverage.status, real on the wire, and ABSENT from the
 # provider spec root the wire lock is generated from. Each line: `<field-id> = <why the wire has
-# what the spec lacks>`. crates/busbar/tests/field_coverage.rs requires every status id to be a
+# what the spec lacks>`. crates/busbar-plane-llm/tests/field_coverage.rs requires every status id to be a
 # wire-lock path or a line here, and every line here to be claimed in the status file and absent
 # from the locks (when a spec gains the field, move the claim to the lock path and delete the line).
 anthropic/request/betas = the anthropic-beta header list, carried as a body member; not in CreateMessageParams (a header, and a Beta* schema member)

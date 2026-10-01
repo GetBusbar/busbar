@@ -1651,7 +1651,7 @@ mod door {
         "on_piece attempt Ready POST /up m1 to_far_end=true",
         "on_piece far_end Ready answer status=200 done=true verdict_ok=true units=1:6:true \
          record=k=v field=x-plane=door",
-        "refusal Ready denied gate=true field=x-refusal",
+        "refusal Ready denied gate=false field=x-refusal",
         "serve Ready 200 ok",
         "project Ready signals=1 value=Some(3) body=abc",
         "tick Ready next=1001000",

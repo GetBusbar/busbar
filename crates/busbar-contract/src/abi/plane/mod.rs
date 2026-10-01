@@ -68,6 +68,67 @@
 //!
 //! [`CANCEL_FAILED`] bills nothing.
 //!
+//! # The cancel rule
+//!
+//! A caller can cancel one of its own in-flight units by name. `arrive` names every unit it
+//! classifies with an optional [`ArriveOut::correlation`]. The CANCEL KEY is (connection, the
+//! arrival's authenticated principal, correlation): the principal is the one the kernel verified
+//! for the arrival, never a value a plane reports, so a correlation is never connection-wide. A
+//! subsequent arrival whose [`ArriveOut::cancels`] equals a live unit's correlation under the same
+//! connection and principal is a cancel:
+//!
+//! 1. The cancel acts only AFTER its own arrival has passed the same authentication as any arrival.
+//!    An arrival that is unauthenticated, or refused, cancels nothing.
+//! 2. The kernel ends the named unit, whatever its shape (a one-shot unit included), through the
+//!    lifecycle `cancel`, and bills it by [`cancel_bills_reported_units`] like any other cut. A
+//!    cancel racing the unit's own end settles the unit's hold exactly once.
+//! 3. The named unit is SILENCED: nothing of its reply that has not already reached the caller is
+//!    written after the cancel.
+//! 4. The cancel itself is a notice: it opens no hold, bills nothing and writes no reply.
+//! 5. A `cancels` value naming no live unit, a finished unit, another connection's unit or ANOTHER
+//!    PRINCIPAL's unit matches nothing and is ignored silently. It is never an error and never
+//!    reveals that another principal's unit exists.
+//! 6. A DUPLICATE correlation (an arrival whose key is already held by a live unit) is served, but
+//!    it gets no cancel key: the key stays with the unit that claimed it first, the duplicate can
+//!    never be cancelled by name, and a cancel naming the key ends only the first. That is the
+//!    served baseline's behaviour, and the claim is never displaced.
+//!
+//! The kernel's key table is bounded by the connection's in-flight units: an entry leaves at its
+//! unit's end, and the whole table at the connection's close. When to emit a cancel is the plane's
+//! call; a plane whose dialect defines cancel only on some carriers leaves `cancels` at `0`
+//! everywhere else.
+//!
+//! # The catalogue-moved tick
+//!
+//! A session that asked to be told when the catalogue moves ([`EMIT_WATCH_CATALOGUE`] on any of
+//! its pieces) is given a [`PIECE_CATALOGUE_MOVED`] piece ([`FROM_KERNEL`], no bytes) on its stream
+//! when the catalogue generation moves. The watch is keyed by (session stream, the session's
+//! authenticated principal, the one the kernel verified); a repeated WATCH is idempotent, and
+//! [`EMIT_UNWATCH_CATALOGUE`] drops it, as does the session ending or being evicted, so the watch
+//! set is bounded by live sessions. The kernel holds AT MOST ONE pending tick per watch: moves that
+//! land while one is pending coalesce into it, so a slow plane never queues ticks. The plane keeps
+//! what the session watches (its own bounded state) and answers the tick with whatever it tells the
+//! session, or with nothing; a watch never widens what the session's principal may see.
+//!
+//! # A refused arrival
+//!
+//! An `arrive` that answers REFUSED states why in its `head.error`: the plane's own words, at most
+//! [`MAX_REFUSAL_TEXT`] bytes. The kernel carries them to the plane's `refusal` as
+//! [`RefusalIn::text`] with [`REFUSAL_ARRIVE`] and the arrival's claimant dialect, so the caller
+//! is answered in the plane's dialect and words:
+//!
+//! 1. The bytes are opaque: the kernel never parses or changes them.
+//! 2. More than [`MAX_REFUSAL_TEXT`] is a FAULT of that `arrive`; the kernel refuses the arrival in
+//!    its own words ([`REFUSAL_KERNEL`]) and never cuts the text.
+//! 3. The text reaches the caller only through the plane's `refusal` rendering.
+//! 4. The kernel never logs or audits the text, since it may echo what the caller sent.
+//! 5. [`MAX_REFUSAL_TEXT`] is at or above the largest field line a transport admits, so words that
+//!    echo a field line the caller sent never overflow it.
+//!
+//! [`RefusalOut::status`] lets the rendering name the status its dialect answers with; `0` keeps
+//! the one the kernel chose. The gate-rejected audit marker is the kernel's: it sets it from
+//! [`REFUSAL_GATE`], and a plane never sets [`RefusalOut::marker`].
+//!
 //! EVERY `PlaneDecl` FIELD, AND WHERE IT WENT (nothing dropped silently):
 //!
 //! | hot-lane `PlaneDecl` / `BuildCtx` | here |
@@ -311,6 +372,12 @@ pub const PIECE_HAS_STATUS: u32 = 1 << 2;
 /// end reports its outcome there (a trailer status) reads it, any other ignores the piece. The
 /// kernel never drops or reads it.
 pub const PIECE_FIELDS: u32 = 1 << 3;
+/// [`OnPieceIn::flags`]: the CATALOGUE-MOVED TICK. With [`FROM_KERNEL`], `attempt_no == 0` and no
+/// bytes, on a session's [`OnPieceIn::stream`], it says the catalogue generation that session
+/// watches ([`EMIT_WATCH_CATALOGUE`]) moved since the last tick it was given. The plane answers
+/// with whatever it tells the session about the move, or with nothing. See
+/// the catalogue-moved tick in this module's documentation.
+pub const PIECE_CATALOGUE_MOVED: u32 = 1 << 4;
 
 /// [`OnPieceOut::flags`]: the emitted bytes go to the far end (else to the caller).
 pub const EMIT_TO_FAR_END: u32 = 1;
@@ -320,6 +387,45 @@ pub const EMIT_DONE: u32 = 1 << 1;
 /// binary messages sends them as text). Only on an answer that emits at least one byte and
 /// completes its message (`more == 0`).
 pub const PIECE_OUT_TEXT: u32 = 1 << 2;
+/// [`OnPieceOut::flags`]: WATCH. From now on, this piece's session is given a
+/// [`PIECE_CATALOGUE_MOVED`] tick whenever the catalogue generation moves. The watch is keyed by
+/// (session stream, the session's authenticated principal) and is the kernel's to hold; a repeated
+/// WATCH is idempotent.
+pub const EMIT_WATCH_CATALOGUE: u32 = 1 << 3;
+/// [`OnPieceOut::flags`]: DROP the watch [`EMIT_WATCH_CATALOGUE`] set for this piece's session. The
+/// kernel also drops it on its own when the session ends or is evicted. Never set together with
+/// [`EMIT_WATCH_CATALOGUE`].
+pub const EMIT_UNWATCH_CATALOGUE: u32 = 1 << 4;
+
+/// Whether every flag in `flags` is one bit and no two share it. Each flag set below is asserted
+/// with it, so two lanes that pick the same bit for different flags fail to compile.
+const fn one_bit_each(flags: &[u32]) -> bool {
+    let mut seen = 0u32;
+    let mut i = 0;
+    while i < flags.len() {
+        let f = flags[i];
+        if f.count_ones() != 1 || seen & f != 0 {
+            return false;
+        }
+        seen |= f;
+        i += 1;
+    }
+    true
+}
+const _: () = assert!(one_bit_each(&[
+    PIECE_END_OF_FRAME,
+    PIECE_LAST,
+    PIECE_HAS_STATUS,
+    PIECE_FIELDS,
+    PIECE_CATALOGUE_MOVED,
+]));
+const _: () = assert!(one_bit_each(&[
+    EMIT_TO_FAR_END,
+    EMIT_DONE,
+    PIECE_OUT_TEXT,
+    EMIT_WATCH_CATALOGUE,
+    EMIT_UNWATCH_CATALOGUE,
+]));
 
 /// [`OnPieceOut::verdict`]: no verdict; the walk's status table alone decides.
 pub const VERDICT_NONE: u32 = 0;
@@ -335,8 +441,20 @@ pub const VERDICT_HARD: u32 = 3;
 pub const REFUSAL_KERNEL: u32 = 0;
 /// [`RefusalIn::cause`]: a gate refused.
 pub const REFUSAL_GATE: u32 = 1;
-/// [`RefusalOut::marker`]: the rendered refusal is a gate rejection (the `GateRejected` marker the
-/// kernel keeps).
+/// [`RefusalIn::cause`]: the plane refused its own arrival; [`RefusalIn::text`] is that arrival's
+/// words (see "A refused arrival" in this module's documentation).
+pub const REFUSAL_ARRIVE: u32 = 2;
+/// The most bytes of text a REFUSED `arrive` may carry in its `head.error`. More is a FAULT of
+/// that `arrive`: the words are refused whole, never cut. It is at or above the largest field
+/// line a transport admits ([`LARGEST_ADMITTED_FIELD_LINE`]), so an echoed field never overflows.
+pub const MAX_REFUSAL_TEXT: u64 = 512 * 1024;
+/// The largest field line a transport admits: a textual head is read into at most 8 KiB plus
+/// 100 x 4 KiB (its library's default read buffer), and one field line may fill it; a binary
+/// field list is admitted up to 16 KiB.
+pub const LARGEST_ADMITTED_FIELD_LINE: u64 = 8192 + 4096 * 100;
+const _: () = assert!(MAX_REFUSAL_TEXT >= LARGEST_ADMITTED_FIELD_LINE);
+/// The gate-rejected audit marker (the `GateRejected` marker the kernel keeps). The kernel sets it
+/// from [`REFUSAL_GATE`]; [`RefusalOut::marker`] from a plane is always `0`.
 pub const MARK_GATE_REJECTED: u32 = 1;
 
 /// [`RecordWrite::op`]: put, the one record write there is. A record is never deleted by a write:
@@ -1097,6 +1215,17 @@ pub struct ArriveOut {
     pub refusal_status: u32,
     /// Alignment padding.
     pub _reserved: u32,
+    /// This unit's CORRELATION KEY: a non-zero value the plane derives from the arrival (for
+    /// example from its request identifier), naming the unit for a subsequent
+    /// [`ArriveOut::cancels`]; `0` = the unit cannot be cancelled by name. A tail addition. It is
+    /// scoped to (connection, the arrival's authenticated principal), never connection-wide: see
+    /// the cancel rule in this module's documentation.
+    pub correlation: u64,
+    /// A non-zero value makes this arrival a CANCEL: it names the [`ArriveOut::correlation`] of an
+    /// in-flight unit of the same connection and principal (the cancel rule, in this module's
+    /// documentation).
+    /// `0` = not a cancel. Never set together with a non-zero [`ArriveOut::correlation`].
+    pub cancels: u64,
 }
 
 /// `on_piece`'s `in`.
@@ -1218,7 +1347,7 @@ pub struct OnPieceOut {
 pub struct RefusalIn {
     /// The head.
     pub head: InHead,
-    /// `REFUSAL_KERNEL` | `REFUSAL_GATE`.
+    /// [`REFUSAL_KERNEL`] | [`REFUSAL_GATE`] | [`REFUSAL_ARRIVE`].
     pub cause: u32,
     /// The status number the kernel chose.
     pub status: u32,
@@ -1228,7 +1357,8 @@ pub struct RefusalIn {
     /// plane renders. Two reasons may share a status and still read differently to a client.
     pub reason: u32,
     /// The refusal text: the kernel's own message for the refusal (for a limit, it names the
-    /// bucket that blocked); never secret material.
+    /// bucket that blocked); never secret material. With [`REFUSAL_ARRIVE`]: the refused arrival's
+    /// `head.error`, byte for byte.
     pub text: AbiStr,
     /// HOST buffer for the rendered body.
     pub reply_buf: *mut u8,
@@ -1268,14 +1398,15 @@ pub struct RefusalOut {
     pub arena_written: u64,
     /// Short answer: the bytes `arena_buf` needs.
     pub arena_needed: u64,
-    /// [`MARK_GATE_REJECTED`] or `0`.
+    /// Always `0`: the kernel sets [`MARK_GATE_REJECTED`] itself; a plane that sets it is FAULT.
     pub marker: u32,
     /// Fields written to `fields_buf`.
     pub fields_written: u32,
     /// Short answer: the fields `fields_buf` needs.
     pub fields_needed: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
+    /// The status number the rendered reply carries, in [`RefusalIn::status`]'s space; the
+    /// transport maps it to its wire. `0` = keep [`RefusalIn::status`].
+    pub status: u32,
 }
 
 /// `serve`'s `in`.

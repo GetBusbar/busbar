@@ -65,11 +65,6 @@ pub struct GrpcTransport {
     /// `dial` reads this field too rather than taking a second route to the same number. See
     /// `busbar_transport_ws`'s identical field for the two-lifecycle reasoning this mirrors.
     max_message_bytes: AtomicUsize,
-    /// How long the HTTP/2 connection preface — accept or dial — has to complete;
-    /// [`super::conn::PREFACE_TIMEOUT`] unless a caller said otherwise. Carried the same way
-    /// `max_message_bytes` is: read once here, applied to every connection this instance goes on
-    /// to accept or dial.
-    preface_timeout: std::time::Duration,
     /// The layer this one composes over. `None` for an instance that will only ever be handed a
     /// stream directly, which is all a transport owning no socket can otherwise do.
     lower: Option<Arc<dyn Transport>>,
@@ -89,7 +84,6 @@ impl GrpcTransport {
             next_id: AtomicU64::new(1),
             conns: SyncMutex::new(HashMap::new()),
             max_message_bytes: AtomicUsize::new(0),
-            preface_timeout: super::conn::PREFACE_TIMEOUT,
             lower: None,
         }
     }
@@ -101,18 +95,8 @@ impl GrpcTransport {
             next_id: AtomicU64::new(1),
             conns: SyncMutex::new(HashMap::new()),
             max_message_bytes: AtomicUsize::new(0),
-            preface_timeout: super::conn::PREFACE_TIMEOUT,
             lower: Some(lower),
         }
-    }
-
-    /// Set the budget the HTTP/2 connection preface — accept or dial — has to complete in, for a
-    /// deployment — or a battery cell proving item 146's stalled-preface drop without a real
-    /// ten-second wait — whose tolerance is not the default.
-    #[must_use]
-    pub fn with_preface_timeout(mut self, budget: std::time::Duration) -> Self {
-        self.preface_timeout = budget;
-        self
     }
 
     fn lower(&self) -> Result<&Arc<dyn Transport>, TransportError> {
@@ -208,7 +192,7 @@ impl Transport for GrpcTransport {
             let state = ConnState::new(None, chain, self.message_cap());
             state.set_local_port(port);
             self.conns.lock().unwrap().insert(id, state.clone());
-            super::server::serve_connection(stream, state, self.preface_timeout);
+            super::server::serve_connection(stream, state, super::conn::PREFACE_TIMEOUT);
             Ok(Conn::new(Arc::new(GrpcConnHandle { id, peer })))
         })
     }
@@ -255,7 +239,7 @@ impl Transport for GrpcTransport {
             // only stops listing, while the socket under it stays with a task no caller can reach.
             let (stream, cut) = super::conn::Cuttable::new(stream);
             let (dialer, origin, over) =
-                client::handshake_h2(stream, authority, self.preface_timeout).await?;
+                client::handshake_h2(stream, authority, super::conn::PREFACE_TIMEOUT).await?;
             let id = self.mint_id();
             let state = ConnState::new(
                 Some((Arc::new(dialer), origin, method)),
