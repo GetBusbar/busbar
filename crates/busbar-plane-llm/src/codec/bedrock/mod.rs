@@ -1509,7 +1509,7 @@ fn stop_reason_reverse(canonical: crate::codec::ir::IrStopReason) -> &'static st
 /// cache CREATION in Anthropic terms) and the read `cacheReadInputTokens`; both are OPTIONAL on the
 /// wire, so each maps to `None` when absent (distinct from `Some(0)`). `cacheDetails` is the per-TTL
 /// breakdown of the cache write — a list of `{ttl, inputTokens}` the service model sorts 1h before
-/// 5m — and the two TTLs are PRICED DIFFERENTLY, so each TTL is the sum of its entries
+/// 5m — and the two TTLs are separate tiers, so each TTL is the sum of its entries
 /// (`CountRead::ListSum`): a TTL the upstream did not report stays `None`, and an unrecognized `ttl`
 /// reaches no tier (the `cacheWriteInputTokens` total still carries it). The buffered response, the
 /// stream's `metadata` frame and a truncated-body recovery read this one table.

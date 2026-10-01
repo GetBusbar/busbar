@@ -811,8 +811,8 @@ impl ProtocolReader for AnthropicReader {
         // PRESENT and unreadable is not absent: it refuses (#42) instead of ledgering zero.
         let usage_val = obj.get("usage");
         // The 5m/1h cache-creation TIER SPLIT rides the same table as the totals (see `USAGE`):
-        // the two tiers are PRICED DIFFERENTLY, so collapsing them leaves a bill that reconciles in
-        // aggregate and cannot be reconciled per line.
+        // the kernel counts the two tiers separately, so collapsing them would leave a total that
+        // reconciles in aggregate and cannot be reconciled per line.
         let usage = read_anthropic_usage(usage_val)?;
 
         // Treat an empty `model` string as absent (`None`). The writer emits `model: ""` as the

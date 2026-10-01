@@ -8,7 +8,7 @@ use crate::codec::usage_count::{read_usage, CountRead, CountSlot, UsageCount};
 
 /// ANTHROPIC'S USAGE COUNTS, AS DATA (#42). The four totals come first: a truncated-body recovery
 /// reads only those (`USAGE[..4]`). Then the 5m/1h cache-creation TIER SPLIT — SLICES of
-/// `cache_creation_input_tokens`, never additions to it, but PRICED DIFFERENTLY — the
+/// `cache_creation_input_tokens`, never additions to it, but two separate tiers — the
 /// separately-metered `server_tool_use.web_search_requests`, and the thinking slice of
 /// `output_tokens` (attribution: already counted inside the output total, so a lenient read).
 /// The buffered response and both stream frames (`message_start`, `message_delta`) read the same
