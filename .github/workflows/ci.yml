@@ -2651,6 +2651,7 @@ jobs:
   # feature-covered: busbar-kernel-identity/sha256 -- check -- reached from the default auth-admin-tokens closure in the workspace build
   # feature-covered: busbar-kernel/test-support -- check -- unified in by a dev-dependency under cargo clippy --workspace --all-targets
   # feature-covered: busbar-kernel-audit/test-support -- check -- enabled by busbar's dev-dependency, unified in under cargo clippy --workspace --all-targets
+  # feature-covered: busbar-kernel-identity/stand-in -- check -- turned on by busbar-kernel/test-support (and busbar-kernel's own tests), which that job unifies in under --all-targets
   # feature-covered: busbar-a2a/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-mcp/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-llm/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
