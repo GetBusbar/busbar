@@ -1496,7 +1496,9 @@ kernel_crate = "busbar-kernel"
 # ── RE-ARMED 55793 -> 55799 AT THE MEASUREMENT of the unit tip (OWNER GRANT 2026-09-29 (3)): the
 # plane driver restacked onto the deduplicated driver keeps its own verify seat (the caller
 # reference is derived there) beside the forwarded seats, +6 over the summed ledger.
-kernel_ceiling = 55799
+# ── RE-ARMED 54919 -> 54949, AT THE MEASUREMENT (OWNER GRANT 2026-09-29 (3)): The restart verifies (the held amendment chain, the real checkpoint anchor, the resume breaks an append reports) and their findings on admin verify, +30.
+# ── SUMMED on the trunk (CONVERGER): kernel_ceiling 55799 + (54949 - 54919) = 55829; the measurement at the segment tip re-arms it.
+kernel_ceiling = 55829
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
