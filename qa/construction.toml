@@ -1415,7 +1415,9 @@ kernel_crate = "busbar-kernel"
 # ── RE-ARMED 53156 -> 53169: kernel x plugin-tooling drain: the observer's grants seam (observe::Grants, install_grants), +13; 53169 measured on k1-kpt-drain.
 # ── RE-ARMED 53169 -> 53189: rule L local answer, measured on the stack over predev 3cc28b00e.
 # ── RE-ARMED 53189 -> 53391 over MW3 (+167) and T13b (+35) on predev, from 52136; declared above.
-kernel_ceiling = 53391
+# ── LOWERED 53391 -> 53380 by K1-FIX 5f77deb37 (the observer's installed grants seam leaves the kernel;
+# grants are handed in per call): 12 code lines removed, 1 added, -11. Downward only.
+kernel_ceiling = 53380
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
