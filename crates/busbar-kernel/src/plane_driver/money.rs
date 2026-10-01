@@ -115,6 +115,10 @@ struct Open {
     abandoned: bool,
     /// The route step ended without a cancel: no bill will come.
     finished: bool,
+    /// The provider of the member that served the unit, once its answering attempt committed
+    /// ([`MoneySeam::served`]); `None` while no member has answered. The served model replaces
+    /// [`UnitMoney::model`] in `money` at the same moment.
+    provider: Option<String>,
 }
 
 /// THE KERNEL'S MONEY STEPS for one plane instance's units.
@@ -151,6 +155,7 @@ impl PlaneMoney {
                 ledgered: false,
                 abandoned: false,
                 finished: false,
+                provider: None,
             },
         );
     }
@@ -170,7 +175,13 @@ impl PlaneMoney {
         };
         let m = &open.money;
         if !open.ledgered {
-            self.ledger(m, &reported(&open.last));
+            let counts = reported(&open.last);
+            self.ledger(m, &counts);
+            // A DELIVERED end meters one request against the serving member, tokens or none
+            // (v1.5.5 proxy/usage.rs:31-40 and :99-106).
+            if (200..=299).contains(&caller_status) {
+                self.meter(m, open.provider.as_deref(), &counts);
+            }
         }
         if m.fee.refunds(caller_status, &open.last) {
             self.gov.refund_request(&m.cost, &m.key, &m.pool, m.arrived);
@@ -202,6 +213,37 @@ impl PlaneMoney {
             .unwrap_or_default();
         self.gov
             .record_usage(&m.cost, &m.key, &m.pool, &m.model, &units, m.arrived);
+    }
+
+    /// THE METERING ROW for a delivered (or reported-billed) unit: one request against the serving
+    /// member, with the reported token tiers when the plane reported any — v1.5.5
+    /// `crates/busbar/src/proxy/usage.rs` `ledger_and_meter` (:99-106: "even a zero-token delivered
+    /// response counts its request") and `record_resp_usage` (:31-40: "A delivered response with NO
+    /// token usage ... still METERS as one request against the serving model").
+    ///
+    /// The row is the one `GovState::record_usage`'s class mirror keys the same lane by, so nothing
+    /// splits across two rows: an unqualified (pools) lane is `(model, served provider)` with the
+    /// token split (no serving member, no row: 1.5.5's unresolvable lane metered nothing); a
+    /// plane-qualified lane `"<plane>\u{1f}<subject>"` is `(subject, plane)` with no token split,
+    /// its classes carried by the mirror.
+    fn meter(&self, m: &UnitMoney, provider: Option<&str>, counts: &[(u32, u64)]) {
+        use busbar_contract::records::{
+            UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
+        };
+        let units = named(&m.classes, &usage_only(m, counts), u64::checked_add).unwrap_or_default();
+        let tier = |unit: &str| units.get(unit).copied();
+        let tokens = [UNIT_INPUT, UNIT_OUTPUT, UNIT_CACHE_READ, UNIT_CACHE_WRITE]
+            .iter()
+            .any(|u| units.contains_key(*u))
+            .then(|| crate::billing::TokenUsage {
+                input: tier(UNIT_INPUT).unwrap_or(0),
+                output: tier(UNIT_OUTPUT).unwrap_or(0),
+                cache_read: tier(UNIT_CACHE_READ),
+                cache_creation: tier(UNIT_CACHE_WRITE),
+                ..Default::default()
+            });
+        self.gov
+            .record_lane_metering(&m.key.id, &m.model, provider, tokens.as_ref(), m.arrived);
     }
 
     /// Whether `counts`, priced at the card in force, reach what the unit's tightest applicable
@@ -296,7 +338,7 @@ impl MoneySeam for PlaneMoney {
     }
 
     fn cancelled(&self, ctx: &UnitCtx, bill: &CancelBill) {
-        let money = {
+        let (money, provider) = {
             let mut all = self.lock();
             let Some(open) = all.get_mut(&ctx.key) else {
                 return;
@@ -305,7 +347,7 @@ impl MoneySeam for PlaneMoney {
                 return;
             }
             open.ledgered = true;
-            let money = open.money.clone();
+            let money = (open.money.clone(), open.provider.clone());
             if open.abandoned {
                 // The caller went away and its end is posted: this bill was all it waited for.
                 all.remove(&ctx.key);
@@ -313,6 +355,11 @@ impl MoneySeam for PlaneMoney {
             money
         };
         self.ledger(&money, &bill.billed);
+        // A cancelled stream meters only when it bills a reported count (1.5.5's drop path billed
+        // the usage the far end had reported through the same ledger_and_meter; none, no row).
+        if bills(&money, &bill.billed) {
+            self.meter(&money, provider.as_deref(), &bill.billed);
+        }
     }
 
     /// The caller went away: the loop's sealed end goes to the root's posting site, and the unit's
@@ -330,7 +377,7 @@ impl MoneySeam for PlaneMoney {
                     let open = all.remove(&ctx.key);
                     open.map(|o| {
                         let counts = reported(&o.last);
-                        (o.money, counts)
+                        (o.money, o.provider, counts)
                     })
                 }
                 Some(open) if open.ledgered || open.last.is_empty() => {
@@ -344,12 +391,15 @@ impl MoneySeam for PlaneMoney {
                 None => None,
             }
         };
-        if let Some((money, counts)) = owed {
+        if let Some((money, provider, counts)) = owed {
             // Safe inside the loop's `Drop` guard: GovState::record_usage is an in-memory accrual
             // (the bucket cells and the metering row are write-behind; the durable write is the
             // flusher's, never a store call on this thread), and it neither awaits nor crosses a
-            // plugin.
+            // plugin. record_metering is the same in-memory, sharded accumulator.
             self.ledger(&money, &counts);
+            if bills(&money, &counts) {
+                self.meter(&money, provider.as_deref(), &counts);
+            }
         }
         self.post.post(ctx, ended);
     }
@@ -359,6 +409,22 @@ impl MoneySeam for PlaneMoney {
             open.finished = true;
         }
     }
+
+    /// The member that served the unit: from here every ledgering, metering and cut-stream pricing
+    /// of the unit is under ITS config model and provider, as 1.5.5 attributed a delivered response
+    /// to the serving lane after failover (`proxy/usage.rs` `ledger_and_meter`: "THE ONE PLACE a
+    /// delivered response is attributed to a model ... `lane` is the SERVING lane").
+    fn served(&self, ctx: &UnitCtx, model: &str, provider: &str) {
+        if let Some(open) = self.lock().get_mut(&ctx.key) {
+            open.money.model = model.to_string();
+            open.provider = Some(provider.to_string());
+        }
+    }
+}
+
+/// Whether `counts` bill anything once the fee units are set aside: a reported count above zero.
+fn bills(m: &UnitMoney, counts: &[(u32, u64)]) -> bool {
+    usage_only(m, counts).iter().any(|(_, n)| *n > 0)
 }
 
 #[cfg(test)]

@@ -61,14 +61,13 @@ fn cost(budget_cents: Option<u64>, fee: i64) -> Arc<CostModel> {
             ..Default::default()
         },
     )]);
-    let card = BTreeMap::from([(
-        "m".to_string(),
-        crate::config::RateEntryCfg {
-            input_utok: 1.0,
-            output_utok: 1.0,
-            ..Default::default()
-        },
-    )]);
+    let rate = || crate::config::RateEntryCfg {
+        input_utok: 1.0,
+        output_utok: 1.0,
+        ..Default::default()
+    };
+    // `m2` is the member a failed-over unit is served by.
+    let card = BTreeMap::from([("m".to_string(), rate()), ("m2".to_string(), rate())]);
     Arc::new(CostModel::resolve_parts(Some(&card), fee, &groups))
 }
 
@@ -287,6 +286,115 @@ fn a_fee_unit_count_is_never_ledgered_as_usage() {
         (40, 5),
         "the input counts and the admission's fee, nothing else"
     );
+}
+
+// THE SERVING MEMBER (v1.5.5 crates/busbar/src/proxy/usage.rs `record_resp_usage` :31-40 and
+// `ledger_and_meter` :99-106): a delivered response meters one request against the SERVING lane's
+// config model and provider, tokens or none, and its tokens ledger under that model.
+
+fn metering_rows(r: &Rig) -> Vec<busbar_contract::records::MeteringRow> {
+    r.gov.flush_metering();
+    r.gov
+        .metering_for(crate::governance::metering_bucket(NOW))
+        .expect("metering read")
+}
+
+/// A delivered unit that reported no token still meters ONE request against its serving member.
+/// RED: without the end's metering the row is absent.
+#[test]
+fn a_delivered_zero_token_unit_meters_one_request() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    r.money.served(&ctx(1), "m", "acme");
+    r.money.settle_end(UnitKey::new(1), 200);
+    let rows = metering_rows(&r);
+    assert_eq!(rows.len(), 1, "one metering row");
+    let row = &rows[0];
+    assert_eq!(
+        (row.model.as_str(), row.provider.as_str(), row.requests),
+        ("m", "acme", 1)
+    );
+    assert_eq!((row.tokens_input, row.tokens_output), (0, 0));
+}
+
+/// A unit that failed over ledgers AND meters under the member that served it, never the model
+/// it was opened under. RED: without `served` the tokens sit under `m` and nothing meters.
+#[test]
+fn a_failed_over_unit_ledgers_and_meters_under_the_serving_member() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    let _ = r.money.checkpoint(&ctx(1), &reported(40));
+    r.money.served(&ctx(1), "m2", "fallback");
+    r.money.settle_end(UnitKey::new(1), 200);
+    let rows = metering_rows(&r);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (
+            rows[0].model.as_str(),
+            rows[0].provider.as_str(),
+            rows[0].requests,
+            rows[0].tokens_input
+        ),
+        ("m2", "fallback", 1, 40)
+    );
+    let models: Vec<String> = r
+        .gov
+        .bucket_model_tokens(&r.cost, &r.key.id, WINDOW_TOTAL, NOW)
+        .into_iter()
+        .map(|(model, _)| model)
+        .collect();
+    assert_eq!(
+        models,
+        vec!["m2".to_string()],
+        "ledgered under the serving model"
+    );
+}
+
+/// A plane-qualified lane meters its request on the row the class mirror keys it by:
+/// `(subject, plane)`, never a second row under the qualified string.
+#[test]
+fn a_plane_lane_unit_meters_on_the_planes_row() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    r.money.served(&ctx(1), "tp\u{1f}srv_read", "unused");
+    r.money.settle_end(UnitKey::new(1), 200);
+    let rows = metering_rows(&r);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (
+            rows[0].model.as_str(),
+            rows[0].provider.as_str(),
+            rows[0].requests
+        ),
+        ("srv_read", "tp", 1)
+    );
+}
+
+/// An undelivered end meters nothing (1.5.5 metered delivered responses only).
+#[test]
+fn an_undelivered_end_meters_nothing() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    r.money.served(&ctx(1), "m", "acme");
+    r.money.settle_end(UnitKey::new(1), 503);
+    assert!(metering_rows(&r).is_empty());
+}
+
+/// A cancelled stream meters only when its bill carries a reported count (1.5.5's drop path).
+#[test]
+fn a_cancelled_stream_meters_only_a_reported_bill() {
+    let bill = |billed: Vec<(u32, u64)>| CancelBill {
+        cause: CancelCause::ClientGone,
+        disposition: CANCEL_OK_PARTIAL,
+        far_end_answered: true,
+        streamed: true,
+        billed,
+    };
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    r.money.served(&ctx(1), "m", "acme");
+    r.money.cancelled(&ctx(1), &bill(vec![(INPUT, 0)]));
+    assert!(metering_rows(&r).is_empty(), "a zero bill meters nothing");
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    r.money.served(&ctx(1), "m", "acme");
+    r.money.cancelled(&ctx(1), &bill(vec![(INPUT, 30)]));
+    let rows = metering_rows(&r);
+    assert_eq!((rows.len(), rows[0].tokens_input), (1, 30));
 }
 
 /// finish-unit (the default, 1.5.5) never cuts, however far past the budget the unit runs.

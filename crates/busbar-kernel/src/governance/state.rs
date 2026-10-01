@@ -593,6 +593,30 @@ impl GovState {
         );
     }
 
+    /// ONE METERED REQUEST on `lane`'s metering row, keyed exactly as [`GovState::meter_classes`]
+    /// keys the same lane, so a unit's request and its classes never split across two rows: an
+    /// unqualified (pools) lane meters on `(lane, provider)` with the token split, and with no
+    /// serving provider it meters nothing (1.5.5 metered no response it could not attribute to a
+    /// serving lane); a plane-qualified lane `"<plane>\u{1f}<subject>"` meters on
+    /// `(subject, plane)` with no token split, its classes carried by the mirror.
+    pub fn record_lane_metering(
+        &self,
+        key_id: &str,
+        lane: &str,
+        provider: Option<&str>,
+        usage: Option<&crate::billing::TokenUsage>,
+        now: u64,
+    ) {
+        match split_plane_lane(lane) {
+            ("", _) => {
+                if let Some(provider) = provider {
+                    self.record_metering(key_id, lane, provider, usage, now);
+                }
+            }
+            (plane, subject) => self.record_metering(key_id, subject, plane, None, now),
+        }
+    }
+
     /// Accrue `units` under `model` to ONE bucket's current-window ledger cell (straddle-safe;
     /// see [`GovState::record_usage`]).
     fn accrue_bucket(

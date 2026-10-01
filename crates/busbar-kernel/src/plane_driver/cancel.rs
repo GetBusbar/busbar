@@ -58,6 +58,14 @@ pub trait MoneySeam: Send + Sync {
         let _ = ctx;
     }
 
+    /// The member whose attempt answered the unit, once it commits (failover happens only before
+    /// the first byte, so this is final): its CONFIG model name and its provider. The money steps
+    /// ledger and meter the unit under it, as 1.5.5's `ledger_and_meter` did under the serving
+    /// lane. The driver calls it once per unit, before any piece of that answer is relayed.
+    fn served(&self, ctx: &UnitCtx, model: &str, provider: &str) {
+        let _ = (ctx, model, provider);
+    }
+
     /// The end of a unit whose caller went away, as the loop's guard reached it: posted by the
     /// money steps exactly as a returned end is. Runs inside a `Drop`: it must not panic, await or
     /// cross a plugin.
