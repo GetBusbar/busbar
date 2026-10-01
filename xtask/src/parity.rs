@@ -165,22 +165,6 @@ fn spawn_legacy(
     Ok((out, leg))
 }
 
-/// Run the legacy argv and capture what it printed, for a gate whose legacy writes no ledger.
-pub fn run_legacy_captured(
-    cx: &Ctx,
-    argv: &[String],
-    ledger_env: &str,
-) -> Result<LegacyRun, String> {
-    let (out, _leg) = spawn_legacy(cx, argv, ledger_env)?;
-    Ok(LegacyRun {
-        argv: argv.to_vec(),
-        code: out.status.code(),
-        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        scratch: cx.scratch().to_path_buf(),
-    })
-}
-
 /// A translator's rows must AGREE WITH THE EXIT STATUS of the script they were read out of. A
 /// script that exited non-zero while its translator found nothing to report is a translator that
 /// is not reading its subject, and the parity green it would produce is worthless.

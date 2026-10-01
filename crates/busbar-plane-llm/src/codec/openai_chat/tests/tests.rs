@@ -361,6 +361,7 @@ fn write_request_tool_result_multi_text_concatenates_without_separator() {
         parallel_tool_calls: None,
         system: Vec::new(),
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![IrMessage {
             role: IrRole::Tool,
             content: vec![crate::codec::ir::IrBlock::ToolResult {
@@ -436,6 +437,7 @@ fn write_request_emits_max_tokens_from_modeled_cap() {
         parallel_tool_calls: None,
         system: Vec::new(),
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![IrMessage {
             role: IrRole::User,
             content: vec![text_block("hi")],
@@ -580,6 +582,7 @@ fn write_request_omits_token_cap_when_absent() {
         parallel_tool_calls: None,
         system: Vec::new(),
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![IrMessage {
             role: IrRole::User,
             content: vec![text_block("hi")],
@@ -628,6 +631,7 @@ fn write_request_keeps_tool_use_on_user_message() {
         parallel_tool_calls: None,
         system: Vec::new(),
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![IrMessage {
             role: IrRole::User,
             content: vec![IrBlock::ToolUse {
@@ -692,6 +696,7 @@ fn write_request_pure_tool_result_message_emits_only_flat_entries() {
         parallel_tool_calls: None,
         system: Vec::new(),
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![IrMessage {
             role: IrRole::Tool,
             content: vec![IrBlock::ToolResult {
@@ -753,6 +758,7 @@ fn write_request_tool_role_mixed_content_not_dropped() {
         parallel_tool_calls: None,
         system: Vec::new(),
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![IrMessage {
             role: IrRole::Tool,
             content: vec![
@@ -847,6 +853,7 @@ fn write_request_tool_result_on_user_message_emits_tool_message() {
         parallel_tool_calls: None,
         system: Vec::new(),
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![IrMessage {
             role: IrRole::User,
             content: vec![IrBlock::ToolResult {
@@ -1572,6 +1579,7 @@ fn write_request_tool_call_only_assistant_has_null_content() {
         parallel_tool_calls: None,
         system: Vec::new(),
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![IrMessage {
             role: IrRole::Assistant,
             content: vec![IrBlock::ToolUse {
@@ -1857,6 +1865,7 @@ fn write_request_non_text_system_block_does_not_vanish_silently() {
             },
         ],
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![IrMessage {
             role: IrRole::User,
             content: vec![text_block("hi")],
@@ -2060,6 +2069,7 @@ fn write_request_assistant_tool_result_block_not_emitted_as_content() {
         parallel_tool_calls: None,
         system: Vec::new(),
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![IrMessage {
             role: IrRole::Assistant,
             content: vec![
@@ -2130,6 +2140,7 @@ fn write_request_thinking_block_dropped_from_message_content() {
         parallel_tool_calls: None,
         system: Vec::new(),
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![IrMessage {
             role: IrRole::Assistant,
             content: vec![
@@ -3245,6 +3256,7 @@ fn req_with_tool(
         parallel_tool_calls: None,
         system: Vec::new(),
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: Vec::new(),
         tools: vec![crate::codec::ir::IrTool {
             name: "get_weather".to_string(),
@@ -3662,6 +3674,7 @@ fn write_request_string_tool_arguments_emitted_verbatim() {
         parallel_tool_calls: None,
         system: Vec::new(),
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![IrMessage {
             role: IrRole::Assistant,
             content: vec![crate::codec::ir::IrBlock::ToolUse {
@@ -4077,6 +4090,7 @@ fn test_ir_request() -> crate::codec::ir::IrRequest {
         parallel_tool_calls: None,
         system: Vec::new(),
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![IrMessage {
             role: IrRole::User,
             content: vec![text_block("hi")],
@@ -4617,6 +4631,7 @@ fn test_write_request_file_id_image_dropped_not_corrupted() {
         parallel_tool_calls: None,
         system: vec![],
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![crate::codec::ir::IrMessage {
             role: crate::codec::ir::IrRole::User,
             content: vec![
@@ -4702,6 +4717,7 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
         parallel_tool_calls: None,
         system: vec![],
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         messages: vec![crate::codec::ir::IrMessage {
             role: crate::codec::ir::IrRole::User,
             content: vec![

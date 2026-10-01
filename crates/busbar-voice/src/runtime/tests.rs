@@ -632,7 +632,7 @@ struct ServesOnly(&'static str);
 
 #[async_trait::async_trait]
 impl crate::runtime::ToolExecutor for ServesOnly {
-    fn serves(&self, name: &str) -> bool {
+    fn executes_here(&self, name: &str) -> bool {
         name == self.0
     }
     async fn execute(&self, name: &str, _arguments: &[u8]) -> Vec<u8> {

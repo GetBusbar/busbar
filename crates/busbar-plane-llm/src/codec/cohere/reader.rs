@@ -183,6 +183,8 @@ impl ProtocolReader for CohereReader {
         // Count of `system`-role entries folded out of `messages` below — restores the 1.5.5
         // `message_count` semantics (the raw wire array length) onto `IrFacts::shape()`.
         let mut system_turns_folded: usize = 0;
+        // Where each folded entry stood, for the hook view (`IrRequest::system_folds`).
+        let mut system_folds: Vec<crate::codec::ir::IrSystemFold> = Vec::new();
 
         let mut messages: Vec<crate::codec::ir::IrMessage> = Vec::new();
         if let Some(messages_val) = obj.get("messages") {
@@ -233,6 +235,7 @@ impl ProtocolReader for CohereReader {
                 // to a protocol whose writer reads req.system.
                 if role == crate::codec::ir::IrRole::System {
                     system_turns_folded += 1;
+                    let blocks_before = system_blocks.len();
                     if let Some(content_val) = msg_val.get("content") {
                         if let Some(s) = content_val.as_str() {
                             system_blocks.push(crate::codec::ir::IrBlock::Text {
@@ -272,6 +275,13 @@ impl ProtocolReader for CohereReader {
                             }
                         }
                     }
+                    crate::codec::ir::IrSystemFold::record(
+                        &mut system_folds,
+                        messages.len(),
+                        crate::codec::ir::IrSystemRole::System,
+                        blocks_before,
+                        system_blocks.len(),
+                    );
                     continue;
                 }
 
@@ -759,6 +769,7 @@ impl ProtocolReader for CohereReader {
             parallel_tool_calls: None,
             system: system_blocks,
             system_turns_folded,
+            system_folds,
             messages,
             tools,
             max_tokens,

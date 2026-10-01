@@ -1351,13 +1351,16 @@ impl ProductionUnits {
     /// because the rest is unfinished.
     #[cfg(feature = "root-admin")]
     #[must_use]
-    pub fn admin_only(dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>) -> Self {
+    pub fn admin_only(
+        dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>,
+        door: crate::root::units_admin::AdminDoorFn,
+    ) -> Self {
         // One value, two halves. The ledger is handed the write half and keeps it for the life of
         // the node; the read half stays here so the ledger views have somewhere to read the
         // previous release's rows from. They are the same rows because they are the same value —
         // a second recorder would be a second answer to what the dual write wrote.
         let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
-        ProductionUnits::admin_only_over(dispatch, Box::new(rows.clone()), Arc::new(rows))
+        ProductionUnits::admin_only_over(dispatch, door, Box::new(rows.clone()), Arc::new(rows))
     }
 
     /// The same composition, over legacy rows the caller supplies both halves of.
@@ -1371,6 +1374,7 @@ impl ProductionUnits {
     #[must_use]
     pub fn admin_only_over(
         dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>,
+        door: crate::root::units_admin::AdminDoorFn,
         write: Box<dyn busbar_kernel_ledger::legacy::LegacyRows>,
         read: Arc<dyn crate::root::units_admin::LegacyRowsRead>,
     ) -> Self {
@@ -1380,7 +1384,7 @@ impl ProductionUnits {
             write,
         )
         .expect("a memory-buffered journal cannot fail to open");
-        ProductionUnits::admin_only_sharing(dispatch, Arc::new(Mutex::new(durability)), read)
+        ProductionUnits::admin_only_sharing(dispatch, door, Arc::new(Mutex::new(durability)), read)
     }
 
     /// The same composition again, over a book the caller already opened.
@@ -1398,6 +1402,7 @@ impl ProductionUnits {
     #[must_use]
     pub fn admin_only_sharing(
         dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>,
+        door: crate::root::units_admin::AdminDoorFn,
         durability: Arc<Mutex<crate::root::durability::Durability>>,
         read: Arc<dyn crate::root::units_admin::LegacyRowsRead>,
     ) -> Self {
@@ -1408,7 +1413,7 @@ impl ProductionUnits {
             Arc::clone(&durability),
             crate::root::adapters::BreakerPolicy::new(),
             crate::root::policy::ScopePolicy::new(),
-            crate::root::units_admin::AdminBinding::new(dispatch),
+            crate::root::units_admin::AdminBinding::new(dispatch, door),
             Arc::new(RefusingStore),
         );
         // The views are bound after the units are assembled rather than through the constructor,
@@ -1482,43 +1487,6 @@ impl ProductionUnits {
     pub fn with_auth_chain(mut self, chain: AuthChain) -> Self {
         self.auth = Auth::new(chain);
         self
-    }
-
-    /// Whether this node's front door is open — no module and no keys arm.
-    ///
-    /// Read by the grant, because "no principal was resolved" and "the door is open" are the same
-    /// fact stated from two sides, and the grant has to know which posture it is granting under.
-    fn front_door_is_open(&self) -> bool {
-        self.auth.chain().is_open()
-    }
-
-    /// The scope THIS caller's admin credential carries, or nothing at all.
-    ///
-    /// The previous release's rule, in its three arms and no more:
-    ///
-    /// 1. **No principal.** The explicit open administrative posture — a deployment that configured
-    ///    no admin credential. Full, and dev-only, exactly as it has always been.
-    /// 2. **The operator credential.** A roleless principal carrying the reserved id, which on this
-    ///    node only the admin-token module mints. Full by definition: it IS the root credential.
-    /// 3. **Anyone else roleless.** No grant. Not a narrower one — none — because a roleless
-    ///    principal has nothing bound to read a scope out of, and inventing one would be this root
-    ///    granting authority the deployment never wrote down.
-    ///
-    /// It returns an absence rather than a floor for the third arm because a floor is still a grant:
-    /// `ReadOnly` would hand an unbound principal every read the surface has. The scope unit's matrix
-    /// still decides what a grant reaches — the grant is the ceiling, the matrix is the door — and a
-    /// caller holding no ceiling never reaches the door at all.
-    pub(crate) fn admin_grant(
-        &self,
-        principal: &PrincipalId,
-    ) -> Option<busbar_core_admin::VerbScope> {
-        if self.front_door_is_open() {
-            return Some(busbar_core_admin::VerbScope::Full);
-        }
-        if principal.as_str() == crate::root::auth_bindings::ADMIN_PRINCIPAL_ID {
-            return Some(busbar_core_admin::VerbScope::Full);
-        }
-        None
     }
 
     /// Register a plane onto this loop, keyed by its own name, and return `self` to chain.

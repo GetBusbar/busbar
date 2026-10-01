@@ -88,9 +88,11 @@
 //!
 //! The rows are the linked wires (`LINKED.transports`, manifest order) followed by the wires
 //! DROPPED INTO `plugins.dir` (scan order), each admitted over the HOT-tier ABI by the loader and
-//! presented as a `Transport` by its adapter (`crate::root::loader::WireTransport`) — #2 rule (1):
-//! one contract, one loading path; #3: a transport is swappable, compiled in OR dropped in. The
-//! fold does not ask which door a row came in by, except to build it.
+//! presented as a `Transport` by its adapter (`crate::root::loader::WireTransport`), or — a
+//! memory-ABI transport door — admitted through the one dispatcher's door validation and served over
+//! the host's sockets by the connector (`crate::root::doors`) — #2 rule (1): one contract, one
+//! loading path; #3: a transport is swappable, compiled in OR dropped in. The fold does not ask
+//! which door a row came in by, except to build it.
 //!
 //! A wire is built once every layer it declares that this build carries is built, in row order
 //! otherwise — so a layer always exists before anything that names it — and is handed the first of
@@ -264,6 +266,34 @@ pub fn plane_claims(planes: &[LinkedClaims]) -> Vec<PlaneClaim> {
 /// One folded wire: its row as the composition check reads it, and the built transport.
 pub type Built = (Registered, Arc<dyn Transport>);
 
+/// A transport DOOR dropped into `plugins.dir`: a memory-ABI entry admitted through the one
+/// dispatcher's door validation and served over the host's sockets (`crate::root::doors`).
+pub struct DroppedDoor {
+    /// Its registry key: its own claim.
+    pub key: &'static str,
+    /// The layers it declares.
+    pub composes_over: Vec<&'static str>,
+    /// The entry, served.
+    pub wire: Arc<dyn Transport>,
+}
+
+/// The transports a plugins directory contributes, by the lane each image speaks.
+#[derive(Clone, Copy)]
+pub struct Dropped {
+    /// HOT-decl wires.
+    pub hot: &'static [DynTransport],
+    /// Memory-ABI transport doors.
+    pub doors: &'static [DroppedDoor],
+}
+
+impl Dropped {
+    /// Nothing dropped in.
+    pub const NONE: Self = Self {
+        hot: &[],
+        doors: &[],
+    };
+}
+
 /// One row of the transport axis, whichever door it came in by.
 #[derive(Clone, Copy)]
 enum Row<'r> {
@@ -271,6 +301,8 @@ enum Row<'r> {
     Linked(&'r LinkedTransport),
     /// A wire dropped into `plugins.dir`, admitted over the HOT-tier ABI.
     Dropped(&'static DynTransport),
+    /// A transport door dropped into `plugins.dir`.
+    Door(&'static DroppedDoor),
 }
 
 impl Row<'_> {
@@ -278,6 +310,7 @@ impl Row<'_> {
         match self {
             Row::Linked(row) => row.key,
             Row::Dropped(wire) => wire.key(),
+            Row::Door(door) => door.key,
         }
     }
 
@@ -285,6 +318,7 @@ impl Row<'_> {
         match self {
             Row::Linked(row) => row.composes_over,
             Row::Dropped(wire) => wire.composes_over(),
+            Row::Door(door) => door.composes_over.as_slice(),
         }
     }
 }
@@ -303,13 +337,14 @@ impl Row<'_> {
 /// to build.
 pub fn compose(
     linked: &[LinkedTransport],
-    dropped: &'static [DynTransport],
+    dropped: Dropped,
     settings: &TransportSettings,
 ) -> Result<Vec<Built>, BootRefusal> {
     let rows: Vec<Row<'_>> = linked
         .iter()
         .map(Row::Linked)
-        .chain(dropped.iter().map(Row::Dropped))
+        .chain(dropped.hot.iter().map(Row::Dropped))
+        .chain(dropped.doors.iter().map(Row::Door))
         .collect();
     // Index for index with `built`: the adapter, where the row came in dropped in.
     let mut built: Vec<(Built, Option<Arc<WireTransport>>)> = Vec::with_capacity(rows.len());
@@ -344,6 +379,7 @@ pub fn compose(
                 let adapter = Arc::new(adapter);
                 (Arc::clone(&adapter) as Arc<dyn Transport>, Some(adapter))
             }
+            Row::Door(door) => (Arc::clone(&door.wire), None),
         };
         let registered = Registered {
             key: row.key(),
@@ -367,7 +403,7 @@ pub fn compose(
 /// was built over one it does not declare; or the registry refused an entry.
 pub fn seal(
     linked: &Linked,
-    dropped: &'static [DynTransport],
+    dropped: Dropped,
     settings: TransportSettings,
 ) -> Result<BootRegistry, BootRefusal> {
     let (registered, transports): (Vec<Registered>, Vec<Arc<dyn Transport>>) =
@@ -401,7 +437,12 @@ pub fn seal(
         resolved: sealed.resolved,
         registered,
         transports,
-        dropped: dropped.iter().map(DynTransport::key).collect(),
+        dropped: dropped
+            .hot
+            .iter()
+            .map(DynTransport::key)
+            .chain(dropped.doors.iter().map(|d| d.key))
+            .collect(),
     })
 }
 

@@ -449,7 +449,7 @@ count = "5"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "299"
+count = "295"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -744,15 +744,11 @@ crate = "busbar-transport-stdio"
 kind = "transport"
 count = "3"
 
-[[cell]]
-crate = "busbar-transport-tcp"
-kind = "plane"
-count = "1"
 
 [[cell]]
 crate = "busbar-transport-tcp"
 kind = "transport"
-count = "2"
+count = "1"
 
 [[cell]]
 crate = "busbar-transport-ws"
@@ -1424,6 +1420,14 @@ why = "the retiring a2a engine carries its own transport implementation, from be
 drain = "finish the a2a drain and delete busbar-a2a; the row goes with the crate."
 
 [[face]]
+crate = "busbar"
+face = "Transport"
+count = "1"
+cite = "BUSBAR-1.6.0.md THE DESIGN, §5 — the host owns every socket; the connector serves a framer entry over them. ARCHITECT ruling (Option R): `busbar-core-connector` is core and presents no plugin face, so the adapter onto the kernel's legacy transport seam lives in the composition root. F12 relocation (ARCHITECT): the retired tcp carrier implemented this face in busbar-transport-tcp; it moved to the connector, then to the root."
+why = "`busbar::root::doors::RootWire` wraps the connector's `HostWire` and implements the kernel's legacy transport seam by only delegating to the connector's host-side surface, so the kernel's listeners and upgrades drive a memory-ABI framer door over the host's sockets. One implementation, in shipped source. Transitional: RootWire deletes with the legacy stack at step 36."
+drain = "drains at TODO step 36, when the kernel's serve/egress path stops speaking `Transport` and the engine is deleted; RootWire deletes with the legacy stack at step 36."
+
+[[face]]
 crate = "busbar-plugin-loader"
 face = "Transport"
 count = "1"
@@ -1778,16 +1782,6 @@ count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECT 2026-09-25 (K4 residue, decisions.md, L5 intake): \"busbar -> busbar-plugin-example-plane test edge [[dep]] row\"; BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes (`root -> plugin-tooling` is granted)."
 why     = "busbar names busbar-plugin-example-plane: declared dev in the test graph so the root's tests load the example plane plugin through the plugin path, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: BUSBAR-1.6.0.md grants this class. What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar"
-to      = "busbar-transport-tcp"
-half    = "test"
-count   = "1"
-verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes (`root -> transport` is granted; the shipped half of this edge is already a row). BUSBAR-1.6.0.md #3 (OWNER-LOCKED: a transport is swappable, compiled in OR dropped in): the root's both-doors transport proofs (src/root/tests/registry.rs) dlopen the wire's cdylib, whose door is compiled only under `dropped-in`, so a release image links one set of door symbols."
-why     = "busbar names busbar-transport-tcp: declared dev in the test graph (under its `dropped-in` door feature) so a package-scoped test build emits a tcp cdylib with a door for the root's dropped-in-wire proofs, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants this class. What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]

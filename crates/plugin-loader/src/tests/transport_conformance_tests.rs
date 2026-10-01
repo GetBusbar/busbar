@@ -1,34 +1,33 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! BOTH-WAYS CONFORMANCE for `kind: transport` (#3: a transport is swappable, compiled in OR dropped
-//! in over the ABI; #30: it rides the HOT lane; #2 rule (1): one contract, one loading path;
-//! TRANSPORT-STACK: the HOT decl is the carrier/framer traits lowered one slot per method).
+//! CONFORMANCE for a HOT `kind: transport` decl (#3: a transport is swappable, compiled in OR
+//! dropped in over the ABI; #30: it rides the HOT lane; TRANSPORT-STACK: the HOT decl is the
+//! carrier/framer traits lowered one slot per method), over the test-only `mem` carrier
+//! ([`super::mem_carrier`]).
 //!
-//! The fixture is a REAL shipped carrier, reached by KIND (`[package.metadata.busbar.both-ways]`),
-//! built `["rlib", "cdylib"]`. Its rlib's carrier (`linked::carrier`) is the LINKED carrier, driven as the contract's
-//! [`Carrier`] directly; its decl (the contract's `export_carrier!` lowering of the same type) is
-//! admitted through [`link_transport`]; and its cdylib is signed first-party into a fresh `plugins/`
-//! directory, scanned, and opened through
-//! [`PluginRegistry::open_transport`](crate::PluginRegistry::open_transport) (the dropped-in door).
-//! Every decl runs ONE admission ([`assemble`]).
-//!
-//! THE FOLD. Each carrier runs the same script through the SAME trait methods, against real
-//! connections whose far end is a peer through busbar's own linked carrier (a separate instance) —
-//! dial it and exchange bytes, listen for it and exchange bytes — and records what crossed the wire in each direction. The folds must be equal, and each
-//! must equal the bytes the script sent: the bytes on the wire are identical whichever door the
-//! carrier came in by, and identical to what was asked for.
+//! THE FOLD. The linked carrier and the loader's decl-backed carrier over its decl (admitted through
+//! [`link_transport`], the one admission a dropped-in decl also runs) run the same script through
+//! the SAME trait methods, against connections whose far end is a peer through a separate linked
+//! instance. The folds must be equal, and each must equal the bytes the script sent.
 //!
 //! THE RED ARM, kept: [`a_divergent_carrier_is_seen_by_the_fold`] runs the fold over a decl whose
 //! `poll_write` slot alters one byte and requires the fold to DIFFER.
+//!
+//! THE ADMISSION: every refusal [`crate::transport::assemble`] makes, over copies of the decl with
+//! one field altered, and the claims tail read claim for claim.
 
-use super::*;
-use crate::both_ways::{cdylib, dropped, statement, transport_fixture, HOT_FIXTURES};
-use crate::carrier_peer::{self, wait};
-use crate::sign::{validate_structure, HookNeeds, Manifest};
-use busbar_contract::abi::hot::transport::{CarrierSlots, DeclClaim, FramerSlots};
-use busbar_contract::transport::wire::StatusAt;
-use std::sync::OnceLock;
+use super::mem_carrier::{self, decl, decl_copy, slots, wait, KEY, NOBODY};
+use crate::both_ways::statement;
+use crate::sign::{validate_structure, Manifest};
+use crate::transport::{link_transport, wire_settings, Built, DynTransport};
+use busbar_contract::abi::hot::decl::DeclStr;
+use busbar_contract::abi::hot::transport::{
+    CarrierSlots, DeclByteList, DeclClaim, DeclStrList, FramerSlots, RawWireOutcome, TransportDecl,
+};
+use busbar_contract::transport::wire::{CloseReason, StatusAt, TransportError};
+use busbar_contract::transport::{Carrier, Dest, Role, TransportSettings};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Offer every one of `bytes` to `conn`, then flush.
 fn write_all(c: &dyn Carrier, conn: u64, bytes: &[u8]) -> Result<(), TransportError> {
@@ -37,20 +36,6 @@ fn write_all(c: &dyn Carrier, conn: u64, bytes: &[u8]) -> Result<(), TransportEr
         at += wait(|cx| c.poll_write(conn, cx, &bytes[at..]))?;
     }
     wait(|cx| c.poll_flush(conn, cx))
-}
-
-/// The fixture carrier's decl.
-fn fixture_decl() -> &'static TransportDecl {
-    &transport_fixture::exports::TRANSPORT_DECL
-}
-
-/// The fixture's cdylib crate name.
-fn fixture_crate() -> &'static str {
-    HOT_FIXTURES
-        .iter()
-        .find(|(kind, _)| *kind == "transport")
-        .map(|&(_, krate)| krate)
-        .expect("a `transport` row in [package.metadata.busbar.both-ways]")
 }
 
 /// A decl admitted through the linked door, once for the process per decl.
@@ -69,22 +54,6 @@ fn admitted(decl: &'static TransportDecl, display: &str) -> &'static DynTranspor
     row
 }
 
-/// The dropped-in door's row: the cdylib signed first-party, scanned and opened by name, once for the
-/// process. `None` when the artifact is not built (never under CI — `cdylib` refuses to skip there).
-fn dropped_in() -> Option<&'static DynTransport> {
-    static ROW: OnceLock<Option<DynTransport>> = OnceLock::new();
-    ROW.get_or_init(|| {
-        let lib = std::fs::read(cdylib(fixture_crate())?).expect("read the transport cdylib");
-        let manifest = statement("transport", "wire", "wire", busbar_contract::abi::ABI_MINOR);
-        Some(
-            dropped("transport-row", manifest, &lib)
-                .open_transport("wire")
-                .expect("the dropped-in door opens the transport"),
-        )
-    })
-    .as_ref()
-}
-
 /// A decl row's carrier, built.
 fn carrier_of(row: &'static DynTransport) -> Arc<dyn Carrier> {
     match row
@@ -92,12 +61,12 @@ fn carrier_of(row: &'static DynTransport) -> Arc<dyn Carrier> {
         .expect("the carrier builds")
     {
         Built::Carrier(c) => c,
-        Built::Framer(_) => panic!("the fixture is a carrier"),
+        Built::Framer(_) => panic!("the test carrier is a carrier"),
     }
 }
 
-/// Bytes that exercise every value and outrun both the fixture's read chunk and the read buffer
-/// below, so a stream is handed out across several reads.
+/// Bytes that exercise every value and outrun both the pipe's capacity and the read buffers below,
+/// so a stream is handed out across several reads and a write parks.
 fn payload(seed: u8, len: usize) -> Vec<u8> {
     (0..len)
         .map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed))
@@ -144,8 +113,8 @@ struct Fold {
     accept_read: Vec<u8>,
     accept_peer_saw: Vec<u8>,
     arrival_agrees: bool,
-    /// What an unknown connection answers on write and close, a dial to a port nobody listens on
-    /// once it settles, and a program destination.
+    /// What an unknown connection answers on write and close, a dial to an address nobody listens
+    /// on once it settles, and a program destination.
     unknown_write: TransportError,
     unknown_close: Result<(), TransportError>,
     refused_dial: TransportError,
@@ -155,11 +124,10 @@ struct Fold {
 const SENT: (u8, usize) = (7, 40_000);
 const REPLY: (u8, usize) = (91, 20_001);
 
-/// THE SCRIPT, run identically against every carrier. The far end of every leg is a peer through
-/// busbar's own linked carrier (a separate instance: [`carrier_peer`]).
+/// THE SCRIPT, run identically against every carrier.
 fn fold(c: &dyn Carrier) -> Fold {
     // ── dial the peer, send, read its reply to the clean end its close makes ──
-    let far = carrier_peer::listen();
+    let far = mem_carrier::listen();
     let authority = far.addr.clone();
     let far = std::thread::spawn(move || {
         let (peer, _) = far.accept();
@@ -175,14 +143,14 @@ fn fold(c: &dyn Carrier) -> Fold {
     let dial_peer_saw = far.join().unwrap();
 
     // ── listen, take the peer's bytes, answer, close; the peer reads to the clean end ──
-    let (listener, addr) = c.listen("127.0.0.1:0").expect("listen");
+    let (listener, addr) = c.listen("mem:0").expect("listen");
     let near = std::thread::spawn(move || {
-        let peer = carrier_peer::dial(&addr);
+        let peer = mem_carrier::dial(&addr);
         peer.write_all(&payload(SENT.0 ^ 0xff, SENT.1));
         peer.read_to_end()
     });
     let (conn, peer_addr) = wait(|cx| c.poll_accept(listener, cx)).expect("accept");
-    assert!(peer_addr.starts_with("127.0.0.1:"), "{peer_addr}");
+    assert!(peer_addr.starts_with("mem:"), "{peer_addr}");
     let arrival = c.arrival(conn).expect("an accepted connection's arrival");
     let arrival_agrees = arrival.peer == peer_addr && arrival.local_port != 0;
     let accept_read = read_exact(c, conn, SENT.1, 777);
@@ -192,7 +160,7 @@ fn fold(c: &dyn Carrier) -> Fold {
 
     // ── a dial nobody answers is refused when its opening settles ──
     let conn = c
-        .dial(&Dest::Authority(carrier_peer::NOBODY))
+        .dial(&Dest::Authority(NOBODY))
         .expect("dial answers at once");
     let refused_dial = wait(|cx| c.poll_flush(conn, cx)).unwrap_err();
     let _ = wait(|cx| c.poll_close(conn, cx, CloseReason::Normal));
@@ -220,7 +188,7 @@ fn fold(c: &dyn Carrier) -> Fold {
 /// What the script sent, byte for byte, on each leg.
 fn expected() -> Fold {
     Fold {
-        key: transport_fixture::linked::KEY,
+        key: KEY,
         dial_peer_saw: payload(SENT.0, SENT.1),
         dial_read_back: payload(REPLY.0, REPLY.1),
         accept_read: payload(SENT.0 ^ 0xff, SENT.1),
@@ -233,55 +201,25 @@ fn expected() -> Fold {
     }
 }
 
-/// ONE ROW, WHICHEVER DOOR: every constant the carrier declares — read off its decl through the
-/// linked door and through the dropped-in door — is the linked type's own row.
-#[test]
-fn a_linked_and_a_dropped_in_carrier_are_one_row() {
-    let linked = admitted(fixture_decl(), "linked-wire");
-    let row = transport_fixture::linked::ROW;
-    assert_eq!(*linked.row(), row);
-    assert_eq!(linked.role(), Role::Carrier);
-    let Some(dropped) = dropped_in() else {
-        return;
-    };
-    assert_eq!(*dropped.row(), row);
-    // Two images, two decls: the dropped-in one is not the linked one read twice.
-    assert_ne!(dropped.decl(), linked.decl());
-}
-
-/// THE WITNESS: the linked carrier and the decl-backed carrier over each door run the script to the
+/// THE WITNESS: the linked carrier and the decl-backed carrier over its decl run the script to the
 /// SAME record, and that record is the bytes the script put on the wire.
 #[test]
 fn both_doors_put_the_same_bytes_on_the_wire() {
-    let linked = transport_fixture::linked::carrier(&TransportSettings::default());
+    let linked = mem_carrier::carrier();
     let linked_fold = fold(&*linked);
     assert_eq!(
         linked_fold,
         expected(),
         "the linked carrier moves exactly the bytes it was given"
     );
-    let decl_fold = fold(&*carrier_of(admitted(fixture_decl(), "linked-wire")));
+    let decl_fold = fold(&*carrier_of(admitted(decl(), "linked-mem")));
     assert_eq!(
         decl_fold, linked_fold,
         "the carrier over its own decl is the linked carrier"
     );
-    let Some(row) = dropped_in() else {
-        return;
-    };
-    assert_eq!(
-        fold(&*carrier_of(row)),
-        linked_fold,
-        "a dropped-in carrier and the same carrier linked are observationally one carrier"
-    );
 }
 
 // ── THE RED ARM ─────────────────────────────────────────────────────────────────────────────────
-
-/// The fixture carrier's real slot table.
-fn real() -> &'static CarrierSlots {
-    // SAFETY: the fixture is a carrier, so its decl's carrier table is its `'static` table.
-    unsafe { &*fixture_decl().carrier }
-}
 
 /// A `poll_write` slot that flips the first byte of every offer, then writes through the real slot.
 extern "C-unwind" fn altering_write(
@@ -292,7 +230,7 @@ extern "C-unwind" fn altering_write(
     len: usize,
     out_written: *mut usize,
 ) -> RawWireOutcome {
-    let real = real().poll_write.expect("the fixture writes");
+    let real = slots().poll_write.expect("the carrier writes");
     if buf.is_null() || len == 0 {
         return real(state, conn, token, buf, len, out_written);
     }
@@ -300,12 +238,6 @@ extern "C-unwind" fn altering_write(
     let mut bytes = unsafe { std::slice::from_raw_parts(buf, len) }.to_vec();
     bytes[0] ^= 0x01;
     real(state, conn, token, bytes.as_ptr(), bytes.len(), out_written)
-}
-
-/// A copy of the fixture's decl, to alter one field of.
-fn decl_copy() -> TransportDecl {
-    // SAFETY: a byte copy of the live fixture decl; every pointer in it is `'static` image data.
-    unsafe { core::ptr::read(fixture_decl()) }
 }
 
 /// THE RED ARM, kept: a carrier whose `poll_write` alters one byte folds DIFFERENTLY, on exactly the
@@ -316,13 +248,13 @@ fn a_divergent_carrier_is_seen_by_the_fold() {
     static ALTERED: OnceLock<TransportDecl> = OnceLock::new();
     let slots = SLOTS.get_or_init(|| CarrierSlots {
         poll_write: Some(altering_write),
-        ..*real()
+        ..*slots()
     });
     let altered = ALTERED.get_or_init(|| TransportDecl {
         carrier: slots,
         ..decl_copy()
     });
-    let seen = fold(&*carrier_of(admitted(altered, "altered-wire")));
+    let seen = fold(&*carrier_of(admitted(altered, "altered-mem")));
     let honest = expected();
     assert_ne!(
         seen, honest,
@@ -337,24 +269,16 @@ fn a_divergent_carrier_is_seen_by_the_fold() {
 
 // ── THE ADMISSION ───────────────────────────────────────────────────────────────────────────────
 
+/// A packed `kind` manifest: an artifact digest present.
 fn manifest(kind: &str) -> Manifest {
     Manifest {
-        name: "my-transport".to_string(),
-        alias: "my-transport".to_string(),
-        kind: kind.to_string(),
-        version: "1.0.0".to_string(),
-        publisher: "acme".to_string(),
-        abi_version: busbar_contract::abi::ABI_MINOR,
         sha256: crate::sign::sha256_hex(b"lib"),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: HookNeeds::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
+        ..statement(
+            kind,
+            "my-transport",
+            "my-transport",
+            busbar_contract::abi::ABI_MINOR,
+        )
     }
 }
 
@@ -414,8 +338,8 @@ static BAD_FORM: [u8; 1] = [99];
 #[test]
 fn the_admission_refuses_a_decl_it_cannot_trust() {
     // SAFETY (every `link_transport` below): null is refused before any read; each other decl is a
-    // live local copy of the valid fixture decl with one field altered, refused before anything
-    // outlives it; its borrowed ranges are `'static` data.
+    // live local copy of the valid decl with one field altered, refused before anything outlives
+    // it; its borrowed ranges are `'static` data.
     let null = unsafe { link_transport(core::ptr::null(), "null") }.unwrap_err();
     assert!(null.contains("null decl"), "{null}");
 
@@ -481,7 +405,10 @@ fn the_admission_refuses_a_decl_it_cannot_trust() {
         },
         "so it is a Framer",
     );
-    let short = SHORT_CARRIER.get_or_init(|| CarrierSlots { size: 8, ..*real() });
+    let short = SHORT_CARRIER.get_or_init(|| CarrierSlots {
+        size: 8,
+        ..*slots()
+    });
     refuse(&|d| d.carrier = short, "slot table attests size 8");
     // THE CLAIMS (minor 33): each is read as strictly as the row.
     refuse(
@@ -534,23 +461,23 @@ const fn claim(key: &'static str, status_at: u8) -> DeclClaim {
         _reserved: 0,
     }
 }
-/// The fixture's own key: its first claim.
-const OWN: &str = transport_fixture::linked::KEY;
+/// The carrier's own key: its first claim.
+const OWN: &str = KEY;
 static TWICE: [DeclClaim; 2] = [claim(OWN, 0), claim(OWN, 0)];
 static ELSEWHERE: [DeclClaim; 1] = [claim("elsewhere", 0)];
 static BAD_LEG: [DeclClaim; 1] = [claim(OWN, 9)];
 
 /// A decl that ends before the claims tail (a transport built before minor 33) is admitted, and makes
-/// the one claim its row describes; the fixture's own lowering states that same one claim.
+/// the one claim its row describes; the carrier's own lowering states that same one claim.
 #[test]
 fn a_decl_before_the_claims_tail_makes_its_rows_one_claim() {
-    let own = admitted(fixture_decl(), "linked-wire").row();
+    let own = admitted(decl(), "linked-mem").row();
     assert_eq!(own.claims.len(), 1);
     assert_eq!(own.claims[0].key, OWN);
     let mut older = decl_copy();
     older.size = core::mem::offset_of!(TransportDecl, claims_ptr) as u32;
-    // SAFETY: a live local copy of the valid fixture decl, attesting a shorter prefix; the row is
-    // copied out before the copy goes.
+    // SAFETY: a live local copy of the valid decl, attesting a shorter prefix; the row is copied
+    // out before the copy goes.
     let row = *unsafe { link_transport(&older, "older") }
         .expect("a pre-claims decl is admitted")
         .row();
@@ -567,7 +494,7 @@ fn every_claim_is_read_with_its_own_status_leg() {
     let mut copy = decl_copy();
     copy.claims_ptr = SEVERAL.as_ptr();
     copy.claims_len = SEVERAL.len();
-    // SAFETY: a live local copy of the valid fixture decl, its claims list `'static`.
+    // SAFETY: a live local copy of the valid decl, its claims list `'static`.
     let row = *unsafe { link_transport(&copy, "several") }
         .expect("admitted")
         .row();
@@ -581,16 +508,16 @@ fn every_claim_is_read_with_its_own_status_leg() {
     );
 }
 
-/// Every constant the fixture declares reaches the host through its lowered decl — an admission that
+/// Every constant the carrier declares reaches the host through its lowered decl — an admission that
 /// dropped or crossed one would read a different row than the linked type's.
 #[test]
 fn the_lowered_decl_carries_the_whole_row() {
-    let row = admitted(fixture_decl(), "linked-wire").row();
-    assert_eq!(*row, transport_fixture::linked::ROW);
+    let row = admitted(decl(), "linked-mem");
+    assert_eq!(*row.row(), mem_carrier::ROW);
+    assert_eq!(row.role(), Role::Carrier);
     // The lowering names every slot of its role and none of the other's.
-    let d = fixture_decl();
-    assert!(d.framer.is_null());
-    let slots = real();
+    assert!(decl().framer.is_null());
+    let slots = slots();
     assert!(
         slots.listen.is_some()
             && slots.poll_accept.is_some()

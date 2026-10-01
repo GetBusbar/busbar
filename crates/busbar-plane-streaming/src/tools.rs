@@ -27,7 +27,7 @@ pub trait ToolExecutor: Send + Sync {
     /// Defaulted to `true` deliberately: an executor that has not thought about the question serves
     /// what it is asked, which is the safe end. The unsafe end would be a node that quietly stopped
     /// running its own tools and waited on a client that was never going to answer.
-    fn serves(&self, _name: &str) -> bool {
+    fn executes_here(&self, _name: &str) -> bool {
         true
     }
 

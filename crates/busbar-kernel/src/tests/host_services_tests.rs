@@ -130,3 +130,64 @@ fn an_egress_class_the_kernel_did_not_map_is_refused() {
     let got = verdict_now(s.dest_judge("https://a.example/", 7, true, Some(later)));
     assert_eq!(got, Stored::refused("no such egress class"));
 }
+
+/// THE JUDGE A DIAL READS: the address it answers is exactly the one the judgement pinned. A name
+/// pends and the pin arrives with the answer; an IP literal is its own pin and asks no resolver; a
+/// refusal the name decides answers at once; an answered address the rules refuse is refused with
+/// the verdict `dest.judge` gives.
+#[test]
+fn judge_dial_answers_the_pinned_address_the_verdict_judged() {
+    let r = Arc::new(HandResolver::default());
+    let s = services(Arc::clone(&r));
+    let pinned = Arc::new(Mutex::new(None));
+    let got = Arc::clone(&pinned);
+    let now = s.judge_dial(
+        "api.example.com:8443",
+        0,
+        Box::new(move |v| *got.lock().unwrap() = Some(v)),
+    );
+    assert_eq!(now, None, "a name pends");
+    let done = r.held.lock().unwrap().pop().unwrap();
+    done(Ok(vec![
+        "93.184.216.34".parse().unwrap(),
+        "93.184.216.35".parse().unwrap(),
+    ]));
+    assert_eq!(
+        *pinned.lock().unwrap(),
+        Some(Ok("93.184.216.34:8443".parse().unwrap())),
+        "the first admissible address, at the named port"
+    );
+
+    let got = s.judge_dial("93.184.216.34:443", 0, Box::new(|_| panic!("no pend")));
+    assert_eq!(got, Some(Ok("93.184.216.34:443".parse().unwrap())));
+    let got = s.judge_dial(
+        "metadata.google.internal:80",
+        0,
+        Box::new(|_| panic!("no pend")),
+    );
+    assert_eq!(got, Some(Err(svc::DEST_METADATA)));
+    assert_eq!(
+        r.asked.load(Ordering::SeqCst),
+        1,
+        "only the name asked the resolver"
+    );
+
+    let refused = Arc::new(Mutex::new(None));
+    let got = Arc::clone(&refused);
+    assert_eq!(
+        s.judge_dial(
+            "rebind.example:80",
+            0,
+            Box::new(move |v| *got.lock().unwrap() = Some(v))
+        ),
+        None
+    );
+    let done = r.held.lock().unwrap().pop().unwrap();
+    done(Ok(vec!["169.254.169.254".parse().unwrap()]));
+    assert_eq!(*refused.lock().unwrap(), Some(Err(svc::DEST_METADATA)));
+    assert_eq!(
+        s.judge_dial("a.example:1", 7, Box::new(|_| {})),
+        Some(Err(svc::DEST_NO_HOST)),
+        "an unmapped class dials nothing"
+    );
+}

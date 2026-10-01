@@ -327,7 +327,7 @@ where
                                     // own uplink. A leg the table cannot enter has no answerer; its
                                     // reply is refused like any other that names nothing open.
                                     match &self.governed {
-                                        Some(g) if !self.tools.serves(&e.name) => {
+                                        Some(g) if !self.tools.executes_here(&e.name) => {
                                             g.calls.planned(g.session, &e.call_id, now_ms());
                                         }
                                         _ => to_exec.push((

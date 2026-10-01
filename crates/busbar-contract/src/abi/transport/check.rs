@@ -273,8 +273,9 @@ pub const fn check_facts(facts: &ConnFacts) -> Result<(), Fault> {
     Ok(())
 }
 
-/// The Statement tail, at load: the role is exactly one of carrier or framer and agrees with
-/// `composes_over` (empty = carrier); framing and fact bits are known; one to [`MAX_CLAIMS`]
+/// The Statement tail, at load: the role is exactly one of carrier or framer, and a carrier composes
+/// over nothing (a framer with an empty `composes_over` frames directly over the host's socket);
+/// framing and fact bits are known; one to [`MAX_CLAIMS`]
 /// claims; no list is counted with a NULL pointer. The lists' elements: [`check_claims`],
 /// [`check_status_rows`], [`check_settings`].
 ///
@@ -285,7 +286,7 @@ pub fn check_tail(t: &TransportTail) -> Result<(), Fault> {
     if (t.role == ROLE_CARRIER) == (t.role == ROLE_FRAMER) {
         return Err(fault(Rule::NotExactlyOne, "tail.role"));
     }
-    if (t.role == ROLE_CARRIER) != (t.composes_over_len == 0) {
+    if t.role == ROLE_CARRIER && t.composes_over_len != 0 {
         return Err(fault(Rule::Contradiction, "tail.composes_over"));
     }
     code(

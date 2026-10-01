@@ -551,15 +551,7 @@ pub fn type_aliases(src: &[char]) -> Vec<(String, String)> {
 
 // ── LIFT_LIST_RE ─────────────────────────────────────────────────────────────────────────────────
 
-/// `const\s+LIFTED_[A-Z0-9_]*KEYS\s*:\s*&\[&(?:'static\s+)?str\]\s*=\s*&\[(.*?)\]\s*;`
-pub fn lift_lists(src: &[char]) -> Vec<String> {
-    lift_lists_named(src)
-        .into_iter()
-        .map(|(_, body)| body)
-        .collect()
-}
-
-/// [`lift_lists`] with each list's own NAME (`LIFTED_TOP_LEVEL_KEYS`, …) beside its body, so a
+/// `const\s+LIFTED_[A-Z0-9_]*KEYS\s*:\s*&\[&(?:'static\s+)?str\]\s*=\s*&\[(.*?)\]\s*;` — each list's own NAME (`LIFTED_TOP_LEVEL_KEYS`, …) beside its body, so a
 /// carrier whose key is written as an index into a list (`LIFTED_TOP_LEVEL_KEYS[0]`) can be resolved
 /// to the literal it names — see [`lift_carriers`].
 pub fn lift_lists_named(src: &[char]) -> Vec<(String, String)> {

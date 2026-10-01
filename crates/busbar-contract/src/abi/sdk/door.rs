@@ -77,6 +77,20 @@ pub unsafe trait AbiIn: Copy + UnwindSafe + RefUnwindSafe + 'static {}
 /// EVERY initialized bit pattern is a valid value of it, as for [`AbiIn`].
 pub unsafe trait AbiOut: Copy + UnwindSafe + RefUnwindSafe + 'static {}
 
+/// A blank `in`, every byte zero: the host fills the fields it states and the dispatcher the head.
+#[must_use]
+pub fn blank_in<T: AbiIn>() -> T {
+    // SAFETY: `AbiIn` promises all-zero is a valid value of `T`.
+    unsafe { core::mem::zeroed() }
+}
+
+/// A blank `out`, every byte zero, for the plugin to answer into.
+#[must_use]
+pub fn blank_out<T: AbiOut>() -> T {
+    // SAFETY: `AbiOut` promises all-zero is a valid value of `T`.
+    unsafe { core::mem::zeroed() }
+}
+
 // SAFETY (all below): each is `#[repr(C)]`, leads with its head (or is the head), and every field
 // is an integer, a raw pointer, an `Option<fn>` or a `#[repr(transparent)]` byte — all-zero valid.
 // (`UnwindSafe`/`RefUnwindSafe` hold of each automatically: plain data, no interior mutability.)

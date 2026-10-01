@@ -437,6 +437,34 @@ lend! {
     }
 }
 
+// THE STORE KIND (`abi::store`): the lists a write lends and the host buffers a request-path read
+// fills. A nested host buffer (`store::HostBuf`, `HostBlobs`, `HostSessions`, `HostRecords`) is
+// reached with `field()` first, then through its own row.
+use crate::abi::store::{
+    AddUsageBatchIn, AppendBatchIn, CellGrant, HostBlobs as StoreHostBlobs,
+    HostBuf as StoreHostBuf, HostRecords, HostSessions, OpBlobsIn, RecordEntry, ReleaseItem,
+    ReserveIn, SessionRow, SliceReleaseIn, UnitCell, UsageCell, WindowCap, WindowCapsIn,
+};
+
+lend! {
+    AddUsageBatchIn { list(cells, cells_len) -> UsageCell; }
+    OpBlobsIn { list(records, records_len) -> Blob; }
+    AppendBatchIn { list(records, records_len) -> Blob; }
+    ReserveIn {
+        list(cells, cells_len) -> UnitCell;
+        buf(grants, grants_cap) -> CellGrant;
+    }
+    SliceReleaseIn {
+        list(items, items_len) -> ReleaseItem;
+        buf(released, released_cap) -> u64;
+    }
+    WindowCapsIn { list(caps, caps_len) -> WindowCap; }
+    StoreHostBuf { buf(ptr, cap) -> u8; }
+    StoreHostBlobs { buf(items, items_cap) -> Blob; }
+    HostSessions { buf(items, items_cap) -> SessionRow; }
+    HostRecords { buf(items, items_cap) -> RecordEntry; }
+}
+
 #[cfg(test)]
 #[path = "tests/lent_tests.rs"]
 mod tests;

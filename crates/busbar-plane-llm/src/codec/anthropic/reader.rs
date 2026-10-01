@@ -215,6 +215,8 @@ impl ProtocolReader for AnthropicReader {
         // never carries one, but a cross-protocol-shaped or malformed body legally can) — restores the
         // 1.5.5 `message_count` semantics (the raw `messages` array length) onto `IrFacts::shape()`.
         let mut system_turns_folded: usize = 0;
+        // Where each folded entry stood, for the hook view (`IrRequest::system_folds`).
+        let mut system_folds: Vec<crate::codec::ir::IrSystemFold> = Vec::new();
 
         // Handle system field (string or array)
         if let Some(system_val) = obj.get("system") {
@@ -262,7 +264,15 @@ impl ProtocolReader for AnthropicReader {
                 let msg = read_message(msg_val)?;
                 if msg.role == crate::codec::ir::IrRole::System {
                     system_turns_folded += 1;
+                    let blocks_before = system_blocks.len();
                     system_blocks.extend(msg.content);
+                    crate::codec::ir::IrSystemFold::record(
+                        &mut system_folds,
+                        messages.len(),
+                        crate::codec::ir::IrSystemRole::System,
+                        blocks_before,
+                        system_blocks.len(),
+                    );
                 } else {
                     stash_unmodeled_blocks(msg_val, messages.len(), &mut unmodeled_blocks);
                     messages.push(msg);
@@ -449,6 +459,7 @@ impl ProtocolReader for AnthropicReader {
             parallel_tool_calls,
             system: system_blocks,
             system_turns_folded,
+            system_folds,
             messages,
             tools,
             max_tokens,

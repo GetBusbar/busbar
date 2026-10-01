@@ -373,13 +373,19 @@ abi = ["crates/busbar-contract"]
 # [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"] 55182 -> 55337 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
 
-# ── THE KERNEL CEILING, RE-ARMED BY THE MONEY VIEW'S SCRAPE MEMO (R-KERNEL; OWNER GRANT 2026-09-29 (3))
+# ── THE KERNEL CEILING, RE-ARMED BY T13b (WIRE-STORE C1 + CONNECTOR-19 + T13B-FIX; R-KERNEL;
+#    OWNER GRANT 2026-09-29 (3))
 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
 file    = "qa/construction.toml"
-from    = 52002
-to      = 52101
-because = "OWNER GRANT 2026-09-29 (3), a kernel line-limit re-arm at the measured value in its own commit: the /metrics scrape reads the kernel money view through a memo (governance::money_view) and reprices a bucket only when its facts, the card generation, the dated history or the corrections moved, so a scrape never drives the pricing path by itself (#43/#71; the export kind, property 4). Measured by cargo xtask gate construction: 51934 before, 52101 after."
+from    = 52101
+to      = 52136
+because = "OWNER GRANT 2026-09-29 (3), a kernel line-limit re-arm at the measured value in its own commit: train T13b's kernel lines (dest.judge's one judge answers a dial the address it pinned, host_services.rs; the served 1.5.5 admin descriptions read off the frozen row, admin/v1/contract and api.rs), +35 over predev, landing on top of the money view's scrape memo re-arm (52101, measured). Measured by cargo xtask gate construction: 51934 before T13b on predev 3cc28b00e, 51969 after (+35); rebased over predev 8a4b18692 (52101), disjoint kernel files: 52136."
+
+# ── THE KERNEL CEILING, RE-ARMED BY THE MONEY VIEW'S SCRAPE MEMO — EXPIRED AND STRUCK
+#
+# Declared `rules.loc-ceilings.kernel_ceiling` 52002 -> 52101 (OWNER GRANT 2026-09-29 (3)). Its commit
+# reached the base; struck by T13b's re-arm above, which declares the next figure.
 
 # ── THE KERNEL CEILING, RE-ARMED BY FOLD-LLM C3' (the AUDIT step's finish) — EXPIRED AND STRUCK
 #
@@ -475,7 +481,14 @@ because = "OWNER GRANT 2026-09-29 (3), ARCHITECT approval: line-limit re-arm at 
 # pair's next figure.
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY STEP-20 (the framer's ALPN offer, the emit deadline and
-#    the offer's safe lend) — measured at the tip
+#    the offer's safe lend) — EXPIRED AND STRUCK
+#
+# Declared `gate.surface_ceilings.contract_caps` and `rules.loc-ceilings.caps_contract_ceiling`
+# 24189 -> 24237. Its commit reached the base; struck by the WIRE-STORE C1 + CONNECTOR-19 re-arm
+# below, which declares the pair's next figure.
+
+# ── THE CONTRACT CEILING PAIR, RE-ARMED BY WIRE-STORE C1 + CONNECTOR-19 (the store SDK door; the
+#    framer over the host socket and the blank in/out) — measured at the tip
 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
@@ -490,18 +503,18 @@ because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan a
 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 24189
-to      = 24237
-because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception: STEP-20's transport-kind appends. The framer states its ALPN offer in locate (LocateIn.alpn_buf/alpn_cap, LocateOut.alpn_written/alpn_needed) and an emit carries its attempt's deadline (EmitIn.deadline_ns), with check_alpn/check_agreed in abi::transport::check (check.rs +42, transport/mod.rs +5; the layout pins bill as test on METER-FIX's basis); the safe surface lends the offer buffer (abi::sdk::lent LocateIn row, +1). +48, measured by cargo xtask gate construction on predev 9b279a546 (23998 -> 24046) and re-armed over FOLD-MCP A4's landed 24189: 24189 -> 24237."
+from    = 24237
+to      = 25636
+because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception, at the measure: WIRE-STORE C1 (the store SDK door and StoreCalls, abi::sdk::store_migrate) +1384, and CONNECTOR-19 step 19 (check_tail's framer over the host socket, abi::sdk::door::blank_in/blank_out) +15. Measured by cargo xtask gate construction on the train over predev 5350ebeda: 24237 before, 25636 after."
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 24189
-to      = 24237
-because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception: STEP-20's transport-kind appends. The framer states its ALPN offer in locate (LocateIn.alpn_buf/alpn_cap, LocateOut.alpn_written/alpn_needed) and an emit carries its attempt's deadline (EmitIn.deadline_ns), with check_alpn/check_agreed in abi::transport::check (check.rs +42, transport/mod.rs +5; the layout pins bill as test on METER-FIX's basis); the safe surface lends the offer buffer (abi::sdk::lent LocateIn row, +1). +48, measured by cargo xtask gate construction on predev 9b279a546 (23998 -> 24046) and re-armed over FOLD-MCP A4's landed 24189: 24189 -> 24237."
+from    = 24237
+to      = 25636
+because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception, at the measure: WIRE-STORE C1 (the store SDK door and StoreCalls, abi::sdk::store_migrate) +1384, and CONNECTOR-19 step 19 (check_tail's framer over the host socket, abi::sdk::door::blank_in/blank_out) +15. Measured by cargo xtask gate construction on the train over predev 5350ebeda: 24237 before, 25636 after."
 
 # ── THE KIND-ISOLATION CELL busbar-transport-ws x transport, RAISED BY STEP-20 (the ALPN offer literal)
 
@@ -792,8 +805,10 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # +191); struck by STEP-20's re-arm.
 # RE-ARMED 24189 -> 24237, AT THE MEASUREMENT (OWNER GRANT 2026-09-29 (3)), in its own commit after
 # STEP-20 (the framer's ALPN offer, the emit deadline and the offer's safe lend, +48); the live
-# declaration above carries the measure.
-contract_caps = 24237
+# declaration above carries the measure; struck by the WIRE-STORE C1 + CONNECTOR-19 re-arm.
+# RE-ARMED 24237 -> 25636, AT THE MEASUREMENT (OWNER GRANT 2026-09-29 (3)), in its own commit after
+# WIRE-STORE C1 (+1384) and CONNECTOR-19 (+15); the live declaration above carries the measure.
+contract_caps = 25636
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1382,7 +1397,9 @@ kernel_crate = "busbar-kernel"
 # measurement, -185. Downward only.
 # ── RE-ARMED 52002 -> 52101 for the money view's scrape memo (a scrape reprices only a bucket whose
 # facts moved; #43/#71), declared above. Measured 51934 before, 52101 after.
-kernel_ceiling = 52101
+# ── RE-ARMED 52101 -> 52136 for T13b (WIRE-STORE C1 + CONNECTOR-19 + T13B-FIX), declared above.
+# Measured 51934 before, 51969 after on predev 3cc28b00e (+35); 52136 over predev 8a4b18692.
+kernel_ceiling = 52136
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -1485,7 +1502,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 23998 -> 24189 with its pair (FOLD-MCP A4: busbar_contract::jsonrpc, the JSON-RPC
 # envelope reader moved out of the kernel, +191).
 # RE-ARMED 24189 -> 24237 with its pair (STEP-20: the ALPN offer, the emit deadline, the lend, +48).
-caps_contract_ceiling = 24237
+# RE-ARMED 24237 -> 25636 with its pair (WIRE-STORE C1 +1384; CONNECTOR-19 +15).
+caps_contract_ceiling = 25636
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
@@ -1674,7 +1692,6 @@ busbar-transport-stdio = ["tokio", "futures"]
 # The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
 busbar-plane-mcp = ["base64"]
-busbar-transport-tcp = ["tokio-util", "futures", "tokio"]
 busbar-transport-ws = [
   "tokio-util", "tokio", "tokio-tungstenite", "tokio-rustls", "rustls", "rustls-pki-types",
   "webpki-roots", "futures",
@@ -2007,7 +2024,6 @@ known_sites = [
   "crates/busbar-transport-http/src/grpc/tests/battery.rs",
   "crates/busbar-transport-http/src/tests/mod.rs",
   "crates/busbar-transport-stdio/src/tests/battery.rs",
-  "crates/busbar-transport-tcp/src/tests/mod.rs",
   "crates/busbar-transport-ws/src/tests/battery.rs",
   "crates/busbar-transport-ws/src/transport.rs",
   "crates/busbar-kernel-egress/src/tests/harness.rs",

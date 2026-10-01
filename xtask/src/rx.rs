@@ -755,10 +755,6 @@ impl Regex {
         self.search_at(subject, 0)
     }
 
-    pub fn search_str(&self, subject: &str) -> Option<Match> {
-        self.search(subject.as_bytes())
-    }
-
     pub fn is_match(&self, subject: &[u8]) -> bool {
         self.search(subject).is_some()
     }
@@ -776,10 +772,6 @@ impl Regex {
                 end,
                 groups: caps,
             })
-    }
-
-    pub fn match_str(&self, subject: &str) -> Option<Match> {
-        self.match_at(subject.as_bytes(), 0)
     }
 
     /// `re.fullmatch`, which several ported rules spell as `^…$` and one (`seam_name_pattern`)
@@ -801,10 +793,6 @@ impl Regex {
             out.push(m);
         }
         out
-    }
-
-    pub fn find_iter_str(&self, subject: &str) -> Vec<Match> {
-        self.find_iter(subject.as_bytes())
     }
 
     fn k_run(&self, k: &Cont, subject: &[u8], pos: usize, caps: &mut Caps) -> Option<usize> {

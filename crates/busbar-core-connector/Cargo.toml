@@ -58,8 +58,17 @@ zeroize = { workspace = true }
 # STUN FINGERPRINT (CRC-32) on the dtls engine's consent probes.
 crc32fast = { workspace = true }
 
+# THE HOST'S SOCKETS AND THEIR READINESS (`io`, `socket`, `compose`, `wire`): the connector owns every
+# OS socket (BUSBAR-1.6.0.md THE DESIGN, §5). `tokio` is asked for its reactor registration
+# (`net`: `AsyncFd`) and its timer (`time`) on the calling worker's own runtime — no runtime and no
+# thread of this crate's. `socket2` makes the non-blocking connect and the per-acceptor listener
+# (address and port reuse); `libc` names the in-progress connect.
+tokio = { workspace = true, features = ["net", "time", "rt"] }
+libc = { workspace = true }
+
+
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
 # THE UNIVERSAL-NEEDS WITNESS (tests/universal_needs.rs, its only user): the fixture below is loaded
 # dropped in through the real admission, scan and open, never a host written for the test. Dev-only.
 busbar-plugin-loader = { path = "../plugin-loader" }

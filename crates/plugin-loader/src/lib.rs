@@ -60,6 +60,7 @@ pub mod scrape;
 pub mod sign;
 mod stage;
 pub mod store_adapter;
+pub mod store_v3;
 pub mod tarball;
 pub mod transport;
 pub mod transport_adapter;
@@ -2075,11 +2076,6 @@ mod store_scope_kind_conformance_tests;
 #[cfg(test)]
 #[path = "tests/both_ways.rs"]
 mod both_ways;
-
-/// The far end of the transport conformance tests: a peer through the fixture's own linked carrier.
-#[cfg(test)]
-#[path = "tests/carrier_peer.rs"]
-mod carrier_peer;
 
 /// `kind: store` through both doors: one row, one store, one fold over every store operation.
 #[cfg(test)]

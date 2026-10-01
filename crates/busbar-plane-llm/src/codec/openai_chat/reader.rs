@@ -117,6 +117,8 @@ impl ProtocolReader for OpenAiReader {
         let mut system_turns_folded: usize = 0;
         // IR-14: which role the folded system entries were written in — `(saw system, saw developer)`.
         let mut system_roles_seen = (false, false);
+        // Where each folded entry stood, for the hook view (`IrRequest::system_folds`).
+        let mut system_folds: Vec<crate::codec::ir::IrSystemFold> = Vec::new();
 
         // Extract scalar fields and extra
         let _model = obj.get("model").and_then(|v| v.as_str()).map(String::from);
@@ -275,6 +277,17 @@ impl ProtocolReader for OpenAiReader {
                             refusal: false,
                         });
                     }
+                    crate::codec::ir::IrSystemFold::record(
+                        &mut system_folds,
+                        messages.len(),
+                        if role_str == "developer" {
+                            crate::codec::ir::IrSystemRole::Developer
+                        } else {
+                            crate::codec::ir::IrSystemRole::System
+                        },
+                        blocks_before,
+                        system_blocks.len(),
+                    );
                 } else {
                     let mut msg_content = Vec::new();
 
@@ -691,6 +704,7 @@ impl ProtocolReader for OpenAiReader {
             parallel_tool_calls,
             system: system_blocks,
             system_turns_folded,
+            system_folds,
             messages,
             tools,
             max_tokens,

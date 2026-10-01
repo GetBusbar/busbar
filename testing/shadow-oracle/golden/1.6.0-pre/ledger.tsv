@@ -1,0 +1,7 @@
+streams|metadata|protected-resource	PASS	capture	
+streams|mint|client-secrets	PASS	capture	
+streams|mint|no-bearer	PASS	capture	
+streams|mint|no-provider	PASS	capture	
+streams|mint|wrong-audience	PASS	capture	
+streams|sdp|calls	PASS	capture	
+streams|sideband|no-upgrade	PASS	capture	

@@ -34,14 +34,6 @@ pub fn plane_keys_protocol() -> Vec<&'static str> {
     PLANE_KEYS.iter().copied().filter(|k| *k != "llm").collect()
 }
 
-/// The PROTOCOL keys except `self`, canonical order.
-pub fn plane_keys_other(self_key: &str) -> Vec<&'static str> {
-    plane_keys_protocol()
-        .into_iter()
-        .filter(|k| *k != self_key)
-        .collect()
-}
-
 /// `crates/busbar-<k>/src` for every plane key, plus the `-codec` halves that still exist. The gate
 /// scans SOURCES, not manifests, so a split that moved the bulk of a plane's files must be named
 /// here or that bulk stops being scanned — which is the failure mode a split invites.

@@ -126,7 +126,7 @@ async fn dial(server: Tls, trust: &EgressTrust, name: &str) -> Result<(), String
     });
 
     let dial = TlsDial::new(
-        Arc::new(build_client_config(trust)),
+        Arc::new(build_client_config(trust).expect("a usable client config")),
         ServerName::try_from(name.to_string()).unwrap(),
     );
     let raw: Box<dyn RawIo> = Box::new(TokioAsyncReadCompatExt::compat(client_io));
@@ -239,4 +239,31 @@ async fn a_client_identity_is_presented_to_a_mutual_peer() {
     )
     .await
     .expect("the identity the host configured is presented and accepted");
+}
+
+/// RED: a client identity whose key does not parse refuses, naming the need, where it once fell
+/// back silently to presenting no certificate at all.
+#[test]
+fn a_client_identity_that_does_not_parse_refuses_the_boot_naming_the_need() {
+    let (_, chain, _) = ca_and_leaf(&["busbar-client"]);
+    let bad = EgressTrust {
+        client_identity: Some(busbar_contract::transport::trust::ClientIdentity {
+            cert_chain: chain,
+            private_key: b"not a private key".to_vec(),
+        }),
+        ..EgressTrust::default()
+    };
+    assert!(matches!(
+        build_client_config(&bad),
+        Err(BadClientIdentity(_))
+    ));
+    let refused = need_client_config("upstream-mtls", &bad).expect_err("refused at boot");
+    assert!(
+        refused.contains("need `upstream-mtls`") && refused.contains("client identity"),
+        "{refused}"
+    );
+    assert!(
+        need_client_config("plain", &EgressTrust::default()).is_ok(),
+        "a need with no identity configured is unchanged"
+    );
 }

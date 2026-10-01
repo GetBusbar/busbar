@@ -102,7 +102,9 @@ pub mod section;
 pub mod services;
 pub mod signal;
 pub mod slice;
+// THE STORE'S CALLS: the typed store v3 surface the loader implements and the kernel calls.
 pub mod spans;
+pub mod store_calls;
 pub mod surface;
 // THE TEST KIT IS NOT IN A RELEASE BUILD (Locked Decision #33, "there is NO testkit"). Its log
 // double is compiled for this crate's own tests and, through the dev-only `test-seal` feature, for a

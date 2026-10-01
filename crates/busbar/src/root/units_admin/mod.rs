@@ -48,7 +48,6 @@ use busbar_contract::caps::{
 use busbar_contract::UnitKey;
 use busbar_core_admin::admin_codec::verbs::ResolvedVerb;
 use busbar_kernel::teller::UnitCtx;
-use busbar_kernel_identity::unit::AuthRequest;
 use busbar_kernel_scope::Scope;
 
 use crate::root::kernel::{ProductionUnits, RegisteredUnits};
@@ -63,17 +62,6 @@ use busbar_kernel_ledger::cost::{Money, MoneyError};
 /// The transport an admin claim is declared over, and therefore the one a sealed destination for an
 /// admin verb carries.
 const ADMIN_TRANSPORT: &str = "http";
-
-/// The scheme the admin claim declares, and the one this plane's units narrow to.
-const ADMIN_SCHEME: &str = "admin-token";
-
-/// Every scheme the admin claim DECLARES — its own, and the alternative beside it.
-///
-/// The auth unit's first check is that the plane narrowed to a scheme the claim actually offered,
-/// and it asks that question of this list. A list holding only the alternatives would say the claim
-/// never declared its own scheme, which would refuse every request on the plane before a credential
-/// was looked at — so the claim's own scheme belongs in it, first, exactly as the claim states it.
-const ADMIN_DECLARED_SCHEMES: &[&str] = &[ADMIN_SCHEME, "bearer"];
 
 /// One admin request, exactly as it arrived.
 ///
@@ -2500,6 +2488,40 @@ impl AdminUnits {
     }
 }
 
+/// THE ADMIN DOOR: one request's verdict on the deployment's admin chain. Production binds
+/// [`live_admin_door`], which reads the LIVE snapshot per call; a test states its own posture.
+pub type AdminDoorFn = Arc<dyn Fn(&AdminRequest) -> busbar_kernel::auth::AdminDoor + Send + Sync>;
+
+/// A test's explicit OPEN door: the `admin_auth: []` posture, stated rather than defaulted.
+#[cfg(test)]
+pub(crate) fn open_door() -> AdminDoorFn {
+    Arc::new(|_: &AdminRequest| busbar_kernel::auth::AdminDoor::Open)
+}
+
+/// A test's door over an identity chain, judged on the presented credential by the rule the
+/// kernel's scope resolution applies to a roleless principal: the operator's id holds the full
+/// tier, any other identity earns no grant (authenticated, not authorized).
+#[cfg(test)]
+pub(crate) fn door_of_chain(chain: busbar_kernel_identity::AuthChain) -> AdminDoorFn {
+    use busbar_kernel::auth::AdminDoor;
+    use busbar_kernel_identity::chain::ChainVerdict;
+    Arc::new(
+        move |request: &AdminRequest| match chain.run_chain(request.credential.as_deref()) {
+            ChainVerdict::Open => AdminDoor::Open,
+            ChainVerdict::Denied => AdminDoor::Denied,
+            ChainVerdict::Identified { principal, .. } => {
+                let grants = if principal.id == crate::root::auth_bindings::ADMIN_PRINCIPAL_ID {
+                    busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full)
+                } else {
+                    busbar_contract::authz::Grants::default()
+                };
+                let principal = busbar_contract::auth::Principal::from_id(principal.id);
+                AdminDoor::Identified(principal, grants)
+            }
+        },
+    )
+}
+
 /// Everything the admin steps are composed over.
 ///
 /// Held by [`crate::root::kernel::ProductionUnits`] as one field, so that the twelve step methods
@@ -2508,6 +2530,9 @@ impl AdminUnits {
 pub struct AdminBinding {
     /// The seam an operation's body is reached through.
     pub dispatch: Arc<dyn AdminDispatch>,
+    /// THE ADMIN DOOR the authenticate step asks (see [`AdminDoorFn`]). Required at construction:
+    /// there is no default door, so an unwired one is a compile error, never a silent open door.
+    pub door: AdminDoorFn,
     /// The figures the five 1.6.0 ledger views read.
     ///
     /// A second seam beside the dispatch, not a widening of it. The 66 legacy operations and the 17
@@ -2676,9 +2701,10 @@ impl AdminBinding {
     /// so. What it must never do is claim a reconciliation over figures it never read, and it does
     /// not — the totals view beside it reports the empty set the identity held over.
     #[must_use]
-    pub fn new(dispatch: Arc<dyn AdminDispatch>) -> Self {
+    pub fn new(dispatch: Arc<dyn AdminDispatch>, door: AdminDoorFn) -> Self {
         AdminBinding {
             dispatch,
+            door,
             ledger: Arc::new(UnopenedLedger),
             audit: None,
             posture: Arc::new(UnsealedPosture),
@@ -2847,20 +2873,15 @@ pub(crate) fn decode(
     }
 }
 
-/// Step 1. Who is calling, through the auth unit and its admin posture.
+/// Step 1. Who is calling: THE ADMIN DOOR, the one admin chain every admin door answers from.
 ///
-/// The posture is the claim's: the admin scheme, narrowed within the alternatives the claim
-/// declares, over the chain the deployment configured. The unit is handed the pinned arrival clock
-/// rather than a fresh reading, and it is told this is a new unit, which is what makes the
-/// revocation set apply.
-///
-/// The three seams the step needs — the credential cache, the key verifier and the revocation view —
-/// come as the node's ONE set rather than three arguments a caller has to remember to fill in. That
-/// distinction is the whole of it: `new_unit: true` says "the revocation set applies to this one",
-/// and a set nothing supplies revokes nothing, so an absence here would be a revoked credential that
-/// still opens the administrative surface.
+/// The binding's [`AdminDoorFn`] judges the request on the deployment's LIVE `admin_auth` chain
+/// (`busbar_kernel::auth::admin_door`, the kernel middleware's own verdict), so a chain an operator
+/// configured — empty, the operator token, an external module — and a `PUT /admin-auth` that swaps
+/// it are what this step answers from, with no restart. The door's grants are stashed on the unit
+/// for the approve step. Revocation then gates the identification, over the one set the node keeps:
+/// an admin unit is always a new unit, and a set nothing supplies revokes nothing.
 pub(crate) fn authenticate(
-    auth: &busbar_kernel_identity::Auth,
     binding: &AdminBinding,
     bindings: &crate::root::auth_bindings::AuthBindings,
     token: &Pass<Authenticate>,
@@ -2869,23 +2890,38 @@ pub(crate) fn authenticate(
     let Some(request) = binding.units.request(ctx.key) else {
         return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unauthenticated));
     };
-    auth.resolve(
-        &AuthRequest {
-            candidate: request.credential.as_deref(),
-            scheme: Some(ADMIN_SCHEME),
-            declared_schemes: ADMIN_DECLARED_SCHEMES,
-            expected_aud: None,
-            in_handshake: false,
-            now: request.at,
-            new_unit: true,
-        },
-        bindings.cache(),
-        bindings.keys(),
-        bindings.revocations(),
-        // No challenge is ever pending on this plane: the administrative claim declares no
-        // handshake, so there is no earlier round for one to have come from.
-        None,
+    let (principal, grants) = match (binding.door)(&request) {
+        busbar_kernel::auth::AdminDoor::Open => (
+            busbar_kernel_identity::principal::ANONYMOUS.to_string(),
+            busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full),
+        ),
+        busbar_kernel::auth::AdminDoor::Identified(principal, grants) => {
+            let revoked = bindings.revocations().zip(request.credential.as_deref());
+            if revoked.is_some_and(|(set, credential)| set.is_revoked(credential)) {
+                return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Revoked));
+            }
+            (principal.id, grants)
+        }
+        busbar_kernel::auth::AdminDoor::Denied => {
+            return SeatVerdict::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
+        }
+    };
+    // The two-rung matrix the approve step compares against: the highest rung the grants reach, or
+    // no grant at all (identified, not authorized: 403).
+    use busbar_contract::authz::Scope as Rung;
+    let rung = if grants.allows(Rung::Full) {
+        Some(VerbScope::Full)
+    } else if grants.allows(Rung::ReadOnly) {
+        Some(VerbScope::ReadOnly)
+    } else {
+        None
+    };
+    if let Some(rung) = rung {
+        binding.units.set_granted(ctx.key, rung);
+    }
+    SeatVerdict::proceed(
         token,
+        busbar_contract::caps::Authenticated::Principal(PrincipalId::new(principal)),
     )
 }
 
@@ -3568,7 +3604,7 @@ impl RegisteredUnits for AdminPlane {
         token: &Pass<Authenticate>,
         ctx: &UnitCtx,
     ) -> SeatVerdict<Authenticate> {
-        authenticate(&root.auth, &root.admin, &root.auth_bindings, token, ctx)
+        authenticate(&root.admin, &root.auth_bindings, token, ctx)
     }
 
     fn verify(
@@ -3592,7 +3628,7 @@ impl RegisteredUnits for AdminPlane {
     ) -> SeatVerdict<Approve> {
         approve(
             &root.admin,
-            root.admin_grant(principal),
+            root.admin.units.granted(ctx.key),
             token,
             ctx,
             principal,
@@ -3831,7 +3867,9 @@ pub(crate) use admin_mount::*;
 mod adjust;
 pub use adjust::RecordedCounts;
 mod bound;
-pub use bound::{live_planes, live_records, no_planes, PlaneLookup, PlaneRecordSink};
+pub use bound::{
+    live_admin_door, live_planes, live_records, no_planes, PlaneLookup, PlaneRecordSink,
+};
 mod claims;
 pub use claims::RootClaimJournal;
 

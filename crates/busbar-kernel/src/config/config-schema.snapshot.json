@@ -2533,6 +2533,10 @@
       "refused": [],
       "wire_keys": []
     },
+    "type Answer": {
+      "kind": "alias",
+      "target": "Arc<Mutex<(Option<Result<SocketAddr, Verdict>>, Option<Waker>)>>"
+    },
     "type AskRoundCfg": {
       "kind": "alias",
       "target": "indexmap::IndexMap<String, AskEntryCfg>"
@@ -2553,6 +2557,10 @@
       "kind": "alias",
       "target": "indexmap::IndexMap<String, IdentityProviderCfg>"
     },
+    "type Opening": {
+      "kind": "alias",
+      "target": "(Vec<(String, Vec<u8>)>, Vec<u8>)"
+    },
     "type PlaneFeesMap": {
       "kind": "alias",
       "target": "std::collections::BTreeMap<String, busbar_kernel_ledger::cost::PlaneFees>"
@@ -2564,6 +2572,10 @@
     "type RoleBindings": {
       "kind": "alias",
       "target": "std::collections::BTreeMap<String, std::collections::BTreeMap<String, RoleBindingCfg>>"
+    },
+    "type Verdict": {
+      "kind": "alias",
+      "target": "u64"
     }
   }
 }

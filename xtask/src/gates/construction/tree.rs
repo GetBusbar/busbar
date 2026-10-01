@@ -21,7 +21,6 @@
 //!   line's length would move every function's reported line number.
 
 use std::collections::BTreeMap;
-use std::path::Path;
 
 use crate::ctx::Ctx;
 use crate::rx::Regex;
@@ -905,13 +904,6 @@ pub fn crate_name_of_dir(dir: &str) -> String {
 /// `[target.'cfg(unix)'.dependencies]` and through `package = "…"`, and the two gates that read the
 /// manifests were green in all three. Fixing one copy would have left the other, so there is now
 /// one reader: [`crate::manifest`]. A missing file still reads as no dependencies.
-pub fn read_cargo_deps(path: &Path) -> Vec<String> {
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    read_cargo_deps_text(&raw)
-}
-
 pub fn read_cargo_deps_text(raw: &str) -> Vec<String> {
     crate::manifest::shipped_dep_names(raw)
 }

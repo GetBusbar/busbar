@@ -23,6 +23,11 @@ pub struct IrRequest {
     /// `IrFacts::shape().turn_count` adds this back onto `messages.len()` to stay byte-for-byte with
     /// 1.5.5 rather than reporting the IR-normalized (system-excluded) count.
     pub system_turns_folded: usize,
+    /// Where each of those folded turns stood on the wire, in wire order. The hook view reads it:
+    /// a 1.5.5 hook was shown an in-band system turn AS A TURN, at its position and under its own
+    /// role, and a `prompt: rw` hook's reply replaces the whole turn array, so a view without it
+    /// deletes the operator's system prompt upstream. Writers never read it.
+    pub system_folds: Vec<IrSystemFold>,
     pub tools: Vec<IrTool>,
     pub max_tokens: Option<u32>,
     // f64 (not ADR-0005's f32): JSON numbers are f64; an f32 round-trip silently mutates a
@@ -1631,6 +1636,34 @@ impl IrSystemRole {
             IrSystemRole::System => "system",
             IrSystemRole::Developer => "developer",
         }
+    }
+}
+
+/// One in-band system turn a reader folded out of the turn array into [`IrRequest::system`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrSystemFold {
+    /// `messages.len()` when the turn was read: the index of the IR message it came before.
+    pub before: usize,
+    /// The role it was written in.
+    pub role: IrSystemRole,
+    /// The blocks it contributed to [`IrRequest::system`].
+    pub blocks: std::ops::Range<usize>,
+}
+
+impl IrSystemFold {
+    /// Record a fold after its blocks were appended: `blocks_before` is `system.len()` before them.
+    pub fn record(
+        folds: &mut Vec<IrSystemFold>,
+        before: usize,
+        role: IrSystemRole,
+        blocks_before: usize,
+        system_len: usize,
+    ) {
+        folds.push(IrSystemFold {
+            before,
+            role,
+            blocks: blocks_before..system_len,
+        });
     }
 }
 

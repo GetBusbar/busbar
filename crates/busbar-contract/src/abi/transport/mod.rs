@@ -12,6 +12,11 @@
 //!   no waker, no clock of its own (the host hands it the clock in every call), and no auth service
 //!   (the kernel makes the one outbound auth call before `encode`).
 //!
+//! THE SOCKET IS THE HOST'S. A framer that composes over nothing (an empty
+//! [`TransportTail::composes_over`]) frames directly over the socket the connector holds; a framer
+//! that names claims composes over them. A carrier composes over nothing, always: it is the bottom
+//! of its stack.
+//!
 //! Direction is a usage mode, never a kind: the same carrier accepts and dials, the same framer
 //! runs on either side ([`SIDE_ACCEPT`] / [`SIDE_DIAL`]). A plugin of ANY kind declares what it needs
 //! as `(transport, auth)` per direction ([`crate::abi::host::conn::connector::Need`]); the kernel's
@@ -427,7 +432,7 @@ pub struct SettingDecl {
 pub struct TransportTail {
     /// The tail head.
     pub head: KindTailHead,
-    /// [`ROLE_CARRIER`] | [`ROLE_FRAMER`]; must agree with `composes_over` (empty = carrier).
+    /// [`ROLE_CARRIER`] | [`ROLE_FRAMER`]; a carrier's `composes_over` is empty.
     pub role: u32,
     /// `FRAMING_*`.
     pub framing: u32,
@@ -435,7 +440,8 @@ pub struct TransportTail {
     pub facts: u32,
     /// The most handshake steps before the first unit.
     pub handshake_max_steps: u32,
-    /// The carrier claims a framer composes over; empty for a carrier.
+    /// The claims a framer composes over (empty = directly over the host's socket); empty for a
+    /// carrier.
     pub composes_over: *const AbiStr,
     /// How many.
     pub composes_over_len: usize,

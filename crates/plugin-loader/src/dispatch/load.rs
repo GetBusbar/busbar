@@ -333,6 +333,36 @@ pub fn load_dropped<K: Kind>(
     Plugin::bind(validate::<K>(door)?, Some(lib), bind)
 }
 
+/// What a staged library turned out to be.
+pub(crate) enum Staging<K: Kind> {
+    /// A memory-ABI plugin, admitted through its door.
+    Door(Plugin<K>),
+    /// No door: not a memory-ABI plugin; the library and its backing come back for another lane.
+    NotADoor(Library, crate::stage::Staged),
+}
+
+/// THE DROPPED-IN DOOR OF A STAGED LIBRARY: `lib` (already `dlopen`ed from its signed tarball's
+/// verified bytes, `staged` its backing) through [`DOOR_SYMBOL`] and the same [`validate`]. The
+/// backing is held for the process once the plugin binds: a plugin's image stays resident.
+pub(crate) fn load_staged<K: Kind>(
+    lib: Library,
+    staged: crate::stage::Staged,
+    bind: Bind,
+) -> Result<Staging<K>, LoadError> {
+    // SAFETY: `DOOR_SYMBOL` is typed `DoorFn` by the mechanism; the symbol is copied out as a plain
+    // fn pointer, kept valid by `Lib` for as long as any handle to the instance lives.
+    let door = unsafe { lib.get::<DoorFn>(DOOR_SYMBOL).map(|s| *s) };
+    let Ok(door) = door else {
+        return Ok(Staging::NotADoor(lib, staged));
+    };
+    let plugin = Plugin::bind(validate::<K>(door)?, Some(Lib(Some(lib))), bind)?;
+    static HELD: std::sync::Mutex<Vec<crate::stage::Staged>> = std::sync::Mutex::new(Vec::new());
+    HELD.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(staged);
+    Ok(Staging::Door(plugin))
+}
+
 /// THE LINKED DOOR: a compiled-in row's [`DoorFn`], through the same [`validate`].
 pub fn load_linked<K: Kind>(door: DoorFn, bind: Bind) -> Result<Plugin<K>, LoadError> {
     Plugin::bind(validate::<K>(door)?, None, bind)

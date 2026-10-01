@@ -124,6 +124,7 @@ fn bedrock_rich_fixture() -> serde_json::Value {
 fn test_write_request() {
     let ir = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1224,6 +1225,7 @@ fn test_write_request_skips_system_role_message() {
     let writer = BedrockWriter;
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1313,6 +1315,7 @@ fn test_write_request_tool_result_preserves_non_text_content() {
     let writer = BedrockWriter;
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1592,6 +1595,7 @@ fn test_write_request_tool_config_cross_protocol_and_empty() {
     // Cross-protocol shape: typed tools, empty extra (seam cleared it).
     let ir_tools = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1651,6 +1655,7 @@ fn test_write_request_tool_config_cross_protocol_and_empty() {
     // No tools, no raw toolConfig → no toolConfig key at all.
     let ir_empty = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2440,6 +2445,7 @@ fn test_top_k_reaches_bedrock_via_additional_model_request_fields() {
     // Cross-protocol shape: top_k set in the IR, extra cleared (as the translate seam leaves it).
     let ir = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2607,6 +2613,7 @@ fn test_inference_config_typed_fields_override_raw_and_cross_protocol() {
     );
     let ir = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2665,6 +2672,7 @@ fn test_inference_config_typed_fields_override_raw_and_cross_protocol() {
     // Cross-protocol egress: no inferenceConfig in extra → config built purely from typed IR.
     let ir2 = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2831,6 +2839,7 @@ fn test_write_request_url_sentinel_image_not_emitted_as_base64() {
     let url = "https://example.com/cat.png";
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2939,6 +2948,7 @@ fn test_write_request_all_nonrepresentable_turn_kept_with_placeholder() {
     let writer = BedrockWriter;
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3274,6 +3284,7 @@ fn test_write_request_tool_result_url_sentinel_image_dropped() {
     let url = "https://example.com/in-tool.png";
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -5102,6 +5113,7 @@ fn consecutive_user_turns_coalesce_for_alternation() {
     };
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -5201,6 +5213,7 @@ fn consecutive_user_turns_coalesce_for_alternation() {
 fn tool_choice_req(tc: Option<crate::codec::ir::IrToolChoice>) -> crate::codec::ir::IrRequest {
     crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -5437,6 +5450,7 @@ fn test_bedrock_tool_choice_absent_is_none() {
 fn test_bedrock_writer_clamps_temperature_above_one() {
     let ir = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -5500,6 +5514,7 @@ fn cache_ctrl_req(
 ) -> crate::codec::ir::IrRequest {
     crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -5861,6 +5876,7 @@ fn test_write_request_response_format_projects_output_config() {
     let writer = BedrockWriter;
     let req = crate::codec::ir::IrRequest {
         system_turns_folded: 0,
+        system_folds: Vec::new(),
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,

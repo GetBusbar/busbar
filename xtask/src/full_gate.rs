@@ -24,7 +24,7 @@
 //! For a gate that runs in-process the verdict is a returned value, so the staleness the shell
 //! suffered — a gate dies before writing, and the caller reads the PREVIOUS healthy run's ledger
 //! sitting on disk — is unrepresentable. Any gate that still shells out and reads a file back must
-//! truncate the file first, which [`crate::ledger::read_leg_after`] does for the caller.
+//! truncate the file first ([`crate::ledger::truncate_leg`]).
 
 use std::collections::BTreeSet;
 use std::process::Command;
@@ -167,6 +167,11 @@ pub const CARGO_LOCAL: &[&str] = &[
     // ci.yml at 4e39e1a11 (the kind:plane rider `plane_abi_rider.rs` dlopens) and the local copy
     // was never moved with it, so the CI line went unclassified. One list, both places.
     "cargo build --locked -p busbar-hook-test-plugin -p busbar-plugin-example-plane",
+    // The connector's universal-needs witness dlopens two transport doors beside its test binary
+    // (the http door example and the socket-framing tcp door); the same feature-sets step builds
+    // them.
+    "cargo build --locked -p busbar-transport-http --example http_door",
+    "cargo build --locked -p busbar-transport-tcp --features dropped-in",
     "cargo xtask gate feature-sets --selftest",
     "cargo xtask gate feature-sets",
     "cargo xtask gate field-inventory --selftest",

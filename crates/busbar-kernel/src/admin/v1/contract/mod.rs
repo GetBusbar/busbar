@@ -1072,7 +1072,18 @@ pub struct AdminAuthView {
     pub configured: bool,
     /// The active admin-plane guard module names, the `admin_auth` chain verbatim (by default the
     /// operator credential's provider alone), reported in order. Empty when the admin plane is open.
+    #[cfg_attr(feature = "openapi-schema", schemars(description = modules_description()))]
     pub modules: Vec<String>,
+}
+
+/// The served description of [`AdminAuthView::modules`]: 1.5.5's text byte for byte, its example
+/// read off the operator credential's frozen provider row, so the kernel spells no auth module.
+#[cfg(feature = "openapi-schema")]
+fn modules_description() -> String {
+    format!(
+        "The active admin-plane guard module names, the `admin_auth` chain verbatim (e.g.\n`[\"{}\"]`), reported in order. Empty when the admin plane is open.",
+        crate::config::operator_provider()
+    )
 }
 
 /// The result of `POST /api/v1/admin/config/validate`, a DRY-RUN: does a proposed config resolve +

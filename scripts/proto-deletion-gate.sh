@@ -576,6 +576,14 @@ llm_dialect_refused() {
 # $6 = an ingress path native to THE DELETED protocol, to prove it 404s post-deletion (level 3c)
 # $7 = optional: extra dialect names the deleted plugin also carried, space separated; each gets its
 #      own level-3a refusal, because ONE plugin now carries SIX dialects and all six must go
+# THE FEATURES EVERY DELETED BUILD KEEPS. `auth-admin-tokens` and `hooks-ranking` are not protocols,
+# and `transport-tcp` is the wire under the data door: the tcp wire's LINKED ROW behind a default-on
+# switch (9f98bb888, spec #3: a transport is compiled in OR dropped in). With the row off and no tcp
+# tarball in `plugins/`, `http` composes over nothing and the composition root refuses to seal — the
+# DESIGNED refusal, pinned by crates/busbar/tests/transport_dropped_in_serves.rs:258-273 — so a
+# `--no-default-features` build that drops it is an unbootable binary, not a protocol deletion.
+BASE_KEEP="auth-admin-tokens,hooks-ranking,transport-tcp"
+
 run_gate() {
   local proto="$1" feature="$2" keep_features="$3" remaining="$4" control_proto="$5" deleted_ingress_path="$6"
   local also_deleted="${7:-}"
@@ -584,9 +592,9 @@ run_gate() {
   [ -n "$keep_features" ] && keep_arg=",${keep_features}"
 
   note "── protocol: ${proto} (feature ${feature}) ──"
-  note "level 2 build: cargo build -p busbar --no-default-features --features auth-admin-tokens,hooks-ranking${keep_arg}"
+  note "level 2 build: cargo build -p busbar --no-default-features --features ${BASE_KEEP}${keep_arg}"
   CARGO_TARGET_DIR="$del_target" cargo build -q -p busbar \
-    --no-default-features --features "auth-admin-tokens,hooks-ranking${keep_arg}" \
+    --no-default-features --features "${BASE_KEEP}${keep_arg}" \
     || die "the busbar binary must build with the ${proto} protocol crate deleted"
   local deleted_bin="$del_target/debug/busbar"
   [ -x "$deleted_bin" ] || die "deleted-build binary not found at $deleted_bin"
@@ -762,7 +770,7 @@ note "mcp-a static: mcp declared by the crate, absent from core, registered by t
 # (R-D). It is NOT a behaviour discriminator and is not presented as one: mcp-a above is what goes
 # red without the move.
 MCP_TARGET="$GATE_TARGET_ROOT/deletion-gate-mcp"
-MCP_KEEP="auth-admin-tokens,hooks-ranking,proto-llm"
+MCP_KEEP="${BASE_KEEP},proto-llm"
 note "mcp-b build: cargo build -p busbar --no-default-features --features $MCP_KEEP (plane-mcp OFF)"
 CARGO_TARGET_DIR="$MCP_TARGET" cargo build -q -p busbar \
   --no-default-features --features "$MCP_KEEP" \
@@ -886,7 +894,7 @@ note "mcp-b-mounted: plane-mcp ON mounts the door — metadata route 200 (presen
 # SEPARATE feature axis from `plane-mcp` — dropping it keeps MCP, proving the two planes are
 # independently droppable rather than droppable only as a set.
 A2A_TARGET="$GATE_TARGET_ROOT/deletion-gate-a2a"
-A2A_KEEP="auth-admin-tokens,hooks-ranking,proto-llm,plane-mcp"
+A2A_KEEP="${BASE_KEEP},proto-llm,plane-mcp"
 note "a2a-b build: cargo build -p busbar --no-default-features --features $A2A_KEEP (plane-a2a OFF)"
 CARGO_TARGET_DIR="$A2A_TARGET" cargo build -q -p busbar \
   --no-default-features --features "$A2A_KEEP" \
@@ -999,7 +1007,7 @@ note "a2a-b-mounted: plane-a2a ON mounts the door — POST /a2a $A2A_ON_CODE (pr
 # under `-D warnings`, and prove the two planes are independently droppable in BOTH directions — the
 # A2A door mounts and routes on a build the MCP plane has left entirely.
 MCP_A2AON_TARGET="$GATE_TARGET_ROOT/deletion-gate-mcp-a2aon"
-MCP_A2AON_KEEP="auth-admin-tokens,hooks-ranking,proto-llm,plane-a2a"
+MCP_A2AON_KEEP="${BASE_KEEP},proto-llm,plane-a2a"
 note "mcp-d build: RUSTFLAGS=-D warnings cargo build -p busbar --no-default-features --features $MCP_A2AON_KEEP (plane-mcp OFF, plane-a2a ON)"
 RUSTFLAGS="-D warnings" CARGO_TARGET_DIR="$MCP_A2AON_TARGET" cargo build -q -p busbar \
   --no-default-features --features "$MCP_A2AON_KEEP" \

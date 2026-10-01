@@ -19,7 +19,7 @@ kind-isolation:matrix	instance-ratchet	busbar-plugin-loader × secret	9
 kind-isolation:matrix	measurement-disagreement	busbar-kernel × plane	3
 kind-isolation:matrix	measurement-disagreement	busbar-kernel × transport	5
 kind-isolation:matrix	measurement-disagreement	busbar-plane-llm × transport	5
-kind-isolation:matrix	ratchet	busbar × cleanliness	206
+kind-isolation:matrix	ratchet	busbar × cleanliness	207
 kind-isolation:matrix	ratchet	busbar × hooks	13
 kind-isolation:matrix	ratchet	busbar × kernel	1295
 kind-isolation:matrix	ratchet	busbar × store	7
@@ -30,7 +30,7 @@ kind-isolation:matrix	ratchet	busbar-kernel × transport	308
 kind-isolation:matrix	ratchet	busbar-kernel-budget × kernel	26
 kind-isolation:matrix	ratchet	busbar-kernel-egress × plane	17
 kind-isolation:matrix	ratchet	busbar-kernel-identity × plane	11
-kind-isolation:matrix	ratchet	busbar-llm × contract	520
+kind-isolation:matrix	ratchet	busbar-llm × contract	523
 kind-isolation:matrix	ratchet	busbar-llm × plane	784
 kind-isolation:matrix	ratchet	busbar-mcp × cleanliness	5
 kind-isolation:matrix	ratchet	busbar-mcp × legacy	8
@@ -60,7 +60,7 @@ kind-isolation:matrix	unlisted-cell	busbar-core-admin × store	2
 kind-isolation:matrix	unlisted-cell	busbar-core-admin × transport	109
 kind-isolation:matrix	unlisted-cell	busbar-core-connector × cleanliness	2
 kind-isolation:matrix	unlisted-cell	busbar-core-connector × legacy	1
-kind-isolation:matrix	unlisted-cell	busbar-core-connector × transport	1
+kind-isolation:matrix	unlisted-cell	busbar-core-connector × transport	47
 kind-isolation:matrix	unlisted-cell	busbar-hooks-ranking × plane	4
 kind-isolation:matrix	unlisted-cell	busbar-kernel × cleanliness	47
 kind-isolation:matrix	unlisted-cell	busbar-kernel × hooks	34
@@ -75,7 +75,7 @@ kind-isolation:matrix	unlisted-cell	busbar-kernel-ledger × cleanliness	4
 kind-isolation:matrix	unlisted-cell	busbar-kernel-ledger × plane	14
 kind-isolation:matrix	unlisted-cell	busbar-llm × kernel	14
 kind-isolation:matrix	unlisted-cell	busbar-llm × legacy	10
-kind-isolation:matrix	unlisted-cell	busbar-mcp × contract	307
+kind-isolation:matrix	unlisted-cell	busbar-mcp × contract	308
 kind-isolation:matrix	unlisted-cell	busbar-mcp × kernel	25
 kind-isolation:matrix	unlisted-cell	busbar-oauth2 × kernel	5
 kind-isolation:matrix	unlisted-cell	busbar-oauth2 × legacy	2
@@ -95,7 +95,7 @@ kind-isolation:matrix	unlisted-edge	cleanliness -> legacy	22
 kind-isolation:matrix	unlisted-edge	cleanliness -> plane	93
 kind-isolation:matrix	unlisted-edge	cleanliness -> plugin-tooling	95
 kind-isolation:matrix	unlisted-edge	cleanliness -> store	7
-kind-isolation:matrix	unlisted-edge	cleanliness -> transport	119
+kind-isolation:matrix	unlisted-edge	cleanliness -> transport	78
 kind-isolation:matrix	unlisted-edge	contract -> cleanliness	1
 kind-isolation:matrix	unlisted-edge	contract -> kernel	1
 kind-isolation:matrix	unlisted-edge	contract -> plugin-tooling	1
@@ -107,7 +107,7 @@ kind-isolation:matrix	unlisted-edge	kernel -> legacy	181
 kind-isolation:matrix	unlisted-edge	kernel -> plugin-tooling	213
 kind-isolation:matrix	unlisted-edge	kernel -> store	31
 kind-isolation:matrix	unlisted-edge	legacy -> cleanliness	9
-kind-isolation:matrix	unlisted-edge	root -> cleanliness	206
+kind-isolation:matrix	unlisted-edge	root -> cleanliness	207
 kind-isolation:matrix	unlisted-instance	busbar × export	8
 kind-isolation:matrix	vendor-name	busbar crates/busbar/benches/hook_path.rs	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/src/root/units_admin/tests/units_admin.rs	1

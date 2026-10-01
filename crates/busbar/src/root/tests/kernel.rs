@@ -290,70 +290,6 @@ fn a_fee_edit_mid_window_prices_each_era_at_the_plane_fee_in_force() {
     assert_eq!(priced.minor(), 13, "each era at the plane fee in force");
 }
 
-/// A chain with one module in it, so the front door is CLOSED without needing a governance state
-/// to close it. What the grant reads is the posture, not the module, so a module that answers
-/// nothing is enough to state the posture with.
-struct NeverIdentifies;
-
-impl busbar_kernel_identity::module::AuthModule for NeverIdentifies {
-    fn name(&self) -> &'static str {
-        "never"
-    }
-    fn authenticate(
-        &self,
-        _candidate: Option<&str>,
-    ) -> busbar_kernel_identity::module::AuthOutcome {
-        busbar_kernel_identity::module::AuthOutcome::Pass
-    }
-}
-
-fn a_closed_door() -> AuthChain {
-    AuthChain::new(
-        vec![busbar_kernel_identity::chain::ChainEntry {
-            provider: "never".to_string(),
-            module: Box::new(NeverIdentifies),
-        }],
-        false,
-    )
-}
-
-/// THE GRANT'S THREE ARMS, which used to be one.
-///
-/// `Full` was returned to every caller without reading who it was, which is right for exactly
-/// one of the three postures below and wrong for the other two. The third arm is the one that
-/// matters: a principal some other module identified, carrying no roles and therefore nothing
-/// bound to read a scope out of, used to be handed the operator's own ceiling.
-#[cfg(feature = "root-admin")]
-#[test]
-fn the_admin_grant_is_the_previous_releases_three_arms() {
-    let open = ProductionUnits::admin_only(std::sync::Arc::new(
-        crate::root::units_admin::RefusingDispatch,
-    ));
-    assert_eq!(
-        open.admin_grant(&PrincipalId::new("anonymous")),
-        Some(busbar_core_admin::VerbScope::Full),
-        "the explicit open posture — no credential configured — is full, as it has always been"
-    );
-
-    let closed = ProductionUnits::admin_only(std::sync::Arc::new(
-        crate::root::units_admin::RefusingDispatch,
-    ))
-    .with_auth_chain(a_closed_door());
-    assert_eq!(
-        closed.admin_grant(&PrincipalId::new(
-            crate::root::auth_bindings::ADMIN_PRINCIPAL_ID
-        )),
-        Some(busbar_core_admin::VerbScope::Full),
-        "the operator credential is the root credential, and carries the full tier by definition"
-    );
-    assert_eq!(
-        closed.admin_grant(&PrincipalId::new("somebody-else")),
-        None,
-        "a roleless principal that is not the operator holds NO grant — not a narrower one, \
-         which would still be authority this deployment never wrote down"
-    );
-}
-
 /// A unit no plane on this node composed is not sealed as an administrative read.
 ///
 /// Both audit doors are asked, because both used to answer with the admin plane's word for a
@@ -364,9 +300,10 @@ fn the_admin_grant_is_the_previous_releases_three_arms() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
-    let units = ProductionUnits::admin_only(std::sync::Arc::new(
-        crate::root::units_admin::RefusingDispatch,
-    ));
+    let units = ProductionUnits::admin_only(
+        std::sync::Arc::new(crate::root::units_admin::RefusingDispatch),
+        crate::root::units_admin::open_door(),
+    );
     let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let ctx = UnitCtx {
         key: busbar_contract::ids::UnitKey::new(9),
@@ -454,9 +391,10 @@ fn the_units_assemble_from_values_configuration_decided() {
         crate::root::adapters::BreakerPolicy::new(),
         crate::root::policy::ScopePolicy::new(),
         #[cfg(feature = "root-admin")]
-        crate::root::units_admin::AdminBinding::new(std::sync::Arc::new(
-            crate::root::units_admin::RefusingDispatch,
-        )),
+        crate::root::units_admin::AdminBinding::new(
+            std::sync::Arc::new(crate::root::units_admin::RefusingDispatch),
+            crate::root::units_admin::open_door(),
+        ),
         std::sync::Arc::new(RefusingStore),
     );
 

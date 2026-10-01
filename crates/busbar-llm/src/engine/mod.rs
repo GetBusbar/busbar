@@ -205,6 +205,9 @@ mod hook_seam_tests;
 #[path = "tests/hook_seat_order_tests.rs"]
 mod hook_seat_order_tests;
 #[cfg(test)]
+#[path = "tests/hook_system_turn_tests.rs"]
+mod hook_system_turn_tests;
+#[cfg(test)]
 #[path = "tests/ingress_indistinguishability_tests.rs"]
 mod ingress_indistinguishability_tests;
 #[cfg(test)]

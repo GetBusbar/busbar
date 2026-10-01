@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DROPPED-IN DOOR, from this crate's own side (#2; R-FIX1): with feature `dropped-in` the
+//! THE DROPPED-IN DOOR, from this crate's own side (#2; R-FIX1): with feature `cold-dropped-in` the
 //! crate exports its ONE constructor through the contract's store export macro, and the boundary the
 //! `cdylib`'s frozen symbols answer through — `BUSBAR_COLD_ENTRY` — opens the same store `open` does
 //! and answers a store operation the way the store answers it directly.
 //!
-//! Only compiled under the feature (`cargo test -p busbar-store-memory --features dropped-in`): a
+//! Only compiled under the feature (`cargo test -p busbar-store-memory --features cold-dropped-in`): a
 //! build that links this crate registers `linked::STORE` and carries no door. That the `dlopen`ed
 //! `cdylib` folds every store operation byte-identically to the linked row is the loader's both-ways
 //! proof; this file pins the door itself.
 
-#![cfg(feature = "dropped-in")]
+#![cfg(feature = "cold-dropped-in")]
 
 use busbar_contract::abi::cold::{StoreRequest, STATUS_OK};
 use busbar_contract::records::VirtualKey;

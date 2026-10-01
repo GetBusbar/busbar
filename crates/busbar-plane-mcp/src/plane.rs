@@ -59,7 +59,7 @@ const FIELD_CONTENT_TYPE: &str = "content-type";
 const CONTENT_TYPE_JSON: &[u8] = b"application/json";
 
 /// The envelope member naming which revision the hop is made under.
-const FIELD_PROTOCOL_VERSION: &str = "mcp-protocol-version";
+const FIELD_PROTOCOL_VERSION: &str = crate::codec::H_PROTOCOL_VERSION;
 
 /// The fact key the per-name projection reports the registration's own name under.
 const SUBJECT_FACT_NAME: &str = "name";

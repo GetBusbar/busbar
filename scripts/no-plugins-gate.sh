@@ -302,15 +302,15 @@ run_axis() {
   else fail "A4 ${label}: admin-plane GET /healthz -> ${ahz}"; axis_failed=1; fi
 
   : >"${out}/probe.txt"
-  local p c
+  local p c reads_failed=0
   for p in $ADMIN_READS; do
     c="$(code "${A}/${p}")"
     printf 'GET admin/%s %s\n' "$p" "$c" >>"${out}/probe.txt"
     if [ "$c" != "200" ]; then
-      fail "A4 ${label}: admin read GET /api/v1/admin/${p} -> ${c} (expected 200)"; axis_failed=1
+      fail "A4 ${label}: admin read GET /api/v1/admin/${p} -> ${c} (expected 200)"; axis_failed=1; reads_failed=1
     fi
   done
-  ok "A4 ${label}: admin reads all 200 (${ADMIN_READS})"
+  if [ "$reads_failed" -eq 0 ]; then ok "A4 ${label}: admin reads all 200 (${ADMIN_READS})"; fi
 
   # The admin WRITE: mint a virtual key. This is the assertion an "is it up?" probe cannot make — an
   # admin plane whose only working route is an unauthenticated /healthz would sail through A4's
@@ -518,11 +518,21 @@ expect_green() {
   return 1
 }
 
+# AXIS 1's FEATURE SET. `proto-llm`, for the probe methodology (see write_zero_plugin_config), and
+# `transport-tcp`, because a binary with NO wire under its data door is not a zero-plugin binary but
+# an unbootable one. `transport-tcp` is the tcp wire's LINKED ROW behind a default-on switch
+# (9f98bb888, spec #3: a transport is compiled in OR dropped in); with the row off and no tcp
+# tarball in `plugins/`, `http` composes over nothing and the composition root refuses to seal —
+# the DESIGNED refusal, pinned by crates/busbar/tests/transport_dropped_in_serves.rs:258-273. A
+# featureless build with zero plugins is therefore an impossible configuration: every request this
+# gate makes needs a wire, so the wire stays linked and every OTHER plugin capability is compiled out.
+AXIS1_FEATURES="proto-llm,transport-tcp"
+
 build_binaries() {
   local stage="$1"
   hdr "Building both axes"
-  note "axis 1 — cargo build -p busbar --no-default-features --features proto-llm --locked"
-  cargo build -p busbar --no-default-features --features proto-llm --locked
+  note "axis 1 — cargo build -p busbar --no-default-features --features ${AXIS1_FEATURES} --locked"
+  cargo build -p busbar --no-default-features --features "${AXIS1_FEATURES}" --locked
   cp "${REPO_ROOT}/target/debug/busbar" "${stage}/busbar-no-default-features"
   note "axis 2 — cargo build -p busbar --locked (DEFAULT features)"
   cargo build -p busbar --locked
@@ -565,7 +575,7 @@ run_selftest() {
   fi
   SUPPRESS=0
 
-  cargo build -p busbar --no-default-features --features proto-llm --locked
+  cargo build -p busbar --no-default-features --features "${AXIS1_FEATURES}" --locked
   cp "${REPO_ROOT}/target/debug/busbar" "${stage}/busbar-no-default-features"
 
   # ── RED-A / RED-B: the REAL featureless binary, with a REAL core dependency on a compiled-out

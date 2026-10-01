@@ -61,6 +61,23 @@ pub(crate) fn statement(kind: &str, name: &str, alias: &str, abi_version: u32) -
     }
 }
 
+/// The example `cdylib` `name` in this target dir (`cargo test` builds examples). Under CI a
+/// missing artifact is a failure, never a skip: this is a both-ways proof.
+pub(crate) fn example_cdylib(name: &str) -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let path = exe
+        .parent()?
+        .parent()?
+        .join("examples")
+        .join(crate::plugin_library_filename(name));
+    let found = path.exists().then_some(path);
+    assert!(
+        found.is_some() || std::env::var_os("CI").is_none(),
+        "the {name} example cdylib is not built under CI; a both-ways proof must not skip"
+    );
+    found
+}
+
 /// The `cdylib` of `crate_snake` in this target dir, newest wins: uplifted, under `deps` by its
 /// exact name, or under `deps` WITH a metadata hash (`lib<snake>-<hex>.<ext>`) — the only place a
 /// fixture pulled from its own repo as a git dependency is ever built. Under CI a missing artifact

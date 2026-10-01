@@ -159,7 +159,7 @@ step() {   # $1 = label ; rest = command
 # So: the number of groups this file DEFINES is counted from the file, the declared constant must
 # agree with it (a group added or removed is a two-place edit a reviewer sees), and the environment
 # may only ever RAISE the floor. A count that cannot be taken is RED, never a floor of zero.
-DONE_GROUPS_DECLARED=23
+DONE_GROUPS_DECLARED=24
 # awk, not `grep -c ... || echo 0`: `grep -c` on a file with no matches PRINTS 0 and EXITS 1, so the
 # obvious fallback fires on top of grep's own output and the variable becomes the two-line string
 # "0\n0" — which then fails every numeric comparison below and takes the honest-floor check with it.
@@ -315,6 +315,15 @@ run_build_group() {  # $1 = the full-gate register path
   else
     absent_step "full-gate register (BUILD without it is three plain builds: no clippy, no test tier)" "$register"
   fi
+}
+
+# THE SHIP-READY GROUP, as a function so --selftest can drive it. DoD clause 2 (BUSBAR-1.6.0.md Part 0):
+# construction standing-reds EMPTY and `ship-ready` GREEN, not tolerated by `--posture`. Nothing on this
+# path ran ship-ready (TODO items 17, 596), so the release could be called DONE with it red. The command
+# is an ARGUMENT so the selftest can plant a red one; the call site below is the only real invocation and
+# the selftest greps it. XTASK_SHIP_TARGET=qa is written there: a detached checkout names no branch.
+run_ship_ready_group() {  # rest = the ship-ready command
+  step "ship-ready gate" "$@"
 }
 
 # THE VOICE LEGS ARE =READY, READ OFF THE RIG'S OWN --list. The CONFORMANCE group is titled
@@ -1070,6 +1079,15 @@ if [ "$SELFTEST" -eq 1 ]; then
     case "$h" in *"--selftest"*) ;; *) return 1 ;; esac
     case "$h" in *"PROVISIONAL"*"exits 3"*) ;; *) return 1 ;; esac; }
   st_expect accept "--help prints --fast, --selftest and the PROVISIONAL / exit-3 rule" st_help
+  # ── SHIP-READY is on the done path and a red one turns the group RED ──────────────────────────
+  st_ship() {  # rest = command -> exit 0 iff the group came out GREEN
+    ( CUR_RED=0; CUR_FIRST_NOTE=""; step() { shift; "$@" >/dev/null 2>&1 || CUR_RED=1; }
+      run_ship_ready_group "$@"; [ "$CUR_RED" -eq 0 ] )
+  }
+  st_expect refuse "a RED ship-ready leaves the SHIP-READY group RED"  st_ship false
+  st_expect accept "a green ship-ready leaves the SHIP-READY group green" st_ship true
+  st_expect accept "the real call site runs ship-ready under XTASK_SHIP_TARGET=qa" grep -q '^run_ship_ready_group env XTASK_SHIP_TARGET=qa cargo xtask gate ship-ready$' "$SELF"
+
   rm -rf "$st_tmp"
   _st_fails=$((_st_fails + st_fail))
   if [ "$_st_fails" -eq 0 ]; then
@@ -1101,6 +1119,14 @@ end_group
 begin_group "KIND-ISOLATION — the plugin kinds never cross-contaminate (ship criterion, 0 exemptions)"
 step "kind-isolation --selftest" cargo xtask gate kind-isolation-ship --selftest
 step "kind-isolation --ship"     cargo xtask gate kind-isolation-ship
+end_group
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# SHIP-READY — DoD clause 2: no standing red, the ship twin at zero, no ceiling slack or stale raise.
+# RED on predev until the standing debt drains; this group reports that, it does not hide it.
+begin_group "SHIP-READY — standing-reds empty, ship twin at zero (DoD clause 2)"
+step "ship-ready --selftest" cargo xtask gate ship-ready --selftest
+run_ship_ready_group env XTASK_SHIP_TARGET=qa cargo xtask gate ship-ready
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────

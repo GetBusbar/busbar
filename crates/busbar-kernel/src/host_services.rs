@@ -22,7 +22,7 @@
 //! only the host there), and its `allow_private` is the target's own setting.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -129,35 +129,65 @@ impl HostServices for KernelServices {
         let Some(rules) = self.classes.get(&class) else {
             return Ran::Now(Stored::refused("no such egress class"));
         };
-        let (host, port, https) = match check_structure(dest, &[], rules.policy, &rules.denylist) {
+        match check_structure(dest, &[], rules.policy, &rules.denylist) {
             Err(r) => return Ran::Now(Stored::ready(verdict(dest, &r))),
-            Ok(Structure::Pinned(_)) => return Ran::Now(Stored::ready(svc::DEST_ALLOWED)),
-            Ok(Structure::Name { .. }) if !resolve => {
-                return Ran::Now(Stored::ready(svc::DEST_ALLOWED))
-            }
-            Ok(Structure::Name { host, port, https }) => (host, port, https),
-        };
+            Ok(Structure::Name { .. }) if resolve => {}
+            Ok(_) => return Ran::Now(Stored::ready(svc::DEST_ALLOWED)),
+        }
         let Some(later) = later else {
             return Ran::Now(Stored::refused(
                 "a service that may pend is callable only inside a ticketed op",
             ));
+        };
+        // The one judge; the verdict is its answer with the pinned address dropped.
+        let answer =
+            |v: Result<SocketAddr, u64>| Stored::ready(v.map_or_else(|v| v, |_| svc::DEST_ALLOWED));
+        match self.judge_dial(dest, class, Box::new(move |v| later(answer(v)))) {
+            Some(v) => Ran::Now(answer(v)),
+            None => Ran::Later,
+        }
+    }
+}
+
+/// Where a dial's judgement goes when it pended: the pinned address, or the `DEST_*` verdict that
+/// refused it. Called once, from any thread.
+pub type Judged = Box<dyn FnOnce(Result<SocketAddr, u64>) + Send>;
+
+impl KernelServices {
+    /// THE ONE JUDGE, for a dial: `dest` against egress class `class`'s rules, and the address to
+    /// dial — exactly the one the judgement pinned, so nothing resolves the name a second time. A
+    /// refusal the name decides, and an IP literal, answer at once (`Some`) before any resolution;
+    /// a name is resolved off the caller's thread and `done` gets the pin or the refusal (`None`).
+    /// `dest.judge` is this judgement with the address dropped. An unknown class is refused as
+    /// naming no usable host.
+    pub fn judge_dial(
+        &self,
+        dest: &str,
+        class: u32,
+        done: Judged,
+    ) -> Option<Result<SocketAddr, u64>> {
+        let Some(rules) = self.classes.get(&class) else {
+            return Some(Err(svc::DEST_NO_HOST));
+        };
+        let (host, port, https) = match check_structure(dest, &[], rules.policy, &rules.denylist) {
+            Err(r) => return Some(Err(verdict(dest, &r))),
+            Ok(Structure::Pinned(p)) => return Some(Ok(p.socket_addr())),
+            Ok(Structure::Name { host, port, https }) => (host, port, https),
         };
         let policy = rules.policy;
         let name = host.clone();
         self.resolver.resolve(
             &name,
             Box::new(move |answer| {
-                let v = match answer {
-                    Err(_) => svc::DEST_UNRESOLVABLE,
-                    Ok(addrs) => match pin_answer(&host, port, https, &addrs, policy) {
-                        Ok(_) => svc::DEST_ALLOWED,
-                        Err(r) => guard_verdict(&r),
-                    },
-                };
-                later(Stored::ready(v));
+                done(match answer {
+                    Err(_) => Err(svc::DEST_UNRESOLVABLE),
+                    Ok(addrs) => pin_answer(&host, port, https, &addrs, policy)
+                        .map(|p| p.socket_addr())
+                        .map_err(|r| guard_verdict(&r)),
+                });
             }),
         );
-        Ran::Later
+        None
     }
 }
 

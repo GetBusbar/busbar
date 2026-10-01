@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE AUTOBAHN|TESTSUITE SUBJECT: `WsTransport::over(TcpTransport)`, echoing on loopback.
+//! THE AUTOBAHN|TESTSUITE SUBJECT: `WsTransport` over the `tcp` door, echoing on loopback.
 //!
 //! `busbar-transport-ws` opens no socket by design (see that crate's `lib.rs`); it is a pure
 //! adapter composed over a lower transport. Autobahn's `fuzzingclient` needs a real listening
-//! WebSocket peer to drive its case suite against, so this binary composes the SAME
-//! `WsTransport::over(TcpTransport)` chain the architecture names -- the identical composition
-//! `crates/busbar-transport-tcp/src/tests/mod.rs` builds for its own battery -- binds it on
+//! WebSocket peer to drive its case suite against, so this binary composes the SAME chain the
+//! root folds -- the `tcp` door served over the host's sockets by the connector
+//! (`crates/busbar/src/root/doors.rs`, mounted here), with `WsTransport` over it -- binds it on
 //! loopback, and echoes every inbound message back unmodified. That is the whole of an Autobahn
 //! echo peer: the fuzzingclient sends every case's frames and grades the echo it gets back.
 //!
@@ -20,9 +20,12 @@ use busbar_contract::transport::wire::Listener;
 use busbar_contract::{
     ConfigView, ScratchBytes, StreamId, Transport, TransportConfigView, TransportKeyHandle,
 };
-use busbar_transport_tcp::TcpTransport;
 use busbar_transport_ws::WsTransport;
 use futures::StreamExt;
+
+#[allow(dead_code)]
+#[path = "../../../../crates/busbar/src/root/doors.rs"]
+mod doors;
 
 struct SubjectCfg;
 
@@ -46,7 +49,11 @@ impl TransportConfigView for SubjectCfg {
 
 #[tokio::main]
 async fn main() {
-    let tcp: Arc<dyn Transport> = Arc::new(TcpTransport::new());
+    let tcp: Arc<dyn Transport> = doors::build(
+        busbar_transport_tcp::linked::door,
+        None,
+        &busbar_contract::transport::TransportSettings::default(),
+    );
     let ws = Arc::new(WsTransport::over(tcp));
     // No key material: this subject echoes on loopback and the upgrade reads no key of its own.
     let key = TransportKeyHandle::keyless();

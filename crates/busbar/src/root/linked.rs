@@ -960,22 +960,51 @@ pub fn dropped_planes_of(dropped: Option<&crate::root::loader::PluginRegistry>) 
 }
 
 /// THE TRANSPORTS DROPPED INTO THE CONFIGURED `plugins.dir` (the registry [`dropped_from_config`]
-/// scanned): every `kind: transport` plugin it admitted, loaded over the HOT-tier ABI ONCE and held
-/// for the process, so the boot seal folds them beside the linked wires
-/// (`crate::root::registry::compose`) and a wire the data door serves through lives as long as the
-/// door. A trusted transport that will not LOAD refuses the boot, as a linked plane's would.
-pub fn dropped_transports() -> &'static [crate::root::loader::DynTransport] {
-    static WIRES: std::sync::OnceLock<Vec<crate::root::loader::DynTransport>> =
-        std::sync::OnceLock::new();
-    WIRES.get_or_init(|| {
-        REGISTRY
-            .get()
-            .map_or(Ok(Vec::new()), |registry| registry.open_transports())
-            .unwrap_or_else(|refusal| {
-                eprintln!("busbar: {refusal}");
-                std::process::exit(2);
-            })
-    })
+/// scanned): every `kind: transport` plugin it admitted, loaded ONCE and held for the process, so the
+/// boot seal folds them beside the linked wires (`crate::root::registry::compose`) and a wire the
+/// data door serves through lives as long as the door. Each image is opened on the lane it speaks: a
+/// memory-ABI door through the one dispatcher, served over the host's sockets
+/// (`crate::root::doors`); a HOT decl through its adapter. A trusted transport that will not LOAD
+/// refuses the boot, as a linked plane's would.
+pub fn dropped_transports() -> crate::root::registry::Dropped {
+    type Held = (
+        Vec<crate::root::loader::DynTransport>,
+        Vec<crate::root::registry::DroppedDoor>,
+    );
+    static WIRES: std::sync::OnceLock<Held> = std::sync::OnceLock::new();
+    let (hot, doors) = WIRES.get_or_init(|| {
+        let Some(registry) = REGISTRY.get() else {
+            return (Vec::new(), Vec::new());
+        };
+        let opened = registry
+            .open_transport_entries(&crate::root::doors::bind())
+            .and_then(|entries| {
+                let doors = entries
+                    .doors
+                    .into_iter()
+                    .map(|plugin| {
+                        let facts = plugin
+                            .context::<crate::root::loader::dispatch::kinds::transport::TransportFacts>()
+                            .cloned()
+                            .ok_or_else(|| format!("`{}` states no transport tail", plugin.name()))?;
+                        let key = facts.claims.first().copied().unwrap_or_default();
+                        let composes_over = facts.composes_over;
+                        let wire = crate::root::doors::host_wire(plugin)?;
+                        Ok(crate::root::registry::DroppedDoor {
+                            key,
+                            composes_over,
+                            wire,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                Ok((entries.hot, doors))
+            });
+        opened.unwrap_or_else(|refusal| {
+            eprintln!("busbar: {refusal}");
+            std::process::exit(2);
+        })
+    });
+    crate::root::registry::Dropped { hot, doors }
 }
 
 /// THE EXPORT AXIS: the registry an `export:` instance's `module:` resolves against — every

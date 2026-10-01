@@ -196,11 +196,15 @@ fn a_node() -> ANodeWhoseChainThisCellReads {
         crate::root::kernel::new_kernel(),
         64 * 1024,
         move |dispatch| {
-            crate::root::kernel::ProductionUnits::admin_only_sharing(dispatch, held, read)
-                .with_auth_chain(a_door_that_identifies_the_operator())
-                .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
-                    ADirectoryThatMintedIt,
-                )))
+            crate::root::kernel::ProductionUnits::admin_only_sharing(
+                dispatch,
+                crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
+                held,
+                read,
+            )
+            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(
+                Arc::new(ADirectoryThatMintedIt),
+            ))
         },
     );
     ANodeWhoseChainThisCellReads {
@@ -253,11 +257,15 @@ fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
         crate::root::kernel::new_kernel(),
         1 << 20,
         move |dispatch| {
-            crate::root::kernel::ProductionUnits::admin_only_sharing(dispatch, held, read)
-                .with_auth_chain(a_door_that_identifies_the_operator())
-                .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
-                    ADirectoryThatMintedIt,
-                )))
+            crate::root::kernel::ProductionUnits::admin_only_sharing(
+                dispatch,
+                crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
+                held,
+                read,
+            )
+            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(
+                Arc::new(ADirectoryThatMintedIt),
+            ))
         },
     );
     (bare, mounted)
@@ -582,12 +590,15 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
         crate::root::kernel::new_kernel(),
         1 << 20,
         move |dispatch| {
-            let mut units =
-                crate::root::kernel::ProductionUnits::admin_only_sharing(dispatch, held, read)
-                    .with_auth_chain(a_door_that_identifies_the_operator())
-                    .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
-                        ADirectoryThatMintedIt,
-                    )));
+            let mut units = crate::root::kernel::ProductionUnits::admin_only_sharing(
+                dispatch,
+                crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
+                held,
+                read,
+            )
+            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+                ADirectoryThatMintedIt,
+            )));
             units.admin.posture = Arc::new(SealedPosture::new(Some([7u8; 32])));
             units.store = Arc::new(AnApplyingStore);
             units
@@ -708,12 +719,15 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
         crate::root::kernel::new_kernel(),
         1 << 20,
         move |dispatch| {
-            let mut units =
-                crate::root::kernel::ProductionUnits::admin_only_sharing(dispatch, held, read)
-                    .with_auth_chain(a_door_that_identifies_the_operator())
-                    .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
-                        ADirectoryThatMintedIt,
-                    )));
+            let mut units = crate::root::kernel::ProductionUnits::admin_only_sharing(
+                dispatch,
+                crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
+                held,
+                read,
+            )
+            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+                ADirectoryThatMintedIt,
+            )));
             units.admin.posture = Arc::new(SealedPosture::new(Some([7u8; 32])));
             units
         },
@@ -810,12 +824,15 @@ async fn the_amend_path_on_a_node_with_no_operator_key_is_1_5_5_s_404() {
             crate::root::kernel::new_kernel(),
             1 << 20,
             move |dispatch| {
-                let mut units =
-                    crate::root::kernel::ProductionUnits::admin_only_sharing(dispatch, held, read)
-                        .with_auth_chain(a_door_that_identifies_the_operator())
-                        .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(
-                            Arc::new(ADirectoryThatMintedIt),
-                        ));
+                let mut units = crate::root::kernel::ProductionUnits::admin_only_sharing(
+                    dispatch,
+                    crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
+                    held,
+                    read,
+                )
+                .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+                    ADirectoryThatMintedIt,
+                )));
                 units.admin.posture = Arc::new(SealedPosture::new(operator_key));
                 units
             },
@@ -990,12 +1007,15 @@ fn a_q71_node(
         crate::root::kernel::new_kernel(),
         1 << 20,
         move |dispatch| {
-            let mut units =
-                crate::root::kernel::ProductionUnits::admin_only_sharing(dispatch, held, read)
-                    .with_auth_chain(door)
-                    .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
-                        ADirectoryThatMintedIt,
-                    )));
+            let mut units = crate::root::kernel::ProductionUnits::admin_only_sharing(
+                dispatch,
+                crate::root::units_admin::door_of_chain(door),
+                held,
+                read,
+            )
+            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+                ADirectoryThatMintedIt,
+            )));
             units.admin.posture = Arc::new(SealedPosture::new(operator_key));
             units.admin.planes =
                 Arc::new(|key: &str| (key == A_SERVED_PLANE.key).then_some(A_SERVED_PLANE));

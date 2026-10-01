@@ -307,3 +307,42 @@ fn a_read_with_nothing_ready_is_pending_and_hands_the_host_its_ticket() {
         "nothing is ready on the connection yet"
     );
 }
+
+/// A host minted with its state behind it, then MOVED (returned by value, pushed into a vector)
+/// after the context was taken: the context points at the heap-stable state, not the moved value.
+fn minted() -> (ConnHost, ConnCtx) {
+    let echo = Arc::new(Echo::default());
+    echo.0.declare(InstanceId(1), NEED);
+    let host = ConnHost::new(echo, InstanceId(1));
+    let ctx = host.ctx();
+    (host, ctx)
+}
+
+/// RED: moving a `ConnHost` after minting its context leaves every call through that context
+/// sound. The host is returned from a helper and then moved into a vector before any call; the
+/// plugin's table still opens, writes and reads back its bytes. With the context pointing at the
+/// `ConnHost` value itself this reads freed stack memory.
+#[test]
+fn a_host_moved_after_minting_its_context_still_serves_the_table() {
+    let (host, ctx) = minted();
+    let mut hosts = vec![host];
+    hosts.push(ConnHost::new(Arc::new(Echo::default()), InstanceId(2)));
+    // SAFETY: the host's own table over the context it minted; `hosts` keeps the host alive.
+    let p = unsafe { HostConns::new(host_slots(), ctx) };
+    let conn = p
+        .open(
+            NEED,
+            &OpenDesc {
+                target: "echo.test",
+                ..OpenDesc::default()
+            },
+        )
+        .expect("the moved host serves the open");
+    assert_eq!(p.write(conn, b"moved", true), Ok(5));
+    let mut buf = [0_u8; 64];
+    let opening = p.read(conn, 7, &mut buf).expect("the (empty) opening");
+    assert_eq!(opening.len, 0);
+    let piece = p.read(conn, 7, &mut buf).expect("the echo");
+    assert_eq!(&buf[..piece.len], b"moved");
+    drop(hosts);
+}

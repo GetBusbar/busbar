@@ -142,6 +142,24 @@ fn yes(b: bool) -> String {
     if b { "true" } else { "false" }.to_string()
 }
 
+/// The CONTRIBUTING layout sentence: a twin repo is a two-crate workspace (`<stem>/` the logic,
+/// `<stem>-plugin/` the cdylib); a repo whose cdylib crate IS the repo (a single-crate hook) is one
+/// crate at the repo root.
+fn layout(p: &Plugin) -> String {
+    if p.crate_name == p.repo {
+        format!(
+            "Every busbar plugin repo has the same skeleton. This one is a single crate at the repo root: `{}` is the `cdylib` that packages the plugin as a droppable `kind: {}` plugin.",
+            p.crate_name, p.kind
+        )
+    } else {
+        format!(
+            "Every busbar plugin repo has the same skeleton. This one is a two-crate Cargo workspace: `{stem}/` holds the plugin's logic and `{stem}-plugin/` is the thin `cdylib` that packages it as a droppable `kind: {kind}` plugin.",
+            stem = p.stem(),
+            kind = p.kind
+        )
+    }
+}
+
 fn vars(fleet: &Fleet, p: &Plugin, channel: &str) -> Result<Vec<(&'static str, String)>, String> {
     Ok(vec![
         ("repo", p.repo.clone()),
@@ -168,6 +186,7 @@ fn vars(fleet: &Fleet, p: &Plugin, channel: &str) -> Result<Vec<(&'static str, S
         // Daily, staggered by registry position so the fleet's schedules do not all fire at once.
         ("cron", format!("{} 9 * * *", (p.index * 7 + 3) % 60)),
         ("stem", p.stem().to_string()),
+        ("layout", layout(p)),
         ("rust_version", rust_version_of(channel)?),
         ("gitignore", lines(&p.gitignore)),
         (

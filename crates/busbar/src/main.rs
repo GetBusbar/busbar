@@ -1024,8 +1024,11 @@ async fn run(data_workers: usize) {
             // body before that router's own limit can.
             req_body_max,
             |dispatch| {
+                // THE ADMIN DOOR: the deployment's live `admin_auth` chain, read per unit off the same
+                // snapshot the kernel middleware reads and `PUT /api/v1/admin/admin-auth` swaps.
                 let mut units = root::kernel::ProductionUnits::admin_only_sharing(
                     dispatch,
+                    root::units_admin::live_admin_door(std::sync::Arc::clone(&app_handle)),
                     std::sync::Arc::clone(&book.durability),
                     std::sync::Arc::clone(&book.rows)
                         as std::sync::Arc<dyn root::units_admin::LegacyRowsRead>,
@@ -1060,26 +1063,15 @@ async fn run(data_workers: usize) {
                     std::sync::Arc::clone(&app_handle),
                     breaker_policy,
                 );
-                // THE DEPLOYMENT'S OWN DOOR, in front of the authenticate step. Without these two lines
-                // the assembly's open posture shipped: the step admitted every caller anonymously and
-                // the only thing deciding was the surface mounted underneath — so a credential this node
-                // had REVOKED was admitted at Authenticate, and the revocation the governance state
-                // holds was consulted by nothing on the request path. The chain is the operator's admin
-                // token and the bindings are the same governance state's directory, which is what makes
-                // the revocation set the one this node actually keeps.
+                // THE REVOCATION SET the authenticate step gates an identification with: the same
+                // governance state's directory, so the revocation set is the one this node keeps. No
+                // governance state is no directory, left as the assembly built it.
                 match app_handle.load().governance.clone() {
-                    Some(gov) => units
-                        .with_auth_chain(root::kernel::auth_bindings::admin_chain(
-                            std::sync::Arc::clone(&gov),
-                        ))
-                        .with_auth_bindings(root::kernel::auth_bindings::AuthBindings::new(
-                            std::sync::Arc::new(
-                                root::kernel::auth_bindings::GovernanceDirectory::new(gov),
-                            ),
+                    Some(gov) => units.with_auth_bindings(
+                        root::kernel::auth_bindings::AuthBindings::new(std::sync::Arc::new(
+                            root::kernel::auth_bindings::GovernanceDirectory::new(gov),
                         )),
-                    // No governance state is no directory and no configured token, which is the open
-                    // administrative posture the previous release also has. Left as the assembly built
-                    // it rather than wired to an authority that does not exist.
+                    ),
                     None => units,
                 }
             },
