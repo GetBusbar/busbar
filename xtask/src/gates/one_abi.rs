@@ -86,6 +86,10 @@ impl Spec {
 
 struct Ledger {
     rows: BTreeSet<Key>,
+    /// COUNTED ROWS: a row may state `count = N`, the most findings its key may have (one per
+    /// line). It only goes down: more findings than N are NEW, fewer is a count to lower in the
+    /// same commit. A row without one holds any number, as before.
+    counts: BTreeMap<Key, usize>,
     errors: Vec<String>,
 }
 
@@ -95,6 +99,7 @@ fn load_ledger(cx: &Ctx, spec: &Spec) -> Ledger {
         Err(e) => {
             return Ledger {
                 rows: BTreeSet::new(),
+                counts: BTreeMap::new(),
                 errors: vec![format!(
                     "{} is unreadable ({e}); every finding is therefore NEW",
                     spec.ledger
@@ -106,6 +111,7 @@ fn load_ledger(cx: &Ctx, spec: &Spec) -> Ledger {
     let known: BTreeSet<&str> = spec.rules.iter().map(|(id, _)| *id).collect();
     let mut led = Ledger {
         rows: BTreeSet::new(),
+        counts: BTreeMap::new(),
         errors: Vec::new(),
     };
     for (n, t) in doc.array_table("finding").iter().enumerate() {
@@ -118,6 +124,18 @@ fn load_ledger(cx: &Ctx, spec: &Spec) -> Ledger {
                 n + 1
             ));
             continue;
+        }
+        if let Some(c) = t.get_one("count") {
+            match c.parse::<usize>() {
+                Ok(max) => {
+                    led.counts
+                        .insert((rule.clone(), file.clone(), item.clone()), max);
+                }
+                Err(_) => led.errors.push(format!(
+                    "[[finding]] #{}: `count` must be a whole number (got `{c}`)",
+                    n + 1
+                )),
+            }
         }
         if !led.rows.insert((rule, file, item)) {
             led.errors.push(format!(
@@ -158,14 +176,27 @@ pub fn verdict(cx: &Ctx, spec: &Spec, mut findings: Vec<Finding>, errors: Vec<St
     }
     let led = load_ledger(cx, spec);
     let found: BTreeSet<Key> = findings.iter().map(Finding::key).collect();
+    let mut per_key: BTreeMap<Key, usize> = BTreeMap::new();
+    for f in &findings {
+        *per_key.entry(f.key()).or_default() += 1;
+    }
     let mut rows = Vec::new();
     for (id, what) in spec.rules {
         let mine: Vec<&Finding> = findings.iter().filter(|f| f.rule == *id).collect();
-        let fresh: Vec<String> = mine
+        let mut fresh: Vec<String> = mine
             .iter()
             .filter(|f| !led.rows.contains(&f.key()))
             .map(|f| format!("{}:{} {}", f.file, f.line, f.item))
             .collect();
+        for (k, n) in led.counts.iter().filter(|(k, _)| k.0 == *id) {
+            let have = per_key.get(k).copied().unwrap_or(0);
+            if have > *n {
+                fresh.push(format!(
+                    "{} {}: {have} finding(s) over its counted row's {n}",
+                    k.1, k.2
+                ));
+            }
+        }
         let distinct: BTreeSet<Key> = mine.iter().map(|f| f.key()).collect();
         if fresh.is_empty() {
             rows.push(Row::pass(
@@ -198,6 +229,21 @@ pub fn verdict(cx: &Ctx, spec: &Spec, mut findings: Vec<Finding>, errors: Vec<St
         .collect();
     let mut problems = led.errors;
     problems.extend(errors);
+    let high: Vec<String> = led
+        .counts
+        .iter()
+        .filter_map(|(k, n)| {
+            let have = per_key.get(k).copied().unwrap_or(0);
+            (have > 0 && have < *n).then(|| format!("{} {} {}: count {n}, tree {have}", k.0, k.1, k.2))
+        })
+        .collect();
+    if !high.is_empty() {
+        problems.push(format!(
+            "{} counted row(s) above the tree — a count only goes down; lower it in the commit that drained it: {}",
+            high.len(),
+            high.join(" | ")
+        ));
+    }
     if !stale.is_empty() {
         problems.push(format!(
             "{} STALE row(s) — drained in the tree and not struck from {} in the same commit: {}",
