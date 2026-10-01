@@ -39,7 +39,6 @@
 pub mod call;
 pub mod check;
 pub mod door;
-mod layout;
 pub mod lifecycle;
 pub mod ticket;
 

@@ -3,8 +3,7 @@
 
 //! THE STORE KIND'S v3 TABLE, AS STATED (B.1 "store (v3)"; m3-inputs "store v3 money slots" and
 //! "window caps"): the slot numbering, the per-slot contract and the zero readings the money
-//! shapes depend on. Layout is pinned elsewhere (`store/layout.rs`, `mechanism_layout.rs`, the
-//! golden).
+//! shapes depend on. Layout is pinned once, by the golden (`layout_golden.rs`).
 
 use std::mem::{offset_of, size_of};
 

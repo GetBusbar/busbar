@@ -28,6 +28,7 @@ use busbar_contract::abi::AbiPreamble;
 use busbar_contract::abi::mechanism::call::{
     AbiStr as MechStr, Blob as MechBlob, Diag as MechDiag, Envelope as MechEnvelope,
     InHead as MechInHead, MetricEntry as MechMetricEntry, OutHead as MechOutHead,
+    RawOutcome as MechRawOutcome,
 };
 use busbar_contract::abi::mechanism::door::{
     Door as MechDoor, KindTailHead as MechKindTailHead, MetricFamily as MechMetricFamily,
@@ -925,7 +926,8 @@ fn compute_layout() -> String {
     );
 
     // THE ONE MEMORY ABI (`BUSBAR-1.6.0.md` THE DESIGN, §11.5): the shared mechanism and the seven kind
-    // tables. `tests/mechanism_layout.rs` states the same numbers by hand.
+    // tables. This golden is the ONE layout pin (`abi-audit` F2).
+    record!(s, MechRawOutcome, []);
     record!(s, MechStr, [ptr, len]);
     record!(s, MechBlob, [ptr, len, fmt, flags]);
     record!(

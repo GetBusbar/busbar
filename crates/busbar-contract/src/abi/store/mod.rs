@@ -79,7 +79,6 @@
 //!   and a store treats an `op_id` it does not know as new.
 
 pub mod check;
-mod layout;
 pub mod ledger;
 pub mod money;
 pub mod plane;
