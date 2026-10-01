@@ -649,7 +649,7 @@ enum Again {
     Ingest,
     Emit(u64),
     Timer,
-    Refuse(Option<u64>),
+    Refuse(Option<u64>, u32),
 }
 
 impl Framing {
@@ -745,11 +745,12 @@ impl Framing {
                     i.sink = sink;
                     self.door.cross(Call::Emit(&mut i, &mut o))
                 }
-                Again::Refuse(stream) => {
+                Again::Refuse(stream, status) => {
                     let mut i: RefuseIn = blank_in();
                     i.framing = self.token;
                     i.stream = stream.unwrap_or(0);
                     i.has_stream = u32::from(stream.is_some());
+                    i.status = status;
                     i.sink = sink;
                     self.door.cross(Call::Refuse(&mut i, &mut o))
                 }
@@ -815,16 +816,23 @@ impl Framing {
         Ok(y)
     }
 
-    /// `refuse`: a refusal's bytes for `stream` (`None` = the whole connection).
+    /// `refuse`: a refusal's bytes for `stream` (`None` = the whole connection), with its neutral
+    /// `status` for the framer to map to its wire (`0` = none stated).
     ///
     /// # Errors
     ///
     /// The framer refused to render it.
-    pub fn refuse(&mut self, stream: Option<u64>, bytes: &[u8]) -> Result<Yielded, Refused> {
+    pub fn refuse(
+        &mut self,
+        stream: Option<u64>,
+        bytes: &[u8],
+        status: u32,
+    ) -> Result<Yielded, Refused> {
         let mut i: RefuseIn = blank_in();
         i.framing = self.token;
         i.stream = stream.unwrap_or(0);
         i.has_stream = u32::from(stream.is_some());
+        i.status = status;
         i.bytes = bytes.as_ptr();
         i.len = bytes.len();
         i.sink = self.bufs.sink();
@@ -832,7 +840,7 @@ impl Framing {
         ready(self.door.cross(Call::Refuse(&mut i, &mut o)))?;
         let mut y = Yielded::default();
         if !self.bufs.take(&o, &mut y)? {
-            self.more(Again::Refuse(stream), &mut y)?;
+            self.more(Again::Refuse(stream, status), &mut y)?;
         }
         Ok(y)
     }
