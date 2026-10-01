@@ -11,8 +11,8 @@
 //! uses (the recorder is process-global) and asserts the exact delta.
 
 use super::*;
-use axum::response::IntoResponse;
 use crate::test_support::{metric_sum, LaneSpec, TestApp};
+use axum::response::IntoResponse;
 use busbar_contract::records::{PlaneRequestCtx, ScopeRef, VirtualKey};
 
 /// A deployment whose only pool is `pool`, so `pool_label` keeps the name and the metric delta is
@@ -96,7 +96,11 @@ fn an_admitted_unit_ends_once_at_its_finish_and_never_at_the_door() {
         StatusCode::BAD_GATEWAY.into_response(),
         grant.is_some(),
     );
-    assert_eq!(terminals(pool) - before, 1, "one admitted unit, one terminal");
+    assert_eq!(
+        terminals(pool) - before,
+        1,
+        "one admitted unit, one terminal"
+    );
 }
 
 /// Each finish door is one terminal per call: a unit routed through either ends exactly once.

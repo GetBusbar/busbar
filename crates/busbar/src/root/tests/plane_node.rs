@@ -1575,7 +1575,6 @@ async fn billing_off_serves_free_writes_its_metering_row_reading_zero_yet_still_
     assert_eq!(field(&guarded, "metering_rows"), "");
 }
 
-
 // ── THE TWO SURFACES WHOSE MODEL IS IN THE URL ─────────────────────────────────────────────
 
 /// THE DIALECT FIXTURE (`fixtures/plane_node_dialects.json`): each dialect's native request body
