@@ -398,8 +398,8 @@ because = "Test anchors for the failover-after-refusal test the ARCHITECT asked 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
 file    = "qa/construction.toml"
 from    = 53148
-to      = 54295
-because = "OWNER GRANT 2026-09-29 (3) / ARCHITECT GRANT 3, kernel line-limit at the measured value, itemised per lane over predev 53148: E12 (SWEEP-KERNEL + LLM-CLEAN, lower-only) measured 52945 (-203); URL-SEAM -17 and RESOLVE-PIN +66 (the pooled client's dial judge; ARCHITECT approved) = +49; H2 host services +1260 (ARCHITECT approved 2026-10-01). 53148 - 203 + 49 + 1260 = 54254. Then the llm fold (step 34a and the plane ABI v1 refusal/arrival edits: the plane driver chooses a refusal's status from the plane's stated rows, keeps a refused arrive's own code and 4xx and the unit key, and hands refusal the reason, unit, code, target and the method on arrive), +41 measured over the plane driver core: 54254 + 41 = 54295."
+to      = 55608
+because = "OWNER GRANT 2026-09-29 (3) / ARCHITECT GRANT 3, kernel line-limit at the measured value, itemised per lane over predev 53148: E12 (SWEEP-KERNEL + LLM-CLEAN, lower-only) measured 52945 (-203); URL-SEAM -17 and RESOLVE-PIN +66 (the pooled client's dial judge; ARCHITECT approved) = +49; H2 host services +1260 (ARCHITECT approved 2026-10-01). 53148 - 203 + 49 + 1260 = 54254. Then the llm fold (step 34a and the plane ABI v1 refusal/arrival edits: the plane driver chooses a refusal's status from the plane's stated rows, keeps a refused arrive's own code and 4xx and the unit key, and hands refusal the reason, unit, code, target and the method on arrive), +41 measured over the plane driver core: 54254 + 41 = 54295. Then the production far end and money seam for the plane driver, +1313 at the measurement (ARCHITECT cap from the itemised table, 2026-10-01): step 15's budget modes +80; the walk's pick in the pump +33; the far end over the kernel's egress walk and the connector +831 and its follow-ups +116; the production money seam +180 and its checked sums and once-only ledger +68; the piece's claim, dialect and caller reference +64; one identity re-export home +3; drains -64: 54295 + 1313 = 55608."
 
 # ── THE KERNEL CEILING, RE-ARMED BY T13b (WIRE-STORE C1 + CONNECTOR-19 + T13B-FIX) — EXPIRED AND STRUCK
 #
@@ -1468,7 +1468,18 @@ kernel_crate = "busbar-kernel"
 # ── RE-ARMED 52945 -> 54254 for URL-SEAM + RESOLVE-PIN (+49) and H2 (+1260), declared above.
 # ── RE-ARMED 54254 -> 54295 for the plane driver's refusal statuses and arrival refusals (the llm fold,
 # step 34a, plane ABI v1), declared above, +41.
-kernel_ceiling = 54295
+# ── RE-ARMED 54295 -> 55608 (+1313), AT THE MEASUREMENT (OWNER GRANT 2026-09-29 (3); ARCHITECT cap from the
+# itemised table, 2026-10-01): step 15's budget modes +80 (53501 measured on the stack); K2, the
+# production far end and money seam for the plane driver, +1233: the walk's pick in the pump +33;
+# the far end over the kernel's egress walk and the connector +831, its pool, path-only target,
+# bounded auth wait, zeroised credentials, trailers, passthrough and error-body cap +116; the
+# production money seam +180 and its checked sums and once-only ledger +68; the piece's claim,
+# dialect and caller reference +64; one identity re-export home +3; drains -64 (the walk's own
+# context-length exclusion, attempt cap and breaker judge; one class-sum fold; unread Debug).
+# STANDING DUPLICATE (F1): the far end's pull-style walk (next_member, pick, take, shed, least_bad,
+# queue, settle, about 270 lines) restates busbar-kernel-egress walk.rs/exhaustion.rs; it expires
+# at LLM-ENGINE-DELETE, when the call-and-wait walk goes and the far end is the one walk.
+kernel_ceiling = 55608
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
