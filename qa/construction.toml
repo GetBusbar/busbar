@@ -1480,7 +1480,7 @@ kernel_crate = "busbar-kernel"
 # production money seam +180 and its checked sums and once-only ledger +68; the piece's claim,
 # dialect and caller reference +64; one identity re-export home +3; drains -64 (the walk's own
 # context-length exclusion, attempt cap and breaker judge; one class-sum fold; unread Debug).
-# STANDING DUPLICATE (F1): the far end's pull-style walk (next_member, pick, take, shed, least_bad,
+# STANDING DUPLICATE: the far end's pull-style walk (next_member, pick, take, shed, least_bad,
 # queue, settle, about 270 lines) restates busbar-kernel-egress walk.rs/exhaustion.rs; it expires
 # at LLM-ENGINE-DELETE, when the call-and-wait walk goes and the far end is the one walk.
 kernel_ceiling = 55608
