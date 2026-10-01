@@ -104,7 +104,7 @@ const FLV: &str = "flv";
 const GIF: &str = "gif";
 const MKV: &str = "mkv";
 const MOV: &str = "mov";
-const MP4: &str = "mp4";
+const FORMAT_MP4: &str = "mp4";
 const MPEG: &str = "mpeg";
 const MPG: &str = "mpg";
 const PDF: &str = "pdf";
@@ -809,7 +809,7 @@ fn bedrock_media_type_for_format(kind: crate::codec::ir::IrMediaKind, format: &s
         DOCX => APPLICATION_VND_OPENXMLFORMATS_OFFICEDOCUMENT_WORDPROCESSINGML_DOCUMENT.to_string(),
         XLS => APPLICATION_VND_MS_EXCEL.to_string(),
         XLSX => APPLICATION_VND_OPENXMLFORMATS_OFFICEDOCUMENT_SPREADSHEETML_SHEET.to_string(),
-        MP4 | MOV | WEBM | FLV | MPEG | MPG | WMV | MKV => {
+        FORMAT_MP4 | MOV | WEBM | FLV | MPEG | MPG | WMV | MKV => {
             format!("video/{format}")
         }
         THREE_GP => "video/3gpp".to_string(),
@@ -935,14 +935,14 @@ fn bedrock_document_format(source: &crate::codec::ir::IrImageSource) -> Option<&
 /// Mime type → a member of Converse's closed `VideoFormat` union, or `None` (drop with a warn).
 fn bedrock_video_format(source: &crate::codec::ir::IrImageSource) -> Option<&'static str> {
     let crate::codec::ir::IrImageSource::Base64 { media_type, .. } = source else {
-        return Some(MP4);
+        return Some(FORMAT_MP4);
     };
     let subtype = media_type
         .to_ascii_lowercase()
         .strip_prefix("video/")
         .map(String::from);
     let f = match subtype.as_deref() {
-        Some(MP4) => MP4,
+        Some(FORMAT_MP4) => FORMAT_MP4,
         Some("quicktime") | Some(MOV) => MOV,
         Some(WEBM) => WEBM,
         Some("x-flv") | Some(FLV) => FLV,

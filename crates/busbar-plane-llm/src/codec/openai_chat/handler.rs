@@ -9,6 +9,9 @@ use crate::codec::ir::moderation::{
     ModerationInput, ModerationReq, ModerationResp, ModerationResult,
 };
 use busbar_contract::codec::{CodecError, IngressReject, RequestHandler};
+// The leaf cells' trait, which the dialect's handler tests call through.
+#[cfg(test)]
+use busbar_contract::codec::OperationHandler;
 use busbar_contract::codec::{EgressCtx, WireBody};
 use busbar_contract::operation::OpVerb;
 use busbar_contract::SlabBytes;

@@ -418,7 +418,7 @@ const REJECTED_PREDICTION_TOKENS: &str = "rejected_prediction_tokens";
 /// The OpenAI wire word `audio`.
 const AUDIO: &str = "audio";
 /// The OpenAI wire word `mp3`.
-const MP3: &str = "mp3";
+const FORMAT_MP3: &str = "mp3";
 /// The OpenAI wire word `choices`.
 const CHOICES: &str = "choices";
 /// The OpenAI wire word `max_completion_tokens`.
@@ -832,7 +832,7 @@ fn media_part_from_ir(
 /// token the API rejects.
 fn openai_audio_input_format(media_type: &str) -> Option<&'static str> {
     match media_type.to_ascii_lowercase().as_str() {
-        keys::AUDIO_MPEG | "audio/mp3" | "audio/mpeg3" | "audio/x-mpeg-3" => Some(MP3),
+        keys::AUDIO_MPEG | "audio/mp3" | "audio/mpeg3" | "audio/x-mpeg-3" => Some(FORMAT_MP3),
         AUDIO_WAV | "audio/x-wav" | "audio/wave" | "audio/vnd.wave" | "audio/x-pn-wav" => {
             Some(keys::WAV)
         }
@@ -1030,7 +1030,7 @@ fn file_media_type_from_name(name: Option<&str>) -> &'static str {
         ("jpg", keys::IMAGE_JPEG),
         ("jpeg", keys::IMAGE_JPEG),
         (keys::WAV, AUDIO_WAV),
-        (MP3, keys::AUDIO_MPEG),
+        (FORMAT_MP3, keys::AUDIO_MPEG),
     ];
     crate::codec::dialect::media_type(
         &[

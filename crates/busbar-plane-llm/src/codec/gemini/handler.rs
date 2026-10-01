@@ -20,6 +20,9 @@ use crate::codec::ir::embeddings::{
 };
 use crate::codec::keys;
 use busbar_contract::codec::{CodecError, IngressReject, RequestHandler};
+// The leaf cells' trait, which the dialect's handler tests call through.
+#[cfg(test)]
+use busbar_contract::codec::OperationHandler;
 use busbar_contract::codec::{EgressCtx, WireBody};
 use busbar_contract::media::{base64_encode, MediaBlob, MediaPayload};
 use busbar_contract::operation::OpVerb;

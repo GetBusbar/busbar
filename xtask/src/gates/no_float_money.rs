@@ -624,7 +624,7 @@ pub const ALLOWED_COUNT_READS: &[Allow] = &[
     // ── Not a count, permanently ──────────────────────────────────────────────────────────────
     Allow {
         file: "crates/busbar-plane-llm/src/codec/bedrock/mod.rs",
-        needle: "contentBlockIndex",
+        needle: "CONTENT_BLOCK_INDEX",
         class: AllowClass::NotACount,
         why: "a frame's position in a sequence, not a quantity anybody is billed for",
     },
