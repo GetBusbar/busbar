@@ -50,6 +50,17 @@ pub const PROVIDER_SIGNAL_CONTEXT_LENGTH: &str = "context_length";
 /// name costs one entry, and so the writer's lookup cannot be thrown off by a `null` hole.
 pub const MESSAGE_NAMES_SENTINEL: &str = "__busbar_message_names";
 
+/// The refusal a dialect reader returns for bytes it cannot read as its own shape: a client error
+/// carrying the `ir_parse` lane signal. One constructor, so every reader refuses alike.
+#[must_use]
+pub fn ir_parse_error() -> busbar_contract::protocol::IrError {
+    busbar_contract::protocol::IrError {
+        class: busbar_contract::upstream::StatusClass::ClientError,
+        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
+        retry_after: None,
+    }
+}
+
 /// Precise context-length prose scan shared by `OpenAiReader::extract_error` and
 /// `ResponsesReader::extract_error` — the message scan was duplicated. The scan must be PRECISE:
 /// a naive OR of weak tokens (`token`/`maximum`) misclassifies unrelated errors (e.g. a quota body

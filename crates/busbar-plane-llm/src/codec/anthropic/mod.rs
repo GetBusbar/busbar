@@ -33,6 +33,7 @@ mod citations;
 mod ids;
 mod slots;
 mod usage;
+use crate::codec::dialect::ir_parse_error;
 use blocks::*;
 use citations::*;
 use ids::*;
@@ -671,11 +672,7 @@ fn read_cache_control(
             kind: crate::codec::ir::CacheKind::Ephemeral,
         })),
         None => Ok(None),
-        Some(_) => Err(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        }),
+        Some(_) => Err(ir_parse_error()),
     }
 }
 

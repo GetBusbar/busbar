@@ -3,6 +3,7 @@
 
 //! OpenAI protocol reader/writer implementation.
 
+use crate::codec::dialect::ir_parse_error;
 use crate::codec::ir::{IrStreamEvent, IrUsage};
 use crate::codec::usage_count::read_count_u64;
 use busbar_contract::http::StatusCode;
@@ -799,11 +800,7 @@ fn openai_audio_input_format(media_type: &str) -> Option<&'static str> {
 
 /// Read an OpenAI-format block from JSON.
 fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::IrBlock, IrError> {
-    let obj = block_val.as_object().ok_or(IrError {
-        class: StatusClass::ClientError,
-        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-        retry_after: None,
-    })?;
+    let obj = block_val.as_object().ok_or_else(ir_parse_error)?;
 
     let block_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -819,11 +816,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::
             })
         }
         "image_url" => {
-            let image_obj = obj.get("image_url").ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })?;
+            let image_obj = obj.get("image_url").ok_or_else(ir_parse_error)?;
             let url = image_obj.get("url").and_then(|v| v.as_str()).unwrap_or("");
             // The IR `Image` contract (set by the Anthropic reader) is: `media_type` = a real MIME
             // type (e.g. "image/png") and `data` = the raw base64 payload. The Anthropic writer
@@ -858,11 +851,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::
         // (`wav`), so normalize it to the real mime type the neutral IR (and every other dialect)
         // speaks; the writer reverses this exactly.
         "input_audio" => {
-            let audio_obj = obj.get("input_audio").ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })?;
+            let audio_obj = obj.get("input_audio").ok_or_else(ir_parse_error)?;
             let data = audio_obj
                 .get("data")
                 .and_then(|v| v.as_str())
@@ -892,11 +881,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::
         // source an image gets. A `file_id` is an OpenAI-hosted reference with NO neutral form, so it
         // rides the opaque `Vendor` escape and only an OpenAI-family writer re-emits it.
         "file" => {
-            let file_obj = obj.get("file").ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })?;
+            let file_obj = obj.get("file").ok_or_else(ir_parse_error)?;
             let name = file_obj
                 .get("filename")
                 .and_then(|v| v.as_str())
@@ -1013,11 +998,7 @@ fn file_media_type_from_name(name: Option<&str>) -> &'static str {
 
 /// Read an OpenAI-format tool from JSON.
 fn read_openai_tool(tool_val: &serde_json::Value) -> Result<crate::codec::ir::IrTool, IrError> {
-    let obj = tool_val.as_object().ok_or(IrError {
-        class: StatusClass::ClientError,
-        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-        retry_after: None,
-    })?;
+    let obj = tool_val.as_object().ok_or_else(ir_parse_error)?;
 
     // A tool whose `type` is not `function` — today Chat's `custom` tool
     // (`{"type":"custom","custom":{"name","description","format"}}`, free-text or grammar input, no

@@ -1,3 +1,4 @@
+use crate::codec::dialect::ir_parse_error;
 use super::*;
 
 impl ProtocolReader for GeminiReader {
@@ -299,11 +300,7 @@ impl ProtocolReader for GeminiReader {
         &self,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrRequest, IrError> {
-        let obj = body.as_object().ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        })?;
+        let obj = body.as_object().ok_or_else(ir_parse_error)?;
 
         let mut extra = serde_json::Map::new();
         let mut system_blocks: Vec<crate::codec::ir::IrBlock> = Vec::new();
@@ -339,11 +336,7 @@ impl ProtocolReader for GeminiReader {
             // (string/number/object where the array is required) is a genuine structural violation.
             // Reject with a 400 rather than silently coercing to an empty conversation (matching the
             // strict openai_chat/cohere readers). ABSENT `contents` stays lenient.
-            let contents_arr = contents_val.as_array().ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })?;
+            let contents_arr = contents_val.as_array().ok_or_else(ir_parse_error)?;
             for (turn, content_val) in contents_arr.iter().enumerate() {
                 let role_str = content_val
                     .get("role")
@@ -356,13 +349,7 @@ impl ProtocolReader for GeminiReader {
                     "user" | "" => crate::codec::ir::IrRole::User,
                     "model" => crate::codec::ir::IrRole::Assistant,
                     _ => {
-                        return Err(IrError {
-                            class: StatusClass::ClientError,
-                            provider_signal: Some(
-                                busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
-                            ),
-                            retry_after: None,
-                        })
+                        return Err(ir_parse_error())
                     }
                 };
 
@@ -374,13 +361,7 @@ impl ProtocolReader for GeminiReader {
                 let parts_val = content_val.get("parts");
                 if let Some(pv) = parts_val {
                     if !pv.is_array() {
-                        return Err(IrError {
-                            class: StatusClass::ClientError,
-                            provider_signal: Some(
-                                busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
-                            ),
-                            retry_after: None,
-                        });
+                        return Err(ir_parse_error());
                     }
                 }
                 if let Some(parts_arr) = parts_val.and_then(|p| p.as_array()) {
@@ -1423,11 +1404,7 @@ impl ProtocolReader for GeminiReader {
         &self,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrResponse, IrError> {
-        let obj = body.as_object().ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        })?;
+        let obj = body.as_object().ok_or_else(ir_parse_error)?;
 
         // Prompt-blocked envelope. A native Gemini `generateContent` can reject the PROMPT itself
         // (not a candidate): the body carries a top-level `promptFeedback.blockReason` (e.g.
@@ -1469,23 +1446,11 @@ impl ProtocolReader for GeminiReader {
         }
 
         // Parse candidates array - must have at least one
-        let candidates_val = obj.get("candidates").ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        })?;
-        let candidates = candidates_val.as_array().ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        })?;
+        let candidates_val = obj.get("candidates").ok_or_else(ir_parse_error)?;
+        let candidates = candidates_val.as_array().ok_or_else(ir_parse_error)?;
 
         if candidates.is_empty() {
-            return Err(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            });
+            return Err(ir_parse_error());
         }
 
         // A client can legally request N>1 (Gemini `candidateCount`, promoted from `n` on the request

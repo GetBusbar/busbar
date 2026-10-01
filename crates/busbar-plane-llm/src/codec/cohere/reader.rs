@@ -1,3 +1,4 @@
+use crate::codec::dialect::ir_parse_error;
 use super::*;
 
 impl ProtocolReader for CohereReader {
@@ -172,11 +173,7 @@ impl ProtocolReader for CohereReader {
         &self,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrRequest, IrError> {
-        let obj = body.as_object().ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        })?;
+        let obj = body.as_object().ok_or_else(ir_parse_error)?;
 
         let mut extra = serde_json::Map::new();
         let mut system_blocks: Vec<crate::codec::ir::IrBlock> = Vec::new();
@@ -188,11 +185,7 @@ impl ProtocolReader for CohereReader {
 
         let mut messages: Vec<crate::codec::ir::IrMessage> = Vec::new();
         if let Some(messages_val) = obj.get("messages") {
-            let msgs_arr = messages_val.as_array().ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })?;
+            let msgs_arr = messages_val.as_array().ok_or_else(ir_parse_error)?;
 
             for msg_val in msgs_arr {
                 let role_str = msg_val.get("role").and_then(|r| r.as_str()).unwrap_or("");
@@ -202,13 +195,7 @@ impl ProtocolReader for CohereReader {
                     "assistant" => crate::codec::ir::IrRole::Assistant,
                     "tool" => crate::codec::ir::IrRole::Tool,
                     _ => {
-                        return Err(IrError {
-                            class: StatusClass::ClientError,
-                            provider_signal: Some(
-                                busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
-                            ),
-                            retry_after: None,
-                        })
+                        return Err(ir_parse_error())
                     }
                 };
 
@@ -220,13 +207,7 @@ impl ProtocolReader for CohereReader {
                 // uses. Absent/null/empty stay lenient (forward-compat).
                 if let Some(cv) = msg_val.get("content") {
                     if !cv.is_null() && !cv.is_string() && !cv.is_array() {
-                        return Err(IrError {
-                            class: StatusClass::ClientError,
-                            provider_signal: Some(
-                                busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
-                            ),
-                            retry_after: None,
-                        });
+                        return Err(ir_parse_error());
                     }
                 }
 
@@ -460,14 +441,7 @@ impl ProtocolReader for CohereReader {
                                         .get("id")
                                         .and_then(|v| v.as_str())
                                         .filter(|s| !s.is_empty())
-                                        .ok_or(IrError {
-                                            class: StatusClass::ClientError,
-                                            provider_signal: Some(
-                                                busbar_contract::protocol::SIGNAL_IR_PARSE
-                                                    .to_string(),
-                                            ),
-                                            retry_after: None,
-                                        })?
+                                        .ok_or_else(ir_parse_error)?
                                         .to_string();
                                     let name = func_obj
                                         .get("name")
@@ -604,11 +578,7 @@ impl ProtocolReader for CohereReader {
                 });
             }
         } else {
-            return Err(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            });
+            return Err(ir_parse_error());
         }
 
         let mut tools: Vec<crate::codec::ir::IrTool> = Vec::new();
@@ -1365,16 +1335,8 @@ impl ProtocolReader for CohereReader {
         &self,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrResponse, IrError> {
-        let obj = body.as_object().ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        })?;
-        let message_val = obj.get("message").ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        })?;
+        let obj = body.as_object().ok_or_else(ir_parse_error)?;
+        let message_val = obj.get("message").ok_or_else(ir_parse_error)?;
 
         let mut content: Vec<crate::codec::ir::IrBlock> = Vec::new();
         // Cohere v2 carries the assistant's INTERNAL plan that precedes its tool calls in

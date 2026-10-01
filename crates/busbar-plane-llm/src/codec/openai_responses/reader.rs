@@ -1,3 +1,4 @@
+use crate::codec::dialect::ir_parse_error;
 use super::*;
 
 impl ProtocolReader for ResponsesReader {
@@ -101,18 +102,10 @@ impl ProtocolReader for ResponsesReader {
         &self,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrRequest, IrError> {
-        let obj = body.as_object().ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        })?;
+        let obj = body.as_object().ok_or_else(ir_parse_error)?;
 
         if obj.is_empty() {
-            return Err(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            });
+            return Err(ir_parse_error());
         }
 
         // STATEFUL RESPONSES — server-side conversation-state knobs. `previous_response_id`
@@ -134,21 +127,13 @@ impl ProtocolReader for ResponsesReader {
             .get("previous_response_id")
             .is_some_and(|v| !v.is_null() && !v.is_string())
         {
-            return Err(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            });
+            return Err(ir_parse_error());
         }
         if obj
             .get("store")
             .is_some_and(|v| !v.is_null() && !v.is_boolean())
         {
-            return Err(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            });
+            return Err(ir_parse_error());
         }
 
         let mut extra = serde_json::Map::new();
@@ -185,11 +170,7 @@ impl ProtocolReader for ResponsesReader {
             // conversation — reject it with a 400 (matching the strict openai_chat/cohere readers). A
             // `null` input is tolerated as absent (an instructions-only request stays valid).
             if !input_val.is_null() && !input_val.is_string() && !input_val.is_array() {
-                return Err(IrError {
-                    class: StatusClass::ClientError,
-                    provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                    retry_after: None,
-                });
+                return Err(ir_parse_error());
             }
             if input_val.is_string() {
                 let text = input_val.as_str().unwrap_or("").to_string();
@@ -269,13 +250,7 @@ impl ProtocolReader for ResponsesReader {
                                 .get("call_id")
                                 .and_then(|c| c.as_str())
                                 .filter(|s| !s.is_empty())
-                                .ok_or(IrError {
-                                    class: StatusClass::ClientError,
-                                    provider_signal: Some(
-                                        busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
-                                    ),
-                                    retry_after: None,
-                                })?
+                                .ok_or_else(ir_parse_error)?
                                 .to_string();
                             let name = item
                                 .get("name")
@@ -346,13 +321,7 @@ impl ProtocolReader for ResponsesReader {
                             // would silently drop into an empty (vanished) turn — reject with a 400.
                             if let Some(cv) = item.get("content") {
                                 if !cv.is_null() && !cv.is_string() && !cv.is_array() {
-                                    return Err(IrError {
-                                        class: StatusClass::ClientError,
-                                        provider_signal: Some(
-                                            busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
-                                        ),
-                                        retry_after: None,
-                                    });
+                                    return Err(ir_parse_error());
                                 }
                             }
                             let role_str = item.get("role").and_then(|r| r.as_str()).unwrap_or("");
@@ -493,13 +462,7 @@ impl ProtocolReader for ResponsesReader {
                         // violation the projections below would silently drop — reject with a 400.
                         if let Some(cv) = content_val {
                             if !cv.is_null() && !cv.is_string() && !cv.is_array() {
-                                return Err(IrError {
-                                    class: StatusClass::ClientError,
-                                    provider_signal: Some(
-                                        busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
-                                    ),
-                                    retry_after: None,
-                                });
+                                return Err(ir_parse_error());
                             }
                         }
 
@@ -556,11 +519,7 @@ impl ProtocolReader for ResponsesReader {
                 }
             }
         } else if !obj.contains_key("instructions") {
-            return Err(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            });
+            return Err(ir_parse_error());
         }
 
         let mut tools: Vec<crate::codec::ir::IrTool> = Vec::new();
@@ -569,11 +528,7 @@ impl ProtocolReader for ResponsesReader {
             // A PRESENT `tools` that is not an array is a malformed request — reject it (mirroring the
             // `input` type-check) rather than coercing to empty, which would forward a tool-less
             // request upstream at HTTP 200 and silently strip the caller's tools.
-            let tools_arr = tools_val.as_array().ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })?;
+            let tools_arr = tools_val.as_array().ok_or_else(ir_parse_error)?;
             for tool_val in tools_arr {
                 // HOSTED-TOOL PASSTHROUGH. The Responses `tools` array mixes CUSTOM
                 // function tools (`type:"function"` with a flat `name`/`parameters`) with provider-
@@ -1578,11 +1533,7 @@ impl ProtocolReader for ResponsesReader {
         &self,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrResponse, IrError> {
-        let obj = body.as_object().ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        })?;
+        let obj = body.as_object().ok_or_else(ir_parse_error)?;
 
         let status = obj.get("status").and_then(|s| s.as_str()).unwrap_or("");
 
@@ -1803,11 +1754,7 @@ impl ProtocolReader for ResponsesReader {
         } else {
             // `status:"failed"` is handled by the early return above, so a missing/non-array
             // `output` here is a genuine parse failure (malformed body).
-            return Err(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            });
+            return Err(ir_parse_error());
         }
 
         // Promote a successful end_turn to tool_use when the assembled content carries a tool call,

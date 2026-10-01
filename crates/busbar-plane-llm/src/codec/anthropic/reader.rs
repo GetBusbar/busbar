@@ -1,3 +1,4 @@
+use crate::codec::dialect::ir_parse_error;
 use super::*;
 
 impl ProtocolReader for AnthropicReader {
@@ -203,11 +204,7 @@ impl ProtocolReader for AnthropicReader {
         &self,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrRequest, IrError> {
-        let obj = body.as_object().ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        })?;
+        let obj = body.as_object().ok_or_else(ir_parse_error)?;
 
         let mut extra = serde_json::Map::new();
         let mut system_blocks: Vec<crate::codec::ir::IrBlock> = Vec::new();
@@ -255,11 +252,7 @@ impl ProtocolReader for AnthropicReader {
             // (string/number/object where an array is required) is a genuine structural violation.
             // Reject it with a 400 rather than silently coercing to an empty conversation (matching
             // the strict openai_chat/cohere readers). An ABSENT `messages` stays lenient above.
-            let messages_arr = messages_val.as_array().ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })?;
+            let messages_arr = messages_val.as_array().ok_or_else(ir_parse_error)?;
             for msg_val in messages_arr {
                 let msg = read_message(msg_val)?;
                 if msg.role == crate::codec::ir::IrRole::System {
@@ -295,11 +288,7 @@ impl ProtocolReader for AnthropicReader {
             // A PRESENT `tools` that is not an array is a malformed request — reject it (mirroring the
             // `messages` type-check above) rather than coercing to empty, which would forward a
             // tool-less request upstream at HTTP 200 and silently strip the caller's tools.
-            let tools_arr = tools_val.as_array().ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })?;
+            let tools_arr = tools_val.as_array().ok_or_else(ir_parse_error)?;
             for tool_val in tools_arr {
                 match read_hosted_tool(tool_val) {
                     Some(hosted) => hosted_tools.push(hosted),
@@ -795,31 +784,19 @@ impl ProtocolReader for AnthropicReader {
         &self,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrResponse, IrError> {
-        let obj = body.as_object().ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.into()),
-            retry_after: None,
-        })?;
+        let obj = body.as_object().ok_or_else(ir_parse_error)?;
 
         // Parse role (should be "assistant" for responses)
         let role_str = obj.get("role").and_then(|r| r.as_str()).unwrap_or("");
         let role = match role_str {
             "assistant" => crate::codec::ir::IrRole::Assistant,
             _ => {
-                return Err(IrError {
-                    class: StatusClass::ClientError,
-                    provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.into()),
-                    retry_after: None,
-                })
+                return Err(ir_parse_error())
             }
         };
 
         // Parse content blocks
-        let content_val = obj.get("content").ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.into()),
-            retry_after: None,
-        })?;
+        let content_val = obj.get("content").ok_or_else(ir_parse_error)?;
         let mut content: Vec<crate::codec::ir::IrBlock> = Vec::new();
         if let Some(arr) = content_val.as_array() {
             for block_val in arr {

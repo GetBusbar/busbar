@@ -1,3 +1,4 @@
+use crate::codec::dialect::ir_parse_error;
 use super::*;
 
 impl ProtocolReader for OpenAiReader {
@@ -104,11 +105,7 @@ impl ProtocolReader for OpenAiReader {
         &self,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrRequest, IrError> {
-        let obj = body.as_object().ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        })?;
+        let obj = body.as_object().ok_or_else(ir_parse_error)?;
 
         let mut extra = serde_json::Map::new();
         let mut system_blocks: Vec<crate::codec::ir::IrBlock> = Vec::new();
@@ -187,11 +184,7 @@ impl ProtocolReader for OpenAiReader {
         // call of the same name — the legacy wire correlates by name alone.
         let mut legacy_calls: Vec<(String, String, bool)> = Vec::new();
         if let Some(messages_val) = obj.get("messages") {
-            let msgs_arr = messages_val.as_array().ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })?;
+            let msgs_arr = messages_val.as_array().ok_or_else(ir_parse_error)?;
 
             for msg_val in msgs_arr.iter() {
                 let role_str = msg_val.get("role").and_then(|r| r.as_str()).unwrap_or("");
@@ -205,13 +198,7 @@ impl ProtocolReader for OpenAiReader {
                 // stay lenient (forward-compat).
                 if let Some(cv) = content_val {
                     if !cv.is_null() && !cv.is_string() && !cv.is_array() {
-                        return Err(IrError {
-                            class: StatusClass::ClientError,
-                            provider_signal: Some(
-                                busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
-                            ),
-                            retry_after: None,
-                        });
+                        return Err(ir_parse_error());
                     }
                 }
 
@@ -227,13 +214,7 @@ impl ProtocolReader for OpenAiReader {
                     // tool result correlated by name (OAI-07); it is read as one below.
                     "tool" | "function" => crate::codec::ir::IrRole::Tool,
                     _ => {
-                        return Err(IrError {
-                            class: StatusClass::ClientError,
-                            provider_signal: Some(
-                                busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
-                            ),
-                            retry_after: None,
-                        })
+                        return Err(ir_parse_error())
                     }
                 };
 
@@ -330,22 +311,9 @@ impl ProtocolReader for OpenAiReader {
                                         .get("id")
                                         .and_then(|v| v.as_str())
                                         .filter(|s| !s.is_empty())
-                                        .ok_or(IrError {
-                                            class: StatusClass::ClientError,
-                                            provider_signal: Some(
-                                                busbar_contract::protocol::SIGNAL_IR_PARSE
-                                                    .to_string(),
-                                            ),
-                                            retry_after: None,
-                                        })?
+                                        .ok_or_else(ir_parse_error)?
                                         .to_string();
-                                    let func = tc_val.get("function").ok_or(IrError {
-                                        class: StatusClass::ClientError,
-                                        provider_signal: Some(
-                                            busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
-                                        ),
-                                        retry_after: None,
-                                    })?;
+                                    let func = tc_val.get("function").ok_or_else(ir_parse_error)?;
                                     let name = func
                                         .get("name")
                                         .and_then(|v| v.as_str())
@@ -540,11 +508,7 @@ impl ProtocolReader for OpenAiReader {
             // A PRESENT `tools` that is not an array is a malformed request — reject it (mirroring the
             // `messages` type-check) rather than coercing to empty, which would forward a tool-less
             // request upstream at HTTP 200 and silently strip the caller's tools.
-            let tools_arr = tools_val.as_array().ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })?;
+            let tools_arr = tools_val.as_array().ok_or_else(ir_parse_error)?;
             for tool_val in tools_arr {
                 // OAI-09: a `custom` tool (free-text / grammar input) crosses in
                 // the typed hosted-tool slot, so a Responses lane receives it; one carrying a member
@@ -1312,30 +1276,14 @@ impl ProtocolReader for OpenAiReader {
         &self,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrResponse, IrError> {
-        let obj = body.as_object().ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.into()),
-            retry_after: None,
-        })?;
+        let obj = body.as_object().ok_or_else(ir_parse_error)?;
 
         // Get choices array
-        let choices_val = obj.get("choices").ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.into()),
-            retry_after: None,
-        })?;
-        let choices = choices_val.as_array().ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.into()),
-            retry_after: None,
-        })?;
+        let choices_val = obj.get("choices").ok_or_else(ir_parse_error)?;
+        let choices = choices_val.as_array().ok_or_else(ir_parse_error)?;
 
         if choices.is_empty() {
-            return Err(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.into()),
-                retry_after: None,
-            });
+            return Err(ir_parse_error());
         }
 
         // A client can legally request n>1 (OpenAI `n`). This reader collapses to choices[0], which
@@ -1354,11 +1302,7 @@ impl ProtocolReader for OpenAiReader {
         let choice = &choices[0];
 
         // Parse role (should be "assistant")
-        let message_val = choice.get("message").ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.into()),
-            retry_after: None,
-        })?;
+        let message_val = choice.get("message").ok_or_else(ir_parse_error)?;
         let _role_str = message_val
             .get("role")
             .and_then(|r| r.as_str())
@@ -1457,11 +1401,7 @@ impl ProtocolReader for OpenAiReader {
                     // deterministic `call_…` id when the backend supplied none — so the correlation key
                     // is never blank. (`unwrap_or("")` previously let an empty id through to egress.)
                     let raw_id = tc_val.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                    let func = tc_val.get("function").ok_or(IrError {
-                        class: StatusClass::ClientError,
-                        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.into()),
-                        retry_after: None,
-                    })?;
+                    let func = tc_val.get("function").ok_or_else(ir_parse_error)?;
                     let name = func
                         .get("name")
                         .and_then(|v| v.as_str())

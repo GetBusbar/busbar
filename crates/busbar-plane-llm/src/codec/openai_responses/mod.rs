@@ -3,6 +3,7 @@
 
 //! OpenAI Responses API protocol reader/writer implementation.
 
+use crate::codec::dialect::ir_parse_error;
 use crate::codec::ir::IrStreamEvent;
 use crate::codec::usage_count::read_count_u64;
 use busbar_contract::http::StatusCode;
@@ -904,11 +905,7 @@ fn responses_modeled_keys() -> &'static std::collections::HashSet<&'static str> 
 pub struct ResponsesReader;
 
 fn responses_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::IrBlock, IrError> {
-    let obj = block_val.as_object().ok_or(IrError {
-        class: StatusClass::ClientError,
-        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-        retry_after: None,
-    })?;
+    let obj = block_val.as_object().ok_or_else(ir_parse_error)?;
 
     let block_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -937,11 +934,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::Ir
         "input_image" => {
             // Handle a file_id-referenced image (no inline `image_url`) faithfully rather than
             // emitting an empty Image block. Shared with the request-input reader.
-            responses_input_image_block(block_val).ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })
+            responses_input_image_block(block_val).ok_or_else(ir_parse_error)
         }
         // A file ATTACHMENT: `{"type":"input_file","file_data":"data:application/pdf;base64,…",
         // "filename":"x.pdf"}`, or `{"file_url":"https://…"}`, or `{"file_id":"file-1"}`. It used to
@@ -1012,11 +1005,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::Ir
         // (`openai_chat`'s reader): the bare format token becomes the `audio/<format>` mime the
         // neutral IR speaks, so a Gemini/Bedrock/Chat backend receives the clip.
         "input_audio" => {
-            let audio_obj = obj.get("input_audio").ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })?;
+            let audio_obj = obj.get("input_audio").ok_or_else(ir_parse_error)?;
             let data = audio_obj
                 .get("data")
                 .and_then(|v| v.as_str())

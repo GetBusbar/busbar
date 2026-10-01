@@ -1,3 +1,4 @@
+use crate::codec::dialect::ir_parse_error;
 use super::*;
 
 impl ProtocolReader for BedrockReader {
@@ -166,11 +167,7 @@ impl ProtocolReader for BedrockReader {
         &self,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrRequest, IrError> {
-        let obj = body.as_object().ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        })?;
+        let obj = body.as_object().ok_or_else(ir_parse_error)?;
 
         // Collect every unmodeled top-level request field into `extra` so a same-protocol
         // Bedrock->Bedrock passthrough re-emits them faithfully (see `write_request`, which merges
@@ -292,11 +289,7 @@ impl ProtocolReader for BedrockReader {
             // (string/number/object where the array is required) is a genuine structural violation.
             // Reject with a 400 rather than silently coercing to an empty conversation (matching the
             // strict openai_chat/cohere readers). ABSENT `messages` stays lenient.
-            let msgs_arr = messages_val.as_array().ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })?;
+            let msgs_arr = messages_val.as_array().ok_or_else(ir_parse_error)?;
             for (msg_idx, msg_val) in msgs_arr.iter().enumerate() {
                 let role_str = msg_val.get("role").and_then(|r| r.as_str()).unwrap_or("");
 
@@ -304,13 +297,7 @@ impl ProtocolReader for BedrockReader {
                     "user" => crate::codec::ir::IrRole::User,
                     "assistant" => crate::codec::ir::IrRole::Assistant,
                     _ => {
-                        return Err(IrError {
-                            class: StatusClass::ClientError,
-                            provider_signal: Some(
-                                busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
-                            ),
-                            retry_after: None,
-                        })
+                        return Err(ir_parse_error())
                     }
                 };
 
@@ -321,13 +308,7 @@ impl ProtocolReader for BedrockReader {
                 // reject with a 400 instead. An ABSENT `content` stays lenient.
                 if let Some(cv) = msg_val.get("content") {
                     if !cv.is_array() {
-                        return Err(IrError {
-                            class: StatusClass::ClientError,
-                            provider_signal: Some(
-                                busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
-                            ),
-                            retry_after: None,
-                        });
+                        return Err(ir_parse_error());
                     }
                 }
                 if let Some(content_arr) = msg_val.get("content").and_then(|c| c.as_array()) {
@@ -348,13 +329,7 @@ impl ProtocolReader for BedrockReader {
                                 .get("toolUseId")
                                 .and_then(|id| id.as_str())
                                 .filter(|s| !s.is_empty())
-                                .ok_or(IrError {
-                                    class: StatusClass::ClientError,
-                                    provider_signal: Some(
-                                        busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
-                                    ),
-                                    retry_after: None,
-                                })?
+                                .ok_or_else(ir_parse_error)?
                                 .to_string();
                             let name = tool_use
                                 .get("name")
@@ -1341,11 +1316,7 @@ impl ProtocolReader for BedrockReader {
         &self,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrResponse, IrError> {
-        let obj = body.as_object().ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        })?;
+        let obj = body.as_object().ok_or_else(ir_parse_error)?;
 
         // DOCUMENTED CROSS-PROTOCOL DROP (field-coverage carry, drop+warn+test). A native Converse
         // response can carry Bedrock-only diagnostic/echo members the neutral IR has no home for and
@@ -1373,17 +1344,9 @@ impl ProtocolReader for BedrockReader {
             }
         }
 
-        let output_val = obj.get("output").ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        })?;
+        let output_val = obj.get("output").ok_or_else(ir_parse_error)?;
 
-        let message_val = output_val.get("message").ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        })?;
+        let message_val = output_val.get("message").ok_or_else(ir_parse_error)?;
 
         let mut content: Vec<crate::codec::ir::IrBlock> = Vec::new();
 
