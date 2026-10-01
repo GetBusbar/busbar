@@ -44,6 +44,7 @@
 pub mod a2a {
     pub mod anomaly;
     pub mod canonical;
+    pub mod card;
     pub mod task;
 }
 
