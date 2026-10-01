@@ -44,6 +44,12 @@ pub const DEV: &str = "dev";
 /// The repo's default branch: the public sees released code.
 pub const MAIN: &str = "main";
 
+/// The org ruleset (id 24334334, no bypass: update, deletion, non_fast_forward, creation) that locks
+/// `main` and `qa`, and the rule type whose absence
+/// leaves a branch pushable.
+pub const RULESET: &str = "release branches: main + qa (owner say-so only)";
+pub const RULE_UPDATE: &str = "update";
+
 /// Where a file the render does not produce is drift unless the entry keeps it.
 const OWNED_DIRS: &[&str] = &[".github/"];
 
@@ -129,7 +135,8 @@ fn check_repo(
         }
     }
 
-    // BRANCHES: exactly the release branches, each with the one protection.
+    // BRANCHES: exactly the release branches; `dev` with the one protection, `main` and `qa` under the
+    // org ruleset.
     match remote.branches(repo) {
         Err(e) => out.push(f(repo, "branches", format!("could not list: {e}"))),
         Ok(names) => {
@@ -152,24 +159,46 @@ fn check_repo(
                     ));
                 }
             }
-            for b in fleet.branches.iter().filter(|b| have.contains(b.as_str())) {
-                match remote.protection(repo, b) {
+            // dev carries the classic protection; main and qa are locked by the org ruleset.
+            if have.contains(DEV) {
+                match remote.protection(repo, DEV) {
                     Err(e) => out.push(f(
                         repo,
-                        &format!("protection {b}"),
+                        &format!("protection {DEV}"),
                         format!("could not read: {e}"),
                     )),
-                    Ok(None) => out.push(f(repo, &format!("protection {b}"), "unprotected")),
+                    Ok(None) => out.push(f(repo, &format!("protection {DEV}"), "unprotected")),
                     Ok(Some(got)) => {
                         let got = normalize_protection(&got);
                         if &got != spec {
                             out.push(f(
                                 repo,
-                                &format!("protection {b}"),
+                                &format!("protection {DEV}"),
                                 format!("differs from .github/fleet/protection.json: have {got}"),
                             ));
                         }
                     }
+                }
+            }
+            for b in fleet
+                .branches
+                .iter()
+                .filter(|b| b.as_str() != DEV && have.contains(b.as_str()))
+            {
+                match remote.release_rules(repo, b) {
+                    Err(e) => out.push(f(
+                        repo,
+                        &format!("ruleset {b}"),
+                        format!("could not read: {e}"),
+                    )),
+                    Ok(rules) if !rules.iter().any(|r| r == RULE_UPDATE) => out.push(f(
+                        repo,
+                        &format!("ruleset {b}"),
+                        format!(
+                            "not locked by the org ruleset \"{RULESET}\": no `{RULE_UPDATE}` rule covers it"
+                        ),
+                    )),
+                    Ok(_) => {}
                 }
             }
         }
