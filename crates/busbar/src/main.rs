@@ -970,6 +970,17 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // tamper evidence) moved with the code; see busbar-core/src/boot.rs. A plane whose durable
     // state cannot be restored REFUSES BOOT — `hydrate_all` propagates the plane hook's `Err`.
     busbar_kernel::boot::hydrate_all(&app).unwrap_or_else(|e| die(e));
+    // THE LATE ATTACH (`root::serve::attach`): the kernel's host services gain the pool, the
+    // signer and the hydrated demotion record this first build made, once.
+    let planes: Vec<_> = busbar_kernel::plane::registry::plane_decls()
+        .iter()
+        .map(|d| &d.declaration)
+        .collect();
+    let signer = app
+        .governance
+        .clone()
+        .map(|g| g as Arc<dyn busbar_kernel::host_services::SignKey>);
+    root::serve::attach(&late_services, signer, &app.demotion_record, &planes);
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): a plane's own in-memory health/backoff
     // bookkeeping lives in RAM only and is RE-LEARNED after a restart — none of it is this crate's
     // business, and nothing about it is restored from disk here. The durable config that makes "fix

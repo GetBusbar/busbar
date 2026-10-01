@@ -20,9 +20,13 @@ use axum::body::{Body, Bytes};
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::response::Response;
 use busbar_contract::caps::ReasonCode;
+use busbar_contract::plane::{declares_record_kind, PlaneDeclaration};
 use busbar_contract::services::{Caller, HostServices, Later, Ran, Reading, RecordsList, Stored};
 use busbar_kernel::config::RootCfg;
-use busbar_kernel::host_services::{DestRules, KernelServices, SystemResolver};
+use busbar_kernel::host_records::QUEUE_CAP;
+use busbar_kernel::host_services::{BlockingPool, DestRules, KernelServices, SignKey, SystemResolver};
+use busbar_kernel::plane::store::KIND_DEMOTION;
+use busbar_kernel::plane::DemotionRecord;
 use busbar_kernel::net_guard::{Denylist, GuardPolicy};
 use busbar_kernel::plane_driver::{refusal_status, CallerEnd, HeadFields};
 use tokio::sync::{mpsc, oneshot};
@@ -67,14 +71,56 @@ pub fn kernel_services(cfg: &RootCfg) -> KernelServices {
 /// the dispatcher's [`LateServices`], before any plugin is bound. A second call (a reload) installs
 /// nothing.
 pub fn compose(cfg: &RootCfg, late: &LateServices) {
-    if late.install(Arc::new(kernel_services(cfg))).is_err() {
+    if late.install_kernel(Arc::new(kernel_services(cfg))).is_err() {
         tracing::debug!("the kernel's host services were already installed");
+    }
+}
+
+/// THE LATE ATTACH, once the first app is built (ARCHITECT S7-TICK 2026-10-01, ruling A): the
+/// kernel's services gain what that build made. That is the runtime's blocking pool, bounded at the
+/// record write queue's [`QUEUE_CAP`]; the governance signer, when governance is configured; and
+/// the durable demotion record, its unprefixed rows belonging to the one plane that declares the
+/// demotion record kind ([`demotion_owner`]). Each lives for the process (an apply reuses the
+/// governance state and carries the demotion record), so each attaches once. With no kernel
+/// services composed it attaches nothing. Runs on the runtime.
+pub fn attach(
+    late: &LateServices,
+    signer: Option<Arc<dyn SignKey>>,
+    demotions: &Arc<DemotionRecord>,
+    planes: &[&PlaneDeclaration],
+) {
+    let Some(kernel) = late.kernel() else {
+        return;
+    };
+    let pool = BlockingPool::new(tokio::runtime::Handle::current(), QUEUE_CAP);
+    kernel.attach_pool(Arc::new(pool));
+    if let Some(signer) = signer {
+        kernel.attach_signer(signer);
+    }
+    if let Some(owner) = demotion_owner(planes) {
+        kernel.attach_demotions(Arc::clone(demotions), owner);
+    }
+}
+
+/// The section key of the ONE plane that declares the demotion record kind: the plane whose
+/// unprefixed demotion rows the kernel replays for its implicit first instance. `None` when no
+/// plane, or more than one, declares it.
+#[must_use]
+pub fn demotion_owner(planes: &[&PlaneDeclaration]) -> Option<&'static str> {
+    let mut owners = planes
+        .iter()
+        .filter(|d| declares_record_kind(d, KIND_DEMOTION));
+    match (owners.next(), owners.next()) {
+        (Some(d), None) => Some(d.config_section),
+        _ => None,
     }
 }
 
 /// The kernel's host services, installed once after the configuration loads (see the module doc).
 pub struct LateServices {
     installed: OnceLock<Arc<dyn HostServices>>,
+    /// The kernel's own services, when those are what was installed ([`Self::install_kernel`]).
+    kernel: OnceLock<Arc<KernelServices>>,
     /// The clock before the install: the kernel's own, mapping no egress class.
     clock: KernelServices,
 }
@@ -92,6 +138,7 @@ impl LateServices {
     pub fn new() -> Arc<Self> {
         Arc::new(LateServices {
             installed: OnceLock::new(),
+            kernel: OnceLock::new(),
             clock: KernelServices::new(HashMap::new(), Arc::new(SystemResolver)),
         })
     }
@@ -100,6 +147,20 @@ impl LateServices {
     /// nothing, so a reload can never swap the services a running instance reaches.
     pub fn install(&self, services: Arc<dyn HostServices>) -> Result<(), AlreadyInstalled> {
         self.installed.set(services).map_err(|_| AlreadyInstalled)
+    }
+
+    /// Install the kernel's own services, as [`Self::install`] does, and keep them whole for the
+    /// late attach ([`attach`]) and the plane driver ([`Self::kernel`]).
+    pub fn install_kernel(&self, services: Arc<KernelServices>) -> Result<(), AlreadyInstalled> {
+        self.install(Arc::clone(&services) as Arc<dyn HostServices>)?;
+        self.kernel.set(services).map_err(|_| AlreadyInstalled)
+    }
+
+    /// The kernel's composed services: the plane driver admits its instances and ticks over them.
+    /// `None` before [`compose`].
+    #[must_use]
+    pub fn kernel(&self) -> Option<Arc<KernelServices>> {
+        self.kernel.get().cloned()
     }
 
     /// Whether the kernel's services are installed.
