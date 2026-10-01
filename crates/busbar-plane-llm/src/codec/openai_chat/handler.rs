@@ -4,10 +4,10 @@
 //! OpenAI `RequestHandler` and its OperationHandlers. OperationHandlers are pure codecs — wire ↔ IR,
 //! both directions, nothing else: moderation, embeddings, images, audio, and chat each get one.
 
-use crate::codec::keys;
 use crate::codec::ir::moderation::{
     ModerationInput, ModerationReq, ModerationResp, ModerationResult,
 };
+use crate::codec::keys;
 use busbar_contract::codec::{CodecError, IngressReject, RequestHandler};
 // The leaf cells' trait, which the dialect's handler tests call through.
 #[cfg(test)]
@@ -397,7 +397,10 @@ pub fn write_transcription_response(r: &TranscriptionResp) -> WireBody {
     // a JSON envelope. When the response IR records one of those (the reader saw a non-JSON body),
     // re-emit the transcript verbatim under `text/plain` rather than JSON-wrapping it — otherwise a
     // WEBVTT/SRT response is mangled into `{"text":"WEBVTT..."}` with the wrong content-type.
-    if matches!(r.response_format.as_deref(), Some(keys::TEXT | "srt" | "vtt")) {
+    if matches!(
+        r.response_format.as_deref(),
+        Some(keys::TEXT | "srt" | "vtt")
+    ) {
         return WireBody::typed(SlabBytes::from(r.text.clone().into_bytes()), "text/plain");
     }
     let mut body = json!({ (keys::TEXT): r.text });
@@ -450,7 +453,8 @@ pub fn write_transcription_response(r: &TranscriptionResp) -> WireBody {
             // The one render boundary — byte-identical to what this wrote before the quantity
             // became exact (see `billing::duration_seconds_to_wire`).
             let seconds = busbar_contract::billing::duration_seconds_to_wire(*seconds);
-            body[keys::USAGE] = json!({ (keys::TYPE): super::W_DURATION, (super::SECONDS): seconds });
+            body[keys::USAGE] =
+                json!({ (keys::TYPE): super::W_DURATION, (super::SECONDS): seconds });
         }
         Some(Billing::Tokens(t)) => {
             body[keys::USAGE] = json!({ (keys::TYPE): "tokens", (keys::INPUT_TOKENS): t.input,
@@ -627,8 +631,7 @@ pub fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
         body[keys::MODEL] = json!(m);
     }
     if let Some(u) = &r.usage {
-        body[keys::USAGE] =
-            json!({ (super::PROMPT_TOKENS): u.input, (keys::TOTAL_TOKENS): u.input.saturating_add(u.output) });
+        body[keys::USAGE] = json!({ (super::PROMPT_TOKENS): u.input, (keys::TOTAL_TOKENS): u.input.saturating_add(u.output) });
     }
     WireBody::json(SlabBytes::from(
         serde_json::to_vec(&body).unwrap_or_default(),
@@ -840,7 +843,10 @@ fn input_to_value(input: &[ModerationInput]) -> Value {
 
 fn parse_result(v: &Value) -> ModerationResult {
     ModerationResult {
-        flagged: v.get(super::FLAGGED).and_then(Value::as_bool).unwrap_or(false),
+        flagged: v
+            .get(super::FLAGGED)
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         categories: obj_map(v.get(super::CATEGORIES), |x| x.as_bool()),
         category_scores: obj_map(v.get(super::CATEGORY_SCORES), |x| x.as_f64()),
         applied_input_types: obj_map(v.get(super::CATEGORY_APPLIED_INPUT_TYPES), |x| {
@@ -900,7 +906,9 @@ pub fn read_transcription_request(
             keys::RESPONSE_FORMAT => {
                 req.response_format = Some(String::from_utf8_lossy(f.value).trim().to_string())
             }
-            keys::TEMPERATURE => req.temperature = String::from_utf8_lossy(f.value).trim().parse().ok(),
+            keys::TEMPERATURE => {
+                req.temperature = String::from_utf8_lossy(f.value).trim().parse().ok()
+            }
             super::FILE => {
                 req.audio = Some(MediaBlob {
                     payload: MediaPayload::Bytes(SlabBytes::from(f.value)),
@@ -970,7 +978,10 @@ pub fn read_transcription_response(
                     avg_logprob: s.get(super::AVG_LOGPROB).and_then(Value::as_f64),
                     no_speech_prob: s.get(super::NO_SPEECH_PROB).and_then(Value::as_f64),
                     compression_ratio: s.get(super::COMPRESSION_RATIO).and_then(Value::as_f64),
-                    speaker: s.get(keys::SPEAKER).and_then(Value::as_str).map(str::to_string),
+                    speaker: s
+                        .get(keys::SPEAKER)
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
                 })
                 .collect()
         })
@@ -1036,7 +1047,10 @@ pub fn read_speech_request(
             .get(keys::INSTRUCTIONS)
             .and_then(Value::as_str)
             .map(str::to_string),
-        speed: wire.get(super::SPEED).and_then(Value::as_f64).map(|s| s as f32),
+        speed: wire
+            .get(super::SPEED)
+            .and_then(Value::as_f64)
+            .map(|s| s as f32),
         ..Default::default()
     })
 }
@@ -1160,7 +1174,10 @@ pub fn read_embeddings_request(
         input,
         dimensions,
         encoding_formats,
-        user: wire.get(keys::USER).and_then(Value::as_str).map(str::to_string),
+        user: wire
+            .get(keys::USER)
+            .and_then(Value::as_str)
+            .map(str::to_string),
         ..Default::default()
     })
 }
@@ -1180,8 +1197,10 @@ pub fn read_embeddings_response(
             arr.iter()
                 .enumerate()
                 .map(|(idx, d)| {
-                    let index =
-                        d.get(keys::INDEX).and_then(Value::as_u64).unwrap_or(idx as u64) as usize;
+                    let index = d
+                        .get(keys::INDEX)
+                        .and_then(Value::as_u64)
+                        .unwrap_or(idx as u64) as usize;
                     let mut item = EmbeddingItem {
                         index,
                         ..Default::default()
@@ -1218,7 +1237,10 @@ pub fn read_embeddings_response(
         )
         .transpose()?;
     Ok(EmbeddingsResp {
-        model: v.get(keys::MODEL).and_then(Value::as_str).map(str::to_string),
+        model: v
+            .get(keys::MODEL)
+            .and_then(Value::as_str)
+            .map(str::to_string),
         object_kind: Some(super::LIST.into()),
         embeddings,
         usage,
@@ -1305,7 +1327,10 @@ pub fn read_image_request(
             .get(keys::MODERATION)
             .and_then(Value::as_str)
             .map(str::to_string),
-        user: wire.get(keys::USER).and_then(Value::as_str).map(str::to_string),
+        user: wire
+            .get(keys::USER)
+            .and_then(Value::as_str)
+            .map(str::to_string),
         ..Default::default()
     })
 }
@@ -1413,7 +1438,10 @@ pub fn read_moderation_response(
         .unwrap_or_default();
     Ok(ModerationResp {
         id: v.get(keys::ID).and_then(Value::as_str).map(str::to_string),
-        model: v.get(keys::MODEL).and_then(Value::as_str).map(str::to_string),
+        model: v
+            .get(keys::MODEL)
+            .and_then(Value::as_str)
+            .map(str::to_string),
         results,
         extra: BTreeMap::new(),
     })

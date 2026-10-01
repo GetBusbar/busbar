@@ -508,9 +508,17 @@ fn n_slots_are_reported_dropped_and_not_written() {
 fn ir04_same_dialect_service_tier_bytes_are_the_callers() {
     let protocol = protocol_for("anthropic").unwrap();
     let writer = protocol.writer();
-    for raw in [json!("auto"), json!("standard_only"), json!("turbo"), json!(7)] {
+    for raw in [
+        json!("auto"),
+        json!("standard_only"),
+        json!("turbo"),
+        json!(7),
+    ] {
         let out = writer.write_request(&read(&with(base(), "service_tier", raw.clone())));
         assert_eq!(out.get("service_tier"), Some(&raw), "{raw}");
     }
-    assert!(writer.write_request(&read(&base())).get("service_tier").is_none());
+    assert!(writer
+        .write_request(&read(&base()))
+        .get("service_tier")
+        .is_none());
 }
