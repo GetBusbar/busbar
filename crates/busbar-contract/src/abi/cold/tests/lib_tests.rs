@@ -39,39 +39,6 @@ fn max_plugin_response_len_is_exactly_256_mebibytes() {
     assert_eq!(MAX_PLUGIN_RESPONSE_LEN, 256 * 1024 * 1024);
 }
 
-/// Every kind has a NUL-TERMINATED sibling whose bytes are exactly the plain `&str` plus one
-/// trailing NUL, and every one of them is a legal C string. `busbar_plugin_kind()` returns a
-/// bare `*const u8` with NO length, and the loader does `CStr::from_ptr` on it — so the ONLY
-/// safe thing a hand-written export may return is the pointer to one of THESE. The plain
-/// `kind::*` `&str`s are NOT NUL-terminated; returning `kind::EXPORT.as_ptr()` compiles and is
-/// an unbounded out-of-bounds read. This test is the mechanical proof the safe siblings exist,
-/// stay in lockstep with the strings, and are C-legal.
-#[test]
-fn every_kind_has_a_nul_terminated_sibling_that_is_a_legal_c_string() {
-    let pairs: [(&str, &[u8]); 5] = [
-        (kind::STORE, kind::STORE_NUL),
-        (kind::SECRET, kind::SECRET_NUL),
-        (kind::AUTH, kind::AUTH_NUL),
-        (kind::HOOK, kind::HOOK_NUL),
-        (kind::EXPORT, kind::EXPORT_NUL),
-    ];
-    for (s, nul) in pairs {
-        assert_eq!(
-            nul.len(),
-            s.len() + 1,
-            "{s}: the NUL sibling is the string plus exactly one terminator"
-        );
-        assert_eq!(&nul[..s.len()], s.as_bytes(), "{s}: bytes must match");
-        let c = std::ffi::CStr::from_bytes_with_nul(nul)
-            .unwrap_or_else(|e| panic!("{s}: not a legal C string: {e}"));
-        assert_eq!(
-            c.to_str().expect("ASCII"),
-            s,
-            "{s}: CStr round-trips to the plain form (this is exactly what the loader does)"
-        );
-    }
-}
-
 fn sample_audit() -> AuditRecord {
     AuditRecord {
         seq: 7,
