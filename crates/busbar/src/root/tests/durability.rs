@@ -4,8 +4,9 @@
 
 use super::*;
 use busbar_contract::caps::KernelSeal;
+use busbar_kernel_audit::{Recipe, UsageLine};
 use busbar_kernel_ledger::legacy::RecordingRows;
-use busbar_kernel_wal::{decode_run, verify_journal, NullShipper};
+use busbar_kernel_wal::{decode_run, verify_journal, NullShipper, FRAME_BYTES};
 
 /// A scratch directory that removes itself, following the journal unit's own test fixture: the
 /// point of these tests is what is and is not created, so each needs a directory nobody else is
@@ -251,7 +252,7 @@ fn posting() -> Posting {
 }
 
 /// A sealed audit record for a unit that ran.
-fn audit_inputs(unit: u64) -> busbar_kernel_audit::AuditInputs {
+fn audit_inputs(unit: u64) -> AuditInputs {
     use busbar_contract::caps::{KernelSeal, Origin, OriginKind, Outcome, UnitKey};
     use busbar_kernel_audit::{
         AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage, What,
@@ -316,7 +317,7 @@ fn a_sealed_audit_record_goes_on_the_journal_whole() {
         .seal_unit(audit_inputs(11), audit_pass(), &token)
         .expect("the record goes on the chain");
     assert_eq!(sealed.what.incarnation, durability.incarnation);
-    assert_eq!(sealed.recipe, busbar_kernel_audit::Recipe::V4);
+    assert_eq!(sealed.recipe, Recipe::V4);
 
     let records = durability.journal.replay().unwrap().unwrap();
     let on_chain: Vec<_> = records
@@ -366,7 +367,7 @@ fn two_boots_minting_the_same_unit_key_seal_distinct_verified_records() {
     let reread = boot(&cfg, 7).expect("the journal reopens");
     let whole = reread.audit_window(1, u64::MAX);
     assert_eq!(whole, vec![first, second]);
-    assert!(busbar_kernel_audit::AuditChain::verify_chain(&whole).is_ok());
+    assert!(AuditChain::verify_chain(&whole).is_ok());
     assert!(reread.retained_audit_findings().is_empty());
 }
 
@@ -400,7 +401,7 @@ fn a_range_older_than_the_ring_is_read_back_after_a_restart() {
         vec![1, 2, 3],
         "the journal answers for what the cache let go"
     );
-    assert!(busbar_kernel_audit::AuditChain::verify_window(&old).is_ok());
+    assert!(AuditChain::verify_window(&old).is_ok());
     assert_eq!(restarted.audit_window(total, total)[0].seq, total);
 }
 
@@ -439,7 +440,7 @@ fn an_audit_record_naming_an_undeclared_class_is_a_restart_finding() {
     {
         let mut durability = boot(&cfg, 7).expect("the directory is writable");
         let mut inputs = audit_inputs(1);
-        inputs.usage.lines.push(busbar_kernel_audit::UsageLine {
+        inputs.usage.lines.push(UsageLine {
             class: busbar_contract::MeterClassId::new("a_class_this_node_never_registered"),
             quantity: 3,
             source: busbar_contract::caps::QuantitySource::Count,
@@ -2215,7 +2216,7 @@ fn a_torn_settlement_is_cut_and_its_hold_recovers() {
     // Tear the frame that carries the settlement: zero from inside its header to the end.
     assert!(
         edit_segment(&scratch.path, &4_321u64.to_le_bytes(), |bytes, i| {
-            let frame = busbar_kernel_wal::FRAME_BYTES;
+            let frame = FRAME_BYTES;
             let start = (i / frame) * frame + 20;
             for b in &mut bytes[start..] {
                 *b = 0;

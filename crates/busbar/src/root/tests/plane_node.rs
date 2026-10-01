@@ -4615,10 +4615,11 @@ fn a_late_arm_with_no_reading_writes_the_exits_own_line() {
     assert_eq!(rows[0].settled, 0);
 }
 
-/// **A CLASS NO PLANE DECLARED IS REFUSED FAIL-CLOSED, NEVER BILLED AT ZERO** (§7). The unit read
-/// 1,000 input tokens and 40 units of a class nothing declares or configures. The line is still
-/// written with EVERY count, its money is refused (`UndeclaredClass`), no balance moves, and the read
-/// over it refuses — even on a card that prices input.
+/// **A CLASS NO PLANE DECLARED IS REFUSED FAIL-CLOSED, NEVER BILLED AT ZERO**
+/// (`BUSBAR-1.6.0.md` §7). The unit read 1,000 input tokens and 40 units of a class nothing
+/// declares or configures. The line is still written with EVERY count, its money is refused
+/// (`UndeclaredClass`), no balance moves, and the read over it refuses — even on a card that prices
+/// input.
 #[test]
 fn a_class_no_plane_declared_is_refused_and_keeps_its_counts() {
     let history = cache_silent_history();

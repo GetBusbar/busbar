@@ -48,6 +48,7 @@ use busbar_contract::caps::{
 use busbar_contract::UnitKey;
 use busbar_core_admin::admin_codec::verbs::ResolvedVerb;
 use busbar_kernel::teller::UnitCtx;
+use busbar_kernel_audit::{expose, AuditChain, AuditKeySet, AuditRecord};
 use busbar_kernel_scope::Scope;
 
 use crate::root::kernel::{ProductionUnits, RegisteredUnits};
@@ -299,8 +300,8 @@ pub trait LedgerView: Send + Sync {
 
     /// The keyset a checkpoint's seal is verified against — the audit chain's own (Q71(3): one
     /// keyset, #82). Empty by default: a view bound to no chain vouches for no signature.
-    fn checkpoint_keys(&self) -> busbar_kernel_audit::AuditKeySet {
-        busbar_kernel_audit::AuditKeySet::new()
+    fn checkpoint_keys(&self) -> AuditKeySet {
+        AuditKeySet::new()
     }
 
     /// The marker the first boot after the upgrade sealed, if this deployment has migrated.
@@ -647,7 +648,7 @@ impl LedgerView for NodeLedger {
         self.lock().checkpoints.clone()
     }
 
-    fn checkpoint_keys(&self) -> busbar_kernel_audit::AuditKeySet {
+    fn checkpoint_keys(&self) -> AuditKeySet {
         crate::root::durability::keyset_of(&self.lock().record)
     }
 
@@ -786,7 +787,7 @@ impl LegacyRowsRead for busbar_kernel_ledger::legacy::RecordingRows {
 /// "read-only" a property of the type rather than a promise in a comment. Nothing behind it can seal
 /// a record, mint a key or move a head.
 ///
-/// It is deliberately NOT the chain. An [`busbar_kernel_audit::AuditChain`] can SEAL; a read of it
+/// It is deliberately NOT the chain. An [`AuditChain`] can SEAL; a read of it
 /// has no business holding one that it could. What the trait hands a reader is a borrow, for the
 /// duration of one render, under whatever lock the node keeps the chain behind.
 ///
@@ -801,7 +802,7 @@ pub trait AuditView: Send + Sync {
     /// end into the same body as the window's records: reading the two through separate calls would
     /// let a seal landing between them tie a window to a head it does not belong under, which is the
     /// same race [`LedgerView::identity_snapshot`] exists to close. A borrow, because
-    /// [`busbar_kernel_audit::AuditChain`] is not `Clone` — deliberately, it holds the signing key —
+    /// [`AuditChain`] is not `Clone` — deliberately, it holds the signing key —
     /// so a seam that handed one out would be handing out the ability to sign.
     ///
     /// The records are an OPTION, and `None` is not an empty window. `None` is "this node retains no
@@ -809,13 +810,7 @@ pub trait AuditView: Send + Sync {
     /// journal and were pruned has a chain, a head and no records — and it is a different fact from
     /// "no records fall in the window you asked for". `docs/design/BUSBAR-1.6.0.md:2079`: a gap and
     /// a measurement must never be the same output. The head read answers either way.
-    fn read(
-        &self,
-        take: &mut dyn FnMut(
-            &busbar_kernel_audit::AuditChain,
-            Option<&[busbar_kernel_audit::AuditRecord]>,
-        ),
-    );
+    fn read(&self, take: &mut dyn FnMut(&AuditChain, Option<&[AuditRecord]>));
 
     /// [`AuditView::read`] for the records at positions `from` through `to`: a view whose records
     /// outlive what it holds in memory answers an older window from where it keeps them. The
@@ -824,10 +819,7 @@ pub trait AuditView: Send + Sync {
         &self,
         _from: u64,
         _to: u64,
-        take: &mut dyn FnMut(
-            &busbar_kernel_audit::AuditChain,
-            Option<&[busbar_kernel_audit::AuditRecord]>,
-        ),
+        take: &mut dyn FnMut(&AuditChain, Option<&[AuditRecord]>),
     ) {
         self.read(take);
     }
@@ -835,10 +827,10 @@ pub trait AuditView: Send + Sync {
     /// The PUBLIC halves of every key this node has signed records under.
     ///
     /// Public halves only, and there is no path from this seam to a secret one:
-    /// [`busbar_kernel_audit::AuditKeySet`] holds verifying keys and nothing else. Keys are only
+    /// [`AuditKeySet`] holds verifying keys and nothing else. Keys are only
     /// ever added — a key dropped from this answer makes every record it signed unverifiable, which
     /// from outside is indistinguishable from those records having been forged.
-    fn keys(&self) -> busbar_kernel_audit::AuditKeySet;
+    fn keys(&self) -> AuditKeySet;
 }
 
 /// The chain reads over the evidence THIS node holds.
@@ -882,13 +874,7 @@ impl NodeAudit {
 }
 
 impl AuditView for NodeAudit {
-    fn read(
-        &self,
-        take: &mut dyn FnMut(
-            &busbar_kernel_audit::AuditChain,
-            Option<&[busbar_kernel_audit::AuditRecord]>,
-        ),
-    ) {
+    fn read(&self, take: &mut dyn FnMut(&AuditChain, Option<&[AuditRecord]>)) {
         let durability = self.lock();
         take(&durability.record, Some(&durability.audit_records));
     }
@@ -897,17 +883,14 @@ impl AuditView for NodeAudit {
         &self,
         from: u64,
         to: u64,
-        take: &mut dyn FnMut(
-            &busbar_kernel_audit::AuditChain,
-            Option<&[busbar_kernel_audit::AuditRecord]>,
-        ),
+        take: &mut dyn FnMut(&AuditChain, Option<&[AuditRecord]>),
     ) {
         let durability = self.lock();
         let records = durability.audit_window(from, to);
         take(&durability.record, Some(&records));
     }
 
-    fn keys(&self) -> busbar_kernel_audit::AuditKeySet {
+    fn keys(&self) -> AuditKeySet {
         // The public half of the key this chain signs with, where it was given one. A node that was
         // given none answers with an EMPTY set, and that is the truth about it: nothing it sealed
         // carries a signature, so there is no key with which to check one. What the set must never
@@ -927,7 +910,7 @@ impl AuditView for NodeAudit {
 /// rather than an empty answer.
 ///
 /// A window that runs off either end of what the node holds is NOT an error: it is simply shorter,
-/// which is [`busbar_kernel_audit::expose::range_body`]'s own rule and stays its.
+/// which is [`expose::range_body`]'s own rule and stays its.
 fn audit_window(target: &str) -> Option<(u64, u64)> {
     let (_, query) = target.split_once('?')?;
     let query = query.split('#').next().unwrap_or(query);
@@ -971,7 +954,7 @@ fn render_audit_view(
         KernelVerb::GetAuditHead => {
             let mut body = None;
             view.read(&mut |chain, _records| {
-                body = Some(busbar_kernel_audit::expose::head_body(chain));
+                body = Some(expose::head_body(chain));
             });
             body.map(String::into_bytes).ok_or(GovernanceError::Store)
         }
@@ -981,9 +964,8 @@ fn render_audit_view(
             // answered, the inner says whether it retains records to answer with.
             let mut answered: Option<Option<String>> = None;
             view.read_window(from, to, &mut |chain, records| {
-                answered = Some(records.map(|records| {
-                    busbar_kernel_audit::expose::range_body(chain, records, from, to)
-                }));
+                answered =
+                    Some(records.map(|records| expose::range_body(chain, records, from, to)));
             });
             match answered {
                 None => Err(GovernanceError::Store),
@@ -991,9 +973,7 @@ fn render_audit_view(
                 Some(Some(body)) => Ok(body.into_bytes()),
             }
         }
-        KernelVerb::GetAuditKeys => {
-            Ok(busbar_kernel_audit::expose::keys_body(&view.keys()).into_bytes())
-        }
+        KernelVerb::GetAuditKeys => Ok(expose::keys_body(&view.keys()).into_bytes()),
         // Reachable only if the closed table and this match ever disagree, which is a defect in this
         // file rather than a request to forgive.
         _ => Err(GovernanceError::NotFound),

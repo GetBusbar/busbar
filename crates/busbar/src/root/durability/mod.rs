@@ -94,7 +94,9 @@ use std::path::{Path, PathBuf};
 use crate::root::kernel::PinnedHistory;
 
 use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, PostingFlags, StepName};
-use busbar_kernel_audit::{AuditChain, AuditRecord};
+use busbar_kernel_audit::{
+    from_journal_body, journal_body, AuditChain, AuditInputs, AuditRecord, KeyError,
+};
 use busbar_kernel_ledger::checkpoint::{
     AnchoredHead, Checkpoint, CheckpointAnchor, SelfAttestingAnchor,
 };
@@ -1486,10 +1488,11 @@ fn read_counts_tail(body: &mut BodyReader<'_>) -> Option<(Option<UnitCounts>, Op
     ))
 }
 
-/// The refusal a unit's line carries when its plane reported a class nobody declared (§7). The
-/// record keeps it as [`PostingFlags::UNDECLARED`] and every replay honours it: a declaration is a
-/// fact about the unit when it was written, so the refusal is never re-derived away — not by a card
-/// that prices the class later, not by an absent card that prices everything at nothing.
+/// The refusal a unit's line carries when its plane reported a class nobody declared
+/// (`BUSBAR-1.6.0.md` §7). The record keeps it as [`PostingFlags::UNDECLARED`] and every replay
+/// honours it: a declaration is a fact about the unit when it was written, so the refusal is never
+/// re-derived away — not by a card that prices the class later, not by an absent card that prices
+/// everything at nothing.
 pub const UNDECLARED_CLASS: &str = "UndeclaredClass";
 
 /// `flags`, with [`PostingFlags::UNDECLARED`] set when `refusal` is the undeclared-class refusal.
@@ -1883,12 +1886,12 @@ fn read_key(body: &mut BodyReader<'_>) -> Option<TotalsKey> {
 }
 
 /// The journal body of a sealed audit record: the whole record, `audit.v4`
-/// ([`busbar_kernel_audit::journal_body`]), so the journal can answer for it after the cache has let
+/// ([`journal_body`]), so the journal can answer for it after the cache has let
 /// it go. Content is not in it for the same reason it is not in the record: the journal is a
 /// financial record exempt from erasure, so anything put in it can never be taken out.
 #[must_use]
 pub fn audit_body(record: &AuditRecord) -> Vec<u8> {
-    busbar_kernel_audit::journal_body(record)
+    journal_body(record)
 }
 
 /// The journal entry a sealed audit record goes on the chain as: its whole body, stamped with its
@@ -1909,10 +1912,7 @@ pub fn decode_audit(record: &JournalRecord) -> Result<Option<AuditRecord>, Strin
     if record.class != RecordClass::Transaction {
         return Ok(None);
     }
-    busbar_kernel_audit::from_journal_body(
-        &record.body,
-        &busbar_contract::Registration::meter_class,
-    )
+    from_journal_body(&record.body, &busbar_contract::Registration::meter_class)
 }
 
 /// The journal body of a sealed checkpoint.

@@ -6,7 +6,10 @@
 
 use super::*;
 use busbar_contract::caps::KernelSeal;
-use busbar_kernel_audit::AuditSigningKey;
+use busbar_kernel_audit::{
+    AuditInputs, AuditSigningKey, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage,
+    What,
+};
 use busbar_kernel_ledger::{
     checkpoint::{AnchoredHead, CheckpointAnchor},
     legacy::RecordingRows,
@@ -445,12 +448,12 @@ fn verify_names_a_tampered_retained_audit_record() {
         let mut durability = node_book.durability.lock().expect("unpoisoned");
         let token = busbar_kernel::teller::Kernel::new().durability_token();
         for unit in 1..=2 {
-            let inputs = busbar_kernel_audit::AuditInputs {
-                subject: busbar_kernel_audit::Subject::PrincipalId(format!("p-{unit}")),
-                what: busbar_kernel_audit::What {
+            let inputs = AuditInputs {
+                subject: Subject::PrincipalId(format!("p-{unit}")),
+                what: What {
                     unit_key: busbar_contract::UnitKey::new(unit),
                     incarnation: 0,
-                    op_class: busbar_kernel_audit::OpClassId::new("chat"),
+                    op_class: OpClassId::new("chat"),
                     destination: None,
                     parent: None,
                     pre_hook_head: None,
@@ -462,22 +465,22 @@ fn verify_names_a_tampered_retained_audit_record() {
                     &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
                     busbar_contract::caps::OriginKind::Client,
                 ),
-                outcome: busbar_kernel_audit::OutcomeFacts {
+                outcome: OutcomeFacts {
                     unit_end: busbar_contract::caps::Outcome::Completed,
                     step: None,
-                    finish: busbar_kernel_audit::FinishClass::Complete,
+                    finish: FinishClass::Complete,
                     hook_failed: false,
                     emission_delta: 0,
                     stale_policy: false,
                 },
-                usage: busbar_kernel_audit::Usage {
+                usage: Usage {
                     lines: Vec::new(),
                     tier_bp: 10_000,
                     fee_count: 1,
                     rate_card_version: 0,
                     bucket_chain_ref: String::new(),
                 },
-                controls: busbar_kernel_audit::Controls::default(),
+                controls: Controls::default(),
                 correlation_label: None,
             };
             let pass = busbar_contract::caps::Pass::mint(

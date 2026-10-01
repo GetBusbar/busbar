@@ -10,6 +10,7 @@
 //! journal body itself ([`audit_body`]) stays with the other journal writers in the parent.
 
 use super::*;
+use busbar_kernel_audit::Audit as _;
 
 impl Durability {
     /// REBUILD THE AUDIT CACHE FROM THE CHAIN and continue the audit chain from its tail: every
@@ -51,11 +52,10 @@ impl Durability {
     /// chain and kept in the cache either way.
     pub fn seal_unit(
         &mut self,
-        mut inputs: busbar_kernel_audit::AuditInputs,
+        mut inputs: AuditInputs,
         pass: busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
         token: &Grant<DurableWrite>,
     ) -> Result<AuditRecord, DurabilityLost> {
-        use busbar_kernel_audit::Audit;
         inputs.what.incarnation = self.incarnation;
         let record = self.record.seal(inputs, &pass);
         let entry = audit_entry(&record);
@@ -113,7 +113,7 @@ impl Durability {
             };
             let verified = keys
                 .get(key_id)
-                .ok_or(busbar_kernel_audit::KeyError::Unsigned)
+                .ok_or(KeyError::Unsigned)
                 .and_then(|key| AuditChain::verify_signature(record, key));
             if let Err(e) = verified {
                 findings.push(format!("record {} signed by {key_id}: {e:?}", record.seq));

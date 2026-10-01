@@ -53,6 +53,11 @@ use busbar_contract::{LaneId, Registration, UnitKey};
 use busbar_kernel::plane_host::PlaneAnswer;
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Ended, Evidence, RouteAwait, RouteLeg, UnitCtx, Units};
+use busbar_kernel_audit::{
+    AuditInputs, Controls, FinishClass as RecordFinish, OpClassId as RecordOpClass, OutcomeFacts,
+    Subject, Usage as RecordUsage, UsageLine as RecordLine, What,
+};
+use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
 
 use crate::root::linked::node::{Handed, Late, Reported, Resolve};
 
@@ -1739,17 +1744,16 @@ impl UnitSeal {
         arrived: Arrived,
         rate_card_version: u64,
         outcome: Outcome,
-        lines: Vec<busbar_kernel_audit::UsageLine>,
+        lines: Vec<RecordLine>,
         fee_count: u32,
     ) {
-        use busbar_kernel_audit::{Controls, OutcomeFacts, Subject, Usage, What};
         let refused = matches!(outcome, Outcome::Refused(..));
-        let inputs = busbar_kernel_audit::AuditInputs {
+        let inputs = AuditInputs {
             subject: Subject::PrincipalId(principal.as_str().to_string()),
             what: What {
                 unit_key: self.key,
                 incarnation: 0,
-                op_class: busbar_kernel_audit::OpClassId::new(self.facts.op_class.as_str()),
+                op_class: RecordOpClass::new(self.facts.op_class.as_str()),
                 destination: None,
                 parent: None,
                 pre_hook_head: None,
@@ -1766,7 +1770,7 @@ impl UnitSeal {
                 emission_delta: 0,
                 stale_policy: false,
             },
-            usage: Usage {
+            usage: RecordUsage {
                 lines: if refused { Vec::new() } else { lines },
                 tier_bp: 10_000,
                 fee_count: if refused { 0 } else { fee_count },
@@ -1792,27 +1796,22 @@ impl UnitSeal {
 }
 
 /// How the plane classed the finish, in the record's own words.
-fn audit_finish(finish: busbar_contract::FinishClass) -> busbar_kernel_audit::FinishClass {
+fn audit_finish(finish: busbar_contract::FinishClass) -> RecordFinish {
     match finish {
-        busbar_contract::FinishClass::Complete => busbar_kernel_audit::FinishClass::Complete,
-        busbar_contract::FinishClass::TurnComplete => {
-            busbar_kernel_audit::FinishClass::TurnComplete
-        }
-        busbar_contract::FinishClass::Partial => busbar_kernel_audit::FinishClass::Partial,
-        busbar_contract::FinishClass::Error => busbar_kernel_audit::FinishClass::Error,
+        busbar_contract::FinishClass::Complete => RecordFinish::Complete,
+        busbar_contract::FinishClass::TurnComplete => RecordFinish::TurnComplete,
+        busbar_contract::FinishClass::Partial => RecordFinish::Partial,
+        busbar_contract::FinishClass::Error => RecordFinish::Error,
     }
 }
 
 /// The record's amount for a line the EXIT wrote: the kernel's own accrual, as the exit's usage
 /// line carried it — nothing for a refused unit, which was charged nothing.
-fn exit_lines(
-    outcome: Outcome,
-    posted: &busbar_contract::caps::Posted,
-) -> Vec<busbar_kernel_audit::UsageLine> {
+fn exit_lines(outcome: Outcome, posted: &busbar_contract::caps::Posted) -> Vec<RecordLine> {
     if matches!(outcome, Outcome::Refused(..)) || posted.settled() == 0 {
         return Vec::new();
     }
-    vec![busbar_kernel_audit::UsageLine {
+    vec![RecordLine {
         class: busbar_kernel::teller::KERNEL_ACCRUAL_CLASS,
         quantity: posted.settled(),
         source: busbar_contract::caps::QuantitySource::Count,
@@ -1825,14 +1824,14 @@ fn exit_lines(
 /// The record's amount for a line the LATE ARM wrote: every class the unit reported, by the
 /// registered name. A class nobody declared has no registered name — its line was refused — and is
 /// not a line the record can name.
-fn report_lines(report: &Report) -> Vec<busbar_kernel_audit::UsageLine> {
+fn report_lines(report: &Report) -> Vec<RecordLine> {
     report
         .usage
         .usage_units
         .iter()
         .filter(|(_, count)| **count > 0)
         .filter_map(|(class, count)| {
-            Some(busbar_kernel_audit::UsageLine {
+            Some(RecordLine {
                 class: Registration::meter_class(class)?,
                 quantity: *count,
                 source: busbar_contract::caps::QuantitySource::Count,
@@ -1851,11 +1850,11 @@ fn report_lines(report: &Report) -> Vec<busbar_kernel_audit::UsageLine> {
 /// The caller rather than the pool, because the kernel's posting is the unit's — what the POOL spent
 /// is the governance ledger's figure and is already moved there by the walk's tap. Two figures, two
 /// books, neither a second spelling of the other.
-fn balance(principal: &PrincipalId) -> busbar_kernel_ledger::totals::TotalsKey {
-    busbar_kernel_ledger::totals::TotalsKey::new(
-        busbar_kernel_ledger::totals::BucketId::new(principal.as_str()),
-        busbar_kernel_ledger::totals::CapDimension::NanoUnits,
-        busbar_kernel_ledger::totals::BucketScope::All,
+fn balance(principal: &PrincipalId) -> TotalsKey {
+    TotalsKey::new(
+        BucketId::new(principal.as_str()),
+        CapDimension::NanoUnits,
+        BucketScope::All,
     )
 }
 
@@ -1890,7 +1889,7 @@ pub fn settle(
 /// Where a unit's posting lands: its balance, the window of its pinned arrival, stamped with the
 /// card in force at that arrival.
 fn settling_at<'a>(
-    key: &'a busbar_kernel_ledger::totals::TotalsKey,
+    key: &'a TotalsKey,
     arrived: Arrived,
     card: Option<&crate::root::kernel::PinnedHistory>,
     token: &'a busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
