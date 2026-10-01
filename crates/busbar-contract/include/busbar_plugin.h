@@ -283,6 +283,8 @@ extern "C" {
 #define BB_HOOK_CANCEL_RACED_TO_COMPLETION UINT32_C(1) /* The op had already completed when the cancel arrived (a race with the deadline); its */
 #define BB_HOOK_HARD_MAX_ORDER_SLOTS UINT64_C(0x10000) /* The most `order_buf` slots (`u32` entries, not bytes) one answer may state. */
 #define BB_HOOK_HARD_MAX_HEADERS_OUT_LEN UINT64_C(128) /* The most entries `serve`'s `headers_out` may carry: 64 headers, as (name, value) pairs. */
+#define BB_HOOK_HARD_MAX_MESSAGES UINT64_C(0x10000) /* The most messages one [`PromptView`] may carry (a FAULT ceiling far above any real request). */
+#define BB_HOOK_HARD_MAX_SIGNALS UINT64_C(1024) /* The most signal entries one view may carry (a FAULT ceiling: the catalog holds ten signals). */
 
 /* export */
 #define BB_EXPORT_ABI_VERSION UINT32_C(3) /* The export kind's ABI version: v1.5.5 shipped `2` (`EXPORT_ABI_VERSION`), so 1.6.0 ships `3`. */
@@ -758,6 +760,7 @@ typedef struct bb_hook_RequestView bb_hook_RequestView;
 typedef struct bb_hook_CandidateStatic bb_hook_CandidateStatic;
 typedef struct bb_hook_CandidateDynamic bb_hook_CandidateDynamic;
 typedef struct bb_hook_PromptView bb_hook_PromptView;
+typedef struct bb_hook_MessageView bb_hook_MessageView;
 typedef struct bb_hook_UserView bb_hook_UserView;
 typedef struct bb_hook_BudgetBucketState bb_hook_BudgetBucketState;
 typedef struct bb_hook_DecideIn bb_hook_DecideIn;
@@ -1947,6 +1950,14 @@ struct bb_hook_PromptView {
     bb_mech_AbiStr system;
     uint64_t message_count;
     bb_mech_Blob body;
+    const bb_hook_MessageView *messages;
+    size_t messages_len;
+};
+
+/* One message of the prompt view (OLD `HookMessage`): its role and its flattened text, as 1.5.5's */
+struct bb_hook_MessageView {
+    bb_mech_AbiStr role;
+    bb_mech_AbiStr text;
 };
 
 /* The user view (OLD `CallerIdentity`): present iff `user` access is granted */
@@ -2044,6 +2055,11 @@ struct bb_hook_StageView {
 struct bb_hook_NotifyIn {
     bb_mech_InHead head;
     bb_hook_StageView stage;
+    const bb_hook_SignalEntry *signals;
+    size_t signals_len;
+    bb_hook_PromptView prompt;
+    uint32_t present;
+    uint32_t _reserved;
 };
 
 /* `configure`'s `in`. ARCHITECT review ruling (fresh-Opus M3-SHAPES review, parity item): */
@@ -3365,7 +3381,7 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn need_admit;
 };
 
-/* ---- layout proof: 255 of 258 structures are pinned by the golden ---- */
+/* ---- layout proof: 256 of 259 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -4162,11 +4178,17 @@ BB_ASSERT(offsetof(bb_hook_CandidateDynamic, signals) == 32, "bb_hook_CandidateD
 BB_ASSERT(offsetof(bb_hook_CandidateDynamic, signals_len) == 40, "bb_hook_CandidateDynamic.signals_len: offset");
 BB_ASSERT(offsetof(bb_hook_CandidateDynamic, present) == 48, "bb_hook_CandidateDynamic.present: offset");
 BB_ASSERT(offsetof(bb_hook_CandidateDynamic, _reserved) == 52, "bb_hook_CandidateDynamic._reserved: offset");
-BB_ASSERT(sizeof(bb_hook_PromptView) == 48, "bb_hook_PromptView: size");
+BB_ASSERT(sizeof(bb_hook_PromptView) == 64, "bb_hook_PromptView: size");
 BB_ASSERT(BB_ALIGNOF(bb_hook_PromptView) == 8, "bb_hook_PromptView: alignment");
 BB_ASSERT(offsetof(bb_hook_PromptView, system) == 0, "bb_hook_PromptView.system: offset");
 BB_ASSERT(offsetof(bb_hook_PromptView, message_count) == 16, "bb_hook_PromptView.message_count: offset");
 BB_ASSERT(offsetof(bb_hook_PromptView, body) == 24, "bb_hook_PromptView.body: offset");
+BB_ASSERT(offsetof(bb_hook_PromptView, messages) == 48, "bb_hook_PromptView.messages: offset");
+BB_ASSERT(offsetof(bb_hook_PromptView, messages_len) == 56, "bb_hook_PromptView.messages_len: offset");
+BB_ASSERT(sizeof(bb_hook_MessageView) == 32, "bb_hook_MessageView: size");
+BB_ASSERT(BB_ALIGNOF(bb_hook_MessageView) == 8, "bb_hook_MessageView: alignment");
+BB_ASSERT(offsetof(bb_hook_MessageView, role) == 0, "bb_hook_MessageView.role: offset");
+BB_ASSERT(offsetof(bb_hook_MessageView, text) == 16, "bb_hook_MessageView.text: offset");
 BB_ASSERT(sizeof(bb_hook_UserView) == 48, "bb_hook_UserView: size");
 BB_ASSERT(BB_ALIGNOF(bb_hook_UserView) == 8, "bb_hook_UserView: alignment");
 BB_ASSERT(offsetof(bb_hook_UserView, key_id) == 0, "bb_hook_UserView.key_id: offset");
@@ -4183,7 +4205,7 @@ BB_ASSERT(offsetof(bb_hook_BudgetBucketState, window_start) == 64, "bb_hook_Budg
 BB_ASSERT(offsetof(bb_hook_BudgetBucketState, budget_period) == 72, "bb_hook_BudgetBucketState.budget_period: offset");
 BB_ASSERT(offsetof(bb_hook_BudgetBucketState, present) == 88, "bb_hook_BudgetBucketState.present: offset");
 BB_ASSERT(offsetof(bb_hook_BudgetBucketState, _reserved) == 92, "bb_hook_BudgetBucketState._reserved: offset");
-BB_ASSERT(sizeof(bb_hook_DecideIn) == 384, "bb_hook_DecideIn: size");
+BB_ASSERT(sizeof(bb_hook_DecideIn) == 400, "bb_hook_DecideIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hook_DecideIn) == 8, "bb_hook_DecideIn: alignment");
 BB_ASSERT(offsetof(bb_hook_DecideIn, head) == 0, "bb_hook_DecideIn.head: offset");
 BB_ASSERT(offsetof(bb_hook_DecideIn, request) == 88, "bb_hook_DecideIn.request: offset");
@@ -4191,20 +4213,20 @@ BB_ASSERT(offsetof(bb_hook_DecideIn, candidates) == 168, "bb_hook_DecideIn.candi
 BB_ASSERT(offsetof(bb_hook_DecideIn, candidate_dynamics) == 176, "bb_hook_DecideIn.candidate_dynamics: offset");
 BB_ASSERT(offsetof(bb_hook_DecideIn, candidates_len) == 184, "bb_hook_DecideIn.candidates_len: offset");
 BB_ASSERT(offsetof(bb_hook_DecideIn, prompt) == 192, "bb_hook_DecideIn.prompt: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, user) == 240, "bb_hook_DecideIn.user: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, budget_remaining) == 288, "bb_hook_DecideIn.budget_remaining: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, budget) == 296, "bb_hook_DecideIn.budget: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, budget_len) == 304, "bb_hook_DecideIn.budget_len: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, present) == 312, "bb_hook_DecideIn.present: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, _reserved) == 316, "bb_hook_DecideIn._reserved: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, order_buf) == 320, "bb_hook_DecideIn.order_buf: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, order_cap) == 328, "bb_hook_DecideIn.order_cap: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, reject_message_buf) == 336, "bb_hook_DecideIn.reject_message_buf: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, reject_message_cap) == 344, "bb_hook_DecideIn.reject_message_cap: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, restrict_tags_buf) == 352, "bb_hook_DecideIn.restrict_tags_buf: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, restrict_tags_cap) == 360, "bb_hook_DecideIn.restrict_tags_cap: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, rewrite_buf) == 368, "bb_hook_DecideIn.rewrite_buf: offset");
-BB_ASSERT(offsetof(bb_hook_DecideIn, rewrite_cap) == 376, "bb_hook_DecideIn.rewrite_cap: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, user) == 256, "bb_hook_DecideIn.user: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, budget_remaining) == 304, "bb_hook_DecideIn.budget_remaining: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, budget) == 312, "bb_hook_DecideIn.budget: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, budget_len) == 320, "bb_hook_DecideIn.budget_len: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, present) == 328, "bb_hook_DecideIn.present: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, _reserved) == 332, "bb_hook_DecideIn._reserved: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, order_buf) == 336, "bb_hook_DecideIn.order_buf: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, order_cap) == 344, "bb_hook_DecideIn.order_cap: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, reject_message_buf) == 352, "bb_hook_DecideIn.reject_message_buf: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, reject_message_cap) == 360, "bb_hook_DecideIn.reject_message_cap: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, restrict_tags_buf) == 368, "bb_hook_DecideIn.restrict_tags_buf: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, restrict_tags_cap) == 376, "bb_hook_DecideIn.restrict_tags_cap: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, rewrite_buf) == 384, "bb_hook_DecideIn.rewrite_buf: offset");
+BB_ASSERT(offsetof(bb_hook_DecideIn, rewrite_cap) == 392, "bb_hook_DecideIn.rewrite_cap: offset");
 BB_ASSERT(sizeof(bb_hook_DecideOut) == 152, "bb_hook_DecideOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_hook_DecideOut) == 8, "bb_hook_DecideOut: alignment");
 BB_ASSERT(offsetof(bb_hook_DecideOut, head) == 0, "bb_hook_DecideOut.head: offset");
@@ -4246,10 +4268,15 @@ BB_ASSERT(offsetof(bb_hook_StageView, status) == 128, "bb_hook_StageView.status:
 BB_ASSERT(offsetof(bb_hook_StageView, _reserved) == 130, "bb_hook_StageView._reserved: offset");
 BB_ASSERT(offsetof(bb_hook_StageView, stage_present) == 132, "bb_hook_StageView.stage_present: offset");
 BB_ASSERT(offsetof(bb_hook_StageView, _reserved2) == 136, "bb_hook_StageView._reserved2: offset");
-BB_ASSERT(sizeof(bb_hook_NotifyIn) == 232, "bb_hook_NotifyIn: size");
+BB_ASSERT(sizeof(bb_hook_NotifyIn) == 320, "bb_hook_NotifyIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hook_NotifyIn) == 8, "bb_hook_NotifyIn: alignment");
 BB_ASSERT(offsetof(bb_hook_NotifyIn, head) == 0, "bb_hook_NotifyIn.head: offset");
 BB_ASSERT(offsetof(bb_hook_NotifyIn, stage) == 88, "bb_hook_NotifyIn.stage: offset");
+BB_ASSERT(offsetof(bb_hook_NotifyIn, signals) == 232, "bb_hook_NotifyIn.signals: offset");
+BB_ASSERT(offsetof(bb_hook_NotifyIn, signals_len) == 240, "bb_hook_NotifyIn.signals_len: offset");
+BB_ASSERT(offsetof(bb_hook_NotifyIn, prompt) == 248, "bb_hook_NotifyIn.prompt: offset");
+BB_ASSERT(offsetof(bb_hook_NotifyIn, present) == 312, "bb_hook_NotifyIn.present: offset");
+BB_ASSERT(offsetof(bb_hook_NotifyIn, _reserved) == 316, "bb_hook_NotifyIn._reserved: offset");
 BB_ASSERT(sizeof(bb_hook_ConfigureIn) == 136, "bb_hook_ConfigureIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hook_ConfigureIn) == 8, "bb_hook_ConfigureIn: alignment");
 BB_ASSERT(offsetof(bb_hook_ConfigureIn, head) == 0, "bb_hook_ConfigureIn.head: offset");
