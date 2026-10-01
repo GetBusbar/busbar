@@ -1,6 +1,6 @@
 # tests/one_spelling.rs: per dialect, the occurrences beyond the first of every word-shaped string
 # literal in its production source. LOWER-ONLY: the one-spelling pass drives each to 0.
-anthropic = 459
+anthropic = 0
 bedrock = 443
 cohere = 2
 gemini = 388

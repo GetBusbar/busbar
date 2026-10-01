@@ -3,6 +3,8 @@
 
 //! The Anthropic spelling of the Q57 typed request slots: hosted (server) tools, service tier and the slots Anthropic cannot carry.
 
+use crate::codec::keys;
+
 /// Versioned `type` prefixes of the Anthropic server tools whose KIND the IR models (IR-11). The
 /// version suffix names Anthropic's own schema revision and is not carried; the writer picks one.
 pub(super) const HOSTED_TYPE_PREFIX_WEB_SEARCH: &str = "web_search_";
@@ -25,9 +27,9 @@ pub(super) fn read_hosted_tool(
     tool_val: &serde_json::Value,
 ) -> Option<crate::codec::ir::IrHostedTool> {
     let obj = tool_val.as_object()?;
-    let ty = obj.get("type")?.as_str()?;
+    let ty = obj.get(keys::TYPE)?.as_str()?;
     let max_uses = || {
-        obj.get("max_uses")
+        obj.get(super::MAX_USES)
             .and_then(|v| v.as_u64())
             .and_then(|v| u32::try_from(v).ok())
     };
@@ -43,14 +45,14 @@ pub(super) fn read_hosted_tool(
     };
     if ty.starts_with(HOSTED_TYPE_PREFIX_WEB_SEARCH) {
         let user_location = obj
-            .get("user_location")
+            .get(keys::USER_LOCATION)
             .and_then(|v| v.as_object())
             .map(crate::codec::ir::IrUserLocation::read_members);
         Some(crate::codec::ir::IrHostedTool::WebSearch(
             crate::codec::ir::IrWebSearch {
                 max_uses: max_uses(),
-                allowed_domains: domains("allowed_domains"),
-                blocked_domains: domains("blocked_domains"),
+                allowed_domains: domains(keys::ALLOWED_DOMAINS),
+                blocked_domains: domains(super::BLOCKED_DOMAINS),
                 user_location,
                 search_context_size: None,
             },
@@ -59,8 +61,8 @@ pub(super) fn read_hosted_tool(
         Some(crate::codec::ir::IrHostedTool::WebFetch(
             crate::codec::ir::IrWebFetch {
                 max_uses: max_uses(),
-                allowed_domains: domains("allowed_domains"),
-                blocked_domains: domains("blocked_domains"),
+                allowed_domains: domains(keys::ALLOWED_DOMAINS),
+                blocked_domains: domains(super::BLOCKED_DOMAINS),
             },
         ))
     } else if ty.starts_with(HOSTED_TYPE_PREFIX_CODE_EXECUTION) {
@@ -84,10 +86,10 @@ pub(super) fn write_hosted_tool(
         blocked: &[String],
     ) {
         if let Some(n) = max_uses {
-            obj.insert("max_uses".to_string(), serde_json::json!(n));
+            obj.insert(super::MAX_USES.to_string(), serde_json::json!(n));
         }
         if !allowed.is_empty() {
-            obj.insert("allowed_domains".to_string(), serde_json::json!(allowed));
+            obj.insert(keys::ALLOWED_DOMAINS.to_string(), serde_json::json!(allowed));
             if !blocked.is_empty() {
                 tracing::warn!(
                     "dropping hosted-tool blocked_domains on Anthropic egress: Anthropic accepts \
@@ -95,17 +97,17 @@ pub(super) fn write_hosted_tool(
                 );
             }
         } else if !blocked.is_empty() {
-            obj.insert("blocked_domains".to_string(), serde_json::json!(blocked));
+            obj.insert(super::BLOCKED_DOMAINS.to_string(), serde_json::json!(blocked));
         }
     }
     let mut obj = serde_json::Map::new();
     match tool {
         crate::codec::ir::IrHostedTool::WebSearch(ws) => {
             obj.insert(
-                "type".to_string(),
+                keys::TYPE.to_string(),
                 serde_json::json!(HOSTED_TOOL_WEB_SEARCH),
             );
-            obj.insert("name".to_string(), serde_json::json!("web_search"));
+            obj.insert(keys::NAME.to_string(), serde_json::json!("web_search"));
             put_limits(
                 &mut obj,
                 ws.max_uses,
@@ -113,7 +115,7 @@ pub(super) fn write_hosted_tool(
                 &ws.blocked_domains,
             );
             if let Some(loc) = &ws.user_location {
-                obj.insert("user_location".to_string(), loc.write_flat());
+                obj.insert(keys::USER_LOCATION.to_string(), loc.write_flat());
             }
             if ws.search_context_size.is_some() {
                 tracing::warn!(
@@ -123,8 +125,8 @@ pub(super) fn write_hosted_tool(
             }
         }
         crate::codec::ir::IrHostedTool::WebFetch(wf) => {
-            obj.insert("type".to_string(), serde_json::json!(HOSTED_TOOL_WEB_FETCH));
-            obj.insert("name".to_string(), serde_json::json!("web_fetch"));
+            obj.insert(keys::TYPE.to_string(), serde_json::json!(HOSTED_TOOL_WEB_FETCH));
+            obj.insert(keys::NAME.to_string(), serde_json::json!("web_fetch"));
             put_limits(
                 &mut obj,
                 wf.max_uses,
@@ -134,10 +136,10 @@ pub(super) fn write_hosted_tool(
         }
         crate::codec::ir::IrHostedTool::CodeExecution => {
             obj.insert(
-                "type".to_string(),
+                keys::TYPE.to_string(),
                 serde_json::json!(HOSTED_TOOL_CODE_EXECUTION),
             );
-            obj.insert("name".to_string(), serde_json::json!("code_execution"));
+            obj.insert(keys::NAME.to_string(), serde_json::json!("code_execution"));
         }
         // OAI-09: Anthropic has no free-text / grammar tool (N): dropped with a warn and reported
         // by `dropped_egress_controls`.

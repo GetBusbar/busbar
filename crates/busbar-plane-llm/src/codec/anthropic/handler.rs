@@ -17,7 +17,7 @@ pub struct AnthropicRequestHandler;
 /// This protocol's OWN chat instance — delete this line (and the registry arm) and this
 /// protocol's chat 404s via the standard no-handler path; everything else keeps working.
 static CHAT: super::super::chat_handle::ChatOperation =
-    super::super::chat_handle::ChatOperation("anthropic");
+    super::super::chat_handle::ChatOperation(super::VENDOR_NAME);
 
 /// ANTHROPIC'S ROW OF THE SUPPORT MATRIX — one verb. Every other verb is the standard no-handler
 /// 404, and it is the SAME answer for the LLM verbs Anthropic lacks and for the protocol-surface
@@ -27,7 +27,7 @@ static CELLS: &[busbar_contract::codec::Cell] = &[(OpVerb::CHAT, &CHAT)];
 
 impl RequestHandler for AnthropicRequestHandler {
     fn protocol_name(&self) -> &'static str {
-        "anthropic"
+        super::VENDOR_NAME
     }
     fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
         busbar_contract::codec::cell_of(CELLS, op)

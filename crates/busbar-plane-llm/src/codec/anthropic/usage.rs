@@ -3,6 +3,7 @@
 
 //! Anthropic `usage` objects: the usage table and the buffered / `message_delta` usage writers.
 
+use crate::codec::keys;
 use super::IrError;
 use crate::codec::usage_count::{read_usage, CountRead, CountSlot, UsageCount};
 
@@ -14,36 +15,36 @@ use crate::codec::usage_count::{read_usage, CountRead, CountSlot, UsageCount};
 /// The buffered response and both stream frames (`message_start`, `message_delta`) read the same
 /// table, so one request never reports the split at `stream: false` and loses it at `stream: true`.
 pub(super) const USAGE: &[UsageCount] = &[
-    (CountSlot::Input, CountRead::Zero(&["input_tokens"])),
-    (CountSlot::Output, CountRead::Zero(&["output_tokens"])),
+    (CountSlot::Input, CountRead::Zero(&[keys::INPUT_TOKENS])),
+    (CountSlot::Output, CountRead::Zero(&[keys::OUTPUT_TOKENS])),
     (
         CountSlot::CacheWrite,
-        CountRead::Opt(&["cache_creation_input_tokens"]),
+        CountRead::Opt(&[super::CACHE_CREATION_INPUT_TOKENS]),
     ),
     (
         CountSlot::CacheRead,
-        CountRead::Opt(&["cache_read_input_tokens"]),
+        CountRead::Opt(&[super::CACHE_READ_INPUT_TOKENS]),
     ),
     (
         CountSlot::CacheWrite5m,
-        CountRead::Opt(&["cache_creation", "ephemeral_5m_input_tokens"]),
+        CountRead::Opt(&[super::CACHE_CREATION, super::EPHEMERAL_5M_INPUT_TOKENS]),
     ),
     (
         CountSlot::CacheWrite1h,
-        CountRead::Opt(&["cache_creation", "ephemeral_1h_input_tokens"]),
+        CountRead::Opt(&[super::CACHE_CREATION, super::EPHEMERAL_1H_INPUT_TOKENS]),
     ),
     (
         CountSlot::WebSearchRequests,
-        CountRead::Opt(&["server_tool_use", "web_search_requests"]),
+        CountRead::Opt(&[super::SERVER_TOOL_USE, super::WEB_SEARCH_REQUESTS]),
     ),
     (
         CountSlot::Reasoning,
-        CountRead::Lenient(&["output_tokens_details", "thinking_tokens"]),
+        CountRead::Lenient(&[keys::OUTPUT_TOKENS_DETAILS, super::THINKING_TOKENS]),
     ),
 ];
 
 /// This dialect's label on a refused usage count.
-pub(super) const COUNT_LABEL: &str = "anthropic";
+pub(super) const COUNT_LABEL: &str = super::VENDOR_NAME;
 
 /// An Anthropic wire `usage` object (`None` when the frame carries none) → the IR usage: the
 /// [`USAGE`] table, plus `usage.service_tier` — which tier served the turn
@@ -53,7 +54,7 @@ pub(super) fn read_anthropic_usage(
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
     let mut usage = read_usage(COUNT_LABEL, usage_val, USAGE)?;
     usage.detail.service_tier = usage_val
-        .and_then(|u| u.get("service_tier"))
+        .and_then(|u| u.get(keys::SERVICE_TIER))
         .and_then(|v| v.as_str())
         .map(String::from);
     Ok(usage)
@@ -78,8 +79,8 @@ pub(super) fn write_cache_creation_object(usage: &crate::codec::ir::IrUsage) -> 
         return serde_json::Value::Null;
     }
     serde_json::json!({
-        "ephemeral_5m_input_tokens": d.cache_creation_5m_input_tokens.unwrap_or(0),
-        "ephemeral_1h_input_tokens": d.cache_creation_1h_input_tokens.unwrap_or(0),
+        (super::EPHEMERAL_5M_INPUT_TOKENS): d.cache_creation_5m_input_tokens.unwrap_or(0),
+        (super::EPHEMERAL_1H_INPUT_TOKENS): d.cache_creation_1h_input_tokens.unwrap_or(0),
     })
 }
 
@@ -87,7 +88,7 @@ pub(super) fn write_cache_creation_object(usage: &crate::codec::ir::IrUsage) -> 
 /// else the schema's `null`. Required by both `Usage` and `MessageDeltaUsage`.
 pub(super) fn write_output_tokens_details(usage: &crate::codec::ir::IrUsage) -> serde_json::Value {
     match usage.detail.reasoning_tokens {
-        Some(t) => serde_json::json!({ "thinking_tokens": t }),
+        Some(t) => serde_json::json!({ (super::THINKING_TOKENS): t }),
         None => serde_json::Value::Null,
     }
 }
@@ -98,7 +99,7 @@ pub(super) fn write_output_tokens_details(usage: &crate::codec::ir::IrUsage) -> 
 /// web-search count; the schema requires both counters, so `web_fetch_requests` is `0` here.
 pub(super) fn write_server_tool_use(usage: &crate::codec::ir::IrUsage) -> serde_json::Value {
     match usage.detail.web_search_requests {
-        Some(n) => serde_json::json!({ "web_search_requests": n, "web_fetch_requests": 0 }),
+        Some(n) => serde_json::json!({ (super::WEB_SEARCH_REQUESTS): n, "web_fetch_requests": 0 }),
         None => serde_json::Value::Null,
     }
 }
@@ -124,35 +125,35 @@ pub(super) fn write_usage_object(usage: Option<&crate::codec::ir::IrUsage>) -> s
     let usage = usage.unwrap_or(&zero);
     let mut usage_map = serde_json::Map::new();
     usage_map.insert(
-        "input_tokens".to_string(),
+        keys::INPUT_TOKENS.to_string(),
         serde_json::json!(usage.input_tokens),
     );
     usage_map.insert(
-        "output_tokens".to_string(),
+        keys::OUTPUT_TOKENS.to_string(),
         serde_json::json!(usage.output_tokens),
     );
     usage_map.insert(
-        "cache_creation_input_tokens".to_string(),
+        super::CACHE_CREATION_INPUT_TOKENS.to_string(),
         serde_json::json!(usage.cache_creation_input_tokens.unwrap_or(0)),
     );
     usage_map.insert(
-        "cache_read_input_tokens".to_string(),
+        super::CACHE_READ_INPUT_TOKENS.to_string(),
         serde_json::json!(usage.cache_read_input_tokens.unwrap_or(0)),
     );
     usage_map.insert(
-        "cache_creation".to_string(),
+        super::CACHE_CREATION.to_string(),
         write_cache_creation_object(usage),
     );
     usage_map.insert("inference_geo".to_string(), serde_json::Value::Null);
     usage_map.insert(
-        "output_tokens_details".to_string(),
+        keys::OUTPUT_TOKENS_DETAILS.to_string(),
         write_output_tokens_details(usage),
     );
-    usage_map.insert("server_tool_use".to_string(), write_server_tool_use(usage));
+    usage_map.insert(super::SERVER_TOOL_USE.to_string(), write_server_tool_use(usage));
     usage_map.insert(
-        "service_tier".to_string(),
+        keys::SERVICE_TIER.to_string(),
         serde_json::json!(
-            anthropic_served_tier(usage.detail.service_tier.as_deref()).unwrap_or("standard")
+            anthropic_served_tier(usage.detail.service_tier.as_deref()).unwrap_or(super::STANDARD)
         ),
     );
     serde_json::Value::Object(usage_map)
@@ -167,9 +168,9 @@ pub(super) fn write_usage_object(usage: Option<&crate::codec::ir::IrUsage>) -> s
 pub(super) fn anthropic_served_tier(tier: Option<&str>) -> Option<&'static str> {
     let word = tier?;
     let mapped = match word {
-        "standard" | "default" => Some("standard"),
-        "priority" => Some("priority"),
-        "batch" => Some("batch"),
+        super::STANDARD | "default" => Some(super::STANDARD),
+        super::PRIORITY => Some(super::PRIORITY),
+        super::BATCH => Some(super::BATCH),
         _ => None,
     };
     if mapped.is_none() {
@@ -191,35 +192,35 @@ pub(super) fn anthropic_served_tier(tier: Option<&str>) -> Option<&'static str> 
 pub(super) fn write_message_delta_usage(usage: &crate::codec::ir::IrUsage) -> serde_json::Value {
     let mut usage_map = serde_json::Map::new();
     usage_map.insert(
-        "input_tokens".to_string(),
+        keys::INPUT_TOKENS.to_string(),
         serde_json::json!(usage.input_tokens),
     );
     usage_map.insert(
-        "output_tokens".to_string(),
+        keys::OUTPUT_TOKENS.to_string(),
         serde_json::json!(usage.output_tokens),
     );
     usage_map.insert(
-        "cache_creation_input_tokens".to_string(),
+        super::CACHE_CREATION_INPUT_TOKENS.to_string(),
         serde_json::json!(usage.cache_creation_input_tokens.unwrap_or(0)),
     );
     usage_map.insert(
-        "cache_read_input_tokens".to_string(),
+        super::CACHE_READ_INPUT_TOKENS.to_string(),
         serde_json::json!(usage.cache_read_input_tokens.unwrap_or(0)),
     );
     usage_map.insert(
-        "output_tokens_details".to_string(),
+        keys::OUTPUT_TOKENS_DETAILS.to_string(),
         write_output_tokens_details(usage),
     );
-    usage_map.insert("server_tool_use".to_string(), write_server_tool_use(usage));
+    usage_map.insert(super::SERVER_TOOL_USE.to_string(), write_server_tool_use(usage));
     let d = &usage.detail;
     if d.cache_creation_5m_input_tokens.is_some() || d.cache_creation_1h_input_tokens.is_some() {
         usage_map.insert(
-            "cache_creation".to_string(),
+            super::CACHE_CREATION.to_string(),
             write_cache_creation_object(usage),
         );
     }
     if let Some(tier) = anthropic_served_tier(d.service_tier.as_deref()) {
-        usage_map.insert("service_tier".to_string(), serde_json::json!(tier));
+        usage_map.insert(keys::SERVICE_TIER.to_string(), serde_json::json!(tier));
     }
     serde_json::Value::Object(usage_map)
 }

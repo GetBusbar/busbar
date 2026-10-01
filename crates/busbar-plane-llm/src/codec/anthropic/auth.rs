@@ -4,6 +4,7 @@
 //! Anthropic's native error envelope. (Its egress credential is not built here: the dialect
 //! DECLARES its scheme on `DECL` and the kernel presents the lane credential under it.)
 
+use crate::codec::keys;
 use super::*;
 
 impl AnthropicWriter {
@@ -29,12 +30,12 @@ impl AnthropicWriter {
         request_id: &str,
     ) -> serde_json::Value {
         serde_json::json!({
-            "type": "error",
-            "error": {
-                "type": error_type,
-                "message": message,
+            (keys::TYPE): keys::ERROR_WORD,
+            (keys::ERROR_WORD): {
+                (keys::TYPE): error_type,
+                (keys::MESSAGE): message,
             },
-            "request_id": request_id,
+            (super::REQUEST_ID): request_id,
         })
     }
 }

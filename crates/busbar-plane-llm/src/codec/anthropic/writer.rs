@@ -1,3 +1,4 @@
+use crate::codec::keys;
 use super::*;
 
 impl ProtocolWriter for AnthropicWriter {
@@ -43,7 +44,7 @@ impl ProtocolWriter for AnthropicWriter {
         let anthropic_type = match kind {
             // Generic router/auth/forward `kind`s → Anthropic's typed error vocabulary.
             "invalid_request" | "bad_request" => ERR_TYPE_INVALID_REQUEST,
-            "authentication" | "unauthorized" => ERR_TYPE_AUTHENTICATION,
+            "authentication" | keys::UNAUTHORIZED => ERR_TYPE_AUTHENTICATION,
             "permission" | "forbidden" => ERR_TYPE_PERMISSION,
             "not_found" => ERR_TYPE_NOT_FOUND,
             ERR_TYPE_REQUEST_TOO_LARGE | "payload_too_large" => ERR_TYPE_REQUEST_TOO_LARGE,
@@ -95,7 +96,7 @@ impl ProtocolWriter for AnthropicWriter {
         // the body). The writer already mints a top-level body `request_id`; mirror it into the header
         // so body and header AGREE and the SDK populates `request_id` — omitting it was a deterministic
         // proxy tell on every error response.
-        if let Some(rid) = envelope.get("request_id").and_then(|v| v.as_str()) {
+        if let Some(rid) = envelope.get(super::REQUEST_ID).and_then(|v| v.as_str()) {
             if let Ok(hv) = busbar_contract::http::HeaderValue::from_str(rid) {
                 headers.insert(HDR_REQUEST_ID, hv);
             }
@@ -121,7 +122,7 @@ impl ProtocolWriter for AnthropicWriter {
         // a same-protocol passthrough to such a lane is (correctly) never pristine.
         match body.as_object_mut() {
             Some(obj) => {
-                obj.remove("model");
+                obj.remove(keys::MODEL);
                 obj.insert(
                     "anthropic_version".to_string(),
                     serde_json::json!("vertex-2023-10-16"),
@@ -156,7 +157,7 @@ impl ProtocolWriter for AnthropicWriter {
                 .as_ref()
                 .is_some_and(|rf| rf.json && rf.schema.is_none())
         {
-            dropped.push("response_format");
+            dropped.push(keys::RESPONSE_FORMAT);
         }
         dropped.extend(
             crate::codec::carry::dropped(super::map::REQUEST, super::map::CONTROLS, req)
@@ -192,7 +193,7 @@ impl ProtocolWriter for AnthropicWriter {
         }
         if !system_blocks.is_empty() {
             let system_array: Vec<_> = system_blocks.into_iter().map(write_block).collect();
-            out.insert("system".to_string(), serde_json::Value::Array(system_array));
+            out.insert(keys::SYSTEM.to_string(), serde_json::Value::Array(system_array));
         }
         // Splice back any raw native blocks `read_request` parked because the IR cannot model them
         // (e.g. `document`) — an Anthropic-sourced IR that goes through this writer (not the
@@ -214,7 +215,7 @@ impl ProtocolWriter for AnthropicWriter {
             .map(|(m, msg)| write_message(msg, m, unmodeled_sentinel))
             .collect();
         out.insert(
-            "messages".to_string(),
+            keys::MESSAGES.to_string(),
             serde_json::Value::Array(messages_array),
         );
         // `strict` is carried natively (Anthropic GA per-tool `strict`), so no drop warn here.
@@ -237,7 +238,7 @@ impl ProtocolWriter for AnthropicWriter {
             .chain(req.hosted_tools.iter().filter_map(write_hosted_tool))
             .collect();
         if !tools_array.is_empty() {
-            out.insert("tools".to_string(), serde_json::Value::Array(tools_array));
+            out.insert(keys::TOOLS.to_string(), serde_json::Value::Array(tools_array));
         }
         // Emit `tool_choice` in Anthropic's native object shape when present so a forced /
         // targeted directive translated from another protocol does not silently degrade to `auto`.
@@ -249,7 +250,7 @@ impl ProtocolWriter for AnthropicWriter {
             // `{tools:[{type:"web_search"}], tool_choice:"required"}` can arrive here with
             // `tools == []` and `tool_choice` still set. Drop with a warn rather than a guaranteed
             // 400 — this is the SAME guard the parallelism carry just below already applies.
-            if !out.contains_key("tools") {
+            if !out.contains_key(keys::TOOLS) {
                 tracing::warn!(
                     "dropping tool_choice on Anthropic egress: Anthropic rejects a tool_choice with \
                      no tools array (likely because the hosted tools that carried it were stripped \
@@ -260,24 +261,24 @@ impl ProtocolWriter for AnthropicWriter {
                 if let (Some(parallel), Some(map)) =
                     (req.parallel_tool_calls, tc_val.as_object_mut())
                 {
-                    if map.get("type").and_then(|t| t.as_str()) != Some("none") {
+                    if map.get(keys::TYPE).and_then(|t| t.as_str()) != Some(keys::NONE_WORD) {
                         map.insert(
-                            "disable_parallel_tool_use".to_string(),
+                            super::DISABLE_PARALLEL_TOOL_USE.to_string(),
                             serde_json::json!(!parallel),
                         );
                     }
                 }
-                out.insert("tool_choice".to_string(), tc_val);
+                out.insert(keys::TOOL_CHOICE.to_string(), tc_val);
             }
         } else if let Some(parallel) = req.parallel_tool_calls {
             // No directive but the caller did set parallelism: Anthropic can only express it inside
             // a tool_choice object, so synthesize the neutral `auto` carrier — only when tools are
             // actually present (the flag is meaningless without them, and Anthropic rejects a
             // tool_choice on a tool-less request).
-            if out.contains_key("tools") {
+            if out.contains_key(keys::TOOLS) {
                 out.insert(
-                    "tool_choice".to_string(),
-                    serde_json::json!({"type": "auto", "disable_parallel_tool_use": !parallel}),
+                    keys::TOOL_CHOICE.to_string(),
+                    serde_json::json!({(keys::TYPE): keys::AUTO, (super::DISABLE_PARALLEL_TOOL_USE): !parallel}),
                 );
             }
         }
@@ -312,17 +313,17 @@ impl ProtocolWriter for AnthropicWriter {
                         // in `output_config.format`; JSON Schema's own `description` keyword carries it
                         // when the schema does not already describe itself.
                         if let (Some(desc), Some(obj)) = (&rf.description, schema.as_object_mut()) {
-                            obj.entry("description")
+                            obj.entry(keys::DESCRIPTION)
                                 .or_insert_with(|| serde_json::json!(desc));
                         }
                         output_config.insert(
-                            "format".to_string(),
-                            serde_json::json!({ "type": OUTPUT_FORMAT_JSON_SCHEMA, "schema": schema }),
+                            keys::FORMAT.to_string(),
+                            serde_json::json!({ (keys::TYPE): OUTPUT_FORMAT_JSON_SCHEMA, (keys::SCHEMA): schema }),
                         );
                     }
                     None => {
                         tracing::warn!(
-                            parameter = "response_format",
+                            parameter = keys::RESPONSE_FORMAT,
                             "dropping schema-less JSON mode on Anthropic egress: structured outputs \
                              require a JSON schema and the Messages API has no schema-less JSON mode \
                              (lossy-by-target)"
@@ -350,11 +351,11 @@ impl ProtocolWriter for AnthropicWriter {
                 if rf.json {
                     let mut tool = serde_json::Map::new();
                     tool.insert(
-                        "name".to_string(),
+                        keys::NAME.to_string(),
                         serde_json::json!(RESPONSE_FORMAT_TOOL_NAME),
                     );
                     tool.insert(
-                        "description".to_string(),
+                        keys::DESCRIPTION.to_string(),
                         serde_json::json!(rf.description.clone().unwrap_or_else(|| {
                             "Respond by calling this tool with a JSON object that conforms to the \
                              required schema."
@@ -367,27 +368,27 @@ impl ProtocolWriter for AnthropicWriter {
                     let schema = rf
                         .schema
                         .clone()
-                        .unwrap_or_else(|| serde_json::json!({"type": "object"}));
-                    tool.insert("input_schema".to_string(), schema);
+                        .unwrap_or_else(|| serde_json::json!({(keys::TYPE): keys::OBJECT}));
+                    tool.insert(keys::INPUT_SCHEMA.to_string(), schema);
                     // Append to any tools the request already carried (create the array otherwise).
-                    match out.get_mut("tools").and_then(|v| v.as_array_mut()) {
+                    match out.get_mut(keys::TOOLS).and_then(|v| v.as_array_mut()) {
                         Some(arr) => arr.push(serde_json::Value::Object(tool)),
                         None => {
                             out.insert(
-                                "tools".to_string(),
+                                keys::TOOLS.to_string(),
                                 serde_json::Value::Array(vec![serde_json::Value::Object(tool)]),
                             );
                         }
                     }
                     out.insert(
-                        "tool_choice".to_string(),
-                        serde_json::json!({"type": "tool", "name": RESPONSE_FORMAT_TOOL_NAME}),
+                        keys::TOOL_CHOICE.to_string(),
+                        serde_json::json!({(keys::TYPE): keys::TOOL, (keys::NAME): RESPONSE_FORMAT_TOOL_NAME}),
                     );
                 }
             }
         }
         if let Some(max_tokens) = req.max_tokens {
-            out.insert("max_tokens".to_string(), serde_json::json!(max_tokens));
+            out.insert(keys::MAX_TOKENS.to_string(), serde_json::json!(max_tokens));
         }
         // The reasoning carry: project the IR ask into Anthropic's `thinking` param.
         //
@@ -417,19 +418,19 @@ impl ProtocolWriter for AnthropicWriter {
             }
             Some(crate::codec::ir::IrReasoningAsk::Off) => {
                 out.insert(
-                    "thinking".to_string(),
-                    serde_json::json!({ "type": THINKING_TYPE_DISABLED }),
+                    keys::THINKING.to_string(),
+                    serde_json::json!({ (keys::TYPE): THINKING_TYPE_DISABLED }),
                 );
             }
             Some(crate::codec::ir::IrReasoningAsk::Effort(effort))
                 if caps.anthropic_adaptive_thinking =>
             {
                 out.insert(
-                    "thinking".to_string(),
-                    serde_json::json!({ "type": THINKING_TYPE_ADAPTIVE }),
+                    keys::THINKING.to_string(),
+                    serde_json::json!({ (keys::TYPE): THINKING_TYPE_ADAPTIVE }),
                 );
                 output_config.insert(
-                    "effort".to_string(),
+                    keys::EFFORT.to_string(),
                     serde_json::json!(anthropic_effort_word(effort)),
                 );
                 thinking_emitted = true;
@@ -437,8 +438,8 @@ impl ProtocolWriter for AnthropicWriter {
             Some(crate::codec::ir::IrReasoningAsk::Dynamic) if caps.anthropic_adaptive_thinking => {
                 // "The model decides" IS adaptive thinking; no effort word is invented for it.
                 out.insert(
-                    "thinking".to_string(),
-                    serde_json::json!({ "type": THINKING_TYPE_ADAPTIVE }),
+                    keys::THINKING.to_string(),
+                    serde_json::json!({ (keys::TYPE): THINKING_TYPE_ADAPTIVE }),
                 );
                 thinking_emitted = true;
             }
@@ -469,8 +470,8 @@ impl ProtocolWriter for AnthropicWriter {
                         );
                     }
                     out.insert(
-                        "thinking".to_string(),
-                        serde_json::json!({"type": "enabled", "budget_tokens": budget}),
+                        keys::THINKING.to_string(),
+                        serde_json::json!({(keys::TYPE): keys::ENABLED, (keys::BUDGET_TOKENS): budget}),
                     );
                     thinking_emitted = true;
                 } else {
@@ -485,7 +486,7 @@ impl ProtocolWriter for AnthropicWriter {
         }
         if !output_config.is_empty() {
             out.insert(
-                "output_config".to_string(),
+                keys::OUTPUT_CONFIG.to_string(),
                 serde_json::Value::Object(output_config),
             );
         }
@@ -495,16 +496,16 @@ impl ProtocolWriter for AnthropicWriter {
             // was already written above (before the thinking decision), so downgrade a now-illegal
             // `any`/`tool` to `auto` here, preserving any `disable_parallel_tool_use`, with a warn —
             // same "think-ask wins, observably" rule applied to temperature/top_p/top_k below.
-            if let Some(tc) = out.get_mut("tool_choice").and_then(|v| v.as_object_mut()) {
-                let ty = tc.get("type").and_then(|t| t.as_str());
-                if ty == Some("any") || ty == Some("tool") {
+            if let Some(tc) = out.get_mut(keys::TOOL_CHOICE).and_then(|v| v.as_object_mut()) {
+                let ty = tc.get(keys::TYPE).and_then(|t| t.as_str());
+                if ty == Some(keys::ANY) || ty == Some(keys::TOOL) {
                     tracing::warn!(
                         tool_choice = ?ty,
                         "downgrading forced/targeted tool_choice to 'auto' on Anthropic egress: \
                          not compatible with thinking"
                     );
-                    tc.insert("type".to_string(), serde_json::json!("auto"));
-                    tc.remove("name"); // `name` is only valid on `{type:"tool"}`
+                    tc.insert(keys::TYPE.to_string(), serde_json::json!(keys::AUTO));
+                    tc.remove(keys::NAME); // `name` is only valid on `{type:"tool"}`
                 }
             }
         }
@@ -520,7 +521,7 @@ impl ProtocolWriter for AnthropicWriter {
             },
             &mut out,
         );
-        out.insert("stream".to_string(), serde_json::json!(req.stream));
+        out.insert(keys::STREAM.to_string(), serde_json::json!(req.stream));
         // (response_format is handled ABOVE via native `output_config.format`.)
         // The controls with no Anthropic Messages form (the penalties, `seed`, `n`, a tier Anthropic
         // cannot name, the Q57 slots it has no member for): dropped, observably, each warned in the
@@ -535,7 +536,7 @@ impl ProtocolWriter for AnthropicWriter {
         // before the `extra` overlay: if the request natively carried an Anthropic `metadata`
         // object it rides `extra` and overwrites this, so the verbatim original always wins.
         if let Some(user) = &req.user {
-            out.insert("metadata".to_string(), serde_json::json!({"user_id": user}));
+            out.insert(keys::METADATA.to_string(), serde_json::json!({(super::USER_ID): user}));
         }
         for (key, value) in &req.extra {
             // SKIP busbar's own positional-stash sentinel. It is CONSUMED above (spliced back into
@@ -562,8 +563,8 @@ impl ProtocolWriter for AnthropicWriter {
                 ..
             } => {
                 let role_str = match role {
-                    crate::codec::ir::IrRole::User => "user",
-                    crate::codec::ir::IrRole::Assistant => "assistant",
+                    crate::codec::ir::IrRole::User => keys::USER,
+                    crate::codec::ir::IrRole::Assistant => keys::ASSISTANT,
                     _ => return None,
                 };
                 let mut msg_obj = serde_json::Map::new();
@@ -583,9 +584,9 @@ impl ProtocolWriter for AnthropicWriter {
                 // than announcing the same message under a second identity.
                 let msg_id =
                     self.carried_message_id(|| id.clone().unwrap_or_else(synth_message_id));
-                msg_obj.insert("id".to_string(), serde_json::json!(msg_id));
-                msg_obj.insert("type".to_string(), serde_json::json!("message"));
-                msg_obj.insert("role".to_string(), serde_json::json!(role_str));
+                msg_obj.insert(keys::ID.to_string(), serde_json::json!(msg_id));
+                msg_obj.insert(keys::TYPE.to_string(), serde_json::json!(keys::MESSAGE));
+                msg_obj.insert(keys::ROLE.to_string(), serde_json::json!(role_str));
                 // model: same conformance class as the non-stream `write_response` writer — the SDK
                 // types `message_start.message.model` as a REQUIRED non-optional string and reads it to
                 // populate the assembled streaming Message. Emit it UNCONDITIONALLY (empty-string
@@ -593,15 +594,15 @@ impl ProtocolWriter for AnthropicWriter {
                 // structurally valid rather than dropping a mandatory field. This is the published
                 // wire shape and must stay byte-identical to it.
                 let model_str = model.as_deref().unwrap_or("");
-                msg_obj.insert("model".to_string(), serde_json::json!(model_str));
-                msg_obj.insert("content".to_string(), serde_json::Value::Array(Vec::new()));
-                msg_obj.insert("stop_reason".to_string(), serde_json::Value::Null);
-                msg_obj.insert("stop_sequence".to_string(), serde_json::Value::Null);
+                msg_obj.insert(keys::MODEL.to_string(), serde_json::json!(model_str));
+                msg_obj.insert(keys::CONTENT.to_string(), serde_json::Value::Array(Vec::new()));
+                msg_obj.insert(super::STOP_REASON.to_string(), serde_json::Value::Null);
+                msg_obj.insert(keys::STOP_SEQUENCE.to_string(), serde_json::Value::Null);
                 // The published `Message` schema also requires `stop_details` (structured detail
                 // about why output stopped) and `container` (the code-execution container); both
                 // are nullable and are `null` at stream open, as a real stream carries them.
-                msg_obj.insert("stop_details".to_string(), serde_json::Value::Null);
-                msg_obj.insert("container".to_string(), serde_json::Value::Null);
+                msg_obj.insert(super::STOP_DETAILS.to_string(), serde_json::Value::Null);
+                msg_obj.insert(keys::CONTAINER.to_string(), serde_json::Value::Null);
                 // `usage` is a REQUIRED field of `message_start.message`, typed as the same full
                 // `Usage` schema the buffered response carries: a client that reads
                 // `event.message.usage.input_tokens` on the first event throws if it is absent. On
@@ -609,14 +610,14 @@ impl ProtocolWriter for AnthropicWriter {
                 // so `usage` is `None`; `write_usage_object` emits the zero-valued skeleton in that
                 // case (which also matches native behavior: output_tokens is 0 at stream open) and
                 // fills every spec-required member either way.
-                msg_obj.insert("usage".to_string(), write_usage_object(usage.as_ref()));
+                msg_obj.insert(keys::USAGE.to_string(), write_usage_object(usage.as_ref()));
                 let mut data_obj = serde_json::Map::new();
                 // Native Anthropic SSE data bodies carry a top-level `type` matching the SSE `event:`
                 // header (e.g. `{"type":"message_start",...}`). The SDK streaming decoder accepts the
                 // event off the header, but native parity (and any consumer that dispatches on
                 // `data.type`) requires the field — emit it on every event body.
-                data_obj.insert("type".to_string(), serde_json::json!(EVT_MESSAGE_START));
-                data_obj.insert("message".to_string(), serde_json::Value::Object(msg_obj));
+                data_obj.insert(keys::TYPE.to_string(), serde_json::json!(EVT_MESSAGE_START));
+                data_obj.insert(keys::MESSAGE.to_string(), serde_json::Value::Object(msg_obj));
                 Some((
                     EVT_MESSAGE_START.to_string(),
                     serde_json::Value::Object(data_obj),
@@ -639,10 +640,10 @@ impl ProtocolWriter for AnthropicWriter {
                     // arrived yet — they stream as `citations_delta` events) and `caller` on a
                     // tool_use block (`{"type":"direct"}`, the spec's default).
                     IrBlockMeta::Text => {
-                        serde_json::json!({ "type": "text", "text": "", "citations": null })
+                        serde_json::json!({ (keys::TYPE): keys::TEXT, (keys::TEXT): "", (keys::CITATIONS): null })
                     }
                     IrBlockMeta::Thinking { .. } => {
-                        serde_json::json!({ "type": "thinking", "thinking": "", "signature": "" })
+                        serde_json::json!({ (keys::TYPE): keys::THINKING, (keys::THINKING): "", (keys::SIGNATURE): "" })
                     }
                     // A REDACTED thinking block emits NO content_block_start HERE. Native Anthropic
                     // carries a redacted block's opaque `data` INLINE on its content_block_start (with
@@ -663,11 +664,11 @@ impl ProtocolWriter for AnthropicWriter {
                     IrBlockMeta::RedactedThinking => return None,
                     IrBlockMeta::ToolUse { id, name } => {
                         serde_json::json!({
-                            "type": STOP_TOOL_USE,
-                            "id": id,
-                            "name": name,
-                            "input": {},
-                            "caller": { "type": "direct" },
+                            (keys::TYPE): STOP_TOOL_USE,
+                            (keys::ID): id,
+                            (keys::NAME): name,
+                            (keys::INPUT): {},
+                            (super::W_CALLER): { (keys::TYPE): super::DIRECT },
                         })
                     }
                     // An IMAGE block has NO Anthropic RESPONSE projection. The published
@@ -685,11 +686,11 @@ impl ProtocolWriter for AnthropicWriter {
                 self.mark_block_open(*index);
                 let mut data_obj = serde_json::Map::new();
                 data_obj.insert(
-                    "type".to_string(),
+                    keys::TYPE.to_string(),
                     serde_json::json!(EVT_CONTENT_BLOCK_START),
                 );
-                data_obj.insert("index".to_string(), serde_json::json!(index));
-                data_obj.insert("content_block".to_string(), content_block);
+                data_obj.insert(keys::INDEX.to_string(), serde_json::json!(index));
+                data_obj.insert(super::CONTENT_BLOCK.to_string(), content_block);
                 Some((
                     EVT_CONTENT_BLOCK_START.to_string(),
                     serde_json::Value::Object(data_obj),
@@ -698,16 +699,16 @@ impl ProtocolWriter for AnthropicWriter {
             IrStreamEvent::BlockDelta { index, delta } => {
                 let delta_val = match delta {
                     IrDelta::TextDelta(text) => {
-                        serde_json::json!({ "type": DELTA_TYPE_TEXT, "text": text })
+                        serde_json::json!({ (keys::TYPE): DELTA_TYPE_TEXT, (keys::TEXT): text })
                     }
                     IrDelta::ThinkingDelta(thinking) => {
-                        serde_json::json!({ "type": DELTA_TYPE_THINKING, "thinking": thinking })
+                        serde_json::json!({ (keys::TYPE): DELTA_TYPE_THINKING, (keys::THINKING): thinking })
                     }
                     IrDelta::InputJsonDelta(json) => {
-                        serde_json::json!({ "type": DELTA_TYPE_INPUT_JSON, "partial_json": json })
+                        serde_json::json!({ (keys::TYPE): DELTA_TYPE_INPUT_JSON, (super::PARTIAL_JSON): json })
                     }
                     IrDelta::SignatureDelta(sig) => {
-                        serde_json::json!({ "type": DELTA_TYPE_SIGNATURE, "signature": sig })
+                        serde_json::json!({ (keys::TYPE): DELTA_TYPE_SIGNATURE, (keys::SIGNATURE): sig })
                     }
                     // A streamed redacted-reasoning delta (opaque encrypted bytes). Native Anthropic
                     // carries a `redacted_thinking` block's `data` INLINE on its content_block_start
@@ -733,15 +734,15 @@ impl ProtocolWriter for AnthropicWriter {
                         }
                         let mut data_obj = serde_json::Map::new();
                         data_obj.insert(
-                            "type".to_string(),
+                            keys::TYPE.to_string(),
                             serde_json::json!(EVT_CONTENT_BLOCK_START),
                         );
-                        data_obj.insert("index".to_string(), serde_json::json!(index));
+                        data_obj.insert(keys::INDEX.to_string(), serde_json::json!(index));
                         data_obj.insert(
-                            "content_block".to_string(),
+                            super::CONTENT_BLOCK.to_string(),
                             serde_json::json!({
-                                "type": BLOCK_TYPE_REDACTED_THINKING,
-                                "data": bytes,
+                                (keys::TYPE): BLOCK_TYPE_REDACTED_THINKING,
+                                (keys::DATA): bytes,
                             }),
                         );
                         return Some((
@@ -775,15 +776,15 @@ impl ProtocolWriter for AnthropicWriter {
                         let c = citations.first()?;
                         let mut data_obj = serde_json::Map::new();
                         data_obj.insert(
-                            "type".to_string(),
+                            keys::TYPE.to_string(),
                             serde_json::json!(EVT_CONTENT_BLOCK_DELTA),
                         );
-                        data_obj.insert("index".to_string(), serde_json::json!(index));
+                        data_obj.insert(keys::INDEX.to_string(), serde_json::json!(index));
                         data_obj.insert(
-                            "delta".to_string(),
+                            keys::DELTA.to_string(),
                             serde_json::json!({
-                                "type": DELTA_TYPE_CITATIONS,
-                                "citation": write_citation(c),
+                                (keys::TYPE): DELTA_TYPE_CITATIONS,
+                                (keys::CITATION): write_citation(c),
                             }),
                         );
                         return Some((
@@ -794,11 +795,11 @@ impl ProtocolWriter for AnthropicWriter {
                 };
                 let mut data_obj = serde_json::Map::new();
                 data_obj.insert(
-                    "type".to_string(),
+                    keys::TYPE.to_string(),
                     serde_json::json!(EVT_CONTENT_BLOCK_DELTA),
                 );
-                data_obj.insert("index".to_string(), serde_json::json!(index));
-                data_obj.insert("delta".to_string(), delta_val);
+                data_obj.insert(keys::INDEX.to_string(), serde_json::json!(index));
+                data_obj.insert(keys::DELTA.to_string(), delta_val);
                 Some((
                     EVT_CONTENT_BLOCK_DELTA.to_string(),
                     serde_json::Value::Object(data_obj),
@@ -813,10 +814,10 @@ impl ProtocolWriter for AnthropicWriter {
                 }
                 let mut data_obj = serde_json::Map::new();
                 data_obj.insert(
-                    "type".to_string(),
+                    keys::TYPE.to_string(),
                     serde_json::json!(EVT_CONTENT_BLOCK_STOP),
                 );
-                data_obj.insert("index".to_string(), serde_json::json!(index));
+                data_obj.insert(keys::INDEX.to_string(), serde_json::json!(index));
                 Some((
                     EVT_CONTENT_BLOCK_STOP.to_string(),
                     serde_json::Value::Object(data_obj),
@@ -831,21 +832,21 @@ impl ProtocolWriter for AnthropicWriter {
                 let mut delta_obj = serde_json::Map::new();
                 if let Some(reason) = stop_reason {
                     delta_obj.insert(
-                        "stop_reason".to_string(),
+                        super::STOP_REASON.to_string(),
                         serde_json::json!(write_anthropic_stop_reason_detailed(
                             *reason,
                             stop_detail.as_ref()
                         )),
                     );
                 } else {
-                    delta_obj.insert("stop_reason".to_string(), serde_json::Value::Null);
+                    delta_obj.insert(super::STOP_REASON.to_string(), serde_json::Value::Null);
                 }
                 // `stop_sequence`: native Anthropic `message_delta` ALWAYS carries this key —
                 // the matched stop string when a stop sequence fired, else explicit `null`. Emit
                 // `null` rather than omitting the key so a strict property-presence validator sees
                 // the native shape (the TS SDK already treats `undefined`/`null` alike).
                 delta_obj.insert(
-                    "stop_sequence".to_string(),
+                    keys::STOP_SEQUENCE.to_string(),
                     stop_sequence
                         .as_deref()
                         .map(serde_json::Value::from)
@@ -856,18 +857,18 @@ impl ProtocolWriter for AnthropicWriter {
                 // detail (IR-02), else `null`; busbar carries no code-execution container, so
                 // `container` is `null`.
                 delta_obj.insert(
-                    "stop_details".to_string(),
+                    super::STOP_DETAILS.to_string(),
                     write_anthropic_stop_details(*stop_reason, stop_detail.as_ref()),
                 );
-                delta_obj.insert("container".to_string(), serde_json::Value::Null);
+                delta_obj.insert(keys::CONTAINER.to_string(), serde_json::Value::Null);
                 // `usage`: every `MessageDeltaUsage` member the spec requires, plus the 5m/1h tier
                 // split when the source reported it — it rides the streamed `message_delta.usage`
                 // on native Anthropic exactly as it rides the buffered `usage`, so the SAME request
                 // reconciles per tier at `stream: true` as it does at `stream: false`.
                 let mut data_obj = serde_json::Map::new();
-                data_obj.insert("type".to_string(), serde_json::json!(EVT_MESSAGE_DELTA));
-                data_obj.insert("delta".to_string(), serde_json::Value::Object(delta_obj));
-                data_obj.insert("usage".to_string(), write_message_delta_usage(usage));
+                data_obj.insert(keys::TYPE.to_string(), serde_json::json!(EVT_MESSAGE_DELTA));
+                data_obj.insert(keys::DELTA.to_string(), serde_json::Value::Object(delta_obj));
+                data_obj.insert(keys::USAGE.to_string(), write_message_delta_usage(usage));
                 Some((
                     EVT_MESSAGE_DELTA.to_string(),
                     serde_json::Value::Object(data_obj),
@@ -875,7 +876,7 @@ impl ProtocolWriter for AnthropicWriter {
             }
             IrStreamEvent::MessageStop => Some((
                 EVT_MESSAGE_STOP.to_string(),
-                serde_json::json!({ "type": EVT_MESSAGE_STOP }),
+                serde_json::json!({ (keys::TYPE): EVT_MESSAGE_STOP }),
             )),
             IrStreamEvent::Error(err) => {
                 // Native Anthropic in-stream error event:
@@ -891,7 +892,7 @@ impl ProtocolWriter for AnthropicWriter {
                 // token from the class, keeping a signal that is already a spec token so a native
                 // one round-trips. The free text is not lost — it is the `message` below.
                 error_obj.insert(
-                    "type".to_string(),
+                    keys::TYPE.to_string(),
                     serde_json::json!(stream_error_type(err)),
                 );
                 // The IR carries no separate message string (IrError == CanonicalSignal, which has
@@ -908,16 +909,16 @@ impl ProtocolWriter for AnthropicWriter {
                     Some(ps) if !ps.is_empty() => ps.to_string(),
                     Some(_) | None => "an error occurred while streaming the response".to_string(),
                 };
-                error_obj.insert("message".to_string(), serde_json::json!(message));
+                error_obj.insert(keys::MESSAGE.to_string(), serde_json::json!(message));
                 let mut data_obj = serde_json::Map::new();
                 // Native Anthropic in-stream error data body carries the top-level `type:"error"`
                 // discriminator matching the SSE `event: error` header — exactly like every other
                 // event arm inserts its own `type`. An SDK that dispatches on `data.type` (the
                 // documented shape) won't recognize the event as an error without it, and its
                 // absence is a proxy-signature tell vs a native stream.
-                data_obj.insert("type".to_string(), serde_json::json!("error"));
-                data_obj.insert("error".to_string(), serde_json::Value::Object(error_obj));
-                Some(("error".to_string(), serde_json::Value::Object(data_obj)))
+                data_obj.insert(keys::TYPE.to_string(), serde_json::json!(keys::ERROR_WORD));
+                data_obj.insert(keys::ERROR_WORD.to_string(), serde_json::Value::Object(error_obj));
+                Some((keys::ERROR_WORD.to_string(), serde_json::Value::Object(data_obj)))
             }
         }
     }
@@ -948,11 +949,11 @@ impl ProtocolWriter for AnthropicWriter {
         //     note below: same-protocol non-stream relays the raw upstream body and never reaches this
         //     writer), so there is no same-protocol read→write→read round-trip to keep id-less.
         let id = resp.id.clone().unwrap_or_else(synth_message_id);
-        obj.insert("id".to_string(), serde_json::json!(id));
+        obj.insert(keys::ID.to_string(), serde_json::json!(id));
 
         // type/role are constant for a Messages API response ("message"/"assistant").
-        obj.insert("type".to_string(), serde_json::json!("message"));
-        obj.insert("role".to_string(), serde_json::json!("assistant"));
+        obj.insert(keys::TYPE.to_string(), serde_json::json!(keys::MESSAGE));
+        obj.insert(keys::ROLE.to_string(), serde_json::json!(keys::ASSISTANT));
 
         // model: the official SDKs type `Message.model` as a REQUIRED non-optional string, so a body
         // that omits it fails to decode (Pydantic/Zod validation error). Emit it UNCONDITIONALLY,
@@ -962,7 +963,7 @@ impl ProtocolWriter for AnthropicWriter {
         // structurally valid rather than dropping it — the published wire shape, kept
         // byte-identical. Same-protocol passthrough preserves the upstream value verbatim.
         let model = resp.model.as_deref().unwrap_or("");
-        obj.insert("model".to_string(), serde_json::json!(model));
+        obj.insert(keys::MODEL.to_string(), serde_json::json!(model));
 
         // content blocks, in their RESPONSE shape (the response block schemas require members a
         // request block does not carry — see `write_response_block`).
@@ -986,15 +987,15 @@ impl ProtocolWriter for AnthropicWriter {
                     None
                 }
                 crate::codec::ir::IrBlock::Json(v) => Some(serde_json::json!({
-                    "type": "text",
-                    "text": serde_json::to_string(v).unwrap_or_default(),
-                    "citations": null,
+                    (keys::TYPE): keys::TEXT,
+                    (keys::TEXT): serde_json::to_string(v).unwrap_or_default(),
+                    (keys::CITATIONS): null,
                 })),
                 other => Some(write_response_block(other)),
             })
             .collect();
         obj.insert(
-            "content".to_string(),
+            keys::CONTENT.to_string(),
             serde_json::Value::Array(content_array),
         );
 
@@ -1002,7 +1003,7 @@ impl ProtocolWriter for AnthropicWriter {
         // mapped reason, or an explicit `null` when the source carried none, so the key is always
         // present; `read_response` maps a `null` back to `None`, keeping round-trips lossless.
         obj.insert(
-            "stop_reason".to_string(),
+            super::STOP_REASON.to_string(),
             resp.stop_reason
                 .map(|reason| {
                     serde_json::json!(write_anthropic_stop_reason_detailed(
@@ -1024,10 +1025,10 @@ impl ProtocolWriter for AnthropicWriter {
         // `stop_sequence`.
         match &resp.stop_sequence {
             Some(seq) => {
-                obj.insert("stop_sequence".to_string(), serde_json::json!(seq));
+                obj.insert(keys::STOP_SEQUENCE.to_string(), serde_json::json!(seq));
             }
             None => {
-                obj.insert("stop_sequence".to_string(), serde_json::Value::Null);
+                obj.insert(keys::STOP_SEQUENCE.to_string(), serde_json::Value::Null);
             }
         }
 
@@ -1035,14 +1036,14 @@ impl ProtocolWriter for AnthropicWriter {
         // `stop_details` is the refusal object when the IR carries a refusal detail (IR-02), else
         // `null`; busbar carries no code-execution container, so `container` is `null`.
         obj.insert(
-            "stop_details".to_string(),
+            super::STOP_DETAILS.to_string(),
             write_anthropic_stop_details(resp.stop_reason, resp.stop_detail.as_ref()),
         );
-        obj.insert("container".to_string(), serde_json::Value::Null);
+        obj.insert(keys::CONTAINER.to_string(), serde_json::Value::Null);
 
         // usage: every member the published `Usage` schema requires, with the source's values
         // where it reported them and the spec's zero/null/default shape otherwise.
-        obj.insert("usage".to_string(), write_usage_object(Some(&resp.usage)));
+        obj.insert(keys::USAGE.to_string(), write_usage_object(Some(&resp.usage)));
 
         serde_json::Value::Object(obj)
     }

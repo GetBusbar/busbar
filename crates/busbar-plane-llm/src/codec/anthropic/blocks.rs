@@ -3,6 +3,7 @@
 
 //! Reading Anthropic content blocks, messages and tool definitions into the IR.
 
+use crate::codec::keys;
 use super::*;
 use crate::codec::dialect::ir_parse_error;
 
@@ -12,19 +13,19 @@ pub(super) fn read_block(
 ) -> Result<crate::codec::ir::IrBlock, IrError> {
     let obj = block_val.as_object().ok_or_else(ir_parse_error)?;
 
-    let block_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let block_type = obj.get(keys::TYPE).and_then(|v| v.as_str()).unwrap_or("");
 
     match block_type {
-        "text" => {
+        keys::TEXT => {
             let text = obj
-                .get("text")
+                .get(keys::TEXT)
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
             // Parse cache_control - object form: {"type": "ephemeral"}
-            let cache_control = read_cache_control(obj.get("cache_control"))?;
+            let cache_control = read_cache_control(obj.get(super::CACHE_CONTROL))?;
             let citations = obj
-                .get("citations")
+                .get(keys::CITATIONS)
                 .and_then(|v| v.as_array())
                 .map(|arr| arr.iter().map(read_citation).collect())
                 .unwrap_or_default();
@@ -35,16 +36,16 @@ pub(super) fn read_block(
                 refusal: false,
             })
         }
-        "thinking" => {
+        keys::THINKING => {
             let text = obj
-                .get("thinking")
+                .get(keys::THINKING)
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
             let signature = obj
-                .get("signature")
+                .get(keys::SIGNATURE)
                 .and_then(|v| v.as_str().map(String::from));
-            let cache_control = read_cache_control(obj.get("cache_control"))?;
+            let cache_control = read_cache_control(obj.get(super::CACHE_CONTROL))?;
             // IR-18: a signature read off the Anthropic wire is Anthropic's, so a foreign writer
             // never sends it as its own reasoning blob — unless it is busbar's provenance envelope
             // (another family's signature handed to this client earlier), which restores the
@@ -68,18 +69,18 @@ pub(super) fn read_block(
             // wrong-typed id yields an empty IR id that silently breaks that pairing — reject the
             // malformed block rather than inventing an id.
             let id = obj
-                .get("id")
+                .get(keys::ID)
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .ok_or_else(ir_parse_error)?
                 .to_string();
             let name = obj
-                .get("name")
+                .get(keys::NAME)
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let input = obj.get("input").cloned().unwrap_or(serde_json::Value::Null);
-            let cache_control = read_cache_control(obj.get("cache_control"))?;
+            let input = obj.get(keys::INPUT).cloned().unwrap_or(serde_json::Value::Null);
+            let cache_control = read_cache_control(obj.get(super::CACHE_CONTROL))?;
             Ok(crate::codec::ir::IrBlock::ToolUse {
                 id,
                 name,
@@ -89,13 +90,13 @@ pub(super) fn read_block(
                 thought_signature: None,
             })
         }
-        "tool_result" => {
+        super::TOOL_RESULT => {
             let tool_use_id = obj
-                .get("tool_use_id")
+                .get(super::TOOL_USE_ID)
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let content_val = obj.get("content").unwrap_or(&serde_json::Value::Null);
+            let content_val = obj.get(keys::CONTENT).unwrap_or(&serde_json::Value::Null);
             let content = if let Some(arr) = content_val.as_array() {
                 arr.iter().map(read_block).collect::<Result<_, _>>()?
             } else {
@@ -107,10 +108,10 @@ pub(super) fn read_block(
                 }]
             };
             let is_error = obj
-                .get("is_error")
+                .get(super::IS_ERROR)
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let cache_control = read_cache_control(obj.get("cache_control"))?;
+            let cache_control = read_cache_control(obj.get(super::CACHE_CONTROL))?;
             Ok(crate::codec::ir::IrBlock::ToolResult {
                 tool_use_id,
                 content,
@@ -118,11 +119,11 @@ pub(super) fn read_block(
                 cache_control,
             })
         }
-        "image" => {
-            let source = obj.get("source").ok_or_else(ir_parse_error)?;
+        keys::IMAGE => {
+            let source = obj.get(keys::SOURCE).ok_or_else(ir_parse_error)?;
             // `cache_control` sits on the OUTER image block object (a sibling of `source`), not on
             // the source — read it once and attach to whichever source shape we produce.
-            let cache_control = read_cache_control(obj.get("cache_control"))?;
+            let cache_control = read_cache_control(obj.get(super::CACHE_CONTROL))?;
             if let Some(src_obj) = source.as_object() {
                 // Anthropic's Messages API has TWO native image source shapes:
                 //   - `{"type":"url","url":<url>}`           — a remote image reference
@@ -138,8 +139,8 @@ pub(super) fn read_block(
                 // foreign writers emitted as `data:;base64,` / an empty `inlineData` (ANT-03). Carry it
                 // on the opaque `Vendor` escape instead: this protocol re-emits it verbatim, and every
                 // other writer drops a foreign vendor handle with a warn.
-                let src_type = src_obj.get("type").and_then(|v| v.as_str());
-                if src_type.is_some_and(|t| t != "url" && t != "base64") {
+                let src_type = src_obj.get(keys::TYPE).and_then(|v| v.as_str());
+                if src_type.is_some_and(|t| t != keys::URL && t != keys::BASE64) {
                     return Ok(crate::codec::ir::IrBlock::Image {
                         source: crate::codec::ir::IrImageSource::Vendor {
                             vendor: VENDOR_NAME,
@@ -149,9 +150,9 @@ pub(super) fn read_block(
                         detail: None,
                     });
                 }
-                if src_type == Some("url") {
+                if src_type == Some(keys::URL) {
                     let url = src_obj
-                        .get("url")
+                        .get(keys::URL)
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
@@ -162,12 +163,12 @@ pub(super) fn read_block(
                     });
                 }
                 let media_type = src_obj
-                    .get("media_type")
+                    .get(super::MEDIA_TYPE)
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
                 let data = src_obj
-                    .get("data")
+                    .get(keys::DATA)
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
@@ -199,7 +200,7 @@ pub(super) fn read_block(
             // conversation history into a rejected request. Degrade to the empty-Text placeholder
             // (holding the block's POSITION in the turn) with a warn naming it, which is what every
             // other unmodeled Anthropic block does.
-            let Some(source) = obj.get("source") else {
+            let Some(source) = obj.get(keys::SOURCE) else {
                 tracing::warn!(
                     "degrading anthropic `document` block with no `source` to an empty text \
                      placeholder: the block carries no payload to translate"
@@ -211,30 +212,30 @@ pub(super) fn read_block(
                     refusal: false,
                 });
             };
-            let cache_control = read_cache_control(obj.get("cache_control"))?;
+            let cache_control = read_cache_control(obj.get(super::CACHE_CONTROL))?;
             // `document.context` (a free-text hint) and `document.citations` (an `{enabled}` toggle)
             // ride the IR-12 `Media.context` / `Media.citations` slots, so they cross to Bedrock
             // (the other dialect with the same two members). Same-protocol they are still kept
             // byte-exact: `stash_unmodeled_blocks` parks the raw document verbatim when either is
             // present, and `write_message` splices it back on an Anthropic→Anthropic hop.
             let doc_citations = obj
-                .get("citations")
-                .and_then(|c| c.get("enabled"))
+                .get(keys::CITATIONS)
+                .and_then(|c| c.get(keys::ENABLED))
                 .and_then(|v| v.as_bool());
             let doc_context = obj
-                .get("context")
+                .get(keys::CONTEXT)
                 .and_then(|v| v.as_str())
                 .map(String::from);
             let name = obj
-                .get("title")
+                .get(keys::TITLE)
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .map(String::from);
-            let src_type = source.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            let src_type = source.get(keys::TYPE).and_then(|v| v.as_str()).unwrap_or("");
             let ir_source = match src_type {
-                "url" => crate::codec::ir::IrImageSource::Url(
+                keys::URL => crate::codec::ir::IrImageSource::Url(
                     source
-                        .get("url")
+                        .get(keys::URL)
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string(),
@@ -244,29 +245,29 @@ pub(super) fn read_block(
                 // emits `data` as base64 (`data:text/plain;base64,…`, Bedrock `bytes`) — so storing
                 // the raw text there corrupted the document on every cross-protocol hop (ANT-01).
                 // Encode it on the way in; the Anthropic writer decodes it back into a `text` source.
-                "text" => crate::codec::ir::IrImageSource::Base64 {
+                keys::TEXT => crate::codec::ir::IrImageSource::Base64 {
                     media_type: source
-                        .get("media_type")
+                        .get(super::MEDIA_TYPE)
                         .and_then(|v| v.as_str())
                         .unwrap_or(DOCUMENT_MIME_TEXT_PLAIN)
                         .to_string(),
                     data: busbar_contract::media::base64_encode(
                         source
-                            .get("data")
+                            .get(keys::DATA)
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .as_bytes(),
                     ),
                 },
                 // `base64` carries inline bytes (a PDF) plus a real mime type.
-                "base64" => crate::codec::ir::IrImageSource::Base64 {
+                keys::BASE64 => crate::codec::ir::IrImageSource::Base64 {
                     media_type: source
-                        .get("media_type")
+                        .get(super::MEDIA_TYPE)
                         .and_then(|v| v.as_str())
-                        .unwrap_or("application/pdf")
+                        .unwrap_or(keys::APPLICATION_PDF)
                         .to_string(),
                     data: source
-                        .get("data")
+                        .get(keys::DATA)
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string(),
@@ -309,17 +310,17 @@ pub(super) fn read_block(
         // survive byte-exact). This arm is what the CROSS-protocol egresses read, which is the only
         // path where the sentinel is cleared.
         BLOCK_TYPE_SEARCH_RESULT => {
-            let source = obj.get("source").and_then(|v| v.as_str()).unwrap_or("");
-            let title = obj.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            let source = obj.get(keys::SOURCE).and_then(|v| v.as_str()).unwrap_or("");
+            let title = obj.get(keys::TITLE).and_then(|v| v.as_str()).unwrap_or("");
             // Concatenate the text parts in wire order. A non-text part is not possible per the
             // documented schema; if one ever appears it contributes nothing rather than a sentinel.
             let body: String = obj
-                .get("content")
+                .get(keys::CONTENT)
                 .and_then(|v| v.as_array())
                 .map(|arr| {
                     arr.iter()
-                        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
-                        .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                        .filter(|b| b.get(keys::TYPE).and_then(|t| t.as_str()) == Some(keys::TEXT))
+                        .filter_map(|b| b.get(keys::TEXT).and_then(|t| t.as_str()))
                         .collect::<Vec<_>>()
                         .join("\n")
                 })
@@ -349,7 +350,7 @@ pub(super) fn read_block(
             } else {
                 vec![crate::codec::ir::IrCitation {
                     domain: None,
-                    kind: Some("search_result_location".to_string()),
+                    kind: Some(keys::SEARCH_RESULT_LOCATION.to_string()),
                     cited_text: None,
                     title: (!title.is_empty()).then(|| title.to_string()),
                     url: (!source.is_empty()).then(|| source.to_string()),
@@ -364,7 +365,7 @@ pub(super) fn read_block(
                     raw: None,
                 }]
             };
-            let cache_control = read_cache_control(obj.get("cache_control"))?;
+            let cache_control = read_cache_control(obj.get(super::CACHE_CONTROL))?;
             Ok(crate::codec::ir::IrBlock::Text {
                 text,
                 cache_control,
@@ -383,11 +384,11 @@ pub(super) fn read_block(
         // needed (the old String-sentinel approach that required one is gone).
         BLOCK_TYPE_REDACTED_THINKING => {
             let data = block_val
-                .get("data")
+                .get(keys::DATA)
                 .and_then(|d| d.as_str())
                 .unwrap_or("")
                 .to_string();
-            let cache_control = read_cache_control(block_val.get("cache_control"))?;
+            let cache_control = read_cache_control(block_val.get(super::CACHE_CONTROL))?;
             Ok(crate::codec::ir::IrBlock::Thinking {
                 text: data,
                 signature: None,
@@ -427,15 +428,15 @@ pub(super) fn read_message(
 ) -> Result<crate::codec::ir::IrMessage, IrError> {
     let obj = msg_val.as_object().ok_or_else(ir_parse_error)?;
 
-    let role_str = obj.get("role").and_then(|v| v.as_str()).unwrap_or("");
+    let role_str = obj.get(keys::ROLE).and_then(|v| v.as_str()).unwrap_or("");
     let role = match role_str {
-        "user" => crate::codec::ir::IrRole::User,
-        "assistant" => crate::codec::ir::IrRole::Assistant,
-        "system" => crate::codec::ir::IrRole::System,
+        keys::USER => crate::codec::ir::IrRole::User,
+        keys::ASSISTANT => crate::codec::ir::IrRole::Assistant,
+        keys::SYSTEM => crate::codec::ir::IrRole::System,
         _ => return Err(ir_parse_error()),
     };
 
-    let content_val = obj.get("content").unwrap_or(&serde_json::Value::Null);
+    let content_val = obj.get(keys::CONTENT).unwrap_or(&serde_json::Value::Null);
     // EDGE-VALIDATE the per-message `content` TYPE. Anthropic `content` is legally a string or an
     // array of content blocks (absent/`null` is tolerated as an empty turn). A present number/bool/
     // object is a genuine TYPE violation the lenient `as_str().unwrap_or("")` fallback below would
@@ -461,28 +462,28 @@ pub(super) fn read_tool(tool_val: &serde_json::Value) -> Result<crate::codec::ir
     let obj = tool_val.as_object().ok_or_else(ir_parse_error)?;
 
     let name = obj
-        .get("name")
+        .get(keys::NAME)
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
     let description = obj
-        .get("description")
+        .get(keys::DESCRIPTION)
         .and_then(|v| v.as_str().map(String::from));
     let input_schema = obj
-        .get("input_schema")
+        .get(keys::INPUT_SCHEMA)
         .cloned()
         .unwrap_or(serde_json::Value::Null);
-    let cache_control = read_cache_control(obj.get("cache_control"))?;
+    let cache_control = read_cache_control(obj.get(super::CACHE_CONTROL))?;
     // Anthropic's GA per-tool `strict: true` (schema-guaranteed tool arguments) is the same contract
     // as OpenAI's `function.strict`; read it so it carries (ANT-04). A non-boolean is not a flag.
-    let strict = obj.get("strict").and_then(|v| v.as_bool());
+    let strict = obj.get(keys::STRICT).and_then(|v| v.as_bool());
     // An Anthropic-defined tool (`{"type":"web_search_20250305","name":"web_search",…}`, `bash_*`,
     // `text_editor_*`, `code_execution_*`, `mcp_toolset`, …) is NOT a function tool: it has no
     // caller schema, and reading it as one produced a function `web_search` with a null schema that
     // reached foreign backends (ANT-13). Mark it HOSTED with its raw definition — the cross-protocol
     // seam drops hosted tools, and this protocol's writer re-emits the raw definition verbatim.
     let hosted = obj
-        .get("type")
+        .get(keys::TYPE)
         .and_then(|v| v.as_str())
         .filter(|t| *t != TOOL_TYPE_CUSTOM)
         .map(|_| tool_val.clone());

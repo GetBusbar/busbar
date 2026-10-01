@@ -3,6 +3,7 @@
 
 //! Anthropic citations: the location-type union read into and written from the neutral IrCitation.
 
+use crate::codec::keys;
 use super::*;
 
 /// Map one RAW Anthropic citation object → neutral [`crate::codec::ir::IrCitation`]. Fills the neutral
@@ -12,43 +13,43 @@ use super::*;
 /// per variant (char/page/block index, or web-search `encrypted_index`); we read each into the shared
 /// neutral `start_index`/`end_index`/`encrypted_index` slots, keyed off the `type` tag.
 pub(super) fn read_citation(val: &serde_json::Value) -> crate::codec::ir::IrCitation {
-    let kind = val.get("type").and_then(|v| v.as_str()).map(str::to_string);
+    let kind = val.get(keys::TYPE).and_then(|v| v.as_str()).map(str::to_string);
     let cited_text = val
-        .get("cited_text")
+        .get(super::CITED_TEXT)
         .and_then(|v| v.as_str())
         .map(str::to_string);
     // `document_title` (document-location variants) OR `title` (web_search_result_location).
     let title = val
-        .get("document_title")
-        .or_else(|| val.get("title"))
+        .get(super::DOCUMENT_TITLE)
+        .or_else(|| val.get(keys::TITLE))
         .and_then(|v| v.as_str())
         .map(str::to_string);
     // `url` (web_search_result_location) OR `source` (search_result_location — the caller-supplied
     // `search_result.source` URI the passage came from). Reading only `url` lost the provenance of
     // every search-result citation on a foreign egress (ANT-18).
     let url = val
-        .get("url")
-        .or_else(|| val.get("source"))
+        .get(keys::URL)
+        .or_else(|| val.get(keys::SOURCE))
         .and_then(|v| v.as_str())
         .map(str::to_string);
     // `document_index` (document-location variants) OR `search_result_index`.
     let document_index = val
-        .get("document_index")
-        .or_else(|| val.get("search_result_index"))
+        .get(super::DOCUMENT_INDEX)
+        .or_else(|| val.get(super::SEARCH_RESULT_INDEX))
         .and_then(|v| v.as_i64());
     // Per-variant start/end field names collapse into the shared neutral slots.
     let start_index = val
-        .get("start_char_index")
-        .or_else(|| val.get("start_page_number"))
-        .or_else(|| val.get("start_block_index"))
+        .get(super::START_CHAR_INDEX)
+        .or_else(|| val.get(super::START_PAGE_NUMBER))
+        .or_else(|| val.get(super::START_BLOCK_INDEX))
         .and_then(|v| v.as_i64());
     let end_index = val
-        .get("end_char_index")
-        .or_else(|| val.get("end_page_number"))
-        .or_else(|| val.get("end_block_index"))
+        .get(super::END_CHAR_INDEX)
+        .or_else(|| val.get(super::END_PAGE_NUMBER))
+        .or_else(|| val.get(super::END_BLOCK_INDEX))
         .and_then(|v| v.as_i64());
     let encrypted_index = val
-        .get("encrypted_index")
+        .get(super::ENCRYPTED_INDEX)
         .and_then(|v| v.as_str())
         .map(str::to_string);
     crate::codec::ir::IrCitation {
@@ -72,7 +73,7 @@ pub(super) fn read_citation(val: &serde_json::Value) -> crate::codec::ir::IrCita
 /// than emitted verbatim.
 pub(super) fn is_anthropic_citation_shape(raw: &serde_json::Value) -> bool {
     matches!(
-        raw.get("type").and_then(|v| v.as_str()),
+        raw.get(keys::TYPE).and_then(|v| v.as_str()),
         Some(
             CITATION_TYPE_CHAR
                 | CITATION_TYPE_PAGE
@@ -102,37 +103,37 @@ pub(super) fn write_citation(c: &crate::codec::ir::IrCitation) -> serde_json::Va
     }
     let mut obj = serde_json::Map::new();
     let kind = c.kind.as_deref().unwrap_or(CITATION_TYPE_WEB_SEARCH);
-    obj.insert("type".to_string(), serde_json::json!(kind));
+    obj.insert(keys::TYPE.to_string(), serde_json::json!(kind));
     if let Some(t) = &c.cited_text {
-        obj.insert("cited_text".to_string(), serde_json::json!(t));
+        obj.insert(super::CITED_TEXT.to_string(), serde_json::json!(t));
     }
     match kind {
         CITATION_TYPE_PAGE => {
             if let Some(di) = c.document_index {
-                obj.insert("document_index".to_string(), serde_json::json!(di));
+                obj.insert(super::DOCUMENT_INDEX.to_string(), serde_json::json!(di));
             }
             if let Some(t) = &c.title {
-                obj.insert("document_title".to_string(), serde_json::json!(t));
+                obj.insert(super::DOCUMENT_TITLE.to_string(), serde_json::json!(t));
             }
             if let Some(s) = c.start_index {
-                obj.insert("start_page_number".to_string(), serde_json::json!(s));
+                obj.insert(super::START_PAGE_NUMBER.to_string(), serde_json::json!(s));
             }
             if let Some(e) = c.end_index {
-                obj.insert("end_page_number".to_string(), serde_json::json!(e));
+                obj.insert(super::END_PAGE_NUMBER.to_string(), serde_json::json!(e));
             }
         }
         CITATION_TYPE_CONTENT_BLOCK => {
             if let Some(di) = c.document_index {
-                obj.insert("document_index".to_string(), serde_json::json!(di));
+                obj.insert(super::DOCUMENT_INDEX.to_string(), serde_json::json!(di));
             }
             if let Some(t) = &c.title {
-                obj.insert("document_title".to_string(), serde_json::json!(t));
+                obj.insert(super::DOCUMENT_TITLE.to_string(), serde_json::json!(t));
             }
             if let Some(s) = c.start_index {
-                obj.insert("start_block_index".to_string(), serde_json::json!(s));
+                obj.insert(super::START_BLOCK_INDEX.to_string(), serde_json::json!(s));
             }
             if let Some(e) = c.end_index {
-                obj.insert("end_block_index".to_string(), serde_json::json!(e));
+                obj.insert(super::END_BLOCK_INDEX.to_string(), serde_json::json!(e));
             }
         }
         // A search-result citation names its passage by `source` + `search_result_index` and its
@@ -140,45 +141,45 @@ pub(super) fn write_citation(c: &crate::codec::ir::IrCitation) -> serde_json::Va
         // produced an object no Anthropic SDK reads as a search-result citation (ANT-18).
         CITATION_TYPE_SEARCH_RESULT => {
             if let Some(u) = &c.url {
-                obj.insert("source".to_string(), serde_json::json!(u));
+                obj.insert(keys::SOURCE.to_string(), serde_json::json!(u));
             }
             if let Some(t) = &c.title {
-                obj.insert("title".to_string(), serde_json::json!(t));
+                obj.insert(keys::TITLE.to_string(), serde_json::json!(t));
             }
             if let Some(di) = c.document_index {
-                obj.insert("search_result_index".to_string(), serde_json::json!(di));
+                obj.insert(super::SEARCH_RESULT_INDEX.to_string(), serde_json::json!(di));
             }
             if let Some(s) = c.start_index {
-                obj.insert("start_block_index".to_string(), serde_json::json!(s));
+                obj.insert(super::START_BLOCK_INDEX.to_string(), serde_json::json!(s));
             }
             if let Some(e) = c.end_index {
-                obj.insert("end_block_index".to_string(), serde_json::json!(e));
+                obj.insert(super::END_BLOCK_INDEX.to_string(), serde_json::json!(e));
             }
         }
         CITATION_TYPE_WEB_SEARCH => {
             if let Some(u) = &c.url {
-                obj.insert("url".to_string(), serde_json::json!(u));
+                obj.insert(keys::URL.to_string(), serde_json::json!(u));
             }
             if let Some(t) = &c.title {
-                obj.insert("title".to_string(), serde_json::json!(t));
+                obj.insert(keys::TITLE.to_string(), serde_json::json!(t));
             }
             if let Some(ei) = &c.encrypted_index {
-                obj.insert("encrypted_index".to_string(), serde_json::json!(ei));
+                obj.insert(super::ENCRYPTED_INDEX.to_string(), serde_json::json!(ei));
             }
         }
         // "char_location" and any unknown/None kind default to the char-location field names.
         _ => {
             if let Some(di) = c.document_index {
-                obj.insert("document_index".to_string(), serde_json::json!(di));
+                obj.insert(super::DOCUMENT_INDEX.to_string(), serde_json::json!(di));
             }
             if let Some(t) = &c.title {
-                obj.insert("document_title".to_string(), serde_json::json!(t));
+                obj.insert(super::DOCUMENT_TITLE.to_string(), serde_json::json!(t));
             }
             if let Some(s) = c.start_index {
-                obj.insert("start_char_index".to_string(), serde_json::json!(s));
+                obj.insert(super::START_CHAR_INDEX.to_string(), serde_json::json!(s));
             }
             if let Some(e) = c.end_index {
-                obj.insert("end_char_index".to_string(), serde_json::json!(e));
+                obj.insert(super::END_CHAR_INDEX.to_string(), serde_json::json!(e));
             }
         }
     }

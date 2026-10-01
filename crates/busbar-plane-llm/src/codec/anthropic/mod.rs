@@ -36,6 +36,7 @@ mod citations;
 mod ids;
 mod slots;
 mod usage;
+use crate::codec::keys;
 use crate::codec::dialect::ir_parse_error;
 use blocks::*;
 use citations::*;
@@ -70,7 +71,7 @@ use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
 /// resolution, exactly as the registry's field doc requires.
 pub fn protocol() -> Protocol {
-    Protocol::new("anthropic", AnthropicReader, AnthropicWriter)
+    Protocol::new(VENDOR_NAME, AnthropicReader, AnthropicWriter)
 }
 
 /// A native Anthropic stream emits `event: ping` immediately after `message_start` (and
@@ -90,15 +91,15 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
         .iter()
         .map(|id| {
             serde_json::json!({
-                "type": "model",
-                "id": id,
+                (keys::TYPE): keys::MODEL,
+                (keys::ID): id,
                 "display_name": id,
                 "created_at": "1970-01-01T00:00:00Z"
             })
         })
         .collect();
     serde_json::json!({
-        "data": data,
+        (keys::DATA): data,
         "has_more": false,
         "first_id": names.first(),
         "last_id": names.last(),
@@ -118,10 +119,10 @@ fn claims(
     path: &str,
 ) -> Option<busbar_contract::protocol::ClaimStrength> {
     use busbar_contract::protocol::ClaimStrength;
-    if h.contains_key("anthropic-version") || h.contains_key("anthropic-beta") {
+    if h.contains_key(HDR_ANTHROPIC_VERSION) || h.contains_key("anthropic-beta") {
         return Some(ClaimStrength(2));
     }
-    if h.contains_key("x-api-key") {
+    if h.contains_key(HDR_X_API_KEY) {
         return Some(ClaimStrength(4));
     }
     if path.contains("/v1/messages") {
@@ -140,11 +141,11 @@ fn residual_claims(path: &str) -> Option<busbar_contract::protocol::ClaimStrengt
 }
 
 pub const DECL: ProtocolDecl = ProtocolDecl {
-    name: "anthropic",
+    name: VENDOR_NAME,
     codec: {
         // The dialect's neutral codec facade as a STATIC, so the decl hands out a `&'static dyn`
         // borrow (pure memory, zero alloc per `dialect()` call) — the seam's perf contract.
-        static CODEC: super::proto_codec::DialectRef = super::proto_codec::dialect_ref("anthropic");
+        static CODEC: super::proto_codec::DialectRef = super::proto_codec::dialect_ref(VENDOR_NAME);
         Some(&CODEC)
     },
     handler: Some(&handler::AnthropicRequestHandler),
@@ -220,7 +221,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     vendor_response_metadata: None,
     // The Anthropic SDK always sends `anthropic-version`; its presence disambiguates the shared
     // list-models surface as Anthropic. NARROWER than `claims` on purpose (no `x-api-key`/path).
-    list_models_fingerprint_headers: &["anthropic-version"],
+    list_models_fingerprint_headers: &[HDR_ANTHROPIC_VERSION],
     // Every Anthropic request carries the API version it speaks, whatever its credential — not auth,
     // so it is declared beside the scheme and written after the credential by the kernel.
     static_headers: &[(HDR_ANTHROPIC_VERSION, ANTHROPIC_API_VERSION)],
@@ -271,8 +272,8 @@ const DELTA_TYPE_CITATIONS: &str = "citations_delta";
 
 /// Native Anthropic `stop_reason` token values.
 const STOP_END_TURN: &str = "end_turn";
-const STOP_MAX_TOKENS: &str = "max_tokens";
-const STOP_STOP_SEQUENCE: &str = "stop_sequence";
+const STOP_MAX_TOKENS: &str = keys::MAX_TOKENS;
+const STOP_STOP_SEQUENCE: &str = keys::STOP_SEQUENCE;
 const STOP_TOOL_USE: &str = "tool_use";
 const STOP_PAUSE_TURN: &str = "pause_turn";
 const STOP_REFUSAL: &str = "refusal";
@@ -340,11 +341,11 @@ const ANTHROPIC_UNMODELED_BLOCKS_SENTINEL: &str = "__busbar_anthropic_unmodeled_
 fn is_modeled_anthropic_block_type(t: &str) -> bool {
     matches!(
         t,
-        "text"
-            | "thinking"
+        keys::TEXT
+            | keys::THINKING
             | STOP_TOOL_USE
-            | "tool_result"
-            | "image"
+            | TOOL_RESULT
+            | keys::IMAGE
             | BLOCK_TYPE_DOCUMENT
             | BLOCK_TYPE_REDACTED_THINKING
     )
@@ -355,7 +356,7 @@ fn is_modeled_anthropic_block_type(t: &str) -> bool {
 fn is_streamed_anthropic_block_type(t: &str) -> bool {
     matches!(
         t,
-        "text" | "thinking" | STOP_TOOL_USE | "image" | BLOCK_TYPE_REDACTED_THINKING
+        keys::TEXT | keys::THINKING | STOP_TOOL_USE | keys::IMAGE | BLOCK_TYPE_REDACTED_THINKING
     )
 }
 
@@ -372,7 +373,7 @@ const BLOCK_TYPE_DOCUMENT: &str = "document";
 const DOCUMENT_MIME_TEXT_PLAIN: &str = "text/plain";
 
 /// The one mime an Anthropic `base64` document source accepts.
-const DOCUMENT_MIME_PDF: &str = "application/pdf";
+const DOCUMENT_MIME_PDF: &str = keys::APPLICATION_PDF;
 
 /// Anthropic's `document.source` for inline bytes, by mime: a PDF rides the `base64` source; any
 /// `text/*` document rides the `text` source as DECODED text (`media_type: "text/plain"`), since the
@@ -383,22 +384,22 @@ const DOCUMENT_MIME_PDF: &str = "application/pdf";
 fn inline_document_source(media_type: &str, data: &str) -> Option<serde_json::Value> {
     if media_type.eq_ignore_ascii_case(DOCUMENT_MIME_PDF) {
         return Some(serde_json::json!({
-            "type": "base64",
-            "media_type": DOCUMENT_MIME_PDF,
-            "data": data,
+            (keys::TYPE): keys::BASE64,
+            (MEDIA_TYPE): DOCUMENT_MIME_PDF,
+            (keys::DATA): data,
         }));
     }
     let is_text = media_type
         .split('/')
         .next()
-        .is_some_and(|top| top.eq_ignore_ascii_case("text"));
+        .is_some_and(|top| top.eq_ignore_ascii_case(keys::TEXT));
     if is_text {
         let bytes = busbar_contract::media::base64_decode(data)?;
         let text = String::from_utf8(bytes.to_vec()).ok()?;
         return Some(serde_json::json!({
-            "type": "text",
-            "media_type": DOCUMENT_MIME_TEXT_PLAIN,
-            "data": text,
+            (keys::TYPE): keys::TEXT,
+            (MEDIA_TYPE): DOCUMENT_MIME_TEXT_PLAIN,
+            (keys::DATA): text,
         }));
     }
     None
@@ -419,11 +420,11 @@ fn stash_unmodeled_blocks(
     m: usize,
     sink: &mut Vec<serde_json::Value>,
 ) {
-    let Some(content_arr) = msg_val.get("content").and_then(|c| c.as_array()) else {
+    let Some(content_arr) = msg_val.get(keys::CONTENT).and_then(|c| c.as_array()) else {
         return;
     };
     for (i, block_val) in content_arr.iter().enumerate() {
-        let block_type = block_val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let block_type = block_val.get(keys::TYPE).and_then(|v| v.as_str()).unwrap_or("");
         // A `document` is MODELLED (`IrBlock::Media`) so it survives a cross-protocol hop, but Media
         // carries only source/name/cache_control — NOT Anthropic's `document.context` string or its
         // `document.citations` toggle. Those two have no neutral/cross-protocol slot, so to keep them
@@ -434,9 +435,9 @@ fn stash_unmodeled_blocks(
         // WITHOUT context/citations is NOT parked (Media round-trips it losslessly), so the common
         // case keeps the modelled-not-stashed contract its round-trip test pins.
         let document_needs_stash = block_type == BLOCK_TYPE_DOCUMENT
-            && (block_val.get("context").is_some() || block_val.get("citations").is_some());
+            && (block_val.get(keys::CONTEXT).is_some() || block_val.get(keys::CITATIONS).is_some());
         if !is_modeled_anthropic_block_type(block_type) || document_needs_stash {
-            sink.push(serde_json::json!({ "m": m, "i": i, "block": block_val }));
+            sink.push(serde_json::json!({ (keys::M): m, (keys::I): i, (keys::BLOCK): block_val }));
         }
     }
 }
@@ -449,10 +450,10 @@ fn find_stashed_block(
     i: usize,
 ) -> Option<serde_json::Value> {
     sentinel.iter().find_map(|entry| {
-        let em = entry.get("m")?.as_u64()? as usize;
-        let ei = entry.get("i")?.as_u64()? as usize;
+        let em = entry.get(keys::M)?.as_u64()? as usize;
+        let ei = entry.get(keys::I)?.as_u64()? as usize;
         (em == m && ei == i)
-            .then(|| entry.get("block").cloned())
+            .then(|| entry.get(keys::BLOCK).cloned())
             .flatten()
     })
 }
@@ -476,12 +477,98 @@ const ERR_TYPE_NOT_FOUND: &str = busbar_contract::protocol::ERR_TYPE_NOT_FOUND;
 const ERR_TYPE_PERMISSION: &str = busbar_contract::protocol::ERR_TYPE_PERMISSION;
 const ERR_TYPE_REQUEST_TOO_LARGE: &str = busbar_contract::protocol::ERR_TYPE_REQUEST_TOO_LARGE;
 
+// One spelling per wire word (OWNER 2026-10-01): each word this dialect speaks more than once is
+// spelled here, once, and referenced everywhere else; words shared with other dialects live in
+// `crate::codec::keys`.
+/// Wire word `batch`.
+const BATCH: &str = "batch";
+/// Wire word `blocked_domains`.
+const BLOCKED_DOMAINS: &str = "blocked_domains";
+/// Wire word `cache_control`.
+const CACHE_CONTROL: &str = "cache_control";
+/// Wire word `cache_creation`.
+const CACHE_CREATION: &str = "cache_creation";
+/// Wire word `cache_creation_input_tokens`.
+const CACHE_CREATION_INPUT_TOKENS: &str = "cache_creation_input_tokens";
+/// Wire word `cache_read_input_tokens`.
+const CACHE_READ_INPUT_TOKENS: &str = "cache_read_input_tokens";
+/// Wire word `caller`.
+const W_CALLER: &str = "caller";
+/// Wire word `category`.
+const CATEGORY: &str = "category";
+/// Wire word `cited_text`.
+const CITED_TEXT: &str = "cited_text";
+/// Wire word `content_block`.
+const CONTENT_BLOCK: &str = "content_block";
+/// Wire word `direct`.
+const DIRECT: &str = "direct";
+/// Wire word `disable_parallel_tool_use`.
+const DISABLE_PARALLEL_TOOL_USE: &str = "disable_parallel_tool_use";
+/// Wire word `document_index`.
+const DOCUMENT_INDEX: &str = "document_index";
+/// Wire word `document_title`.
+const DOCUMENT_TITLE: &str = "document_title";
+/// Wire word `encrypted_index`.
+const ENCRYPTED_INDEX: &str = "encrypted_index";
+/// Wire word `end_block_index`.
+const END_BLOCK_INDEX: &str = "end_block_index";
+/// Wire word `end_char_index`.
+const END_CHAR_INDEX: &str = "end_char_index";
+/// Wire word `end_page_number`.
+const END_PAGE_NUMBER: &str = "end_page_number";
+/// Wire word `ephemeral_1h_input_tokens`.
+const EPHEMERAL_1H_INPUT_TOKENS: &str = "ephemeral_1h_input_tokens";
+/// Wire word `ephemeral_5m_input_tokens`.
+const EPHEMERAL_5M_INPUT_TOKENS: &str = "ephemeral_5m_input_tokens";
+/// Wire word `explanation`.
+const EXPLANATION: &str = "explanation";
+/// Wire word `is_error`.
+const IS_ERROR: &str = "is_error";
+/// Wire word `max`.
+const W_MAX: &str = "max";
+/// Wire word `max_uses`.
+const MAX_USES: &str = "max_uses";
+/// Wire word `media_type`.
+const MEDIA_TYPE: &str = "media_type";
+/// Wire word `partial_json`.
+const PARTIAL_JSON: &str = "partial_json";
+/// Wire word `priority`.
+const PRIORITY: &str = "priority";
+/// Wire word `request_id`.
+const REQUEST_ID: &str = "request_id";
+/// Wire word `search_result_index`.
+const SEARCH_RESULT_INDEX: &str = "search_result_index";
+/// Wire word `server_tool_use`.
+const SERVER_TOOL_USE: &str = "server_tool_use";
+/// Wire word `standard`.
+const STANDARD: &str = "standard";
+/// Wire word `start_block_index`.
+const START_BLOCK_INDEX: &str = "start_block_index";
+/// Wire word `start_char_index`.
+const START_CHAR_INDEX: &str = "start_char_index";
+/// Wire word `start_page_number`.
+const START_PAGE_NUMBER: &str = "start_page_number";
+/// Wire word `stop_details`.
+const STOP_DETAILS: &str = "stop_details";
+/// Wire word `stop_reason`.
+const STOP_REASON: &str = "stop_reason";
+/// Wire word `thinking_tokens`.
+const THINKING_TOKENS: &str = "thinking_tokens";
+/// Wire word `tool_result`.
+const TOOL_RESULT: &str = "tool_result";
+/// Wire word `tool_use_id`.
+const TOOL_USE_ID: &str = "tool_use_id";
+/// Wire word `user_id`.
+const USER_ID: &str = "user_id";
+/// Wire word `web_search_requests`.
+const WEB_SEARCH_REQUESTS: &str = "web_search_requests";
+
 /// Anthropic citation `type` tag values (the `type` field on each citation object).
 const CITATION_TYPE_CHAR: &str = "char_location";
 const CITATION_TYPE_PAGE: &str = "page_location";
 const CITATION_TYPE_CONTENT_BLOCK: &str = "content_block_location";
 const CITATION_TYPE_WEB_SEARCH: &str = "web_search_result_location";
-const CITATION_TYPE_SEARCH_RESULT: &str = "search_result_location";
+const CITATION_TYPE_SEARCH_RESULT: &str = keys::SEARCH_RESULT_LOCATION;
 
 /// The sole valid `cache_control.type` Anthropic exposes today.
 const CACHE_KIND_EPHEMERAL: &str = "ephemeral";
@@ -521,7 +608,7 @@ const MAX_ANTHROPIC_BLOCK_INDEX: u64 = 1023;
 /// index, preserving this protocol's stricter `?`-on-missing behavior — the clamp is the additive
 /// hardening, the presence requirement is unchanged).
 fn read_clamped_block_index(data: &serde_json::Value) -> Option<usize> {
-    data.get("index")
+    data.get(keys::INDEX)
         .and_then(|i| i.as_u64())
         .map(|v| v.min(MAX_ANTHROPIC_BLOCK_INDEX) as usize)
 }
@@ -557,7 +644,7 @@ fn stream_error_class(error_type: Option<&str>) -> StatusClass {
         Some(ERR_TYPE_API_ERROR) => StatusClass::ServerError,
         Some(ERR_TYPE_TIMEOUT) => StatusClass::Timeout,
         Some(ERR_TYPE_AUTHENTICATION) | Some(ERR_TYPE_PERMISSION) => StatusClass::Auth,
-        Some("billing_error") => StatusClass::Billing,
+        Some(ERR_TYPE_BILLING) => StatusClass::Billing,
         Some(ERR_TYPE_INVALID_REQUEST)
         | Some(ERR_TYPE_NOT_FOUND)
         | Some(ERR_TYPE_REQUEST_TOO_LARGE)
@@ -571,7 +658,7 @@ fn stream_error_class(error_type: Option<&str>) -> StatusClass {
 const ANTHROPIC_ERROR_TYPES: [&str; 9] = [
     ERR_TYPE_INVALID_REQUEST,
     ERR_TYPE_AUTHENTICATION,
-    "billing_error",
+    ERR_TYPE_BILLING,
     ERR_TYPE_PERMISSION,
     ERR_TYPE_NOT_FOUND,
     ERR_TYPE_RATE_LIMIT,
@@ -603,7 +690,7 @@ fn stream_error_type(err: &IrError) -> &'static str {
         StatusClass::RateLimit => ERR_TYPE_RATE_LIMIT,
         StatusClass::Timeout => ERR_TYPE_TIMEOUT,
         StatusClass::Auth => ERR_TYPE_AUTHENTICATION,
-        StatusClass::Billing => "billing_error",
+        StatusClass::Billing => ERR_TYPE_BILLING,
         StatusClass::ClientError | StatusClass::ContextLength => ERR_TYPE_INVALID_REQUEST,
         StatusClass::ServerError | StatusClass::Network => ERR_TYPE_API_ERROR,
     }
@@ -623,16 +710,16 @@ fn stream_error_type(err: &IrError) -> &'static str {
 fn write_response_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
     let mut val = write_block(block);
     if let Some(obj) = val.as_object_mut() {
-        match obj.get("type").and_then(|t| t.as_str()) {
-            Some("text") => {
-                obj.entry("citations").or_insert(serde_json::Value::Null);
+        match obj.get(keys::TYPE).and_then(|t| t.as_str()) {
+            Some(keys::TEXT) => {
+                obj.entry(keys::CITATIONS).or_insert(serde_json::Value::Null);
             }
             Some(STOP_TOOL_USE) => {
-                obj.entry("caller")
-                    .or_insert_with(|| serde_json::json!({ "type": "direct" }));
+                obj.entry(W_CALLER)
+                    .or_insert_with(|| serde_json::json!({ (keys::TYPE): DIRECT }));
             }
-            Some("thinking") => {
-                obj.entry("signature")
+            Some(keys::THINKING) => {
+                obj.entry(keys::SIGNATURE)
                     .or_insert_with(|| serde_json::json!(""));
             }
             _ => {}
@@ -655,7 +742,7 @@ fn read_cache_control(
     let Some(cc_obj) = cc_val.as_object() else {
         return Ok(None);
     };
-    match cc_obj.get("type").and_then(|t| t.as_str()) {
+    match cc_obj.get(keys::TYPE).and_then(|t| t.as_str()) {
         Some(CACHE_KIND_EPHEMERAL) => Ok(Some(crate::codec::ir::CacheControl {
             kind: crate::codec::ir::CacheKind::Ephemeral,
         })),
@@ -667,7 +754,7 @@ fn read_cache_control(
 /// Serialize the IR's `CacheControl` back to Anthropic's native `{"type":"ephemeral"}` object.
 fn write_cache_control(cc: &crate::codec::ir::CacheControl) -> serde_json::Value {
     match cc.kind {
-        crate::codec::ir::CacheKind::Ephemeral => serde_json::json!({"type": CACHE_KIND_EPHEMERAL}),
+        crate::codec::ir::CacheKind::Ephemeral => serde_json::json!({(keys::TYPE): CACHE_KIND_EPHEMERAL}),
     }
 }
 
@@ -682,11 +769,11 @@ fn read_anthropic_tool_choice(
     val: Option<&serde_json::Value>,
 ) -> Option<crate::codec::ir::IrToolChoice> {
     let obj = val?.as_object()?;
-    match obj.get("type").and_then(|t| t.as_str())? {
-        "auto" => Some(crate::codec::ir::IrToolChoice::Auto),
-        "none" => Some(crate::codec::ir::IrToolChoice::None),
-        "any" => Some(crate::codec::ir::IrToolChoice::Required),
-        "tool" => obj.get("name").and_then(|n| n.as_str()).map(|name| {
+    match obj.get(keys::TYPE).and_then(|t| t.as_str())? {
+        keys::AUTO => Some(crate::codec::ir::IrToolChoice::Auto),
+        keys::NONE_WORD => Some(crate::codec::ir::IrToolChoice::None),
+        keys::ANY => Some(crate::codec::ir::IrToolChoice::Required),
+        keys::TOOL => obj.get(keys::NAME).and_then(|n| n.as_str()).map(|name| {
             crate::codec::ir::IrToolChoice::Tool {
                 name: name.to_string(),
             }
@@ -698,11 +785,11 @@ fn read_anthropic_tool_choice(
 /// Emit the IR tool-choice union in Anthropic's native `tool_choice` object shape.
 fn write_anthropic_tool_choice(tc: &crate::codec::ir::IrToolChoice) -> serde_json::Value {
     match tc {
-        crate::codec::ir::IrToolChoice::Auto => serde_json::json!({"type": "auto"}),
-        crate::codec::ir::IrToolChoice::None => serde_json::json!({"type": "none"}),
-        crate::codec::ir::IrToolChoice::Required => serde_json::json!({"type": "any"}),
+        crate::codec::ir::IrToolChoice::Auto => serde_json::json!({(keys::TYPE): keys::AUTO}),
+        crate::codec::ir::IrToolChoice::None => serde_json::json!({(keys::TYPE): keys::NONE_WORD}),
+        crate::codec::ir::IrToolChoice::Required => serde_json::json!({(keys::TYPE): keys::ANY}),
         crate::codec::ir::IrToolChoice::Tool { name } => {
-            serde_json::json!({"type": "tool", "name": name})
+            serde_json::json!({(keys::TYPE): keys::TOOL, (keys::NAME): name})
         }
     }
 }
@@ -759,13 +846,13 @@ fn read_anthropic_stop_detail(
         }
         STOP_REFUSAL => {
             let d = stop_details?.as_object()?;
-            if d.get("type").and_then(|t| t.as_str()) != Some(STOP_REFUSAL) {
+            if d.get(keys::TYPE).and_then(|t| t.as_str()) != Some(STOP_REFUSAL) {
                 return None;
             }
             let text = |k: &str| d.get(k).and_then(|v| v.as_str()).map(String::from);
             Some(crate::codec::ir::IrStopDetail::Refusal {
-                category: text("category"),
-                explanation: text("explanation"),
+                category: text(CATEGORY),
+                explanation: text(EXPLANATION),
             })
         }
         _ => None,
@@ -803,9 +890,9 @@ fn write_anthropic_stop_details(
                 explanation,
             }),
         ) => serde_json::json!({
-            "type": STOP_REFUSAL,
-            "category": category,
-            "explanation": explanation,
+            (keys::TYPE): STOP_REFUSAL,
+            (CATEGORY): category,
+            (EXPLANATION): explanation,
         }),
         _ => serde_json::Value::Null,
     }
@@ -820,19 +907,19 @@ fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
             refusal: _,
         } => {
             let mut obj = serde_json::Map::new();
-            obj.insert("type".to_string(), serde_json::json!("text"));
-            obj.insert("text".to_string(), serde_json::json!(text));
+            obj.insert(keys::TYPE.to_string(), serde_json::json!(keys::TEXT));
+            obj.insert(keys::TEXT.to_string(), serde_json::json!(text));
             if let Some(cc) = cache_control {
                 let cc_val = match cc.kind {
                     crate::codec::ir::CacheKind::Ephemeral => {
-                        serde_json::json!({"type": CACHE_KIND_EPHEMERAL})
+                        serde_json::json!({(keys::TYPE): CACHE_KIND_EPHEMERAL})
                     }
                 };
-                obj.insert("cache_control".to_string(), cc_val);
+                obj.insert(CACHE_CONTROL.to_string(), cc_val);
             }
             if !citations.is_empty() {
                 let arr: Vec<serde_json::Value> = citations.iter().map(write_citation).collect();
-                obj.insert("citations".to_string(), serde_json::Value::Array(arr));
+                obj.insert(keys::CITATIONS.to_string(), serde_json::Value::Array(arr));
             }
             serde_json::Value::Object(obj)
         }
@@ -847,12 +934,12 @@ fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
         } => {
             let mut obj = serde_json::Map::new();
             obj.insert(
-                "type".to_string(),
+                keys::TYPE.to_string(),
                 serde_json::json!(BLOCK_TYPE_REDACTED_THINKING),
             );
-            obj.insert("data".to_string(), serde_json::json!(text));
+            obj.insert(keys::DATA.to_string(), serde_json::json!(text));
             if let Some(cc) = cache_control {
-                obj.insert("cache_control".to_string(), write_cache_control(cc));
+                obj.insert(CACHE_CONTROL.to_string(), write_cache_control(cc));
             }
             serde_json::Value::Object(obj)
         }
@@ -865,13 +952,13 @@ fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
             signature_origin: _,
         } => {
             let mut obj = serde_json::Map::new();
-            obj.insert("type".to_string(), serde_json::json!("thinking"));
-            obj.insert("thinking".to_string(), serde_json::json!(text));
+            obj.insert(keys::TYPE.to_string(), serde_json::json!(keys::THINKING));
+            obj.insert(keys::THINKING.to_string(), serde_json::json!(text));
             if let Some(sig) = signature {
-                obj.insert("signature".to_string(), serde_json::json!(sig));
+                obj.insert(keys::SIGNATURE.to_string(), serde_json::json!(sig));
             }
             if let Some(cc) = cache_control {
-                obj.insert("cache_control".to_string(), write_cache_control(cc));
+                obj.insert(CACHE_CONTROL.to_string(), write_cache_control(cc));
             }
             serde_json::Value::Object(obj)
         }
@@ -886,12 +973,12 @@ fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
             thought_signature: _,
         } => {
             let mut obj = serde_json::Map::new();
-            obj.insert("type".to_string(), serde_json::json!(STOP_TOOL_USE));
-            obj.insert("id".to_string(), serde_json::json!(id));
-            obj.insert("name".to_string(), serde_json::json!(name));
-            obj.insert("input".to_string(), input.clone());
+            obj.insert(keys::TYPE.to_string(), serde_json::json!(STOP_TOOL_USE));
+            obj.insert(keys::ID.to_string(), serde_json::json!(id));
+            obj.insert(keys::NAME.to_string(), serde_json::json!(name));
+            obj.insert(keys::INPUT.to_string(), input.clone());
             if let Some(cc) = cache_control {
-                obj.insert("cache_control".to_string(), write_cache_control(cc));
+                obj.insert(CACHE_CONTROL.to_string(), write_cache_control(cc));
             }
             serde_json::Value::Object(obj)
         }
@@ -902,10 +989,10 @@ fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
             cache_control,
         } => {
             let mut obj = serde_json::Map::new();
-            obj.insert("type".to_string(), serde_json::json!("tool_result"));
-            obj.insert("tool_use_id".to_string(), serde_json::json!(tool_use_id));
+            obj.insert(keys::TYPE.to_string(), serde_json::json!(TOOL_RESULT));
+            obj.insert(TOOL_USE_ID.to_string(), serde_json::json!(tool_use_id));
             if content.is_empty() {
-                obj.insert("content".to_string(), serde_json::json!(""));
+                obj.insert(keys::CONTENT.to_string(), serde_json::json!(""));
             } else {
                 // A tool_result's content is filtered exactly as a message's is (ANT-17): an
                 // attachment with no Anthropic projection is OMITTED, never sent as the empty-text
@@ -924,23 +1011,23 @@ fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
                     )
                     .map(|b| match b {
                         crate::codec::ir::IrBlock::Json(v) => serde_json::json!({
-                            "type": "text",
-                            "text": serde_json::to_string(v).unwrap_or_default(),
+                            (keys::TYPE): keys::TEXT,
+                            (keys::TEXT): serde_json::to_string(v).unwrap_or_default(),
                         }),
                         other => write_block(other),
                     })
                     .collect();
                 if kept.is_empty() {
-                    obj.insert("content".to_string(), serde_json::json!(""));
+                    obj.insert(keys::CONTENT.to_string(), serde_json::json!(""));
                 } else {
-                    obj.insert("content".to_string(), serde_json::Value::Array(kept));
+                    obj.insert(keys::CONTENT.to_string(), serde_json::Value::Array(kept));
                 }
             }
             if *is_error {
-                obj.insert("is_error".to_string(), serde_json::Value::Bool(true));
+                obj.insert(IS_ERROR.to_string(), serde_json::Value::Bool(true));
             }
             if let Some(cc) = cache_control {
-                obj.insert("cache_control".to_string(), write_cache_control(cc));
+                obj.insert(CACHE_CONTROL.to_string(), write_cache_control(cc));
             }
             serde_json::Value::Object(obj)
         }
@@ -955,7 +1042,7 @@ fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
             // placeholder for the unreachable case.
             let mut img = match source {
                 crate::codec::ir::IrImageSource::Url(url) => {
-                    serde_json::json!({ "type": "image", "source": { "type": "url", "url": url } })
+                    serde_json::json!({ (keys::TYPE): keys::IMAGE, (keys::SOURCE): { (keys::TYPE): keys::URL, (keys::URL): url } })
                 }
                 crate::codec::ir::IrImageSource::Base64 { media_type, data } => {
                     // VALIDATE the media type before putting it on the wire. Anthropic accepts only
@@ -971,8 +1058,8 @@ fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
                     // Anthropic rejects.
                     match crate::codec::ir::image_subtype_if_supported(media_type) {
                         Some(subtype) => serde_json::json!({
-                            "type": "image",
-                            "source": { "type": "base64", "media_type": format!("image/{subtype}"), "data": data }
+                            (keys::TYPE): keys::IMAGE,
+                            (keys::SOURCE): { (keys::TYPE): keys::BASE64, (MEDIA_TYPE): format!("image/{subtype}"), (keys::DATA): data }
                         }),
                         None => {
                             tracing::warn!(
@@ -981,7 +1068,7 @@ fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
                                  image/{{jpeg,png,gif,webp}}, the only set Anthropic accepts — \
                                  emitting it verbatim would 400 the backend"
                             );
-                            serde_json::json!({ "type": "text", "text": "" })
+                            serde_json::json!({ (keys::TYPE): keys::TEXT, (keys::TEXT): "" })
                         }
                     }
                 }
@@ -991,15 +1078,15 @@ fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
                 crate::codec::ir::IrImageSource::Vendor { vendor, value }
                     if *vendor == VENDOR_NAME =>
                 {
-                    serde_json::json!({ "type": "image", "source": value })
+                    serde_json::json!({ (keys::TYPE): keys::IMAGE, (keys::SOURCE): value })
                 }
                 crate::codec::ir::IrImageSource::Vendor { .. } => {
-                    serde_json::json!({ "type": "text", "text": "" })
+                    serde_json::json!({ (keys::TYPE): keys::TEXT, (keys::TEXT): "" })
                 }
             };
             if let Some(cc) = cache_control {
                 if let Some(obj) = img.as_object_mut() {
-                    obj.insert("cache_control".to_string(), write_cache_control(cc));
+                    obj.insert(CACHE_CONTROL.to_string(), write_cache_control(cc));
                 }
             }
             img
@@ -1025,11 +1112,11 @@ fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
                      content block and NO audio or video block, so this attachment has no native \
                      slot; it is NOT emitted"
                 );
-                return serde_json::json!({ "type": "text", "text": "" });
+                return serde_json::json!({ (keys::TYPE): keys::TEXT, (keys::TEXT): "" });
             }
             let src = match source {
                 crate::codec::ir::IrImageSource::Url(url) => {
-                    serde_json::json!({ "type": "url", "url": url })
+                    serde_json::json!({ (keys::TYPE): keys::URL, (keys::URL): url })
                 }
                 crate::codec::ir::IrImageSource::Base64 { media_type, data } => {
                     // Anthropic splits inline document bytes across two source types by mime: a PDF
@@ -1039,30 +1126,30 @@ fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
                     // Anthropic source is filtered before `write_block`; the placeholder is defensive.
                     match inline_document_source(media_type, data) {
                         Some(src) => src,
-                        None => return serde_json::json!({ "type": "text", "text": "" }),
+                        None => return serde_json::json!({ (keys::TYPE): keys::TEXT, (keys::TEXT): "" }),
                     }
                 }
                 // This protocol's OWN opaque source (a Files-API `file_id` or a `content` document):
                 // re-emit verbatim. A FOREIGN vendor reference is filtered in `write_message`.
                 crate::codec::ir::IrImageSource::Vendor { value, .. } => value.clone(),
             };
-            let mut doc = serde_json::json!({ "type": BLOCK_TYPE_DOCUMENT, "source": src });
+            let mut doc = serde_json::json!({ (keys::TYPE): BLOCK_TYPE_DOCUMENT, (keys::SOURCE): src });
             if let Some(obj) = doc.as_object_mut() {
                 if let Some(n) = name {
-                    obj.insert("title".to_string(), serde_json::json!(n));
+                    obj.insert(keys::TITLE.to_string(), serde_json::json!(n));
                 }
                 // IR-12: the document's citation toggle and context hint (Anthropic / Bedrock).
                 if let Some(c) = context {
-                    obj.insert("context".to_string(), serde_json::json!(c));
+                    obj.insert(keys::CONTEXT.to_string(), serde_json::json!(c));
                 }
                 if let Some(enabled) = citations {
                     obj.insert(
-                        "citations".to_string(),
-                        serde_json::json!({ "enabled": enabled }),
+                        keys::CITATIONS.to_string(),
+                        serde_json::json!({ (keys::ENABLED): enabled }),
                     );
                 }
                 if let Some(cc) = cache_control {
-                    obj.insert("cache_control".to_string(), write_cache_control(cc));
+                    obj.insert(CACHE_CONTROL.to_string(), write_cache_control(cc));
                 }
             }
             doc
@@ -1071,7 +1158,7 @@ fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
             // A structured-json tool-result block has no top-level Anthropic content shape; it is
             // dropped before reaching write_block (see the json-tool-result filter in the ToolResult
             // arm). Defensive empty placeholder for the unreachable case.
-            serde_json::json!({ "type": "text", "text": "" })
+            serde_json::json!({ (keys::TYPE): keys::TEXT, (keys::TEXT): "" })
         }
     }
 }
@@ -1081,11 +1168,11 @@ fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
 fn anthropic_effort_word(effort: crate::codec::ir::IrReasoningEffort) -> &'static str {
     use crate::codec::ir::IrReasoningEffort as E;
     match effort {
-        E::Minimal | E::Low => "low",
-        E::Medium => "medium",
-        E::High => "high",
-        E::XHigh => "xhigh",
-        E::Max => "max",
+        E::Minimal | E::Low => keys::LOW,
+        E::Medium => keys::MEDIUM,
+        E::High => keys::HIGH,
+        E::XHigh => keys::XHIGH,
+        E::Max => W_MAX,
     }
 }
 
@@ -1096,11 +1183,11 @@ fn anthropic_effort_word(effort: crate::codec::ir::IrReasoningEffort) -> &'stati
 fn read_anthropic_effort_word(word: &str) -> Option<crate::codec::ir::IrReasoningEffort> {
     use crate::codec::ir::IrReasoningEffort as E;
     match word {
-        "low" => Some(E::Low),
-        "medium" => Some(E::Medium),
-        "high" => Some(E::High),
-        "xhigh" => Some(E::XHigh),
-        "max" => Some(E::Max),
+        keys::LOW => Some(E::Low),
+        keys::MEDIUM => Some(E::Medium),
+        keys::HIGH => Some(E::High),
+        keys::XHIGH => Some(E::XHigh),
+        W_MAX => Some(E::Max),
         _ => None,
     }
 }
@@ -1114,10 +1201,10 @@ fn read_anthropic_effort_word(word: &str) -> Option<crate::codec::ir::IrReasonin
 fn read_anthropic_output_format(
     v: &serde_json::Value,
 ) -> Option<crate::codec::ir::IrResponseFormat> {
-    if v.get("type").and_then(|t| t.as_str()) != Some(OUTPUT_FORMAT_JSON_SCHEMA) {
+    if v.get(keys::TYPE).and_then(|t| t.as_str()) != Some(OUTPUT_FORMAT_JSON_SCHEMA) {
         return None;
     }
-    let schema = v.get("schema").filter(|s| s.is_object())?.clone();
+    let schema = v.get(keys::SCHEMA).filter(|s| s.is_object())?.clone();
     Some(crate::codec::ir::IrResponseFormat {
         json: true,
         schema: Some(schema),
@@ -1137,19 +1224,19 @@ fn close_object_schemas(schema: &mut serde_json::Value) {
     let Some(obj) = schema.as_object_mut() else {
         return;
     };
-    let is_object = obj.contains_key("properties")
-        || match obj.get("type") {
-            Some(serde_json::Value::String(t)) => t == "object",
-            Some(serde_json::Value::Array(ts)) => ts.iter().any(|t| t == "object"),
+    let is_object = obj.contains_key(keys::PROPERTIES)
+        || match obj.get(keys::TYPE) {
+            Some(serde_json::Value::String(t)) => t == keys::OBJECT,
+            Some(serde_json::Value::Array(ts)) => ts.iter().any(|t| t == keys::OBJECT),
             _ => false,
         };
-    if is_object && obj.get("additionalProperties") != Some(&serde_json::Value::Bool(false)) {
+    if is_object && obj.get(keys::ADDITIONAL_PROPERTIES) != Some(&serde_json::Value::Bool(false)) {
         obj.insert(
-            "additionalProperties".to_string(),
+            keys::ADDITIONAL_PROPERTIES.to_string(),
             serde_json::Value::Bool(false),
         );
     }
-    for key in ["properties", "$defs", "definitions"] {
+    for key in [keys::PROPERTIES, "$defs", "definitions"] {
         if let Some(map) = obj.get_mut(key).and_then(|v| v.as_object_mut()) {
             map.values_mut().for_each(close_object_schemas);
         }
@@ -1251,17 +1338,17 @@ fn write_message(
     unmodeled_sentinel: &[serde_json::Value],
 ) -> serde_json::Value {
     let role_str = match msg.role {
-        crate::codec::ir::IrRole::User => "user",
-        crate::codec::ir::IrRole::Assistant => "assistant",
+        crate::codec::ir::IrRole::User => keys::USER,
+        crate::codec::ir::IrRole::Assistant => keys::ASSISTANT,
         // Anthropic's Messages API has NO `system` role inside `messages` — system content lives in
         // the top-level `system` field. `write_request` folds every `IrRole::System` message into
         // that top-level array and FILTERS it out of the per-message loop, so this arm is unreachable
         // on the request path. Map it to `"user"` defensively (NOT the invalid `"system"`) so that
         // even a direct `write_message` call can never emit a `role:"system"` Anthropic rejects.
-        crate::codec::ir::IrRole::System => "user",
+        crate::codec::ir::IrRole::System => keys::USER,
         // Anthropic has no "tool" message role — tool results are carried as `user` messages whose
         // content holds `tool_result` block(s). (Reachable when translating an OpenAI `tool` message.)
-        crate::codec::ir::IrRole::Tool => "user",
+        crate::codec::ir::IrRole::Tool => keys::USER,
     };
     // REQUEST-side filter (write_message feeds write_request only; write_response/_event call
     // write_block directly, so response reasoning still surfaces). Anthropic's Messages API rejects
@@ -1338,7 +1425,7 @@ fn write_message(
     // empty-array skeleton `write_response_event` already emits for `message_start.message.content`
     // (a message with no blocks yet). The non-empty branch is unchanged: a populated array of blocks.
     let content_val: serde_json::Value = serde_json::Value::Array(blocks);
-    serde_json::json!({ "role": role_str, "content": content_val })
+    serde_json::json!({ (keys::ROLE): role_str, (keys::CONTENT): content_val })
 }
 
 /// Project one IR tool onto Anthropic's `tools[]`. `None` for a HOSTED tool that is not an
@@ -1349,10 +1436,10 @@ fn write_tool(tool: &crate::codec::ir::IrTool) -> Option<serde_json::Value> {
         // An Anthropic-defined tool (read by `read_tool` from a non-`custom` `type`) always carries
         // its `name`; re-emit its raw definition verbatim. Anything else is a foreign hosted tool.
         let anthropic_shaped = hosted
-            .get("type")
+            .get(keys::TYPE)
             .and_then(|t| t.as_str())
             .is_some_and(|t| t != TOOL_TYPE_CUSTOM)
-            && hosted.get("name").and_then(|n| n.as_str()).is_some();
+            && hosted.get(keys::NAME).and_then(|n| n.as_str()).is_some();
         if anthropic_shaped {
             return Some(hosted.clone());
         }
@@ -1363,18 +1450,18 @@ fn write_tool(tool: &crate::codec::ir::IrTool) -> Option<serde_json::Value> {
         return None;
     }
     let mut obj = serde_json::Map::new();
-    obj.insert("name".to_string(), serde_json::json!(tool.name));
+    obj.insert(keys::NAME.to_string(), serde_json::json!(tool.name));
     if let Some(desc) = &tool.description {
-        obj.insert("description".to_string(), serde_json::json!(desc));
+        obj.insert(keys::DESCRIPTION.to_string(), serde_json::json!(desc));
     }
-    obj.insert("input_schema".to_string(), tool.input_schema.clone());
+    obj.insert(keys::INPUT_SCHEMA.to_string(), tool.input_schema.clone());
     if let Some(cc) = &tool.cache_control {
-        obj.insert("cache_control".to_string(), write_cache_control(cc));
+        obj.insert(CACHE_CONTROL.to_string(), write_cache_control(cc));
     }
     // Anthropic's GA per-tool `strict` — the same schema-guaranteed-arguments contract as OpenAI's
     // `function.strict`, so a caller's guarantee survives the hop instead of being dropped (ANT-05).
     if let Some(strict) = tool.strict {
-        obj.insert("strict".to_string(), serde_json::json!(strict));
+        obj.insert(keys::STRICT.to_string(), serde_json::json!(strict));
     }
     Some(serde_json::Value::Object(obj))
 }
