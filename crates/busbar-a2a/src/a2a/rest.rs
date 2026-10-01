@@ -57,9 +57,9 @@ use busbar_contract::transport::transport::Transport;
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
 use busbar_plane_a2a::door::{self, Line, Route};
 
-/// THE METHOD NAMES and the fixed id every composed envelope carries have ONE home, the plane's
-/// HTTP+JSON line ([`busbar_plane_a2a::rest`]); re-exported under their old in-crate paths.
-pub(super) use busbar_plane_a2a::rest::{method, REST_RPC_ID};
+/// THE METHOD NAMES have ONE home, the plane's HTTP+JSON line ([`busbar_plane_a2a::rest`]);
+/// re-exported under their old in-crate path.
+pub(super) use busbar_plane_a2a::rest::method;
 
 /// ONE REQUEST ON THE LINE: compose the envelope its request spells (the plane's
 /// [`busbar_plane_a2a::rest::compose_from`], over the captures the router decoded and the raw

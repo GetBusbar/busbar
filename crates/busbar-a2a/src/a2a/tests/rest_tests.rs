@@ -13,6 +13,7 @@
 //! received, and does an answer come back in the shape A2A section 11.3 and section 11.6 define?
 
 use super::*;
+use busbar_plane_a2a::rest::REST_RPC_ID;
 use serde_json::json;
 
 /// SECTION 11.3, IN ONE ASSERTION: the success body IS the `result` verbatim. Not "contains", not
