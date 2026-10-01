@@ -992,6 +992,14 @@ pub struct RefuseIn {
     pub len: usize,
     /// The sink.
     pub sink: FramerSink,
+    /// The refusal's neutral status number, in the space of the plane kind's refusal status
+    /// ([`crate::abi::plane::RefusalIn::status`]): the transport maps it to its own wire, where
+    /// `bytes` do not state one in the wire's own terms. `0` = none stated. Appended (OWNER
+    /// R-addendum 2026-09-30: the refusal carries a neutral status number the transport maps to
+    /// its wire).
+    pub status: u32,
+    /// Alignment padding.
+    pub _reserved2: u32,
 }
 
 /// `finish`'s `in` (the framer's `close`).

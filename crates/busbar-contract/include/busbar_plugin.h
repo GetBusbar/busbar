@@ -2946,6 +2946,8 @@ struct bb_transport_RefuseIn {
     const uint8_t *bytes;
     size_t len;
     bb_transport_FramerSink sink;
+    uint32_t status;
+    uint32_t _reserved2;
 };
 
 /* `finish`'s `in` (the framer's `close`). */
