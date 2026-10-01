@@ -7,7 +7,7 @@
 //! Masking is decided by the location grammar rather than per plane, so every form is asked here
 //! what it does — including the one that does nothing, because it was never in the bytes.
 
-use busbar_kernel::grammar::{ArrivalLocation, MaskKind, SignedOver, Span};
+use busbar_kernel::grammar::{ArrivalLocation, MaskKind, SignedOver};
 use busbar_kernel::inflight::MAX_SESSION_UPSTREAMS;
 
 /// The ceilings the kernel enforces are the ceilings the contract told the plugin about.
