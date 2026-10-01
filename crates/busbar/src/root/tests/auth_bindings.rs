@@ -152,42 +152,6 @@ fn an_unbound_node_binds_no_authority() {
     assert!(bindings.revocations().is_none());
 }
 
-/// THE FACADE DOES NOT DOCUMENT A SWAP THAT ALREADY HAPPENED ELSEWHERE (item 289).
-///
-/// The header used to describe relocating the authenticate step as a pending one-line edit here
-/// ("swap `pub use crate::auth;` for `pub use busbar_kernel_identity;`") and to call itself the
-/// target consumers migrate onto. The relocated crate was already live in the composition root and
-/// its consumers went around the facade, so a maintainer reading it concluded the step had not moved
-/// and fixed only `crate::auth`. While the binary depends on the relocated crate, the facade must say
-/// so and must not present that swap as still to come.
-///
-/// It lives here, in the binary, because the premise is the binary's own manifest: the kernel has
-/// no dependency edge on `busbar` and may not read its files (kind-isolation build-inputs), while
-/// `busbar` depends on `busbar-kernel` and reads the facade through that edge.
-#[test]
-fn the_facade_names_the_relocated_authenticate_step_it_does_not_point_at() {
-    let binary = include_str!("../../../Cargo.toml");
-    let facade = include_str!("../../../../busbar-kernel/src/drain.rs");
-    let relocated_is_live = binary
-        .lines()
-        .any(|l| l.trim_start().starts_with("busbar-kernel-identity"));
-    if !relocated_is_live {
-        return;
-    }
-    assert!(
-        !facade.contains("for `pub use busbar_kernel_identity;`"),
-        "drain.rs still presents the authenticate swap as pending while the binary runs the relocated crate"
-    );
-    assert!(
-        !facade.contains("stable target consumers migrate ONTO"),
-        "drain.rs still claims consumers migrate onto it; they migrated around it"
-    );
-    assert!(
-        facade.contains("ALREADY RELOCATED") && facade.contains("`busbar-kernel-identity`"),
-        "drain.rs's authenticate step must say it already runs from `busbar-kernel-identity`"
-    );
-}
-
 // ------------------------------------------------------------------------------------------------
 // THE ROOT LEGACY TABLE'S OPERATOR WORDS — 1.5.5's bytes, pinned where the words live (ARCHITECT
 // 2026-09-30, KERNEL-AUTH-ZERO Q2: the byte-pin tests move to crates/busbar). The kernel's own tests
@@ -356,5 +320,42 @@ fn the_operator_refusals_are_1_5_5_s_bytes() {
         "auth chain entry 'keys' sets `token:`, which belongs to the built-in \
          `admin-tokens` module only; move it, e.g.:\n\n    admin_auth:\n      - \
          admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }\n"
+    );
+}
+||||||| base
+
+/// THE FACADE DOES NOT DOCUMENT A SWAP THAT ALREADY HAPPENED ELSEWHERE (item 289).
+///
+/// The header used to describe relocating the authenticate step as a pending one-line edit here
+/// ("swap `pub use crate::auth;` for `pub use busbar_kernel_identity;`") and to call itself the
+/// target consumers migrate onto. The relocated crate was already live in the composition root and
+/// its consumers went around the facade, so a maintainer reading it concluded the step had not moved
+/// and fixed only `crate::auth`. While the binary depends on the relocated crate, the facade must say
+/// so and must not present that swap as still to come.
+///
+/// It lives here, in the binary, because the premise is the binary's own manifest: the kernel has
+/// no dependency edge on `busbar` and may not read its files (kind-isolation build-inputs), while
+/// `busbar` depends on `busbar-kernel` and reads the facade through that edge.
+#[test]
+fn the_facade_names_the_relocated_authenticate_step_it_does_not_point_at() {
+    let binary = include_str!("../../../Cargo.toml");
+    let facade = include_str!("../../../../busbar-kernel/src/drain.rs");
+    let relocated_is_live = binary
+        .lines()
+        .any(|l| l.trim_start().starts_with("busbar-kernel-identity"));
+    if !relocated_is_live {
+        return;
+    }
+    assert!(
+        !facade.contains("for `pub use busbar_kernel_identity;`"),
+        "drain.rs still presents the authenticate swap as pending while the binary runs the relocated crate"
+    );
+    assert!(
+        !facade.contains("stable target consumers migrate ONTO"),
+        "drain.rs still claims consumers migrate onto it; they migrated around it"
+    );
+    assert!(
+        facade.contains("ALREADY RELOCATED") && facade.contains("`busbar-kernel-identity`"),
+        "drain.rs's authenticate step must say it already runs from `busbar-kernel-identity`"
     );
 }

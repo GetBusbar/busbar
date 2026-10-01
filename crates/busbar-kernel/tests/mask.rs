@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The dead per-frame fixed scratch allocator, and the masking that hides a credential in the
+//! The masking forms the location grammar declares for a credential in the
 //! read cursor.
 //!
 //! Masking is decided by the location grammar rather than per plane, so every form is asked here
@@ -9,8 +9,6 @@
 
 use busbar_kernel::grammar::{ArrivalLocation, MaskKind, SignedOver, Span};
 use busbar_kernel::inflight::MAX_SESSION_UPSTREAMS;
-use busbar_kernel::mask::FixedScratch;
-use busbar_kernel::mask::{CredentialSlab, CURSOR_CAP_BYTES, FILL_BYTE, FIXED_SCRATCH_BYTES};
 
 /// The ceilings the kernel enforces are the ceilings the contract told the plugin about.
 ///
@@ -21,8 +19,6 @@ use busbar_kernel::mask::{CredentialSlab, CURSOR_CAP_BYTES, FILL_BYTE, FIXED_SCR
 /// at a limit it was never told about the first time one of them moves.
 #[test]
 fn the_kernels_ceilings_are_the_contracts_own() {
-    assert_eq!(FIXED_SCRATCH_BYTES, busbar_contract::SCRATCH_BASE_BYTES);
-    assert_eq!(CURSOR_CAP_BYTES, busbar_contract::MAX_CURSOR_BYTES);
     assert_eq!(
         MAX_SESSION_UPSTREAMS,
         busbar_contract::MAX_SESSION_UPSTREAMS
@@ -30,38 +26,6 @@ fn the_kernels_ceilings_are_the_contracts_own() {
     assert_eq!(
         busbar_contract::caps::usage::MAX_USAGE_LINES,
         busbar_contract::MAX_USAGE_LINES
-    );
-}
-
-#[test]
-fn masking_leaves_the_cursor_the_same_length_and_the_offsets_intact() {
-    let mut cursor = b"GET /x\r\nauthorization: secret-token\r\n\r\n".to_vec();
-    let before = cursor.len();
-    let start = 23;
-    let span = Span::new(start, start + "secret-token".len());
-    let mut slab = CredentialSlab::with_capacity(1024);
-
-    let masked = slab.mask(&mut cursor, span).expect("room in the slab");
-    assert_eq!(cursor.len(), before, "every later offset still holds");
-    assert_eq!(slab.read(masked), b"secret-token");
-    assert!(
-        !String::from_utf8_lossy(&cursor).contains("secret-token"),
-        "the credential is no longer in the bytes a plane will see"
-    );
-    assert_eq!(cursor[start], FILL_BYTE);
-}
-
-#[test]
-fn an_oversize_credential_is_refused_against_the_slab_and_not_the_cursor() {
-    let mut cursor = vec![b'a'; 64];
-    let mut slab = CredentialSlab::with_capacity(8);
-    assert_eq!(
-        slab.mask(&mut cursor, Span::new(0, 32)),
-        Err(busbar_contract::caps::ReasonCode::CredentialBudget)
-    );
-    assert_eq!(
-        slab.mask(&mut cursor, Span::new(0, 128)),
-        Err(busbar_contract::caps::ReasonCode::CursorBudget)
     );
 }
 
@@ -171,107 +135,4 @@ fn every_location_form_masks_by_a_kind_the_closed_set_names() {
             "{form:?} masks by a kind the closed set does not name"
         );
     }
-}
-
-/// The bounded prefix masks the bound the location declared, and no more.
-///
-/// The bound is read off the location itself. It used to be read off a match with a catch-all
-/// arm that answered zero, so a location form that ever masked by bounded prefix without being
-/// named there would have masked NOTHING — a credential left in the cursor for every plane to
-/// read, with nothing failing to say so.
-#[test]
-fn a_bounded_prefix_masks_the_bound_the_location_declared() {
-    let mut cursor = b"hello world, and more".to_vec();
-    let before = cursor.len();
-    let whole = Span::new(0, before);
-    let mut slab = CredentialSlab::with_capacity(64);
-    let masked = slab
-        .mask_as(
-            &mut cursor,
-            whole,
-            &ArrivalLocation::HandshakeFrames {
-                max_frames: 1,
-                max_bytes: 5,
-            },
-        )
-        .expect("room in the slab");
-    assert_eq!(masked.len(), 5, "the declared bound, not the whole span");
-    assert_eq!(slab.read(masked), b"hello");
-    assert_eq!(cursor.len(), before);
-    assert_eq!(&cursor[5..], b" world, and more", "the rest is left alone");
-}
-
-#[test]
-fn a_client_certificate_masks_nothing_because_it_was_never_in_the_bytes() {
-    let mut cursor = b"hello".to_vec();
-    let mut slab = CredentialSlab::with_capacity(64);
-    // A client certificate is the one form that masks nothing, because it was never in the bytes.
-    let masked = slab
-        .mask_as(&mut cursor, Span::new(0, 5), &ArrivalLocation::ClientCert)
-        .expect("nothing to do");
-    assert!(masked.is_empty());
-    assert_eq!(cursor, b"hello");
-}
-
-#[test]
-fn the_fixed_scratch_is_four_kibibytes_and_is_reset_per_frame() {
-    let mut fixed = FixedScratch::new();
-    assert_eq!(fixed.remaining(), FIXED_SCRATCH_BYTES);
-    let span = fixed.push(b"a frame's worth of bytes").expect("room");
-    assert_eq!(fixed.read(span), b"a frame's worth of bytes");
-    assert_eq!(fixed.used(), 24);
-
-    // On the relay path this was reset per frame, so a session that relays all day would use the
-    // same four kibibytes it used at its first frame.
-    for _ in 0..1_000 {
-        fixed.reset();
-        fixed.push(b"another frame").expect("room, every time");
-    }
-    assert_eq!(fixed.used(), 13);
-    assert_eq!(fixed.resets(), 1_000);
-}
-
-#[test]
-fn asking_the_fixed_scratch_for_more_than_it_has_is_an_answer_not_a_panic() {
-    let mut fixed = FixedScratch::new();
-    let full = fixed.take(FIXED_SCRATCH_BYTES).expect("all of it");
-    assert_eq!(full.len(), FIXED_SCRATCH_BYTES);
-    let refused = fixed.push(b"one more byte").expect_err("nothing left");
-    assert_eq!(refused.remaining, 0);
-    assert_eq!(
-        refused.reason(),
-        busbar_contract::caps::ReasonCode::ScratchExhausted
-    );
-}
-
-/// A span the arena hands out holds nothing of the frame before it.
-///
-/// `take` promised zeroed space and `reset` moved the cursor without clearing a byte, so a unit
-/// that took a span and then wrote LESS into it than it asked for could read the tail of the
-/// previous frame straight back out — one connection's bytes surfacing inside another's buffer.
-/// The promise is now kept where it is made.
-#[test]
-fn a_short_write_after_a_reset_shows_nothing_of_the_last_frame() {
-    let mut fixed = FixedScratch::new();
-    let secret = b"authorization: Bearer swordfish";
-    let first = fixed.push(secret).expect("the fixed scratch has room");
-    assert_eq!(fixed.read(first), secret);
-
-    // The frame ends and the next one begins.
-    fixed.reset();
-    let span = fixed
-        .take(secret.len())
-        .expect("the fixed scratch has room");
-    assert!(
-        fixed.read(span).iter().all(|byte| *byte == 0),
-        "the span still held the last frame"
-    );
-
-    // And a unit that writes less than it asked for exposes no tail.
-    fixed.write(span, b"ok").expect("within the span");
-    assert_eq!(&fixed.read(span)[..2], b"ok");
-    assert!(
-        fixed.read(span)[2..].iter().all(|byte| *byte == 0),
-        "the tail of the span leaked the last frame"
-    );
 }

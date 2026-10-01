@@ -133,7 +133,6 @@ mod alloc_gate_instrument {
 pub mod door;
 pub mod grammar;
 pub mod inflight;
-pub mod mask;
 pub mod plane_driver;
 pub mod pump;
 pub mod recovery;
@@ -213,11 +212,6 @@ pub mod config_validate;
 pub mod core_routes;
 pub mod cost;
 pub mod diagnostics;
-// THE DRAIN FACADE (1.6.0 wave W1.e, DECISIONS #27b): the one stable per-step re-export surface for
-// busbar-core's own Teller workflow steps (arrival…exit), so each step relocates to its
-// `busbar-unit-<step>` crate in ANY order by editing one line here. Pure additive/dormant re-export
-// of already-`pub` modules — no code moves, the shipped path is byte-untouched. See the module.
-pub mod drain;
 // The durable-write choke point lives in `busbar-kernel-wal` (the durable medium) so the plugin-loader
 // (plugins.fetch cache write), which this crate links, can route through the SAME primitive.
 // Re-exported here so every existing `crate::durable::*` call site in this binary resolves unchanged.
@@ -344,9 +338,6 @@ mod alarm_silence_tests;
 pub mod appbuild;
 // `key_revoke_tombstone_tests` drives the admin key-revoke HTTP surface; it moved to `busbar-admin`
 // with the service (`busbar_admin::tests::key_revoke_tombstone_tests`).
-#[cfg(test)]
-#[path = "tests/drain_facade_tests.rs"]
-mod drain_facade_tests;
 pub mod preflight;
 pub mod router;
 #[cfg(test)]
