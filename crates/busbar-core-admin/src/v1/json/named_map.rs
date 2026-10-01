@@ -830,7 +830,7 @@ fn check_trust_ceiling(
 #[cfg(feature = "openapi-schema")]
 pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
     use super::RESPONSES_KEY;
-    use serde_json::{json, Map, Value};
+    use serde_json::{json, Value};
     /// One operation: its summary, the `name` path parameter when the path carries one, and its
     /// single response (`status` described by `description`).
     fn operation(
@@ -839,16 +839,14 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
         status: &str,
         description: impl Into<Value>,
     ) -> Value {
-        let mut op = Map::new();
-        op.insert("summary".into(), summary.into());
+        let mut op = json!({
+            "summary": summary,
+            RESPONSES_KEY: { status: {"description": description.into()} }
+        });
         if let Some(param) = name_param {
-            op.insert("parameters".into(), json!([param]));
+            op["parameters"] = json!([param]);
         }
-        op.insert(
-            RESPONSES_KEY.into(),
-            json!({ status: {"description": description.into()} }),
-        );
-        Value::Object(op)
+        op
     }
     let name_param = json!({
         "name": "name", "in": "path", "required": true, "schema": {"type": "string"}
