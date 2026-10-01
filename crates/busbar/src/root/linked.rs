@@ -30,7 +30,7 @@
 use std::sync::Arc;
 
 use crate::root::loader::{DynPlane, ServedPlane};
-use busbar_contract::abi::cold::endpoint::{RouteAuth, RouteMethod};
+use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
 use busbar_contract::abi::hot;
 use busbar_contract::abi::hot::StatusClass;
 use busbar_contract::ids::OpClassId;

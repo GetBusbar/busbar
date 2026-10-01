@@ -14,11 +14,12 @@
 use crate::sign::EgressPolicy;
 use crate::RawPlugin;
 use busbar_contract::abi::cold::{
-    endpoint::{EndpointRequest, EndpointResponse, Route},
+    endpoint::{EndpointRequest, EndpointResponse},
     export::{ExportRequest, ExportResponse},
     kind as abi_kind,
 };
 use busbar_contract::abi::export::ExportStream;
+use busbar_contract::abi::mechanism::route::Route;
 
 /// A telemetry export sink loaded from a dynamic library over the kind-neutral ABI. Wraps a
 /// [`RawPlugin`] whose kind was bound to `export` at load; the streams it carries are queried once at

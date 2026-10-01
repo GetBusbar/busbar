@@ -344,7 +344,7 @@ pub(crate) fn base_data_router(
     Router<std::sync::Arc<state::AppHandle>>,
     crate::core_routes::CoreRouteTable,
 ) {
-    use busbar_contract::abi::cold::endpoint::{RouteAuth, RouteMethod};
+    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
     // EVERY core route is mounted through `CoreRouter::route`, which takes the handler and the
     // admission bar in ONE act (`core_routes`): a route the auth middleware knows nothing about is
     // not a thing this function can produce.
@@ -602,7 +602,7 @@ fn mount_ws_arrivals(
         std::sync::Arc<dyn std::any::Any + Send + Sync>,
     >,
 ) -> crate::core_routes::CoreRouter {
-    use busbar_contract::abi::cold::endpoint::RouteMethod;
+    use busbar_contract::abi::mechanism::route::RouteMethod;
     let mut router = router;
     for spec in busbar_kernel::ingress::duplex_ws::take_ws_arrivals() {
         let busbar_kernel::ingress::duplex_ws::WsArrivalSpec {
@@ -1063,8 +1063,8 @@ pub fn build_split_routers_with_limits(
     let (admin, admin_core_routes) = crate::core_routes::CoreRouter::new()
         .route(
             crate::auth::HEALTHZ_PATH,
-            busbar_contract::abi::cold::endpoint::RouteMethod::Get,
-            busbar_contract::abi::cold::endpoint::RouteAuth::None,
+            busbar_contract::abi::mechanism::route::RouteMethod::Get,
+            busbar_contract::abi::mechanism::route::RouteAuth::None,
             endpoints::healthz,
         )
         .into_parts();

@@ -225,7 +225,8 @@ fn a_v3_export_response_rides_the_observability_envelope() {
 /// additive wire behind plugin route registration + dispatch.
 #[test]
 fn http_endpoint_ops_roundtrip_and_tags() {
-    use crate::abi::cold::endpoint::{EndpointRequest, RouteAuth, RouteMethod};
+    use crate::abi::cold::endpoint::EndpointRequest;
+    use crate::abi::mechanism::route::{RouteAuth, RouteMethod};
     let reqs = vec![
         ExportRequest::Routes,
         ExportRequest::Endpoint {

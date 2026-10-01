@@ -19,6 +19,7 @@
 use crate::config::ExportCfg;
 use crate::plugin_routes::{PluginHttpDispatch, RouteDecl, RouteKind};
 use busbar_contract::abi::cold::endpoint::*;
+use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
 use std::sync::Arc;
 
 /// The well-known exposition path — the one export route outside `/exports/<name>/*`

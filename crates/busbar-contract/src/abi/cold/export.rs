@@ -22,7 +22,8 @@
 //! - `routes` / `http_endpoint` — the sink's HTTP surface (see [`crate::abi::cold::endpoint`]).
 //! - `status` — what the sink has to report when the host renders its exposition (additive).
 
-use crate::abi::cold::endpoint::{EndpointRequest, EndpointResponse, Route};
+use crate::abi::cold::endpoint::{EndpointRequest, EndpointResponse};
+use crate::abi::mechanism::route::Route;
 use crate::abi::export::{CheckPhase, ExportField, ExportStream};
 use serde::{Deserialize, Serialize};
 

@@ -35,6 +35,7 @@ use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::Response;
 use axum::routing::{on, MethodFilter, MethodRouter};
 use busbar_contract::abi::cold::endpoint::*;
+use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
 use std::collections::HashMap;
 use std::sync::Arc;
 

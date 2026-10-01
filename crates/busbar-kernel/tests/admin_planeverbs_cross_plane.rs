@@ -69,7 +69,7 @@ fn the_not_found_names_the_plane_s_own_subject() {
 /// spec cannot ship a mutation that DECLARES `ReadOnly` either.
 #[test]
 fn the_admin_route_table_method_path_scope_is_byte_identical() {
-    use busbar_contract::abi::cold::endpoint::RouteMethod;
+    use busbar_contract::abi::mechanism::route::RouteMethod;
     use busbar_kernel::admin::v1::contract::{required_scope, Scope};
     use busbar_kernel::admin_verbs::AdminScope;
 

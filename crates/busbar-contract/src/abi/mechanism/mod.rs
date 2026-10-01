@@ -45,6 +45,7 @@ pub mod check;
 pub mod door;
 pub mod lifecycle;
 pub mod rendering;
+pub mod route;
 pub mod ticket;
 
 /// The mechanism's version, stamped in every [`door::Door`]. v1.5.5 called it `TRANSPORT_VERSION`

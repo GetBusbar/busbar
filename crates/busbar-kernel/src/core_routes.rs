@@ -32,7 +32,7 @@ use crate::state::AppHandle;
 use axum::http::Method;
 use axum::routing::{on, MethodRouter};
 use axum::Router;
-use busbar_contract::abi::cold::endpoint::{RouteAuth, RouteMethod};
+use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
 use std::sync::Arc;
 
 /// One core route as DECLARED at mount time: the exact axum path pattern, the method, and the

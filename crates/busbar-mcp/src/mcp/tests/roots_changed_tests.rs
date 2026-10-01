@@ -151,7 +151,7 @@ fn rpc_ctx(
     busbar_kernel::plane_routes::PlaneReqCtx {
         path: String::new(),
         uri: axum::http::Uri::default(),
-        method: busbar_contract::abi::cold::endpoint::RouteMethod::Post,
+        method: busbar_contract::abi::mechanism::route::RouteMethod::Post,
         headers: axum::http::HeaderMap::new(),
         body,
         path_params: Vec::new(),

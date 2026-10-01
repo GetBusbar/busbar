@@ -942,9 +942,8 @@ pub use crate::abi::cold::observe::{
 /// Re-export the endpoint wire types (plugin route registration + dispatch) so an export/hook
 /// author names `busbar_contract::abi::sdk::Route` / `EndpointRequest` (etc.) without a direct
 /// `busbar-plugin` dependency.
-pub use crate::abi::cold::endpoint::{
-    EndpointRequest, EndpointResponse, Route, RouteAuth, RouteMethod,
-};
+pub use crate::abi::cold::endpoint::{EndpointRequest, EndpointResponse};
+pub use crate::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
 
 /// The sync contract a `kind: export` plugin author implements. [`streams`](ExportHandler::streams)
 /// declares which observability streams THIS instance carries (asked once at load); `deliver` hands

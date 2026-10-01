@@ -761,7 +761,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     for public in &declared_public {
         assert!(
             core_routes.iter().any(|(path, _, auth)| path == public
-                && *auth == busbar_contract::abi::cold::endpoint::RouteAuth::None),
+                && *auth == busbar_contract::abi::mechanism::route::RouteAuth::None),
             "{public} is declared unauthenticated-by-design but no core route mounts it with \
              RouteAuth::None — the bypass set this names is not the one the router built"
         );
@@ -818,7 +818,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     let mut door_checked = 0usize;
     for route in &core_routes {
         let path = concrete(&route.0);
-        if route.2 == busbar_contract::abi::cold::endpoint::RouteAuth::None {
+        if route.2 == busbar_contract::abi::mechanism::route::RouteAuth::None {
             assert!(
                 declared_public.contains(&route.0),
                 "{} is mounted RouteAuth::None but is not in declared_public — an unauthenticated \

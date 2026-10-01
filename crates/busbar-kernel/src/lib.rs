@@ -377,7 +377,7 @@ pub(crate) use router::build_router_with_limits;
 pub use router::build_router_with_limits;
 
 #[cfg(any(test, feature = "test-support"))]
-use busbar_contract::abi::cold::endpoint::RouteAuth;
+use busbar_contract::abi::mechanism::route::RouteAuth;
 
 /// TEST-SUPPORT ROUTER-SURFACE VIEW: the `(path, declared admission bar)` pairs the base data router
 /// mounts for `app`, built through the very same `router::base_data_router` production calls (off the

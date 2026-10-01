@@ -276,7 +276,7 @@ async fn a_third_plane_publishes_metadata_with_no_handler_of_its_own() {
 /// remembered to ask.
 #[test]
 fn a_declared_route_inherits_the_bar_beside_its_mount() {
-    use busbar_contract::abi::cold::endpoint::{RouteAuth, RouteMethod};
+    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
     let (_router, table) = crate::core_routes::CoreRouter::new()
         // The RPC endpoint — audience-bound, exactly like both real planes'.
         .route(

@@ -592,7 +592,7 @@ pub fn voice_admission(slot: &dyn Any) -> Option<PlaneAdmission> {
 /// receiving side (no dispatch slot), so a deployment that fronts nothing mounts nothing.
 #[must_use]
 pub fn voice_routes(slot: &dyn Any) -> Vec<PlaneRouteSpec> {
-    use busbar_contract::abi::cold::endpoint::{RouteAuth, RouteMethod};
+    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
     use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture};
 
     if slot.downcast_ref::<VoiceMount>().is_none() {
@@ -630,7 +630,7 @@ pub fn install_arrivals() {
 /// plane's decl `key`. Empty when the plane has no receiving side, exactly as [`voice_routes`].
 #[must_use]
 pub fn voice_ws_arrivals() -> Vec<WsArrivalSpec> {
-    use busbar_contract::abi::cold::endpoint::RouteAuth;
+    use busbar_contract::abi::mechanism::route::RouteAuth;
     let key = crate::PLANE_DECLARATION.key;
     vec![
         WsArrivalSpec {

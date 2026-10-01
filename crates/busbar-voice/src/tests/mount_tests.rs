@@ -23,7 +23,7 @@ use crate::mount::open_governed;
 use crate::runtime::scope::rehydrate_sessions;
 use crate::runtime::{EchoToolExecutor, SessionHandle, VoiceRuntime};
 use crate::topology::telephony::{begin_telephony, g711_config};
-use busbar_contract::abi::cold::endpoint::{RouteAuth, RouteMethod};
+use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
 use busbar_contract::records::{PlaneRecord, PlaneSelector, RecordStoreError, RecordStoreResult};
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use busbar_kernel::plane::registry::{BuildCtx, CardIssuer, PlaneBootCtx, RestoredSummary};

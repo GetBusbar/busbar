@@ -22,7 +22,7 @@ use super::engine_kit::{CostKit, EngineApp, EngineTestKit, GovKit, HookEnvHandle
 use super::TestAppSeam;
 use crate::plane::registry::CardIssuer;
 use crate::plane::PlaneAdmission;
-use busbar_contract::abi::cold::endpoint::RouteAuth;
+use busbar_contract::abi::mechanism::route::RouteAuth;
 use busbar_contract::secret::SecretResolve;
 use std::any::Any;
 use std::sync::Arc;
