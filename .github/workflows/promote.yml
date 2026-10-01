@@ -1,0 +1,27 @@
+name: promote
+
+# Every same-repo pull request is one hop up the branch ladder. busbar-release's
+# engine plans the hop from the PR's base branch (crates/busbar-release-train/
+# ladder.json) and runs exactly what entering it needs, on a Latchkey runner sized
+# to it; on BOARD it fast-forwards the base to the tested SHA. qa/main need owner
+# consent and stay locked by the org ruleset. Re-pin: change both SHAs together.
+on:
+  pull_request:
+
+concurrency:
+  group: promote-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    uses: GetBusbar/busbar-release/.github/workflows/promote.yml@4a5f57d556de436233149f7669b38d31cef90fcf
+    with:
+      sha: ${{ github.event.pull_request.head.sha }}
+      to: ${{ github.base_ref }}
+      base_sha: ${{ github.event.pull_request.base.sha }}
+      release_ref: 4a5f57d556de436233149f7669b38d31cef90fcf
+    secrets: inherit
