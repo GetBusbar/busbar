@@ -466,6 +466,14 @@ pub const RECORD_PUT: u32 = 1;
 /// verified by an auth plugin under the style the plane's inbound need declares.
 pub const ROUTE_PUBLIC: u32 = 1;
 
+/// [`ServeOut::audit`]: no audit row.
+pub const AUDIT_NONE: u32 = 0;
+/// [`ServeOut::audit`]: the request applied; the row's outcome is `applied`.
+pub const AUDIT_APPLIED: u32 = 1;
+/// [`ServeOut::audit`]: the request was rejected after it was judged; the row's outcome is
+/// `rejected`.
+pub const AUDIT_REJECTED: u32 = 2;
+
 /// [`RecordChain::framing`]: each field of the record's digest is length-prefixed.
 pub const CHAIN_LENGTH_PREFIXED: u32 = 1;
 /// [`RecordChain::framing`]: the fields of the record's digest are joined by `|`.
@@ -993,6 +1001,8 @@ pub struct AdminRoute {
     pub flags: u32,
     /// Alignment padding.
     pub _reserved: u32,
+    /// The word the kernel's audit row names a served request by; empty = never audited.
+    pub audit_verb: AbiStr,
 }
 
 /// THE GENERATION SNAPSHOT: what the plane answers for THIS generation's settings. Valid until
@@ -1461,8 +1471,8 @@ pub struct ServeOut {
     pub fields_written: u32,
     /// Short answer: the fields `fields_buf` needs.
     pub fields_needed: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
+    /// `AUDIT_*`: the row the kernel audits the request with, under the route's `audit_verb`.
+    pub audit: u32,
 }
 
 /// The plane's `drive` `in`: the lifecycle's, plus a HOST buffer for the sessions with output

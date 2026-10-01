@@ -484,6 +484,8 @@ pub struct OwnedAdminRoute {
     pub target: String,
     /// `ROUTE_PUBLIC` or `0`.
     pub flags: u32,
+    /// The word a served request is audited under; empty = never audited.
+    pub audit_verb: String,
 }
 
 /// A GENERATION SNAPSHOT COPIED OUT OF THE PLUGIN at the crossing that published it, so nothing
@@ -592,6 +594,7 @@ fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<OwnedSnapshot
                     verb: text(r.verb)?,
                     target: text(r.target)?,
                     flags: r.flags,
+                    audit_verb: text(r.audit_verb)?,
                 })
             })
             .collect::<Option<_>>()?,

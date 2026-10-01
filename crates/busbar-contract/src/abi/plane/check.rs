@@ -508,7 +508,7 @@ pub fn check_refusal(
     )
 }
 
-/// `serve`: the reply is valid.
+/// `serve`: a known `AUDIT_*`, and the reply is valid.
 ///
 /// # Errors
 ///
@@ -519,6 +519,7 @@ pub fn check_serve(
     fields_buf: &[OutField],
     caps: &Caps,
 ) -> Result<(), Fault> {
+    code(u64::from(out.audit), 0, u64::from(super::AUDIT_REJECTED), "serve.audit")?;
     reply(
         outcome,
         ["serve.reply", "serve.fields", "serve.arena", "serve"],
@@ -616,6 +617,7 @@ pub fn check_admin_routes(routes: &[AdminRoute]) -> Result<(), Fault> {
     for r in routes {
         named(r.verb, "admin_route.verb")?;
         named(r.target, "admin_route.target")?;
+        text(r.audit_verb, "admin_route.audit_verb")?;
         bits(
             u64::from(r.flags),
             u64::from(ROUTE_PUBLIC),

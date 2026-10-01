@@ -368,6 +368,9 @@ extern "C" {
 #define BB_PLANE_MARK_GATE_REJECTED UINT32_C(1) /* The gate-rejected audit marker (the `GateRejected` marker the kernel keeps). The kernel sets it */
 #define BB_PLANE_RECORD_PUT UINT32_C(1) /* [`RecordWrite::op`]: put, the one record write there is. A put of an EMPTY value is a tombstone: */
 #define BB_PLANE_ROUTE_PUBLIC UINT32_C(1) /* [`AdminRoute::flags`]: a public route. [`slot::SERVE`] serves it to an unauthenticated caller; */
+#define BB_PLANE_AUDIT_NONE UINT32_C(0) /* [`ServeOut::audit`]: no audit row. */
+#define BB_PLANE_AUDIT_APPLIED UINT32_C(1) /* [`ServeOut::audit`]: the request applied; the row's outcome is `applied`. */
+#define BB_PLANE_AUDIT_REJECTED UINT32_C(2) /* [`ServeOut::audit`]: the request was rejected after it was judged; the row's outcome is */
 #define BB_PLANE_CHAIN_LENGTH_PREFIXED UINT32_C(1) /* [`RecordChain::framing`]: each field of the record's digest is length-prefixed. */
 #define BB_PLANE_CHAIN_PIPE_SEPARATED UINT32_C(2) /* [`RecordChain::framing`]: the fields of the record's digest are joined by `|`. */
 #define BB_PLANE_CHAIN_DIGESTS_SCOPE UINT32_C(1) /* [`RecordChain::flags`]: the record's scope enters its digest. */
@@ -2365,6 +2368,7 @@ struct bb_plane_AdminRoute {
     bb_mech_AbiStr target;
     uint32_t flags;
     uint32_t _reserved;
+    bb_mech_AbiStr audit_verb;
 };
 
 /* THE GENERATION SNAPSHOT: what the plane answers for THIS generation's settings. Valid until */
@@ -2563,7 +2567,7 @@ struct bb_plane_ServeOut {
     uint32_t status;
     uint32_t fields_written;
     uint32_t fields_needed;
-    uint32_t _reserved;
+    uint32_t audit;
 };
 
 /* The plane's `drive` `in`: the lifecycle's, plus a HOST buffer for the sessions with output */
@@ -4494,12 +4498,13 @@ BB_ASSERT(offsetof(bb_plane_Claim, carrier) == 32, "bb_plane_Claim.carrier: offs
 BB_ASSERT(offsetof(bb_plane_Claim, flags) == 48, "bb_plane_Claim.flags: offset");
 BB_ASSERT(offsetof(bb_plane_Claim, refusal_dialect) == 52, "bb_plane_Claim.refusal_dialect: offset");
 BB_ASSERT(offsetof(bb_plane_Claim, _pad) == 54, "bb_plane_Claim._pad: offset");
-BB_ASSERT(sizeof(bb_plane_AdminRoute) == 40, "bb_plane_AdminRoute: size");
+BB_ASSERT(sizeof(bb_plane_AdminRoute) == 56, "bb_plane_AdminRoute: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_AdminRoute) == 8, "bb_plane_AdminRoute: alignment");
 BB_ASSERT(offsetof(bb_plane_AdminRoute, verb) == 0, "bb_plane_AdminRoute.verb: offset");
 BB_ASSERT(offsetof(bb_plane_AdminRoute, target) == 16, "bb_plane_AdminRoute.target: offset");
 BB_ASSERT(offsetof(bb_plane_AdminRoute, flags) == 32, "bb_plane_AdminRoute.flags: offset");
 BB_ASSERT(offsetof(bb_plane_AdminRoute, _reserved) == 36, "bb_plane_AdminRoute._reserved: offset");
+BB_ASSERT(offsetof(bb_plane_AdminRoute, audit_verb) == 40, "bb_plane_AdminRoute.audit_verb: offset");
 BB_ASSERT(sizeof(bb_plane_PlaneSnapshot) == 104, "bb_plane_PlaneSnapshot: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneSnapshot) == 8, "bb_plane_PlaneSnapshot: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, size) == 0, "bb_plane_PlaneSnapshot.size: offset");
@@ -4668,7 +4673,7 @@ BB_ASSERT(offsetof(bb_plane_ServeOut, arena_needed) == 120, "bb_plane_ServeOut.a
 BB_ASSERT(offsetof(bb_plane_ServeOut, status) == 128, "bb_plane_ServeOut.status: offset");
 BB_ASSERT(offsetof(bb_plane_ServeOut, fields_written) == 132, "bb_plane_ServeOut.fields_written: offset");
 BB_ASSERT(offsetof(bb_plane_ServeOut, fields_needed) == 136, "bb_plane_ServeOut.fields_needed: offset");
-BB_ASSERT(offsetof(bb_plane_ServeOut, _reserved) == 140, "bb_plane_ServeOut._reserved: offset");
+BB_ASSERT(offsetof(bb_plane_ServeOut, audit) == 140, "bb_plane_ServeOut.audit: offset");
 BB_ASSERT(sizeof(bb_plane_PlaneDriveIn) == 112, "bb_plane_PlaneDriveIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneDriveIn) == 8, "bb_plane_PlaneDriveIn: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneDriveIn, drive) == 0, "bb_plane_PlaneDriveIn.drive: offset");

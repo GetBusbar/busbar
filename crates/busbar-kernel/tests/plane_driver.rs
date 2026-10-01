@@ -31,8 +31,11 @@ use busbar_contract::abi::plane::{
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
     PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, RECORD_PUT, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };
+use busbar_contract::abi::plane::{ServeIn, ServeOut};
 use busbar_contract::caps::OpClassId;
-use busbar_contract::plane_calls::{Answered, Grow, Lent, PieceInFlight, PlaneCalls};
+use busbar_contract::plane_calls::{
+    Answered, Grow, Lent, PieceInFlight, PlaneCalls, ServeInFlight,
+};
 use busbar_kernel::plane_driver::{refusal_status, BufferCaps, DriverConfig, PlaneDriver};
 
 use cases::stat;
@@ -651,6 +654,31 @@ impl PlaneCalls for Double {
             }
         }
         Box::new(Flight(slot))
+    }
+
+    fn serve(&self, _: Ticket, _: ServeIn, _: ServeOut, _: Lent) -> Box<dyn ServeInFlight> {
+        Box::new(NoServe)
+    }
+}
+
+/// The double serves no admin route: every `serve` answers FAULT at once.
+struct NoServe;
+
+impl Future for NoServe {
+    type Output = Answered;
+
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Answered> {
+        Poll::Ready(Answered {
+            outcome: Outcome::Fault,
+            short: false,
+            disposition: None,
+        })
+    }
+}
+
+impl ServeInFlight for NoServe {
+    fn out(&self) -> Option<ServeOut> {
+        None
     }
 }
 

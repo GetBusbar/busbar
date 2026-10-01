@@ -611,6 +611,39 @@ fn a_serve_reply_follows_m_sb_and_its_fields_stay_in_the_arena() {
 }
 
 #[test]
+fn a_serve_audit_is_one_of_the_three() {
+    let mut o: ServeOut = z();
+    for a in [AUDIT_NONE, AUDIT_APPLIED, AUDIT_REJECTED] {
+        o.audit = a;
+        assert_eq!(check_serve(Ready, &o, &[], &caps()), Ok(()));
+    }
+    o.audit = AUDIT_REJECTED + 1;
+    assert_eq!(
+        check_serve(Ready, &o, &[], &caps()),
+        f(Rule::UnknownCode, "serve.audit")
+    );
+}
+
+#[test]
+fn an_admin_route_audit_verb_is_text_or_empty() {
+    let mut r = AdminRoute {
+        verb: s("POST"),
+        target: s("/t"),
+        flags: 0,
+        _reserved: 0,
+        audit_verb: s("connect"),
+    };
+    assert_eq!(check_admin_routes(&[r]), Ok(()));
+    r.audit_verb = z();
+    assert_eq!(check_admin_routes(&[r]), Ok(()));
+    r.audit_verb.len = 1;
+    assert_eq!(
+        check_admin_routes(&[r]),
+        f(Rule::NullWithCount, "admin_route.audit_verb")
+    );
+}
+
+#[test]
 fn an_unwritten_or_unknown_cancel_disposition_is_fault() {
     assert_eq!(
         check_cancel(Ready, 0),
@@ -735,6 +768,7 @@ fn every_snapshot_claim_and_route_is_named() {
         target: z(),
         flags: 0,
         _reserved: 0,
+        audit_verb: z(),
     };
     assert_eq!(
         check_admin_routes(&[r]),
@@ -1113,6 +1147,7 @@ fn an_admin_route_flag_is_known() {
         target: s("/t"),
         flags: ROUTE_PUBLIC,
         _reserved: 0,
+        audit_verb: z(),
     };
     assert_eq!(check_admin_routes(&[r]), Ok(()));
     r.flags = ROUTE_PUBLIC << 1;

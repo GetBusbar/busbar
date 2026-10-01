@@ -4953,6 +4953,8 @@ Row notes:
 - `CLAIM_PROBE`, `TAIL_PROBES`
 - the `project` op
 - `AdminRoute.flags`
+- `AdminRoute.audit_verb: AbiStr`, the word a served request's admin audit row names (empty = never audited) (ARCHITECT C2c S5 Q4 2026-10-01)
+- `ServeOut._reserved` renamed to `audit` (`AUDIT_NONE` 0 / `AUDIT_APPLIED` 1 / `AUDIT_REJECTED` 2, other = FAULT in `check_serve`) (ARCHITECT C2c S5 Q4 2026-10-01)
 - a per-record-kind chain framing list in the tail (LengthPrefixed or PipeSeparated, plus `digests_scope`), so the host reproduces Part 3 §5's three framings
 
 ### C. Build order (S/M/L, arrows are dependencies)

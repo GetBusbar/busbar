@@ -7,8 +7,8 @@
 //! names the other. Nothing here crosses the plugin boundary: the plane's ABI is `abi::plane`.
 //!
 //! The pure ops (`arrive`, `refusal`) and the host's own `cancel` are ticketless: they never pend.
-//! `on_piece` is submitted on a request ticket and crosses on that ticket's worker; its answer is a
-//! future, so the caller's task awaits it and no thread is parked.
+//! `on_piece` and `serve` are submitted on a request ticket and cross on that ticket's worker; the
+//! answer is a future, so the caller's task awaits it and no thread is parked.
 //!
 //! THE LENT MEMORY (ARCHITECT ruling 2026-09-29, every kind): an `on_piece` `in` names the unit's
 //! host buffers by raw pointer, and a crossing the watchdog answers FAULT may still be running on
@@ -22,7 +22,9 @@ use std::sync::Arc;
 
 use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::ticket::Ticket;
-use crate::abi::plane::{ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, RefusalIn, RefusalOut};
+use crate::abi::plane::{
+    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, RefusalIn, RefusalOut, ServeIn, ServeOut,
+};
 
 /// How one ticketed op ended, as the host's dispatcher judged it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +47,13 @@ pub trait PieceInFlight: Future<Output = Answered> + Send + Unpin {
     /// The `out` the answer carried; `None` before the answer, or when the op was faulted
     /// mid-crossing.
     fn out(&self) -> Option<OnPieceOut>;
+}
+
+/// One `serve` in flight on its ticket. Dropping it before it answered is a client drop.
+pub trait ServeInFlight: Future<Output = Answered> + Send + Unpin {
+    /// The `out` the answer carried; `None` before the answer, or when the op was faulted
+    /// mid-crossing.
+    fn out(&self) -> Option<ServeOut>;
 }
 
 /// Grow the host buffers a short answer named, re-pointing the `in` at them, before the one
@@ -100,4 +109,14 @@ pub trait PlaneCalls: Send + Sync {
         out: OnPieceOut,
         lent: Lent,
     ) -> Box<dyn PieceInFlight>;
+
+    /// Submit `serve` (one of the snapshot's admin routes) on `ticket`, as [`PlaneCalls::on_piece`]
+    /// is submitted: on the ticket's worker, `lent` held until the crossing returns.
+    fn serve(
+        &self,
+        ticket: Ticket,
+        input: ServeIn,
+        out: ServeOut,
+        lent: Lent,
+    ) -> Box<dyn ServeInFlight>;
 }

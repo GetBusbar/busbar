@@ -1669,7 +1669,7 @@ fn compute_layout() -> String {
         pkind::Claim,
         [verb, target, carrier, flags, refusal_dialect, _pad]
     );
-    record!(s, pkind::AdminRoute, [verb, target, flags, _reserved]);
+    record!(s, pkind::AdminRoute, [verb, target, flags, _reserved, audit_verb]);
     record!(
         s,
         pkind::PlaneSnapshot,
@@ -1831,7 +1831,7 @@ fn compute_layout() -> String {
             status,
             fields_written,
             fields_needed,
-            _reserved
+            audit
         ]
     );
     record!(s, pkind::PlaneDriveIn, [drive, sessions_buf, sessions_cap]);

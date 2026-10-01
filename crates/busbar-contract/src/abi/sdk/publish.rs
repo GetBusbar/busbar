@@ -215,17 +215,27 @@ pub struct AdminRouteSpec {
     pub target: String,
     /// `ROUTE_PUBLIC` or `0`.
     pub flags: u32,
+    /// The word the kernel audits it under; empty = never audited.
+    pub audit_verb: String,
 }
 
 impl AdminRouteSpec {
-    /// A route of `verb` on `target`.
+    /// A route of `verb` on `target`, never audited.
     #[must_use]
     pub fn new(verb: &str, target: &str, flags: u32) -> Self {
         Self {
             verb: verb.to_string(),
             target: target.to_string(),
             flags,
+            audit_verb: String::new(),
         }
+    }
+
+    /// The route, audited under `word`.
+    #[must_use]
+    pub fn audited(mut self, word: &str) -> Self {
+        self.audit_verb = word.to_string();
+        self
     }
 }
 
@@ -237,6 +247,7 @@ impl Publish for AdminRoute {
             target: arena.str(&spec.target),
             flags: spec.flags,
             _reserved: 0,
+            audit_verb: arena.str(&spec.audit_verb),
         }
     }
 }
