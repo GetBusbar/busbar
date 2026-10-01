@@ -46,6 +46,9 @@ fn known_bytes(a: AbiStr) -> &'static [u8] {
         "mtls",
         "unpinned",
         crate::a2a::config::REFUSE_PASSTHROUGH_SECTION,
+        crate::records::KIND_TASK,
+        crate::records::KIND_TASK_EVENT,
+        crate::records::KIND_PUSH_CONFIG,
     ]
     .into_iter()
     .find(|c| c.as_ptr() == a.ptr && c.len() == a.len)
@@ -68,7 +71,10 @@ fn the_tail_states_the_planes_nouns() {
     assert_eq!(s(TAIL.signing_domain), CARD_SIGNING_DOMAIN);
     assert_eq!(s(TAIL.signing_kid_prefix), CARD_KID_PREFIX);
     assert_eq!(TAIL.dialects_len, 3);
-    assert_eq!(TAIL.record_kinds_len, crate::records::RECORD_KINDS.len());
+    assert_eq!(TAIL.record_kinds_len, crate::records::HELD_KINDS.len());
+    for (abi, kind) in RECORD_KINDS.iter().zip(crate::records::HELD_KINDS) {
+        assert_eq!(s(*abi), *kind);
+    }
 }
 
 #[test]

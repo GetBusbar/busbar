@@ -123,9 +123,11 @@ const BILLABLE_CLASSES: &[BillableClass] = &[BillableClass {
 
 const FEE_UNITS: &[AbiStr] = &[abi_str(FEE_PER_REQUEST)];
 
+/// [`crate::records::HELD_KINDS`] in the ABI's spelling.
 const RECORD_KINDS: &[AbiStr] = &[
-    abi_str(crate::records::KIND_TASK),
-    abi_str(crate::records::KIND_TASK_EVENT),
+    abi_str(crate::records::HELD_KINDS[0]),
+    abi_str(crate::records::HELD_KINDS[1]),
+    abi_str(crate::records::HELD_KINDS[2]),
 ];
 
 /// The pin's four mechanisms; three are authenticity roots and `unpinned` is not.

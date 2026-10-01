@@ -67,6 +67,7 @@ pub mod records;
 pub mod relay;
 pub mod sse;
 pub mod surface;
+pub mod tasks;
 
 pub use frame::{rewrite, Direction, Frame, Tap, Transform};
 
