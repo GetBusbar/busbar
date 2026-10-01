@@ -1728,6 +1728,8 @@ advanced:
   response_headers:                 # every busbar-injected response header, opt-in, default OFF
     server_timing: false            # `Server-Timing: busbar;dur=<ms>` (formerly observability.emit_server_timing)
     route_policy: false             # `x-busbar-route-policy` / `x-busbar-route-target`
+  block_private_addresses: true     # the destination guard: refuse private/loopback/link-local/CGNAT/ULA/metadata targets
+  allow_destinations: []            # always allowed: hosts, `*.domain` wildcards, IPs, CIDRs
 ```
 
 `worker_threads`, `upstream_http1_only`, and `upstream_h2_prior_knowledge` are **boot-time** knobs (read
@@ -1741,6 +1743,19 @@ composition at boot and `route_policy` seeds a process-wide flag, so a live `PUT
 durably (`reload_to_apply` flags `advanced.response_headers`) but only takes effect on the next
 restart. Full catalogue, rationale for defaulting off, and exactly when each header fires:
 [observability.md#response-headers](observability.md#response-headers).
+
+`block_private_addresses` and `allow_destinations` are the **destination guard**, one check for every
+outbound connection busbar makes (provider upstreams, token endpoints, health probes, export sinks,
+plugin fetches, plane and plugin dials). With `block_private_addresses: true` (the default) a target that
+is, or resolves to, a private (RFC 1918), loopback, link-local, CGNAT (`100.64.0.0/10`), IPv6 unique-local
+(`fc00::/7`) or cloud-metadata address is refused. The check runs after name resolution, and the
+connection is made to the address that was checked, so a name later pointed at an internal address is
+refused too. `allow_destinations` lists what is always allowed: an exact host (`ollama.internal`), a
+wildcard (`*.corp.example.com` matches names under it, not the apex), an IP (`127.0.0.1`), or a CIDR
+(`10.20.0.0/16`). A host entry never admits a cloud-metadata answer; only an IP or CIDR entry naming the
+address does. With `block_private_addresses: false`, cloud metadata is still refused. Both are
+**boot-time** knobs. The 1.5.5 keys `security.allow_metadata_hosts`, `security.blocked_metadata_hosts`,
+`security.allow_all_metadata` and `providers.<p>.allow_metadata_hosts` still load and feed the same check.
 
 ### `providers_file`
 

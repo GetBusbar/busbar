@@ -38,6 +38,8 @@ fn make_root_cfg(
         blocked_metadata_hosts: Vec::new(),
         allow_metadata_hosts: Vec::new(),
         allow_all_metadata: false,
+        block_private_addresses: true,
+        allow_destinations: Vec::new(),
         limits: config::LimitsResolved::default(),
         export: Default::default(),
         identity_providers: Default::default(),

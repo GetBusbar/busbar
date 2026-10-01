@@ -72,6 +72,8 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         blocked_metadata_hosts: Vec::new(),
         allow_metadata_hosts: Vec::new(),
         allow_all_metadata: false,
+        block_private_addresses: true,
+        allow_destinations: Vec::new(),
         limits: crate::config::LimitsResolved::default(),
         export: Default::default(),
         identity_providers: Default::default(),

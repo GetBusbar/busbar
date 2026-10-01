@@ -3549,6 +3549,8 @@ mod disposition_matrix_tests {
                 blocked_metadata_hosts: Vec::new(),
                 allow_metadata_hosts: Vec::new(),
                 allow_all_metadata: false,
+                block_private_addresses: true,
+                allow_destinations: Vec::new(),
                 limits: busbar_kernel::config::limits::LimitsResolved::default(),
                 export: Default::default(),
                 identity_providers: Default::default(),

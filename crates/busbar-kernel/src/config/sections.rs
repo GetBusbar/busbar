@@ -198,6 +198,25 @@ pub struct AdvancedCfg {
     /// `proxy::wire::maybe_attach_route_policy` — neither is rebuilt by a config apply.
     #[serde(default)]
     pub response_headers: ResponseHeadersCfg,
+    /// THE DESTINATION GUARD (OWNER ruling DESTINATION GUARD): refuse every outbound connection
+    /// whose target is, or resolves to, a private, loopback, link-local, CGNAT, unique-local or
+    /// cloud-metadata address, judged after resolution and dialled at the judged address. Default
+    /// `true`. Cloud metadata stays refused when `false`, unless an IP/CIDR entry of
+    /// `allow_destinations` names it. BOOT-TIME (the connector is built once).
+    #[serde(default = "default_block_private_addresses")]
+    pub block_private_addresses: bool,
+    /// Destinations always allowed, checked before any refusal: an exact host, a `*.domain`
+    /// wildcard (names under it, never the apex), an IP, or a CIDR. Default empty. BOOT-TIME.
+    #[serde(default)]
+    pub allow_destinations: Vec<String>,
+}
+
+/// `advanced.block_private_addresses`'s default (owner-signed: on).
+pub const DEFAULT_BLOCK_PRIVATE_ADDRESSES: bool = true;
+
+/// Serde's default for [`AdvancedCfg::block_private_addresses`].
+pub fn default_block_private_addresses() -> bool {
+    DEFAULT_BLOCK_PRIVATE_ADDRESSES
 }
 
 impl Default for AdvancedCfg {
@@ -209,6 +228,8 @@ impl Default for AdvancedCfg {
             upstream_http1_only: false,
             upstream_h2_prior_knowledge: false,
             response_headers: ResponseHeadersCfg::default(),
+            block_private_addresses: DEFAULT_BLOCK_PRIVATE_ADDRESSES,
+            allow_destinations: Vec::new(),
         }
     }
 }

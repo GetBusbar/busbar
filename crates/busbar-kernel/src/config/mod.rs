@@ -499,6 +499,10 @@ pub struct RootCfg {
     /// DISABLED — every cloud-metadata endpoint is reachable by every provider. Logs a startup WARN.
     /// Default false.
     pub allow_all_metadata: bool,
+    /// `advanced.block_private_addresses` (the destination guard; [`RootCfg::destinations`]).
+    pub block_private_addresses: bool,
+    /// `advanced.allow_destinations` (the destination guard's allowlist, as written).
+    pub allow_destinations: Vec<String>,
     /// Fully-resolved operational limits ("NEVER CODED CAPS"), projected from the `limits:` /
     /// `observability:` / `governance:` / `metrics:` / `health:` / `routing:` config sections. Every
     /// value defaults to its historical hardcoded const, so an all-default config is unchanged. Read
@@ -539,7 +543,44 @@ pub struct RootCfg {
     pub plane_sections: std::collections::BTreeSet<&'static str>,
 }
 
+/// THE DESTINATION GUARD'S INPUTS, as one deployment states them (`RootCfg::destinations`): the
+/// connector builds its one guard from these.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Destinations {
+    /// `advanced.block_private_addresses`.
+    pub block_private_addresses: bool,
+    /// `advanced.allow_destinations`, as written (each entry validated by the guard at boot).
+    pub allow: Vec<String>,
+    /// The 1.5.5 carve-outs, still loading: `security.allow_metadata_hosts` and every
+    /// `providers.<p>.allow_metadata_hosts` (by provider name). A NAME here admits its metadata
+    /// answer, as 1.5.5's carve-out did.
+    pub legacy_allow: Vec<String>,
+    /// `security.blocked_metadata_hosts`: extra refusals inside the one guard.
+    pub blocked: Vec<String>,
+    /// `security.allow_all_metadata`: every cloud-metadata name and address admitted, as 1.5.5.
+    pub allow_all_metadata: bool,
+}
+
 impl RootCfg {
+    /// The destination guard's inputs ([`Destinations`]).
+    #[must_use]
+    pub fn destinations(&self) -> Destinations {
+        let mut providers: Vec<_> = self.providers.iter().collect();
+        providers.sort_by(|a, b| a.0.cmp(b.0));
+        let legacy_allow = self.allow_metadata_hosts.iter().chain(
+            providers
+                .into_iter()
+                .flat_map(|(_, p)| &p.allow_metadata_hosts),
+        );
+        Destinations {
+            block_private_addresses: self.block_private_addresses,
+            allow: self.allow_destinations.clone(),
+            legacy_allow: legacy_allow.cloned().collect(),
+            blocked: self.blocked_metadata_hosts.clone(),
+            allow_all_metadata: self.allow_all_metadata,
+        }
+    }
+
     /// The VALIDATED endpoint resource for a plane, keyed by that plane's config `section`, or `None`
     /// when this deployment configures no such endpoint (or the owning plane was compiled out). The
     /// resource is type-erased as `Arc<dyn Any>` — the owning plane's own module downcasts it back to
@@ -2617,6 +2658,8 @@ pub fn resolve(
             blocked_metadata_hosts: security.blocked_metadata_hosts,
             allow_metadata_hosts: security.allow_metadata_hosts,
             allow_all_metadata: security.allow_all_metadata,
+            block_private_addresses: deploy.advanced.block_private_addresses,
+            allow_destinations: deploy.advanced.allow_destinations.clone(),
             // Project the operational-limit sections onto a flat resolved struct. The `advanced:` /
             // `export:` blocks are optional; absent ⇒ their section defaults (the historical
             // hardcoded values, via the manual `Default` impls).
@@ -2641,6 +2684,10 @@ pub fn resolve(
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/advanced_destinations_tests.rs"]
+mod advanced_destinations_tests;
 
 #[cfg(test)]
 #[path = "tests/named_map_merge_tests.rs"]
