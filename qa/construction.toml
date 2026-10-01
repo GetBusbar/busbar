@@ -1406,7 +1406,9 @@ kernel_crate = "busbar-kernel"
 # grants are handed in per call): 12 code lines removed, 1 added, -11. Downward only.
 # ── LOWERED 53380 -> 53148 by K1-DEDUP (plane driver frame helpers, seat forwarding and the CancelCause
 # mirror folded; metrics' four cached-handle copies share one path), measured on k1-dedup. Downward only.
-kernel_ceiling = 53148
+# ── LOWERED 53148 -> 53038 by SWEEP-KERNEL (16 kernel dedup commits; -110 measured on 5f8e86152,
+# 52135 -> 52025; K1's kernel files untouched by it), the measurement. Downward only.
+kernel_ceiling = 53038
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -1622,7 +1624,7 @@ patterns = ["registry.rs"]
 # RE-BASELINED 2026-09-22: 887 -> 724, the measurement. The pattern still matches three files by
 # basename — `registry.rs` 314, `plane/registry.rs` 389, `proto/registry.rs` 21 — and all three
 # have drained since the ceiling was last pinned.
-ceiling = 687
+ceiling = 681
 
 [rules.loc-ceilings.kernel_files.grammars]
 label = "grammars incl. JSON span scanner"
@@ -1656,7 +1658,7 @@ ceiling = 191
 [rules.loc-ceilings.kernel_files.arena]
 label = "arena: the per-call bump scratch pad (DECISIONS #41)"
 patterns = ["scratch.rs"]
-ceiling = 109
+ceiling = 93
 
 # ── 15. manifest-allowlist (BUSBAR-1.6.0.md THE DESIGN, §2) ────────────────────────────────────────────────────
 [rules.manifest-allowlist]
