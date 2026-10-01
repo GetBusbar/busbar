@@ -2065,8 +2065,10 @@ transport_file = "crates/busbar-contract/src/transport/mod.rs"
 # of the leg, so there is no second kind trait for this rule to scan. The rule's own refusal is what
 # requires the strike to land in the same commit as the deletion — a trait it cannot find is a trait
 # it cannot judge, and a ceiling of 0 met by scanning nothing is the passing answer to every ban.
+# `Store` stood here until the `kinds::Store` journal trait was struck from busbar-contract
+# (STORE-NOALLOC, ARCHITECT R7 2026-10-01): it had no implementor and no caller; the store kind is
+# its v3 table and `abi::sdk::store::StoreSlots`. Struck in the same commit, as above.
 traits = [
-  "Store",
   "Plane", "SessionPlane", "Transport",
 ]
 max_defaulted = 0

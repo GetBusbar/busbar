@@ -164,7 +164,7 @@ pub use ids::{
 };
 pub use kinds::{
     Ack, Challenge, ChallengeState, ContentFacts, CredentialLocator, EnvelopeFields, Head,
-    PlaneFacts, RecordBytes, SecretRef, SliceGrant, Store, StoreError,
+    PlaneFacts, RecordBytes, SecretRef, StoreError,
 };
 pub use plane::{
     Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,

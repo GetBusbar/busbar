@@ -768,7 +768,7 @@ fn redeem_plane_token_sweeps_lapsed_rows_and_separates_kinds() {
 /// `SWEEP_INTERVAL` ticker, tombstoned `keys` and revoked `creds` likewise, and `plane_tokens` drops
 /// lapsed rows on every redemption — each with a sweep cell above. The map added for the contract's
 /// record leg had no sweep, no ticker and no TTL, and the contract declares NO delete verb at all
-/// (`busbar_contract::kinds::Store` gives `record_put`/`record_get`/`record_scan`, and this crate
+/// (`busbar_contract::abi::sdk::store::StoreSlots` gives `record_put`/`record_get`/`record_scan`, and this crate
 /// does not implement the stream-keyed `purge_before`), so no caller — internal or external — could
 /// ever prune it. `MemoryStore` is the DEFAULT `db` backend of a long-lived proxy process, so
 /// sustained record-leg traffic under ever-new `(schema, key)` pairs grew it for the life of the

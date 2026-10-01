@@ -89,7 +89,7 @@ pub struct MemoryStore {
     ///
     /// A SECOND map beside `plane_records` and deliberately not a re-keying of it. The eight
     /// kind-tagged verbs above are the PUBLISHED store protocol the previous release's callers still
-    /// drive, byte for byte; these three are what `busbar_contract::kinds::Store` declares for a
+    /// drive, byte for byte; these three are what `busbar_contract::abi::sdk::store::StoreSlots` declares for a
     /// record leg, and they key on an opaque byte string rather than on the `(kind, id, seq)`
     /// columns. Folding them onto one map would make every record leg a change to the published
     /// path's key shape, which is precisely the thing that has to stay identical.
@@ -108,7 +108,7 @@ pub struct MemoryStore {
     /// plane is still updating is refreshed by every update, and only a row nothing has touched for
     /// 31 days ages out.
     ///
-    /// This is a BOUND, not a delete verb. `busbar_contract::kinds::Store` declares
+    /// This is a BOUND, not a delete verb. `busbar_contract::abi::sdk::store::StoreSlots` declares
     /// `record_put`/`record_get`/`record_scan` and nothing that removes a row (`purge_before` is
     /// stream-keyed and this crate does not implement it), so a backend cannot invent one here — the
     /// verb would exist on this store and on no other, and a caller written against it would break
@@ -150,11 +150,11 @@ impl MemoryStore {
 
     /// Write one of a plane's kernel-held durable records.
     ///
-    /// The signature is `busbar_contract::kinds::Store::record_put`'s, verb for verb, and the three
+    /// The verb is `busbar_contract::abi::sdk::store::StoreSlots::record_put`'s, and the three
     /// below are its siblings. They are INHERENT rather than a trait implementation for one reason,
     /// and it is a rule rather than a preference: the manifest allow-list refuses a store-kind crate
     /// that names `busbar-kernel`, so the kernel's own record sink is not a trait this crate may
-    /// implement; and the contract's `Store` is the whole twenty-two-verb protocol, of which this
+    /// implement; and the contract's `StoreSlots` is the whole store table, of which this
     /// backend answers the published half through [`Store`] above. What is here is the record half,
     /// at the contract's own spelling, so the adapter that binds a loaded store to the kernel's sink
     /// has one shape to forward to rather than two.

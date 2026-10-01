@@ -30,11 +30,9 @@
 //! verbatim, oracle-proven).
 //!
 //! The five false-friend names de-collided on the FIRST move — `Store`→[`RecordStore`],
-//! `StoreError`→[`RecordStoreError`], `StoreResult`→[`RecordStoreResult`] — and that de-collision
-//! is now load-bearing rather than merely tidy: [`crate::kinds::Store`] (the 22-method
-//! `Plugin`-bound journal ABI) and [`RecordStore`] (the 31-method domain-record CRUD a `db` plugin
-//! implements) are DIFFERENT contracts that now live in ONE crate, and they must never be spelled
-//! the same. The api shim re-exports these under their original names for staged back-compat until
+//! `StoreError`→[`RecordStoreError`], `StoreResult`→[`RecordStoreResult`]: [`RecordStore`] (the
+//! 31-method domain-record CRUD a `db` plugin implements) is a different contract from the store
+//! kind's table, and the two must never be spelled the same. The api shim re-exports these under their original names for staged back-compat until
 //! it retires (W5.b). No I/O, no engine state: pure data.
 
 /// A kind-tagged scope reference — e.g. `{ kind: "pool", value: "fast" }`. The generic

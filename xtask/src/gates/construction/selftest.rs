@@ -1560,12 +1560,12 @@ fn vocabulary_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<
         "//! a doc comment that lost its line break\\n//! and carried on regardless\npub const \
          PLANTED_DOC: u32 = 1;\n",
     );
-    if let Ok(basetext) = cx.read("crates/busbar-contract/src/kinds.rs") {
+    if let Ok(basetext) = cx.read("crates/busbar-contract/src/plane.rs") {
         ov.set(
-            "crates/busbar-contract/src/kinds.rs",
+            "crates/busbar-contract/src/plane.rs",
             basetext.replace(
-                "pub trait Store: Plugin + Send + Sync + 'static {",
-                "pub trait Store: Plugin + Send + Sync + 'static {\n    fn \
+                "pub trait Plane: Plugin + Send + Sync + 'static {",
+                "pub trait Plane: Plugin + Send + Sync + 'static {\n    fn \
                  planted_default_body(&self) -> u32 { 0 }",
             ),
         );

@@ -1,13 +1,9 @@
 //! The shapes the plugin kinds share outside `abi/`: a plane's fact and credential-locator
-//! answers, the auth kind's challenge round, the store kind's journal trait and its record shapes,
-//! an export sink's acknowledgement, and the envelope-field bound.
-//!
-//! Fallibility: every fallible store method returns [`StoreError`]; see the trait doc for what a
-//! failure means, rather than repeating it per method.
+//! answers, the auth kind's challenge round, the store kind's record shapes and error, an export
+//! sink's acknowledgement, and the envelope-field bound.
 
 use crate::bounded::{BoundedVec, Facts, MAX_KEYS, MAX_RECORD_BYTES};
-use crate::ids::{PrincipalId, RecordSchemaId, SchemeAlt, SessionId};
-use crate::plugin::Plugin;
+use crate::ids::SchemeAlt;
 use core::fmt;
 
 // ── shared fact shapes ───────────────────────────────────────────────────────────────────────
@@ -97,15 +93,6 @@ pub struct Head {
     pub epoch: u64,
 }
 
-/// A per-node slice of a bucket window, drawn from the store and fenced by epoch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct SliceGrant {
-    /// How much of the window this node may spend.
-    pub amount: u64,
-    /// The epoch that fences it.
-    pub epoch: u64,
-}
-
 /// Something went wrong under the store.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StoreError {
@@ -128,111 +115,6 @@ impl fmt::Display for StoreError {
 }
 
 impl std::error::Error for StoreError {}
-
-/// The durable store behind the journal.
-///
-/// Every method here runs on a bounded blocking pool under a per-kind deadline, and a call that
-/// overruns ends its unit rather than blocking the loop. The interface generation a store declares
-/// decides how it loads: a store built against an older generation loads through an in-tree
-/// adapter rather than being refused, so a configuration written for the previous release boots
-/// unchanged.
-///
-/// # Errors
-/// Every method returns [`StoreError`] on failure (unavailable, timeout, a fencing race, a gap
-/// between what was written and what read back, or an outright rejection); see the enum for what
-/// each variant means. A method's own doc only adds words when its failure mode is distinctive.
-pub trait Store: Plugin + Send + Sync + 'static {
-    /// Append a batch of journal records.
-    fn append_batch(&self, stream: &str, records: &[RecordBytes]) -> Result<Head, StoreError>;
-
-    /// Read a batch of journal records back.
-    fn replay_batch(
-        &self,
-        stream: &str,
-        from: u64,
-        limit: u32,
-    ) -> Result<Vec<RecordBytes>, StoreError>;
-
-    /// Draw this node's slice of a bucket window. Fails if this node's epoch is fenced out.
-    fn reserve(&self, bucket: &str, amount: u64, epoch: u64) -> Result<SliceGrant, StoreError>;
-
-    /// Hand an undrawn slice back.
-    fn release(&self, bucket: &str, grant: SliceGrant) -> Result<(), StoreError>;
-
-    /// Where each stream has reached.
-    fn heads(&self) -> Result<Vec<(String, Head)>, StoreError>;
-
-    /// Say this node is alive at this epoch. Fails if this node has been fenced out.
-    fn heartbeat(&self, node: &str, epoch: u64) -> Result<(), StoreError>;
-
-    /// Elect which node writes the next checkpoint.
-    fn elect_checkpoint(&self, node: &str, epoch: u64) -> Result<bool, StoreError>;
-
-    /// Claim an idempotency key for this unit.
-    fn claim_key(&self, namespace: &str, key: &[u8], unit: u64) -> Result<bool, StoreError>;
-
-    /// Drop the claims a failed unit made.
-    fn void_claims(&self, namespace: &str, unit: u64) -> Result<(), StoreError>;
-
-    /// Seal a replayable answer under its key.
-    fn replay_put(&self, namespace: &str, key: &[u8], value: &[u8]) -> Result<(), StoreError>;
-
-    /// Read a sealed replayable answer back.
-    fn replay_get(&self, namespace: &str, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError>;
-
-    /// Register a live session in the fleet directory.
-    fn session_put(
-        &self,
-        session: SessionId,
-        node: &str,
-        principal: &PrincipalId,
-    ) -> Result<(), StoreError>;
-
-    /// Drop a session from the directory, at close or at lease expiry.
-    fn session_remove(&self, session: SessionId) -> Result<(), StoreError>;
-
-    /// Which sessions a principal holds across the fleet.
-    fn sessions_for(&self, principal: &PrincipalId)
-        -> Result<Vec<(SessionId, String)>, StoreError>;
-
-    /// Write one of a plane's kernel-held durable records.
-    fn record_put(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-        value: &RecordBytes,
-    ) -> Result<(), StoreError>;
-
-    /// Read one of a plane's kernel-held durable records.
-    fn record_get(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-    ) -> Result<Option<RecordBytes>, StoreError>;
-
-    /// Walk a plane's records under a prefix.
-    fn record_scan(
-        &self,
-        schema: RecordSchemaId,
-        prefix: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError>;
-
-    /// Read the previous release's own cells, for a migrating deployment.
-    fn legacy_cells_read(&self, key: &str) -> Result<Option<Vec<u8>>, StoreError>;
-
-    /// Write the previous release's own cells, for a migrating deployment.
-    fn legacy_cells_write(&self, key: &str, value: &[u8]) -> Result<(), StoreError>;
-
-    /// Where the previous release's audit stream had reached.
-    fn legacy_audit_head(&self) -> Result<Option<Head>, StoreError>;
-
-    /// How far a backup has captured.
-    fn backup_watermark(&self) -> Result<Option<Head>, StoreError>;
-
-    /// Drop everything older than a sequence, under the retention the operator set.
-    fn purge_before(&self, stream: &str, seq: u64) -> Result<u64, StoreError>;
-}
 
 // ── secret ───────────────────────────────────────────────────────────────────────────────────
 
