@@ -152,8 +152,8 @@ fn a_changed_pin_is_its_own_axis() {
     );
     assert_eq!(s.state(), TrustState::Quarantined);
 
-    // approve_pin settles identity ALONE.
-    s.approval.approve_pin(&s.sighting).unwrap();
+    // Approving what is presented now settles the identity drift.
+    s.approval.approve(&s.sighting, None).unwrap();
     assert_eq!(s.state(), TrustState::Approved);
 }
 
@@ -252,8 +252,7 @@ fn a_removed_tool_is_drift() {
     assert_eq!(s.state(), TrustState::Quarantined);
 }
 
-/// RE-APPROVAL is per tool, and it works: the operator adopts the new digest and the server returns
-/// to serving. Without this the demotion would be a one-way door and operators would disable the
+/// RE-APPROVAL works: the operator adopts the new digest and the server returns to serving. Without this the demotion would be a one-way door and operators would disable the
 /// check.
 #[test]
 fn re_approving_the_changed_tool_restores_service() {
@@ -266,32 +265,32 @@ fn re_approving_the_changed_tool_restores_service() {
         vec![simple_tool("read", "CHANGED")],
     );
     assert_eq!(s.state(), TrustState::Quarantined);
-    s.approval.approve_capability("read", &s.sighting).unwrap();
+    s.approval.approve(&s.sighting, None).unwrap();
     assert_eq!(s.state(), TrustState::Approved);
     assert_eq!(s.served_tools().len(), 1);
 }
 
-/// A REJECTED tool stops being drift and stops being served, permanently — the operator has ruled,
-/// and re-raising the alarm every refresh is how an alarm becomes noise.
+/// A REMOVED tool is drift until the operator approves what is offered now, and that one approval
+/// settles it: the server returns to serving exactly the tools it still offers.
 #[test]
-fn a_rejected_tool_is_neither_served_nor_drift() {
-    let mut s = approved_server("srv", vec![simple_tool("a", "x"), simple_tool("evil", "y")]);
-    s.approval.reject_capability("evil");
+fn approving_after_a_tool_is_removed_restores_service() {
+    let mut s = approved_server("srv", vec![simple_tool("a", "x"), simple_tool("gone", "y")]);
+    s.observe(
+        Some(TransportPin::of(
+            McpPinMechanism::CertSpki,
+            "sha256/srv-pin",
+        )),
+        vec![simple_tool("a", "x")],
+    );
+    assert_eq!(s.state(), TrustState::Quarantined);
+    assert_eq!(s.drift().removed, vec!["gone".to_string()]);
+    s.approval.approve(&s.sighting, None).unwrap();
     assert_eq!(s.state(), TrustState::Approved);
+    assert!(s.drift().is_empty());
     let served: Vec<String> = s
         .served_tools()
         .iter()
         .map(|b| b.key.namespaced())
         .collect();
     assert_eq!(served, vec!["srv_a".to_string()]);
-    // ...and it stays settled when the rejected tool changes underneath.
-    s.observe(
-        Some(TransportPin::of(
-            McpPinMechanism::CertSpki,
-            "sha256/srv-pin",
-        )),
-        vec![simple_tool("a", "x"), simple_tool("evil", "MUTATED")],
-    );
-    assert_eq!(s.state(), TrustState::Approved);
-    assert!(s.drift().is_empty());
 }

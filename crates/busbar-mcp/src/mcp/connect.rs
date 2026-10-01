@@ -15,8 +15,8 @@
 //!
 //! ## Nothing here decides trust
 //!
-//! Every transition is `busbar_kernel::trust`'s: [`busbar_kernel::trust::Approval::approve`],
-//! `approve_capability`, `reject_capability`, `approve_pin`, and the DERIVED state and changes queue.
+//! Every transition is `busbar_kernel::trust`'s: [`busbar_kernel::trust::Approval::approve`] and
+//! the DERIVED state and changes queue.
 //! This module fetches, parses, and calls `ServerCatalogue::observe` / `observe_failure` — which
 //! re-hash from the definitions rather than adopting a digest the upstream supplied, because an
 //! upstream-supplied digest is the rug-pull with an extra step. A refresh that fails is recorded as
@@ -500,7 +500,6 @@ pub(crate) fn overlay_patch(
             busbar_kernel::trust::CapabilityApproval::At(digest) => {
                 serde_json::Value::String(digest.clone())
             }
-            busbar_kernel::trust::CapabilityApproval::Rejected => serde_json::Value::Null,
         };
         tools.insert(name.to_string(), serde_json::json!({ "schema_hash": hash }));
     }

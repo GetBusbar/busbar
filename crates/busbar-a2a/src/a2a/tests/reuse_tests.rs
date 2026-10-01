@@ -76,15 +76,15 @@ fn run_the_lifecycle<A: PinnedArtifact>(pin_a: A, pin_b: A, cap: &str, other: &s
     assert_eq!(a.state(&content), TrustState::Quarantined);
     assert!(!a.serves(cap, "MOVED"));
     assert_eq!(a.drift(&content).changed, vec![cap.to_string()]);
-    a.approve_capability(cap, &content).expect("approve one");
+    a.approve(&content, None).expect("re-approve");
     assert_eq!(a.state(&content), TrustState::Approved);
 
-    // Identity drift is its own axis, and `approve-pin` settles it without touching content.
+    // Identity drift is its own axis, and approving what is presented now settles it.
     let identity = seen(&pin_b, &[(cap, "MOVED"), (other, "d2")]);
     assert_eq!(a.state(&identity), TrustState::Quarantined);
     assert!(a.drift(&identity).pin_changed);
     assert!(a.drift(&identity).changed.is_empty());
-    a.approve_pin(&identity).expect("approve-pin");
+    a.approve(&identity, None).expect("re-approve");
     assert_eq!(a.state(&identity), TrustState::Approved);
 
     // Suspension outranks everything and has no soft form.
@@ -249,9 +249,6 @@ fn the_a2a_plane_declares_no_trust_state_of_its_own() {
         "trait PinnedArtifact",
         "fn drift",
         "fn serves",
-        "fn approve_pin",
-        "fn approve_capability",
-        "fn reject_capability",
         "fn suspend",
         "fn resume",
         "fn unpin",

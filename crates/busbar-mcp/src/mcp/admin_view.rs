@@ -277,7 +277,6 @@ fn capability_views(
     for (tool, capability) in server.approval.capabilities() {
         let (status, approved_digest) = match capability {
             CapabilityApproval::At(digest) => ("approved", Some(digest.clone())),
-            CapabilityApproval::Rejected => ("rejected", None),
         };
         out.insert(
             tool.to_string(),

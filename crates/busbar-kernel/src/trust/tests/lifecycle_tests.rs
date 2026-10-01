@@ -161,6 +161,37 @@ fn the_drift_report_separates_added_changed_and_removed() {
     assert!(!d.is_empty());
 }
 
+/// APPROVE SETTLES THE `removed` AXIS. Approval adopts exactly the catalogue offered now, so a
+/// capability the counterparty stopped offering leaves the approval with it, and the record is
+/// `approved` again after the operator's one approval (`docs/design/BUSBAR-1.6.0.md` §11, trust
+/// slot: re-sighting the pinned catalogue clears the quarantine). Merging the offered set into the
+/// old one left the removed capability approved-and-absent: the approve verb answered applied and
+/// the record stayed quarantined, permanently, with no verb left that could clear it.
+#[test]
+fn approve_after_a_capability_is_removed_clears_the_quarantine() {
+    let mut a = Approval::registered();
+    let before = seen(Some(SpkiPin("P")), &[("keep", "h1"), ("vanish", "h2")]);
+    a.approve(&before, None).expect("approve");
+    let shrunk = seen(Some(SpkiPin("P")), &[("keep", "h1")]);
+    assert_eq!(a.state(&shrunk), TrustState::Quarantined);
+    assert_eq!(a.drift(&shrunk).removed, vec!["vanish".to_string()]);
+
+    a.approve(&shrunk, None).expect("re-approve the offered catalogue");
+    assert!(
+        a.drift(&shrunk).is_empty(),
+        "approve left the removed capability as drift"
+    );
+    assert_eq!(a.state(&shrunk), TrustState::Approved);
+    assert!(a.serves("keep", "h1"));
+    assert!(
+        !a.serves("vanish", "h2"),
+        "a capability no longer offered is no longer approved"
+    );
+    // Offered again later, it is a NEW capability for the operator to rule on, not a silent return.
+    assert_eq!(a.drift(&before).added, vec!["vanish".to_string()]);
+    assert_eq!(a.state(&before), TrustState::Quarantined);
+}
+
 /// A CHANGED PIN is its own drift axis, and it is the one that must never be folded into a bulk
 /// capability approval: adopting a new identity is a different act from adopting new content.
 #[test]
@@ -172,65 +203,6 @@ fn a_changed_pin_is_its_own_drift_axis() {
     let d = a.drift(&moved);
     assert!(d.pin_changed);
     assert!(d.added.is_empty() && d.changed.is_empty() && d.removed.is_empty());
-    assert_eq!(a.state(&moved), TrustState::Quarantined);
-}
-
-/// RE-APPROVAL is per capability: approving the drifted one clears the drift for it alone and
-/// leaves every sibling approval byte-identical. This is the changes queue worked one row at a time.
-#[test]
-fn approving_one_capability_clears_only_its_own_drift() {
-    let mut a = Approval::registered();
-    a.approve(&seen(Some(SpkiPin("P")), &[("a", "h1"), ("b", "h2")]), None)
-        .expect("approve");
-    let drifted = seen(Some(SpkiPin("P")), &[("a", "DRIFT-A"), ("b", "DRIFT-B")]);
-    a.approve_capability("a", &drifted).expect("approve one");
-    let d = a.drift(&drifted);
-    assert_eq!(d.changed, vec!["b".to_string()]);
-    assert!(a.serves("a", "DRIFT-A"));
-    assert!(!a.serves("b", "DRIFT-B"));
-    a.approve_capability("b", &drifted)
-        .expect("approve the other");
-    assert!(a.drift(&drifted).is_empty());
-    assert_eq!(a.state(&drifted), TrustState::Approved);
-}
-
-/// REJECTING a capability drops it from the served set PERMANENTLY, and a rejected capability is
-/// NOT drift: the operator has already ruled on it, so it must not keep re-raising an alarm.
-#[test]
-fn a_rejected_capability_is_never_served_and_never_drifts_again() {
-    let mut a = Approval::registered();
-    a.approve(
-        &seen(Some(SpkiPin("P")), &[("ok", "h1"), ("bad", "h2")]),
-        None,
-    )
-    .expect("approve");
-    a.reject_capability("bad");
-    let now = seen(Some(SpkiPin("P")), &[("ok", "h1"), ("bad", "h2")]);
-    assert!(!a.serves("bad", "h2"));
-    assert!(a.serves("ok", "h1"));
-    assert!(
-        a.drift(&now).is_empty(),
-        "a rejected capability is settled, not drifting"
-    );
-    // It stays settled even when the rejected capability's own hash moves.
-    let moved = seen(Some(SpkiPin("P")), &[("ok", "h1"), ("bad", "MOVED")]);
-    assert!(a.drift(&moved).is_empty());
-    assert!(!a.serves("bad", "MOVED"));
-}
-
-/// APPROVE-PIN adopts a changed identity as the new locked pin, and it is a SEPARATE act from
-/// approving content: it clears the pin drift and touches no capability approval.
-#[test]
-fn approve_pin_adopts_the_new_identity_without_touching_capabilities() {
-    let mut a = Approval::registered();
-    a.approve(&seen(Some(SpkiPin("PIN-A")), &[("t", "h1")]), None)
-        .expect("approve");
-    let moved = seen(Some(SpkiPin("PIN-B")), &[("t", "CHANGED")]);
-    a.approve_pin(&moved).expect("approve-pin");
-    assert_eq!(a.pin(), Some(&SpkiPin("PIN-B")));
-    let d = a.drift(&moved);
-    assert!(!d.pin_changed, "the identity drift is settled");
-    assert_eq!(d.changed, vec!["t".to_string()], "the CONTENT drift is not");
     assert_eq!(a.state(&moved), TrustState::Quarantined);
 }
 
@@ -292,24 +264,6 @@ fn unpinning_discards_the_pin_and_every_capability_approval() {
     );
 }
 
-/// A rejection SURVIVES an unpin. The operator said "never serve this capability"; that is a
-/// standing instruction about the name, not a fact about the endpoint's current identity, and
-/// silently reinstating it on a re-approval is exactly the way a rejected tool comes back.
-#[test]
-fn a_rejection_survives_an_unpin_and_a_re_approval() {
-    let mut a = Approval::registered();
-    let sighting = seen(Some(SpkiPin("PIN-A")), &[("ok", "h1"), ("bad", "h2")]);
-    a.approve(&sighting, None).expect("approve");
-    a.reject_capability("bad");
-    a.unpin();
-    a.approve(&sighting, None).expect("re-approve");
-    assert!(a.serves("ok", "h1"));
-    assert!(
-        !a.serves("bad", "h2"),
-        "a bulk re-approval must not quietly un-reject what the operator rejected"
-    );
-}
-
 /// IDEMPOTENCE across the machine: re-running a transition that has already taken effect changes
 /// nothing. Every one of these is reachable from an operator double-click or a retried request.
 #[test]
@@ -320,16 +274,6 @@ fn every_transition_is_idempotent() {
     let once = a.clone();
     a.approve(&sighting, None).expect("approve again");
     assert_eq!(a, once);
-    a.approve_pin(&sighting).expect("approve-pin again");
-    assert_eq!(a, once);
-    a.approve_capability("t", &sighting)
-        .expect("approve one again");
-    assert_eq!(a, once);
-
-    a.reject_capability("t");
-    let rejected = a.clone();
-    a.reject_capability("t");
-    assert_eq!(a, rejected);
 
     a.suspend("r");
     let suspended = a.clone();
@@ -344,15 +288,4 @@ fn every_transition_is_idempotent() {
     let unpinned = a.clone();
     a.unpin();
     assert_eq!(a, unpinned);
-}
-
-/// Approving a capability the endpoint is not currently offering is REFUSED. There is no hash to
-/// adopt, so the alternative is inventing one.
-#[test]
-fn approving_an_unobserved_capability_is_refused() {
-    let mut a = Approval::registered();
-    let sighting = seen(Some(SpkiPin("P")), &[("t", "h1")]);
-    a.approve(&sighting, None).expect("approve");
-    assert!(a.approve_capability("ghost", &sighting).is_err());
-    assert!(a.approve_capability("t", &Sighting::Never).is_err());
 }

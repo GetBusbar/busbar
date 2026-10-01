@@ -175,7 +175,7 @@ fn reordering_the_skills_array_moves_no_digest() {
     );
     // The whole-card fingerprint DOES move, because array order is data and the canonical form
     // preserves it. That is the honest behaviour: a reorder is a new card, so it is a pin change the
-    // operator settles with `approve-pin`, and no skill approval is disturbed by it.
+    // operator settles with `approve`, and no skill approval is disturbed by it.
     assert_ne!(
         fingerprint(&a_card()).expect("fingerprint"),
         fingerprint(&reordered).expect("fingerprint")

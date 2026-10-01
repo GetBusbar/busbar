@@ -84,13 +84,12 @@ fn run_the_lifecycle<A: PinnedArtifact>(pin_a: A, pin_b: A, cap: &str, other: &s
     assert!(!a.serves(cap, "MOVED"));
     assert_eq!(a.drift(&content_drift).changed, vec![cap.to_string()]);
 
-    // per-capability re-approval settles exactly one row.
-    a.approve_capability(cap, &content_drift)
-        .expect("approve one");
+    // approving what is offered now settles the content drift.
+    a.approve(&content_drift, None).expect("re-approve");
     assert!(a.drift(&content_drift).is_empty());
     assert_eq!(a.state(&content_drift), TrustState::Approved);
 
-    // IDENTITY drift is its own axis, and approve-pin settles it alone.
+    // IDENTITY drift is its own axis, and approving what is presented now settles it.
     let identity_drift = observed(&pin_b, &[(cap, "MOVED"), (other, "h2")]);
     let d = a.drift(&identity_drift);
     assert!(d.pin_changed);
@@ -99,20 +98,23 @@ fn run_the_lifecycle<A: PinnedArtifact>(pin_a: A, pin_b: A, cap: &str, other: &s
         "content is unchanged; only the identity moved"
     );
     assert_eq!(a.state(&identity_drift), TrustState::Quarantined);
-    a.approve_pin(&identity_drift).expect("approve-pin");
+    a.approve(&identity_drift, None).expect("re-approve");
     assert_eq!(a.state(&identity_drift), TrustState::Approved);
 
-    // rejection is permanent and stops being drift.
-    a.reject_capability(other);
+    // a capability no longer offered is drift until approved, and approving drops it.
+    let shrunk = observed(&pin_b, &[(cap, "MOVED")]);
+    assert_eq!(a.drift(&shrunk).removed, vec![other.to_string()]);
+    assert_eq!(a.state(&shrunk), TrustState::Quarantined);
+    a.approve(&shrunk, None).expect("re-approve");
+    assert!(a.drift(&shrunk).is_empty());
     assert!(!a.serves(other, "h2"));
-    assert!(a.drift(&identity_drift).is_empty());
 
     // suspension outranks, and only a resume lifts it.
     a.suspend("anomaly");
-    assert_eq!(a.state(&identity_drift), TrustState::Suspended);
+    assert_eq!(a.state(&shrunk), TrustState::Suspended);
     assert!(!a.serves(cap, "MOVED"));
     a.resume();
-    assert_eq!(a.state(&identity_drift), TrustState::Approved);
+    assert_eq!(a.state(&shrunk), TrustState::Approved);
 
     // a failed sighting parks in error.
     assert_eq!(
@@ -120,15 +122,12 @@ fn run_the_lifecycle<A: PinnedArtifact>(pin_a: A, pin_b: A, cap: &str, other: &s
         TrustState::Error
     );
 
-    // an identity change forces re-approval; the rejection survives it.
+    // an identity change forces re-approval.
     a.unpin();
-    assert_eq!(a.state(&identity_drift), TrustState::Pending);
-    a.approve(&identity_drift, None).expect("re-approve");
+    assert_eq!(a.state(&shrunk), TrustState::Pending);
+    assert!(!a.serves(cap, "MOVED"));
+    a.approve(&shrunk, None).expect("re-approve");
     assert!(a.serves(cap, "MOVED"));
-    assert!(
-        !a.serves(other, "h2"),
-        "the rejection is a standing instruction"
-    );
 }
 
 /// The MCP instantiation: a cert-SPKI pin over a tool list.

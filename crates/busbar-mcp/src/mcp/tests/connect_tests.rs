@@ -207,7 +207,6 @@ fn an_approval_projects_onto_the_config_fields_the_build_reads_back() {
     });
     // THE TRANSITIONS ARE THE LIFECYCLE'S. Nothing in the projection decides anything.
     approval.approve(&observation, None).unwrap();
-    approval.reject_capability("write");
 
     let patch = overlay_patch("fs", &approval);
 
@@ -222,14 +221,6 @@ fn an_approval_projects_onto_the_config_fields_the_build_reads_back() {
             .unwrap(),
         "sha256:aaa",
         "the approved digest lands on the field `server_entry` reads: {patch}"
-    );
-    assert!(
-        patch
-            .pointer("/tools/servers/fs/tools_allow/write/schema_hash")
-            .unwrap()
-            .is_null(),
-        "a REJECTED capability projects as no approved hash, which the build reads as `pending` — \
-         allowed, inspectable, and not serving: {patch}"
     );
 }
 
