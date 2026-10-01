@@ -293,17 +293,6 @@ impl Guard {
         })
     }
 
-    /// Whether `block_private_addresses` holds, and how many entries are allowed and extra
-    /// blocked: the startup report's numbers.
-    #[must_use]
-    pub fn summary(&self) -> (bool, usize, usize) {
-        (
-            self.block_private,
-            self.allow.len() + self.legacy.len(),
-            self.blocked.len(),
-        )
-    }
-
     fn refuses_private(&self, class: u32) -> bool {
         self.block_private && PRIVATE_REFUSED_IN.contains(&class)
     }

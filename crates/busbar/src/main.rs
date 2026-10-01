@@ -827,11 +827,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     if !refused.is_empty() {
         die(format!("config errors:\n  - {}", refused.join("\n  - ")));
     }
-    let (block_private, allowed, blocked_extra) = dest.guard().summary();
-    tracing::info!(
-        "destination guard: block_private_addresses={block_private}, {allowed} allowed, \
-         {blocked_extra} extra blocked"
-    );
     // THE SERVE PATH'S ONE COMPOSITION: the kernel's host services go into the dispatcher built at
     // boot, before any plugin is bound (`root::serve`).
     root::serve::compose(dest.clone(), &late_services);

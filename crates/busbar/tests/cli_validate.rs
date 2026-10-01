@@ -52,6 +52,8 @@ fn write_configs(dir: &Path, extra: &str) {
         dir.join("config.yaml"),
         format!(
             r#"listen: "127.0.0.1:0"
+advanced:
+  allow_destinations: ["127.0.0.1"]
 providers:
   mock:
     api_key: {{ env: MOCK_KEY }}
@@ -1207,6 +1209,8 @@ fn write_configs_with_api_key(dir: &Path, api_key_yaml: &str, extra: &str) {
         dir.join("config.yaml"),
         format!(
             r#"listen: "127.0.0.1:0"
+advanced:
+  allow_destinations: ["127.0.0.1"]
 providers:
   mock:
     api_key: {api_key_yaml}
@@ -1337,6 +1341,8 @@ fn write_decisions_configs(dir: &Path, protocol: &str, decisions_yaml: &str) {
         dir.join("config.yaml"),
         format!(
             r#"listen: "127.0.0.1:0"
+advanced:
+  allow_destinations: ["127.0.0.1"]
 providers:
   mock:
     api_key: {{ env: MOCK_KEY }}
