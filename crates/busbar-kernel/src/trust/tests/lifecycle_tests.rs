@@ -176,7 +176,8 @@ fn approve_after_a_capability_is_removed_clears_the_quarantine() {
     assert_eq!(a.state(&shrunk), TrustState::Quarantined);
     assert_eq!(a.drift(&shrunk).removed, vec!["vanish".to_string()]);
 
-    a.approve(&shrunk, None).expect("re-approve the offered catalogue");
+    a.approve(&shrunk, None)
+        .expect("re-approve the offered catalogue");
     assert!(
         a.drift(&shrunk).is_empty(),
         "approve left the removed capability as drift"
