@@ -487,22 +487,19 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C>
         at_parent_exit(ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal>;
     }
 
-    /// S1, DECODE: the plane's `arrive`.
+    /// S1, DECODE: the plane's `arrive`; a plane that did not answer, or named an operation class
+    /// it does not have, is refused.
     fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> StepAnswer<Decode> {
-        let op = self.arrive(ctx.key.get()).and_then(|d| {
-            let op = self
-                .driver
-                .config
-                .op_classes
-                .get(d.op_class as usize)
-                .copied();
-            self.lock().decoded = Some(d);
-            op
-        });
-        match op {
-            Some(op) => StepAnswer::proceed(token, op),
-            None => StepAnswer::refuse(token, Refusal::new(ReasonCode::DecodeFailed)),
-        }
+        let decoded = self.arrive(ctx.key.get());
+        let classes = &self.driver.config.op_classes;
+        let op = decoded
+            .as_ref()
+            .and_then(|d| classes.get(d.op_class as usize).copied());
+        self.lock().decoded = decoded;
+        op.map_or_else(
+            || StepAnswer::refuse(token, Refusal::new(ReasonCode::DecodeFailed)),
+            |op| StepAnswer::proceed(token, op),
+        )
     }
 
     /// The in-place Route seat: a plane's route awaits its far end, so the driver is reached
