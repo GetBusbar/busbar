@@ -554,3 +554,33 @@ impl crate::egress::engine::ResolveNames for RebindingResolver {
 
 /// The loopback IP as the address family every fixture binds.
 pub const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+/// A test's scoped dial posture: its table and its names.
+type ScopedDial = (
+    crate::egress::engine::DialTable,
+    Arc<dyn crate::egress::engine::ResolveNames>,
+);
+
+thread_local! {
+    static SCOPED_DIAL: std::cell::RefCell<Option<ScopedDial>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// TEST SEAM: every pooled client built by `build` on this thread judges by `table` and resolves
+/// through `names`.
+pub fn with_scoped_dial<R>(
+    table: crate::egress::engine::DialTable,
+    names: Arc<dyn crate::egress::engine::ResolveNames>,
+    build: impl FnOnce() -> R,
+) -> R {
+    let prior = SCOPED_DIAL.with(|s| s.replace(Some((table, names))));
+    let built = build();
+    SCOPED_DIAL.with(|s| *s.borrow_mut() = prior);
+    built
+}
+
+/// The posture [`with_scoped_dial`] set on this thread, if any: what a pooled client built here
+/// resolves through and judges by.
+pub(crate) fn scoped_dial() -> Option<ScopedDial> {
+    SCOPED_DIAL.with(|s| s.borrow().clone())
+}

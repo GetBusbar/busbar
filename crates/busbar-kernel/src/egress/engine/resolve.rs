@@ -56,39 +56,16 @@ fn judged(table: &DialTable, host: &str, addrs: Vec<SocketAddr>) -> Result<Resol
 }
 
 /// The dial posture a pooled client is built with: the process table over the system resolver.
-/// A test scopes its own table and names over the clients built inside [`with_scoped_dial`], so a
+/// A test scopes its own table and names over the clients built inside
+/// `egress::fixtures::with_scoped_dial`, so a
 /// plane's runtime built in that scope judges by the test's lists without touching the process
 /// table another test reads.
 pub(crate) fn pooled_dial() -> (DialTable, Option<Arc<dyn ResolveNames>>) {
     #[cfg(any(test, feature = "test-support"))]
-    if let Some(scoped) = SCOPED_DIAL.with(|s| s.borrow().clone()) {
-        return (scoped.0, Some(scoped.1));
+    if let Some((table, names)) = crate::egress::fixtures::scoped_dial() {
+        return (table, Some(names));
     }
     (process_dial_table(), None)
-}
-
-/// A test's scoped dial posture: its table and its names.
-#[cfg(any(test, feature = "test-support"))]
-type ScopedDial = (DialTable, Arc<dyn ResolveNames>);
-
-#[cfg(any(test, feature = "test-support"))]
-thread_local! {
-    static SCOPED_DIAL: std::cell::RefCell<Option<ScopedDial>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// TEST SEAM: every pooled client built by `build` on this thread judges by `table` and resolves
-/// through `names`.
-#[cfg(any(test, feature = "test-support"))]
-pub fn with_scoped_dial<R>(
-    table: DialTable,
-    names: Arc<dyn ResolveNames>,
-    build: impl FnOnce() -> R,
-) -> R {
-    let prior = SCOPED_DIAL.with(|s| s.replace(Some((table, names))));
-    let built = build();
-    SCOPED_DIAL.with(|s| *s.borrow_mut() = prior);
-    built
 }
 
 /// A caller-supplied name resolver — the test seam (a counting resolver is how "the engine
