@@ -6,13 +6,13 @@
 //! THE MECHANISM: a webhook sender that holds no busbar credential signs each request with a secret
 //! it shares with the receiver — an HMAC over what it sent — and presents the signature in a header.
 //! This plugin checks that signature on the auth kind's inbound `verify` (webhook
-//! signature verification belongs to the auth kind; the plane never sees the secret). It is
-//! named by the mechanism, not by a sender; a sender's exact algorithm is a VARIANT ([`Variant`],
-//! the algorithms in [`signature`]):
+//! signature verification belongs to the auth kind; the request's handler never sees the secret).
+//! It is named by the mechanism, not by a sender; a sender's exact algorithm is a VARIANT
+//! ([`Variant`], the algorithms in [`signature`]):
 //!
 //! * `twilio` — HMAC-SHA1 over the full URL plus the sorted POST form parameters, in
 //!   `X-Twilio-Signature`. It authenticates a Twilio Media Streams WebSocket upgrade (a GET: the URL
-//!   alone), which a plane claims under the `webhook-signature` scheme alternative
+//!   alone), which a claim names under the `webhook-signature` scheme alternative
 //!   (Twilio cannot present a busbar bearer or API key), and Twilio's signed POSTs.
 //! * `standard-webhooks` — the Standard Webhooks specification: HMAC-SHA256 over
 //!   `id.timestamp.body`, in `webhook-id` / `webhook-timestamp` / `webhook-signature`, with a
@@ -25,7 +25,7 @@
 //! lists"): the host lends the whole body, bounded by the size gate, so a signature over the body is
 //! checked over the bytes received; a request the host lent no body is refused (fail-closed).
 //! Whatever its verdict, it names its signature header lines for the transport to strip, so the
-//! plane never sees them.
+//! request's handler never sees them.
 //!
 //! THE VERDICTS:
 //! * none of the variant's headers present — PASS: not this plugin's credential. A claim whose only
