@@ -1034,7 +1034,11 @@ fn run_http_stream(
         ) {
             Ok(client) => client,
             Err(e) => {
-                send_fault(head_tx, EgressFailClass::Fault, format!("egress client: {e}"));
+                send_fault(
+                    head_tx,
+                    EgressFailClass::Fault,
+                    format!("egress client: {e}"),
+                );
                 return;
             }
         };
