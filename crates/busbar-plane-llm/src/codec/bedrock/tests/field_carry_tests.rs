@@ -5,7 +5,7 @@
 //!
 //! Each test here is the named instrument a `qa/field-coverage.status` line points at, and each
 //! genuinely FAILS if its field stops surviving — that is the whole contract of the coverage gate
-//! (`crates/busbar/tests/field_coverage.rs`): a `carried` claim is admissible only with a test that
+//! (`crates/busbar-plane-llm/tests/field_coverage.rs`): a `carried` claim is admissible only with a test that
 //! would miss the field being dropped. The tests are grouped by wire construct, but EVERY named
 //! field carries its own field-level assertion.
 //!

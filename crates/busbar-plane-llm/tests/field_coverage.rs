@@ -20,7 +20,7 @@
 //! in silence, because **you cannot mutate a field that does not exist.**
 //!
 //! So a list of six is a list of six things somebody happened to notice. This gate makes the CLASS
-//! enumerable, exactly as [`method_coverage`](../method_coverage.rs) does for MCP/A2A methods, and
+//! enumerable, exactly as the method-coverage gate does for protocol methods, and
 //! for the reason `scripts/method-inventory.py` states: a hand-written list is how coverage ends at
 //! J with nobody noticing, because an absent row and a considered-and-inapplicable row look
 //! identical on the page.
@@ -52,9 +52,8 @@
 //! impossible. So every unbacked path is UNCLASSIFIED, `qa/field-coverage.missing` pins it in rank
 //! order, and the pin is the carry work queue: no field lands without editing that file.
 //!
-//! The repo's own convention for a deliberately-red gate is the one
-//! `testing/a2a-tck/check-baseline.py` states: *"a suite whose result is UNCHANGING is still a
-//! gate, because the thing a gate has to catch is a CHANGE."*
+//! The repo's convention for a deliberately-red gate: *"a suite whose result is UNCHANGING is still
+//! a gate, because the thing a gate has to catch is a CHANGE."*
 //!
 //! **Never weaken this gate to make it green.** Do not move a line from `.missing` to a waiver to
 //! make a number look better: a waiver says "not owed, and here is why", and laundering a gap into
@@ -298,7 +297,7 @@ fn unclassified_new_report() {
 /// FULL-STRENGTH ACCEPTANCE: every wire path is carried or waived, and nothing is UNCLASSIFIED.
 ///
 /// Kept at full strength and `#[ignore]`d rather than weakened, exactly as
-/// `method_coverage::every_cell_is_implemented_or_waived` is. Run it with `-- --ignored`.
+/// the method-coverage acceptance test is. Run it with `-- --ignored`.
 #[test]
 #[ignore = "acceptance: the field work queue in qa/field-coverage.missing is the deliverable, and \
             a visible red queue is the honest shape of a partial sweep"]

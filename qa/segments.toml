@@ -150,7 +150,7 @@ run    = "cargo test --release -p busbar --test method_coverage -- --ignored"
 id     = "field-coverage"
 status = "active"
 tier   = "fast"
-# THE LLM-PROTOCOL FIELD-COVERAGE GATE (crates/busbar/tests/field_coverage.rs) promoted to its own
+# THE LLM-PROTOCOL FIELD-COVERAGE GATE (crates/busbar-plane-llm/tests/field_coverage.rs) promoted to its own
 # verdict line — the field-level analogue of method-coverage-acceptance above. Every request/response
 # field of every chat dialect busbar speaks is `carried` (with a named test that FAILS if the field
 # stops surviving), `waived` (dated reason), or MISSING — and the MISSING set is PINNED, so
@@ -167,7 +167,7 @@ tier   = "fast"
 # independently-reported line on the qa promotion gate. Never weaken the test or this segment to keep
 # it green, and launder no gap into a waiver: if the queue ever regrows, this goes RED until the
 # field is CARRIED, not waived.
-run    = "cargo test --release -p busbar --test field_coverage -- --ignored"
+run    = "cargo test --release -p busbar-plane-llm --test field_coverage -- --ignored"
 
 [[segment]]
 id     = "teller-waist"

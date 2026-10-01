@@ -3,7 +3,7 @@
 //! Every request, response and stream path of every chat dialect lives in one place: the wire lock
 //! `testing/llm-conformance/wire/<dialect>.wire.json`, which `cargo xtask dialect wire --write`
 //! GENERATES from the provider specs pinned in `testing/llm-conformance/spec-digests.tsv` (see
-//! [`crate::wire_lock`]). `crates/busbar/tests/field_coverage.rs` reads its denominator from those
+//! [`crate::wire_lock`]). `crates/busbar-plane-llm/tests/field_coverage.rs` reads its denominator from those
 //! locks. This gate holds the locks to what a denominator must be, reading only committed files
 //! (no network, no spec cache), so it runs in the fast tier:
 //!
