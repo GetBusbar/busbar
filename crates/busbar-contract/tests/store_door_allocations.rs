@@ -228,10 +228,22 @@ impl StoreSlots for Canned {
         let v = || RecordBytes::new(b"v".to_vec()).expect("a small record");
         unwitnessed(|| Ok(vec![(b"k1".to_vec(), v()), (b"k2".to_vec(), v())]))
     }
-    fn reserve(&self, _: OpId, _: u64, _: &[UnitCell<'_>]) -> Result<Vec<Grant>, ReserveRefused> {
+    fn reserve<'c>(
+        &self,
+        _: OpId,
+        _: u64,
+        _: impl Iterator<Item = UnitCell<'c>> + Clone,
+        _: &mut impl Extend<Grant>,
+    ) -> Result<(), ReserveRefused> {
         unreachable!("money: not this witness")
     }
-    fn slice_release(&self, _: OpId, _: u64, _: &[(u64, u64)]) -> OpResult<Vec<u64>> {
+    fn slice_release(
+        &self,
+        _: OpId,
+        _: u64,
+        _: impl Iterator<Item = (u64, u64)> + Clone,
+        _: &mut impl Extend<u64>,
+    ) -> OpResult<()> {
         unreachable!("money: not this witness")
     }
     fn add_usage_batch(&self, _: OpId, _: &[(&str, u64, UsageDelta)]) -> OpResult<()> {
