@@ -26,7 +26,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::abi::plane::{UnitCount, UNITS_REPORTED};
+use busbar_contract::abi::plane::{units_bill, UnitCount};
 use busbar_contract::records::VirtualKey;
 use busbar_contract::UnitKey;
 
@@ -79,7 +79,7 @@ pub enum FeeRefund {
     CallerStatus,
     /// The plane decides: these indices into [`UnitMoney::classes`] are its declared fee units,
     /// each also a billable class (the tail check holds `fee_units ⊆ billable_classes`) reported as a
-    /// [`UNITS_REPORTED`] count of 0 or 1. An end whose fee units report no count above zero
+    /// billing count ([`units_bill`]) of 0 or 1. An end whose fee units report no count above zero
     /// refunds the fee. A fee unit's count is never ledgered as usage: the fee itself was charged
     /// at admission (#21).
     PlaneFeeUnits(Arc<[u32]>),
@@ -101,7 +101,7 @@ impl FeeRefund {
             FeeRefund::CallerStatus => !(200..=299).contains(&caller_status),
             FeeRefund::PlaneFeeUnits(fees) => !last
                 .iter()
-                .any(|u| u.source == UNITS_REPORTED && u.amount > 0 && fees.contains(&u.class)),
+                .any(|u| units_bill(u.source) && u.amount > 0 && fees.contains(&u.class)),
         }
     }
 }
@@ -302,11 +302,12 @@ fn named(
     Some(units)
 }
 
-/// The counts the plane REPORTED (not its estimates), as `(class, amount)`: what a bill ledgers.
+/// The counts that bill ([`units_bill`]: reported or floor, never an estimate), as `(class, amount)`:
+/// what a bill ledgers.
 fn reported(units: &[UnitCount]) -> Vec<(u32, u64)> {
     units
         .iter()
-        .filter(|u| u.source == UNITS_REPORTED)
+        .filter(|u| units_bill(u.source))
         .map(|u| (u.class, u.amount))
         .collect()
 }
