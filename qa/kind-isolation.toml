@@ -567,7 +567,9 @@ count = "515"
 [[cell]]
 crate = "busbar-llm"
 kind = "transport"
-count = "546"
+# 546 -> 548, test anchors (RESOLVE-PIN): dial_refusal_failover_tests.rs:117, :123 (MockResponse::Sse).
+# Expires at LLM-ENGINE-DELETE.
+count = "548"
 
 
 
