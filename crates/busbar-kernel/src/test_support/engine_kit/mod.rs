@@ -385,7 +385,7 @@ pub trait EngineTestKit: Send + Sync {
     /// Link the operator credential's test registry row (`entry`, the SDK boundary of the auth plugin
     /// the test binary links for it) onto the engine's auth axis — see
     /// [`crate::test_support::install_operator_auth_row`]. The first install stands.
-    fn install_operator_auth_row(&self, entry: busbar_kernel_identity::operator::AuthBoundary);
+    fn install_operator_auth_row(&self, entry: crate::test_support::AuthBoundary);
     /// A fresh test-App builder.
     fn new_app(&self) -> Box<dyn TestAppKit>;
     /// A governance registry over `store`, with an optional operator admin token and an optional

@@ -2281,20 +2281,19 @@ impl Drop for EnvVarGuard {
     }
 }
 
-/// THE OPERATOR DOUBLE: the kernel-neutral words a test build's operator credential answers to
-/// (BUSBAR-1.6.0.md:175, "Kernel tests use kind-neutral doubles"); kernel-identity's `stand-in`
-/// words, which `test-support` turns on. The shipped words are the composition root's legacy
-/// table's, handed in with its linked auth rows; the kernel spells none of them.
-pub use busbar_kernel_identity::operator::STAND_IN as OPERATOR_DOUBLE;
-
 /// TEST REGISTRY ROW — link the operator credential's auth row into this test binary's auth axis,
 /// as the composition root links it into the shipped one: `entry` is the SDK boundary
 /// (`BUSBAR_COLD_ENTRY`) of whichever auth plugin the test binary links for the purpose, registered
-/// under the [`OPERATOR_DOUBLE`]'s provider. The first install stands (the axis is process-wide).
-/// A test crate names that plugin only in its manifest; its build script turns the manifest row into
-/// the `entry` it hands here.
+/// under the operator words this build answers to: with no root, the kind-neutral `stand-in` double
+/// that `test-support` turns on (BUSBAR-1.6.0.md:175, "Kernel tests use kind-neutral doubles"). The
+/// first install stands (the axis is process-wide). A test crate names that plugin only in its
+/// manifest; its build script turns the manifest row into the `entry` it hands here.
 pub fn install_operator_auth_row(entry: AuthBoundary) {
-    install_operator_auth_row_as(OPERATOR_DOUBLE, entry)
+    let words = OperatorWords {
+        provider: crate::config::operator_provider(),
+        principal_id: crate::config::operator_principal_id(),
+    };
+    install_operator_auth_row_as(words, entry)
 }
 
 /// `install_operator_auth_row_as(words, entry)`: [`install_operator_auth_row`] under a test binary's
