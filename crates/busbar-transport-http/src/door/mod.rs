@@ -45,8 +45,8 @@
 //! so `begin` for [`SIDE_ACCEPT`] is refused, and so are `refuse`, `detach`, `adopt` and every
 //! carrier op.
 
-pub mod engine;
 pub mod dest_head;
+pub mod engine;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
