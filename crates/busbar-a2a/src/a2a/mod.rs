@@ -546,6 +546,8 @@ pub(crate) fn openapi_fragment() -> serde_json::Value {
 pub(crate) use busbar_plane_a2a::a2a as plane_crate;
 /// The plane's door: the facts it states once, which the engine reads rather than restates.
 pub(crate) use busbar_plane_a2a::door;
+/// The plane's push delivery: the notification, the credential, the retry rule and the queue bound.
+pub(crate) use busbar_plane_a2a::push;
 
 pub mod admin_view;
 /// MOVED to `busbar-plane-a2a` (the wire dialect, #39), re-exported here under its old in-crate path
