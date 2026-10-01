@@ -58,31 +58,6 @@ pub trait MoneySeam: Send + Sync {
     fn abandoned(&self, ctx: &UnitCtx, ended: Ended);
 }
 
-/// Why the driver cancelled a unit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CancelCause {
-    /// The unit ran past its deadline.
-    Deadline,
-    /// A checkpoint dried the budget under `cut-stream`.
-    Cut,
-    /// The plane's generation is being replaced.
-    Reload,
-    /// The caller went away.
-    ClientGone,
-}
-
-impl CancelCause {
-    /// The reason the unit's end records.
-    pub fn reason(self) -> ReasonCode {
-        match self {
-            CancelCause::Deadline => ReasonCode::DeadlineExceeded,
-            CancelCause::Cut => ReasonCode::OverBudget,
-            CancelCause::Reload => ReasonCode::Drain,
-            CancelCause::ClientGone => ReasonCode::ClientGone,
-        }
-    }
-}
-
 /// The driver's own facts about a unit (never the plane's word alone).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Facts {
@@ -97,8 +72,11 @@ pub(crate) struct Facts {
 /// A cancelled unit's bill.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CancelBill {
-    /// Why the unit was cancelled.
-    pub cause: CancelCause,
+    /// Why the unit was cancelled, the reason its end records: [`ReasonCode::DeadlineExceeded`]
+    /// (past its deadline), [`ReasonCode::OverBudget`] (a checkpoint dried the budget under
+    /// `cut-stream`), [`ReasonCode::Drain`] (the plane's generation is being replaced) or
+    /// [`ReasonCode::ClientGone`] (the caller went away).
+    pub cause: ReasonCode,
     /// The plane's disposition; a FAULT, an absent or an unknown disposition is [`CANCEL_FAILED`].
     pub disposition: u32,
     /// The far end answered before the cancel (the driver's fact).
@@ -110,7 +88,7 @@ pub struct CancelBill {
 }
 
 impl CancelBill {
-    pub(crate) fn new(cause: CancelCause, disposition: Option<u32>, facts: &Facts) -> Self {
+    pub(crate) fn new(cause: ReasonCode, disposition: Option<u32>, facts: &Facts) -> Self {
         let disposition = match disposition {
             Some(d @ (CANCEL_OK_PARTIAL | CANCEL_FAILED | CANCEL_ABORTED)) => d,
             _ => CANCEL_FAILED,
@@ -170,7 +148,7 @@ impl PlaneDriver {
                 },
                 None => self.cancel_now(unit.ticket),
             };
-            let bill = CancelBill::new(CancelCause::ClientGone, disposition, &unit.facts);
+            let bill = CancelBill::new(ReasonCode::ClientGone, disposition, &unit.facts);
             self.money.cancelled(&unit.ctx, &bill);
             self.calls.recycle(unit.ticket);
         }

@@ -32,15 +32,13 @@ mod route;
 
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, Envelope, InHead, OutHead, Outcome as AbiOutcome, RawOutcome, BLOB_ABSENT,
-    BLOB_OCTETS,
-};
-use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome as AbiOutcome, BLOB_OCTETS};
+use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, Field, OutField, RefusalIn, RefusalOut, Span, UnitCount, REFUSAL_GATE,
     REFUSAL_KERNEL,
 };
+use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{
     Admit, Admittance, Approve, Arrival as ArrivalStep, Audit, Authenticate, Consumption, Decode,
     Dial, Encode, Grant, HoldAccrual, Meter, OpClassId, Outcome, Pass, PrincipalId, ReasonCode,
@@ -49,7 +47,7 @@ use busbar_contract::caps::{
 use busbar_contract::plane_calls::PlaneCalls;
 use tokio::sync::watch;
 
-pub use cancel::{CancelBill, CancelCause, Checkpoint, MoneySeam};
+pub use cancel::{CancelBill, Checkpoint, MoneySeam};
 pub use epoch::FlushEpoch;
 pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest};
 
@@ -189,6 +187,9 @@ impl PlaneDriver {
     }
 }
 
+/// A head's fields, name and value, in order.
+pub type HeadFields = Vec<(Vec<u8>, Vec<u8>)>;
+
 /// What arrived: the claim it matched and the caller's request, as the kernel keeps it.
 #[derive(Debug, Clone)]
 pub struct Arrival {
@@ -197,7 +198,7 @@ pub struct Arrival {
     /// The request target.
     pub target: Vec<u8>,
     /// The head fields.
-    pub fields: Vec<(Vec<u8>, Vec<u8>)>,
+    pub fields: HeadFields,
     /// The caller's body, kept for every attempt.
     pub body: Arc<[u8]>,
 }
@@ -221,7 +222,7 @@ pub struct Rendered {
     /// The status number.
     pub status: u32,
     /// The head fields.
-    pub fields: Vec<(Vec<u8>, Vec<u8>)>,
+    pub fields: HeadFields,
     /// The body.
     pub body: Vec<u8>,
 }
@@ -251,65 +252,9 @@ impl<S, F, C> std::fmt::Debug for PlaneUnits<'_, S, F, C> {
     }
 }
 
-fn abi_str(b: &[u8]) -> AbiStr {
-    AbiStr {
-        ptr: b.as_ptr(),
-        len: b.len(),
-    }
-}
-
-/// An absent blob.
-const NO_BLOB: Blob = Blob {
-    ptr: std::ptr::null(),
-    len: 0,
-    fmt: BLOB_ABSENT,
-    flags: 0,
-};
-
-/// A blank `in` head; the dispatcher stamps it before every crossing.
-fn blank_in() -> InHead {
-    InHead {
-        size: std::mem::size_of::<InHead>() as u32,
-        op: 0,
-        flags: 0,
-        deadline_class: 0,
-        _reserved: [0; 3],
-        host: HostCtx {
-            ptr: std::ptr::null_mut(),
-        },
-        ticket: Ticket::NONE,
-        deadline_ns: 0,
-        trace_id: [0; 16],
-        parent_span_id: 0,
-        extensions: NO_BLOB,
-    }
-}
-
-/// A blank `out` head, reading FAULT until the plane writes it.
-fn blank_out() -> OutHead {
-    OutHead {
-        size: std::mem::size_of::<OutHead>() as u32,
-        outcome: RawOutcome::of(AbiOutcome::Fault),
-        _reserved: [0; 3],
-        wake_at_ns: 0,
-        lease: 0,
-        error: AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
-        envelope: Envelope {
-            metrics: std::ptr::null(),
-            metrics_len: 0,
-            diags: std::ptr::null(),
-            diags_len: 0,
-        },
-        extensions: NO_BLOB,
-    }
-}
-
 fn blob(b: &[u8]) -> Blob {
     if b.is_empty() {
-        return NO_BLOB;
+        return Blob::ABSENT;
     }
     Blob {
         ptr: b.as_ptr(),
@@ -324,9 +269,10 @@ const ZERO_UNIT: UnitCount = UnitCount {
     source: 0,
     amount: 0,
 };
+const NO_SPAN: Span = Span { offset: 0, len: 0 };
 const NO_FIELD: OutField = OutField {
-    name: Span { offset: 0, len: 0 },
-    value: Span { offset: 0, len: 0 },
+    name: NO_SPAN,
+    value: NO_SPAN,
 };
 
 impl<S, F, C> PlaneUnits<'_, S, F, C> {
@@ -360,32 +306,23 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             .fields
             .iter()
             .map(|(n, v)| Field {
-                name: abi_str(n),
-                value: abi_str(v),
+                name: AbiStr::over(n),
+                value: AbiStr::over(v),
             })
             .collect();
         let mut units = vec![ZERO_UNIT; self.driver.config.caps.units];
         let mut input = ArriveIn {
-            head: blank_in(),
             unit,
             claim: a.claim,
-            _reserved: 0,
-            target: abi_str(&a.target),
+            target: AbiStr::over(&a.target),
             fields: fields.as_ptr(),
             fields_len: fields.len(),
             body: blob(&a.body),
             units_buf: units.as_mut_ptr(),
             units_cap: units.len(),
+            ..blank_in()
         };
-        let mut o = ArriveOut {
-            head: blank_out(),
-            op_class: 0,
-            principal_need: 0,
-            dialect: 0,
-            units_written: 0,
-            units_needed: 0,
-            _reserved: 0,
-        };
+        let mut o: ArriveOut = blank_out();
         let outcome = self
             .driver
             .calls
@@ -419,7 +356,6 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             vec![0u8; caps.arena],
         );
         let mut input = RefusalIn {
-            head: blank_in(),
             cause: if reason == ReasonCode::HookVeto {
                 REFUSAL_GATE
             } else {
@@ -427,26 +363,16 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             },
             status,
             dialect,
-            _reserved: 0,
-            text: abi_str(text.as_bytes()),
+            text: AbiStr::over(text.as_bytes()),
             reply_buf: reply.as_mut_ptr(),
             reply_cap: reply.len(),
             fields_buf: fields.as_mut_ptr(),
             fields_cap: fields.len(),
             arena_buf: arena.as_mut_ptr(),
             arena_cap: arena.len(),
+            ..blank_in()
         };
-        let mut o = RefusalOut {
-            head: blank_out(),
-            reply_written: 0,
-            reply_needed: 0,
-            arena_written: 0,
-            arena_needed: 0,
-            marker: 0,
-            fields_written: 0,
-            fields_needed: 0,
-            _reserved: 0,
-        };
+        let mut o: RefusalOut = blank_out();
         let outcome = self
             .driver
             .calls
@@ -511,10 +437,10 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
             route::End::Cancel(cause, done) => {
                 let bill = run.cancel(cause, done);
                 self.lock().bill = Some(bill);
-                if cause == CancelCause::Cut {
+                if cause == ReasonCode::OverBudget {
                     self.cut_frame().await;
                 }
-                StepAnswer::refuse(token, Refusal::new(cause.reason()))
+                StepAnswer::refuse(token, Refusal::new(cause))
             }
         };
         run.finish();
@@ -533,9 +459,32 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
     }
 }
 
+/// The seats the kernel's own steps answer, forwarded to `self.steps` unchanged: one line per
+/// seat, so the plane's three seats (decode, route, encode) are the only bodies in the impl.
+macro_rules! forward_to_steps {
+    ($($seat:ident($($arg:ident: $ty:ty),* $(,)?) -> $answer:ty;)*) => {$(
+        fn $seat(&self, $($arg: $ty),*) -> $answer {
+            self.steps.$seat($($arg),*)
+        }
+    )*};
+}
+
 impl<S: Units + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C> {
-    fn arrival(&self, token: &Pass<ArrivalStep>, ctx: &UnitCtx) -> StepAnswer<ArrivalStep> {
-        self.steps.arrival(token, ctx)
+    forward_to_steps! {
+        arrival(token: &Pass<ArrivalStep>, ctx: &UnitCtx) -> StepAnswer<ArrivalStep>;
+        authenticate(token: &Pass<Authenticate>, ctx: &UnitCtx) -> StepAnswer<Authenticate>;
+        verify(token: &Pass<Verify>, trust: &Grant<Dial>, ctx: &UnitCtx, principal: &PrincipalId)
+            -> StepAnswer<Verify>;
+        approve(token: &Pass<Approve>, ctx: &UnitCtx, principal: &PrincipalId,
+            destinations: &[VerifiedDestination]) -> StepAnswer<Approve>;
+        admit(token: &Pass<Admit>, admit: &Grant<Admittance>, ctx: &UnitCtx, principal: &PrincipalId,
+            destinations: &[VerifiedDestination], leases: &GroupLeaseSlip) -> StepAnswer<Admit>;
+        meter(token: &Pass<Meter>, usage: &Grant<Consumption>, ctx: &UnitCtx, provisional: &Outcome,
+            destinations: &[VerifiedDestination]) -> StepAnswer<Meter>;
+        audit(token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> StepAnswer<Audit>;
+        audit_refused(token: &Pass<Audit>, ctx: &UnitCtx, refusal: &Refusal) -> StepAnswer<Audit>;
+        evidence(ctx: &UnitCtx) -> Evidence;
+        at_parent_exit(ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal>;
     }
 
     /// S1, DECODE: the plane's `arrive`.
@@ -556,43 +505,6 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C>
         }
     }
 
-    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> StepAnswer<Authenticate> {
-        self.steps.authenticate(token, ctx)
-    }
-
-    fn verify(
-        &self,
-        token: &Pass<Verify>,
-        trust: &Grant<Dial>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-    ) -> StepAnswer<Verify> {
-        self.steps.verify(token, trust, ctx, principal)
-    }
-
-    fn approve(
-        &self,
-        token: &Pass<Approve>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
-    ) -> StepAnswer<Approve> {
-        self.steps.approve(token, ctx, principal, destinations)
-    }
-
-    fn admit(
-        &self,
-        token: &Pass<Admit>,
-        admit: &Grant<Admittance>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
-        leases: &GroupLeaseSlip,
-    ) -> StepAnswer<Admit> {
-        self.steps
-            .admit(token, admit, ctx, principal, destinations, leases)
-    }
-
     /// The in-place Route seat: a plane's route awaits its far end, so the driver is reached
     /// only through [`RouteAwait::route_leg`]; the synchronous entry refuses it.
     fn route(
@@ -602,31 +514,6 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C>
         _destinations: &[VerifiedDestination],
     ) -> StepAnswer<Route> {
         StepAnswer::refuse(token, Refusal::new(ReasonCode::HandoffMismatch))
-    }
-
-    fn meter(
-        &self,
-        token: &Pass<Meter>,
-        usage: &Grant<Consumption>,
-        ctx: &UnitCtx,
-        provisional: &Outcome,
-        destinations: &[VerifiedDestination],
-    ) -> StepAnswer<Meter> {
-        self.steps
-            .meter(token, usage, ctx, provisional, destinations)
-    }
-
-    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> StepAnswer<Audit> {
-        self.steps.audit(token, ctx, outcome)
-    }
-
-    fn audit_refused(
-        &self,
-        token: &Pass<Audit>,
-        ctx: &UnitCtx,
-        refusal: &Refusal,
-    ) -> StepAnswer<Audit> {
-        self.steps.audit_refused(token, ctx, refusal)
     }
 
     /// The bytes that leave. A refused or failed unit whose caller has no byte yet gets the
@@ -664,14 +551,6 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C>
                 meta: busbar_contract::FrameMeta::default(),
             },
         )
-    }
-
-    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
-        self.steps.evidence(ctx)
-    }
-
-    fn at_parent_exit(&self, ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal> {
-        self.steps.at_parent_exit(ctx, accrual)
     }
 }
 

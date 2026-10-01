@@ -23,18 +23,19 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome as AbiOutcome, BLOB_OCTETS};
+use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     OnPieceIn, OnPieceOut, OutField, RecordWrite, Span, UnitCount, EMIT_DONE, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, VERDICT_RETRY,
 };
+use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::ReasonCode;
 use busbar_contract::plane_calls::{Answered, Lent, PieceInFlight};
 use tokio::sync::watch;
 
-use super::cancel::{Buried, CancelBill, CancelCause, Checkpoint};
-use super::{blank_in, blank_out, BufferCaps, PlaneDriver, UnitState, NO_BLOB};
+use super::cancel::{Buried, CancelBill, Checkpoint};
+use super::{blob, BufferCaps, HeadFields, PlaneDriver, UnitState, NO_FIELD, NO_SPAN, ZERO_UNIT};
 use crate::teller::UnitCtx;
 
 /// One piece of the far end's reply.
@@ -60,7 +61,7 @@ pub struct OutboundRequest {
     /// The target.
     pub target: Vec<u8>,
     /// The dialect's head fields (the kernel adds the auth fields when it sends).
-    pub fields: Vec<(Vec<u8>, Vec<u8>)>,
+    pub fields: HeadFields,
     /// The body.
     pub body: Vec<u8>,
 }
@@ -80,7 +81,7 @@ pub trait FarEnd: Sync {
 /// THE CALLER'S SIDE of the unit: the reply head, then the reply bytes.
 pub trait CallerEnd: Sync {
     /// The reply head, once, before the first byte.
-    fn head(&self, status: u32, fields: Vec<(Vec<u8>, Vec<u8>)>);
+    fn head(&self, status: u32, fields: HeadFields);
     /// Write `bytes`, resolving once they are written (the caller's side was writable); `false`
     /// when the caller has gone.
     fn write<'a>(&'a self, bytes: &'a [u8]) -> impl Future<Output = bool> + Send + 'a;
@@ -102,12 +103,6 @@ pub(crate) struct PieceBufs {
     member: Vec<u8>,
 }
 
-const NO_SPAN: Span = Span { offset: 0, len: 0 };
-const ZERO_UNIT: UnitCount = UnitCount {
-    class: 0,
-    source: 0,
-    amount: 0,
-};
 
 impl PieceBufs {
     pub(crate) fn new(caps: &BufferCaps, body: Arc<[u8]>) -> Self {
@@ -133,13 +128,9 @@ impl PieceBufs {
             key: NO_SPAN,
             value: NO_SPAN,
         };
-        let field = OutField {
-            name: NO_SPAN,
-            value: NO_SPAN,
-        };
         self.units.resize(units.max(self.units.len()), ZERO_UNIT);
         self.records.resize(records.max(self.records.len()), record);
-        self.fields.resize(fields.max(self.fields.len()), field);
+        self.fields.resize(fields.max(self.fields.len()), NO_FIELD);
         self.arena.resize(arena.max(self.arena.len()), 0);
     }
 
@@ -150,7 +141,7 @@ impl PieceBufs {
             .unwrap_or_default()
     }
 
-    fn fields_of(&self, written: u32) -> Vec<(Vec<u8>, Vec<u8>)> {
+    fn fields_of(&self, written: u32) -> HeadFields {
         self.fields
             .iter()
             .take(written as usize)
@@ -199,28 +190,16 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
         Src::Input => &bufs.input[..],
         Src::None => &[][..],
     };
-    let blob = if bytes.is_empty() {
-        NO_BLOB
-    } else {
-        Blob {
-            ptr: bytes.as_ptr(),
-            len: bytes.len(),
-            fmt: BLOB_OCTETS,
-            flags: 0,
-        }
-    };
     let member = if p.attempt_no == 0 {
         &[][..]
     } else {
         &bufs.member[..]
     };
     let input = OnPieceIn {
-        head: blank_in(),
         unit,
         from: p.from,
         flags: p.flags,
-        stream: 0,
-        bytes: blob,
+        bytes: blob(bytes),
         status_code: p.status.0,
         status_class: p.status.1,
         reply_buf: bufs.reply.as_mut_ptr(),
@@ -233,32 +212,11 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
         fields_cap: bufs.fields.len(),
         arena_buf: bufs.arena.as_mut_ptr(),
         arena_cap: bufs.arena.len(),
-        member: AbiStr {
-            ptr: member.as_ptr(),
-            len: member.len(),
-        },
+        member: AbiStr::over(member),
         attempt_no: p.attempt_no,
-        _reserved: 0,
+        ..blank_in()
     };
-    let out = OnPieceOut {
-        head: blank_out(),
-        emitted: 0,
-        more: 0,
-        flags: 0,
-        reply_status: 0,
-        fields_written: 0,
-        fields_needed: 0,
-        units_written: 0,
-        units_needed: 0,
-        records_written: 0,
-        records_needed: 0,
-        verdict: 0,
-        arena_written: 0,
-        arena_needed: 0,
-        verb: NO_SPAN,
-        target: NO_SPAN,
-    };
-    (input, out)
+    (input, blank_out())
 }
 
 /// How a unit's pump ended.
@@ -268,7 +226,7 @@ pub(crate) enum End {
     /// The unit failed; nothing was cancelled.
     Failed(ReasonCode),
     /// The driver cancels the unit; the answer of the op that was in flight, if one was.
-    Cancel(CancelCause, Option<Answered>),
+    Cancel(ReasonCode, Option<Answered>),
 }
 
 /// What pushing one piece came to.
@@ -391,7 +349,7 @@ impl<'u> Pumping<'u> {
     /// client-drop path (the cancel crossing, on the worker) and the op's answer, with its
     /// disposition, is awaited before the pump moves on. The driver keeps the deadline itself;
     /// the dispatcher is handed none, so no second cancel races the driver's.
-    async fn cross(&mut self, p: &Piece) -> (Answered, Option<Answer>, Option<CancelCause>) {
+    async fn cross(&mut self, p: &Piece) -> (Answered, Option<Answer>, Option<ReasonCode>) {
         let calls = &self.driver.calls;
         let (input, out) = frame(&mut self.bufs, p, self.ctx.key.get());
         let left = self.left();
@@ -414,7 +372,7 @@ impl<'u> Pumping<'u> {
     /// Cancel the unit for `cause` and bill it. With an op that was in flight, its answer carries
     /// the disposition the cancel crossing gave; otherwise the driver makes the ticketless `cancel`
     /// itself, here, on the caller's task.
-    pub(crate) fn cancel(&mut self, cause: CancelCause, done: Option<Answered>) -> CancelBill {
+    pub(crate) fn cancel(&mut self, cause: ReasonCode, done: Option<Answered>) -> CancelBill {
         let disposition = match done.map(|d| (d.disposition, d.outcome)) {
             Some((Some(d), _)) => Some(d),
             Some((None, AbiOutcome::Fault)) => None,
@@ -477,12 +435,12 @@ async fn guarded<T>(
     stop: &mut watch::Receiver<bool>,
     left: Option<Duration>,
     fut: impl Future<Output = T>,
-) -> Result<T, CancelCause> {
+) -> Result<T, ReasonCode> {
     tokio::select! {
         biased;
         v = fut => Ok(v),
-        _ = stop.wait_for(|stopped| *stopped) => Err(CancelCause::Reload),
-        () = until(left) => Err(CancelCause::Deadline),
+        _ = stop.wait_for(|stopped| *stopped) => Err(ReasonCode::Drain),
+        () = until(left) => Err(ReasonCode::DeadlineExceeded),
     }
 }
 
@@ -490,7 +448,7 @@ async fn guarded<T>(
 async fn guarded_run<T>(
     run: &mut Pumping<'_>,
     fut: impl Future<Output = T>,
-) -> Result<T, CancelCause> {
+) -> Result<T, ReasonCode> {
     let left = run.left();
     guarded(&mut run.stop, left, fut).await
 }
@@ -678,7 +636,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         match guarded(stop, left, self.caller.write(emitted)).await {
                             Ok(true) => {}
                             Ok(false) => {
-                                return Step::End(End::Cancel(CancelCause::ClientGone, None));
+                                return Step::End(End::Cancel(ReasonCode::ClientGone, None));
                             }
                             Err(cause) => return Step::End(End::Cancel(cause, None)),
                         }
@@ -686,7 +644,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 }
             }
             if checkpoint == Checkpoint::Cut {
-                return Step::End(End::Cancel(CancelCause::Cut, None));
+                return Step::End(End::Cancel(ReasonCode::OverBudget, None));
             }
             if out.more == 1 {
                 piece = piece.continuation();

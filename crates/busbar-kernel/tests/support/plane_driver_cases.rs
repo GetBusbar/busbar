@@ -23,8 +23,8 @@ use std::time::{Duration, Instant};
 use busbar_contract::abi::plane::{UnitCount, CANCEL_FAILED, CANCEL_OK_PARTIAL};
 use busbar_contract::caps::{Canary, Outcome, ReasonCode, StepName};
 use busbar_kernel::plane_driver::{
-    Arrival, BufferCaps, CallerEnd, CancelBill, CancelCause, Checkpoint, FarEnd, FarPiece,
-    MoneySeam, OutboundRequest, PlaneUnits,
+    Arrival, BufferCaps, CallerEnd, CancelBill, Checkpoint, FarEnd, FarPiece, MoneySeam,
+    OutboundRequest, PlaneUnits,
 };
 use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
 use busbar_kernel::teller::{
@@ -735,7 +735,7 @@ async fn cancel_on_the_deadline() {
         );
         let bills = r.book.bills();
         assert_eq!(bills.len(), 1, "{way:?}");
-        assert_eq!(bills[0].cause, CancelCause::Deadline);
+        assert_eq!(bills[0].cause, ReasonCode::DeadlineExceeded);
         assert_eq!(
             bills[0].disposition, CANCEL_FAILED,
             "far end answered, nothing streamed"
@@ -775,7 +775,7 @@ async fn cancel_on_the_cut() {
         );
         assert_eq!(caller.text(), "hello refused:429:over_budget", "{way:?}");
         let bill = units.cancel_bill().expect("the cut was billed");
-        assert_eq!(bill.cause, CancelCause::Cut);
+        assert_eq!(bill.cause, ReasonCode::OverBudget);
         assert_eq!(bill.disposition, CANCEL_OK_PARTIAL);
         assert_eq!(
             bill.billed,
@@ -819,7 +819,7 @@ async fn cancel_on_reload() {
         );
         let bills = r.book.bills();
         assert_eq!(bills.len(), 1);
-        assert_eq!(bills[0].cause, CancelCause::Reload);
+        assert_eq!(bills[0].cause, ReasonCode::Drain);
         assert_eq!(r.stats()[stat::CANCELS_ON_WORKER], 1);
     }
 }
@@ -859,7 +859,7 @@ async fn cancel_when_the_caller_goes_away() {
         assert_eq!(r.driver.buried(), 0, "{way:?}: the sweep finished it");
         let bills = r.book.bills();
         assert_eq!(bills.len(), 1);
-        assert_eq!(bills[0].cause, CancelCause::ClientGone);
+        assert_eq!(bills[0].cause, ReasonCode::ClientGone);
         assert_eq!(bills[0].disposition, CANCEL_FAILED);
         let s = r.stats();
         assert_eq!(s[stat::CANCELS], 1, "{way:?}: one cancel");
