@@ -30,6 +30,9 @@ pub trait Remote {
     fn branches(&self, repo: &str) -> Result<Vec<String>, String>;
     /// The branch's protection as GitHub reports it; `None` when the branch is unprotected.
     fn protection(&self, repo: &str, branch: &str) -> Result<Option<Value>, String>;
+    /// The rule types the org rulesets put on `branch` (`rules/branches/<branch>`): `update`,
+    /// `deletion`, `non_fast_forward`, `creation`, ...; empty when no ruleset covers it.
+    fn release_rules(&self, repo: &str, branch: &str) -> Result<Vec<String>, String>;
 }
 
 /// The `gh` CLI.
@@ -160,6 +163,23 @@ impl Remote for Gh {
                 err.trim()
             ))
         }
+    }
+
+    fn release_rules(&self, repo: &str, branch: &str) -> Result<Vec<String>, String> {
+        let api = format!("repos/{ORG}/{repo}/rules/branches/{branch}");
+        let (ok, out, err) = gh(&["api", "--paginate", &api, "--jq", ".[].type"])?;
+        if !ok {
+            return Err(format!("`gh api {api}`: {}", err.trim()));
+        }
+        let mut types: Vec<String> = out
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect();
+        types.sort();
+        types.dedup();
+        Ok(types)
     }
 }
 

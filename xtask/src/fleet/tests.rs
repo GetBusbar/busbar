@@ -69,6 +69,8 @@ struct Repo {
     files: BTreeMap<String, String>,
     branches: Vec<String>,
     protection: BTreeMap<String, Value>,
+    /// The rule types the org ruleset puts on a branch (`rules/branches/<b>`).
+    rules: BTreeMap<String, Vec<String>>,
     settings: Settings,
     /// No commits at all (GitHub's 409 "Git Repository is empty").
     empty: bool,
@@ -81,6 +83,7 @@ impl Default for Repo {
             files: BTreeMap::new(),
             branches: Vec::new(),
             protection: BTreeMap::new(),
+            rules: BTreeMap::new(),
             empty: false,
             settings: Settings {
                 visibility: "public".into(),
@@ -95,7 +98,11 @@ impl Default for Repo {
 struct Fake {
     repos: RefCell<BTreeMap<String, Repo>>,
     unreadable: Vec<String>,
+    unreadable_rules: Vec<String>,
 }
+
+/// What the org ruleset "release branches: main + qa (owner say-so only)" puts on a branch.
+const RULESET: [&str; 4] = ["creation", "deletion", "non_fast_forward", "update"];
 
 impl Remote for Fake {
     fn is_empty(&self, repo: &str) -> Result<bool, String> {
@@ -127,6 +134,16 @@ impl Remote for Fake {
     }
     fn protection(&self, repo: &str, b: &str) -> Result<Option<Value>, String> {
         Ok(self.repos.borrow()[repo].protection.get(b).cloned())
+    }
+    fn release_rules(&self, repo: &str, b: &str) -> Result<Vec<String>, String> {
+        if self.unreadable_rules.iter().any(|r| r == repo) {
+            return Err("HTTP 403: Resource not accessible".into());
+        }
+        Ok(self.repos.borrow()[repo]
+            .rules
+            .get(b)
+            .cloned()
+            .unwrap_or_default())
     }
 }
 
@@ -160,8 +177,11 @@ fn conforming(fleet: &Fleet, t: &Templates) -> Fake {
             branches: vec!["dev".into(), "qa".into(), "main".into()],
             ..Default::default()
         };
-        for b in &r.branches.clone() {
-            r.protection.insert(b.clone(), as_github_reports(&spec));
+        // Classic protection is `dev`'s alone; `main` and `qa` are the ruleset's.
+        r.protection.insert("dev".into(), as_github_reports(&spec));
+        for b in ["main", "qa"] {
+            r.rules
+                .insert(b.into(), RULESET.iter().map(|x| x.to_string()).collect());
         }
         let skeleton = readme_skeleton(fleet, p, t).unwrap();
         for f in render(fleet, p, t).unwrap() {
@@ -200,6 +220,7 @@ fn conforming(fleet: &Fleet, t: &Templates) -> Fake {
     Fake {
         repos: RefCell::new(repos),
         unreadable: vec![],
+        unreadable_rules: vec![],
     }
 }
 
@@ -426,9 +447,9 @@ fn every_kind_of_drift_is_red_and_names_the_repo_and_the_file() {
     );
 
     let f = plant(&|r| {
-        r.protection.remove("main");
+        r.protection.remove("dev");
     });
-    one(&f, a, "protection main", "unprotected");
+    one(&f, a, "protection dev", "unprotected");
 
     let f = plant(&|r| {
         r.files.insert(
@@ -1038,4 +1059,55 @@ fn an_export_sinks_registry_alias_is_its_module_name() {
     ] {
         assert_eq!(fleet.plugin(repo).unwrap().alias, module, "{repo}");
     }
+}
+
+#[test]
+fn main_and_qa_are_held_to_the_org_ruleset_and_dev_to_the_classic_protection() {
+    let (fleet, t) = (fixture(), templates());
+    let a = "busbar-store-alpha";
+    let plant = |edit: &dyn Fn(&mut Repo)| {
+        let fake = conforming(&fleet, &t);
+        edit(fake.repos.borrow_mut().get_mut(a).unwrap());
+        run(&fleet, &t, &fake)
+    };
+    // The control: no classic protection on main or qa, the ruleset on both: green.
+    assert!(run(&fleet, &t, &conforming(&fleet, &t)).is_empty());
+    // A branch the ruleset does not cover (no `update` rule) is named, repo and branch.
+    for b in ["main", "qa"] {
+        let f = plant(&|r| {
+            r.rules
+                .insert(b.into(), vec!["deletion".into(), "creation".into()]);
+        });
+        one(&f, a, &format!("ruleset {b}"), "`update`");
+        assert_eq!(f.len(), 1, "{f:#?}");
+        let f = plant(&|r| {
+            r.rules.remove(b);
+        });
+        one(&f, a, &format!("ruleset {b}"), "`update`");
+    }
+    // Classic protection on main or qa is not compared: it is dev's alone.
+    let f = plant(&|r| {
+        r.protection
+            .insert("main".into(), serde_json::json!({"x": 1}));
+    });
+    assert!(f.is_empty(), "{f:#?}");
+    // dev is still compared against protection.json.
+    let f = plant(&|r| {
+        r.protection.get_mut("dev").unwrap()["required_pull_request_reviews"]
+            ["required_approving_review_count"] = Value::from(0);
+    });
+    one(
+        &f,
+        a,
+        "protection dev",
+        "differs from .github/fleet/protection.json",
+    );
+    // A missing release branch is the branch finding alone, not a second ruleset finding.
+    let f = plant(&|r| r.branches.retain(|b| b != "qa"));
+    one(&f, a, "branch qa", "missing");
+    assert_eq!(f.len(), 1, "{f:#?}");
+    // Rules that cannot be read are a finding, not a pass.
+    let mut fake = conforming(&fleet, &t);
+    fake.unreadable_rules.push(a.into());
+    one(&run(&fleet, &t, &fake), a, "ruleset main", "could not read");
 }
