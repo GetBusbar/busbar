@@ -364,7 +364,7 @@ macro_rules! lend {
     };
 }
 
-use crate::abi::auth::{IdentityBuf, NamedValue, Span as AuthSpan, VerifyIn};
+use crate::abi::auth::{IdentityBuf, NamedValue, VerifyIn};
 use crate::abi::mechanism::lifecycle::{OpenIn, RefreshIn};
 use crate::abi::plane::{
     ArriveIn, OnPieceIn, OutField, PlaneDriveIn, ProjectIn, RecordWrite, RefusalIn, ServeIn,
@@ -383,7 +383,7 @@ lend! {
     VerifyIn { list(carrier, carrier_len) -> NamedValue; }
     IdentityBuf {
         buf(buf, buf_cap) -> u8;
-        buf(groups, groups_cap) -> AuthSpan;
+        buf(groups, groups_cap) -> Span;
     }
     // THE PLANE KIND (`abi::plane`): request-path results go into host buffers.
     ArriveIn {
@@ -391,7 +391,7 @@ lend! {
         buf(units_buf, units_cap) -> UnitCount;
     }
     OnPieceIn {
-        list(head_fields, head_fields_len) -> PlaneField;
+        list(head_fields, head_fields_len) -> Field;
         buf(reply_buf, reply_cap) -> u8;
         buf(units_buf, units_cap) -> UnitCount;
         buf(records_buf, records_cap) -> RecordWrite;

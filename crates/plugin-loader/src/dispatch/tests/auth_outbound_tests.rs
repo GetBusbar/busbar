@@ -12,10 +12,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use busbar_contract::abi::auth::{
-    AuthTail, FieldSpan, FieldsIn, FieldsOut, OpenOutboundIn, OpenOutboundOut, Span, StyleDecl,
+    AuthTail, FieldSpan, FieldsIn, FieldsOut, OpenOutboundIn, OpenOutboundOut, StyleDecl,
     CAP_INBOUND, CAP_OUTBOUND, FIELD_SENSITIVE, LOGIN_KIND_NONE, MODE_PASSTHROUGH,
 };
-use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome};
+use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome, Span};
 use busbar_contract::abi::mechanism::door::KindTailHead;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::sdk::auth_door::{Held, Verdict, VerifyPlugin, VerifyView};
@@ -117,11 +117,11 @@ mod plugin {
                     );
                     *i.fields.add(k) = FieldSpan {
                         name: Span {
-                            off: at as u32,
+                            offset: at as u32,
                             len: n.len() as u32,
                         },
                         value: Span {
-                            off: (at + n.len()) as u32,
+                            offset: (at + n.len()) as u32,
                             len: v.len() as u32,
                         },
                         flags: *flags,

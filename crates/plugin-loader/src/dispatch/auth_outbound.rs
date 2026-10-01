@@ -81,8 +81,8 @@ const NO_BLOB: Blob = Blob {
 };
 
 const NO_FIELD: FieldSpan = FieldSpan {
-    name: busbar_contract::abi::auth::Span { off: 0, len: 0 },
-    value: busbar_contract::abi::auth::Span { off: 0, len: 0 },
+    name: busbar_contract::abi::mechanism::call::Span { offset: 0, len: 0 },
+    value: busbar_contract::abi::mechanism::call::Span { offset: 0, len: 0 },
     flags: 0,
     _reserved: 0,
 };
@@ -174,8 +174,8 @@ impl Lend {
     /// The fields a READY answer wrote, copied out of the host buffer. The dispatcher's validator
     /// (`check_fields`) already bounded every span.
     fn answer(&self, out: &FieldsOut) -> Fields {
-        let take = |s: busbar_contract::abi::auth::Span| {
-            let start = s.off as usize;
+        let take = |s: busbar_contract::abi::mechanism::call::Span| {
+            let start = s.offset as usize;
             self.field_buf
                 .get(start..start.saturating_add(s.len as usize))
                 .unwrap_or_default()
