@@ -1,261 +1,36 @@
 name: promote
-
-# Every same-repo pull request is one hop up the branch ladder. busbar-release's
-# engine plans the hop from the PR's base branch (crates/busbar-release-train/
-# ladder.json) and runs exactly what entering it needs, on a Latchkey runner sized
-# to it; on BOARD it fast-forwards the base to the tested SHA. qa/main need owner
-# consent and stay locked by the org ruleset.
-#
-# The jobs live here, not as a `uses:` of busbar-release's reusable promote.yml:
-# busbar is public and busbar-release is private, and GitHub refuses to start a
-# public repository's run that calls a private repository's workflow (startup
-# failure, no jobs). The engine itself stays in busbar-release, pinned by
-# RELEASE_REF and checked out with a token that can read it. Keep these jobs in
-# step with busbar-release/.github/workflows/promote.yml at that commit.
-#
-# BOARD (the fast-forward of the base) runs only when the repository variable
-# PROMOTE_BOARD is "true"; without it a green run stops at the turnstile verdict.
-on:
-  pull_request:
-
-concurrency:
-  group: promote-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
-permissions:
-  contents: read
-
+# Every same-repo PR is one hop up the branch ladder. The hop is GetBusbar/busbar-release's
+# ci/promote scripts at RELEASE_REF (private, so no `uses:`); these jobs only check out both repos
+# and run them. BOARD (fast-forward of the base) runs only when vars.PROMOTE_BOARD is "true".
+on: pull_request
+concurrency: { group: "promote-${{ github.event.pull_request.number }}", cancel-in-progress: true }
+permissions: { contents: read }
 env:
-  CARGO_TERM_COLOR: always
-  CARGO_INCREMENTAL: "0"
-  # busbar-release commit whose engine and ladder run this hop. Re-pin here.
-  RELEASE_REF: 4a5f57d556de436233149f7669b38d31cef90fcf
+  RELEASE_REF: f4c8b01d09c07d82726a6750aad70dcf087687b8
   SHA: ${{ github.event.pull_request.head.sha }}
   TO: ${{ github.base_ref }}
   BASE_SHA: ${{ github.event.pull_request.base.sha }}
-
 jobs:
-  # FAIL FAST on a free runner: the checks that need no build of the product.
-  # A red here costs a minute, not a gate battery.
   preflight:
-    name: preflight
-    # Same-repo PRs only: a fork's PR never reaches the secrets or a Latchkey runner.
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    outputs:
-      runner: ${{ steps.size.outputs.runner }}
+    outputs: { runner: "${{ steps.pre.outputs.runner }}" }
     steps:
-      # Inputs travel through env, never `${{ }}` in script text, and are
-      # allowlisted before anything uses them (injection sink).
-      - name: Check inputs
-        env:
-          SHA: ${{ env.SHA }}
-          TO: ${{ env.TO }}
-          BASE_SHA: ${{ env.BASE_SHA }}
-          RELEASE_REF: ${{ env.RELEASE_REF }}
-        run: |
-          set -euo pipefail
-          for v in "$SHA" "$TO" "$BASE_SHA" "$RELEASE_REF"; do
-            case "$v" in *[!A-Za-z0-9._/-]*) echo "illegal character in an input" >&2; exit 1;; esac
-          done
-
-      # The rung's runner (ladder.json) sizes the heavy job before it starts.
-      - name: Checkout the ladder
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: GetBusbar/busbar-release
-          ref: ${{ env.RELEASE_REF }}
-          # busbar-release is private: the run's GITHUB_TOKEN cannot read it.
-          token: ${{ secrets.TURNSTILE_DISPATCH_TOKEN }}
-          path: busbar-release
-          sparse-checkout: crates/busbar-release-train/ladder.json
-          sparse-checkout-cone-mode: false
-
-      - name: Runner for this hop
-        id: size
-        env:
-          TO: ${{ env.TO }}
-        run: |
-          set -euo pipefail
-          runner=$(jq -r --arg to "$TO" '.rungs[] | select(.branch == $to) | .runner // "latchkey-large"' \
-            busbar-release/crates/busbar-release-train/ladder.json)
-          [ -n "$runner" ] || { echo "$TO is not on the ladder" >&2; exit 1; }
-          echo "runner=$runner" | tee -a "$GITHUB_OUTPUT"
-
-      - name: Checkout busbar candidate
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: GetBusbar/busbar
-          ref: ${{ env.SHA }}
-          path: busbar
-
-      # busbar's rust-toolchain.toml is honoured by rustup in this checkout.
-      - name: Formatting
-        working-directory: busbar
-        run: cargo fmt --all -- --check
-
-      - name: Cargo.lock is current
-        working-directory: busbar
-        run: cargo metadata --locked --format-version 1 >/dev/null
-
-      - name: C header is current
-        working-directory: busbar
-        run: |
-          set -euo pipefail
-          cargo xtask gate abi-header --write
-          git diff --exit-code -- crates/busbar-contract/include
-
+      - { uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262, with: { ref: "${{ env.SHA }}", path: busbar } }
+      - { uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } }
+      - { id: pre, run: bash busbar-release/ci/promote/preflight.sh }
   hop:
-    name: promote
     needs: preflight
-    # Decision #56: Latchkey-primary; money/oracle allowed on Latchkey.
     runs-on: ${{ needs.preflight.outputs.runner }}
-    # One promotion per target at a time; a candidate admitted on a stale tip
-    # re-admits (fast-forward-only), so queue rather than cancel.
-    concurrency:
-      group: promote-hop-${{ github.base_ref }}
-      cancel-in-progress: false
+    concurrency: { group: "promote-hop-${{ github.base_ref }}", cancel-in-progress: false }
     timeout-minutes: 330
     steps:
-      - name: Checkout busbar-release
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: GetBusbar/busbar-release
-          ref: ${{ env.RELEASE_REF }}
-          # busbar-release is private: the run's GITHUB_TOKEN cannot read it.
-          token: ${{ secrets.TURNSTILE_DISPATCH_TOKEN }}
-          path: busbar-release
-
-      - name: Install pinned Rust toolchain
-        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0 (action version)
-        with:
-          toolchain: "1.97"
-
-      # sccache on R2 under its own `turnstile/` prefix. Fails open: without the
-      # secrets or a reachable bucket every build runs uncached.
-      - name: Install sccache
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
-        continue-on-error: true
-
-      - name: Enable sccache (R2) if credentials present
-        id: sccache
-        env:
-          R2_KEY_ID: ${{ secrets.R2_CACHE_ACCESS_KEY_ID }}
-          R2_KEY_SECRET: ${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}
-          SCCACHE_BUCKET: busbar-build-cache
-          SCCACHE_ENDPOINT: https://91612b184a379a695266d84761cbee8f.r2.cloudflarestorage.com
-          SCCACHE_REGION: auto
-          SCCACHE_S3_KEY_PREFIX: turnstile
-        run: |
-          set +e
-          echo "enabled=false" >> "$GITHUB_OUTPUT"
-          SC="${SCCACHE_PATH:-$(command -v sccache)}"
-          if [ -z "$R2_KEY_ID" ] || [ -z "$R2_KEY_SECRET" ] || [ ! -x "$SC" ]; then
-            echo "sccache unavailable; building uncached"; exit 0
-          fi
-          export AWS_ACCESS_KEY_ID="$R2_KEY_ID" AWS_SECRET_ACCESS_KEY="$R2_KEY_SECRET"
-          if ! "$SC" --start-server >/dev/null 2>&1; then
-            echo "sccache could not reach R2; building uncached"; exit 0
-          fi
-          {
-            echo "RUSTC_WRAPPER=$SC"
-            echo "SCCACHE_BUCKET=$SCCACHE_BUCKET"
-            echo "SCCACHE_ENDPOINT=$SCCACHE_ENDPOINT"
-            echo "SCCACHE_REGION=$SCCACHE_REGION"
-            echo "SCCACHE_S3_KEY_PREFIX=$SCCACHE_S3_KEY_PREFIX"
-            echo "AWS_ACCESS_KEY_ID=$R2_KEY_ID"
-            echo "AWS_SECRET_ACCESS_KEY=$R2_KEY_SECRET"
-          } >> "$GITHUB_ENV"
-          echo "enabled=true" >> "$GITHUB_OUTPUT"
-
-      - name: Build engine (turnstile + train)
-        working-directory: busbar-release
-        run: cargo build --locked --release -p busbar-release-turnstile -p busbar-release-train
-
-      - name: Plan the hop
-        id: plan
-        working-directory: busbar-release
-        env:
-          TO: ${{ env.TO }}
-        run: |
-          set -euo pipefail
-          ./target/release/busbar-train plan --to "$TO" | tee -a "$GITHUB_OUTPUT"
-
-      - name: Checkout busbar candidate
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: GetBusbar/busbar
-          ref: ${{ env.SHA }}
-          path: busbar
-          fetch-depth: 0
-
-      # The oracle records THIS candidate's release binary with the pinned Rust
-      # money-oracle engine: busbar's bin/oracle builds it from this busbar-release
-      # checkout (oracle-rust.pin) and prints a tool dir whose record.sh forwards
-      # to `busbar-oracle record --native`.
-      - name: Build candidate release binary + the pinned Rust oracle engine
-        if: contains(steps.plan.outputs.turnstile, '--needs-oracle')
-        working-directory: busbar
-        env:
-          BUSBAR_RELEASE_CHECKOUT: ${{ github.workspace }}/busbar-release
-        run: |
-          set -euo pipefail
-          cargo build --locked --release -p busbar --bin busbar
-          tool_dir="$(./bin/oracle tool-dir)"
-          [ -f "$tool_dir/record.sh" ] || { echo "record.sh shim absent under $tool_dir" >&2; exit 1; }
-          echo "BUSBAR_ORACLE_TOOL_DIR=$tool_dir" >> "$GITHUB_ENV"
-          echo "BUSBAR_RELEASE_CHECKOUT=$BUSBAR_RELEASE_CHECKOUT" >> "$GITHUB_ENV"
-
-      - name: Admit (turnstile)
-        working-directory: busbar-release
-        env:
-          SHA: ${{ env.SHA }}
-          BASE_SHA: ${{ env.BASE_SHA }}
-          CHECKS: ${{ steps.plan.outputs.turnstile }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$GITHUB_WORKSPACE/artifacts"
-          BASE=()
-          [ -z "$BASE_SHA" ] || BASE=(--base-sha "$BASE_SHA")
-          # shellcheck disable=SC2086 # CHECKS is the plan's flag list
-          ./target/release/busbar-turnstile admit \
-            --busbar-repo "$GITHUB_WORKSPACE/busbar" \
-            --sha "$SHA" \
-            --artifacts "$GITHUB_WORKSPACE/artifacts" \
-            "${BASE[@]}" $CHECKS --json
-
-      - name: Builds named by the plan
-        if: steps.plan.outputs.builds != ''
-        env:
-          BUILDS: ${{ steps.plan.outputs.builds }}
-        run: |
-          echo "entry builds not yet ported into the engine: $BUILDS" >&2
-          exit 1
-
-      - name: sccache stats
-        if: always() && steps.sccache.outputs.enabled == 'true'
-        run: ${{ env.RUSTC_WRAPPER }} --show-stats
-
-      - name: Upload turnstile report
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: turnstile-report-${{ env.SHA }}
-          path: artifacts/turnstile-report.json
-          if-no-files-found: warn
-
-      # BOARD: fast-forward the target to the exact admitted SHA. The engine
-      # re-derives the verdict from the report and refuses a consent-gated rung
-      # without --approve, so qa/main stop here green for the owner.
-      - name: Promote
-        if: steps.plan.outputs.consent == 'false' && vars.PROMOTE_BOARD == 'true'
-        working-directory: busbar-release
-        env:
-          GITHUB_TOKEN: ${{ secrets.BUSBAR_TRAIN_TOKEN }}
-          SHA: ${{ env.SHA }}
-          TO: ${{ env.TO }}
-        run: |
-          ./target/release/busbar-train promote --repo GetBusbar/busbar \
-            --sha "$SHA" --to "$TO" \
-            --from-report "$GITHUB_WORKSPACE/artifacts/turnstile-report.json"
+      - { uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262, with: { ref: "${{ env.SHA }}", path: busbar, fetch-depth: 0 } }
+      - { uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } }
+      - run: bash busbar-release/ci/promote/hop.sh
+        env: { R2_KEY_ID: "${{ secrets.R2_CACHE_ACCESS_KEY_ID }}", R2_KEY_SECRET: "${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}" }
+      - { if: always(), uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02, with: { name: "turnstile-report-${{ env.SHA }}", path: "artifacts/turnstile-*.json", if-no-files-found: warn } }
+      - if: vars.PROMOTE_BOARD == 'true'
+        run: bash busbar-release/ci/promote/board.sh
+        env: { GITHUB_TOKEN: "${{ secrets.BUSBAR_TRAIN_TOKEN }}" }
