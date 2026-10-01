@@ -90,6 +90,8 @@ fn field() -> OutField {
 #[test]
 fn arrive_green_units_within_the_hosts_cap() {
     let mut units = [unit(); 4];
+    // One count per class: a class counted twice in one report is refused.
+    units[1].class = 1;
     let mut i: ArriveIn = z();
     i.units_buf = units.as_mut_ptr();
     i.units_cap = units.len();
