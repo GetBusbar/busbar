@@ -3246,7 +3246,10 @@ mod signed_token {
         ];
         for out in &printed {
             assert!(!out.contains(&token), "token leaked through a print");
-            assert!(!out.contains(&aws_secret), "AWS secret leaked through a print");
+            assert!(
+                !out.contains(&aws_secret),
+                "AWS secret leaked through a print"
+            );
         }
         assert!(printed[4].contains("[REDACTED]"));
         let (_, cred) = g

@@ -409,12 +409,7 @@ impl GovState {
         self.store.put_key_with_credential(&binding, &secret)?;
         self.refresh()?;
         let token = material.signer.mint(&id, exp, Some(&generation));
-        Ok((
-            binding,
-            token.into(),
-            access_key_id,
-            secret_access_key,
-        ))
+        Ok((binding, token.into(), access_key_id, secret_access_key))
     }
 
     /// The signing key id (`kid`) this node stamps into minted tokens, if signing is enabled.

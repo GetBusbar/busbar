@@ -350,16 +350,22 @@ extern "C" {
 #define BB_PLANE_PIECE_LAST UINT32_C(2) /* [`OnPieceIn::flags`]: no piece follows from this side. */
 #define BB_PLANE_PIECE_HAS_STATUS UINT32_C(4) /* [`OnPieceIn::flags`]: `status_code`/`status_class` are set. */
 #define BB_PLANE_PIECE_FIELDS UINT32_C(8) /* [`OnPieceIn::flags`], [`FROM_FAR_END`]: the bytes are a head of the far end's fields that */
+#define BB_PLANE_PIECE_CATALOGUE_MOVED UINT32_C(16) /* [`OnPieceIn::flags`]: the CATALOGUE-MOVED TICK. With [`FROM_KERNEL`], `attempt_no == 0` and no */
 #define BB_PLANE_EMIT_TO_FAR_END UINT32_C(1) /* [`OnPieceOut::flags`]: the emitted bytes go to the far end (else to the caller). */
 #define BB_PLANE_EMIT_DONE UINT32_C(2) /* [`OnPieceOut::flags`]: the unit's reply is complete. */
 #define BB_PLANE_PIECE_OUT_TEXT UINT32_C(4) /* [`OnPieceOut::flags`]: the bytes this answer emits are ONE text message (a carrier with text and */
+#define BB_PLANE_EMIT_WATCH_CATALOGUE UINT32_C(8) /* [`OnPieceOut::flags`]: WATCH. From now on, this piece's session is given a */
+#define BB_PLANE_EMIT_UNWATCH_CATALOGUE UINT32_C(16) /* [`OnPieceOut::flags`]: DROP the watch [`EMIT_WATCH_CATALOGUE`] set for this piece's session. The */
 #define BB_PLANE_VERDICT_NONE UINT32_C(0) /* [`OnPieceOut::verdict`]: no verdict; the walk's status table alone decides. */
 #define BB_PLANE_VERDICT_OK UINT32_C(1) /* [`OnPieceOut::verdict`]: the far end's answer is a success. */
 #define BB_PLANE_VERDICT_RETRY UINT32_C(2) /* [`OnPieceOut::verdict`]: the far end's answer is a failure another member may not share. The */
 #define BB_PLANE_VERDICT_HARD UINT32_C(3) /* [`OnPieceOut::verdict`]: the far end's answer is a failure no other member would change. */
 #define BB_PLANE_REFUSAL_KERNEL UINT32_C(0) /* [`RefusalIn::cause`]: the kernel refused. */
 #define BB_PLANE_REFUSAL_GATE UINT32_C(1) /* [`RefusalIn::cause`]: a gate refused. */
-#define BB_PLANE_MARK_GATE_REJECTED UINT32_C(1) /* [`RefusalOut::marker`]: the rendered refusal is a gate rejection (the `GateRejected` marker the */
+#define BB_PLANE_REFUSAL_ARRIVE UINT32_C(2) /* [`RefusalIn::cause`]: the plane refused its own arrival; [`RefusalIn::text`] is that arrival's */
+#define BB_PLANE_MAX_REFUSAL_TEXT UINT64_C(0x80000) /* The most bytes of text a REFUSED `arrive` may carry in its `head.error`. More is a FAULT of */
+#define BB_PLANE_LARGEST_ADMITTED_FIELD_LINE UINT64_C(0x66000) /* The largest field line a transport admits: a textual head is read into at most 8 KiB plus */
+#define BB_PLANE_MARK_GATE_REJECTED UINT32_C(1) /* The gate-rejected audit marker (the `GateRejected` marker the kernel keeps). The kernel sets it */
 #define BB_PLANE_RECORD_PUT UINT32_C(1) /* [`RecordWrite::op`]: put, the one record write there is. A record is never deleted by a write: */
 #define BB_PLANE_ROUTE_PUBLIC UINT32_C(1) /* [`AdminRoute::flags`]: a public route. [`slot::SERVE`] serves it to an unauthenticated caller; */
 #define BB_PLANE_CHAIN_LENGTH_PREFIXED UINT32_C(1) /* [`RecordChain::framing`]: each field of the record's digest is length-prefixed. */
@@ -2419,6 +2425,8 @@ struct bb_plane_ArriveOut {
     uint32_t refusal;
     uint32_t refusal_status;
     uint32_t _reserved;
+    uint64_t correlation;
+    uint64_t cancels;
 };
 
 /* `on_piece`'s `in`. */
@@ -2504,7 +2512,7 @@ struct bb_plane_RefusalOut {
     uint32_t marker;
     uint32_t fields_written;
     uint32_t fields_needed;
-    uint32_t _reserved;
+    uint32_t status;
 };
 
 /* `serve`'s `in`. */
@@ -4502,7 +4510,7 @@ BB_ASSERT(offsetof(bb_plane_ArriveIn, body) == 136, "bb_plane_ArriveIn.body: off
 BB_ASSERT(offsetof(bb_plane_ArriveIn, units_buf) == 160, "bb_plane_ArriveIn.units_buf: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveIn, units_cap) == 168, "bb_plane_ArriveIn.units_cap: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveIn, method) == 176, "bb_plane_ArriveIn.method: offset");
-BB_ASSERT(sizeof(bb_plane_ArriveOut) == 128, "bb_plane_ArriveOut: size");
+BB_ASSERT(sizeof(bb_plane_ArriveOut) == 144, "bb_plane_ArriveOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_ArriveOut) == 8, "bb_plane_ArriveOut: alignment");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, head) == 0, "bb_plane_ArriveOut.head: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, op_class) == 96, "bb_plane_ArriveOut.op_class: offset");
@@ -4513,6 +4521,8 @@ BB_ASSERT(offsetof(bb_plane_ArriveOut, units_needed) == 112, "bb_plane_ArriveOut
 BB_ASSERT(offsetof(bb_plane_ArriveOut, refusal) == 116, "bb_plane_ArriveOut.refusal: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, refusal_status) == 120, "bb_plane_ArriveOut.refusal_status: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, _reserved) == 124, "bb_plane_ArriveOut._reserved: offset");
+BB_ASSERT(offsetof(bb_plane_ArriveOut, correlation) == 128, "bb_plane_ArriveOut.correlation: offset");
+BB_ASSERT(offsetof(bb_plane_ArriveOut, cancels) == 136, "bb_plane_ArriveOut.cancels: offset");
 BB_ASSERT(sizeof(bb_plane_OnPieceIn) == 312, "bb_plane_OnPieceIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_OnPieceIn) == 8, "bb_plane_OnPieceIn: alignment");
 BB_ASSERT(offsetof(bb_plane_OnPieceIn, head) == 0, "bb_plane_OnPieceIn.head: offset");
@@ -4590,7 +4600,7 @@ BB_ASSERT(offsetof(bb_plane_RefusalOut, arena_needed) == 120, "bb_plane_RefusalO
 BB_ASSERT(offsetof(bb_plane_RefusalOut, marker) == 128, "bb_plane_RefusalOut.marker: offset");
 BB_ASSERT(offsetof(bb_plane_RefusalOut, fields_written) == 132, "bb_plane_RefusalOut.fields_written: offset");
 BB_ASSERT(offsetof(bb_plane_RefusalOut, fields_needed) == 136, "bb_plane_RefusalOut.fields_needed: offset");
-BB_ASSERT(offsetof(bb_plane_RefusalOut, _reserved) == 140, "bb_plane_RefusalOut._reserved: offset");
+BB_ASSERT(offsetof(bb_plane_RefusalOut, status) == 140, "bb_plane_RefusalOut.status: offset");
 BB_ASSERT(sizeof(bb_plane_ServeIn) == 200, "bb_plane_ServeIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_ServeIn) == 8, "bb_plane_ServeIn: alignment");
 BB_ASSERT(offsetof(bb_plane_ServeIn, head) == 0, "bb_plane_ServeIn.head: offset");
