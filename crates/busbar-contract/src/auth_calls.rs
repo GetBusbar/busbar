@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE AUTH KIND'S CALLS, AS THE HOST'S TWO HALVES SHARE THEM (`BUSBAR-1.6.0.md` THE DESIGN §6,
-//! §11.4, §11.6, §11.11 R3): the [`AuthCalls`] trait the plugin loader implements over one loaded
+//! THE AUTH KIND'S CALLS, AS THE HOST'S TWO HALVES SHARE THEM (`BUSBAR-1.6.0.md` THE DESIGN,
+//! sections 6, 11.4, 11.6 and 11.11): the [`AuthCalls`] trait the plugin loader implements over one loaded
 //! auth instance, and the [`AuthAxis`] the composition root hands the kernel to open them. The
 //! kernel's identity chain calls every auth plugin's `verify` through these, so a compiled-in and a
 //! dropped-in auth plugin are reached through the same table. The kernel names this, the loader
@@ -10,7 +10,7 @@
 //! kind's ABI is `abi::auth`.
 //!
 //! ONE CALL PER REQUEST PER CHAIN POSITION, and no verdict cache in the kernel: each auth plugin
-//! caches inside itself (R3), and drops that cache on `refresh` ([`AuthCalls::refresh`]).
+//! caches inside itself, and drops that cache on `refresh` ([`AuthCalls::refresh`]).
 
 use std::future::Future;
 
@@ -77,7 +77,7 @@ pub enum Verified {
     /// answer): the chain's error path, fail-closed as 1.5.5's module failure.
     Failed,
     /// The instance's `max_inflight` is full: the call was not queued. The host answers the
-    /// request 503 (THE DESIGN §11.11 R8, an accepted difference from 1.5.5).
+    /// request 503 (THE DESIGN, section 11.11: an accepted difference from 1.5.5).
     Overloaded,
 }
 
@@ -97,7 +97,7 @@ pub trait AuthCalls: Send + Sync {
     fn facts(&self) -> u32;
 
     /// `verify` ON THE SPOT: one ticket-less crossing on the caller's thread, bounded by the
-    /// dispatcher's watchdog (THE DESIGN §12: a crossing that cannot wait needs no ticket). A
+    /// dispatcher's watchdog (THE DESIGN, section 12: a crossing that cannot wait needs no ticket). A
     /// plugin whose `verify` must wait on I/O answers REFUSED there (`abi::auth`), and this answers
     /// `None`: the caller then [`AuthCalls::verify`]s, awaiting it. A short answer is re-called once.
     fn verify_now(&self, request: &VerifyRequest) -> Option<Verified>;

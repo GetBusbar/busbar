@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE AUTH KIND'S VERIFY DOOR, FOR A SAFE PLUGIN (`abi::auth`, THE DESIGN §11.4, §11.6): the auth
+//! THE AUTH KIND'S VERIFY DOOR, FOR A SAFE PLUGIN (`abi::auth`, THE DESIGN, sections 11.4 and 11.6): the auth
 //! kind's bits over the SDK's safe layer ([`SafeSlot`], [`Lent`], [`HostBuf`]). An auth plugin that
 //! judges an inbound credential on the spot implements [`VerifyPlugin`], and
 //! [`auth_verify_door!`](crate::auth_verify_door) builds its whole door over the auth table: the
