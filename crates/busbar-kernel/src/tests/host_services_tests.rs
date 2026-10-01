@@ -1947,3 +1947,68 @@ fn a_unit_not_in_flight_or_no_unit_is_not_entitled_and_ungoverned_is() {
         r.s.entitlement_check(&caller("stranger"), Some(9), "item:one");
     assert_eq!(stranger.value, svc::NOT_ENTITLED);
 }
+
+// ── THE DESTINATION GUARD AS THE KERNEL'S JUDGE (OWNER DESTINATION GUARD): the kernel asks the
+// judge the root installed; its rules are the connector's, never the kernel's ──
+
+/// A judge that refuses `10.0.0.5` as internal and admits every other literal, recording what it
+/// was asked.
+#[derive(Default)]
+struct FakeGuard(Mutex<Vec<String>>);
+
+impl DestJudge for FakeGuard {
+    fn judge_name(&self, dest: &str, _class: u32) -> Result<(), u64> {
+        self.0.lock().unwrap().push(dest.to_owned());
+        if dest.contains("10.0.0.5") {
+            Err(svc::DEST_INTERNAL)
+        } else {
+            Ok(())
+        }
+    }
+    fn judge(
+        &self,
+        dest: &str,
+        class: u32,
+        _done: Box<dyn FnOnce(Admitted) + Send>,
+    ) -> Option<Admitted> {
+        Some(self.judge_name(dest, class).map(|()| {
+            let at: SocketAddr = "93.184.216.34:443".parse().unwrap();
+            (at, vec![at.ip()])
+        }))
+    }
+    fn judge_answer(&self, _: &str, _: &[IpAddr], _: u32) -> Result<(), DestRefusal> {
+        Ok(())
+    }
+}
+
+/// RED: with a judge installed, `dest.judge` answers the judge's refusal; the kernel's own
+/// (permissive) class rules are never consulted, under any class.
+#[test]
+fn dest_judge_answers_the_installed_guard_refusal() {
+    let guard = Arc::new(FakeGuard::default());
+    let s = services(Arc::default()).with_dest_judge(guard.clone());
+    for class in [0, 4] {
+        let (_, later) = recorder();
+        let got = verdict_now(s.dest_judge("http://10.0.0.5:80/x", class, false, Some(later)));
+        assert_eq!(got.value, svc::DEST_INTERNAL, "class {class}");
+    }
+    assert_eq!(
+        s.judge_dial("10.0.0.5:80", 0, Box::new(|_| {})),
+        Some(Err(svc::DEST_INTERNAL))
+    );
+    assert!(guard.0.lock().unwrap().len() >= 3);
+}
+
+/// RED: the judge's admission is `dest.judge`'s answer too, with the addresses it judged.
+#[test]
+fn dest_judge_answers_the_installed_guard_admission() {
+    let s = services(Arc::default()).with_dest_judge(Arc::new(FakeGuard::default()));
+    let (_, later) = recorder();
+    let got = verdict_now(s.dest_judge("https://api.example.com/", 0, true, Some(later)));
+    assert_eq!(got.value, svc::DEST_ALLOWED);
+    assert_eq!(got.bytes, b"93.184.216.34");
+    assert_eq!(
+        s.judge_dial("api.example.com:443", 0, Box::new(|_| {})),
+        Some(Ok("93.184.216.34:443".parse().unwrap()))
+    );
+}

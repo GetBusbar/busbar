@@ -545,7 +545,7 @@ pub struct RootCfg {
 
 /// THE DESTINATION GUARD'S INPUTS, as one deployment states them (`RootCfg::destinations`): the
 /// connector builds its one guard from these.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Destinations {
     /// `advanced.block_private_addresses`.
     pub block_private_addresses: bool,
@@ -559,6 +559,19 @@ pub struct Destinations {
     pub blocked: Vec<String>,
     /// `security.allow_all_metadata`: every cloud-metadata name and address admitted, as 1.5.5.
     pub allow_all_metadata: bool,
+}
+
+impl Default for Destinations {
+    /// The owner default: private addresses blocked, nothing allowed.
+    fn default() -> Self {
+        Destinations {
+            block_private_addresses: sections::DEFAULT_BLOCK_PRIVATE_ADDRESSES,
+            allow: Vec::new(),
+            legacy_allow: Vec::new(),
+            blocked: Vec::new(),
+            allow_all_metadata: false,
+        }
+    }
 }
 
 impl RootCfg {

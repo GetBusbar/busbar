@@ -75,6 +75,68 @@ use crate::net_guard::{
     NetworkRefusal, Structure,
 };
 
+/// THE DESTINATION JUDGE THE KERNEL ASKS (OWNER ruling DESTINATION GUARD): the connector's one
+/// guard, installed by the root. The judge lives in the connector; the kernel names only this
+/// trait, so the edge stays connector -> kernel.
+pub trait DestJudge: Send + Sync {
+    /// `dest` (a URL or `host[:port]`) under egress class `class`, without resolving: the scheme
+    /// and name arms, an IP literal judged as its own answer. `Err` is the `DEST_*` verdict.
+    ///
+    /// # Errors
+    ///
+    /// The verdict refusing it.
+    fn judge_name(&self, dest: &str, class: u32) -> Result<(), u64>;
+    /// `dest` judged and pinned: at once (`Some`) for a literal or a refusal the name decides; a
+    /// name is resolved off the caller's thread and `done` gets the answer (`None`).
+    fn judge(
+        &self,
+        dest: &str,
+        class: u32,
+        done: Box<dyn FnOnce(Admitted) + Send>,
+    ) -> Option<Admitted>;
+    /// An answer the kernel's own client resolved for `host`, judged whole under `class`.
+    ///
+    /// # Errors
+    ///
+    /// The refusal of the first refused address.
+    fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), DestRefusal>;
+}
+
+/// A destination judge's refusal of an answer: the `DEST_*` verdict and the guard's sentence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DestRefusal {
+    /// The `DEST_*` verdict.
+    pub verdict: u64,
+    /// The guard's sentence.
+    pub reason: String,
+}
+
+impl std::fmt::Display for DestRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.reason)
+    }
+}
+
+impl std::error::Error for DestRefusal {}
+
+static PROCESS_JUDGE: std::sync::OnceLock<Arc<dyn DestJudge>> = std::sync::OnceLock::new();
+
+/// Install the process's destination judge, once (the root, at boot, before any dial).
+///
+/// # Errors
+///
+/// One is already installed: the argument comes back.
+pub fn install_dest_judge(judge: Arc<dyn DestJudge>) -> Result<(), Arc<dyn DestJudge>> {
+    PROCESS_JUDGE.set(judge)
+}
+
+/// The process's destination judge, once the root installed it: what the kernel's own clients
+/// ask at dial time.
+#[must_use]
+pub fn installed_dest_judge() -> Option<&'static Arc<dyn DestJudge>> {
+    PROCESS_JUDGE.get()
+}
+
 /// The rules `dest.judge` applies for one egress class.
 #[derive(Debug, Clone)]
 pub struct DestRules {
@@ -356,6 +418,8 @@ pub struct KernelServices {
     signer: Option<Arc<dyn SignKey>>,
     trust: TrustBook,
     demotions: Option<Demotions>,
+    /// The destination guard; when set it IS the judge (`dest.judge`, [`Self::judge_dial`]).
+    judge: Option<Arc<dyn DestJudge>>,
 }
 
 /// The durable demotion record, and the instance its unprefixed rows belong to.
@@ -391,7 +455,15 @@ impl KernelServices {
             signer: None,
             trust: TrustBook::default(),
             demotions: None,
+            judge: None,
         }
+    }
+
+    /// The same services judging every destination through `judge` (the connector's guard).
+    #[must_use]
+    pub fn with_dest_judge(mut self, judge: Arc<dyn DestJudge>) -> Self {
+        self.judge = Some(judge);
+        self
     }
 
     /// Serve the records services over `reads` (the store's typed record reads) and `claims` (its
@@ -826,13 +898,18 @@ impl HostServices for KernelServices {
     }
 
     fn dest_judge(&self, dest: &str, class: u32, resolve: bool, later: Option<Later>) -> Ran {
-        let Some(rules) = self.classes.get(&class) else {
-            return Ran::Now(Stored::refused("no such egress class"));
+        // The name and scheme arms first, at once: a refusal never waits on a resolution.
+        let named = match (&self.judge, self.classes.get(&class)) {
+            (Some(j), _) => j.judge_name(dest, class),
+            (None, Some(rules)) => check_structure(dest, &[], rules.policy, &rules.denylist)
+                .map(|_| ())
+                .map_err(|r| verdict(dest, &r)),
+            (None, None) => return Ran::Now(Stored::refused("no such egress class")),
         };
-        match check_structure(dest, &[], rules.policy, &rules.denylist) {
-            Err(r) => return Ran::Now(Stored::ready(verdict(dest, &r))),
-            Ok(_) if resolve => {}
-            Ok(_) => return Ran::Now(Stored::ready(svc::DEST_ALLOWED)),
+        match named {
+            Err(v) => return Ran::Now(Stored::ready(v)),
+            Ok(()) if resolve => {}
+            Ok(()) => return Ran::Now(Stored::ready(svc::DEST_ALLOWED)),
         }
         let Some(later) = later else {
             return Ran::Now(Stored::refused(
@@ -1059,7 +1136,7 @@ pub type Judged = Box<dyn FnOnce(Result<SocketAddr, u64>) + Send>;
 
 /// THE ONE JUDGEMENT'S ANSWER: the pinned address and every address judged with it (the pin
 /// first), or the `DEST_*` verdict refusing them.
-type Admitted = Result<(SocketAddr, Vec<IpAddr>), u64>;
+pub type Admitted = Result<(SocketAddr, Vec<IpAddr>), u64>;
 
 /// `dest.judge`'s stored answer for a judgement: the verdict, and admitted, one span per judged
 /// address (key = the address as text, value absent).
@@ -1106,6 +1183,9 @@ impl KernelServices {
         class: u32,
         done: Box<dyn FnOnce(Admitted) + Send>,
     ) -> Option<Admitted> {
+        if let Some(j) = &self.judge {
+            return j.judge(dest, class, done);
+        }
         let Some(rules) = self.classes.get(&class) else {
             return Some(Err(svc::DEST_NO_HOST));
         };
