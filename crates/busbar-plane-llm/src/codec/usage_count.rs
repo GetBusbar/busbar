@@ -201,6 +201,14 @@ pub enum CountSlot {
 
 const SLOTS: usize = 17;
 
+/// The slots a turn is billed on, the ones a provider's stated total ([`CountRead::Total`]) sums.
+const BILLED: [CountSlot; 4] = [
+    CountSlot::Input,
+    CountSlot::CacheRead,
+    CountSlot::CacheWrite,
+    CountSlot::Output,
+];
+
 /// How one count is read off the usage object and folded into its slot. A path names the member
 /// from the usage object down; every member before the last is a parent object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -231,6 +239,11 @@ pub enum CountRead {
         /// The entry's count member.
         count: &'static str,
     },
+    /// The provider's own stated TOTAL of the billed slots (input, cache read, cache write,
+    /// output): when it exceeds what those slots already count, the remainder is ADDED to this
+    /// slot, so the turn bills the total the provider charges even for tokens no other counter
+    /// names. Absent or `null` adds nothing; unreadable REFUSES. Read after every billed slot.
+    Total(&'static [&'static str]),
     /// `count` of the FIRST entry of the list at `list` whose `key` member is `value`, as an
     /// attribution slice: unreadable is `None` (a per-modality list).
     ListFirst {
@@ -317,6 +330,18 @@ pub fn read_usage(
             CountRead::More(path) => {
                 let n = opt(usage, path).map_err(refuse)?.unwrap_or(0);
                 *s = Some(s.unwrap_or(0).saturating_add(n));
+            }
+            CountRead::Total(path) => {
+                if let Some(total) = opt(usage, path).map_err(refuse)? {
+                    let counted = BILLED
+                        .iter()
+                        .map(|b| slots[*b as usize].unwrap_or(0))
+                        .fold(0u64, u64::saturating_add);
+                    if total > counted {
+                        let s = &mut slots[slot as usize];
+                        *s = Some(s.unwrap_or(0).saturating_add(total - counted));
+                    }
+                }
             }
             CountRead::ListSum {
                 list,
