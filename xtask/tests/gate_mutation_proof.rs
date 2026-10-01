@@ -22,7 +22,7 @@
 //!
 //! WHY IT IS GUARDED BY AN ENVIRONMENT VARIABLE. Unguarded, this test would add the better part of
 //! an hour to every `cargo test` in the workspace, including the `check` job that has nothing to do
-//! with mutation. `XTASK_GATE_MUTATION_PROOF=1` turns it on, and `scripts/gate-mutants.sh` sets it.
+//! with mutation. `XTASK_GATE_MUTATION_PROOF=1` turns it on (a manual `cargo-mutants` run sets it).
 //!
 //! THE GUARD FAILS SAFE, WHICH IS THE ONLY REASON IT IS ALLOWED TO EXIST. If the variable were
 //! ever dropped from the job, this test would go inert — and an inert test command catches FEWER
@@ -53,9 +53,9 @@ const SWITCH: &str = "XTASK_GATE_MUTATION_PROOF";
 /// mutation of a construction rule, so running it is wall clock spent proving the mutant is not
 /// somewhere it cannot be.
 ///
-/// `scripts/gate-mutants.sh` computes the list from the diff and sets this variable; the mapping,
-/// and the rule that ANY shared file (`manifest.rs`, `scan.rs`, `ctx.rs`, `gates/mod.rs`, a gate
-/// source with no directory of its own) widens it back to all four, live there.
+/// A manual run computes the list from the diff and sets this variable; ANY shared file
+/// (`manifest.rs`, `scan.rs`, `ctx.rs`, `gates/mod.rs`, a gate source with no directory of its own)
+/// widens it back to all four.
 ///
 /// THE NARROWING FAILS SAFE IN BOTH DIRECTIONS. Unset means ALL FOUR — a job that forgot to set it
 /// pays full price and measures everything, which is the expensive mistake, not the quiet one. Set

@@ -41,7 +41,7 @@ usermod -aG docker ubuntu
 
 # ── The GitHub CLI ──────────────────────────────────────────────────────────────────────────────
 # `gh` is on the GitHub-HOSTED image and is not in Ubuntu's archive, so a self-hosted box does not
-# have it and nothing says so until a workflow reaches for it. keep-proof.yml and ci.yml both do —
+# have it and nothing says so until a workflow reaches for it. the removed keep-proof.yml and the removed ci.yml both do —
 # the oracle's one-line summary, the keep-proof verdict and the golden-artefact download are all
 # `gh api` — and the failure is `gh: command not found`, exit 127, at the very END of a job whose
 # expensive work has already succeeded. That is the worst place to learn about a missing package.

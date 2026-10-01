@@ -54,7 +54,7 @@
 # GAP, not a pass. `record_gap` names it; the final verdict prints "PASSED WITH GAPS" and lists
 # every one; each is appended as "<phase-id> <status>" to $BUSBAR_RELEASE_GAP_FILE when the parent
 # gate sets it; and under BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=1 (the parent's own env switch,
-# which qa-gate-run.sh exports) a gap is FATAL -- the same policy release-check.sh applies.
+# which the removed qa-gate-run.sh exports) a gap is FATAL -- the same policy release-check.sh applies.
 #
 # FAILURE POLICY — identical to release-check.sh: fail-fast, name the failing phase, tear everything
 # down on ANY exit. A failure here means: DO NOT TAG THIS RELEASE.

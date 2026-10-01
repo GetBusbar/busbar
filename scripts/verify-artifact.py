@@ -101,7 +101,7 @@ def _read_elf(data: bytes):
     (phoff,) = struct.unpack_from("<Q", data, 32)
     phentsize, phnum = struct.unpack_from("<HH", data, 54)
     # PT_INTERP (3) names the dynamic loader. Its ABSENCE is what "statically linked" means on ELF,
-    # and its presence in a musl FROM-scratch image binary is the failure docker.yml hard-fails on.
+    # and its presence in a musl FROM-scratch image binary is the failure the removed docker.yml hard-fails on.
     interp = any(
         struct.unpack_from("<I", data, phoff + i * phentsize)[0] == 3 for i in range(phnum)
     )
@@ -413,12 +413,12 @@ def row_quickstart_boots(ctx) -> str:
 # which every workflow that can be given `id-token: write` + `attestations: write` satisfies equally
 # -- including one added on a branch by a PR that attested an archive the release path never built.
 #
-# It is `build-artifact.yml` and not its callers, and that is how GitHub issues the certificate
+# It is the removed `build-artifact.yml` and not its callers, and that is how GitHub issues the certificate
 # rather than a preference: `gh attestation verify --help` says "if your attestation was generated
 # via a reusable workflow then that reusable workflow is the signer whose identity needs to be
 # validated", because the Fulcio SAN is the `job_workflow_ref` of the job that requested the OIDC
 # token, not the `workflow_ref` of whatever called it. `actions/attest-build-provenance` runs inside
-# build-artifact.yml for archives (docker.yml is the image half's signer). Naming a caller here
+# the removed build-artifact.yml for archives (the removed docker.yml is the image half's signer). Naming a caller here
 # would fail every verify on a healthy release.
 ARCHIVE_SIGNER_WORKFLOW = "GetBusbar/busbar/.github/workflows/build-artifact.yml"
 
@@ -1051,7 +1051,7 @@ def selftest(contract_path: str = DEFAULT_CONTRACT, targets_path: str = DEFAULT_
 
     # ── THE COVERAGE REPORT DISCRIMINATES ────────────────────────────────────────────────────────
     # Set equality is satisfied by the real contract and always has been. The five image rows used
-    # to be executed by nothing, and this case asserted exactly that. release-stage.yml's
+    # to be executed by nothing, and this case asserted exactly that. the removed release-stage.yml's
     # `verify-image` job now runs them against the staged digest, so the assertion is INVERTED
     # rather than deleted: the report must say they are covered. Deleting it would have left the
     # report free to drift back to crying gap over a closed gap, which trains a reader to ignore
@@ -1107,7 +1107,7 @@ def selftest(contract_path: str = DEFAULT_CONTRACT, targets_path: str = DEFAULT_
 
     # ── THE COVERAGE GATE IS REACHABLE FROM THE INVOCATION CI MAKES ─────────────────────────────
     # coverage_main() returned 1 on a gap, and nothing called it: every workflow mention of
-    # `--coverage` is a comment. So this self-test — which ci.yml does run — runs that SAME function
+    # `--coverage` is a comment. So this self-test — which the removed ci.yml does run — runs that SAME function
     # over the contract and targets it was handed, and a gap fails the self-test.
     import io
     import contextlib

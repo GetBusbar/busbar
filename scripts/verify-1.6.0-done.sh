@@ -753,7 +753,7 @@ assert_legs_distinct() {  # $1 = default sha256 ; $2 = llm-only sha256
 # ── THE REFERENCE IS THE COMMITTED 1.5.5 GOLDEN, NEVER RE-RECORDED HERE (TODO item 41) ───────────
 # This group used to re-record its own golden, from the cached 1.5.5 binary, whenever the golden
 # directory was empty — on the machine under test, with no check that the recording was whole. That
-# is the exact practice ci.yml's shadow-oracle job names as the thing that went wrong ("234 of 897
+# is the exact practice the removed ci.yml's shadow-oracle job names as the thing that went wrong ("234 of 897
 # cells failed to record on one run and the report read 'the golden no longer owes this id'"): a
 # reference re-derived on the machine under test is not a reference. The golden is now the signed-off
 # recording committed at testing/shadow-oracle/golden/1.5.5, COPIED in fresh on every run (a stale
@@ -971,7 +971,7 @@ if [ "$SELFTEST" -eq 1 ]; then
     case ",$f," in *,plane-*) return 1 ;; esac
     parity_leg_args llm-only "$PARITY_MANIFEST" | grep -qx -- '--no-default-features'; }
   st_expect accept "the llm-only leg derives from THIS manifest: --no-default-features, no plane-*" st_llm_real
-  printf '[features]\ndefault = ["auth-admin-tokens", "proto-llm", "plane-mcp", "plane-streaming", "root-admin", "root-voice"]\n' > "$st_tmp/Cargo-legs.toml"
+  printf '[features]\ndefault = ["auth-admin-tokens", "proto-llm", "plane-mcp", "plane-voice", "root-admin", "root-voice"]\n' > "$st_tmp/Cargo-legs.toml"
   printf '[features]\ndefault = ["auth-admin-tokens", "plane-mcp", "root-admin"]\n' > "$st_tmp/Cargo-noroot.toml"
   printf '[features]\nfoo = []\n' > "$st_tmp/Cargo-nodefault.toml"
   st_llm_fixture() { [ "$(parity_llm_only_features "$st_tmp/Cargo-legs.toml")" = "auth-admin-tokens,proto-llm,root-admin" ]; }
@@ -1131,7 +1131,7 @@ end_group
 # plane/transport instance outside its own crate family. RED on HEAD by design (the plane extraction
 # is in flight, and every remaining coupling is a tracked row in qa/instance-noun-neutrality.toml);
 # this is the release-time question of whether that burndown has reached zero. A per-push red would
-# only restate that the extraction is in flight, so it lives here, not in ci.yml.
+# only restate that the extraction is in flight, so it lives here, not in the removed ci.yml.
 begin_group "INSTANCE-NOUN NEUTRALITY — no concrete instance noun leaks across crate families (burndown to 0)"
 step "instance-noun --selftest" cargo xtask gate instance-noun-neutrality --selftest
 step "instance-noun gate"       cargo xtask gate instance-noun-neutrality
@@ -1146,7 +1146,7 @@ end_group
 # measures the ABSENCE of a caller. RED on HEAD by design, on named rows, and every unreached unit
 # path either gets switched on or gets a written `[[dormant]]` row in qa/reachability.toml. Exactly
 # the footing instance-noun-neutrality is on above: a per-push red would only restate that the plane
-# switch-ons are in flight, so it lives here and not in ci.yml.
+# switch-ons are in flight, so it lives here and not in the removed ci.yml.
 begin_group "REACHABILITY — every locked plane is served by a unit path the composition root constructs"
 step "reachability --selftest" cargo xtask gate reachability --selftest
 step "reachability gate"       cargo xtask gate reachability
@@ -1453,7 +1453,7 @@ elif [ -x bin/oracle ]; then
       # `--strict` IS WHAT MAKES THE EXIT CODE THE VERDICT. Without it the differ prints its rows and
       # exits 0 whatever they say — including when the selection matched nothing.
       #
-      # `--allow-harness-skew` IS PASSED HERE, BY NAME, for the reason ci.yml's shadow-oracle job gives
+      # `--allow-harness-skew` IS PASSED HERE, BY NAME, for the reason the removed ci.yml's shadow-oracle job gives
       # beside its own: the golden is the COMMITTED 1.5.5 recording, taken with the Python harness, and
       # the candidate was just recorded with the Rust engine, so the differ's same-revision guard would
       # refuse the pair. This run no longer re-records its reference (TODO item 41), which is what used
@@ -1535,7 +1535,7 @@ begin_group "INVENTORY-COVERAGE — every qa/evidence/inventory/*.md row id is b
 # was missing. qa/inventory-gaps.json names every row id with no citing cell yet, so a gap is a
 # visible, owned line item rather than a silent hole. DONE means no id has no cell and no name.
 # The bash wrapper and its Python were deleted at c8272b166; this reads the Rust gate that replaced
-# them, which is registered, run by ci.yml on every push, and cited by design binding PB-0. The
+# them, which is registered, run by the removed ci.yml on every push, and cited by design binding PB-0. The
 # guard stays a guard -- it now asks whether the GATE is registered, not whether a file is on disk,
 # because that is what "the check can run" means for a gate that lives in a crate.
 if cargo xtask gate --list 2>/dev/null | grep -q '\binventory-coverage\b'; then

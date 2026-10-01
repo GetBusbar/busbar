@@ -248,7 +248,7 @@ fn a_shorter_vtable_hides_its_trailing_slots() {
 // reference`): deleting `crates/plane-abi-spike` took the only assertion of (a) the vtable
 // fn-pointer-hop wall-clock budget and (b) the no-allocation property of the POD host-call paths
 // with it — `the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate`,
-// invoked from qa/segments.toml's `benches` segment. The budget (1000ns) and the round/iteration
+// invoked from the removed qa/segments.toml's `benches` segment. The budget (1000ns) and the round/iteration
 // counts below are the ones that test used (`git show 527bdbf96:crates/plane-abi-spike/src/tests/
 // lib_tests.rs`); everything else is re-derived against the REAL surface rather than the spike's
 // own hand-rolled duplicate of it: the real [`Facts`]/[`Decision`] from `hot/pod.rs` (not a spike
@@ -325,7 +325,7 @@ fn bench_sample() -> (Vec<u8>, u64, u64, u64, u32, u32) {
 
 /// THE 1 µs/CALL BUDGET, ASSERTED — see the module-level OWED comment above.
 ///
-/// IGNORED BY DEFAULT, run explicitly by qa/segments.toml's `benches` segment
+/// IGNORED BY DEFAULT, run explicitly by the removed qa/segments.toml's `benches` segment
 /// (`--ignored --test-threads=1`): it measures WALL CLOCK (meaningless alongside other tests on a
 /// shared runner) and uses [`crate::abi::CountingAlloc`], a per-THREAD (not per-test) counter, so the
 /// alloc arms below must run alone in this thread the same way `stub_vtable_populates_every_slot`'s

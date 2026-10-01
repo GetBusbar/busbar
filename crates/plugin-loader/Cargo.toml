@@ -160,7 +160,7 @@ busbar-store-memory = { path = "../store-memory", features = ["cold-dropped-in"]
 # NO `kind: secret` fixture: the in-tree secret fixture is deleted (owner, 1.6.0-QUESTIONS.md
 # "FIXTURES": "real plugins are the examples"). The secret kind is proven by the REAL plugin repo
 # (GetBusbar/busbar-secret-vault) — `plugin_proof_tests` dlopens its built cdylib from
-# `BUSBAR_PLUGIN_PROOF_DIR`, run by ci.yml's `plugin-proofs` job.
+# `BUSBAR_PLUGIN_PROOF_DIR`, run by the removed ci.yml's `plugin-proofs` job.
 # The `kind: auth` BOTH-WAYS witness — #2's auth witness, step (4) (OWNER-LOCKED) — is a REAL plugin, not
 # a fixture (owner, 1.6.0-QUESTIONS.md "FIXTURES": "real plugins are the examples"; R-FIX2): the
 # token-verifying OIDC module from its own repo (GetBusbar/busbar-auth-oidc) at a pinned rev. Its `rlib` gives
@@ -209,10 +209,10 @@ libc = { workspace = true }
 # locate the artifact on disk — under `cargo test --workspace` every in-tree member cdylib is
 # present, and the kind:store fixture falls back to the store both-ways proof's own cdylib (above)
 # when the sqlite sibling is not built; under CI a missing fixture is a hard failure, never a skip.
-# The sibling-built one is required only under qa-gate.yml's `loader` leg (see
+# The sibling-built one is required only under the removed qa-gate.yml's `loader` leg (see
 # store_fixture_plugin_path()'s doc comment in src/tests/lib_tests.rs). The DURABLE store across a
 # dlopen restart is the real one (GetBusbar/busbar-store-sqlite), dlopened by `plugin_proof_tests` from
-# `BUSBAR_PLUGIN_PROOF_DIR` (ci.yml `plugin-proofs`), with no edge from this crate.
+# `BUSBAR_PLUGIN_PROOF_DIR` (the removed ci.yml `plugin-proofs`), with no edge from this crate.
 
 # THE BOTH-WAYS FIXTURES: <cold kind> = "<fixture crate>". `build.rs` turns these rows into the table
 # `src/tests/both_ways.rs` includes, so each conformance test reaches its kind's fixture by KIND and no
