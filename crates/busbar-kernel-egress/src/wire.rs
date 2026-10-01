@@ -101,32 +101,57 @@ impl Shed {
     /// to wait again.
     #[must_use]
     pub fn request_timeout() -> Self {
-        Self::of(STATUS_SERVICE_UNAVAILABLE, KIND_OVERLOADED, DETAIL_REQUEST_TIMEOUT, false)
+        Self::of(
+            STATUS_SERVICE_UNAVAILABLE,
+            KIND_OVERLOADED,
+            DETAIL_REQUEST_TIMEOUT,
+            false,
+        )
     }
 
     /// The pool has no members at all. Same words as an exhausted pool and, like the previous
     /// release's own arm, no wait: there is nothing to wait for.
     #[must_use]
     pub fn empty_pool() -> Self {
-        Self::of(STATUS_SERVICE_UNAVAILABLE, KIND_OVERLOADED, DETAIL_OVERLOADED, false)
+        Self::of(
+            STATUS_SERVICE_UNAVAILABLE,
+            KIND_OVERLOADED,
+            DETAIL_OVERLOADED,
+            false,
+        )
     }
 
     /// A gate's restriction left no eligible member in the pool a spill landed in.
     #[must_use]
     pub fn restrict_no_lane() -> Self {
-        Self::of(STATUS_SERVICE_UNAVAILABLE, KIND_OVERLOADED, DETAIL_RESTRICT_NO_LANE, true)
+        Self::of(
+            STATUS_SERVICE_UNAVAILABLE,
+            KIND_OVERLOADED,
+            DETAIL_RESTRICT_NO_LANE,
+            true,
+        )
     }
 
     /// The request body was not the shape its content type claimed.
     #[must_use]
     pub fn invalid_body() -> Self {
-        Self::of(STATUS_BAD_REQUEST, KIND_INVALID_REQUEST, DETAIL_INVALID_JSON, false)
+        Self::of(
+            STATUS_BAD_REQUEST,
+            KIND_INVALID_REQUEST,
+            DETAIL_INVALID_JSON,
+            false,
+        )
     }
 
     /// The attempt could not be assembled. Nothing was sent and nothing was recorded.
     #[must_use]
     pub fn internal() -> Self {
-        Self::of(STATUS_INTERNAL_ERROR, KIND_API_ERROR, DETAIL_INTERNAL_ERROR, false)
+        Self::of(
+            STATUS_INTERNAL_ERROR,
+            KIND_API_ERROR,
+            DETAIL_INTERNAL_ERROR,
+            false,
+        )
     }
 }
 

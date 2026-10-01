@@ -292,7 +292,6 @@ fn blob_over(bytes: &[u8], fmt: u32, secret: bool) -> Blob {
     }
 }
 
-
 /// Answer one record (or none) under a lease.
 fn lease_one<B: StoreSlots>(
     s: &Served<B>,

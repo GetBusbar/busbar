@@ -103,7 +103,6 @@ pub(crate) struct PieceBufs {
     member: Vec<u8>,
 }
 
-
 impl PieceBufs {
     pub(crate) fn new(caps: &BufferCaps, body: Arc<[u8]>) -> Self {
         let mut bufs = PieceBufs {
