@@ -129,49 +129,35 @@ impl ScratchPad {
         self.resets = self.resets.saturating_add(1);
     }
 
-    /// The abuse-backstop check: refuse the ONE request that would carry the pad past its ceiling.
-    fn guard(&self, wanted: usize) -> Result<(), ScratchRefused> {
-        if self.used.get().saturating_add(wanted) > self.ceiling {
-            return Err(ScratchRefused {
-                wanted,
-                ceiling: self.ceiling,
-            });
-        }
-        Ok(())
-    }
-
-    /// Note a successful allocation against the ceiling.
-    fn charge(&self, wanted: usize) {
-        self.used.set(self.used.get().saturating_add(wanted));
-    }
-
-    /// The abuse-ceiling refusal for a request bumpalo itself could not honour (true OOM).
-    fn oom(&self, wanted: usize) -> ScratchRefused {
-        ScratchRefused {
+    /// THE ONE COPY-IN: refuse the ONE request that would carry the pad past its ceiling (the abuse
+    /// backstop), bump-allocate it through `alloc`, and charge it against the ceiling only on
+    /// success. A request bumpalo itself cannot honour (true OOM) is the same ceiling refusal.
+    fn copy_in<'a, T: ?Sized>(
+        &'a self,
+        wanted: usize,
+        alloc: impl FnOnce(&'a Bump) -> Result<&'a mut T, bumpalo::AllocErr>,
+    ) -> Result<&'a mut T, ScratchRefused> {
+        let refused = ScratchRefused {
             wanted,
             ceiling: self.ceiling,
+        };
+        if self.used.get().saturating_add(wanted) > self.ceiling {
+            return Err(refused);
         }
+        let dst = alloc(&self.bump).map_err(|_| refused)?;
+        self.used.set(self.used.get().saturating_add(wanted));
+        Ok(dst)
     }
 }
 
 impl Scratch for ScratchPad {
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ScratchBytes<'a>, ScratchRefused> {
-        self.guard(src.len())?;
-        let dst = self
-            .bump
-            .try_alloc_slice_copy(src)
-            .map_err(|_| self.oom(src.len()))?;
-        self.charge(src.len());
+        let dst = self.copy_in(src.len(), |bump| bump.try_alloc_slice_copy(src))?;
         Ok(ScratchBytes::new(dst))
     }
 
     fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ScratchRefused> {
-        self.guard(src.len())?;
-        let dst = self
-            .bump
-            .try_alloc_str(src)
-            .map_err(|_| self.oom(src.len()))?;
-        self.charge(src.len());
+        let dst = self.copy_in(src.len(), |bump| bump.try_alloc_str(src))?;
         Ok(dst)
     }
 
@@ -179,13 +165,9 @@ impl Scratch for ScratchPad {
         &'a self,
         src: &[(&'a str, Span)],
     ) -> Result<&'a [(&'a str, Span)], ScratchRefused> {
-        let wanted = std::mem::size_of_val(src);
-        self.guard(wanted)?;
-        let dst = self
-            .bump
-            .try_alloc_slice_copy(src)
-            .map_err(|_| self.oom(wanted))?;
-        self.charge(wanted);
+        let dst = self.copy_in(std::mem::size_of_val(src), |bump| {
+            bump.try_alloc_slice_copy(src)
+        })?;
         Ok(dst)
     }
 
