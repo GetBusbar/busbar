@@ -333,12 +333,22 @@ impl GovState {
     /// MinIO/S3-compatible model). Persists the binding + AWS credential atomically and issues the
     /// signed token. Returns `(binding, token, aws_access_key_id, aws_secret_access_key)` - the
     /// token and the AWS secret are shown ONCE. See `mint_signed` for the binding shape.
+    ///
+    /// Both secrets come back as [`Redacted`](busbar_contract::redacted::Redacted): a `{:?}`/`{}` of
+    /// either (or of the tuple) prints `[REDACTED]`, so the one-time values cannot reach a log line
+    /// by accident; the caller reads them once, at the response boundary, via `expose_secret`. The
+    /// AccessKeyId is not secret (it travels in the SigV4 header) and stays a plain `String`.
     pub fn mint_signed_with_aws(
         &self,
         spec: NewKeySpec,
         exp: u64,
         now: u64,
-    ) -> RecordStoreResult<(VirtualKey, String, String, String)> {
+    ) -> RecordStoreResult<(
+        VirtualKey,
+        busbar_contract::redacted::Redacted<String>,
+        String,
+        busbar_contract::redacted::Redacted<String>,
+    )> {
         let Some(material) = self.signing_material() else {
             return Err(RecordStoreError(
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
@@ -350,7 +360,8 @@ impl GovState {
         let id = format!("{VK_ID_PREFIX}{}", hex::encode(raw));
         let generation = generate_binding_generation().store()?;
         let access_key_id = generate_aws_access_key_id().store()?;
-        let secret_access_key = generate_aws_secret_access_key().store()?;
+        let secret_access_key =
+            busbar_contract::redacted::Redacted::new(generate_aws_secret_access_key().store()?);
         let mut cred_raw = [0u8; 16];
         getrandom::fill(&mut cred_raw)
             .map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
@@ -393,12 +404,17 @@ impl GovState {
                 revoke_reason: None,
                 revision: 0,
             },
-            secret: format!("v1:plain:{secret_access_key}"),
+            secret: format!("v1:plain:{}", secret_access_key.expose_secret()),
         };
         self.store.put_key_with_credential(&binding, &secret)?;
         self.refresh()?;
         let token = material.signer.mint(&id, exp, Some(&generation));
-        Ok((binding, token, access_key_id, secret_access_key))
+        Ok((
+            binding,
+            token.into(),
+            access_key_id,
+            secret_access_key,
+        ))
     }
 
     /// The signing key id (`kid`) this node stamps into minted tokens, if signing is enabled.

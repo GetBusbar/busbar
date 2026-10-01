@@ -3213,14 +3213,46 @@ mod signed_token {
         let (binding, token, akid, secret) = g
             .mint_signed_with_aws(spec("bob", None, None), 2_000, 1_000)
             .expect("mint+aws");
-        assert!(token.starts_with("bbk_"));
+        assert!(token.expose_secret().starts_with("bbk_"));
         assert!(akid.starts_with("AKIA"));
-        assert!(!secret.is_empty());
+        assert!(!secret.expose_secret().is_empty());
         // The AWS credential resolves back to the same subject.
         let (resolved_key, _cred) = g
             .lookup_credential(&crate::governance::tests::signed_kind(), &akid)
             .expect("akid resolves");
         assert_eq!(resolved_key.id, binding.id);
+    }
+
+    /// The two one-time secrets `mint_signed_with_aws` hands back (the bearer token and the AWS
+    /// secret access key) are sealed: a `{:?}` or `{}` of either, or a `{:?}` of the whole returned
+    /// tuple, never carries the plaintext (DESIGN #54: secret material Debug/Display => REDACTED).
+    /// The stored credential row still holds the exact plaintext, so SigV4 verification and the
+    /// admin response bytes are unchanged.
+    #[test]
+    fn mint_with_aws_secrets_never_print() {
+        let g = gov();
+        let minted = g
+            .mint_signed_with_aws(spec("bob", None, None), 2_000, 1_000)
+            .expect("mint+aws");
+        let token = minted.1.expose_secret().clone();
+        let aws_secret = minted.3.expose_secret().clone();
+        assert!(!token.is_empty() && !aws_secret.is_empty());
+        let printed = [
+            format!("{:?}", minted.1),
+            format!("{}", minted.1),
+            format!("{:?}", minted.3),
+            format!("{}", minted.3),
+            format!("{minted:?}"),
+        ];
+        for out in &printed {
+            assert!(!out.contains(&token), "token leaked through a print");
+            assert!(!out.contains(&aws_secret), "AWS secret leaked through a print");
+        }
+        assert!(printed[4].contains("[REDACTED]"));
+        let (_, cred) = g
+            .lookup_credential(&crate::governance::tests::signed_kind(), &minted.2)
+            .expect("akid resolves");
+        assert_eq!(cred.secret, format!("v1:plain:{aws_secret}"));
     }
 
     /// Minting without a signer fails closed (no token can be issued).
