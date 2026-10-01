@@ -500,3 +500,61 @@ fn verify_names_a_tampered_retained_audit_record() {
         "a tampered retained record must be a /verify finding: {body}"
     );
 }
+
+/// A CHECKPOINT OUT OF STEP WITH THE CHAIN IS A RESTART FINDING (self-attesting). The chain seals
+/// checkpoints 1 and 2; a later record then carries checkpoint 1 again — a checkpoint put back after
+/// a newer one was sealed. The boot's step check (the chain's newest checkpoint record against the
+/// anchor it seeds at the highest-numbered one) names it, and says it is self-attesting.
+#[test]
+fn a_checkpoint_out_of_step_with_the_chain_is_a_restart_finding() {
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-root-anchor-step-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    let cfg = DurabilityConfig {
+        data_dir: Some(dir.clone()),
+    };
+    let token = token();
+    {
+        let mut durability = node(&cfg);
+        durability.arm_checkpoints(NOW);
+        let first = durability
+            .seal_checkpoint(&token, StepName::Meter, NOW)
+            .expect("sealed");
+        let _second = durability
+            .seal_checkpoint(&token, StepName::Meter, NOW)
+            .expect("sealed");
+        assert!(node_findings(&durability).is_empty());
+        durability
+            .journal
+            .append(
+                &token,
+                StepName::Meter,
+                &[busbar_kernel_wal::Entry::new(
+                    busbar_kernel_wal::RecordClass::Checkpoint,
+                    crate::root::durability::checkpoint_body(&first),
+                )],
+            )
+            .expect("appended");
+    }
+    let again = node(&cfg);
+    let _ = std::fs::remove_dir_all(&dir);
+    let findings = node_findings(&again);
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.contains("self-attesting") && f.contains("out of step")),
+        "{findings:?}"
+    );
+}
+
+fn node_findings(durability: &Durability) -> Vec<String> {
+    durability
+        .restart_findings
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}

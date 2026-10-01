@@ -199,10 +199,15 @@ pub struct Durability {
     /// What the boot could not read back of the audit chain: a journalled record that does not
     /// decode, or names a class nobody declares here. Each is a restart finding.
     pub audit_findings: Vec<String>,
+    /// What the boot's checkpoint step check found (self-attesting): each is a restart finding.
+    pub anchor_findings: Vec<String>,
     /// WHERE EVERY SEALED CHECKPOINT IS ANCHORED, and the head `GET /admin/verify` compares the
-    /// checkpoint it verifies against: a rewound checkpoint reads as `AnchorHeadDiffers`. The
-    /// default is the self-attesting in-memory anchor, seeded at boot from the last checkpoint the
-    /// chain carries, and labelled self-attesting wherever it is reported.
+    /// checkpoint it verifies against: a checkpoint rewound after it was sealed reads as
+    /// `AnchorHeadDiffers`. The default is the self-attesting in-memory anchor, seeded at boot from
+    /// the chain itself and labelled self-attesting wherever it is reported. Seeded from the chain,
+    /// it cannot see a rollback of the whole chain — only a puller holding a head it took earlier
+    /// can. What the boot does check is that the chain's checkpoints are in step with each other
+    /// (see [`anchored_on`]).
     pub anchor: SelfAttestingAnchor,
     /// WHICH BOOT OF THIS JOURNAL this process is: one more than the highest any record on the
     /// chain was written under, and 1 on a chain that holds none.
@@ -1925,9 +1930,10 @@ pub fn checkpoint_body(checkpoint: &Checkpoint) -> Vec<u8> {
     body.finish()
 }
 
-/// THE HEAD A CHAIN ANCHORED LAST: the newest checkpoint record's sequence and body digest, read off
-/// its [`checkpoint_body`] (which carries both), or `None` for a chain that has sealed none.
-fn last_anchored_on(records: &[JournalRecord]) -> Option<AnchoredHead> {
+/// EVERY HEAD THE CHAIN ANCHORED, in chain order: each checkpoint record's sequence and body digest,
+/// read off its [`checkpoint_body`] (which carries both). The ONE reader of a checkpoint record's
+/// head — the boot's seed, its step check and a supplied-anchor comparison all read through it.
+pub fn anchored_on(records: &[JournalRecord]) -> impl Iterator<Item = AnchoredHead> + '_ {
     records
         .iter()
         .filter(|r| r.class == RecordClass::Checkpoint)
@@ -1942,7 +1948,27 @@ fn last_anchored_on(records: &[JournalRecord]) -> Option<AnchoredHead> {
                 body_hash,
             })
         })
-        .max_by_key(|head| head.checkpoint_seq)
+}
+
+/// THE HEAD A CHAIN ANCHORED LAST: the highest-numbered checkpoint on it, or `None` for a chain that
+/// has sealed none.
+fn last_anchored_on(records: &[JournalRecord]) -> Option<AnchoredHead> {
+    anchored_on(records).max_by_key(|head| head.checkpoint_seq)
+}
+
+/// THE BOOT'S STEP CHECK (self-attesting): the checkpoint the chain wrote LAST must be the one the
+/// anchor is seeded at, the highest-numbered. A newer record carrying an older checkpoint is a
+/// checkpoint put back out of step with the chain — a partial rewind. `None` when they agree.
+fn anchor_out_of_step(records: &[JournalRecord], seeded: Option<&AnchoredHead>) -> Option<String> {
+    let newest = anchored_on(records).last()?;
+    let seeded = seeded?;
+    (newest != *seeded).then(|| {
+        format!(
+            "checkpoint anchor (self-attesting): the chain's newest checkpoint record is seq {}, \
+             but the anchor stands at seq {} — a checkpoint out of step with the chain",
+            newest.checkpoint_seq, seeded.checkpoint_seq
+        )
+    })
 }
 
 /// THE UNITS THE SET-ASIDE JOURNAL RECORDS NAME: every hold, mark, claim and posting a quarantine
@@ -2218,6 +2244,7 @@ pub fn build_with_cards(
         checkpoints: Vec::new(),
         audit_records: Vec::new(),
         audit_findings: Vec::new(),
+        anchor_findings: Vec::new(),
         // Seeded from the chain below, with everything else the chain rebuilds.
         anchor: SelfAttestingAnchor::new(),
         // Set from the chain below, before anything can write under it.
@@ -2274,7 +2301,11 @@ pub fn build_with_cards(
     let view = pinned.as_ref().map(PinnedHistory::view);
     let (replayed, unreadable) = match chain {
         Ok(Ok(records)) => {
-            durability.anchor = SelfAttestingAnchor::seeded(last_anchored_on(&records));
+            let seeded = last_anchored_on(&records);
+            if let Some(why) = anchor_out_of_step(&records, seeded.as_ref()) {
+                durability.anchor_findings.push(why);
+            }
+            durability.anchor = SelfAttestingAnchor::seeded(seeded);
             durability.resume_audit(&records);
             (
                 replay_into(&mut durability.ledger, &records, view.as_ref(), false),
@@ -2354,6 +2385,13 @@ pub fn build_with_cards(
             .audit_findings
             .iter()
             .map(|why| JournalDisagreement::Unreadable(format!("audit chain: {why}"))),
+    );
+    findings.extend(
+        durability
+            .anchor_findings
+            .iter()
+            .cloned()
+            .map(JournalDisagreement::Unreadable),
     );
     findings.extend(durability.reconcile_with_journal());
     findings.dedup();

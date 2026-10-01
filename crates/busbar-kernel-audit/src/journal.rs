@@ -346,7 +346,7 @@ fn finish_of(tag: &str) -> Option<FinishClass> {
 
 /// The inverse of [`outcome_tag`], checked by re-rendering: an outcome is accepted only when it
 /// renders back to exactly the tag that was read.
-fn outcome_of(tag: &str) -> Option<Outcome> {
+pub(crate) fn outcome_of(tag: &str) -> Option<Outcome> {
     let outcome = if tag == "Completed" {
         Outcome::Completed
     } else if let Some(inner) = tag
