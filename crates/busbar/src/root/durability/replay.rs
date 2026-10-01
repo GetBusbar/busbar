@@ -345,12 +345,33 @@ pub enum JournalDisagreement {
         /// How many the node holds.
         book: usize,
     },
+    /// Journal bytes were set aside at boot: a whole record altered after it was written, or damage
+    /// with acknowledged records behind it. The text names the segment, the offset and the records.
+    Quarantined(String),
+    /// A unit whose hold was left OPEN at boot because a quarantined record names it (or because a
+    /// quarantined record could not be read at all, so no open hold can be cleared of it). Recovery
+    /// would have settled it at its checkpoint — a zero line for a unit that may have settled — so
+    /// it is left for the operator, never settled on a guess.
+    OpenQuarantined {
+        /// Which balance.
+        key: TotalsKey,
+        /// Which window.
+        window: WindowStart,
+        /// The unit's monotonic reading, which with the balance and window names it.
+        mono: u64,
+    },
 }
 
 impl std::fmt::Display for JournalDisagreement {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             JournalDisagreement::Unreadable(why) => f.write_str(why),
+            JournalDisagreement::Quarantined(what) => write!(f, "journal quarantine: {what}"),
+            JournalDisagreement::OpenQuarantined { key, window, mono } => write!(
+                f,
+                "{key} in the window opening at {window}: unit {mono} is left OPEN-QUARANTINED — a \
+                 quarantined journal record names it, so it is not settled at its checkpoint"
+            ),
             JournalDisagreement::RefusedRows { journal, book } => write!(
                 f,
                 "the journal rebuilds {journal} refused counts row(s), the node holds {book}"

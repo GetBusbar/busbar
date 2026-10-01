@@ -202,6 +202,9 @@ pub struct Durability {
     /// which the book in memory and the book the journal rebuilds disagree, and any journal record
     /// that could not be read. Empty is the only good answer. See [`Durability::reconcile_with_journal`].
     pub restart_findings: Vec<JournalDisagreement>,
+    /// The holds boot left OPEN because a quarantined journal record names their unit — never
+    /// settled at the checkpoint on a guess. Each is also a restart finding.
+    pub open_quarantined: Vec<JournalDisagreement>,
     /// How many holds a predecessor left open that this boot RECOVERED and posted (item 127).
     pub recovered_holds: usize,
     /// The idempotency claims a predecessor took with no hold ever made durable behind them, VOIDED
@@ -1927,6 +1930,32 @@ fn last_anchored_on(records: &[JournalRecord]) -> Option<AnchoredHead> {
         .max_by_key(|head| head.checkpoint_seq)
 }
 
+/// THE UNITS THE SET-ASIDE JOURNAL RECORDS NAME: every hold, mark, claim and posting a quarantine
+/// holds, read from its bytes as they now read. `None` when some set-aside record cannot be read as
+/// a journal record at all: then no open hold can be cleared of it.
+fn quarantined_units(
+    quarantined: &[busbar_kernel_wal::Quarantine],
+) -> Option<Vec<(u64, TotalsKey, WindowStart, u64)>> {
+    let mut units = Vec::new();
+    for record in quarantined.iter().flat_map(|q| q.damaged.iter()) {
+        let journal = JournalRecord::decode(&record.body).ok()?;
+        let unit = if let Some(posting) = Posting::from_record(&journal) {
+            Some((
+                posting.incarnation,
+                posting.key,
+                posting.window,
+                posting.mono,
+            ))
+        } else if let Some(hold) = HoldOpened::from_record(&journal) {
+            Some(hold.unit())
+        } else {
+            UnitMark::from_record(&journal).map(|mark| mark.unit())
+        };
+        units.extend(unit);
+    }
+    Some(units)
+}
+
 /// How many bytes a migration marker takes on the journal. Fixed, because every field of it is.
 const MIGRATION_MARKER_BYTES: usize = 8 * 6 + 8 + 32;
 
@@ -2177,6 +2206,7 @@ pub fn build_with_cards(
         // Set from the chain below, before anything can write under it.
         incarnation: 0,
         restart_findings: Vec::new(),
+        open_quarantined: Vec::new(),
         recovered_holds: 0,
         voided_claims: Vec::new(),
         refused: Vec::new(),
@@ -2249,7 +2279,25 @@ pub fn build_with_cards(
     // book (item 127): `recovery::recover_all` had no production caller, so a hold whose node died
     // mid-unit was never posted by anybody. Each is posted per the recovery table and closed on the
     // chain under the incarnation that opened it.
-    durability.recover(replayed.open);
+    // A HOLD A QUARANTINED RECORD NAMES IS NEVER SETTLED ON A GUESS. The set-aside bytes may hold
+    // the unit's settlement; recovering its hold at the checkpoint would post a zero line for a unit
+    // that settled. Those holds stay OPEN-QUARANTINED, and each is a finding. A set-aside record
+    // that cannot be read at all clears no open hold.
+    let named = quarantined_units(&durability.quarantined);
+    let (held_back, open): (Vec<Recoverable>, Vec<Recoverable>) =
+        replayed.open.into_iter().partition(|held| match &named {
+            None => true,
+            Some(units) => units.contains(&held.hold.unit()),
+        });
+    durability.open_quarantined = held_back
+        .iter()
+        .map(|held| JournalDisagreement::OpenQuarantined {
+            key: held.hold.key.clone(),
+            window: held.hold.window,
+            mono: held.hold.mono,
+        })
+        .collect();
+    durability.recover(open);
 
     // AND EVERY IDEMPOTENCY CLAIM A PREDECESSOR TOOK WITH NO HOLD BEHIND IT IS VOIDED, so a client's
     // retry is answered by running the unit rather than by a unit that never ran.
@@ -2268,6 +2316,13 @@ pub fn build_with_cards(
             .into_iter()
             .map(JournalDisagreement::Unreadable),
     );
+    findings.extend(
+        durability
+            .quarantined
+            .iter()
+            .map(|q| JournalDisagreement::Quarantined(q.to_string())),
+    );
+    findings.extend(durability.open_quarantined.iter().cloned());
     findings.extend(durability.reconcile_with_journal());
     findings.dedup();
     for finding in &findings {

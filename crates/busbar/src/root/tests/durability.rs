@@ -1988,3 +1988,126 @@ fn a_settled_figure_tampered_on_disk_is_caught_at_boot() {
         "a figure edited on disk must be a restart finding, never taken silently onto the book"
     );
 }
+
+/// Find the segment holding `needle` and apply `edit` at its first occurrence. Answers whether it did.
+fn edit_segment(dir: &std::path::Path, needle: &[u8], edit: impl Fn(&mut Vec<u8>, usize)) -> bool {
+    for entry in std::fs::read_dir(dir).expect("the data directory lists") {
+        let path = entry.expect("an entry").path();
+        let Ok(mut bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        if let Some(i) = bytes.windows(needle.len()).position(|w| w == needle) {
+            edit(&mut bytes, i);
+            std::fs::write(&path, &bytes).expect("the segment rewrites");
+            return true;
+        }
+    }
+    false
+}
+
+/// A COMPLETED SETTLEMENT ALTERED AT THE JOURNAL'S TAIL IS NEVER A SILENT ZERO. The unit's
+/// settlement is the last record on the journal and its counts are edited on disk while the node is
+/// down. Before the WAL's header check this read as a torn tail: the record was cut silently, the
+/// hold looked open, and recovery settled the unit at its checkpoint — 4,321 became 0 with no
+/// alarm. Now the record is quarantined, the finding names it, and the hold is left
+/// OPEN-QUARANTINED: nothing settles it on a guess.
+#[test]
+fn a_settlement_altered_at_the_tail_is_quarantined_and_never_settles_at_zero() {
+    let scratch = ScratchDir::new("tampered-tail");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let key = totals_key("vk_tail");
+    {
+        let mut durability = boot(&cfg, 22).expect("the directory is writable");
+        settle_one(&mut durability, &key, 5_000, 4_321, 9);
+    }
+    let clean = boot(&cfg, 22).expect("reopens");
+    assert_eq!(clean.ledger.book().get(&key, 86_400).settled, 4_321);
+    assert!(
+        clean.restart_findings.is_empty(),
+        "{:?}",
+        clean.restart_findings
+    );
+    drop(clean);
+    assert!(
+        edit_segment(&scratch.path, &4_321u64.to_le_bytes(), |bytes, i| {
+            bytes[i..i + 8].copy_from_slice(&4_322u64.to_le_bytes());
+        }),
+        "the fixture found the settled counts on disk"
+    );
+    let restarted = boot(&cfg, 22).expect("a corrupt journal does not stop the boot");
+    assert_eq!(
+        restarted.quarantined.len(),
+        1,
+        "the altered tail record is set aside"
+    );
+    let figures = restarted.ledger.book().get(&key, 86_400);
+    assert_eq!(
+        figures.settled, 0,
+        "the altered figure is not taken onto the book"
+    );
+    assert_eq!(
+        figures.open_holds, 5_000,
+        "and the hold is NOT settled at its checkpoint: it stays open"
+    );
+    assert_eq!(
+        restarted.recovered_holds, 0,
+        "nothing was recovered on a guess"
+    );
+    let findings: Vec<String> = restarted
+        .restart_findings
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.starts_with("journal quarantine:"))
+            && findings
+                .iter()
+                .any(|f| f.contains("unit 9 is left OPEN-QUARANTINED")),
+        "the findings name the quarantine and the unit: {findings:?}"
+    );
+}
+
+/// A TRUE TORN TAIL STILL TRUNCATES AND RECOVERS. The settlement's write stopped inside its frame's
+/// header (a crash mid-append): the header check fails, the tail is cut silently, and the unit's
+/// hold is recovered as it always was — nothing was acknowledged past the tear.
+#[test]
+fn a_torn_settlement_is_cut_and_its_hold_recovers() {
+    let scratch = ScratchDir::new("torn-settlement");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let key = totals_key("vk_torn");
+    {
+        let mut durability = boot(&cfg, 23).expect("the directory is writable");
+        settle_one(&mut durability, &key, 5_000, 4_321, 11);
+    }
+    // Tear the frame that carries the settlement: zero from inside its header to the end.
+    assert!(
+        edit_segment(&scratch.path, &4_321u64.to_le_bytes(), |bytes, i| {
+            let frame = busbar_kernel_wal::FRAME_BYTES;
+            let start = (i / frame) * frame + 20;
+            for b in &mut bytes[start..] {
+                *b = 0;
+            }
+        }),
+        "the fixture found the settlement on disk"
+    );
+    let restarted = boot(&cfg, 23).expect("reopens");
+    assert!(
+        restarted.quarantined.is_empty(),
+        "a torn write is not a quarantine"
+    );
+    assert_eq!(
+        restarted.recovered_holds, 1,
+        "the open hold is recovered as before"
+    );
+    assert!(
+        restarted.open_quarantined.is_empty(),
+        "{:?}",
+        restarted.open_quarantined
+    );
+}

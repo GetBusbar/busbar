@@ -83,8 +83,10 @@ fn zeros_are_read_as_the_end_of_the_writes_and_not_as_damage() {
 
 #[test]
 fn a_frame_whose_payload_length_is_impossible_is_refused_before_it_is_used() {
+    // A legacy (version-1) frame: a version-2 frame whose header field is edited fails its header
+    // check first (`a_version_2_header_edit_fails_its_header_check`).
     let record = Record::new(1, 1, vec![1u8; 10]);
-    let mut frame = record.encode().remove(0);
+    let mut frame = crate::record::encode_legacy(&record).remove(0);
     frame[32..34].copy_from_slice(&((FRAME_PAYLOAD_BYTES + 1) as u16).to_le_bytes());
     assert!(matches!(
         decode_frame(&frame),
@@ -105,8 +107,10 @@ fn a_frame_from_a_layout_this_build_does_not_know_stops_the_scan() {
 
 #[test]
 fn a_frame_claiming_a_part_outside_its_own_count_is_refused() {
+    // A legacy (version-1) frame: a version-2 frame whose header field is edited fails its header
+    // check first (`a_version_2_header_edit_fails_its_header_check`).
     let record = Record::new(1, 1, vec![1u8; 10]);
-    let mut frame = record.encode().remove(0);
+    let mut frame = crate::record::encode_legacy(&record).remove(0);
     frame[24..28].copy_from_slice(&5u32.to_le_bytes());
     assert!(matches!(
         decode_frame(&frame),
@@ -120,4 +124,26 @@ fn the_header_leaves_the_documented_amount_of_room_for_a_payload() {
     // recomputed from each other at every call site.
     assert_eq!(FRAME_HEADER_BYTES + FRAME_PAYLOAD_BYTES, FRAME_BYTES);
     assert_eq!(FRAME_BYTES, crate::MAX_RECORD_BYTES);
+}
+
+/// A version-2 frame whose header field is edited fails its HEADER CHECK before anything else is
+/// read: an edit to the header reads as a torn write, never as a different record.
+#[test]
+fn a_version_2_header_edit_fails_its_header_check() {
+    let record = Record::new(1, 1, vec![1u8; 10]);
+    let mut frame = record.encode().remove(0);
+    frame[24..28].copy_from_slice(&5u32.to_le_bytes());
+    assert_eq!(decode_frame(&frame), Err(FrameError::HeaderMismatch));
+}
+
+/// A version-2 frame whose PAYLOAD is edited keeps its header check and fails its digest: a whole
+/// frame altered after it was written.
+#[test]
+fn a_version_2_payload_edit_is_an_altered_whole_frame() {
+    let record = Record::new(1, 1, vec![1u8; 10]);
+    let mut frame = record.encode().remove(0);
+    frame[crate::record::FRAME_HEADER_BYTES] ^= 0xFF;
+    assert_eq!(decode_frame(&frame), Err(FrameError::DigestMismatch));
+    assert!(crate::record::checked_header(&frame).is_some());
+    assert!(FrameError::DigestMismatch.is_altered_whole_frame(crate::record::FRAME_VERSION));
 }
