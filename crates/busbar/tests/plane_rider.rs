@@ -33,7 +33,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
-use busbar_contract::abi::mechanism::{KindCode, MECHANISM_VERSION};
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, PlaneOpenIn, PlaneOpenOut, UnitCount,
 };
@@ -41,8 +40,8 @@ use busbar_contract::services::HostServices;
 use busbar_kernel::host_services::{KernelServices, SystemResolver};
 
 use busbar_plugin_loader::dispatch::{
-    in_head, kinds::plane::Plane, load_dropped, load_linked, out_head, Bind, DispatchConfig,
-    Dispatcher, Frame, ManifestFacts, NoSink, Plugin, NO_BLOB,
+    in_head, kinds::plane::Plane, load_dropped, load_linked, out_head, rendering_of, Bind, DispatchConfig,
+    Dispatcher, Frame, LinkedRow, NoSink, Plugin, NO_BLOB,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,17 +81,17 @@ fn opened(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
         max_inflight_cap: 8,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher.adopter(),
+        conns: None,
     };
     let plugin = match way {
-        Way::Linked => load_linked::<Plane>(plane::door, bind).expect("the linked door loads"),
+        Way::Linked => {
+            let row = LinkedRow::of(plane::door).expect("the plane states its Statement");
+            load_linked::<Plane>(&row, bind).expect("the linked door loads")
+        }
         Way::Dropped => {
-            let facts = ManifestFacts {
-                mechanism_version: MECHANISM_VERSION,
-                kind: KindCode::Plane,
-                kind_abi: KindCode::Plane.abi_version(),
-            };
+            let stated = rendering_of(plane::door).expect("the plane renders its Statement");
             let path = dropped_path().expect("the example is built");
-            load_dropped::<Plane>(&path, &facts, bind).expect("the dropped door loads")
+            load_dropped::<Plane>(&path, &stated, bind).expect("the dropped door loads")
         }
     };
     let mut open = Frame::new(

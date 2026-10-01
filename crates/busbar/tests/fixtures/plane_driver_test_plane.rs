@@ -31,7 +31,7 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::call::{MetricEntry, METRIC_SET};
 use busbar_contract::abi::mechanism::door::{
-    Door, KindTailHead, MetricFamily, Statement, FAMILY_GAUGE,
+    Door, KindTailHead, MetricFamily, Section, Statement, FAMILY_GAUGE, SECTION_DECLARING,
 };
 use busbar_contract::abi::mechanism::lifecycle::{CancelIn, CancelOut, OpsHead, LIFECYCLE_SLOTS};
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket, WakeFn};
@@ -39,11 +39,11 @@ use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, Claim, OnPieceIn, OnPieceOut, OpClass, Ops, OutField,
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneSnapshot, PlaneTail, RefusalIn,
-    RefusalOut, RefusalStatus, Section, UnitCount, CANCEL_ABORTED, CANCEL_FAILED,
-    CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
-    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
-    PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT, SECTION_DECLARING, SHAPE_WHOLE,
-    UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    RefusalOut, RefusalStatus, UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL,
+    EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE,
+    INGRESS_RESPONSE_STREAM, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT,
+    PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT, SHAPE_WHOLE, UNITS_ESTIMATED, UNITS_REPORTED,
+    VERDICT_RETRY,
 };
 
 /// The plane's own refusal code and the status `/clock` refuses with when the host will not read
@@ -200,8 +200,6 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     signing_domain: NO_STR,
     signing_kid_prefix: NO_STR,
     cli_help: NO_STR,
-    sections: &SECTIONS.0 as *const Section,
-    sections_len: 1,
     dialects: &DIALECTS.0 as *const AbiStr,
     dialects_len: 1,
     dialect_auth: std::ptr::null(),
@@ -218,8 +216,6 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     fee_units_len: 0,
     record_kinds: std::ptr::null(),
     record_kinds_len: 0,
-    needs: std::ptr::null(),
-    needs_len: 0,
     egress_targets: std::ptr::null(),
     egress_targets_len: 0,
     record_chains: std::ptr::null(),
@@ -256,6 +252,21 @@ static STATEMENT: Shared<Statement> = Shared(Statement {
     settings_schema: NO_BLOB,
     kind_tail: &TAIL.0.head as *const KindTailHead,
     extensions: NO_BLOB,
+    marks: 0,
+    mark_words: std::ptr::null(),
+    mark_words_len: 0,
+    rewrites: std::ptr::null(),
+    rewrites_len: 0,
+    sections: &SECTIONS.0 as *const Section,
+    sections_len: 1,
+    needs: std::ptr::null(),
+    needs_len: 0,
+    target_from: NO_STR,
+    trust_from: NO_STR,
+    answers: std::ptr::null(),
+    answers_len: 0,
+    claims: std::ptr::null(),
+    claims_len: 0,
 });
 
 static OPS: Shared<Ops> = Shared(Ops {

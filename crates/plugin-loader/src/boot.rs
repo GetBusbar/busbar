@@ -515,6 +515,7 @@ pub fn load(req: &LoadRequest<'_>) -> Result<Loaded, String> {
             .sink(&s.instance, c.kind, req.metrics.clone())
             .map_err(|e| format!("{}: {e}", s.instance))?;
         let bind = Bind {
+            instance: Arc::from(s.instance.as_str()),
             max_inflight_cap: req.max_inflight_cap,
             sink: Arc::new(sink),
             dispatcher: req.dispatcher.clone(),

@@ -22,7 +22,6 @@ use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::Outcome as AbiOutcome;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
-use busbar_contract::abi::mechanism::{KindCode, MECHANISM_VERSION};
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, PlaneOpenIn, PlaneOpenOut, UnitCount,
     FROM_FAR_END,
@@ -30,9 +29,9 @@ use busbar_contract::abi::plane::{
 use busbar_contract::caps::OpClassId;
 use busbar_kernel::plane_driver::{refusal_status, BufferCaps, DriverConfig, PlaneDriver};
 use busbar_plugin_loader::dispatch::{
-    in_head, kinds::plane::Plane, load_dropped, load_linked, now_ns as dispatch_now, out_head,
+    in_head, kinds::plane::Plane, load_dropped, load_linked, now_ns as dispatch_now, out_head, rendering_of,
     plane_calls::PlaneInstance, Bind, Diagnostic, DispatchConfig, Dispatcher, Dropped,
-    EnvelopeSink, Frame, ManifestFacts, Metric, NoSink, Plugin, NO_BLOB,
+    EnvelopeSink, Frame, LinkedRow, Metric, NoSink, Plugin, NO_BLOB,
 };
 
 /// The dispatcher's clock, the one a unit's deadline is on.
@@ -85,17 +84,17 @@ fn load_with(way: Way, dispatcher: &Dispatcher, sink: Arc<dyn EnvelopeSink>) -> 
         max_inflight_cap: 64,
         sink,
         dispatcher: dispatcher.adopter(),
+        conns: None,
     };
     let plugin = match way {
-        Way::Linked => load_linked::<Plane>(plane::door, bind).expect("the linked door loads"),
+        Way::Linked => {
+            let row = LinkedRow::of(plane::door).expect("the plane states its Statement");
+            load_linked::<Plane>(&row, bind).expect("the linked door loads")
+        }
         Way::Dropped => {
-            let facts = ManifestFacts {
-                mechanism_version: MECHANISM_VERSION,
-                kind: KindCode::Plane,
-                kind_abi: KindCode::Plane.abi_version(),
-            };
+            let stated = rendering_of(plane::door).expect("the plane renders its Statement");
             let path = dropped_path().expect("the example is built");
-            load_dropped::<Plane>(&path, &facts, bind).expect("the dropped door loads")
+            load_dropped::<Plane>(&path, &stated, bind).expect("the dropped door loads")
         }
     };
     let mut open = Frame::new(

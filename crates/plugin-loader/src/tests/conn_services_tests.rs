@@ -130,6 +130,7 @@ fn bound(needs: &'static [Need], table: &Arc<Recording>) -> Plugin<TestKind> {
         v,
         None,
         Bind {
+            instance: Arc::from("the-instance"),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: Adopter::unwatched(),
@@ -484,6 +485,7 @@ fn bound_over(table: &Arc<Scripted>) -> Plugin<TestKind> {
         v,
         None,
         Bind {
+            instance: Arc::from("the-instance"),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: Adopter::unwatched(),

@@ -20,7 +20,6 @@ use std::sync::Arc;
 use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut, ValidateIn};
-use busbar_contract::abi::mechanism::{KindCode, MECHANISM_VERSION};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 
 use super::open_reason_plugins as witness;
@@ -28,7 +27,7 @@ use super::OPEN_REASON_CAP;
 use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::kinds::store::Store;
 use crate::dispatch::{
-    load_dropped, load_linked, Bind, DispatchConfig, Dispatcher, Frame, ManifestFacts, NoSink,
+    load_dropped, load_linked, Bind, DispatchConfig, Dispatcher, Frame, LinkedRow, NoSink,
 };
 use crate::store_v3::LoadedStore;
 
@@ -38,9 +37,11 @@ fn dispatcher() -> Arc<Dispatcher> {
 
 fn bind(d: &Dispatcher) -> Bind {
     Bind {
+        instance: Arc::from("the-instance"),
         max_inflight_cap: 16,
         sink: Arc::new(NoSink),
         dispatcher: d.adopter(),
+        conns: None,
     }
 }
 
@@ -49,23 +50,17 @@ fn dropped_path(example: &str) -> Option<PathBuf> {
     crate::both_ways::example_cdylib(example)
 }
 
-fn facts(kind: KindCode) -> ManifestFacts {
-    ManifestFacts {
-        mechanism_version: MECHANISM_VERSION,
-        kind,
-        kind_abi: kind.abi_version(),
-    }
-}
 
 /// The store witness's text through the store host ([`LoadedStore::open`]), LINKED and (when
 /// built) DROPPED; both must agree.
 fn store_text(settings: &[u8]) -> String {
     let d = dispatcher();
     let door: DoorFn = witness::store::door;
-    let linked = load_linked::<Store>(door, bind(&d)).expect("the linked store door loads");
+    let row = LinkedRow::of(door).expect("the store door states its Statement");
+    let linked = load_linked::<Store>(&row, bind(&d)).expect("the linked store door loads");
     let text = LoadedStore::open(linked, d.clone(), settings, 1).expect_err("it never opens");
     if let Some(path) = dropped_path("open_reason_store_door") {
-        let dropped = load_dropped::<Store>(&path, &facts(KindCode::Store), bind(&d))
+        let dropped = load_dropped::<Store>(&path, &row.statement, bind(&d))
             .expect("the dropped store door loads");
         let dropped_text =
             LoadedStore::open(dropped, d.clone(), settings, 1).expect_err("it never opens");
@@ -129,7 +124,8 @@ fn octets(b: &[u8]) -> Blob {
 fn an_sdk_validate_and_open_say_their_own_owned_words_through_the_lent_buffers() {
     let d = dispatcher();
     let door: DoorFn = witness::life::door;
-    let p = load_linked::<Secret>(door, bind(&d)).expect("the linked life door loads");
+    let row = LinkedRow::of(door).expect("the life door states its Statement");
+    let p = load_linked::<Secret>(&row, bind(&d)).expect("the linked life door loads");
 
     let mut vi: ValidateIn = blank_in();
     vi.settings = octets(b"no port");
