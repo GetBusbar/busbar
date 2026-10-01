@@ -656,6 +656,24 @@ impl HealthState {
         self.lane_max(lane, FsmCell::streak)
     }
 
+    /// Run `close` on the default cell and then on every EXISTING per-pool cell for the lane (a cell
+    /// not yet created inherits health lazily on first access). A cell `close` reports really closed
+    /// gets its SWRR accumulator reset — the lock-free generational bump, run after the transition
+    /// lock is released — so its stripes rejoin selection from 0; a cell a peer re-armed mid-race is
+    /// left alone.
+    pub(crate) fn close_all_cells(&self, lane: usize, close: impl Fn(&FsmCell) -> bool) {
+        let ls = self.get_lane(lane);
+        if close(&ls.cell) {
+            self.reset_swrr_for("", ls.as_ref());
+        }
+        let cells = read_recover(&self.pool_cells);
+        for (pool_name, cell) in cells.get(&lane).into_iter().flatten() {
+            if close(&cell.fsm) {
+                self.reset_swrr_for(pool_name, cell.as_ref());
+            }
+        }
+    }
+
     /// The largest `read` across the default cell and every per-pool cell for the lane.
     fn lane_max<T: Ord>(&self, lane: usize, read: impl Fn(&FsmCell) -> T) -> T {
         let cells = read_recover(&self.pool_cells);
