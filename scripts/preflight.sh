@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-release gate. Mirrors .github/workflows/ci.yml EXACTLY so a tag can never ship red CI —
+# Pre-release gate. A local mirror of the cargo battery (fmt, clippy, build, test) so a tag can never ship red —
 # in particular the config-specific dead-code that `-D warnings` rejects only under
 # `--no-default-features` or on Windows (which a single default `cargo build` on a unix box
 # silently passes). Run this before every `git tag vX.Y.Z`.

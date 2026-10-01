@@ -308,9 +308,8 @@ gm_run_shard() {
   #   `cargo test -p xtask` run everything, keeps the command the one this job claims to run.
   #
   #   IT IS ALSO THE DIFFERENCE BETWEEN A 40-MINUTE CAMPAIGN AND AN UNRUNNABLE ONE, and the reason
-  #   is worth naming so nobody "simplifies" it back. `xtask/tests/cli.rs` carries two cases --
-  #   `selftest_runs_every_registered_gates_red_proof` and
-  #   `the_registry_and_the_workflow_still_name_the_same_gates` -- that re-run EVERY registered
+  #   is worth naming so nobody "simplifies" it back. `xtask/tests/cli.rs` carries a case --
+  #   `selftest_runs_every_registered_gates_red_proof` -- that re-runs EVERY registered
   #   gate's self-proof: 45 minutes, once, on top of everything. A bare `cargo test -p xtask` would
   #   put that 45 minutes inside every shard's baseline AND inside every single mutant, which is
   #   days, not a push. Naming the two targets this job actually needs is what keeps `tests/cli.rs`

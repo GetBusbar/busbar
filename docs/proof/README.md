@@ -1,27 +1,23 @@
 # Where the published proof manifests live
 
-The Build Proof Dashboard manifest is produced by the
-`proof-manifest` job in `.github/workflows/ci.yml` on a push to `dev`, `qa` or `main`, and published
-in two places. Neither of them is the branch it ran on.
+The Build Proof Dashboard manifest is collated by `scripts/proof-manifest.py`. The `proof-manifest`
+job that ran it (in `ci.yml`, on a push to `dev`, `qa` or `main`) is deleted with the rest of busbar's
+workflows: `promote.yml` does not publish a manifest, so nothing refreshes the published copies until
+the collator is wired into the release engine in busbar-release. The last published manifests are on
+the `proof-manifests` branch.
 
 1. **The `proof-manifests` branch** (canonical, for readers). One file per SOURCE branch —
    `docs/proof/dev.json`, `docs/proof/qa.json`, `docs/proof/main.json` — plus the `index.json`
    roll-up over all of them. The branch is deliberately unprotected, is never built, never released
    and never fast-forwarded into anything.
-2. **The `proof-manifest-<branch>` workflow artifact** of the run that produced it, containing the
-   same two files. This is the copy to consume from another workflow: it needs no git write at all.
 
 ## Why not commit it back to dev/qa/main
 
-It used to. `git push origin "HEAD:${{ github.ref_name }}"` is rejected on `qa` and `main` because
-both are protected (required status checks, linear history, `enforce_admins: true`); the job fails,
-the `CI` run concludes failure, and `release-stage.yml`'s gate 0 then refuses to stage — a manifest
-refresh took the release out. And if such a push ever did land it would mint a release-branch HEAD
-carrying `[skip ci]`, for which no `CI`, `qa-gate` or `Release stage` run exists, so
-`release.yml`'s `resolve-staged` would refuse that sha permanently.
-
-`scripts/release-order-lint.py` R11 fails CI if any workflow pushes a commit to a release branch, so
-this cannot come back by accident.
+It used to. A push of the manifest back to `qa` or `main` is rejected, because both are protected
+(required status checks, linear history, `enforce_admins: true`). And if such a push ever did land it
+would mint a release-branch HEAD for which no required run exists. `cargo xtask gate workflow-rules`
+rule R11 fails if any workflow pushes a commit to a release branch, so this cannot come back by
+accident.
 
 ## Reading it
 
@@ -34,4 +30,4 @@ in the file name, so one checkout serves all three deploys.
 
 `dev.json` / `index.json` committed here are the seed the collator and the public-safety guard were
 developed against, and are what `node scripts/check-proof-manifest-public.mjs` (no arguments) checks
-locally. CI no longer refreshes them; the live manifests are on the `proof-manifests` branch.
+locally. Nothing refreshes them; the live manifests are on the `proof-manifests` branch.

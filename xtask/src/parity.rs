@@ -9,9 +9,9 @@
 //!
 //! The sequence every conversion follows, in this order:
 //!
-//! 1. land the Rust gate with its own selftest, NOT yet wired into `ci.yml`;
+//! 1. land the Rust gate with its own selftest, NOT yet registered;
 //! 2. land `parity` GREEN — legacy and Rust produce byte-identical rows over the real tree;
-//! 3. switch the `ci.yml` call site;
+//! 3. register it (the turnstile then runs it on every hop);
 //! 4. delete the Python/bash in a separate commit that touches no `qa/*.json` byte.
 //!
 //! If a committed artifact must change, it changes in its own commit with the diff reviewable,

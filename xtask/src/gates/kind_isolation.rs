@@ -423,7 +423,7 @@ const PENDING_KINDS: &[(&str, &str)] = &[
         "secret",
         "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
          secret fixture is deleted (\"FIXTURES\") and the kind is proven by GetBusbar/busbar-secret-vault \
-         through crates/plugin-loader/src/tests/plugin_proof_tests.rs (ci.yml `plugin-proofs`)",
+         through crates/plugin-loader/src/tests/plugin_proof_tests.rs",
     ),
     (
         "auth",
@@ -490,8 +490,7 @@ const OFF_TREE_MANIFESTS: &[(&str, &str)] = &[
         "the coverage-guided fuzz harnesses over the codec parse surface: a SELF-CONTAINED \
          workspace (its own empty `[workspace]` table), deliberately not a member of the root \
          workspace so a normal `cargo build`/`cargo test` never sees it and it adds zero cost to \
-         per-push CI. It only builds when `cargo fuzz` invokes it (qa-fuzz.yml, at the qa \
-         promotion boundary). It path-deps target crates by their sanctioned `test-support` \
+         per-push CI. It only builds when `cargo fuzz` invokes it. It path-deps target crates by their sanctioned `test-support` \
          feature and modifies no crate source, so it is an input to fuzzing rather than a crate of \
          the product tree.",
     ),
@@ -9817,7 +9816,7 @@ fn registry_subst(cx: &Ctx, from: &str, to: &str) -> Result<Overlay, String> {
 }
 
 /// NOTHING TO PLANT IS A VISIBLE CASE, counted as unproven — never a silent green. The shape
-/// `ci_umbrella` and `service_images` already use at the same door.
+/// `service_images` already uses at the same door.
 pub(super) fn unplantable(
     name: &str,
     covers: &[&str],

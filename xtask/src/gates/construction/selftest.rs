@@ -9,8 +9,8 @@
 //!
 //! THREE THINGS ARE DIFFERENT FROM THE SHELL SELF-TEST, each deliberately:
 //!
-//! 1. **THE BASELINE IS NOT "GREEN".** This gate is RED BY DESIGN on HEAD — `ci.yml` runs it
-//!    report-only and `scripts/full-gate.sh` says so in its skip list, because seven rows are over
+//! 1. **THE BASELINE IS NOT "GREEN".** This gate is RED BY DESIGN on HEAD — it is
+//!    reported against a standing-red list (`gates::REPORT_ONLY`), because seven rows are over
 //!    ceilings the construction work in flight is driving down. The shell obtained a green baseline
 //!    by writing a calibrated ceilings file, which is to say by turning the gate off. The baseline
 //!    here asserts the property that actually matters to every RED proof below: **the unplanted

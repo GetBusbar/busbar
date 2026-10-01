@@ -37,10 +37,10 @@
 #       --bin skips the build and boots PATH. --run-id names the run in `run_id`/`evidence`.
 #   jev-conformance.sh --selftest
 #       Prove the judgement: every red rule fires on its planted input, and no planted input yields
-#       a pass; and prove the workflow runs every battery target. No cargo, no boot.
+#       a pass. No cargo, no boot.
 #
-# THE SAME TWO LEGS, ONE CI JOB PER PIECE (.github/workflows/qa-conformance-jev.yml). The workflow
-# runs each piece as its own job, and its `verdict` job judges them through the same `judge`:
+# THE SAME TWO LEGS, ONE PIECE AT A TIME (a caller may run each as its own job and judge them
+# through the same `judge`):
 #   jev-conformance.sh --targets
 #       Print the battery's test targets, DISCOVERED from the crate (`lib` plus every tests/*.rs),
 #       never listed by hand.
@@ -58,7 +58,6 @@ set -u
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 CRATE="$REPO/crates/busbar-plane-decisions"
-WORKFLOW="$REPO/.github/workflows/qa-conformance-jev.yml"
 OUT="$REPO/conformance/verdicts/jev.json"
 BIN=""
 RUN_ID="${JEV_RUN_ID:-}"
@@ -99,26 +98,6 @@ discover_targets() {
     [ -f "$f" ] && basename "$f" .rs
   done
   return 0
-}
-
-# workflow_targets <workflow-file> → every `--battery NAME` the workflow runs, one per line.
-workflow_targets() {
-  grep -oE -- '--battery [A-Za-z0-9_]+' "$1" 2>/dev/null | awk '{print $2}' | sort -u
-}
-
-# coverage <crate-dir> <workflow-file> → prints every target the workflow does not run and every
-# `--battery` it runs that names no target; returns 1 when either list is non-empty.
-coverage() {
-  local want got missing ghost
-  want="$(discover_targets "$1" | sort -u)"
-  got="$(workflow_targets "$2")"
-  [ -n "$want" ] || { echo "no battery target discovered under $1"; return 1; }
-  missing="$(comm -23 <(printf '%s\n' "$want") <(printf '%s\n' "$got"))"
-  ghost="$(comm -13 <(printf '%s\n' "$want") <(printf '%s\n' "$got"))"
-  [ -z "$missing" ] && [ -z "$ghost" ] && return 0
-  [ -n "$missing" ] && printf 'battery target run by no job: %s\n' $missing
-  [ -n "$ghost" ] && printf 'job runs --battery for no such target: %s\n' $ghost
-  return 1
 }
 
 # tests_ran <cargo-test-output> → the number of tests cargo says passed, summed over binaries.
@@ -165,26 +144,6 @@ selftest() {
     fail=1; red "FAIL  the verdict writer's output is not the verdict shape"
   fi
   rm -f "$tmp"
-  # THE BATTERY IS SPLIT ACROSS JOBS, SO THE SPLIT MUST COVER IT. A planted crate and workflows
-  # prove the coverage check bites both ways; then the real crate and the real workflow must agree.
-  local fx; fx="$(mktemp -d)"
-  mkdir -p "$fx/c/src" "$fx/c/tests"
-  : >"$fx/c/src/lib.rs"; : >"$fx/c/tests/one.rs"; : >"$fx/c/tests/two.rs"
-  printf 'run: x --battery lib\nrun: x --battery one\nrun: x --battery two\n' >"$fx/full.yml"
-  printf 'run: x --battery lib\nrun: x --battery one\n' >"$fx/short.yml"
-  printf 'run: x --battery lib\nrun: x --battery one\nrun: x --battery two\nrun: x --battery three\n' >"$fx/ghost.yml"
-  if coverage "$fx/c" "$fx/full.yml" >/dev/null; then note "PASS  a workflow running every target covers the battery"
-  else fail=1; red "FAIL  full coverage was refused"; fi
-  if coverage "$fx/c" "$fx/short.yml" >/dev/null; then fail=1; red "FAIL  a target run by no job was accepted"
-  else note "PASS  a target run by no job is refused"; fi
-  if coverage "$fx/c" "$fx/ghost.yml" >/dev/null; then fail=1; red "FAIL  a --battery naming no target was accepted"
-  else note "PASS  a --battery naming no target is refused"; fi
-  rm -rf "$fx"
-  if out="$(coverage "$CRATE" "$WORKFLOW")"; then
-    note "PASS  qa-conformance-jev.yml runs every battery target: $(discover_targets "$CRATE" | tr '\n' ' ')"
-  else
-    fail=1; red "FAIL  qa-conformance-jev.yml does not cover the battery:"; printf '%s\n' "$out"
-  fi
   # A green cargo run that selected nothing is not a pass, so the counter must read cargo's lines.
   if [ "$(tests_ran 'test result: ok. 0 passed; 0 failed')" = "0" ] \
      && [ "$(tests_ran "$(printf 'test result: ok. 3 passed; 0 failed\ntest result: ok. 2 passed; 0 failed')")" = "5" ]; then

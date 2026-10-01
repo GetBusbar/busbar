@@ -53,8 +53,8 @@ One consequence of "the ceiling is concurrency" was measured after this was writ
 fans **24 shards** per push, and it used to trigger on `keep-*` as well as the integration line. With
 ~15 live slot branches that is 15 × 24 shard claims on 32 slots, and the per-branch
 `cancel-in-progress` cannot relieve it (it cancels a branch's own superseded run, not its
-neighbours'). The integration tip's own proof queued behind it. So `keep-*` is no longer in
-`gate-mutants.yml`'s push trigger: a slot that touches the mutation scope runs
+neighbours'). The integration tip's own proof queued behind it. So `keep-*` no longer triggers a
+mutation run: a slot that touches the mutation scope runs
 `scripts/gate-mutants.sh --shard 1/1` locally and says so in its hand-back, and the 24-shard run
 happens at landing on the integration branch (`docs/ci/gate-integrity.md`, *Sharding*).
 
@@ -322,8 +322,8 @@ public half travels, over SSM.
 ./scripts/prove-remote.sh --setup              # prepare every box (idempotent)
 ```
 
-It runs exactly the legs `keep-proof.yml` runs, in the same order, scoped by **the same
-`.keep-proof.toml`** the workflow reads off the branch root: workspace build, rustfmt,
+It runs the legs `keep-proof.yml` used to run (that workflow is deleted), in the same order, scoped by
+**the same `.keep-proof.toml`** read off the branch root: workspace build, rustfmt,
 `clippy -D warnings`, the named test packages (or the whole suite when the branch names none),
 `cargo xtask gate --all`, `cargo xtask selftest`, and the shadow oracle over `families` against the
 published 1.5.5 recording. Reading the same scope file rather than inventing a second one is what

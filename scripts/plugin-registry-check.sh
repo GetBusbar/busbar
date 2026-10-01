@@ -7,7 +7,7 @@
 # Checks, in order:
 #   1. Registry shape: required fields, valid kinds/gates, unique repo/alias/crate, and every repo is
 #      named busbar-<kind>-<name> for its OWN kind (owner ruling: repo = crate = artifact prefix).
-#   2. qa-gate.yml derives its sibling checkouts from the registry (its clone loop calls this
+#   2. scripts/qa-gate-run.sh derives its sibling checkouts from the registry (its clone loop calls this
 #      script's --list mode) — per-plugin hand-written checkout steps are gone by design, so the
 #      check is "the registry-driven step exists", not "a literal step per plugin exists".
 #   3. release-check.sh coverage per entry's `gate` kind:
@@ -25,7 +25,7 @@
 #        scripts/plugin-registry-check.sh --list
 #
 # --list is the machine-readable registry feed the other consumers iterate (release-check.sh's
-# suite loop, qa-gate.yml's clone loop): one tab-separated line per plugin —
+# suite loop, qa-gate-run.sh's clone loop): one tab-separated line per plugin —
 #   repo <TAB> dir <TAB> alias <TAB> kind <TAB> service <TAB> release_gate <TAB> gate <TAB> checkout_ref
 # where dir is checkout_dir (falling back to repo) and checkout_ref is "-" when unset. Shape
 # validation (check 1) still runs first, so a malformed registry fails every consumer loudly.
@@ -133,7 +133,7 @@ PAGES
 
   # ── CHECK 2, FAIL-INJECTED. A COMMENT MENTIONING THE LOOP IS NOT THE LOOP ──────────────────────
   # Check 2 asserted only that the string `plugin-registry-check.sh --list` appeared SOMEWHERE in
-  # the qa-gate surface, and scripts/qa-gate-run.sh's header documents that loop in prose. Deleting
+  # scripts/qa-gate-run.sh, and scripts/qa-gate-run.sh's header documents that loop in prose. Deleting
   # the real invocation from cmd_siblings therefore left the gate green on the strength of the
   # sentence describing what had just been removed -- the sibling fan-out would have cloned nothing
   # while this gate reported it registry-driven. Proven by OBSERVATION against a throwaway tree in
@@ -146,7 +146,6 @@ PAGES
   cp plugins.yaml "$c2/plugins.yaml"
   cp scripts/plugin-registry-check.sh scripts/release-check.sh "$c2/scripts/"
   [ -f scripts/release-check-1.5.2.sh ] && cp scripts/release-check-1.5.2.sh "$c2/scripts/"
-  [ -f .github/workflows/qa-gate.yml ] && cp .github/workflows/qa-gate.yml "$c2/.github/workflows/"
 
   # Capture, never `producer | grep -q`. Under `pipefail` grep -q exits on its first match, the
   # producer takes SIGPIPE, and the pipeline reports failure whether or not the text was there --
@@ -192,7 +191,6 @@ MUT
   cp plugins.yaml "$c1/plugins.yaml"
   cp scripts/plugin-registry-check.sh scripts/release-check.sh scripts/qa-gate-run.sh "$c1/scripts/"
   [ -f scripts/release-check-1.5.2.sh ] && cp scripts/release-check-1.5.2.sh "$c1/scripts/"
-  [ -f .github/workflows/qa-gate.yml ] && cp .github/workflows/qa-gate.yml "$c1/.github/workflows/"
   c1_says() { local out; out="$( (cd "$c1" && ./scripts/plugin-registry-check.sh --offline) 2>&1 || true)"; case "$out" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
   first="$(sed -n 's/^  - repo: //p' plugins.yaml | head -1)"
   first_kind="$(awk '/^  - repo: /{n++} n==1 && /^    kind: /{print $2; exit}' plugins.yaml)"
@@ -365,12 +363,9 @@ if list_mode:
 
 # ── 2. the qa gate derives its checkouts from the registry (no hand-written per-plugin steps).
 #
-# The loop itself now lives in scripts/qa-gate-run.sh, not inline in the YAML: qa-gate.yml is a thin
-# dispatcher that checks out the triggering SHA and invokes that script from it, so gate logic is
-# versioned with the code it gates instead of frozen on the default branch (`workflow_run` always
-# loads the workflow file from the default branch). This check follows the code rather than the
-# filename: the loop must exist in one of the two files, and it must not be satisfied by a mere
-# comment mentioning the string, so the whole qa-gate surface is scanned as one unit.
+# The loop lives in scripts/qa-gate-run.sh (the qa gate's runner; no workflow in this repository
+# dispatches it any more). The loop must exist in that file, and it must not be satisfied by a mere
+# comment mentioning the string.
 #
 # A COMMENT MENTIONING THE LOOP IS NOT THE LOOP. This scanned the raw file text, and
 # scripts/qa-gate-run.sh's own header documents the registry-driven checkout in prose -- the exact
@@ -387,9 +382,9 @@ def _code(path):
                    if not ln.lstrip().startswith(("#", "//")))
 
 
-devgate = _code(".github/workflows/qa-gate.yml") + _code("scripts/qa-gate-run.sh")
+devgate = _code("scripts/qa-gate-run.sh")
 if "plugin-registry-check.sh --list" not in devgate:
-    fail.append("the qa gate does not clone siblings via the registry (expected qa-gate.yml or "
+    fail.append("the qa gate does not clone siblings via the registry (expected "
                 "scripts/qa-gate-run.sh to iterate `scripts/plugin-registry-check.sh --list`)")
 
 # ── 3. release-check.sh coverage, per each entry's declared gate kind.

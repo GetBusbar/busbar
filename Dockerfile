@@ -1,5 +1,5 @@
 # busbar container image: FROM scratch, because the binary is the whole product.
-# Static musl binaries are built in CI (see .github/workflows/docker.yml) and copied
+# Static musl binaries are built by the release engine's container build (busbar-release) and copied
 # in per-arch; CA roots are compiled into the binary (webpki-roots), so no /etc/ssl
 # is needed. The vetted provider catalog ships inside the image as the default.
 #
@@ -14,7 +14,7 @@
 # dynamic linker's compiled-in default search path — `/lib` here, since a from-scratch image has
 # no /etc/ld-musl-*.path to redirect it. These are extracted in CI from the same pinned
 # `rust:alpine@sha256:...` musl-native container a `-crt-static`-disabled plugin cdylib is built
-# against (see docker.yml's "Extract musl plugin runtime libs" step), so they are a property of
+# against (the container build's "extract musl plugin runtime libs" step), so they are a property of
 # THIS IMAGE, independent of which plugin (if any) an operator drops in — not a specific plugin's
 # bundled dependency.
 #

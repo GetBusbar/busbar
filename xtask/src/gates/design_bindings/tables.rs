@@ -27,7 +27,6 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "at_capacity_reject_sheds_503_not_queued", "a saturated reject pool sheds 503 at once, never parks"),
         ("test", "queue_dispatches_when_permit_frees_before_deadline", "waiting only under on_exhausted queue, on the lane semaphore"),
         ("test", "queue_times_out_to_503_when_capacity_never_frees", "queue max_ms elapses to a 503"),
-        ("gate", "scripts/release-check.sh", "phase-0c-soak-reject: real binary at max_concurrent 1 sheds excess with a fast 503"),
     ]),
     ("PB-3", &[
         ("test", "ordered_walk_skips_tripped_preferred_to_next", "a tripped lane is excluded from the walk, not ordered last"),
@@ -49,7 +48,6 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "queue_won_permit_but_breaker_now_open_never_dispatches", "the queue winner re-checks the breaker"),
         ("test", "queue_two_waiters_one_freed_permit_wakes_exactly_one", "FIFO permit park wakes one"),
         ("test", "test_scrape_gauges_pool_queued_reads_live_depth", "the busbar_pool_queued gauge"),
-        ("gate", "scripts/release-check.sh", "reject SLO on the real binary: 503 + Retry-After >= 2; soak-queue phase sees busbar_pool_queued > 0"),
     ]),
     ("PB-5", &[
         ("test", "crates/busbar-llm/src/engine/tests/ordered_walk_tests.rs::sticky_affinity_never_selects_zero_weight_drained_member", "sticky fast path skipped on weight 0"),
@@ -210,7 +208,6 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "callback_state_mismatch_400", "?code dispatch with a state check"),
         ("test", "refresh_rotates_key_and_revokes_the_old_one", "?refresh"),
         ("test", "an_audience_bound_token_is_confined_to_its_door_plane", "/auth/token is in the unauthenticated exact-path bypass set"),
-        ("gate", "scripts/release-check-1.5.2.sh", "live-hermetic GET /auth/token?method= through the IdP callback to a key"),
     ]),
     ("PB-34", &[
         ("test", "admin_token_secret_ref_re_resolves_on_apply", "the admin token re-resolves on apply through the deferred rotation"),

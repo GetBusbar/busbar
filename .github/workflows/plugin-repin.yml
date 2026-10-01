@@ -12,7 +12,7 @@
 #   repin    on `cut`: scripts/fleet/repin.sh moves .busbar-ref, every manifest's busbar rev,
 #            Cargo.lock and the callers' reusable-workflow refs together, pin-check re-verifies them,
 #            and the commit goes to the repo's `dev` — a FIXED destination, never an input: qa and
-#            main are release branches (release-order R11), and a repo promotes dev -> qa -> main on
+#            main are release branches (workflow-rules R11), and a repo promotes dev -> qa -> main on
 #            its own, its release cut from main by a tag.
 #   dry_run  decides and repins in the runner, commits nothing.
 #

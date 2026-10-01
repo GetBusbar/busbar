@@ -1,0 +1,36 @@
+name: promote
+# Every same-repo PR is one hop up the branch ladder. The hop is GetBusbar/busbar-release's
+# ci/promote scripts at RELEASE_REF (private, so no `uses:`); these jobs only check out both repos
+# and run them. BOARD (fast-forward of the base) runs only when vars.PROMOTE_BOARD is "true".
+on: pull_request
+concurrency: { group: "promote-${{ github.event.pull_request.number }}", cancel-in-progress: true }
+permissions: { contents: read }
+env:
+  RELEASE_REF: f4c8b01d09c07d82726a6750aad70dcf087687b8
+  SHA: ${{ github.event.pull_request.head.sha }}
+  TO: ${{ github.base_ref }}
+  BASE_SHA: ${{ github.event.pull_request.base.sha }}
+jobs:
+  preflight:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs: { runner: "${{ steps.pre.outputs.runner }}" }
+    steps:
+      - { uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262, with: { ref: "${{ env.SHA }}", path: busbar } } # v4
+      - { uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v4
+      - { id: pre, run: bash busbar-release/ci/promote/preflight.sh }
+  hop:
+    needs: preflight
+    runs-on: ${{ needs.preflight.outputs.runner }}
+    concurrency: { group: "promote-hop-${{ github.base_ref }}", cancel-in-progress: false }
+    timeout-minutes: 330
+    steps:
+      - { uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262, with: { ref: "${{ env.SHA }}", path: busbar, fetch-depth: 0 } } # v4
+      - { uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262, with: { repository: GetBusbar/busbar-release, ref: "${{ env.RELEASE_REF }}", token: "${{ secrets.TURNSTILE_DISPATCH_TOKEN }}", path: busbar-release, persist-credentials: false } } # v4
+      - run: bash busbar-release/ci/promote/hop.sh
+        env: { R2_KEY_ID: "${{ secrets.R2_CACHE_ACCESS_KEY_ID }}", R2_KEY_SECRET: "${{ secrets.R2_CACHE_SECRET_ACCESS_KEY }}" }
+      - { if: always(), uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02, with: { name: "turnstile-report-${{ env.SHA }}", path: "artifacts/turnstile-*.json", if-no-files-found: warn } } # v4
+      - if: vars.PROMOTE_BOARD == 'true'
+        run: bash busbar-release/ci/promote/board.sh
+        env: { GITHUB_TOKEN: "${{ secrets.BUSBAR_TRAIN_TOKEN }}" }

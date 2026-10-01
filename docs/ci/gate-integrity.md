@@ -18,14 +18,12 @@ This document is what replaced it.
 
 Two halves, and they are enforced by two different mechanisms.
 
-*Nothing new arrives unheld* is [`gate-mutants`](../../.github/workflows/gate-mutants.yml). Every
-push that changes gate code is mutated, and a stub that survives the gates' own self-proof is a
-line of new gate code that nothing holds down. It is scoped to the diff, so its cost is proportional
-to the change and it can therefore run on every push to `integration/**`, `dev`, `qa` and `main`
-(and every pull request) rather than once a quarter. It does **not** run on `keep-*` slot branches:
-a slot that touches the mutation scope runs `scripts/gate-mutants.sh --shard 1/1` locally and says so
-in its hand-back, and the 24-shard run happens at landing on the integration branch. See *Sharding*
-below for why.
+*Nothing new arrives unheld* is `scripts/gate-mutants.sh`, run on demand (no workflow carries it any
+more). The gate code a change touches is mutated, and a stub that survives the gates' own self-proof
+is a line of new gate code that nothing holds down. It is scoped to the diff, so its cost is
+proportional to the change. A change that touches the mutation scope runs
+`scripts/gate-mutants.sh --shard 1/1` locally and says so in its hand-back; the 24-shard run is a
+deliberate campaign. See *Sharding* below for why.
 
 *Nothing already held stops being held* is the ratchets that were already here: the ceilings in
 `qa/construction.toml` and `qa/kind-isolation.toml`, held exactly (not approximately) by
@@ -36,59 +34,45 @@ drift hides.
 `ship-ready` is the row that says both halves are true at the same time, on a tree that is asking to
 be promoted.
 
-## What CI holds mechanically
+## What the pipeline holds mechanically
+
+busbar has one pipeline workflow, `.github/workflows/promote.yml`: every same-repo pull request is one
+hop up the branch ladder, and the release engine in busbar-release plans the hop from the PR's base
+branch.
 
 | check | what it is | required on |
 | --- | --- | --- |
-| `ci umbrella` | every gating job in `ci.yml`, in one status | qa, main |
-| `structure lint` | `kind-isolation`, structure-lint, release-order, duplex-ws | qa, main |
-| `construction gate (…)` | how the tree is built vs the design (`docs/design/BUSBAR-1.6.0.md`), on its posture | qa, main |
-| `gate-mutants` | the gates themselves, under mutation | qa, main |
-| `ship-ready` | the ship criterion, as five rows | qa, main |
+| `preflight` | formatting, `Cargo.lock` current, the generated C header current, on a free runner | qa, main |
+| `promote` | the turnstile admits the candidate: EVERY registered `cargo xtask gate`, plus the oracle and conformance where the rung asks, then the fast-forward of the base | qa, main |
 
-### Which executable scenario runs on the integration/dev push
+`ship-ready` is a registered gate like the rest: it runs on every hop, with `XTASK_SHIP_TARGET` set to
+the hop's base branch, so it is strict for `qa` and `main` and carries the dev line's standing reds
+for `predev` and `dev`.
+
+### Which executable scenario runs on the dev push
 
 Same question, one layer down. `qa/teller-steps.json` maps every Teller step of every gating plane to
 the scenario that proves it, and `cargo xtask gate teller-steps` asserts each cell NAMES A REAL
-SCRIPT. It does not run one. Measured on this line: the twelve `scripts/mcp-subject/h2-*.sh` and
-`scripts/a2a-subject/h2-*.sh` scenarios — the admission path end to end, authenticate through exit —
-were executed by no job of any workflow, while being cited by the matrix as proof.
+SCRIPT. It does not run one. The twelve `scripts/mcp-subject/h2-*.sh` and `scripts/a2a-subject/h2-*.sh`
+scenarios — the admission path end to end, authenticate through exit — are run by
+`testing/shadow-oracle/rigs-ledger.sh`, driven from the TELLER-STEPS group of
+`scripts/verify-1.6.0-done.sh`; no pipeline job runs them per hop. Eight of the twenty rigs are the
+MONEY legs, one set per plane: `h2-class-price.sh`, `h2-card-epoch.sh`, `h2-unpriced-refuses.sh`
+(added when the rigs' subject became a billing-ON deployment, #42) and `h2-ledger-unconditional.sh`
+(the 2026-09-22 ruling that the metering write does not depend on the rate card at all). See
+`docs/design/BUSBAR-1.6.0.md` Part 7 §12/§13.
 
-`ci.yml`'s `plane-rigs` job runs all TWENTY on every push to `integration/**`, `dev`, `qa` and
-`main`, one named step each, and it is in `ci-umbrella`'s `needs` and RESULTS. `feature-sets`'s
-eighth row holds the membership: a `h2-*.sh` in the tree that no step of `ci.yml` names is red.
-Eight of the twenty are the MONEY legs, one set per plane: `h2-class-price.sh`, `h2-card-epoch.sh`,
-`h2-unpriced-refuses.sh` (added when the rigs' subject became a billing-ON deployment, #42) and
-`h2-ledger-unconditional.sh` (the 2026-09-22 ruling that the metering write does not depend on the
-rate card at all). They gate with no `continue-on-error` and are expected RED today, each on a named
-decision the tree does not yet keep. See `docs/design/BUSBAR-1.6.0.md` Part 7 §12/§13.
+### Which registered gate runs on a hop
 
-### Which registered gate runs on the integration/dev push
-
-Measured on this line, not assumed. Every gate in `xtask`'s registry is either invoked by
-`.github/workflows/ci.yml` or carries an entry in `full_gate::REGISTRY_NOT_IN_CI` with an `Excuse`
-that is *checked* — `XtaskTest` needs its needle under `xtask/tests/`, `ReleaseScript` needs it in
-the named script — so a gate that runs on no job cannot exist here quietly. `full-gate` reports the
-set difference in both directions.
-
-`design-bindings` is one of the invoked ones: `ci.yml` runs it in its own job
-(`cargo xtask gate design-bindings --selftest`, then the gate), with no `if:` guard, so it executes
-on every push to `integration/**`, `dev`, `qa` and `main`; it is in `ci-umbrella`'s `needs` and
-scored `fast` in its RESULTS ledger. It does **not** exist at all on `dev`, `qa`, `main` or
-`integration/plane-extraction` at the time of writing — the gate is newer than those lines, which is
-why a reading taken against them finds no job running it.
-
-It is also RED on this line, and it is red BLOCKING: the job invokes the bare scored form (no
-`--posture`), and `PB-0` fails because it cites `scripts/inventory-coverage.sh`, a file the shell
-retirement removed without converting the gate. `gates::REPORT_ONLY` names exactly that red
-(`Excused::OnlyAbout("scripts/inventory-coverage.sh")`), which excuses it from `gate --all` — but
-`--all` is not what `ci.yml` runs. Either PB-0 gets a check that exists, or that job needs the
-`--posture` treatment `construction-gate` already has. Softening it without fixing PB-0 would be a
-waiver; it is recorded here instead.
+Every gate in `xtask`'s registry runs on every hop: the turnstile discovers them with
+`cargo xtask gate --list` and runs each by name, so a gate that runs on no job cannot exist here
+quietly. `design-bindings` counts a gate module as invoked exactly when it is registered; a script it
+cites counts only when something the pipeline runs invokes that script, and a script nothing runs
+compares nothing, so the binding is reported unproven rather than waved through.
 
 The required-check list is not maintained by hand in a settings page. It is
 [`scripts/ci-branch-protection.sh`](../../scripts/ci-branch-protection.sh): idempotent, `gh api`,
-read-modify-write (it adds a floor to whatever a branch already requires, and never removes a
+read-modify-write (it adds a floor of two contexts, `preflight` and `promote`, to whatever a branch already requires, and never removes a
 context somebody added for a reason this script does not know about). It also sets
 `allow_force_pushes: false`, `allow_deletions: false` and `enforce_admins: true` — the last of which
 is the point. A required check an administrator can click past is a required check that gets clicked
@@ -187,9 +171,8 @@ in.
 landing-sized diff the busiest shard already holds one mutant, so the second term is already minimal
 and every extra shard adds another whole baseline to the fleet's bill for nothing.
 
-*A bare `cargo test -p xtask` as the command.* `xtask/tests/cli.rs` carries two cases —
-`selftest_runs_every_registered_gates_red_proof` and
-`the_registry_and_the_workflow_still_name_the_same_gates` — that re-run **every** registered gate's
+*A bare `cargo test -p xtask` as the command.* `xtask/tests/cli.rs` carries a case —
+`selftest_runs_every_registered_gates_red_proof` — that re-runs **every** registered gate's
 self-proof, 45 minutes of it. Naming `--lib` and `--test gate_mutation_proof` explicitly is what
 keeps that out of every baseline and every mutant. Adding a test target here adds its cost to every
 mutant in the campaign.
@@ -230,8 +213,8 @@ be produced: an ancestor of `HEAD`, or of an audit pin. Pins are written locally
 the branch's merge-base ref and nothing else, so on the runner the pin set was **empty**, thirteen of
 the register's commits read as unreachable, and exactly two `audit_ledger` cases went red — on the
 checkout *and* in the copy, because `--copy-vcs true` copies the refs it was given and an empty pin
-set copies faithfully. `ci.yml` and `keep-proof.yml` already carried the fetch; this workflow did
-not, and now does.
+set copies faithfully. Any runner that runs the audit-ledger gate must fetch
+`+refs/backup/audit-pins/*:refs/audit-pins/*` first.
 
 Proven three ways rather than argued:
 

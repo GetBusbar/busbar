@@ -22,7 +22,7 @@
 //! moment of cutting a release, and in `ci.yml`'s feature matrix, where a `tests:` cell selected a
 //! package that no longer existed and a libtest filter over zero packages exits 0.
 //!
-//! THE SHAPE OF THE CONTRACT is `feature-sets`': membership is DERIVED from the tree (the workspace
+//! THE SHAPE OF THE CONTRACT is the one `qa-names` keeps: membership is DERIVED from the tree (the workspace
 //! members plus `Cargo.lock`, which is the exact set `cargo -p` resolves against) and ASSERTED
 //! against every covered file, and a deliberate exception is possible only IN WRITING, next to the
 //! site, as a comment:
@@ -43,7 +43,7 @@
 //! 2. A `tests:` or `features:` MATRIX CELL. `tests:` is passed verbatim after `cargo test`;
 //!    `features:` is `<pkg>/<feature>`, so its left half is a package selector in all but spelling.
 //! 3. A Rust string literal under `xtask/src` that BEGINS with `cargo ` — the command strings
-//!    `full_gate` mirrors CI with. The "begins with" is load-bearing: the same tuples carry PROSE
+//!    a runner mirrors a pipeline with. The "begins with" is load-bearing: the same tuples carry PROSE
 //!    strings that quote dead selectors on purpose, and prose is not a command.
 //!
 //! WHAT IS DELIBERATELY NOT COVERED, stated so it is not mistaken for held: the general "no string
@@ -112,11 +112,11 @@ pub const ROW_DECL_REASON: &str = "package-selectors:declaration-reason";
 /// makes every selector in the tree look dead, which is a defect in the instrument reported as a
 /// defect in the tree.
 pub const UNIVERSE_FLOOR: usize = 40;
-/// The floor under the discovered selector sites. Measured at 200, across 245 covered files, on the
-/// 1.6.0 integration tree. This is the floor that matters: an empty scan set is the one state in
+/// The floor under the discovered selector sites. Measured at 98, across 277 covered files, once
+/// the deleted workflows' selectors left the tree (it read 200 across 245 files before). This is the floor that matters: an empty scan set is the one state in
 /// which "every selector resolves" is true and means nothing.
-pub const SITE_FLOOR: usize = 120;
-/// The shortest exemption reason that is a reason rather than a shrug. `feature-sets`' number.
+pub const SITE_FLOOR: usize = 98;
+/// The shortest exemption reason that is a reason rather than a shrug.
 pub const MIN_REASON: usize = 30;
 
 /// Where a selector was found, and in what shape — carried so a finding cites the line a reader has
@@ -429,9 +429,9 @@ fn scan_matrix(rel: &str, text: &str, out: &mut Vec<Site>) {
 
 /// Rule 3: a Rust string literal that BEGINS with `cargo `.
 ///
-/// `full_gate`'s `CARGO_CI_ONLY` is a list of (command, reason) tuples on ONE line each, and the
-/// reason quotes dead selectors deliberately — `"(It read '-p busbar-core' here for as long as
-/// ci.yml did …)"`. A literal that begins with `cargo ` is a command; one that begins with anything
+/// A list of (command, reason) tuples on ONE line each (a command mirror) carries reasons that
+/// quote dead selectors deliberately — `"(It read '-p busbar-core' here for as long as the old
+/// workflow did …)"`. A literal that begins with `cargo ` is a command; one that begins with anything
 /// else is prose about a command, and prose is out of scope by construction rather than by
 /// allowlist.
 fn scan_rust_commands(rel: &str, text: &str, out: &mut Vec<Site>) {

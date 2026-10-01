@@ -115,4 +115,3 @@ emit "site:download-page"     "the marketing download page advertises this versi
 
 # ── Fleet + self-consistency ────────────────────────────────────────────────────────────────────
 emit "plugins:fleet-released" "every first-party plugin in plugins.yaml has a published release"
-emit "contract:drift"         "release-stage.yml still derives its build matrix from the contract, and names no target the contract does not declare"

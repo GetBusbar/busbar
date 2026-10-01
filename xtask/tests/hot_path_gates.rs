@@ -1,12 +1,9 @@
 //! THE HOT-PATH GATES, DRIVEN THROUGH THE DISPATCHER.
 //!
 //! `docs/design/BUSBAR-1.6.0.md` Part 3 §8 owes a perf gate and an alloc gate; §11b counts
-//! their criterion benches toward the core-engine tests/benches 8→9 rise. Both are registered but
-//! deliberately NOT invoked by `ci.yml` yet (the keystone wave owns `.github`), so
-//! `full_gate::REGISTRY_NOT_IN_CI` excuses them with `Excuse::XtaskTest` pointing HERE: this file is
-//! the coverage route the excuse rests on, and it runs under `cargo test --workspace --locked` on
-//! every push. The exact invocation strings below are the needles that excuse checks for — keep them
-//! byte-identical to the entries in `xtask/src/full_gate.rs`.
+//! their criterion benches toward the core-engine tests/benches 8→9 rise. Both are registered, so
+//! the pipeline's turnstile runs them by name on every hop; this file is the second route, driving
+//! each through the dispatcher under `cargo test --workspace --locked`.
 //!
 //! Driven through `cli::main` directly, like `xtask/tests/cli.rs`: exit 0 is green, and a gate that
 //! could not run would not be able to return it.

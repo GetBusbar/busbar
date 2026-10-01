@@ -13,11 +13,11 @@
 //! prevent.
 //!
 //! This is the belt-and-suspenders twin of the xtask gate: the xtask gate is the BLOCKING one (it is
-//! a row of `xtask/src/full_gate.rs`, selftest and scan both); this runs in every `cargo test`, so a
+//! a registered gate, selftest and scan both); this runs in every `cargo test`, so a
 //! neutral-crate transport-noun leak reddens the workspace test run too, not only the lint tier. The
 //! xtask gate replaced `scripts/plane-transport-neutrality.sh` rule for rule and the script is gone —
 //! a demotion that leans on a gate is only honest while that gate exists, so
-//! [`the_blocking_twin_this_file_leans_on_exists_and_is_in_the_full_gate`] checks it does. Both share
+//! [`the_blocking_twin_this_file_leans_on_exists_and_is_registered`] checks it does. Both share
 //! ONE detection discipline (mirrored, not re-invented):
 //!   * comments and doc-strings are STRIPPED (respecting string literals) — a doc-comment that
 //!     legitimately discusses `audio`/`speech` billing is not a hit; only code tokens are judged;
@@ -429,28 +429,24 @@ fn an_exemption_covers_one_identifier_in_one_file_and_nothing_else() {
 }
 
 /// The gate this file calls BLOCKING, by the two facts that make it one: its source is on disk, and
-/// the full gate runs it — scan and selftest. The file used to lean on a shell script that no longer
-/// existed (item 266); a twin that is absent turns "belt-and-suspenders" into the only belt.
+/// the registry lists it (the pipeline's turnstile runs every registered gate on every hop, scan and
+/// selftest both). A twin that is absent turns "belt-and-suspenders" into the only belt.
 const BLOCKING_TWIN_SOURCE: &str = "xtask/src/gates/plane_transport_neutrality.rs";
-const BLOCKING_TWIN_ROWS: &[&str] = &[
-    "\"cargo xtask gate plane-transport-neutrality --selftest\"",
-    "\"cargo xtask gate plane-transport-neutrality\"",
-];
+const BLOCKING_TWIN_REGISTRATION: &str = "name: \"plane-transport-neutrality\"";
 
 #[test]
-fn the_blocking_twin_this_file_leans_on_exists_and_is_in_the_full_gate() {
+fn the_blocking_twin_this_file_leans_on_exists_and_is_registered() {
     let root = repo_root();
     assert!(
         root.join(BLOCKING_TWIN_SOURCE).is_file(),
         "{BLOCKING_TWIN_SOURCE} is gone; this witness calls it the blocking gate, so either restore \
          it or stop leaning on it"
     );
-    let full_gate = std::fs::read_to_string(root.join("xtask/src/full_gate.rs"))
-        .expect("xtask/src/full_gate.rs is readable");
-    for row in BLOCKING_TWIN_ROWS {
-        assert!(
-            full_gate.contains(row),
-            "the full gate no longer runs {row}; a gate nothing runs is not blocking anything"
-        );
-    }
+    let registry = std::fs::read_to_string(root.join("xtask/src/gates/mod.rs"))
+        .expect("xtask/src/gates/mod.rs is readable");
+    assert!(
+        registry.contains(BLOCKING_TWIN_REGISTRATION),
+        "the gate registry no longer lists plane-transport-neutrality; a gate nothing runs is not \
+         blocking anything"
+    );
 }
