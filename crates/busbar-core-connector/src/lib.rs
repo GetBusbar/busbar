@@ -370,12 +370,12 @@ impl Connector {
         limits: AcceptLimits,
     ) -> Result<SocketAddr, ConnError> {
         self.slab.check_need(owner, need)?;
-        let (scheme, _) = self
+        let scheme = self
             .over
             .lock()
             .expect("needs")
             .get(&(owner, need))
-            .cloned()
+            .map(|d| d.transport.clone())
             .ok_or(NO_TRANSPORT_YET)?;
         let (door, alpn) = {
             let view = self.transports.read().expect("transports");
