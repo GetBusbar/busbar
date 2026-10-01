@@ -14,7 +14,8 @@
 //! * **May pend only on a ticket.** A service that may pend, called with no ticket, is REFUSED and
 //!   never runs.
 //! * **Served so far:** `clock.now`, `dest.judge`, `records.get`/`records.list`/`records.claim`,
-//!   `sign`, `trust.sight` and `trust.due`. Every other slot answers REFUSED ([`UNIMPLEMENTED`]).
+//!   `sign`, `trust.sight`, `trust.due` and `trust.verify`. Every other slot answers REFUSED
+//!   ([`UNIMPLEMENTED`]).
 //! * **Who called.** The instance's [`Caller`], stated at bind, is handed to every service that is
 //!   scoped to its caller; an instance with none is REFUSED ([`NO_CALLER`]).
 //!
@@ -32,9 +33,9 @@ use busbar_contract::abi::host::service::{
     self as svc, check_bufs, check_head, check_random_fill_in, check_records_claim_in, may_pend,
     op, ClockNowIn, ClockReading, DestJudgeIn, EntitlementCheckIn, HostSlots, RandomFillIn,
     RecordsClaimIn, RecordsGetIn, RecordsListIn, ServiceBufs, ServiceHead, ServiceOut, SignIn,
-    TrustDueIn, TrustSightIn, SERVICES,
+    TrustDueIn, TrustSightIn, TrustVerifyIn, SERVICES,
 };
-use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
 
@@ -325,6 +326,7 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     hook_call: Some(hook_call),
     random_fill: Some(random_fill),
     need_admit: Some(need_admit),
+    trust_verify: Some(trust_verify),
 };
 
 /// The dispatcher an instance's context routes to, and what it serves.
@@ -357,6 +359,16 @@ fn bytes_of(s: AbiStr, field: &'static str) -> Option<Vec<u8>> {
     }
     // SAFETY: a checked range of the caller's, live for the call; copied before any pend.
     Some(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }.to_vec())
+}
+
+/// A checked blob of the caller's, copied: `None` for NULL with a length.
+fn blob_of(b: Blob, field: &'static str) -> Option<Vec<u8>> {
+    check::listed(b.ptr, b.len, field).ok()?;
+    if b.len == 0 {
+        return Some(Vec::new());
+    }
+    // SAFETY: a checked range of the caller's, live for the call; copied before any pend.
+    Some(unsafe { std::slice::from_raw_parts(b.ptr, b.len) }.to_vec())
 }
 
 /// A checked UTF-8 string of the caller's, copied: `None` for NULL with a length or bad UTF-8.
@@ -653,17 +665,12 @@ extern "C" fn sign(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> 
         |served, route, head, caller| {
             // SAFETY: the head covered a `SignIn`.
             let i = unsafe { input.cast::<SignIn>().read_unaligned() };
-            if check::listed(i.data.ptr, i.data.len, "sign.data").is_err()
-                || check_bufs(&i.into).is_err()
-            {
+            let Some(data) = blob_of(i.data, "sign.data") else {
+                return Answered::fault();
+            };
+            if check_bufs(&i.into).is_err() {
                 return Answered::fault();
             }
-            let data = if i.data.len == 0 {
-                Vec::new()
-            } else {
-                // SAFETY: a checked range of the caller's, live for the call.
-                unsafe { std::slice::from_raw_parts(i.data.ptr, i.data.len) }.to_vec()
-            };
             let provider = Arc::clone(&served.provider);
             // SAFETY: `into` checked above; the caller's buffers.
             unsafe {
@@ -720,6 +727,41 @@ extern "C" fn trust_due(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             unsafe {
                 serve(&served.store, &route, &head, Some(&i.into), |_| {
                     Ran::Now(provider.trust_due(&caller))
+                })
+            }
+        },
+    )
+}
+
+extern "C" fn trust_verify(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::TRUST_VERIFY,
+        size_of::<TrustVerifyIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `TrustVerifyIn`.
+            let i = unsafe { input.cast::<TrustVerifyIn>().read_unaligned() };
+            let (Some(counterparty), Some(payload), Some(signatures)) = (
+                text_of(i.counterparty, "trust_verify.counterparty"),
+                blob_of(i.payload, "trust_verify.payload"),
+                blob_of(i.signatures, "trust_verify.signatures"),
+            ) else {
+                return Answered::fault();
+            };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: `into` checked above; the caller's buffers.
+            unsafe {
+                serve(&served.store, &route, &head, Some(&i.into), |_| {
+                    Ran::Now(provider.trust_verify(&caller, &counterparty, &payload, &signatures))
                 })
             }
         },

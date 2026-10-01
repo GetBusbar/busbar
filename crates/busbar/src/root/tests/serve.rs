@@ -40,6 +40,9 @@ impl HostServices for Judges {
     fn trust_due(&self, _: &Caller) -> Stored {
         Stored::ready(7)
     }
+    fn trust_verify(&self, _: &Caller, _: &str, _: &[u8], _: &[u8]) -> Stored {
+        Stored::ready(10)
+    }
     fn entitlement_check(&self, _: &Caller, _: Option<u64>, _: &str) -> Stored {
         Stored::ready(8)
     }
@@ -109,6 +112,7 @@ fn every_service(s: &LateServices) -> Vec<Stored> {
         s.trust_due(&caller),
         s.entitlement_check(&caller, None, "model:m"),
         s.random_fill(16),
+        s.trust_verify(&caller, "peer", b"payload", b"[]"),
     ]
 }
 
@@ -123,7 +127,7 @@ fn every_service_is_the_installed_services_answer() {
     let after = every_service(&late);
     assert!(after.iter().all(|s| s.outcome == Outcome::Ready));
     let values: Vec<u64> = after.iter().map(|s| s.value).collect();
-    assert_eq!(values, (2..=9).collect::<Vec<u64>>());
+    assert_eq!(values, (2..=10).collect::<Vec<u64>>());
 }
 
 fn kernel(blocked: &[&str], allow_all: bool) -> KernelServices {

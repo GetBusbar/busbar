@@ -89,6 +89,17 @@ pub trait HostServices: Send + Sync {
     /// span each (key = the counterparty), drained. Never pends.
     fn trust_due(&self, caller: &Caller) -> Stored;
 
+    /// `trust.verify`: verify `signatures` (a JSON array as the document wrote it; empty = none)
+    /// over `payload` against the root key `caller`'s declared pin names for `counterparty`. READY
+    /// with a `SIGNED_*` verdict; the bytes name a refused algorithm or critical member. Never pends.
+    fn trust_verify(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        payload: &[u8],
+        signatures: &[u8],
+    ) -> Stored;
+
     /// `entitlement.check`: whether the principal of `unit` (the unit the calling crossing
     /// serves, `None` for a crossing that serves none) is entitled to `target`,
     /// `"<scope_kind>:<name>"`. READY `ENTITLED` or `NOT_ENTITLED`. Never pends.

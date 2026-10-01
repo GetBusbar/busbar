@@ -1051,6 +1051,10 @@ impl HostServices for KernelServices {
         }
         stored
     }
+
+    fn trust_verify(&self, _: &Caller, _: &str, _: &[u8], _: &[u8]) -> Stored {
+        Stored::refused(busbar_contract::services::UNSERVED)
+    }
 }
 
 /// Where a dial's judgement goes when it pended: the pinned address, or the `DEST_*` verdict that

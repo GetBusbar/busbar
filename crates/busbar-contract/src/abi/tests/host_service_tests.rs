@@ -404,7 +404,7 @@ fn the_host_refuses_a_capacity_with_a_null_buffer() {
 }
 
 #[test]
-fn the_services_that_never_pend_are_exactly_the_stated_seven() {
+fn the_services_that_never_pend_are_exactly_the_stated_eight() {
     let never: Vec<u32> = (0..SERVICES).filter(|s| !may_pend(*s)).collect();
     assert_eq!(
         never,
@@ -415,7 +415,8 @@ fn the_services_that_never_pend_are_exactly_the_stated_seven() {
             op::VERIFY_STORE,
             op::ENTITLEMENT_CHECK,
             op::RANDOM_FILL,
-            op::NEED_ADMIT
+            op::NEED_ADMIT,
+            op::TRUST_VERIFY
         ]
     );
     assert!(!may_pend(SERVICES), "an index past the table never pends");
@@ -474,6 +475,7 @@ fn every_service_field_sits_at_its_op_index() {
         (offset_of!(HostSlots, hook_call), op::HOOK_CALL),
         (offset_of!(HostSlots, random_fill), op::RANDOM_FILL),
         (offset_of!(HostSlots, need_admit), op::NEED_ADMIT),
+        (offset_of!(HostSlots, trust_verify), op::TRUST_VERIFY),
     ];
     for (i, (offset, op)) in table.iter().enumerate() {
         assert_eq!(*op as usize, i, "op constants run 0.. in table order");
@@ -561,4 +563,77 @@ fn need_admit_never_pends_and_answers_admitted_or_refused() {
         rule(check_need_admit(&at(Ticket::NONE), ready(&o), &o)),
         Rule::UnknownCode
     );
+}
+
+fn verify_in(into: ServiceBufs) -> TrustVerifyIn {
+    TrustVerifyIn {
+        head: head(
+            op::TRUST_VERIFY,
+            Ticket::NONE,
+            core::mem::size_of::<TrustVerifyIn>(),
+        ),
+        counterparty: none(),
+        payload: empty_blob(),
+        signatures: empty_blob(),
+        into,
+    }
+}
+
+/// `check_trust_verify`: a verdict that names what it refused carries its bytes; every verdict in
+/// range is legal on a ticketless call.
+#[test]
+fn a_trust_verify_verdict_naming_its_refusal_carries_bytes() {
+    let mut buf = [0u8; 8];
+    let i = verify_in(bufs(&mut buf, &mut []));
+    for v in SIGNED_VERIFIED..=SIGNED_MALFORMED_ROOT {
+        let mut o = out(Outcome::Ready);
+        o.value = v;
+        assert!(check_trust_verify(&i, ready(&o), &o).is_ok(), "verdict {v}");
+    }
+    let mut o = out(Outcome::Ready);
+    o.value = SIGNED_ALGORITHM;
+    o.len = 4;
+    assert!(check_trust_verify(&i, ready(&o), &o).is_ok());
+}
+
+/// RED ARM (`check_trust_verify`, the `trust_verify.out.len` arm): bytes with a verdict that names
+/// nothing, or any span, are a `Contradiction`.
+#[test]
+fn red_trust_verify_bytes_with_a_verdict_that_names_nothing_name_trust_verify_out_len() {
+    let mut buf = [0u8; 8];
+    let mut spans = [ItemSpan::default_absent()];
+    let i = verify_in(bufs(&mut buf, &mut spans));
+    let mut o = out(Outcome::Ready);
+    o.value = SIGNED_VERIFIED;
+    o.len = 4;
+    assert_eq!(
+        check_trust_verify(&i, ready(&o), &o).unwrap_err(),
+        fault(Rule::Contradiction, "trust_verify.out.len")
+    );
+    let mut o = out(Outcome::Ready);
+    o.value = SIGNED_CRITICAL;
+    o.len = 4;
+    o.items = 1;
+    spans[0].value = Span { offset: 0, len: 4 };
+    let i = verify_in(bufs(&mut buf, &mut spans));
+    assert_eq!(
+        check_trust_verify(&i, ready(&o), &o).unwrap_err(),
+        fault(Rule::Contradiction, "trust_verify.out.len")
+    );
+}
+
+/// `trust.verify` never pends: a PENDING answer, even on a ticket, is FAULT; a verdict past the
+/// last is FAULT.
+#[test]
+fn trust_verify_never_pends_and_its_verdicts_end_at_the_root_key() {
+    let mut i = verify_in(bufs(&mut [], &mut []));
+    i.head.handle.ticket = TICKET;
+    let o = out(Outcome::Pending);
+    assert_eq!(
+        rule(check_trust_verify(&i, ready(&o), &o)),
+        Rule::Contradiction
+    );
+    let mut o = out(Outcome::Ready);
+    o.value = SIGNED_MALFORMED_ROOT + 1;
+    assert!(check_trust_verify(&i, ready(&o), &o).is_err());
 }

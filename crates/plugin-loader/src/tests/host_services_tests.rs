@@ -112,6 +112,15 @@ impl HostServices for Provider {
         Stored::ready(0)
     }
 
+    /// Answers the payload's length as the verdict, and the counterparty as the bytes.
+    fn trust_verify(&self, c: &Caller, cp: &str, payload: &[u8], sigs: &[u8]) -> Stored {
+        self.saw(c, "trust.verify", &[payload, b"|", sigs].concat());
+        Stored {
+            bytes: cp.as_bytes().to_vec(),
+            ..Stored::ready(payload.len() as u64)
+        }
+    }
+
     fn entitlement_check(&self, c: &Caller, unit: Option<u64>, target: &str) -> Stored {
         let arg = format!("{unit:?} {target}");
         self.saw(c, "entitlement.check", arg.as_bytes());
@@ -682,6 +691,58 @@ fn sign_and_trust_due_reach_the_kernel_without_a_ticket() {
             ("double".to_string(), "trust.due", Vec::new()),
         ]
     );
+}
+
+fn blob(b: &[u8]) -> busbar_contract::abi::mechanism::call::Blob {
+    busbar_contract::abi::mechanism::call::Blob {
+        ptr: b.as_ptr(),
+        len: b.len(),
+        fmt: 0,
+        flags: 0,
+    }
+}
+
+/// `trust.verify` reaches the kernel from a ticketless op as its caller, with the counterparty,
+/// payload and signatures it named; the kernel's bytes land in the caller's buffer.
+#[test]
+fn trust_verify_reaches_the_kernel_without_a_ticket_and_answers_into_the_callers_buffer() {
+    let d = double();
+    let mut buf = [0u8; 8];
+    let i = TrustVerifyIn {
+        head: head(op::TRUST_VERIFY, Ticket::NONE, 0, size_of::<TrustVerifyIn>()),
+        counterparty: text("peer"),
+        payload: blob(b"doc"),
+        signatures: blob(b"[]"),
+        into: bufs(&mut buf, &mut []),
+    };
+    let mut o = blank();
+    let ret = HOST_SLOTS.trust_verify.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!((o.value, o.len), (3, 4));
+    assert_eq!(&buf[..4], b"peer");
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().as_slice(),
+        &[("double".to_string(), "trust.verify", b"doc|[]".to_vec())]
+    );
+}
+
+/// RED: a signatures blob that names a length with no bytes is FAULT, and never reaches the kernel.
+#[test]
+fn trust_verify_with_a_null_blob_of_a_length_is_fault() {
+    let d = double();
+    let mut i = TrustVerifyIn {
+        head: head(op::TRUST_VERIFY, Ticket::NONE, 0, size_of::<TrustVerifyIn>()),
+        counterparty: text("peer"),
+        payload: blob(b"doc"),
+        signatures: blob(b""),
+        into: bufs(&mut [], &mut []),
+    };
+    i.signatures.ptr = std::ptr::null();
+    i.signatures.len = 2;
+    let mut o = blank();
+    let ret = HOST_SLOTS.trust_verify.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Fault);
+    assert!(d.route.provider.scoped.lock().unwrap().is_empty());
 }
 
 fn entitlement_in(target: &'static str) -> EntitlementCheckIn {
