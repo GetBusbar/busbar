@@ -320,10 +320,13 @@ fn a_report_that_overflows_is_cut_and_never_kept() {
 fn class_sums_are_checked_and_the_fallback_saturates() {
     let classes = ["input".to_string()];
     let counts = [(INPUT, u64::MAX), (INPUT, 2)];
-    assert_eq!(super::named(&classes, &counts), None);
-    assert_eq!(super::saturated(&classes, &counts)["input"], u64::MAX);
+    assert_eq!(super::named(&classes, &counts, u64::checked_add), None);
     assert_eq!(
-        super::named(&classes, &[(INPUT, 3), (INPUT, 4)]).unwrap()["input"],
+        super::named(&classes, &counts, |a, b| Some(a.saturating_add(b))).unwrap()["input"],
+        u64::MAX
+    );
+    assert_eq!(
+        super::named(&classes, &[(INPUT, 3), (INPUT, 4)], u64::checked_add).unwrap()["input"],
         7
     );
 }

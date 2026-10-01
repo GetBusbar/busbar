@@ -65,18 +65,6 @@ pub struct UnitMoney {
     pub mode: ExhaustionMode,
 }
 
-impl std::fmt::Debug for UnitMoney {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("UnitMoney")
-            .field("key", &self.key.id)
-            .field("pool", &self.pool)
-            .field("model", &self.model)
-            .field("arrived", &self.arrived)
-            .field("mode", &self.mode)
-            .finish_non_exhaustive()
-    }
-}
-
 /// One open unit: its facts, its last cumulative counts, whether it has been ledgered, and whether
 /// its caller went away (its end then waits only for the driver's cancel bill).
 struct Open {
@@ -93,12 +81,6 @@ pub struct PlaneMoney {
     gov: Arc<GovState>,
     post: Arc<dyn EndPost>,
     units: Mutex<HashMap<UnitKey, Open>>,
-}
-
-impl std::fmt::Debug for PlaneMoney {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PlaneMoney").finish_non_exhaustive()
-    }
 }
 
 impl PlaneMoney {
@@ -145,13 +127,7 @@ impl PlaneMoney {
         };
         let m = &open.money;
         if !open.ledgered {
-            let counts: Vec<(u32, u64)> = open
-                .last
-                .iter()
-                .filter(|u| u.source == UNITS_REPORTED)
-                .map(|u| (u.class, u.amount))
-                .collect();
-            self.ledger(m, &counts);
+            self.ledger(m, &reported(&open.last));
         }
         if !(200..=299).contains(&caller_status) {
             self.gov.refund_request(&m.cost, &m.key, &m.pool, m.arrived);
@@ -177,7 +153,9 @@ impl PlaneMoney {
     /// that would overflow bills the saturated figure, never a wrapped or zero one (fail closed);
     /// the plane check refuses a class counted twice, so a validated report never gets here.
     fn ledger(&self, m: &UnitMoney, counts: &[(u32, u64)]) {
-        let units = named(&m.classes, counts).unwrap_or_else(|| saturated(&m.classes, counts));
+        let units = named(&m.classes, counts, u64::checked_add)
+            .or_else(|| named(&m.classes, counts, |a, b| Some(a.saturating_add(b))))
+            .unwrap_or_default();
         self.gov
             .record_usage(&m.cost, &m.key, &m.pool, &m.model, &units, m.arrived);
     }
@@ -195,7 +173,7 @@ impl PlaneMoney {
         let Some(remaining) = remaining else {
             return false; // no budget applies: nothing to run dry
         };
-        let Some(usage_units) = named(&m.classes, counts) else {
+        let Some(usage_units) = named(&m.classes, counts, u64::checked_add) else {
             return true; // a report that does not add up is a plane fault: fail closed
         };
         let usage = busbar_contract::billing::Usage { usage_units };
@@ -209,29 +187,32 @@ impl PlaneMoney {
     }
 }
 
-/// `counts` under the plane's class names; a class index the plane never declared is not billed.
-/// `None` when a class's counts do not add up in a `u64` (a plane fault; never a wrapped sum).
-fn named(classes: &[String], counts: &[(u32, u64)]) -> Option<BTreeMap<String, u64>> {
+/// `counts` under the plane's class names, each class's sum added by `add`; a class index the
+/// plane never declared is not billed. With `u64::checked_add`, `None` when a class's counts do not
+/// add up in a `u64` (a plane fault; never a wrapped sum); saturating, the figure a fail-closed
+/// ledger bills.
+fn named(
+    classes: &[String],
+    counts: &[(u32, u64)],
+    add: fn(u64, u64) -> Option<u64>,
+) -> Option<BTreeMap<String, u64>> {
     let mut units: BTreeMap<String, u64> = BTreeMap::new();
     for (class, amount) in counts {
         if let Some(name) = classes.get(*class as usize) {
             let n = units.entry(name.clone()).or_insert(0);
-            *n = n.checked_add(*amount)?;
+            *n = add(*n, *amount)?;
         }
     }
     Some(units)
 }
 
-/// [`named`], each class's sum saturated at `u64::MAX`: the figure a fail-closed ledger bills.
-fn saturated(classes: &[String], counts: &[(u32, u64)]) -> BTreeMap<String, u64> {
-    let mut units: BTreeMap<String, u64> = BTreeMap::new();
-    for (class, amount) in counts {
-        if let Some(name) = classes.get(*class as usize) {
-            let n = units.entry(name.clone()).or_insert(0);
-            *n = n.saturating_add(*amount);
-        }
-    }
+/// The counts the plane REPORTED (not its estimates), as `(class, amount)`: what a bill ledgers.
+fn reported(units: &[UnitCount]) -> Vec<(u32, u64)> {
     units
+        .iter()
+        .filter(|u| u.source == UNITS_REPORTED)
+        .map(|u| (u.class, u.amount))
+        .collect()
 }
 
 impl MoneySeam for PlaneMoney {
@@ -241,7 +222,7 @@ impl MoneySeam for PlaneMoney {
             return Checkpoint::Continue;
         };
         let all_counts: Vec<(u32, u64)> = units.iter().map(|u| (u.class, u.amount)).collect();
-        if named(&open.money.classes, &all_counts).is_none() {
+        if named(&open.money.classes, &all_counts, u64::checked_add).is_none() {
             // A report whose counts do not add up is a plane fault: it is not kept, and the unit
             // is cut (fail closed) rather than run on a figure nothing can bill.
             return Checkpoint::Cut;
@@ -253,12 +234,7 @@ impl MoneySeam for PlaneMoney {
         }
         let money = open.money.clone();
         drop(all);
-        let reported: Vec<(u32, u64)> = units
-            .iter()
-            .filter(|u| u.source == UNITS_REPORTED)
-            .map(|u| (u.class, u.amount))
-            .collect();
-        if self.dry(&money, &reported) {
+        if self.dry(&money, &reported(units)) {
             Checkpoint::Cut
         } else {
             Checkpoint::Continue
@@ -299,12 +275,7 @@ impl MoneySeam for PlaneMoney {
                     // reported counts are the bill, ledgered here, once.
                     let open = all.remove(&ctx.key);
                     open.map(|o| {
-                        let counts: Vec<(u32, u64)> = o
-                            .last
-                            .iter()
-                            .filter(|u| u.source == UNITS_REPORTED)
-                            .map(|u| (u.class, u.amount))
-                            .collect();
+                        let counts = reported(&o.last);
                         (o.money, counts)
                     })
                 }
