@@ -22,6 +22,7 @@ use busbar_contract::abi::sdk::auth_door::{Held, Verdict, VerifyPlugin, VerifyVi
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::lent::Lent;
 use busbar_contract::abi::sdk::safe::{Instance, SafeSlot};
+use busbar_contract::abi::sdk::Out;
 use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest, OutboundAuth};
 
 use super::*;
@@ -58,13 +59,14 @@ mod plugin {
         fn call(
             _: Instance<'_, Held<Outbound>>,
             input: Lent<'_, OpenOutboundIn>,
-            out: &mut OpenOutboundOut,
+            mut out: Out<'_, OpenOutboundOut>,
         ) -> Outcome {
-            out.handle = match input.field(|i| &i.style).bytes() {
+            let handle = match input.field(|i| &i.style).bytes() {
                 b"bearer" => 1,
                 b"wide" => 2,
                 _ => return Outcome::Failed,
             };
+            out.set(|o| &o.handle, handle);
             Outcome::Ready
         }
     }
@@ -80,7 +82,7 @@ mod plugin {
         fn call(
             _: Instance<'_, Held<Outbound>>,
             input: Lent<'_, FieldsIn>,
-            out: &mut FieldsOut,
+            mut out: Out<'_, FieldsOut>,
         ) -> Outcome {
             let i: &FieldsIn = &input;
             let fields: Vec<(Vec<u8>, Vec<u8>, u32)> = match (i.handle, i.mode) {
@@ -100,8 +102,8 @@ mod plugin {
             };
             let bytes: usize = fields.iter().map(|(n, v, _)| n.len() + v.len()).sum();
             if fields.len() > i.fields_cap as usize || bytes > i.field_buf_cap {
-                out.needed_fields = fields.len() as u32;
-                out.needed_bytes = bytes as u64;
+                out.set(|o| &o.needed_fields, fields.len() as u32);
+                out.set(|o| &o.needed_bytes, bytes as u64);
                 return Outcome::Failed;
             }
             let mut at = 0usize;
@@ -130,7 +132,7 @@ mod plugin {
                 }
                 at += n.len() + v.len();
             }
-            out.fields_len = fields.len() as u32;
+            out.set(|o| &o.fields_len, fields.len() as u32);
             Outcome::Ready
         }
     }

@@ -72,6 +72,8 @@ const NEEDS: &[Need] = &[Need {
     target_from: abi_str("settings.url"),
     trust_from: NONE,
     details: blob(b"{}", BLOB_JSON),
+    keep_response_headers: std::ptr::null(),
+    keep_response_headers_len: 0,
     timeout_ms: 30_000,
 }];
 const ANSWERS: &[AbiStr] = &[abi_str("status")];

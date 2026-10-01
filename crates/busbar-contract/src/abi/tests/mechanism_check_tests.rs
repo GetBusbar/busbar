@@ -344,6 +344,8 @@ const NEEDS: &[Need] = &[Need {
         fmt: 0,
         flags: 0,
     },
+    keep_response_headers: core::ptr::null(),
+    keep_response_headers_len: 0,
     timeout_ms: 0,
 }];
 

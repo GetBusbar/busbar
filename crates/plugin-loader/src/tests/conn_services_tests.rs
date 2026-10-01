@@ -107,6 +107,8 @@ const NEEDS: [Need; 1] = [Need {
     target_from: abi_str("settings.upstream"),
     trust_from: NONE,
     details: NO_BLOB,
+    keep_response_headers: std::ptr::null(),
+    keep_response_headers_len: 0,
     timeout_ms: 0,
 }];
 
@@ -460,6 +462,8 @@ const NAMED: [Need; 1] = [Need {
     target_from: NONE,
     trust_from: NONE,
     details: NO_BLOB,
+    keep_response_headers: std::ptr::null(),
+    keep_response_headers_len: 0,
     timeout_ms: 0,
 }];
 
