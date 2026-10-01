@@ -203,6 +203,7 @@ fn record_inputs(op_class: &str, destination: &str) -> AuditInputs {
         subject: Subject::PrincipalId("pseudonym-1".into()),
         what: What {
             unit_key: UnitKey::new(1),
+            incarnation: 0,
             op_class: OpClassId::new(op_class),
             destination: Some(destination.into()),
             parent: None,

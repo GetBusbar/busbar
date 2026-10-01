@@ -99,6 +99,7 @@ pub use legacy::{
 };
 pub use recipe::{
     digest_fields, digest_over, DigestField, DigestValue, Recipe, DIGEST_RECIPE, DIGEST_RECIPE_V2,
+    DIGEST_RECIPE_V3,
 };
 pub use record::{
     Audit, AuditBreak, AuditBreakKind, AuditChain, AuditInputs, AuditRecord, Controls, FinishClass,

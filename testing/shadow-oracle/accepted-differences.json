@@ -1767,7 +1767,7 @@
     {
       "id": "#34 a new audit record signs under digest v3, which drops currency",
       "kind": "breaking",
-      "changelog": "1.6.0 Changed: a newly sealed audit record signs under `busbar.audit.digest.v3`, which drops `currency` from the digest.",
+      "changelog": "1.6.0 Changed: a newly sealed audit record signs under `busbar.audit.digest.v4`, which drops `currency` from the digest and adds `incarnation`.",
       "by": "owner (Matthew Jackson), #34 ruling 2026-09-29 (remove and migrate)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
@@ -1797,11 +1797,11 @@
           {
             "cell": "admin.ops|GetAuditHead|ok",
             "pointer": "/recipe",
-            "equals": "busbar.audit.digest.v3"
+            "equals": "busbar.audit.digest.v4"
           }
         ]
       },
-      "rationale": "OWNER-RULED 2026-09-29 (#34). The only bytes that move are the published recipe name (`busbar.audit.digest.v2` -> `busbar.audit.digest.v3`) in the three audit reads, the digest (and so the signature) of a record sealed from here on, the `currency` member leaving a new record in the range read, and a `recipe` member on each range record naming the recipe it was sealed under. The three cells are 1.6.0-additive and carry no 1.5.5 golden (accepted-gaps `admin-kernel-verbs-new-in-1.6.0`), so this entry forgives no measured cell today; it registers the published-contract change so the next golden that records these reads meets it signed. A record sealed under v2 is never rewritten and still verifies by docs/audit-chain-digest-v2.md, proven in crates/busbar-kernel-audit (record_tests, published_recipe_tests)."
+      "rationale": "OWNER-RULED 2026-09-29 (#34). The only bytes that move are the published recipe name (`busbar.audit.digest.v2` -> `busbar.audit.digest.v3`) in the three audit reads, the digest (and so the signature) of a record sealed from here on, the `currency` member leaving a new record in the range read, and a `recipe` member on each range record naming the recipe it was sealed under. The three cells are 1.6.0-additive and carry no 1.5.5 golden (accepted-gaps `admin-kernel-verbs-new-in-1.6.0`), so this entry forgives no measured cell today; it registers the published-contract change so the next golden that records these reads meets it signed. A record sealed under v2 is never rewritten and still verifies by docs/audit-chain-digest-v2.md, proven in crates/busbar-kernel-audit (record_tests, published_recipe_tests). The recipe a new record signs under then advanced to busbar.audit.digest.v4 (v3 plus the boot incarnation after unit_key, ARCHITECT ruling on unit-key incarnation 2026-09-29): v3 never shipped in a release, the same three 1.6.0-additive cells carry it, and a v3 record still verifies by docs/audit-chain-digest-v3.md."
     },
     {
       "id": "#79 warm-up requests keep the card in force when they arrived (minor-unit-rounding)",

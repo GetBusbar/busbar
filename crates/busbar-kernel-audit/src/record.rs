@@ -87,6 +87,9 @@ pub enum FinishClass {
 pub struct What {
     /// Which unit.
     pub unit_key: UnitKey,
+    /// WHICH BOOT of the node the unit ran in. A unit key restarts at every boot, so the key alone
+    /// names two different units across two boots; the pair is unique. Digested from recipe `v4`.
+    pub incarnation: u64,
     /// What kind of operation, as the caller names it.
     pub op_class: OpClassId,
     /// Where it went, once the trust unit had judged the destination. Absent when the unit never
@@ -212,7 +215,7 @@ pub struct AuditRecord {
     /// The preceding record's digest.
     pub prev_hash: String,
     /// WHICH RECIPE this record was sealed under, and so the rules its digest is recomputed by
-    /// (#34). Every record this build seals is [`crate::recipe::Recipe::V3`]; a record sealed
+    /// (#34). Every record this build seals is [`crate::recipe::Recipe::V4`]; a record sealed
     /// under `v2` keeps verifying by `v2`'s rules.
     pub recipe: crate::recipe::Recipe,
     /// This record's own digest.
@@ -465,7 +468,7 @@ impl AuditChain {
     ///
     /// ONE RECIPE, and this walks it. The field order, the framing and the exact spelling of every
     /// value live in [`crate::recipe::digest_fields`], which is also what the range read publishes
-    /// and what `docs/audit-chain-digest-v3.md` describes (a record sealed under `v2`: the `v2`
+    /// and what `docs/audit-chain-digest-v4.md` describes (a record sealed under `v2`: the `v2`
     /// page). Before, the order lived here and the document described it from the outside — two copies of one contract, and the one thing a
     /// published digest recipe cannot survive is two spellings of itself: a drift between them
     /// would make every third-party verification fail while looking, to the third party, exactly
@@ -620,7 +623,7 @@ impl Audit for AuditChain {
                 .map(|label| crate::legacy::sha256_hex(label.as_bytes())),
             seq: self.next_seq,
             prev_hash: self.tail_hash.clone(),
-            recipe: crate::recipe::Recipe::V3,
+            recipe: crate::recipe::Recipe::V4,
             hash: String::new(),
             signature: None,
             key_id: None,

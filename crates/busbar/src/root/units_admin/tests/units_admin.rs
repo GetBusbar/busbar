@@ -3158,6 +3158,7 @@ fn a_sealed_chain() -> SealedChain {
                 subject: Subject::PrincipalId(format!("pseudonym-{unit}")),
                 what: What {
                     unit_key: UnitKey::new(unit),
+                    incarnation: 0,
                     op_class: OpClassId::new("chat.completion"),
                     destination: Some("upstream-a".into()),
                     parent: None,
@@ -5448,6 +5449,7 @@ fn a_signed_record_and_a_signed_checkpoint_verify_against_the_served_audit_keys(
         subject: Subject::PrincipalId("pseudonym-keyset".into()),
         what: What {
             unit_key: UnitKey::new(1),
+            incarnation: 0,
             op_class: OpClassId::new("chat.completion"),
             destination: Some("upstream-a".into()),
             parent: None,

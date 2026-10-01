@@ -260,6 +260,7 @@ fn audit_inputs(unit: u64) -> busbar_kernel_audit::AuditInputs {
         subject: Subject::PrincipalId(format!("pseudonym-{unit}")),
         what: What {
             unit_key: UnitKey::new(unit),
+            incarnation: 0,
             op_class: OpClassId::new("chat.completion"),
             destination: Some("upstream-a".into()),
             parent: None,
