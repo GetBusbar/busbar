@@ -713,41 +713,6 @@ fn cohere_prompt_tokens(usage: &crate::codec::ir::IrUsage) -> u64 {
         .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0))
 }
 
-/// The request keys this reader models explicitly (and therefore must NOT echo back through
-/// `extra`). Built once per process via `OnceLock` instead of being reconstructed on every
-/// `read_request` call — the rebuild was a pointless per-request allocation on the Cohere ingress
-/// hot path (also avoided in the Gemini/Bedrock readers).
-fn cohere_modeled_keys() -> &'static std::collections::HashSet<&'static str> {
-    static MODELED_KEYS: OnceLock<std::collections::HashSet<&'static str>> = OnceLock::new();
-    MODELED_KEYS.get_or_init(|| {
-        [
-            "model",
-            "messages",
-            "tools",
-            "tool_choice",
-            "max_tokens",
-            "temperature",
-            "p",
-            "k",
-            "stop_sequences",
-            "stream",
-            // Sampling/output controls modeled into the IR (so they translate the
-            // cross-protocol seam) — must be excluded from `extra` or a same-protocol passthrough
-            // would double-emit them (once from the modeled writer path, once echoed via extra).
-            "frequency_penalty",
-            "presence_penalty",
-            "seed",
-            "response_format",
-            // Request `logprobs` (bool) is modeled into `IrRequest.logprobs` (cross-protocol ask),
-            // so it must be excluded from `extra` or a same-protocol passthrough would double-emit it
-            // (once from the modeled writer path, once echoed via extra).
-            "logprobs",
-        ]
-        .into_iter()
-        .collect()
-    })
-}
-
 /// Format 16 bytes as a UUID-shaped (8-4-4-4-12 lowercase hex) token. Real Cohere v2 chat response
 /// ids are bare RFC-4122 UUIDv4s (e.g. `c14c80c3-18eb-4519-9460-6c92edd8cfb4` — note the version
 /// nibble `4` opening the 3rd group and the variant nibble `9` (`10xx`) opening the 4th), with NO

@@ -20,17 +20,12 @@ impl ProtocolWriter for ResponsesWriter {
     }
 
     fn dropped_egress_controls(&self, req: &crate::codec::ir::IrRequest) -> Vec<&'static str> {
-        // Mirrors the `write_request` drop-warns: the `/v1/responses` create API models `top_p` and
-        // `top_logprobs` but NOT `top_k`, `stop`, `frequency_penalty`, `presence_penalty`, `seed`, or
-        // `n`, so a cross-protocol request carrying any of them has that control dropped on egress.
-        use crate::codec::dialect::{
-            carried, FREQUENCY_PENALTY, N, OUTPUT_MODALITIES, PRESENCE_PENALTY, SEED, STOP, TOP_K,
-        };
-        let mut dropped: Vec<&'static str> = carried(
-            req,
-            &[TOP_K, STOP, FREQUENCY_PENALTY, PRESENCE_PENALTY, SEED, N],
-        )
-        .collect();
+        // Mirrors the `write_request` drop-warns: the controls the mapping file has no row for
+        // (`top_k`, `stop`, the penalties, `seed`, `n`) are derived from it.
+        let mut dropped: Vec<&'static str> =
+            crate::codec::carry::dropped(super::map::REQUEST, super::map::CONTROLS, req)
+                .map(crate::codec::carry::Slot::name)
+                .collect();
         // IR-11: a hosted kind with no Responses tool (URL fetch).
         for tool in &req.hosted_tools {
             if matches!(tool, crate::codec::ir::IrHostedTool::WebFetch(_)) {
@@ -38,7 +33,7 @@ impl ProtocolWriter for ResponsesWriter {
             }
         }
         // IR-19: Responses has no output-modality ask; a text-only ask loses nothing.
-        if (OUTPUT_MODALITIES.1)(req) {
+        if crate::codec::carry::Slot::OutputModalities.carried(req) {
             dropped.push("modalities");
         }
         dropped
@@ -452,16 +447,6 @@ impl ProtocolWriter for ResponsesWriter {
 
         // `temperature` / `top_p` are rows of the mapping file (written below). A cross-protocol
         // source's top_k/stop have no Responses target and are dropped (documented in the reader).
-        // LOW: the Responses create API models no `top_k` (only `top_p`). A cross-protocol source's
-        // `top_k` has no Responses target. Rather than silently dropping it, emit a `warn!` so the
-        // lossy-by-target omission is observable in logs (mirrors the `stop`-drop warn below and the
-        // anthropic/bedrock writers' drop-with-warn contract). Nothing is written to `out`.
-        if req.top_k.is_some() {
-            tracing::warn!(
-                "responses writer: the /v1/responses API models no `top_k` parameter; \
-                 dropping top_k (lossy-by-target)"
-            );
-        }
 
         // LOGPROBS ask: the Responses create API models a top-level `top_logprobs` integer (0–20),
         // so a Responses→Responses request round-trips it and a cross-protocol source's logprobs ask
@@ -476,71 +461,18 @@ impl ProtocolWriter for ResponsesWriter {
             out.insert("user".to_string(), serde_json::json!(user));
         }
 
-        if req
-            .output_modalities
-            .as_ref()
-            .is_some_and(|m| m.iter().any(|m| *m != crate::codec::ir::IrModality::Text))
-        {
+        if crate::codec::carry::Slot::OutputModalities.carried(req) {
             tracing::warn!(
                 "responses writer: /v1/responses models no output-modality ask; dropping the \
                  non-text modalities (lossy-by-target)"
             );
         }
 
-        // SAMPLING: the Responses create API does NOT model `frequency_penalty`,
-        // `presence_penalty`, `seed`, or `n` (verified against the official openai-python
-        // `ResponseCreateParamsBase`: only `temperature`/`top_p`/`top_logprobs`/`text` are present).
-        // They are lossy-by-target on this surface, so they are intentionally NOT emitted — emitting an
-        // unsupported param would 400 a real `/v1/responses` call. A cross-protocol source that carried
-        // them loses them here (a target-capability omission, not a leak) — but that drop must be
-        // OBSERVABLE: emit a `warn!` per control (mirroring the top_k/stop drop-warns above) instead of
-        // the prior silent drop, and report them via `dropped_egress_controls` for the seam audit.
-        if let Some(frequency_penalty) = req.frequency_penalty {
-            tracing::warn!(
-                parameter = "frequency_penalty",
-                frequency_penalty,
-                "responses writer: the /v1/responses API models no `frequency_penalty`; \
-                 dropping it (lossy-by-target)"
-            );
-        }
-        if let Some(presence_penalty) = req.presence_penalty {
-            tracing::warn!(
-                parameter = "presence_penalty",
-                presence_penalty,
-                "responses writer: the /v1/responses API models no `presence_penalty`; \
-                 dropping it (lossy-by-target)"
-            );
-        }
-        if let Some(seed) = req.seed {
-            tracing::warn!(
-                parameter = "seed",
-                seed,
-                "responses writer: the /v1/responses API models no `seed`; \
-                 dropping it (lossy-by-target)"
-            );
-        }
-        if let Some(n) = req.n {
-            tracing::warn!(
-                parameter = "n",
-                n,
-                "responses writer: the /v1/responses API models no `n` candidate-count; \
-                 dropping it (lossy-by-target)"
-            );
-        }
-
-        // STOP: the Responses create API has NO `stop`/`stop_sequences` param (same verification as
-        // sampling above — no stop field exists on `ResponseCreateParamsBase`). So stop sequences
-        // cannot be expressed on this surface. Rather than silently dropping them, emit a `warn!` so
-        // the lossy-by-target omission is observable in logs (mirrors the anthropic/bedrock writers'
-        // drop-with-warn contract). Nothing is written to `out`.
-        if !req.stop.is_empty() {
-            tracing::warn!(
-                stop_count = req.stop.len(),
-                "responses writer: the /v1/responses API models no `stop` parameter; \
-                 dropping {} stop sequence(s) (lossy-by-target)",
-                req.stop.len()
-            );
-        }
+        // The controls the Responses create API does not model (`top_k`, `stop`, the penalties,
+        // `seed`, `n`; verified against openai-python `ResponseCreateParamsBase`): emitting one would
+        // 400 a real `/v1/responses` call, so each is dropped, observably — warned in the mapping
+        // file's words and reported via `dropped_egress_controls` for the seam audit.
+        crate::codec::carry::warn_drops(super::map::REQUEST, super::map::CONTROLS, None, req);
 
         // response_format → Responses `text.format`. The Responses surface carries structured-output
         // config under `text.format` (flat json_schema shape), NOT a top-level `response_format`. Build

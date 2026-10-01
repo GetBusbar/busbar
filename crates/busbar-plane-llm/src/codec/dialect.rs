@@ -50,59 +50,6 @@ pub const PROVIDER_SIGNAL_CONTEXT_LENGTH: &str = "context_length";
 /// name costs one entry, and so the writer's lookup cannot be thrown off by a `null` hole.
 pub const MESSAGE_NAMES_SENTINEL: &str = "__busbar_message_names";
 
-/// A request control a dialect may have no form for: the name its drop is warned and audited
-/// under, and whether a request carries it. A dialect lists the controls it drops as a table of
-/// these, and that one table answers both its egress warn loop and `dropped_egress_controls`.
-pub type Control = (&'static str, fn(&crate::codec::ir::IrRequest) -> bool);
-
-/// The free-form caller metadata map.
-pub const METADATA: Control = ("metadata", |r| r.metadata.is_some());
-/// The capacity tier, in any word.
-pub const SERVICE_TIER: Control = ("service_tier", |r| r.service_tier.is_some());
-/// The provider-side storage ask.
-pub const STORE: Control = ("store", |r| r.store.is_some());
-/// The end-user safety identifier.
-pub const SAFETY_IDENTIFIER: Control = ("safety_identifier", |r| r.safety_identifier.is_some());
-/// The prompt-cache routing key.
-pub const PROMPT_CACHE_KEY: Control = ("prompt_cache_key", |r| r.prompt_cache_key.is_some());
-/// The answer-verbosity ask.
-pub const VERBOSITY: Control = ("verbosity", |r| r.verbosity.is_some());
-/// An output-modality ask naming anything but text.
-pub const OUTPUT_MODALITIES: Control = ("output_modalities", |r| {
-    r.output_modalities
-        .as_ref()
-        .is_some_and(|m| m.iter().any(|m| *m != crate::codec::ir::IrModality::Text))
-});
-/// An OpenAI custom (free-form grammar) tool.
-pub const CUSTOM_TOOL: Control = ("custom_tool", |r| {
-    r.hosted_tools
-        .iter()
-        .any(|t| matches!(t, crate::codec::ir::IrHostedTool::Custom(_)))
-});
-/// The top-k sampling control.
-pub const TOP_K: Control = ("top_k", |r| r.top_k.is_some());
-/// Any stop sequence.
-pub const STOP: Control = ("stop", |r| !r.stop.is_empty());
-/// The frequency penalty.
-pub const FREQUENCY_PENALTY: Control = ("frequency_penalty", |r| r.frequency_penalty.is_some());
-/// The presence penalty.
-pub const PRESENCE_PENALTY: Control = ("presence_penalty", |r| r.presence_penalty.is_some());
-/// The deterministic-sampling seed.
-pub const SEED: Control = ("seed", |r| r.seed.is_some());
-/// The candidate count.
-pub const N: Control = ("n", |r| r.n.is_some());
-
-/// The controls of `table` that `req` carries, by name, in table order.
-pub fn carried<'a>(
-    req: &'a crate::codec::ir::IrRequest,
-    table: &'a [Control],
-) -> impl Iterator<Item = &'static str> + 'a {
-    table
-        .iter()
-        .filter(move |(_, carries)| carries(req))
-        .map(|(name, _)| *name)
-}
-
 /// How a dialect's egress warn names a dropped control: the field the name rides under and the
 /// dialect's own message. Data per dialect; [`warn_dropped`] is the one walker.
 pub enum DropWarn {
@@ -112,8 +59,9 @@ pub enum DropWarn {
     Parameter(&'static str),
 }
 
-/// THE ONE DROP WALKER: one warn per dropped control, in the dialect's own words. The names are the
-/// same ones the dialect's `dropped_egress_controls` reports, so the log and the seam's audit agree.
+/// One warn per dropped control, in the dialect's own words (the dialect's `drop_warn`, used by
+/// `codec::carry::warn_drops`). The names are the same ones the dialect's `dropped_egress_controls`
+/// reports, so the log and the seam's audit agree.
 pub fn warn_dropped<'a>(dropped: impl IntoIterator<Item = &'a str>, warn: &DropWarn) {
     for name in dropped {
         match warn {

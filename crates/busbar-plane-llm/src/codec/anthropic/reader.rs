@@ -374,39 +374,11 @@ impl ProtocolReader for AnthropicReader {
             .or(output_format_legacy)
             .and_then(read_anthropic_output_format);
         let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
-        // IR-04: Anthropic `service_tier` (`auto` / `standard_only`). It also rides `extra`, so a
-        // same-protocol hop re-emits the caller's exact value.
-        let service_tier = obj
-            .get("service_tier")
-            .and_then(|v| v.as_str())
-            .and_then(read_anthropic_service_tier);
 
-        // Collect unmodeled top-level keys into `extra`. The set of modeled keys is a static,
-        // never-changing list of `&'static str` literals, so it lives as a compile-time SORTED slice
-        // and membership is an O(log n) `binary_search` — zero allocation, zero hashing, on every
-        // inbound request (the previous per-call `HashSet` allocated + hashed up to 10 entries and
-        // dropped the set immediately, pure churn on the hot ingress path). Kept sorted by hand;
-        // `debug_assert` below pins that invariant so a future edit that breaks ordering fails tests.
-        const MODELED_KEYS: &[&str] = &[
-            "max_tokens",
-            "messages",
-            "model",
-            "stop_sequences",
-            "stream",
-            "system",
-            "temperature",
-            "tool_choice",
-            "tools",
-            "top_k",
-            "top_p",
-        ];
-        debug_assert!(
-            MODELED_KEYS.windows(2).all(|w| w[0] < w[1]),
-            "MODELED_KEYS must stay sorted for binary_search"
-        );
-
+        // Collect unmodeled top-level keys into `extra`: the modelled keys are the mapping file's
+        // top-level rows.
         for (key, value) in obj.iter() {
-            if MODELED_KEYS.binary_search(&key.as_str()).is_err() {
+            if !crate::codec::carry::models(super::map::REQUEST, key) {
                 extra.insert(key.clone(), value.clone());
             }
         }
@@ -452,7 +424,8 @@ impl ProtocolReader for AnthropicReader {
             response_format,
             extra,
             metadata: None,
-            service_tier,
+            // IR-04: a row of the mapping file (`auto` / `standard_only`), read below.
+            service_tier: None,
             store: None,
             safety_identifier: None,
             prompt_cache_key: None,

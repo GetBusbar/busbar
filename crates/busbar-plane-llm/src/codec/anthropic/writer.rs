@@ -158,12 +158,10 @@ impl ProtocolWriter for AnthropicWriter {
         {
             dropped.push("response_format");
         }
-        use crate::codec::dialect::{carried, FREQUENCY_PENALTY, N, PRESENCE_PENALTY, SEED};
-        dropped.extend(carried(
-            req,
-            &[FREQUENCY_PENALTY, PRESENCE_PENALTY, SEED, N],
-        ));
-        dropped.extend(carried(req, ANTHROPIC_UNREPRESENTABLE));
+        dropped.extend(
+            crate::codec::carry::dropped(super::map::REQUEST, super::map::CONTROLS, req)
+                .map(crate::codec::carry::Slot::name),
+        );
         dropped
     }
 
@@ -524,67 +522,14 @@ impl ProtocolWriter for AnthropicWriter {
         );
         out.insert("stream".to_string(), serde_json::json!(req.stream));
         // (response_format is handled ABOVE via native `output_config.format`.)
-        // SAMPLING CONTROLS with no Anthropic Messages analog: `frequency_penalty`,
-        // `presence_penalty`, `seed`, `n`. Anthropic models none of them, so a cross-protocol request
-        // (e.g. an OpenAI/Responses caller) carrying any is dropped here. The drop is intentional (the
-        // reader never sets these on a same-protocol path — same-protocol relays the raw body and
-        // never reaches this writer), but it must be OBSERVABLE: emit a `warn!` for each (mirroring the
-        // response_format/top_k/reasoning drop-with-warn convention) instead of the prior silent drop,
-        // and report them via `dropped_egress_controls` so the cross-protocol seam audits each one.
-        if let Some(frequency_penalty) = req.frequency_penalty {
-            tracing::warn!(
-                parameter = "frequency_penalty",
-                frequency_penalty,
-                "dropping frequency_penalty on Anthropic egress: the Messages API models no such \
-                 sampling control (lossy-by-target)"
-            );
-        }
-        if let Some(presence_penalty) = req.presence_penalty {
-            tracing::warn!(
-                parameter = "presence_penalty",
-                presence_penalty,
-                "dropping presence_penalty on Anthropic egress: the Messages API models no such \
-                 sampling control (lossy-by-target)"
-            );
-        }
-        if let Some(seed) = req.seed {
-            tracing::warn!(
-                parameter = "seed",
-                seed,
-                "dropping seed on Anthropic egress: the Messages API models no deterministic-sampling \
-                 seed (lossy-by-target)"
-            );
-        }
-        if let Some(n) = req.n {
-            tracing::warn!(
-                parameter = "n",
-                n,
-                "dropping n on Anthropic egress: the Messages API returns a single completion and \
-                 models no candidate-count parameter (lossy-by-target)"
-            );
-        }
-        // IR-04: the capacity tier in Anthropic's spelling; a tier Anthropic cannot name (Flex /
-        // Scale) is dropped. Emitted before the `extra` overlay, so a native value wins.
-        if let Some(tier) = req.service_tier {
-            match write_anthropic_service_tier(tier) {
-                Some(word) => {
-                    out.insert("service_tier".to_string(), serde_json::json!(word));
-                }
-                None => tracing::warn!(
-                    service_tier = tier.as_str(),
-                    "dropping service_tier on Anthropic egress: Anthropic offers only auto /                      standard_only capacity (lossy-by-target)"
-                ),
-            }
-        }
-        // The Q57 slots with no Anthropic form (store, safety_identifier, prompt_cache_key,
-        // verbosity, the metadata map, non-text output modalities): dropped, observably.
-        // `service_tier` is warned above with the tier it could not name.
-        crate::codec::dialect::warn_dropped(
-            crate::codec::dialect::carried(req, ANTHROPIC_UNREPRESENTABLE)
-                .filter(|slot| *slot != "service_tier"),
-            &crate::codec::dialect::DropWarn::Parameter(
-                "dropping {slot} on Anthropic egress: the Messages API has no such request                      member (lossy-by-target)",
-            ),
+        // The controls with no Anthropic Messages form (the penalties, `seed`, `n`, a tier Anthropic
+        // cannot name, the Q57 slots it has no member for): dropped, observably, each warned in the
+        // mapping file's words and reported by `dropped_egress_controls` for the seam audit.
+        crate::codec::carry::warn_drops(
+            super::map::REQUEST,
+            super::map::CONTROLS,
+            Some(&super::map::DROP_WARN),
+            req,
         );
         // Carry the end-user identifier into Anthropic's spelling (`metadata.user_id`). Emitted
         // before the `extra` overlay: if the request natively carried an Anthropic `metadata`

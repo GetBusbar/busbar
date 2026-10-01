@@ -3,7 +3,15 @@
 
 [dialect]
 wire = "bedrock"  # the wire lock: dialects/bedrock.wire.json (notation A paths)
-request = ["inference_config"]
+request = ["structure", "inference_config", "tier"]
+drop_warn = "dropping a request control on Bedrock egress: Converse has no form for it"
+
+# Members the dialect's own code models (`prim`). Everything else rides `extra` raw.
+[rows.structure]
+"messages" = { prim = "messages" }
+"model" = { prim = "model" }
+"stream" = { prim = "stream" }
+"system" = { prim = "system" }
 
 # `inferenceConfig` rides `extra` raw; these rows overlay it. Thinking: Claude refuses a modified
 # sampling knob beside a thinking ask; the ask wins, observably. Temperature is clamped to
@@ -13,3 +21,26 @@ request = ["inference_config"]
 "inferenceConfig.temperature" = { ir = "temperature", clamp = [0.0, 1.0], clamp_warn = "clamping temperature to Bedrock's [0.0, 1.0] range; the requested value was out of range and would be rejected with a 400 ValidationException", drop_if = "thinking", drop_warn = "omitting temperature on Bedrock egress: not compatible with thinking" }
 "inferenceConfig.topP" = { ir = "top_p", drop_if = "thinking", drop_warn = "omitting topP on Bedrock egress: not compatible with thinking" }
 "inferenceConfig.stopSequences" = { ir = "stop" }
+
+# BED-14 / IR-04: Converse `serviceTier: {type}`; `reserved` has no IR tier and Auto / Scale no
+# Converse word. The raw member rides `extra` and wins on the same dialect.
+[rows.tier]
+"serviceTier.type" = { ir = "service_tier", words = "service_tier" }
+
+[words.service_tier]
+"priority" = { wire = "priority" }
+"default" = { wire = "default" }
+"flex" = { wire = "flex" }
+
+# Controls beyond the rows. `requestMetadata` (validated per entry), `top_k` (either spelling) and
+# the hosted tool kinds are the writer's own code. Converse has no penalties, seed or candidate
+# count: 1.5.5 omitted them with no warn and no audit (1.5.5:
+# crates/busbar/src/proto/bedrock/reader.rs:703 reads none, its writer writes none).
+[controls]
+"metadata" = { code = "bedrock_request_metadata" }
+"top_k" = { code = "bedrock_top_k" }
+"custom_tool" = { code = "bedrock_hosted_tools" }
+"frequency_penalty" = { silent = true }
+"presence_penalty" = { silent = true }
+"seed" = { silent = true }
+"n" = { silent = true }

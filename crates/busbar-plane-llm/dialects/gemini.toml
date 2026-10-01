@@ -4,7 +4,17 @@
 [dialect]
 wire = "gemini"  # the wire lock: dialects/gemini.wire.json (notation A paths)
 label = "Gemini"
-request = ["generation_config"]
+request = ["structure", "generation_config"]
+drop_warn = "dropping a request control on Gemini egress: generateContent has no form for it"
+
+# Members the dialect's own code models (`prim`). `generationConfig` is NOT one: it rides `extra`
+# raw so its unmodelled members survive, and the rows below overlay it.
+[rows.structure]
+"contents" = { prim = "messages" }
+"tools" = { prim = "tools" }
+"systemInstruction" = { prim = "system" }
+"model" = { prim = "model" }
+"__busbar_gemini_json_array" = { prim = "json_array_shim" }
 
 # `generationConfig` rides `extra` raw; these rows overlay it. 1.5.4 silent-degrade: a stop list
 # past Gemini's cap of 5 is truncated, not refused.
@@ -17,3 +27,9 @@ request = ["generation_config"]
 "generationConfig.presencePenalty" = { ir = "presence_penalty" }
 "generationConfig.seed" = { ir = "seed" }
 "generationConfig.candidateCount" = { ir = "n" }
+
+# Controls beyond the rows: `labels` (validated per entry) and `responseModalities` are the
+# dialect's own code.
+[controls]
+"metadata" = { code = "gemini_labels" }
+"output_modalities" = { code = "gemini_response_modalities" }

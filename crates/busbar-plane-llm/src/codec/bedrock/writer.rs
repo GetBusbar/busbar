@@ -104,7 +104,11 @@ impl ProtocolWriter for BedrockWriter {
         if matches!(req.tool_choice, Some(crate::codec::ir::IrToolChoice::None)) {
             dropped.push("tool_choice=none");
         }
-        dropped.extend(bedrock_unrepresentable_slots(req));
+        dropped.extend(
+            crate::codec::carry::dropped(super::map::REQUEST, super::map::CONTROLS, req)
+                .map(crate::codec::carry::Slot::name),
+        );
+        dropped.extend(req.hosted_tools.iter().map(|h| h.kind_str()));
         dropped
     }
 
@@ -1491,25 +1495,17 @@ impl BedrockWriter {
                 out.insert(super::FIELD_REQUEST_METADATA.to_string(), m);
             }
         }
-        // BED-14 / IR-04: the tier is Converse's `serviceTier: {type}`. A
-        // same-protocol body's own raw member (in `extra`) wins.
-        if let Some(word) = req
-            .service_tier
-            .filter(|_| !req.extra.contains_key(super::FIELD_SERVICE_TIER))
-            .and_then(super::write_bedrock_service_tier)
-        {
-            out.insert(
-                super::FIELD_SERVICE_TIER.to_string(),
-                serde_json::json!({ "type": word }),
-            );
-        }
         // The Q57 request slots with no Converse form — the same set `dropped_egress_controls`
         // reports for the seam's audit.
+        crate::codec::carry::warn_drops(
+            super::map::REQUEST,
+            super::map::CONTROLS,
+            Some(&super::map::DROP_WARN),
+            req,
+        );
         crate::codec::dialect::warn_dropped(
-            bedrock_unrepresentable_slots(req),
-            &crate::codec::dialect::DropWarn::Control(
-                "dropping a request control on Bedrock egress: Converse has no form for it",
-            ),
+            req.hosted_tools.iter().map(|h| h.kind_str()),
+            &super::map::DROP_WARN,
         );
 
         for (key, value) in &req.extra {
@@ -1554,28 +1550,4 @@ impl BedrockWriter {
 
         serde_json::Value::Object(out)
     }
-}
-
-/// The typed request slots a Converse body has no member for — each is dropped with a warn by
-/// `write_request` and reported by `dropped_egress_controls`, so the seam audits the degradation:
-/// `store`, `safety_identifier`, `prompt_cache_key`, `verbosity`, a `service_tier` Converse has no
-/// `serviceTier.type` word for (Auto, Scale), a non-text output modality (Converse answers in text), and every
-/// provider-hosted tool kind (Converse has no hosted web search / code execution / web fetch).
-const BEDROCK_UNREPRESENTABLE: &[crate::codec::dialect::Control] = &[
-    ("service_tier", |r| {
-        r.service_tier
-            .is_some_and(|t| super::write_bedrock_service_tier(t).is_none())
-    }),
-    crate::codec::dialect::STORE,
-    crate::codec::dialect::SAFETY_IDENTIFIER,
-    crate::codec::dialect::PROMPT_CACHE_KEY,
-    crate::codec::dialect::VERBOSITY,
-    crate::codec::dialect::OUTPUT_MODALITIES,
-];
-
-/// [`BEDROCK_UNREPRESENTABLE`] carried by `req`, then every hosted tool kind it asks for.
-fn bedrock_unrepresentable_slots(req: &crate::codec::ir::IrRequest) -> Vec<&'static str> {
-    crate::codec::dialect::carried(req, BEDROCK_UNREPRESENTABLE)
-        .chain(req.hosted_tools.iter().map(|h| h.kind_str()))
-        .collect()
 }

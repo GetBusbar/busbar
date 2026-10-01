@@ -12,7 +12,30 @@
 [dialect]
 wire = "openai"  # the wire lock: dialects/openai.wire.json (notation A paths)
 label = "OpenAI"
-request = ["openai_sampling", "openai_penalties", "chat_sampling", "openai_family", "chat"]
+request = [
+    "chat_structure",
+    "openai_sampling",
+    "openai_penalties",
+    "chat_sampling",
+    "openai_family",
+    "chat",
+]
+
+# Members the dialect's own code models (`prim`): counted among the modelled keys only.
+[rows.chat_structure]
+"model" = { prim = "model" }
+"messages" = { prim = "messages" }
+"tools" = { prim = "tools" }
+"max_tokens" = { prim = "max_output" }
+"max_completion_tokens" = { prim = "max_output" }
+"stream" = { prim = "stream" }
+"tool_choice" = { prim = "tool_choice" }
+"response_format" = { prim = "response_format" }
+"user" = { prim = "user" }
+"parallel_tool_calls" = { prim = "parallel_tool_calls" }
+"logprobs" = { prim = "logprobs" }
+"top_logprobs" = { prim = "logprobs" }
+"reasoning_effort" = { prim = "reasoning" }
 
 # Sampling Chat and Responses spell alike.
 [rows.openai_sampling]
@@ -45,6 +68,12 @@ park = true
 "verbosity" = { ir = "verbosity" }
 "modalities" = { ir = "output_modalities", hook = "chat_modalities" }
 "web_search_options" = { ir = "web_search", hook = "chat_web_search" }
+
+# Controls beyond the rows. Chat has no top_k: 1.5.5 omitted it with no warn and no audit
+# (1.5.5: crates/busbar/src/proto/openai_chat/writer.rs:265). Custom tools are tools[] entries.
+[controls]
+"top_k" = { silent = true }
+"custom_tool" = { code = "chat_custom_tools" }
 
 # The response `service_tier` (the tier that SERVED the answer, OAI-03 / RSP-17) <> the IR
 # attribution word (the Anthropic vocabulary: `default` IS `standard`). The OpenAI-family words are

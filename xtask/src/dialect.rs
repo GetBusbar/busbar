@@ -19,6 +19,14 @@
 //!   (same-dialect fidelity park); `clamp = [min, max]` with `clamp_warn = "<text>"` and
 //!   `clamp_parameter = true|false`; `cap = <n>`; `drop_if = "thinking"` with `drop_warn = "<text>"`
 //!   and `drop_warn_value = true|false` (default true);
+//! * a `prim = "<name>"` row is a member the dialect's named structural code models: the walker
+//!   only counts it among the modelled keys (`ir` is optional);
+//! * `[controls]`: how a control slot beyond the rows is handled, one per line, `"<slot>" =
+//!   { silent = true }` (a 1.5.5 silent drop, its reason cited in a comment), `{ code = "<name>" }`
+//!   (carried or reported by named dialect code) or `{ warn = "<text>" [, value = true] }` (the
+//!   slot's own drop warn);
+//! * `[dialect] drop_warn = "<text>"`, `drop_field = "control" | "parameter"`: the warn for every
+//!   other derived drop (`parameter` texts name the slot as `{slot}`);
 //! * `[words.<table>]`: `base = "<table>"` (its rows come first), then one row per line,
 //!   `"<ir word>" = { wire = "<word>" [, dir = "read" | "write"] }`.
 
@@ -176,10 +184,18 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
                 continue;
             }
             let f = row_fields(&source, key, raw)?;
-            let slot = field(&f, "ir")
-                .map(toml_lite::string_value)
-                .ok_or_else(|| format!("{source}: [{path}] \"{key}\" names no ir slot"))?;
+            let prim = field(&f, "prim").map(toml_lite::string_value);
+            let slot = match (field(&f, "ir").map(toml_lite::string_value), &prim) {
+                (Some(slot), _) => slot,
+                (None, Some(_)) => "structure".to_string(),
+                (None, None) => {
+                    return Err(format!("{source}: [{path}] \"{key}\" names no ir slot"))
+                }
+            };
             let codec = match (field(&f, "words"), field(&f, "hook")) {
+                (None, None) if prim.is_some() => {
+                    format!("Codec::Prim({})", lit(prim.as_deref().unwrap_or_default()))
+                }
                 (None, None) => "Codec::Plain".to_string(),
                 (Some(w), None) => {
                     let (wd, wn) = qualified(&d.name, &toml_lite::string_value(w));
@@ -196,6 +212,7 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
             uses.insert("Codec");
             const KNOWN: &[&str] = &[
                 "ir",
+                "prim",
                 "words",
                 "hook",
                 "park",
@@ -288,6 +305,51 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
         body.push_str(&format!(
             "\n/// The request table, walked in order.\npub(crate) const REQUEST: Table = &[{}];\n",
             refs.join(", ")
+        ));
+    }
+
+    // How each control slot beyond the rows is handled.
+    let controls = d.doc.tables.get("controls");
+    if let Some(controls) = controls {
+        uses.insert("Handled");
+        uses.insert("Slot");
+        body.push_str(
+            "\n/// How each control slot beyond the rows is handled.\npub(crate) const CONTROLS: &[(Slot, Handled)] = &[\n",
+        );
+        for (key, raw) in &controls.entries {
+            let f = row_fields(&source, key, raw)?;
+            let text = |name: &str| field(&f, name).map(toml_lite::string_value);
+            let handled = match (text("silent").as_deref(), text("code"), text("warn")) {
+                (Some("true"), None, None) => "Handled::Silent".to_string(),
+                (None, Some(code), None) => format!("Handled::Code({})", lit(&code)),
+                (None, None, Some(warn)) => format!(
+                    "Handled::Warn({}, {})",
+                    lit(&warn),
+                    text("value").as_deref() == Some("true")
+                ),
+                _ => {
+                    return Err(format!(
+                        "{source}: [controls] \"{key}\" is not one of silent / code / warn"
+                    ))
+                }
+            };
+            body.push_str(&format!("    (Slot::{}, {handled}),\n", camel(key)));
+        }
+        body.push_str("];\n");
+    }
+    if let Some(warn) = dialect_t.get_one("drop_warn") {
+        let kind = match dialect_t.get_one("drop_field") {
+            Some("parameter") => "Parameter",
+            _ => "Control",
+        };
+        let warn = dialect_t
+            .entries
+            .iter()
+            .find(|(k, _)| k == "drop_warn")
+            .map_or_else(|| warn.to_string(), |(_, raw)| toml_lite::string_value(raw));
+        body.push_str(&format!(
+            "\n/// The warn for every other derived drop.\npub(crate) const DROP_WARN: crate::codec::dialect::DropWarn =\n    crate::codec::dialect::DropWarn::{kind}({});\n",
+            lit(&warn)
         ));
     }
 

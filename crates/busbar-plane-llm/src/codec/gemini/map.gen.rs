@@ -5,7 +5,7 @@
 // DO NOT EDIT: edit the mapping file and re-run the compile; the `dialect-map` gate refuses
 // a table file that differs from a fresh compile.
 
-use crate::codec::carry::{Codec, Field, Slot, Table, row};
+use crate::codec::carry::{Codec, Field, Handled, Slot, Table, row};
 
 /// Row group `generation_config`.
 pub(crate) const ROWS_GENERATION_CONFIG: &[Field] = &[
@@ -19,5 +19,24 @@ pub(crate) const ROWS_GENERATION_CONFIG: &[Field] = &[
     row(&["generationConfig", "candidateCount"], Slot::N, Codec::Plain),
 ];
 
+/// Row group `structure`.
+pub(crate) const ROWS_STRUCTURE: &[Field] = &[
+    row(&["contents"], Slot::Structure, Codec::Prim("messages")),
+    row(&["tools"], Slot::Structure, Codec::Prim("tools")),
+    row(&["systemInstruction"], Slot::Structure, Codec::Prim("system")),
+    row(&["model"], Slot::Structure, Codec::Prim("model")),
+    row(&["__busbar_gemini_json_array"], Slot::Structure, Codec::Prim("json_array_shim")),
+];
+
 /// The request table, walked in order.
-pub(crate) const REQUEST: Table = &[ROWS_GENERATION_CONFIG];
+pub(crate) const REQUEST: Table = &[ROWS_STRUCTURE, ROWS_GENERATION_CONFIG];
+
+/// How each control slot beyond the rows is handled.
+pub(crate) const CONTROLS: &[(Slot, Handled)] = &[
+    (Slot::Metadata, Handled::Code("gemini_labels")),
+    (Slot::OutputModalities, Handled::Code("gemini_response_modalities")),
+];
+
+/// The warn for every other derived drop.
+pub(crate) const DROP_WARN: crate::codec::dialect::DropWarn =
+    crate::codec::dialect::DropWarn::Control("dropping a request control on Gemini egress: generateContent has no form for it");

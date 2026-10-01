@@ -1,16 +1,5 @@
 use super::*;
 
-/// The Q57 request slots Cohere v2 `/chat` has no form for, in the order they are reported.
-const COHERE_UNREPRESENTABLE: &[crate::codec::dialect::Control] = &[
-    crate::codec::dialect::METADATA,
-    crate::codec::dialect::SERVICE_TIER,
-    crate::codec::dialect::STORE,
-    crate::codec::dialect::SAFETY_IDENTIFIER,
-    crate::codec::dialect::PROMPT_CACHE_KEY,
-    crate::codec::dialect::VERBOSITY,
-    crate::codec::dialect::OUTPUT_MODALITIES,
-];
-
 impl ProtocolWriter for CohereWriter {
     fn probe_request(&self) -> serde_json::Value {
         // The ping IR is built by the plugin (ir_encode::ping_request); this dialect serializes it
@@ -27,7 +16,8 @@ impl ProtocolWriter for CohereWriter {
     /// here, so the seam audits the degradation. `service_tier` included: Cohere's `priority` is an
     /// integer queue order, a different concept, so no tier is written.
     fn dropped_egress_controls(&self, req: &crate::codec::ir::IrRequest) -> Vec<&'static str> {
-        crate::codec::dialect::carried(req, COHERE_UNREPRESENTABLE)
+        crate::codec::carry::dropped(super::map::REQUEST, super::map::CONTROLS, req)
+            .map(crate::codec::carry::Slot::name)
             .chain(req.hosted_tools.iter().map(|h| h.kind_str()))
             .collect()
     }
@@ -512,11 +502,15 @@ impl ProtocolWriter for CohereWriter {
         }
         // The Q57 request slots with no Cohere form — the same set `dropped_egress_controls`
         // reports for the seam's audit.
+        crate::codec::carry::warn_drops(
+            super::map::REQUEST,
+            super::map::CONTROLS,
+            Some(&super::map::DROP_WARN),
+            req,
+        );
         crate::codec::dialect::warn_dropped(
-            self.dropped_egress_controls(req),
-            &crate::codec::dialect::DropWarn::Control(
-                "dropping a request control on Cohere egress: Cohere v2 /chat has no form for it",
-            ),
+            req.hosted_tools.iter().map(|h| h.kind_str()),
+            &super::map::DROP_WARN,
         );
 
         if let Some(max_tokens) = req.max_tokens {

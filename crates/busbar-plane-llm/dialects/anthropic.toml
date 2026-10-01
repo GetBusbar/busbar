@@ -3,7 +3,20 @@
 
 [dialect]
 wire = "anthropic"  # the wire lock: dialects/anthropic.wire.json (notation A paths)
-request = ["sampling"]
+request = ["structure", "sampling", "tier"]
+drop_warn = "dropping {slot} on Anthropic egress: the Messages API has no such request                      member (lossy-by-target)"
+drop_field = "parameter"
+
+# Members the dialect's own code models (`prim`). `metadata` (its `user_id` is `user`), `thinking`
+# and `output_config` are read by code and otherwise ride `extra`.
+[rows.structure]
+"max_tokens" = { prim = "max_output" }
+"messages" = { prim = "messages" }
+"model" = { prim = "model" }
+"stream" = { prim = "stream" }
+"system" = { prim = "system" }
+"tool_choice" = { prim = "tool_choice" }
+"tools" = { prim = "tools" }
 
 # Thinking: Anthropic refuses a modified sampling knob beside a thinking ask; the ask wins and the
 # knob is omitted, observably. The temperature clamp is to Anthropic's [0.0, 1.0] (it 422s above).
@@ -12,3 +25,22 @@ request = ["sampling"]
 "top_p" = { ir = "top_p", drop_if = "thinking", drop_warn = "omitting top_p on Anthropic egress: not compatible with thinking" }
 "top_k" = { ir = "top_k", drop_if = "thinking", drop_warn = "omitting top_k on Anthropic egress: not compatible with thinking" }
 "stop_sequences" = { ir = "stop" }
+
+# IR-04: Anthropic serves `auto` and `standard_only`; Priority asks `auto` (Priority capacity when
+# the org has it); Flex / Scale have no form and are dropped.
+[rows.tier]
+"service_tier" = { ir = "service_tier", words = "service_tier", park = true }
+
+[words.service_tier]
+"auto" = { wire = "auto" }
+"default" = { wire = "standard_only" }
+"priority" = { wire = "auto", dir = "write" }
+
+# Controls beyond the rows: the Messages API models no penalties, seed or candidate count; each
+# drop is warned in these words, naming the value, and audited.
+[controls]
+"frequency_penalty" = { warn = "dropping frequency_penalty on Anthropic egress: the Messages API models no such sampling control (lossy-by-target)", value = true }
+"presence_penalty" = { warn = "dropping presence_penalty on Anthropic egress: the Messages API models no such sampling control (lossy-by-target)", value = true }
+"seed" = { warn = "dropping seed on Anthropic egress: the Messages API models no deterministic-sampling seed (lossy-by-target)", value = true }
+"n" = { warn = "dropping n on Anthropic egress: the Messages API returns a single completion and models no candidate-count parameter (lossy-by-target)", value = true }
+"service_tier" = { warn = "dropping service_tier on Anthropic egress: Anthropic offers only auto /                      standard_only capacity (lossy-by-target)", value = true }

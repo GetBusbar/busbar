@@ -33,7 +33,10 @@ impl ProtocolWriter for OpenAiWriter {
     /// A hosted tool of a kind Chat has no built-in for (code execution, web fetch) is dropped by
     /// the writer (IR-11); the seam records each as a dropped control.
     fn dropped_egress_controls(&self, req: &crate::codec::ir::IrRequest) -> Vec<&'static str> {
-        super::slots::dropped_hosted_kinds(req)
+        crate::codec::carry::dropped(super::map::REQUEST, super::map::CONTROLS, req)
+            .map(crate::codec::carry::Slot::name)
+            .chain(super::slots::dropped_hosted_kinds(req))
+            .collect()
     }
 
     fn write_request_for_lane(

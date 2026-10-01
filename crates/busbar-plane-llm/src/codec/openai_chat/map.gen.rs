@@ -5,7 +5,7 @@
 // DO NOT EDIT: edit the mapping file and re-run the compile; the `dialect-map` gate refuses
 // a table file that differs from a fresh compile.
 
-use crate::codec::carry::{Codec, Dir, Field, Hook, Slot, Table, Word, row};
+use crate::codec::carry::{Codec, Dir, Field, Handled, Hook, Slot, Table, Word, row};
 
 /// Row group `chat`.
 pub(crate) const ROWS_CHAT: &[Field] = &[
@@ -18,6 +18,23 @@ pub(crate) const ROWS_CHAT: &[Field] = &[
 pub(crate) const ROWS_CHAT_SAMPLING: &[Field] = &[
     row(&["stop"], Slot::Stop, Codec::Plain).cap(4, "OpenAI"),
     row(&["n"], Slot::N, Codec::Plain),
+];
+
+/// Row group `chat_structure`.
+pub(crate) const ROWS_CHAT_STRUCTURE: &[Field] = &[
+    row(&["model"], Slot::Structure, Codec::Prim("model")),
+    row(&["messages"], Slot::Structure, Codec::Prim("messages")),
+    row(&["tools"], Slot::Structure, Codec::Prim("tools")),
+    row(&["max_tokens"], Slot::Structure, Codec::Prim("max_output")),
+    row(&["max_completion_tokens"], Slot::Structure, Codec::Prim("max_output")),
+    row(&["stream"], Slot::Structure, Codec::Prim("stream")),
+    row(&["tool_choice"], Slot::Structure, Codec::Prim("tool_choice")),
+    row(&["response_format"], Slot::Structure, Codec::Prim("response_format")),
+    row(&["user"], Slot::Structure, Codec::Prim("user")),
+    row(&["parallel_tool_calls"], Slot::Structure, Codec::Prim("parallel_tool_calls")),
+    row(&["logprobs"], Slot::Structure, Codec::Prim("logprobs")),
+    row(&["top_logprobs"], Slot::Structure, Codec::Prim("logprobs")),
+    row(&["reasoning_effort"], Slot::Structure, Codec::Prim("reasoning")),
 ];
 
 /// Row group `openai_family`.
@@ -43,7 +60,13 @@ pub(crate) const ROWS_OPENAI_SAMPLING: &[Field] = &[
 ];
 
 /// The request table, walked in order.
-pub(crate) const REQUEST: Table = &[ROWS_OPENAI_SAMPLING, ROWS_OPENAI_PENALTIES, ROWS_CHAT_SAMPLING, ROWS_OPENAI_FAMILY, ROWS_CHAT];
+pub(crate) const REQUEST: Table = &[ROWS_CHAT_STRUCTURE, ROWS_OPENAI_SAMPLING, ROWS_OPENAI_PENALTIES, ROWS_CHAT_SAMPLING, ROWS_OPENAI_FAMILY, ROWS_CHAT];
+
+/// How each control slot beyond the rows is handled.
+pub(crate) const CONTROLS: &[(Slot, Handled)] = &[
+    (Slot::TopK, Handled::Silent),
+    (Slot::CustomTool, Handled::Code("chat_custom_tools")),
+];
 
 /// Word table `openai_served_tier`: (wire word, IR word, direction).
 pub(crate) const WORDS_OPENAI_SERVED_TIER: &[Word] = &[

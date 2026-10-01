@@ -3636,17 +3636,11 @@ fn test_stream_tool_after_closed_text_block_does_not_reuse_index_zero() {
     ));
 }
 
-/// The modeled-key set is built once and shared, and still
-/// contains exactly the keys this reader models — so request fields like those stay out of
-/// `extra` while unknown keys are preserved. Calling it twice returns the same backing set.
+/// The modelled keys are the mapping file's top-level rows — so request fields like those stay
+/// out of `extra` while unknown keys are preserved.
 #[test]
-fn test_modeled_keys_built_once_and_complete() {
-    let a = cohere_modeled_keys();
-    let b = cohere_modeled_keys();
-    assert!(
-        std::ptr::eq(a, b),
-        "modeled-key set must be a shared singleton"
-    );
+fn test_modeled_keys_are_the_mapping_rows() {
+    let a = |k: &str| crate::codec::carry::models(super::map::REQUEST, k);
     for k in [
         "model",
         "messages",
@@ -3655,10 +3649,10 @@ fn test_modeled_keys_built_once_and_complete() {
         "temperature",
         "stream",
     ] {
-        assert!(a.contains(k), "{k} must be a modeled key");
+        assert!(a(k), "{k} must be a modeled key");
     }
     // An unknown key is NOT modeled (so it round-trips through `extra`).
-    assert!(!a.contains("unknown_passthrough_key"));
+    assert!(!a("unknown_passthrough_key"));
 }
 
 /// A cross-protocol stream delivering tool calls to a

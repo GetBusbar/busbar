@@ -486,39 +486,6 @@ const FIELD_FUNCTION_CALL: &str = "functionCall";
 /// JSON key for the finish reason on a candidate.
 const FIELD_FINISH_REASON: &str = "finishReason";
 
-/// The set of top-level Gemini request keys the reader models into typed `IrRequest` fields (any
-/// OTHER key is swept verbatim into `extra` for round-trip fidelity). This set is a compile-time
-/// constant, so it is built ONCE into a process-global `OnceLock` and shared by every
-/// `read_request` call instead of being re-allocated and re-hashed per request on the ingress hot
-/// path. Every member is a `&'static str`, so the cached set borrows nothing request-scoped.
-fn modeled_request_keys() -> &'static std::collections::HashSet<&'static str> {
-    static MODELED_KEYS: std::sync::OnceLock<std::collections::HashSet<&'static str>> =
-        std::sync::OnceLock::new();
-    MODELED_KEYS.get_or_init(|| {
-        // NB: `generationConfig` is deliberately ABSENT. The reader promotes 5 of its sub-fields
-        // (`maxOutputTokens`/`temperature`/`topP`/`topK`/`stopSequences`) into typed IR fields, but
-        // a native Gemini client may also send unmodeled sub-fields (`responseMimeType` for JSON
-        // mode, `thinkingConfig` for extended thinking, `candidateCount`, `seed`,
-        // `presence/frequencyPenalty`, `responseModalities`, `speechConfig`, …). Were
-        // `generationConfig` modeled-out of `extra`, the writer — which rebuilds it from only the 5
-        // typed fields — would SILENTLY DROP every unmodeled sub-field on cross-protocol ingress.
-        // Keeping the raw `generationConfig` object in `extra` lets the writer OVERLAY the 5 typed
-        // fields onto the original object (the same pattern `BedrockWriter` uses for
-        // `inferenceConfig`), preserving unknown sub-fields. Same-protocol Gemini→Gemini is
-        // unaffected (byte-identical), and the cross-protocol seam (`proxy engine ir.extra.clear()`)
-        // still prevents foreign Gemini sub-fields from leaking onto a non-Gemini backend.
-        [
-            "contents",
-            "tools",
-            "systemInstruction",
-            "model",
-            GEMINI_JSON_ARRAY_SHIM_KEY,
-        ]
-        .into_iter()
-        .collect()
-    })
-}
-
 #[derive(Clone)]
 pub struct GeminiReader;
 

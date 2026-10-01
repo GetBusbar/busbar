@@ -1360,33 +1360,6 @@ fn bedrock_signature_origin(model: Option<&str>) -> Option<crate::codec::ir::IrS
     names_provider.then_some(crate::codec::ir::IrSignatureOrigin::BedrockOther)
 }
 
-/// Converse request member for the processing tier (IR-04).
-const FIELD_SERVICE_TIER: &str = "serviceTier";
-
-/// Converse `serviceTier: {type}` → the IR tier: `priority` → Priority, `default` → Default,
-/// `flex` → Flex. `reserved` (provisioned capacity) has no IR tier: `None`.
-fn read_bedrock_service_tier(
-    obj: &serde_json::Map<String, serde_json::Value>,
-) -> Option<crate::codec::ir::IrServiceTier> {
-    match obj.get(FIELD_SERVICE_TIER)?.get("type")?.as_str()? {
-        "priority" => Some(crate::codec::ir::IrServiceTier::Priority),
-        "default" => Some(crate::codec::ir::IrServiceTier::Default),
-        "flex" => Some(crate::codec::ir::IrServiceTier::Flex),
-        _ => None,
-    }
-}
-
-/// The IR tier → the Converse `serviceTier.type` word, or `None` for a tier Converse has no word
-/// for (Auto, Scale): dropped with a warn and reported by `dropped_egress_controls`.
-fn write_bedrock_service_tier(tier: crate::codec::ir::IrServiceTier) -> Option<&'static str> {
-    match tier {
-        crate::codec::ir::IrServiceTier::Priority => Some("priority"),
-        crate::codec::ir::IrServiceTier::Default => Some("default"),
-        crate::codec::ir::IrServiceTier::Flex => Some("flex"),
-        crate::codec::ir::IrServiceTier::Auto | crate::codec::ir::IrServiceTier::Scale => None,
-    }
-}
-
 /// Converse `requestMetadata` (string → string, filters the caller's invocation logs) → the typed
 /// [`crate::codec::ir::IrRequest::metadata`] (IR-03). A non-string value is not a member Converse defines
 /// and is skipped. The raw object still rides `extra`, so a same-protocol hop re-emits it verbatim.

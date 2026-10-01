@@ -619,7 +619,7 @@ impl ProtocolReader for CohereReader {
         // path — same fix the Gemini/Bedrock readers want). The set is immutable, so a OnceLock is
         // safe to share across threads.
         for (key, value) in obj.iter() {
-            if !cohere_modeled_keys().contains(key.as_str()) {
+            if !crate::codec::carry::models(super::map::REQUEST, key) {
                 extra.insert(key.clone(), value.clone());
             }
         }

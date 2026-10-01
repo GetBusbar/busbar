@@ -4,7 +4,19 @@
 [dialect]
 wire = "cohere"  # the wire lock: dialects/cohere.wire.json (notation A paths)
 label = "Cohere"
-request = ["sampling", "openai_chat.openai_penalties"]
+request = ["structure", "sampling", "openai_chat.openai_penalties"]
+drop_warn = "dropping a request control on Cohere egress: Cohere v2 /chat has no form for it"
+
+# Members the dialect's own code models (`prim`).
+[rows.structure]
+"model" = { prim = "model" }
+"messages" = { prim = "messages" }
+"tools" = { prim = "tools" }
+"tool_choice" = { prim = "tool_choice" }
+"max_tokens" = { prim = "max_output" }
+"stream" = { prim = "stream" }
+"response_format" = { prim = "response_format" }
+"logprobs" = { prim = "logprobs" }
 
 # Cohere v2 names top_p `p` and top_k `k`. Temperature is clamped to Cohere's [0.0, 1.0] (it 400s
 # above). 1.5.4 silent-degrade: a stop list past Cohere's cap of 5 is truncated, not refused.
@@ -13,3 +25,10 @@ request = ["sampling", "openai_chat.openai_penalties"]
 "p" = { ir = "top_p" }
 "k" = { ir = "top_k" }
 "stop_sequences" = { ir = "stop", cap = 5 }
+
+# Controls beyond the rows. /v2/chat has no candidate count: 1.5.5 omitted `n` with no warn and no
+# audit (1.5.5: crates/busbar/src/proto/cohere/reader.rs:489). Every hosted tool kind, custom included, is reported by the
+# writer's own hosted-tool code.
+[controls]
+"n" = { silent = true }
+"custom_tool" = { code = "cohere_hosted_tools" }

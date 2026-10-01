@@ -841,40 +841,6 @@ fn responses_error_code(err: &busbar_contract::protocol::IrError) -> String {
     .to_string()
 }
 
-/// The set of top-level Responses API request keys that `ResponsesReader::read_request` MODELS
-/// into `IrRequest` fields. Keys in this set are EXCLUDED from `extra` (the pass-through map) so
-/// they are not double-emitted by the writer's extra-forwarding loop. Built once per process via
-/// `OnceLock` instead of being reconstructed on every `read_request` call — the rebuild was a
-/// pointless per-request allocation on the Responses ingress hot path.
-///
-/// The flat request fields (`map.gen.rs`: `metadata`, `service_tier`, `store`, `safety_identifier`,
-/// `prompt_cache_key`) join the set from their table; a raw member the typed slot cannot reproduce
-/// is parked in `extra` by the walker, so a same-protocol write still re-emits the caller's exact
-/// member.
-fn responses_modeled_keys() -> &'static std::collections::HashSet<&'static str> {
-    static MODELED_KEYS: OnceLock<std::collections::HashSet<&'static str>> = OnceLock::new();
-    MODELED_KEYS.get_or_init(|| {
-        [
-            "model",
-            "instructions",
-            "input",
-            "tools",
-            "max_output_tokens",
-            "temperature",
-            "top_p",
-            "top_logprobs",
-            "stream",
-            "tool_choice",
-            "parallel_tool_calls",
-            // RSP-05: read into `IrRequest.user`, written back from it.
-            "user",
-        ]
-        .into_iter()
-        .chain(crate::codec::carry::keys(map::REQUEST))
-        .collect()
-    })
-}
-
 #[derive(Clone)]
 pub struct ResponsesReader;
 

@@ -618,57 +618,6 @@ fn synth_completion_id() -> String {
     format!("{COMPLETION_ID_PREFIX}{token}")
 }
 
-/// The set of top-level OpenAI Chat-Completions request keys the reader models into typed
-/// `IrRequest` fields (any OTHER key is swept verbatim into `extra` for round-trip fidelity). This
-/// set is a compile-time constant, so it is built ONCE into a process-global `OnceLock` and shared
-/// by every `read_request` call instead of being re-allocated and re-hashed per request on the
-/// ingress hot path. Every member is a `&'static str`, so the cached set borrows nothing
-/// request-scoped.
-fn modeled_request_keys() -> &'static std::collections::HashSet<&'static str> {
-    static MODELED_KEYS: std::sync::OnceLock<std::collections::HashSet<&'static str>> =
-        std::sync::OnceLock::new();
-    MODELED_KEYS.get_or_init(|| {
-        [
-            "model",
-            "messages",
-            "tools",
-            "max_tokens",
-            // `max_completion_tokens` is now modeled via the IR `max_tokens` field, so it must be
-            // excluded from `extra` like `max_tokens` is. Leaving it in `extra` would make the
-            // writer emit BOTH the promoted cap AND a verbatim `max_completion_tokens`, and on a
-            // same-protocol passthrough also re-emit `max_tokens` alongside it — a conflicting
-            // duplicate that reasoning models (which reject `max_tokens`) would 400 on.
-            "max_completion_tokens",
-            "temperature",
-            "top_p",
-            "stop",
-            "stream",
-            "tool_choice",
-            // These are promoted to first-class IR fields, so they must be excluded
-            // from `extra` — otherwise the writer would emit BOTH the promoted field AND a verbatim
-            // copy from `extra`, and the cross-protocol seam would clear the `extra` copy.
-            "frequency_penalty",
-            "presence_penalty",
-            "seed",
-            "n",
-            "response_format",
-            // Carried cross-protocol to their Anthropic analogs (`metadata.user_id` /
-            // `tool_choice.disable_parallel_tool_use`), so they must not ALSO ride `extra`.
-            "user",
-            "parallel_tool_calls",
-            // Carried cross-protocol to Gemini's `generationConfig.responseLogprobs`/`logprobs`.
-            "logprobs",
-            "top_logprobs",
-            // Carried cross-protocol to Anthropic/Gemini thinking budgets (gated per lane).
-            "reasoning_effort",
-        ]
-        .into_iter()
-        // The flat request fields (`map.gen.rs`).
-        .chain(crate::codec::carry::keys(map::REQUEST))
-        .collect()
-    })
-}
-
 /// The `error.code` token OpenAI-compatible upstreams use for a rate limit. The specific token
 /// rides on `code`; `type` carries the coarser `rate_limit_error` bucket.
 const STREAM_ERR_CODE_RATE_LIMIT: &str = "rate_limit_exceeded";

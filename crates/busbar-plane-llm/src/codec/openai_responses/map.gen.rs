@@ -5,12 +5,38 @@
 // DO NOT EDIT: edit the mapping file and re-run the compile; the `dialect-map` gate refuses
 // a table file that differs from a fresh compile.
 
-use crate::codec::carry::{Codec, Field, Slot, Table, row};
+use crate::codec::carry::{Codec, Field, Handled, Slot, Table, row};
 
 /// Row group `responses`.
 pub(crate) const ROWS_RESPONSES: &[Field] = &[
     row(&["text", "verbosity"], Slot::Verbosity, Codec::Plain).park(),
 ];
 
+/// Row group `responses_structure`.
+pub(crate) const ROWS_RESPONSES_STRUCTURE: &[Field] = &[
+    row(&["model"], Slot::Structure, Codec::Prim("model")),
+    row(&["instructions"], Slot::Structure, Codec::Prim("system")),
+    row(&["input"], Slot::Structure, Codec::Prim("messages")),
+    row(&["tools"], Slot::Structure, Codec::Prim("tools")),
+    row(&["max_output_tokens"], Slot::Structure, Codec::Prim("max_output")),
+    row(&["top_logprobs"], Slot::Structure, Codec::Prim("logprobs")),
+    row(&["stream"], Slot::Structure, Codec::Prim("stream")),
+    row(&["tool_choice"], Slot::Structure, Codec::Prim("tool_choice")),
+    row(&["parallel_tool_calls"], Slot::Structure, Codec::Prim("parallel_tool_calls")),
+    row(&["user"], Slot::Structure, Codec::Prim("user")),
+];
+
 /// The request table, walked in order.
-pub(crate) const REQUEST: Table = &[crate::codec::openai_chat::map::ROWS_OPENAI_SAMPLING, crate::codec::openai_chat::map::ROWS_OPENAI_FAMILY, ROWS_RESPONSES];
+pub(crate) const REQUEST: Table = &[ROWS_RESPONSES_STRUCTURE, crate::codec::openai_chat::map::ROWS_OPENAI_SAMPLING, crate::codec::openai_chat::map::ROWS_OPENAI_FAMILY, ROWS_RESPONSES];
+
+/// How each control slot beyond the rows is handled.
+pub(crate) const CONTROLS: &[(Slot, Handled)] = &[
+    (Slot::TopK, Handled::Warn("responses writer: the /v1/responses API models no `top_k` parameter; dropping top_k (lossy-by-target)", false)),
+    (Slot::Stop, Handled::Warn("responses writer: the /v1/responses API models no `stop` parameter; dropping {count} stop sequence(s) (lossy-by-target)", true)),
+    (Slot::FrequencyPenalty, Handled::Warn("responses writer: the /v1/responses API models no `frequency_penalty`; dropping it (lossy-by-target)", true)),
+    (Slot::PresencePenalty, Handled::Warn("responses writer: the /v1/responses API models no `presence_penalty`; dropping it (lossy-by-target)", true)),
+    (Slot::Seed, Handled::Warn("responses writer: the /v1/responses API models no `seed`; dropping it (lossy-by-target)", true)),
+    (Slot::N, Handled::Warn("responses writer: the /v1/responses API models no `n` candidate-count; dropping it (lossy-by-target)", true)),
+    (Slot::OutputModalities, Handled::Code("responses_modalities")),
+    (Slot::CustomTool, Handled::Code("responses_custom_tools")),
+];

@@ -646,13 +646,8 @@ impl ProtocolReader for GeminiReader {
         // foreign OpenAI/Anthropic/Cohere/Bedrock backend. Both the unconditional forward-layer strip
         // and this exclusion now guard that leak (defense in depth).
         //
-        // The set is a compile-time constant, so it is built ONCE into a process-global `OnceLock`
-        // rather than re-allocated and re-hashed on every ingress `read_request` (it was previously
-        // rebuilt per request — heap churn + hashing on the hot path under load). All members are
-        // `&'static str` (`GEMINI_JSON_ARRAY_SHIM_KEY` is a `&'static str` const), so the cached set
-        // borrows nothing request-scoped and is cache-hot after first call. Mirrors the lazy-static
-        // pattern used elsewhere for per-request constant lookups.
-        let modeled_keys = modeled_request_keys();
+        // The modelled keys are the mapping file's top-level rows; `generationConfig` is not one
+        // (it rides `extra` raw, overlaid by the writer).
 
         // model is modeled but we preserve it in extra for round-trip identity. Done once here;
         // the loop skips it because `model` is in `modeled_keys`.
@@ -661,7 +656,7 @@ impl ProtocolReader for GeminiReader {
         }
 
         for (key, value) in obj.iter() {
-            if !modeled_keys.contains(key.as_str()) {
+            if !crate::codec::carry::models(super::map::REQUEST, key) {
                 extra.insert(key.clone(), value.clone());
             }
         }

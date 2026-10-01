@@ -187,3 +187,33 @@ fn stop_reads_a_string_or_an_array_and_unparked_rows_never_park() {
     assert_eq!(ir.seed, None);
     assert!(ir.extra.is_empty(), "rows without park leave extra alone");
 }
+
+#[test]
+fn drops_are_derived_from_missing_rows_in_the_control_order() {
+    const ROWS: &[Field] = &[
+        row(&["tier"], Slot::ServiceTier, Codec::Words(TIERS)),
+        row(&["seed"], Slot::Seed, Codec::Plain),
+        row(&["model"], Slot::Structure, Codec::Prim("model")),
+    ];
+    const CONTROLS: &[(Slot, Handled)] = &[
+        (Slot::TopK, Handled::Silent),
+        (Slot::Metadata, Handled::Code("labels")),
+    ];
+    let ir = IrRequest {
+        top_k: Some(3),
+        seed: Some(1),
+        metadata: Some(vec![]),
+        store: Some(true),
+        service_tier: Some(IrServiceTier::Flex),
+        stop: vec!["x".into()],
+        ..Default::default()
+    };
+    let names: Vec<&str> = dropped(&[ROWS], CONTROLS, &ir).map(Slot::name).collect();
+    assert_eq!(names, ["stop", "service_tier", "store"]);
+    let ir = IrRequest {
+        service_tier: Some(IrServiceTier::Priority),
+        ..Default::default()
+    };
+    assert_eq!(dropped(&[ROWS], CONTROLS, &ir).count(), 0, "a word the table has");
+    assert!(models(&[ROWS], "model") && !models(&[ROWS], "other"));
+}

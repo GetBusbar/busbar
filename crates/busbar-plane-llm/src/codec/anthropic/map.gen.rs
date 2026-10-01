@@ -5,7 +5,7 @@
 // DO NOT EDIT: edit the mapping file and re-run the compile; the `dialect-map` gate refuses
 // a table file that differs from a fresh compile.
 
-use crate::codec::carry::{Codec, Cond, Field, Slot, Table, row};
+use crate::codec::carry::{Codec, Cond, Dir, Field, Handled, Slot, Table, Word, row};
 
 /// Row group `sampling`.
 pub(crate) const ROWS_SAMPLING: &[Field] = &[
@@ -15,5 +15,41 @@ pub(crate) const ROWS_SAMPLING: &[Field] = &[
     row(&["stop_sequences"], Slot::Stop, Codec::Plain),
 ];
 
+/// Row group `structure`.
+pub(crate) const ROWS_STRUCTURE: &[Field] = &[
+    row(&["max_tokens"], Slot::Structure, Codec::Prim("max_output")),
+    row(&["messages"], Slot::Structure, Codec::Prim("messages")),
+    row(&["model"], Slot::Structure, Codec::Prim("model")),
+    row(&["stream"], Slot::Structure, Codec::Prim("stream")),
+    row(&["system"], Slot::Structure, Codec::Prim("system")),
+    row(&["tool_choice"], Slot::Structure, Codec::Prim("tool_choice")),
+    row(&["tools"], Slot::Structure, Codec::Prim("tools")),
+];
+
+/// Row group `tier`.
+pub(crate) const ROWS_TIER: &[Field] = &[
+    row(&["service_tier"], Slot::ServiceTier, Codec::Words(WORDS_SERVICE_TIER)).park(),
+];
+
 /// The request table, walked in order.
-pub(crate) const REQUEST: Table = &[ROWS_SAMPLING];
+pub(crate) const REQUEST: Table = &[ROWS_STRUCTURE, ROWS_SAMPLING, ROWS_TIER];
+
+/// How each control slot beyond the rows is handled.
+pub(crate) const CONTROLS: &[(Slot, Handled)] = &[
+    (Slot::FrequencyPenalty, Handled::Warn("dropping frequency_penalty on Anthropic egress: the Messages API models no such sampling control (lossy-by-target)", true)),
+    (Slot::PresencePenalty, Handled::Warn("dropping presence_penalty on Anthropic egress: the Messages API models no such sampling control (lossy-by-target)", true)),
+    (Slot::Seed, Handled::Warn("dropping seed on Anthropic egress: the Messages API models no deterministic-sampling seed (lossy-by-target)", true)),
+    (Slot::N, Handled::Warn("dropping n on Anthropic egress: the Messages API returns a single completion and models no candidate-count parameter (lossy-by-target)", true)),
+    (Slot::ServiceTier, Handled::Warn("dropping service_tier on Anthropic egress: Anthropic offers only auto /                      standard_only capacity (lossy-by-target)", true)),
+];
+
+/// The warn for every other derived drop.
+pub(crate) const DROP_WARN: crate::codec::dialect::DropWarn =
+    crate::codec::dialect::DropWarn::Parameter("dropping {slot} on Anthropic egress: the Messages API has no such request                      member (lossy-by-target)");
+
+/// Word table `service_tier`: (wire word, IR word, direction).
+pub(crate) const WORDS_SERVICE_TIER: &[Word] = &[
+    ("auto", "auto", Dir::Both),
+    ("standard_only", "default", Dir::Both),
+    ("auto", "priority", Dir::Write),
+];

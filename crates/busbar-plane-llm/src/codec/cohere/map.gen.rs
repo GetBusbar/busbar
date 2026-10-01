@@ -5,7 +5,7 @@
 // DO NOT EDIT: edit the mapping file and re-run the compile; the `dialect-map` gate refuses
 // a table file that differs from a fresh compile.
 
-use crate::codec::carry::{Codec, Field, Slot, Table, row};
+use crate::codec::carry::{Codec, Field, Handled, Slot, Table, row};
 
 /// Row group `sampling`.
 pub(crate) const ROWS_SAMPLING: &[Field] = &[
@@ -15,5 +15,27 @@ pub(crate) const ROWS_SAMPLING: &[Field] = &[
     row(&["stop_sequences"], Slot::Stop, Codec::Plain).cap(5, "Cohere"),
 ];
 
+/// Row group `structure`.
+pub(crate) const ROWS_STRUCTURE: &[Field] = &[
+    row(&["model"], Slot::Structure, Codec::Prim("model")),
+    row(&["messages"], Slot::Structure, Codec::Prim("messages")),
+    row(&["tools"], Slot::Structure, Codec::Prim("tools")),
+    row(&["tool_choice"], Slot::Structure, Codec::Prim("tool_choice")),
+    row(&["max_tokens"], Slot::Structure, Codec::Prim("max_output")),
+    row(&["stream"], Slot::Structure, Codec::Prim("stream")),
+    row(&["response_format"], Slot::Structure, Codec::Prim("response_format")),
+    row(&["logprobs"], Slot::Structure, Codec::Prim("logprobs")),
+];
+
 /// The request table, walked in order.
-pub(crate) const REQUEST: Table = &[ROWS_SAMPLING, crate::codec::openai_chat::map::ROWS_OPENAI_PENALTIES];
+pub(crate) const REQUEST: Table = &[ROWS_STRUCTURE, ROWS_SAMPLING, crate::codec::openai_chat::map::ROWS_OPENAI_PENALTIES];
+
+/// How each control slot beyond the rows is handled.
+pub(crate) const CONTROLS: &[(Slot, Handled)] = &[
+    (Slot::N, Handled::Silent),
+    (Slot::CustomTool, Handled::Code("cohere_hosted_tools")),
+];
+
+/// The warn for every other derived drop.
+pub(crate) const DROP_WARN: crate::codec::dialect::DropWarn =
+    crate::codec::dialect::DropWarn::Control("dropping a request control on Cohere egress: Cohere v2 /chat has no form for it");

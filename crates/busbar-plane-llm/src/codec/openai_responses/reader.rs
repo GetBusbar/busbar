@@ -609,7 +609,6 @@ impl ProtocolReader for ResponsesReader {
         // NOTE: `text` is NOT in the modeled-keys set — it is intercepted by its own branch in the
         // loop below (its `format` sub-key → IR `response_format`, the remainder preserved
         // in `extra`). `metadata` is also deliberately excluded from the set; see `responses_modeled_keys`.
-        let modeled_keys = responses_modeled_keys();
 
         for (key, value) in obj.iter() {
             // `text` is partially modeled: its `format` sub-key is promoted to the IR
@@ -634,7 +633,7 @@ impl ProtocolReader for ResponsesReader {
                 }
                 continue;
             }
-            if modeled_keys.contains(key.as_str()) {
+            if crate::codec::carry::models(super::map::REQUEST, key) {
                 continue;
             }
             extra.insert(key.clone(), value.clone());

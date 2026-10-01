@@ -4789,13 +4789,7 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
 }
 
 #[test]
-fn test_modeled_request_keys_is_stable_singleton() {
-    let a = modeled_request_keys();
-    let b = modeled_request_keys();
-    assert!(
-        std::ptr::eq(a, b),
-        "modeled_request_keys must return the same cached set, not rebuild per call"
-    );
+fn test_modeled_request_keys_are_the_mapping_rows() {
     for k in [
         "model",
         "messages",
@@ -4818,8 +4812,12 @@ fn test_modeled_request_keys_is_stable_singleton() {
         "top_logprobs",
         "reasoning_effort",
     ] {
-        assert!(a.contains(k), "modeled key set must contain {k}");
+        assert!(
+            crate::codec::carry::models(super::map::REQUEST, k),
+            "modeled key set must contain {k}"
+        );
     }
+    assert!(!crate::codec::carry::models(super::map::REQUEST, "unknown_passthrough_key"));
 }
 
 /// Non-stream `read_response` cache-token NORMALIZATION (ir.rs:457): OpenAI's `prompt_tokens` is a

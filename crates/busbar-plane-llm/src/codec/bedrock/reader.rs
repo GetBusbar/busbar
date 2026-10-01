@@ -192,15 +192,9 @@ impl ProtocolReader for BedrockReader {
         // verbatim) and let `write_request` overlay the typed `tools` array onto that raw object. The
         // `tools` array is still parsed into the structured IR below for cross-protocol egress; the raw
         // capture is what makes a Bedrock->Bedrock passthrough re-emit `toolChoice` faithfully.
-        const MODELED_KEYS: &[&str] = &["messages", "model", "stream", "system"];
-        debug_assert!(
-            MODELED_KEYS.windows(2).all(|w| w[0] < w[1]),
-            "MODELED_KEYS must stay sorted for binary_search"
-        );
-
         let mut extra = serde_json::Map::new();
         for (key, value) in obj.iter() {
-            if MODELED_KEYS.binary_search(&key.as_str()).is_err() {
+            if !crate::codec::carry::models(super::map::REQUEST, key) {
                 extra.insert(key.clone(), value.clone());
             }
         }
@@ -776,9 +770,9 @@ impl ProtocolReader for BedrockReader {
             // `extra` for the same-protocol re-emission).
             metadata: read_bedrock_request_metadata(obj),
             extra,
-            // BED-14 / IR-04: Converse `serviceTier: {type}` (priority / default /
-            // flex); `reserved` has no IR tier and rides `extra` only.
-            service_tier: super::read_bedrock_service_tier(obj),
+            // BED-14 / IR-04: Converse `serviceTier.type`, a row of the mapping file read below;
+            // `reserved` has no IR tier and rides `extra` only.
+            service_tier: None,
             store: None,
             safety_identifier: None,
             prompt_cache_key: None,

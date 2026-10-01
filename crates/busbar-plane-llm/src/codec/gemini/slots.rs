@@ -227,19 +227,6 @@ pub(super) fn write_gemini_response_modalities(modalities: &[IrModality]) -> ser
     )
 }
 
-/// The Q57 request slots Gemini has no form for (IR-04 `service_tier`, IR-05 `store`, IR-06
-/// `safety_identifier`/`prompt_cache_key`, IR-07 `verbosity`): the writer drops each one a request
-/// carries with a warn, and the seam audits the drop through `dropped_egress_controls`.
-pub(super) const GEMINI_UNSUPPORTED: &[crate::codec::dialect::Control] = &[
-    crate::codec::dialect::SERVICE_TIER,
-    crate::codec::dialect::STORE,
-    crate::codec::dialect::SAFETY_IDENTIFIER,
-    crate::codec::dialect::PROMPT_CACHE_KEY,
-    crate::codec::dialect::VERBOSITY,
-    // OAI-09: an OpenAI custom tool has no Gemini form.
-    crate::codec::dialect::CUSTOM_TOOL,
-];
-
 /// Whether a Gemini model accepts `thinkingBudget: 0` — reasoning switched off (IR-09). Only the
 /// gemini-2.5-flash family (flash and flash-lite, any version or preview suffix) can stop thinking;
 /// gemini-2.5-pro rejects a budget under 128, and the Gemini 3 models cannot switch thinking off. A

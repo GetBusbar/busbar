@@ -3391,17 +3391,11 @@ fn test_write_response_model_only_total_token_count_saturates() {
 
 // --- modeled_keys is hoisted to a process-global OnceLock. ---
 
-/// The modeled-key set is a stable process-global — repeated calls return the
-/// SAME backing allocation (proving it is built once, not per request) and the set's membership
-/// is exactly the modeled top-level keys, so unmodeled keys still flow to `extra`.
+/// The modelled keys are the mapping file's top-level rows, so unmodelled keys still flow to
+/// `extra`.
 #[test]
-fn test_modeled_request_keys_is_stable_singleton() {
-    let a = modeled_request_keys();
-    let b = modeled_request_keys();
-    assert!(
-        std::ptr::eq(a, b),
-        "modeled_request_keys must return the same cached set, not rebuild per call"
-    );
+fn test_modeled_request_keys_are_the_mapping_rows() {
+    let a = |k: &str| crate::codec::carry::models(super::map::REQUEST, k);
     for k in [
         "contents",
         "tools",
@@ -3409,14 +3403,14 @@ fn test_modeled_request_keys_is_stable_singleton() {
         "model",
         super::GEMINI_JSON_ARRAY_SHIM_KEY,
     ] {
-        assert!(a.contains(k), "modeled key set must contain {k}");
+        assert!(a(k), "modeled key set must contain {k}");
     }
     // An arbitrary caller field is NOT modeled, so the reader sweeps it into `extra`.
-    assert!(!a.contains("toolConfig"), "toolConfig must not be modeled");
+    assert!(!a("toolConfig"), "toolConfig must not be modeled");
     // `generationConfig` is INTENTIONALLY not modeled-out of `extra`: the reader keeps the raw
     // object so the writer can overlay the 5 typed fields and preserve unmodeled sub-fields.
     assert!(
-        !a.contains("generationConfig"),
+        !a("generationConfig"),
         "generationConfig must NOT be modeled-out of extra (raw object is preserved for overlay)"
     );
 }

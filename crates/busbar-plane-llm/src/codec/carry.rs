@@ -60,6 +60,45 @@ pub enum Slot {
     N,
     /// `IrRequest::stop`: read from a string or an array of strings, written as an array.
     Stop,
+    /// An OpenAI custom (free-form grammar) tool in `IrRequest::hosted_tools` (carried by code).
+    CustomTool,
+    /// A member the dialect's own structural code models (`prim` rows): no slot of its own.
+    Structure,
+}
+
+/// THE CONTROL ORDER: every request control a dialect may have no form for, in the order a
+/// dialect's dropped controls are warned and audited. Each dialect's dropped set is DERIVED from
+/// its mapping: a control is dropped when the request carries it and the dialect has no row for it
+/// (or its row's word table has no word for the value), unless the dialect's `[controls]` names it
+/// silent (a 1.5.5 waiver) or carried by its own code.
+pub const CONTROL_ORDER: &[Slot] = &[
+    Slot::TopK,
+    Slot::Stop,
+    Slot::FrequencyPenalty,
+    Slot::PresencePenalty,
+    Slot::Seed,
+    Slot::N,
+    Slot::Metadata,
+    Slot::ServiceTier,
+    Slot::Store,
+    Slot::SafetyIdentifier,
+    Slot::PromptCacheKey,
+    Slot::Verbosity,
+    Slot::OutputModalities,
+    Slot::CustomTool,
+];
+
+/// How a dialect handles a control slot beyond its rows (`[controls]` in the mapping file).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Handled {
+    /// Dropped with neither a warn nor an audit entry: the 1.5.5 behaviour, kept as a named waiver
+    /// (`silent = true`, its reason cited in the mapping file).
+    Silent,
+    /// Carried, warned or reported by the named dialect code (`code = "<name>"`).
+    Code(&'static str),
+    /// When dropped, warned with this text instead of the dialect's `drop_warn`; `true` names the
+    /// dropped value in the warn's fields (`warn = "<text>"`, `value = true|false`).
+    Warn(&'static str, bool),
 }
 
 /// Which way a [`Word`] row maps.
@@ -88,6 +127,9 @@ pub enum Codec {
     Words(&'static [Word]),
     /// Named irregular code from the [`Hook`] registry.
     Hook(Hook),
+    /// A member the dialect's named structural code reads and writes (`prim = "<name>"`); the walker
+    /// only counts it among the modelled keys.
+    Prim(&'static str),
 }
 
 /// THE HOOK REGISTRY: every named piece of irregular carry a mapping row may cite (`hook = "<name>"`
@@ -245,6 +287,52 @@ impl Slot {
             Slot::Seed => r.seed.map(Value::from),
             Slot::N => r.n.map(Value::from),
             Slot::Stop => (!r.stop.is_empty()).then(|| Value::from(r.stop.clone())),
+            Slot::CustomTool | Slot::Structure => None,
+        }
+    }
+
+    /// The slot's name: the IR field's, as warns and the seam's audit name a dropped control.
+    pub fn name(self) -> &'static str {
+        match self {
+            Slot::Metadata => "metadata",
+            Slot::ServiceTier => "service_tier",
+            Slot::Store => "store",
+            Slot::SafetyIdentifier => "safety_identifier",
+            Slot::PromptCacheKey => "prompt_cache_key",
+            Slot::Verbosity => "verbosity",
+            Slot::OutputModalities => "output_modalities",
+            Slot::WebSearch => "web_search",
+            Slot::Temperature => "temperature",
+            Slot::TopP => "top_p",
+            Slot::TopK => "top_k",
+            Slot::FrequencyPenalty => "frequency_penalty",
+            Slot::PresencePenalty => "presence_penalty",
+            Slot::Seed => "seed",
+            Slot::N => "n",
+            Slot::Stop => "stop",
+            Slot::CustomTool => "custom_tool",
+            Slot::Structure => "structure",
+        }
+    }
+
+    /// Whether the request carries the control: set, or (stop) non-empty, or (output modalities)
+    /// naming anything but text, or (custom tool) holding one.
+    pub fn carried(self, r: &IrRequest) -> bool {
+        match self {
+            Slot::OutputModalities => r
+                .output_modalities
+                .as_ref()
+                .is_some_and(|m| m.iter().any(|m| *m != crate::codec::ir::IrModality::Text)),
+            Slot::CustomTool => r
+                .hosted_tools
+                .iter()
+                .any(|t| matches!(t, crate::codec::ir::IrHostedTool::Custom(_))),
+            Slot::WebSearch => r
+                .hosted_tools
+                .iter()
+                .any(|t| matches!(t, crate::codec::ir::IrHostedTool::WebSearch(_))),
+            Slot::Structure => false,
+            other => other.get(r).is_some(),
         }
     }
 
@@ -281,6 +369,7 @@ impl Slot {
                     r.stop = crate::codec::ir::read_stop_sequences(Some(v));
                 }
             }
+            Slot::CustomTool | Slot::Structure => {}
         }
     }
 }
@@ -356,6 +445,7 @@ pub fn read(table: Table, obj: &Map<String, Value>, ir: &mut IrRequest) {
                 }
             }
             Codec::Hook(hook) => hook.read(raw, ir),
+            Codec::Prim(_) => {}
         }
     }
     let mut written = Map::new();
@@ -385,6 +475,7 @@ fn value_of(f: &Field, req: &IrRequest) -> Option<Value> {
             .and_then(|v| v.as_str().and_then(|n| word_out(words, n)))
             .map(Value::from),
         Codec::Hook(hook) => hook.write(req),
+        Codec::Prim(_) => None,
     }
 }
 
@@ -467,6 +558,101 @@ pub fn write(table: Table, req: &IrRequest, egress: Egress, out: &mut Map<String
         }
         put(out, f.path, v);
     }
+}
+
+/// THE DERIVED DROPS: the controls of [`CONTROL_ORDER`] that `req` carries and this dialect cannot
+/// write: no row names the slot (a hook row and a `prim` row carry it), or its word-table row has
+/// no word for the value — unless `controls` names the slot silent or carried by code. The names
+/// are the ones the dialect's `dropped_egress_controls` reports and its warns carry.
+pub fn dropped<'a>(
+    table: Table,
+    controls: &'a [(Slot, Handled)],
+    req: &'a IrRequest,
+) -> impl Iterator<Item = Slot> + 'a {
+    CONTROL_ORDER.iter().copied().filter(move |&slot| {
+        if !slot.carried(req) {
+            return false;
+        }
+        match handled(controls, slot) {
+            Some(Handled::Silent | Handled::Code(_)) => false,
+            _ => match rows(table).find(|f| f.slot == slot) {
+                None => true,
+                Some(f @ Field {
+                    codec: Codec::Words(_),
+                    ..
+                }) => value_of(f, req).is_none(),
+                Some(_) => false,
+            },
+        }
+    })
+}
+
+fn handled(controls: &[(Slot, Handled)], slot: Slot) -> Option<Handled> {
+    controls.iter().find(|(s, _)| *s == slot).map(|(_, h)| *h)
+}
+
+/// THE ONE DROP WARN: one warn per [`dropped`] control, in the dialect's own words — its
+/// `[controls]` text for the slot when it names one, else its `drop_warn`.
+pub fn warn_drops(
+    table: Table,
+    controls: &[(Slot, Handled)],
+    drop_warn: Option<&crate::codec::dialect::DropWarn>,
+    req: &IrRequest,
+) {
+    for slot in dropped(table, controls, req) {
+        match (handled(controls, slot), drop_warn) {
+            (Some(Handled::Warn(text, value)), _) => warn_slot(slot, text, value, req),
+            (_, Some(drop_warn)) => crate::codec::dialect::warn_dropped([slot.name()], drop_warn),
+            (_, None) => tracing::warn!(control = slot.name(), "dropping a request control on egress: the dialect has no form for it"),
+        }
+    }
+}
+
+/// A dropped control's own warn. With `value`, the warn names the dropped value under the slot's
+/// field (and `parameter`, for a sampling control), as each writer always spelled it.
+fn warn_slot(slot: Slot, text: &str, value: bool, req: &IrRequest) {
+    match (slot, value) {
+        (Slot::FrequencyPenalty, true) => {
+            if let Some(frequency_penalty) = req.frequency_penalty {
+                tracing::warn!(parameter = "frequency_penalty", frequency_penalty, "{}", text);
+            }
+        }
+        (Slot::PresencePenalty, true) => {
+            if let Some(presence_penalty) = req.presence_penalty {
+                tracing::warn!(parameter = "presence_penalty", presence_penalty, "{}", text);
+            }
+        }
+        (Slot::Seed, true) => {
+            if let Some(seed) = req.seed {
+                tracing::warn!(parameter = "seed", seed, "{}", text);
+            }
+        }
+        (Slot::N, true) => {
+            if let Some(n) = req.n {
+                tracing::warn!(parameter = "n", n, "{}", text);
+            }
+        }
+        (Slot::ServiceTier, true) => {
+            if let Some(tier) = req.service_tier {
+                tracing::warn!(service_tier = tier.as_str(), "{}", text);
+            }
+        }
+        (Slot::Stop, true) => {
+            let stop_count = req.stop.len();
+            tracing::warn!(
+                stop_count,
+                "{}",
+                text.replace("{count}", &stop_count.to_string())
+            );
+        }
+        _ => tracing::warn!("{}", text),
+    }
+}
+
+/// Whether `key` is a top-level member `table` models (the reader keeps every other member in
+/// `extra`).
+pub fn models(table: Table, key: &str) -> bool {
+    keys(table).any(|k| k == key)
 }
 
 /// The top-level members `table` models: every single-key path. (A nested row's container is the

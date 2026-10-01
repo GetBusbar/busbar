@@ -510,13 +510,9 @@ impl ProtocolReader for OpenAiReader {
         // sweep). Cross-protocol mapping of these to Gemini/Anthropic/Bedrock analogs is handled by the
         // translate seam (`proxy engine`).
         //
-        // The set is a compile-time constant, so it is built ONCE into a process-global `OnceLock`
-        // and shared by every `read_request` call instead of being re-allocated and re-hashed per
-        // request on the ingress hot path.
-        let modeled_keys = modeled_request_keys();
-
+        // The modelled keys are the mapping file's top-level rows.
         for (key, value) in obj.iter() {
-            if !modeled_keys.contains(key.as_str()) {
+            if !crate::codec::carry::models(super::map::REQUEST, key) {
                 extra.insert(key.clone(), value.clone());
             }
         }

@@ -5,7 +5,7 @@
 // DO NOT EDIT: edit the mapping file and re-run the compile; the `dialect-map` gate refuses
 // a table file that differs from a fresh compile.
 
-use crate::codec::carry::{Codec, Cond, Field, Slot, Table, row};
+use crate::codec::carry::{Codec, Cond, Dir, Field, Handled, Slot, Table, Word, row};
 
 /// Row group `inference_config`.
 pub(crate) const ROWS_INFERENCE_CONFIG: &[Field] = &[
@@ -14,5 +14,40 @@ pub(crate) const ROWS_INFERENCE_CONFIG: &[Field] = &[
     row(&["inferenceConfig", "stopSequences"], Slot::Stop, Codec::Plain),
 ];
 
+/// Row group `structure`.
+pub(crate) const ROWS_STRUCTURE: &[Field] = &[
+    row(&["messages"], Slot::Structure, Codec::Prim("messages")),
+    row(&["model"], Slot::Structure, Codec::Prim("model")),
+    row(&["stream"], Slot::Structure, Codec::Prim("stream")),
+    row(&["system"], Slot::Structure, Codec::Prim("system")),
+];
+
+/// Row group `tier`.
+pub(crate) const ROWS_TIER: &[Field] = &[
+    row(&["serviceTier", "type"], Slot::ServiceTier, Codec::Words(WORDS_SERVICE_TIER)),
+];
+
 /// The request table, walked in order.
-pub(crate) const REQUEST: Table = &[ROWS_INFERENCE_CONFIG];
+pub(crate) const REQUEST: Table = &[ROWS_STRUCTURE, ROWS_INFERENCE_CONFIG, ROWS_TIER];
+
+/// How each control slot beyond the rows is handled.
+pub(crate) const CONTROLS: &[(Slot, Handled)] = &[
+    (Slot::Metadata, Handled::Code("bedrock_request_metadata")),
+    (Slot::TopK, Handled::Code("bedrock_top_k")),
+    (Slot::CustomTool, Handled::Code("bedrock_hosted_tools")),
+    (Slot::FrequencyPenalty, Handled::Silent),
+    (Slot::PresencePenalty, Handled::Silent),
+    (Slot::Seed, Handled::Silent),
+    (Slot::N, Handled::Silent),
+];
+
+/// The warn for every other derived drop.
+pub(crate) const DROP_WARN: crate::codec::dialect::DropWarn =
+    crate::codec::dialect::DropWarn::Control("dropping a request control on Bedrock egress: Converse has no form for it");
+
+/// Word table `service_tier`: (wire word, IR word, direction).
+pub(crate) const WORDS_SERVICE_TIER: &[Word] = &[
+    ("priority", "priority", Dir::Both),
+    ("default", "default", Dir::Both),
+    ("flex", "flex", Dir::Both),
+];
