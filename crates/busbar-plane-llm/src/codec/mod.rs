@@ -304,6 +304,11 @@ mod leaf_write_dispatch_tests;
 #[path = "tests/cache_tier_capture_tests.rs"]
 mod cache_tier_capture_tests;
 
+/// TODO 585: the operator warning when an image's `detail` is dropped for a dialect with no slot.
+#[cfg(test)]
+#[path = "tests/image_detail_warn_tests.rs"]
+mod image_detail_warn_tests;
+
 /// THE CODEC/IR TEST SUITES: the detection, translate-parity, streaming, round-trip and IR goldens
 /// that name the dialects and the concrete wire codecs. See the module header for the `super::*`
 /// prelude reconstruction.

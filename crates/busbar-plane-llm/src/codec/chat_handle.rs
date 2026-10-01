@@ -24,6 +24,34 @@ use serde_json::Value;
 /// Google's documented dummy `thoughtSignature` sentinel — relocated with chat from `ir::variant`.
 pub const GEMINI_SKIP_THOUGHT_SIGNATURE: &str = "skip_thought_signature_validator";
 
+/// 1.5.5's operator warning, restored (TODO 585): an image's requested fidelity a dialect has no
+/// slot for is dropped with a warn, once per image, naming the word. `auto` (the default) loses
+/// nothing and logs nothing.
+pub fn warn_dropped_image_details(ir: &IrRequest) {
+    fn walk(blocks: &[crate::codec::ir::IrBlock]) {
+        for block in blocks {
+            match block {
+                crate::codec::ir::IrBlock::Image {
+                    detail: Some(d), ..
+                } if *d != crate::codec::ir::IrImageDetail::Auto => {
+                    let detail = d.as_str();
+                    ::tracing::warn!(
+                        detail,
+                        "dropping image_url.detail: no cross-protocol carrier exists for this \
+                         cost/latency hint (not even on a same-protocol OpenAI round-trip)"
+                    );
+                }
+                crate::codec::ir::IrBlock::ToolResult { content, .. } => walk(content),
+                _ => {}
+            }
+        }
+    }
+    walk(&ir.system);
+    for m in &ir.messages {
+        walk(&m.content);
+    }
+}
+
 /// Chat cross-protocol EGRESS preparation (verbatim from the former `IrReq::Chat` arm).
 pub fn chat_prepare_for_egress(ir: &mut IrRequest, prep: &EgressPrep) {
     if ir.max_tokens.is_none() && prep.egress_requires_max_tokens {
@@ -403,7 +431,13 @@ impl IrHandle for ChatReqHandle {
         // lane's declared capabilities (recorded at `prepare_for_egress`) for the dialects whose
         // spelling depends on what that model accepts.
         super::proto_codec::protocol_for(egress_proto)
-            .map(|p| EgressWire::Json(p.writer().write_request_for_lane(&self.0, model, &self.1)))
+            .map(|p| {
+                let writer = p.writer();
+                if !writer.carries_image_detail() {
+                    warn_dropped_image_details(&self.0);
+                }
+                EgressWire::Json(writer.write_request_for_lane(&self.0, model, &self.1))
+            })
             .unwrap_or_else(|| EgressWire::Bytes(SlabBytes::default()))
     }
 }
