@@ -32,3 +32,64 @@ fn the_process_has_one_connector_and_every_path_takes_it() {
     assert!(install(second).is_err(), "a second connector is refused");
     assert!(Arc::ptr_eq(the(), &built));
 }
+
+/// A resolved deployment with one provider at `base_url`, allowing `allow`.
+fn provider_at(base_url: &str, allow: &[&str]) -> busbar_kernel::config::RootCfg {
+    let deploy = busbar_kernel::config::deploy_from_yaml_str("providers: {}\nmodels: {}\n")
+        .expect("a minimal deployment");
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+    cfg.allow_destinations = allow.iter().map(|s| (*s).to_owned()).collect();
+    cfg.providers.insert(
+        "local".into(),
+        busbar_kernel::config::ProviderCfg {
+            protocol: "openai".into(),
+            base_url: base_url.into(),
+            api_key: busbar_kernel::config::SecretRef::env("LOCAL_KEY"),
+            health: None,
+            error_map: Default::default(),
+            path: None,
+            path_base: None,
+            token_url: None,
+            scope: None,
+            subject: None,
+            auth: None,
+            allow_metadata_hosts: Vec::new(),
+            max_output_key: None,
+            anthropic_adaptive_thinking: None,
+            native_structured_output: None,
+            model_capabilities: Vec::new(),
+        },
+    );
+    cfg
+}
+
+fn preflight_of(cfg: &busbar_kernel::config::RootCfg) -> Vec<String> {
+    let dest = process::dest_judge(&cfg.destinations()).expect("the guard");
+    preflight(cfg, dest.guard())
+}
+
+/// RED (the destination guard at boot and `--validate`): a provider on a private literal or a
+/// `localhost` name is refused by default, by the one guard's name arm, naming the provider and
+/// the key; a public host is not.
+#[test]
+fn a_provider_on_a_private_literal_is_refused_at_validate() {
+    assert_eq!(
+        preflight_of(&provider_at("http://127.0.0.1:11434/v1", &[])),
+        [
+            "provider 'local' base_url: host `127.0.0.1` resolves to the internal address \
+          127.0.0.1; list it in advanced.allow_destinations to allow it"
+        ]
+    );
+    assert_eq!(
+        preflight_of(&provider_at("http://localhost:11434", &[])).len(),
+        1
+    );
+    assert!(preflight_of(&provider_at("https://api.example.com", &[])).is_empty());
+}
+
+/// GREEN: the same provider validates once the allowlist names it.
+#[test]
+fn a_provider_on_a_private_literal_validates_when_allowlisted() {
+    assert!(preflight_of(&provider_at("http://127.0.0.1:11434/v1", &["127.0.0.1"])).is_empty());
+    assert!(preflight_of(&provider_at("http://localhost:11434", &["localhost"])).is_empty());
+}

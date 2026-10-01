@@ -816,9 +816,25 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // build_app_from_config — the one construction path).
     let mut cfg = config::resolve(&deploy, &defs)
         .unwrap_or_else(|errs| die(format!("config errors:\n  - {}", errs.join("\n  - "))));
+    // THE DESTINATION GUARD (OWNER ruling DESTINATION GUARD): ONE judge for every outbound
+    // connection, built once here, before anything dials: the kernel's `dest.judge` and its own
+    // clients ask it (installed below), and the connector dials by it.
+    let dest = root::connector::dest_judge(&cfg);
+    if busbar_kernel::host_services::install_dest_judge(dest.clone()).is_err() {
+        die("the destination guard was installed twice; the process has one".to_owned());
+    }
+    let refused = root::connector::preflight(&cfg, dest.guard());
+    if !refused.is_empty() {
+        die(format!("config errors:\n  - {}", refused.join("\n  - ")));
+    }
+    let (block_private, allowed, blocked_extra) = dest.guard().summary();
+    tracing::info!(
+        "destination guard: block_private_addresses={block_private}, {allowed} allowed, \
+         {blocked_extra} extra blocked"
+    );
     // THE SERVE PATH'S ONE COMPOSITION: the kernel's host services go into the dispatcher built at
     // boot, before any plugin is bound (`root::serve`).
-    root::serve::compose(&cfg, &late_services);
+    root::serve::compose(dest.clone(), &late_services);
     // THE EXPORT AXIS'S SINKS, opened once — before the first app is built, so the routes they
     // declare are in the boot route table (restart-to-apply, as every built-in PUSH sink is). A
     // configured sink that will not open refuses the boot.
@@ -874,11 +890,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The rows are the linked wires and the ones dropped into `plugins.dir`, folded in one pass.
     let _sealed = root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));
     // THE PROCESS'S ONE CONNECTOR, right after the transport registry sealed: every linked
-    // transport door as a framer entry, every dial judged by the kernel's one judge. Inbound
+    // transport door as a framer entry, every dial judged by the one destination guard. Inbound
     // listening and outbound egress both take it from `root::connector::the()`.
     let _connector = root::connector::boot(
         LINKED_TRANSPORT_DOORS,
-        root::connector::dest_judge(&cfg),
+        dest,
         &[cfg.listen.as_str(), cfg.admin_listen.as_str()],
     );
     // The planes that state themselves through a door bind on the process's one dispatcher (built

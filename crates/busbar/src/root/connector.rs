@@ -15,8 +15,12 @@
 
 use std::sync::{Arc, OnceLock};
 
+use busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
+use busbar_contract::abi::host::service::DEST_INTERNAL;
 use busbar_contract::abi::mechanism::door::DoorFn;
+use busbar_contract::net::url_host;
 use busbar_core_connector::framer::FramerDoor;
+use busbar_core_connector::guard::Guard;
 use busbar_core_connector::process::GuardJudge;
 use busbar_core_connector::registry::Entry;
 use busbar_core_connector::{process, Connector};
@@ -80,6 +84,36 @@ pub fn dest_judge(cfg: &RootCfg) -> Arc<GuardJudge> {
         eprintln!("busbar: config errors:\n  - {refusal}");
         std::process::exit(2);
     })
+}
+
+/// THE BOOT AND `--validate` CHECK OF THE STATICALLY CONFIGURED TARGETS (OWNER Q2, ARCHITECT
+/// RULING DEST-GUARD): every provider's `base_url` and `token_url` host asked of the ONE guard's
+/// name arm, with no resolution (`--validate` stays network-free). A literal private address or a
+/// `localhost` name refused by default is a configuration error here, at boot; a name that only
+/// resolves to one is refused when dialled. Metadata targets keep their 1.5.5 sentences from the
+/// configuration check, so only the guard's internal-address refusals are added here.
+#[must_use]
+pub fn preflight(cfg: &RootCfg, guard: &Guard) -> Vec<String> {
+    let mut providers: Vec<_> = cfg.providers.iter().collect();
+    providers.sort_by(|a, b| a.0.cmp(b.0));
+    let mut refused = Vec::new();
+    for (name, p) in providers {
+        let targets = [
+            ("base_url", Some(&p.base_url)),
+            ("token_url", p.token_url.as_ref()),
+        ];
+        for (key, url) in targets {
+            let Some(host) = url.and_then(|u| url_host(u)) else {
+                continue;
+            };
+            if let Err(r) = guard.judge_name(&host, EGRESS_PROVIDER) {
+                if r.verdict == DEST_INTERNAL {
+                    refused.push(format!("provider '{name}' {key}: {r}"));
+                }
+            }
+        }
+    }
+    refused
 }
 
 /// THE BOOT PATH'S STEP: build the one Connector over every linked transport door, its dials

@@ -331,7 +331,9 @@ impl Guard {
         {
             return refuse(DEST_METADATA);
         }
-        if self.blocked.iter().any(|e| e.names(&name)) && !(allowed || carved) {
+        if self.blocked.iter().any(|e| e.names(&name))
+            && !(self.allow_all_metadata || allowed || carved)
+        {
             return refuse(DEST_METADATA);
         }
         if is_alternate_ipv4_encoding(&name) {
@@ -375,9 +377,12 @@ impl Guard {
         let metadata = ip_is_cloud_metadata(&addr);
         let listed = |l: &[Entry]| l.iter().any(|e| e.covers(addr));
         let named = |l: &[Entry]| l.iter().any(|e| e.names(&name));
+        // `allow_all_metadata` is 1.5.5's nuclear override: every metadata address and every
+        // extra blocked one admitted.
         let admitted = listed(&self.allow)
             || listed(&self.legacy)
-            || (metadata && (self.allow_all_metadata || named(&self.legacy)))
+            || ((metadata || listed(&self.blocked)) && self.allow_all_metadata)
+            || (metadata && named(&self.legacy))
             || (!metadata && (named(&self.allow) || named(&self.legacy)));
         if admitted {
             return Ok(());

@@ -45,7 +45,7 @@
 //! only the host there), and its `allow_private` is the target's own setting.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -69,11 +69,6 @@ use crate::host_records::{
 use crate::plane::quarantine::DemotionRecord;
 use crate::trust::book::{Effect, Sight, TrustBook, Unjudged};
 use crate::trust::section::TrustEntry;
-
-use crate::net_guard::{
-    check_structure, pin_answer_under, split_url, AddressRefusal, Denylist, GuardPolicy,
-    NetworkRefusal, Structure,
-};
 
 /// THE DESTINATION JUDGE THE KERNEL ASKS (OWNER ruling DESTINATION GUARD): the connector's one
 /// guard, installed by the root. The judge lives in the connector; the kernel names only this
@@ -119,6 +114,9 @@ impl std::fmt::Display for DestRefusal {
 
 impl std::error::Error for DestRefusal {}
 
+/// What `dest.judge` answers on services built without a destination judge.
+pub const NO_DEST_JUDGE: &str = "no destination judge is installed";
+
 static PROCESS_JUDGE: std::sync::OnceLock<Arc<dyn DestJudge>> = std::sync::OnceLock::new();
 
 /// Install the process's destination judge, once (the root, at boot, before any dial).
@@ -135,58 +133,6 @@ pub fn install_dest_judge(judge: Arc<dyn DestJudge>) -> Result<(), Arc<dyn DestJ
 #[must_use]
 pub fn installed_dest_judge() -> Option<&'static Arc<dyn DestJudge>> {
     PROCESS_JUDGE.get()
-}
-
-/// The rules `dest.judge` applies for one egress class.
-#[derive(Debug, Clone)]
-pub struct DestRules {
-    /// The guard policy.
-    pub policy: GuardPolicy,
-    /// The metadata denylist, with the deployment's additions and carve-outs.
-    pub denylist: Arc<Denylist>,
-}
-
-/// Where one resolution's answer goes: called once, from any thread. `Err` is a resolution failure,
-/// not an empty answer.
-pub type Resolved = Box<dyn FnOnce(Result<Vec<IpAddr>, String>) + Send>;
-
-/// A resolver that answers off the caller's thread.
-pub trait Resolve: Send + Sync {
-    /// Resolve `host`, answering through `done` now or later, on any thread; never blocks the caller.
-    fn resolve(&self, host: &str, done: Resolved);
-}
-
-/// The system resolver, one short-lived thread per resolution, so a slow name never holds a
-/// dispatcher worker.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct SystemResolver;
-
-impl Resolve for SystemResolver {
-    fn resolve(&self, host: &str, done: Resolved) {
-        let cell = Arc::new(Mutex::new(Some(done)));
-        let mine = Arc::clone(&cell);
-        let host = host.to_string();
-        let spawned = std::thread::Builder::new()
-            .name("busbar-resolve".into())
-            .spawn(move || {
-                let answer = (host.as_str(), 0)
-                    .to_socket_addrs()
-                    .map(|a| a.map(|s| s.ip()).collect())
-                    .map_err(|e| e.to_string());
-                if let Some(done) = take(&mine) {
-                    done(answer);
-                }
-            });
-        if spawned.is_err() {
-            if let Some(done) = take(&cell) {
-                done(Err("no resolver thread".into()));
-            }
-        }
-    }
-}
-
-fn take(cell: &Mutex<Option<Resolved>>) -> Option<Resolved> {
-    cell.lock().unwrap_or_else(|e| e.into_inner()).take()
 }
 
 /// Runs store I/O off the calling thread, on a bounded pool.
@@ -406,8 +352,6 @@ fn system_wall_ms() -> u64 {
 /// THE KERNEL'S HOST SERVICES.
 pub struct KernelServices {
     origin: Instant,
-    classes: HashMap<u32, DestRules>,
-    resolver: Arc<dyn Resolve>,
     wall_ms: WallMs,
     instances: Mutex<HashMap<Arc<str>, Arc<InstanceFacts>>>,
     records: Option<Records>,
@@ -428,23 +372,27 @@ struct Demotions {
     default_instance: Arc<str>,
 }
 
+impl Default for KernelServices {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl std::fmt::Debug for KernelServices {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KernelServices")
-            .field("classes", &self.classes.len())
+            .field("judge", &self.judge.is_some())
             .finish_non_exhaustive()
     }
 }
 
 impl KernelServices {
-    /// The services over `classes` (egress class → rules; a class not listed is refused) and
-    /// `resolver`.
+    /// The services, judging no destination until [`Self::with_dest_judge`] gives them the
+    /// deployment's guard (every `dest.judge` refused, every dial refused, until then).
     #[must_use]
-    pub fn new(classes: HashMap<u32, DestRules>, resolver: Arc<dyn Resolve>) -> Self {
+    pub fn new() -> Self {
         Self {
             origin: Instant::now(),
-            classes,
-            resolver,
             wall_ms: Arc::new(system_wall_ms),
             instances: Mutex::default(),
             records: None,
@@ -899,13 +847,10 @@ impl HostServices for KernelServices {
 
     fn dest_judge(&self, dest: &str, class: u32, resolve: bool, later: Option<Later>) -> Ran {
         // The name and scheme arms first, at once: a refusal never waits on a resolution.
-        let named = match (&self.judge, self.classes.get(&class)) {
-            (Some(j), _) => j.judge_name(dest, class),
-            (None, Some(rules)) => check_structure(dest, &[], rules.policy, &rules.denylist)
-                .map(|_| ())
-                .map_err(|r| verdict(dest, &r)),
-            (None, None) => return Ran::Now(Stored::refused("no such egress class")),
+        let Some(j) = &self.judge else {
+            return Ran::Now(Stored::refused(NO_DEST_JUDGE));
         };
+        let named = j.judge_name(dest, class);
         match named {
             Err(v) => return Ran::Now(Stored::ready(v)),
             Ok(()) if resolve => {}
@@ -1183,35 +1128,10 @@ impl KernelServices {
         class: u32,
         done: Box<dyn FnOnce(Admitted) + Send>,
     ) -> Option<Admitted> {
-        if let Some(j) = &self.judge {
-            return j.judge(dest, class, done);
+        match &self.judge {
+            Some(j) => j.judge(dest, class, done),
+            None => Some(Err(svc::DEST_NO_HOST)),
         }
-        let Some(rules) = self.classes.get(&class) else {
-            return Some(Err(svc::DEST_NO_HOST));
-        };
-        let (host, port, https) = match check_structure(dest, &[], rules.policy, &rules.denylist) {
-            Err(r) => return Some(Err(verdict(dest, &r))),
-            Ok(Structure::Pinned(p)) => {
-                let addr = p.socket_addr();
-                return Some(Ok((addr, vec![addr.ip()])));
-            }
-            Ok(Structure::Name { host, port, https }) => (host, port, https),
-        };
-        let policy = rules.policy;
-        let denylist = Arc::clone(&rules.denylist);
-        let name = host.clone();
-        self.resolver.resolve(
-            &name,
-            Box::new(move |answer| {
-                done(match answer {
-                    Err(_) => Err(svc::DEST_UNRESOLVABLE),
-                    Ok(addrs) => pin_answer_under(&host, port, https, &addrs, policy, &denylist)
-                        .map(|p| (p.socket_addr(), addrs))
-                        .map_err(|r| guard_verdict(&r)),
-                });
-            }),
-        );
-        None
     }
 }
 
@@ -1220,37 +1140,6 @@ const fn absent_span() -> Span {
     Span {
         offset: busbar_contract::abi::mechanism::check::SPAN_ABSENT,
         len: 0,
-    }
-}
-
-/// The verdict a refusal answers. A destination naming a scheme the web schemes do not cover reads
-/// as a bare authority to the one judge and is refused for its host; its verdict names the scheme,
-/// as the refusal it is.
-fn verdict(dest: &str, r: &NetworkRefusal) -> u64 {
-    let foreign_scheme =
-        dest.contains("://") && matches!(split_url(dest), Err(AddressRefusal::Scheme { .. }));
-    match r {
-        NetworkRefusal::Guard(AddressRefusal::NoHost(_)) if foreign_scheme => svc::DEST_SCHEME,
-        NetworkRefusal::MetadataDenied(_) => svc::DEST_METADATA,
-        NetworkRefusal::Guard(g) => guard_verdict(g),
-        NetworkRefusal::NotAnUpstream => svc::DEST_NO_HOST,
-    }
-}
-
-fn guard_verdict(r: &AddressRefusal) -> u64 {
-    match r {
-        AddressRefusal::Scheme { .. } => svc::DEST_SCHEME,
-        AddressRefusal::Plaintext { .. } => svc::DEST_PLAINTEXT,
-        AddressRefusal::ObfuscatedHost(_) => svc::DEST_OBFUSCATED,
-        AddressRefusal::MetadataName(_) | AddressRefusal::CloudMetadataAddress { .. } => {
-            svc::DEST_METADATA
-        }
-        AddressRefusal::LoopbackName(_) | AddressRefusal::InternalAddress { .. } => {
-            svc::DEST_INTERNAL
-        }
-        AddressRefusal::Unresolvable { .. } => svc::DEST_UNRESOLVABLE,
-        AddressRefusal::NoAddresses(_) => svc::DEST_NO_ADDRESSES,
-        _ => svc::DEST_NO_HOST,
     }
 }
 

@@ -48,7 +48,7 @@ fn the_binarys_dispatcher_serves_dest_judge_once_composed() {
     let deploy = busbar_kernel::config::deploy_from_yaml_str("providers: {}\nmodels: {}\n")
         .expect("a minimal deployment");
     let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
-    crate::root::serve::compose(&cfg, &late);
+    crate::root::serve::compose(crate::root::connector::dest_judge(&cfg), &late);
     assert_eq!(
         judged(&dispatcher, "https://93.184.216.34/"),
         Stored::ready(svc::DEST_ALLOWED)
