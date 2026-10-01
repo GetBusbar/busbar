@@ -249,7 +249,9 @@ async fn read_direct(c: &Arc<Connector>, id: ConnId) -> Result<Vec<u8>, ConnErro
 /// A far end on 127.0.0.1 that counts the connections it accepts and echoes four bytes on each.
 async fn counting_echo() -> (u16, Arc<AtomicU64>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let l = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let l = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
     let port = l.local_addr().unwrap().port();
     let accepted = Arc::new(AtomicU64::new(0));
     let seen = Arc::clone(&accepted);

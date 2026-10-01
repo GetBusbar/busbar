@@ -128,7 +128,10 @@ const TICKET: Ticket = Ticket {
 fn an_instance_handed_no_connector_is_unarmed_and_no_ticket_cannot_pend() {
     let unarmed = host(std::ptr::null());
     let mut c = unarmed.connector(TICKET);
-    assert_eq!(c.establish(0, None, ""), Poll::Ready(Err(ConnFailure::Unarmed)));
+    assert_eq!(
+        c.establish(0, None, ""),
+        Poll::Ready(Err(ConnFailure::Unarmed))
+    );
     let h = host(&SLOTS);
     let mut c = h.connector(Ticket::NONE);
     assert_eq!(

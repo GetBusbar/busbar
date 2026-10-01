@@ -451,7 +451,8 @@ fn dest_judge_answers_the_judged_addresses_as_the_set_a_dial_lands_within() {
         }))
     );
     let (mut buf, mut spans) = ([0u8; 22], [NO_SPAN; 2]);
-    let Poll::Ready(Ok(j)) = s.dest_judge(handle(), dest, 0, Some((&mut buf[..], &mut spans[..]))) else {
+    let Poll::Ready(Ok(j)) = s.dest_judge(handle(), dest, 0, Some((&mut buf[..], &mut spans[..])))
+    else {
         panic!("admitted, with its addresses");
     };
     assert_eq!(j.verdict, DEST_ALLOWED);

@@ -464,7 +464,10 @@ fn the_sdk_dest_judge_pends_and_its_reissue_reads_the_stored_verdict() {
     else {
         panic!("the stored answer");
     };
-    assert_eq!((j.verdict, j.within()), (DEST_ALLOWED, "198.51.100.7".to_owned()));
+    assert_eq!(
+        (j.verdict, j.within()),
+        (DEST_ALLOWED, "198.51.100.7".to_owned())
+    );
     assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 1);
 }
 

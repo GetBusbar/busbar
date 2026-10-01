@@ -1886,7 +1886,11 @@ fn compute_layout() -> String {
             timeout_ms
         ]
     );
-    record!(s, hconn::EstablishIn, [head, need, _reserved, target, within]);
+    record!(
+        s,
+        hconn::EstablishIn,
+        [head, need, _reserved, target, within]
+    );
     record!(s, hconn::StreamIn, [head, stream]);
     record!(s, hconn::IoIn, [head, stream, buf, len]);
     record!(s, hconn::UpgradeIn, [head, stream, offered_name, trust]);
@@ -1963,7 +1967,11 @@ fn compute_layout() -> String {
         [head, kind, prefix, after, limit, _reserved, into]
     );
     record!(s, hsvc::RecordsClaimIn, [head, kind, key, ttl_ms]);
-    record!(s, hsvc::DestJudgeIn, [head, dest, egress_class, flags, into]);
+    record!(
+        s,
+        hsvc::DestJudgeIn,
+        [head, dest, egress_class, flags, into]
+    );
     record!(s, hsvc::SignIn, [head, data, into]);
     record!(s, hsvc::UnitNestIn, [head, verb, target, body, into]);
     record!(s, hsvc::WorkOpenIn, [head, kind, record]);

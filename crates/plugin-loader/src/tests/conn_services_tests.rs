@@ -880,10 +880,22 @@ fn establish_within_reaches_the_connect_raw_and_framed() {
     });
     let p = bound_over(&framed);
     let stream = pinned_stream(&p, 0, "203.0.113.5,2001:db8::1").value;
-    assert!(framed.within.lock().unwrap().is_empty(), "nothing opens at establish");
+    assert!(
+        framed.within.lock().unwrap().is_empty(),
+        "nothing opens at establish"
+    );
     assert!(ready(&request(&p, 1, stream, &head_piece(), HEAD_BYTES)));
-    assert!(framed.within.lock().unwrap().is_empty(), "nor before the end");
-    assert!(ready(&request(&p, 2, stream, &kind_piece(REQUEST_END), b"")));
+    assert!(
+        framed.within.lock().unwrap().is_empty(),
+        "nor before the end"
+    );
+    assert!(ready(&request(
+        &p,
+        2,
+        stream,
+        &kind_piece(REQUEST_END),
+        b""
+    )));
     assert_eq!(framed.within.lock().unwrap().as_slice(), &[set]);
 
     let refused = Arc::new(Scripted::default());

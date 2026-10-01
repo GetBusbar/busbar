@@ -225,7 +225,10 @@ fn dest_judge_writes_the_addresses_it_judged() {
     ]));
     let got = slot.lock().unwrap().take().unwrap();
     assert_eq!(got.value, svc::DEST_INTERNAL);
-    assert!(got.spans.is_empty() && got.bytes.is_empty(), "a refusal names none");
+    assert!(
+        got.spans.is_empty() && got.bytes.is_empty(),
+        "a refusal names none"
+    );
 
     let (_, later) = recorder();
     let got = verdict_now(s.dest_judge("https://push.example.com/", 0, false, Some(later)));
