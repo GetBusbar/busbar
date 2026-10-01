@@ -51,7 +51,6 @@ use busbar_contract::caps::{
 use busbar_contract::plane_calls::PlaneCalls;
 use tokio::sync::watch;
 
-pub use busbar_kernel_identity::caller_ref::CallerRefKey;
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
 pub use epoch::FlushEpoch;
 pub use far_end::{
@@ -60,6 +59,7 @@ pub use far_end::{
 pub use money::{EndPost, PlaneMoney, UnitMoney};
 pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick};
 
+use crate::auth::CallerRefKey;
 use crate::slice::GroupLeaseSlip;
 use crate::teller::{Ended, Evidence, RouteAwait, RouteLeg, UnitCtx, Units};
 
