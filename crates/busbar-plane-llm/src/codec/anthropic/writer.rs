@@ -624,14 +624,14 @@ impl ProtocolWriter for AnthropicWriter {
         }
         // The Q57 slots with no Anthropic form (store, safety_identifier, prompt_cache_key,
         // verbosity, the metadata map, non-text output modalities): dropped, observably.
-        for slot in crate::codec::dialect::carried(req, ANTHROPIC_UNREPRESENTABLE) {
-            if slot != "service_tier" {
-                tracing::warn!(
-                    parameter = slot,
-                    "dropping {slot} on Anthropic egress: the Messages API has no such request                      member (lossy-by-target)"
-                );
-            }
-        }
+        // `service_tier` is warned above with the tier it could not name.
+        crate::codec::dialect::warn_dropped(
+            crate::codec::dialect::carried(req, ANTHROPIC_UNREPRESENTABLE)
+                .filter(|slot| *slot != "service_tier"),
+            &crate::codec::dialect::DropWarn::Parameter(
+                "dropping {slot} on Anthropic egress: the Messages API has no such request                      member (lossy-by-target)",
+            ),
+        );
         // Carry the end-user identifier into Anthropic's spelling (`metadata.user_id`). Emitted
         // before the `extra` overlay: if the request natively carried an Anthropic `metadata`
         // object it rides `extra` and overwrites this, so the verbatim original always wins.

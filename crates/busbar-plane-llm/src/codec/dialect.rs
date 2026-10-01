@@ -103,6 +103,28 @@ pub fn carried<'a>(
         .map(|(name, _)| *name)
 }
 
+/// How a dialect's egress warn names a dropped control: the field the name rides under and the
+/// dialect's own message. Data per dialect; [`warn_dropped`] is the one walker.
+pub enum DropWarn {
+    /// `control = <name>`, with a fixed message.
+    Control(&'static str),
+    /// `parameter = <name>`, with the message naming it where the template says `{slot}`.
+    Parameter(&'static str),
+}
+
+/// THE ONE DROP WALKER: one warn per dropped control, in the dialect's own words. The names are the
+/// same ones the dialect's `dropped_egress_controls` reports, so the log and the seam's audit agree.
+pub fn warn_dropped<'a>(dropped: impl IntoIterator<Item = &'a str>, warn: &DropWarn) {
+    for name in dropped {
+        match warn {
+            DropWarn::Control(message) => tracing::warn!(control = name, "{}", message),
+            DropWarn::Parameter(template) => {
+                tracing::warn!(parameter = name, "{}", template.replace("{slot}", name));
+            }
+        }
+    }
+}
+
 /// The refusal a dialect reader returns for bytes it cannot read as its own shape: a client error
 /// carrying the `ir_parse` lane signal. One constructor, so every reader refuses alike.
 #[must_use]

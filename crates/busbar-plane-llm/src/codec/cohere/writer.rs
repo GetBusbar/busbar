@@ -512,12 +512,12 @@ impl ProtocolWriter for CohereWriter {
         }
         // The Q57 request slots with no Cohere form — the same set `dropped_egress_controls`
         // reports for the seam's audit.
-        for control in self.dropped_egress_controls(req) {
-            tracing::warn!(
-                control = control,
-                "dropping a request control on Cohere egress: Cohere v2 /chat has no form for it"
-            );
-        }
+        crate::codec::dialect::warn_dropped(
+            self.dropped_egress_controls(req),
+            &crate::codec::dialect::DropWarn::Control(
+                "dropping a request control on Cohere egress: Cohere v2 /chat has no form for it",
+            ),
+        );
 
         if let Some(max_tokens) = req.max_tokens {
             out.insert("max_tokens".to_string(), serde_json::json!(max_tokens));

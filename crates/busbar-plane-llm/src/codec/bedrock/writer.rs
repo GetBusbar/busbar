@@ -1530,12 +1530,12 @@ impl BedrockWriter {
         }
         // The Q57 request slots with no Converse form — the same set `dropped_egress_controls`
         // reports for the seam's audit.
-        for control in bedrock_unrepresentable_slots(req) {
-            tracing::warn!(
-                control = control,
-                "dropping a request control on Bedrock egress: Converse has no form for it"
-            );
-        }
+        crate::codec::dialect::warn_dropped(
+            bedrock_unrepresentable_slots(req),
+            &crate::codec::dialect::DropWarn::Control(
+                "dropping a request control on Bedrock egress: Converse has no form for it",
+            ),
+        );
 
         for (key, value) in &req.extra {
             // `inferenceConfig` and `toolConfig` were already consumed above (typed fields overlaid
