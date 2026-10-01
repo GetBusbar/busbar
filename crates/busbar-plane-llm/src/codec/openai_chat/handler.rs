@@ -4,6 +4,7 @@
 //! OpenAI `RequestHandler` and its OperationHandlers. OperationHandlers are pure codecs — wire ↔ IR,
 //! both directions, nothing else: moderation, embeddings, images, audio, and chat each get one.
 
+use crate::codec::keys;
 use crate::codec::ir::moderation::{
     ModerationInput, ModerationReq, ModerationResp, ModerationResult,
 };
@@ -30,7 +31,7 @@ pub struct OpenAiRequestHandler;
 /// This protocol's OWN chat instance — delete this line (and the registry arm) and this
 /// protocol's chat 404s via the standard no-handler path; everything else keeps working.
 static CHAT: super::super::chat_handle::ChatOperation =
-    super::super::chat_handle::ChatOperation("openai");
+    super::super::chat_handle::ChatOperation(super::VENDOR_NAME);
 
 static MODERATION: OpenAiModeration = OpenAiModeration;
 static EMBEDDINGS: OpenAiEmbeddings = OpenAiEmbeddings;
@@ -64,7 +65,7 @@ static PATHS: &[(OpVerb, &str)] = &[
 
 impl RequestHandler for OpenAiRequestHandler {
     fn protocol_name(&self) -> &'static str {
-        "openai"
+        super::VENDOR_NAME
     }
     fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
         busbar_contract::codec::cell_of(CELLS, op)
@@ -137,7 +138,7 @@ fn sanitize_mime_type(raw: &str) -> String {
         .collect();
     let trimmed = clean.trim();
     if trimmed.is_empty() {
-        "application/octet-stream".to_string()
+        keys::APPLICATION_OCTET_STREAM.to_string()
     } else {
         trimmed.to_string()
     }
@@ -219,7 +220,7 @@ fn parse_multipart_segment(seg: &[u8]) -> Option<MultipartField<'_>> {
     if value.ends_with(b"\r\n") {
         value = &value[..value.len() - 2];
     }
-    let name = header_attr(&headers, "name")?;
+    let name = header_attr(&headers, keys::NAME)?;
     let content_type = headers.lines().find_map(|l| {
         let l = l.trim();
         l.strip_prefix("Content-Type:")
@@ -245,7 +246,7 @@ fn parse_multipart_segment(seg: &[u8]) -> Option<MultipartField<'_>> {
 struct OpenAiTranscription;
 
 leaf_op! {
-    OpenAiTranscription: "openai",
+    OpenAiTranscription: super::VENDOR_NAME,
     TranscriptionReqHandle = read_transcription_request,
     TranscriptionRespHandle = read_transcription_response;
     fn egress_request_content_type(&self) -> &'static str {
@@ -345,23 +346,23 @@ pub fn write_transcription_request(r: &TranscriptionReq) -> Bytes {
             .as_bytes(),
         );
     };
-    push_field("model", &r.model);
+    push_field(keys::MODEL, &r.model);
     // Carry the caller's transcription hints on cross-protocol egress (e.g. Gemini ingress ->
     // OpenAI Whisper): dropping these silently changed behavior (no language hint / prompt /
     // format). Emit each only when present, matching the OpenAI multipart form field names.
     if let Some(lang) = &r.source_language {
-        push_field("language", lang);
+        push_field(super::LANGUAGE, lang);
     }
     if let Some(prompt) = &r.prompt {
-        push_field("prompt", prompt);
+        push_field(keys::PROMPT, prompt);
     }
     if let Some(fmt) = &r.response_format {
-        push_field("response_format", fmt);
+        push_field(keys::RESPONSE_FORMAT, fmt);
     }
     // Carry the sampling `temperature` too — OpenAI's transcription form accepts it natively;
     // dropping it silently reset sampling to the default on a cross-protocol hop.
     if let Some(t) = r.temperature {
-        push_field("temperature", &t.to_string());
+        push_field(keys::TEMPERATURE, &t.to_string());
     }
     if let Some(blob) = &r.audio {
         let bytes = match &blob.payload {
@@ -398,39 +399,39 @@ pub fn write_transcription_response(r: &TranscriptionResp) -> WireBody {
     // a JSON envelope. When the response IR records one of those (the reader saw a non-JSON body),
     // re-emit the transcript verbatim under `text/plain` rather than JSON-wrapping it — otherwise a
     // WEBVTT/SRT response is mangled into `{"text":"WEBVTT..."}` with the wrong content-type.
-    if matches!(r.response_format.as_deref(), Some("text" | "srt" | "vtt")) {
+    if matches!(r.response_format.as_deref(), Some(keys::TEXT | "srt" | "vtt")) {
         return WireBody::typed(SlabBytes::from(r.text.clone().into_bytes()), "text/plain");
     }
-    let mut body = json!({ "text": r.text });
+    let mut body = json!({ (keys::TEXT): r.text });
     // `verbose_json` carries language/duration/segments/words alongside the text. These are all
     // modelled by the IR; emit each when present (a plain-`json` response leaves them unset, so an
     // absent field emits nothing rather than a fabricated empty array). Cross-protocol readers that
     // captured timestamps/diarization survive the openai egress hop instead of being flattened away.
     if let Some(lang) = &r.detected_language {
-        body["language"] = json!(lang);
+        body[super::LANGUAGE] = json!(lang);
     }
     if let Some(d) = r.duration_seconds {
-        body["duration"] = json!(d);
+        body[super::W_DURATION] = json!(d);
     }
     if !r.segments.is_empty() {
-        body["segments"] = Value::Array(
+        body[super::SEGMENTS] = Value::Array(
             r.segments
                 .iter()
                 .map(|s| {
                     let mut o = json!({
-                        "id": s.id, "start": s.start, "end": s.end, "text": s.text,
+                        (keys::ID): s.id, (keys::START): s.start, (keys::END): s.end, (keys::TEXT): s.text,
                     });
                     if let Some(v) = s.avg_logprob {
-                        o["avg_logprob"] = json!(v);
+                        o[super::AVG_LOGPROB] = json!(v);
                     }
                     if let Some(v) = s.no_speech_prob {
-                        o["no_speech_prob"] = json!(v);
+                        o[super::NO_SPEECH_PROB] = json!(v);
                     }
                     if let Some(v) = s.compression_ratio {
-                        o["compression_ratio"] = json!(v);
+                        o[super::COMPRESSION_RATIO] = json!(v);
                     }
                     if let Some(sp) = &s.speaker {
-                        o["speaker"] = json!(sp);
+                        o[keys::SPEAKER] = json!(sp);
                     }
                     o
                 })
@@ -438,10 +439,10 @@ pub fn write_transcription_response(r: &TranscriptionResp) -> WireBody {
         );
     }
     if !r.words.is_empty() {
-        body["words"] = Value::Array(
+        body[super::W_WORDS] = Value::Array(
             r.words
                 .iter()
-                .map(|w| json!({ "word": w.word, "start": w.start, "end": w.end }))
+                .map(|w| json!({ (super::WORD): w.word, (keys::START): w.start, (keys::END): w.end }))
                 .collect(),
         );
     }
@@ -451,11 +452,11 @@ pub fn write_transcription_response(r: &TranscriptionResp) -> WireBody {
             // The one render boundary — byte-identical to what this wrote before the quantity
             // became exact (see `billing::duration_seconds_to_wire`).
             let seconds = busbar_contract::billing::duration_seconds_to_wire(*seconds);
-            body["usage"] = json!({ "type": "duration", "seconds": seconds });
+            body[keys::USAGE] = json!({ (keys::TYPE): super::W_DURATION, (super::SECONDS): seconds });
         }
         Some(Billing::Tokens(t)) => {
-            body["usage"] = json!({ "type": "tokens", "input_tokens": t.input,
-                "output_tokens": t.output, "total_tokens": t.input.saturating_add(t.output) });
+            body[keys::USAGE] = json!({ (keys::TYPE): "tokens", (keys::INPUT_TOKENS): t.input,
+                (keys::OUTPUT_TOKENS): t.output, (keys::TOTAL_TOKENS): t.input.saturating_add(t.output) });
         }
         _ => {}
     }
@@ -471,13 +472,13 @@ pub fn write_transcription_response(r: &TranscriptionResp) -> WireBody {
 /// billing at all — the presence of `input_tokens` is what says this response is token-metered, and
 /// that gating is unchanged.
 fn parse_transcription_usage(wire: &[u8], u: &Value) -> Result<Option<Billing>, CodecError> {
-    match u.get("type").and_then(Value::as_str) {
+    match u.get(keys::TYPE).and_then(Value::as_str) {
         // THE DURATION IS A MEASUREMENT, so it is read from the wire's DECIMAL TEXT and never
         // through an `f64` (#81). `u.get("seconds")` would hand back a `Value` whose number is
         // already a double and has already lost the exactness no later conversion can give back, so
         // the read goes to the ORIGINAL BYTES by pointer and `u` only says whether it is there.
-        Some("duration") => {
-            if u.get("seconds").is_none() {
+        Some(super::W_DURATION) => {
+            if u.get(super::SECONDS).is_none() {
                 return Ok(None);
             }
             let seconds = busbar_contract::Count::read_at(wire, "/usage/seconds")
@@ -490,15 +491,15 @@ fn parse_transcription_usage(wire: &[u8], u: &Value) -> Result<Option<Billing>, 
         // BILLED COUNTS: absent is not billed, UNREADABLE IS A REFUSAL (#81/#42). `.unwrap_or(0)`
         // on the output leg used to record "no output tokens" for a count the provider really sent
         // and this build could not read — a ledger row that is faithfully wrong all the way down.
-        _ => match u.get("input_tokens") {
+        _ => match u.get(keys::INPUT_TOKENS) {
             // Absent, or spelled `null`: this response is not token-metered. Unchanged.
             None => Ok(None),
             Some(v) if v.is_null() => Ok(None),
             Some(_) => Ok(Some(Billing::Tokens(
                 busbar_contract::billing::TokenUsage {
-                    input: crate::codec::usage_count::billed_count(u, "input_tokens")
+                    input: crate::codec::usage_count::billed_count(u, keys::INPUT_TOKENS)
                         .map_err(|e| CodecError::Malformed(e.to_string()))?,
-                    output: crate::codec::usage_count::billed_count(u, "output_tokens")
+                    output: crate::codec::usage_count::billed_count(u, keys::OUTPUT_TOKENS)
                         .map_err(|e| CodecError::Malformed(e.to_string()))?,
                     ..Default::default()
                 },
@@ -511,7 +512,7 @@ fn parse_transcription_usage(wire: &[u8], u: &Value) -> Result<Option<Billing>, 
 struct OpenAiSpeech;
 
 leaf_op! {
-    OpenAiSpeech: "openai",
+    OpenAiSpeech: super::VENDOR_NAME,
     SpeechReqHandle = read_speech_request,
     SpeechRespHandle = read_speech_response;
 }
@@ -519,17 +520,17 @@ leaf_op! {
 /// IR → openai speech (TTS) request wire (the body of [`OpenAiSpeech::write_request`], moved behind
 /// the `(speech, openai)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
 pub fn write_speech_request(r: &SpeechReq) -> Bytes {
-    let mut body = json!({ "model": r.model, "input": r.input, "voice": r.voice });
+    let mut body = json!({ (keys::MODEL): r.model, (keys::INPUT): r.input, (super::VOICE): r.voice });
     if let Some(f) = &r.response_format {
-        body["response_format"] = json!(f);
+        body[keys::RESPONSE_FORMAT] = json!(f);
     }
     // Carry the caller's style + playback controls (gpt-4o-mini-tts `instructions`, `speed`);
     // dropping them made the synthesized audio ignore the request on a cross-protocol hop.
     if let Some(instr) = &r.instructions {
-        body["instructions"] = json!(instr);
+        body[keys::INSTRUCTIONS] = json!(instr);
     }
     if let Some(speed) = r.speed {
-        body["speed"] = json!(speed);
+        body[super::SPEED] = json!(speed);
     }
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
@@ -559,7 +560,7 @@ use crate::codec::ir::embeddings::{
 struct OpenAiEmbeddings;
 
 leaf_op! {
-    OpenAiEmbeddings: "openai",
+    OpenAiEmbeddings: super::VENDOR_NAME,
     EmbeddingsReqHandle = read_embeddings_request,
     EmbeddingsRespHandle = read_embeddings_response;
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
@@ -585,22 +586,22 @@ pub fn write_embeddings_request(r: &EmbeddingsReq) -> Bytes {
             json!([])
         }
     };
-    let mut body = json!({ "model": r.model, "input": input });
+    let mut body = json!({ (keys::MODEL): r.model, (keys::INPUT): input });
     if let Some(d) = r.dimensions {
-        body["dimensions"] = json!(d);
+        body[keys::DIMENSIONS] = json!(d);
     }
     // Carry the caller's `user` abuse-tracking signal (read into the IR by `read_embeddings_request`)
     // so an openai->openai embeddings passthrough does not strip it — the writer previously emitted
     // neither, silently dropping the field on the round trip. Emitted only when present so a request
     // that never carried it gains no fabricated field.
     if let Some(u) = &r.user {
-        body["user"] = json!(u);
+        body[keys::USER] = json!(u);
     }
     // Honor a base64 encoding request (OpenAI supports float (default) and base64). Dropping
     // it made a cross-protocol base64 embeddings request silently come back as float; the
     // response reader decodes both, so emitting the field completes the round trip.
     if r.encoding_formats.contains(&EncFmt::Base64) {
-        body["encoding_format"] = json!("base64");
+        body[super::ENCODING_FORMAT] = json!(keys::BASE64);
     }
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
@@ -620,16 +621,16 @@ pub fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
                     _ => json!([]),
                 },
             };
-            json!({ "object": "embedding", "index": item.index, "embedding": emb })
+            json!({ (keys::OBJECT): keys::EMBEDDING, (keys::INDEX): item.index, (keys::EMBEDDING): emb })
         })
         .collect();
-    let mut body = json!({ "object": "list", "data": data });
+    let mut body = json!({ (keys::OBJECT): super::LIST, (keys::DATA): data });
     if let Some(m) = &r.model {
-        body["model"] = json!(m);
+        body[keys::MODEL] = json!(m);
     }
     if let Some(u) = &r.usage {
-        body["usage"] =
-            json!({ "prompt_tokens": u.input, "total_tokens": u.input.saturating_add(u.output) });
+        body[keys::USAGE] =
+            json!({ (super::PROMPT_TOKENS): u.input, (keys::TOTAL_TOKENS): u.input.saturating_add(u.output) });
     }
     WireBody::json(SlabBytes::from(
         serde_json::to_vec(&body).unwrap_or_default(),
@@ -644,7 +645,7 @@ use busbar_contract::media::ImageOutput;
 struct OpenAiImage;
 
 leaf_op! {
-    OpenAiImage: "openai",
+    OpenAiImage: super::VENDOR_NAME,
     ImageReqHandle = read_image_request,
     ImageRespHandle = read_image_response;
     // Token-metered for gpt-image-1: buffer the same-protocol non-stream 2xx body so the default
@@ -660,47 +661,47 @@ leaf_op! {
 /// IR → openai image request wire (the body of [`OpenAiImage::write_request`], moved behind the
 /// `(image, openai)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
 pub fn write_image_request(r: &ImageReq) -> Bytes {
-    let mut body = json!({ "model": r.model });
+    let mut body = json!({ (keys::MODEL): r.model });
     if let Some(p) = &r.prompt {
-        body["prompt"] = json!(p);
+        body[keys::PROMPT] = json!(p);
     }
     if let Some(n) = r.n {
-        body["n"] = json!(n);
+        body[super::W_N] = json!(n);
     }
     match r.size {
         Some(ImageSize::Wh { width, height }) => {
-            body["size"] = json!(format!("{width}x{height}"));
+            body[super::SIZE] = json!(format!("{width}x{height}"));
         }
-        Some(ImageSize::Auto) => body["size"] = json!("auto"),
+        Some(ImageSize::Auto) => body[super::SIZE] = json!(keys::AUTO),
         None => {}
     }
     // Carry the generation controls the reader captures; dropping them silently downgraded the
     // request (e.g. a `b64_json` ask fell back to the default URL response, `hd` to standard).
     if let Some(q) = &r.quality {
-        body["quality"] = json!(q);
+        body[keys::QUALITY] = json!(q);
     }
     if let Some(s) = &r.style {
-        body["style"] = json!(s);
+        body[super::STYLE] = json!(s);
     }
     if let Some(f) = &r.response_format {
-        body["response_format"] = json!(f);
+        body[keys::RESPONSE_FORMAT] = json!(f);
     }
     // gpt-image-1 output controls the reader captures — dropping them downgraded the request
     // (a transparent-background/webp ask fell back to opaque PNG, a moderation policy was lost).
     if let Some(b) = &r.background {
-        body["background"] = json!(b);
+        body[super::BACKGROUND] = json!(b);
     }
     if let Some(f) = &r.output_format {
-        body["output_format"] = json!(f);
+        body[keys::OUTPUT_FORMAT] = json!(f);
     }
     if let Some(c) = r.output_compression {
-        body["output_compression"] = json!(c);
+        body[super::OUTPUT_COMPRESSION] = json!(c);
     }
     if let Some(m) = &r.moderation {
-        body["moderation"] = json!(m);
+        body[keys::MODERATION] = json!(m);
     }
     if let Some(u) = &r.user {
-        body["user"] = json!(u);
+        body[keys::USER] = json!(u);
     }
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
@@ -714,31 +715,31 @@ pub fn write_image_response(r: &ImageResp) -> WireBody {
         .map(|img| {
             let mut o = serde_json::Map::new();
             if let Some(b) = &img.b64 {
-                o.insert("b64_json".into(), json!(b));
+                o.insert(super::B64_JSON.into(), json!(b));
             }
             if let Some(u) = &img.url {
-                o.insert("url".into(), json!(u));
+                o.insert(keys::URL.into(), json!(u));
             }
             if let Some(rp) = &img.revised_prompt {
-                o.insert("revised_prompt".into(), json!(rp));
+                o.insert(super::REVISED_PROMPT.into(), json!(rp));
             }
             Value::Object(o)
         })
         .collect();
-    let mut body = json!({ "data": data });
+    let mut body = json!({ (keys::DATA): data });
     // Emit `created` only when the upstream actually sent it — fabricating `created:0` invents a
     // 1970 timestamp on a response that carried none (gpt-image-1 omits it), a wrong wire value.
     if let Some(created) = r.created {
-        body["created"] = json!(created);
+        body[super::CREATED] = json!(created);
     }
     // gpt-image-1 returns a token `usage` object; the reader parses it (for billing) but the writer
     // dropped it, so a same-/cross-protocol image hop lost the usage the client should see. Re-emit
     // it in OpenAI's own image-usage shape when present.
     if let Some(u) = &r.usage {
-        body["usage"] = json!({
-            "input_tokens": u.input,
-            "output_tokens": u.output,
-            "total_tokens": u.input.saturating_add(u.output),
+        body[keys::USAGE] = json!({
+            (keys::INPUT_TOKENS): u.input,
+            (keys::OUTPUT_TOKENS): u.output,
+            (keys::TOTAL_TOKENS): u.input.saturating_add(u.output),
         });
     }
     WireBody::json(SlabBytes::from(
@@ -751,7 +752,7 @@ pub fn write_image_response(r: &ImageResp) -> WireBody {
 struct OpenAiModeration;
 
 leaf_op! {
-    OpenAiModeration: "openai",
+    OpenAiModeration: super::VENDOR_NAME,
     ModerationReqHandle = read_moderation_request,
     ModerationRespHandle = read_moderation_response;
 }
@@ -759,7 +760,7 @@ leaf_op! {
 /// IR → openai moderation request wire (the body of [`OpenAiModeration::write_request`], moved behind
 /// the `(moderation, openai)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
 pub fn write_moderation_request(r: &ModerationReq) -> Bytes {
-    let body = json!({ "model": r.model, "input": input_to_value(&r.input) });
+    let body = json!({ (keys::MODEL): r.model, (keys::INPUT): input_to_value(&r.input) });
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
 
@@ -771,19 +772,19 @@ pub fn write_moderation_response(r: &ModerationResp) -> WireBody {
         .iter()
         .map(|res| {
             json!({
-                "flagged": res.flagged,
-                "categories": map_bool(&res.categories),
-                "category_scores": map_f64(&res.category_scores),
-                "category_applied_input_types": map_strs(&res.applied_input_types),
+                (super::FLAGGED): res.flagged,
+                (super::CATEGORIES): map_bool(&res.categories),
+                (super::CATEGORY_SCORES): map_f64(&res.category_scores),
+                (super::CATEGORY_APPLIED_INPUT_TYPES): map_strs(&res.applied_input_types),
             })
         })
         .collect();
-    let mut body = json!({ "results": results });
+    let mut body = json!({ (keys::RESULTS): results });
     if let Some(id) = &r.id {
-        body["id"] = json!(id);
+        body[keys::ID] = json!(id);
     }
     if let Some(m) = &r.model {
-        body["model"] = json!(m);
+        body[keys::MODEL] = json!(m);
     }
     WireBody::json(SlabBytes::from(
         serde_json::to_vec(&body).unwrap_or_default(),
@@ -799,15 +800,15 @@ fn parse_input(v: Option<&Value>) -> Result<Vec<ModerationInput>, IngressReject>
             .iter()
             .map(|item| match item {
                 Value::String(s) => Ok(ModerationInput::Text(s.clone())),
-                Value::Object(o) => match o.get("type").and_then(Value::as_str) {
-                    Some("image_url") => o
-                        .get("image_url")
-                        .and_then(|iu| iu.get("url"))
+                Value::Object(o) => match o.get(keys::TYPE).and_then(Value::as_str) {
+                    Some(keys::IMAGE_URL) => o
+                        .get(keys::IMAGE_URL)
+                        .and_then(|iu| iu.get(keys::URL))
                         .and_then(Value::as_str)
                         .map(|u| ModerationInput::ImageUrl(u.to_string()))
                         .ok_or_else(|| IngressReject::BadRequest("image_url missing url".into())),
                     _ => o
-                        .get("text")
+                        .get(keys::TEXT)
                         .and_then(Value::as_str)
                         .map(|t| ModerationInput::Text(t.to_string()))
                         .ok_or_else(|| IngressReject::BadRequest("input item missing text".into())),
@@ -830,9 +831,9 @@ fn input_to_value(input: &[ModerationInput]) -> Value {
         input
             .iter()
             .map(|i| match i {
-                ModerationInput::Text(t) => json!({ "type": "text", "text": t }),
+                ModerationInput::Text(t) => json!({ (keys::TYPE): keys::TEXT, (keys::TEXT): t }),
                 ModerationInput::ImageUrl(u) => {
-                    json!({ "type": "image_url", "image_url": { "url": u } })
+                    json!({ (keys::TYPE): keys::IMAGE_URL, (keys::IMAGE_URL): { (keys::URL): u } })
                 }
             })
             .collect(),
@@ -841,10 +842,10 @@ fn input_to_value(input: &[ModerationInput]) -> Value {
 
 fn parse_result(v: &Value) -> ModerationResult {
     ModerationResult {
-        flagged: v.get("flagged").and_then(Value::as_bool).unwrap_or(false),
-        categories: obj_map(v.get("categories"), |x| x.as_bool()),
-        category_scores: obj_map(v.get("category_scores"), |x| x.as_f64()),
-        applied_input_types: obj_map(v.get("category_applied_input_types"), |x| {
+        flagged: v.get(super::FLAGGED).and_then(Value::as_bool).unwrap_or(false),
+        categories: obj_map(v.get(super::CATEGORIES), |x| x.as_bool()),
+        category_scores: obj_map(v.get(super::CATEGORY_SCORES), |x| x.as_f64()),
+        applied_input_types: obj_map(v.get(super::CATEGORY_APPLIED_INPUT_TYPES), |x| {
             x.as_array().map(|a| {
                 a.iter()
                     .filter_map(|s| s.as_str().map(str::to_string))
@@ -893,23 +894,23 @@ pub fn read_transcription_request(
     let mut req = TranscriptionReq::default();
     for f in &fields {
         match f.name.as_str() {
-            "model" => req.model = String::from_utf8_lossy(f.value).trim().to_string(),
-            "language" => {
+            keys::MODEL => req.model = String::from_utf8_lossy(f.value).trim().to_string(),
+            super::LANGUAGE => {
                 req.source_language = Some(String::from_utf8_lossy(f.value).trim().to_string())
             }
-            "prompt" => req.prompt = Some(String::from_utf8_lossy(f.value).into_owned()),
-            "response_format" => {
+            keys::PROMPT => req.prompt = Some(String::from_utf8_lossy(f.value).into_owned()),
+            keys::RESPONSE_FORMAT => {
                 req.response_format = Some(String::from_utf8_lossy(f.value).trim().to_string())
             }
-            "temperature" => req.temperature = String::from_utf8_lossy(f.value).trim().parse().ok(),
-            "file" => {
+            keys::TEMPERATURE => req.temperature = String::from_utf8_lossy(f.value).trim().parse().ok(),
+            super::FILE => {
                 req.audio = Some(MediaBlob {
                     payload: MediaPayload::Bytes(SlabBytes::from(f.value)),
                     mime_type: f
                         .content_type
                         .as_deref()
                         .map(sanitize_mime_type)
-                        .unwrap_or_else(|| "application/octet-stream".into()),
+                        .unwrap_or_else(|| keys::APPLICATION_OCTET_STREAM.into()),
                     pcm: None,
                 })
             }
@@ -944,51 +945,51 @@ pub fn read_transcription_response(
         Err(_) => {
             return Ok(TranscriptionResp {
                 text: String::from_utf8_lossy(wire).into_owned(),
-                response_format: Some("text".to_string()),
+                response_format: Some(keys::TEXT.to_string()),
                 ..Default::default()
             });
         }
     };
     let text = v
-        .get("text")
+        .get(keys::TEXT)
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
     let segments = v
-        .get("segments")
+        .get(super::SEGMENTS)
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
                 .map(|s| crate::codec::ir::audio::Segment {
-                    id: s.get("id").and_then(Value::as_i64).unwrap_or(0),
-                    start: s.get("start").and_then(Value::as_f64).unwrap_or(0.0),
-                    end: s.get("end").and_then(Value::as_f64).unwrap_or(0.0),
+                    id: s.get(keys::ID).and_then(Value::as_i64).unwrap_or(0),
+                    start: s.get(keys::START).and_then(Value::as_f64).unwrap_or(0.0),
+                    end: s.get(keys::END).and_then(Value::as_f64).unwrap_or(0.0),
                     text: s
-                        .get("text")
+                        .get(keys::TEXT)
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string(),
-                    avg_logprob: s.get("avg_logprob").and_then(Value::as_f64),
-                    no_speech_prob: s.get("no_speech_prob").and_then(Value::as_f64),
-                    compression_ratio: s.get("compression_ratio").and_then(Value::as_f64),
-                    speaker: s.get("speaker").and_then(Value::as_str).map(str::to_string),
+                    avg_logprob: s.get(super::AVG_LOGPROB).and_then(Value::as_f64),
+                    no_speech_prob: s.get(super::NO_SPEECH_PROB).and_then(Value::as_f64),
+                    compression_ratio: s.get(super::COMPRESSION_RATIO).and_then(Value::as_f64),
+                    speaker: s.get(keys::SPEAKER).and_then(Value::as_str).map(str::to_string),
                 })
                 .collect()
         })
         .unwrap_or_default();
     let words = v
-        .get("words")
+        .get(super::W_WORDS)
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
                 .map(|w| crate::codec::ir::audio::Word {
                     word: w
-                        .get("word")
+                        .get(super::WORD)
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string(),
-                    start: w.get("start").and_then(Value::as_f64).unwrap_or(0.0),
-                    end: w.get("end").and_then(Value::as_f64).unwrap_or(0.0),
+                    start: w.get(keys::START).and_then(Value::as_f64).unwrap_or(0.0),
+                    end: w.get(keys::END).and_then(Value::as_f64).unwrap_or(0.0),
                 })
                 .collect()
         })
@@ -996,13 +997,13 @@ pub fn read_transcription_response(
     Ok(TranscriptionResp {
         text,
         detected_language: v
-            .get("language")
+            .get(super::LANGUAGE)
             .and_then(Value::as_str)
             .map(str::to_string),
-        duration_seconds: v.get("duration").and_then(Value::as_f64),
+        duration_seconds: v.get(super::W_DURATION).and_then(Value::as_f64),
         segments,
         words,
-        usage: match v.get("usage") {
+        usage: match v.get(keys::USAGE) {
             Some(u) => parse_transcription_usage(wire, u)?,
             None => None,
         },
@@ -1026,18 +1027,18 @@ pub fn read_speech_request(
             .to_string()
     };
     Ok(SpeechReq {
-        input: get("input"),
-        model: get("model"),
-        voice: get("voice"),
+        input: get(keys::INPUT),
+        model: get(keys::MODEL),
+        voice: get(super::VOICE),
         response_format: wire
-            .get("response_format")
+            .get(keys::RESPONSE_FORMAT)
             .and_then(Value::as_str)
             .map(str::to_string),
         instructions: wire
-            .get("instructions")
+            .get(keys::INSTRUCTIONS)
             .and_then(Value::as_str)
             .map(str::to_string),
-        speed: wire.get("speed").and_then(Value::as_f64).map(|s| s as f32),
+        speed: wire.get(super::SPEED).and_then(Value::as_f64).map(|s| s as f32),
         ..Default::default()
     })
 }
@@ -1091,20 +1092,20 @@ pub fn read_speech_response(
 /// since PCM is byte-indistinguishable from an unlucky mp3 frame prefix.
 fn sniff_speech_audio_mime(wire: &[u8]) -> &'static str {
     if wire.starts_with(b"ID3") {
-        "audio/mpeg"
+        keys::AUDIO_MPEG
     } else if wire.starts_with(b"OggS") {
         "audio/opus"
     } else if wire.starts_with(b"fLaC") {
         "audio/flac"
     } else if wire.len() >= 12 && wire[0..4] == *b"RIFF" && wire[8..12] == *b"WAVE" {
-        "audio/wav"
+        super::AUDIO_WAV
     } else if wire.len() >= 2 && wire[0] == 0xFF && (wire[1] == 0xF1 || wire[1] == 0xF9) {
         // ADTS AAC syncword (12-bit 0xFFF + layer/protection bits): 0xFFF1 (MPEG-4) / 0xFFF9
         // (MPEG-2). Distinct from the mp3 frame-sync second bytes (0xFB/0xFA/0xF3/0xF2/…).
         "audio/aac"
     } else {
         // Raw MPEG frame-sync mp3 (no ID3 tag) or headerless PCM → the endpoint's default format.
-        "audio/mpeg"
+        keys::AUDIO_MPEG
     }
 }
 
@@ -1118,11 +1119,11 @@ pub fn read_embeddings_request(
     let wire: Value =
         serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
     let model = wire
-        .get("model")
+        .get(keys::MODEL)
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let input = match wire.get("input") {
+    let input = match wire.get(keys::INPUT) {
         Some(Value::String(s)) => EmbInput::Text(vec![s.clone()]),
         Some(Value::Array(a)) => {
             // An array of strings is the multi-text batch. An array of integers (or token-ID
@@ -1149,11 +1150,11 @@ pub fn read_embeddings_request(
         }
     };
     let dimensions = wire
-        .get("dimensions")
+        .get(keys::DIMENSIONS)
         .and_then(Value::as_u64)
         .and_then(|d| u32::try_from(d).ok());
-    let encoding_formats = match wire.get("encoding_format").and_then(Value::as_str) {
-        Some("base64") => vec![EncFmt::Base64],
+    let encoding_formats = match wire.get(super::ENCODING_FORMAT).and_then(Value::as_str) {
+        Some(keys::BASE64) => vec![EncFmt::Base64],
         _ => vec![EncFmt::Float],
     };
     Ok(EmbeddingsReq {
@@ -1161,7 +1162,7 @@ pub fn read_embeddings_request(
         input,
         dimensions,
         encoding_formats,
-        user: wire.get("user").and_then(Value::as_str).map(str::to_string),
+        user: wire.get(keys::USER).and_then(Value::as_str).map(str::to_string),
         ..Default::default()
     })
 }
@@ -1175,19 +1176,19 @@ pub fn read_embeddings_response(
     let v: Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
     let embeddings = v
-        .get("data")
+        .get(keys::DATA)
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
                 .enumerate()
                 .map(|(idx, d)| {
                     let index =
-                        d.get("index").and_then(Value::as_u64).unwrap_or(idx as u64) as usize;
+                        d.get(keys::INDEX).and_then(Value::as_u64).unwrap_or(idx as u64) as usize;
                     let mut item = EmbeddingItem {
                         index,
                         ..Default::default()
                     };
-                    if let Some(f) = d.get("embedding").and_then(Value::as_array) {
+                    if let Some(f) = d.get(keys::EMBEDDING).and_then(Value::as_array) {
                         item.vectors.insert(
                             EncFmt::Float,
                             VectorData::Float(
@@ -1196,7 +1197,7 @@ pub fn read_embeddings_response(
                                     .collect(),
                             ),
                         );
-                    } else if let Some(b) = d.get("embedding").and_then(Value::as_str) {
+                    } else if let Some(b) = d.get(keys::EMBEDDING).and_then(Value::as_str) {
                         item.vectors
                             .insert(EncFmt::Base64, VectorData::Base64(b.to_string()));
                     }
@@ -1206,12 +1207,12 @@ pub fn read_embeddings_response(
         })
         .unwrap_or_default();
     let usage = v
-        .get("usage")
+        .get(keys::USAGE)
         .map(
             |u| -> Result<busbar_contract::billing::TokenUsage, CodecError> {
                 // BILLED COUNT: absent is zero, UNREADABLE IS A REFUSAL (#81/#42).
                 Ok(busbar_contract::billing::TokenUsage {
-                    input: crate::codec::usage_count::billed_count(u, "prompt_tokens")
+                    input: crate::codec::usage_count::billed_count(u, super::PROMPT_TOKENS)
                         .map_err(|e| CodecError::Malformed(e.to_string()))?,
                     ..Default::default()
                 })
@@ -1219,8 +1220,8 @@ pub fn read_embeddings_response(
         )
         .transpose()?;
     Ok(EmbeddingsResp {
-        model: v.get("model").and_then(Value::as_str).map(str::to_string),
-        object_kind: Some("list".into()),
+        model: v.get(keys::MODEL).and_then(Value::as_str).map(str::to_string),
+        object_kind: Some(super::LIST.into()),
         embeddings,
         usage,
         ..Default::default()
@@ -1237,7 +1238,7 @@ pub fn read_image_request(
     let wire: Value =
         serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
     let model = wire
-        .get("model")
+        .get(keys::MODEL)
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
@@ -1253,8 +1254,8 @@ pub fn read_image_request(
             model,
         });
     }
-    let size = wire.get("size").and_then(Value::as_str).and_then(|s| {
-        if s == "auto" {
+    let size = wire.get(super::SIZE).and_then(Value::as_str).and_then(|s| {
+        if s == keys::AUTO {
             Some(ImageSize::Auto)
         } else {
             s.split_once('x').and_then(|(w, h)| {
@@ -1269,44 +1270,44 @@ pub fn read_image_request(
         op: ImageOp::Generate,
         model,
         prompt: wire
-            .get("prompt")
+            .get(keys::PROMPT)
             .and_then(Value::as_str)
             .map(str::to_string),
         n: wire
-            .get("n")
+            .get(super::W_N)
             .and_then(Value::as_u64)
             .and_then(|n| u32::try_from(n).ok()),
         size,
         quality: wire
-            .get("quality")
+            .get(keys::QUALITY)
             .and_then(Value::as_str)
             .map(str::to_string),
         style: wire
-            .get("style")
+            .get(super::STYLE)
             .and_then(Value::as_str)
             .map(str::to_string),
         response_format: wire
-            .get("response_format")
+            .get(keys::RESPONSE_FORMAT)
             .and_then(Value::as_str)
             .map(str::to_string),
         // gpt-image-1 output controls — carried through so egress re-emits them (see write_image_request).
         background: wire
-            .get("background")
+            .get(super::BACKGROUND)
             .and_then(Value::as_str)
             .map(str::to_string),
         output_format: wire
-            .get("output_format")
+            .get(keys::OUTPUT_FORMAT)
             .and_then(Value::as_str)
             .map(str::to_string),
         output_compression: wire
-            .get("output_compression")
+            .get(super::OUTPUT_COMPRESSION)
             .and_then(Value::as_u64)
             .and_then(|c| u8::try_from(c).ok()),
         moderation: wire
-            .get("moderation")
+            .get(keys::MODERATION)
             .and_then(Value::as_str)
             .map(str::to_string),
-        user: wire.get("user").and_then(Value::as_str).map(str::to_string),
+        user: wire.get(keys::USER).and_then(Value::as_str).map(str::to_string),
         ..Default::default()
     })
 }
@@ -1318,18 +1319,18 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::codec::ir::image::Image
     let v: Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
     let images: Vec<ImageOutput> = v
-        .get("data")
+        .get(keys::DATA)
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
                 .map(|d| ImageOutput {
                     b64: d
-                        .get("b64_json")
+                        .get(super::B64_JSON)
                         .and_then(Value::as_str)
                         .map(str::to_string),
-                    url: d.get("url").and_then(Value::as_str).map(str::to_string),
+                    url: d.get(keys::URL).and_then(Value::as_str).map(str::to_string),
                     revised_prompt: d
-                        .get("revised_prompt")
+                        .get(super::REVISED_PROMPT)
                         .and_then(Value::as_str)
                         .map(str::to_string),
                     ..Default::default()
@@ -1342,14 +1343,14 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::codec::ir::image::Image
     // billed nothing — `ImageResp::billing()` returns `None` when BOTH `usage` and `cost_basis`
     // are unset. Parse the token object when present so `billing()` yields `Billing::Tokens`.
     let usage = v
-        .get("usage")
+        .get(keys::USAGE)
         .map(
             |u| -> Result<busbar_contract::billing::TokenUsage, CodecError> {
                 // BILLED COUNTS: absent is zero, UNREADABLE IS A REFUSAL (#81/#42).
                 Ok(busbar_contract::billing::TokenUsage {
-                    input: crate::codec::usage_count::billed_count(u, "input_tokens")
+                    input: crate::codec::usage_count::billed_count(u, keys::INPUT_TOKENS)
                         .map_err(|e| CodecError::Malformed(e.to_string()))?,
-                    output: crate::codec::usage_count::billed_count(u, "output_tokens")
+                    output: crate::codec::usage_count::billed_count(u, keys::OUTPUT_TOKENS)
                         .map_err(|e| CodecError::Malformed(e.to_string()))?,
                     ..Default::default()
                 })
@@ -1369,7 +1370,7 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::codec::ir::image::Image
         None
     };
     Ok(ImageResp {
-        created: v.get("created").and_then(Value::as_u64),
+        created: v.get(super::CREATED).and_then(Value::as_u64),
         images,
         usage,
         cost_basis,
@@ -1387,11 +1388,11 @@ pub fn read_moderation_request(
     let wire: Value =
         serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
     let model = wire
-        .get("model")
+        .get(keys::MODEL)
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let input = parse_input(wire.get("input"))?;
+    let input = parse_input(wire.get(keys::INPUT))?;
     Ok(ModerationReq {
         model,
         input,
@@ -1408,13 +1409,13 @@ pub fn read_moderation_response(
     let v: Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
     let results = v
-        .get("results")
+        .get(keys::RESULTS)
         .and_then(Value::as_array)
         .map(|arr| arr.iter().map(parse_result).collect())
         .unwrap_or_default();
     Ok(ModerationResp {
-        id: v.get("id").and_then(Value::as_str).map(str::to_string),
-        model: v.get("model").and_then(Value::as_str).map(str::to_string),
+        id: v.get(keys::ID).and_then(Value::as_str).map(str::to_string),
+        model: v.get(keys::MODEL).and_then(Value::as_str).map(str::to_string),
         results,
         extra: BTreeMap::new(),
     })

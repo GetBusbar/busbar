@@ -4,6 +4,7 @@
 //! OpenAI protocol reader/writer implementation.
 
 use crate::codec::dialect::ir_parse_error;
+use crate::codec::keys;
 use crate::codec::ir::{IrStreamEvent, IrUsage};
 use busbar_contract::http::StatusCode;
 // The openai-family error helpers (`bearer_error_code`/`context_length_prose_scan`) now live
@@ -45,7 +46,7 @@ mod writer;
 /// resolution, exactly as the registry's field doc requires. Mirrors
 /// `super::anthropic::protocol`.
 pub fn protocol() -> Protocol {
-    Protocol::new("openai", OpenAiReader, OpenAiWriter)
+    Protocol::new(VENDOR_NAME, OpenAiReader, OpenAiWriter)
 }
 
 /// The [`ProtocolDecl::models_list_envelope`] builder: OpenAI's `GET /v1/models` shape. Each name
@@ -55,9 +56,9 @@ pub fn protocol() -> Protocol {
 fn models_list_envelope(names: &[&str]) -> serde_json::Value {
     let data: Vec<serde_json::Value> = names
         .iter()
-        .map(|id| serde_json::json!({ "id": id, "object": "model", "created": 0, "owned_by": "busbar" }))
+        .map(|id| serde_json::json!({ (keys::ID): id, (keys::OBJECT): keys::MODEL, (CREATED): 0, "owned_by": "busbar" }))
         .collect();
-    serde_json::json!({ "object": "list", "data": data })
+    serde_json::json!({ (keys::OBJECT): LIST, (keys::DATA): data })
 }
 
 /// OPENAI'S ROUTER DETECTION — its rungs of the old core `protocol_id` ladder: `/v1/chat/completions`
@@ -99,11 +100,11 @@ fn residual_claims(path: &str) -> Option<busbar_contract::protocol::ClaimStrengt
 
 /// OPENAI'S DECLARATION. See `proto::registry` for what each field replaces.
 pub const DECL: ProtocolDecl = ProtocolDecl {
-    name: "openai",
+    name: VENDOR_NAME,
     codec: {
         // The dialect's neutral codec facade as a STATIC, so the decl hands out a `&'static dyn`
         // borrow (pure memory, zero alloc per `dialect()` call) — the seam's perf contract.
-        static CODEC: super::proto_codec::DialectRef = super::proto_codec::dialect_ref("openai");
+        static CODEC: super::proto_codec::DialectRef = super::proto_codec::dialect_ref(VENDOR_NAME);
         Some(&CODEC)
     },
     handler: Some(&handler::OpenAiRequestHandler),
@@ -199,43 +200,43 @@ const MAX_OPEN_TOOLS: usize = OPENAI_FAMILY_MAX_OPEN_TOOLS;
 /// read, never a refusal. The buffered response, the stream's `include_usage` chunk and a
 /// truncated-body recovery read this one table.
 const USAGE: &[UsageCount] = &[
-    (CountSlot::Input, CountRead::Zero(&["prompt_tokens"])),
+    (CountSlot::Input, CountRead::Zero(&[PROMPT_TOKENS])),
     (
         CountSlot::Input,
-        CountRead::Less(&["prompt_tokens_details", "cached_tokens"]),
+        CountRead::Less(&[PROMPT_TOKENS_DETAILS, keys::CACHED_TOKENS]),
     ),
     (
         CountSlot::Input,
-        CountRead::Less(&["prompt_tokens_details", "cache_write_tokens"]),
+        CountRead::Less(&[PROMPT_TOKENS_DETAILS, keys::CACHE_WRITE_TOKENS]),
     ),
-    (CountSlot::Output, CountRead::Zero(&["completion_tokens"])),
+    (CountSlot::Output, CountRead::Zero(&[COMPLETION_TOKENS])),
     (
         CountSlot::CacheWrite,
-        CountRead::Opt(&["prompt_tokens_details", "cache_write_tokens"]),
+        CountRead::Opt(&[PROMPT_TOKENS_DETAILS, keys::CACHE_WRITE_TOKENS]),
     ),
     (
         CountSlot::CacheRead,
-        CountRead::Opt(&["prompt_tokens_details", "cached_tokens"]),
+        CountRead::Opt(&[PROMPT_TOKENS_DETAILS, keys::CACHED_TOKENS]),
     ),
     (
         CountSlot::Reasoning,
-        CountRead::Lenient(&["completion_tokens_details", "reasoning_tokens"]),
+        CountRead::Lenient(&[COMPLETION_TOKENS_DETAILS, keys::REASONING_TOKENS]),
     ),
     (
         CountSlot::InputAudio,
-        CountRead::Lenient(&["prompt_tokens_details", "audio_tokens"]),
+        CountRead::Lenient(&[PROMPT_TOKENS_DETAILS, AUDIO_TOKENS]),
     ),
     (
         CountSlot::OutputAudio,
-        CountRead::Lenient(&["completion_tokens_details", "audio_tokens"]),
+        CountRead::Lenient(&[COMPLETION_TOKENS_DETAILS, AUDIO_TOKENS]),
     ),
     (
         CountSlot::AcceptedPrediction,
-        CountRead::Lenient(&["completion_tokens_details", "accepted_prediction_tokens"]),
+        CountRead::Lenient(&[COMPLETION_TOKENS_DETAILS, ACCEPTED_PREDICTION_TOKENS]),
     ),
     (
         CountSlot::RejectedPrediction,
-        CountRead::Lenient(&["completion_tokens_details", "rejected_prediction_tokens"]),
+        CountRead::Lenient(&[COMPLETION_TOKENS_DETAILS, REJECTED_PREDICTION_TOKENS]),
     ),
 ];
 
@@ -246,7 +247,7 @@ fn read_openai_usage(
     usage: Option<&serde_json::Value>,
     tier: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
-    let mut usage = crate::codec::usage_count::read_usage("openai", usage, USAGE)?;
+    let mut usage = crate::codec::usage_count::read_usage(VENDOR_NAME, usage, USAGE)?;
     usage.detail.service_tier = crate::codec::carry::read_word(map::WORDS_SERVED_TIER, tier);
     Ok(usage)
 }
@@ -311,23 +312,23 @@ const FINISH_STOP: &str = "stop";
 /// OpenAI `finish_reason` wire token for a max-tokens truncation.
 const FINISH_LENGTH: &str = "length";
 /// OpenAI `finish_reason` wire token emitted when the model called a tool.
-const FINISH_TOOL_CALLS: &str = "tool_calls";
+const FINISH_TOOL_CALLS: &str = keys::TOOL_CALLS;
 /// OpenAI `finish_reason` wire token emitted when content was filtered.
 const FINISH_CONTENT_FILTER: &str = "content_filter";
 /// Legacy OpenAI `finish_reason` wire token for function-calling (pre-tool_calls era).
-const FINISH_FUNCTION_CALL: &str = "function_call";
+const FINISH_FUNCTION_CALL: &str = keys::FUNCTION_CALL;
 
 /// `response_format.type` value for plain-text output.
-const RESP_FORMAT_TEXT: &str = "text";
+const RESP_FORMAT_TEXT: &str = keys::TEXT;
 /// `response_format.type` value for a schema-constrained JSON output.
-const RESP_FORMAT_JSON_SCHEMA: &str = "json_schema";
+const RESP_FORMAT_JSON_SCHEMA: &str = keys::JSON_SCHEMA;
 /// `response_format.type` value for unstructured JSON output.
 const RESP_FORMAT_JSON_OBJECT: &str = "json_object";
 
 /// Tool `type` field value for all Chat Completions function tools.
-const TOOL_TYPE_FUNCTION: &str = "function";
+const TOOL_TYPE_FUNCTION: &str = keys::FUNCTION;
 /// Tool `type` field value for a Chat Completions custom (free-text / grammar input) tool.
-const TOOL_TYPE_CUSTOM: &str = "custom";
+const TOOL_TYPE_CUSTOM: &str = keys::CUSTOM;
 
 /// Fallback `json_schema.name` synthesized when the IR carries none.
 /// OpenAI REQUIRES this field and the SDK rejects it when absent.
@@ -344,11 +345,99 @@ const PATH_UPSTREAM: &str = "/v1/chat/completions";
 /// that key on the message string still fire.
 const AUTH_FAILURE_MSG: &str = "Incorrect API key provided.";
 
-/// The `vendor` tag on an [`crate::codec::ir::IrImageSource::Vendor`] this protocol produces — an OpenAI
+/// The dialect's own name `openai`, also the `vendor` tag on an [`crate::codec::ir::IrImageSource::Vendor`] this protocol produces — an OpenAI
 /// `file.file_id`, an uploads-API handle with no neutral (base64/url) form. Only an OpenAI-family
 /// writer recognizes the tag and re-emits the reference; every other writer drops it with a warn
 /// rather than emitting a handle its own backend cannot resolve.
 const VENDOR_NAME: &str = "openai";
+
+// Wire words only this dialect speaks, each spelled once here (the words two or more dialects
+// share are `crate::codec::keys`). Request/response member names, usage buckets, audio/image/
+// moderation members, and the two media words the chat codec names.
+/// The OpenAI wire word `language`.
+const LANGUAGE: &str = "language";
+/// The OpenAI wire word `duration`.
+const W_DURATION: &str = "duration";
+/// The OpenAI wire word `segments`.
+const SEGMENTS: &str = "segments";
+/// The OpenAI wire word `avg_logprob`.
+const AVG_LOGPROB: &str = "avg_logprob";
+/// The OpenAI wire word `no_speech_prob`.
+const NO_SPEECH_PROB: &str = "no_speech_prob";
+/// The OpenAI wire word `compression_ratio`.
+const COMPRESSION_RATIO: &str = "compression_ratio";
+/// The OpenAI wire word `words`.
+const W_WORDS: &str = "words";
+/// The OpenAI wire word `word`.
+const WORD: &str = "word";
+/// The OpenAI wire word `seconds`.
+const SECONDS: &str = "seconds";
+/// The OpenAI wire word `voice`.
+const VOICE: &str = "voice";
+/// The OpenAI wire word `speed`.
+const SPEED: &str = "speed";
+/// The OpenAI wire word `encoding_format`.
+const ENCODING_FORMAT: &str = "encoding_format";
+/// The OpenAI wire word `list`.
+const LIST: &str = "list";
+/// The OpenAI wire word `prompt_tokens`.
+const PROMPT_TOKENS: &str = "prompt_tokens";
+/// The OpenAI wire word `n`.
+const W_N: &str = "n";
+/// The OpenAI wire word `size`.
+const SIZE: &str = "size";
+/// The OpenAI wire word `style`.
+const STYLE: &str = "style";
+/// The OpenAI wire word `background`.
+const BACKGROUND: &str = "background";
+/// The OpenAI wire word `output_compression`.
+const OUTPUT_COMPRESSION: &str = "output_compression";
+/// The OpenAI wire word `b64_json`.
+const B64_JSON: &str = "b64_json";
+/// The OpenAI wire word `revised_prompt`.
+const REVISED_PROMPT: &str = "revised_prompt";
+/// The OpenAI wire word `created`.
+const CREATED: &str = "created";
+/// The OpenAI wire word `flagged`.
+const FLAGGED: &str = "flagged";
+/// The OpenAI wire word `categories`.
+const CATEGORIES: &str = "categories";
+/// The OpenAI wire word `category_scores`.
+const CATEGORY_SCORES: &str = "category_scores";
+/// The OpenAI wire word `category_applied_input_types`.
+const CATEGORY_APPLIED_INPUT_TYPES: &str = "category_applied_input_types";
+/// The OpenAI wire word `file`.
+const FILE: &str = "file";
+/// The OpenAI media type `audio/wav`.
+const AUDIO_WAV: &str = "audio/wav";
+/// The OpenAI wire word `prompt_tokens_details`.
+const PROMPT_TOKENS_DETAILS: &str = "prompt_tokens_details";
+/// The OpenAI wire word `completion_tokens`.
+const COMPLETION_TOKENS: &str = "completion_tokens";
+/// The OpenAI wire word `completion_tokens_details`.
+const COMPLETION_TOKENS_DETAILS: &str = "completion_tokens_details";
+/// The OpenAI wire word `audio_tokens`.
+const AUDIO_TOKENS: &str = "audio_tokens";
+/// The OpenAI wire word `accepted_prediction_tokens`.
+const ACCEPTED_PREDICTION_TOKENS: &str = "accepted_prediction_tokens";
+/// The OpenAI wire word `rejected_prediction_tokens`.
+const REJECTED_PREDICTION_TOKENS: &str = "rejected_prediction_tokens";
+/// The OpenAI wire word `audio`.
+const AUDIO: &str = "audio";
+/// The OpenAI wire word `mp3`.
+const MP3: &str = "mp3";
+/// The OpenAI wire word `choices`.
+const CHOICES: &str = "choices";
+/// The OpenAI wire word `max_completion_tokens`.
+const MAX_COMPLETION_TOKENS: &str = "max_completion_tokens";
+/// The OpenAI wire word `functions`.
+const FUNCTIONS: &str = "functions";
+/// The OpenAI wire word `reasoning_effort`.
+const REASONING_EFFORT: &str = "reasoning_effort";
+/// The OpenAI wire word `reasoning_content`.
+const REASONING_CONTENT: &str = "reasoning_content";
+/// The OpenAI wire word `system_fingerprint`.
+const SYSTEM_FINGERPRINT: &str = "system_fingerprint";
 
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -395,7 +484,7 @@ fn read_openai_response_format(
     v: &serde_json::Value,
 ) -> Option<crate::codec::ir::IrResponseFormat> {
     let o = v.as_object()?;
-    match o.get("type").and_then(|t| t.as_str()) {
+    match o.get(keys::TYPE).and_then(|t| t.as_str()) {
         Some(RESP_FORMAT_TEXT) => Some(crate::codec::ir::IrResponseFormat {
             json: false,
             schema: None,
@@ -404,17 +493,17 @@ fn read_openai_response_format(
             description: None,
         }),
         Some(RESP_FORMAT_JSON_SCHEMA) => {
-            let js = o.get("json_schema");
+            let js = o.get(keys::JSON_SCHEMA);
             Some(crate::codec::ir::IrResponseFormat {
                 json: true,
-                schema: js.and_then(|j| j.get("schema")).cloned(),
+                schema: js.and_then(|j| j.get(keys::SCHEMA)).cloned(),
                 name: js
-                    .and_then(|j| j.get("name"))
+                    .and_then(|j| j.get(keys::NAME))
                     .and_then(|n| n.as_str())
                     .map(String::from),
-                strict: js.and_then(|j| j.get("strict")).and_then(|s| s.as_bool()),
+                strict: js.and_then(|j| j.get(keys::STRICT)).and_then(|s| s.as_bool()),
                 description: js
-                    .and_then(|j| j.get("description"))
+                    .and_then(|j| j.get(keys::DESCRIPTION))
                     .and_then(|d| d.as_str())
                     .map(String::from),
             })
@@ -436,26 +525,26 @@ fn read_openai_response_format(
 /// ONLY code that builds OpenAI's structured-output wire shape.
 fn write_openai_response_format(rf: &crate::codec::ir::IrResponseFormat) -> serde_json::Value {
     if !rf.json {
-        return serde_json::json!({"type": RESP_FORMAT_TEXT});
+        return serde_json::json!({(keys::TYPE): RESP_FORMAT_TEXT});
     }
     match &rf.schema {
         Some(schema) => {
             let mut js = serde_json::Map::new();
             // OpenAI REQUIRES `json_schema.name`; synthesize a valid one when the source had none.
             js.insert(
-                "name".to_string(),
+                keys::NAME.to_string(),
                 serde_json::json!(rf.name.as_deref().unwrap_or(JSON_SCHEMA_DEFAULT_NAME)),
             );
-            js.insert("schema".to_string(), schema.clone());
+            js.insert(keys::SCHEMA.to_string(), schema.clone());
             if let Some(s) = rf.strict {
-                js.insert("strict".to_string(), serde_json::json!(s));
+                js.insert(keys::STRICT.to_string(), serde_json::json!(s));
             }
             if let Some(d) = &rf.description {
-                js.insert("description".to_string(), serde_json::json!(d));
+                js.insert(keys::DESCRIPTION.to_string(), serde_json::json!(d));
             }
-            serde_json::json!({"type": RESP_FORMAT_JSON_SCHEMA, "json_schema": js})
+            serde_json::json!({(keys::TYPE): RESP_FORMAT_JSON_SCHEMA, (keys::JSON_SCHEMA): js})
         }
-        None => serde_json::json!({"type": RESP_FORMAT_JSON_OBJECT}),
+        None => serde_json::json!({(keys::TYPE): RESP_FORMAT_JSON_OBJECT}),
     }
 }
 
@@ -478,14 +567,14 @@ pub fn read_openai_logprobs(
     v: Option<&serde_json::Value>,
 ) -> Vec<crate::codec::ir::IrTokenLogprob> {
     let entries = match v
-        .and_then(|lp| lp.get("content"))
+        .and_then(|lp| lp.get(keys::CONTENT))
         .and_then(|c| c.as_array())
     {
         Some(a) => a,
         None => return Vec::new(),
     };
     let read_bytes = |e: &serde_json::Value| -> Option<Vec<u8>> {
-        e.get("bytes")?.as_array().map(|arr| {
+        e.get(keys::BYTES)?.as_array().map(|arr| {
             arr.iter()
                 .filter_map(|b| b.as_u64().and_then(|b| u8::try_from(b).ok()))
                 .collect()
@@ -495,18 +584,18 @@ pub fn read_openai_logprobs(
         .iter()
         .filter_map(|e| {
             Some(crate::codec::ir::IrTokenLogprob {
-                token: e.get("token")?.as_str()?.to_string(),
-                logprob: e.get("logprob")?.as_f64()?,
+                token: e.get(keys::TOKEN)?.as_str()?.to_string(),
+                logprob: e.get(keys::LOGPROB)?.as_f64()?,
                 bytes: read_bytes(e),
                 top: e
-                    .get("top_logprobs")
+                    .get(keys::TOP_LOGPROBS)
                     .and_then(|t| t.as_array())
                     .map(|arr| {
                         arr.iter()
                             .filter_map(|t| {
                                 Some(crate::codec::ir::IrTopLogprob {
-                                    token: t.get("token")?.as_str()?.to_string(),
-                                    logprob: t.get("logprob")?.as_f64()?,
+                                    token: t.get(keys::TOKEN)?.as_str()?.to_string(),
+                                    logprob: t.get(keys::LOGPROB)?.as_f64()?,
                                     bytes: read_bytes(t),
                                 })
                             })
@@ -537,14 +626,14 @@ pub fn write_openai_logprobs(lps: &[crate::codec::ir::IrTokenLogprob]) -> serde_
                         .bytes
                         .clone()
                         .unwrap_or_else(|| t.token.as_bytes().to_vec());
-                    serde_json::json!({"token": t.token, "logprob": t.logprob, "bytes": b})
+                    serde_json::json!({(keys::TOKEN): t.token, (keys::LOGPROB): t.logprob, (keys::BYTES): b})
                 })
                 .collect();
             serde_json::json!({
-                "token": lp.token,
-                "logprob": lp.logprob,
-                "bytes": bytes,
-                "top_logprobs": top
+                (keys::TOKEN): lp.token,
+                (keys::LOGPROB): lp.logprob,
+                (keys::BYTES): bytes,
+                (keys::TOP_LOGPROBS): top
             })
         })
         .collect();
@@ -556,7 +645,7 @@ pub fn write_openai_logprobs(lps: &[crate::codec::ir::IrTokenLogprob]) -> serde_
     // `content` failed strict spec validation and the Python SDK's Pydantic model, and was a proxy
     // tell on every response that carried logprobs. The Responses writer lifts the `content` array
     // out of this object for an `output_text` part's bare `LogProb[]`, so it is unaffected.
-    serde_json::json!({ "content": content, "refusal": serde_json::Value::Null })
+    serde_json::json!({ (keys::CONTENT): content, (keys::REFUSAL): serde_json::Value::Null })
 }
 
 /// Synthesize a protocol-correct OpenAI completion id (`"chatcmpl-<24 base62 chars>"`) for
@@ -686,12 +775,12 @@ fn media_part_from_ir(
             // emitting an invalid `format`.
             match openai_audio_input_format(media_type) {
                 Some(format) => Some(serde_json::json!({
-                    "type": "input_audio",
-                    "input_audio": { "data": data, "format": format }
+                    (keys::TYPE): keys::INPUT_AUDIO,
+                    (keys::INPUT_AUDIO): { (keys::DATA): data, (keys::FORMAT): format }
                 })),
                 None => {
                     tracing::warn!(
-                        media_kind = "audio",
+                        media_kind = AUDIO,
                         mime = media_type.as_str(),
                         "dropping audio attachment on OpenAI Chat egress: input_audio.format is a \
                          closed {{wav, mp3}} enum and this mime maps to neither; the block is NOT \
@@ -704,24 +793,24 @@ fn media_part_from_ir(
         (K::Document, S::Base64 { media_type, data }) => {
             let mut file = serde_json::Map::new();
             file.insert(
-                "file_data".to_string(),
+                keys::FILE_DATA.to_string(),
                 serde_json::json!(format!("data:{media_type};base64,{data}")),
             );
             if let Some(n) = name {
-                file.insert("filename".to_string(), serde_json::json!(n));
+                file.insert(keys::FILENAME.to_string(), serde_json::json!(n));
             }
-            Some(serde_json::json!({ "type": "file", "file": serde_json::Value::Object(file) }))
+            Some(serde_json::json!({ (keys::TYPE): FILE, (FILE): serde_json::Value::Object(file) }))
         }
         // An OpenAI Files handle — this dialect's own or a Responses `input_file.file_id`, the same
         // namespace (SHR-03): re-emit the native `file_id` form.
         (K::Document, source) if super::openai_annotations::openai_file_id(source).is_some() => {
             let id = super::openai_annotations::openai_file_id(source)?;
             let mut file = serde_json::Map::new();
-            file.insert("file_id".to_string(), serde_json::json!(id));
+            file.insert(keys::FILE_ID.to_string(), serde_json::json!(id));
             if let Some(n) = name {
-                file.insert("filename".to_string(), serde_json::json!(n));
+                file.insert(keys::FILENAME.to_string(), serde_json::json!(n));
             }
-            Some(serde_json::json!({ "type": "file", "file": serde_json::Value::Object(file) }))
+            Some(serde_json::json!({ (keys::TYPE): FILE, (FILE): serde_json::Value::Object(file) }))
         }
         _ => {
             tracing::warn!(
@@ -748,9 +837,9 @@ fn media_part_from_ir(
 /// token the API rejects.
 fn openai_audio_input_format(media_type: &str) -> Option<&'static str> {
     match media_type.to_ascii_lowercase().as_str() {
-        "audio/mpeg" | "audio/mp3" | "audio/mpeg3" | "audio/x-mpeg-3" => Some("mp3"),
-        "audio/wav" | "audio/x-wav" | "audio/wave" | "audio/vnd.wave" | "audio/x-pn-wav" => {
-            Some("wav")
+        keys::AUDIO_MPEG | "audio/mp3" | "audio/mpeg3" | "audio/x-mpeg-3" => Some(MP3),
+        AUDIO_WAV | "audio/x-wav" | "audio/wave" | "audio/vnd.wave" | "audio/x-pn-wav" => {
+            Some(keys::WAV)
         }
         _ => None,
     }
@@ -760,11 +849,11 @@ fn openai_audio_input_format(media_type: &str) -> Option<&'static str> {
 fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::IrBlock, IrError> {
     let obj = block_val.as_object().ok_or_else(ir_parse_error)?;
 
-    let block_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let block_type = obj.get(keys::TYPE).and_then(|v| v.as_str()).unwrap_or("");
 
     match block_type {
-        "text" => {
-            let text_val = obj.get("text");
+        keys::TEXT => {
+            let text_val = obj.get(keys::TEXT);
             let text = text_val.and_then(|t| t.as_str()).unwrap_or("").to_string();
             Ok(crate::codec::ir::IrBlock::Text {
                 text,
@@ -773,9 +862,9 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::
                 refusal: false,
             })
         }
-        "image_url" => {
-            let image_obj = obj.get("image_url").ok_or_else(ir_parse_error)?;
-            let url = image_obj.get("url").and_then(|v| v.as_str()).unwrap_or("");
+        keys::IMAGE_URL => {
+            let image_obj = obj.get(keys::IMAGE_URL).ok_or_else(ir_parse_error)?;
+            let url = image_obj.get(keys::URL).and_then(|v| v.as_str()).unwrap_or("");
             // The IR `Image` contract (set by the Anthropic reader) is: `media_type` = a real MIME
             // type (e.g. "image/png") and `data` = the raw base64 payload. The Anthropic writer
             // renders that as a `{"type":"base64", "media_type":..., "data":...}` source. The prior
@@ -786,7 +875,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::
             // `image_url.detail` (`low`/`high`/`auto`) is the image-fidelity ask the IR carries
             // (IR-08; Responses and Cohere use the same words). An unknown word is dropped with a
             // warn rather than coerced onto a fidelity the caller did not ask for.
-            let detail = image_obj.get("detail").and_then(|v| v.as_str());
+            let detail = image_obj.get(keys::DETAIL).and_then(|v| v.as_str());
             let parsed = detail.and_then(crate::codec::ir::IrImageDetail::parse);
             if let (Some(word), None) = (detail, parsed) {
                 tracing::warn!(
@@ -808,17 +897,17 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::
         // would have accepted it natively as `inlineData`. OpenAI carries the format as a bare token
         // (`wav`), so normalize it to the real mime type the neutral IR (and every other dialect)
         // speaks; the writer reverses this exactly.
-        "input_audio" => {
-            let audio_obj = obj.get("input_audio").ok_or_else(ir_parse_error)?;
+        keys::INPUT_AUDIO => {
+            let audio_obj = obj.get(keys::INPUT_AUDIO).ok_or_else(ir_parse_error)?;
             let data = audio_obj
-                .get("data")
+                .get(keys::DATA)
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
             let format = audio_obj
-                .get("format")
+                .get(keys::FORMAT)
                 .and_then(|v| v.as_str())
-                .unwrap_or("wav");
+                .unwrap_or(keys::WAV);
             Ok(crate::codec::ir::IrBlock::Media {
                 kind: crate::codec::ir::IrMediaKind::Audio,
                 source: crate::codec::ir::IrImageSource::Base64 {
@@ -838,15 +927,15 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::
         // `data:<mime>;base64,<payload>` and otherwise keeps a URL verbatim) yields the same typed
         // source an image gets. A `file_id` is an OpenAI-hosted reference with NO neutral form, so it
         // rides the opaque `Vendor` escape and only an OpenAI-family writer re-emits it.
-        "file" => {
-            let file_obj = obj.get("file").ok_or_else(ir_parse_error)?;
+        FILE => {
+            let file_obj = obj.get(FILE).ok_or_else(ir_parse_error)?;
             let name = file_obj
-                .get("filename")
+                .get(keys::FILENAME)
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .map(String::from);
             let source = match file_obj
-                .get("file_data")
+                .get(keys::FILE_DATA)
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
             {
@@ -867,13 +956,13 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::
                 },
                 None => {
                     let file_id = file_obj
-                        .get("file_id")
+                        .get(keys::FILE_ID)
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
                     crate::codec::ir::IrImageSource::Vendor {
                         vendor: VENDOR_NAME,
-                        value: serde_json::json!({ "file_id": file_id }),
+                        value: serde_json::json!({ (keys::FILE_ID): file_id }),
                     }
                 }
             };
@@ -898,9 +987,9 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::
         // OpenAI conversation history through busbar will include them. Map a refusal to a Text block
         // carrying the refusal string, flagged as a refusal (IR-02), so the turn survives translation
         // rather than being rejected with a 400, and a dialect with a refusal part keeps it one.
-        "refusal" => {
+        keys::REFUSAL => {
             let text = obj
-                .get("refusal")
+                .get(keys::REFUSAL)
                 .and_then(|t| t.as_str())
                 .unwrap_or("")
                 .to_string();
@@ -940,10 +1029,10 @@ fn file_media_type_from_name(name: Option<&str>) -> &'static str {
         ("htm", "text/html"),
         ("json", "application/json"),
         ("xml", "application/xml"),
-        ("jpg", "image/jpeg"),
-        ("jpeg", "image/jpeg"),
-        ("wav", "audio/wav"),
-        ("mp3", "audio/mpeg"),
+        ("jpg", keys::IMAGE_JPEG),
+        ("jpeg", keys::IMAGE_JPEG),
+        (keys::WAV, AUDIO_WAV),
+        (MP3, keys::AUDIO_MPEG),
     ];
     crate::codec::dialect::media_type(
         &[
@@ -953,7 +1042,7 @@ fn file_media_type_from_name(name: Option<&str>) -> &'static str {
         ],
         &ext,
     )
-    .unwrap_or("application/octet-stream")
+    .unwrap_or(keys::APPLICATION_OCTET_STREAM)
 }
 
 /// Read an OpenAI-format tool from JSON.
@@ -967,7 +1056,7 @@ fn read_openai_tool(tool_val: &serde_json::Value) -> Result<crate::codec::ir::Ir
     // (OAI-09). It is carried as a `hosted` tool instead: the raw definition rides verbatim, the
     // cross-protocol seam drops it with its hosted-tool diagnostic, and this dialect's own writer
     // re-emits it unchanged.
-    if let Some(kind) = obj.get("type").and_then(|t| t.as_str()) {
+    if let Some(kind) = obj.get(keys::TYPE).and_then(|t| t.as_str()) {
         if kind != TOOL_TYPE_FUNCTION {
             return Ok(crate::codec::ir::IrTool {
                 name: String::new(),
@@ -983,20 +1072,20 @@ fn read_openai_tool(tool_val: &serde_json::Value) -> Result<crate::codec::ir::Ir
     // OpenAI nests the tool definition under `function` ({"type":"function","function":{...}}).
     // Read from there, falling back to the top level so a flattened/native-shaped tool still works.
     let src = obj
-        .get("function")
+        .get(keys::FUNCTION)
         .and_then(|f| f.as_object())
         .unwrap_or(obj);
 
     let name = src
-        .get("name")
+        .get(keys::NAME)
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
     let description = src
-        .get("description")
+        .get(keys::DESCRIPTION)
         .and_then(|v| v.as_str().map(String::from));
     let input_schema = src
-        .get("parameters")
+        .get(keys::PARAMETERS)
         .or_else(|| src.get("input_schema"))
         .cloned()
         .unwrap_or(serde_json::Value::Null);
@@ -1010,7 +1099,7 @@ fn read_openai_tool(tool_val: &serde_json::Value) -> Result<crate::codec::ir::Ir
         // STRICT function calling. Nested under `function` like `name`/`parameters`, so it is read
         // off `src` (which already resolved the nested-vs-flat shape). Absent ⇒ `None`, which is NOT
         // `Some(false)`: "the caller said nothing" must not be re-emitted as an explicit opt-out.
-        strict: src.get("strict").and_then(|v| v.as_bool()),
+        strict: src.get(keys::STRICT).and_then(|v| v.as_bool()),
     })
 }
 
@@ -1022,15 +1111,15 @@ fn read_openai_tool_choice(
 ) -> Option<crate::codec::ir::IrToolChoice> {
     match val? {
         serde_json::Value::String(s) => match s.as_str() {
-            "auto" => Some(crate::codec::ir::IrToolChoice::Auto),
-            "none" => Some(crate::codec::ir::IrToolChoice::None),
-            "required" => Some(crate::codec::ir::IrToolChoice::Required),
+            keys::AUTO => Some(crate::codec::ir::IrToolChoice::Auto),
+            keys::NONE_WORD => Some(crate::codec::ir::IrToolChoice::None),
+            keys::REQUIRED => Some(crate::codec::ir::IrToolChoice::Required),
             _ => None,
         },
         serde_json::Value::Object(o) => {
-            if o.get("type").and_then(|t| t.as_str()) == Some(TOOL_TYPE_FUNCTION) {
-                o.get("function")
-                    .and_then(|f| f.get("name"))
+            if o.get(keys::TYPE).and_then(|t| t.as_str()) == Some(TOOL_TYPE_FUNCTION) {
+                o.get(keys::FUNCTION)
+                    .and_then(|f| f.get(keys::NAME))
                     .and_then(|n| n.as_str())
                     .map(|name| crate::codec::ir::IrToolChoice::Tool {
                         name: name.to_string(),
@@ -1144,9 +1233,9 @@ impl StreamFraming for OpenAiStreamFraming {
         let Some(obj) = data.as_object() else {
             return false;
         };
-        let has_usage_obj = obj.get("usage").is_some_and(|u| u.is_object());
+        let has_usage_obj = obj.get(keys::USAGE).is_some_and(|u| u.is_object());
         let choices_empty = obj
-            .get("choices")
+            .get(CHOICES)
             .and_then(|c| c.as_array())
             .is_some_and(|arr| arr.is_empty());
         has_usage_obj && choices_empty
@@ -1181,11 +1270,11 @@ impl StreamFraming for OpenAiStreamFraming {
         // distinguishes a content/finish chunk from the empty-choices usage-only trailer, and it works
         // for compatible upstreams that omit or vary `object`.
         let choices_non_empty = obj
-            .get("choices")
+            .get(CHOICES)
             .and_then(|c| c.as_array())
             .is_some_and(|arr| !arr.is_empty());
         // Only act when a top-level `usage` key is actually present (the forced-include_usage tell).
-        obj.contains_key("usage") && choices_non_empty
+        obj.contains_key(keys::USAGE) && choices_non_empty
     }
 }
 
@@ -1202,22 +1291,22 @@ impl OpenAiStreamFraming {
         let Some(obj) = chunk.as_object_mut() else {
             return;
         };
-        if obj.get("object").and_then(|v| v.as_str()) != Some(OBJ_CHUNK) {
+        if obj.get(keys::OBJECT).and_then(|v| v.as_str()) != Some(OBJ_CHUNK) {
             return;
         }
-        let Some(choices) = obj.get_mut("choices").and_then(|c| c.as_array_mut()) else {
+        let Some(choices) = obj.get_mut(CHOICES).and_then(|c| c.as_array_mut()) else {
             return;
         };
         for choice in choices {
             let Some(tool_calls) = choice
-                .get_mut("delta")
-                .and_then(|d| d.get_mut("tool_calls"))
+                .get_mut(keys::DELTA)
+                .and_then(|d| d.get_mut(keys::TOOL_CALLS))
                 .and_then(|tc| tc.as_array_mut())
             else {
                 continue;
             };
             for tc in tool_calls {
-                let Some(raw) = tc.get("index").and_then(|i| i.as_u64()) else {
+                let Some(raw) = tc.get(keys::INDEX).and_then(|i| i.as_u64()) else {
                     continue;
                 };
                 // Assign the next ordinal on first sight of this raw index; replay it thereafter.
@@ -1236,7 +1325,7 @@ impl OpenAiStreamFraming {
                 let next = self.tool_call_index.len() as u64;
                 let ordinal = *self.tool_call_index.entry(raw).or_insert(next);
                 if let Some(tc_obj) = tc.as_object_mut() {
-                    tc_obj.insert("index".to_string(), serde_json::json!(ordinal));
+                    tc_obj.insert(keys::INDEX.to_string(), serde_json::json!(ordinal));
                 }
             }
         }
@@ -1251,32 +1340,32 @@ impl OpenAiStreamFraming {
         };
         // Only `chat.completion.chunk` bodies carry stream identity. An in-band error envelope
         // (`{"error":{...}}`) the writer may emit has no `object` field — leave it untouched.
-        if obj.get("object").and_then(|v| v.as_str()) != Some(OBJ_CHUNK) {
+        if obj.get(keys::OBJECT).and_then(|v| v.as_str()) != Some(OBJ_CHUNK) {
             return;
         }
         match &self.chunk_identity {
             None => {
                 // First chunk: latch its identity (the writer put id/created on the role chunk, and
                 // model when the lane supplied one).
-                if obj.contains_key("id") {
+                if obj.contains_key(keys::ID) {
                     self.chunk_identity = Some(OpenAiChunkIdentity {
-                        id: obj.get("id").cloned().unwrap_or(serde_json::Value::Null),
+                        id: obj.get(keys::ID).cloned().unwrap_or(serde_json::Value::Null),
                         created: obj
-                            .get("created")
+                            .get(CREATED)
                             .cloned()
                             .unwrap_or(serde_json::Value::Null),
-                        model: obj.get("model").cloned(),
+                        model: obj.get(keys::MODEL).cloned(),
                     });
                 }
             }
             Some(identity) => {
                 // Subsequent chunk: replay the latched identity (the writer omitted it).
-                obj.entry("id".to_string())
+                obj.entry(keys::ID.to_string())
                     .or_insert_with(|| identity.id.clone());
-                obj.entry("created".to_string())
+                obj.entry(CREATED.to_string())
                     .or_insert_with(|| identity.created.clone());
                 if let Some(model) = &identity.model {
-                    obj.entry("model".to_string())
+                    obj.entry(keys::MODEL.to_string())
                         .or_insert_with(|| model.clone());
                 }
             }
@@ -1297,7 +1386,7 @@ impl OpenAiStreamFraming {
 /// populated with the latched id/created/model), so both frames share ONE stream identity.
 fn split_openai_trailing_usage(chunk: &mut serde_json::Value) -> Option<serde_json::Value> {
     let obj = chunk.as_object_mut()?;
-    if obj.get("object").and_then(|v| v.as_str()) != Some(OBJ_CHUNK) {
+    if obj.get(keys::OBJECT).and_then(|v| v.as_str()) != Some(OBJ_CHUNK) {
         return None;
     }
     // A native include_usage trailer carries usage ONLY on a chunk with no active choice, so the
@@ -1313,29 +1402,29 @@ fn split_openai_trailing_usage(chunk: &mut serde_json::Value) -> Option<serde_js
     // it, so the usage was lost on the way to a Chat-Completions client. Keying on the fold itself
     // covers both shapes and matches what the spec actually discriminates on: usage rides its own
     // chunk, not a chunk with a choice on it.
-    if !obj.contains_key("usage") {
+    if !obj.contains_key(keys::USAGE) {
         return None;
     }
-    let usage = obj.remove("usage")?;
+    let usage = obj.remove(keys::USAGE)?;
     // Build the trailing usage-only chunk mirroring the finish chunk's stream identity. `choices`
     // is an EMPTY array — the native include_usage trailer carries no choice. Fields absent on the
     // source chunk are simply omitted (kept faithful to what the stream already carries).
     let mut trailing = serde_json::Map::new();
-    if let Some(id) = obj.get("id") {
-        trailing.insert("id".to_string(), id.clone());
+    if let Some(id) = obj.get(keys::ID) {
+        trailing.insert(keys::ID.to_string(), id.clone());
     }
     trailing.insert(
-        "object".to_string(),
+        keys::OBJECT.to_string(),
         serde_json::Value::String(OBJ_CHUNK.to_string()),
     );
-    if let Some(created) = obj.get("created") {
-        trailing.insert("created".to_string(), created.clone());
+    if let Some(created) = obj.get(CREATED) {
+        trailing.insert(CREATED.to_string(), created.clone());
     }
-    if let Some(model) = obj.get("model") {
-        trailing.insert("model".to_string(), model.clone());
+    if let Some(model) = obj.get(keys::MODEL) {
+        trailing.insert(keys::MODEL.to_string(), model.clone());
     }
-    trailing.insert("choices".to_string(), serde_json::Value::Array(Vec::new()));
-    trailing.insert("usage".to_string(), usage);
+    trailing.insert(CHOICES.to_string(), serde_json::Value::Array(Vec::new()));
+    trailing.insert(keys::USAGE.to_string(), usage);
     Some(serde_json::Value::Object(trailing))
 }
 
@@ -1352,10 +1441,10 @@ fn strip_folded_usage(chunk: &mut serde_json::Value) {
     let Some(obj) = chunk.as_object_mut() else {
         return;
     };
-    if obj.get("object").and_then(|v| v.as_str()) != Some(OBJ_CHUNK) {
+    if obj.get(keys::OBJECT).and_then(|v| v.as_str()) != Some(OBJ_CHUNK) {
         return;
     }
-    obj.remove("usage");
+    obj.remove(keys::USAGE);
 }
 
 /// OpenAI writer implementation.
@@ -1474,8 +1563,8 @@ pub(crate) fn openai_classify(status: StatusCode, body: &[u8]) -> CanonicalSigna
     let code_is_context = crate::codec::json::parse::<serde_json::Value>(body)
         .ok()
         .and_then(|j| {
-            j.get("error")
-                .and_then(|e| e.get("code"))
+            j.get(keys::ERROR_WORD)
+                .and_then(|e| e.get(keys::CODE))
                 .and_then(|c| c.as_str())
                 .map(|s| s.to_string())
         })
@@ -1516,7 +1605,7 @@ pub(crate) fn openai_classify(status: StatusCode, body: &[u8]) -> CanonicalSigna
     if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
         return CanonicalSignal {
             class: StatusClass::Auth,
-            provider_signal: Some("auth".to_string()),
+            provider_signal: Some(keys::AUTH_WORD.to_string()),
             retry_after: None,
         };
     }

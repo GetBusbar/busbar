@@ -19,6 +19,7 @@
 //! walker; `extra` is written last (it wins on the same dialect) and is cleared on the
 //! cross-protocol seam, where the typed slot is what crosses.
 
+use crate::codec::keys;
 use crate::codec::ir::{
     IrHostedTool, IrModality, IrRequest, IrToolChoice, IrUserLocation, IrVerbosity, IrWebSearch,
 };
@@ -34,13 +35,13 @@ pub(super) fn read_tool_choice_slots(
     obj: &serde_json::Map<String, serde_json::Value>,
     ir: &mut IrRequest,
 ) {
-    if let Some((names, mode)) = obj.get("tool_choice").and_then(read_allowed_tools) {
+    if let Some((names, mode)) = obj.get(keys::TOOL_CHOICE).and_then(read_allowed_tools) {
         ir.allowed_tools = Some(names);
         ir.tool_choice = Some(mode);
     }
-    if let Some(raw) = obj.get("tool_choice") {
+    if let Some(raw) = obj.get(keys::TOOL_CHOICE) {
         if write_tool_choice(ir).as_ref() != Some(raw) {
-            ir.extra.insert("tool_choice".to_string(), raw.clone());
+            ir.extra.insert(keys::TOOL_CHOICE.to_string(), raw.clone());
         }
     }
 }
@@ -50,12 +51,12 @@ pub(super) fn read_tool_choice_slots(
 /// member the IR cannot hold (it stays the raw same-protocol tool).
 pub(super) fn read_custom_tool(tool: &serde_json::Value) -> Option<IrHostedTool> {
     let obj = tool.as_object()?;
-    if obj.get("type").and_then(|t| t.as_str()) != Some("custom")
-        || obj.keys().any(|k| k != "type" && k != "custom")
+    if obj.get(keys::TYPE).and_then(|t| t.as_str()) != Some(keys::CUSTOM)
+        || obj.keys().any(|k| k != keys::TYPE && k != keys::CUSTOM)
     {
         return None;
     }
-    crate::codec::ir::IrCustomTool::read_members(obj.get("custom")?.as_object()?, &[])
+    crate::codec::ir::IrCustomTool::read_members(obj.get(keys::CUSTOM)?.as_object()?, &[])
         .map(IrHostedTool::Custom)
 }
 
@@ -65,8 +66,8 @@ pub(super) fn write_custom_tools(req: &IrRequest) -> Vec<serde_json::Value> {
         .iter()
         .filter_map(|t| match t {
             IrHostedTool::Custom(c) => Some(serde_json::json!({
-                "type": "custom",
-                "custom": serde_json::Value::Object(c.write_members()),
+                (keys::TYPE): keys::CUSTOM,
+                (keys::CUSTOM): serde_json::Value::Object(c.write_members()),
             })),
             _ => None,
         })
@@ -95,26 +96,26 @@ pub(super) fn dropped_hosted_kinds(req: &IrRequest) -> Vec<&'static str> {
 pub(super) fn write_tool_choice(req: &IrRequest) -> Option<serde_json::Value> {
     if let Some(names) = &req.allowed_tools {
         let mode = match req.tool_choice {
-            Some(IrToolChoice::Required) => "required",
-            _ => "auto",
+            Some(IrToolChoice::Required) => keys::REQUIRED,
+            _ => keys::AUTO,
         };
         let tools: Vec<serde_json::Value> = names
             .iter()
             .map(
-                |n| serde_json::json!({"type": super::TOOL_TYPE_FUNCTION, "function": {"name": n}}),
+                |n| serde_json::json!({(keys::TYPE): super::TOOL_TYPE_FUNCTION, (keys::FUNCTION): {(keys::NAME): n}}),
             )
             .collect();
         return Some(serde_json::json!({
-            "type": TOOL_CHOICE_ALLOWED_TOOLS,
-            TOOL_CHOICE_ALLOWED_TOOLS: {"mode": mode, "tools": tools},
+            (keys::TYPE): TOOL_CHOICE_ALLOWED_TOOLS,
+            TOOL_CHOICE_ALLOWED_TOOLS: {(keys::MODE): mode, (keys::TOOLS): tools},
         }));
     }
     Some(match req.tool_choice.as_ref()? {
-        IrToolChoice::Auto => serde_json::json!("auto"),
-        IrToolChoice::None => serde_json::json!("none"),
-        IrToolChoice::Required => serde_json::json!("required"),
+        IrToolChoice::Auto => serde_json::json!(keys::AUTO),
+        IrToolChoice::None => serde_json::json!(keys::NONE_WORD),
+        IrToolChoice::Required => serde_json::json!(keys::REQUIRED),
         IrToolChoice::Tool { name } => {
-            serde_json::json!({"type": super::TOOL_TYPE_FUNCTION, "function": {"name": name}})
+            serde_json::json!({(keys::TYPE): super::TOOL_TYPE_FUNCTION, (keys::FUNCTION): {(keys::NAME): name}})
         }
     })
 }
@@ -134,7 +135,7 @@ pub(crate) fn read_modalities(v: &serde_json::Value, ir: &mut IrRequest) {
 /// dialect); cross-protocol it is dropped with a warn rather than sent as a request OpenAI rejects.
 /// `image` has no Chat output modality.
 pub(crate) fn write_modalities(req: &IrRequest) -> Option<serde_json::Value> {
-    let has_audio_member = req.extra.contains_key("audio");
+    let has_audio_member = req.extra.contains_key(super::AUDIO);
     let mut out: Vec<serde_json::Value> = Vec::new();
     for m in req.output_modalities.as_deref()? {
         match m {
@@ -161,11 +162,11 @@ pub(crate) fn read_web_search(v: &serde_json::Value, ir: &mut IrRequest) {
         return;
     };
     let search_context_size = o
-        .get("search_context_size")
+        .get(keys::SEARCH_CONTEXT_SIZE)
         .and_then(|s| s.as_str())
         .and_then(IrVerbosity::parse);
     let user_location = o
-        .get("user_location")
+        .get(keys::USER_LOCATION)
         .and_then(|l| l.get(IrUserLocation::TYPE_APPROXIMATE))
         .and_then(|a| a.as_object())
         .map(IrUserLocation::read_members);
@@ -217,7 +218,7 @@ fn web_search_options(ws: &IrWebSearch) -> serde_json::Value {
     let mut o = serde_json::Map::new();
     if let Some(size) = ws.search_context_size {
         o.insert(
-            "search_context_size".to_string(),
+            keys::SEARCH_CONTEXT_SIZE.to_string(),
             serde_json::json!(size.as_str()),
         );
     }
@@ -225,8 +226,8 @@ fn web_search_options(ws: &IrWebSearch) -> serde_json::Value {
         // Chat nests the members under the type's own name.
         let approx = IrUserLocation::TYPE_APPROXIMATE;
         o.insert(
-            "user_location".to_string(),
-            serde_json::json!({"type": approx, approx: serde_json::Value::Object(loc.write_members())}),
+            keys::USER_LOCATION.to_string(),
+            serde_json::json!({(keys::TYPE): approx, approx: serde_json::Value::Object(loc.write_members())}),
         );
     }
     serde_json::Value::Object(o)
@@ -237,23 +238,23 @@ fn web_search_options(ws: &IrWebSearch) -> serde_json::Value {
 /// cross-dialect tool to name (OAI-09), so it is not listed; a subset with no function tool left is
 /// not a subset at all.
 fn read_allowed_tools(v: &serde_json::Value) -> Option<(Vec<String>, IrToolChoice)> {
-    if v.get("type").and_then(|t| t.as_str()) != Some(TOOL_CHOICE_ALLOWED_TOOLS) {
+    if v.get(keys::TYPE).and_then(|t| t.as_str()) != Some(TOOL_CHOICE_ALLOWED_TOOLS) {
         return None;
     }
     let at = v.get(TOOL_CHOICE_ALLOWED_TOOLS)?;
-    let mode = match at.get("mode").and_then(|m| m.as_str())? {
-        "auto" => IrToolChoice::Auto,
-        "required" => IrToolChoice::Required,
+    let mode = match at.get(keys::MODE).and_then(|m| m.as_str())? {
+        keys::AUTO => IrToolChoice::Auto,
+        keys::REQUIRED => IrToolChoice::Required,
         _ => return None,
     };
     let names: Vec<String> = at
-        .get("tools")?
+        .get(keys::TOOLS)?
         .as_array()?
         .iter()
-        .filter(|t| t.get("type").and_then(|x| x.as_str()) == Some(super::TOOL_TYPE_FUNCTION))
+        .filter(|t| t.get(keys::TYPE).and_then(|x| x.as_str()) == Some(super::TOOL_TYPE_FUNCTION))
         .filter_map(|t| {
-            t.get("function")
-                .and_then(|f| f.get("name"))
+            t.get(keys::FUNCTION)
+                .and_then(|f| f.get(keys::NAME))
                 .and_then(|n| n.as_str())
                 .map(String::from)
         })

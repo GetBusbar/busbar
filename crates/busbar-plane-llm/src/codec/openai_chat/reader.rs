@@ -21,14 +21,14 @@ impl ProtocolReader for OpenAiReader {
         let json = crate::codec::json::parse::<serde_json::Value>(body).ok();
         let error_obj = json
             .as_ref()
-            .and_then(|j| j.get("error"))
+            .and_then(|j| j.get(keys::ERROR_WORD))
             .and_then(|e| e.as_object());
         let provider_code = error_obj
-            .and_then(|e_obj| e_obj.get("code"))
+            .and_then(|e_obj| e_obj.get(keys::CODE))
             .and_then(|c| c.as_str())
             .map(String::from);
         let structured_type = error_obj
-            .and_then(|e_obj| e_obj.get("type"))
+            .and_then(|e_obj| e_obj.get(keys::TYPE))
             .and_then(|t| t.as_str())
             .map(String::from);
 
@@ -57,7 +57,7 @@ impl ProtocolReader for OpenAiReader {
                 return None;
             }
             let message = error_obj
-                .and_then(|e_obj| e_obj.get("message"))
+                .and_then(|e_obj| e_obj.get(keys::MESSAGE))
                 .and_then(|m| m.as_str())
                 .unwrap_or("")
                 .to_lowercase();
@@ -100,7 +100,7 @@ impl ProtocolReader for OpenAiReader {
         let mut system_folds: Vec<crate::codec::ir::IrSystemFold> = Vec::new();
 
         // Extract scalar fields and extra
-        let _model = obj.get("model").and_then(|v| v.as_str()).map(String::from);
+        let _model = obj.get(keys::MODEL).and_then(|v| v.as_str()).map(String::from);
 
         // Read the caller's output-token cap. `max_tokens` is the legacy field; `max_completion_tokens`
         // is the current Chat Completions parameter and is MANDATORY for reasoning models (o1/o3/...),
@@ -115,8 +115,8 @@ impl ProtocolReader for OpenAiReader {
         // hardened sibling readers (gemini/anthropic/cohere/bedrock) while preserving the existing
         // non-positive-rejection contract.
         let max_tokens = obj
-            .get("max_tokens")
-            .or_else(|| obj.get("max_completion_tokens"))
+            .get(keys::MAX_TOKENS)
+            .or_else(|| obj.get(MAX_COMPLETION_TOKENS))
             .and_then(|v| v.as_u64())
             .and_then(|v| u32::try_from(v).ok())
             .filter(|&v| v > 0);
@@ -127,14 +127,14 @@ impl ProtocolReader for OpenAiReader {
         // `max_tokens` is correct. The sentinel rides `extra` and is cleared on the cross-protocol seam,
         // so it scopes to same-protocol exactly.
         let max_completion_tokens_was_source =
-            !obj.contains_key("max_tokens") && obj.contains_key("max_completion_tokens");
+            !obj.contains_key(keys::MAX_TOKENS) && obj.contains_key(MAX_COMPLETION_TOKENS);
         // The sampling controls (temperature, top_p, the penalties, seed, n, stop) are rows of the
         // mapping file, read below. `response_format` is the raw object (json_object /
         // json_schema), stored verbatim so the writer can re-emit it unchanged.
         let response_format = obj
-            .get("response_format")
+            .get(keys::RESPONSE_FORMAT)
             .and_then(read_openai_response_format);
-        let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+        let stream = obj.get(keys::STREAM).and_then(|v| v.as_bool()).unwrap_or(false);
 
         // Handle messages array
         let mut messages: Vec<crate::codec::ir::IrMessage> = Vec::new();
@@ -152,12 +152,12 @@ impl ProtocolReader for OpenAiReader {
         // `call_…` id, and a later `role:"function"` result pairs with the most recent UNMATCHED
         // call of the same name — the legacy wire correlates by name alone.
         let mut legacy_calls: Vec<(String, String, bool)> = Vec::new();
-        if let Some(messages_val) = obj.get("messages") {
+        if let Some(messages_val) = obj.get(keys::MESSAGES) {
             let msgs_arr = messages_val.as_array().ok_or_else(ir_parse_error)?;
 
             for msg_val in msgs_arr.iter() {
-                let role_str = msg_val.get("role").and_then(|r| r.as_str()).unwrap_or("");
-                let content_val = msg_val.get("content");
+                let role_str = msg_val.get(keys::ROLE).and_then(|r| r.as_str()).unwrap_or("");
+                let content_val = msg_val.get(keys::CONTENT);
 
                 // EDGE-VALIDATE the per-message `content` TYPE. OpenAI chat `content` is legally a
                 // string, an array of content parts, or absent/`null` (an assistant turn carrying
@@ -176,12 +176,12 @@ impl ProtocolReader for OpenAiReader {
                     // Responses API reader already treats them as equivalent). Map both to the IR
                     // System role so a developer-role turn flows through the existing
                     // System-promotion path below rather than being 400ed by the catch-all.
-                    "developer" | "system" => crate::codec::ir::IrRole::System,
-                    "user" => crate::codec::ir::IrRole::User,
-                    "assistant" => crate::codec::ir::IrRole::Assistant,
+                    keys::DEVELOPER | keys::SYSTEM => crate::codec::ir::IrRole::System,
+                    keys::USER => crate::codec::ir::IrRole::User,
+                    keys::ASSISTANT => crate::codec::ir::IrRole::Assistant,
                     // The legacy function-result turn (`{"role":"function","name","content"}`) is a
                     // tool result correlated by name (OAI-07); it is read as one below.
-                    "tool" | "function" => crate::codec::ir::IrRole::Tool,
+                    keys::TOOL | keys::FUNCTION => crate::codec::ir::IrRole::Tool,
                     _ => return Err(ir_parse_error()),
                 };
 
@@ -193,7 +193,7 @@ impl ProtocolReader for OpenAiReader {
                 // never push a System IrMessage; we accumulate its content into system_blocks.
                 if role == crate::codec::ir::IrRole::System {
                     system_turns_folded += 1;
-                    if role_str == "developer" {
+                    if role_str == keys::DEVELOPER {
                         system_roles_seen.1 = true;
                     } else {
                         system_roles_seen.0 = true;
@@ -266,7 +266,7 @@ impl ProtocolReader for OpenAiReader {
 
                     // Handle tool_calls for assistant messages
                     if role == crate::codec::ir::IrRole::Assistant {
-                        if let Some(tool_calls) = msg_val.get("tool_calls") {
+                        if let Some(tool_calls) = msg_val.get(keys::TOOL_CALLS) {
                             if let Some(tc_arr) = tool_calls.as_array() {
                                 for tc_val in tc_arr {
                                     // A present tool call MUST carry a non-empty string `id`: it is
@@ -275,18 +275,18 @@ impl ProtocolReader for OpenAiReader {
                                     // empty IR id that silently breaks that pairing downstream, so
                                     // reject the malformed call rather than inventing an id.
                                     let id = tc_val
-                                        .get("id")
+                                        .get(keys::ID)
                                         .and_then(|v| v.as_str())
                                         .filter(|s| !s.is_empty())
                                         .ok_or_else(ir_parse_error)?
                                         .to_string();
-                                    let func = tc_val.get("function").ok_or_else(ir_parse_error)?;
+                                    let func = tc_val.get(keys::FUNCTION).ok_or_else(ir_parse_error)?;
                                     let name = func
-                                        .get("name")
+                                        .get(keys::NAME)
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("")
                                         .to_string();
-                                    let input = tool_input_from_arguments(func.get("arguments"));
+                                    let input = tool_input_from_arguments(func.get(keys::ARGUMENTS));
 
                                     msg_content.push(crate::codec::ir::IrBlock::ToolUse {
                                         id,
@@ -306,11 +306,11 @@ impl ProtocolReader for OpenAiReader {
                     // stays in this message's extras stash, which is what an OpenAI-origin
                     // re-serialize writes back instead of `tool_calls`.
                     if role == crate::codec::ir::IrRole::Assistant
-                        && msg_val.get("tool_calls").is_none()
+                        && msg_val.get(keys::TOOL_CALLS).is_none()
                     {
-                        if let Some(fc) = msg_val.get("function_call").filter(|f| f.is_object()) {
+                        if let Some(fc) = msg_val.get(keys::FUNCTION_CALL).filter(|f| f.is_object()) {
                             let name = fc
-                                .get("name")
+                                .get(keys::NAME)
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("")
                                 .to_string();
@@ -319,7 +319,7 @@ impl ProtocolReader for OpenAiReader {
                             msg_content.push(crate::codec::ir::IrBlock::ToolUse {
                                 id,
                                 name,
-                                input: tool_input_from_arguments(fc.get("arguments")),
+                                input: tool_input_from_arguments(fc.get(keys::ARGUMENTS)),
                                 cache_control: None,
                                 thought_signature: None,
                             });
@@ -328,10 +328,10 @@ impl ProtocolReader for OpenAiReader {
 
                     // Handle tool results
                     if role == crate::codec::ir::IrRole::Tool {
-                        let tool_call_id = if role_str == "function" {
+                        let tool_call_id = if role_str == keys::FUNCTION {
                             // Legacy result: pair by name with the latest unmatched legacy call; a
                             // result with no such call keeps a synthesized id of its own.
-                            let fname = msg_val.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                            let fname = msg_val.get(keys::NAME).and_then(|v| v.as_str()).unwrap_or("");
                             match legacy_calls
                                 .iter_mut()
                                 .rev()
@@ -345,7 +345,7 @@ impl ProtocolReader for OpenAiReader {
                             }
                         } else {
                             msg_val
-                                .get("tool_call_id")
+                                .get(keys::TOOL_CALL_ID)
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("")
                                 .to_string()
@@ -396,7 +396,7 @@ impl ProtocolReader for OpenAiReader {
                     // `message.refusal` handling. A same-protocol re-serialize writes it back as a
                     // `refusal` content part (value preserved).
                     if let Some(refusal) = msg_val
-                        .get("refusal")
+                        .get(keys::REFUSAL)
                         .and_then(|v| v.as_str())
                         .filter(|s| !s.is_empty())
                     {
@@ -413,9 +413,9 @@ impl ProtocolReader for OpenAiReader {
                     // this is not an `IrMessage` field): it survives a same-protocol re-serialize and
                     // is NAMED in the cross-protocol dropped-keys warn instead of vanishing.
                     if let Some(name) = msg_val
-                        .get("name")
+                        .get(keys::NAME)
                         .and_then(|v| v.as_str())
-                        .filter(|s| !s.is_empty() && role_str != "function")
+                        .filter(|s| !s.is_empty() && role_str != keys::FUNCTION)
                     {
                         message_names.insert(messages.len().to_string(), serde_json::json!(name));
                     }
@@ -431,12 +431,12 @@ impl ProtocolReader for OpenAiReader {
                         for (k, v) in mo {
                             if !matches!(
                                 k.as_str(),
-                                "role"
-                                    | "content"
-                                    | "name"
-                                    | "tool_calls"
-                                    | "tool_call_id"
-                                    | "refusal"
+                                keys::ROLE
+                                    | keys::CONTENT
+                                    | keys::NAME
+                                    | keys::TOOL_CALLS
+                                    | keys::TOOL_CALL_ID
+                                    | keys::REFUSAL
                             ) {
                                 this_extras.insert(k.clone(), v.clone());
                             }
@@ -444,11 +444,11 @@ impl ProtocolReader for OpenAiReader {
                         // A legacy `role:"function"` turn is remembered as one (its function
                         // `name` included), so an OpenAI-origin re-serialize writes it back in the
                         // legacy shape rather than as a `tool` message.
-                        if role_str == "function" {
+                        if role_str == keys::FUNCTION {
                             this_extras.insert(
                                 LEGACY_FUNCTION_ROLE_KEY.to_string(),
                                 msg_val
-                                    .get("name")
+                                    .get(keys::NAME)
                                     .cloned()
                                     .unwrap_or(serde_json::Value::Null),
                             );
@@ -471,7 +471,7 @@ impl ProtocolReader for OpenAiReader {
         // Handle tools array
         let mut tools: Vec<crate::codec::ir::IrTool> = Vec::new();
         let mut custom_tools: Vec<crate::codec::ir::IrHostedTool> = Vec::new();
-        if let Some(tools_val) = obj.get("tools") {
+        if let Some(tools_val) = obj.get(keys::TOOLS) {
             // A PRESENT `tools` that is not an array is a malformed request — reject it (mirroring the
             // `messages` type-check) rather than coercing to empty, which would forward a tool-less
             // request upstream at HTTP 200 and silently strip the caller's tools.
@@ -486,14 +486,14 @@ impl ProtocolReader for OpenAiReader {
                 }
                 tools.push(read_openai_tool(tool_val)?);
             }
-        } else if let Some(functions) = obj.get("functions").and_then(|f| f.as_array()) {
+        } else if let Some(functions) = obj.get(FUNCTIONS).and_then(|f| f.as_array()) {
             // The legacy `functions` array (pre-`tools` API): each entry IS the body of a modern
             // function tool, so it is read as one (OAI-07). `functions` also stays in `extra`, which
             // is what an OpenAI-origin re-serialize writes back instead of `tools`.
             for f in functions {
                 tools.push(read_openai_tool(&serde_json::json!({
-                    "type": TOOL_TYPE_FUNCTION,
-                    "function": f,
+                    (keys::TYPE): TOOL_TYPE_FUNCTION,
+                    (keys::FUNCTION): f,
                 }))?);
             }
         }
@@ -548,16 +548,16 @@ impl ProtocolReader for OpenAiReader {
         // the cross-protocol seam instead of degrading to `auto`. Read it from the native shape here.
         // The legacy `function_call` directive (`"auto"` / `"none"` / `{"name":X}`) is the
         // pre-`tools` spelling of `tool_choice` (OAI-07); read it when `tool_choice` is absent.
-        let tool_choice = read_openai_tool_choice(obj.get("tool_choice")).or_else(|| {
-            match obj.get("function_call")? {
-                serde_json::Value::String(s) if s == "auto" => {
+        let tool_choice = read_openai_tool_choice(obj.get(keys::TOOL_CHOICE)).or_else(|| {
+            match obj.get(keys::FUNCTION_CALL)? {
+                serde_json::Value::String(s) if s == keys::AUTO => {
                     Some(crate::codec::ir::IrToolChoice::Auto)
                 }
-                serde_json::Value::String(s) if s == "none" => {
+                serde_json::Value::String(s) if s == keys::NONE_WORD => {
                     Some(crate::codec::ir::IrToolChoice::None)
                 }
                 serde_json::Value::Object(o) => {
-                    o.get("name").and_then(|n| n.as_str()).map(|name| {
+                    o.get(keys::NAME).and_then(|n| n.as_str()).map(|name| {
                         crate::codec::ir::IrToolChoice::Tool {
                             name: name.to_string(),
                         }
@@ -570,21 +570,21 @@ impl ProtocolReader for OpenAiReader {
         // Cross-protocol carries with an Anthropic analog: `user` <-> `metadata.user_id`,
         // `parallel_tool_calls` <-> `!tool_choice.disable_parallel_tool_use`.
         let user = obj
-            .get("user")
+            .get(keys::USER)
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let parallel_tool_calls = obj.get("parallel_tool_calls").and_then(|v| v.as_bool());
+        let parallel_tool_calls = obj.get(keys::PARALLEL_TOOL_CALLS).and_then(|v| v.as_bool());
 
         // The reasoning ASK in chat-completions spelling: a top-level `reasoning_effort` word.
         // Promoted so it carries to Anthropic/Gemini thinking budgets via the effort table.
-        let reasoning_effort_raw = obj.get("reasoning_effort").and_then(|v| v.as_str());
+        let reasoning_effort_raw = obj.get(REASONING_EFFORT).and_then(|v| v.as_str());
         // IR-09 (OAI-10): `xhigh` (the gpt-5 family's step above `high`) is the IR's `XHigh`, and
         // `none` is reasoning switched OFF (`IrReasoningAsk::Off` — not "the caller said nothing"),
         // so a cross-protocol lane gets the top effort / thinking disabled instead of losing the ask.
         // (`max` is not a Chat word and stays unmapped.) The raw word still rides `extra` (below) so
         // an OpenAI-origin re-serialize writes it back verbatim.
         let reasoning = reasoning_effort_raw.and_then(|raw| match raw {
-            "none" => Some(crate::codec::ir::IrReasoningAsk::Off),
+            keys::NONE_WORD => Some(crate::codec::ir::IrReasoningAsk::Off),
             "xhigh" => Some(crate::codec::ir::IrReasoningAsk::Effort(
                 crate::codec::ir::IrReasoningEffort::XHigh,
             )),
@@ -608,7 +608,7 @@ impl ProtocolReader for OpenAiReader {
                     );
                 }
                 extra.insert(
-                    "reasoning_effort".to_string(),
+                    REASONING_EFFORT.to_string(),
                     serde_json::Value::String(raw.to_string()),
                 );
             }
@@ -616,9 +616,9 @@ impl ProtocolReader for OpenAiReader {
 
         // Logprobs ask, carried first-class so it reaches a Gemini backend as
         // `generationConfig.responseLogprobs`/`logprobs` (and back).
-        let logprobs = obj.get("logprobs").and_then(|v| v.as_bool());
+        let logprobs = obj.get(keys::LOGPROBS).and_then(|v| v.as_bool());
         let top_logprobs = obj
-            .get("top_logprobs")
+            .get(keys::TOP_LOGPROBS)
             .and_then(|v| v.as_u64())
             .and_then(|v| u32::try_from(v).ok());
 
@@ -702,9 +702,9 @@ impl ProtocolReader for OpenAiReader {
         //    Handled BEFORE the MessageStart block so an error-only chunk never emits a stray start
         //    frame (matching the gemini sibling); on a stream that already started, MessageStart has
         //    long since been emitted and the Error simply terminates it.
-        if let Some(error_obj) = data.get("error").and_then(|e| e.as_object()) {
-            let error_type = error_obj.get("type").and_then(|t| t.as_str());
-            let code = error_obj.get("code").and_then(|c| c.as_str());
+        if let Some(error_obj) = data.get(keys::ERROR_WORD).and_then(|e| e.as_object()) {
+            let error_type = error_obj.get(keys::TYPE).and_then(|t| t.as_str());
+            let code = error_obj.get(keys::CODE).and_then(|c| c.as_str());
             // Carry the most specific upstream token through as the provider signal (`code` when
             // present, else `type`, else the prose `message`), so a same-protocol egress can round
             // trip it and the breaker's observability names the real fault. `None` only when the
@@ -712,7 +712,7 @@ impl ProtocolReader for OpenAiReader {
             let provider_signal = code
                 .filter(|c| !c.is_empty())
                 .or(error_type)
-                .or_else(|| error_obj.get("message").and_then(|m| m.as_str()))
+                .or_else(|| error_obj.get(keys::MESSAGE).and_then(|m| m.as_str()))
                 .map(String::from);
             out.push(IrStreamEvent::Error(busbar_contract::protocol::IrError {
                 class: stream_inline_error_class(error_type, code),
@@ -731,13 +731,13 @@ impl ProtocolReader for OpenAiReader {
             out.push(IrStreamEvent::MessageStart {
                 role: crate::codec::ir::IrRole::Assistant,
                 usage: None,
-                id: data.get("id").and_then(|v| v.as_str()).map(String::from),
-                created: data.get("created").and_then(|v| v.as_u64()),
-                model: data.get("model").and_then(|v| v.as_str()).map(String::from),
+                id: data.get(keys::ID).and_then(|v| v.as_str()).map(String::from),
+                created: data.get(CREATED).and_then(|v| v.as_u64()),
+                model: data.get(keys::MODEL).and_then(|v| v.as_str()).map(String::from),
             });
         }
 
-        let choices_arr = data.get("choices").and_then(|c| c.as_array());
+        let choices_arr = data.get(CHOICES).and_then(|c| c.as_array());
         // A client can legally request n>1 (OpenAI `n`). This reader collapses to choices[0], which
         // is all a CROSS-PROTOCOL (IR-rebuilt) hop can carry — the rest are dropped there. A
         // same-protocol relay re-emits the upstream bytes verbatim and preserves all N; this reader is
@@ -754,7 +754,7 @@ impl ProtocolReader for OpenAiReader {
             }
         }
         let choice0 = choices_arr.and_then(|a| a.first());
-        let delta = choice0.and_then(|c| c.get("delta"));
+        let delta = choice0.and_then(|c| c.get(keys::DELTA));
 
         // 2. Reasoning (chain-of-thought) → a Thinking block. Reasoning that arrives before any
         //    answer block opens at index 0, ahead of the answer, and `reasoning_seen` reserves that
@@ -766,7 +766,7 @@ impl ProtocolReader for OpenAiReader {
         //    index from the monotone counter, so no already-opened index ever shifts. Its index is
         //    recorded under `LATE_THINKING_KEY` so every later delta and its stop replay it.
         if let Some(reasoning) = delta
-            .and_then(|d| d.get("reasoning_content").or_else(|| d.get("reasoning")))
+            .and_then(|d| d.get(REASONING_CONTENT).or_else(|| d.get(keys::REASONING)))
             .and_then(|r| r.as_str())
             .filter(|r| !r.is_empty())
         {
@@ -809,14 +809,14 @@ impl ProtocolReader for OpenAiReader {
         // text at all and an end_turn finish — an empty 200 the client could not tell from a model
         // that said nothing. `refusal_seen` promotes the stop reason on the terminal frame.
         let refusal_delta = delta
-            .and_then(|d| d.get("refusal"))
+            .and_then(|d| d.get(keys::REFUSAL))
             .and_then(|c| c.as_str())
             .filter(|s| !s.is_empty());
         if refusal_delta.is_some() {
             state.refusal_seen = true;
         }
         let content_delta = delta
-            .and_then(|d| d.get("content"))
+            .and_then(|d| d.get(keys::CONTENT))
             .and_then(|c| c.as_str());
         // IR-02: the refusal rides its OWN text block, opened with `refusal: true`, so a writer with a
         // refusal slot (Chat `delta.refusal`, Responses refusal events) carries it exactly. A
@@ -887,7 +887,7 @@ impl ProtocolReader for OpenAiReader {
         let lp_entries = if state.text_block_closed {
             Vec::new()
         } else {
-            read_openai_logprobs(choice0.and_then(|c| c.get("logprobs")))
+            read_openai_logprobs(choice0.and_then(|c| c.get(keys::LOGPROBS)))
         };
         if !lp_entries.is_empty() {
             if !state.text_block_open {
@@ -923,7 +923,7 @@ impl ProtocolReader for OpenAiReader {
         //     logprobs-only chunk does. Offsets are not carried, for the reason
         //     `read_url_annotations` gives (the buffered path drops them the same way).
         let citations = delta
-            .and_then(|d| d.get("annotations"))
+            .and_then(|d| d.get(keys::ANNOTATIONS))
             .map(super::super::openai_annotations::read_url_annotations)
             .unwrap_or_default();
         if !citations.is_empty() {
@@ -973,7 +973,7 @@ impl ProtocolReader for OpenAiReader {
         //    with a synthesized `call_…` id (OAI-08), so its name and arguments reach the IR instead
         //    of vanishing while `finish_reason: "function_call"` reports a tool use with no block.
         let tool_items: Vec<(usize, Option<&str>, Option<&serde_json::Value>)> = match delta
-            .and_then(|d| d.get("tool_calls"))
+            .and_then(|d| d.get(keys::TOOL_CALLS))
             .and_then(|t| t.as_array())
         {
             Some(tcs) => tcs
@@ -987,18 +987,18 @@ impl ProtocolReader for OpenAiReader {
                     // index arithmetic and the old overflow hazard is structurally gone — this clamp
                     // now exists solely to bound `oai_idx` as a map/set key.
                     let oai_idx = tc
-                        .get("index")
+                        .get(keys::INDEX)
                         .and_then(|i| i.as_u64())
                         .map_or(0, |v| v.min(MAX_TOOL_INDEX) as usize);
                     (
                         oai_idx,
-                        tc.get("id").and_then(|i| i.as_str()),
-                        tc.get("function"),
+                        tc.get(keys::ID).and_then(|i| i.as_str()),
+                        tc.get(keys::FUNCTION),
                     )
                 })
                 .collect(),
             None => delta
-                .and_then(|d| d.get("function_call"))
+                .and_then(|d| d.get(keys::FUNCTION_CALL))
                 .filter(|f| f.is_object())
                 .map(|f| vec![(LEGACY_FUNCTION_CALL_KEY, None, Some(f))])
                 .unwrap_or_default(),
@@ -1014,7 +1014,7 @@ impl ProtocolReader for OpenAiReader {
             // the next free index instead of a second `BlockStart` at the closed one (OAI-14).
             close_text_block(state, &mut out);
             for (oai_idx, tc_id, func) in tool_items {
-                if let Some(name) = func.and_then(|f| f.get("name")).and_then(|n| n.as_str()) {
+                if let Some(name) = func.and_then(|f| f.get(keys::NAME)).and_then(|n| n.as_str()) {
                     // Cap the number of DISTINCT open tool calls per stream. Without this, a
                     // pathological backend emitting unbounded unique indices would grow `open_tools`
                     // (and the emitted BlockStart count) without limit — a per-request memory-
@@ -1049,7 +1049,7 @@ impl ProtocolReader for OpenAiReader {
                     }
                 }
                 if let Some(args) = func
-                    .and_then(|f| f.get("arguments"))
+                    .and_then(|f| f.get(keys::ARGUMENTS))
                     .and_then(|a| a.as_str())
                 {
                     // Only route argument deltas to an index we actually opened a BlockStart for.
@@ -1089,9 +1089,9 @@ impl ProtocolReader for OpenAiReader {
         // buffered response does), so the one table reads them here as well; the serving tier rides
         // the chunk's top level, beside `usage` (OAI-03).
         let chunk_usage = data
-            .get("usage")
+            .get(keys::USAGE)
             .filter(|u| u.is_object())
-            .map(|u| read_openai_usage(Some(u), data.get("service_tier")));
+            .map(|u| read_openai_usage(Some(u), data.get(keys::SERVICE_TIER)));
         let chunk_usage = match chunk_usage.transpose() {
             Ok(usage) => usage,
             Err(refusal) => {
@@ -1102,7 +1102,7 @@ impl ProtocolReader for OpenAiReader {
 
         // 5. finish_reason → close open blocks (text first, then tools ascending), MessageDelta, MessageStop.
         let finish_reason = choice0
-            .and_then(|c| c.get("finish_reason"))
+            .and_then(|c| c.get(keys::FINISH_REASON))
             .and_then(|r| r.as_str());
         if let Some(fr) = finish_reason {
             // Close in order: thinking (if it never yielded to text), then text, then tools.
@@ -1145,7 +1145,7 @@ impl ProtocolReader for OpenAiReader {
                 detail: crate::codec::ir::IrUsageDetail {
                     service_tier: crate::codec::carry::read_word(
                         super::map::WORDS_SERVED_TIER,
-                        data.get("service_tier"),
+                        data.get(keys::SERVICE_TIER),
                     ),
                     ..Default::default()
                 },
@@ -1196,7 +1196,7 @@ impl ProtocolReader for OpenAiReader {
         let obj = body.as_object().ok_or_else(ir_parse_error)?;
 
         // Get choices array
-        let choices_val = obj.get("choices").ok_or_else(ir_parse_error)?;
+        let choices_val = obj.get(CHOICES).ok_or_else(ir_parse_error)?;
         let choices = choices_val.as_array().ok_or_else(ir_parse_error)?;
 
         if choices.is_empty() {
@@ -1219,9 +1219,9 @@ impl ProtocolReader for OpenAiReader {
         let choice = &choices[0];
 
         // Parse role (should be "assistant")
-        let message_val = choice.get("message").ok_or_else(ir_parse_error)?;
+        let message_val = choice.get(keys::MESSAGE).ok_or_else(ir_parse_error)?;
         let _role_str = message_val
-            .get("role")
+            .get(keys::ROLE)
             .and_then(|r| r.as_str())
             .unwrap_or("");
 
@@ -1232,7 +1232,7 @@ impl ProtocolReader for OpenAiReader {
         // chain-of-thought in a separate `reasoning_content` (or `reasoning`) field. Map it to a
         // Thinking block — ahead of the answer — so it survives translation to protocols that have
         // one (e.g. Anthropic). (Protocols without a thinking concept drop it on write, as before.)
-        for key in ["reasoning_content", "reasoning"] {
+        for key in [REASONING_CONTENT, keys::REASONING] {
             if let Some(r) = message_val.get(key).and_then(|v| v.as_str()) {
                 if !r.is_empty() {
                     content.push(crate::codec::ir::IrBlock::Thinking {
@@ -1248,14 +1248,14 @@ impl ProtocolReader for OpenAiReader {
             }
         }
 
-        if let Some(content_val) = message_val.get("content") {
+        if let Some(content_val) = message_val.get(keys::CONTENT) {
             if let Some(text) = content_val.as_str() {
                 if !text.is_empty() {
                     // `annotations` is a sibling of `content` on the `message` object (not nested
                     // per content-part, since `content` is a plain string here). See
                     // `read_url_annotations` for why offsets are deliberately not carried.
                     let citations = message_val
-                        .get("annotations")
+                        .get(keys::ANNOTATIONS)
                         .map(super::super::openai_annotations::read_url_annotations)
                         .unwrap_or_default();
                     content.push(crate::codec::ir::IrBlock::Text {
@@ -1293,7 +1293,7 @@ impl ProtocolReader for OpenAiReader {
         // assistant Text (Anthropic/Bedrock/Gemini have no distinct refusal part) and promote the
         // stop reason below, matching what the sibling Responses reader already does.
         let mut saw_refusal = false;
-        if let Some(text) = message_val.get("refusal").and_then(|v| v.as_str()) {
+        if let Some(text) = message_val.get(keys::REFUSAL).and_then(|v| v.as_str()) {
             if !text.is_empty() {
                 saw_refusal = true;
                 // Flagged as the refusal message (IR-02), so a dialect with a refusal slot carries it
@@ -1308,7 +1308,7 @@ impl ProtocolReader for OpenAiReader {
         }
 
         // Parse tool_calls
-        if let Some(tool_calls_val) = message_val.get("tool_calls") {
+        if let Some(tool_calls_val) = message_val.get(keys::TOOL_CALLS) {
             if let Some(tc_arr) = tool_calls_val.as_array() {
                 for (tc_ordinal, tc_val) in tc_arr.iter().enumerate() {
                     // A response tool-call id is the correlation key a later `tool` message pairs
@@ -1317,10 +1317,10 @@ impl ProtocolReader for OpenAiReader {
                     // the RESPONSE path, rather than fail an otherwise-good upstream body, SYNTHESIZE a
                     // deterministic `call_…` id when the backend supplied none — so the correlation key
                     // is never blank. (`unwrap_or("")` previously let an empty id through to egress.)
-                    let raw_id = tc_val.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                    let func = tc_val.get("function").ok_or_else(ir_parse_error)?;
+                    let raw_id = tc_val.get(keys::ID).and_then(|v| v.as_str()).unwrap_or("");
+                    let func = tc_val.get(keys::FUNCTION).ok_or_else(ir_parse_error)?;
                     let name = func
-                        .get("name")
+                        .get(keys::NAME)
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
@@ -1329,7 +1329,7 @@ impl ProtocolReader for OpenAiReader {
                     } else {
                         raw_id.to_string()
                     };
-                    let input = tool_input_from_arguments(func.get("arguments"));
+                    let input = tool_input_from_arguments(func.get(keys::ARGUMENTS));
 
                     content.push(crate::codec::ir::IrBlock::ToolUse {
                         id,
@@ -1351,15 +1351,15 @@ impl ProtocolReader for OpenAiReader {
             .iter()
             .any(|b| matches!(b, crate::codec::ir::IrBlock::ToolUse { .. }))
         {
-            if let Some(fc) = message_val.get("function_call").filter(|f| f.is_object()) {
+            if let Some(fc) = message_val.get(keys::FUNCTION_CALL).filter(|f| f.is_object()) {
                 let name = fc
-                    .get("name")
+                    .get(keys::NAME)
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
                 content.push(crate::codec::ir::IrBlock::ToolUse {
                     id: synth_response_tool_call_id(0, &name),
-                    input: tool_input_from_arguments(fc.get("arguments")),
+                    input: tool_input_from_arguments(fc.get(keys::ARGUMENTS)),
                     name,
                     cache_control: None,
                     thought_signature: None,
@@ -1369,7 +1369,7 @@ impl ProtocolReader for OpenAiReader {
 
         // Parse finish_reason → stop_reason mapping
         let finish_reason = choice
-            .get("finish_reason")
+            .get(keys::FINISH_REASON)
             .and_then(|r| r.as_str())
             .unwrap_or("");
         let mut stop_reason = if finish_reason.is_empty() {
@@ -1390,29 +1390,29 @@ impl ProtocolReader for OpenAiReader {
         // makes proxy engine discard a valid 200 body and emit a spurious 500. The sibling Gemini and
         // Cohere readers tolerate the same condition with a zero-usage fallback. `usage_val` is an
         // `Option`, so each token lookup below already defaults to 0.
-        let usage_val = obj.get("usage");
+        let usage_val = obj.get(keys::USAGE);
         //
         // Absent is zero, a present-but-UNREADABLE count REFUSES (#42). See `USAGE` for the cache
         // normalization and the attribution sub-buckets; the serving tier is a top-level member
         // beside `usage` (OAI-03).
-        let usage = read_openai_usage(usage_val, obj.get("service_tier"))?;
+        let usage = read_openai_usage(usage_val, obj.get(keys::SERVICE_TIER))?;
 
-        let model = obj.get("model").and_then(|m| m.as_str()).map(String::from);
+        let model = obj.get(keys::MODEL).and_then(|m| m.as_str()).map(String::from);
 
         // Capture the upstream's response identity so same-protocol (OpenAI→OpenAI) passthrough
         // preserves it exactly: `id` ("chatcmpl-..."), `created` (unix secs), `system_fingerprint`.
         // (`object` is fixed "chat.completion" and re-emitted by the writer; `usage.total_tokens` is
         // derivable from prompt+completion, so it is recomputed on write rather than stored.)
-        let id = obj.get("id").and_then(|v| v.as_str()).map(String::from);
-        let created = obj.get("created").and_then(|v| v.as_u64());
+        let id = obj.get(keys::ID).and_then(|v| v.as_str()).map(String::from);
+        let created = obj.get(CREATED).and_then(|v| v.as_u64());
         let system_fingerprint = obj
-            .get("system_fingerprint")
+            .get(SYSTEM_FINGERPRINT)
             .and_then(|v| v.as_str())
             .map(String::from);
 
         // Per-token logprobs from the first choice, carried neutrally so a foreign-dialect caller
         // (e.g. Gemini) receives them in its own shape.
-        let logprobs = read_openai_logprobs(choices[0].get("logprobs"));
+        let logprobs = read_openai_logprobs(choices[0].get(keys::LOGPROBS));
 
         Ok(crate::codec::ir::IrResponse {
             logprobs,

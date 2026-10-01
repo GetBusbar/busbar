@@ -23,7 +23,7 @@ impl ProtocolWriter for OpenAiWriter {
     /// rejects `n > 1` on a cross-protocol route (the single-candidate IR would drop candidates
     /// `1..n`).
     fn requested_candidate_count(&self, body: &serde_json::Value) -> Option<u64> {
-        body.get("n").and_then(|v| v.as_u64()).filter(|&k| k > 1)
+        body.get(W_N).and_then(|v| v.as_u64()).filter(|&k| k > 1)
     }
 
     fn write_request(&self, req: &crate::codec::ir::IrRequest) -> serde_json::Value {
@@ -58,7 +58,7 @@ impl ProtocolWriter for OpenAiWriter {
         // Chat / Responses developer message); absent, it is `system` as before.
         let system_role = req
             .system_role
-            .map_or("system", crate::codec::ir::IrSystemRole::as_str);
+            .map_or(keys::SYSTEM, crate::codec::ir::IrSystemRole::as_str);
         for block in &req.system {
             let text: &str = match block {
                 crate::codec::ir::IrBlock::Text { text, .. } => text,
@@ -70,8 +70,8 @@ impl ProtocolWriter for OpenAiWriter {
                 | crate::codec::ir::IrBlock::Json(_) => "",
             };
             messages_array.push(serde_json::json!({
-                "role": system_role,
-                "content": text
+                (keys::ROLE): system_role,
+                (keys::CONTENT): text
             }));
         }
 
@@ -95,10 +95,10 @@ impl ProtocolWriter for OpenAiWriter {
         // Add regular messages
         for (msg_idx, msg) in req.messages.iter().enumerate() {
             let role_str = match msg.role {
-                crate::codec::ir::IrRole::User => "user",
-                crate::codec::ir::IrRole::Assistant => "assistant",
-                crate::codec::ir::IrRole::Tool => "tool",
-                crate::codec::ir::IrRole::System => "system",
+                crate::codec::ir::IrRole::User => keys::USER,
+                crate::codec::ir::IrRole::Assistant => keys::ASSISTANT,
+                crate::codec::ir::IrRole::Tool => keys::TOOL,
+                crate::codec::ir::IrRole::System => keys::SYSTEM,
             };
 
             let content_val: serde_json::Value = if msg.content.is_empty() {
@@ -116,10 +116,10 @@ impl ProtocolWriter for OpenAiWriter {
                             ..
                         } if msg.role == crate::codec::ir::IrRole::Assistant => {
                             content_arr
-                                .push(serde_json::json!({ "type": "refusal", "refusal": text }));
+                                .push(serde_json::json!({ (keys::TYPE): keys::REFUSAL, (keys::REFUSAL): text }));
                         }
                         crate::codec::ir::IrBlock::Text { text, .. } => {
-                            content_arr.push(serde_json::json!({ "type": "text", "text": text }));
+                            content_arr.push(serde_json::json!({ (keys::TYPE): keys::TEXT, (keys::TEXT): text }));
                         }
                         crate::codec::ir::IrBlock::Image { source, detail, .. } => {
                             // A URL is emitted verbatim, a base64 image re-wrapped as a data URI. A
@@ -128,14 +128,14 @@ impl ProtocolWriter for OpenAiWriter {
                             // than corrupt the block.
                             match super::super::ir_encode::image_url_from_ir(source) {
                                 Some(url) => {
-                                    let mut image_url = serde_json::json!({ "url": url });
+                                    let mut image_url = serde_json::json!({ (keys::URL): url });
                                     // IR-08: the image-fidelity ask, when the source stated one.
                                     if let Some(d) = detail {
-                                        image_url["detail"] = serde_json::json!(d.as_str());
+                                        image_url[keys::DETAIL] = serde_json::json!(d.as_str());
                                     }
                                     content_arr.push(serde_json::json!({
-                                        "type": "image_url",
-                                        "image_url": image_url
+                                        (keys::TYPE): keys::IMAGE_URL,
+                                        (keys::IMAGE_URL): image_url
                                     }))
                                 }
                                 None => tracing::warn!(
@@ -187,8 +187,8 @@ impl ProtocolWriter for OpenAiWriter {
             };
 
             let mut msg_obj = serde_json::json!({
-                "role": role_str,
-                "content": content_val,
+                (keys::ROLE): role_str,
+                (keys::CONTENT): content_val,
             });
 
             // Re-emit the participant `name` this message arrived with. Without this a pool-alias
@@ -200,7 +200,7 @@ impl ProtocolWriter for OpenAiWriter {
                 .and_then(|v| v.as_str())
             {
                 if let Some(o) = msg_obj.as_object_mut() {
-                    o.insert("name".to_string(), serde_json::json!(name));
+                    o.insert(keys::NAME.to_string(), serde_json::json!(name));
                 }
             }
 
@@ -238,11 +238,11 @@ impl ProtocolWriter for OpenAiWriter {
                         // Preserve the original tool_call id verbatim — it must round-trip so the
                         // assistant tool_call correlates with the tool-result `tool_call_id`.
                         tool_calls_arr.push(serde_json::json!({
-                            "type": TOOL_TYPE_FUNCTION,
-                            "id": id,
-                            "function": {
-                                "name": name,
-                                "arguments": args_str
+                            (keys::TYPE): TOOL_TYPE_FUNCTION,
+                            (keys::ID): id,
+                            (keys::FUNCTION): {
+                                (keys::NAME): name,
+                                (keys::ARGUMENTS): args_str
                             }
                         }));
                     }
@@ -250,8 +250,8 @@ impl ProtocolWriter for OpenAiWriter {
 
                 // A legacy assistant `function_call` re-attached from this dialect's own extras
                 // stash already carries the call (OAI-07); `tool_calls` would duplicate it.
-                if !tool_calls_arr.is_empty() && msg_obj.get("function_call").is_none() {
-                    msg_obj["tool_calls"] = serde_json::Value::Array(tool_calls_arr);
+                if !tool_calls_arr.is_empty() && msg_obj.get(keys::FUNCTION_CALL).is_none() {
+                    msg_obj[keys::TOOL_CALLS] = serde_json::Value::Array(tool_calls_arr);
                 }
             }
 
@@ -277,9 +277,9 @@ impl ProtocolWriter for OpenAiWriter {
                     } = block
                     {
                         let mut tool_result_obj = serde_json::json!({
-                            "role": "tool",
-                            "tool_call_id": tool_use_id,
-                            "content": "",
+                            (keys::ROLE): keys::TOOL,
+                            (keys::TOOL_CALL_ID): tool_use_id,
+                            (keys::CONTENT): "",
                         });
 
                         // Concatenate text content with NO separator, matching the OpenAI READ path
@@ -307,7 +307,7 @@ impl ProtocolWriter for OpenAiWriter {
                                 })
                                 .collect();
 
-                            tool_result_obj["content"] = serde_json::json!(text_parts.concat());
+                            tool_result_obj[keys::CONTENT] = serde_json::json!(text_parts.concat());
                         }
 
                         // A legacy `role:"function"` result this dialect's own reader marked
@@ -317,9 +317,9 @@ impl ProtocolWriter for OpenAiWriter {
                             .and_then(|e| e.get(LEGACY_FUNCTION_ROLE_KEY))
                         {
                             tool_result_obj = serde_json::json!({
-                                "role": "function",
-                                "name": fname,
-                                "content": tool_result_obj["content"].clone(),
+                                (keys::ROLE): keys::FUNCTION,
+                                (keys::NAME): fname,
+                                (keys::CONTENT): tool_result_obj[keys::CONTENT].clone(),
                             });
                         }
                         messages_array.push(tool_result_obj);
@@ -337,8 +337,8 @@ impl ProtocolWriter for OpenAiWriter {
                 // (non-null `content` or a `tool_calls` array), or when the message had NO ToolResult
                 // block at all (so an otherwise-empty message is not lost). This never duplicates a
                 // ToolResult — those are the standalone entries above and never appear in `content_val`.
-                let msg_has_payload = msg_obj.get("content").is_some_and(|c| !c.is_null())
-                    || msg_obj.get("tool_calls").is_some();
+                let msg_has_payload = msg_obj.get(keys::CONTENT).is_some_and(|c| !c.is_null())
+                    || msg_obj.get(keys::TOOL_CALLS).is_some();
                 if msg_has_payload || !emitted_tool_result {
                     messages_array.push(msg_obj);
                 }
@@ -353,12 +353,12 @@ impl ProtocolWriter for OpenAiWriter {
                 // (OAI-11). Send the empty string instead: the turn keeps its place in the
                 // conversation and says nothing, which is what it carried in Chat terms.
                 if let Some(o) = msg_obj.as_object_mut() {
-                    let content_null = o.get("content").is_some_and(|c| c.is_null());
+                    let content_null = o.get(keys::CONTENT).is_some_and(|c| c.is_null());
                     if content_null
-                        && !o.contains_key("tool_calls")
-                        && !o.contains_key("function_call")
+                        && !o.contains_key(keys::TOOL_CALLS)
+                        && !o.contains_key(keys::FUNCTION_CALL)
                     {
-                        o.insert("content".to_string(), serde_json::json!(""));
+                        o.insert(keys::CONTENT.to_string(), serde_json::json!(""));
                     }
                 }
                 messages_array.push(msg_obj);
@@ -368,12 +368,12 @@ impl ProtocolWriter for OpenAiWriter {
         let mut out = serde_json::Map::new();
 
         // Add model from extra if present (since IrRequest doesn't have a model field)
-        if let Some(model_val) = req.extra.get("model") {
-            out.insert("model".to_string(), model_val.clone());
+        if let Some(model_val) = req.extra.get(keys::MODEL) {
+            out.insert(keys::MODEL.to_string(), model_val.clone());
         }
 
         out.insert(
-            "messages".to_string(),
+            keys::MESSAGES.to_string(),
             serde_json::Value::Array(messages_array),
         );
 
@@ -396,9 +396,9 @@ impl ProtocolWriter for OpenAiWriter {
                 .unwrap_or(false)
                 || caps.max_output_key == MaxOutputKey::MaxCompletionTokens;
             let key = if completion_key {
-                "max_completion_tokens"
+                MAX_COMPLETION_TOKENS
             } else {
-                "max_tokens"
+                keys::MAX_TOKENS
             };
             out.insert(key.to_string(), serde_json::json!(max_tokens));
         }
@@ -410,7 +410,7 @@ impl ProtocolWriter for OpenAiWriter {
         // The Anthropic-analog carries, re-emitted in OpenAI's native spelling (an Anthropic
         // `metadata.user_id` arrives here as `user`; `disable_parallel_tool_use` arrives inverted).
         if let Some(user) = &req.user {
-            out.insert("user".to_string(), serde_json::json!(user));
+            out.insert(keys::USER.to_string(), serde_json::json!(user));
         }
         // OpenAI rejects `parallel_tool_calls` when no tools are present ("only allowed when 'tools'
         // are specified"). An Anthropic source can carry the flag (via `disable_parallel_tool_use`)
@@ -418,7 +418,7 @@ impl ProtocolWriter for OpenAiWriter {
         // which only emits its equivalent when tools are present.
         if let (Some(parallel), false) = (req.parallel_tool_calls, req.tools.is_empty()) {
             out.insert(
-                "parallel_tool_calls".to_string(),
+                keys::PARALLEL_TOOL_CALLS.to_string(),
                 serde_json::json!(parallel),
             );
         }
@@ -431,7 +431,7 @@ impl ProtocolWriter for OpenAiWriter {
         // ask is omitted (a lane that is not told to reason does not). An OpenAI-origin `"none"`
         // still rides `extra` verbatim.
         if req.reasoning == Some(crate::codec::ir::IrReasoningAsk::Off) && caps.reasoning_none {
-            out.insert("reasoning_effort".to_string(), serde_json::json!("none"));
+            out.insert(REASONING_EFFORT.to_string(), serde_json::json!(keys::NONE_WORD));
         } else if req.reasoning == Some(crate::codec::ir::IrReasoningAsk::Off) {
             tracing::warn!(
                 "omitting reasoning OFF on OpenAI Chat egress: reasoning_effort \"none\" is not \
@@ -442,7 +442,7 @@ impl ProtocolWriter for OpenAiWriter {
                 .reasoning_budgets
                 .unwrap_or(crate::codec::ir::REASONING_BUDGET_DEFAULTS);
             out.insert(
-                "reasoning_effort".to_string(),
+                REASONING_EFFORT.to_string(),
                 serde_json::json!(ask.to_effort(table).as_openai_reasoning_effort()),
             );
         }
@@ -452,19 +452,19 @@ impl ProtocolWriter for OpenAiWriter {
         // whenever the count is present, even if the source protocol only carried the count (a
         // Gemini request with `logprobs: N` but no `responseLogprobs`) — otherwise OpenAI 400s.
         if let Some(top_logprobs) = req.top_logprobs {
-            out.insert("logprobs".to_string(), serde_json::json!(true));
-            out.insert("top_logprobs".to_string(), serde_json::json!(top_logprobs));
+            out.insert(keys::LOGPROBS.to_string(), serde_json::json!(true));
+            out.insert(keys::TOP_LOGPROBS.to_string(), serde_json::json!(top_logprobs));
         } else if let Some(logprobs) = req.logprobs {
-            out.insert("logprobs".to_string(), serde_json::json!(logprobs));
+            out.insert(keys::LOGPROBS.to_string(), serde_json::json!(logprobs));
         }
         if let Some(response_format) = &req.response_format {
             out.insert(
-                "response_format".to_string(),
+                keys::RESPONSE_FORMAT.to_string(),
                 write_openai_response_format(response_format),
             );
         }
 
-        out.insert("stream".to_string(), serde_json::json!(req.stream));
+        out.insert(keys::STREAM.to_string(), serde_json::json!(req.stream));
 
         // Add tools if present. The Chat Completions API requires the NESTED tool shape
         // `{"type":"function","function":{"name":...,"description":...,"parameters":...}}` — name,
@@ -478,7 +478,7 @@ impl ProtocolWriter for OpenAiWriter {
         // OAI-09: the typed custom tools, written after the function tools.
         let custom_tools = super::slots::write_custom_tools(req);
         if (!req.tools.is_empty() || !custom_tools.is_empty())
-            && !req.extra.contains_key("functions")
+            && !req.extra.contains_key(FUNCTIONS)
         {
             let mut tools_arr: Vec<serde_json::Value> = Vec::new();
             for tool in &req.tools {
@@ -488,7 +488,7 @@ impl ProtocolWriter for OpenAiWriter {
                 // before a writer runs, and one that got here anyway is not emitted as a malformed
                 // empty-name function.
                 if let Some(hosted) = &tool.hosted {
-                    if hosted.get("type").and_then(|t| t.as_str()) == Some(TOOL_TYPE_CUSTOM) {
+                    if hosted.get(keys::TYPE).and_then(|t| t.as_str()) == Some(TOOL_TYPE_CUSTOM) {
                         tools_arr.push(hosted.clone());
                     } else {
                         tracing::warn!(
@@ -499,10 +499,10 @@ impl ProtocolWriter for OpenAiWriter {
                     continue;
                 }
                 let mut function_obj = serde_json::Map::new();
-                function_obj.insert("name".to_string(), serde_json::json!(tool.name));
+                function_obj.insert(keys::NAME.to_string(), serde_json::json!(tool.name));
 
                 if let Some(desc) = &tool.description {
-                    function_obj.insert("description".to_string(), serde_json::json!(desc));
+                    function_obj.insert(keys::DESCRIPTION.to_string(), serde_json::json!(desc));
                 }
 
                 // Map OpenAI's "parameters" to our input_schema
@@ -511,20 +511,20 @@ impl ProtocolWriter for OpenAiWriter {
                 } else {
                     serde_json::json!({})
                 };
-                function_obj.insert("parameters".to_string(), params);
+                function_obj.insert(keys::PARAMETERS.to_string(), params);
 
                 // STRICT function calling, in its native nested slot. Emitted only when the source
                 // actually stated it — `None` means "the caller said nothing", and materializing
                 // that as `strict: false` would be busbar inventing an explicit opt-out the caller
                 // never wrote.
                 if let Some(strict) = tool.strict {
-                    function_obj.insert("strict".to_string(), serde_json::json!(strict));
+                    function_obj.insert(keys::STRICT.to_string(), serde_json::json!(strict));
                 }
 
                 let mut tool_obj = serde_json::Map::new();
-                tool_obj.insert("type".to_string(), serde_json::json!(TOOL_TYPE_FUNCTION));
+                tool_obj.insert(keys::TYPE.to_string(), serde_json::json!(TOOL_TYPE_FUNCTION));
                 tool_obj.insert(
-                    "function".to_string(),
+                    keys::FUNCTION.to_string(),
                     serde_json::Value::Object(function_obj),
                 );
 
@@ -532,7 +532,7 @@ impl ProtocolWriter for OpenAiWriter {
             }
             tools_arr.extend(custom_tools.iter().cloned());
             if !tools_arr.is_empty() {
-                out.insert("tools".to_string(), serde_json::Value::Array(tools_arr));
+                out.insert(keys::TOOLS.to_string(), serde_json::Value::Array(tools_arr));
             }
         }
 
@@ -546,7 +546,7 @@ impl ProtocolWriter for OpenAiWriter {
         // Likewise the legacy `function_call` directive rides `extra` verbatim on an OpenAI-origin IR.
         // An allowed-tools subset (IR-10) is written as Chat's `{type:"allowed_tools", ...}` choice.
         if let Some(v) = super::slots::write_tool_choice(req)
-            .filter(|_| !req.extra.contains_key("function_call"))
+            .filter(|_| !req.extra.contains_key(keys::FUNCTION_CALL))
         {
             if req.tools.is_empty() && custom_tools.is_empty() {
                 tracing::warn!(
@@ -555,7 +555,7 @@ impl ProtocolWriter for OpenAiWriter {
                      stripped on the cross-protocol seam)"
                 );
             } else {
-                out.insert("tool_choice".to_string(), v);
+                out.insert(keys::TOOL_CHOICE.to_string(), v);
             }
         }
 
@@ -598,12 +598,12 @@ impl ProtocolWriter for OpenAiWriter {
                 ..
             } => {
                 let openai_role = match role {
-                    crate::codec::ir::IrRole::Assistant => "assistant",
+                    crate::codec::ir::IrRole::Assistant => keys::ASSISTANT,
                     crate::codec::ir::IrRole::User
                     | crate::codec::ir::IrRole::System
                     | crate::codec::ir::IrRole::Tool => return None,
                 };
-                let delta_obj = serde_json::json!({ "role": openai_role });
+                let delta_obj = serde_json::json!({ (keys::ROLE): openai_role });
                 // The opening chunk carries the stream's identity (`id`, `created`, `model`); an
                 // official OpenAI stream repeats these on every chunk, but emitting them on the first
                 // (role) chunk is sufficient for the SDKs, which latch the id/created/model from the
@@ -620,14 +620,14 @@ impl ProtocolWriter for OpenAiWriter {
                 // so fall back to DEFAULT_MODEL rather than omitting the field.
                 let chunk_model = model_or_default(model.as_deref());
                 let chunk = serde_json::json!({
-                    "id": chunk_id,
-                    "object": OBJ_CHUNK,
-                    "created": chunk_created,
-                    "model": chunk_model,
-                    "choices": [{
-                        "index": 0,
-                        "delta": delta_obj,
-                        "finish_reason": null
+                    (keys::ID): chunk_id,
+                    (keys::OBJECT): OBJ_CHUNK,
+                    (CREATED): chunk_created,
+                    (keys::MODEL): chunk_model,
+                    (CHOICES): [{
+                        (keys::INDEX): 0,
+                        (keys::DELTA): delta_obj,
+                        (keys::FINISH_REASON): null
                     }]
                 });
                 Some(("".to_string(), chunk))
@@ -656,19 +656,19 @@ impl ProtocolWriter for OpenAiWriter {
                     // assignment lives in the framing, which is the only seam that sees the whole
                     // stream.
                     let delta_obj = serde_json::json!({
-                        "tool_calls": [{
-                            "index": index,
-                            "id": id,
-                            "type": TOOL_TYPE_FUNCTION,
-                            "function": { "name": name, "arguments": "" }
+                        (keys::TOOL_CALLS): [{
+                            (keys::INDEX): index,
+                            (keys::ID): id,
+                            (keys::TYPE): TOOL_TYPE_FUNCTION,
+                            (keys::FUNCTION): { (keys::NAME): name, (keys::ARGUMENTS): "" }
                         }]
                     });
                     let chunk_obj = serde_json::json!({
-                        "object": OBJ_CHUNK,
-                        "choices": [{
-                            "index": 0,
-                            "delta": delta_obj,
-                            "finish_reason": null
+                        (keys::OBJECT): OBJ_CHUNK,
+                        (CHOICES): [{
+                            (keys::INDEX): 0,
+                            (keys::DELTA): delta_obj,
+                            (keys::FINISH_REASON): null
                         }]
                     });
                     Some(("".to_string(), chunk_obj))
@@ -682,16 +682,16 @@ impl ProtocolWriter for OpenAiWriter {
             IrStreamEvent::BlockDelta { index, delta } => match delta {
                 crate::codec::ir::IrDelta::TextDelta(text) => {
                     let delta_obj = if self.is_refusal_block(*index) {
-                        serde_json::json!({ "refusal": text })
+                        serde_json::json!({ (keys::REFUSAL): text })
                     } else {
-                        serde_json::json!({ "content": text })
+                        serde_json::json!({ (keys::CONTENT): text })
                     };
                     let chunk_obj = serde_json::json!({
-                        "object": OBJ_CHUNK,
-                        "choices": [{
-                            "index": 0,
-                            "delta": delta_obj,
-                            "finish_reason": null
+                        (keys::OBJECT): OBJ_CHUNK,
+                        (CHOICES): [{
+                            (keys::INDEX): 0,
+                            (keys::DELTA): delta_obj,
+                            (keys::FINISH_REASON): null
                         }]
                     });
                     Some(("".to_string(), chunk_obj))
@@ -701,17 +701,17 @@ impl ProtocolWriter for OpenAiWriter {
                     // fragments route to the correct parallel tool call; the framing seam remaps this
                     // to the same 0-based ordinal it assigned the BlockStart.
                     let delta_obj = serde_json::json!({
-                        "tool_calls": [{
-                            "index": index,
-                            "function": { "arguments": json }
+                        (keys::TOOL_CALLS): [{
+                            (keys::INDEX): index,
+                            (keys::FUNCTION): { (keys::ARGUMENTS): json }
                         }]
                     });
                     let chunk_obj = serde_json::json!({
-                        "object": OBJ_CHUNK,
-                        "choices": [{
-                            "index": 0,
-                            "delta": delta_obj,
-                            "finish_reason": null
+                        (keys::OBJECT): OBJ_CHUNK,
+                        (CHOICES): [{
+                            (keys::INDEX): 0,
+                            (keys::DELTA): delta_obj,
+                            (keys::FINISH_REASON): null
                         }]
                     });
                     Some(("".to_string(), chunk_obj))
@@ -747,11 +747,11 @@ impl ProtocolWriter for OpenAiWriter {
                     Some((
                         "".to_string(),
                         serde_json::json!({
-                            "object": OBJ_CHUNK,
-                            "choices": [{
-                                "index": 0,
-                                "delta": { "annotations": annotations },
-                                "finish_reason": null
+                            (keys::OBJECT): OBJ_CHUNK,
+                            (CHOICES): [{
+                                (keys::INDEX): 0,
+                                (keys::DELTA): { (keys::ANNOTATIONS): annotations },
+                                (keys::FINISH_REASON): null
                             }]
                         }),
                     ))
@@ -766,12 +766,12 @@ impl ProtocolWriter for OpenAiWriter {
                         None
                     } else {
                         let chunk_obj = serde_json::json!({
-                            "object": OBJ_CHUNK,
-                            "choices": [{
-                                "index": 0,
-                                "delta": {},
-                                "logprobs": write_openai_logprobs(lps),
-                                "finish_reason": null
+                            (keys::OBJECT): OBJ_CHUNK,
+                            (CHOICES): [{
+                                (keys::INDEX): 0,
+                                (keys::DELTA): {},
+                                (keys::LOGPROBS): write_openai_logprobs(lps),
+                                (keys::FINISH_REASON): null
                             }]
                         });
                         Some(("".to_string(), chunk_obj))
@@ -796,11 +796,11 @@ impl ProtocolWriter for OpenAiWriter {
                 };
                 let delta_obj = serde_json::json!({});
                 let mut chunk_obj = serde_json::json!({
-                    "object": OBJ_CHUNK,
-                    "choices": [{
-                        "index": 0,
-                        "delta": delta_obj,
-                        "finish_reason": finish_reason
+                    (keys::OBJECT): OBJ_CHUNK,
+                    (CHOICES): [{
+                        (keys::INDEX): 0,
+                        (keys::DELTA): delta_obj,
+                        (keys::FINISH_REASON): finish_reason
                     }]
                 });
                 // Carry real token usage on the terminal chunk. On a cross-protocol egress (e.g.
@@ -838,15 +838,15 @@ impl ProtocolWriter for OpenAiWriter {
                 if prompt_tokens != 0 || completion_tokens != 0 {
                     if let Some(obj) = chunk_obj.as_object_mut() {
                         let mut usage_obj = serde_json::json!({
-                            "prompt_tokens": prompt_tokens,
-                            "completion_tokens": completion_tokens,
-                            "total_tokens": prompt_tokens.saturating_add(completion_tokens),
+                            (PROMPT_TOKENS): prompt_tokens,
+                            (COMPLETION_TOKENS): completion_tokens,
+                            (keys::TOTAL_TOKENS): prompt_tokens.saturating_add(completion_tokens),
                         });
                         if usage.cache_read_input_tokens.is_some() {
                             if let Some(uo) = usage_obj.as_object_mut() {
                                 uo.insert(
-                                    "prompt_tokens_details".to_string(),
-                                    serde_json::json!({ "cached_tokens": cache_read }),
+                                    PROMPT_TOKENS_DETAILS.to_string(),
+                                    serde_json::json!({ (keys::CACHED_TOKENS): cache_read }),
                                 );
                             }
                         }
@@ -858,12 +858,12 @@ impl ProtocolWriter for OpenAiWriter {
                         if let Some(rt) = usage.detail.reasoning_tokens {
                             if let Some(uo) = usage_obj.as_object_mut() {
                                 uo.insert(
-                                    "completion_tokens_details".to_string(),
-                                    serde_json::json!({ "reasoning_tokens": rt }),
+                                    COMPLETION_TOKENS_DETAILS.to_string(),
+                                    serde_json::json!({ (keys::REASONING_TOKENS): rt }),
                                 );
                             }
                         }
-                        obj.insert("usage".to_string(), usage_obj);
+                        obj.insert(keys::USAGE.to_string(), usage_obj);
                     }
                 }
                 // The serving tier rides the chunk's top level, as on a native stream (OAI-03).
@@ -873,7 +873,7 @@ impl ProtocolWriter for OpenAiWriter {
                     })
                 {
                     if let Some(obj) = chunk_obj.as_object_mut() {
-                        obj.insert("service_tier".to_string(), serde_json::json!(tier));
+                        obj.insert(keys::SERVICE_TIER.to_string(), serde_json::json!(tier));
                     }
                 }
                 Some(("".to_string(), chunk_obj))
@@ -883,7 +883,7 @@ impl ProtocolWriter for OpenAiWriter {
                 let message = err
                     .provider_signal
                     .clone()
-                    .unwrap_or_else(|| "error".to_string());
+                    .unwrap_or_else(|| keys::ERROR_WORD.to_string());
                 // Map the IR error class onto OpenAI's enumerated error `type` vocabulary. The prior
                 // hardcoded "error" is not a valid OpenAI error type — SDK clients that switch on
                 // `error.type` would fall through to an unhandled default, and the bogus value is a
@@ -916,11 +916,11 @@ impl ProtocolWriter for OpenAiWriter {
                 // an in-stream error structurally different from a non-stream error (a detectable
                 // proxy tell) and broke clients that destructure `error.code` / `error.param`.
                 let error_obj = serde_json::json!({
-                    "error": {
-                        "message": message,
-                        "type": error_type,
-                        "code": bearer_error_code(error_type),
-                        "param": serde_json::Value::Null,
+                    (keys::ERROR_WORD): {
+                        (keys::MESSAGE): message,
+                        (keys::TYPE): error_type,
+                        (keys::CODE): bearer_error_code(error_type),
+                        (keys::PARAM): serde_json::Value::Null,
                     }
                 });
                 Some(("".to_string(), error_obj))
@@ -957,7 +957,7 @@ impl ProtocolWriter for OpenAiWriter {
             ERR_TYPE_INVALID_REQUEST | "invalid_request" | "bad_request" => {
                 ERR_TYPE_INVALID_REQUEST
             }
-            ERR_TYPE_AUTHENTICATION | "unauthorized" | "auth" => ERR_TYPE_AUTHENTICATION,
+            ERR_TYPE_AUTHENTICATION | "unauthorized" | keys::AUTH_WORD => ERR_TYPE_AUTHENTICATION,
             ERR_TYPE_PERMISSION | "permission_denied" | "forbidden" => ERR_TYPE_PERMISSION,
             ERR_TYPE_NOT_FOUND => ERR_TYPE_NOT_FOUND,
             ERR_TYPE_RATE_LIMIT | "rate_limit" | "too_many_requests" => ERR_TYPE_RATE_LIMIT,
@@ -1001,11 +1001,11 @@ impl ProtocolWriter for OpenAiWriter {
         };
 
         serde_json::json!({
-            "error": {
-                "message": message,
-                "type": error_type,
-                "param": serde_json::Value::Null,
-                "code": bearer_error_code(error_type),
+            (keys::ERROR_WORD): {
+                (keys::MESSAGE): message,
+                (keys::TYPE): error_type,
+                (keys::PARAM): serde_json::Value::Null,
+                (keys::CODE): bearer_error_code(error_type),
             }
         })
     }
@@ -1042,11 +1042,11 @@ impl ProtocolWriter for OpenAiWriter {
                 // Serialize input to JSON string
                 let args_str = crate::codec::dialect::tool_arguments_to_string(input);
                 tool_calls_arr.push(serde_json::json!({
-                    "type": TOOL_TYPE_FUNCTION,
-                    "id": id,
-                    "function": {
-                        "name": name,
-                        "arguments": args_str
+                    (keys::TYPE): TOOL_TYPE_FUNCTION,
+                    (keys::ID): id,
+                    (keys::FUNCTION): {
+                        (keys::NAME): name,
+                        (keys::ARGUMENTS): args_str
                     }
                 }));
             }
@@ -1122,14 +1122,14 @@ impl ProtocolWriter for OpenAiWriter {
             }
         };
         let mut message_obj = serde_json::json!({
-            "role": "assistant",
-            "content": content_val,
-            "refusal": refusal_val,
+            (keys::ROLE): keys::ASSISTANT,
+            (keys::CONTENT): content_val,
+            (keys::REFUSAL): refusal_val,
         });
 
         // Add tool_calls only if present
         if !tool_calls_arr.is_empty() {
-            message_obj["tool_calls"] = serde_json::Value::Array(tool_calls_arr);
+            message_obj[keys::TOOL_CALLS] = serde_json::Value::Array(tool_calls_arr);
         }
 
         // Grounding sources. Chat joins every text block into ONE content string, so a citation's
@@ -1154,7 +1154,7 @@ impl ProtocolWriter for OpenAiWriter {
             }
         }
         if !annotations.is_empty() {
-            message_obj["annotations"] = serde_json::Value::Array(annotations);
+            message_obj[keys::ANNOTATIONS] = serde_json::Value::Array(annotations);
         }
 
         let mut choices_array: Vec<serde_json::Value> = Vec::new();
@@ -1174,22 +1174,22 @@ impl ProtocolWriter for OpenAiWriter {
         };
 
         let mut choice_obj = serde_json::Map::new();
-        choice_obj.insert("index".to_string(), serde_json::json!(0));
-        choice_obj.insert("message".to_string(), message_obj);
+        choice_obj.insert(keys::INDEX.to_string(), serde_json::json!(0));
+        choice_obj.insert(keys::MESSAGE.to_string(), message_obj);
         // Carried per-token logprobs (e.g. from a Gemini backend's `logprobsResult`) in OpenAI's
         // native choice shape. `logprobs` is a REQUIRED member of the published chat.completion
         // choice schema (nullable object): the carried object when the backend produced any, JSON
         // null otherwise — which is exactly what real OpenAI returns when they were not requested.
         // Omitting the key failed strict spec validation and was a proxy tell.
         choice_obj.insert(
-            "logprobs".to_string(),
+            keys::LOGPROBS.to_string(),
             if resp.logprobs.is_empty() {
                 serde_json::Value::Null
             } else {
                 write_openai_logprobs(&resp.logprobs)
             },
         );
-        choice_obj.insert("finish_reason".to_string(), finish_reason);
+        choice_obj.insert(keys::FINISH_REASON.to_string(), finish_reason);
         choices_array.push(serde_json::Value::Object(choice_obj));
 
         // Identity fields, in the order an official OpenAI chat.completion object carries them
@@ -1199,26 +1199,26 @@ impl ProtocolWriter for OpenAiWriter {
         // (cross-protocol: the backend never minted one) we SYNTHESIZE a protocol-correct value so a
         // native SDK can't tell this was translated.
         let id = resp.id.clone().unwrap_or_else(synth_completion_id);
-        obj.insert("id".to_string(), serde_json::json!(id));
-        obj.insert("object".to_string(), serde_json::json!(OBJ_COMPLETION));
+        obj.insert(keys::ID.to_string(), serde_json::json!(id));
+        obj.insert(keys::OBJECT.to_string(), serde_json::json!(OBJ_COMPLETION));
         let created = resp.created.unwrap_or_else(host_now);
-        obj.insert("created".to_string(), serde_json::json!(created));
+        obj.insert(CREATED.to_string(), serde_json::json!(created));
         // model that served the response. `model` is a REQUIRED non-nullable string in the OpenAI
         // chat.completion schema; a cross-protocol backend whose `read_response` yields `model: None`
         // (e.g. Bedrock egress -> OpenAI ingress) would otherwise produce a model-less completion that
         // fails strict SDK deserialisation and is a proxy tell. Preserve the upstream value on a
         // same-protocol passthrough; fall back to DEFAULT_MODEL when none was supplied.
         obj.insert(
-            "model".to_string(),
+            keys::MODEL.to_string(),
             serde_json::json!(model_or_default(resp.model.as_deref())),
         );
         // system_fingerprint is only emitted when the upstream supplied one (same-protocol
         // passthrough); we do not fabricate an opaque backend marker on cross-protocol responses.
         if let Some(ref fp) = resp.system_fingerprint {
-            obj.insert("system_fingerprint".to_string(), serde_json::json!(fp));
+            obj.insert(SYSTEM_FINGERPRINT.to_string(), serde_json::json!(fp));
         }
         obj.insert(
-            "choices".to_string(),
+            CHOICES.to_string(),
             serde_json::Value::Array(choices_array),
         );
 
@@ -1237,15 +1237,15 @@ impl ProtocolWriter for OpenAiWriter {
             .saturating_add(resp.usage.cache_creation_input_tokens.unwrap_or(0));
         let mut usage_map = serde_json::Map::new();
         usage_map.insert(
-            "prompt_tokens".to_string(),
+            PROMPT_TOKENS.to_string(),
             serde_json::json!(prompt_tokens),
         );
         usage_map.insert(
-            "completion_tokens".to_string(),
+            COMPLETION_TOKENS.to_string(),
             serde_json::json!(resp.usage.output_tokens),
         );
         usage_map.insert(
-            "total_tokens".to_string(),
+            keys::TOTAL_TOKENS.to_string(),
             serde_json::json!(prompt_tokens.saturating_add(resp.usage.output_tokens)),
         );
         // `prompt_tokens_details` carries the cached AND audio input slices. Emit the object when
@@ -1254,14 +1254,14 @@ impl ProtocolWriter for OpenAiWriter {
         {
             let mut ptd = serde_json::Map::new();
             if resp.usage.cache_read_input_tokens.is_some() {
-                ptd.insert("cached_tokens".to_string(), serde_json::json!(cache_read));
+                ptd.insert(keys::CACHED_TOKENS.to_string(), serde_json::json!(cache_read));
             }
             if let Some(a) = resp.usage.detail.input_audio_tokens {
-                ptd.insert("audio_tokens".to_string(), serde_json::json!(a));
+                ptd.insert(AUDIO_TOKENS.to_string(), serde_json::json!(a));
             }
             if !ptd.is_empty() {
                 usage_map.insert(
-                    "prompt_tokens_details".to_string(),
+                    PROMPT_TOKENS_DETAILS.to_string(),
                     serde_json::Value::Object(ptd),
                 );
             }
@@ -1273,31 +1273,31 @@ impl ProtocolWriter for OpenAiWriter {
         {
             let mut ctd = serde_json::Map::new();
             if let Some(rt) = resp.usage.detail.reasoning_tokens {
-                ctd.insert("reasoning_tokens".to_string(), serde_json::json!(rt));
+                ctd.insert(keys::REASONING_TOKENS.to_string(), serde_json::json!(rt));
             }
             if let Some(a) = resp.usage.detail.output_audio_tokens {
-                ctd.insert("audio_tokens".to_string(), serde_json::json!(a));
+                ctd.insert(AUDIO_TOKENS.to_string(), serde_json::json!(a));
             }
             if let Some(t) = resp.usage.detail.accepted_prediction_tokens {
                 ctd.insert(
-                    "accepted_prediction_tokens".to_string(),
+                    ACCEPTED_PREDICTION_TOKENS.to_string(),
                     serde_json::json!(t),
                 );
             }
             if let Some(t) = resp.usage.detail.rejected_prediction_tokens {
                 ctd.insert(
-                    "rejected_prediction_tokens".to_string(),
+                    REJECTED_PREDICTION_TOKENS.to_string(),
                     serde_json::json!(t),
                 );
             }
             if !ctd.is_empty() {
                 usage_map.insert(
-                    "completion_tokens_details".to_string(),
+                    COMPLETION_TOKENS_DETAILS.to_string(),
                     serde_json::Value::Object(ctd),
                 );
             }
         }
-        obj.insert("usage".to_string(), serde_json::Value::Object(usage_map));
+        obj.insert(keys::USAGE.to_string(), serde_json::Value::Object(usage_map));
         // The tier that served the request, in OpenAI's vocabulary (OAI-03). Omitted when the
         // source named none, or a tier OpenAI has no response value for.
         if let Some(tier) = resp
@@ -1307,7 +1307,7 @@ impl ProtocolWriter for OpenAiWriter {
             .as_deref()
             .and_then(|t| crate::codec::carry::word_out(super::map::WORDS_SERVED_TIER, t))
         {
-            obj.insert("service_tier".to_string(), serde_json::json!(tier));
+            obj.insert(keys::SERVICE_TIER.to_string(), serde_json::json!(tier));
         }
 
         serde_json::Value::Object(obj)
