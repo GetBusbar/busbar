@@ -49,6 +49,7 @@ extern "C" {
 #define BB_MECH_MAX_TEXT ((size_t)4096) /* The most bytes of error or diagnostic text an entry may carry; longer is a malformed entry. */
 #define BB_MECH_SPAN_ABSENT UINT32_C(0xffffffff) /* [`span`]: no bytes; the span's length is then `0`. */
 #define BB_MECH_MAX_BYTES UINT64_C(0xffffffff) /* The largest byte count any answer may state (written or needed). */
+#define BB_MECH_HARD_MAX_BYTES UINT64_C(0x1000000) /* The largest blob, or byte `needed`, one answer of the secret, hook or export kind may state */
 #define BB_MECH_FAMILY_COUNTER UINT8_C(0) /* [`MetricFamily::kind`]: a counter. */
 #define BB_MECH_FAMILY_GAUGE UINT8_C(1) /* [`MetricFamily::kind`]: a gauge. */
 #define BB_MECH_FAMILY_HISTOGRAM UINT8_C(2) /* [`MetricFamily::kind`]: a histogram. */
@@ -155,7 +156,6 @@ extern "C" {
 #define BB_SECRET_ERROR_KIND_INVALID UINT32_C(4) /* [`ResolveOut::error_kind`]: the settings blob itself is malformed — OLD */
 #define BB_SECRET_ERROR_KIND_INTERNAL UINT32_C(5) /* [`ResolveOut::error_kind`]: an internal fault in the plugin, not classified above — OLD */
 #define BB_SECRET_CANCEL_ABORTED UINT32_C(0) /* The pending `resolve` was aborted; no lease was granted. */
-#define BB_SECRET_HARD_MAX_BYTES UINT64_C(0x1000000) /* The largest secret one answer may carry, in bytes (16 MiB). */
 
 /* auth */
 #define BB_AUTH_IDENTITY_GROUPS_HARD_MAX UINT32_C(0x10000) /* The hard maximum of `needed_groups`: no identity asserts more groups than this. */
@@ -199,7 +199,6 @@ extern "C" {
 #define BB_AUTH_FORM_PASSWORD UINT32_C(2) /* [`LoginField::kind`]: a password; its submitted value arrives as a secret */
 #define BB_AUTH_BEGIN_AUTHORIZE UINT32_C(1) /* [`BeginLoginOut::shape`]: redirect to [`BeginLoginOut::authorize_url`]. */
 #define BB_AUTH_BEGIN_FORM UINT32_C(2) /* [`BeginLoginOut::shape`]: render [`BeginLoginOut::form`]. */
-#define BB_AUTH_SPAN_ABSENT UINT32_C(0xffffffff) /* [`Span::off`] of an absent value. */
 #define BB_AUTH_IDENTITY_HAS_TTL UINT32_C(1) /* [`IdentityOut::flags`]: [`IdentityOut::ttl_secs`] is set. */
 
 /* hook */
@@ -268,7 +267,6 @@ extern "C" {
 #define BB_HOOK_USER_RO UINT32_C(1) /* [`Tail::user_access`]: read-only user view — OLD `UserAccess::Ro`. */
 #define BB_HOOK_CANCEL_ABORTED UINT32_C(0) /* The pending op was aborted before it produced a verdict/response; `on_error` runs as */
 #define BB_HOOK_CANCEL_RACED_TO_COMPLETION UINT32_C(1) /* The op had already completed when the cancel arrived (a race with the deadline); its */
-#define BB_HOOK_HARD_MAX_BYTES UINT64_C(0x1000000) /* The largest blob or byte `needed` one answer may state (16 MiB). `order_buf` is counted in */
 #define BB_HOOK_HARD_MAX_ORDER_SLOTS UINT64_C(0x10000) /* The most `order_buf` slots (`u32` entries, not bytes) one answer may state. */
 #define BB_HOOK_HARD_MAX_HEADERS_OUT_LEN UINT64_C(128) /* The most entries `serve`'s `headers_out` may carry: 64 headers, as (name, value) pairs. */
 
@@ -292,7 +290,6 @@ extern "C" {
 #define BB_EXPORT_ROUTE_AUTH_ADMIN UINT32_C(2) /* [`Route::auth`]: admin auth required, reachable only on the admin listener — OLD */
 #define BB_EXPORT_CANCEL_ABORTED UINT32_C(0) /* The pending op was aborted before it produced anything (deliver: the batch was not */
 #define BB_EXPORT_CANCEL_RACED_TO_COMPLETION UINT32_C(1) /* The op had already completed when the cancel arrived (a race with the deadline); its */
-#define BB_EXPORT_HARD_MAX_BYTES UINT64_C(0x1000000) /* The largest blob or `needed` one answer may state, in bytes (16 MiB). */
 #define BB_EXPORT_HARD_MAX_HEADERS_OUT_LEN UINT64_C(128) /* The most entries `serve`'s `headers_out` may carry: 64 headers, as (name, value) pairs. */
 
 /* plane */
@@ -539,6 +536,8 @@ typedef uint8_t bb_export_ExportStream;
 
 /* ---- forward declarations ---- */
 typedef struct bb_mech_AbiStr bb_mech_AbiStr;
+typedef struct bb_mech_Span bb_mech_Span;
+typedef struct bb_mech_Field bb_mech_Field;
 typedef struct bb_mech_Blob bb_mech_Blob;
 typedef struct bb_mech_InHead bb_mech_InHead;
 typedef struct bb_mech_MetricEntry bb_mech_MetricEntry;
@@ -622,7 +621,6 @@ typedef struct bb_store_IdReasonIn bb_store_IdReasonIn;
 typedef struct bb_secret_Ops bb_secret_Ops;
 typedef struct bb_secret_ResolveIn bb_secret_ResolveIn;
 typedef struct bb_secret_ResolveOut bb_secret_ResolveOut;
-typedef struct bb_auth_Span bb_auth_Span;
 typedef struct bb_auth_NamedValue bb_auth_NamedValue;
 typedef struct bb_auth_RequestFacts bb_auth_RequestFacts;
 typedef struct bb_auth_IdentityBuf bb_auth_IdentityBuf;
@@ -696,8 +694,6 @@ typedef struct bb_plane_PlaneSnapshot bb_plane_PlaneSnapshot;
 typedef struct bb_plane_PlaneOpenIn bb_plane_PlaneOpenIn;
 typedef struct bb_plane_PlaneOpenOut bb_plane_PlaneOpenOut;
 typedef struct bb_plane_PlaneRefreshOut bb_plane_PlaneRefreshOut;
-typedef struct bb_plane_Field bb_plane_Field;
-typedef struct bb_plane_Span bb_plane_Span;
 typedef struct bb_plane_OutField bb_plane_OutField;
 typedef struct bb_plane_UnitCount bb_plane_UnitCount;
 typedef struct bb_plane_RecordWrite bb_plane_RecordWrite;
@@ -718,7 +714,6 @@ typedef struct bb_transport_Claim bb_transport_Claim;
 typedef struct bb_transport_StatusRow bb_transport_StatusRow;
 typedef struct bb_transport_SettingDecl bb_transport_SettingDecl;
 typedef struct bb_transport_TransportTail bb_transport_TransportTail;
-typedef struct bb_transport_Field bb_transport_Field;
 typedef struct bb_transport_Destination bb_transport_Destination;
 typedef struct bb_transport_ConnFacts bb_transport_ConnFacts;
 typedef struct bb_transport_FramePiece bb_transport_FramePiece;
@@ -804,6 +799,18 @@ typedef bb_mech_RawOutcome (*bb_hsvc_ServiceFn)(bb_mech_HostCtx, const void *, b
 struct bb_mech_AbiStr {
     const uint8_t *ptr;
     size_t len;
+};
+
+/* A byte range of a buffer the call names, in bytes; `offset ==` */
+struct bb_mech_Span {
+    uint32_t offset;
+    uint32_t len;
+};
+
+/* One named field borrowed for the call: a name and its value (any bytes). THE one field of */
+struct bb_mech_Field {
+    bb_mech_AbiStr name;
+    bb_mech_AbiStr value;
 };
 
 /* A payload: pointer + length, with its format. JSON crosses ONLY as one of these (JSON is only a payload). */
@@ -1512,12 +1519,6 @@ struct bb_secret_ResolveOut {
     uint32_t _reserved;
 };
 
-/* A slice of a HOST buffer the plugin wrote: `off` and `len` in bytes. `off ==` */
-struct bb_auth_Span {
-    uint32_t off;
-    uint32_t len;
-};
-
 /* A named value the host hands in: an inbound carrier field, or a submitted login field. A */
 struct bb_auth_NamedValue {
     bb_mech_AbiStr name;
@@ -1540,20 +1541,20 @@ struct bb_auth_RequestFacts {
 struct bb_auth_IdentityBuf {
     uint8_t *buf;
     size_t buf_cap;
-    bb_auth_Span *groups;
+    bb_mech_Span *groups;
     uint32_t groups_cap;
     uint32_t _reserved;
 };
 
 /* An identity, as spans into the host's [`IdentityBuf`]. */
 struct bb_auth_IdentityOut {
-    bb_auth_Span subject;
-    bb_auth_Span key_id;
-    bb_auth_Span key_name;
-    bb_auth_Span user;
-    bb_auth_Span provider;
-    bb_auth_Span name;
-    bb_auth_Span claims;
+    bb_mech_Span subject;
+    bb_mech_Span key_id;
+    bb_mech_Span key_name;
+    bb_mech_Span user;
+    bb_mech_Span provider;
+    bb_mech_Span name;
+    bb_mech_Span claims;
     uint32_t claims_fmt;
     uint32_t flags;
     uint64_t ttl_secs;
@@ -1683,8 +1684,8 @@ struct bb_auth_OutboundReadyOut {
 
 /* One field `fields` wrote: spans into [`FieldsIn::field_buf`]. */
 struct bb_auth_FieldSpan {
-    bb_auth_Span name;
-    bb_auth_Span value;
+    bb_mech_Span name;
+    bb_mech_Span value;
     uint32_t flags;
     uint32_t _reserved;
 };
@@ -2246,22 +2247,10 @@ struct bb_plane_PlaneRefreshOut {
     const bb_plane_PlaneSnapshot *snapshot;
 };
 
-/* One head field the HOST hands in, borrowed for the call. */
-struct bb_plane_Field {
-    bb_mech_AbiStr name;
-    bb_mech_AbiStr value;
-};
-
-/* A byte range of the call's HOST `arena`; [`SPAN_ABSENT`] = none. */
-struct bb_plane_Span {
-    uint32_t offset;
-    uint32_t len;
-};
-
 /* One head field the plugin writes, its bytes in the call's `arena`. */
 struct bb_plane_OutField {
-    bb_plane_Span name;
-    bb_plane_Span value;
+    bb_mech_Span name;
+    bb_mech_Span value;
 };
 
 /* One cumulative unit count, in a HOST buffer. */
@@ -2275,8 +2264,8 @@ struct bb_plane_UnitCount {
 struct bb_plane_RecordWrite {
     uint32_t kind;
     uint32_t op;
-    bb_plane_Span key;
-    bb_plane_Span value;
+    bb_mech_Span key;
+    bb_mech_Span value;
 };
 
 /* `arrive`'s `in`. */
@@ -2285,7 +2274,7 @@ struct bb_plane_ArriveIn {
     uint32_t claim;
     uint32_t _reserved;
     bb_mech_AbiStr target;
-    const bb_plane_Field *fields;
+    const bb_mech_Field *fields;
     size_t fields_len;
     bb_mech_Blob body;
     bb_plane_UnitCount *units_buf;
@@ -2343,8 +2332,8 @@ struct bb_plane_OnPieceOut {
     uint32_t verdict;
     uint64_t arena_written;
     uint64_t arena_needed;
-    bb_plane_Span verb;
-    bb_plane_Span target;
+    bb_mech_Span verb;
+    bb_mech_Span target;
 };
 
 /* `refusal`'s `in`. */
@@ -2382,7 +2371,7 @@ struct bb_plane_ServeIn {
     uint32_t route;
     uint32_t _reserved;
     bb_mech_AbiStr target;
-    const bb_plane_Field *fields;
+    const bb_mech_Field *fields;
     size_t fields_len;
     bb_mech_Blob body;
     uint8_t *reply_buf;
@@ -2426,7 +2415,7 @@ struct bb_plane_ProjectIn {
     uint32_t claim;
     uint32_t _reserved;
     bb_mech_AbiStr target;
-    const bb_plane_Field *fields;
+    const bb_mech_Field *fields;
     size_t fields_len;
     bb_mech_Blob body;
     bb_hook_SignalEntry *signals_buf;
@@ -2439,7 +2428,7 @@ struct bb_plane_ProjectIn {
 struct bb_plane_ProjectOut {
     bb_mech_OutHead head;
     bb_hook_RequestView view;
-    bb_plane_Span body;
+    bb_mech_Span body;
     uint32_t signals_needed;
     uint32_t _reserved;
     uint64_t arena_written;
@@ -2523,12 +2512,6 @@ struct bb_transport_TransportTail {
     size_t settings_len;
 };
 
-/* One envelope field. */
-struct bb_transport_Field {
-    bb_mech_AbiStr name;
-    bb_mech_AbiStr value;
-};
-
 /* A carrier's destination, borrowed for the call. */
 struct bb_transport_Destination {
     uint32_t kind;
@@ -2537,7 +2520,7 @@ struct bb_transport_Destination {
     bb_mech_AbiStr program;
     const bb_mech_AbiStr *args;
     size_t args_len;
-    const bb_transport_Field *env;
+    const bb_mech_Field *env;
     size_t env_len;
 };
 
@@ -2750,7 +2733,7 @@ struct bb_transport_EmitIn {
 /* `encode`'s `in`. The rendered bytes go into `sink.wire`. */
 struct bb_transport_EncodeIn {
     bb_mech_InHead head;
-    const bb_transport_Field *fields;
+    const bb_mech_Field *fields;
     size_t fields_len;
     const uint8_t *body;
     size_t body_len;
@@ -2928,12 +2911,10 @@ struct bb_hsvc_ServiceOut {
     bb_mech_AbiStr error;
 };
 
-/* One named range of a result's bytes: a key and a value, each `(offset, len)` into the bytes */
+/* One named range of a result's bytes: a key and a value, each a [`Span`] into the bytes */
 struct bb_hsvc_ItemSpan {
-    uint32_t key_off;
-    uint32_t key_len;
-    uint32_t value_off;
-    uint32_t value_len;
+    bb_mech_Span key;
+    bb_mech_Span value;
 };
 
 /* The plugin's buffers a service writes its result into, preallocated at the sizes the plugin */
@@ -3111,7 +3092,7 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn hook_call;
 };
 
-/* ---- layout proof: 246 of 247 structures are pinned by the golden ---- */
+/* ---- layout proof: 244 of 245 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -3121,6 +3102,14 @@ struct bb_hsvc_HostSlots {
 #define BB_ALIGNOF(t) _Alignof(t)
 #endif
 
+BB_ASSERT(sizeof(bb_mech_Span) == 8, "bb_mech_Span: size");
+BB_ASSERT(BB_ALIGNOF(bb_mech_Span) == 4, "bb_mech_Span: alignment");
+BB_ASSERT(offsetof(bb_mech_Span, offset) == 0, "bb_mech_Span.offset: offset");
+BB_ASSERT(offsetof(bb_mech_Span, len) == 4, "bb_mech_Span.len: offset");
+BB_ASSERT(sizeof(bb_mech_Field) == 32, "bb_mech_Field: size");
+BB_ASSERT(BB_ALIGNOF(bb_mech_Field) == 8, "bb_mech_Field: alignment");
+BB_ASSERT(offsetof(bb_mech_Field, name) == 0, "bb_mech_Field.name: offset");
+BB_ASSERT(offsetof(bb_mech_Field, value) == 16, "bb_mech_Field.value: offset");
 BB_ASSERT(sizeof(bb_mech_Blob) == 24, "bb_mech_Blob: size");
 BB_ASSERT(BB_ALIGNOF(bb_mech_Blob) == 8, "bb_mech_Blob: alignment");
 BB_ASSERT(offsetof(bb_mech_Blob, ptr) == 0, "bb_mech_Blob.ptr: offset");
@@ -3660,10 +3649,6 @@ BB_ASSERT(offsetof(bb_secret_ResolveOut, head) == 0, "bb_secret_ResolveOut.head:
 BB_ASSERT(offsetof(bb_secret_ResolveOut, secret) == 96, "bb_secret_ResolveOut.secret: offset");
 BB_ASSERT(offsetof(bb_secret_ResolveOut, error_kind) == 120, "bb_secret_ResolveOut.error_kind: offset");
 BB_ASSERT(offsetof(bb_secret_ResolveOut, _reserved) == 124, "bb_secret_ResolveOut._reserved: offset");
-BB_ASSERT(sizeof(bb_auth_Span) == 8, "bb_auth_Span: size");
-BB_ASSERT(BB_ALIGNOF(bb_auth_Span) == 4, "bb_auth_Span: alignment");
-BB_ASSERT(offsetof(bb_auth_Span, off) == 0, "bb_auth_Span.off: offset");
-BB_ASSERT(offsetof(bb_auth_Span, len) == 4, "bb_auth_Span.len: offset");
 BB_ASSERT(sizeof(bb_auth_NamedValue) == 40, "bb_auth_NamedValue: size");
 BB_ASSERT(BB_ALIGNOF(bb_auth_NamedValue) == 8, "bb_auth_NamedValue: alignment");
 BB_ASSERT(offsetof(bb_auth_NamedValue, name) == 0, "bb_auth_NamedValue.name: offset");
@@ -4241,14 +4226,6 @@ BB_ASSERT(sizeof(bb_plane_PlaneRefreshOut) == 104, "bb_plane_PlaneRefreshOut: si
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneRefreshOut) == 8, "bb_plane_PlaneRefreshOut: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneRefreshOut, head) == 0, "bb_plane_PlaneRefreshOut.head: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneRefreshOut, snapshot) == 96, "bb_plane_PlaneRefreshOut.snapshot: offset");
-BB_ASSERT(sizeof(bb_plane_Field) == 32, "bb_plane_Field: size");
-BB_ASSERT(BB_ALIGNOF(bb_plane_Field) == 8, "bb_plane_Field: alignment");
-BB_ASSERT(offsetof(bb_plane_Field, name) == 0, "bb_plane_Field.name: offset");
-BB_ASSERT(offsetof(bb_plane_Field, value) == 16, "bb_plane_Field.value: offset");
-BB_ASSERT(sizeof(bb_plane_Span) == 8, "bb_plane_Span: size");
-BB_ASSERT(BB_ALIGNOF(bb_plane_Span) == 4, "bb_plane_Span: alignment");
-BB_ASSERT(offsetof(bb_plane_Span, offset) == 0, "bb_plane_Span.offset: offset");
-BB_ASSERT(offsetof(bb_plane_Span, len) == 4, "bb_plane_Span.len: offset");
 BB_ASSERT(sizeof(bb_plane_OutField) == 16, "bb_plane_OutField: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_OutField) == 4, "bb_plane_OutField: alignment");
 BB_ASSERT(offsetof(bb_plane_OutField, name) == 0, "bb_plane_OutField.name: offset");
@@ -4474,10 +4451,6 @@ BB_ASSERT(offsetof(bb_transport_TransportTail, status_rows) == 136, "bb_transpor
 BB_ASSERT(offsetof(bb_transport_TransportTail, status_rows_len) == 144, "bb_transport_TransportTail.status_rows_len: offset");
 BB_ASSERT(offsetof(bb_transport_TransportTail, settings) == 152, "bb_transport_TransportTail.settings: offset");
 BB_ASSERT(offsetof(bb_transport_TransportTail, settings_len) == 160, "bb_transport_TransportTail.settings_len: offset");
-BB_ASSERT(sizeof(bb_transport_Field) == 32, "bb_transport_Field: size");
-BB_ASSERT(BB_ALIGNOF(bb_transport_Field) == 8, "bb_transport_Field: alignment");
-BB_ASSERT(offsetof(bb_transport_Field, name) == 0, "bb_transport_Field.name: offset");
-BB_ASSERT(offsetof(bb_transport_Field, value) == 16, "bb_transport_Field.value: offset");
 BB_ASSERT(sizeof(bb_transport_Destination) == 72, "bb_transport_Destination: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_Destination) == 8, "bb_transport_Destination: alignment");
 BB_ASSERT(offsetof(bb_transport_Destination, kind) == 0, "bb_transport_Destination.kind: offset");
@@ -4791,10 +4764,8 @@ BB_ASSERT(offsetof(bb_hsvc_ServiceOut, needed_items) == 40, "bb_hsvc_ServiceOut.
 BB_ASSERT(offsetof(bb_hsvc_ServiceOut, error) == 48, "bb_hsvc_ServiceOut.error: offset");
 BB_ASSERT(sizeof(bb_hsvc_ItemSpan) == 16, "bb_hsvc_ItemSpan: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_ItemSpan) == 4, "bb_hsvc_ItemSpan: alignment");
-BB_ASSERT(offsetof(bb_hsvc_ItemSpan, key_off) == 0, "bb_hsvc_ItemSpan.key_off: offset");
-BB_ASSERT(offsetof(bb_hsvc_ItemSpan, key_len) == 4, "bb_hsvc_ItemSpan.key_len: offset");
-BB_ASSERT(offsetof(bb_hsvc_ItemSpan, value_off) == 8, "bb_hsvc_ItemSpan.value_off: offset");
-BB_ASSERT(offsetof(bb_hsvc_ItemSpan, value_len) == 12, "bb_hsvc_ItemSpan.value_len: offset");
+BB_ASSERT(offsetof(bb_hsvc_ItemSpan, key) == 0, "bb_hsvc_ItemSpan.key: offset");
+BB_ASSERT(offsetof(bb_hsvc_ItemSpan, value) == 8, "bb_hsvc_ItemSpan.value: offset");
 BB_ASSERT(sizeof(bb_hsvc_ServiceBufs) == 32, "bb_hsvc_ServiceBufs: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_ServiceBufs) == 8, "bb_hsvc_ServiceBufs: alignment");
 BB_ASSERT(offsetof(bb_hsvc_ServiceBufs, buf) == 0, "bb_hsvc_ServiceBufs.buf: offset");
