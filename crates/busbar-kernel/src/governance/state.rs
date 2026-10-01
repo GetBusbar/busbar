@@ -1,4 +1,5 @@
 use super::*;
+use busbar_contract::redacted::Redacted;
 use busbar_contract::records::{UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
 use busbar_kernel_ledger::{
     cost::{
@@ -33,6 +34,49 @@ pub const REVOCATION_DURABLE_MARKER: &str = "REVOCATION APPLIED (cache reconcile
 /// previous credential is dead) but the newly-minted secret could not be returned, so the correct
 /// operator response is RE-ROTATE, not "retry, nothing happened".
 pub const ROTATION_DURABLE_MARKER: &str = "ROTATION APPLIED (new secret not returned)";
+
+/// The policy BINDING row a signed-token mint persists (see [`GovState::mint_signed`]), and the
+/// rotation GENERATION its token carries. One home for both signed mints.
+fn signed_binding(spec: NewKeySpec, now: u64) -> RecordStoreResult<(VirtualKey, String)> {
+    // A fresh random subject id (256-bit CSPRNG draw -> `vk_<16 hex>`). Unlike the legacy hash
+    // path, the id is NOT derived from a secret (the token is the credential); it is a random
+    // handle, so there is no id/hash prefix-collision hazard - but keep the `vk_` bucket
+    // namespace so ledger/rate buckets stay consistent with the enforcement machinery.
+    let mut raw = [0u8; 16];
+    getrandom::fill(&mut raw)
+        .map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
+    let id = format!("{VK_ID_PREFIX}{}", hex::encode(raw));
+    let generation = generate_binding_generation().store()?;
+    let binding = VirtualKey {
+        id: id.clone(),
+        // Not a credential: signed tokens are stateless, so this is never looked up BY — it is
+        // a rotation fingerprint, read only after the key is already resolved by `sub`, compared
+        // against the token's `generation` claim to detect a stale (pre-rotation) token. The
+        // trailing GENERATION is the rotation epoch (`rotate_key`), carried durably so a
+        // pre-rotation token is rejected by every node reading the same store.
+        generation_hash: binding_marker(&id, &generation),
+        name: spec.name,
+        // Intent carried intact from the mint body: None = all pools; Some([]) = none.
+        allowed_scopes: spec.allowed_pools.map(|list| {
+            list.into_iter()
+                .map(busbar_contract::records::ScopeRef::pool)
+                .collect()
+        }),
+        enabled: true,
+        created_at: now,
+        group: spec.group,
+        labels: spec.labels,
+        expires_at: None,
+        deleted_at: None,
+        revision: 0,
+        // PROVENANCE + binding mode carried from the mint spec (1.6.0): set for an admin-minted
+        // APP token, `None` for a mint that named neither (byte-identical to before).
+        minted_by: spec.minted_by,
+        binding_mode: spec.binding_mode,
+        ..Default::default()
+    };
+    Ok((binding, generation))
+}
 
 impl GovState {
     /// Production never constructs a `GovState` this way -- `appbuild` always resolves a signer and
@@ -286,46 +330,10 @@ impl GovState {
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
             ));
         };
-        // A fresh random subject id (256-bit CSPRNG draw -> `vk_<16 hex>`). Unlike the legacy hash
-        // path, the id is NOT derived from a secret (the token is the credential); it is a random
-        // handle, so there is no id/hash prefix-collision hazard - but keep the `vk_` bucket
-        // namespace so ledger/rate buckets stay consistent with the enforcement machinery.
-        let mut raw = [0u8; 16];
-        getrandom::fill(&mut raw)
-            .map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
-        let id = format!("{VK_ID_PREFIX}{}", hex::encode(raw));
-        let generation = generate_binding_generation().store()?;
-        let binding = VirtualKey {
-            id: id.clone(),
-            // Not a credential: signed tokens are stateless, so this is never looked up BY — it is
-            // a rotation fingerprint, read only after the key is already resolved by `sub`, compared
-            // against the token's `generation` claim to detect a stale (pre-rotation) token. The
-            // trailing GENERATION is the rotation epoch (`rotate_key`), carried durably so a
-            // pre-rotation token is rejected by every node reading the same store.
-            generation_hash: binding_marker(&id, &generation),
-            name: spec.name,
-            // Intent carried intact from the mint body: None = all pools; Some([]) = none.
-            allowed_scopes: spec.allowed_pools.map(|list| {
-                list.into_iter()
-                    .map(busbar_contract::records::ScopeRef::pool)
-                    .collect()
-            }),
-            enabled: true,
-            created_at: now,
-            group: spec.group,
-            labels: spec.labels,
-            expires_at: None,
-            deleted_at: None,
-            revision: 0,
-            // PROVENANCE + binding mode carried from the mint spec (1.6.0): set for an admin-minted
-            // APP token, `None` for a mint that named neither (byte-identical to before).
-            minted_by: spec.minted_by,
-            binding_mode: spec.binding_mode,
-            ..Default::default()
-        };
+        let (binding, generation) = signed_binding(spec, now)?;
         self.store.put_key(&binding)?;
         self.refresh()?;
-        let token = material.signer.mint(&id, exp, Some(&generation));
+        let token = material.signer.mint(&binding.id, exp, Some(&generation));
         Ok((binding, token))
     }
 
@@ -343,56 +351,26 @@ impl GovState {
         spec: NewKeySpec,
         exp: u64,
         now: u64,
-    ) -> RecordStoreResult<(
-        VirtualKey,
-        busbar_contract::redacted::Redacted<String>,
-        String,
-        busbar_contract::redacted::Redacted<String>,
-    )> {
+    ) -> RecordStoreResult<(VirtualKey, Redacted<String>, String, Redacted<String>)> {
         let Some(material) = self.signing_material() else {
             return Err(RecordStoreError(
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
             ));
         };
-        let mut raw = [0u8; 16];
-        getrandom::fill(&mut raw)
-            .map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
-        let id = format!("{VK_ID_PREFIX}{}", hex::encode(raw));
-        let generation = generate_binding_generation().store()?;
+        let (binding, generation) = signed_binding(spec, now)?;
         let access_key_id = generate_aws_access_key_id().store()?;
-        let secret_access_key =
-            busbar_contract::redacted::Redacted::new(generate_aws_secret_access_key().store()?);
+        let secret_access_key = Redacted::new(generate_aws_secret_access_key().store()?);
         let mut cred_raw = [0u8; 16];
         getrandom::fill(&mut cred_raw)
             .map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
         let cred_id = format!("cred_{}", hex::encode(cred_raw));
-        let binding = VirtualKey {
-            id: id.clone(),
-            generation_hash: binding_marker(&id, &generation),
-            name: spec.name,
-            allowed_scopes: spec.allowed_pools.map(|list| {
-                list.into_iter()
-                    .map(busbar_contract::records::ScopeRef::pool)
-                    .collect()
-            }),
-            enabled: true,
-            created_at: now,
-            group: spec.group,
-            labels: spec.labels,
-            expires_at: None,
-            deleted_at: None,
-            revision: 0,
-            minted_by: spec.minted_by,
-            binding_mode: spec.binding_mode,
-            ..Default::default()
-        };
         // SigV4: kind belongs to `credentials` because it IS row-looked-up (by AccessKeyId), unlike
         // the signed token above (see CredentialMeta's doc). `secret_form: Recoverable` — HMAC
         // verification needs the plaintext back, so it cannot be a one-way digest.
         let secret = CredentialSecret {
             meta: CredentialMeta {
                 id: cred_id,
-                key_id: id.clone(),
+                key_id: binding.id.clone(),
                 kind: "sigv4".to_string(),
                 slot: 0,
                 public_id: access_key_id.clone(),
@@ -408,7 +386,7 @@ impl GovState {
         };
         self.store.put_key_with_credential(&binding, &secret)?;
         self.refresh()?;
-        let token = material.signer.mint(&id, exp, Some(&generation));
+        let token = material.signer.mint(&binding.id, exp, Some(&generation));
         Ok((binding, token.into(), access_key_id, secret_access_key))
     }
 
