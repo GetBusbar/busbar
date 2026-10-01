@@ -366,7 +366,7 @@ extern "C" {
 #define BB_PLANE_MAX_REFUSAL_TEXT UINT64_C(0x80000) /* The most bytes of text a REFUSED `arrive` may carry in its `head.error`. More is a FAULT of */
 #define BB_PLANE_LARGEST_ADMITTED_FIELD_LINE UINT64_C(0x66000) /* The largest field line a transport admits: a textual head is read into at most 8 KiB plus */
 #define BB_PLANE_MARK_GATE_REJECTED UINT32_C(1) /* The gate-rejected audit marker (the `GateRejected` marker the kernel keeps). The kernel sets it */
-#define BB_PLANE_RECORD_PUT UINT32_C(1) /* [`RecordWrite::op`]: put, the one record write there is. A record is never deleted by a write: */
+#define BB_PLANE_RECORD_PUT UINT32_C(1) /* [`RecordWrite::op`]: put, the one record write there is. A put of an EMPTY value is a tombstone: */
 #define BB_PLANE_ROUTE_PUBLIC UINT32_C(1) /* [`AdminRoute::flags`]: a public route. [`slot::SERVE`] serves it to an unauthenticated caller; */
 #define BB_PLANE_CHAIN_LENGTH_PREFIXED UINT32_C(1) /* [`RecordChain::framing`]: each field of the record's digest is length-prefixed. */
 #define BB_PLANE_CHAIN_PIPE_SEPARATED UINT32_C(2) /* [`RecordChain::framing`]: the fields of the record's digest are joined by `|`. */
