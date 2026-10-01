@@ -46,16 +46,6 @@ item = "busbar_plane_a2a"
 
 [[finding]]
 rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/engine/attempt/assemble.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/engine/attempt/buffered.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
 file = "crates/busbar-llm/src/engine/attempt/respond.rs"
 item = "busbar_plane_llm"
 
@@ -82,11 +72,6 @@ item = "busbar_plane_llm"
 [[finding]]
 rule = "door-only:plugin-path"
 file = "crates/busbar-llm/src/engine/pipeline.rs"
-item = "busbar_plane_llm"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-llm/src/engine/response_body.rs"
 item = "busbar_plane_llm"
 
 [[finding]]

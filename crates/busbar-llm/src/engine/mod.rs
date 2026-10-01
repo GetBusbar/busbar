@@ -17,8 +17,6 @@
 // `Value`/`Disposition`/`OnExhausted`/`StatusClass`/`App`/`now`/`Permit`/… at their historical short
 // paths. The core-staying items are named DOWN across the crate boundary (the allowed plane→core
 // edge); the relocated `WeightedLane`/`Lane`/… come from the submodule globs below.
-/// The plane's sans-I/O exchange: the byte steps this engine shares with the plane's door.
-pub(crate) use busbar_plane_llm::exchange as xchg;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
