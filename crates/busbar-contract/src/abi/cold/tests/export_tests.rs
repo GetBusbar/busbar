@@ -4,6 +4,7 @@
 //! Tests for `crates/plugin-abi/src/export.rs`.
 
 use super::*;
+use crate::abi::export::ExportField;
 
 /// The op-discriminated request round-trips through JSON unchanged (the variant is the op tag).
 #[test]

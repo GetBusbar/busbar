@@ -3,8 +3,9 @@
 
 //! THE ROUTE VOCABULARY every kind that serves a route declares it in: a path, a method and the
 //! auth bar the host enforces before a matched request reaches the plugin. One plain type, shared
-//! by the mechanism (`BUSBAR-1.6.0.md` THE DESIGN §11.5): hooks, export sinks and planes declare
-//! routes, and the host's own routes are named in the same words. Each kind's `repr(C)` table form
+//! by the mechanism (`BUSBAR-1.6.0.md` THE DESIGN, the closed ABI layout: the mechanism, one folder
+//! per kind, the host tables and the SDK): hooks, export sinks and planes declare routes, and the
+//! host's own routes are named in the same words. Each kind's `repr(C)` table form
 //! carries the same three facts.
 
 use serde::{Deserialize, Serialize};

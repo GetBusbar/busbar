@@ -23,8 +23,8 @@
 //! - `status` — what the sink has to report when the host renders its exposition (additive).
 
 use crate::abi::cold::endpoint::{EndpointRequest, EndpointResponse};
+use crate::abi::export::{CheckPhase, ExportStream};
 use crate::abi::mechanism::route::Route;
-use crate::abi::export::{CheckPhase, ExportField, ExportStream};
 use serde::{Deserialize, Serialize};
 
 /// The export-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: export`).
