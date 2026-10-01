@@ -71,15 +71,28 @@ pub struct Shed {
 }
 
 impl Shed {
+    /// A shed with no advertised wait: the one literal every constructor below reads from.
+    const fn of(
+        status: u16,
+        kind: &'static str,
+        detail: &'static str,
+        gate_rejected: bool,
+    ) -> Self {
+        Self {
+            status,
+            kind,
+            detail,
+            retry_after_secs: None,
+            gate_rejected,
+        }
+    }
+
     /// The pool is exhausted: the overload shed with the terminal's computed wait.
     #[must_use]
     pub fn overloaded(retry_after_secs: u64) -> Self {
         Self {
-            status: STATUS_SERVICE_UNAVAILABLE,
-            kind: KIND_OVERLOADED,
-            detail: DETAIL_OVERLOADED,
             retry_after_secs: Some(retry_after_secs),
-            gate_rejected: false,
+            ..Self::empty_pool()
         }
     }
 
@@ -88,62 +101,32 @@ impl Shed {
     /// to wait again.
     #[must_use]
     pub fn request_timeout() -> Self {
-        Self {
-            status: STATUS_SERVICE_UNAVAILABLE,
-            kind: KIND_OVERLOADED,
-            detail: DETAIL_REQUEST_TIMEOUT,
-            retry_after_secs: None,
-            gate_rejected: false,
-        }
+        Self::of(STATUS_SERVICE_UNAVAILABLE, KIND_OVERLOADED, DETAIL_REQUEST_TIMEOUT, false)
     }
 
     /// The pool has no members at all. Same words as an exhausted pool and, like the previous
     /// release's own arm, no wait: there is nothing to wait for.
     #[must_use]
     pub fn empty_pool() -> Self {
-        Self {
-            status: STATUS_SERVICE_UNAVAILABLE,
-            kind: KIND_OVERLOADED,
-            detail: DETAIL_OVERLOADED,
-            retry_after_secs: None,
-            gate_rejected: false,
-        }
+        Self::of(STATUS_SERVICE_UNAVAILABLE, KIND_OVERLOADED, DETAIL_OVERLOADED, false)
     }
 
     /// A gate's restriction left no eligible member in the pool a spill landed in.
     #[must_use]
     pub fn restrict_no_lane() -> Self {
-        Self {
-            status: STATUS_SERVICE_UNAVAILABLE,
-            kind: KIND_OVERLOADED,
-            detail: DETAIL_RESTRICT_NO_LANE,
-            retry_after_secs: None,
-            gate_rejected: true,
-        }
+        Self::of(STATUS_SERVICE_UNAVAILABLE, KIND_OVERLOADED, DETAIL_RESTRICT_NO_LANE, true)
     }
 
     /// The request body was not the shape its content type claimed.
     #[must_use]
     pub fn invalid_body() -> Self {
-        Self {
-            status: STATUS_BAD_REQUEST,
-            kind: KIND_INVALID_REQUEST,
-            detail: DETAIL_INVALID_JSON,
-            retry_after_secs: None,
-            gate_rejected: false,
-        }
+        Self::of(STATUS_BAD_REQUEST, KIND_INVALID_REQUEST, DETAIL_INVALID_JSON, false)
     }
 
     /// The attempt could not be assembled. Nothing was sent and nothing was recorded.
     #[must_use]
     pub fn internal() -> Self {
-        Self {
-            status: STATUS_INTERNAL_ERROR,
-            kind: KIND_API_ERROR,
-            detail: DETAIL_INTERNAL_ERROR,
-            retry_after_secs: None,
-            gate_rejected: false,
-        }
+        Self::of(STATUS_INTERNAL_ERROR, KIND_API_ERROR, DETAIL_INTERNAL_ERROR, false)
     }
 }
 
