@@ -518,8 +518,8 @@ because = "OWNER GRANT 2026-09-29 (3), ARCHITECT approval: line-limit re-arm at 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
 from    = 25682
-to      = 26458
-because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception at the measure, itemised per lane over predev 25682: E12 (SWEEP-L2 -186 kinds.rs traits, SWEEP-L3 -57) measured 25439 (-243); URL-SEAM busbar_contract::net +489; H2 Caller, caller-scoped host services, merge_list, entitlement and random.fill wrappers +229. 25682 - 243 + 489 + 229 = 26157. Then the llm fold, plane ABI v1 pre-tag edits (abi/plane/mod.rs RefusalStatus, REFUSAL_ANY_DIALECT, the tail's refusal_statuses, the RefusalIn/ArriveIn/ArriveOut/OnPieceIn/Claim fields and the wire refusal-code table; abi/plane/check.rs; layout pins; the TRANSITIONAL head seam, 1.6.0-TODO.md row 34c), +301 measured over the plane driver core: 26157 + 301 = 26458."
+to      = 27089
+because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception at the measure, itemised per lane over predev 25682: E12 (SWEEP-L2 -186 kinds.rs traits, SWEEP-L3 -57) measured 25439 (-243); URL-SEAM busbar_contract::net +489; H2 Caller, caller-scoped host services, merge_list, entitlement and random.fill wrappers +229. 25682 - 243 + 489 + 229 = 26157. Then the llm fold, plane ABI v1 pre-tag edits (abi/plane/mod.rs RefusalStatus, REFUSAL_ANY_DIALECT, the tail's refusal_statuses, the RefusalIn/ArriveIn/ArriveOut/OnPieceIn/Claim fields and the wire refusal-code table; abi/plane/check.rs; layout pins; the TRANSITIONAL head seam, 1.6.0-TODO.md row 34c), +301 measured over the plane driver core: 26157 + 301 = 26458. Then K2's contract half at the measurement, +631: the auth kind's calls and the safe verify door +434, the outbound auth half +70, the host-side PollConns reader +10, a need's kept head fields +51, the plane ABI's piece claim/dialect/caller and head FieldList +65, one class per report +7: 26458 + 631 = 27089."
 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
@@ -542,8 +542,8 @@ because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan a
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
 from    = 25682
-to      = 26458
-because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception at the measure, itemised per lane over predev 25682: E12 (SWEEP-L2 -186 kinds.rs traits, SWEEP-L3 -57) measured 25439 (-243); URL-SEAM busbar_contract::net +489; H2 Caller, caller-scoped host services, merge_list, entitlement and random.fill wrappers +229. 25682 - 243 + 489 + 229 = 26157. Then the llm fold, plane ABI v1 pre-tag edits (abi/plane/mod.rs RefusalStatus, REFUSAL_ANY_DIALECT, the tail's refusal_statuses, the RefusalIn/ArriveIn/ArriveOut/OnPieceIn/Claim fields and the wire refusal-code table; abi/plane/check.rs; layout pins; the TRANSITIONAL head seam, 1.6.0-TODO.md row 34c), +301 measured over the plane driver core: 26157 + 301 = 26458."
+to      = 27089
+because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception at the measure, itemised per lane over predev 25682: E12 (SWEEP-L2 -186 kinds.rs traits, SWEEP-L3 -57) measured 25439 (-243); URL-SEAM busbar_contract::net +489; H2 Caller, caller-scoped host services, merge_list, entitlement and random.fill wrappers +229. 25682 - 243 + 489 + 229 = 26157. Then the llm fold, plane ABI v1 pre-tag edits (abi/plane/mod.rs RefusalStatus, REFUSAL_ANY_DIALECT, the tail's refusal_statuses, the RefusalIn/ArriveIn/ArriveOut/OnPieceIn/Claim fields and the wire refusal-code table; abi/plane/check.rs; layout pins; the TRANSITIONAL head seam, 1.6.0-TODO.md row 34c), +301 measured over the plane driver core: 26157 + 301 = 26458. Then K2's contract half at the measurement, +631: the auth kind's calls and the safe verify door +434, the outbound auth half +70, the host-side PollConns reader +10, a need's kept head fields +51, the plane ABI's piece claim/dialect/caller and head FieldList +65, one class per report +7: 26458 + 631 = 27089."
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
@@ -861,7 +861,11 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 25439 -> 26157 with its pair (URL-SEAM +489, H2 +229), declared above.
 # RE-ARMED 26157 -> 26458 with its pair (plane ABI v1 refusal/arrival edits, the wire
 # refusal codes, and the TRANSITIONAL head seam, +301), declared above.
-contract_caps = 26458
+# RE-ARMED 26458 -> 27089 with its pair, AT THE MEASUREMENT (OWNER GRANT 2026-09-29 (3)): K2's
+# contract half, +631: the auth kind's calls and the safe verify door (WIRE-AUTH picks) +434, the
+# outbound auth half +70, the host-side PollConns reader +10, a need's kept head fields +51, the
+# plane ABI's piece claim/dialect/caller and head FieldList +65, one class per report +7.
+contract_caps = 27089
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1472,7 +1476,7 @@ kernel_crate = "busbar-kernel"
 # itemised table, 2026-10-01): step 15's budget modes +80 (53501 measured on the stack); K2, the
 # production far end and money seam for the plane driver, +1233: the walk's pick in the pump +33;
 # the far end over the kernel's egress walk and the connector +831, its pool, path-only target,
-# bounded auth wait, zeroised credentials, trailers, passthrough and error-body cap +116; the
+# bounded auth wait, zeroised credentials, trailers, passthrough and error-body cap +118; the
 # production money seam +180 and its checked sums and once-only ledger +68; the piece's claim,
 # dialect and caller reference +64; one identity re-export home +3; drains -64 (the walk's own
 # context-length exclusion, attempt cap and breaker judge; one class-sum fold; unread Debug).
@@ -1591,7 +1595,9 @@ contract_crate = "busbar-contract"
 # LOWERED 25496 -> 25439 with its pair (SWEEP-L3: InboundTrust, transport/config_handle.rs and observer_installed leave production, -57), at the measurement. Downward only.
 # RE-ARMED 25439 -> 26157 with its pair (URL-SEAM +489, H2 +229).
 # RE-ARMED 26157 -> 26458 with its pair (plane ABI v1 refusal/arrival edits, +301).
-caps_contract_ceiling = 26458
+# RE-ARMED 26458 -> 27089 with its pair (K2's contract half: auth calls and verify door, outbound
+# auth, PollConns, kept head fields, piece claim/dialect/caller, +631).
+caps_contract_ceiling = 27089
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
