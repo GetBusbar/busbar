@@ -173,6 +173,9 @@ pub struct ClaimSpec {
     pub carrier: String,
     /// `CLAIM_OPEN` | `CLAIM_EXACT`.
     pub flags: u32,
+    /// The dialect a refusal on this route wears before `arrive` has read the arrival (see
+    /// [`Claim::refusal_dialect`]); `0` for a plane with no dialects.
+    pub refusal_dialect: u16,
 }
 
 impl ClaimSpec {
@@ -184,6 +187,7 @@ impl ClaimSpec {
             target: target.to_string(),
             carrier: carrier.to_string(),
             flags,
+            refusal_dialect: 0,
         }
     }
 }
@@ -196,7 +200,8 @@ impl Publish for Claim {
             target: arena.str(&spec.target),
             carrier: arena.str(&spec.carrier),
             flags: spec.flags,
-            _reserved: 0,
+            refusal_dialect: spec.refusal_dialect,
+            _pad: 0,
         }
     }
 }
