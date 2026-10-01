@@ -142,6 +142,13 @@ impl crate::dispatch::Plugin<Plane> {
             .context::<PlaneFacts>()
             .map_or(&[], |f| f.refusal_statuses.as_slice())
     }
+
+    /// The dialects the plane's tail declares (`0` with no tail facts).
+    fn dialects(&self) -> u64 {
+        self.inner
+            .context::<PlaneFacts>()
+            .map_or(0, |f| f.bounds.dialects)
+    }
 }
 
 /// The tail's kernel-owned trust keys, judged PER ELEMENT: each key by `check_trust_keys`, each
@@ -497,7 +504,7 @@ impl crate::dispatch::Plugin<Plane> {
     ) -> (crate::dispatch::Called, Option<OwnedSnapshot>) {
         let called = self.call(life::OPEN, frame);
         let copy = (called.outcome == Outcome::Ready)
-            .then(|| copy_snapshot(frame.out.snapshot))
+            .then(|| copy_snapshot(frame.out.snapshot, self.dialects()))
             .flatten();
         (called, copy)
     }
@@ -509,7 +516,7 @@ impl crate::dispatch::Plugin<Plane> {
     ) -> (crate::dispatch::Called, Option<OwnedSnapshot>) {
         let called = self.call(life::REFRESH, frame);
         let copy = (called.outcome == Outcome::Ready)
-            .then(|| copy_snapshot(frame.out.snapshot))
+            .then(|| copy_snapshot(frame.out.snapshot, self.dialects()))
             .flatten();
         (called, copy)
     }
@@ -529,8 +536,9 @@ fn owned_str(s: busbar_contract::abi::mechanism::call::AbiStr) -> Option<Option<
 
 /// Copy the snapshot a READY `open`/`refresh` published: the loader's own `check_snapshot` has
 /// passed (its size, generation, lists and strings), and the claims and admin routes are judged
-/// here by the contract's element checks before any element string is read.
-fn copy_snapshot(p: *const PlaneSnapshot) -> Option<OwnedSnapshot> {
+/// here by the contract's element checks before any element string is read: a claim's refusal
+/// dialect against the `dialects` its tail declares.
+fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<OwnedSnapshot> {
     use busbar_contract::abi::plane::check::{check_admin_routes, check_claims};
     if p.is_null() {
         return None;
@@ -550,7 +558,7 @@ fn copy_snapshot(p: *const PlaneSnapshot) -> Option<OwnedSnapshot> {
     } else {
         unsafe { std::slice::from_raw_parts(s.admin_routes, s.admin_routes_len) }
     };
-    check_claims(claims).ok()?;
+    check_claims(claims, dialects).ok()?;
     check_admin_routes(routes).ok()?;
     let text = |a| owned_str(a)?.or(Some(String::new()));
     Some(OwnedSnapshot {
