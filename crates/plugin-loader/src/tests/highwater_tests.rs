@@ -5,6 +5,11 @@
 
 use super::*;
 
+/// True when the marks are backed by a data-dir file (so they survive a restart).
+fn is_persistent(marks: &HighWaterMarks) -> bool {
+    marks.path.is_some()
+}
+
 fn tmpdir() -> PathBuf {
     let mut p = std::env::temp_dir();
     let mut rnd = [0u8; 8];
@@ -26,7 +31,7 @@ fn without_a_data_dir_the_store_creates_no_file() {
     let dir = tmpdir();
     let (mut marks, note) = HighWaterMarks::load(None);
     assert!(note.is_none());
-    assert!(!marks.is_persistent());
+    assert!(!is_persistent(&marks));
     assert!(marks.raise("busbar-store-gamma-plugin", "1.2.0"));
     marks.persist().expect("a memory-only persist is a no-op");
     assert_eq!(
@@ -47,7 +52,7 @@ fn without_a_data_dir_the_store_creates_no_file() {
 fn with_a_data_dir_the_floor_survives_a_restart() {
     let dir = tmpdir();
     let (mut marks, _) = HighWaterMarks::load(Some(&dir));
-    assert!(marks.is_persistent());
+    assert!(is_persistent(&marks));
     assert!(marks.raise("busbar-store-gamma-plugin", "1.2.0"));
     marks.persist().unwrap();
 
@@ -117,7 +122,7 @@ fn a_missing_file_is_a_clean_first_boot() {
     let (marks, note) = HighWaterMarks::load(Some(&dir));
     assert!(note.is_none());
     assert!(marks.marks().is_empty());
-    assert!(marks.is_persistent());
+    assert!(is_persistent(&marks));
 }
 
 /// The persisted file is `0600`: an integrity floor is not a secret, but it is written with the same

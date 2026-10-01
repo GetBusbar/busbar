@@ -160,13 +160,6 @@ impl HighWaterMarks {
         self.marks.clone()
     }
 
-    /// True when these marks are backed by a data-dir file (so they survive a restart).
-    #[cfg(test)]
-    #[must_use]
-    pub fn is_persistent(&self) -> bool {
-        self.path.is_some()
-    }
-
     /// RAISE the mark for `name` to `version` if `version` is above the current mark. Never lowers:
     /// the mark is a high-water mark, so an explicit rollback (which loads an older artifact past
     /// its pin) must not silently erase the floor every other node still enforces. Returns true iff
