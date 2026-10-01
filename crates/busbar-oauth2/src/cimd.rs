@@ -239,6 +239,14 @@ fn materialize(url: &str, body: &[u8], ceiling: &ScopeSet) -> Result<Client, Str
         Some(list) if !list.is_empty() => list
             .iter()
             .map(|v| match v.as_str() {
+                // A `\` or a userinfo gives the URI two hosts: the one a reader splitting at `/`
+                // names and the one the browser dials. The consent screen must name the host the
+                // code goes to, so a URI whose two readings differ is refused outright.
+                Some(s)
+                    if s.contains('\\') || net_guard::parse_url(s).is_ok_and(|p| p.userinfo) =>
+                {
+                    Err("redirect_uris entries carry no backslash and no userinfo".to_string())
+                }
                 Some(s)
                     if !s.is_empty() && !s.contains('#') && !s.contains(char::is_whitespace) =>
                 {
