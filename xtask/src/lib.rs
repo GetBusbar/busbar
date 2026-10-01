@@ -59,4 +59,5 @@ pub mod selftest;
 pub mod sha256;
 pub mod toml_doc;
 pub mod toml_lite;
+pub mod wire_lock;
 pub mod yaml_lite;

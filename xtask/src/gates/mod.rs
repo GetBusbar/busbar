@@ -2970,7 +2970,7 @@ pub static REGISTRY: &[Registration] = &[
         batch: 2,
         tier: Tier::Fast,
         build: || Box::new(field_inventory::FieldInventoryGate),
-        summary: "every dialect field is enumerated from a schema that carries its provenance",
+        summary: "the wire locks (every dialect path, generated from the pinned specs) are pinned, registered and whole",
     },
     Registration {
         name: "no-deferral",

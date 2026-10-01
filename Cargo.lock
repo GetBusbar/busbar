@@ -5061,6 +5061,7 @@ version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "serde_json",
+ "serde_yaml_ng",
  "syn 2.0.117",
 ]
 

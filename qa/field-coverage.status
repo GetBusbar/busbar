@@ -1,5 +1,12 @@
-# FIELD COVERAGE STATUS -- the only place a field of qa/field-inventory.json may be declared
-# anything other than MISSING.
+# FIELD COVERAGE STATUS -- the only place a wire path of crates/busbar-plane-llm/dialects/*.wire.json
+# may be declared anything other than UNCLASSIFIED.
+#
+# IDS. `<dialect>/<request|response|stream>/<path>` in wire-lock notation (exact paths from the spec
+# root; `type=<arm>` union segments; see xtask/src/wire_lock/walk.rs). Translated 2026-10-01 from the
+# hand-list ids (`content[].type=text.text` -> `messages[].content[].type=text.text`); an old id that
+# named a union's tag member (`messages[].role`, `...source.type`) became one line per arm, and an
+# old id the spec root lacks stayed as written and is listed, with its reason, in
+# qa/field-coverage.offspec.
 #
 # Owner's ruling, 2026-08-13: "good fix it all. IR completion is key. we say we dont leave things
 # on floor, its our differentiator. needs to be solid"
@@ -48,22 +55,30 @@ anthropic/request/stop_sequences = carried roundtrip_anthropic_request
 anthropic/request/stream = carried roundtrip_anthropic_request
 anthropic/request/temperature = carried roundtrip_anthropic_request
 anthropic/request/top_p = carried roundtrip_anthropic_request
-anthropic/request/content[].type=text.text = carried roundtrip_anthropic_request
-anthropic/request/content[].type=image.source.type = carried roundtrip_anthropic_request
-anthropic/request/content[].type=image.source.media_type = carried roundtrip_anthropic_request
-anthropic/request/content[].type=image.source.data = carried roundtrip_anthropic_request
-anthropic/request/content[].type=document.source.type = carried roundtrip_anthropic_request
-anthropic/request/content[].type=document.source.media_type = carried roundtrip_anthropic_request
-anthropic/request/content[].type=document.source.data = carried roundtrip_anthropic_request
-anthropic/request/content[].type=document.title = carried roundtrip_anthropic_request
-anthropic/request/content[].type=tool_use.id = carried roundtrip_anthropic_request
-anthropic/request/content[].type=tool_use.name = carried roundtrip_anthropic_request
-anthropic/request/content[].type=tool_use.input = carried roundtrip_anthropic_request
-anthropic/request/content[].type=tool_result.tool_use_id = carried roundtrip_anthropic_request
-anthropic/request/content[].type=tool_result.content = carried roundtrip_anthropic_request
-anthropic/request/content[].type=document.source.file_id = carried anthropic_unmodeled_document_survives_same_protocol_round_trip
-anthropic/request/content[].type=document.source.content = carried anthropic_unmodeled_document_survives_same_protocol_round_trip
-anthropic/request/content[].type=redacted_thinking.data = carried read_block_unmodeled_document_type_degrades_not_400
+anthropic/request/messages[].content[].type=text.text = carried roundtrip_anthropic_request
+anthropic/request/messages[].content[].type=image.source.type=base64 = carried roundtrip_anthropic_request
+anthropic/request/messages[].content[].type=image.source.type=file = carried roundtrip_anthropic_request
+anthropic/request/messages[].content[].type=image.source.type=url = carried roundtrip_anthropic_request
+anthropic/request/messages[].content[].type=image.source.type=base64.media_type = carried roundtrip_anthropic_request
+anthropic/request/messages[].content[].type=image.source.type=base64.data = carried roundtrip_anthropic_request
+anthropic/request/messages[].content[].type=document.source.type=base64 = carried roundtrip_anthropic_request
+anthropic/request/messages[].content[].type=document.source.type=content = carried roundtrip_anthropic_request
+anthropic/request/messages[].content[].type=document.source.type=file = carried roundtrip_anthropic_request
+anthropic/request/messages[].content[].type=document.source.type=text = carried roundtrip_anthropic_request
+anthropic/request/messages[].content[].type=document.source.type=url = carried roundtrip_anthropic_request
+anthropic/request/messages[].content[].type=document.source.type=text.media_type = carried roundtrip_anthropic_request
+anthropic/request/messages[].content[].type=document.source.type=base64.media_type = carried roundtrip_anthropic_request
+anthropic/request/messages[].content[].type=document.source.type=text.data = carried roundtrip_anthropic_request
+anthropic/request/messages[].content[].type=document.source.type=base64.data = carried roundtrip_anthropic_request
+anthropic/request/messages[].content[].type=document.title = carried roundtrip_anthropic_request
+anthropic/request/messages[].content[].type=tool_use.id = carried roundtrip_anthropic_request
+anthropic/request/messages[].content[].type=tool_use.name = carried roundtrip_anthropic_request
+anthropic/request/messages[].content[].type=tool_use.input = carried roundtrip_anthropic_request
+anthropic/request/messages[].content[].type=tool_result.tool_use_id = carried roundtrip_anthropic_request
+anthropic/request/messages[].content[].type=tool_result.content = carried roundtrip_anthropic_request
+anthropic/request/messages[].content[].type=document.source.type=file.file_id = carried anthropic_unmodeled_document_survives_same_protocol_round_trip
+anthropic/request/messages[].content[].type=document.source.type=content.content = carried anthropic_unmodeled_document_survives_same_protocol_round_trip
+anthropic/request/messages[].content[].type=redacted_thinking.data = carried read_block_unmodeled_document_type_degrades_not_400
 
 # ---------------------------------------------------------------------------
 # ANTHROPIC -- response. Backed by `roundtrip_anthropic_response` (exact divergence set: empty)
@@ -87,18 +102,29 @@ anthropic/response/usage.cache_creation.ephemeral_1h_input_tokens = carried anth
 # OPENAI CHAT
 # ---------------------------------------------------------------------------
 openai/request/model = waived 2026-08-13 set by the engine from the routing lane, not by the reader/writer pair
-openai/request/messages[].role = carried roundtrip_openai_request
-openai/request/messages[].content = carried roundtrip_openai_request
+openai/request/messages[].role=assistant = carried roundtrip_openai_request
+openai/request/messages[].role=developer = carried roundtrip_openai_request
+openai/request/messages[].role=function = carried roundtrip_openai_request
+openai/request/messages[].role=system = carried roundtrip_openai_request
+openai/request/messages[].role=tool = carried roundtrip_openai_request
+openai/request/messages[].role=user = carried roundtrip_openai_request
+openai/request/messages[].role=tool.content = carried roundtrip_openai_request
+openai/request/messages[].role=user.content = carried roundtrip_openai_request
+openai/request/messages[].role=system.content = carried roundtrip_openai_request
+openai/request/messages[].role=function.content = carried roundtrip_openai_request
+openai/request/messages[].role=assistant.content = carried roundtrip_openai_request
+openai/request/messages[].role=developer.content = carried roundtrip_openai_request
 openai/request/max_tokens = carried roundtrip_openai_request
 openai/request/temperature = carried roundtrip_openai_request
 openai/request/stream = carried roundtrip_openai_request
-openai/request/content[].type=text.text = carried roundtrip_openai_request
-openai/request/content[].type=input_audio.input_audio.data = carried openai_attachments_survive_the_ir_rather_than_becoming_empty_text
-openai/request/content[].type=input_audio.input_audio.format = carried openai_attachments_survive_the_ir_rather_than_becoming_empty_text
-openai/request/content[].type=file.file.file_data = carried openai_attachments_survive_the_ir_rather_than_becoming_empty_text
-openai/request/content[].type=file.file.filename = carried openai_attachments_survive_the_ir_rather_than_becoming_empty_text
-openai/request/content[].type=file.file.file_id = carried openai_attachments_survive_the_ir_rather_than_becoming_empty_text
-openai/request/content[].type=image_url.image_url.detail = waived 2026-08-13 a cost/latency hint ONE vendor models; dropped with a warn at openai_chat/mod.rs, no cross-protocol carrier exists
+openai/request/messages[].role=user.content[].type=text.text = carried roundtrip_openai_request
+openai/request/messages[].role=assistant.content[].type=text.text = carried roundtrip_openai_request
+openai/request/messages[].role=user.content[].type=input_audio.input_audio.data = carried openai_attachments_survive_the_ir_rather_than_becoming_empty_text
+openai/request/messages[].role=user.content[].type=input_audio.input_audio.format = carried openai_attachments_survive_the_ir_rather_than_becoming_empty_text
+openai/request/messages[].role=user.content[].type=file.file.file_data = carried openai_attachments_survive_the_ir_rather_than_becoming_empty_text
+openai/request/messages[].role=user.content[].type=file.file.filename = carried openai_attachments_survive_the_ir_rather_than_becoming_empty_text
+openai/request/messages[].role=user.content[].type=file.file.file_id = carried openai_attachments_survive_the_ir_rather_than_becoming_empty_text
+openai/request/messages[].role=user.content[].type=image_url.image_url.detail = waived 2026-08-13 a cost/latency hint ONE vendor models; dropped with a warn at openai_chat/mod.rs, no cross-protocol carrier exists
 openai/response/usage.completion_tokens_details.reasoning_tokens = carried openai_reasoning_tokens_reach_the_ir
 openai/response/usage.prompt_tokens = carried openai_reasoning_tokens_reach_the_ir
 openai/response/usage.completion_tokens = carried openai_reasoning_tokens_reach_the_ir
@@ -107,8 +133,8 @@ openai/response/usage.total_tokens = carried openai_reasoning_tokens_reach_the_i
 # ---------------------------------------------------------------------------
 # GEMINI
 # ---------------------------------------------------------------------------
-gemini/request/parts[].inlineData.mimeType = carried gemini_non_image_inline_data_is_not_an_image_block
-gemini/request/parts[].inlineData.data = carried gemini_non_image_inline_data_is_not_an_image_block
+gemini/request/contents[].parts[].inlineData.mimeType = carried gemini_non_image_inline_data_is_not_an_image_block
+gemini/request/contents[].parts[].inlineData.data = carried gemini_non_image_inline_data_is_not_an_image_block
 gemini/request/contents[].role = carried attachments_reach_gemini_as_inline_data
 gemini/request/contents[].parts = carried attachments_reach_gemini_as_inline_data
 gemini/response/usageMetadata.thoughtsTokenCount = carried gemini_thoughts_token_count_is_the_reasoning_sub_bucket
@@ -124,14 +150,14 @@ bedrock/request/system = carried roundtrip_bedrock_request
 bedrock/request/inferenceConfig.maxTokens = carried roundtrip_bedrock_request
 bedrock/request/inferenceConfig.temperature = carried roundtrip_bedrock_request
 bedrock/request/inferenceConfig.topP = carried roundtrip_bedrock_request
-bedrock/request/content[].text = carried roundtrip_bedrock_request
-bedrock/request/content[].image.format = carried roundtrip_bedrock_request
-bedrock/request/content[].image.source.bytes = carried roundtrip_bedrock_request
-bedrock/request/content[].document.format = carried bedrock_document_is_modelled_without_double_emitting
-bedrock/request/content[].document.name = carried bedrock_document_is_modelled_without_double_emitting
-bedrock/request/content[].document.source.bytes = carried bedrock_document_is_modelled_without_double_emitting
-bedrock/request/content[].video.format = carried roundtrip_bedrock_request
-bedrock/request/content[].video.source.bytes = carried roundtrip_bedrock_request
+bedrock/request/messages[].content[].text = carried roundtrip_bedrock_request
+bedrock/request/messages[].content[].image.format = carried roundtrip_bedrock_request
+bedrock/request/messages[].content[].image.source.bytes = carried roundtrip_bedrock_request
+bedrock/request/messages[].content[].document.format = carried bedrock_document_is_modelled_without_double_emitting
+bedrock/request/messages[].content[].document.name = carried bedrock_document_is_modelled_without_double_emitting
+bedrock/request/messages[].content[].document.source.bytes = carried bedrock_document_is_modelled_without_double_emitting
+bedrock/request/messages[].content[].video.format = carried roundtrip_bedrock_request
+bedrock/request/messages[].content[].video.source.bytes = carried roundtrip_bedrock_request
 bedrock/request/guardrailConfig = waived 2026-08-13 names an AWS account resource that exists at exactly one vendor; no cross-protocol projection
 
 # ---------------------------------------------------------------------------
@@ -143,13 +169,13 @@ cohere/response/message.content = carried cohere_tool_plan_is_reasoning_not_visi
 cohere/response/usage.billed_units.search_units = carried cohere_search_units_reach_the_ir
 cohere/response/usage.tokens.input_tokens = carried cohere_search_units_reach_the_ir
 cohere/response/usage.tokens.output_tokens = carried cohere_search_units_reach_the_ir
-cohere/request/content[].type=document.document.id = carried cohere_tool_result_document_is_not_stringified
-cohere/request/content[].type=document.document.data = carried cohere_tool_result_document_is_not_stringified
-cohere/request/messages[].tool_call_id = carried cohere_tool_result_document_is_not_stringified
-cohere/request/messages[].tool_calls = carried cohere_tool_result_document_is_not_stringified
+cohere/request/messages[].role=tool.content[].type=document.document.id = carried cohere_tool_result_document_is_not_stringified
+cohere/request/messages[].role=tool.content[].type=document.document.data = carried cohere_tool_result_document_is_not_stringified
+cohere/request/messages[].role=tool.tool_call_id = carried cohere_tool_result_document_is_not_stringified
+cohere/request/messages[].role=assistant.tool_calls = carried cohere_tool_result_document_is_not_stringified
 cohere/request/documents = waived 2026-08-13 Cohere-native RAG grounding with no faithful target mapping; warned at the reader before the seam clears it
-cohere/response/stream:tool-plan-delta = carried test_stream_tool_plan_delta_becomes_leading_reasoning_before_tool_call
-cohere/response/stream:citation-start = carried streamed_citations_reach_openai_and_cohere_clients
+cohere/stream/type=tool-plan-delta = carried test_stream_tool_plan_delta_becomes_leading_reasoning_before_tool_call
+cohere/stream/type=citation-start = carried streamed_citations_reach_openai_and_cohere_clients
 cohere/response/message.citations = carried cohere_response_citations_reach_a_foreign_client
 openai/response/stream:choices[].delta.annotations = carried streamed_citations_reach_openai_and_cohere_clients
 gemini/response/usageMetadata.promptTokenCount = carried gemini_thoughts_token_count_is_the_reasoning_sub_bucket
@@ -159,11 +185,11 @@ gemini/response/usageMetadata.totalTokenCount = carried gemini_thoughts_token_co
 # ---------------------------------------------------------------------------
 # RESPONSES
 # ---------------------------------------------------------------------------
-responses/request/content[].type=input_file.file_data = carried responses_input_file_survives_the_ir
-responses/request/content[].type=input_file.filename = carried responses_input_file_survives_the_ir
-responses/request/content[].type=input_file.file_url = carried responses_input_file_survives_the_ir
-responses/request/content[].type=input_file.file_id = carried responses_input_file_degrades_with_warn_not_silent_drop
-responses/request/content[].type=input_text.text = carried responses_input_file_survives_the_ir
+responses/request/input[].type=message.content[].type=input_file.file_data = carried responses_input_file_survives_the_ir
+responses/request/input[].type=message.content[].type=input_file.filename = carried responses_input_file_survives_the_ir
+responses/request/input[].type=message.content[].type=input_file.file_url = carried responses_input_file_survives_the_ir
+responses/request/input[].type=message.content[].type=input_file.file_id = carried responses_input_file_degrades_with_warn_not_silent_drop
+responses/request/input[].type=message.content[].type=input_text.text = carried responses_input_file_survives_the_ir
 responses/response/usage.output_tokens_details.reasoning_tokens = carried responses_reasoning_tokens_are_not_zeroed
 responses/response/usage.input_tokens = carried responses_reasoning_tokens_are_not_zeroed
 responses/response/usage.output_tokens = carried responses_reasoning_tokens_are_not_zeroed
@@ -175,28 +201,28 @@ responses/request/conversation = waived 2026-08-13 same as previous_response_id:
 bedrock/request/inferenceConfig.stopSequences = carried bedrock_carry_request_stop_sequences
 bedrock/request/toolConfig.tools = carried bedrock_carry_request_tool_config
 bedrock/request/toolConfig.toolChoice = carried bedrock_carry_request_tool_config
-bedrock/request/content[].toolUse.toolUseId = carried bedrock_carry_request_tool_use
-bedrock/request/content[].toolUse.name = carried bedrock_carry_request_tool_use
-bedrock/request/content[].toolUse.input = carried bedrock_carry_request_tool_use
-bedrock/request/content[].toolResult.toolUseId = carried bedrock_carry_request_tool_result
-bedrock/request/content[].toolResult.content = carried bedrock_carry_request_tool_result
-bedrock/request/content[].toolResult.status = carried bedrock_carry_request_tool_result
-bedrock/request/content[].reasoningContent.reasoningText.text = carried bedrock_carry_request_reasoning_content
-bedrock/request/content[].reasoningContent.reasoningText.signature = carried bedrock_carry_request_reasoning_content
-bedrock/request/content[].reasoningContent.redactedContent = carried bedrock_carry_request_reasoning_content
+bedrock/request/messages[].content[].toolUse.toolUseId = carried bedrock_carry_request_tool_use
+bedrock/request/messages[].content[].toolUse.name = carried bedrock_carry_request_tool_use
+bedrock/request/messages[].content[].toolUse.input = carried bedrock_carry_request_tool_use
+bedrock/request/messages[].content[].toolResult.toolUseId = carried bedrock_carry_request_tool_result
+bedrock/request/messages[].content[].toolResult.content = carried bedrock_carry_request_tool_result
+bedrock/request/messages[].content[].toolResult.status = carried bedrock_carry_request_tool_result
+bedrock/request/messages[].content[].reasoningContent.reasoningText.text = carried bedrock_carry_request_reasoning_content
+bedrock/request/messages[].content[].reasoningContent.reasoningText.signature = carried bedrock_carry_request_reasoning_content
+bedrock/request/messages[].content[].reasoningContent.redactedContent = carried bedrock_carry_request_reasoning_content
 # Provider-specific: lossless SAME-protocol via verbatim capture (extra / positional stash / vendor source).
 bedrock/request/additionalModelRequestFields = carried bedrock_carry_request_additional_model_request_fields
 bedrock/request/additionalModelResponseFieldPaths = carried bedrock_carry_request_additional_model_response_field_paths
 bedrock/request/promptVariables = carried bedrock_carry_request_prompt_variables
 bedrock/request/requestMetadata = carried bedrock_carry_request_request_metadata
 bedrock/request/performanceConfig = carried bedrock_carry_request_performance_config
-bedrock/request/content[].image.source.s3Location = carried bedrock_carry_request_image_s3_location
-bedrock/request/content[].document.source.s3Location = carried bedrock_carry_request_document_provider_fields
-bedrock/request/content[].document.citations = carried bedrock_carry_request_document_provider_fields
-bedrock/request/content[].document.context = carried bedrock_carry_request_document_provider_fields
-bedrock/request/content[].video.source.s3Location = carried bedrock_carry_request_video_s3_location
-bedrock/request/content[].cachePoint.type = carried bedrock_carry_request_cache_point
-bedrock/request/content[].guardContent = carried bedrock_carry_request_guard_content
+bedrock/request/messages[].content[].image.source.s3Location = carried bedrock_carry_request_image_s3_location
+bedrock/request/messages[].content[].document.source.s3Location = carried bedrock_carry_request_document_provider_fields
+bedrock/request/messages[].content[].document.citations = carried bedrock_carry_request_document_provider_fields
+bedrock/request/messages[].content[].document.context = carried bedrock_carry_request_document_provider_fields
+bedrock/request/messages[].content[].video.source.s3Location = carried bedrock_carry_request_video_s3_location
+bedrock/request/messages[].content[].cachePoint.type = carried bedrock_carry_request_cache_point
+bedrock/request/messages[].content[].guardContent = carried bedrock_carry_request_guard_content
 # Response envelope + usage (cross-protocol-meaningful).
 bedrock/response/output.message.role = carried bedrock_carry_response_output_and_stop_reason
 bedrock/response/output.message.content = carried bedrock_carry_response_output_and_stop_reason
@@ -213,12 +239,12 @@ bedrock/response/trace.promptRouter = carried bedrock_carry_response_trace_docum
 bedrock/response/additionalModelResponseFields = carried bedrock_carry_response_additional_model_response_fields_documented_drop
 bedrock/response/performanceConfig = carried bedrock_carry_response_performance_config_documented_drop
 # ConverseStream binary eventstream frame types (read + write).
-bedrock/response/stream:messageStart = carried bedrock_carry_stream_frame_types
-bedrock/response/stream:contentBlockStart = carried bedrock_carry_stream_frame_types
-bedrock/response/stream:contentBlockDelta = carried bedrock_carry_stream_frame_types
-bedrock/response/stream:contentBlockStop = carried bedrock_carry_stream_frame_types
-bedrock/response/stream:messageStop = carried bedrock_carry_stream_frame_types
-bedrock/response/stream:metadata = carried bedrock_carry_stream_frame_types
+bedrock/stream/messageStart = carried bedrock_carry_stream_frame_types
+bedrock/stream/contentBlockStart = carried bedrock_carry_stream_frame_types
+bedrock/stream/contentBlockDelta = carried bedrock_carry_stream_frame_types
+bedrock/stream/contentBlockStop = carried bedrock_carry_stream_frame_types
+bedrock/stream/messageStop = carried bedrock_carry_stream_frame_types
+bedrock/stream/metadata = carried bedrock_carry_stream_frame_types
 responses/request/model = carried responses_request_core_fields_survive_roundtrip
 responses/request/input = carried responses_request_core_fields_survive_roundtrip
 responses/request/instructions = carried responses_request_core_fields_survive_roundtrip
@@ -246,11 +272,11 @@ responses/request/safety_identifier = carried responses_request_provider_specifi
 responses/request/service_tier = carried responses_request_provider_specific_fields_survive_same_protocol
 responses/request/background = carried responses_request_provider_specific_fields_survive_same_protocol
 responses/request/user = carried responses_request_provider_specific_fields_survive_same_protocol
-responses/request/content[].type=output_text.text = carried responses_request_content_parts_survive_roundtrip
-responses/request/content[].type=output_text.annotations = carried responses_request_output_text_annotations_survive
-responses/request/content[].type=input_image.image_url = carried responses_request_content_parts_survive_roundtrip
-responses/request/content[].type=input_image.file_id = carried responses_request_content_parts_survive_roundtrip
-responses/request/content[].type=input_image.detail = carried responses_request_input_image_detail_carried
+responses/request/input[].type=message.content[].type=output_text.text = carried responses_request_content_parts_survive_roundtrip
+responses/request/input[].type=message.content[].type=output_text.annotations = carried responses_request_output_text_annotations_survive
+responses/request/input[].type=message.content[].type=input_image.image_url = carried responses_request_content_parts_survive_roundtrip
+responses/request/input[].type=message.content[].type=input_image.file_id = carried responses_request_content_parts_survive_roundtrip
+responses/request/input[].type=message.content[].type=input_image.detail = carried responses_request_input_image_detail_carried
 responses/request/input[].type=function_call.call_id = carried responses_request_function_call_items_survive_roundtrip
 responses/request/input[].type=function_call.name = carried responses_request_function_call_items_survive_roundtrip
 responses/request/input[].type=function_call.arguments = carried responses_request_function_call_items_survive_roundtrip
@@ -282,19 +308,19 @@ responses/response/output[].type=function_call.name = carried responses_response
 responses/response/output[].type=function_call.arguments = carried responses_response_output_items_emitted
 responses/response/output[].type=web_search_call.id = carried responses_response_web_search_call_dropped_with_warn
 responses/response/output[].type=web_search_call.status = carried responses_response_web_search_call_dropped_with_warn
-responses/response/stream:response.created = carried responses_stream_events_emitted_by_writer
-responses/response/stream:response.in_progress = carried responses_stream_in_progress_consumed_by_reader
-responses/response/stream:response.output_item.added = carried responses_stream_events_emitted_by_writer
-responses/response/stream:response.output_item.done = carried responses_stream_events_emitted_by_writer
-responses/response/stream:response.content_part.added = carried responses_stream_events_emitted_by_writer
-responses/response/stream:response.content_part.done = carried responses_stream_events_emitted_by_writer
-responses/response/stream:response.output_text.delta = carried responses_stream_events_emitted_by_writer
-responses/response/stream:response.output_text.done = carried responses_stream_events_emitted_by_writer
-responses/response/stream:response.function_call_arguments.delta = carried responses_stream_events_emitted_by_writer
-responses/response/stream:response.reasoning_summary_text.delta = carried responses_stream_reasoning_summary_delta_consumed_by_reader
-responses/response/stream:response.completed = carried responses_stream_events_emitted_by_writer
-responses/response/stream:response.failed = carried responses_stream_failed_event_emitted
-responses/response/stream:response.incomplete = carried responses_stream_incomplete_event_emitted
+responses/stream/type=response.created = carried responses_stream_events_emitted_by_writer
+responses/stream/type=response.in_progress = carried responses_stream_in_progress_consumed_by_reader
+responses/stream/type=response.output_item.added = carried responses_stream_events_emitted_by_writer
+responses/stream/type=response.output_item.done = carried responses_stream_events_emitted_by_writer
+responses/stream/type=response.content_part.added = carried responses_stream_events_emitted_by_writer
+responses/stream/type=response.content_part.done = carried responses_stream_events_emitted_by_writer
+responses/stream/type=response.output_text.delta = carried responses_stream_events_emitted_by_writer
+responses/stream/type=response.output_text.done = carried responses_stream_events_emitted_by_writer
+responses/stream/type=response.function_call_arguments.delta = carried responses_stream_events_emitted_by_writer
+responses/stream/type=response.reasoning_summary_text.delta = carried responses_stream_reasoning_summary_delta_consumed_by_reader
+responses/stream/type=response.completed = carried responses_stream_events_emitted_by_writer
+responses/stream/type=response.failed = carried responses_stream_failed_event_emitted
+responses/stream/type=response.incomplete = carried responses_stream_incomplete_event_emitted
 anthropic/request/metadata = carried anthropic_request_provider_specific_fields_carry
 anthropic/request/service_tier = carried anthropic_request_provider_specific_fields_carry
 anthropic/request/container = carried anthropic_request_provider_specific_fields_carry
@@ -304,34 +330,34 @@ anthropic/request/top_k = carried anthropic_request_top_k_carry
 anthropic/request/tools = carried anthropic_request_tools_carry
 anthropic/request/tool_choice = carried anthropic_request_tool_choice_carry
 anthropic/request/thinking = carried anthropic_request_thinking_carry
-anthropic/request/content[].type=text.cache_control = carried anthropic_content_block_field_carry
-anthropic/request/content[].type=text.citations = carried anthropic_content_block_field_carry
-anthropic/request/content[].type=image.source.url = carried anthropic_content_block_field_carry
-anthropic/request/content[].type=image.cache_control = carried anthropic_content_block_field_carry
-anthropic/request/content[].type=tool_use.cache_control = carried anthropic_content_block_field_carry
-anthropic/request/content[].type=tool_result.is_error = carried anthropic_content_block_field_carry
-anthropic/request/content[].type=tool_result.cache_control = carried anthropic_content_block_field_carry
-anthropic/request/content[].type=thinking.thinking = carried anthropic_thinking_content_block_carry
-anthropic/request/content[].type=thinking.signature = carried anthropic_thinking_content_block_carry
-anthropic/request/content[].type=document.source.url = carried anthropic_document_block_carry
-anthropic/request/content[].type=document.context = carried anthropic_document_block_carry
-anthropic/request/content[].type=document.citations = carried anthropic_document_block_carry
-anthropic/request/content[].type=document.cache_control = carried anthropic_document_block_carry
-anthropic/request/content[].type=search_result.source = carried anthropic_search_result_block_carry
-anthropic/request/content[].type=search_result.title = carried anthropic_search_result_block_carry
-anthropic/request/content[].type=search_result.content = carried anthropic_search_result_block_carry
+anthropic/request/messages[].content[].type=text.cache_control = carried anthropic_content_block_field_carry
+anthropic/request/messages[].content[].type=text.citations = carried anthropic_content_block_field_carry
+anthropic/request/messages[].content[].type=image.source.type=url.url = carried anthropic_content_block_field_carry
+anthropic/request/messages[].content[].type=image.cache_control = carried anthropic_content_block_field_carry
+anthropic/request/messages[].content[].type=tool_use.cache_control = carried anthropic_content_block_field_carry
+anthropic/request/messages[].content[].type=tool_result.is_error = carried anthropic_content_block_field_carry
+anthropic/request/messages[].content[].type=tool_result.cache_control = carried anthropic_content_block_field_carry
+anthropic/request/messages[].content[].type=thinking.thinking = carried anthropic_thinking_content_block_carry
+anthropic/request/messages[].content[].type=thinking.signature = carried anthropic_thinking_content_block_carry
+anthropic/request/messages[].content[].type=document.source.type=url.url = carried anthropic_document_block_carry
+anthropic/request/messages[].content[].type=document.context = carried anthropic_document_block_carry
+anthropic/request/messages[].content[].type=document.citations = carried anthropic_document_block_carry
+anthropic/request/messages[].content[].type=document.cache_control = carried anthropic_document_block_carry
+anthropic/request/messages[].content[].type=search_result.source = carried anthropic_search_result_block_carry
+anthropic/request/messages[].content[].type=search_result.title = carried anthropic_search_result_block_carry
+anthropic/request/messages[].content[].type=search_result.content = carried anthropic_search_result_block_carry
 anthropic/response/usage.server_tool_use.web_search_requests = carried anthropic_response_usage_extras_carry
 anthropic/response/usage.service_tier = carried anthropic_response_usage_extras_carry
-anthropic/response/stream:message_start = carried anthropic_stream_event_roundtrip_carry
-anthropic/response/stream:content_block_start = carried anthropic_stream_event_roundtrip_carry
-anthropic/response/stream:content_block_delta.text_delta = carried anthropic_stream_delta_roundtrip_carry
-anthropic/response/stream:content_block_delta.input_json_delta = carried anthropic_stream_delta_roundtrip_carry
-anthropic/response/stream:content_block_delta.thinking_delta = carried anthropic_stream_delta_roundtrip_carry
-anthropic/response/stream:content_block_delta.signature_delta = carried anthropic_stream_delta_roundtrip_carry
-anthropic/response/stream:content_block_delta.citations_delta = carried anthropic_stream_delta_roundtrip_carry
-anthropic/response/stream:content_block_stop = carried anthropic_stream_event_roundtrip_carry
-anthropic/response/stream:message_delta = carried anthropic_stream_event_roundtrip_carry
-anthropic/response/stream:message_stop = carried anthropic_stream_event_roundtrip_carry
+anthropic/stream/type=message_start = carried anthropic_stream_event_roundtrip_carry
+anthropic/stream/type=content_block_start = carried anthropic_stream_event_roundtrip_carry
+anthropic/stream/type=content_block_delta.delta.type=text_delta = carried anthropic_stream_delta_roundtrip_carry
+anthropic/stream/type=content_block_delta.delta.type=input_json_delta = carried anthropic_stream_delta_roundtrip_carry
+anthropic/stream/type=content_block_delta.delta.type=thinking_delta = carried anthropic_stream_delta_roundtrip_carry
+anthropic/stream/type=content_block_delta.delta.type=signature_delta = carried anthropic_stream_delta_roundtrip_carry
+anthropic/stream/type=content_block_delta.delta.type=citations_delta = carried anthropic_stream_delta_roundtrip_carry
+anthropic/stream/type=content_block_stop = carried anthropic_stream_event_roundtrip_carry
+anthropic/stream/type=message_delta = carried anthropic_stream_event_roundtrip_carry
+anthropic/stream/type=message_stop = carried anthropic_stream_event_roundtrip_carry
 anthropic/response/stream:ping = carried anthropic_stream_ping_same_proto_carry
 # ---------------------------------------------------------------------------
 # OPENAI (Chat Completions) -- 1.6.x field-carry sweep. See
@@ -339,14 +365,18 @@ anthropic/response/stream:ping = carried anthropic_stream_ping_same_proto_carry
 # field it backs individually. Provider-specific request fields ride `extra` (lossless
 # same-protocol, cleared cross-protocol); provider-specific RESPONSE fields with no addable
 # IR carrier survive the same-protocol verbatim relay and drop on cross-protocol re-serialize.
-openai/request/messages[].name = carried openai_carry_request_message_and_content_fields
-openai/request/messages[].tool_calls = carried openai_carry_request_message_and_content_fields
-openai/request/messages[].tool_call_id = carried openai_carry_request_message_and_content_fields
-openai/request/messages[].refusal = carried openai_carry_request_message_and_content_fields
-openai/request/messages[].audio = carried openai_carry_request_message_and_content_fields
-openai/request/messages[].function_call = carried openai_carry_request_message_and_content_fields
-openai/request/content[].type=image_url.image_url.url = carried openai_carry_request_message_and_content_fields
-openai/request/content[].type=refusal.refusal = carried openai_carry_request_message_and_content_fields
+openai/request/messages[].role=user.name = carried openai_carry_request_message_and_content_fields
+openai/request/messages[].role=system.name = carried openai_carry_request_message_and_content_fields
+openai/request/messages[].role=function.name = carried openai_carry_request_message_and_content_fields
+openai/request/messages[].role=assistant.name = carried openai_carry_request_message_and_content_fields
+openai/request/messages[].role=developer.name = carried openai_carry_request_message_and_content_fields
+openai/request/messages[].role=assistant.tool_calls = carried openai_carry_request_message_and_content_fields
+openai/request/messages[].role=tool.tool_call_id = carried openai_carry_request_message_and_content_fields
+openai/request/messages[].role=assistant.refusal = carried openai_carry_request_message_and_content_fields
+openai/request/messages[].role=assistant.audio = carried openai_carry_request_message_and_content_fields
+openai/request/messages[].role=assistant.function_call = carried openai_carry_request_message_and_content_fields
+openai/request/messages[].role=user.content[].type=image_url.image_url.url = carried openai_carry_request_message_and_content_fields
+openai/request/messages[].role=assistant.content[].type=refusal.refusal = carried openai_carry_request_message_and_content_fields
 openai/request/frequency_penalty = carried openai_carry_request_sampling_and_output_controls
 openai/request/presence_penalty = carried openai_carry_request_sampling_and_output_controls
 openai/request/logit_bias = carried openai_carry_request_provider_specific_extra_fields
@@ -395,10 +425,10 @@ openai/response/usage.prompt_tokens_details.audio_tokens = carried openai_carry_
 openai/response/usage.completion_tokens_details.audio_tokens = carried openai_carry_response_usage_sub_buckets
 openai/response/usage.completion_tokens_details.accepted_prediction_tokens = carried openai_carry_response_usage_sub_buckets
 openai/response/usage.completion_tokens_details.rejected_prediction_tokens = carried openai_carry_response_usage_sub_buckets
-openai/response/stream:choices[].delta.role = carried openai_carry_stream_delta_fields
-openai/response/stream:choices[].delta.content = carried openai_carry_stream_delta_fields
-openai/response/stream:choices[].delta.refusal = carried openai_carry_stream_delta_fields
-openai/response/stream:choices[].delta.tool_calls = carried openai_carry_stream_delta_fields
+openai/stream/choices[].delta.role = carried openai_carry_stream_delta_fields
+openai/stream/choices[].delta.content = carried openai_carry_stream_delta_fields
+openai/stream/choices[].delta.refusal = carried openai_carry_stream_delta_fields
+openai/stream/choices[].delta.tool_calls = carried openai_carry_stream_delta_fields
 openai/response/stream:choices[].delta.reasoning_content = carried openai_carry_stream_delta_fields
 gemini/request/systemInstruction = carried gemini_request_system_instruction_survives
 gemini/request/tools = carried gemini_request_tools_survive
@@ -423,17 +453,17 @@ gemini/request/generationConfig.thinkingConfig.includeThoughts = carried gemini_
 gemini/request/generationConfig.mediaResolution = carried gemini_request_provider_specific_fields_survive_same_proto
 gemini/request/generationConfig.speechConfig = carried gemini_request_provider_specific_fields_survive_same_proto
 gemini/request/labels = carried gemini_request_provider_specific_fields_survive_same_proto
-gemini/request/parts[].text = carried gemini_request_content_parts_survive
-gemini/request/parts[].thought = carried gemini_request_content_parts_survive
-gemini/request/parts[].thoughtSignature = carried gemini_request_content_parts_survive
-gemini/request/parts[].fileData.fileUri = carried gemini_request_content_parts_survive
-gemini/request/parts[].fileData.mimeType = carried gemini_request_content_parts_survive
-gemini/request/parts[].functionCall.name = carried gemini_request_content_parts_survive
-gemini/request/parts[].functionCall.args = carried gemini_request_content_parts_survive
-gemini/request/parts[].functionResponse.name = carried gemini_request_content_parts_survive
-gemini/request/parts[].functionResponse.response = carried gemini_request_content_parts_survive
-gemini/request/parts[].executableCode = carried gemini_code_execution_parts_drop_cross_proto_without_corruption
-gemini/request/parts[].codeExecutionResult = carried gemini_code_execution_parts_drop_cross_proto_without_corruption
+gemini/request/contents[].parts[].text = carried gemini_request_content_parts_survive
+gemini/request/contents[].parts[].thought = carried gemini_request_content_parts_survive
+gemini/request/contents[].parts[].thoughtSignature = carried gemini_request_content_parts_survive
+gemini/request/contents[].parts[].fileData.fileUri = carried gemini_request_content_parts_survive
+gemini/request/contents[].parts[].fileData.mimeType = carried gemini_request_content_parts_survive
+gemini/request/contents[].parts[].functionCall.name = carried gemini_request_content_parts_survive
+gemini/request/contents[].parts[].functionCall.args = carried gemini_request_content_parts_survive
+gemini/request/contents[].parts[].functionResponse.name = carried gemini_request_content_parts_survive
+gemini/request/contents[].parts[].functionResponse.response = carried gemini_request_content_parts_survive
+gemini/request/contents[].parts[].executableCode = carried gemini_code_execution_parts_drop_cross_proto_without_corruption
+gemini/request/contents[].parts[].codeExecutionResult = carried gemini_code_execution_parts_drop_cross_proto_without_corruption
 gemini/response/candidates[].content = carried gemini_response_core_fields_survive
 gemini/response/candidates[].finishReason = carried gemini_response_core_fields_survive
 gemini/response/candidates[].index = carried gemini_response_provider_specific_fields_drop_cross_proto_without_corruption
@@ -451,12 +481,21 @@ gemini/response/usageMetadata.promptTokensDetails = carried gemini_response_prov
 gemini/response/modelVersion = carried gemini_response_core_fields_survive
 gemini/response/responseId = carried gemini_response_core_fields_survive
 cohere/request/model = carried cohere_request_model_is_stamped_by_routing_lane
-cohere/request/messages[].role = carried cohere_request_messages_and_tools_survive_roundtrip
-cohere/request/messages[].content = carried cohere_request_messages_and_tools_survive_roundtrip
-cohere/request/messages[].tool_plan = carried cohere_request_messages_and_tools_survive_roundtrip
-cohere/request/messages[].citations = carried cohere_request_messages_and_tools_survive_roundtrip
-cohere/request/content[].type=text.text = carried cohere_request_messages_and_tools_survive_roundtrip
-cohere/request/content[].type=image_url.image_url.url = carried cohere_request_messages_and_tools_survive_roundtrip
+cohere/request/messages[].role=assistant = carried cohere_request_messages_and_tools_survive_roundtrip
+cohere/request/messages[].role=system = carried cohere_request_messages_and_tools_survive_roundtrip
+cohere/request/messages[].role=tool = carried cohere_request_messages_and_tools_survive_roundtrip
+cohere/request/messages[].role=user = carried cohere_request_messages_and_tools_survive_roundtrip
+cohere/request/messages[].role=tool.content = carried cohere_request_messages_and_tools_survive_roundtrip
+cohere/request/messages[].role=user.content = carried cohere_request_messages_and_tools_survive_roundtrip
+cohere/request/messages[].role=system.content = carried cohere_request_messages_and_tools_survive_roundtrip
+cohere/request/messages[].role=assistant.content = carried cohere_request_messages_and_tools_survive_roundtrip
+cohere/request/messages[].role=assistant.tool_plan = carried cohere_request_messages_and_tools_survive_roundtrip
+cohere/request/messages[].role=assistant.citations = carried cohere_request_messages_and_tools_survive_roundtrip
+cohere/request/messages[].role=tool.content[].type=text.text = carried cohere_request_messages_and_tools_survive_roundtrip
+cohere/request/messages[].role=user.content[].type=text.text = carried cohere_request_messages_and_tools_survive_roundtrip
+cohere/request/messages[].role=system.content[].type=text.text = carried cohere_request_messages_and_tools_survive_roundtrip
+cohere/request/messages[].role=assistant.content[].type=text.text = carried cohere_request_messages_and_tools_survive_roundtrip
+cohere/request/messages[].role=user.content[].type=image_url.image_url.url = carried cohere_request_messages_and_tools_survive_roundtrip
 cohere/request/tools = carried cohere_request_messages_and_tools_survive_roundtrip
 cohere/request/tool_choice = carried cohere_request_messages_and_tools_survive_roundtrip
 cohere/request/citation_options = carried cohere_request_provider_specific_survive_same_proto
@@ -480,12 +519,12 @@ cohere/response/logprobs = carried cohere_response_logprobs_drop_is_warned
 cohere/response/usage.billed_units.input_tokens = carried cohere_response_billed_units_survive_roundtrip
 cohere/response/usage.billed_units.output_tokens = carried cohere_response_billed_units_survive_roundtrip
 cohere/response/usage.billed_units.classifications = carried cohere_response_billed_units_survive_roundtrip
-cohere/response/stream:message-start = carried cohere_stream_events_reach_a_cohere_client
-cohere/response/stream:content-start = carried cohere_stream_events_reach_a_cohere_client
-cohere/response/stream:content-delta = carried cohere_stream_events_reach_a_cohere_client
-cohere/response/stream:content-end = carried cohere_stream_events_reach_a_cohere_client
-cohere/response/stream:tool-call-start = carried cohere_stream_events_reach_a_cohere_client
-cohere/response/stream:tool-call-delta = carried cohere_stream_events_reach_a_cohere_client
-cohere/response/stream:tool-call-end = carried cohere_stream_events_reach_a_cohere_client
-cohere/response/stream:citation-end = carried cohere_stream_citation_end_pairs_with_start
-cohere/response/stream:message-end = carried cohere_stream_events_reach_a_cohere_client
+cohere/stream/type=message-start = carried cohere_stream_events_reach_a_cohere_client
+cohere/stream/type=content-start = carried cohere_stream_events_reach_a_cohere_client
+cohere/stream/type=content-delta = carried cohere_stream_events_reach_a_cohere_client
+cohere/stream/type=content-end = carried cohere_stream_events_reach_a_cohere_client
+cohere/stream/type=tool-call-start = carried cohere_stream_events_reach_a_cohere_client
+cohere/stream/type=tool-call-delta = carried cohere_stream_events_reach_a_cohere_client
+cohere/stream/type=tool-call-end = carried cohere_stream_events_reach_a_cohere_client
+cohere/stream/type=citation-end = carried cohere_stream_citation_end_pairs_with_start
+cohere/stream/type=message-end = carried cohere_stream_events_reach_a_cohere_client

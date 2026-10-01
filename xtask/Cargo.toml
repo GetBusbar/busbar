@@ -42,4 +42,8 @@ serde_json = { workspace = true }
 # question, each from a scanner that mis-handled a nested block comment, a raw string or a char
 # literal. See the note beside these two in the workspace table.
 proc-macro2 = { workspace = true }
+# THE WIRE LOCKS READ THREE YAML SPECS (openai, anthropic, cohere), each several MB of full YAML.
+# `yaml_lite` is deliberately the workflow subset only, so the spec reader uses the workspace's
+# existing YAML parser (already in Cargo.lock via busbar-contract); no new crate enters the lock.
+serde_yaml = { workspace = true }
 syn = { workspace = true }

@@ -1,0 +1,11 @@
+# OFF-SPEC FIELD IDS -- claimed in qa/field-coverage.status, real on the wire, and ABSENT from the
+# provider spec root the wire lock is generated from. Each line: `<field-id> = <why the wire has
+# what the spec lacks>`. crates/busbar/tests/field_coverage.rs requires every status id to be a
+# wire-lock path or a line here, and every line here to be claimed in the status file and absent
+# from the locks (when a spec gains the field, move the claim to the lock path and delete the line).
+anthropic/request/betas = the anthropic-beta header list, carried as a body member; not in CreateMessageParams (a header, and a Beta* schema member)
+anthropic/request/mcp_servers = a beta request member: CreateMessageParams lacks it; it exists only in the spec's Beta* schemas, sent with an anthropic-beta header
+anthropic/response/stream:ping = the SSE keep-alive event Anthropic sends on the wire; MessageStreamEvent does not list it
+openai/response/choices[].message.reasoning_content = reasoning text emitted by OpenAI-compatible upstreams (DeepSeek, vLLM); not in the OpenAI spec
+openai/response/stream:choices[].delta.annotations = url-citation annotations streamed on the delta by the live API; the pinned CreateChatCompletionStreamResponse delta has no annotations member
+openai/response/stream:choices[].delta.reasoning_content = streamed reasoning text from OpenAI-compatible upstreams (DeepSeek, vLLM); not in the OpenAI spec

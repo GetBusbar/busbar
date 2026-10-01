@@ -34,6 +34,8 @@ usage:
   cargo xtask full-gate [--list] [--selftest] [--dump-gates|--dump-cargo [FILE]]
   cargo xtask conformance check --suite <id>|all|--musts [--sha <sha>] [--manifest <path>] [--format=tsv]
   cargo xtask conformance check --selftest
+  cargo xtask dialect wire [--write | --diff] <dialect|all>
+  cargo xtask dialect wire --diff-files <old.wire.json> <new.wire.json>
   cargo xtask fleet render <repo> [--out <dir>]
   cargo xtask fleet check [--repo <repo>]...
   cargo xtask fleet sync [--repo <repo>]... [--workdir <dir>] [--dry-run]
@@ -59,6 +61,7 @@ pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
     "root",
     "perf-ab",
     "perf-ab-mock",
+    "dialect",
 ];
 
 pub fn main(args: &[String]) -> i32 {
@@ -139,6 +142,12 @@ pub fn main(args: &[String]) -> i32 {
         // already reconciled, read-only, so the release pipeline can shell to it directly
         // (`CONFORMANCE-GATES-PLAN.md` §1.3 — turnstile drives local subprocesses, never GitHub
         // check-runs).
+        // THE WIRE LOCKS. Not a gate: it GENERATES `dialects/<d>.wire.json` from the pinned
+        // provider specs (and checks or diffs them); `gate field-inventory` reads the result.
+        Some("dialect") => match open_ctx() {
+            Ok(cx) => crate::wire_lock::main(&cx, &args[1..]),
+            Err(code) => code,
+        },
         Some("conformance") => match open_ctx() {
             Ok(cx) => conformance_check::main(&cx, &args[1..]),
             Err(code) => code,
