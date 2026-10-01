@@ -136,7 +136,7 @@ impl ClientCreds {
             http::header::CONTENT_TYPE,
             http::HeaderValue::from_static("application/x-www-form-urlencoded"),
         );
-        let request = crate::egress::engine::request(
+        let request = crate::egress::engine::client_request(
             http::Method::POST,
             uri,
             headers,

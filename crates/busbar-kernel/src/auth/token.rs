@@ -1002,7 +1002,7 @@ async fn execute_hop(
     // The exact call reqwest's `.form()` was — wire bytes unchanged.
     let body = serde_urlencoded::to_string(&form).map_err(|_| ())?;
     let request =
-        busbar_kernel::egress::engine::request(method, uri, headers, bytes::Bytes::from(body));
+        crate::egress::engine::client_request(method, uri, headers, bytes::Bytes::from(body));
     // The hop's total, send THROUGH body read under one absolute deadline — the client-level
     // timeout the retired reqwest builder carried, now the caller's argument (production passes
     // [`HOP_TIMEOUT_SECS`]; the hang test shortens it, which is what a client-level knob allowed).
