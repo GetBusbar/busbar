@@ -131,7 +131,10 @@ async fn a_mixed_answer_is_refused_whole() {
         )))
         .await
         .expect_err("a mixed answer must be refused");
-    assert!(dial_refusal(&err).is_some(), "refused by the table: {err:?}");
+    assert!(
+        dial_refusal(&err).is_some(),
+        "refused by the table: {err:?}"
+    );
     assert!(fixture.records().is_empty(), "no connection was opened");
 }
 
@@ -152,7 +155,11 @@ async fn a_loopback_answer_dials_and_pools() {
         assert_eq!(resp.status(), 200);
         let _ = http_body_util::BodyExt::collect(resp.into_body()).await;
     }
-    assert_eq!(counting.calls(), 1, "the second request reused the pooled connection");
+    assert_eq!(
+        counting.calls(),
+        1,
+        "the second request reused the pooled connection"
+    );
     assert_eq!(fixture.records().len(), 1);
     assert_eq!(fixture.records()[0].requests, 2);
 }
@@ -185,7 +192,10 @@ async fn a_published_table_is_read_by_the_next_dial() {
         .request(get(&url))
         .await
         .expect_err("the operator-blocked address is refused");
-    assert!(dial_refusal(&err).is_some(), "refused by the table: {err:?}");
+    assert!(
+        dial_refusal(&err).is_some(),
+        "refused by the table: {err:?}"
+    );
     assert_eq!(fixture.records().len(), 1);
 }
 
@@ -205,7 +215,11 @@ async fn a_refusal_is_connect_class_with_no_timeout_in_its_chain() {
     let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(&err);
     while let Some(e) = cur {
         if let Some(io) = e.downcast_ref::<std::io::Error>() {
-            assert_ne!(io.kind(), std::io::ErrorKind::TimedOut, "no timeout in the chain");
+            assert_ne!(
+                io.kind(),
+                std::io::ErrorKind::TimedOut,
+                "no timeout in the chain"
+            );
         }
         cur = e.source();
     }

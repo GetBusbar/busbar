@@ -176,8 +176,16 @@ async fn an_all_refused_pool_answers_as_an_all_down_pool() {
     // Port 1 on loopback: nothing listens, so the baseline's connections are refused.
     let refused_url = "http://127.0.0.1:1";
     let baseline = TestApp::new()
-        .lane(LaneSpec::new("lane0", crate::proto_codec::PROTO_ANTHROPIC, refused_url))
-        .lane(LaneSpec::new("lane1", crate::proto_codec::PROTO_ANTHROPIC, refused_url))
+        .lane(LaneSpec::new(
+            "lane0",
+            crate::proto_codec::PROTO_ANTHROPIC,
+            refused_url,
+        ))
+        .lane(LaneSpec::new(
+            "lane1",
+            crate::proto_codec::PROTO_ANTHROPIC,
+            refused_url,
+        ))
         .pool("default", &[(0, 1), (1, 1)])
         .build();
     let _ = crate::engine::test_host_rt(&baseline);
@@ -206,7 +214,10 @@ async fn an_all_refused_pool_answers_as_an_all_down_pool() {
         app
     });
     let refused = forward(&judged, 2).await;
-    assert!(names.calls() >= 2, "both lanes' names were resolved and refused");
+    assert!(
+        names.calls() >= 2,
+        "both lanes' names were resolved and refused"
+    );
     assert_eq!(refused.status(), base_status);
     assert_eq!(base_status, StatusCode::SERVICE_UNAVAILABLE);
     let refused_body = axum::body::to_bytes(refused.into_body(), usize::MAX)

@@ -47,7 +47,11 @@ pub fn process_dial_table() -> DialTable {
 /// Judge one resolution's answer, refusing it whole. The refusal ([`AddressRefusal`]) is the
 /// resolver's error, so `HttpConnector` reports the dial as a connect failure caused by it: not a
 /// timeout, so a plane fails it over as it does a refused connection.
-fn judged(table: &DialTable, host: &str, addrs: Vec<SocketAddr>) -> Result<ResolvedAddrs, BoxError> {
+fn judged(
+    table: &DialTable,
+    host: &str,
+    addrs: Vec<SocketAddr>,
+) -> Result<ResolvedAddrs, BoxError> {
     let ips: Vec<IpAddr> = addrs.iter().map(SocketAddr::ip).collect();
     table
         .judge(host, &ips)

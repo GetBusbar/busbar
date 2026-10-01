@@ -277,7 +277,11 @@ fn a_metadata_carve_out_admits_only_what_it_names() {
     let pinned = Arc::new(Mutex::new(None));
     let slot = Arc::clone(&pinned);
     assert!(s
-        .judge_dial("rebind.example:80", 0, Box::new(move |v| *slot.lock().unwrap() = Some(v)))
+        .judge_dial(
+            "rebind.example:80",
+            0,
+            Box::new(move |v| *slot.lock().unwrap() = Some(v))
+        )
         .is_none());
     let done = r.held.lock().unwrap().pop().expect("resolved");
     done(Ok(vec!["100.100.100.200".parse().unwrap()]));
@@ -296,7 +300,11 @@ fn without_an_override_metadata_stays_refused_on_the_dial() {
     let pinned = Arc::new(Mutex::new(None));
     let slot = Arc::clone(&pinned);
     assert!(s
-        .judge_dial("rebind.example:80", 0, Box::new(move |v| *slot.lock().unwrap() = Some(v)))
+        .judge_dial(
+            "rebind.example:80",
+            0,
+            Box::new(move |v| *slot.lock().unwrap() = Some(v))
+        )
         .is_none());
     let done = r.held.lock().unwrap().pop().expect("resolved");
     done(Ok(vec!["169.254.169.254".parse().unwrap()]));
@@ -320,7 +328,11 @@ fn an_operator_blocked_answer_is_refused_on_the_dial() {
     let pinned = Arc::new(Mutex::new(None));
     let slot = Arc::clone(&pinned);
     assert!(s
-        .judge_dial("blocked.example:443", 0, Box::new(move |v| *slot.lock().unwrap() = Some(v)))
+        .judge_dial(
+            "blocked.example:443",
+            0,
+            Box::new(move |v| *slot.lock().unwrap() = Some(v))
+        )
         .is_none());
     let done = r.held.lock().unwrap().pop().expect("resolved");
     done(Ok(vec!["93.184.216.34".parse().unwrap()]));

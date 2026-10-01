@@ -92,8 +92,8 @@ pub use lane::{
     survives_prewalk_filter, BreakerQuery, BreakerView, LaneCandidate, LaneTable, Unavailable,
 };
 pub use net::{
-    check_destination, check_destination_facts, AddressRefusal, Denylist, DialDenylist,
-    DialTable, GuardPolicy, NetworkRefusal, PinnedTarget, Resolver,
+    check_destination, check_destination_facts, AddressRefusal, Denylist, DialDenylist, DialTable,
+    GuardPolicy, NetworkRefusal, PinnedTarget, Resolver,
 };
 pub use order::{
     pick, reconcile_order, sticky_position, OrderVerdict, OrderingHook, Pick, PickOutcome,

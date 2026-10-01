@@ -21,7 +21,14 @@ fn strings(xs: &[&str]) -> Vec<String> {
 #[test]
 fn metadata_answers_are_refused_and_private_answers_pass() {
     let table = DialDenylist::default();
-    for bad in ["169.254.169.254", "100.100.100.200", "168.63.129.16", "192.0.0.192", "fd00:ec2::254", "::ffff:169.254.169.254"] {
+    for bad in [
+        "169.254.169.254",
+        "100.100.100.200",
+        "168.63.129.16",
+        "192.0.0.192",
+        "fd00:ec2::254",
+        "::ffff:169.254.169.254",
+    ] {
         assert_eq!(
             table.judge("api.example.com", &[ip(bad)]),
             Err(AddressRefusal::CloudMetadataAddress {
@@ -31,8 +38,20 @@ fn metadata_answers_are_refused_and_private_answers_pass() {
             "{bad}"
         );
     }
-    for good in ["127.0.0.1", "::1", "10.0.0.5", "192.168.1.9", "100.64.0.1", "93.184.216.34", "fe80::1"] {
-        assert_eq!(table.judge("api.example.com", &[ip(good)]), Ok(()), "{good}");
+    for good in [
+        "127.0.0.1",
+        "::1",
+        "10.0.0.5",
+        "192.168.1.9",
+        "100.64.0.1",
+        "93.184.216.34",
+        "fe80::1",
+    ] {
+        assert_eq!(
+            table.judge("api.example.com", &[ip(good)]),
+            Ok(()),
+            "{good}"
+        );
     }
 }
 
@@ -40,7 +59,10 @@ fn metadata_answers_are_refused_and_private_answers_pass() {
 fn a_mixed_answer_is_refused_whole() {
     let table = DialDenylist::default();
     assert!(table
-        .judge("api.example.com", &[ip("93.184.216.34"), ip("169.254.169.254")])
+        .judge(
+            "api.example.com",
+            &[ip("93.184.216.34"), ip("169.254.169.254")]
+        )
         .is_err());
 }
 
@@ -60,8 +82,12 @@ fn a_provider_carve_out_admits_its_own_host_only() {
         false,
         [("https://IMDS.example./v1", own.as_slice())],
     );
-    assert!(table.judge("imds.example", &[ip("169.254.169.254")]).is_ok());
-    assert!(table.judge("other.example", &[ip("169.254.169.254")]).is_err());
+    assert!(table
+        .judge("imds.example", &[ip("169.254.169.254")])
+        .is_ok());
+    assert!(table
+        .judge("other.example", &[ip("169.254.169.254")])
+        .is_err());
 
     // A carve-out may name the host instead of the address.
     let by_name = strings(&["named.example"]);
@@ -71,15 +97,24 @@ fn a_provider_carve_out_admits_its_own_host_only() {
         false,
         [("https://named.example", by_name.as_slice())],
     );
-    assert!(table.judge("named.example", &[ip("169.254.169.254")]).is_ok());
+    assert!(table
+        .judge("named.example", &[ip("169.254.169.254")])
+        .is_ok());
 }
 
 #[test]
 fn the_global_carve_out_and_allow_all_reach_every_host() {
-    let table = DialDenylist::new(&[], &strings(&["169.254.169.254"]), false, std::iter::empty());
+    let table = DialDenylist::new(
+        &[],
+        &strings(&["169.254.169.254"]),
+        false,
+        std::iter::empty(),
+    );
     assert!(table.judge("any.example", &[ip("169.254.169.254")]).is_ok());
     let table = DialDenylist::new(&strings(&["10.9.9.9"]), &[], true, std::iter::empty());
-    assert!(table.judge("any.example", &[ip("169.254.169.254"), ip("10.9.9.9")]).is_ok());
+    assert!(table
+        .judge("any.example", &[ip("169.254.169.254"), ip("10.9.9.9")])
+        .is_ok());
 }
 
 /// ONE RULE: for an address literal, the dial-time verdict and the configuration-time verdict are
@@ -90,9 +125,19 @@ fn the_dial_verdict_matches_the_configuration_verdict() {
     let allowed = strings(&["168.63.129.16"]);
     let lists = Denylist::new(&blocked, &allowed, false);
     for literal in [
-        "169.254.169.254", "169.254.170.2", "100.100.100.200", "168.63.129.16", "192.0.0.192",
-        "10.9.9.9", "10.9.9.8", "127.0.0.1", "93.184.216.34", "fd00:ec2::254",
-        "::ffff:100.100.100.200", "::1", "fe80::1",
+        "169.254.169.254",
+        "169.254.170.2",
+        "100.100.100.200",
+        "168.63.129.16",
+        "192.0.0.192",
+        "10.9.9.9",
+        "10.9.9.8",
+        "127.0.0.1",
+        "93.184.216.34",
+        "fd00:ec2::254",
+        "::ffff:100.100.100.200",
+        "::1",
+        "fe80::1",
     ] {
         let addr = ip(literal);
         let url = match addr {
@@ -113,6 +158,9 @@ fn the_dial_verdict_matches_the_configuration_verdict() {
 /// table admits it and the configuration-time check still admits it.
 #[test]
 fn an_ipv6_link_local_answer_is_dialled_as_predev_dialled_it() {
-    assert_eq!(DialDenylist::default().judge("lan.example", &[ip("fe80::1")]), Ok(()));
+    assert_eq!(
+        DialDenylist::default().judge("lan.example", &[ip("fe80::1")]),
+        Ok(())
+    );
     assert!(ssrf_blocked_host("https://[fe80::1]/v1", &[], false, &[]).is_none());
 }

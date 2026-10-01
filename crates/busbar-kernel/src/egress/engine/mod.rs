@@ -68,12 +68,12 @@ mod pool;
 pub mod resolve;
 pub mod tls;
 
-pub use deadline::ConnectDeadline;
-pub use observe::{peer_key_pin, KeyPinObserve, ObservedIo, PeerKeyPin};
-pub use crate::net_guard::DialTable;
-pub use resolve::{process_dial_table, EgressResolver, ResolveNames};
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::egress::fixtures::with_scoped_dial;
+pub use crate::net_guard::DialTable;
+pub use deadline::ConnectDeadline;
+pub use observe::{peer_key_pin, KeyPinObserve, ObservedIo, PeerKeyPin};
+pub use resolve::{process_dial_table, EgressResolver, ResolveNames};
 pub use tls::{ClientIdentity, Trust};
 
 /// The connector stack, bottom-up: TCP through the pin-aware resolver (+ boot-detected CONNECT

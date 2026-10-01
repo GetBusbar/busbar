@@ -1019,13 +1019,17 @@ impl DialTable {
     /// A table holding `lists`.
     #[must_use]
     pub fn new(lists: DialDenylist) -> Self {
-        DialTable(std::sync::Arc::new(std::sync::RwLock::new(std::sync::Arc::new(lists))))
+        DialTable(std::sync::Arc::new(std::sync::RwLock::new(
+            std::sync::Arc::new(lists),
+        )))
     }
 
     /// Replace the lists every holder of this table judges by.
     pub fn publish(&self, lists: DialDenylist) {
-        *self.0.write().unwrap_or_else(std::sync::PoisonError::into_inner) =
-            std::sync::Arc::new(lists);
+        *self
+            .0
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = std::sync::Arc::new(lists);
     }
 
     /// Judge one resolution's answer under the lists in force now ([`DialDenylist::judge`]).
@@ -1035,7 +1039,10 @@ impl DialTable {
     /// The first answered address the lists refuse.
     pub fn judge(&self, host: &str, addrs: &[IpAddr]) -> Result<(), AddressRefusal> {
         let lists = std::sync::Arc::clone(
-            &self.0.read().unwrap_or_else(std::sync::PoisonError::into_inner),
+            &self
+                .0
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
         lists.judge(host, addrs)
     }

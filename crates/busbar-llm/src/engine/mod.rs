@@ -166,11 +166,11 @@ mod auth_style_tests;
 #[path = "tests/client_header_forwarding_tests.rs"]
 mod client_header_forwarding_tests;
 #[cfg(test)]
-#[path = "tests/dialect_registry_facts_tests.rs"]
-mod dialect_registry_facts_tests;
-#[cfg(test)]
 #[path = "tests/dial_refusal_failover_tests.rs"]
 mod dial_refusal_failover_tests;
+#[cfg(test)]
+#[path = "tests/dialect_registry_facts_tests.rs"]
+mod dialect_registry_facts_tests;
 #[cfg(test)]
 #[path = "tests/egress_differential_tests.rs"]
 mod egress_differential_tests;
