@@ -8,6 +8,7 @@ use busbar_contract::http::StatusCode;
 use busbar_contract::protocol::*;
 #[cfg(test)]
 use busbar_contract::upstream::CanonicalSignal;
+#[cfg(test)]
 use busbar_contract::upstream::StatusClass;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
@@ -545,15 +546,6 @@ fn read_cohere_document(doc: &serde_json::Value) -> crate::codec::ir::IrBlock {
             context: None,
         },
     }
-}
-
-/// Whether a request's requested output modalities (IR-19) are lost on Cohere egress: Cohere v2
-/// `/chat` produces text only and has no modality control, so an ask for anything beyond text is
-/// dropped. A text-only ask is what Cohere does anyway — nothing is lost.
-fn cohere_drops_output_modalities(req: &crate::codec::ir::IrRequest) -> bool {
-    req.output_modalities
-        .as_ref()
-        .is_some_and(|m| m.iter().any(|x| *x != crate::codec::ir::IrModality::Text))
 }
 
 /// Read the `detail` of a Cohere v2 `image_url` object (`{"url": …, "detail": "auto"|"low"|"high"}`)

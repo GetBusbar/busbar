@@ -311,31 +311,8 @@ unsafe fn resolve_key(key: *const Key) -> Option<(String, usize)> {
 /// than wedging the cell. Fail-closed: a refusal, a bad key, or a caught panic all return
 /// [`AdmissionId::NONE`].
 pub(super) extern "C-unwind" fn breaker_admit(host: HostCtx, key: *const Key) -> AdmissionId {
-    catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: recovery invariant (see `super::recover`).
-        let Some(state) = (unsafe { recover(host) }) else {
-            // A null / stale (generation no longer live) handle refuses like any other bad input.
-            return AdmissionId::NONE;
-        };
-        // SAFETY: ABI key discipline (see `resolve_key`).
-        let Some((pool, lane)) = (unsafe { resolve_key(key) }) else {
-            return AdmissionId::NONE;
-        };
-        let breakers = Arc::clone(&state.app.plane_breakers);
-        match breakers.admit(&pool, lane) {
-            Ok(admission) => state
-                .scope
-                .register_settling_admission(Box::new(BreakerAdmission {
-                    breakers: Arc::clone(&breakers),
-                    key: pool,
-                    lane,
-                    _admission: admission,
-                })),
-            // Unavailable (Open / probe-in-flight / dead / budget) → refuse with the NONE sentinel.
-            Err(_unavailable) => AdmissionId::NONE,
-        }
-    }))
-    .unwrap_or(AdmissionId::NONE) // fail-closed: a panicked admit refuses.
+    // The same admit with no refusal slot: `write_refusal` tolerates a null `out`.
+    breaker_admit_reason(host, key, core::ptr::null_mut())
 }
 
 /// Map the store's [`Unavailable`](busbar_kernel::store::Unavailable) refusal taxonomy onto the neutral ABI
@@ -507,33 +484,22 @@ pub fn failure_signal(cs: &CanonicalSignal) -> Signal {
         None => (core::ptr::null(), 0),
     };
     Signal {
-        size: core::mem::size_of::<Signal>() as u32,
-        version: busbar_contract::abi::hot::POD_VERSION,
-        class: RawStatus::of(StatusClass::Fault),
-        _reserved: 0,
-        latency_nanos: 0,
-        bytes: 0,
         fault_class: RawFault::of(fault_of(cs.class)),
         fault_flags: flags,
-        _reserved2: 0,
-        _reserved3: 0,
         retry_after_secs: secs,
         provider_signal_ptr: ptr,
         provider_signal_len: len,
+        ..bare_signal(StatusClass::Fault)
     }
 }
 
-/// The ABI [`Signal`] a host settle carries for a SUCCESS — the host `classify` maps `Ok` straight to
-/// `record_success`, closing the half-open probe exactly as the plane's own success record does.
-// Built only by the plane settle paths behind the `dispatch`/`relay` features, so it reads dead when
-// both are compiled out; live with either on.
-#[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
-#[must_use]
-pub fn success_signal() -> Signal {
+/// A settle [`Signal`] of coarse `class` carrying nothing else: no fine fault, no `Retry-After`
+/// floor, no provider error-code. The one place the POD header and the zeroed fields are written.
+fn bare_signal(class: StatusClass) -> Signal {
     Signal {
         size: core::mem::size_of::<Signal>() as u32,
         version: busbar_contract::abi::hot::POD_VERSION,
-        class: RawStatus::of(StatusClass::Ok),
+        class: RawStatus::of(class),
         _reserved: 0,
         latency_nanos: 0,
         bytes: 0,
@@ -545,6 +511,16 @@ pub fn success_signal() -> Signal {
         provider_signal_ptr: core::ptr::null(),
         provider_signal_len: 0,
     }
+}
+
+/// The ABI [`Signal`] a host settle carries for a SUCCESS — the host `classify` maps `Ok` straight to
+/// `record_success`, closing the half-open probe exactly as the plane's own success record does.
+// Built only by the plane settle paths behind the `dispatch`/`relay` features, so it reads dead when
+// both are compiled out; live with either on.
+#[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
+#[must_use]
+pub fn success_signal() -> Signal {
+    bare_signal(StatusClass::Ok)
 }
 
 /// The ABI [`Signal`] a host settle carries for an outcome that is NOT an upstream health signal —
@@ -556,19 +532,5 @@ pub fn success_signal() -> Signal {
 #[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
 #[must_use]
 pub fn refused_signal() -> Signal {
-    Signal {
-        size: core::mem::size_of::<Signal>() as u32,
-        version: busbar_contract::abi::hot::POD_VERSION,
-        class: RawStatus::of(StatusClass::Refused),
-        _reserved: 0,
-        latency_nanos: 0,
-        bytes: 0,
-        fault_class: RawFault::of(FaultClass::Unspecified),
-        fault_flags: 0,
-        _reserved2: 0,
-        _reserved3: 0,
-        retry_after_secs: 0,
-        provider_signal_ptr: core::ptr::null(),
-        provider_signal_len: 0,
-    }
+    bare_signal(StatusClass::Refused)
 }

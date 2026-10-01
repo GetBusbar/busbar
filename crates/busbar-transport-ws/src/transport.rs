@@ -164,43 +164,24 @@ fn spelled_authority(url: &str) -> Option<&str> {
 type FrameStream =
     std::pin::Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
 
-/// One `ws://`/`wss://` URL, hand-parsed into `(secure, host, port, path)`. Deliberately strict
-/// rather than permissive: this is an operator/runtime target, not free text.
+/// One `ws://`/`wss://` URL, read into `(secure, host, port, path)`. Strict over the scheme, with
+/// the authority read by the contract's one URL reader ([`busbar_contract::net::parse_url`], WHATWG
+/// rules): it ends at `/`, `?`, `#` or `\` exactly where the handshake's parser ends it, the host
+/// comes back unbracketed, and a userinfo is refused. The path always opens with `/`.
 pub(crate) fn split_ws_url(url: &str) -> Result<(bool, String, u16, String), TransportError> {
-    let (secure, rest) = if let Some(r) = url.strip_prefix("wss://") {
-        (true, r)
-    } else if let Some(r) = url.strip_prefix("ws://") {
-        (false, r)
+    let secure = if url.starts_with("wss://") {
+        true
+    } else if url.starts_with("ws://") {
+        false
     } else {
         return Err(TransportError::AddressRefused);
     };
-    let (authority, path) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, "/"),
-    };
-    if authority.is_empty() || authority.contains('@') {
+    let parts = busbar_contract::net::parse_url(url).map_err(|_| TransportError::AddressRefused)?;
+    if parts.userinfo {
         return Err(TransportError::AddressRefused);
     }
-    let (host, port) = match authority.rsplit_once(':') {
-        // The last colon separates a port only when nothing after it is inside the brackets: that
-        // one condition tells `[::1]:8080` (a port) from `[::1]` (an address whose own colons the
-        // brackets are there to hide). A rule that also demanded the host not end in `]` rejected
-        // exactly the bracketed-with-a-port case the brackets exist for.
-        Some((h, p)) if !p.contains(']') => {
-            let port: u16 = p.parse().map_err(|_| TransportError::AddressRefused)?;
-            (h.to_string(), port)
-        }
-        _ => (authority.to_string(), if secure { 443 } else { 80 }),
-    };
-    let host = host
-        .strip_prefix('[')
-        .and_then(|h| h.strip_suffix(']'))
-        .map(str::to_string)
-        .unwrap_or(host);
-    if host.is_empty() {
-        return Err(TransportError::AddressRefused);
-    }
-    Ok((secure, host, port, path.to_string()))
+    let port = parts.port.unwrap_or(if secure { 443 } else { 80 });
+    Ok((secure, parts.host, port, parts.path))
 }
 
 /// The WebSocket transport. In-tree, inside the trusted computing base — see the architecture

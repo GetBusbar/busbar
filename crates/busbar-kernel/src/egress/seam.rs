@@ -37,7 +37,7 @@
 use busbar_contract::abi::hot::{EgressDesc, EgressKind, StatusClass, POD_VERSION};
 
 use crate::plane_host::egress::{
-    drive_close, drive_open, drive_poll, scope_bits, OpenOutcome, OpenedHead,
+    borrowed_range, drive_close, drive_open, drive_poll, scope_bits, OpenOutcome, OpenedHead,
 };
 use crate::plane_host::scope::DispatchScope;
 use crate::proxy::ReadEnd;
@@ -83,21 +83,9 @@ fn pack_headers(headers: &[(String, String)]) -> Vec<u8> {
 /// buffers here are — the caller keeps them on the stack across the `drive_open` call (the host copies
 /// everything it needs at open, so the borrow need only span that call).
 fn build_desc<'a>(spec: &'a HopSpec<'a>, packed_headers: &'a [u8]) -> EgressDesc {
-    let (headers_ptr, headers_len) = if packed_headers.is_empty() {
-        (std::ptr::null(), 0)
-    } else {
-        (packed_headers.as_ptr(), packed_headers.len())
-    };
-    let (verb_ptr, verb_len) = if spec.verb.is_empty() {
-        (std::ptr::null(), 0)
-    } else {
-        (spec.verb.as_ptr(), spec.verb.len())
-    };
-    let (body_ptr, body_len) = if spec.body.is_empty() {
-        (std::ptr::null(), 0)
-    } else {
-        (spec.body.as_ptr(), spec.body.len())
-    };
+    let (headers_ptr, headers_len) = borrowed_range(packed_headers);
+    let (verb_ptr, verb_len) = borrowed_range(spec.verb.as_bytes());
+    let (body_ptr, body_len) = borrowed_range(spec.body);
     // Encode the plane's already-judged pinned address (Design A) into the 16-byte slot + kind: a v4
     // address fills the first 4 bytes (kind 4), a v6 address fills all 16 (kind 6). `None` ⇒ kind 0,
     // the host resolves the URL host itself (the pre-enrichment behaviour).

@@ -696,7 +696,8 @@ fn oai07_legacy_function_calling_request_maps() {
 /// — as `max_completion_tokens`; a lane that declares nothing receives `max_tokens`.
 #[test]
 fn oai01_lane_max_output_key_decides_the_cross_protocol_spelling() {
-    use crate::codec::proto_codec::{LaneCaps, MaxOutputKey, ProtocolReader, ProtocolWriter};
+    use crate::codec::proto_codec::{ProtocolReader, ProtocolWriter};
+    use busbar_contract::ir::egress_prep::{LaneCaps, MaxOutputKey};
     let completion_lane = LaneCaps {
         max_output_key: MaxOutputKey::MaxCompletionTokens,
         ..LaneCaps::default()

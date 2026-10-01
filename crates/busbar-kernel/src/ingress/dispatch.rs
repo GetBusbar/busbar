@@ -33,7 +33,7 @@ pub(crate) async fn protocol_dispatch(
     body: Bytes,
 ) -> Response {
     let path = uri.path().to_string();
-    let Some(proto) = crate::proto::detect::protocol_id(&path, &headers) else {
+    let Some(proto) = crate::proto::detect_protocol(&path, &headers) else {
         // Not a protocol endpoint: the pre-collapse 404 fallback shape (native envelope by path).
         return crate::fallback_error_response(
             &app.planes,

@@ -35,12 +35,24 @@ pub fn dispatcher() -> &'static Dispatcher {
     ONE.get_or_init(|| Dispatcher::new(DispatchConfig::default()))
 }
 
-/// What a transport door is bound to.
+/// What a transport door is bound to. The instance label is the transport lane's own; every door
+/// is relabelled as it opens: a linked row with its row name ([`row_bind`]), a dropped-in door
+/// with its plugin's name (the registry), so the label is unique per instance.
 pub fn bind() -> Bind {
     Bind {
+        instance: Arc::from("transport"),
         max_inflight_cap: 1024,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher().adopter(),
+    }
+}
+
+/// What a LINKED row's door is bound to: [`bind`], labelled with the row's name (its registry
+/// key), so two linked rows are two instances to the host services.
+pub fn row_bind(row: &str) -> Bind {
+    Bind {
+        instance: Arc::from(row),
+        ..bind()
     }
 }
 
@@ -246,19 +258,21 @@ pub fn host_wire(
     Ok(Arc::new(RootWire(HostWire::new(Arc::new(door))?)))
 }
 
-/// A linked row's build: its door admitted through the one validation, served over the host's
-/// sockets. A door row frames the host's socket, so it takes no lower layer and reads no setting.
+/// A linked row's build: its door admitted through the one validation, bound under the row's name
+/// `row` ([`row_bind`]), served over the host's sockets. A door row frames the host's socket, so it
+/// takes no lower layer and reads no setting.
 ///
 /// # Panics
 ///
 /// The build's own door is refused: the binary was built with a broken plugin, which no
 /// configuration can repair.
 pub fn build(
+    row: &str,
     door: DoorFn,
     _lower: Option<Arc<dyn busbar_contract::Transport>>,
     _settings: &busbar_contract::transport::TransportSettings,
 ) -> Arc<dyn busbar_contract::Transport> {
-    load_linked::<TransportKind>(door, bind())
+    load_linked::<TransportKind>(door, row_bind(row))
         .map_err(|e| e.to_string())
         .and_then(host_wire)
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))

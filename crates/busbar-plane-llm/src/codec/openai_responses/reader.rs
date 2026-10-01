@@ -1,30 +1,13 @@
 use super::*;
+use crate::codec::dialect::ir_parse_error;
 
 impl ProtocolReader for ResponsesReader {
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
-        // Every count that reaches the bill is read through `billed`/`billed_opt`: an unreadable
-        // one yields NO recovered usage, never a zero one (#42), and the caller then bills its
-        // conservative floor estimate for the truncated body instead of $0.
-        let u = Some(&v);
-        let cached = billed_opt(v.get("input_tokens_details"), "cached_tokens").ok()?;
-        // A truncated body bills the same cache tiers an untruncated one does: `cache_write_tokens`
-        // is the OTHER slice of `input_tokens`, priced at the cache-WRITE tier. See
-        // `read_cache_write_tokens`.
-        let cache_write = super::read_cache_write_tokens(&v).ok()?;
-        Some(
-            crate::codec::ir::IrUsage {
-                input_tokens: billed(u, "input_tokens")
-                    .ok()?
-                    .saturating_sub(cached.unwrap_or(0))
-                    .saturating_sub(cache_write.unwrap_or(0)),
-                output_tokens: billed(u, "output_tokens").ok()?,
-                cache_creation_input_tokens: cache_write,
-                cache_read_input_tokens: cached,
-                detail: crate::codec::ir::IrUsageDetail::default(),
-            }
-            .to_token_usage(),
-        )
+        // Every count is read through the dialect's usage table (`USAGE`): an unreadable one yields
+        // NO recovered usage, never a zero one (#42). A truncated body reads the same cache tiers an
+        // untruncated one does.
+        Some(read_responses_usage(Some(&v), None).ok()?.to_token_usage())
     }
 
     fn extract_error(
@@ -101,18 +84,10 @@ impl ProtocolReader for ResponsesReader {
         &self,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrRequest, IrError> {
-        let obj = body.as_object().ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        })?;
+        let obj = body.as_object().ok_or_else(ir_parse_error)?;
 
         if obj.is_empty() {
-            return Err(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            });
+            return Err(ir_parse_error());
         }
 
         // STATEFUL RESPONSES — server-side conversation-state knobs. `previous_response_id`
@@ -134,21 +109,13 @@ impl ProtocolReader for ResponsesReader {
             .get("previous_response_id")
             .is_some_and(|v| !v.is_null() && !v.is_string())
         {
-            return Err(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            });
+            return Err(ir_parse_error());
         }
         if obj
             .get("store")
             .is_some_and(|v| !v.is_null() && !v.is_boolean())
         {
-            return Err(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            });
+            return Err(ir_parse_error());
         }
 
         let mut extra = serde_json::Map::new();
@@ -185,11 +152,7 @@ impl ProtocolReader for ResponsesReader {
             // conversation — reject it with a 400 (matching the strict openai_chat/cohere readers). A
             // `null` input is tolerated as absent (an instructions-only request stays valid).
             if !input_val.is_null() && !input_val.is_string() && !input_val.is_array() {
-                return Err(IrError {
-                    class: StatusClass::ClientError,
-                    provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                    retry_after: None,
-                });
+                return Err(ir_parse_error());
             }
             if input_val.is_string() {
                 let text = input_val.as_str().unwrap_or("").to_string();
@@ -269,13 +232,7 @@ impl ProtocolReader for ResponsesReader {
                                 .get("call_id")
                                 .and_then(|c| c.as_str())
                                 .filter(|s| !s.is_empty())
-                                .ok_or(IrError {
-                                    class: StatusClass::ClientError,
-                                    provider_signal: Some(
-                                        busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
-                                    ),
-                                    retry_after: None,
-                                })?
+                                .ok_or_else(ir_parse_error)?
                                 .to_string();
                             let name = item
                                 .get("name")
@@ -346,13 +303,7 @@ impl ProtocolReader for ResponsesReader {
                             // would silently drop into an empty (vanished) turn — reject with a 400.
                             if let Some(cv) = item.get("content") {
                                 if !cv.is_null() && !cv.is_string() && !cv.is_array() {
-                                    return Err(IrError {
-                                        class: StatusClass::ClientError,
-                                        provider_signal: Some(
-                                            busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
-                                        ),
-                                        retry_after: None,
-                                    });
+                                    return Err(ir_parse_error());
                                 }
                             }
                             let role_str = item.get("role").and_then(|r| r.as_str()).unwrap_or("");
@@ -493,13 +444,7 @@ impl ProtocolReader for ResponsesReader {
                         // violation the projections below would silently drop — reject with a 400.
                         if let Some(cv) = content_val {
                             if !cv.is_null() && !cv.is_string() && !cv.is_array() {
-                                return Err(IrError {
-                                    class: StatusClass::ClientError,
-                                    provider_signal: Some(
-                                        busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
-                                    ),
-                                    retry_after: None,
-                                });
+                                return Err(ir_parse_error());
                             }
                         }
 
@@ -556,11 +501,7 @@ impl ProtocolReader for ResponsesReader {
                 }
             }
         } else if !obj.contains_key("instructions") {
-            return Err(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            });
+            return Err(ir_parse_error());
         }
 
         let mut tools: Vec<crate::codec::ir::IrTool> = Vec::new();
@@ -569,11 +510,7 @@ impl ProtocolReader for ResponsesReader {
             // A PRESENT `tools` that is not an array is a malformed request — reject it (mirroring the
             // `input` type-check) rather than coercing to empty, which would forward a tool-less
             // request upstream at HTTP 200 and silently strip the caller's tools.
-            let tools_arr = tools_val.as_array().ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })?;
+            let tools_arr = tools_val.as_array().ok_or_else(ir_parse_error)?;
             for tool_val in tools_arr {
                 // HOSTED-TOOL PASSTHROUGH. The Responses `tools` array mixes CUSTOM
                 // function tools (`type:"function"` with a flat `name`/`parameters`) with provider-
@@ -1403,46 +1340,7 @@ impl ProtocolReader for ResponsesReader {
                     // — the stream ends in an error instead of ledgering zero tokens.
                     let usage = response_obj
                         .get("usage")
-                        .map(|u| -> Result<crate::codec::ir::IrUsage, IrError> {
-                            let cached = read_cached_tokens(u).map_err(refuse_unreadable_count)?;
-                            // `cache_write_tokens` rides the STREAM's terminal usage object exactly
-                            // as `cached_tokens` does — the OTHER slice of `input_tokens`, priced at
-                            // the cache-WRITE tier. See `read_cache_write_tokens`.
-                            let cache_write =
-                                read_cache_write_tokens(u).map_err(refuse_unreadable_count)?;
-                            Ok(crate::codec::ir::IrUsage {
-                                // NORMALIZE to the additive-cache convention: the Responses API's
-                                // `input_tokens` is a TOTAL that already INCLUDES the cached prefix
-                                // and the cache-write slice, so subtract both to leave only the
-                                // uncached input. `saturating_sub` guards an odd upstream where the
-                                // slices exceed the total.
-                                input_tokens: billed(Some(u), "input_tokens")?
-                                    .saturating_sub(cached.unwrap_or(0))
-                                    .saturating_sub(cache_write.unwrap_or(0)),
-                                output_tokens: billed(Some(u), "output_tokens")?,
-                                cache_creation_input_tokens: cache_write,
-                                // Carry the streamed prompt-cache hit count
-                                // (`usage.input_tokens_details.cached_tokens`) into the IR's
-                                // read-side cache field so a streaming Responses terminal preserves
-                                // the cache saving.
-                                cache_read_input_tokens: cached,
-                                // `output_tokens_details.reasoning_tokens` is on the STREAM's
-                                // terminal `response.completed` usage object exactly as it is on the
-                                // buffered response. Reading it only on the buffered path made the
-                                // same request report reasoning tokens at `stream: false` and a hard
-                                // `0` at `stream: true`.
-                                detail: crate::codec::ir::IrUsageDetail {
-                                    reasoning_tokens: u
-                                        .get("output_tokens_details")
-                                        .and_then(|d| d.get("reasoning_tokens"))
-                                        .and_then(read_count_u64),
-                                    // RSP-17: the tier that served the response, read off the
-                                    // terminal `response` exactly as the buffered read does.
-                                    service_tier: read_responses_service_tier(response_obj),
-                                    ..Default::default()
-                                },
-                            })
-                        })
+                        .map(|u| read_responses_usage(Some(u), Some(response_obj)))
                         .transpose();
                     let usage = match usage {
                         Ok(usage) => usage.unwrap_or(crate::codec::ir::IrUsage {
@@ -1578,11 +1476,7 @@ impl ProtocolReader for ResponsesReader {
         &self,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrResponse, IrError> {
-        let obj = body.as_object().ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        })?;
+        let obj = body.as_object().ok_or_else(ir_parse_error)?;
 
         let status = obj.get("status").and_then(|s| s.as_str()).unwrap_or("");
 
@@ -1803,11 +1697,7 @@ impl ProtocolReader for ResponsesReader {
         } else {
             // `status:"failed"` is handled by the early return above, so a missing/non-array
             // `output` here is a genuine parse failure (malformed body).
-            return Err(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            });
+            return Err(ir_parse_error());
         }
 
         // Promote a successful end_turn to tool_use when the assembled content carries a tool call,
@@ -1839,53 +1729,9 @@ impl ProtocolReader for ResponsesReader {
         // proxy engine discard a valid body and emit a spurious 500.
         let usage_val = obj.get("usage");
 
-        let cached = match usage_val {
-            Some(u) => read_cached_tokens(u).map_err(refuse_unreadable_count)?,
-            None => None,
-        };
-        // `input_tokens_details.cache_write_tokens` — the OTHER slice of `input_tokens`, priced at
-        // the cache-WRITE tier. See `read_cache_write_tokens`.
-        let cache_write = match usage_val {
-            Some(u) => read_cache_write_tokens(u).map_err(refuse_unreadable_count)?,
-            None => None,
-        };
-        let usage = crate::codec::ir::IrUsage {
-            // NORMALIZE to the additive-cache convention: the Responses API's `input_tokens` is a
-            // TOTAL that already INCLUDES the cached prefix and the cache-write slice, so subtract
-            // both to leave only the uncached input. `saturating_sub` guards an odd upstream where
-            // the slices exceed the total.
-            //
-            // BILLED COUNTS: absent is zero, a present-but-UNREADABLE count REFUSES (#42).
-            input_tokens: billed(usage_val, "input_tokens")?
-                .saturating_sub(cached.unwrap_or(0))
-                .saturating_sub(cache_write.unwrap_or(0)),
-            output_tokens: billed(usage_val, "output_tokens")?,
-            // `input_tokens_details.cache_write_tokens` is the CACHE-WRITE tier's count; leaving it
-            // inside the plain input total (hardcoded `None`) charged a cache-writing turn at the
-            // wrong rate — and the writer has always emitted the member, so the reader was the only
-            // half of the pair that did not carry it. Map it to the IR's ADDITIVE
-            // `cache_creation_input_tokens`.
-            cache_creation_input_tokens: cache_write,
-            // The Responses API reports prompt-cache hits under
-            // `usage.input_tokens_details.cached_tokens`. Map it into the IR's
-            // `cache_read_input_tokens` (the read-side cache field Bedrock already uses) so the cache
-            // saving survives a cross-protocol hop instead of being dropped. No new IR field is added.
-            cache_read_input_tokens: cached,
-            // `output_tokens_details.reasoning_tokens` is a SUB-BUCKET of `output_tokens`. It was
-            // previously unread, and the writer hardcoded `0` — so every cross-protocol reasoning
-            // call CLAIMED the model did no thinking rather than admitting the number was not
-            // carried.
-            detail: crate::codec::ir::IrUsageDetail {
-                reasoning_tokens: usage_val
-                    .and_then(|u| u.get("output_tokens_details"))
-                    .and_then(|d| d.get("reasoning_tokens"))
-                    .and_then(read_count_u64),
-                // RSP-17: the tier that SERVED the response (top-level `service_tier`), mapped onto
-                // the IR's attribution vocabulary. See `read_responses_service_tier`.
-                service_tier: read_responses_service_tier(body),
-                ..Default::default()
-            },
-        };
+        // Absent is zero, a present-but-UNREADABLE count REFUSES (#42). See `USAGE` for the cache
+        // normalization; RSP-17's serving tier is the top-level `service_tier`.
+        let usage = read_responses_usage(usage_val, Some(body))?;
 
         let model = obj.get("model").and_then(|m| m.as_str()).map(String::from);
 
@@ -2004,53 +1850,6 @@ fn tool_input_from_arguments(v: Option<&serde_json::Value>) -> serde_json::Value
             .unwrap_or_else(|_| serde_json::Value::String(s.clone())),
         Some(other) => other.clone(),
         None => serde_json::json!({}),
-    }
-}
-
-// ── BILLED COUNTS (#42) ──────────────────────────────────────────────────────────────────────────
-
-/// Read one BILLED count off a usage object under `usage_count::billed_count`'s contract: an absent
-/// usage object, an absent field or a JSON `null` is 0 (exactly as before), a readable count is the
-/// count (through the crate's one seam, `read_count_u64`), and a present-but-UNREADABLE count
-/// REFUSES. The lenient read this replaces defaulted an unreadable count to zero, so a stringified
-/// `"1500"` was ledgered as no work at all.
-///
-/// The read itself IS `usage_count::billed_count` — this adapter only lifts its absent-usage-object
-/// case (zero) and maps its refusal onto this reader's error shape, so the contract and the bounded
-/// spelling live in one place and cannot drift per dialect.
-fn billed(usage: Option<&serde_json::Value>, field: &'static str) -> Result<u64, IrError> {
-    usage.map_or(Ok(0), |u| {
-        crate::codec::usage_count::billed_count(u, field).map_err(refuse_unreadable_count)
-    })
-}
-
-/// [`billed`] for a count whose ABSENCE the IR keeps distinct from zero (a cache tier): absent or
-/// `null` is `None`, readable is `Some`, unreadable REFUSES.
-fn billed_opt(
-    usage: Option<&serde_json::Value>,
-    field: &'static str,
-) -> Result<Option<u64>, IrError> {
-    match usage.and_then(|u| u.get(field)) {
-        None => Ok(None),
-        Some(v) if v.is_null() => Ok(None),
-        Some(_) => billed(usage, field).map(Some),
-    }
-}
-
-/// The refusal a present-but-unreadable billed count becomes — the same `ir_parse` shape as every
-/// other response this reader cannot read, with the field and the BOUNDED spelling `billed_count`
-/// quoted (cut on a character boundary there, so a hostile multi-byte spelling cannot panic the cut).
-fn refuse_unreadable_count(unreadable: crate::codec::usage_count::UnreadableCount) -> IrError {
-    tracing::warn!(
-        protocol = "openai_responses",
-        field = unreadable.field,
-        spelling = %unreadable.spelling,
-        "usage count is present but unreadable; refusing rather than billing it as zero (#42)"
-    );
-    IrError {
-        class: StatusClass::ClientError,
-        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.into()),
-        retry_after: None,
     }
 }
 

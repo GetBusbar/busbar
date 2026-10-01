@@ -36,9 +36,8 @@ pub mod meta;
 pub mod plane;
 
 use busbar_contract::ids::LaneId;
+use busbar_contract::ir::egress_prep::LaneCaps;
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};
-/// A lane's declared request-shape capabilities (see [`Upstream::caps`]).
-pub use codec::proto_codec::{LaneCaps, MaxOutputKey};
 
 /// One configured upstream this plane may name.
 ///

@@ -358,23 +358,26 @@ fn client_and_scope_of(target: &str) -> Option<(String, String, String)> {
 /// The consent screen names this rather than the whole URI: the host is what decides WHO receives
 /// the credential, and a full URI puts an attacker-chosen path and query on the screen next to it,
 /// which is room to write text that argues with the page around it.
+///
+/// Read by the one shared URL reader ([`busbar_kernel::net_guard::parse_url`], WHATWG rules for
+/// `https`), so the host named here is the host the browser contacts: a userinfo before the last
+/// `@` is dropped (`https://client.example@evil.example/cb` names `evil.example`), and a `\` ends the
+/// authority (`https://evil.example\@trusted.example/cb` names `evil.example`, not the
+/// `trusted.example` a reader splitting only at `/` showed). A URI with no readable host names
+/// nothing, and the screen says so.
 fn host_of(redirect_uri: &str) -> String {
-    let after_scheme = redirect_uri
-        .split_once("://")
-        .map(|(_, rest)| rest)
-        .unwrap_or(redirect_uri);
-    // Authority ends at the first `/`, `?` or `#`; userinfo before an `@` is stripped, so a
-    // `https://client.example@evil.example/cb` reads as `evil.example`, which is the host the
-    // browser will actually contact.
-    let authority = after_scheme
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or(after_scheme);
-    authority
-        .rsplit_once('@')
-        .map(|(_, host)| host)
-        .unwrap_or(authority)
-        .to_string()
+    let Ok(parts) = busbar_kernel::net_guard::parse_url(redirect_uri) else {
+        return String::new();
+    };
+    let host = if parts.host.contains(':') {
+        format!("[{}]", parts.host)
+    } else {
+        parts.host
+    };
+    match parts.port {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    }
 }
 
 /// `a=b&c=d` with `+` and `%xx` decoded. Hand-written because the one caller reads two names out of
@@ -544,3 +547,7 @@ type _State = Arc<AppHandle>;
 #[cfg(test)]
 #[path = "tests/percent_decode_tests.rs"]
 mod percent_decode_tests;
+
+#[cfg(test)]
+#[path = "tests/consent_host_tests.rs"]
+mod consent_host_tests;

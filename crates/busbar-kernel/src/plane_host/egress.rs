@@ -116,6 +116,11 @@ enum HeadMsg {
     },
 }
 
+/// Report a head-stage fault to the opener (a gone opener is not an error: nothing is waiting).
+fn send_fault(head_tx: &SyncSender<HeadMsg>, class: EgressFailClass, cause: String) {
+    let _ = head_tx.send(HeadMsg::Fault { class, cause });
+}
+
 /// One open governed HTTP egress the host owns end to end. The plane holds only its [`EgressId`].
 struct HttpEgress {
     /// The receiver end of the bounded chunk channel; `None` once closed. Behind a `Mutex` because
@@ -493,6 +498,32 @@ unsafe fn borrowed_string(ptr: *const u8, len: usize) -> String {
 // — never a permissive value.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
+/// THE FRAME every egress entry runs in: the MANDATORY catch_unwind, failing CLOSED (`Fault`) on a
+/// caught panic — never a permissive value.
+fn guarded(body: impl FnOnce() -> StatusClass) -> StatusClass {
+    catch_unwind(AssertUnwindSafe(body)).unwrap_or(StatusClass::Fault)
+}
+
+/// [`guarded`] for a vtable slot: recover the `HostState` FIRST; a null / stale handle is `Refused`.
+fn slot(host: HostCtx, body: impl FnOnce(&HostState<'_>) -> StatusClass) -> StatusClass {
+    guarded(|| {
+        // SAFETY: recovery invariant (see `super::recover`).
+        match unsafe { recover(host) } {
+            Some(state) => body(state),
+            None => StatusClass::Refused,
+        }
+    })
+}
+
+/// Close and reclaim `egress`: `Ok` when it was live, `Gone` when it names nothing.
+fn close_status(egress: EgressId) -> StatusClass {
+    if close_and_remove(egress.0) {
+        StatusClass::Ok
+    } else {
+        StatusClass::Gone
+    }
+}
+
 /// Open a governed egress. On `Ok` writes an [`EgressOpen`]; on any refusal/fault the out-param is
 /// left untouched (init-only-on-Ok).
 pub(crate) extern "C-unwind" fn egress_open(
@@ -500,11 +531,7 @@ pub(crate) extern "C-unwind" fn egress_open(
     desc: *const EgressDesc,
     out: *mut MaybeUninit<EgressOpen>,
 ) -> StatusClass {
-    catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: recovery invariant (see `super::recover`).
-        let Some(state) = (unsafe { recover(host) }) else {
-            return StatusClass::Refused;
-        };
+    slot(host, |state| {
         if desc.is_null() || out.is_null() {
             return StatusClass::Refused;
         }
@@ -534,8 +561,7 @@ pub(crate) extern "C-unwind" fn egress_open(
             // subprocess open is REFUSED at the allowlist. See [`super::pipe`].
             EgressKind::Subprocess => super::pipe::open_subprocess(state, d, &[], out),
         }
-    }))
-    .unwrap_or(StatusClass::Fault)
+    })
 }
 
 /// THE OPERATOR'S DESTINATIONS FOR ONE PLANE (DEC-SERVE G3): the origin (scheme, host, port) of every
@@ -848,16 +874,8 @@ fn open_http(
 
     // The EgressHead borrows the backend's own SPKI + response-header bytes, which live until close — so
     // the pointers handed back stay valid while the plane holds the EgressOpen.
-    let (pin_ptr, pin_len) = if egress.observed_pin.is_empty() {
-        (std::ptr::null(), 0)
-    } else {
-        (egress.observed_pin.as_ptr(), egress.observed_pin.len())
-    };
-    let (rh_ptr, rh_len) = if egress.resp_headers.is_empty() {
-        (std::ptr::null(), 0)
-    } else {
-        (egress.resp_headers.as_ptr(), egress.resp_headers.len())
-    };
+    let (pin_ptr, pin_len) = borrowed_range(&egress.observed_pin);
+    let (rh_ptr, rh_len) = borrowed_range(&egress.resp_headers);
     let open = EgressOpen {
         size: std::mem::size_of::<EgressOpen>() as u32,
         version: POD_VERSION,
@@ -952,10 +970,7 @@ fn run_http_stream(
     let rt = match egress_runtime() {
         Ok(rt) => rt,
         Err(e) => {
-            let _ = head_tx.send(HeadMsg::Fault {
-                class: EgressFailClass::Fault,
-                cause: e,
-            });
+            send_fault(head_tx, EgressFailClass::Fault, e);
             return;
         }
     };
@@ -1019,10 +1034,11 @@ fn run_http_stream(
         ) {
             Ok(client) => client,
             Err(e) => {
-                let _ = head_tx.send(HeadMsg::Fault {
-                    class: EgressFailClass::Fault,
-                    cause: format!("egress client: {e}"),
-                });
+                send_fault(
+                    head_tx,
+                    EgressFailClass::Fault,
+                    format!("egress client: {e}"),
+                );
                 return;
             }
         };
@@ -1037,10 +1053,8 @@ fn run_http_stream(
             Err(e) => {
                 // Structurally unreachable (`split_url` already recognised this URL); classified
                 // as the builder-stage failure it would have been (`is_connect` false ⇒ Io).
-                let _ = head_tx.send(HeadMsg::Fault {
-                    class: EgressFailClass::Io,
-                    cause: format!("egress target does not parse as a URI: {e}"),
-                });
+                let cause = format!("egress target does not parse as a URI: {e}");
+                send_fault(head_tx, EgressFailClass::Io, cause);
                 return;
             }
         };
@@ -1057,10 +1071,8 @@ fn run_http_stream(
                     // reqwest recorded an invalid header as a builder error surfaced at send
                     // (`is_connect` false ⇒ the Io class); the engine refuses at the same class,
                     // naming the header.
-                    let _ = head_tx.send(HeadMsg::Fault {
-                        class: EgressFailClass::Io,
-                        cause: format!("egress request header {name:?} is not a valid header"),
-                    });
+                    let cause = format!("egress request header {name:?} is not a valid header");
+                    send_fault(head_tx, EgressFailClass::Io, cause);
                     return;
                 }
             }
@@ -1086,10 +1098,7 @@ fn run_http_stream(
                 } else {
                     EgressFailClass::Io
                 };
-                let _ = head_tx.send(HeadMsg::Fault {
-                    class,
-                    cause: hop.into_cause(),
-                });
+                send_fault(head_tx, class, hop.into_cause());
                 return;
             }
         };
@@ -1222,15 +1231,10 @@ pub(crate) extern "C-unwind" fn egress_fault(
     url_buf: *mut u8,
     url_cap: usize,
 ) -> StatusClass {
-    catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: recovery invariant (see `super::recover`).
-        let Some(state) = (unsafe { recover(host) }) else {
-            return StatusClass::Refused;
-        };
+    slot(host, |state| {
         // SAFETY: caller's out/buffers are writable ranges for the call (ABI) — forwarded verbatim.
         unsafe { egress_fault_body(state.scope, out, cause_buf, cause_cap, url_buf, url_cap) }
-    }))
-    .unwrap_or(StatusClass::Fault)
+    })
 }
 
 /// The scope-based body of [`egress_fault`], shared by the FFI slot (which recovers the scope off the
@@ -1286,15 +1290,10 @@ pub(crate) extern "C-unwind" fn egress_poll(
     buf_cap: usize,
     out_written: *mut usize,
 ) -> StatusClass {
-    catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: recovery invariant (see `super::recover`).
-        let Some(state) = (unsafe { recover(host) }) else {
-            return StatusClass::Refused;
-        };
+    slot(host, |state| {
         // SAFETY: caller's `buf`/`out_written` describe live ranges for the call (ABI) — forwarded.
         unsafe { egress_poll_body(state.scope, egress, buf, buf_cap, out_written) }
-    }))
-    .unwrap_or(StatusClass::Fault)
+    })
 }
 
 /// The scope-based body of [`egress_poll`], shared by the FFI slot and the hostless in-core entry.
@@ -1352,36 +1351,20 @@ pub(crate) extern "C-unwind" fn egress_write(
     buf: *const u8,
     len: usize,
 ) -> StatusClass {
-    catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: recovery invariant (see `super::recover`).
-        let Some(_state) = (unsafe { recover(host) }) else {
-            return StatusClass::Refused;
-        };
+    slot(host, |_| {
         let _ = (buf, len);
         if registry().contains_key(&egress.0) {
             StatusClass::Unsupported
         } else {
             StatusClass::Gone
         }
-    }))
-    .unwrap_or(StatusClass::Fault)
+    })
 }
 
 /// Close a governed egress and reclaim it. Idempotent; also run by the arena `Closer` on
 /// dispatch-drop / cancellation. `Ok` when this call closed it, `Gone` when it was already gone.
 pub(crate) extern "C-unwind" fn egress_close(host: HostCtx, egress: EgressId) -> StatusClass {
-    catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: recovery invariant (see `super::recover`).
-        let Some(_state) = (unsafe { recover(host) }) else {
-            return StatusClass::Refused;
-        };
-        if close_and_remove(egress.0) {
-            StatusClass::Ok
-        } else {
-            StatusClass::Gone
-        }
-    }))
-    .unwrap_or(StatusClass::Fault)
+    slot(host, |_| close_status(egress))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -1402,7 +1385,7 @@ pub(crate) fn egress_open_scoped(
     desc: *const EgressDesc,
     out: *mut MaybeUninit<EgressOpen>,
 ) -> StatusClass {
-    catch_unwind(AssertUnwindSafe(|| {
+    guarded(|| {
         if desc.is_null() || out.is_null() {
             return StatusClass::Refused;
         }
@@ -1419,8 +1402,7 @@ pub(crate) fn egress_open_scoped(
             // The hostless in-core egress entry serves HTTP; raw/subprocess remain a HostCtx-slot path.
             EgressKind::RawConn | EgressKind::Subprocess => StatusClass::Unsupported,
         }
-    }))
-    .unwrap_or(StatusClass::Fault)
+    })
 }
 
 /// Read the last stashed fault off `scope` (no `HostCtx`). The in-core twin of [`egress_fault`].
@@ -1434,11 +1416,10 @@ pub(crate) fn egress_fault_scoped(
     url_buf: *mut u8,
     url_cap: usize,
 ) -> StatusClass {
-    catch_unwind(AssertUnwindSafe(|| {
+    guarded(|| {
         // SAFETY: caller's out/buffers are writable ranges for the call (ABI) — forwarded verbatim.
         unsafe { egress_fault_body(scope, out, cause_buf, cause_cap, url_buf, url_cap) }
-    }))
-    .unwrap_or(StatusClass::Fault)
+    })
 }
 
 /// Poll the next body chunk over `scope` (no `HostCtx`). The in-core twin of [`egress_poll`].
@@ -1451,11 +1432,10 @@ pub(crate) fn egress_poll_scoped(
     buf_cap: usize,
     out_written: *mut usize,
 ) -> StatusClass {
-    catch_unwind(AssertUnwindSafe(|| {
+    guarded(|| {
         // SAFETY: caller's `buf`/`out_written` describe live ranges for the call (ABI) — forwarded.
         unsafe { egress_poll_body(scope, egress, buf, buf_cap, out_written) }
-    }))
-    .unwrap_or(StatusClass::Fault)
+    })
 }
 
 /// Close and reclaim a governed egress (no `HostCtx`). The in-core twin of [`egress_close`]; teardown
@@ -1463,14 +1443,7 @@ pub(crate) fn egress_poll_scoped(
 #[cfg(feature = "egress-seam")]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn egress_close_scoped(egress: EgressId) -> StatusClass {
-    catch_unwind(AssertUnwindSafe(|| {
-        if close_and_remove(egress.0) {
-            StatusClass::Ok
-        } else {
-            StatusClass::Gone
-        }
-    }))
-    .unwrap_or(StatusClass::Fault)
+    guarded(|| close_status(egress))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -1484,6 +1457,16 @@ pub(crate) fn egress_close_scoped(egress: EgressId) -> StatusClass {
 // `unsafe` in the one sanctioned module while the neutral adapter (and the `Response`/`StreamHead`
 // projection) stays plane-blind in `crate::egress`.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A borrowed byte range as the ABI's `(ptr, len)` pair: an empty range is `(null, 0)`, never a
+/// dangling non-null pointer. Shared with the seam so a desc and a head encode "absent" one way.
+pub(crate) fn borrowed_range(bytes: &[u8]) -> (*const u8, usize) {
+    if bytes.is_empty() {
+        (std::ptr::null(), 0)
+    } else {
+        (bytes.as_ptr(), bytes.len())
+    }
+}
 
 /// Map two host allowlist-scope bools onto the [`EgressDesc::allowlist_scope`] bit convention this
 /// module reads. Exposed so the seam builds a desc without duplicating the bit values.

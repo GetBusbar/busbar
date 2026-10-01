@@ -456,7 +456,9 @@ pub trait LaneRuntime: Send + Sync + 'static {
     // probe), leaving the bare form test-only — so it is `#[cfg(test)]`-gated out of the release
     // binary entirely rather than merely silenced.
     #[cfg(any(test, feature = "test-support"))]
-    fn usable(&self, lane: usize, now: u64) -> bool;
+    fn usable(&self, lane: usize, now: u64) -> bool {
+        self.usable_in("", lane, now)
+    }
     // As of the lane-availability refactor, `pick_among`'s sticky fast path uses `try_admit` instead
     // of `usable_in`, so this has no non-test caller left; retained as a tested primitive.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -468,7 +470,9 @@ pub trait LaneRuntime: Send + Sync + 'static {
     /// independently), leaving this default-cell-only form exercised by the unit tests, so it is
     /// `#[cfg(test)]`-gated out of the release binary entirely.
     #[cfg(any(test, feature = "test-support"))]
-    fn is_ready(&self, lane: usize, now: u64) -> bool;
+    fn is_ready(&self, lane: usize, now: u64) -> bool {
+        self.ready_in("", lane, now)
+    }
     /// Side-effect-FREE readiness across ANY cell: true iff the lane is admissible (not dead / in
     /// budget) AND the default cell OR ANY per-pool cell would admit a request right now. `/healthz`
     /// must use this, not the default-cell-only `is_ready`: production traffic routes through NAMED
@@ -623,7 +627,9 @@ pub trait LaneRuntime: Send + Sync + 'static {
     // are all `#[cfg(test)]`-gated out of the release binary entirely rather than merely silenced with
     // a dead-code allow.
     #[cfg(any(test, feature = "test-support"))]
-    fn breaker_state(&self, lane: usize) -> BreakerState;
+    fn breaker_state(&self, lane: usize) -> BreakerState {
+        self.breaker_state_in("", lane)
+    }
     /// Per-(pool, lane) breaker FSM state — test-only, so regressions can assert the POOL cell (not
     /// just the default `""` cell) transitions correctly on the degraded forward path.
     #[cfg(any(test, feature = "test-support"))]
@@ -638,7 +644,9 @@ pub trait LaneRuntime: Send + Sync + 'static {
     // `lane_max_cooldown_remaining`, not the default-cell-only `cooldown_remaining` (which stayed 0
     // for pool-routed traffic), so this bare-lane form is release-dead and exercised only by tests.
     #[cfg(any(test, feature = "test-support"))]
-    fn cooldown_remaining(&self, lane: usize, now: u64) -> u64;
+    fn cooldown_remaining(&self, lane: usize, now: u64) -> u64 {
+        self.cooldown_remaining_in("", lane, now)
+    }
     fn cooldown_remaining_in(&self, pool: &str, lane: usize, now: u64) -> u64;
     /// True if the breaker is suppressing this lane in ANY cell (default or any pool) — either a
     /// non-Closed (Open/HalfOpen) state OR a Closed lane with a pending soft cooldown
@@ -651,7 +659,9 @@ pub trait LaneRuntime: Send + Sync + 'static {
     // ROUTING POOL cell via `record_success_in`, so this bare default-cell form is test-only and
     // `#[cfg(test)]`-gated out of the release binary.
     #[cfg(any(test, feature = "test-support"))]
-    fn record_success(&self, lane: usize);
+    fn record_success(&self, lane: usize) {
+        self.record_success_in("", lane);
+    }
     fn record_success_in(&self, pool: &str, lane: usize);
     /// A SUCCESSFUL (2xx) out-of-band health probe: push a success outcome into the sliding
     /// error-rate window of EVERY cell for the lane (the default/direct-route cell AND every existing
@@ -688,7 +698,9 @@ pub trait LaneRuntime: Send + Sync + 'static {
         what: &str,
         cfg: &BreakerCfg,
         retry_after: Option<u64>,
-    ) -> bool;
+    ) -> bool {
+        self.record_transient_in("", lane, what, cfg, retry_after)
+    }
     fn record_transient_in(
         &self,
         pool: &str,
@@ -704,7 +716,9 @@ pub trait LaneRuntime: Send + Sync + 'static {
         now: u64,
         cfg: &BreakerCfg,
         retry_after: Option<u64>,
-    ) -> bool;
+    ) -> bool {
+        self.record_rate_limit_in("", lane, now, cfg, retry_after)
+    }
     fn record_rate_limit_in(
         &self,
         pool: &str,
@@ -781,7 +795,9 @@ pub trait LaneRuntime: Send + Sync + 'static {
     /// `weights` is the per-member weight for each candidate (must match candidates length).
     /// Returns None if no healthy members or all candidates are unusable.
     #[cfg(any(test, feature = "test-support"))]
-    fn select_weighted(&self, candidates: &[usize], weights: &[u32], now: u64) -> Option<usize>;
+    fn select_weighted(&self, candidates: &[usize], weights: &[u32], now: u64) -> Option<usize> {
+        self.select_weighted_in("", candidates, weights, now)
+    }
     fn select_weighted_in(
         &self,
         pool: &str,

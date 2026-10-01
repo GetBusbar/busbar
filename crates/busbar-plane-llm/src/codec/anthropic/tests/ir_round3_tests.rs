@@ -106,7 +106,7 @@ fn off_ask() -> crate::codec::ir::IrRequest {
 #[test]
 fn item12_off_omits_thinking_on_an_always_on_lane() {
     let w = protocol_for("anthropic").unwrap();
-    let always_on = super::super::proto_codec::LaneCaps {
+    let always_on = busbar_contract::ir::egress_prep::LaneCaps {
         anthropic_adaptive_thinking: true,
         native_structured_output: true,
         thinking_always_on: true,

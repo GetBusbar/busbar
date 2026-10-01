@@ -8,7 +8,6 @@ use crate::codec::ir::embeddings::{
 };
 use busbar_contract::codec::{CodecError, IngressReject, OperationHandler, RequestHandler};
 use busbar_contract::codec::{EgressCtx, WireBody};
-use busbar_contract::ir::handle::IrHandle;
 use busbar_contract::operation::OpVerb;
 use busbar_contract::SlabBytes;
 use bytes::Bytes;
@@ -147,40 +146,21 @@ impl RequestHandler for BedrockRequestHandler {
 }
 
 /// Amazon Titan Image Generator via `/model/{id}/invoke`. prompt in → `images[]` (b64) out.
+///
+/// Titan image `InvokeModel` wire → IR (bedrock as INGRESS). Model rides the PATH, not the body —
+/// the route layer resolves it; the IR's `model` is filled by routing (`IrReq::set_model`).
 struct BedrockImage;
 
-impl OperationHandler for BedrockImage {
-    /// This protocol's error envelope, shared by every operation it serves: the same
-    /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(
-        &self,
-        status: u16,
-        body: &[u8],
-    ) -> busbar_contract::upstream::RawUpstreamError {
-        super::super::proto_codec::protocol_error("bedrock", status, body)
-    }
+leaf_op! {
+    BedrockImage: "bedrock",
+    ImageReqHandle = read_image_request,
+    ImageRespHandle = read_image_response;
     // Buffer the same-protocol non-stream 2xx body so the default `extract_usage` runs the op's own
     // reader and bills once. Titan/SDXL are per-image with no token usage object, so the tap bills 0
     // tokens and the per-image cost basis on the cross-protocol seam carries the charge — mirrors the
     // OpenAI/Gemini image cells (closes the same-protocol metering gap).
     fn taps_usage(&self) -> bool {
         true
-    }
-    /// Titan image `InvokeModel` wire → IR (bedrock as INGRESS). Model rides the PATH, not the body —
-    /// the route layer resolves it; the IR's `model` is filled by routing (`IrReq::set_model`).
-    fn read_request(
-        &self,
-        body: &[u8],
-        _content_type: &str,
-    ) -> Result<Box<dyn IrHandle>, IngressReject> {
-        Ok(Box::new(super::super::leaf_handles::ImageReqHandle(
-            read_image_request(body, _content_type)?,
-        )) as Box<dyn IrHandle>)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
-        Ok(Box::new(super::super::leaf_handles::ImageRespHandle(
-            read_image_response(wire)?,
-        )) as Box<dyn IrHandle>)
     }
 }
 
@@ -230,39 +210,20 @@ pub fn write_image_response(r: &crate::codec::ir::image::ImageResp) -> WireBody 
 }
 
 /// Amazon Titan Embeddings via `/model/{id}/invoke`.
+///
+/// Titan `InvokeModel` wire → IR (bedrock as INGRESS): `inputText` (+ v2 dims/normalize). Model
+/// rides the PATH; routing fills it via `IrReq::set_model`.
 struct BedrockEmbeddings;
 
-impl OperationHandler for BedrockEmbeddings {
-    /// This protocol's error envelope, shared by every operation it serves: the same
-    /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(
-        &self,
-        status: u16,
-        body: &[u8],
-    ) -> busbar_contract::upstream::RawUpstreamError {
-        super::super::proto_codec::protocol_error("bedrock", status, body)
-    }
+leaf_op! {
+    BedrockEmbeddings: "bedrock",
+    EmbeddingsReqHandle = read_embeddings_request,
+    EmbeddingsRespHandle = read_embeddings_response;
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
     // `extract_usage` can read the `usage` object and bill the virtual key's TPM/spend
     // (the cross-protocol path already bills; this closes the same-protocol gap).
     fn taps_usage(&self) -> bool {
         true
-    }
-    /// Titan `InvokeModel` wire → IR (bedrock as INGRESS): `inputText` (+ v2 dims/normalize). Model
-    /// rides the PATH; routing fills it via `IrReq::set_model`.
-    fn read_request(
-        &self,
-        body: &[u8],
-        _content_type: &str,
-    ) -> Result<Box<dyn IrHandle>, IngressReject> {
-        Ok(Box::new(super::super::leaf_handles::EmbeddingsReqHandle(
-            read_embeddings_request(body, _content_type)?,
-        )) as Box<dyn IrHandle>)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
-        Ok(Box::new(super::super::leaf_handles::EmbeddingsRespHandle(
-            read_embeddings_response(wire)?,
-        )) as Box<dyn IrHandle>)
     }
 }
 
@@ -333,30 +294,10 @@ pub fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
 /// models and harmless to amazon.rerank.
 struct BedrockRerank;
 
-impl OperationHandler for BedrockRerank {
-    /// This protocol's error envelope, shared by every operation it serves: the same
-    /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(
-        &self,
-        status: u16,
-        body: &[u8],
-    ) -> busbar_contract::upstream::RawUpstreamError {
-        super::super::proto_codec::protocol_error("bedrock", status, body)
-    }
-    fn read_request(
-        &self,
-        body: &[u8],
-        _content_type: &str,
-    ) -> Result<Box<dyn IrHandle>, IngressReject> {
-        Ok(Box::new(super::super::leaf_handles::RerankReqHandle(
-            read_rerank_request(body, _content_type)?,
-        )) as Box<dyn IrHandle>)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
-        Ok(Box::new(super::super::leaf_handles::RerankRespHandle(
-            read_rerank_response(wire)?,
-        )) as Box<dyn IrHandle>)
-    }
+leaf_op! {
+    BedrockRerank: "bedrock",
+    RerankReqHandle = read_rerank_request,
+    RerankRespHandle = read_rerank_response;
 }
 
 /// IR → bedrock rerank request wire (the body of [`BedrockRerank::write_request`], moved behind the

@@ -3,8 +3,8 @@
 
 //! OpenAI protocol reader/writer implementation.
 
+use crate::codec::dialect::ir_parse_error;
 use crate::codec::ir::{IrStreamEvent, IrUsage};
-use crate::codec::usage_count::read_count_u64;
 use busbar_contract::http::StatusCode;
 // The openai-family error helpers (`bearer_error_code`/`context_length_prose_scan`) now live
 // in the neutral substrate; name them there so this plugin reaches no `busbar-core` path for them.
@@ -26,6 +26,8 @@ use busbar_contract::upstream::StatusClass;
 #[allow(unused_imports)]
 // used standalone; redundant with the `busbar_contract::protocol::*` glob when netted into core
 use super::proto_codec::*;
+use crate::codec::usage_count::{CountRead, CountSlot, UsageCount};
+use busbar_contract::ir::egress_prep::{LaneCaps, MaxOutputKey};
 // See the anthropic dialect for the rationale: an explicit import of the codec surface so it binds to
 // THIS crate's own `proto_codec` rather than the `busbar_contract::protocol::*` glob.
 #[allow(unused_imports)]
@@ -185,29 +187,65 @@ pub const OPENAI_FAMILY_MAX_OPEN_TOOLS: usize = 128;
 /// emitting unbounded unique indices. Matches OpenAI's documented parallel-tool-call limit (128).
 const MAX_OPEN_TOOLS: usize = OPENAI_FAMILY_MAX_OPEN_TOOLS;
 
-/// Read `usage.prompt_tokens_details.cache_write_tokens` off a Chat Completions usage object.
-///
-/// It is declared on `CompletionUsage.prompt_tokens_details` — "the number of prompt tokens written
-/// to cache" — making it a SLICE OF `prompt_tokens`, exactly as `cached_tokens` is. Cache-WRITE
-/// prices at its own tier, distinct from both the plain input rate and the cache-READ rate, so
-/// leaving those tokens inside the plain input total charges the whole cache-writing turn at the
-/// wrong rate. Mapping it onto the IR's ADDITIVE `cache_creation` bucket — the same bucket
-/// Anthropic's `cache_creation_input_tokens`, Bedrock's `cacheWriteInputTokens` and this provider's
-/// own `/v1/responses` `input_tokens_details.cache_write_tokens` populate — is what prices it at
-/// that tier and carries the count across a cross-protocol hop. `None` when the nested field is
-/// absent (never a spurious `Some(0)`).
-///
-/// Read through [`crate::codec::usage_count::billed_count_opt`] (#42, item 133): a float-spelled count is
-/// the count, absent or `null` is `None`, and a present-but-UNREADABLE count is an
-/// [`crate::codec::usage_count::UnreadableCount`] the caller turns into a refusal. The old read returned
-/// `None` for it, which priced the cache-write slice as nothing at all.
-fn read_cache_write_tokens(
-    usage_val: &serde_json::Value,
-) -> Result<Option<u64>, crate::codec::usage_count::UnreadableCount> {
-    crate::codec::usage_count::billed_count_opt(
-        usage_val.get("prompt_tokens_details"),
-        "cache_write_tokens",
-    )
+/// OPENAI CHAT'S USAGE COUNTS, AS DATA (#42). `prompt_tokens` is a TOTAL that already INCLUDES the
+/// cached prefix (`prompt_tokens_details.cached_tokens`) and the cache-write slice
+/// (`prompt_tokens_details.cache_write_tokens`), so both are subtracted (saturating) to leave the
+/// uncached input and carried as the IR's ADDITIVE cache read / cache creation — the cache write is
+/// its own tier, never inside the plain input total. The `*_details` sub-buckets
+/// (reasoning, audio, predicted outputs) are SLICES of the totals, carried as attribution: a lenient
+/// read, never a refusal. The buffered response, the stream's `include_usage` chunk and a
+/// truncated-body recovery read this one table.
+const USAGE: &[UsageCount] = &[
+    (CountSlot::Input, CountRead::Zero(&["prompt_tokens"])),
+    (
+        CountSlot::Input,
+        CountRead::Less(&["prompt_tokens_details", "cached_tokens"]),
+    ),
+    (
+        CountSlot::Input,
+        CountRead::Less(&["prompt_tokens_details", "cache_write_tokens"]),
+    ),
+    (CountSlot::Output, CountRead::Zero(&["completion_tokens"])),
+    (
+        CountSlot::CacheWrite,
+        CountRead::Opt(&["prompt_tokens_details", "cache_write_tokens"]),
+    ),
+    (
+        CountSlot::CacheRead,
+        CountRead::Opt(&["prompt_tokens_details", "cached_tokens"]),
+    ),
+    (
+        CountSlot::Reasoning,
+        CountRead::Lenient(&["completion_tokens_details", "reasoning_tokens"]),
+    ),
+    (
+        CountSlot::InputAudio,
+        CountRead::Lenient(&["prompt_tokens_details", "audio_tokens"]),
+    ),
+    (
+        CountSlot::OutputAudio,
+        CountRead::Lenient(&["completion_tokens_details", "audio_tokens"]),
+    ),
+    (
+        CountSlot::AcceptedPrediction,
+        CountRead::Lenient(&["completion_tokens_details", "accepted_prediction_tokens"]),
+    ),
+    (
+        CountSlot::RejectedPrediction,
+        CountRead::Lenient(&["completion_tokens_details", "rejected_prediction_tokens"]),
+    ),
+];
+
+/// An OpenAI Chat `usage` object (`None` when absent) → the IR usage, through [`USAGE`]; the
+/// serving tier (`service_tier`, a top-level member beside `usage`, OAI-03) is a word, not a count,
+/// and is set from `tier`.
+fn read_openai_usage(
+    usage: Option<&serde_json::Value>,
+    tier: Option<&serde_json::Value>,
+) -> Result<crate::codec::ir::IrUsage, IrError> {
+    let mut usage = crate::codec::usage_count::read_usage("openai", usage, USAGE)?;
+    usage.detail.service_tier = read_openai_service_tier(tier);
+    Ok(usage)
 }
 
 /// OpenAI `service_tier` (the tier that SERVED the request, a top-level response / chunk member) →
@@ -799,11 +837,7 @@ fn openai_audio_input_format(media_type: &str) -> Option<&'static str> {
 
 /// Read an OpenAI-format block from JSON.
 fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::IrBlock, IrError> {
-    let obj = block_val.as_object().ok_or(IrError {
-        class: StatusClass::ClientError,
-        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-        retry_after: None,
-    })?;
+    let obj = block_val.as_object().ok_or_else(ir_parse_error)?;
 
     let block_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -819,11 +853,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::
             })
         }
         "image_url" => {
-            let image_obj = obj.get("image_url").ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })?;
+            let image_obj = obj.get("image_url").ok_or_else(ir_parse_error)?;
             let url = image_obj.get("url").and_then(|v| v.as_str()).unwrap_or("");
             // The IR `Image` contract (set by the Anthropic reader) is: `media_type` = a real MIME
             // type (e.g. "image/png") and `data` = the raw base64 payload. The Anthropic writer
@@ -858,11 +888,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::
         // (`wav`), so normalize it to the real mime type the neutral IR (and every other dialect)
         // speaks; the writer reverses this exactly.
         "input_audio" => {
-            let audio_obj = obj.get("input_audio").ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })?;
+            let audio_obj = obj.get("input_audio").ok_or_else(ir_parse_error)?;
             let data = audio_obj
                 .get("data")
                 .and_then(|v| v.as_str())
@@ -892,11 +918,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::
         // source an image gets. A `file_id` is an OpenAI-hosted reference with NO neutral form, so it
         // rides the opaque `Vendor` escape and only an OpenAI-family writer re-emits it.
         "file" => {
-            let file_obj = obj.get("file").ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })?;
+            let file_obj = obj.get("file").ok_or_else(ir_parse_error)?;
             let name = file_obj
                 .get("filename")
                 .and_then(|v| v.as_str())
@@ -1013,11 +1035,7 @@ fn file_media_type_from_name(name: Option<&str>) -> &'static str {
 
 /// Read an OpenAI-format tool from JSON.
 fn read_openai_tool(tool_val: &serde_json::Value) -> Result<crate::codec::ir::IrTool, IrError> {
-    let obj = tool_val.as_object().ok_or(IrError {
-        class: StatusClass::ClientError,
-        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-        retry_after: None,
-    })?;
+    let obj = tool_val.as_object().ok_or_else(ir_parse_error)?;
 
     // A tool whose `type` is not `function` — today Chat's `custom` tool
     // (`{"type":"custom","custom":{"name","description","format"}}`, free-text or grammar input, no

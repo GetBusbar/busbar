@@ -614,7 +614,8 @@ fn open_boot_book(app: &busbar_kernel::state::App) -> root::durability::NodeBook
 async fn run(data_workers: usize) {
     // THE PROCESS'S ONE DISPATCHER, before any plugin loads: every kind's plugins are opened on
     // it (`root::dispatch`).
-    let _dispatcher = root::dispatch::boot(data_workers);
+    let late_services = root::serve::LateServices::new();
+    let _dispatcher = root::dispatch::boot(data_workers, late_services.clone());
     // THE PLUGIN OBSERVABILITY ENVELOPE, before any plugin loads (`root::observe`).
     root::observe::install();
     // Metrics are configured AFTER the config loads (below, via `metrics::configure`) because they
@@ -754,6 +755,9 @@ async fn run(data_workers: usize) {
     // build_app_from_config — the one construction path).
     let mut cfg = config::resolve(&deploy, &defs)
         .unwrap_or_else(|errs| die(format!("config errors:\n  - {}", errs.join("\n  - "))));
+    // THE SERVE PATH'S ONE COMPOSITION: the kernel's host services go into the dispatcher built at
+    // boot, before any plugin is bound (`root::serve`).
+    root::serve::compose(&cfg, &late_services);
     // THE EXPORT AXIS'S SINKS, opened once — before the first app is built, so the routes they
     // declare are in the boot route table (restart-to-apply, as every built-in PUSH sink is). A
     // configured sink that will not open refuses the boot.

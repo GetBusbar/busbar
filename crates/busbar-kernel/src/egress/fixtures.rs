@@ -95,6 +95,9 @@ pub struct ConnRecord {
     pub handshake_ok: bool,
     /// How many HTTP requests rode this one connection — the pooled-reuse observation.
     pub requests: usize,
+    /// Every request HEAD this TLS connection carried, verbatim to the blank line — what a
+    /// test reads the `Host` header off.
+    pub heads: Vec<String>,
 }
 
 type SharedRecords = Arc<Mutex<Vec<Arc<Mutex<ConnRecord>>>>>;
@@ -245,10 +248,14 @@ fn serve_tls_conn(
     }
     let mut tls = rustls::Stream::new(&mut conn, &mut stream);
     for _ in 0..max_requests {
-        if read_one_request(&mut tls).is_none() {
+        let Some(head) = read_one_request(&mut tls) else {
             break;
+        };
+        {
+            let mut rec = record.lock().expect("record");
+            rec.requests += 1;
+            rec.heads.push(head);
         }
-        record.lock().expect("record").requests += 1;
         if tls.write_all(response).and_then(|()| tls.flush()).is_err() {
             break;
         }
@@ -512,17 +519,68 @@ impl RebindingResolver {
     pub fn calls(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
     }
+
+    /// The next scripted answer, counted: the honest address first, the hostile one after.
+    fn answer(&self) -> SocketAddr {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            self.first
+        } else {
+            self.then
+        }
+    }
 }
 
 impl reqwest::dns::Resolve for RebindingResolver {
     fn resolve(&self, _name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        let n = self.calls.fetch_add(1, Ordering::SeqCst);
-        let addr = if n == 0 { self.first } else { self.then };
+        let addr = self.answer();
         Box::pin(std::future::ready(Ok(
             Box::new(std::iter::once(addr)) as Box<dyn Iterator<Item = SocketAddr> + Send>
         )))
     }
 }
 
+/// The same scripted answers for the engine's resolver seam, so one double drives both stacks.
+impl crate::egress::engine::ResolveNames for RebindingResolver {
+    fn resolve(
+        &self,
+        _name: &str,
+    ) -> futures::future::BoxFuture<
+        'static,
+        Result<Vec<SocketAddr>, Box<dyn std::error::Error + Send + Sync>>,
+    > {
+        Box::pin(std::future::ready(Ok(vec![self.answer()])))
+    }
+}
+
 /// The loopback IP as the address family every fixture binds.
 pub const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+/// A test's scoped dial posture: its table and its names.
+type ScopedDial = (
+    crate::egress::engine::DialTable,
+    Arc<dyn crate::egress::engine::ResolveNames>,
+);
+
+thread_local! {
+    static SCOPED_DIAL: std::cell::RefCell<Option<ScopedDial>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// TEST SEAM: every pooled client built by `build` on this thread judges by `table` and resolves
+/// through `names`.
+pub fn with_scoped_dial<R>(
+    table: crate::egress::engine::DialTable,
+    names: Arc<dyn crate::egress::engine::ResolveNames>,
+    build: impl FnOnce() -> R,
+) -> R {
+    let prior = SCOPED_DIAL.with(|s| s.replace(Some((table, names))));
+    let built = build();
+    SCOPED_DIAL.with(|s| *s.borrow_mut() = prior);
+    built
+}
+
+/// The posture [`with_scoped_dial`] set on this thread, if any: what a pooled client built here
+/// resolves through and judges by.
+pub(crate) fn scoped_dial() -> Option<ScopedDial> {
+    SCOPED_DIAL.with(|s| s.borrow().clone())
+}

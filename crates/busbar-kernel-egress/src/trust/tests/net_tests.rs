@@ -858,12 +858,24 @@ fn dest(authority: &'static str) -> busbar_contract::VerifiedDestination {
 /// A host is blocked IFF `!allow_all` AND on-denylist AND NOT in the allow overrides. Every one of
 /// those three has been the whole answer in some earlier reading of this rule, which is why all
 /// four corners are asserted rather than the interesting one.
+///
+/// THE OVERRIDES ARE 1.5.5'S, AND THEY REACH THE ADDRESS TOO. 1.5.5 (`crates/busbar/src/config/
+/// mod.rs:445`) stated the nuclear override as:
+///
+/// > Nuclear override (`security.allow_all_metadata`): when true the metadata SSRF guard is fully
+/// > DISABLED — every cloud-metadata endpoint is reachable by every provider. Logs a startup WARN.
+///
+/// So IMDS is reachable only with an explicit operator opt-in, and with one it is reachable: no
+/// override, refused; `allow_all`, admitted; a carve-out naming `169.254.169.254`, admitted. The
+/// address arm judges through the same list decision ([`judge_addresses_under`]) the denylist arm
+/// does, so the two cannot disagree. IPv6 link-local had no knob in 1.5.5 and gets none here: it is
+/// not on the metadata list, so `allow_all` leaves its internal-address refusal exactly as it was.
 #[test]
 fn the_denylist_precedence_is_allow_all_then_allow_override_then_block() {
     let base = "https://169.254.169.254/latest/meta-data";
     let none = Denylist::default();
 
-    // On the denylist, nothing overriding it: blocked.
+    // No override: refused.
     assert_eq!(
         check_destination(&dest(base), &[], &NeverAsked, strict(), &none),
         Err(NetworkRefusal::MetadataDenied(
@@ -871,29 +883,32 @@ fn the_denylist_precedence_is_allow_all_then_allow_override_then_block() {
         ))
     );
 
-    // A surgical carve-out and the nuclear override both get the destination PAST the denylist —
-    // and the address guard below it still refuses, because this address is IMDS. That is the whole
-    // point of the two being separate checks: a deployment can say "this host is not a metadata
-    // host to me", and it still cannot say "hand out cloud credentials". Neither knob is a way to
-    // reach `169.254.169.254`, and there is deliberately no knob that is.
-    for past_the_denylist in [
+    // An explicit carve-out for the address, and the nuclear override: admitted.
+    for opted_in in [
         Denylist::new(&[], &["169.254.169.254".to_string()], false),
         Denylist::new(&[], &[], true),
     ] {
         assert!(
             matches!(
-                check_destination(
-                    &dest(base),
-                    &[],
-                    &NeverAsked,
-                    private_ok(),
-                    &past_the_denylist
-                ),
+                check_destination(&dest(base), &[], &NeverAsked, strict(), &opted_in),
+                Ok(Some(_))
+            ),
+            "an explicit operator opt-in reaches IMDS, as in 1.5.5"
+        );
+    }
+
+    // IPv6 link-local is not on the metadata list, so the nuclear override does not touch it: the
+    // internal-address refusal is the same with the override as without.
+    let link_local = "https://[fe80::1]/";
+    for lists in [Denylist::default(), Denylist::new(&[], &[], true)] {
+        assert!(
+            matches!(
+                check_destination(&dest(link_local), &[], &NeverAsked, strict(), &lists),
                 Err(NetworkRefusal::Guard(
-                    AddressRefusal::CloudMetadataAddress { .. }
+                    AddressRefusal::InternalAddress { .. }
                 ))
             ),
-            "the denylist is not the only thing standing between a caller and IMDS"
+            "allow_all leaves link-local as it was"
         );
     }
 
@@ -1478,6 +1493,55 @@ fn a_padded_authority_does_not_slip_past_the_operator_denylist() {
             ssrf_blocked_host(spelling, &[], false, &blocked).as_deref(),
             Some("10.99.99.99"),
             "{spelling:?} must fire the operator's denylist entry"
+        );
+    }
+}
+
+/// The authority ends where the dialling stack ends it — at `/`, `?`, `#` or `\` — and the host is
+/// read by the one shared reader (percent-decoded, trailing root dot dropped). RED on the reader
+/// that ended the authority only at `/`: it read `https://127.0.0.1?x` as the host `127.0.0.1?x`.
+#[test]
+fn split_url_ends_the_authority_where_the_dialler_does() {
+    for (url, host, port, path) in [
+        ("https://127.0.0.1?x", "127.0.0.1", 443, "/?x"),
+        ("https://localhost#a", "localhost", 443, "/#a"),
+        ("https://127.0.0.1./", "127.0.0.1", 443, "/"),
+        ("https://%6c%6fcalhost/", "localhost", 443, "/"),
+        ("https://10.0.0.5\\x/", "10.0.0.5", 443, "/x/"),
+        ("http://host.example?q=1", "host.example", 80, "/?q=1"),
+        ("https://host.example:8443#f", "host.example", 8443, "/#f"),
+    ] {
+        let (_, h, p, pa) = split_url(url).unwrap_or_else(|e| panic!("{url}: {e}"));
+        assert_eq!((h.as_str(), p, pa.as_str()), (host, port, path), "{url}");
+    }
+    // A userinfo is still refused, wherever a `\` moves the boundary.
+    assert!(matches!(
+        split_url("https://svc@10.0.0.5\\x/"),
+        Err(AddressRefusal::NoHost(_))
+    ));
+}
+
+/// The structural half of the check — what `dest.judge` answers without resolving — refuses every
+/// loopback and private spelling for a class without `allow_private`. RED on the `/`-only reader,
+/// which read each of these as an unresolved NAME and allowed it.
+#[test]
+fn the_structural_check_refuses_every_loopback_spelling() {
+    for dest in [
+        "https://127.0.0.1?x",
+        "https://localhost#a",
+        "https://127.0.0.1./",
+        "https://%6c%6fcalhost/",
+        "https://10.0.0.5\\x/",
+    ] {
+        let got = check_structure(dest, &[], GuardPolicy::default(), &Denylist::default());
+        assert!(
+            matches!(
+                got,
+                Err(NetworkRefusal::Guard(
+                    AddressRefusal::InternalAddress { .. } | AddressRefusal::LoopbackName(_)
+                ))
+            ),
+            "{dest}: {got:?}"
         );
     }
 }

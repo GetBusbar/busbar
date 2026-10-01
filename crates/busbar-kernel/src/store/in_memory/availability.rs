@@ -160,18 +160,8 @@ impl LaneRuntime for HealthState {
         std::sync::Arc::clone(&self.unit)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    fn usable(&self, lane: usize, now: u64) -> bool {
-        self.usable_for("", lane, now)
-    }
-
     fn usable_in(&self, pool: &str, lane: usize, now: u64) -> bool {
         self.usable_for(pool, lane, now)
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    fn is_ready(&self, lane: usize, now: u64) -> bool {
-        self.ready_for("", lane, now)
     }
 
     fn is_ready_any_cell(&self, lane: usize, now: u64) -> bool {
@@ -352,11 +342,6 @@ impl LaneRuntime for HealthState {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    fn breaker_state(&self, lane: usize) -> BreakerState {
-        self.breaker_state_for("", lane)
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
     fn breaker_state_in(&self, pool: &str, lane: usize) -> BreakerState {
         self.breaker_state_for(pool, lane)
     }
@@ -372,18 +357,8 @@ impl LaneRuntime for HealthState {
         });
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    fn cooldown_remaining(&self, lane: usize, now: u64) -> u64 {
-        self.cooldown_remaining_for("", lane, now)
-    }
-
     fn cooldown_remaining_in(&self, pool: &str, lane: usize, now: u64) -> u64 {
         self.cooldown_remaining_for(pool, lane, now)
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    fn record_success(&self, lane: usize) {
-        self.record_success_for("", lane);
     }
 
     fn record_success_in(&self, pool: &str, lane: usize) {
@@ -400,35 +375,14 @@ impl LaneRuntime for HealthState {
             return;
         }
         let now = Self::now_secs();
-        // Default cell (direct/ad-hoc routes) — IS the `LaneState`. `record_success` pushes the
-        // success outcome and runs the HalfOpen→Closed CAS. It does NOT touch `ok`/`err`, so it never
+        // `record_success` pushes the success outcome into every cell's window (the default cell —
+        // IS the `LaneState` — and every existing per-pool cell, the SAME windows the failed-probe
+        // path trips) and runs the HalfOpen→Closed CAS. It does NOT touch `ok`/`err`, so it never
         // double-counts the lane-global stat. The CAS is *usually* a no-op here because the 2xx caller
         // runs `recover_lane` first — but only when `lane_needs_probe` is true, and even then a peer
         // (organic request, hard-down) can move a cell back to HalfOpen between that recovery and this
-        // push. If this push then wins the HalfOpen→Closed CAS, the matching `reset_swrr_for`
-        // (a generational stripe bump) MUST run so the recovered cell's stripes rejoin from 0 —
-        // gate it on the recovered-bool exactly like `record_success_for` and `recover_lane` do.
-        if ls.cell.record_success(now) {
-            // Default cell belongs to the no-pool ("") set; the reset is the lock-free generational
-            // bump (`reset_swrr_for` takes no shard lock), run after the transition lock is
-            // released (it is a leaf within `record_success`).
-            self.reset_swrr_for("", ls.as_ref());
-        }
-        // Every existing per-pool cell for this lane — the cells organic traffic is selected against,
-        // so the probe success dilutes the SAME per-pool error-rate windows the failed-probe path
-        // trips against. Mirrors `record_probe_failure_all_cells`'s `pool_cells` iteration exactly
-        // (existing cells only — a cell not yet created inherits health lazily on first access).
-        let cells = read_recover(&self.pool_cells);
-        for (pool_name, cell) in cells.get(&lane).into_iter().flatten() {
-            // Same SWRR gate per cell: a real HalfOpen→Closed close here re-admits the cell to
-            // selection with a zeroed accumulator via the lock-free generational bump — each
-            // stripe rejoins from 0 the next time a selection resolves its slot (a selection
-            // observes the generation at exactly ONE point, its single `slot()` resolution, so
-            // the bump can never zero an accumulator mid-sequence) — mirrors `recover_lane`.
-            if cell.fsm.record_success(now) {
-                self.reset_swrr_for(pool_name, cell.as_ref());
-            }
-        }
+        // push; a push that wins the CAS gets the same SWRR reset `recover_lane` gives a close.
+        self.close_all_cells(lane, |c| c.record_success(now));
         // Bump the lane-GLOBAL `ok` counter EXACTLY ONCE per probe (not once per cell): the prior
         // per-cell `record_success_in` loop bumped `LaneState.ok` (N+1) times for a lane in N pools.
         // Mirrors `record_probe_failure_all_cells`, which bumps `LaneState.err` once.
@@ -442,17 +396,6 @@ impl LaneRuntime for HealthState {
         ls.client_fault.fetch_add(1, Ordering::Relaxed);
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    fn record_transient(
-        &self,
-        lane: usize,
-        _what: &str,
-        cfg: &BreakerCfg,
-        retry_after: Option<u64>,
-    ) -> bool {
-        self.record_failure_for("", lane, Self::now_secs(), cfg, retry_after)
-    }
-
     fn record_transient_in(
         &self,
         pool: &str,
@@ -462,17 +405,6 @@ impl LaneRuntime for HealthState {
         retry_after: Option<u64>,
     ) -> bool {
         self.record_failure_for(pool, lane, Self::now_secs(), cfg, retry_after)
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    fn record_rate_limit(
-        &self,
-        lane: usize,
-        now_time: u64,
-        cfg: &BreakerCfg,
-        retry_after: Option<u64>,
-    ) -> bool {
-        self.record_failure_for("", lane, now_time, cfg, retry_after)
     }
 
     fn record_rate_limit_in(
@@ -547,16 +479,7 @@ impl LaneRuntime for HealthState {
                 None => false,
             }
         };
-        let ls = self.get_lane(lane);
-        if close(&ls.cell) {
-            self.reset_swrr_for("", ls.as_ref());
-        }
-        let cells = read_recover(&self.pool_cells);
-        for (pool_name, cell) in cells.get(&lane).into_iter().flatten() {
-            if close(&cell.fsm) {
-                self.reset_swrr_for(pool_name, cell.as_ref());
-            }
-        }
+        self.close_all_cells(lane, close);
     }
 
     fn record_probe_failure_all_cells(
@@ -725,12 +648,6 @@ impl LaneRuntime for HealthState {
                 }
             })
             .collect()
-    }
-
-    // SWRR selection over the healthy subset (ADR-0001 algorithm). Uses the lane-default cells.
-    #[cfg(any(test, feature = "test-support"))]
-    fn select_weighted(&self, candidates: &[usize], weights: &[u32], now: u64) -> Option<usize> {
-        self.select_weighted_for("", candidates, weights, now)
     }
 
     fn select_weighted_in(

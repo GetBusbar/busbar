@@ -3,8 +3,8 @@
 
 //! OpenAI Responses API protocol reader/writer implementation.
 
+use crate::codec::dialect::ir_parse_error;
 use crate::codec::ir::IrStreamEvent;
-use crate::codec::usage_count::read_count_u64;
 use busbar_contract::http::StatusCode;
 // `bearer_error_code` and `CODE_INVALID_API_KEY` now live in the neutral substrate; read them there
 // so this plugin names no `busbar-core` implementation path for them.
@@ -26,6 +26,7 @@ use busbar_contract::upstream::StatusClass;
 #[allow(unused_imports)]
 // used standalone; redundant with the `busbar_contract::protocol::*` glob when netted into core
 use super::proto_codec::*;
+use crate::codec::usage_count::{CountRead, CountSlot, UsageCount};
 // See the anthropic dialect for the rationale: an explicit import of the codec surface so it binds to
 // THIS crate's own `proto_codec` rather than the `busbar_contract::protocol::*` glob.
 #[allow(unused_imports)]
@@ -904,11 +905,7 @@ fn responses_modeled_keys() -> &'static std::collections::HashSet<&'static str> 
 pub struct ResponsesReader;
 
 fn responses_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::IrBlock, IrError> {
-    let obj = block_val.as_object().ok_or(IrError {
-        class: StatusClass::ClientError,
-        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-        retry_after: None,
-    })?;
+    let obj = block_val.as_object().ok_or_else(ir_parse_error)?;
 
     let block_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -937,11 +934,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::Ir
         "input_image" => {
             // Handle a file_id-referenced image (no inline `image_url`) faithfully rather than
             // emitting an empty Image block. Shared with the request-input reader.
-            responses_input_image_block(block_val).ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })
+            responses_input_image_block(block_val).ok_or_else(ir_parse_error)
         }
         // A file ATTACHMENT: `{"type":"input_file","file_data":"data:application/pdf;base64,…",
         // "filename":"x.pdf"}`, or `{"file_url":"https://…"}`, or `{"file_id":"file-1"}`. It used to
@@ -1012,11 +1005,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::Ir
         // (`openai_chat`'s reader): the bare format token becomes the `audio/<format>` mime the
         // neutral IR speaks, so a Gemini/Bedrock/Chat backend receives the clip.
         "input_audio" => {
-            let audio_obj = obj.get("input_audio").ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })?;
+            let audio_obj = obj.get("input_audio").ok_or_else(ir_parse_error)?;
             let data = audio_obj
                 .get("data")
                 .and_then(|v| v.as_str())
@@ -1283,46 +1272,48 @@ fn write_text_format(rf: &crate::codec::ir::IrResponseFormat) -> serde_json::Val
     }
 }
 
-/// Read the Responses prompt-cache hit count from a `usage` object:
-/// `usage.input_tokens_details.cached_tokens`. Returns `None` when the nested field is absent (so a
-/// usage object without cache details does not gain a spurious `Some(0)`), mapping into the IR's
-/// `cache_read_input_tokens`. Shared by the non-streaming `read_response` and the streaming terminal.
-///
-/// A present-but-UNREADABLE count is an [`crate::codec::usage_count::UnreadableCount`] the caller turns
-/// into a refusal (#42, item 133) — the old read returned `None` for it, and a cache read the
-/// provider reported was ledgered as no cache read at all.
-fn read_cached_tokens(
-    usage_val: &serde_json::Value,
-) -> Result<Option<u64>, crate::codec::usage_count::UnreadableCount> {
-    crate::codec::usage_count::billed_count_opt(
-        usage_val.get("input_tokens_details"),
-        "cached_tokens",
-    )
-}
+/// THE RESPONSES API'S USAGE COUNTS, AS DATA (#42). `input_tokens` is a TOTAL that already INCLUDES
+/// the cached prefix (`input_tokens_details.cached_tokens`) and the cache-write slice
+/// (`input_tokens_details.cache_write_tokens`, "the number of input tokens that were written to
+/// the cache"), so both are subtracted (saturating) to leave the uncached input and carried as the
+/// IR's ADDITIVE cache read / cache creation; `None` when absent, never a spurious `Some(0)`.
+/// `output_tokens_details.reasoning_tokens` is a SLICE of `output_tokens`, carried as attribution.
+/// The buffered response, the stream's terminal usage and a truncated-body recovery read this one
+/// table.
+const USAGE: &[UsageCount] = &[
+    (CountSlot::Input, CountRead::Zero(&["input_tokens"])),
+    (
+        CountSlot::Input,
+        CountRead::Less(&["input_tokens_details", "cached_tokens"]),
+    ),
+    (
+        CountSlot::Input,
+        CountRead::Less(&["input_tokens_details", "cache_write_tokens"]),
+    ),
+    (CountSlot::Output, CountRead::Zero(&["output_tokens"])),
+    (
+        CountSlot::CacheWrite,
+        CountRead::Opt(&["input_tokens_details", "cache_write_tokens"]),
+    ),
+    (
+        CountSlot::CacheRead,
+        CountRead::Opt(&["input_tokens_details", "cached_tokens"]),
+    ),
+    (
+        CountSlot::Reasoning,
+        CountRead::Lenient(&["output_tokens_details", "reasoning_tokens"]),
+    ),
+];
 
-/// Read the Responses CACHE-WRITE count from a `usage` object:
-/// `usage.input_tokens_details.cache_write_tokens` — "the number of input tokens that were written
-/// to the cache". It is a SLICE OF the `input_tokens` total, exactly as `cached_tokens` is
-/// (`input_tokens` = cached + cache-write + uncached). Mapping it into the IR's ADDITIVE
-/// `cache_creation_input_tokens` (the field Anthropic's `cache_creation_input_tokens` and Bedrock's
-/// `cacheWriteInputTokens` populate) is what prices those tokens at the cache-WRITE tier instead of
-/// leaving them inside the plain input total. `None` when the nested field is absent (never a
-/// spurious `Some(0)`). Shared by the non-streaming `read_response` and the streaming terminal.
-///
-/// This closes a READER/WRITER asymmetry that was live in trunk: [`build_responses_usage`] has
-/// always EMITTED `cache_write_tokens` (the pinned `ResponseUsage` schema requires the member), so
-/// a Responses body that stated a cache write was re-emitted with the total intact and the write
-/// count zeroed — the tokens silently moved from the cache-write tier to the plain input rate.
-///
-/// A present-but-UNREADABLE count is an [`crate::codec::usage_count::UnreadableCount`] the caller turns
-/// into a refusal (#42, item 133), never the `None` that reads as "no cache write".
-fn read_cache_write_tokens(
-    usage_val: &serde_json::Value,
-) -> Result<Option<u64>, crate::codec::usage_count::UnreadableCount> {
-    crate::codec::usage_count::billed_count_opt(
-        usage_val.get("input_tokens_details"),
-        "cache_write_tokens",
-    )
+/// A Responses `usage` object (`None` when absent) → the IR usage, through [`USAGE`]; the tier that
+/// served the response (RSP-17) is a word on `response`, not a count.
+fn read_responses_usage(
+    usage: Option<&serde_json::Value>,
+    response: Option<&serde_json::Value>,
+) -> Result<crate::codec::ir::IrUsage, IrError> {
+    let mut usage = crate::codec::usage_count::read_usage("openai_responses", usage, USAGE)?;
+    usage.detail.service_tier = response.and_then(read_responses_service_tier);
+    Ok(usage)
 }
 
 /// OpenAI Responses streaming writer.

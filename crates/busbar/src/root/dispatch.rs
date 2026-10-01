@@ -12,6 +12,8 @@
 
 use std::sync::{Arc, OnceLock};
 
+use busbar_contract::services::HostServices;
+
 use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
 
 static DISPATCHER: OnceLock<Arc<Dispatcher>> = OnceLock::new();
@@ -27,16 +29,20 @@ pub fn config(workers: usize) -> DispatchConfig {
     }
 }
 
-/// Build the process's dispatcher for `workers` data workers, at boot, before any plugin loads.
-/// The first build stands; a later call answers it.
-pub fn boot(workers: usize) -> Arc<Dispatcher> {
-    Arc::clone(DISPATCHER.get_or_init(|| Arc::new(Dispatcher::new(config(workers)))))
+/// Build the process's dispatcher for `workers` data workers, at boot, before any plugin loads,
+/// serving `services` (the composition's [`crate::root::serve::LateServices`], installed once the
+/// configuration loads). The first build stands; a later call answers it.
+pub fn boot(workers: usize, services: Arc<dyn HostServices>) -> Arc<Dispatcher> {
+    Arc::clone(
+        DISPATCHER.get_or_init(|| Arc::new(Dispatcher::with_services(config(workers), services))),
+    )
 }
 
-/// The process's dispatcher (built at boot; built with one worker on first use where no boot ran).
+/// The process's dispatcher (built at boot; built with one worker and no installed services on
+/// first use where no boot ran).
 #[must_use]
 pub fn dispatcher() -> Arc<Dispatcher> {
-    boot(1)
+    boot(1, crate::root::serve::LateServices::new())
 }
 
 #[cfg(test)]

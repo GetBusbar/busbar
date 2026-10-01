@@ -8,7 +8,6 @@ use crate::codec::ir::embeddings::{
 };
 use busbar_contract::codec::{CodecError, IngressReject, OperationHandler, RequestHandler};
 use busbar_contract::codec::{EgressCtx, WireBody};
-use busbar_contract::ir::handle::IrHandle;
 use busbar_contract::operation::OpVerb;
 use busbar_contract::SlabBytes;
 use bytes::Bytes;
@@ -109,38 +108,19 @@ fn cohere_encoding_format(s: &str) -> EncFmt {
 }
 
 /// Cohere v2 embeddings (`/v2/embed`). `input_type` is required by Cohere; default to a document role.
+///
+/// cohere `/v2/embed` wire → IR (cohere as INGRESS): `texts[]` + required `input_type`.
 struct CohereEmbeddings;
 
-impl OperationHandler for CohereEmbeddings {
-    /// This protocol's error envelope, shared by every operation it serves: the same
-    /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(
-        &self,
-        status: u16,
-        body: &[u8],
-    ) -> busbar_contract::upstream::RawUpstreamError {
-        super::super::proto_codec::protocol_error("cohere", status, body)
-    }
+leaf_op! {
+    CohereEmbeddings: "cohere",
+    EmbeddingsReqHandle = read_embeddings_request,
+    EmbeddingsRespHandle = read_embeddings_response;
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
     // `extract_usage` can read the `usage` object and bill the virtual key's TPM/spend
     // (the cross-protocol path already bills; this closes the same-protocol gap).
     fn taps_usage(&self) -> bool {
         true
-    }
-    /// cohere `/v2/embed` wire → IR (cohere as INGRESS): `texts[]` + required `input_type`.
-    fn read_request(
-        &self,
-        body: &[u8],
-        _content_type: &str,
-    ) -> Result<Box<dyn IrHandle>, IngressReject> {
-        Ok(Box::new(super::super::leaf_handles::EmbeddingsReqHandle(
-            read_embeddings_request(body, _content_type)?,
-        )) as Box<dyn IrHandle>)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
-        Ok(Box::new(super::super::leaf_handles::EmbeddingsRespHandle(
-            read_embeddings_response(wire)?,
-        )) as Box<dyn IrHandle>)
     }
 }
 
@@ -259,35 +239,15 @@ fn rerank_documents(v: Option<&Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-impl OperationHandler for CohereRerank {
-    /// This protocol's error envelope, shared by every operation it serves: the same
-    /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(
-        &self,
-        status: u16,
-        body: &[u8],
-    ) -> busbar_contract::upstream::RawUpstreamError {
-        super::super::proto_codec::protocol_error("cohere", status, body)
-    }
+leaf_op! {
+    CohereRerank: "cohere",
+    RerankReqHandle = read_rerank_request,
+    RerankRespHandle = read_rerank_response;
     // Search-unit metered: buffer the same-protocol non-stream 2xx body so the tap reads the
     // `meta.billed_units.search_units` it billed onto both books, as the cross-protocol path does
     // (item 134). Without it the verbatim relay kept no copy and the units reached neither book.
     fn taps_usage(&self) -> bool {
         true
-    }
-    fn read_request(
-        &self,
-        body: &[u8],
-        _content_type: &str,
-    ) -> Result<Box<dyn IrHandle>, IngressReject> {
-        Ok(Box::new(super::super::leaf_handles::RerankReqHandle(
-            read_rerank_request(body, _content_type)?,
-        )) as Box<dyn IrHandle>)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
-        Ok(Box::new(super::super::leaf_handles::RerankRespHandle(
-            read_rerank_response(wire)?,
-        )) as Box<dyn IrHandle>)
     }
 }
 

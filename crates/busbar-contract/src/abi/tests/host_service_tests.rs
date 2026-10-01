@@ -315,6 +315,26 @@ fn a_ready_value_outside_the_service_range_is_fault() {
 }
 
 #[test]
+fn a_claim_with_no_time_to_live_is_refused() {
+    let mut claim = RecordsClaimIn {
+        head: head(
+            op::RECORDS_CLAIM,
+            TICKET,
+            core::mem::size_of::<RecordsClaimIn>(),
+        ),
+        kind: none(),
+        key: none(),
+        ttl_ms: 0,
+    };
+    assert_eq!(
+        check_records_claim_in(&claim).unwrap_err(),
+        fault(Rule::Missing, "records_claim.ttl_ms")
+    );
+    claim.ttl_ms = 1;
+    assert!(check_records_claim_in(&claim).is_ok());
+}
+
+#[test]
 fn a_clock_reading_must_be_there_and_of_this_layout() {
     let o = out(Outcome::Ready);
     let null = ClockNowIn {
@@ -382,7 +402,7 @@ fn the_host_refuses_a_capacity_with_a_null_buffer() {
 }
 
 #[test]
-fn the_services_that_never_pend_are_exactly_the_stated_five() {
+fn the_services_that_never_pend_are_exactly_the_stated_six() {
     let never: Vec<u32> = (0..SERVICES).filter(|s| !may_pend(*s)).collect();
     assert_eq!(
         never,
@@ -391,7 +411,8 @@ fn the_services_that_never_pend_are_exactly_the_stated_five() {
             op::SIGN,
             op::TRUST_DUE,
             op::VERIFY_STORE,
-            op::ENTITLEMENT_CHECK
+            op::ENTITLEMENT_CHECK,
+            op::RANDOM_FILL
         ]
     );
     assert!(!may_pend(SERVICES), "an index past the table never pends");
@@ -412,4 +433,44 @@ impl ItemSpan {
             value_len: 0,
         }
     }
+}
+
+/// THE SLOT ORDER, pinned: each service's field sits at the table index its `op` constant names,
+/// one function pointer apart after the two `u32` heads. Services are appended in landing order;
+/// a later append that reorders an earlier one fails here, and the loader's table (built field by
+/// field) follows the same order.
+#[test]
+fn every_service_field_sits_at_its_op_index() {
+    use core::mem::{offset_of, size_of};
+    let slot = |op: u32| 8 + op as usize * size_of::<Option<ServiceFn>>();
+    let table = [
+        (offset_of!(HostSlots, clock_now), op::CLOCK_NOW),
+        (offset_of!(HostSlots, records_get), op::RECORDS_GET),
+        (offset_of!(HostSlots, records_list), op::RECORDS_LIST),
+        (offset_of!(HostSlots, records_claim), op::RECORDS_CLAIM),
+        (offset_of!(HostSlots, dest_judge), op::DEST_JUDGE),
+        (offset_of!(HostSlots, sign), op::SIGN),
+        (offset_of!(HostSlots, unit_nest), op::UNIT_NEST),
+        (offset_of!(HostSlots, work_open), op::WORK_OPEN),
+        (offset_of!(HostSlots, work_find), op::WORK_FIND),
+        (offset_of!(HostSlots, work_settle), op::WORK_SETTLE),
+        (offset_of!(HostSlots, work_resume), op::WORK_RESUME),
+        (offset_of!(HostSlots, trust_sight), op::TRUST_SIGHT),
+        (offset_of!(HostSlots, trust_due), op::TRUST_DUE),
+        (offset_of!(HostSlots, verify_lookup), op::VERIFY_LOOKUP),
+        (offset_of!(HostSlots, verify_store), op::VERIFY_STORE),
+        (
+            offset_of!(HostSlots, entitlement_check),
+            op::ENTITLEMENT_CHECK,
+        ),
+        (offset_of!(HostSlots, content_scan), op::CONTENT_SCAN),
+        (offset_of!(HostSlots, hook_call), op::HOOK_CALL),
+        (offset_of!(HostSlots, random_fill), op::RANDOM_FILL),
+    ];
+    for (i, (offset, op)) in table.iter().enumerate() {
+        assert_eq!(*op as usize, i, "op constants run 0.. in table order");
+        assert_eq!(*offset, slot(*op), "field of op {op} sits at its index");
+    }
+    assert_eq!(table.len(), SERVICES as usize);
+    assert_eq!(size_of::<HostSlots>(), slot(SERVICES));
 }

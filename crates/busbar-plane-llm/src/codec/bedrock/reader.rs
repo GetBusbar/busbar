@@ -1,28 +1,14 @@
 use super::*;
+use crate::codec::dialect::ir_parse_error;
 
 impl ProtocolReader for BedrockReader {
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
         // An unreadable billed count yields NO recovered usage, never a zero one (#42): the caller
         // then bills its conservative floor estimate for the truncated body instead of $0.
-        let u = Some(&v);
         // The per-TTL cache-write split rides the same `usage` object a truncated body still
         // carries, so a body too large to buffer whole reports the same breakdown a small one does.
-        let (cache_5m, cache_1h) = super::read_cache_details(Some(&v)).ok()?;
-        Some(
-            crate::codec::ir::IrUsage {
-                input_tokens: billed(u, "inputTokens").ok()?,
-                output_tokens: billed(u, "outputTokens").ok()?,
-                cache_creation_input_tokens: billed_opt(u, "cacheWriteInputTokens").ok()?,
-                cache_read_input_tokens: billed_opt(u, "cacheReadInputTokens").ok()?,
-                detail: crate::codec::ir::IrUsageDetail {
-                    cache_creation_5m_input_tokens: cache_5m,
-                    cache_creation_1h_input_tokens: cache_1h,
-                    ..Default::default()
-                },
-            }
-            .to_token_usage(),
-        )
+        Some(read_bedrock_usage(Some(&v)).ok()?.to_token_usage())
     }
 
     fn extract_error(
@@ -166,11 +152,7 @@ impl ProtocolReader for BedrockReader {
         &self,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrRequest, IrError> {
-        let obj = body.as_object().ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        })?;
+        let obj = body.as_object().ok_or_else(ir_parse_error)?;
 
         // Collect every unmodeled top-level request field into `extra` so a same-protocol
         // Bedrock->Bedrock passthrough re-emits them faithfully (see `write_request`, which merges
@@ -292,26 +274,14 @@ impl ProtocolReader for BedrockReader {
             // (string/number/object where the array is required) is a genuine structural violation.
             // Reject with a 400 rather than silently coercing to an empty conversation (matching the
             // strict openai_chat/cohere readers). ABSENT `messages` stays lenient.
-            let msgs_arr = messages_val.as_array().ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })?;
+            let msgs_arr = messages_val.as_array().ok_or_else(ir_parse_error)?;
             for (msg_idx, msg_val) in msgs_arr.iter().enumerate() {
                 let role_str = msg_val.get("role").and_then(|r| r.as_str()).unwrap_or("");
 
                 let role = match role_str {
                     "user" => crate::codec::ir::IrRole::User,
                     "assistant" => crate::codec::ir::IrRole::Assistant,
-                    _ => {
-                        return Err(IrError {
-                            class: StatusClass::ClientError,
-                            provider_signal: Some(
-                                busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
-                            ),
-                            retry_after: None,
-                        })
-                    }
+                    _ => return Err(ir_parse_error()),
                 };
 
                 let mut msg_content: Vec<crate::codec::ir::IrBlock> = Vec::new();
@@ -321,13 +291,7 @@ impl ProtocolReader for BedrockReader {
                 // reject with a 400 instead. An ABSENT `content` stays lenient.
                 if let Some(cv) = msg_val.get("content") {
                     if !cv.is_array() {
-                        return Err(IrError {
-                            class: StatusClass::ClientError,
-                            provider_signal: Some(
-                                busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
-                            ),
-                            retry_after: None,
-                        });
+                        return Err(ir_parse_error());
                     }
                 }
                 if let Some(content_arr) = msg_val.get("content").and_then(|c| c.as_array()) {
@@ -348,13 +312,7 @@ impl ProtocolReader for BedrockReader {
                                 .get("toolUseId")
                                 .and_then(|id| id.as_str())
                                 .filter(|s| !s.is_empty())
-                                .ok_or(IrError {
-                                    class: StatusClass::ClientError,
-                                    provider_signal: Some(
-                                        busbar_contract::protocol::SIGNAL_IR_PARSE.to_string(),
-                                    ),
-                                    retry_after: None,
-                                })?
+                                .ok_or_else(ir_parse_error)?
                                 .to_string();
                             let name = tool_use
                                 .get("name")
@@ -1226,44 +1184,12 @@ impl ProtocolReader for BedrockReader {
                 // total made the same turn's bill reconcilable buffered and not reconcilable
                 // streamed.
                 let usage_val = data.get("usage");
-                let read = (|| -> Result<_, IrError> {
-                    let (cache_creation, cache_read) =
-                        read_cache_usage(usage_val).map_err(refuse_unreadable_count)?;
-                    let (cache_5m, cache_1h) =
-                        super::read_cache_details(usage_val).map_err(refuse_unreadable_count)?;
-                    Ok((
-                        billed(usage_val, "inputTokens")?,
-                        billed(usage_val, "outputTokens")?,
-                        cache_creation,
-                        cache_read,
-                        cache_5m,
-                        cache_1h,
-                    ))
-                })();
-                let (
-                    input_tokens,
-                    output_tokens,
-                    cache_creation_input_tokens,
-                    cache_read_input_tokens,
-                    cache_5m,
-                    cache_1h,
-                ) = match read {
-                    Ok(counts) => counts,
+                let usage = match read_bedrock_usage(usage_val) {
+                    Ok(usage) => usage,
                     Err(refusal) => {
                         out.push(IrStreamEvent::Error(refusal));
                         return out;
                     }
-                };
-                let usage = crate::codec::ir::IrUsage {
-                    input_tokens,
-                    output_tokens,
-                    cache_creation_input_tokens,
-                    cache_read_input_tokens,
-                    detail: crate::codec::ir::IrUsageDetail {
-                        cache_creation_5m_input_tokens: cache_5m,
-                        cache_creation_1h_input_tokens: cache_1h,
-                        ..Default::default()
-                    },
                 };
 
                 out.push(IrStreamEvent::MessageDelta {
@@ -1341,11 +1267,7 @@ impl ProtocolReader for BedrockReader {
         &self,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrResponse, IrError> {
-        let obj = body.as_object().ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        })?;
+        let obj = body.as_object().ok_or_else(ir_parse_error)?;
 
         // DOCUMENTED CROSS-PROTOCOL DROP (field-coverage carry, drop+warn+test). A native Converse
         // response can carry Bedrock-only diagnostic/echo members the neutral IR has no home for and
@@ -1373,17 +1295,9 @@ impl ProtocolReader for BedrockReader {
             }
         }
 
-        let output_val = obj.get("output").ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        })?;
+        let output_val = obj.get("output").ok_or_else(ir_parse_error)?;
 
-        let message_val = output_val.get("message").ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        })?;
+        let message_val = output_val.get("message").ok_or_else(ir_parse_error)?;
 
         let mut content: Vec<crate::codec::ir::IrBlock> = Vec::new();
 
@@ -1479,25 +1393,9 @@ impl ProtocolReader for BedrockReader {
         // response-format quirk (mock/staging backend, or a future model variant), not a client
         // error, so a spurious `ClientError` here would mislabel the cause and confuse retry logic.
         let usage_obj = obj.get("usage");
-        let (cache_creation_input_tokens, cache_read_input_tokens) =
-            read_cache_usage(usage_obj).map_err(refuse_unreadable_count)?;
-        // `cacheDetails` — the per-TTL breakdown of `cacheWriteInputTokens`. The two TTLs are
-        // PRICED DIFFERENTLY, so the total alone leaves a bill that reconciles in aggregate and
-        // cannot be reconciled per line. See `read_cache_details`.
-        let (cache_5m, cache_1h) =
-            super::read_cache_details(usage_obj).map_err(refuse_unreadable_count)?;
-        // BILLED COUNTS: absent is zero, a present-but-UNREADABLE count REFUSES (#42).
-        let usage = crate::codec::ir::IrUsage {
-            input_tokens: billed(usage_obj, "inputTokens")?,
-            output_tokens: billed(usage_obj, "outputTokens")?,
-            cache_creation_input_tokens,
-            cache_read_input_tokens,
-            detail: crate::codec::ir::IrUsageDetail {
-                cache_creation_5m_input_tokens: cache_5m,
-                cache_creation_1h_input_tokens: cache_1h,
-                ..Default::default()
-            },
-        };
+        // `cacheDetails` — the per-TTL breakdown of `cacheWriteInputTokens` — rides the same table
+        // as the totals (see `USAGE`). Absent is zero, a present-but-UNREADABLE count REFUSES (#42).
+        let usage = read_bedrock_usage(usage_obj)?;
 
         Ok(crate::codec::ir::IrResponse {
             logprobs: Vec::new(),
@@ -1532,53 +1430,6 @@ impl ProtocolReader for BedrockReader {
 
     fn clone_box(&self) -> Box<dyn ProtocolReader> {
         Box::new(self.clone())
-    }
-}
-
-// ── BILLED COUNTS (#42) ──────────────────────────────────────────────────────────────────────────
-
-/// Read one BILLED count off a usage object under `usage_count::billed_count`'s contract: an absent
-/// usage object, an absent field or a JSON `null` is 0 (exactly as before), a readable count is the
-/// count (through the crate's one seam, `read_count_u64`), and a present-but-UNREADABLE count
-/// REFUSES. The lenient read this replaces defaulted an unreadable count to zero, so a stringified
-/// `"1500"` was ledgered as no work at all.
-///
-/// The read itself IS `usage_count::billed_count` — this adapter only lifts its absent-usage-object
-/// case (zero) and maps its refusal onto this reader's error shape, so the contract and the bounded
-/// spelling live in one place and cannot drift per dialect.
-fn billed(usage: Option<&serde_json::Value>, field: &'static str) -> Result<u64, IrError> {
-    usage.map_or(Ok(0), |u| {
-        crate::codec::usage_count::billed_count(u, field).map_err(refuse_unreadable_count)
-    })
-}
-
-/// [`billed`] for a count whose ABSENCE the IR keeps distinct from zero (a cache tier): absent or
-/// `null` is `None`, readable is `Some`, unreadable REFUSES.
-fn billed_opt(
-    usage: Option<&serde_json::Value>,
-    field: &'static str,
-) -> Result<Option<u64>, IrError> {
-    match usage.and_then(|u| u.get(field)) {
-        None => Ok(None),
-        Some(v) if v.is_null() => Ok(None),
-        Some(_) => billed(usage, field).map(Some),
-    }
-}
-
-/// The refusal a present-but-unreadable billed count becomes — the same `ir_parse` shape as every
-/// other response this reader cannot read, with the field and the BOUNDED spelling `billed_count`
-/// quoted (cut on a character boundary there, so a hostile multi-byte spelling cannot panic the cut).
-fn refuse_unreadable_count(unreadable: crate::codec::usage_count::UnreadableCount) -> IrError {
-    tracing::warn!(
-        protocol = "bedrock",
-        field = unreadable.field,
-        spelling = %unreadable.spelling,
-        "usage count is present but unreadable; refusing rather than billing it as zero (#42)"
-    );
-    IrError {
-        class: StatusClass::ClientError,
-        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.into()),
-        retry_after: None,
     }
 }
 

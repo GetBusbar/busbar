@@ -37,7 +37,7 @@ fn xreq_lane(
     ingress: &'static str,
     egress: &str,
     body: &Value,
-    caps: &super::super::proto_codec::LaneCaps,
+    caps: &busbar_contract::ir::egress_prep::LaneCaps,
 ) -> Value {
     let egress_p = protocol_for(egress).expect("egress protocol");
     let mut req = protocol_for(ingress)
@@ -67,8 +67,8 @@ fn xreq_lane(
 
 /// A lane of the newest Claude generation: declares adaptive thinking AND native structured
 /// outputs (the shipped catalog's model patterns turn both on for Opus 4.7+/5.x, Sonnet 5, Fable).
-fn newest_lane() -> super::super::proto_codec::LaneCaps {
-    super::super::proto_codec::LaneCaps {
+fn newest_lane() -> busbar_contract::ir::egress_prep::LaneCaps {
+    busbar_contract::ir::egress_prep::LaneCaps {
         anthropic_adaptive_thinking: true,
         native_structured_output: true,
         ..Default::default()

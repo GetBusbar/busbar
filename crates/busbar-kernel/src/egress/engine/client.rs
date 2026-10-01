@@ -222,33 +222,7 @@ async fn send_request(
                         }
                         return Ok(resp);
                     }
-                    Err(mut e) => match e.take_message() {
-                        Some(returned) if reused => {
-                            #[cfg(test)]
-                            inner
-                                .retry_bounces
-                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                            req = returned;
-                            continue;
-                        }
-                        Some(_) => {
-                            // A FRESH conn handed the request back: its failure is real and
-                            // terminal — never retried (legacy's Canceled kind, not connect).
-                            return Err(EngineError::with_source(
-                                ErrorKind::Canceled,
-                                e.into_error(),
-                            ));
-                        }
-                        None => {
-                            // The dispatcher accepted the request (headers may have flushed,
-                            // body may be partially written): the anti-duplicate boundary —
-                            // propagate, never retry.
-                            return Err(EngineError::with_source(
-                                ErrorKind::SendRequest,
-                                e.into_error(),
-                            ));
-                        }
-                    },
+                    Err(e) => req = inner.retry_or_fail(e, reused)?,
                 }
             }
             CheckedOut::H2 {
@@ -266,31 +240,35 @@ async fn send_request(
                         // return path for h2.
                         return Ok(resp);
                     }
-                    Err(mut e) => match e.take_message() {
-                        Some(returned) if reused => {
-                            #[cfg(test)]
-                            inner
-                                .retry_bounces
-                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                            req = returned;
-                            continue;
-                        }
-                        Some(_) => {
-                            return Err(EngineError::with_source(
-                                ErrorKind::Canceled,
-                                e.into_error(),
-                            ));
-                        }
-                        None => {
-                            return Err(EngineError::with_source(
-                                ErrorKind::SendRequest,
-                                e.into_error(),
-                            ));
-                        }
-                    },
+                    Err(e) => req = inner.retry_or_fail(e, reused)?,
                 }
             }
         }
+    }
+}
+
+impl ClientInner {
+    /// A send the conn refused. A REUSED conn that handed the request back was a stale idle conn:
+    /// the request goes round the loop again (`Ok`). A FRESH conn that handed it back failed for
+    /// real and terminally — never retried (legacy's Canceled kind, not connect). No request back
+    /// means the dispatcher accepted it (headers may have flushed, body may be partially written):
+    /// the anti-duplicate boundary — propagate, never retry.
+    fn retry_or_fail(
+        &self,
+        mut e: hyper::client::conn::TrySendError<Request<Full<Bytes>>>,
+        reused: bool,
+    ) -> Result<Request<Full<Bytes>>, EngineError> {
+        let kind = match e.take_message() {
+            Some(returned) if reused => {
+                #[cfg(test)]
+                self.retry_bounces
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return Ok(returned);
+            }
+            Some(_) => ErrorKind::Canceled,
+            None => ErrorKind::SendRequest,
+        };
+        Err(EngineError::with_source(kind, e.into_error()))
     }
 }
 

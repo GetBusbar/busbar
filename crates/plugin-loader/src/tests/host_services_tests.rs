@@ -9,8 +9,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use busbar_contract::abi::host::service::{
-    check_clock_now, check_dest_judge, EntitlementCheckIn, ItemSpan, DEST_INTERNAL, DEST_METADATA,
-    DEST_RESOLVE,
+    check_clock_now, check_dest_judge, check_random_fill, ContentScanIn, EntitlementCheckIn,
+    ItemSpan, RandomFillIn, DEST_INTERNAL, DEST_METADATA, DEST_RESOLVE,
 };
 use busbar_contract::abi::mechanism::check::Filled;
 
@@ -27,6 +27,19 @@ const TICKET: Ticket = Ticket {
 struct Provider {
     judged: AtomicUsize,
     held: Mutex<Vec<Later>>,
+    /// Every caller-scoped call, as `(instance, service, first argument)`.
+    scoped: Mutex<Vec<(String, &'static str, Vec<u8>)>>,
+    /// How many `random.fill`s reached the provider.
+    filled: AtomicUsize,
+}
+
+impl Provider {
+    fn saw(&self, c: &Caller, what: &'static str, arg: &[u8]) {
+        self.scoped
+            .lock()
+            .unwrap()
+            .push((c.instance.to_string(), what, arg.to_vec()));
+    }
 }
 
 impl HostServices for Provider {
@@ -48,6 +61,54 @@ impl HostServices for Provider {
                 Ran::Later
             }
             None => Ran::Now(Stored::refused("no ticket")),
+        }
+    }
+
+    fn records_get(&self, c: &Caller, kind: &str, key: &[u8], later: Later) -> Ran {
+        self.saw(c, "records.get", kind.as_bytes());
+        let mut stored = Stored::ready(svc::FOUND);
+        stored.bytes = [key, b"=v"].concat();
+        stored.spans = vec![ItemSpan {
+            key_off: 0,
+            key_len: key.len() as u32,
+            value_off: key.len() as u32,
+            value_len: 2,
+        }];
+        later(stored);
+        Ran::Later
+    }
+
+    fn records_claim(&self, c: &Caller, kind: &str, _key: &[u8], ttl: u64, _l: Later) -> Ran {
+        self.saw(c, "records.claim", kind.as_bytes());
+        Ran::Now(Stored::ready(if ttl == 1 {
+            svc::CLAIM_WON
+        } else {
+            svc::CLAIM_TAKEN
+        }))
+    }
+
+    fn sign(&self, c: &Caller, data: &[u8]) -> Stored {
+        self.saw(c, "sign", data);
+        Stored::ready(0)
+    }
+
+    fn trust_due(&self, c: &Caller) -> Stored {
+        self.saw(c, "trust.due", b"");
+        Stored::ready(0)
+    }
+
+    fn entitlement_check(&self, c: &Caller, unit: Option<u64>, target: &str) -> Stored {
+        let arg = format!("{unit:?} {target}");
+        self.saw(c, "entitlement.check", arg.as_bytes());
+        Stored::ready(svc::ENTITLED)
+    }
+
+    /// Every fill's bytes differ from the last one's: all `n`, the fill's ordinal.
+    fn random_fill(&self, len: u64) -> Stored {
+        let n = self.filled.fetch_add(1, Ordering::SeqCst) + 1;
+        Stored {
+            bytes: vec![n as u8; len as usize],
+            ..Stored::ready(0)
         }
     }
 }
@@ -86,6 +147,14 @@ fn double() -> Double {
     let wake: &'static InstanceWake = Box::leak(Box::default());
     let dyn_route: Arc<dyn WakeRoute> = route.clone();
     assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
+    assert!(wake
+        .caller
+        .set(Caller {
+            instance: Arc::from("double"),
+            plugin: Arc::from("double-plugin"),
+            kind: busbar_contract::abi::mechanism::KindCode::Plane,
+        })
+        .is_ok());
     Double {
         route,
         ctx: HostCtx {
@@ -192,6 +261,7 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         HOST_SLOTS.entitlement_check,
         HOST_SLOTS.content_scan,
         HOST_SLOTS.hook_call,
+        HOST_SLOTS.random_fill,
     ];
     assert_eq!(slots.len(), SERVICES as usize);
     for (service, f) in (0..SERVICES).zip(slots) {
@@ -205,7 +275,10 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         if may_pend(service) {
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), UNTICKETED, "service {service}");
-        } else if service != op::CLOCK_NOW {
+        } else if !matches!(
+            service,
+            op::CLOCK_NOW | op::SIGN | op::TRUST_DUE | op::ENTITLEMENT_CHECK | op::RANDOM_FILL
+        ) {
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), UNIMPLEMENTED, "service {service}");
         }
@@ -215,20 +288,18 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
 #[test]
 fn every_other_slot_answers_unimplemented_on_a_ticket() {
     let d = double();
-    let i = EntitlementCheckIn {
-        head: head(
-            op::ENTITLEMENT_CHECK,
-            TICKET,
-            0,
-            size_of::<EntitlementCheckIn>(),
-        ),
-        target: AbiStr {
+    let i = ContentScanIn {
+        head: head(op::CONTENT_SCAN, TICKET, 0, size_of::<ContentScanIn>()),
+        content: busbar_contract::abi::mechanism::call::Blob {
             ptr: std::ptr::null(),
             len: 0,
+            fmt: 0,
+            flags: 0,
         },
+        into: bufs(&mut [], &mut []),
     };
     let mut o = blank();
-    let ret = HOST_SLOTS.entitlement_check.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    let ret = HOST_SLOTS.content_scan.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
     assert_eq!(ret.outcome(), Outcome::Refused);
     assert_eq!(error(&o), UNIMPLEMENTED);
 }
@@ -378,4 +449,222 @@ fn a_recall_reads_the_stored_result_without_running_again() {
 
     store.forget(TICKET);
     assert_eq!(store.held(), 0, "a recycled ticket's results are forgotten");
+}
+
+fn text(s: &'static str) -> AbiStr {
+    AbiStr {
+        ptr: s.as_ptr(),
+        len: s.len(),
+    }
+}
+
+fn claim_in(ttl_ms: u64) -> RecordsClaimIn {
+    RecordsClaimIn {
+        head: head(op::RECORDS_CLAIM, TICKET, 0, size_of::<RecordsClaimIn>()),
+        kind: text("approval"),
+        key: text("k1"),
+        ttl_ms,
+    }
+}
+
+fn call_claim(d: &Double, i: &RecordsClaimIn) -> (RawOutcome, ServiceOut) {
+    let mut o = blank();
+    let ret = HOST_SLOTS.records_claim.unwrap()(d.ctx, std::ptr::from_ref(i).cast(), &mut o);
+    (ret, o)
+}
+
+/// A caller-scoped service called from an instance bind stated no caller for is REFUSED and never
+/// reaches the kernel.
+#[test]
+fn a_caller_scoped_service_with_no_caller_is_refused() {
+    let d = double();
+    let wake: &'static InstanceWake = Box::leak(Box::default());
+    let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
+    assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
+    let anon = HostCtx {
+        ptr: std::ptr::from_ref(wake).cast_mut().cast(),
+    };
+    let i = claim_in(1);
+    let mut o = blank();
+    let ret = HOST_SLOTS.records_claim.unwrap()(anon, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NO_CALLER);
+    assert!(d.route.provider.scoped.lock().unwrap().is_empty());
+}
+
+/// A claim with no time to live is refused before it reaches the kernel; there is no default.
+#[test]
+fn a_claim_with_no_time_to_live_is_refused_and_never_runs() {
+    let d = double();
+    let (ret, o) = call_claim(&d, &claim_in(0));
+    assert_eq!(ret.outcome(), Outcome::Refused);
+    assert_eq!(error(&o), NO_TTL);
+    assert!(d.route.provider.scoped.lock().unwrap().is_empty());
+    let (ret, o) = call_claim(&d, &claim_in(1));
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!(o.value, svc::CLAIM_WON);
+    assert!(svc::check_records_claim(&claim_in(1), ret, &o).is_ok());
+}
+
+/// `records.get` hands the kernel the caller bind stated, the kind and the key, and delivers what
+/// it answered into the caller's buffers.
+#[test]
+fn records_get_reaches_the_kernel_as_its_caller_and_delivers_the_record() {
+    let d = double();
+    let mut buf = [0u8; 16];
+    let mut spans = [ItemSpan {
+        key_off: 0,
+        key_len: 0,
+        value_off: 0,
+        value_len: 0,
+    }; 1];
+    let i = RecordsGetIn {
+        head: head(op::RECORDS_GET, TICKET, 0, size_of::<RecordsGetIn>()),
+        kind: text("approval"),
+        key: text("k1"),
+        into: bufs(&mut buf, &mut spans),
+    };
+    let mut o = blank();
+    let ret = HOST_SLOTS.records_get.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    assert_eq!(o.value, svc::FOUND);
+    assert_eq!(&buf[..4], b"k1=v");
+    assert!(svc::check_records_get(&i, ret, &o).is_ok());
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().as_slice(),
+        &[("double".to_string(), "records.get", b"approval".to_vec())]
+    );
+}
+
+/// The services that never pend reach the kernel from a ticketless op, as their caller.
+#[test]
+fn sign_and_trust_due_reach_the_kernel_without_a_ticket() {
+    let d = double();
+    let data = b"payload";
+    let i = SignIn {
+        head: head(op::SIGN, Ticket::NONE, 0, size_of::<SignIn>()),
+        data: busbar_contract::abi::mechanism::call::Blob {
+            ptr: data.as_ptr(),
+            len: data.len(),
+            fmt: 0,
+            flags: 0,
+        },
+        into: bufs(&mut [], &mut []),
+    };
+    let mut o = blank();
+    let ret = HOST_SLOTS.sign.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    let due = TrustDueIn {
+        head: head(op::TRUST_DUE, Ticket::NONE, 0, size_of::<TrustDueIn>()),
+        into: bufs(&mut [], &mut []),
+    };
+    let ret = HOST_SLOTS.trust_due.unwrap()(d.ctx, std::ptr::from_ref(&due).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    let seen = d.route.provider.scoped.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec![
+            ("double".to_string(), "sign", data.to_vec()),
+            ("double".to_string(), "trust.due", Vec::new()),
+        ]
+    );
+}
+
+fn entitlement_in(target: &'static str) -> EntitlementCheckIn {
+    EntitlementCheckIn {
+        head: head(
+            op::ENTITLEMENT_CHECK,
+            Ticket::NONE,
+            0,
+            size_of::<EntitlementCheckIn>(),
+        ),
+        target: text(target),
+    }
+}
+
+#[test]
+fn entitlement_check_reaches_the_kernel_with_the_unit_its_crossing_serves() {
+    let d = double();
+    let ask = |target| {
+        let i = entitlement_in(target);
+        let mut o = blank();
+        let ret =
+            HOST_SLOTS.entitlement_check.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+        (ret.outcome(), o.value)
+    };
+    // Outside any crossing: no unit.
+    assert_eq!(ask("item:one"), (Outcome::Ready, svc::ENTITLED));
+    {
+        let _outer = serving(Some(7));
+        assert_eq!(ask("item:two").0, Outcome::Ready);
+        {
+            // A nested crossing states its own unit, and its end restores the outer one.
+            let _inner = serving(Some(8));
+            ask("item:three");
+        }
+        ask("item:four");
+    }
+    ask("item:five");
+    let seen: Vec<String> = d
+        .route
+        .provider
+        .scoped
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, what, _)| *what == "entitlement.check")
+        .map(|(_, _, arg)| String::from_utf8(arg.clone()).unwrap())
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            "None item:one",
+            "Some(7) item:two",
+            "Some(8) item:three",
+            "Some(7) item:four",
+            "None item:five",
+        ]
+    );
+}
+
+fn fill_in(len: u64, buf: &mut [u8]) -> RandomFillIn {
+    RandomFillIn {
+        head: head(op::RANDOM_FILL, Ticket::NONE, 0, size_of::<RandomFillIn>()),
+        len,
+        into: bufs(buf, &mut []),
+    }
+}
+
+#[test]
+fn random_fill_writes_the_kernels_bytes_and_refuses_outside_its_cap_before_the_kernel() {
+    let d = double();
+    let fill = |len: u64, buf: &mut [u8]| {
+        let i = fill_in(len, buf);
+        let mut o = blank();
+        let ret = HOST_SLOTS.random_fill.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+        (check_random_fill(&i, ret, &o), ret.outcome(), o)
+    };
+    let (mut a, mut b) = ([0u8; 16], [0u8; 16]);
+    let (checked, outcome, o) = fill(16, &mut a[..]);
+    assert_eq!(
+        (checked, outcome, o.len),
+        (Ok(Filled::Written), Outcome::Ready, 16)
+    );
+    let (checked, _, _) = fill(16, &mut b[..]);
+    assert_eq!(checked, Ok(Filled::Written));
+    // Each fill lands in its own buffer.
+    assert_eq!((a, b), ([1; 16], [2; 16]));
+    assert_ne!(a, b, "two fills are never equal");
+    for len in [0, svc::MAX_RANDOM_FILL + 1, u64::MAX] {
+        let mut big = vec![0u8; 2048];
+        let (_, outcome, o) = fill(len, &mut big[..]);
+        assert_eq!(outcome, Outcome::Refused, "len {len}");
+        assert_eq!(error(&o), FILL_OUT_OF_RANGE, "len {len}");
+        assert!(big.iter().all(|x| *x == 0), "nothing written");
+    }
+    assert_eq!(
+        d.route.provider.filled.load(Ordering::SeqCst),
+        2,
+        "a refused fill never reaches the kernel"
+    );
 }

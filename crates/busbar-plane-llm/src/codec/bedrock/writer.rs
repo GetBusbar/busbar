@@ -1530,12 +1530,12 @@ impl BedrockWriter {
         }
         // The Q57 request slots with no Converse form — the same set `dropped_egress_controls`
         // reports for the seam's audit.
-        for control in bedrock_unrepresentable_slots(req) {
-            tracing::warn!(
-                control = control,
-                "dropping a request control on Bedrock egress: Converse has no form for it"
-            );
-        }
+        crate::codec::dialect::warn_dropped(
+            bedrock_unrepresentable_slots(req),
+            &crate::codec::dialect::DropWarn::Control(
+                "dropping a request control on Bedrock egress: Converse has no form for it",
+            ),
+        );
 
         for (key, value) in &req.extra {
             // `inferenceConfig` and `toolConfig` were already consumed above (typed fields overlaid
@@ -1586,33 +1586,21 @@ impl BedrockWriter {
 /// `store`, `safety_identifier`, `prompt_cache_key`, `verbosity`, a `service_tier` Converse has no
 /// `serviceTier.type` word for (Auto, Scale), a non-text output modality (Converse answers in text), and every
 /// provider-hosted tool kind (Converse has no hosted web search / code execution / web fetch).
+const BEDROCK_UNREPRESENTABLE: &[crate::codec::dialect::Control] = &[
+    ("service_tier", |r| {
+        r.service_tier
+            .is_some_and(|t| super::write_bedrock_service_tier(t).is_none())
+    }),
+    crate::codec::dialect::STORE,
+    crate::codec::dialect::SAFETY_IDENTIFIER,
+    crate::codec::dialect::PROMPT_CACHE_KEY,
+    crate::codec::dialect::VERBOSITY,
+    crate::codec::dialect::OUTPUT_MODALITIES,
+];
+
+/// [`BEDROCK_UNREPRESENTABLE`] carried by `req`, then every hosted tool kind it asks for.
 fn bedrock_unrepresentable_slots(req: &crate::codec::ir::IrRequest) -> Vec<&'static str> {
-    let mut dropped = Vec::new();
-    if req
-        .service_tier
-        .is_some_and(|t| super::write_bedrock_service_tier(t).is_none())
-    {
-        dropped.push("service_tier");
-    }
-    if req.store.is_some() {
-        dropped.push("store");
-    }
-    if req.safety_identifier.is_some() {
-        dropped.push("safety_identifier");
-    }
-    if req.prompt_cache_key.is_some() {
-        dropped.push("prompt_cache_key");
-    }
-    if req.verbosity.is_some() {
-        dropped.push("verbosity");
-    }
-    if req
-        .output_modalities
-        .as_ref()
-        .is_some_and(|m| m.iter().any(|m| *m != crate::codec::ir::IrModality::Text))
-    {
-        dropped.push("output_modalities");
-    }
-    dropped.extend(req.hosted_tools.iter().map(|h| h.kind_str()));
-    dropped
+    crate::codec::dialect::carried(req, BEDROCK_UNREPRESENTABLE)
+        .chain(req.hosted_tools.iter().map(|h| h.kind_str()))
+        .collect()
 }

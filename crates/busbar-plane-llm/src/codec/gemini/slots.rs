@@ -2,7 +2,7 @@
 //! (IR-11), `labels` (IR-03), `allowedFunctionNames` (IR-10), `responseModalities` (IR-19), and the
 //! slots Gemini has no form for (IR-04..07), which the writer drops with a warn and reports.
 
-use crate::codec::ir::{IrHostedTool, IrModality, IrRequest, IrTool, IrWebFetch, IrWebSearch};
+use crate::codec::ir::{IrHostedTool, IrModality, IrTool, IrWebFetch, IrWebSearch};
 
 /// Gemini's hosted-tool keys that have a neutral IR kind (IR-11).
 const GEMINI_GOOGLE_SEARCH: &str = "googleSearch";
@@ -230,33 +230,15 @@ pub(super) fn write_gemini_response_modalities(modalities: &[IrModality]) -> ser
 /// The Q57 request slots Gemini has no form for (IR-04 `service_tier`, IR-05 `store`, IR-06
 /// `safety_identifier`/`prompt_cache_key`, IR-07 `verbosity`): the writer drops each one a request
 /// carries with a warn, and the seam audits the drop through `dropped_egress_controls`.
-pub(super) fn gemini_unsupported_slots(req: &IrRequest) -> Vec<&'static str> {
-    let mut dropped = Vec::new();
-    if req.service_tier.is_some() {
-        dropped.push("service_tier");
-    }
-    if req.store.is_some() {
-        dropped.push("store");
-    }
-    if req.safety_identifier.is_some() {
-        dropped.push("safety_identifier");
-    }
-    if req.prompt_cache_key.is_some() {
-        dropped.push("prompt_cache_key");
-    }
-    if req.verbosity.is_some() {
-        dropped.push("verbosity");
-    }
+pub(super) const GEMINI_UNSUPPORTED: &[crate::codec::dialect::Control] = &[
+    crate::codec::dialect::SERVICE_TIER,
+    crate::codec::dialect::STORE,
+    crate::codec::dialect::SAFETY_IDENTIFIER,
+    crate::codec::dialect::PROMPT_CACHE_KEY,
+    crate::codec::dialect::VERBOSITY,
     // OAI-09: an OpenAI custom tool has no Gemini form.
-    if req
-        .hosted_tools
-        .iter()
-        .any(|t| matches!(t, IrHostedTool::Custom(_)))
-    {
-        dropped.push("custom_tool");
-    }
-    dropped
-}
+    crate::codec::dialect::CUSTOM_TOOL,
+];
 
 /// Whether a Gemini model accepts `thinkingBudget: 0` — reasoning switched off (IR-09). Only the
 /// gemini-2.5-flash family (flash and flash-lite, any version or preview suffix) can stop thinking;

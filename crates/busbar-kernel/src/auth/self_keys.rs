@@ -117,24 +117,27 @@ impl DeterministicEd25519Keys {
             principal.id
         )
     }
-}
 
-#[async_trait]
-impl SelfServeKeys for DeterministicEd25519Keys {
-    async fn issue(&self, principal: &Principal, ttl: Duration) -> Result<IssuedKey, String> {
+    /// One self-serve mint (`issue` or `refresh`). FIX: provision the personal budget bucket under
+    /// the resolved team BEFORE minting, so the issued key resolves a real group at admission
+    /// instead of 429 MissingGroup. Idempotent (the leaf already exists on a refresh).
+    async fn mint(
+        &self,
+        principal: &Principal,
+        ttl: Duration,
+        op: crate::governance::SelfMintOp,
+    ) -> Result<IssuedKey, String> {
         let now = busbar_kernel::store::now();
         let exp = now.saturating_add(ttl.as_secs());
-        // FIX: provision the personal budget bucket under the resolved team BEFORE minting, so the
-        // issued key resolves a real group at admission instead of 429 MissingGroup. Idempotent.
         self.provisioner
             .ensure_leaf(&Self::self_group(principal), &self.team)
             .await?;
-        // Offloaded: `issue_self` holds a std::sync::Mutex across synchronous store I/O, so
-        // request-path callers must never invoke it directly on the reactor. See
+        // Offloaded: `issue_self` / `refresh_self` hold a std::sync::Mutex across synchronous
+        // store I/O, so request-path callers must never invoke them directly on the reactor. See
         // `governance::mint_self_offloaded`.
         let (binding, token) = crate::governance::mint_self_offloaded(
             self.gov.clone(),
-            crate::governance::SelfMintOp::Issue,
+            op,
             principal.id.clone(),
             self.allowed_pools.clone(),
             exp,
@@ -149,32 +152,18 @@ impl SelfServeKeys for DeterministicEd25519Keys {
             exp,
         })
     }
+}
+
+#[async_trait]
+impl SelfServeKeys for DeterministicEd25519Keys {
+    async fn issue(&self, principal: &Principal, ttl: Duration) -> Result<IssuedKey, String> {
+        self.mint(principal, ttl, crate::governance::SelfMintOp::Issue)
+            .await
+    }
 
     async fn refresh(&self, principal: &Principal, ttl: Duration) -> Result<IssuedKey, String> {
-        let now = busbar_kernel::store::now();
-        let exp = now.saturating_add(ttl.as_secs());
-        // Same provision-before-mint as `issue` (idempotent; the leaf already exists on a refresh).
-        self.provisioner
-            .ensure_leaf(&Self::self_group(principal), &self.team)
-            .await?;
-        // Offloaded: `refresh_self` holds the same std::sync::Mutex across synchronous store
-        // I/O (write + delete). See `governance::mint_self_offloaded`.
-        let (binding, token) = crate::governance::mint_self_offloaded(
-            self.gov.clone(),
-            crate::governance::SelfMintOp::Refresh,
-            principal.id.clone(),
-            self.allowed_pools.clone(),
-            exp,
-            now,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        Ok(IssuedKey {
-            secret: busbar_contract::redacted::Redacted::new(token),
-            key_id: binding.id,
-            group: binding.group.unwrap_or_default(),
-            exp,
-        })
+        self.mint(principal, ttl, crate::governance::SelfMintOp::Refresh)
+            .await
     }
 }
 
@@ -341,11 +330,7 @@ pub(crate) fn resolve_exchange<'a>(
             // `synthesize_principal_key`'s `granting` scan) — not just the first role that happens
             // to have a binding. A principal can hold multiple roles; an earlier-listed role's
             // binding may be groupless while a later one carries the group that actually admits it.
-            let granting: Vec<&crate::config::RoleBindingCfg> = principal
-                .roles
-                .iter()
-                .filter_map(|r| table.get(r))
-                .collect();
+            let granting = crate::governance::granting_bindings(principal, table);
             if granting.is_empty() {
                 return Err(ExchangeError::Unbound);
             }
@@ -367,21 +352,7 @@ pub(crate) fn resolve_exchange<'a>(
             // union yields `Some(vec![])`, the SAME "no pools" encoding `GovState::issue_self`/
             // `refresh_self` already special-case ("C6 intent carried intact: None = all pools;
             // Some([]) = none"), so the minted key exists but grants no data-plane pool.
-            let mut pool_names: Vec<String> = Vec::new();
-            let mut all_pools = false;
-            for b in &granting {
-                match b.allowed_pools.as_deref() {
-                    None => all_pools = true,
-                    Some(list) => {
-                        for p in list {
-                            if !pool_names.contains(p) {
-                                pool_names.push(p.clone());
-                            }
-                        }
-                    }
-                }
-            }
-            let allowed_pools = if all_pools { None } else { Some(pool_names) };
+            let allowed_pools = crate::governance::pool_union(&granting);
             Ok((principal, team, allowed_pools))
         }
         // No identity established (all-Pass default, or an explicit Reject) → 401.

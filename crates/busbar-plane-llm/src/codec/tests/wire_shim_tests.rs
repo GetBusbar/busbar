@@ -10,7 +10,7 @@
 //! REFUSED an unparseable value.
 //!
 //! Item 133 (`92227db57`, "a present-but-unreadable billed count REFUSES, never ledgers 0") already
-//! moved the fix to the ROOT: every dialect reader (`billed`/`billed_opt` over
+//! moved the fix to the ROOT: every dialect reader (`read_count`/`read_count_opt` over
 //! `usage_count::billed_count`) now refuses BEFORE a [`TokenUsage`] is ever constructed, so by the
 //! time a value reaches `tier_usage()`, `None` can only mean "legitimately absent" — the refusal
 //! never survives to become a collapsed `None` here. That invariant is what makes `tier_usage()`'s
@@ -56,7 +56,7 @@ fn reported_tiers_are_priced() {
     );
 }
 
-/// A cache tier the provider genuinely never reported (`None`, per `billed_opt`'s absent/null
+/// A cache tier the provider genuinely never reported (`None`, per `read_count_opt`'s absent/null
 /// contract) is OMITTED from the sparse map — not billed, not present as a zero entry either. This
 /// is the legitimate-absence case `tier_usage()` must keep distinguishable from a refusal: a refusal
 /// never reaches this function at all (see `unreadable_top_level_cache_count_refuses_before_reaching_tier_usage`
@@ -119,7 +119,7 @@ fn sparse_zero_and_absent_cache_tiers_are_both_omitted() {
 
 /// END TO END, through a real dialect reader this crate owns (not cohere/openai_responses): a
 /// present-but-unparseable top-level `cache_read_input_tokens`/`cache_creation_input_tokens` REFUSES
-/// the buffered response outright (item 133's path — `billed_opt` over `usage_count::billed_count`)
+/// the buffered response outright (item 133's path — `read_count_opt` over `usage_count::billed_count`)
 /// and never reaches `TokenUsage`, let alone `tier_usage()`. This is the proof that the `None`
 /// `tier_usage()` sees can only ever mean "legitimately absent": the alternative cause never survives
 /// to become a `TokenUsage` at all. Nothing in this crate's existing suites drove an unreadable

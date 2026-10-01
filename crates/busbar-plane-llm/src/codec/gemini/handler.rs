@@ -9,7 +9,6 @@ use crate::codec::ir::embeddings::{
 };
 use busbar_contract::codec::{CodecError, IngressReject, OperationHandler, RequestHandler};
 use busbar_contract::codec::{EgressCtx, WireBody};
-use busbar_contract::ir::handle::IrHandle;
 use busbar_contract::media::{base64_encode, MediaBlob, MediaPayload};
 use busbar_contract::operation::OpVerb;
 use busbar_contract::SlabBytes;
@@ -139,36 +138,15 @@ impl RequestHandler for GeminiRequestHandler {
 
 /// Gemini transcription — audio understood via `models/{id}:generateContent` with inline audio data.
 /// Egress-only (openai→gemini): audio IR → generateContent request; candidates text → transcription.
+///
+/// gemini `generateContent`-with-audio wire → IR (gemini as INGRESS): `inline_data` part is the
+/// audio, a text part (if any) is the instruction/prompt. Model rides the PATH.
 struct GeminiTranscription;
 
-impl OperationHandler for GeminiTranscription {
-    /// This protocol's error envelope, shared by every operation it serves: the same
-    /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(
-        &self,
-        status: u16,
-        body: &[u8],
-    ) -> busbar_contract::upstream::RawUpstreamError {
-        super::super::proto_codec::protocol_error("gemini", status, body)
-    }
-    /// gemini `generateContent`-with-audio wire → IR (gemini as INGRESS): `inline_data` part is the
-    /// audio, a text part (if any) is the instruction/prompt. Model rides the PATH.
-    fn read_request(
-        &self,
-        body: &[u8],
-        _content_type: &str,
-    ) -> Result<Box<dyn IrHandle>, IngressReject> {
-        Ok(Box::new(super::super::leaf_handles::TranscriptionReqHandle(
-            read_transcription_request(body, _content_type)?,
-        )) as Box<dyn IrHandle>)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
-        Ok(
-            Box::new(super::super::leaf_handles::TranscriptionRespHandle(
-                read_transcription_response(wire)?,
-            )) as Box<dyn IrHandle>,
-        )
-    }
+leaf_op! {
+    GeminiTranscription: "gemini",
+    TranscriptionReqHandle = read_transcription_request,
+    TranscriptionRespHandle = read_transcription_response;
 }
 
 /// The two synthetic directive texts the transcription writer prepends. Kept as named constants so the
@@ -255,33 +233,14 @@ pub fn write_transcription_response(r: &crate::codec::ir::audio::TranscriptionRe
 
 /// Gemini speech (TTS) — `models/{id}:generateContent` with `responseModalities: [AUDIO]`.
 /// Gemini returns inline base64 PCM; a raw-binary body (mock/other) is wrapped verbatim.
+///
+/// gemini TTS wire → IR (gemini as INGRESS): text part is the input; voice from speechConfig.
 struct GeminiSpeech;
 
-impl OperationHandler for GeminiSpeech {
-    /// This protocol's error envelope, shared by every operation it serves: the same
-    /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(
-        &self,
-        status: u16,
-        body: &[u8],
-    ) -> busbar_contract::upstream::RawUpstreamError {
-        super::super::proto_codec::protocol_error("gemini", status, body)
-    }
-    /// gemini TTS wire → IR (gemini as INGRESS): text part is the input; voice from speechConfig.
-    fn read_request(
-        &self,
-        body: &[u8],
-        _content_type: &str,
-    ) -> Result<Box<dyn IrHandle>, IngressReject> {
-        Ok(Box::new(super::super::leaf_handles::SpeechReqHandle(
-            read_speech_request(body, _content_type)?,
-        )) as Box<dyn IrHandle>)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
-        Ok(Box::new(super::super::leaf_handles::SpeechRespHandle(
-            read_speech_response(wire)?,
-        )) as Box<dyn IrHandle>)
-    }
+leaf_op! {
+    GeminiSpeech: "gemini",
+    SpeechReqHandle = read_speech_request,
+    SpeechRespHandle = read_speech_response;
 }
 
 /// IR → gemini TTS request wire (the body of [`GeminiSpeech::write_request`], moved behind the
@@ -346,18 +305,14 @@ pub fn write_speech_response(r: &SpeechResp) -> WireBody {
 }
 
 /// Gemini/Imagen image generation (`models/{id}:predict`). prompt in → `predictions[].bytesBase64Encoded` out.
+///
+/// Imagen `:predict` wire → IR (gemini as INGRESS): `instances[].prompt` + `parameters`.
 struct GeminiImage;
 
-impl OperationHandler for GeminiImage {
-    /// This protocol's error envelope, shared by every operation it serves: the same
-    /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(
-        &self,
-        status: u16,
-        body: &[u8],
-    ) -> busbar_contract::upstream::RawUpstreamError {
-        super::super::proto_codec::protocol_error("gemini", status, body)
-    }
+leaf_op! {
+    GeminiImage: "gemini",
+    ImageReqHandle = read_image_request,
+    ImageRespHandle = read_image_response;
     // Buffer the same-protocol non-stream 2xx body so the default `extract_usage` can read the
     // response's usage and bill the virtual key's TPM/spend. Token-metered image models expose a
     // `usageMetadata` object (billed as tokens); Imagen `:predict` per-image responses have none, so
@@ -365,21 +320,6 @@ impl OperationHandler for GeminiImage {
     // cross-protocol seam — mirrors the OpenAI image cell.
     fn taps_usage(&self) -> bool {
         true
-    }
-    /// Imagen `:predict` wire → IR (gemini as INGRESS): `instances[].prompt` + `parameters`.
-    fn read_request(
-        &self,
-        body: &[u8],
-        _content_type: &str,
-    ) -> Result<Box<dyn IrHandle>, IngressReject> {
-        Ok(Box::new(super::super::leaf_handles::ImageReqHandle(
-            read_image_request(body, _content_type)?,
-        )) as Box<dyn IrHandle>)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
-        Ok(Box::new(super::super::leaf_handles::ImageRespHandle(
-            read_image_response(wire)?,
-        )) as Box<dyn IrHandle>)
     }
 }
 
@@ -450,42 +390,22 @@ pub fn write_image_response(r: &crate::codec::ir::image::ImageResp) -> WireBody 
 }
 
 /// Gemini embeddings (`models/{id}:embedContent`). Single content in, `embedding.values` out.
+// Gemini `:embedContent` embeds a SINGLE input. v1.5.4-restored: a cross-protocol request
+// carrying N > 1 inputs (e.g. an OpenAI-family embeddings batch) is NOT rejected — the egress
+// writer embeds the FIRST input, warns how many were dropped, and returns HTTP 200 with one
+// vector (the silent-degrade v1.5.4 shipped). Representability is the leaf handle's default
+// (`EmbeddingsReqHandle`), so no override is needed now the enum dissolved.
 struct GeminiEmbeddings;
 
-impl OperationHandler for GeminiEmbeddings {
-    /// This protocol's error envelope, shared by every operation it serves: the same
-    /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(
-        &self,
-        status: u16,
-        body: &[u8],
-    ) -> busbar_contract::upstream::RawUpstreamError {
-        super::super::proto_codec::protocol_error("gemini", status, body)
-    }
+leaf_op! {
+    GeminiEmbeddings: "gemini",
+    EmbeddingsReqHandle = read_embeddings_request,
+    EmbeddingsRespHandle = read_embeddings_response;
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
     // `extract_usage` can read the `usage` object and bill the virtual key's TPM/spend
     // (the cross-protocol path already bills; this closes the same-protocol gap).
     fn taps_usage(&self) -> bool {
         true
-    }
-    // Gemini `:embedContent` embeds a SINGLE input. v1.5.4-restored: a cross-protocol request
-    // carrying N > 1 inputs (e.g. an OpenAI-family embeddings batch) is NOT rejected — the egress
-    // writer embeds the FIRST input, warns how many were dropped, and returns HTTP 200 with one
-    // vector (the silent-degrade v1.5.4 shipped). Representability is the leaf handle's default
-    // (`EmbeddingsReqHandle`), so no override is needed now the enum dissolved.
-    fn read_request(
-        &self,
-        body: &[u8],
-        _content_type: &str,
-    ) -> Result<Box<dyn IrHandle>, IngressReject> {
-        Ok(Box::new(super::super::leaf_handles::EmbeddingsReqHandle(
-            read_embeddings_request(body, _content_type)?,
-        )) as Box<dyn IrHandle>)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
-        Ok(Box::new(super::super::leaf_handles::EmbeddingsRespHandle(
-            read_embeddings_response(wire)?,
-        )) as Box<dyn IrHandle>)
     }
 }
 

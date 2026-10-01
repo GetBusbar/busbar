@@ -22,19 +22,26 @@
 //! 3. The unpriced-destination gate, which refuses with the invalid-request shape rather than a
 //!    quota shape, because an unpriced arbitrary name is a bad request and not an exhausted budget.
 //!
-//! ## The network guard is here, not in a transport
+//! ## The network guard, and what it covers today
 //!
 //! Where a unit may go is this unit's question, and the address a destination resolves to is part
-//! of it. A transport that resolved a name itself was a transport that had to remember to guard it,
-//! and every new carrier was a new place to forget. [`net::check_destination`] runs once, before
-//! any dial, for every carrier there will ever be: the metadata denylist over the configured base
-//! AND over the paths joined to it, then exactly one resolution, then a judgement of every answered
-//! address, then a pin. What a transport receives is an address that has already been looked at.
+//! of it. [`net::check_destination`] states the whole discipline once: the metadata denylist over
+//! the configured base AND over the paths joined to it, then exactly one resolution, then a
+//! judgement of every answered address, then a pin.
 //!
-//! It is reached through [`KindFacts::net_guard_passes`], which the dialled kinds' own rules ask
-//! before anything is sealed — so the guard is part of the answer this unit produces rather than a
-//! library beside it that a caller may or may not have called. A guard nothing on the sealed path
-//! reaches is a guard that is not running, however carefully it is written.
+//! It is NOT one guard pinned for every carrier. No production path calls
+//! [`net::check_destination`], and no production [`KindFacts`] answers
+//! [`KindFacts::net_guard_passes`]. A provider URL is checked when the configuration is applied
+//! ([`net::ssrf_blocked_host`], the 1.5.5 validators), and checked again when it is dialled: the
+//! pooled egress client resolves the name once per new connection, judges every address it answered
+//! with by the same rule ([`net::DialDenylist`], over [`net::Denylist::refuses_address`]), and
+//! connects only to an address that passed, keeping the name for TLS and the `Host` header. That
+//! rule refuses cloud-metadata and operator-blocked addresses and admits private and loopback ones,
+//! as the configuration-time check does, so a name that resolves to a private address still works
+//! and a name that later resolves to a metadata address is refused. The fetches the host makes on
+//! an operator's or a caller's behalf resolve-then-pin through [`net::resolve_and_pin`] or
+//! [`net::pin_answer`] under their own [`net::GuardPolicy`], and the `dest.judge` host service asks
+//! [`net::check_structure`].
 //!
 //! ## The exclusion rule
 //!
@@ -85,8 +92,8 @@ pub use lane::{
     survives_prewalk_filter, BreakerQuery, BreakerView, LaneCandidate, LaneTable, Unavailable,
 };
 pub use net::{
-    check_destination, check_destination_facts, AddressRefusal, Denylist, GuardPolicy,
-    NetworkRefusal, PinnedTarget, Resolver,
+    check_destination, check_destination_facts, AddressRefusal, Denylist, DialDenylist, DialTable,
+    GuardPolicy, NetworkRefusal, PinnedTarget, Resolver,
 };
 pub use order::{
     pick, reconcile_order, sticky_position, OrderVerdict, OrderingHook, Pick, PickOutcome,

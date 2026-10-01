@@ -53,6 +53,43 @@ pub mod chat_handle;
 /// themselves onto the peer dialect via the `leaf_codec` `(op,proto)` dispatchers.
 pub mod leaf_handles;
 
+/// ONE LEAF OPERATION'S `OperationHandler`, written once for every dialect.
+///
+/// Every leaf cell answers the same three things the same way: its error envelope is its
+/// protocol's (the same vocabulary the chat cell reports, read from the same upstream), and its
+/// reads wrap the dialect's own `read_<op>_request`/`read_<op>_response` in the op's leaf handle.
+/// Only the dialect label and the two reads differ per cell; anything else a cell says (a usage
+/// tap, an egress content type) follows the `;` verbatim.
+macro_rules! leaf_op {
+    ($op:ident: $dialect:literal, $req:ident = $read_req:ident, $resp:ident = $read_resp:ident; $($extra:tt)*) => {
+        impl busbar_contract::codec::OperationHandler for $op {
+            fn extract_error(
+                &self,
+                status: u16,
+                body: &[u8],
+            ) -> busbar_contract::upstream::RawUpstreamError {
+                $crate::codec::proto_codec::protocol_error($dialect, status, body)
+            }
+            fn read_request(
+                &self,
+                body: &[u8],
+                content_type: &str,
+            ) -> Result<Box<dyn busbar_contract::ir::handle::IrHandle>, busbar_contract::codec::IngressReject>
+            {
+                Ok(Box::new($crate::codec::leaf_handles::$req($read_req(body, content_type)?)))
+            }
+            fn read_response(
+                &self,
+                wire: &[u8],
+            ) -> Result<Box<dyn busbar_contract::ir::handle::IrHandle>, busbar_contract::codec::CodecError>
+            {
+                Ok(Box::new($crate::codec::leaf_handles::$resp($read_resp(wire)?)))
+            }
+            $($extra)*
+        }
+    };
+}
+
 pub mod anthropic;
 pub mod bedrock;
 pub mod cohere;

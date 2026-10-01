@@ -4,7 +4,7 @@ impl ProtocolWriter for GeminiWriter {
     /// The Q57 request slots Gemini has no form for (IR-04..07); `write_request` drops each with a
     /// warn and the seam audits it from here.
     fn dropped_egress_controls(&self, req: &crate::codec::ir::IrRequest) -> Vec<&'static str> {
-        gemini_unsupported_slots(req)
+        crate::codec::dialect::carried(req, GEMINI_UNSUPPORTED).collect()
     }
 
     fn probe_request(&self) -> serde_json::Value {
@@ -709,12 +709,12 @@ impl ProtocolWriter for GeminiWriter {
         }
         // The Q57 slots with no Gemini form (IR-04..07): drop with a warn; the seam audits them
         // through `dropped_egress_controls`.
-        for control in gemini_unsupported_slots(req) {
-            tracing::warn!(
-                control,
-                "dropping a request control on Gemini egress: generateContent has no form for it"
-            );
-        }
+        crate::codec::dialect::warn_dropped(
+            crate::codec::dialect::carried(req, GEMINI_UNSUPPORTED),
+            &crate::codec::dialect::DropWarn::Control(
+                "dropping a request control on Gemini egress: generateContent has no form for it",
+            ),
+        );
 
         // Merge extra fields (may override, but that's expected behavior). `generationConfig` AND
         // `toolConfig` are SKIPPED here: their raw `extra` copies were already folded into the

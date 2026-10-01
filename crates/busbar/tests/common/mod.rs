@@ -24,6 +24,7 @@
 #![allow(dead_code)]
 
 pub mod boot;
+pub mod coverage;
 pub mod plugins;
 
 use std::path::{Path, PathBuf};

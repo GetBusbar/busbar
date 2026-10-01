@@ -93,7 +93,7 @@ const UPSTREAMS: &[Upstream] = &[Upstream {
     host: "openai.invalid",
     dialect: "openai",
     model: "gpt-4o-mini",
-    caps: busbar_plane_llm::LaneCaps::NONE,
+    caps: busbar_contract::ir::egress_prep::LaneCaps::NONE,
 }];
 
 /// A request in the dialect the upstream speaks.

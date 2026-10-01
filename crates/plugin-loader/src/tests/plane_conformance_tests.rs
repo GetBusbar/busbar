@@ -1403,6 +1403,7 @@ mod door {
 
     fn bind() -> Bind {
         Bind {
+            instance: Arc::from("the-instance"),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: Adopter::unwatched(),

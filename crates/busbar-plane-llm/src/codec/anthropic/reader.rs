@@ -1,20 +1,15 @@
 use super::*;
+use crate::codec::dialect::ir_parse_error;
 
 impl ProtocolReader for AnthropicReader {
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
         // An unreadable billed count yields NO recovered usage, never a zero one (#42): the caller
         // then bills its conservative floor estimate for the truncated body instead of $0.
-        let u = Some(&v);
         Some(
-            crate::codec::ir::IrUsage {
-                input_tokens: billed(u, "input_tokens").ok()?,
-                output_tokens: billed(u, "output_tokens").ok()?,
-                cache_creation_input_tokens: billed_opt(u, "cache_creation_input_tokens").ok()?,
-                cache_read_input_tokens: billed_opt(u, "cache_read_input_tokens").ok()?,
-                detail: crate::codec::ir::IrUsageDetail::default(),
-            }
-            .to_token_usage(),
+            crate::codec::usage_count::read_usage(COUNT_LABEL, Some(&v), &USAGE[..4])
+                .ok()?
+                .to_token_usage(),
         )
     }
 
@@ -203,11 +198,7 @@ impl ProtocolReader for AnthropicReader {
         &self,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrRequest, IrError> {
-        let obj = body.as_object().ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        })?;
+        let obj = body.as_object().ok_or_else(ir_parse_error)?;
 
         let mut extra = serde_json::Map::new();
         let mut system_blocks: Vec<crate::codec::ir::IrBlock> = Vec::new();
@@ -255,11 +246,7 @@ impl ProtocolReader for AnthropicReader {
             // (string/number/object where an array is required) is a genuine structural violation.
             // Reject it with a 400 rather than silently coercing to an empty conversation (matching
             // the strict openai_chat/cohere readers). An ABSENT `messages` stays lenient above.
-            let messages_arr = messages_val.as_array().ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })?;
+            let messages_arr = messages_val.as_array().ok_or_else(ir_parse_error)?;
             for msg_val in messages_arr {
                 let msg = read_message(msg_val)?;
                 if msg.role == crate::codec::ir::IrRole::System {
@@ -295,11 +282,7 @@ impl ProtocolReader for AnthropicReader {
             // A PRESENT `tools` that is not an array is a malformed request — reject it (mirroring the
             // `messages` type-check above) rather than coercing to empty, which would forward a
             // tool-less request upstream at HTTP 200 and silently strip the caller's tools.
-            let tools_arr = tools_val.as_array().ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })?;
+            let tools_arr = tools_val.as_array().ok_or_else(ir_parse_error)?;
             for tool_val in tools_arr {
                 match read_hosted_tool(tool_val) {
                     Some(hosted) => hosted_tools.push(hosted),
@@ -507,26 +490,7 @@ impl ProtocolReader for AnthropicReader {
                 let usage = match data
                     .get("message")
                     .and_then(|m| m.get("usage"))
-                    .map(|u| -> Result<IrUsage, IrError> {
-                        Ok(IrUsage {
-                            input_tokens: billed(Some(u), "input_tokens")?,
-                            output_tokens: billed(Some(u), "output_tokens")?,
-                            cache_creation_input_tokens: billed_opt(
-                                Some(u),
-                                "cache_creation_input_tokens",
-                            )?,
-                            cache_read_input_tokens: billed_opt(
-                                Some(u),
-                                "cache_read_input_tokens",
-                            )?,
-                            // `message_start.message.usage` carries the same `cache_creation` tier
-                            // object the buffered response does — and this is the frame that
-                            // reports cache writes on an Anthropic stream, so defaulting it away
-                            // lost the whole tier split on every streamed request.
-                            detail: read_cache_tier_detail(Some(u))
-                                .map_err(refuse_unreadable_count)?,
-                        })
-                    })
+                    .map(|u| read_anthropic_usage(Some(u)))
                     .transpose()
                 {
                     Ok(usage) => usage,
@@ -655,21 +619,7 @@ impl ProtocolReader for AnthropicReader {
                 // An ABSENT count still zero-defaults (above); a present-but-UNREADABLE one refuses
                 // (#42) — the stream ends in an error rather than billing the count as zero.
                 let usage_val = data.get("usage");
-                let usage = match (|| -> Result<IrUsage, IrError> {
-                    Ok(IrUsage {
-                        input_tokens: billed(usage_val, "input_tokens")?,
-                        output_tokens: billed(usage_val, "output_tokens")?,
-                        cache_creation_input_tokens: billed_opt(
-                            usage_val,
-                            "cache_creation_input_tokens",
-                        )?,
-                        cache_read_input_tokens: billed_opt(usage_val, "cache_read_input_tokens")?,
-                        // `message_delta.usage` repeats the `cache_creation` tier object when the
-                        // turn wrote cache; read it for the same reason `message_start` does.
-                        detail: read_cache_tier_detail(usage_val)
-                            .map_err(refuse_unreadable_count)?,
-                    })
-                })() {
+                let usage = match read_anthropic_usage(usage_val) {
                     Ok(usage) => usage,
                     Err(refusal) => return Some(IrStreamEvent::Error(refusal)),
                 };
@@ -795,31 +745,17 @@ impl ProtocolReader for AnthropicReader {
         &self,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrResponse, IrError> {
-        let obj = body.as_object().ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.into()),
-            retry_after: None,
-        })?;
+        let obj = body.as_object().ok_or_else(ir_parse_error)?;
 
         // Parse role (should be "assistant" for responses)
         let role_str = obj.get("role").and_then(|r| r.as_str()).unwrap_or("");
         let role = match role_str {
             "assistant" => crate::codec::ir::IrRole::Assistant,
-            _ => {
-                return Err(IrError {
-                    class: StatusClass::ClientError,
-                    provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.into()),
-                    retry_after: None,
-                })
-            }
+            _ => return Err(ir_parse_error()),
         };
 
         // Parse content blocks
-        let content_val = obj.get("content").ok_or(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.into()),
-            retry_after: None,
-        })?;
+        let content_val = obj.get("content").ok_or_else(ir_parse_error)?;
         let mut content: Vec<crate::codec::ir::IrBlock> = Vec::new();
         if let Some(arr) = content_val.as_array() {
             for block_val in arr {
@@ -872,18 +808,10 @@ impl ProtocolReader for AnthropicReader {
         // absent each counter defaults to zero (`Some` → parse, `None` → 0). A counter that is
         // PRESENT and unreadable is not absent: it refuses (#42) instead of ledgering zero.
         let usage_val = obj.get("usage");
-        let usage = crate::codec::ir::IrUsage {
-            input_tokens: billed(usage_val, "input_tokens")?,
-            output_tokens: billed(usage_val, "output_tokens")?,
-            cache_creation_input_tokens: billed_opt(usage_val, "cache_creation_input_tokens")?,
-            cache_read_input_tokens: billed_opt(usage_val, "cache_read_input_tokens")?,
-            // The 5m/1h cache-creation TIER SPLIT. These are SLICES of
-            // `cache_creation_input_tokens`, never additions to it — but the two tiers are PRICED
-            // DIFFERENTLY, so collapsing them into the one total leaves a bill that reconciles in
-            // aggregate and cannot be reconciled per line. Shared with the two STREAMING sites so a
-            // stream does not silently lose a split the buffered path reports.
-            detail: read_cache_tier_detail(usage_val).map_err(refuse_unreadable_count)?,
-        };
+        // The 5m/1h cache-creation TIER SPLIT rides the same table as the totals (see `USAGE`):
+        // the kernel counts the two tiers separately, so collapsing them would leave a total that
+        // reconciles in aggregate and cannot be reconciled per line.
+        let usage = read_anthropic_usage(usage_val)?;
 
         // Treat an empty `model` string as absent (`None`). The writer emits `model: ""` as the
         // mandatory-field fallback when the source carried no model (see `write_response`); mapping
@@ -929,53 +857,6 @@ impl ProtocolReader for AnthropicReader {
                 obj.get("stop_details"),
             ),
         })
-    }
-}
-
-// ── BILLED COUNTS (#42) ──────────────────────────────────────────────────────────────────────────
-
-/// Read one BILLED count off a usage object under `usage_count::billed_count`'s contract: an absent
-/// usage object, an absent field or a JSON `null` is 0 (exactly as before), a readable count is the
-/// count (through the crate's one seam, `read_count_u64`), and a present-but-UNREADABLE count
-/// REFUSES. The lenient read this replaces defaulted an unreadable count to zero, so a stringified
-/// `"1500"` was ledgered as no work at all.
-///
-/// The read itself IS `usage_count::billed_count` — this adapter only lifts its absent-usage-object
-/// case (zero) and maps its refusal onto this reader's error shape, so the contract and the bounded
-/// spelling live in one place and cannot drift per dialect.
-fn billed(usage: Option<&serde_json::Value>, field: &'static str) -> Result<u64, IrError> {
-    usage.map_or(Ok(0), |u| {
-        crate::codec::usage_count::billed_count(u, field).map_err(refuse_unreadable_count)
-    })
-}
-
-/// [`billed`] for a count whose ABSENCE the IR keeps distinct from zero (a cache tier): absent or
-/// `null` is `None`, readable is `Some`, unreadable REFUSES.
-fn billed_opt(
-    usage: Option<&serde_json::Value>,
-    field: &'static str,
-) -> Result<Option<u64>, IrError> {
-    match usage.and_then(|u| u.get(field)) {
-        None => Ok(None),
-        Some(v) if v.is_null() => Ok(None),
-        Some(_) => billed(usage, field).map(Some),
-    }
-}
-
-/// The refusal a present-but-unreadable billed count becomes — the same `ir_parse` shape as every
-/// other response this reader cannot read, with the field and the BOUNDED spelling `billed_count`
-/// quoted (cut on a character boundary there, so a hostile multi-byte spelling cannot panic the cut).
-fn refuse_unreadable_count(unreadable: crate::codec::usage_count::UnreadableCount) -> IrError {
-    tracing::warn!(
-        protocol = "anthropic",
-        field = unreadable.field,
-        spelling = %unreadable.spelling,
-        "usage count is present but unreadable; refusing rather than billing it as zero (#42)"
-    );
-    IrError {
-        class: StatusClass::ClientError,
-        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.into()),
-        retry_after: None,
     }
 }
 

@@ -55,11 +55,14 @@ pub(crate) trait WakeRoute: Send + Sync {
     }
 }
 
-/// What an instance's `HostCtx` points to: the dispatcher its tickets live in. Leaked per
-/// instance, so a late wake never dangles; a wake before any dispatcher is bound is dropped.
+/// What an instance's `HostCtx` points to: the dispatcher its tickets live in, and who the instance
+/// is to the host services. Leaked per instance, so a late wake never dangles; a wake before any
+/// dispatcher is bound is dropped.
 #[derive(Debug, Default)]
 pub(crate) struct InstanceWake {
     pub(crate) route: OnceLock<Weak<dyn WakeRoute>>,
+    /// The instance as the host services see it, stated once at bind.
+    pub(crate) caller: OnceLock<busbar_contract::services::Caller>,
 }
 
 /// THE HOST'S WAKE (`abi::mechanism::ticket::WakeFn`). Any thread; never blocks on the plugin;

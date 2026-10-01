@@ -4,16 +4,13 @@
 //! Reading Anthropic content blocks, messages and tool definitions into the IR.
 
 use super::*;
+use crate::codec::dialect::ir_parse_error;
 
 // Helper functions for IR mapping (used by read_request/write_request)
 pub(super) fn read_block(
     block_val: &serde_json::Value,
 ) -> Result<crate::codec::ir::IrBlock, IrError> {
-    let obj = block_val.as_object().ok_or(IrError {
-        class: StatusClass::ClientError,
-        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-        retry_after: None,
-    })?;
+    let obj = block_val.as_object().ok_or_else(ir_parse_error)?;
 
     let block_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -74,11 +71,7 @@ pub(super) fn read_block(
                 .get("id")
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
-                .ok_or(IrError {
-                    class: StatusClass::ClientError,
-                    provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                    retry_after: None,
-                })?
+                .ok_or_else(ir_parse_error)?
                 .to_string();
             let name = obj
                 .get("name")
@@ -126,11 +119,7 @@ pub(super) fn read_block(
             })
         }
         "image" => {
-            let source = obj.get("source").ok_or(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })?;
+            let source = obj.get("source").ok_or_else(ir_parse_error)?;
             // `cache_control` sits on the OUTER image block object (a sibling of `source`), not on
             // the source — read it once and attach to whichever source shape we produce.
             let cache_control = read_cache_control(obj.get("cache_control"))?;
@@ -188,11 +177,7 @@ pub(super) fn read_block(
                     detail: None,
                 })
             } else {
-                Err(IrError {
-                    class: StatusClass::ClientError,
-                    provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                    retry_after: None,
-                })
+                Err(ir_parse_error())
             }
         }
         // A native `document` block — the PDF/CSV/text attachment the model reads. Until
@@ -440,24 +425,14 @@ pub(super) fn read_block(
 pub(super) fn read_message(
     msg_val: &serde_json::Value,
 ) -> Result<crate::codec::ir::IrMessage, IrError> {
-    let obj = msg_val.as_object().ok_or(IrError {
-        class: StatusClass::ClientError,
-        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-        retry_after: None,
-    })?;
+    let obj = msg_val.as_object().ok_or_else(ir_parse_error)?;
 
     let role_str = obj.get("role").and_then(|v| v.as_str()).unwrap_or("");
     let role = match role_str {
         "user" => crate::codec::ir::IrRole::User,
         "assistant" => crate::codec::ir::IrRole::Assistant,
         "system" => crate::codec::ir::IrRole::System,
-        _ => {
-            return Err(IrError {
-                class: StatusClass::ClientError,
-                provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-                retry_after: None,
-            })
-        }
+        _ => return Err(ir_parse_error()),
     };
 
     let content_val = obj.get("content").unwrap_or(&serde_json::Value::Null);
@@ -466,11 +441,7 @@ pub(super) fn read_message(
     // object is a genuine TYPE violation the lenient `as_str().unwrap_or("")` fallback below would
     // silently swallow into an empty Text block — reject it with a 400 instead.
     if !content_val.is_null() && !content_val.is_string() && !content_val.is_array() {
-        return Err(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        });
+        return Err(ir_parse_error());
     }
     let content = if let Some(arr) = content_val.as_array() {
         arr.iter().map(read_block).collect::<Result<_, _>>()?
@@ -487,11 +458,7 @@ pub(super) fn read_message(
 }
 
 pub(super) fn read_tool(tool_val: &serde_json::Value) -> Result<crate::codec::ir::IrTool, IrError> {
-    let obj = tool_val.as_object().ok_or(IrError {
-        class: StatusClass::ClientError,
-        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-        retry_after: None,
-    })?;
+    let obj = tool_val.as_object().ok_or_else(ir_parse_error)?;
 
     let name = obj
         .get("name")

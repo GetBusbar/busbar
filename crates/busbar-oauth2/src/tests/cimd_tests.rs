@@ -133,6 +133,25 @@ fn a_document_without_usable_redirect_uris_is_refused() {
     materialized(&doc).expect_err("RFC 6749 §3.1.2: a redirection endpoint carries no fragment");
 }
 
+/// A redirect URI with a `\` or a userinfo names two hosts — the one a `/`-splitting reader shows on
+/// the consent screen and the one the browser sends the code to — so the document is refused. RED on
+/// the check that refused only a fragment and whitespace. A `@` in the path is not a userinfo.
+#[test]
+fn a_redirect_uri_with_a_backslash_or_a_userinfo_is_refused() {
+    for uri in [
+        "https://evil.example\\@trusted.example/cb",
+        "https://trusted.example@evil.example/cb",
+        "https://u:p@trusted.example/cb",
+    ] {
+        let mut doc = document();
+        doc["redirect_uris"] = serde_json::json!([uri]);
+        materialized(&doc).expect_err(uri);
+    }
+    let mut doc = document();
+    doc["redirect_uris"] = serde_json::json!(["http://127.0.0.1:9999/cb/@me"]);
+    materialized(&doc).expect("a `@` in the path is not a userinfo");
+}
+
 /// What is a metadata-document `client_id` at all: HTTPS, parseable, fragment-free. Everything
 /// else stays an ordinary opaque identifier and never reaches the fetch.
 #[test]

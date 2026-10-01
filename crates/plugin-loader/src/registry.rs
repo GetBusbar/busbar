@@ -690,9 +690,10 @@ impl PluginRegistry {
 
     /// Open EVERY loadable transport, in scan order, each through the lane its image speaks: a
     /// library with the memory-ABI door ([`busbar_contract::abi::mechanism::DOOR_SYMBOL`]) is
-    /// admitted through the one dispatcher's door validation and bound with `bind`; any other through
-    /// the HOT decl ([`Self::open_transport`]'s lane). Each image is staged and opened once. The
-    /// first that will not load fails the whole set, naming it.
+    /// admitted through the one dispatcher's door validation and bound with `bind`, labelled with
+    /// its own plugin name (each opened door is its own instance to the host services); any other
+    /// through the HOT decl ([`Self::open_transport`]'s lane). Each image is staged and opened once.
+    /// The first that will not load fails the whole set, naming it.
     ///
     /// # Errors
     ///
@@ -713,7 +714,10 @@ impl PluginRegistry {
             match load_staged::<crate::dispatch::kinds::transport::Transport>(
                 lib,
                 staged,
-                bind.clone(),
+                crate::dispatch::Bind {
+                    instance: std::sync::Arc::from(name.as_str()),
+                    ..bind.clone()
+                },
             )
             .map_err(|e| format!("transport plugin '{name}' refused at its door: {e}"))?
             {

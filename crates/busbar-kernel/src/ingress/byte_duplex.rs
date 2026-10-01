@@ -377,6 +377,9 @@ fn offer_frame<P: DuplexPlane>(
             shared
                 .queued
                 .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            tracing::debug!(
+                "duplex: the session's handler cap and frame queue are both full and the peer is still writing; ending the session"
+            );
             Offered::Overrun
         }
     }
@@ -590,9 +593,6 @@ where
             continue; // a blank line is not a frame
         }
         if offer_frame(&shared, &plane, &frames, std::mem::take(&mut buf)) == Offered::Overrun {
-            tracing::debug!(
-                "duplex: the session's handler cap and frame queue are both full and the peer is still writing; ending the session"
-            );
             break;
         }
     }
@@ -624,9 +624,6 @@ where
     // message-duplex analogue of EOF.
     while let Some(frame) = stream.next().await {
         if offer_frame(&shared, &plane, &frames, frame) == Offered::Overrun {
-            tracing::debug!(
-                "duplex: the session's handler cap and frame queue are both full and the peer is still writing; ending the session"
-            );
             break;
         }
     }

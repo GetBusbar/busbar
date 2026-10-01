@@ -94,6 +94,7 @@ pub mod plane_decisions;
 pub mod plane_node;
 pub mod policy;
 pub mod registry;
+pub mod serve;
 pub mod transports;
 #[cfg(feature = "root-admin")]
 pub mod units_admin;

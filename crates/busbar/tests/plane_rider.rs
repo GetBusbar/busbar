@@ -78,6 +78,7 @@ fn ways() -> Vec<Way> {
 /// Load and open the test plane through `way` on `dispatcher`.
 fn opened(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
     let bind = Bind {
+        instance: Arc::from("the-instance"),
         max_inflight_cap: 8,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher.adopter(),

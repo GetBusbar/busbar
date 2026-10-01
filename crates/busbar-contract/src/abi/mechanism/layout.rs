@@ -1233,11 +1233,12 @@ mod host_service {
     pin!(EntitlementCheckIn, 40, 8, head = 0, target = 24);
     pin!(ContentScanIn, 80, 8, head = 0, content = 24, into = 48);
     pin!(HookCallIn, 72, 8, head = 0, stage = 24, _reserved = 28, view = 32, into = 40);
-    pin!(HostSlots, 152, 8, size = 0, slots = 4, clock_now = 8, records_get = 16,
+    pin!(RandomFillIn, 64, 8, head = 0, len = 24, into = 32);
+    pin!(HostSlots, 160, 8, size = 0, slots = 4, clock_now = 8, records_get = 16,
         records_list = 24, records_claim = 32, dest_judge = 40, sign = 48, unit_nest = 56,
         work_open = 64, work_find = 72, work_settle = 80, work_resume = 88, trust_sight = 96,
         trust_due = 104, verify_lookup = 112, verify_store = 120, entitlement_check = 128,
-        content_scan = 136, hook_call = 144);
+        content_scan = 136, hook_call = 144, random_fill = 152);
 }
 
 // ── THE PLANE KIND (abi/plane/) ─────────────────────────────────────────────────────────────

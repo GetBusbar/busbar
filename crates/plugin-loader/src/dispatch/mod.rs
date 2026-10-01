@@ -103,6 +103,18 @@ pub trait Kind: Send + Sync + 'static {
         Ok(())
     }
 
+    /// The unit a crossing of `slot` serves, read from its `in` (`in_size` bytes, leading with
+    /// its head): the kernel-minted unit key, so a host service called inside the crossing answers
+    /// for that unit. `None` = the op serves no unit.
+    fn unit_of(
+        slot: u32,
+        input: *const busbar_contract::abi::mechanism::call::InHead,
+        in_size: usize,
+    ) -> Option<u64> {
+        let _ = (slot, input, in_size);
+        None
+    }
+
     /// Whether a FAILED answer (that passed [`Kind::check`]) is SHORT: a host buffer too small,
     /// its `needed_*` above the capacity given. The caller re-calls once with bigger buffers; a
     /// second short answer on the re-call is FAULT (the short-buffer rule on `OutHead`).

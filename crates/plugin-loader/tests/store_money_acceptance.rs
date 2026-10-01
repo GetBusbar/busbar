@@ -869,6 +869,7 @@ mod v3 {
 
     fn bind_to(d: &Dispatcher) -> Bind {
         Bind {
+            instance: Arc::from("the-instance"),
             max_inflight_cap: 1024,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),

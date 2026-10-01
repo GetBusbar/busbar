@@ -201,45 +201,17 @@ pub(super) fn write_anthropic_service_tier(
 /// Anthropic): each one a request carries is dropped by `write_request` with a warn and reported
 /// from `dropped_egress_controls`. `metadata` is the free-form map (Anthropic's `metadata` holds
 /// only `user_id`, which carries as `user`); output modalities other than text have no form.
-pub(super) fn anthropic_unrepresentable_slots(
-    req: &crate::codec::ir::IrRequest,
-) -> Vec<&'static str> {
-    let mut dropped = Vec::new();
-    if req.metadata.is_some() {
-        dropped.push("metadata");
-    }
-    if req
-        .service_tier
-        .is_some_and(|t| write_anthropic_service_tier(t).is_none())
-    {
-        dropped.push("service_tier");
-    }
-    if req.store.is_some() {
-        dropped.push("store");
-    }
-    if req.safety_identifier.is_some() {
-        dropped.push("safety_identifier");
-    }
-    if req.prompt_cache_key.is_some() {
-        dropped.push("prompt_cache_key");
-    }
-    if req.verbosity.is_some() {
-        dropped.push("verbosity");
-    }
-    if req
-        .output_modalities
-        .as_ref()
-        .is_some_and(|m| m.iter().any(|x| *x != crate::codec::ir::IrModality::Text))
-    {
-        dropped.push("output_modalities");
-    }
+pub(super) const ANTHROPIC_UNREPRESENTABLE: &[crate::codec::dialect::Control] = &[
+    crate::codec::dialect::METADATA,
+    ("service_tier", |r| {
+        r.service_tier
+            .is_some_and(|t| write_anthropic_service_tier(t).is_none())
+    }),
+    crate::codec::dialect::STORE,
+    crate::codec::dialect::SAFETY_IDENTIFIER,
+    crate::codec::dialect::PROMPT_CACHE_KEY,
+    crate::codec::dialect::VERBOSITY,
+    crate::codec::dialect::OUTPUT_MODALITIES,
     // OAI-09: an OpenAI custom tool has no Anthropic form.
-    if req
-        .hosted_tools
-        .iter()
-        .any(|t| matches!(t, crate::codec::ir::IrHostedTool::Custom(_)))
-    {
-        dropped.push("custom_tool");
-    }
-    dropped
-}
+    crate::codec::dialect::CUSTOM_TOOL,
+];

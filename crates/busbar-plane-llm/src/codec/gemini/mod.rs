@@ -346,11 +346,22 @@ const GEMINI_USAGE_ADDITIVE_TERMS: &[&str] = &[
 /// [`crate::codec::ir::UsageIdentityNote::identity`] so callers branch on a constant, not on prose.
 const GEMINI_USAGE_IDENTITY: &str = "gemini.usageMetadata";
 
+/// The sum of [`GEMINI_USAGE_ADDITIVE_TERMS`] on one `usageMetadata` object (absent terms are zero).
+/// `None` only for an unreadable term, which the usage table has already refused (#42).
+fn additive_sum(u: &serde_json::Value) -> Option<u64> {
+    GEMINI_USAGE_ADDITIVE_TERMS
+        .iter()
+        .try_fold(0u64, |sum, k| {
+            crate::codec::usage_count::billed_count(u, k).map(|n| sum.saturating_add(n))
+        })
+        .ok()
+}
+
 /// Cross-check what busbar will BILL for this turn against the total Google itself stated, and
 /// report a disagreement instead of hiding one.
 ///
-/// `billed` is `IrUsage::billable_tokens` for the usage just decoded. Since 1.6.0 busbar bills every
-/// term in [`GEMINI_USAGE_ADDITIVE_TERMS`], so that figure IS the sum of the modelled terms and this
+/// `summed_total` is the sum of every term in [`GEMINI_USAGE_ADDITIVE_TERMS`] — what the usage table
+/// folds into the turn's totals since 1.6.0 — so that figure IS the sum of the modelled terms and this
 /// check is a DATA-DRIVEN DISCREPANCY METRIC over `totalTokenCount`: it can only fire when Google's
 /// stated total cannot be reached from the table — a counter this dialect does not model at all, or
 /// a term whose meaning has changed. Either way the answer is a new recording and a table entry, not
@@ -367,13 +378,14 @@ const GEMINI_USAGE_IDENTITY: &str = "gemini.usageMetadata";
 /// The buckets stay exactly as Google sent them; the shortfall travels beside them.
 fn gemini_usage_identity_note(
     u: Option<&serde_json::Value>,
-    billed: u64,
 ) -> Option<crate::codec::ir::UsageIdentityNote> {
     let u = u?;
     // ABSENT is not ZERO. A `usageMetadata` that states no total states nothing to check against;
     // treating a missing total as 0 would report every ordinary streaming frame as a discrepancy.
     let reported_total = u.get(FIELD_TOTAL_TOKEN_COUNT).and_then(read_count_u64)?;
-    let summed_total = billed;
+    // What busbar counts for this turn: every additive term of the table below, which is exactly
+    // what the usage table folds into `input_tokens + cache_read_input_tokens + output_tokens`.
+    let summed_total = additive_sum(u)?;
     if summed_total == reported_total {
         return None;
     }
@@ -389,12 +401,7 @@ fn gemini_usage_identity_note(
     //
     // Read through `billed_count`, the same seam the billed terms were read through: the caller has
     // already refused an unreadable term (#42), so every term here is a count or absent (zero).
-    let wire_sum: u64 = GEMINI_USAGE_ADDITIVE_TERMS
-        .iter()
-        .try_fold(0u64, |sum, k| {
-            crate::codec::usage_count::billed_count(u, k).map(|n| sum.saturating_add(n))
-        })
-        .ok()?;
+    let wire_sum = summed_total;
     let unmodelled_term = wire_sum != reported_total;
     tracing::warn!(
         identity = GEMINI_USAGE_IDENTITY,
@@ -991,24 +998,6 @@ fn gemini_rfc3339_to_epoch(s: &str) -> Option<u64> {
     let days = era * 146_097 + doe - 719_468;
     let epoch = days * 86_400 + hour * 3600 + minute * 60 + second - offset_secs;
     u64::try_from(epoch).ok()
-}
-
-/// The `AUDIO` entry of a Gemini `promptTokensDetails` / `candidatesTokensDetails` modality list
-/// (`[{"modality":"AUDIO","tokenCount":N}, …]`) — the audio slice the IR carries as
-/// `input_audio_tokens` / `output_audio_tokens` (IR audit GEM-12). Attribution only: both IR fields
-/// are slices of totals `billable_tokens` never reads. `None` when the list has no AUDIO entry.
-fn gemini_modality_count(
-    usage: Option<&serde_json::Value>,
-    list: &str,
-    modality: &str,
-) -> Option<u64> {
-    usage?
-        .get(list)?
-        .as_array()?
-        .iter()
-        .find(|e| e.get("modality").and_then(|m| m.as_str()) == Some(modality))
-        .and_then(|e| e.get("tokenCount"))
-        .and_then(read_count_u64)
 }
 
 /// Gemini's `logprobsResult` — two PARALLEL arrays, `chosenCandidates[i]` (the generated token at

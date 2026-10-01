@@ -459,6 +459,9 @@ pub mod declared;
 /// THE TRUST KEYS A PLANE DECLARES, parsed and judged by the kernel for every plane alike.
 pub mod section;
 
+/// THE KERNEL'S TRUST STATE per instance and counterparty, behind `trust.sight` and `trust.due`.
+pub mod book;
+
 // THE ORDERED REQUEST VALIDATOR — *"is this still what the operator approved?"* Relocated in
 // Phase-B B1. The `GovState`-facing standing-permission half (`Standing`/`Snapshot`/`Lapsed`) stays
 // in core and re-exports these; see `busbar-core`'s `trust::validate`.

@@ -335,10 +335,9 @@ pub const REFUSAL_GATE: u32 = 1;
 /// kernel keeps).
 pub const MARK_GATE_REJECTED: u32 = 1;
 
-/// [`RecordWrite::op`]: put.
+/// [`RecordWrite::op`]: put, the one record write there is. A record is never deleted by a write:
+/// a code past it is FAULT, never a write the kernel drops.
 pub const RECORD_PUT: u32 = 1;
-/// [`RecordWrite::op`]: delete.
-pub const RECORD_DELETE: u32 = 2;
 
 /// [`AdminRoute::flags`]: a public route. [`slot::SERVE`] serves it to an unauthenticated caller;
 /// the arrival gate and the audit still run, it meters nothing, and a signature it carries is
@@ -695,16 +694,21 @@ pub struct UnitCount {
 
 /// One record write, a destination fact the kernel applies on the record seam; its key and value
 /// bytes are in the call's `arena`.
+///
+/// The kernel batches record writes to the store, and a write is DURABLE before the op that carried
+/// it completes: the instance reads its own write at once, and a write the store refuses fails the
+/// op. What must be decided once and for all (a replay refusal, an idempotency key, an approval
+/// redemption) is a `records.claim`, a one-time put the store answers itself.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct RecordWrite {
     /// Index into [`PlaneTail::record_kinds`].
     pub kind: u32,
-    /// [`RECORD_PUT`] | [`RECORD_DELETE`].
+    /// [`RECORD_PUT`].
     pub op: u32,
     /// The key.
     pub key: Span,
-    /// The value (empty for a delete).
+    /// The value.
     pub value: Span,
 }
 

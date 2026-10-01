@@ -9,7 +9,6 @@ use crate::codec::ir::moderation::{
 };
 use busbar_contract::codec::{CodecError, IngressReject, OperationHandler, RequestHandler};
 use busbar_contract::codec::{EgressCtx, WireBody};
-use busbar_contract::ir::handle::IrHandle;
 use busbar_contract::operation::OpVerb;
 use busbar_contract::SlabBytes;
 use bytes::Bytes;
@@ -245,16 +244,10 @@ fn parse_multipart_segment(seg: &[u8]) -> Option<MultipartField<'_>> {
 /// into the operation codec, which is a trait-signature change.
 struct OpenAiTranscription;
 
-impl OperationHandler for OpenAiTranscription {
-    /// This protocol's error envelope, shared by every operation it serves: the same
-    /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(
-        &self,
-        status: u16,
-        body: &[u8],
-    ) -> busbar_contract::upstream::RawUpstreamError {
-        super::super::proto_codec::protocol_error("openai", status, body)
-    }
+leaf_op! {
+    OpenAiTranscription: "openai",
+    TranscriptionReqHandle = read_transcription_request,
+    TranscriptionRespHandle = read_transcription_response;
     fn egress_request_content_type(&self) -> &'static str {
         // write_request rebuilds the multipart form around `transcription_boundary()`, which is
         // drawn from entropy rather than hard-coded. Both sides read the same value, so the header
@@ -262,23 +255,6 @@ impl OperationHandler for OpenAiTranscription {
         static CT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
         CT.get_or_init(|| format!("multipart/form-data; boundary={}", transcription_boundary()))
             .as_str()
-    }
-
-    fn read_request(
-        &self,
-        body: &[u8],
-        content_type: &str,
-    ) -> Result<Box<dyn IrHandle>, IngressReject> {
-        Ok(Box::new(super::super::leaf_handles::TranscriptionReqHandle(
-            read_transcription_request(body, content_type)?,
-        )) as Box<dyn IrHandle>)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
-        Ok(
-            Box::new(super::super::leaf_handles::TranscriptionRespHandle(
-                read_transcription_response(wire)?,
-            )) as Box<dyn IrHandle>,
-        )
     }
 }
 
@@ -534,30 +510,10 @@ fn parse_transcription_usage(wire: &[u8], u: &Value) -> Result<Option<Billing>, 
 /// Speech (TTS): `{input}` IN → binary audio OUT.
 struct OpenAiSpeech;
 
-impl OperationHandler for OpenAiSpeech {
-    /// This protocol's error envelope, shared by every operation it serves: the same
-    /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(
-        &self,
-        status: u16,
-        body: &[u8],
-    ) -> busbar_contract::upstream::RawUpstreamError {
-        super::super::proto_codec::protocol_error("openai", status, body)
-    }
-    fn read_request(
-        &self,
-        body: &[u8],
-        _content_type: &str,
-    ) -> Result<Box<dyn IrHandle>, IngressReject> {
-        Ok(Box::new(super::super::leaf_handles::SpeechReqHandle(
-            read_speech_request(body, _content_type)?,
-        )) as Box<dyn IrHandle>)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
-        Ok(Box::new(super::super::leaf_handles::SpeechRespHandle(
-            read_speech_response(wire)?,
-        )) as Box<dyn IrHandle>)
-    }
+leaf_op! {
+    OpenAiSpeech: "openai",
+    SpeechReqHandle = read_speech_request,
+    SpeechRespHandle = read_speech_response;
 }
 
 /// IR → openai speech (TTS) request wire (the body of [`OpenAiSpeech::write_request`], moved behind
@@ -598,40 +554,19 @@ use crate::codec::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
 
+///
+/// openai embeddings wire → IR (used when openai is the INGRESS of a cross-protocol call).
 struct OpenAiEmbeddings;
 
-impl OperationHandler for OpenAiEmbeddings {
-    /// This protocol's error envelope, shared by every operation it serves: the same
-    /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(
-        &self,
-        status: u16,
-        body: &[u8],
-    ) -> busbar_contract::upstream::RawUpstreamError {
-        super::super::proto_codec::protocol_error("openai", status, body)
-    }
+leaf_op! {
+    OpenAiEmbeddings: "openai",
+    EmbeddingsReqHandle = read_embeddings_request,
+    EmbeddingsRespHandle = read_embeddings_response;
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
     // `extract_usage` can read the `usage` object and bill the virtual key's TPM/spend
     // (the cross-protocol path already bills; this closes the same-protocol gap).
     fn taps_usage(&self) -> bool {
         true
-    }
-    /// openai embeddings wire → IR (used when openai is the INGRESS of a cross-protocol call).
-    fn read_request(
-        &self,
-        body: &[u8],
-        _content_type: &str,
-    ) -> Result<Box<dyn IrHandle>, IngressReject> {
-        Ok(Box::new(super::super::leaf_handles::EmbeddingsReqHandle(
-            read_embeddings_request(body, _content_type)?,
-        )) as Box<dyn IrHandle>)
-    }
-
-    /// openai embeddings response wire → IR (used when openai is the EGRESS).
-    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
-        Ok(Box::new(super::super::leaf_handles::EmbeddingsRespHandle(
-            read_embeddings_response(wire)?,
-        )) as Box<dyn IrHandle>)
     }
 }
 
@@ -708,16 +643,10 @@ use busbar_contract::media::ImageOutput;
 
 struct OpenAiImage;
 
-impl OperationHandler for OpenAiImage {
-    /// This protocol's error envelope, shared by every operation it serves: the same
-    /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(
-        &self,
-        status: u16,
-        body: &[u8],
-    ) -> busbar_contract::upstream::RawUpstreamError {
-        super::super::proto_codec::protocol_error("openai", status, body)
-    }
+leaf_op! {
+    OpenAiImage: "openai",
+    ImageReqHandle = read_image_request,
+    ImageRespHandle = read_image_response;
     // Token-metered for gpt-image-1: buffer the same-protocol non-stream 2xx body so the default
     // `extract_usage` can read the `usage` object and bill the virtual key's TPM/spend. The
     // cross-protocol path already bills via `translate_response`; this closes the same-protocol gap
@@ -725,20 +654,6 @@ impl OperationHandler for OpenAiImage {
     // and the request still meters once — unchanged for them.
     fn taps_usage(&self) -> bool {
         true
-    }
-    fn read_request(
-        &self,
-        body: &[u8],
-        _content_type: &str,
-    ) -> Result<Box<dyn IrHandle>, IngressReject> {
-        Ok(Box::new(super::super::leaf_handles::ImageReqHandle(
-            read_image_request(body, _content_type)?,
-        )) as Box<dyn IrHandle>)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
-        Ok(Box::new(super::super::leaf_handles::ImageRespHandle(
-            read_image_response(wire)?,
-        )) as Box<dyn IrHandle>)
     }
 }
 
@@ -835,31 +750,10 @@ pub fn write_image_response(r: &ImageResp) -> WireBody {
 
 struct OpenAiModeration;
 
-impl OperationHandler for OpenAiModeration {
-    /// This protocol's error envelope, shared by every operation it serves: the same
-    /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(
-        &self,
-        status: u16,
-        body: &[u8],
-    ) -> busbar_contract::upstream::RawUpstreamError {
-        super::super::proto_codec::protocol_error("openai", status, body)
-    }
-    fn read_request(
-        &self,
-        body: &[u8],
-        _content_type: &str,
-    ) -> Result<Box<dyn IrHandle>, IngressReject> {
-        Ok(Box::new(super::super::leaf_handles::ModerationReqHandle(
-            read_moderation_request(body, _content_type)?,
-        )) as Box<dyn IrHandle>)
-    }
-
-    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
-        Ok(Box::new(super::super::leaf_handles::ModerationRespHandle(
-            read_moderation_response(wire)?,
-        )) as Box<dyn IrHandle>)
-    }
+leaf_op! {
+    OpenAiModeration: "openai",
+    ModerationReqHandle = read_moderation_request,
+    ModerationRespHandle = read_moderation_response;
 }
 
 /// IR → openai moderation request wire (the body of [`OpenAiModeration::write_request`], moved behind

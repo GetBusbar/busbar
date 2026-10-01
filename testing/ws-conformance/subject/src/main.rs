@@ -50,6 +50,7 @@ impl TransportConfigView for SubjectCfg {
 #[tokio::main]
 async fn main() {
     let tcp: Arc<dyn Transport> = doors::build(
+        busbar_transport_tcp::linked::KEY,
         busbar_transport_tcp::linked::door,
         None,
         &busbar_contract::transport::TransportSettings::default(),

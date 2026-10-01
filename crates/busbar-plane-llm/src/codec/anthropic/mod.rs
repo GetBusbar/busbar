@@ -33,6 +33,7 @@ mod citations;
 mod ids;
 mod slots;
 mod usage;
+use crate::codec::dialect::ir_parse_error;
 use blocks::*;
 use citations::*;
 use ids::*;
@@ -40,7 +41,9 @@ pub use ids::{request_id_from_entropy, synth_anthropic_request_id};
 use slots::*;
 use usage::*;
 
-use crate::codec::ir::{IrBlockMeta, IrDelta, IrStreamEvent, IrUsage};
+#[cfg(test)]
+use crate::codec::ir::IrUsage;
+use crate::codec::ir::{IrBlockMeta, IrDelta, IrStreamEvent};
 use busbar_contract::http::StatusCode;
 use busbar_contract::protocol::*;
 #[cfg(test)]
@@ -52,6 +55,7 @@ use busbar_contract::upstream::StatusClass;
 #[allow(unused_imports)]
 // used standalone; redundant with the `busbar_contract::protocol::*` glob when netted into core
 use super::proto_codec::*;
+use busbar_contract::ir::egress_prep::LaneCaps;
 // The wire-codec surface, named EXPLICITLY so it resolves to THIS crate's own `proto_codec` and not to
 // the `busbar_contract::protocol::*` glob above — which, in a `test-support` build of busbar-core (this
 // crate's dev-dependency), re-exports a SECOND copy of these same source items through core's `#[path]`
@@ -671,11 +675,7 @@ fn read_cache_control(
             kind: crate::codec::ir::CacheKind::Ephemeral,
         })),
         None => Ok(None),
-        Some(_) => Err(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        }),
+        Some(_) => Err(ir_parse_error()),
     }
 }
 

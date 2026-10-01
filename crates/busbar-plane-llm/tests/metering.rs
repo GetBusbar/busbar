@@ -25,7 +25,7 @@ const UPSTREAMS: &[Upstream] = &[Upstream {
     host: "openai.invalid",
     dialect: "openai",
     model: "gpt-4o-mini",
-    caps: busbar_plane_llm::LaneCaps::NONE,
+    caps: busbar_contract::ir::egress_prep::LaneCaps::NONE,
 }];
 
 /// The request that opens the unit.
@@ -242,7 +242,7 @@ const ADDITIVE_UPSTREAMS: &[Upstream] = &[Upstream {
     host: "anthropic.invalid",
     dialect: "anthropic",
     model: "claude",
-    caps: busbar_plane_llm::LaneCaps::NONE,
+    caps: busbar_contract::ir::egress_prep::LaneCaps::NONE,
 }];
 
 /// Every class the plane DECLARES is a class the metering step emits.
