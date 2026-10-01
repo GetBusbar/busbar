@@ -304,17 +304,12 @@ fn validate_config_command() -> i32 {
         );
         return 1;
     }
-    // THE DESTINATION GUARD, as boot builds it: a bad `advanced.allow_destinations` entry, or a
-    // provider target the guard refuses by name, fails here as it fails the boot.
-    let refused = match busbar_core_connector::process::dest_judge(&cfg.destinations()) {
-        Ok(dest) => crate::root::connector::preflight(&cfg, dest.guard()),
-        Err(e) => vec![e],
-    };
-    if !refused.is_empty() {
+    // THE DESTINATION GUARD, as boot builds it: a bad `advanced.allow_destinations` entry fails
+    // here as it fails the boot.
+    if let Err(e) = busbar_core_connector::process::dest_judge(&cfg.destinations()) {
         eprintln!(
-            "[error] {}: config validation failed:\n  - {}",
-            diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
-            refused.join("\n  - ")
+            "[error] {}: config validation failed:\n  - {e}",
+            diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
         );
         return 1;
     }

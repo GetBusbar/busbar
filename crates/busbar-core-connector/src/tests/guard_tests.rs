@@ -5,7 +5,12 @@
 
 use super::*;
 
-const C: u32 = EGRESS_PROVIDER;
+use busbar_contract::abi::host::conn::connector::{
+    EGRESS_LOOPBACK_ALLOWED, EGRESS_OPERATOR_INFRASTRUCTURE, EGRESS_PROVIDER,
+};
+
+/// A class whose destinations come from request data: the private refusal holds.
+const C: u32 = EGRESS_DEFAULT;
 
 fn guard(block: bool, allow: &[&str]) -> Guard {
     Guard::from_config(&Destinations {
@@ -245,15 +250,31 @@ fn a_bad_entry_is_refused_naming_the_key() {
     assert!(refused("10.0.0.1/8").contains("past its prefix length"));
 }
 
-/// Q7 (owner-open) is one table: every class refuses a private address under the ruling as
-/// written.
+/// OWNER Q7 (operator infrastructure EXEMPT) is one table: a destination from request data (the
+/// default class, open-web) is refused private; a destination the operator configured (provider,
+/// operator infrastructure, loopback-allowed) is trusted, private and loopback included, while
+/// cloud metadata, a configured name rebinding to it included, stays refused in every class.
 #[test]
-fn every_class_refuses_private_under_the_default_policy() {
+fn private_is_refused_for_request_data_and_trusted_for_configured_destinations() {
     let g = Guard::default();
     for class in PRIVATE_REFUSED_IN {
         assert_eq!(
             verdict(g.judge_answer("db.test", &[ip("10.0.0.5")], *class)),
             Some(DEST_INTERNAL)
+        );
+    }
+    for class in [
+        EGRESS_PROVIDER,
+        EGRESS_OPERATOR_INFRASTRUCTURE,
+        EGRESS_LOOPBACK_ALLOWED,
+    ] {
+        assert_eq!(g.judge_answer("db.test", &[ip("10.0.0.5")], class), Ok(()));
+        assert_eq!(g.judge_name("localhost", class), Ok(None));
+        assert_eq!(g.judge_name("127.0.0.1", class), Ok(Some(ip("127.0.0.1"))));
+        assert_eq!(
+            verdict(g.judge_answer("db.test", &[ip("169.254.169.254")], class)),
+            Some(DEST_METADATA),
+            "a configured name rebinding to metadata, class {class}"
         );
     }
 }

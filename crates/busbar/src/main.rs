@@ -823,10 +823,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     if busbar_kernel::host_services::install_dest_judge(dest.clone()).is_err() {
         die("the destination guard was installed twice; the process has one".to_owned());
     }
-    let refused = root::connector::preflight(&cfg, dest.guard());
-    if !refused.is_empty() {
-        die(format!("config errors:\n  - {}", refused.join("\n  - ")));
-    }
     // THE SERVE PATH'S ONE COMPOSITION: the kernel's host services go into the dispatcher built at
     // boot, before any plugin is bound (`root::serve`).
     root::serve::compose(dest.clone(), &late_services);

@@ -875,8 +875,6 @@ fn write_configs(dir: &Path) {
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
-advanced:
-  allow_destinations: ["127.0.0.1"]
 admin_require_mtls: false
 identity-providers:
   admin-tokens:

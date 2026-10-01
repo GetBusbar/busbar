@@ -50,8 +50,6 @@ fn a_tls_material_refusal_names_the_listener_once() {
         format!(
             r#"listen: "127.0.0.1:{port}"
 admin_listen: "127.0.0.1:0"
-advanced:
-  allow_destinations: ["127.0.0.1"]
 tls:
   cert: {{ env: BOOT_TLS_ONCE_CERT }}
   key: {{ env: BOOT_TLS_ONCE_KEY }}

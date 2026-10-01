@@ -86,36 +86,6 @@ pub fn dest_judge(cfg: &RootCfg) -> Arc<GuardJudge> {
     })
 }
 
-/// THE BOOT AND `--validate` CHECK OF THE STATICALLY CONFIGURED TARGETS (OWNER Q2, ARCHITECT
-/// RULING DEST-GUARD): every provider's `base_url` and `token_url` host asked of the ONE guard's
-/// name arm, with no resolution (`--validate` stays network-free). A literal private address or a
-/// `localhost` name refused by default is a configuration error here, at boot; a name that only
-/// resolves to one is refused when dialled. Metadata targets keep their 1.5.5 sentences from the
-/// configuration check, so only the guard's internal-address refusals are added here.
-#[must_use]
-pub fn preflight(cfg: &RootCfg, guard: &Guard) -> Vec<String> {
-    let mut providers: Vec<_> = cfg.providers.iter().collect();
-    providers.sort_by(|a, b| a.0.cmp(b.0));
-    let mut refused = Vec::new();
-    for (name, p) in providers {
-        let targets = [
-            ("base_url", Some(&p.base_url)),
-            ("token_url", p.token_url.as_ref()),
-        ];
-        for (key, url) in targets {
-            let Some(host) = url.and_then(|u| url_host(u)) else {
-                continue;
-            };
-            if let Err(r) = guard.judge_name(&host, EGRESS_PROVIDER) {
-                if r.verdict == DEST_INTERNAL {
-                    refused.push(format!("provider '{name}' {key}: {r}"));
-                }
-            }
-        }
-    }
-    refused
-}
-
 /// THE BOOT PATH'S STEP: build the one Connector over every linked transport door, its dials
 /// judged by `dest` (the deployment's one guard) with the node's own ports read off its
 /// `listens`, and install it. A connector that cannot be built refuses the boot, as an unsealed

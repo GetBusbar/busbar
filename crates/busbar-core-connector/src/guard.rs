@@ -16,8 +16,10 @@
 //! Per address, in order: the allowlist (`advanced.allow_destinations`, and the 1.5.5 carve-outs
 //! that still load) admits; then the extra refusals (`security.blocked_metadata_hosts`); then cloud
 //! metadata is refused, whatever `block_private_addresses` says; then, where
-//! `block_private_addresses` holds, every private address (`busbar_contract::net::ip_is_internal`:
-//! RFC 1918, loopback, link-local, CGNAT, unique-local, unspecified and the rest of that list).
+//! `block_private_addresses` holds and the destination came from request data or the network
+//! ([`PRIVATE_REFUSED_IN`]; a destination the operator configured is trusted, owner Q7), every
+//! private address (`busbar_contract::net::ip_is_internal`: RFC 1918, loopback, link-local, CGNAT,
+//! unique-local, unspecified and the rest of that list).
 //! A HOST allowlist entry never admits a metadata answer (owner Q8): it is how internal DNS is
 //! admitted, and it must not become a way to reach IMDS by a rebinding answer. An IP or CIDR entry
 //! that covers a metadata address does admit it, because it names it.
@@ -26,10 +28,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use busbar_contract::abi::host::conn::connector::{
-    EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
-    EGRESS_PROVIDER,
-};
+use busbar_contract::abi::host::conn::connector::{EGRESS_DEFAULT, EGRESS_OPEN_WEB};
 use busbar_contract::abi::host::service::{
     DEST_INTERNAL, DEST_METADATA, DEST_NO_ADDRESSES, DEST_OBFUSCATED,
 };
@@ -39,18 +38,16 @@ use busbar_contract::net::{
 };
 use busbar_kernel::config::Destinations;
 
-/// THE DEFAULT POLICY, ONE TABLE (owner Q7, OPEN): the egress classes whose dials the private
-/// address refusal holds for. The ruling as written: every class, operator infrastructure
-/// (databases, Vault, LDAP on a private network) included, so such a target must be allowlisted.
-/// The owner's answer is a one-line change here (drop `EGRESS_OPERATOR_INFRASTRUCTURE` to exempt
-/// it). Cloud metadata is refused in every class whatever this table says.
-pub const PRIVATE_REFUSED_IN: &[u32] = &[
-    EGRESS_DEFAULT,
-    EGRESS_PROVIDER,
-    EGRESS_OPERATOR_INFRASTRUCTURE,
-    EGRESS_OPEN_WEB,
-    EGRESS_LOOPBACK_ALLOWED,
-];
+/// THE DEFAULT POLICY, ONE TABLE (OWNER ruling Q7, 2026-10-02: operator infrastructure EXEMPT):
+/// the egress classes whose dials the private address refusal holds for. A destination the
+/// operator writes into config is trusted (provider/upstream URLs, export sinks, store, secret and
+/// auth plugin connections: the `provider` and `operator-infrastructure` classes, a
+/// `loopback-allowed` need, and any need whose target its config names, see
+/// [`crate::Connector`]); the refusal holds for destinations that come from request data or the
+/// network (a caller- or plane-named target: the default class, `open-web`). Cloud metadata is
+/// refused in every class whatever this table says, a configured NAME rebinding to it included,
+/// unless an IP/CIDR allowlist entry names it.
+pub const PRIVATE_REFUSED_IN: &[u32] = &[EGRESS_DEFAULT, EGRESS_OPEN_WEB];
 
 /// The config key an allowlist refusal at boot names.
 pub const ALLOW_KEY: &str = "advanced.allow_destinations";

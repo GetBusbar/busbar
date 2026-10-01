@@ -432,3 +432,26 @@ fn the_same_name_dials_when_allowlisted() {
         assert_eq!(accepted.load(Ordering::SeqCst), 1);
     });
 }
+
+/// OWNER Q7 (operator infrastructure EXEMPT): the same name, when the need's CONFIG names it
+/// (`target_from`, a store/secret/auth plugin's connection), is the operator's own destination and
+/// dials with no allowlist; the name a plugin names per open (above) stays refused.
+#[test]
+fn a_config_named_target_on_loopback_is_trusted() {
+    worker().block_on(async {
+        let (port, accepted) = counting_echo().await;
+        let c = connector_over(
+            &[],
+            Arc::new(Table(vec![("db.test", [127, 0, 0, 1].into())])),
+            Arc::default(),
+        );
+        let target = format!("db.test:{port}");
+        c.declare_need_to(OWNER, NEED, "bytes", crate::DEFAULT_CLASS, &target);
+        let id = c
+            .open(OWNER, NEED, &OpenDesc::default())
+            .expect("the configured target opens");
+        assert_eq!(c.write(OWNER, id, b"conf", false), Ok(4));
+        assert_eq!(read_direct(&c, id).await.expect("the echo"), b"conf");
+        assert_eq!(accepted.load(Ordering::SeqCst), 1);
+    });
+}

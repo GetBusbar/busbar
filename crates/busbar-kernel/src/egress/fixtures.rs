@@ -582,9 +582,10 @@ pub fn with_scoped_dial<R>(
     built
 }
 
-/// A TEST DOUBLE of the destination guard's address rule (the guard itself is the connector's,
-/// which the kernel cannot name): an answer holding a private, loopback or cloud-metadata address
-/// is refused unless its host or that address is in the allowlist.
+/// A TEST DOUBLE of a refusing destination guard (the guard itself is the connector's, which the
+/// kernel cannot name): an answer holding a private, loopback or cloud-metadata address is refused
+/// unless its host or that address is in the allowlist, whatever the class. What a test proves with
+/// it is the engine's side: every answer is asked of the guard, and a refusal is a connect failure.
 pub struct PrivateRefusing(pub Vec<String>);
 
 impl crate::host_services::DestJudge for PrivateRefusing {

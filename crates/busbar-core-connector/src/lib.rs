@@ -61,7 +61,7 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
 use busbar_contract::abi::host::conn::connector::{
-    DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB,
+    DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
 };
 use busbar_contract::abi::host::service::DEST_PLAINTEXT;
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
@@ -729,6 +729,15 @@ impl Conns for Connector {
             head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
         };
         let planned = Planned::locate(Arc::clone(&door), dial).map_err(|f| map(&f))?;
+        // A TARGET THE NEED'S CONFIG NAMES IS THE OPERATOR'S OWN (OWNER Q7: a destination the
+        // operator writes into config is trusted): its address is judged as operator
+        // infrastructure, never under a class that refuses request-data destinations.
+        let judged_class =
+            if declared_target.is_some() && guard::PRIVATE_REFUSED_IN.contains(&egress_class) {
+                EGRESS_OPERATOR_INFRASTRUCTURE
+            } else {
+                egress_class
+            };
         // THE DECLARED TARGET (1.5.5's per-module target guarantee, on every need): a need whose
         // config names its target dials that target and no other.
         if let Some(declared) = declared_target {
@@ -750,7 +759,7 @@ impl Conns for Connector {
         let later = Arc::clone(&answer);
         let judged = self.judge.judge_dial(
             planned.authority(),
-            egress_class,
+            judged_class,
             Box::new(move |v| {
                 let mut a = later.lock().expect("judgement");
                 a.0 = Some(v);

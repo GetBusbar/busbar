@@ -99,14 +99,14 @@ fn every_egress_class_is_judged_by_the_one_guard() {
     }
 }
 
-/// RED: under the default, every class refuses a private and a loopback address (the ruling as
-/// written, owner Q7 open: operator infrastructure included); the allowlist admits them in every
-/// class.
+/// RED (OWNER Q7): under the default, a request-data class (the default class, open-web) refuses a
+/// private and a loopback address unless allowlisted; a configured-destination class (provider,
+/// operator infrastructure, loopback-allowed) is trusted with them; metadata is refused in all.
 #[test]
-fn a_private_address_is_refused_in_every_class_unless_allowlisted() {
+fn a_private_address_is_refused_for_request_data_unless_allowlisted() {
     let strict = process_judge(&[], vec![]);
     let allowed = process_judge(&["10.0.0.0/8", "127.0.0.1"], vec![]);
-    for class in CLASSES {
+    for class in crate::guard::PRIVATE_REFUSED_IN.iter().copied() {
         assert_eq!(
             now(&strict, "10.0.0.5:5432", class),
             Err(DEST_INTERNAL),
@@ -125,10 +125,17 @@ fn a_private_address_is_refused_in_every_class_unless_allowlisted() {
         assert!(now(&allowed, "10.0.0.5:5432", class).is_ok(), "{class}");
         assert!(now(&allowed, "127.0.0.1:6379", class).is_ok(), "{class}");
     }
-    assert_eq!(
-        now(&allowed, "169.254.169.254:80", EGRESS_PROVIDER),
-        Err(DEST_METADATA)
-    );
+    for class in [EGRESS_PROVIDER, EGRESS_OPERATOR_INFRASTRUCTURE] {
+        assert!(now(&strict, "10.0.0.5:5432", class).is_ok(), "{class}");
+        assert!(now(&strict, "127.0.0.1:6379", class).is_ok(), "{class}");
+    }
+    for class in CLASSES {
+        assert_eq!(
+            now(&allowed, "169.254.169.254:80", class),
+            Err(DEST_METADATA),
+            "{class}"
+        );
+    }
 }
 
 /// RED: a name resolving to loopback is refused after its one resolution, before any socket; the
@@ -138,12 +145,12 @@ fn a_name_resolving_to_loopback_is_refused_until_allowlisted() {
     let names = || vec![("db.internal", IpAddr::from([127, 0, 0, 1]))];
     let strict = process_judge(&[], names());
     assert_eq!(
-        pended(&strict, "db.internal:5432", EGRESS_OPERATOR_INFRASTRUCTURE),
+        pended(&strict, "db.internal:5432", EGRESS_DEFAULT),
         Err(DEST_INTERNAL)
     );
     let allowed = process_judge(&["db.internal"], names());
     assert_eq!(
-        pended(&allowed, "db.internal:5432", EGRESS_OPERATOR_INFRASTRUCTURE),
+        pended(&allowed, "db.internal:5432", EGRESS_DEFAULT),
         Ok("127.0.0.1:5432".parse().unwrap())
     );
     assert_eq!(
@@ -204,7 +211,7 @@ fn the_kernel_asks_the_same_judge() {
     );
     assert_eq!(j.judge_name("https://10.0.0.5/", 0), Err(DEST_INTERNAL));
     let r = j
-        .judge_answer("api.test", &["10.9.9.9".parse().unwrap()], EGRESS_PROVIDER)
+        .judge_answer("api.test", &["10.9.9.9".parse().unwrap()], EGRESS_DEFAULT)
         .unwrap_err();
     assert_eq!(r.verdict, DEST_INTERNAL);
     assert!(r.reason.contains("advanced.allow_destinations"), "{r}");
