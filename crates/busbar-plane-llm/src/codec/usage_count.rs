@@ -213,7 +213,7 @@ pub fn refuse_unreadable_count(
             protocol,
             field = unreadable.field,
             spelling = %unreadable.spelling,
-            "usage count is present but unreadable; refusing rather than billing it as zero (#42)"
+            "usage count is present but unreadable; refusing rather than counting it as zero (#42)"
         );
         crate::codec::dialect::ir_parse_error()
     }
