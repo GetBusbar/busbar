@@ -236,7 +236,10 @@ fn an_instance_with_a_declared_need_is_declared_and_its_establish_reaches_the_ta
         RawOutcome::of(Outcome::Refused),
         "an establish before open is undeclared"
     );
-    assert_eq!(open_with(&p, br#"{"upstream":"127.0.0.1:9"}"#), Outcome::Ready);
+    assert_eq!(
+        open_with(&p, br#"{"upstream":"127.0.0.1:9"}"#),
+        Outcome::Ready
+    );
     let declared = table.declared.lock().unwrap().clone();
     assert_eq!(declared.len(), 1);
     let (owner, need, spec, target) = &declared[0];
@@ -247,7 +250,11 @@ fn an_instance_with_a_declared_need_is_declared_and_its_establish_reaches_the_ta
         spec.target_from, "settings.upstream",
         "the target source reaches declare intact"
     );
-    assert_eq!(target.as_deref(), Some("127.0.0.1:9"), "pinned to its setting");
+    assert_eq!(
+        target.as_deref(),
+        Some("127.0.0.1:9"),
+        "pinned to its setting"
+    );
     let out = establish(&p, 0, "127.0.0.1:9");
     assert_eq!(out.outcome, RawOutcome::of(Outcome::Ready));
     assert_eq!(
@@ -262,9 +269,18 @@ fn an_instance_with_a_declared_need_is_declared_and_its_establish_reaches_the_ta
 fn a_refresh_re_declares_a_config_targeted_need_at_its_new_target() {
     let table = Arc::new(Recording::default());
     let p = bound(Box::leak(Box::new(NEEDS)), &table);
-    assert_eq!(open_with(&p, br#"{"upstream":"127.0.0.1:9"}"#), Outcome::Ready);
-    assert_eq!(refresh_with(&p, br#"{"upstream":"127.0.0.2:9"}"#), Outcome::Ready);
-    assert_eq!(refresh_with(&p, br#"{"other":"127.0.0.3:9"}"#), Outcome::Ready);
+    assert_eq!(
+        open_with(&p, br#"{"upstream":"127.0.0.1:9"}"#),
+        Outcome::Ready
+    );
+    assert_eq!(
+        refresh_with(&p, br#"{"upstream":"127.0.0.2:9"}"#),
+        Outcome::Ready
+    );
+    assert_eq!(
+        refresh_with(&p, br#"{"other":"127.0.0.3:9"}"#),
+        Outcome::Ready
+    );
     assert_eq!(
         targets(&table, &p),
         vec![
@@ -285,9 +301,21 @@ fn a_target_from_path_resolves_only_to_a_non_empty_string_under_settings() {
         "n": 3,
         "e": "",
     });
-    assert_eq!(resolve_target(&doc, "settings.upstream").as_deref(), Some("db:5432"));
-    assert_eq!(resolve_target(&doc, "settings.nested.url").as_deref(), Some("h:1"));
-    for miss in ["settings.n", "settings.e", "settings.absent", "upstream", "settings.nested"] {
+    assert_eq!(
+        resolve_target(&doc, "settings.upstream").as_deref(),
+        Some("db:5432")
+    );
+    assert_eq!(
+        resolve_target(&doc, "settings.nested.url").as_deref(),
+        Some("h:1")
+    );
+    for miss in [
+        "settings.n",
+        "settings.e",
+        "settings.absent",
+        "upstream",
+        "settings.nested",
+    ] {
         assert_eq!(resolve_target(&doc, miss), None, "{miss}");
     }
 }
