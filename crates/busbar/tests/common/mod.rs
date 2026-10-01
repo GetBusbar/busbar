@@ -27,9 +27,10 @@ pub mod boot;
 pub mod plugins;
 
 mod classify;
+#[allow(unused_imports)]
 pub use classify::*;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 // ── THE PLUGIN VOCABULARY IS DATA ─────────────────────────────────────────────────────────────────
 // "A plugin tests itself; the kernel never tests or names a plugin." A scanning gate here still has
