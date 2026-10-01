@@ -539,6 +539,7 @@ fn need(direction: u32, transport: &str, target_from: &str) -> ReadNeed {
             flags: 0,
             bytes: Vec::new(),
         },
+        timeout_ms: 0,
     }
 }
 
@@ -736,6 +737,9 @@ fn a_candidate_carries_its_statements_needs() {
             len: 0,
             ptr: core::ptr::null(),
         },
+        keep_response_headers: core::ptr::null(),
+        keep_response_headers_len: 0,
+        timeout_ms: 0,
     }];
     let st = busbar_contract::abi::mechanism::door::Statement {
         kind: KindCode::Plane as u32,

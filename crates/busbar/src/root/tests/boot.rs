@@ -252,6 +252,7 @@ fn listening_plane(target_from: &str) -> Candidate {
                 flags: 0,
                 bytes: Vec::new(),
             },
+            timeout_ms: 0,
         }],
         stated: Vec::new(),
         origin: Origin::Dropped {
