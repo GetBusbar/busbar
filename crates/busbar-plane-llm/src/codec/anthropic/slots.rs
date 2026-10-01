@@ -45,15 +45,7 @@ pub(super) fn read_hosted_tool(
         let user_location = obj
             .get("user_location")
             .and_then(|v| v.as_object())
-            .map(|l| {
-                let text = |k: &str| l.get(k).and_then(|v| v.as_str()).map(String::from);
-                crate::codec::ir::IrUserLocation {
-                    city: text("city"),
-                    region: text("region"),
-                    country: text("country"),
-                    timezone: text("timezone"),
-                }
-            });
+            .map(crate::codec::ir::IrUserLocation::read_members);
         Some(crate::codec::ir::IrHostedTool::WebSearch(
             crate::codec::ir::IrWebSearch {
                 max_uses: max_uses(),
@@ -121,19 +113,7 @@ pub(super) fn write_hosted_tool(
                 &ws.blocked_domains,
             );
             if let Some(loc) = &ws.user_location {
-                let mut l = serde_json::Map::new();
-                l.insert("type".to_string(), serde_json::json!("approximate"));
-                for (k, v) in [
-                    ("city", &loc.city),
-                    ("region", &loc.region),
-                    ("country", &loc.country),
-                    ("timezone", &loc.timezone),
-                ] {
-                    if let Some(v) = v {
-                        l.insert(k.to_string(), serde_json::json!(v));
-                    }
-                }
-                obj.insert("user_location".to_string(), serde_json::Value::Object(l));
+                obj.insert("user_location".to_string(), loc.write_flat());
             }
             if ws.search_context_size.is_some() {
                 tracing::warn!(

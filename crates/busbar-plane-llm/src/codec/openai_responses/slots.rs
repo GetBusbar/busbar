@@ -164,14 +164,9 @@ pub(super) fn read_hosted_tool(tool: &serde_json::Value) -> Option<crate::codec:
                     .unwrap_or_default();
             }
             if let Some(loc) = obj.get("user_location").filter(|l| !l.is_null()) {
-                let lobj = loc.as_object()?;
-                let field = |k: &str| lobj.get(k).and_then(|v| v.as_str()).map(String::from);
-                ws.user_location = Some(crate::codec::ir::IrUserLocation {
-                    city: field("city"),
-                    region: field("region"),
-                    country: field("country"),
-                    timezone: field("timezone"),
-                });
+                ws.user_location = Some(crate::codec::ir::IrUserLocation::read_members(
+                    loc.as_object()?,
+                ));
             }
             if let Some(size) = obj.get("search_context_size").filter(|s| !s.is_null()) {
                 ws.search_context_size =
@@ -211,19 +206,7 @@ pub(super) fn write_hosted_tool(
                 );
             }
             if let Some(loc) = &ws.user_location {
-                let mut l = serde_json::Map::new();
-                l.insert("type".to_string(), serde_json::json!("approximate"));
-                for (k, v) in [
-                    ("city", &loc.city),
-                    ("region", &loc.region),
-                    ("country", &loc.country),
-                    ("timezone", &loc.timezone),
-                ] {
-                    if let Some(v) = v {
-                        l.insert(k.to_string(), serde_json::json!(v));
-                    }
-                }
-                out.insert("user_location".to_string(), serde_json::Value::Object(l));
+                out.insert("user_location".to_string(), loc.write_flat());
             }
             if let Some(size) = ws.search_context_size {
                 out.insert(

@@ -166,17 +166,9 @@ pub(crate) fn read_web_search(v: &serde_json::Value, ir: &mut IrRequest) {
         .and_then(IrVerbosity::parse);
     let user_location = o
         .get("user_location")
-        .and_then(|l| l.get("approximate"))
+        .and_then(|l| l.get(IrUserLocation::TYPE_APPROXIMATE))
         .and_then(|a| a.as_object())
-        .map(|a| {
-            let s = |k: &str| a.get(k).and_then(|v| v.as_str()).map(String::from);
-            IrUserLocation {
-                city: s("city"),
-                region: s("region"),
-                country: s("country"),
-                timezone: s("timezone"),
-            }
-        });
+        .map(IrUserLocation::read_members);
     ir.hosted_tools.push(IrHostedTool::WebSearch(IrWebSearch {
         search_context_size,
         user_location,
@@ -230,20 +222,11 @@ fn web_search_options(ws: &IrWebSearch) -> serde_json::Value {
         );
     }
     if let Some(loc) = &ws.user_location {
-        let mut a = serde_json::Map::new();
-        for (k, v) in [
-            ("city", &loc.city),
-            ("region", &loc.region),
-            ("country", &loc.country),
-            ("timezone", &loc.timezone),
-        ] {
-            if let Some(v) = v {
-                a.insert(k.to_string(), serde_json::json!(v));
-            }
-        }
+        // Chat nests the members under the type's own name.
+        let approx = IrUserLocation::TYPE_APPROXIMATE;
         o.insert(
             "user_location".to_string(),
-            serde_json::json!({"type": "approximate", "approximate": serde_json::Value::Object(a)}),
+            serde_json::json!({"type": approx, approx: serde_json::Value::Object(loc.write_members())}),
         );
     }
     serde_json::Value::Object(o)

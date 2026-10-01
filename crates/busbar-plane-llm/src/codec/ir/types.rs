@@ -1832,6 +1832,45 @@ pub struct IrUserLocation {
     pub timezone: Option<String>,
 }
 
+impl IrUserLocation {
+    /// The `type` every dialect stamps on a user location.
+    pub const TYPE_APPROXIMATE: &'static str = "approximate";
+    /// The member names, the same on every wire, in field order.
+    const MEMBERS: [&'static str; 4] = ["city", "region", "country", "timezone"];
+
+    /// Read the string members of the object that holds them (a member of another type is absent).
+    pub fn read_members(obj: &serde_json::Map<String, serde_json::Value>) -> Self {
+        let mut loc = Self::default();
+        let slots = [
+            &mut loc.city,
+            &mut loc.region,
+            &mut loc.country,
+            &mut loc.timezone,
+        ];
+        for (name, slot) in Self::MEMBERS.iter().zip(slots) {
+            *slot = obj.get(*name).and_then(|v| v.as_str()).map(String::from);
+        }
+        loc
+    }
+
+    /// The set members as a JSON object.
+    pub fn write_members(&self) -> serde_json::Map<String, serde_json::Value> {
+        let values = [&self.city, &self.region, &self.country, &self.timezone];
+        Self::MEMBERS
+            .iter()
+            .zip(values)
+            .filter_map(|(name, v)| Some(((*name).to_string(), serde_json::json!(v.as_ref()?))))
+            .collect()
+    }
+
+    /// The flat `{type: "approximate", city, region, country, timezone}` (Anthropic, Responses).
+    pub fn write_flat(&self) -> serde_json::Value {
+        let mut out = self.write_members();
+        out.insert("type".to_string(), serde_json::json!(Self::TYPE_APPROXIMATE));
+        serde_json::Value::Object(out)
+    }
+}
+
 /// A refinement of [`IrStopReason`] that some dialects can state and others cannot (IR-16, and the
 /// refusal category half of IR-02). The coarse `stop_reason` stays authoritative and is always set
 /// to the nearest variant, so a writer that ignores this detail still emits a valid, close stop
