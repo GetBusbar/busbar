@@ -270,6 +270,8 @@ impl Door {
             frame_cap: WIRE_CAP,
             pieces: self.pieces.as_mut_ptr(),
             pieces_cap: self.pieces.len(),
+            heads: std::ptr::null_mut(),
+            heads_cap: 0,
             now_monotonic_ns: self.now_ns,
             now_unix_ns: 1_790_000_000_000_000_000,
         }
