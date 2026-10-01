@@ -22,6 +22,14 @@
 //! BACKPRESSURE IS NOT A SHORT BUFFER: `on_piece`'s reply bytes stream. A full `reply_buf` is READY
 //! with `more = 1` (and at least one byte `emitted`); the kernel flushes, waits for the socket to be
 //! writable and calls again. `emitted` is therefore never above `reply_cap` and has no `needed`.
+//! THAT RE-CALL CARRIES NO NEW BYTES: it is an `on_piece` of the same unit with the SAME `from` as
+//! the piece that answered `more = 1`, zero bytes, no `PIECE_*` flags and no status; the piece's
+//! bytes were taken whole, and the re-call answers only what the first could not hold (the
+//! transport's `YIELD_MORE` re-call, in the plane's terms).
+//!
+//! ONE UNIT, ONE KEY. The kernel mints the unit's key and hands it to every op of the unit:
+//! [`ArriveIn::unit`] and [`OnPieceIn::unit`]. The caller's head (target and fields) crosses ONCE,
+//! at `arrive`; a plane keeps what it needs of it keyed by `unit`, and no piece re-sends it.
 //!
 //! THE KERNEL DRIVES THE ROUTE (`BUSBAR-1.6.0.md` Part 3, the plane driver). The kernel keeps the caller's body
 //! and runs its own egress walk. Each attempt starts with an ATTEMPT piece ([`FROM_KERNEL`],
@@ -706,6 +714,10 @@ pub struct RecordWrite {
 pub struct ArriveIn {
     /// The head.
     pub head: InHead,
+    /// The unit, as the kernel minted it: every [`OnPieceIn`] of this unit carries the same key.
+    /// The caller's head (`target`, `fields`) crosses here ONCE; a plane keeps what it needs of it
+    /// keyed by `unit`, and no piece re-sends it.
+    pub unit: u64,
     /// Index into the snapshot's claims the arrival matched.
     pub claim: u32,
     /// Alignment padding.
@@ -750,11 +762,13 @@ pub struct ArriveOut {
 pub struct OnPieceIn {
     /// The head.
     pub head: InHead,
+    /// The unit, as the kernel minted it: the key its [`ArriveIn::unit`] carried.
+    pub unit: u64,
     /// [`FROM_CALLER`] | [`FROM_FAR_END`] | [`FROM_KERNEL`].
     pub from: u32,
     /// `PIECE_*` bits.
     pub flags: u32,
-    /// The stream.
+    /// A duplex session's stream, as `drive` names it; `0` for a request unit.
     pub stream: u64,
     /// The piece's bytes, zero-copy.
     pub bytes: Blob,
@@ -799,7 +813,8 @@ pub struct OnPieceOut {
     pub head: OutHead,
     /// Bytes written to `reply_buf`.
     pub emitted: u64,
-    /// `1` = more output is waiting; flush and call again once writable.
+    /// `1` = more output is waiting; flush and call again once writable, with the same `from`,
+    /// no bytes and no `PIECE_*` flags.
     pub more: u32,
     /// `EMIT_*` bits.
     pub flags: u32,

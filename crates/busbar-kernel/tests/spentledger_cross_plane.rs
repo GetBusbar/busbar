@@ -44,7 +44,7 @@
 //! only), opened once PER NODE on one file. Two handles on one file is what two nodes of a fleet
 //! are; a handle, a drop, and a second handle is what a restart is — the second finds only what the
 //! first really kept. That a store crossing the plugin C ABI answers this verb exactly as it answers
-//! linked is the loader's both-ways fold (`busbar-plugin-loader`'s `store_conformance_tests`), whose
+//! linked is the loader's both-ways fold (its `store_conformance_tests`), whose
 //! kept RED arm is the ABI that carried no variant for it.
 
 mod linked;

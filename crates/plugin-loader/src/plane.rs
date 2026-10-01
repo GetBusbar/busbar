@@ -20,11 +20,10 @@
 //! `busbar-plugin-example-plane` is a real cdylib that, once built through [`DynPlane`], calls core's
 //! own host slots back from the plugin side — `clock_now`, `govern_admit`, `meter_charge`,
 //! `cost_reserve`, `cost_settle` — and REFUSES its work item if any of them is absent or answers
-//! fail-closed. That crossing is asserted, per slot and by exact call count, in two places:
-//! `src/tests/plane_conformance_tests.rs` (this crate's half, against an instrumented table) and
-//! `crates/busbar-kernel/tests/plane_abi_rider.rs` (against the REAL vtable — unreachable from here,
-//! because this crate may not name `busbar-kernel`). So `PlaneDecl` + [`PlaneHostVtable`] are no
-//! longer the 0-caller ABI `docs/design/BUSBAR-1.6.0.md` §11a forbids.
+//! fail-closed. That crossing is asserted, per slot and by exact call count, in
+//! `src/tests/plane_conformance_tests.rs` (against an instrumented table). This lane retires with the
+//! old loader; the door lane's crossing into the kernel's own host services is proven by the
+//! composition root (`crates/busbar/src/root/tests/plane_rider.rs`).
 //!
 //! ONE ADMISSION, BOTH DOORS. A plane dropped into `plugins/` reaches the composition root as a
 //! [`DynPlane`] through [`load_plane_from_bytes`]; the SAME plane linked into the binary reaches it as

@@ -323,7 +323,7 @@ jobs:
   # Owner, 2026-08-08: "nothing should ever be released red", and "or ignored". Both halves are
   # rules, and the second one is the harder one.
   #
-  # WHAT MAKES THIS NECESSARY. GetBusbar/busbar-hook-headroom cut and published v2.0.5 with its CI RED. The
+  # WHAT MAKES THIS NECESSARY. A first-party hook plugin cut and published a release with its CI RED. The
   # red was `public-hygiene-lint`, unrelated to the change, and it was sitting on a list under the
   # heading "KNOWN, TRACKED, NOT BLOCKING". That heading is institutionalised ignoring: a red that
   # sits on a list is still ignored, only with paperwork attached. Every red found across the fleet
@@ -1160,11 +1160,11 @@ jobs:
   # ── Every plugin releases from its own repo — no plugin upload jobs live here at all ─────────────
   # Through 1.5.0 this file built and published every first-party plugin itself: `store-plugins`
   # (sqlite/postgres/valkey) and `auth-plugins` (oidc) from the in-tree `crates/store-*-plugin` /
-  # `crates/auth-oidc-plugin` crates, and `hook-plugins` (headroom/webrequest) from external sibling
-  # checkouts — headroom was ALSO baked pre-installed into the official Docker image. All of that
+  # `crates/auth-oidc-plugin` crates, and `hook-plugins` from external sibling checkouts — one hook
+  # was ALSO baked pre-installed into the official Docker image. All of that
   # special-casing is gone: a plugin is a plugin, full stop. Every first-party plugin — store, auth,
   # AND hook alike — is a standalone repo (GetBusbar/busbar-store-sqlite, store-postgres, store-valkey,
-  # auth-oidc, headroom-hook, webrequest-hook) with its own CI, its own `main`/`dev` branches, and
+  # auth-oidc, webrequest-hook) with its own CI, its own `main`/`dev` branches, and
   # its own release workflow that builds+signs+publishes ITS OWN tarball to ITS OWN GitHub Release
   # on a version tag, independently versioned from busbar itself. busbar's own release publishes
   # ONLY the core binary — no plugin tarball, signed or otherwise, is uploaded from this workflow.

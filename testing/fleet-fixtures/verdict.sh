@@ -11,7 +11,7 @@
 #   * ZERO ROWS IS RED — a functional gate that exercised nothing is the green-having-run-nothing
 #     failure the audit is about, checked for by name rather than trusted not to happen.
 #
-# Usage: EXPECTED_IDS="store:sqlite hook:headroom" LEDGER=<tsv> verdict.sh
+# Usage: EXPECTED_IDS="store:sqlite hook:webrequest" LEDGER=<tsv> verdict.sh
 #        EXPECTED_IDS=$'a|b|GET /x|ok\nc|d'          LEDGER=<tsv> verdict.sh
 #        (EXPECTED_IDS is the list of probe ids the run OWED, ONE PER LINE, or space-separated on a
 #        single line when no id contains a space. It is derived by the caller from the plugin kind

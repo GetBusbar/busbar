@@ -621,7 +621,7 @@ fn finish_inner(
     let finished_ts = busbar_kernel::store::now();
     if app
         .export_projections
-        .wants_stream(busbar_plugin_loader::ExportStream::Logs)
+        .wants_stream(busbar_contract::abi::cold::export::ExportStream::Logs)
     {
         crate::export::deliver_request_log(&crate::export::RequestLogFacts {
             ts: finished_ts,

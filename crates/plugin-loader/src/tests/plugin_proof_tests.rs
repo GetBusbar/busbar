@@ -7,18 +7,16 @@
 //! `GetBusbar/busbar-secret-vault` (secret), `GetBusbar/busbar-auth-github` (auth), and, per the R-FIX2 ruling
 //! (dropped-in door proofs use REAL plugins), `GetBusbar/busbar-store-sqlite` (store: a durable file, a
 //! restart, two nodes on one file) and `GetBusbar/busbar-hook-webrequest` (hook: reject, restrict and a slow
-//! upstream, against a local mock upstream), and `GetBusbar/busbar-hook-headroom` (hook: a THIRD party's
-//! plugin reporting its own metrics on its status reply).
+//! upstream, against a local mock upstream).
 //!
 //! ci.yml's `plugin-proofs` job checks hashicorp-vault and auth-github out beside this one at `dev`,
 //! `[patch]`es the busbar crates they name by git (busbar-contract, and busbar-plugin-loader
-//! dev-only) to this tree through cargo config, and builds their `cdylib`s; it checks store-sqlite,
-//! webrequest-hook and headroom-hook out at the revs it pins and builds their `cdylib`s `--locked`
+//! dev-only) to this tree through cargo config, and builds their `cdylib`s; it checks store-sqlite
+//! and webrequest-hook out at the revs it pins and builds their `cdylib`s `--locked`
 //! against their own busbar pin (the artifact each repo ships). It runs these tests with `BUSBAR_PLUGIN_PROOF_DIR`
 //! naming the directory the `cdylib`s were built into. Each test takes the REAL artifact through the
-//! DROPPED-IN door ([`super::both_ways::dropped`]: signed first-party into a fresh `plugins/`, or
-//! [`super::both_ways::dropped_third_party`] for the third-party proof, found by
-//! [`crate::scan_and_validate`], opened by the registry's own `open_*`) and asserts:
+//! DROPPED-IN door ([`super::both_ways::dropped`]: signed first-party into a fresh `plugins/`,
+//! found by [`crate::scan_and_validate`], opened by the registry's own `open_*`) and asserts:
 //!
 //! * the KIND HANDSHAKE — the row resolves, and the library opens as the kind it exports;
 //! * REAL OPERATIONS — the plugin's own code runs over the ABI and answers what only it would;
@@ -853,145 +851,5 @@ async fn the_real_hook_plugin_rejects_restricts_and_times_out_through_the_droppe
             "plugin 'proof-hook-as-store' exports kind 'hook' but is being loaded as 'store'"
         ),
         "{e}"
-    );
-}
-
-// ── a THIRD-PARTY plugin's OWN metrics — the real metrics-reporting hook (GetBusbar/busbar-hook-headroom) ──
-
-/// The engine-side projectors for the metrics proof: the `transform` projection carries the pool and
-/// the granted prompt's turns (`{role, text}`), as the engine projects a `prompt: rw` grant, and the
-/// `status` reply is read into the shared `HookStatus` (the engine's `hooks::wire` then validates,
-/// bounds and renders it — this crate never parses a reply itself).
-fn metrics_hook_projectors() -> std::sync::Arc<crate::hook::HookProjectors> {
-    use busbar_contract::hooks::{HookStatus, TransformOutcome};
-    std::sync::Arc::new(crate::hook::HookProjectors {
-        decide: Box::new(|req, _cands, _ctx| serde_json::json!({"request": {"pool": req.pool}})),
-        transform: Box::new(|req| {
-            serde_json::json!({
-                "request": {
-                    "pool": req.pool,
-                    "messages": req.prompt.as_ref().map(|p| {
-                        p.messages.iter().map(|(r, t)| {
-                            serde_json::json!({"role": r.as_ref(), "text": t.as_ref()})
-                        }).collect::<Vec<_>>()
-                    }),
-                }
-            })
-        }),
-        normalize: Box::new(|_, _| Ok(busbar_contract::hooks::RoutingDecision::Abstain)),
-        transform_outcome: Box::new(|_| TransformOutcome::Abstain),
-        status: Box::new(|v| {
-            v.get("status").map(|s| HookStatus {
-                settings_version: s.get("settings_version").and_then(|x| x.as_u64()),
-                settings: s.get("settings").and_then(|x| x.as_object()).cloned(),
-                metrics: s.get("metrics").and_then(|m| m.as_array()).cloned(),
-            })
-        }),
-        describe_schema: Box::new(|v| v.get("schema").cloned()),
-    })
-}
-
-/// A request carrying a granted conversation for `pool`: history before the ask, which is what the
-/// plugin works on (a lone turn has nothing to compress, and the plugin abstains without counting).
-fn conversation(pool: &'static str) -> busbar_contract::hooks::RoutingRequest<'static> {
-    let history =
-        "The quarterly report covers revenue, costs and hiring across every region. ".repeat(40);
-    busbar_contract::hooks::RoutingRequest {
-        request_id: 7,
-        pool,
-        ingress_protocol: "proto-a",
-        requested_model: None,
-        message_count: 2,
-        tool_count: 0,
-        has_tools: false,
-        total_chars: history.len() + 20,
-        system_chars: 0,
-        max_tokens: None,
-        stream: false,
-        prompt: Some(busbar_contract::hooks::PromptProjection {
-            system: None,
-            messages: vec![
-                ("user".into(), history.into()),
-                ("user".into(), "What were the costs?".into()),
-            ],
-        }),
-        identity: None,
-        signals: Default::default(),
-    }
-}
-
-/// The metrics a status reply carried, as JSON entries.
-fn reported(status: Option<busbar_contract::hooks::HookStatus>) -> Vec<serde_json::Value> {
-    status
-        .expect("the plugin answers status")
-        .metrics
-        .unwrap_or_default()
-}
-
-/// HOOK — A THIRD-PARTY PLUGIN'S OWN METRICS CROSS THE DROPPED-IN DOOR: the real metrics-reporting
-/// hook, dropped in by a THIRD party (publisher allowlisted under its own key: trusted, not
-/// first-party), handed one conversation for pool `proof-pool`, reports on its status reply what it
-/// observed — its own series under its own names (none in the reserved `busbar_` namespace), its own
-/// `pool` label, the one conversation counted once. That reply is what the engine's hook scrape
-/// validates, bounds and renders with its `hook="<instance>"` provenance label
-/// (`busbar-kernel` `hooks::scrape`, whose tests hold that half, the reserved-namespace drop
-/// included). RED ARM: the same plugin, opened again and handed nothing, reports no request series —
-/// what crosses the door is what the plugin observed, never a series the loader invents.
-#[tokio::test]
-#[ignore = "needs BUSBAR_PLUGIN_PROOF_DIR (ci.yml plugin-proofs builds the real plugin repos)"]
-async fn a_third_party_plugins_own_metrics_cross_the_dropped_in_door() {
-    let lib = real_cdylib("metrics_hook");
-    let mut m = manifest("hook", "proof-metrics-hook");
-    m.publisher = "acme".into();
-    m.needs.prompt = crate::sign::NeedLevel::Rw;
-    let registry = super::both_ways::dropped_third_party("proof-metrics-hook", m, &lib);
-    let row = registry
-        .resolve("proof-metrics-hook")
-        .expect("the third party's row is admitted");
-    assert!(!row.first_party(), "the proof is a THIRD party's plugin");
-    let open = || {
-        registry
-            .open_hook(
-                "proof-metrics-hook",
-                "{}",
-                "proof-metrics-hook",
-                metrics_hook_projectors(),
-            )
-            .expect("the real metrics-reporting hook opens as `hook`")
-    };
-    let budget = std::time::Duration::from_secs(5);
-    let requests = artifact("proof_metrics_hook_requests_series");
-
-    let gate = open();
-    let _ = gate.transform(&conversation("proof-pool"), budget).await;
-    let metrics = reported(gate.status(budget).await);
-    let counted: Vec<&serde_json::Value> =
-        metrics.iter().filter(|m| m["name"] == requests).collect();
-    assert_eq!(counted.len(), 1, "one `{requests}` series: {metrics:?}");
-    assert_eq!(counted[0]["type"], "counter", "{metrics:?}");
-    assert_eq!(
-        counted[0]["value"], 1,
-        "the one conversation, counted once: {metrics:?}"
-    );
-    assert_eq!(counted[0]["labels"]["pool"], "proof-pool", "{metrics:?}");
-    for series in artifact("proof_metrics_hook_other_series").split_whitespace() {
-        assert!(
-            metrics.iter().any(|m| m["name"] == series),
-            "`{series}` is reported under the plugin's own name: {metrics:?}"
-        );
-    }
-    assert!(
-        metrics.iter().all(|m| !m["name"]
-            .as_str()
-            .unwrap_or("busbar_")
-            .starts_with("busbar_")),
-        "a third party's own series are its own names, never the reserved namespace: {metrics:?}"
-    );
-
-    // RED ARM: opened again and handed nothing, the plugin has observed nothing.
-    let idle = reported(open().status(budget).await);
-    assert!(
-        idle.iter().all(|m| m["name"] != requests),
-        "a plugin handed no conversation reported one: {idle:?}"
     );
 }

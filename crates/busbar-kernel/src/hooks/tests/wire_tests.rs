@@ -44,7 +44,7 @@ fn status_metric_hints_cap_char_safe() {
     assert!(parsed2[0].max.is_none());
 }
 
-/// The redesigned metric shape (the Headroom fit-test): a Prometheus-style ARRAY carrying
+/// The redesigned metric shape (the compression-hook fit-test): a Prometheus-style ARRAY carrying
 /// per-dimension LABELS, a HISTOGRAM distribution via quantiles, and an ESTIMATE with a CI —
 /// the shapes a real plugin dashboard needs and the old flat map could not express. Malformed
 /// optional members are dropped individually; the entry survives.
@@ -115,7 +115,7 @@ fn status_metrics_caps_the_quantile_count() {
 fn status_metrics_validates_native_buckets() {
     let m = [
         // Good bucket map: finite bounds + "+Inf" kept; NaN count, non-numeric key dropped.
-        serde_json::json!({"name":"headroom_compression_ratio","type":"histogram","value":7.0,
+        serde_json::json!({"name":"rewriter_compression_ratio","type":"histogram","value":7.0,
                                "buckets":{"0.5":3.0,"1":7.0,"+Inf":7.0,
                                           "abc":1.0,"2":-2.0}}),
         // Every entry invalid => the whole buckets map drops to None.
@@ -506,7 +506,7 @@ fn parse_restrict_is_fail_closed() {
 fn parse_rewrite_is_fail_closed() {
     let ok = parse_rewrite(&serde_json::json!({
         "messages": [{"role": "user", "content": "hi"}],
-        "tools": [{"name": "headroom_retrieve"}]
+        "tools": [{"name": "rewriter_retrieve"}]
     }))
     .expect("well-formed rewrite parses");
     assert_eq!(ok.messages.len(), 1);

@@ -1,4 +1,4 @@
-//! One object-safety fixture per plugin kind, and a working implementation of the two largest.
+//! One object-safety fixture per kind trait, and a working implementation of the two largest.
 //!
 //! The honesty table of the design lists object safety as a compile-time property proven by a
 //! fixture per kind. That is what the assertions below are: each one only compiles if the trait
@@ -16,16 +16,12 @@ use busbar_contract::dest::{
     AuthDecoration, DestinationFacts, EgressBody, RoutePlan, TransportKeyHandle,
     VerifiedDestination,
 };
-use busbar_contract::grammar::ArrivalLocation;
 use busbar_contract::ids::{
-    AdminVerbId, LaneId, MeterClassDecl, OpClassId, PrincipalId, RecordSchemaId, SchemeKey,
-    StreamId,
+    AdminVerbId, LaneId, MeterClassDecl, OpClassId, RecordSchemaId, SchemeKey, StreamId,
 };
 use busbar_contract::kinds::{
-    Ack, Anchor, AuthOutcome, AuthScheme, Challenge, ChallengeState, ContentFacts, Credential,
-    CredentialFacts, CredentialLocator, Export, ExportItem, Head, Hook, HookFacts, HookKindDecl,
-    HookView, KeyMaterial, OnFailure, PlaneFacts, Seat, Secret, SecretError, SecretRef,
-    SecretValue, Signer, Store, StoreError,
+    Ack, Challenge, ChallengeState, ContentFacts, CredentialLocator, Head, PlaneFacts, SecretRef,
+    Store, StoreError,
 };
 use busbar_contract::plane::{
     Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
@@ -36,7 +32,7 @@ use busbar_contract::transport::{
 };
 use busbar_contract::unit::{
     AdmitFacts, AuditFacts, Clock, ConfigView, Ctx, FinishClass, Refusal, ScopeFacts, SessionView,
-    Step, TransportView, Unit, UnitEnd, UsageLocators,
+    TransportView, Unit, UnitEnd, UsageLocators,
 };
 use busbar_contract::wire::{
     ArrivalRecord, CloseReason, Conn, Decode, DiscardCode, Encode, Frame, FrameCursor, Listener,
@@ -51,14 +47,8 @@ const _TRANSPORT: Option<&dyn Transport> = None;
 // The two transport roles (TRANSPORT-STACK): a transport plugin is one or the other.
 const _CARRIER: Option<&dyn Carrier> = None;
 const _FRAMER: Option<&dyn Framer> = None;
-const _AUTH: Option<&dyn AuthScheme> = None;
 const _STORE: Option<&dyn Store> = None;
-const _SECRET: Option<&dyn Secret> = None;
-const _HOOK: Option<&dyn Hook> = None;
-const _EXPORT: Option<&dyn Export> = None;
-const _ANCHOR: Option<&dyn Anchor> = None;
 const _PLUGIN: Option<&dyn Plugin> = None;
-const _SIGNER: Option<&dyn Signer> = None;
 const _PLANE_ALLOC: Option<&dyn PlaneAlloc> = None;
 const _CONFIG: Option<&dyn ConfigView> = None;
 const _SESSION_VIEW: Option<&dyn SessionView> = None;
@@ -437,86 +427,6 @@ impl Transport for FixtureTransport {
     }
 }
 
-// ── a hook and an auth scheme, implemented in full ────────────────────────────────────────────
-
-/// A hook that observes and never gates.
-struct FixtureHook;
-
-impl Plugin for FixtureHook {
-    fn key(&self) -> &'static str {
-        "fixture-hook"
-    }
-    fn kind(&self) -> Kind {
-        Kind::Hook
-    }
-    fn abi(&self) -> AbiVersion {
-        AbiVersion(1)
-    }
-}
-
-impl Hook for FixtureHook {
-    fn hook_kind(&self) -> HookKindDecl {
-        HookKindDecl::Tap
-    }
-    fn seats(&self) -> &'static [Seat] {
-        &[Seat::After(Step::Route)]
-    }
-    fn hook_facts(&self) -> &'static [&'static str] {
-        &[]
-    }
-    fn on_failure(&self) -> OnFailure {
-        OnFailure::Closed
-    }
-    fn max_priced_delta(&self) -> u64 {
-        0
-    }
-    fn may_change_destination(&self) -> bool {
-        false
-    }
-    fn may_rewrite(&self) -> bool {
-        false
-    }
-    fn observe<'u, 'a>(&self, _seat: Seat, _view: &HookView<'u, 'a>) -> HookFacts<'u> {
-        HookFacts::default()
-    }
-}
-
-/// An auth scheme that abstains on everything.
-struct FixtureAuth;
-
-impl Plugin for FixtureAuth {
-    fn key(&self) -> &'static str {
-        "fixture-auth"
-    }
-    fn kind(&self) -> Kind {
-        Kind::Auth
-    }
-    fn abi(&self) -> AbiVersion {
-        AbiVersion(1)
-    }
-}
-
-impl AuthScheme for FixtureAuth {
-    fn locations(&self) -> &'static [ArrivalLocation] {
-        &[ArrivalLocation::Header("authorization")]
-    }
-    fn does_io(&self) -> bool {
-        false
-    }
-    fn verify(
-        &self,
-        _credential: &Credential,
-        _arrival: &ArrivalRecord,
-        _clock: Clock,
-        _prior: Option<&ChallengeState>,
-    ) -> AuthOutcome {
-        AuthOutcome::Pass
-    }
-    fn refresh(&self, clock: Clock) -> KeyMaterial {
-        KeyMaterial::new(Vec::new(), clock.unix_secs)
-    }
-}
-
 // ── the tests ─────────────────────────────────────────────────────────────────────────────────
 
 /// Every kind can be held behind a pointer, which is how the registry holds one.
@@ -525,14 +435,10 @@ fn every_kind_is_object_safe() {
     let plane: &dyn Plane = &FixturePlane;
     let session_plane: &dyn SessionPlane = &FixturePlane;
     let transport: &dyn Transport = &FixtureTransport;
-    let hook: &dyn Hook = &FixtureHook;
-    let auth: &dyn AuthScheme = &FixtureAuth;
 
     assert_eq!(plane.kind(), Kind::Plane);
     assert_eq!(session_plane.key(), "fixture");
     assert_eq!(transport.kind(), Kind::Transport);
-    assert_eq!(hook.on_failure(), OnFailure::Closed);
-    assert!(!auth.does_io());
 }
 
 /// A plane call runs, with a real context, and the borrow story holds.
@@ -574,39 +480,18 @@ fn a_plugin_reports_the_kind_of_the_trait_it_implements() {
         FixtureTransport.kind(),
         Kind::of::<busbar_contract::plugin::markers::TransportKind>()
     );
-    assert_eq!(
-        FixtureHook.kind(),
-        Kind::of::<busbar_contract::plugin::markers::HookKind>()
-    );
-    assert_eq!(
-        FixtureAuth.kind(),
-        Kind::of::<busbar_contract::plugin::markers::AuthKind>()
-    );
 }
 
 /// The shapes the other kinds hand back exist and are constructible.
 #[test]
 fn the_remaining_kinds_shapes_are_constructible() {
-    let _ = AuthOutcome::Challenge(Challenge {
+    let _ = Challenge {
         bytes: vec![1],
         state: ChallengeState(vec![2]),
         rounds_left: 1,
-    });
-    let _ = AuthOutcome::Facts(CredentialFacts {
-        principal: PrincipalId::new("someone"),
-        issuer: None,
-        expiry: None,
-        session_bindable: true,
-    });
-    let _: Result<SecretValue, SecretError> = Err(SecretError::Unknown);
+    };
     let _ = SecretRef::file("fixture://key");
     let _: Result<Head, StoreError> = Err(StoreError::Unavailable);
-    let _ = ExportItem::Segment {
-        stream: "journal",
-        from: 0,
-        to: 1,
-        bytes: ScratchBytes::new(&[]),
-    };
     let _ = Ack::Durable;
     let _: Option<AuthDecoration<'static>> = None;
 }

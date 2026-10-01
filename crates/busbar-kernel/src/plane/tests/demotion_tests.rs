@@ -19,7 +19,7 @@
 //! Everything below runs against the durable store double (`test_support::durable_store`, R-FIX3:
 //! linked only): each handle a fresh one on the same file, so a row is found only if it was really
 //! kept. That a store crossing the plugin C ABI answers these verbs exactly as it answers linked is
-//! the loader's both-ways fold (`busbar-plugin-loader`'s `store_conformance_tests`).
+//! the loader's both-ways fold (its `store_conformance_tests`).
 
 use crate::plane::quarantine::{DemotionRecord, DemotionRow};
 use crate::plane::store::{decode, KIND_DEMOTION};

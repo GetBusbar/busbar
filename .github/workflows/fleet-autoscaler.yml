@@ -3,8 +3,8 @@ name: release-fleet
 # release-fleet.yml — THE downstream fan-out gate for a busbar release. ONE verdict across every
 # artifact and every downstream a release publishes: given a version, prove a user can, today, on any
 # supported platform, through any documented channel, get the release we said we shipped — AND that
-# every downstream (docker, helm, homebrew, terraform, install.sh, the marketing page, the
-# busbar-headroom bundle) is on that version and working.
+# every downstream (docker, helm, homebrew, terraform, install.sh, the marketing page) is on that
+# version and working.
 #
 # RECONCILIATION — ONE MECHANISM, NOT TWO. This is the `ci/release-verify-gate` branch's proven
 # `release gate` (54 checks, ledger/contract design, red on real 1.5.3 for #50 and #52), promoted
@@ -12,8 +12,6 @@ name: release-fleet
 # still lives in scripts/release-gate/ so every block is dry-runnable on a laptop against any
 # published version; nothing about the detection changed. What this file adds over the branch:
 #   * `workflow_call` is the primary entry (release.yml calls it) — the branch already had it; kept.
-#   * a `fleet` job for the getbusbar/busbar-headroom BUNDLE (fleet-checks.sh): the one downstream
-#     the channel checks did not cover, rebuilt on the new busbar and asserted to BOOT.
 # Everything else — resolve/platform/docker/channels + the aggregating `release gate` verdict — is
 # the branch's design verbatim, because it was validated against real broken releases and this task
 # is to extend that thinking, not replace it.
@@ -300,27 +298,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  # ── The busbar-headroom BUNDLE, rebuilt on the new busbar and asserted to boot ─────────────────
-  fleet:
-    name: fleet (the busbar-headroom bundle rebuilt on this release)
-    needs: resolve
-    runs-on: latchkey-small
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Verify the headroom bundle image
-        env:
-          LEDGER: ${{ runner.temp }}/ledger-fleet.tsv
-          VERSION: ${{ needs.resolve.outputs.version }}
-        run: scripts/release-gate/fleet-checks.sh "$VERSION"
-      - if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: ledger-fleet
-          path: ${{ runner.temp }}/ledger-fleet.tsv
-          if-no-files-found: warn
-          retention-days: 14
-
   # ══ THE GATE — THIS JOB'S NAME (`release gate`) IS THE REQUIRED STATUS CHECK ════════════════════
   # `if: always()` + needs everything: a needed job that FAILED, was CANCELLED, or was SKIPPED must
   # still reach aggregation, because "the docker job never ran" has to be reportable as `did not run`
@@ -328,7 +305,7 @@ jobs:
   # the exact vacuous green this file exists to eliminate).
   gate:
     name: release gate
-    needs: [resolve, platform, docker, channels, fleet]
+    needs: [resolve, platform, docker, channels]
     if: always()
     runs-on: latchkey-small
     timeout-minutes: 10

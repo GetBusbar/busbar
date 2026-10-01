@@ -143,8 +143,15 @@
 # 2026-09-30: moved 97957ea -> 2b5f964 (same branch): the corpus sha pins 97957ea wrote were wrong
 # (a count rewrite hit the sha), and two streams cells' `why` now say the build's answer is pinned.
 #
+# 2026-10-01 (ARCHITECT ruling, STORE-PERSIST-RC; owner approved the busbar-release push): moved 2b5f964 ->
+# a73c6fc (branch `store-persist-raw`, cut from 2b5f964). A script cell's $RAW is <out>/raw/<cell id, | -> __>,
+# as the v0.2.2 recorder named it (record.sh:905-906), instead of <work>/raw-cell: store-persist.sh selects its
+# plugins.log line with `grep -w <alias>`, and a raw path that carried the alias picked the wrong line. Only
+# script cells change; the four plugins.store-persist cells record their 1.5.5 bytes again. Still a feature
+# branch head; re-pin to the integration/merge commit when that branch lands.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=2b5f964
+release_ref=a73c6fc
 crate=busbar-release-oracle
 bin=busbar-oracle

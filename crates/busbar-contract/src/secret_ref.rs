@@ -4,8 +4,8 @@
 //! `SecretRef` — the SECRET REFERENCE type, extracted out of `busbar`'s crate-private
 //! `crates/busbar-core/src/config/secret.rs` into its own tiny crate, and since merged into the
 //! contract (DECISIONS #83: contract = shapes). It is the ONE `SecretRef`: the placeholder
-//! `kinds::SecretRef(String)` the secret kind's trait used to take is gone, and
-//! [`crate::kinds::Secret`] resolves this type.
+//! `kinds::SecretRef(String)` the secret kind's trait used to take is gone, and a secret plugin
+//! resolves this type.
 //!
 //! Every secret/external value in busbar config is `{ module: <secret-module>, settings: {…} }` — a
 //! reference to a SECRET MODULE (`kind: secret` plugin), never the secret itself. The built-in

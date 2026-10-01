@@ -604,8 +604,13 @@ fn the_admin_write_path_and_the_file_share_one_grammar() {
 }
 
 /// The section is a real member of the named-map chassis, not a special case bolted beside it.
+///
+/// The chassis folds its sections from the process plane registry, so this test registers its own
+/// plane first, as the composition root does before any read. It does not count on a sibling test
+/// having registered it.
 #[test]
 fn the_section_is_a_first_class_member_of_the_chassis() {
+    crate::testkit::install_test_seams();
     let agents = engine()
         .named_map_section_facts(crate::a2a::PLANE_DECLARATION.config_section)
         .expect(

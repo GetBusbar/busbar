@@ -1640,7 +1640,7 @@ fn compute_layout() -> String {
     record!(
         s,
         pkind::ArriveIn,
-        [head, claim, _reserved, target, fields, fields_len, body, units_buf, units_cap]
+        [head, unit, claim, _reserved, target, fields, fields_len, body, units_buf, units_cap]
     );
     record!(
         s,
@@ -1660,6 +1660,7 @@ fn compute_layout() -> String {
         pkind::OnPieceIn,
         [
             head,
+            unit,
             from,
             flags,
             stream,

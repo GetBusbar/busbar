@@ -32,7 +32,8 @@
 mod common;
 
 use busbar_plugin_loader::{
-    EgressPolicy, HostResult, HttpRequest, HttpResponse, LinkedPlugin, PluginRegistry,
+    install_egress_carrier, EgressCarrier, EgressPolicy, HostResult, HttpRequest, HttpResponse,
+    LinkedPlugin, PluginRegistry,
 };
 use common::plugins;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
@@ -57,7 +58,7 @@ static ASKED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// connection per request, and answers with the collector's status.
 struct Carrier;
 
-impl busbar_plugin_loader::EgressCarrier for Carrier {
+impl EgressCarrier for Carrier {
     fn carry(&self, request: &HttpRequest) -> HostResult {
         self.carry_under(EgressPolicy::OpenWeb, request, request.body.as_bytes())
     }
@@ -252,7 +253,7 @@ async fn a_closed_span_reaches_an_otlp_collector_the_same_through_either_door() 
         eprintln!("skip: the OTLP sink's cdylib is not built");
         return;
     };
-    assert!(busbar_plugin_loader::install_egress_carrier(&Carrier));
+    assert!(install_egress_carrier(&Carrier));
     busbar_kernel::export::plugin::install(both_doors(&lib));
     let port = collector();
     let instance = |module: &str, stream: &str, path: &str| {

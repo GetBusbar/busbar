@@ -201,10 +201,10 @@ fn need_level_parsing() {
 fn packed_hook_needs_prompt_rw_is_signed() {
     let seed = [3u8; 32];
     let key = SigningKey::from_bytes(&seed);
-    let lib = b"pretend headroom cdylib";
+    let lib = b"pretend compress cdylib";
     let m = Manifest {
-        name: "busbar-headroom".into(),
-        alias: "headroom".into(),
+        name: "busbar-compress".into(),
+        alias: "compress".into(),
         kind: "hook".into(),
         version: "1.5.0".into(),
         publisher: "busbar".into(),

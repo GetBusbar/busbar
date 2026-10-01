@@ -6,9 +6,7 @@
 //! Every one of these is handed across the plugin ABI, so the code that might format it is code
 //! this tree cannot see. The guarantee has to be the type's, not the caller's discipline.
 
-use busbar_contract::{
-    ArrivalLocation, Credential, KeyMaterial, SecretOnce, SecretValue, UpstreamAddress,
-};
+use busbar_contract::{SecretOnce, UpstreamAddress};
 
 /// The environment a `stdio` child is spawned under is the node's credential hand-off: the whole
 /// reason the arm names it rather than inheriting it is that inheriting it hands the child every
@@ -74,33 +72,6 @@ fn the_socket_arms_still_print_what_they_carry() {
     );
 }
 
-#[test]
-fn a_credential_does_not_print_the_credential() {
-    let c = Credential {
-        location: ArrivalLocation::Header("authorization"),
-        bytes: b"sk-live-SECRET".to_vec(),
-    };
-    let printed = format!("{c:?}");
-    assert!(
-        !printed.contains("SECRET"),
-        "a credential printed its own bytes: {printed}"
-    );
-    assert!(!printed.contains("sk-live"), "{printed}");
-    // What it DOES say: where the credential arrived and how long it was — enough to diagnose a
-    // scheme that read the wrong header, and nothing a reader could present as the credential.
-    assert!(printed.contains("authorization"), "{printed}");
-    assert!(printed.contains("14"), "{printed}");
-}
-
-#[test]
-fn a_resolved_secret_prints_exactly_the_redaction_and_nothing_else() {
-    let s = SecretValue::new(b"sk-live-SECRET".to_vec());
-    // The whole string, not a substring check: an assertion that the output merely lacks the word
-    // SECRET keeps passing if the impl starts printing the length, the first bytes, or a hash of
-    // them. What a resolved secret says is one fixed word.
-    assert_eq!(format!("{s:?}"), "SecretValue(redacted)");
-}
-
 /// The one-time placeholder's nonce IS the secret: it is the thing the encoded bytes must contain
 /// exactly once, and a reader who has it has what the verb minted.
 #[test]
@@ -122,19 +93,4 @@ fn a_one_time_placeholder_does_not_print_its_nonce() {
     // encode step needs to be diagnosable.
     assert!(printed.contains("body.secret"), "{printed}");
     assert_eq!(once.nonce(), nonce);
-}
-
-#[test]
-fn key_material_prints_how_much_and_how_old_but_not_what() {
-    let k = KeyMaterial::new(b"signing-SECRET".to_vec(), 1_700_000_000);
-    let printed = format!("{k:?}");
-    assert!(!printed.contains("SECRET"), "{printed}");
-    assert!(
-        !printed.contains("115"),
-        "the raw bytes were printed: {printed}"
-    );
-    assert!(
-        printed.contains("14") && printed.contains("1700000000"),
-        "{printed}"
-    );
 }

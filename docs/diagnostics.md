@@ -1435,7 +1435,7 @@ A request-log webhook exporter could not be built from its configuration and has
 
 A request-log webhook delivery got a non-2xx response from the sink, so that one log line was dropped (deliveries are fire-and-forget and never retried). This can recur per request when a sink is unhealthy, so it is logged at debug.
 
-**What to do:** If logs are being lost, check the webhook sink's health and the delivery counters. `WEBHOOK_LOGS_DROPPED_TOTAL` tracks the volume.
+**What to do:** If logs are being lost, check the webhook sink's health and the delivery counters. `busbar_webhook_logs_dropped_total` tracks the volume.
 
 <a id="webhook-delivery-transport-error"></a>
 ### BUSBAR-7072 — Webhook log delivery transport error (log dropped)
@@ -1446,7 +1446,7 @@ A request-log webhook delivery got a non-2xx response from the sink, so that one
 
 A request-log webhook delivery failed with a transport error (connection/timeout/DNS), so that one log line was dropped. Deliveries are fire-and-forget and never retried; this can recur per request when a sink is unreachable, so it is logged at debug.
 
-**What to do:** If logs are being lost, check the webhook sink's reachability and the delivery counters. `WEBHOOK_LOGS_DROPPED_TOTAL` tracks the volume.
+**What to do:** If logs are being lost, check the webhook sink's reachability and the delivery counters. `busbar_webhook_logs_dropped_total` tracks the volume.
 
 <a id="file-log-append-failed"></a>
 ### BUSBAR-7073 — Request-log file append failed (log dropped)

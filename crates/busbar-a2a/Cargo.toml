@@ -160,4 +160,4 @@ rustls-pki-types = { workspace = true }
 busbar-core-admin = { path = "../busbar-core-admin" }
 # The operator credential's test registry row (`test-operator-auth` above), from its own repo at the
 # SAME pinned rev the composition root links. Dev-only: the library names no auth plugin.
-busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "47cb5047e4c9a73341c613c09a056b4a4bb8eb99" }
+busbar-auth-admin-tokens-plugin = { workspace = true }

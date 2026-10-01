@@ -3512,7 +3512,7 @@ fn test_hook_nonreserved_name_ok() {
     };
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.hooks
-        .insert("headroom".to_string(), gate_hook("test-hook", 150));
+        .insert("compress".to_string(), gate_hook("test-hook", 150));
     if let Err(errs) = validate(&cfg) {
         assert!(
             !errs.iter().any(|e| e.contains("reserved")),

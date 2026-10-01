@@ -10,7 +10,7 @@ name: plugin-consumer-verify
 # uploading, which proves the run believed it succeeded and nothing else. Two failures came straight
 # out of that gap:
 #
-#   * headroom-hook's SHIPPED docker/bundle/config.yaml carries config shapes busbar 1.5.3 retired
+#   * a hook plugin's SHIPPED docker/bundle/config.yaml carried config shapes busbar 1.5.3 retired
 #     (`auth.admin_auth:` with INLINE module entries, which moved under `identity-providers:`). The
 #     published bundle therefore CANNOT BOOT: busbar exits 1 with "this looks like a busbar 1.x
 #     config" before it ever binds a port. The image built fine, pushed fine, and every workflow
@@ -106,7 +106,7 @@ on:
         default: true
       bundle_image:
         description: >-
-          Docker repository of a runnable bundle this repo publishes, e.g. getbusbar/busbar-headroom.
+          Docker repository of a runnable bundle this repo publishes, e.g. getbusbar/busbar-<name>.
           Empty means the repo ships no bundle and the boot check is declared not-applicable rather
           than silently skipped. When set, the image is pulled FRESH, its :latest is checked against
           the version pin by manifest digest, and the container must BOOT AND SERVE.
@@ -116,8 +116,8 @@ on:
       bundle_env:
         description: >-
           Space-separated KEY=VALUE pairs passed to `docker run -e` for the bundle boot. The bundle's
-          shipped config decides what is required; headroom's needs ANTHROPIC_KEY and
-          BUSBAR_ADMIN_TOKEN. Dummy values are correct here: this asserts BOOT and health, and
+          shipped config decides what is required (typically a provider key such as
+          ANTHROPIC_KEY, and BUSBAR_ADMIN_TOKEN). Dummy values are correct here: this asserts BOOT and health, and
           deliberately spends no real provider call.
         required: false
         type: string
@@ -212,7 +212,7 @@ jobs:
 
           # -- C1: the Release is REAL and PUBLIC -----------------------------------------------
           # A draft Release is the failure mode two repos in the fleet are one bug away from:
-          # headroom-hook and webrequest-hook both create the Release with --draft and rely on their
+          # hook plugin repos create the Release with --draft and rely on their
           # verify-assets job running `gh release edit --draft=false` afterwards. If that job is
           # skipped (a `needs:` on a failed job skips its dependent by DEFAULT, which is exactly how
           # busbar's own verify-assets got skipped precisely when the release was broken), the tag
@@ -369,8 +369,8 @@ jobs:
 
           # -- C5: THE BUNDLE MUST BOOT AND SERVE -----------------------------------------------
           # "It built" and "it runs" are different claims, and only the first was ever checked
-          # anywhere in this fleet. headroom-hook's published bundle proves the gap is not theoretical:
-          # its shipped docker/bundle/config.yaml still uses `auth.admin_auth:` with inline module
+          # anywhere in this fleet. A hook plugin's published bundle proved the gap is not theoretical:
+          # its shipped docker/bundle/config.yaml used `auth.admin_auth:` with inline module
           # entries, retired in busbar 1.5.3, so the container exits 1 during config load with "this
           # looks like a busbar 1.x config" and never binds a port. The image builds, pushes, and
           # every workflow involved goes green.

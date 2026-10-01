@@ -631,7 +631,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-webhook"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-webhook?rev=5e0170432aa2dc7640c8b6f6e89c9d38edad1df0#5e0170432aa2dc7640c8b6f6e89c9d38edad1df0"
+source = "git+https://github.com/GetBusbar/busbar-export-webhook?rev=3ad5a711aad433f2015a980cf3a792afa5fd3a7a#3ad5a711aad433f2015a980cf3a792afa5fd3a7a"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -642,7 +642,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-webhook-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-webhook?rev=5e0170432aa2dc7640c8b6f6e89c9d38edad1df0#5e0170432aa2dc7640c8b6f6e89c9d38edad1df0"
+source = "git+https://github.com/GetBusbar/busbar-export-webhook?rev=3ad5a711aad433f2015a980cf3a792afa5fd3a7a#3ad5a711aad433f2015a980cf3a792afa5fd3a7a"
 dependencies = [
  "busbar-export-webhook",
 ]

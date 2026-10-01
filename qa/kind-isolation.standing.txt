@@ -66,7 +66,7 @@ kind-isolation:matrix	unlisted-cell	busbar-kernel × cleanliness	47
 kind-isolation:matrix	unlisted-cell	busbar-kernel × hooks	34
 kind-isolation:matrix	unlisted-cell	busbar-kernel × kernel	183
 kind-isolation:matrix	unlisted-cell	busbar-kernel × legacy	180
-kind-isolation:matrix	unlisted-cell	busbar-kernel × plugin-tooling	213
+kind-isolation:matrix	unlisted-cell	busbar-kernel × plugin-tooling	177
 kind-isolation:matrix	unlisted-cell	busbar-kernel × store	31
 kind-isolation:matrix	unlisted-cell	busbar-kernel-audit × kernel	1
 kind-isolation:matrix	unlisted-cell	busbar-kernel-budget × plane	25

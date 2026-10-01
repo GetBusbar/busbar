@@ -33,13 +33,18 @@
 //! path; a FAILED answer of one of them with any `*_needed` non-zero is short.
 
 use busbar_contract::abi::mechanism::call::Outcome;
+use busbar_contract::abi::mechanism::call::{InHead, OutHead};
 use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
 use busbar_contract::abi::mechanism::door::Statement;
-use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut, OpenIn, RefreshIn};
+use busbar_contract::abi::mechanism::lifecycle::{
+    slot as life, CancelOut, DriveIn, OpenIn, RefreshIn,
+};
+use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::{
     check_arrive, check_cancel, check_drive, check_on_piece, check_pin_mechanisms, check_project,
     check_refusal, check_serve, check_snapshot, check_tail, check_trust_keys, Bounds, Caps,
+    MAX_SESSIONS,
 };
 use busbar_contract::abi::plane::{
     self, slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, PinMechanism, PlaneDriveIn,
@@ -47,7 +52,10 @@ use busbar_contract::abi::plane::{
     ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, TrustKey,
 };
 
-use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
+use crate::dispatch::{
+    in_head, lifecycle_name, out_head, stamp_drive, Answer, Context, DriveFrame, Frame, InFrame,
+    Kind, OutFrame,
+};
 
 /// The plane kind.
 #[derive(Debug, Clone, Copy)]
@@ -223,6 +231,12 @@ impl Kind for Plane {
         }
     }
 
+    /// The plane's `drive` frame: `PlaneDriveIn`/`PlaneDriveOut`, with a host buffer for the ready
+    /// sessions at the kind's maximum, so a `drive` never answers short.
+    fn drive_frame() -> Box<dyn DriveFrame> {
+        Box::new(PlaneDrive::new())
+    }
+
     fn short(a: &Answer) -> bool {
         if a.outcome != Outcome::Failed {
             return false;
@@ -249,6 +263,50 @@ impl Kind for Plane {
                 .is_ok_and(|o| o.sessions_needed != 0),
             _ => false,
         }
+    }
+}
+
+/// A plane driver ticket's `drive` frame and the host buffer its `in` names.
+struct PlaneDrive {
+    frame: Frame<PlaneDriveIn, PlaneDriveOut>,
+    sessions: Vec<u64>,
+}
+
+impl PlaneDrive {
+    fn new() -> Self {
+        PlaneDrive {
+            frame: Frame::new(
+                PlaneDriveIn {
+                    drive: DriveIn {
+                        head: in_head(),
+                        driver: Ticket::NONE,
+                    },
+                    sessions_buf: std::ptr::null_mut(),
+                    sessions_cap: 0,
+                },
+                PlaneDriveOut {
+                    head: out_head(),
+                    sessions_written: 0,
+                    sessions_needed: 0,
+                },
+            ),
+            sessions: vec![0; MAX_SESSIONS as usize],
+        }
+    }
+}
+
+impl DriveFrame for PlaneDrive {
+    fn prepare(&mut self, driver: Ticket, flags: u32) -> (*mut InHead, *mut OutHead, u32) {
+        let input = &mut self.frame.input;
+        stamp_drive(
+            &mut input.drive,
+            driver,
+            flags,
+            std::mem::size_of::<PlaneDriveIn>(),
+        );
+        input.sessions_buf = self.sessions.as_mut_ptr();
+        input.sessions_cap = self.sessions.len();
+        self.frame.heads()
     }
 }
 

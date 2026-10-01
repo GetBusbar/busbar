@@ -80,7 +80,7 @@
 #   - A sibling checkout `../busbar-store-postgres` (GetBusbar/busbar-store-postgres) next to this repo — REQUIRED
 #     (not optional): Phase 2 runs that repo's own `cargo test --workspace` as the Postgres gate.
 #   - Optionally, sibling checkouts for every other plugins.yaml entry (`../busbar-store-sqlite`,
-#     `../busbar-store-mysql`, `../busbar-store-valkey`, `../busbar-secret-vault`, `../busbar-auth-oidc`, `../busbar-hook-headroom`,
+#     `../busbar-store-mysql`, `../busbar-store-valkey`, `../busbar-secret-vault`, `../busbar-auth-oidc`,
 #     `../busbar-hook-webrequest`) next to this repo. Each of these plugins has been fully extracted — its
 #     own repo now owns 100% of its logic + release-gate proof (see that repo's own CI). If a
 #     sibling is present, its phase below runs the real proof against it; if absent, that phase is
@@ -323,15 +323,13 @@ while read -r _pr; do
     *)               add_phase "$_pid" yes "plugin phase for ${_pr}" ;;
   esac
 done <<<"$(all_plugin_repos)"
-# THE THREE SPECIAL (non-suite) PLUGIN PHASES, DERIVED LIKE THE SUITE ONES. Their bodies below are
-# keyed by repo (they build ../busbar-store-sqlite, ../busbar-hook-headroom, ../busbar-hook-webrequest), so their ids come
+# THE TWO SPECIAL (non-suite) PLUGIN PHASES, DERIVED LIKE THE SUITE ONES. Their bodies below are
+# keyed by repo (they build ../busbar-store-sqlite, ../busbar-hook-webrequest), so their ids come
 # from plugin_phase_id on that repo -- the SAME function the registry used above. They used to be
 # written as literals (phase-1-sqlite-binary, ...) while the registry derived them from the plugins.yaml
 # ALIAS, so one alias rename made every segmented run record the phase `not-in-segment` and skip it.
 SQLITE_BINARY_PHASE="$(plugin_phase_id busbar-store-sqlite)" \
   || setup_fail "plugins.yaml has no busbar-store-sqlite entry, but Phase 1 builds ../busbar-store-sqlite: the registry and this gate disagree."
-HEADROOM_SMOKE_PHASE="$(plugin_phase_id busbar-hook-headroom)" \
-  || setup_fail "plugins.yaml has no busbar-hook-headroom entry, but Phase 5 smokes ../busbar-hook-headroom: the registry and this gate disagree."
 WEBREQUEST_SMOKE_PHASE="$(plugin_phase_id busbar-hook-webrequest)" \
   || setup_fail "plugins.yaml has no busbar-hook-webrequest entry, but Phase 5 smokes ../busbar-hook-webrequest: the registry and this gate disagree."
 add_phase phase-admin-cli          yes "Phase: busbar-admin CLI driven against the fresh busbar"
@@ -1804,9 +1802,8 @@ while IFS=$'\t' read -r P_REPO P_DIR _ _ P_SERVICE P_RELGATE P_GATE _; do
   fi
 done <<<"$REGISTRY_LIST"
 
-# ── Phase 5: Headroom / Webrequest — local --validate dlopen smoke test ────────────────────────────
-phase "Phase 5: headroom-hook / webrequest-hook — local busbar --validate dlopen smoke test"
-HEADROOM_SRC="${REPO_ROOT}/../busbar-hook-headroom"
+# ── Phase 5: Webrequest — local --validate dlopen smoke test ────────────────────────────────────────
+phase "Phase 5: webrequest-hook — local busbar --validate dlopen smoke test"
 WEBREQUEST_SRC="${REPO_ROOT}/../busbar-hook-webrequest"
 
 run_validate_smoke() {
@@ -1854,17 +1851,6 @@ EOF
   echo "$out" | grep -q "1 validated" || { echo "  ${name} did not validate as loaded: $out" >&2; exit 1; }
   ok "${name}: busbar --validate confirms the real dlopen'd plugin loads (${out##*$'\n'})"
 }
-
-if ! phase_selected "${HEADROOM_SMOKE_PHASE}"; then
-  record_phase_skip "${HEADROOM_SMOKE_PHASE}" "not-in-segment"
-elif [ -d "$HEADROOM_SRC" ]; then
-  begin_phase "${HEADROOM_SMOKE_PHASE}" "Phase 5: headroom-hook — busbar --validate dlopen smoke"
-  run_validate_smoke "headroom" "${HEADROOM_SRC}/Cargo.toml" "busbar_hook_headroom" hook needs
-  end_phase ran
-else
-  note "SKIP: ../busbar-hook-headroom not present as a sibling checkout on this machine."
-  record_phase_skip "${HEADROOM_SMOKE_PHASE}" "sibling-missing"
-fi
 
 if ! phase_selected "${WEBREQUEST_SMOKE_PHASE}"; then
   record_phase_skip "${WEBREQUEST_SMOKE_PHASE}" "not-in-segment"
@@ -1950,11 +1936,11 @@ if phase_selected "${SQLITE_BINARY_PHASE}"; then
     echo "SQLite phase passed with real assertions (sibling checkout)."
   fi
 fi
-if phase_selected "${HEADROOM_SMOKE_PHASE}" || phase_selected "${WEBREQUEST_SMOKE_PHASE}"; then
-  if [ ! -d "$HEADROOM_SRC" ] || [ ! -d "$WEBREQUEST_SRC" ]; then
-    echo "NOTE: one or both hook-plugin sibling repos were not present locally — that phase was"
-    echo "partially or fully skipped. Run on a machine with ../busbar-hook-headroom and ../busbar-hook-webrequest"
-    echo "checked out for full coverage before tagging, or confirm docker.yml's own smoke test is green."
+if phase_selected "${WEBREQUEST_SMOKE_PHASE}"; then
+  if [ ! -d "$WEBREQUEST_SRC" ]; then
+    echo "NOTE: the hook-plugin sibling repo was not present locally — that phase was skipped."
+    echo "Run on a machine with ../busbar-hook-webrequest checked out for full coverage before tagging,"
+    echo "or confirm that repo's own CI is green."
   fi
 fi
 

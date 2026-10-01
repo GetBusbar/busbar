@@ -81,12 +81,6 @@ pub fn install_plugin_observer(observer: &'static dyn PluginObserver) -> bool {
     OBSERVER.set(observer).is_ok()
 }
 
-/// Whether a host observer has been installed — for a boot cell that wants to say so, and for the
-/// tests that prove the un-installed path drops rather than panics.
-pub fn observer_installed() -> bool {
-    OBSERVER.get().is_some()
-}
-
 /// Hand one decoded envelope's back-channel to the installed observer, if any. A no-op when the
 /// envelope is bare, so the common case costs one pair of `is_empty` checks and no call at all.
 pub(crate) fn fold<R>(plugin: &str, kind: &str, envelope: &Envelope<R>) {

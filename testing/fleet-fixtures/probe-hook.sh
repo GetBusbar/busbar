@@ -10,7 +10,7 @@
 #     fixture, drive a chat request through the pool it is attached to, and assert the SIDECAR
 #     received the forwarded call — the hook demonstrably fired on the request path. Plus the
 #     first-party validation log line.
-#   * IN-PROCESS content-intent hook (headroom): assert the two boot log lines, then drive a request
+#   * IN-PROCESS content-intent hook (a `prompt: rw` gate): assert the two boot log lines, then drive a request
 #     and assert busbar still served it (the hook ran in-band without breaking the path).
 #
 # Usage: BUSBAR_BIN=<busbar> PLUGIN_DIR=<dir> LEDGER=<tsv> \

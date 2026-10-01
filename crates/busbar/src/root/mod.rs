@@ -84,6 +84,7 @@ pub mod ledger_identity;
 pub mod linked;
 pub(crate) mod loader;
 pub mod migration;
+pub mod observe;
 pub mod otlp;
 #[cfg(feature = "plane-decisions")]
 pub mod plane_decisions;

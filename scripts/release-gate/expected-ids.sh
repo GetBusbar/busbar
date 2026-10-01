@@ -116,9 +116,3 @@ emit "site:download-page"     "the marketing download page advertises this versi
 # ── Fleet + self-consistency ────────────────────────────────────────────────────────────────────
 emit "plugins:fleet-released" "every first-party plugin in plugins.yaml has a published release"
 emit "contract:drift"         "release-stage.yml still derives its build matrix from the contract, and names no target the contract does not declare"
-
-# ── The bundle image (getbusbar/busbar-headroom), rebuilt on the new busbar ─────────────────────
-# The one downstream docker-checks (which verifies the ENGINE image) does not cover: the bundle that
-# bakes busbar + the headroom hook, on its own version line, rebuilt by the fan-out.
-emit "bundle:headroom-latest" "the getbusbar/busbar-headroom bundle :latest was (re)pushed and pulls"
-emit "bundle:headroom-boot"   "the rebuilt headroom bundle actually boots and serves ok on /healthz"

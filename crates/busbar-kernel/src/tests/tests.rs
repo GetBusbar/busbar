@@ -2384,7 +2384,7 @@ fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
 /// the unwind tears down hyper's connection task and the client sees a reset instead of a response.
 #[tokio::test]
 async fn a_panicking_handler_fails_only_its_own_request() {
-    use busbar_plugin_loader::{RouteAuth, RouteMethod};
+    use busbar_contract::abi::cold::endpoint::{RouteAuth, RouteMethod};
     crate::metrics::init();
     let app = crate::test_support::TestApp::new().build();
     let handle = std::sync::Arc::new(crate::state::AppHandle::new(app));
