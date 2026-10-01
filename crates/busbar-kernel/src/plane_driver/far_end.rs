@@ -66,6 +66,7 @@ use busbar_contract::transport::registry::status_ns;
 use busbar_contract::transport::wire::{WireStatus, WireStatusClass};
 
 use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
+use super::HeadFields;
 
 /// The bytes one read of the far end takes.
 const READ_BYTES: usize = 16 * 1024;
@@ -319,6 +320,22 @@ impl Drop for Head {
     fn drop(&mut self) {
         self.wipe();
     }
+}
+
+/// Drop the plane's per-connection fields: busbar is invisible to upstreams (OWNER HARD RULE
+/// 2026-10-02), and the mechanics are the connection's own. A hop-by-hop field, one a `connection`
+/// field nominates, `host` and `content-length` never reach the wire; the connection re-derives them
+/// ([`crate::proxy::re_derived`], the one statement of the set).
+fn strip_re_derived(fields: &mut HeadFields) {
+    let nominated: Vec<Vec<u8>> = fields
+        .iter()
+        .filter(|(n, _)| n.eq_ignore_ascii_case(b"connection"))
+        .map(|(_, v)| v.clone())
+        .collect();
+    fields.retain(|(n, _)| {
+        !std::str::from_utf8(n)
+            .is_ok_and(|n| crate::proxy::re_derived(n, nominated.iter().map(Vec::as_slice)))
+    });
 }
 
 /// A far-end piece that ends the attempt without reaching the plane: fail over.
@@ -724,8 +741,9 @@ impl EgressFarEnd<'_> {
     }
 
     /// Send the attempt: the dispatch record, the auth fields, the connector's open.
-    async fn send_attempt(&self, token: &Pass<Route>, request: OutboundRequest) -> bool {
+    async fn send_attempt(&self, token: &Pass<Route>, mut request: OutboundRequest) -> bool {
         let e = self.egress;
+        strip_re_derived(&mut request.fields);
         let (destination, record) = {
             let w = self.lock();
             let Some(live) = w.live.as_ref() else {
@@ -785,10 +803,12 @@ impl EgressFarEnd<'_> {
                 f.value.expose_secret().clone(),
             )
         }));
+        // A plane field named like an auth field never doubles it: the auth binding's stands.
         head.0.extend(
             request
                 .fields
                 .iter()
+                .filter(|(n, _)| !auth.iter().any(|f| f.name.eq_ignore_ascii_case(n)))
                 .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone())),
         );
         drop(auth);

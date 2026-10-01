@@ -73,8 +73,8 @@ use busbar_kernel::proxy::proxy_vocab::fire_stage_taps;
 use busbar_kernel::proxy::{APPLICATION_JSON, KIND_NOT_FOUND};
 
 use crate::engine::{
-    capture_stage_shape, forwardable_client_header_names, EngineTables, GateRejected, LazyBody,
-    NativeRuntime, TapCell, UsageSink, WeightedLane,
+    capture_stage_shape, EngineTables, GateRejected, LazyBody, NativeRuntime, TapCell, UsageSink,
+    WeightedLane,
 };
 use crate::native_ingress::affinity_header_for;
 
@@ -323,10 +323,9 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
         .get(affinity_header_for(rt, destination))
         .and_then(|h| h.to_str().ok())
         .map(str::to_string);
-    // Opt-in client beta/version headers, collected against this plane's forwardable set. Empty ⇒
-    // byte-identical egress.
-    let client_fwd =
-        busbar_kernel::proxy::collect_client_headers(headers, &forwardable_client_header_names());
+    // Every client header but the per-connection mechanics and the ones the dialects govern, for a
+    // same-dialect egress to forward unchanged (busbar is invisible to upstreams).
+    let client_fwd = busbar_kernel::proxy::collect_client_headers(headers, crate::engine::governed);
 
     // THE PLAN, named before the walk runs it: one leg per candidate the destination resolved to,
     // in the order the walk was handed them. The lane and the dial target are the deployment's own

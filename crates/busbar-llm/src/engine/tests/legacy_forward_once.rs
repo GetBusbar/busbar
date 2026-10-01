@@ -74,9 +74,8 @@ pub(super) async fn forward_once(
     // degraded path has no `cands` in scope, so the caller passes the already-resolved override here
     // (mirrors the hot path's `effective_reasoning`).
     reasoning_override: Option<bool>,
-    // The allowlisted client beta/version headers the caller actually sent (from
-    // `RequestCtx::forwarded_client_headers`). Forwarded to the upstream SCOPED to this lane's egress
-    // dialect (no cross-dialect leak), mirroring the hot path. Empty ⇒ byte-identical egress here too.
+    // The collected client headers (from `RequestCtx::forwarded_client_headers`), forwarded on a
+    // same-dialect hop only, mirroring the hot path.
     client_fwd: &[(axum::http::HeaderName, axum::http::HeaderValue)],
 ) -> Result<Response, ()> {
     // App-retype WEDGE 3: this degraded-path dispatch's upstream-failure/failover telemetry and every
@@ -291,15 +290,11 @@ pub(super) async fn forward_once(
         ACCEPT,
         axum::http::HeaderValue::from_static(op.egress_accept(egress_name, wants_stream)),
     );
-    // CLIENT-HEADER FIDELITY (mirrors the main forward path): forward the allowlisted client
-    // beta/version headers, scoped to THIS lane's egress dialect (no cross-dialect leak) via the
-    // plane's per-destination allowlist. No-op on an empty set, so this degraded route stays
-    // byte-identical when the caller sent none.
-    busbar_kernel::proxy::apply_client_headers(
-        &mut egress_headers,
-        client_fwd,
-        &crate::engine::client_header_names_for_egress(egress_name),
-    );
+    // Busbar is invisible to upstreams (mirrors the main forward path): a same-dialect hop forwards
+    // every collected client header; a translated hop none.
+    if ingress_protocol == egress_name {
+        busbar_kernel::proxy::apply_client_headers(&mut egress_headers, client_fwd);
+    }
     // The precomputed egress `http::Uri` (mirrors the main forward path): hand-assembled request,
     // no builder machinery, no per-request compose + WHATWG parse.
     let hreq = crate::engine::egress_request(target.uri.clone(), egress_headers, payload);

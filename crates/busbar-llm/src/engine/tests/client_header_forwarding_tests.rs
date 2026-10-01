@@ -1,30 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! CLIENT-HEADER FIDELITY — the client-header FORWARDING golden.
+//! BUSBAR IS INVISIBLE TO UPSTREAMS (OWNER HARD RULE 2026-10-02) — the client-header forwarding
+//! golden.
 //!
-//! busbar rebuilds the egress header map fresh (lane creds + CT/UA/Accept) and historically DROPPED
-//! every client-supplied request header, silently discarding the caller's GA/beta/version selectors
-//! (`anthropic-beta`, `OpenAI-Beta`, `anthropic-version`). The forwarding seam restores that fidelity
-//! as a NEUTRAL mechanism plus a PLANE policy:
-//!
-//!   * NEUTRAL (`busbar_kernel::proxy::{collect,apply}_client_headers`) — forwards EXACTLY the set
-//!     of header names it is handed, hard-coding NONE. Proven by `neutral_mechanism_*` below.
-//!   * PLANE (`crate::engine::{FORWARDED_CLIENT_HEADERS, forwardable_client_header_names,
-//!     client_header_names_for_egress}`) — the dialect-scoped allowlist that supplies those names. The
-//!     dialect tokens live HERE in the LLM plane, never in the neutral crate.
-//!
-//! The end-to-end invariants this file pins (each drives a real request through
-//! `forward_with_pool_keyed` — the production forward entry that carries the collected allowlist — and
-//! inspects the exact header set the `MockServer` upstream received):
-//!
-//!   1. FORWARD — an allowlisted header the caller actually sent REACHES the matching-dialect upstream
-//!      (and, for `anthropic-version`, the caller's explicit value OVERRIDES busbar's pinned default).
-//!   2. NO CROSS-DIALECT LEAK — a beta header meant for one dialect is NOT forwarded when the request
-//!      is routed to a DIFFERENT dialect's lane.
-//!   3. OPT-IN — a request that sends NO allowlisted header leaves the egress map untouched.
-//!   4. NON-ALLOWLISTED DROP — a client header that is NOT on the plane's allowlist is never captured,
-//!      so it never reaches the upstream.
+//! On a same-dialect route every client header and body field passes through unchanged, except what
+//! busbar governs: the dialects' credential headers and tenant selectors (declared as data in
+//! `busbar_plane_llm::dialect`, replaced from busbar's config), and the per-connection mechanics
+//! (hop-by-hop, `host`, `content-length`), which the upstream connection re-derives. A translated
+//! route translates what maps and drops the rest; no header maps. Each test drives a real request
+//! through `forward_with_pool_keyed` and inspects what the `MockServer` upstream received.
 
 use crate::engine::forward_with_pool_keyed;
 use crate::test_support::*;
@@ -37,6 +22,10 @@ use std::sync::Arc;
 const CLIENT_ANTHROPIC_VERSION: &str = "2020-01-01-clienttest";
 const CLIENT_ANTHROPIC_BETA: &str = "prompt-caching-2024-07-31,message-batches-2024-09-24";
 const CLIENT_OPENAI_BETA: &str = "assistants=v2";
+/// An arbitrary header no table anywhere names.
+const TRACE: (&str, &str) = ("x-client-trace", "abc");
+/// The lane's own upstream key, the one credential the upstream may see.
+const LANE_KEY: &str = "sk-lane-upstream";
 
 fn anthropic_body() -> bytes::Bytes {
     serde_json::to_vec(&json!({
@@ -48,25 +37,81 @@ fn anthropic_body() -> bytes::Bytes {
     .into()
 }
 
-/// Build the collected forwarded-header set from a client HeaderMap exactly as the native ingress
-/// handler does — through the NEUTRAL collector fed the PLANE's forwardable-name set (opt-in filter).
+fn openai_body() -> bytes::Bytes {
+    serde_json::to_vec(&json!({
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "hi"}],
+        "x_vendor_flag": true
+    }))
+    .unwrap()
+    .into()
+}
+
+fn openai_reply() -> serde_json::Value {
+    json!({
+        "id": "chatcmpl-x",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "test-model",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+    })
+}
+
+/// The collected set, exactly as the native ingress builds it: the neutral collector asked with the
+/// plane's governed-name data.
 fn collect(pairs: &[(&'static str, &str)]) -> Vec<(HeaderName, HeaderValue)> {
     let mut hm = HeaderMap::new();
     for (name, value) in pairs {
-        hm.insert(
+        hm.append(
             HeaderName::from_static(name),
             HeaderValue::from_str(value).unwrap(),
         );
     }
-    busbar_kernel::proxy::collect_client_headers(
-        &hm,
-        &crate::engine::forwardable_client_header_names(),
-    )
+    busbar_kernel::proxy::collect_client_headers(&hm, crate::engine::governed)
+}
+
+/// One upstream of `protocol` answering `reply`, the lane keyed with [`LANE_KEY`].
+async fn upstream(
+    protocol: &'static str,
+    reply: serde_json::Value,
+) -> (
+    Arc<MockServerState>,
+    MockServer,
+    Arc<busbar_kernel::state::App>,
+) {
+    upstream_of(protocol, reply, None).await
+}
+
+/// [`upstream`], the lane's provider named when `provider` is.
+async fn upstream_of(
+    protocol: &'static str,
+    reply: serde_json::Value,
+    provider: Option<&str>,
+) -> (
+    Arc<MockServerState>,
+    MockServer,
+    Arc<busbar_kernel::state::App>,
+) {
+    crate::testkit::install_test_seams();
+    let state = Arc::new(MockServerState::new());
+    state.push(MockResponse::Ok {
+        status: StatusCode::OK,
+        body: reply,
+    });
+    let server = MockServer::new(state.clone()).await;
+    let mut lane = LaneSpec::new("test-model", protocol, &server.base_url()).api_key(LANE_KEY);
+    if let Some(p) = provider {
+        lane = lane.provider(p);
+    }
+    let app = TestApp::new().lane(lane).pool("p", &[(0, 1)]).build();
+    (state, server, app)
 }
 
 async fn drive<A: busbar_kernel::test_support::BuiltAppSeam + ?Sized>(
     app: &Arc<A>,
     ingress_protocol: &'static str,
+    body: bytes::Bytes,
     client_fwd: Vec<(HeaderName, HeaderValue)>,
 ) {
     let resp = forward_with_pool_keyed(
@@ -77,7 +122,7 @@ async fn drive<A: busbar_kernel::test_support::BuiltAppSeam + ?Sized>(
             weight: 1,
             attempt_timeout_ms: None,
         }],
-        anthropic_body(),
+        body,
         None,
         None,
         "p",
@@ -92,48 +137,225 @@ async fn drive<A: busbar_kernel::test_support::BuiltAppSeam + ?Sized>(
     let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
 }
 
-/// FORWARD: a client `anthropic-beta` + `anthropic-version` on an Anthropic-ingress request routed to
-/// an Anthropic lane REACHES the upstream verbatim, and the caller's version OVERRIDES busbar's pinned
-/// default.
+/// SAME DIALECT (anthropic): the caller's `anthropic-beta`, `anthropic-version` and an arbitrary
+/// header reach the upstream verbatim; the caller's version OVERRIDES busbar's pinned default.
 #[tokio::test]
-async fn client_anthropic_beta_reaches_matching_anthropic_upstream() {
-    crate::testkit::install_test_seams();
-    let state = Arc::new(MockServerState::new());
-    state.push(MockResponse::Ok {
-        status: StatusCode::OK,
-        body: json!({ "content": [] }),
-    });
-    let server = MockServer::new(state.clone()).await;
-    let app = TestApp::new()
-        .lane(LaneSpec::new(
-            "test-model",
-            crate::proto_codec::PROTO_ANTHROPIC,
-            &server.base_url(),
-        ))
-        .pool("p", &[(0, 1)])
-        .build();
-
+async fn same_dialect_anthropic_forwards_every_client_header() {
+    let (state, server, app) = upstream(
+        crate::proto_codec::PROTO_ANTHROPIC,
+        json!({ "content": [] }),
+    )
+    .await;
     drive(
         &app,
         "anthropic",
+        anthropic_body(),
         collect(&[
             ("anthropic-beta", CLIENT_ANTHROPIC_BETA),
             ("anthropic-version", CLIENT_ANTHROPIC_VERSION),
+            TRACE,
         ]),
     )
     .await;
-
+    let seen = |name: &str| state.get_last_request_header(name);
     assert_eq!(
-        state.get_last_request_header("anthropic-beta").as_deref(),
-        Some(CLIENT_ANTHROPIC_BETA),
-        "the client anthropic-beta must reach the matching Anthropic upstream verbatim"
+        seen("anthropic-beta").as_deref(),
+        Some(CLIENT_ANTHROPIC_BETA)
     );
+    assert_eq!(
+        seen("anthropic-version").as_deref(),
+        Some(CLIENT_ANTHROPIC_VERSION)
+    );
+    assert_eq!(
+        seen(TRACE.0).as_deref(),
+        Some(TRACE.1),
+        "an arbitrary header passes"
+    );
+    server.shutdown().await;
+}
+
+/// SAME DIALECT (openai): `OpenAI-Beta`, an arbitrary header and the caller's own `user-agent`
+/// reach the upstream, and an UNKNOWN body field rides through untouched.
+#[tokio::test]
+async fn same_dialect_openai_forwards_headers_and_unknown_body_fields() {
+    let (state, server, app) = upstream(crate::proto_codec::PROTO_OPENAI, openai_reply()).await;
+    drive(
+        &app,
+        "openai",
+        openai_body(),
+        collect(&[
+            ("openai-beta", CLIENT_OPENAI_BETA),
+            TRACE,
+            ("user-agent", "OpenAI/Python 9.9.9"),
+        ]),
+    )
+    .await;
+    let seen = |name: &str| state.get_last_request_header(name);
+    assert_eq!(seen("openai-beta").as_deref(), Some(CLIENT_OPENAI_BETA));
+    assert_eq!(seen(TRACE.0).as_deref(), Some(TRACE.1));
+    assert_eq!(
+        seen("user-agent").as_deref(),
+        Some("OpenAI/Python 9.9.9"),
+        "the caller's user-agent wins over busbar's native default"
+    );
+    let body: serde_json::Value =
+        serde_json::from_slice(&state.get_last_request_body().unwrap()).unwrap();
+    assert_eq!(
+        body["x_vendor_flag"],
+        json!(true),
+        "an unknown body field passes"
+    );
+    server.shutdown().await;
+}
+
+/// GOVERNED (credential): the caller's busbar credential, in any carrier, never reaches the
+/// upstream; the upstream sees the lane's own key.
+#[tokio::test]
+async fn caller_credential_is_replaced_by_the_lane_credential() {
+    let (state, server, app) = upstream(crate::proto_codec::PROTO_OPENAI, openai_reply()).await;
+    drive(
+        &app,
+        "openai",
+        openai_body(),
+        collect(&[
+            ("authorization", "Bearer busbar-caller-key"),
+            ("x-api-key", "busbar-caller-key"),
+            ("x-goog-api-key", "busbar-caller-key"),
+            ("api-key", "busbar-caller-key"),
+        ]),
+    )
+    .await;
+    let seen = |name: &str| state.get_last_request_header(name);
+    assert_eq!(seen("authorization"), Some(format!("Bearer {LANE_KEY}")));
+    for carrier in ["x-api-key", "x-goog-api-key", "api-key"] {
+        assert_eq!(
+            seen(carrier),
+            None,
+            "{carrier}: the caller's key never goes upstream"
+        );
+    }
+    server.shutdown().await;
+}
+
+/// GOVERNED (tenant selectors): the caller's `OpenAI-Organization` / `OpenAI-Project` are ignored;
+/// what goes upstream comes from busbar's config, which sets none.
+#[tokio::test]
+async fn caller_tenant_selectors_are_ignored() {
+    let (state, server, app) = upstream(crate::proto_codec::PROTO_OPENAI, openai_reply()).await;
+    drive(
+        &app,
+        "openai",
+        openai_body(),
+        collect(&[
+            ("openai-organization", "org-caller"),
+            ("openai-project", "proj-caller"),
+            TRACE,
+        ]),
+    )
+    .await;
+    let seen = |name: &str| state.get_last_request_header(name);
+    assert_eq!(seen("openai-organization"), None);
+    assert_eq!(seen("openai-project"), None);
+    assert_eq!(seen(TRACE.0).as_deref(), Some(TRACE.1));
+    server.shutdown().await;
+}
+
+/// MECHANICS: the caller's hop-by-hop fields (and a field its `connection` nominates), `host` and
+/// `content-length` never reach the upstream; the upstream connection derives its own.
+#[tokio::test]
+async fn hop_by_hop_host_and_length_are_re_derived() {
+    let (state, server, app) = upstream(crate::proto_codec::PROTO_OPENAI, openai_reply()).await;
+    let body = openai_body();
+    drive(
+        &app,
+        "openai",
+        body.clone(),
+        collect(&[
+            ("connection", "keep-alive, x-nominated"),
+            ("x-nominated", "1"),
+            ("keep-alive", "timeout=5"),
+            ("te", "trailers"),
+            ("upgrade", "websocket"),
+            ("proxy-authorization", "Basic Zm9v"),
+            ("host", "client.example"),
+            ("content-length", "9999"),
+            TRACE,
+        ]),
+    )
+    .await;
+    let seen = |name: &str| state.get_last_request_header(name);
+    for gone in [
+        "x-nominated",
+        "keep-alive",
+        "te",
+        "upgrade",
+        "proxy-authorization",
+    ] {
+        assert_eq!(seen(gone), None, "{gone} is per-connection");
+    }
+    assert_ne!(seen("host").as_deref(), Some("client.example"));
+    assert_ne!(seen("content-length").as_deref(), Some("9999"));
+    assert_eq!(seen(TRACE.0).as_deref(), Some(TRACE.1));
+    server.shutdown().await;
+}
+
+/// TRANSLATED: an anthropic request routed to an openai lane forwards no client header (no header
+/// maps between the two dialects) and drops the body member the far dialect cannot carry.
+#[tokio::test]
+async fn translated_route_drops_what_does_not_map() {
+    let (state, server, app) = upstream_of(
+        crate::proto_codec::PROTO_OPENAI,
+        openai_reply(),
+        Some("zai"),
+    )
+    .await;
+    let body: bytes::Bytes = serde_json::to_vec(&json!({
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 100,
+        "x_vendor_flag": true
+    }))
+    .unwrap()
+    .into();
+    drive(
+        &app,
+        "anthropic",
+        body,
+        collect(&[("anthropic-beta", CLIENT_ANTHROPIC_BETA), TRACE]),
+    )
+    .await;
+    let seen = |name: &str| state.get_last_request_header(name);
+    assert_eq!(seen("anthropic-beta"), None, "no cross-dialect header leak");
+    assert_eq!(
+        seen(TRACE.0),
+        None,
+        "a translated route forwards no client header"
+    );
+    let sent: serde_json::Value =
+        serde_json::from_slice(&state.get_last_request_body().unwrap()).unwrap();
+    assert!(
+        sent.get("x_vendor_flag").is_none(),
+        "an untranslatable member is dropped"
+    );
+    server.shutdown().await;
+}
+
+/// A request that sends no client header leaves busbar's own egress headers standing.
+#[tokio::test]
+async fn no_client_header_leaves_egress_unchanged() {
+    let (state, server, app) = upstream(
+        crate::proto_codec::PROTO_ANTHROPIC,
+        json!({ "content": [] }),
+    )
+    .await;
+    drive(&app, "anthropic", anthropic_body(), collect(&[])).await;
+    assert_eq!(state.get_last_request_header("anthropic-beta"), None);
     assert_eq!(
         state
             .get_last_request_header("anthropic-version")
             .as_deref(),
-        Some(CLIENT_ANTHROPIC_VERSION),
-        "the caller's explicit anthropic-version must OVERRIDE busbar's pinned default"
+        Some("2023-06-01"),
+        "busbar's own pinned anthropic-version stands"
     );
     server.shutdown().await;
 }
@@ -181,275 +403,40 @@ async fn anthropic_egress_carries_exactly_the_declared_headers() {
     }
 }
 
-/// FORWARD (OpenAI dialect): a client `OpenAI-Beta` on an OpenAI-ingress request routed to an OpenAI
-/// lane reaches the upstream.
-#[tokio::test]
-async fn client_openai_beta_reaches_matching_openai_upstream() {
-    crate::testkit::install_test_seams();
-    let state = Arc::new(MockServerState::new());
-    state.push(MockResponse::Ok {
-        status: StatusCode::OK,
-        body: json!({
-            "id": "chatcmpl-x",
-            "object": "chat.completion",
-            "created": 1,
-            "model": "test-model",
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1}
-        }),
-    });
-    let server = MockServer::new(state.clone()).await;
-    let app = TestApp::new()
-        .lane(LaneSpec::new(
-            "test-model",
-            crate::proto_codec::PROTO_OPENAI,
-            &server.base_url(),
-        ))
-        .pool("p", &[(0, 1)])
-        .build();
-
-    drive(
-        &app,
-        "openai",
-        collect(&[("openai-beta", CLIENT_OPENAI_BETA)]),
-    )
-    .await;
-
-    assert_eq!(
-        state.get_last_request_header("openai-beta").as_deref(),
-        Some(CLIENT_OPENAI_BETA),
-        "the client OpenAI-Beta must reach the matching OpenAI upstream"
-    );
-    server.shutdown().await;
-}
-
-/// NO CROSS-DIALECT LEAK: a client `anthropic-beta` on an Anthropic-ingress request that is routed to
-/// an OpenAI lane (cross-protocol hop) must NOT ride to the OpenAI upstream — `anthropic-beta` is
-/// allowlisted for the `anthropic` dialect only, so the egress allowlist for `openai` excludes it.
-#[tokio::test]
-async fn client_anthropic_beta_does_not_leak_to_openai_upstream() {
-    crate::testkit::install_test_seams();
-    let state = Arc::new(MockServerState::new());
-    state.push(MockResponse::Ok {
-        status: StatusCode::OK,
-        body: json!({
-            "id": "chatcmpl-x",
-            "object": "chat.completion",
-            "created": 1,
-            "model": "glm",
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1}
-        }),
-    });
-    let server = MockServer::new(state.clone()).await;
-    // Lane speaks OpenAI; ingress is Anthropic → the anthropic-beta the client sent is meant for the
-    // Anthropic dialect and must be dropped at this OpenAI egress.
-    let app = TestApp::new()
-        .lane(
-            LaneSpec::new(
-                "test-model",
-                crate::proto_codec::PROTO_OPENAI,
-                &server.base_url(),
-            )
-            .provider("zai"),
-        )
-        .pool("p", &[(0, 1)])
-        .build();
-
-    drive(
-        &app,
-        "anthropic",
-        collect(&[("anthropic-beta", CLIENT_ANTHROPIC_BETA)]),
-    )
-    .await;
-
-    assert_eq!(
-        state.get_last_request_header("anthropic-beta"),
-        None,
-        "an anthropic-beta must NOT leak cross-dialect to an OpenAI upstream"
-    );
-    server.shutdown().await;
-}
-
-/// OPT-IN: a request that sends NO allowlisted header forwards nothing — the upstream sees no
-/// `anthropic-beta`, and `anthropic-version` remains busbar's own pinned default (NOT the client
-/// sentinel). This is the invariant that keeps the money-path oracles byte-identical.
-#[tokio::test]
-async fn no_client_beta_leaves_egress_unchanged() {
-    crate::testkit::install_test_seams();
-    let state = Arc::new(MockServerState::new());
-    state.push(MockResponse::Ok {
-        status: StatusCode::OK,
-        body: json!({ "content": [] }),
-    });
-    let server = MockServer::new(state.clone()).await;
-    let app = TestApp::new()
-        .lane(LaneSpec::new(
-            "test-model",
-            crate::proto_codec::PROTO_ANTHROPIC,
-            &server.base_url(),
-        ))
-        .pool("p", &[(0, 1)])
-        .build();
-
-    // No allowlisted header collected → nothing forwarded.
-    drive(&app, "anthropic", collect(&[])).await;
-
-    assert_eq!(
-        state.get_last_request_header("anthropic-beta"),
-        None,
-        "no anthropic-beta is forwarded when the client sent none (opt-in)"
-    );
-    let version = state.get_last_request_header("anthropic-version");
-    assert!(
-        version.is_some(),
-        "busbar still sends its own pinned anthropic-version"
-    );
-    assert_ne!(
-        version.as_deref(),
-        Some(CLIENT_ANTHROPIC_VERSION),
-        "with no client version sent, busbar's default stands — not the client sentinel"
-    );
-    server.shutdown().await;
-}
-
-/// NON-ALLOWLISTED DROP: a client sends BOTH an allowlisted `anthropic-beta` AND an arbitrary
-/// `x-secret-header` that is NOT on the plane's allowlist. The allowlisted one reaches the upstream;
-/// the non-allowlisted one is never even captured, so it never reaches the upstream.
-#[tokio::test]
-async fn non_allowlisted_client_header_is_not_forwarded() {
-    crate::testkit::install_test_seams();
-    let state = Arc::new(MockServerState::new());
-    state.push(MockResponse::Ok {
-        status: StatusCode::OK,
-        body: json!({ "content": [] }),
-    });
-    let server = MockServer::new(state.clone()).await;
-    let app = TestApp::new()
-        .lane(LaneSpec::new(
-            "test-model",
-            crate::proto_codec::PROTO_ANTHROPIC,
-            &server.base_url(),
-        ))
-        .pool("p", &[(0, 1)])
-        .build();
-
-    drive(
-        &app,
-        "anthropic",
-        collect(&[
-            ("anthropic-beta", CLIENT_ANTHROPIC_BETA),
-            ("x-secret-header", "leak-me"),
-        ]),
-    )
-    .await;
-
-    assert_eq!(
-        state.get_last_request_header("anthropic-beta").as_deref(),
-        Some(CLIENT_ANTHROPIC_BETA),
-        "the allowlisted anthropic-beta still reaches the upstream"
-    );
-    assert_eq!(
-        state.get_last_request_header("x-secret-header"),
-        None,
-        "a client header that is NOT on the plane allowlist must never be forwarded"
-    );
-    server.shutdown().await;
-}
-
 // ── NEUTRAL-MECHANISM DIRECT TESTS ────────────────────────────────────────────────────────────────
-// These bypass the plane policy entirely and drive `busbar_kernel::proxy::{collect,apply}` with
-// ARBITRARY, made-up header names to prove the neutral mechanism forwards EXACTLY the set it is given
-// and hard-codes nothing — the whole point of the redo.
+// `busbar_kernel::proxy::{collect,apply}_client_headers` with made-up names: the mechanism forwards
+// everything but the mechanics and what the caller says it governs, and names no dialect header.
 
-/// `collect_client_headers` captures exactly the names it is handed — no more (a name not in the set
-/// is ignored) and no less (every name in the set that the caller sent is captured, with multiplicity).
+/// `collect_client_headers` keeps every header, in order and with multiplicity, except the
+/// per-connection mechanics and the governed names.
 #[test]
-fn neutral_collect_captures_exactly_the_given_names() {
+fn neutral_collect_keeps_all_but_mechanics_and_governed() {
     let mut hm = HeaderMap::new();
-    hm.insert(
-        HeaderName::from_static("x-made-up-alpha"),
-        HeaderValue::from_static("a1"),
-    );
-    hm.append(
-        HeaderName::from_static("x-made-up-alpha"),
-        HeaderValue::from_static("a2"),
-    );
-    hm.insert(
-        HeaderName::from_static("x-made-up-beta"),
-        HeaderValue::from_static("b"),
-    );
-    hm.insert(
-        HeaderName::from_static("x-not-requested"),
-        HeaderValue::from_static("nope"),
-    );
-
-    // Ask for two arbitrary names the neutral crate has never heard of.
-    let got =
-        busbar_kernel::proxy::collect_client_headers(&hm, &["x-made-up-alpha", "x-made-up-beta"]);
-
-    // alpha appears twice (multiplicity preserved), beta once, the un-requested name never.
-    let alpha: Vec<_> = got
+    for (n, v) in [
+        ("x-made-up-alpha", "a1"),
+        ("x-made-up-alpha", "a2"),
+        ("x-made-up-governed", "g"),
+        ("connection", "x-made-up-nominated"),
+        ("x-made-up-nominated", "n"),
+        ("transfer-encoding", "chunked"),
+        ("host", "h"),
+        ("content-length", "1"),
+    ] {
+        hm.append(HeaderName::from_static(n), HeaderValue::from_static(v));
+    }
+    let got = busbar_kernel::proxy::collect_client_headers(&hm, |n| n == "x-made-up-governed");
+    let names: Vec<(&str, &str)> = got
         .iter()
-        .filter(|(n, _)| n.as_str() == "x-made-up-alpha")
-        .map(|(_, v)| v.to_str().unwrap())
+        .map(|(n, v)| (n.as_str(), v.to_str().unwrap()))
         .collect();
     assert_eq!(
-        alpha,
-        vec!["a1", "a2"],
-        "multiplicity of a requested name is preserved"
-    );
-    assert!(
-        got.iter()
-            .any(|(n, v)| n.as_str() == "x-made-up-beta" && v == "b"),
-        "a requested name the caller sent is captured"
-    );
-    assert!(
-        got.iter().all(|(n, _)| n.as_str() != "x-not-requested"),
-        "a name NOT in the requested set is never captured — the mechanism hard-codes nothing"
+        names,
+        vec![("x-made-up-alpha", "a1"), ("x-made-up-alpha", "a2")]
     );
 }
 
-/// `apply_client_headers` forwards exactly the names in the `allowed` set onto the egress map: an
-/// arbitrary made-up name in `allowed` is forwarded; a collected name NOT in `allowed` is dropped; an
-/// EMPTY `allowed` forwards nothing.
-#[test]
-fn neutral_apply_forwards_exactly_the_allowed_set() {
-    let collected = vec![
-        (
-            HeaderName::from_static("x-made-up-allowed"),
-            HeaderValue::from_static("yes"),
-        ),
-        (
-            HeaderName::from_static("x-made-up-denied"),
-            HeaderValue::from_static("no"),
-        ),
-    ];
-
-    // Only the arbitrary allowed name rides through — the neutral crate never heard of either name.
-    let mut egress = HeaderMap::new();
-    busbar_kernel::proxy::apply_client_headers(&mut egress, &collected, &["x-made-up-allowed"]);
-    assert_eq!(
-        egress.get("x-made-up-allowed").map(|v| v.to_str().unwrap()),
-        Some("yes"),
-        "a name in the allowed set is forwarded, chosen purely by the caller-supplied data"
-    );
-    assert!(
-        egress.get("x-made-up-denied").is_none(),
-        "a collected name NOT in the allowed set is dropped"
-    );
-
-    // Empty allowlist ⇒ nothing forwarded (byte-identical egress).
-    let mut egress_empty = HeaderMap::new();
-    busbar_kernel::proxy::apply_client_headers(&mut egress_empty, &collected, &[]);
-    assert!(
-        egress_empty.is_empty(),
-        "an empty allowlist forwards nothing — no hidden hard-coded names"
-    );
-}
-
-/// `apply_client_headers` REPLACES a pre-existing egress default with the caller's first value, then
-/// APPENDS subsequent same-name values (multiplicity), for any arbitrary name.
+/// `apply_client_headers` REPLACES a busbar default with the caller's first value and APPENDS the
+/// rest.
 #[test]
 fn neutral_apply_replaces_then_appends() {
     let name = HeaderName::from_static("x-made-up-multi");
@@ -458,19 +445,12 @@ fn neutral_apply_replaces_then_appends() {
         (name.clone(), HeaderValue::from_static("second")),
     ];
     let mut egress = HeaderMap::new();
-    // A busbar default the caller's value must override.
     egress.insert(name.clone(), HeaderValue::from_static("busbar-default"));
-
-    busbar_kernel::proxy::apply_client_headers(&mut egress, &collected, &["x-made-up-multi"]);
-
+    busbar_kernel::proxy::apply_client_headers(&mut egress, &collected);
     let values: Vec<_> = egress
         .get_all(&name)
         .iter()
         .map(|v| v.to_str().unwrap())
         .collect();
-    assert_eq!(
-        values,
-        vec!["first", "second"],
-        "the first caller value REPLACES the busbar default; the second is APPENDED"
-    );
+    assert_eq!(values, vec!["first", "second"]);
 }

@@ -49,6 +49,11 @@ pub struct Dialect {
     pub scheme_alt: &'static str,
     /// The egress-auth scheme that decorates a request to an upstream of this dialect.
     pub egress_scheme: &'static str,
+    /// The request headers busbar GOVERNS for this dialect (lower-case): its credential headers and
+    /// its tenant selectors. A same-dialect route forwards every other client header unchanged; these
+    /// never pass, because busbar's upstream credential and configuration replace them (OWNER HARD
+    /// RULE 2026-10-02, "BUSBAR IS INVISIBLE TO UPSTREAMS", governed fields (1) and (2)).
+    pub governed_headers: &'static [&'static str],
 }
 
 /// The top-level member the four body-carrying dialects name the model under.
@@ -63,6 +68,15 @@ const MODEL: Location = Location::Arrival(ArrivalLocation::FirstFrameJsonPointer
 /// the pattern's first variable, which is why one index serves both.
 const MODEL_IN_PATH: Location = Location::Arrival(ArrivalLocation::PathSegment(0));
 
+/// What the two dialects of one vendor govern: its credential headers (a bearer, and the key header
+/// a re-hosted deployment of it reads) and its two tenant selectors.
+const OPENAI_GOVERNED: &[&str] = &[
+    "authorization",
+    "api-key",
+    "openai-organization",
+    "openai-project",
+];
+
 /// The table, one row per dialect, in the order the codec crate declares them.
 pub const DIALECTS: &[Dialect] = &[
     Dialect {
@@ -76,6 +90,7 @@ pub const DIALECTS: &[Dialect] = &[
         cache_write_pointer: Some("/usage/cache_creation_input_tokens"),
         scheme_alt: "api-key",
         egress_scheme: "bearer",
+        governed_headers: &["authorization", "x-api-key"],
     },
     Dialect {
         name: "openai",
@@ -92,6 +107,7 @@ pub const DIALECTS: &[Dialect] = &[
         cache_write_pointer: None,
         scheme_alt: "bearer",
         egress_scheme: "bearer",
+        governed_headers: OPENAI_GOVERNED,
     },
     Dialect {
         name: "gemini",
@@ -105,6 +121,7 @@ pub const DIALECTS: &[Dialect] = &[
         cache_write_pointer: None,
         scheme_alt: "api-key",
         egress_scheme: "bearer",
+        governed_headers: &["authorization", "x-goog-api-key", "x-goog-user-project"],
     },
     Dialect {
         name: "bedrock",
@@ -118,6 +135,12 @@ pub const DIALECTS: &[Dialect] = &[
         cache_write_pointer: Some("/usage/cacheWriteInputTokens"),
         scheme_alt: "request-signature",
         egress_scheme: "request-signature",
+        governed_headers: &[
+            "authorization",
+            "x-amz-date",
+            "x-amz-content-sha256",
+            "x-amz-security-token",
+        ],
     },
     Dialect {
         name: "responses",
@@ -130,6 +153,7 @@ pub const DIALECTS: &[Dialect] = &[
         cache_write_pointer: Some("/usage/input_tokens_details/cache_write_tokens"),
         scheme_alt: "bearer",
         egress_scheme: "bearer",
+        governed_headers: OPENAI_GOVERNED,
     },
     Dialect {
         name: "cohere",
@@ -143,6 +167,7 @@ pub const DIALECTS: &[Dialect] = &[
         cache_write_pointer: None,
         scheme_alt: "bearer",
         egress_scheme: "bearer",
+        governed_headers: &["authorization"],
     },
 ];
 
@@ -150,6 +175,20 @@ pub const DIALECTS: &[Dialect] = &[
 #[must_use]
 pub fn dialect(name: &str) -> Option<&'static Dialect> {
     DIALECTS.iter().find(|d| d.name == name)
+}
+
+/// Whether busbar governs the request header `name` (compared without case) for ANY dialect.
+///
+/// The union, not the arrival dialect's own row: busbar reads its caller's credential from any of
+/// these carriers whatever the dialect, so a name another dialect declares a credential is never a
+/// header to hand a far end either.
+#[must_use]
+pub fn governed(name: &str) -> bool {
+    DIALECTS.iter().any(|d| {
+        d.governed_headers
+            .iter()
+            .any(|g| name.eq_ignore_ascii_case(g))
+    })
 }
 
 /// Whether a dialect refuses a request that names no response ceiling.

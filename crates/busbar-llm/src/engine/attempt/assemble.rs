@@ -122,13 +122,12 @@ pub(super) async fn build(
             hop.op.egress_accept(hop.egress_name, hop.wants_stream),
         ),
     );
-    // Forward the allowlisted client beta/version headers the caller actually sent, scoped to THIS
-    // egress dialect (no cross-dialect leak). A no-op when the caller sent none.
-    busbar_kernel::proxy::apply_client_headers(
-        &mut egress_headers,
-        hop.client_fwd,
-        &crate::engine::client_header_names_for_egress(hop.egress_name),
-    );
+    // Busbar is invisible to upstreams: a same-dialect hop forwards every client header it
+    // collected (none of them governed), the client's value winning over busbar's native defaults.
+    // A translated hop forwards none: no header maps between dialects.
+    if hop.ingress_protocol == hop.egress_name {
+        busbar_kernel::proxy::apply_client_headers(&mut egress_headers, hop.client_fwd);
+    }
     let hreq = crate::engine::egress_request(target.uri.clone(), egress_headers, payload);
     drop(_cb_reqwest);
     Ok(hreq)

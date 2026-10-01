@@ -101,14 +101,15 @@ fn a_cross_dialect_request_is_written_in_the_far_ends_dialect() {
 }
 
 #[test]
-fn a_native_clients_head_fields_then_the_callers_selectors_for_that_dialect_only() {
+fn a_same_dialect_caller_s_fields_all_go_out_but_the_governed_ones() {
     let h = head(&[
         ("content-type", "application/json"),
         ("anthropic-version", "2023-06-01"),
         ("anthropic-beta", "a"),
         ("anthropic-beta", "b"),
-        ("openai-beta", "assistants=v2"),
+        ("X-Client-Trace", "abc"),
         ("authorization", "Bearer never-forwarded"),
+        ("x-api-key", "never-forwarded"),
     ]);
     let a = arrived(
         "/v1/messages",
@@ -120,13 +121,15 @@ fn a_native_clients_head_fields_then_the_callers_selectors_for_that_dialect_only
     assert_eq!(
         names,
         [
-            "content-type",
             "user-agent",
             "accept",
+            "content-type",
             "anthropic-version",
             "anthropic-beta",
-            "anthropic-beta"
-        ]
+            "anthropic-beta",
+            "x-client-trace"
+        ],
+        "busbar's native defaults the caller did not send, then every caller field but the credential"
     );
     assert_eq!(
         field(&r, "user-agent"),
@@ -137,11 +140,84 @@ fn a_native_clients_head_fields_then_the_callers_selectors_for_that_dialect_only
         field(&r, "anthropic-beta"),
         [b"a".as_slice(), b"b".as_slice()]
     );
-    // The same caller routed to an openai far end forwards none of the anthropic selectors.
+    assert_eq!(field(&r, "x-client-trace"), [b"abc".as_slice()]);
+}
+
+#[test]
+fn the_caller_s_value_replaces_busbar_s_native_default() {
+    let h = head(&[
+        ("content-type", "application/json"),
+        ("user-agent", "my-sdk/1.0"),
+    ]);
+    let a = arrived(
+        "/v1/messages",
+        &h,
+        r#"{"model":"claude","max_tokens":5,"messages":[]}"#,
+    );
+    let r = build(&a, &h, &shaping(), "p", "claude").expect("built");
+    assert_eq!(field(&r, "user-agent"), [b"my-sdk/1.0".as_slice()]);
+}
+
+#[test]
+fn the_caller_s_tenant_selectors_never_go_out() {
+    let h = head(&[
+        ("content-type", "application/json"),
+        ("OpenAI-Organization", "org-caller"),
+        ("OpenAI-Project", "proj-caller"),
+    ]);
+    let a = arrived(
+        "/v1/chat/completions",
+        &h,
+        r#"{"model":"gpt","messages":[]}"#,
+    );
     let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
-    assert_eq!(field(&r, "anthropic-version").len(), 0);
-    assert_eq!(field(&r, "openai-beta"), [b"assistants=v2".as_slice()]);
-    assert_eq!(field(&r, "authorization").len(), 0);
+    assert_eq!(field(&r, "openai-organization").len(), 0);
+    assert_eq!(field(&r, "openai-project").len(), 0);
+}
+
+#[test]
+fn a_translated_route_forwards_no_caller_field() {
+    let h = head(&[
+        ("content-type", "application/json"),
+        ("anthropic-beta", "a"),
+        ("openai-beta", "assistants=v2"),
+        ("x-client-trace", "abc"),
+    ]);
+    let a = arrived(
+        "/v1/messages",
+        &h,
+        r#"{"model":"claude","max_tokens":5,"messages":[]}"#,
+    );
+    let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    let names: Vec<&str> = r.fields.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["content-type", "user-agent", "accept"]);
+}
+
+#[test]
+fn a_same_dialect_unknown_body_member_goes_out() {
+    let h = head(&[("content-type", "application/json")]);
+    let a = arrived(
+        "/v1/chat/completions",
+        &h,
+        r#"{"model":"gpt-alias","messages":[],"x_vendor_flag":true}"#,
+    );
+    let r = build(&a, &h, &shaping(), "p", "gpt-alias").expect("built");
+    let v: Value = busbar_plane_llm::codec::json::parse(&r.body).expect("json");
+    assert_eq!(v["model"], "gpt-4o", "the mapped model");
+    assert_eq!(v["x_vendor_flag"], true, "the unknown member, unchanged");
+}
+
+#[test]
+fn a_translated_route_drops_a_member_the_far_dialect_cannot_carry() {
+    let h = head(&[("content-type", "application/json")]);
+    let a = arrived(
+        "/v1/chat/completions",
+        &h,
+        r#"{"model":"claude","messages":[{"role":"user","content":"hi"}],"x_vendor_flag":true}"#,
+    );
+    let r = build(&a, &h, &shaping(), "p", "claude").expect("built");
+    let v: Value = busbar_plane_llm::codec::json::parse(&r.body).expect("json");
+    assert!(v.get("x_vendor_flag").is_none());
 }
 
 #[test]

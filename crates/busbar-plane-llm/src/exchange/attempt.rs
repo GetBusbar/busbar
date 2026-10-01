@@ -472,20 +472,16 @@ pub fn wire_and_canonical_path(url_path: &str) -> (String, String) {
     (wire, canonical)
 }
 
-/// The client header names forwarded to a far end of each dialect: the caller's version and beta
-/// selectors, never to a far end of another dialect.
-pub const FORWARDED_CLIENT_HEADERS: &[(&str, &[&str])] = &[
-    ("anthropic-beta", &["anthropic"]),
-    ("anthropic-version", &["anthropic"]),
-    ("openai-beta", &["openai", "responses"]),
-];
-
 /// A value a head field can carry as text: visible ASCII and the tab.
 fn legal_field_value(v: &[u8]) -> bool {
     v.iter().all(|b| *b == b'\t' || (0x20..0x7f).contains(b))
 }
 
-/// The head fields a native client of `lane`'s dialect sends, then the caller's forwarded selectors.
+/// The head fields a native client of `lane`'s dialect sends, then, when the caller speaks that
+/// dialect, every field the caller sent but the ones busbar governs ([`crate::dialect::governed`]):
+/// busbar is invisible to upstreams (OWNER HARD RULE 2026-10-02). The caller's value of a name
+/// replaces busbar's native default; the per-connection mechanics are the kernel's to drop as it
+/// writes the head. A translated route forwards no caller field: none maps between dialects.
 fn head_fields(
     lane: &Lane,
     handler: &dyn OperationHandler,
@@ -526,14 +522,19 @@ fn head_fields(
                 .to_vec(),
         ),
     ];
-    // The caller's selectors, in the order the caller sent them; a repeated name keeps every value.
-    for (name, value) in caller {
-        if let Some((h, _)) = FORWARDED_CLIENT_HEADERS.iter().find(|(h, dialects)| {
-            name.eq_ignore_ascii_case(h.as_bytes()) && dialects.contains(&egress)
-        }) {
-            fields.push(((*h).to_string(), value.to_vec()));
-        }
+    if arrived.dialect != egress {
+        return Ok(fields);
     }
+    // The caller's fields, in the order the caller sent them; a repeated name keeps every value.
+    let forwarded: Vec<(String, Vec<u8>)> = caller
+        .iter()
+        .filter_map(|(name, value)| {
+            let name = std::str::from_utf8(name).ok()?.to_ascii_lowercase();
+            (!crate::dialect::governed(&name)).then(|| (name, value.to_vec()))
+        })
+        .collect();
+    fields.retain(|(own, _)| !forwarded.iter().any(|(name, _)| name == own));
+    fields.extend(forwarded);
     Ok(fields)
 }
 
