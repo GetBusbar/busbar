@@ -31,6 +31,8 @@
 //! * `trust.sight` / `trust.due` — the kernel's trust state ([`TrustBook`]), judged from the
 //!   caller's parsed trust entries; demotion and its clearing are written through the durable
 //!   demotion record.
+//! * `trust.verify` — a document's detached signatures judged against the root key the caller's
+//!   declared pin names ([`signed`]); the verdict and the refused name, never a fallback.
 //!
 //! EVERY CALLER-SCOPED SERVICE ANSWERS FROM WHAT [`KernelServices::admit`] REGISTERED for the
 //! caller's instance: its record kinds, its signing declaration and its trust entries. Every
@@ -68,6 +70,7 @@ use crate::host_records::{
 };
 use crate::plane::quarantine::DemotionRecord;
 use crate::trust::book::{Effect, Sight, TrustBook, Unjudged};
+use crate::trust::signed::{self, Refused};
 use crate::trust::section::TrustEntry;
 
 use crate::net_guard::{
@@ -1056,8 +1059,36 @@ impl HostServices for KernelServices {
         stored
     }
 
-    fn trust_verify(&self, _: &Caller, _: &str, _: &[u8], _: &[u8]) -> Stored {
-        Stored::refused(busbar_contract::services::UNSERVED)
+    fn trust_verify(&self, caller: &Caller, cp: &str, payload: &[u8], sigs: &[u8]) -> Stored {
+        let key = match self.trust.root_key(&caller.instance, cp) {
+            Ok(Some(key)) => key,
+            Ok(None) => return Stored::refused(NO_ROOT_KEY),
+            Err(Unjudged::UnknownInstance) => return Stored::refused(NOT_ADMITTED),
+            Err(Unjudged::UnknownCounterparty) => return Stored::refused(NOT_A_COUNTERPARTY),
+        };
+        let Ok(sigs) = (if sigs.is_empty() {
+            Ok(serde_json::Value::Null)
+        } else {
+            serde_json::from_slice(sigs)
+        }) else {
+            return Stored::refused(SIGNATURES_NOT_JSON);
+        };
+        let judged = signed::root_key(&key).and_then(|root| signed::verify(payload, &sigs, &root));
+        let (value, named) = match judged {
+            Ok(()) => (svc::SIGNED_VERIFIED, String::new()),
+            Err(Refused::MalformedRoot) => (svc::SIGNED_MALFORMED_ROOT, String::new()),
+            Err(Refused::Unsigned) => (svc::SIGNED_NONE, String::new()),
+            Err(Refused::TooMany) => (svc::SIGNED_TOO_MANY, String::new()),
+            Err(Refused::MalformedHeader) => (svc::SIGNED_MALFORMED_HEADER, String::new()),
+            Err(Refused::Algorithm(alg)) => (svc::SIGNED_ALGORITHM, alg),
+            Err(Refused::Critical(name)) => (svc::SIGNED_CRITICAL, name),
+            Err(Refused::MalformedSignature) => (svc::SIGNED_MALFORMED_SIGNATURE, String::new()),
+            Err(Refused::NotByRoot) => (svc::SIGNED_NOT_BY_ROOT, String::new()),
+        };
+        Stored {
+            bytes: named.into_bytes(),
+            ..Stored::ready(value)
+        }
     }
 }
 
