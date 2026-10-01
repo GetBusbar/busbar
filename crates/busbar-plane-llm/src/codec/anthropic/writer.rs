@@ -510,67 +510,18 @@ impl ProtocolWriter for AnthropicWriter {
                 }
             }
         }
-        if thinking_emitted && req.temperature.is_some_and(|t| t != 1.0) {
-            // Anthropic 400s on temperature != 1 with thinking enabled; the think-ask wins and the
-            // sampling knob is omitted, observably.
-            tracing::warn!(
-                temperature = ?req.temperature,
-                "omitting temperature on Anthropic egress: not compatible with thinking"
-            );
-        }
-        if let Some(temperature) = req.temperature.filter(|_| !thinking_emitted) {
-            // Clamp to Anthropic's valid [0.0, 1.0] — see `clamp_temperature_for_anthropic`.
-            // NON-SILENT clamp: silently rewriting a caller's sampling temperature
-            // is exactly the lossy mutation busbar exists to avoid; we keep the clamp (Anthropic 422s on
-            // >1.0) but emit a `warn!` whenever it ACTUALLY changes the value so an operator can detect
-            // the divergence in logs. A request-time RESPONSE header (`x-busbar-parameter-clamped`)
-            // cannot be attached from here: `write_request` returns only the egress request JSON and
-            // has no handle on the (much-later-built) client response; surfacing it as a header would
-            // require threading a clamp signal back out through the whole `forward` path / trait
-            // signature, deferred as out-of-scope for this minimal-safe fix. The warn! is the contract.
-            let (clamped, was_clamped) = clamp_temperature_for_anthropic(temperature);
-            if was_clamped {
-                tracing::warn!(
-                    requested_temperature = temperature,
-                    clamped_temperature = clamped,
-                    parameter = "temperature",
-                    "clamping temperature to Anthropic's [0.0, 1.0] range; the requested value was \
-                     outside it (e.g. an OpenAI/Responses value up to 2.0) and would 422 — the \
-                     forwarded value diverges from the caller's request"
-                );
-            }
-            out.insert("temperature".to_string(), serde_json::json!(clamped));
-        }
-        // Sampling controls promoted to first-class IR fields (see `IrRequest`): emit each in
-        // Anthropic's native shape when present. `top_p`/`top_k` map 1:1; the IR's normalized `stop`
-        // vec is Anthropic's native `stop_sequences` array. Emitted before the `extra` overlay (these
-        // keys were pulled OUT of extra by the reader, so there is no double-emit on passthrough).
-        if let Some(top_p) = req.top_p {
-            if thinking_emitted {
-                // Anthropic rejects top_p modifications alongside thinking (same rule as
-                // temperature/top_k); omit it, observably, rather than ship a certain 400.
-                tracing::warn!(
-                    top_p,
-                    "omitting top_p on Anthropic egress: not compatible with thinking"
-                );
-            } else {
-                out.insert("top_p".to_string(), serde_json::json!(top_p));
-            }
-        }
-        if let Some(top_k) = req.top_k {
-            if thinking_emitted {
-                // Anthropic rejects top_k modifications alongside thinking; omit, observably.
-                tracing::warn!(
-                    top_k,
-                    "omitting top_k on Anthropic egress: not compatible with thinking"
-                );
-            } else {
-                out.insert("top_k".to_string(), serde_json::json!(top_k));
-            }
-        }
-        if !req.stop.is_empty() {
-            out.insert("stop_sequences".to_string(), serde_json::json!(req.stop));
-        }
+        // temperature (clamped to [0.0, 1.0]) / top_p / top_k / stop_sequences: rows of the mapping
+        // file. Beside an emitted thinking ask Anthropic 400s on a modified sampling knob, so each is
+        // omitted, observably (the think-ask wins). Emitted before the `extra` overlay (the reader
+        // pulled these keys OUT of extra, so there is no double-emit on passthrough).
+        crate::codec::carry::write(
+            super::map::REQUEST,
+            req,
+            crate::codec::carry::Egress {
+                thinking: thinking_emitted,
+            },
+            &mut out,
+        );
         out.insert("stream".to_string(), serde_json::json!(req.stream));
         // (response_format is handled ABOVE via native `output_config.format`.)
         // SAMPLING CONTROLS with no Anthropic Messages analog: `frequency_penalty`,

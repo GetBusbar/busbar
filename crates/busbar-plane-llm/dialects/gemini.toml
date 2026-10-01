@@ -1,0 +1,19 @@
+# crates/busbar-plane-llm/dialects/gemini.toml: the HAND-WRITTEN wire <> IR mapping of the Gemini
+# generateContent dialect (stage 0: flat request fields). Format: see openai_chat.toml.
+
+[dialect]
+wire = "gemini"  # the wire lock: dialects/gemini.wire.json (notation A paths)
+label = "Gemini"
+request = ["generation_config"]
+
+# `generationConfig` rides `extra` raw; these rows overlay it. 1.5.4 silent-degrade: a stop list
+# past Gemini's cap of 5 is truncated, not refused.
+[rows.generation_config]
+"generationConfig.temperature" = { ir = "temperature" }
+"generationConfig.topP" = { ir = "top_p" }
+"generationConfig.topK" = { ir = "top_k" }
+"generationConfig.stopSequences" = { ir = "stop", cap = 5 }
+"generationConfig.frequencyPenalty" = { ir = "frequency_penalty" }
+"generationConfig.presencePenalty" = { ir = "presence_penalty" }
+"generationConfig.seed" = { ir = "seed" }
+"generationConfig.candidateCount" = { ir = "n" }

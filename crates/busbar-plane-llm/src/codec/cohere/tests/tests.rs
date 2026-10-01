@@ -4969,16 +4969,16 @@ fn test_cohere_writer_clamps_temperature_above_one() {
 #[test]
 fn test_clamp_temperature_for_cohere_signals_on_change() {
     // Above range: clamped to 1.0 and flagged.
-    assert_eq!(clamp_temperature_for_cohere(1.8), (1.0, true));
-    assert_eq!(clamp_temperature_for_cohere(2.0), (1.0, true));
+    assert_eq!(crate::codec::carry::clamp(1.8, 0.0, 1.0), (1.0, true));
+    assert_eq!(crate::codec::carry::clamp(2.0, 0.0, 1.0), (1.0, true));
     // Below range: clamped to 0.0 and flagged.
-    assert_eq!(clamp_temperature_for_cohere(-0.5), (0.0, true));
+    assert_eq!(crate::codec::carry::clamp(-0.5, 0.0, 1.0), (0.0, true));
     // In range: untouched and NOT flagged (no spurious warn on a valid value).
-    assert_eq!(clamp_temperature_for_cohere(0.7), (0.7, false));
-    assert_eq!(clamp_temperature_for_cohere(0.0), (0.0, false));
-    assert_eq!(clamp_temperature_for_cohere(1.0), (1.0, false));
+    assert_eq!(crate::codec::carry::clamp(0.7, 0.0, 1.0), (0.7, false));
+    assert_eq!(crate::codec::carry::clamp(0.0, 0.0, 1.0), (0.0, false));
+    assert_eq!(crate::codec::carry::clamp(1.0, 0.0, 1.0), (1.0, false));
     // Non-finite is total + passthrough (defensive; unreachable via valid JSON).
-    let (nan_out, nan_flag) = clamp_temperature_for_cohere(f64::NAN);
+    let (nan_out, nan_flag) = crate::codec::carry::clamp(f64::NAN, 0.0, 1.0);
     assert!(nan_out.is_nan() && !nan_flag);
 }
 

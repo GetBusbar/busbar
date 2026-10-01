@@ -15,18 +15,19 @@ const TIERS: &[Word] = &[
 ];
 
 const GROUP_A: &[Field] = &[
-    row(&["metadata"], Slot::Metadata, Codec::Plain),
-    row(&["tier"], Slot::ServiceTier, Codec::Words(TIERS)),
+    row(&["metadata"], Slot::Metadata, Codec::Plain).park(),
+    row(&["tier"], Slot::ServiceTier, Codec::Words(TIERS)).park(),
 ];
 const GROUP_B: &[Field] = &[
-    row(&["text", "verbosity"], Slot::Verbosity, Codec::Plain),
-    row(&["user_id"], Slot::SafetyIdentifier, Codec::Plain),
-    row(&["alt_user_id"], Slot::SafetyIdentifier, Codec::Plain),
+    row(&["text", "verbosity"], Slot::Verbosity, Codec::Plain).park(),
+    row(&["user_id"], Slot::SafetyIdentifier, Codec::Plain).park(),
+    row(&["alt_user_id"], Slot::SafetyIdentifier, Codec::Plain).park(),
     row(
         &["modes"],
         Slot::OutputModalities,
         Codec::Hook(Hook::ChatModalities),
-    ),
+    )
+    .park(),
 ];
 const TABLE: Table = &[GROUP_A, GROUP_B];
 
@@ -38,7 +39,7 @@ fn read_obj(v: Value) -> IrRequest {
 
 fn written(ir: &IrRequest) -> Value {
     let mut out = Map::new();
-    write(TABLE, ir, &mut out);
+    write(TABLE, ir, Egress::default(), &mut out);
     Value::Object(out)
 }
 
@@ -111,7 +112,7 @@ fn a_nested_row_overlays_the_container_already_written() {
     };
     let mut out = Map::new();
     out.insert("text".to_string(), json!({"format": {"type": "text"}}));
-    write(TABLE, &ir, &mut out);
+    write(TABLE, &ir, Egress::default(), &mut out);
     assert_eq!(
         Value::Object(out),
         json!({"text": {"format": {"type": "text"}, "verbosity": "medium"}})
@@ -139,4 +140,50 @@ fn a_member_the_slot_cannot_reproduce_is_parked_raw_in_extra() {
 fn keys_are_the_single_key_paths() {
     let k: Vec<&str> = keys(TABLE).collect();
     assert_eq!(k, ["metadata", "tier", "user_id", "alt_user_id", "modes"]);
+}
+
+const SAMPLING: &[Field] = &[
+    row(&["temperature"], Slot::Temperature, Codec::Plain)
+        .clamp(0.0, 1.0, "clamped", true)
+        .drop_if(Cond::Thinking, "omitted", true),
+    row(&["stop"], Slot::Stop, Codec::Plain).cap(2, "Test"),
+    row(&["seed"], Slot::Seed, Codec::Plain),
+];
+
+fn write_sampling(ir: &IrRequest, thinking: bool) -> Value {
+    let mut out = Map::new();
+    write(&[SAMPLING], ir, Egress { thinking }, &mut out);
+    Value::Object(out)
+}
+
+#[test]
+fn modifiers_clamp_cap_and_drop_on_write() {
+    let ir = IrRequest {
+        temperature: Some(1.5),
+        stop: vec!["a".into(), "b".into(), "c".into()],
+        seed: Some(-7),
+        ..Default::default()
+    };
+    assert_eq!(
+        write_sampling(&ir, false),
+        json!({"temperature": 1.0, "stop": ["a", "b"], "seed": -7})
+    );
+    assert_eq!(
+        write_sampling(&ir, true),
+        json!({"stop": ["a", "b"], "seed": -7}),
+        "thinking drops the temperature row"
+    );
+    assert_eq!(clamp(0.7, 0.0, 1.0), (0.7, false));
+    assert_eq!(clamp(-0.3, 0.0, 1.0), (0.0, true));
+    let (nan, changed) = clamp(f64::NAN, 0.0, 1.0);
+    assert!(nan.is_nan() && !changed);
+}
+
+#[test]
+fn stop_reads_a_string_or_an_array_and_unparked_rows_never_park() {
+    let mut ir = IrRequest::default();
+    read(&[SAMPLING], json!({"stop": "END", "seed": 1.5}).as_object().unwrap(), &mut ir);
+    assert_eq!(ir.stop, vec!["END".to_string()]);
+    assert_eq!(ir.seed, None);
+    assert!(ir.extra.is_empty(), "rows without park leave extra alone");
 }

@@ -592,35 +592,13 @@ impl ProtocolReader for CohereReader {
             .and_then(|v| v.as_i64())
             .filter(|&v| v > 0)
             .and_then(|v| u32::try_from(v).ok());
-        let temperature = obj.get("temperature").and_then(|v| v.as_f64());
-        // Cohere v2 chat names its sampling controls `p` (top_p), `k` (top_k), `stop_sequences`.
-        let top_p = obj.get("p").and_then(|v| v.as_f64());
-        // Narrow with `u32::try_from` (NOT a bare `as u32`), matching the hardened `max_tokens`
-        // path above: a `k` (top_k) above `u32::MAX` silently wraps under `as` to a small nonsense
-        // sampling cap (e.g. 4294967296 -> 0, 4294967297 -> 1) that is then forwarded to Cohere,
-        // diverging from a direct Cohere call with the same JSON. `try_from` drops an out-of-range
-        // value to `None` instead, so the proxy forwards no cap rather than a wrapped one.
-        let top_k = obj
-            .get("k")
-            .and_then(|v| v.as_u64())
-            .and_then(|v| u32::try_from(v).ok());
-        let stop = crate::codec::ir::read_stop_sequences(obj.get("stop_sequences"));
+        // temperature / `p` (top_p) / `k` (top_k) / stop_sequences and the penalties and seed are
+        // rows of the mapping file, read below.
         // Cohere v2 `tool_choice` is a top-level enum string (REQUIRED/NONE). Promote it to the IR
         // union so a forced directive survives the cross-protocol seam.
         let tool_choice = read_cohere_tool_choice(obj.get("tool_choice"));
         let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
-        // Cohere v2 chat models `frequency_penalty`/`presence_penalty` (top-level floats) natively,
-        // with the SAME names/shape as OpenAI — promote them to the IR so a forced penalty survives
-        // the cross-protocol seam instead of being dropped (they are modeled keys, so they are NOT
-        // re-echoed via `extra`).
-        let frequency_penalty = obj.get("frequency_penalty").and_then(|v| v.as_f64());
-        let presence_penalty = obj.get("presence_penalty").and_then(|v| v.as_f64());
-        // Cohere v2 chat supports a top-level integer `seed` for reproducible sampling (same name as
-        // OpenAI/Responses), so promote it to the IR. `i64` to carry the full JSON integer range
-        // losslessly, matching the IR field type. (If a future Cohere API revision drops `seed`, this
-        // read is a harmless no-op when the key is absent.)
-        let seed = obj.get("seed").and_then(|v| v.as_i64());
         // Cohere v2 chat models `response_format` (json_object / json_schema structured output) at the
         // top level. Carry the raw object verbatim into the IR so it round-trips and translates.
         let response_format = obj
@@ -702,7 +680,7 @@ impl ProtocolReader for CohereReader {
             extra.remove("thinking");
         }
 
-        Ok(crate::codec::ir::IrRequest {
+        let mut ir = crate::codec::ir::IrRequest {
             reasoning,
             reasoning_budgets: None,
             // Cohere v2 request `logprobs` (bool) promoted so the ask carries cross-protocol.
@@ -716,15 +694,15 @@ impl ProtocolReader for CohereReader {
             messages,
             tools,
             max_tokens,
-            temperature,
-            top_p,
-            top_k,
-            stop,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop: Vec::new(),
             tool_choice,
             stream,
-            frequency_penalty,
-            presence_penalty,
-            seed,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: None,
             // `n` (candidate count) is intentionally omitted: the Cohere v2 `/v2/chat` API has NO
             // `num_generations`/`n` parameter (it was a v1 Generate-API field, removed in v2 — the
             // documented way to get N candidates is to call chat N times). So there is nothing native
@@ -743,7 +721,9 @@ impl ProtocolReader for CohereReader {
             hosted_tools: Vec::new(),
             system_role: None,
             output_modalities: None,
-        })
+        };
+        crate::codec::carry::read(super::map::REQUEST, obj, &mut ir);
+        Ok(ir)
     }
 
     fn read_response_events(

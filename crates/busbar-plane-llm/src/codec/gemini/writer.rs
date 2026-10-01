@@ -548,37 +548,22 @@ impl ProtocolWriter for GeminiWriter {
         if let Some(max_tokens) = req.max_tokens {
             gen_config.insert("maxOutputTokens".to_string(), serde_json::json!(max_tokens));
         }
-        if let Some(temperature) = req.temperature {
-            gen_config.insert("temperature".to_string(), serde_json::json!(temperature));
-        }
-        // Promoted sampling controls in Gemini's native generationConfig shape.
-        if let Some(top_p) = req.top_p {
-            gen_config.insert("topP".to_string(), serde_json::json!(top_p));
-        }
-        if let Some(top_k) = req.top_k {
-            gen_config.insert("topK".to_string(), serde_json::json!(top_k));
-        }
-        if !req.stop.is_empty() {
-            // v1.5.4 silent-degrade (restored): a cross-protocol request whose stop list exceeds
-            // Gemini's cap of 5 is CLAMPED to the cap here (with a `warn!` naming what was dropped)
-            // and forwarded at HTTP 200, rather than rejected up front with a 400. A same-protocol
-            // Gemini->Gemini request never rebuilds its body from the IR (verbatim relay), so it
-            // never reaches this writer and is never clamped. The published cap in the declaration
-            // (`stop_sequence_cap`) is retained for other planes.
-            gen_config.insert(
-                "stopSequences".to_string(),
-                serde_json::json!(crate::codec::ir::clamp_stop(&req.stop, 5, "Gemini")),
-            );
-        }
-        // Promoted sampling controls in Gemini's native generationConfig shape (cross-protocol
-        // survival, inverse of the reader's promotion). `n` → `candidateCount` (Gemini's name).
-        // Omitted when None so a request that never carried them gains nothing.
-        if let Some(frequency_penalty) = req.frequency_penalty {
-            gen_config.insert(
-                "frequencyPenalty".to_string(),
-                serde_json::json!(frequency_penalty),
-            );
-        }
+        // The sampling rows of the mapping file (temperature, topP, topK, stopSequences capped at 5,
+        // frequencyPenalty, presencePenalty, seed, candidateCount), overlaid on the raw object.
+        out.insert(
+            "generationConfig".to_string(),
+            serde_json::Value::Object(gen_config),
+        );
+        crate::codec::carry::write(
+            super::map::REQUEST,
+            req,
+            crate::codec::carry::Egress::default(),
+            &mut out,
+        );
+        let mut gen_config = match out.remove("generationConfig") {
+            Some(serde_json::Value::Object(gc)) => gc,
+            _ => serde_json::Map::new(),
+        };
         // The logprobs ask in Gemini's native spellings (an OpenAI `logprobs`/`top_logprobs`
         // arrives here via the IR): boolean `responseLogprobs`, top-count `logprobs`.
         // Gemini requires `responseLogprobs: true` for the `logprobs` top-count to be valid. Force
@@ -653,18 +638,6 @@ impl ProtocolWriter for GeminiWriter {
                 };
                 gen_config.insert("thinkingConfig".to_string(), thinking_config);
             }
-        }
-        if let Some(presence_penalty) = req.presence_penalty {
-            gen_config.insert(
-                "presencePenalty".to_string(),
-                serde_json::json!(presence_penalty),
-            );
-        }
-        if let Some(seed) = req.seed {
-            gen_config.insert("seed".to_string(), serde_json::json!(seed));
-        }
-        if let Some(n) = req.n {
-            gen_config.insert("candidateCount".to_string(), serde_json::json!(n));
         }
         // response_format: map the IR's normalized object back into Gemini's
         // `responseMimeType` / `responseSchema` (overlaying any raw copy preserved in `extra`). The

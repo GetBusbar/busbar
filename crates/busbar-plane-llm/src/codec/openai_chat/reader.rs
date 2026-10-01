@@ -128,25 +128,12 @@ impl ProtocolReader for OpenAiReader {
         // so it scopes to same-protocol exactly.
         let max_completion_tokens_was_source =
             !obj.contains_key("max_tokens") && obj.contains_key("max_completion_tokens");
-        let temperature = obj.get("temperature").and_then(|v| v.as_f64());
-        let top_p = obj.get("top_p").and_then(|v| v.as_f64());
-        // First-class sampling/output controls, promoted out of `extra` to first-class IR
-        // fields (read in OpenAI's native top-level shape). `frequency_penalty`/`presence_penalty` are
-        // floats; `seed`/`n` are integers; `response_format` is the raw object (json_object / json_schema),
-        // stored verbatim so the writer can re-emit it unchanged.
-        let frequency_penalty = obj.get("frequency_penalty").and_then(|v| v.as_f64());
-        let presence_penalty = obj.get("presence_penalty").and_then(|v| v.as_f64());
-        let seed = obj.get("seed").and_then(|v| v.as_i64());
-        let n = obj
-            .get("n")
-            .and_then(|v| v.as_u64())
-            .and_then(|v| u32::try_from(v).ok());
+        // The sampling controls (temperature, top_p, the penalties, seed, n, stop) are rows of the
+        // mapping file, read below. `response_format` is the raw object (json_object /
+        // json_schema), stored verbatim so the writer can re-emit it unchanged.
         let response_format = obj
             .get("response_format")
             .and_then(read_openai_response_format);
-        // OpenAI's `stop` is a string OR an array of strings; normalize to the IR's Vec<String>.
-        // OpenAI has NO top_k knob, so `top_k` stays None (its writer omits it too).
-        let stop = crate::codec::ir::read_stop_sequences(obj.get("stop"));
         let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
         // Handle messages array
@@ -652,16 +639,16 @@ impl ProtocolReader for OpenAiReader {
             messages,
             tools,
             max_tokens,
-            temperature,
-            top_p,
+            temperature: None,
+            top_p: None,
             top_k: None,
-            stop,
+            stop: Vec::new(),
             tool_choice,
             stream,
-            frequency_penalty,
-            presence_penalty,
-            seed,
-            n,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: None,
+            n: None,
             response_format,
             extra,
             metadata: None,

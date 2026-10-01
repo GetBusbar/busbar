@@ -11,9 +11,14 @@
 //!
 //! * `[dialect] request = ["<group>", "<other dialect>.<group>", ..]`: the request row groups,
 //!   walked in order;
+//! * `[dialect] label = "<name>"`: the dialect's name in a `cap` truncation diagnostic;
 //! * `[rows.<group>]`: one row per line, `"<wire path>" = { ir = "<slot>" [, words = "<table>"]
-//!   [, hook = "<hook>"] }`, the path in inventory notation (`a.b`), the slot and hook in snake
-//!   case, resolved against the plane's one registry (`Slot`, `Hook`) when the table compiles;
+//!   [, hook = "<hook>"] [, modifiers] }`, the path in inventory notation (`a.b`), the slot and
+//!   hook in snake case, resolved against the plane's one registry (`Slot`, `Hook`) when the table
+//!   compiles. `park = true` on its own line marks every row of the group. Modifiers: `park = true`
+//!   (same-dialect fidelity park); `clamp = [min, max]` with `clamp_warn = "<text>"` and
+//!   `clamp_parameter = true|false`; `cap = <n>`; `drop_if = "thinking"` with `drop_warn = "<text>"`
+//!   and `drop_warn_value = true|false` (default true);
 //! * `[words.<table>]`: `base = "<table>"` (its rows come first), then one row per line,
 //!   `"<ir word>" = { wire = "<word>" [, dir = "read" | "write"] }`.
 
@@ -136,6 +141,11 @@ fn word_rows(
     Ok(out)
 }
 
+/// The dialect's `[dialect] label`.
+fn dialect_label(doc: &toml_lite::Document) -> Option<String> {
+    doc.table("dialect").get_one("label").map(String::from)
+}
+
 /// Compile one dialect's table file text.
 fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
     let source = format!("{DIALECT_DIR}/{}.toml", d.name);
@@ -159,7 +169,12 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
         uses.insert("Field");
         uses.insert("Slot");
         uses.insert("row");
+        let mut group_park = false;
         for (key, raw) in &table.entries {
+            if key == "park" {
+                group_park = toml_lite::string_value(raw) == "true";
+                continue;
+            }
             let f = row_fields(&source, key, raw)?;
             let slot = field(&f, "ir")
                 .map(toml_lite::string_value)
@@ -179,14 +194,78 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
                 }
             };
             uses.insert("Codec");
+            const KNOWN: &[&str] = &[
+                "ir",
+                "words",
+                "hook",
+                "park",
+                "clamp",
+                "clamp_warn",
+                "clamp_parameter",
+                "cap",
+                "drop_if",
+                "drop_warn",
+                "drop_warn_value",
+            ];
             for (k, _) in &f {
-                if !["ir", "words", "hook"].contains(&k.as_str()) {
+                if !KNOWN.contains(&k.as_str()) {
                     return Err(format!("{source}: [{path}] \"{key}\": unknown modifier `{k}`"));
                 }
             }
+            let text = |name: &str| field(&f, name).map(toml_lite::string_value);
+            let flag = |name: &str, default: bool| text(name).map_or(default, |v| v == "true");
+            let mut mods = String::new();
+            if group_park || flag("park", false) {
+                mods.push_str(".park()");
+            }
+            if let Some(range) = field(&f, "clamp") {
+                let bounds: Vec<f64> = toml_lite::array_items(range)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|b| b.parse().ok())
+                    .collect();
+                let (Some(min), Some(max), Some(warn), 2) =
+                    (bounds.first(), bounds.get(1), text("clamp_warn"), bounds.len())
+                else {
+                    return Err(format!(
+                        "{source}: [{path}] \"{key}\": clamp needs [min, max] and clamp_warn"
+                    ));
+                };
+                mods.push_str(&format!(
+                    ".clamp({min:?}, {max:?}, {}, {})",
+                    lit(&warn),
+                    flag("clamp_parameter", false)
+                ));
+            }
+            if let Some(n) = text("cap") {
+                let n: usize = n
+                    .parse()
+                    .map_err(|_| format!("{source}: [{path}] \"{key}\": cap is not a count"))?;
+                let label = dialect_label(&d.doc)
+                    .ok_or_else(|| format!("{source}: a cap needs [dialect] label"))?;
+                mods.push_str(&format!(".cap({n}, {})", lit(&label)));
+            }
+            if let Some(cond) = text("drop_if") {
+                let cond = match cond.as_str() {
+                    "thinking" => "Cond::Thinking",
+                    other => {
+                        return Err(format!(
+                            "{source}: [{path}] \"{key}\": unknown drop_if `{other}`"
+                        ))
+                    }
+                };
+                let warn = text("drop_warn")
+                    .ok_or_else(|| format!("{source}: [{path}] \"{key}\": drop_if needs drop_warn"))?;
+                uses.insert("Cond");
+                mods.push_str(&format!(
+                    ".drop_if({cond}, {}, {})",
+                    lit(&warn),
+                    flag("drop_warn_value", true)
+                ));
+            }
             let segs: Vec<String> = key.split('.').map(lit).collect();
             body.push_str(&format!(
-                "    row(&[{}], Slot::{}, {codec}),\n",
+                "    row(&[{}], Slot::{}, {codec}){mods},\n",
                 segs.join(", "),
                 camel(&slot)
             ));

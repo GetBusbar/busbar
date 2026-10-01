@@ -562,48 +562,9 @@ impl ProtocolReader for GeminiReader {
             .and_then(|v| v.as_i64())
             .filter(|&v| v > 0)
             .and_then(|v| u32::try_from(v).ok());
-        let temperature = obj
-            .get("generationConfig")
-            .and_then(|gc| gc.get("temperature"))
-            .and_then(|v| v.as_f64());
-        // Promoted sampling controls live under `generationConfig`: topP, topK, stopSequences.
-        let top_p = obj
-            .get("generationConfig")
-            .and_then(|gc| gc.get("topP"))
-            .and_then(|v| v.as_f64());
-        let top_k = obj
-            .get("generationConfig")
-            .and_then(|gc| gc.get("topK"))
-            .and_then(|v| v.as_u64())
-            .and_then(|v| u32::try_from(v).ok());
-        let stop = crate::codec::ir::read_stop_sequences(
-            obj.get("generationConfig")
-                .and_then(|gc| gc.get("stopSequences")),
-        );
-        // Promoted sampling controls under `generationConfig` (cross-protocol survival): Gemini
-        // models `frequencyPenalty`/`presencePenalty`/`seed`/`candidateCount` natively. Promote them
-        // into the typed IR fields so they survive the cross-protocol seam (where `extra` — which
-        // still holds the raw `generationConfig` for same-protocol byte-identity — is cleared)
-        // instead of degrading to the target's default. `candidateCount` → `n` (Gemini's name for the
-        // OpenAI `n` / Cohere `num_generations` candidate count). Each is bounds-checked the same way
-        // `topK`/`maxOutputTokens` are: an out-of-range value drops to `None` rather than truncating.
-        let frequency_penalty = obj
-            .get("generationConfig")
-            .and_then(|gc| gc.get("frequencyPenalty"))
-            .and_then(|v| v.as_f64());
-        let presence_penalty = obj
-            .get("generationConfig")
-            .and_then(|gc| gc.get("presencePenalty"))
-            .and_then(|v| v.as_f64());
-        let seed = obj
-            .get("generationConfig")
-            .and_then(|gc| gc.get("seed"))
-            .and_then(|v| v.as_i64());
-        let n = obj
-            .get("generationConfig")
-            .and_then(|gc| gc.get("candidateCount"))
-            .and_then(|v| v.as_u64())
-            .and_then(|v| u32::try_from(v).ok());
+        // The sampling controls under `generationConfig` (temperature, topP, topK, stopSequences,
+        // frequencyPenalty, presencePenalty, seed, candidateCount → `n`) are rows of the mapping
+        // file, read below; the raw `generationConfig` ALSO survives same-protocol via `extra`.
         // response_format: Gemini expresses structured output as
         // `generationConfig.responseMimeType` (+ optional `responseSchema`). There is no single
         // native key, so the IR carries a NORMALIZED object `{responseMimeType, responseSchema?}`
@@ -705,7 +666,7 @@ impl ProtocolReader for GeminiReader {
             }
         }
 
-        Ok(crate::codec::ir::IrRequest {
+        let mut ir = crate::codec::ir::IrRequest {
             reasoning,
             reasoning_budgets: None,
             logprobs,
@@ -720,16 +681,16 @@ impl ProtocolReader for GeminiReader {
             messages,
             tools,
             max_tokens,
-            temperature,
-            top_p,
-            top_k,
-            stop,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop: Vec::new(),
             tool_choice,
             stream,
-            frequency_penalty,
-            presence_penalty,
-            seed,
-            n,
+            frequency_penalty: None,
+            presence_penalty: None,
+            seed: None,
+            n: None,
             response_format,
             extra,
             // Gemini `labels` (IR-03); the raw copy also stays in `extra` for same-protocol
@@ -745,7 +706,9 @@ impl ProtocolReader for GeminiReader {
             system_role: None,
             // `generationConfig.responseModalities` (IR-19); the raw copy rides `extra` too.
             output_modalities: read_gemini_response_modalities(obj.get("generationConfig")),
-        })
+        };
+        crate::codec::carry::read(super::map::REQUEST, obj, &mut ir);
+        Ok(ir)
     }
 
     fn read_response_events(

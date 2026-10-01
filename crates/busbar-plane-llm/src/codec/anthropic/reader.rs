@@ -304,14 +304,7 @@ impl ProtocolReader for AnthropicReader {
             // readers). A zero cap is meaningless (no output budget) and would force an invalid body
             // on egress; dropping it to None lets the target apply its own default.
             .filter(|&v| v > 0);
-        let temperature = obj.get("temperature").and_then(|v| v.as_f64());
-        let top_p = obj.get("top_p").and_then(|v| v.as_f64());
-        let top_k = obj
-            .get("top_k")
-            .and_then(|v| v.as_u64())
-            .and_then(|v| u32::try_from(v).ok());
-        // Anthropic's native `stop_sequences` is an array of strings.
-        let stop = crate::codec::ir::read_stop_sequences(obj.get("stop_sequences"));
+        // temperature / top_p / top_k / stop_sequences are rows of the mapping file, read below.
         // Anthropic `tool_choice` is an object: {type:"auto"|"any"|"tool"|"none", name?}. Normalize
         // into the IR union so forced/targeted tool use survives the cross-protocol seam.
         let tool_choice = read_anthropic_tool_choice(obj.get("tool_choice"));
@@ -433,7 +426,7 @@ impl ProtocolReader for AnthropicReader {
         // `redacted_thinking`/`redactedContent` block — a client-supplied `signature` string can never
         // mark a block redacted, so the old `__busbar` sentinel forgery vector is structurally closed.)
 
-        Ok(crate::codec::ir::IrRequest {
+        let mut ir = crate::codec::ir::IrRequest {
             reasoning,
             reasoning_budgets: None,
             logprobs: None,
@@ -446,10 +439,10 @@ impl ProtocolReader for AnthropicReader {
             messages,
             tools,
             max_tokens,
-            temperature,
-            top_p,
-            top_k,
-            stop,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop: Vec::new(),
             tool_choice,
             stream,
             frequency_penalty: None,
@@ -468,7 +461,9 @@ impl ProtocolReader for AnthropicReader {
             hosted_tools,
             system_role: None,
             output_modalities: None,
-        })
+        };
+        crate::codec::carry::read(super::map::REQUEST, obj, &mut ir);
+        Ok(ir)
     }
 
     fn read_response_event(

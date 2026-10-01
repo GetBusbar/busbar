@@ -44,6 +44,22 @@ pub enum Slot {
     OutputModalities,
     /// A hosted web search in `IrRequest::hosted_tools` (carried by a hook).
     WebSearch,
+    /// `IrRequest::temperature`.
+    Temperature,
+    /// `IrRequest::top_p`.
+    TopP,
+    /// `IrRequest::top_k`.
+    TopK,
+    /// `IrRequest::frequency_penalty`.
+    FrequencyPenalty,
+    /// `IrRequest::presence_penalty`.
+    PresencePenalty,
+    /// `IrRequest::seed`.
+    Seed,
+    /// `IrRequest::n`, the candidate count.
+    N,
+    /// `IrRequest::stop`: read from a string or an array of strings, written as an array.
+    Stop,
 }
 
 /// Which way a [`Word`] row maps.
@@ -103,17 +119,100 @@ impl Hook {
     }
 }
 
-/// One mapping row. The path is the member's keys from the body's top level.
+/// One mapping row: the member's keys from the body's top level, its slot and codec, and the row
+/// modifiers the mapping file states.
 #[derive(Clone, Copy)]
 pub struct Field {
     pub path: &'static [&'static str],
     pub slot: Slot,
     pub codec: Codec,
+    /// Same-dialect fidelity: a raw member the slot does not reproduce is parked in `extra`.
+    pub park: bool,
+    /// Clamp a number into a range before it is written.
+    pub clamp: Option<Clamp>,
+    /// Truncate a list to `(at most n entries, the dialect's name in the truncation diagnostic)`.
+    pub cap: Option<(usize, &'static str)>,
+    /// Omit the member, observably, under an egress condition.
+    pub drop_if: Option<DropIf>,
+}
+
+/// The clamp a row applies on write (`clamp`, `clamp_warn`, `clamp_parameter` in the mapping
+/// file). It is the temperature clamp: the warn, emitted only when the clamp changed the value,
+/// carries `requested_temperature` / `clamped_temperature` (and `parameter`, when `parameter`).
+#[derive(Clone, Copy)]
+pub struct Clamp {
+    pub min: f64,
+    pub max: f64,
+    pub warn: &'static str,
+    pub parameter: bool,
+}
+
+/// An egress condition a row is dropped under (`drop_if` in the mapping file).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cond {
+    /// The writer emitted a thinking ask: the provider refuses a modified sampling knob beside it.
+    /// A temperature of exactly 1 is what thinking runs at, so omitting it is not warned.
+    Thinking,
+}
+
+/// The drop a row takes under [`Cond`] (`drop_if`, `drop_warn`, `drop_warn_value`): its warn, and
+/// whether the warn names the dropped value.
+#[derive(Clone, Copy)]
+pub struct DropIf {
+    pub when: Cond,
+    pub warn: &'static str,
+    pub value: bool,
 }
 
 /// A row with no modifiers.
 pub const fn row(path: &'static [&'static str], slot: Slot, codec: Codec) -> Field {
-    Field { path, slot, codec }
+    Field {
+        path,
+        slot,
+        codec,
+        park: false,
+        clamp: None,
+        cap: None,
+        drop_if: None,
+    }
+}
+
+impl Field {
+    /// `park = true`.
+    pub const fn park(mut self) -> Field {
+        self.park = true;
+        self
+    }
+
+    /// `clamp = [min, max]`, `clamp_warn`, `clamp_parameter`.
+    pub const fn clamp(mut self, min: f64, max: f64, warn: &'static str, parameter: bool) -> Field {
+        self.clamp = Some(Clamp {
+            min,
+            max,
+            warn,
+            parameter,
+        });
+        self
+    }
+
+    /// `cap = n` (the dialect's `label` names it in the diagnostic).
+    pub const fn cap(mut self, n: usize, label: &'static str) -> Field {
+        self.cap = Some((n, label));
+        self
+    }
+
+    /// `drop_if`, `drop_warn`, `drop_warn_value`.
+    pub const fn drop_if(mut self, when: Cond, warn: &'static str, value: bool) -> Field {
+        self.drop_if = Some(DropIf { when, warn, value });
+        self
+    }
+}
+
+/// What the egress writer knows that a row's modifiers may test.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Egress {
+    /// The writer emitted a thinking ask.
+    pub thinking: bool,
 }
 
 /// A dialect's field table: its row groups, walked in order (a group shared by two dialects is
@@ -138,6 +237,14 @@ impl Slot {
             Slot::PromptCacheKey => r.prompt_cache_key.clone().map(Value::from),
             Slot::Verbosity => r.verbosity.map(|v| Value::from(v.as_str())),
             Slot::OutputModalities | Slot::WebSearch => None,
+            Slot::Temperature => r.temperature.map(Value::from),
+            Slot::TopP => r.top_p.map(Value::from),
+            Slot::TopK => r.top_k.map(Value::from),
+            Slot::FrequencyPenalty => r.frequency_penalty.map(Value::from),
+            Slot::PresencePenalty => r.presence_penalty.map(Value::from),
+            Slot::Seed => r.seed.map(Value::from),
+            Slot::N => r.n.map(Value::from),
+            Slot::Stop => (!r.stop.is_empty()).then(|| Value::from(r.stop.clone())),
         }
     }
 
@@ -150,6 +257,7 @@ impl Slot {
             }
         }
         let text = || v.as_str().map(String::from);
+        let count = || v.as_u64().and_then(|n| u32::try_from(n).ok());
         match self {
             Slot::Metadata => first(&mut r.metadata, string_map(v)),
             Slot::ServiceTier => first(
@@ -161,6 +269,18 @@ impl Slot {
             Slot::PromptCacheKey => first(&mut r.prompt_cache_key, text()),
             Slot::Verbosity => first(&mut r.verbosity, v.as_str().and_then(IrVerbosity::parse)),
             Slot::OutputModalities | Slot::WebSearch => {}
+            Slot::Temperature => first(&mut r.temperature, v.as_f64()),
+            Slot::TopP => first(&mut r.top_p, v.as_f64()),
+            Slot::TopK => first(&mut r.top_k, count()),
+            Slot::FrequencyPenalty => first(&mut r.frequency_penalty, v.as_f64()),
+            Slot::PresencePenalty => first(&mut r.presence_penalty, v.as_f64()),
+            Slot::Seed => first(&mut r.seed, v.as_i64()),
+            Slot::N => first(&mut r.n, count()),
+            Slot::Stop => {
+                if r.stop.is_empty() {
+                    r.stop = crate::codec::ir::read_stop_sequences(Some(v));
+                }
+            }
         }
     }
 }
@@ -239,32 +359,113 @@ pub fn read(table: Table, obj: &Map<String, Value>, ir: &mut IrRequest) {
         }
     }
     let mut written = Map::new();
-    write(table, ir, &mut written);
-    for key in keys(table) {
-        if let Some(raw) = obj.get(key) {
-            if written.get(key) != Some(raw) {
-                ir.extra.insert(key.to_string(), raw.clone());
+    for f in rows(table).filter(|f| f.park) {
+        if let Some(v) = value_of(f, ir) {
+            put(&mut written, f.path, v);
+        }
+    }
+    for f in rows(table).filter(|f| f.park) {
+        if let [key] = f.path {
+            if let Some(raw) = obj.get(*key) {
+                if written.get(*key) != Some(raw) {
+                    ir.extra.insert((*key).to_string(), raw.clone());
+                }
             }
         }
     }
 }
 
-/// THE WRITE WALK. Emit every slot of `table` that `req` carries into `out` at its wire path. A
-/// neutral word the row's table has no wire word for is not written.
-pub fn write(table: Table, req: &IrRequest, out: &mut Map<String, Value>) {
-    for f in rows(table) {
-        let value = match f.codec {
-            Codec::Plain => f.slot.get(req),
-            Codec::Words(words) => f
-                .slot
-                .get(req)
-                .and_then(|v| v.as_str().and_then(|n| word_out(words, n)))
-                .map(Value::from),
-            Codec::Hook(hook) => hook.write(req),
-        };
-        if let Some(v) = value {
-            put(out, f.path, v);
+/// The wire value of `f` for `req` before any modifier.
+fn value_of(f: &Field, req: &IrRequest) -> Option<Value> {
+    match f.codec {
+        Codec::Plain => f.slot.get(req),
+        Codec::Words(words) => f
+            .slot
+            .get(req)
+            .and_then(|v| v.as_str().and_then(|n| word_out(words, n)))
+            .map(Value::from),
+        Codec::Hook(hook) => hook.write(req),
+    }
+}
+
+/// The warn of a row dropped under its condition. Its fields are the slot's own (a static field
+/// name per slot, as the writers always spelled them).
+fn warn_drop(d: &DropIf, slot: Slot, req: &IrRequest) {
+    match slot {
+        // Thinking runs at temperature 1: omitting exactly 1 changes nothing and is not warned.
+        Slot::Temperature if req.temperature == Some(1.0) => {}
+        Slot::Temperature if d.value => {
+            tracing::warn!(temperature = ?req.temperature, "{}", d.warn);
         }
+        Slot::TopP if d.value => {
+            if let Some(top_p) = req.top_p {
+                tracing::warn!(top_p, "{}", d.warn);
+            }
+        }
+        Slot::TopK if d.value => {
+            if let Some(top_k) = req.top_k {
+                tracing::warn!(top_k, "{}", d.warn);
+            }
+        }
+        _ => tracing::warn!("{}", d.warn),
+    }
+}
+
+/// Clamp `v` into `[min, max]`: `(the value to write, whether the clamp changed it)`. A non-finite
+/// value (unreachable through JSON) is returned unchanged.
+pub fn clamp(v: f64, min: f64, max: f64) -> (f64, bool) {
+    if !v.is_finite() {
+        return (v, false);
+    }
+    let clamped = v.clamp(min, max);
+    (clamped, clamped != v)
+}
+
+/// THE WRITE WALK. Emit every slot of `table` that `req` carries into `out` at its wire path,
+/// through the row's modifiers: a row whose drop condition holds is omitted with its warn, a clamp
+/// is applied (warned when it changed the value), a list is capped. A neutral word the row's table
+/// has no wire word for is not written.
+pub fn write(table: Table, req: &IrRequest, egress: Egress, out: &mut Map<String, Value>) {
+    for f in rows(table) {
+        let Some(mut v) = value_of(f, req) else {
+            continue;
+        };
+        if let Some(d) = &f.drop_if {
+            if match d.when {
+                Cond::Thinking => egress.thinking,
+            } {
+                warn_drop(d, f.slot, req);
+                continue;
+            }
+        }
+        if let (Some(c), Some(n)) = (&f.clamp, v.as_f64()) {
+            let (clamped, changed) = clamp(n, c.min, c.max);
+            if changed && c.parameter {
+                tracing::warn!(
+                    requested_temperature = n,
+                    clamped_temperature = clamped,
+                    parameter = "temperature",
+                    "{}",
+                    c.warn
+                );
+            } else if changed {
+                tracing::warn!(
+                    requested_temperature = n,
+                    clamped_temperature = clamped,
+                    "{}",
+                    c.warn
+                );
+            }
+            v = Value::from(clamped);
+        }
+        if let (Some((cap, label)), Some(items)) = (f.cap, v.as_array()) {
+            let items: Vec<String> = items
+                .iter()
+                .filter_map(|i| i.as_str().map(String::from))
+                .collect();
+            v = Value::from(crate::codec::ir::clamp_stop(&items, cap, label));
+        }
+        put(out, f.path, v);
     }
 }
 

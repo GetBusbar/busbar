@@ -450,15 +450,8 @@ impl ProtocolWriter for ResponsesWriter {
             );
         }
 
-        if let Some(temperature) = req.temperature {
-            out.insert("temperature".to_string(), serde_json::json!(temperature));
-        }
-        // Promoted sampling control: the Responses API supports `top_p` (but no top_k / stop), so
-        // only top_p is emitted. A cross-protocol source's top_k/stop have no Responses target and
-        // are dropped (documented in the reader).
-        if let Some(top_p) = req.top_p {
-            out.insert("top_p".to_string(), serde_json::json!(top_p));
-        }
+        // `temperature` / `top_p` are rows of the mapping file (written below). A cross-protocol
+        // source's top_k/stop have no Responses target and are dropped (documented in the reader).
         // LOW: the Responses create API models no `top_k` (only `top_p`). A cross-protocol source's
         // `top_k` has no Responses target. Rather than silently dropping it, emit a `warn!` so the
         // lossy-by-target omission is observable in logs (mirrors the `stop`-drop warn below and the
@@ -573,7 +566,12 @@ impl ProtocolWriter for ResponsesWriter {
         // The flat request fields (`map.gen.rs`): IR-03..06 (the members Chat spells alike) and
         // IR-07 `text.verbosity`, overlaid on the `text` written above. A same-protocol request's
         // raw members in `extra` (overlaid below) win.
-        crate::codec::carry::write(super::map::REQUEST, req, &mut out);
+        crate::codec::carry::write(
+            super::map::REQUEST,
+            req,
+            crate::codec::carry::Egress::default(),
+            &mut out,
+        );
 
         // `stream` is a modeled key (excluded from `extra`), so it must be emitted explicitly or it
         // is silently dropped — a `stream: true` request would otherwise be answered non-streaming,

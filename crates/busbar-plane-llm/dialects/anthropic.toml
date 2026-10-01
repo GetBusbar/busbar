@@ -1,0 +1,14 @@
+# crates/busbar-plane-llm/dialects/anthropic.toml: the HAND-WRITTEN wire <> IR mapping of the
+# Anthropic Messages dialect (stage 0: flat request fields). Format: see openai_chat.toml.
+
+[dialect]
+wire = "anthropic"  # the wire lock: dialects/anthropic.wire.json (notation A paths)
+request = ["sampling"]
+
+# Thinking: Anthropic refuses a modified sampling knob beside a thinking ask; the ask wins and the
+# knob is omitted, observably. The temperature clamp is to Anthropic's [0.0, 1.0] (it 422s above).
+[rows.sampling]
+"temperature" = { ir = "temperature", clamp = [0.0, 1.0], clamp_warn = "clamping temperature to Anthropic's [0.0, 1.0] range; the requested value was outside it (e.g. an OpenAI/Responses value up to 2.0) and would 422 — the forwarded value diverges from the caller's request", clamp_parameter = true, drop_if = "thinking", drop_warn = "omitting temperature on Anthropic egress: not compatible with thinking" }
+"top_p" = { ir = "top_p", drop_if = "thinking", drop_warn = "omitting top_p on Anthropic egress: not compatible with thinking" }
+"top_k" = { ir = "top_k", drop_if = "thinking", drop_warn = "omitting top_k on Anthropic egress: not compatible with thinking" }
+"stop_sequences" = { ir = "stop" }

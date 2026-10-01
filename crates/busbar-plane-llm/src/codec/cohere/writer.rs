@@ -522,66 +522,15 @@ impl ProtocolWriter for CohereWriter {
         if let Some(max_tokens) = req.max_tokens {
             out.insert("max_tokens".to_string(), serde_json::json!(max_tokens));
         }
-        if let Some(temperature) = req.temperature {
-            // Clamp to Cohere's native [0.0, 1.0] — see `clamp_temperature_for_cohere`.
-            // NON-SILENT clamp (the fidelity fix): the writer previously clamped SILENTLY, exactly
-            // the lossy mutation busbar exists to avoid. We keep the clamp (Cohere 400s on >1.0) but
-            // emit a `warn!` whenever it ACTUALLY changes the value so an operator can detect the
-            // divergence in logs. Mirrors the anthropic/bedrock writers' non-silent clamp.
-            let (clamped, was_clamped) = clamp_temperature_for_cohere(temperature);
-            if was_clamped {
-                tracing::warn!(
-                    requested_temperature = temperature,
-                    clamped_temperature = clamped,
-                    parameter = "temperature",
-                    "clamping temperature to Cohere's [0.0, 1.0] range; the requested value was \
-                     outside it (e.g. an OpenAI/Responses value up to 2.0) and would 400 — the \
-                     forwarded value diverges from the caller's request"
-                );
-            }
-            out.insert("temperature".to_string(), serde_json::json!(clamped));
-        }
-        // Promoted sampling controls in Cohere v2's native names: `p` (top_p), `k` (top_k),
-        // `stop_sequences`. Emitted before the `extra` overlay (the reader pulled these keys out of
-        // extra, so there is no double-emit on a same-protocol passthrough).
-        if let Some(top_p) = req.top_p {
-            out.insert("p".to_string(), serde_json::json!(top_p));
-        }
-        if let Some(top_k) = req.top_k {
-            out.insert("k".to_string(), serde_json::json!(top_k));
-        }
-        if !req.stop.is_empty() {
-            // v1.5.4 silent-degrade (restored): a cross-protocol request whose stop list exceeds
-            // Cohere's cap of 5 is CLAMPED to the cap here (with a `warn!` naming what was dropped)
-            // and forwarded at HTTP 200, rather than rejected up front with a 400. A same-protocol
-            // Cohere->Cohere request never rebuilds its body from the IR (verbatim relay), so it
-            // never reaches this writer and is never clamped. The published cap in the declaration
-            // (`stop_sequence_cap`) is retained for other planes.
-            out.insert(
-                "stop_sequences".to_string(),
-                serde_json::json!(crate::codec::ir::clamp_stop(&req.stop, 5, "Cohere")),
-            );
-        }
-        // Sampling/output controls in Cohere v2's native (OpenAI-shaped) names. Emitted
-        // before the `extra` overlay (the reader pulled these keys out of extra, so there is no
-        // double-emit on a same-protocol passthrough).
-        if let Some(frequency_penalty) = req.frequency_penalty {
-            out.insert(
-                "frequency_penalty".to_string(),
-                serde_json::json!(frequency_penalty),
-            );
-        }
-        if let Some(presence_penalty) = req.presence_penalty {
-            out.insert(
-                "presence_penalty".to_string(),
-                serde_json::json!(presence_penalty),
-            );
-        }
-        // Cohere v2 chat supports a top-level integer `seed`. Emit it when present so deterministic
-        // sampling survives the seam (the reader models it as a modeled key, so no double-emit).
-        if let Some(seed) = req.seed {
-            out.insert("seed".to_string(), serde_json::json!(seed));
-        }
+        // temperature (clamped to [0.0, 1.0]), `p`, `k`, stop_sequences (capped at 5), the penalties
+        // and seed: rows of the mapping file. Emitted before the `extra` overlay (the reader pulled
+        // these keys out of extra, so there is no double-emit on a same-protocol passthrough).
+        crate::codec::carry::write(
+            super::map::REQUEST,
+            req,
+            crate::codec::carry::Egress::default(),
+            &mut out,
+        );
         // Cohere v2 chat's request `logprobs` is a boolean ask (return per-token log probs?), the
         // same shape OpenAI/Gemini model. Emit it when the IR carries the ask so it survives the
         // seam (the reader models it as a modeled key, so there is no double-emit via `extra`).

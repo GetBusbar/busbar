@@ -9,8 +9,8 @@ use crate::codec::carry::{Codec, Field, Slot, Table, row};
 
 /// Row group `responses`.
 pub(crate) const ROWS_RESPONSES: &[Field] = &[
-    row(&["text", "verbosity"], Slot::Verbosity, Codec::Plain),
+    row(&["text", "verbosity"], Slot::Verbosity, Codec::Plain).park(),
 ];
 
 /// The request table, walked in order.
-pub(crate) const REQUEST: Table = &[crate::codec::openai_chat::map::ROWS_OPENAI_FAMILY, ROWS_RESPONSES];
+pub(crate) const REQUEST: Table = &[crate::codec::openai_chat::map::ROWS_OPENAI_SAMPLING, crate::codec::openai_chat::map::ROWS_OPENAI_FAMILY, ROWS_RESPONSES];

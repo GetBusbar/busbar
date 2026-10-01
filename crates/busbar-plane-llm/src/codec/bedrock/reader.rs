@@ -621,17 +621,11 @@ impl ProtocolReader for BedrockReader {
             None
         };
 
-        let inference_config = obj.get("inferenceConfig").and_then(|i| i.as_object());
-        let temperature =
-            inference_config.and_then(|ic| ic.get("temperature").and_then(|v| v.as_f64()));
-        // Promoted sampling controls in Bedrock's `inferenceConfig`: topP and stopSequences. `topK`
-        // is NOT an inferenceConfig field (it lives in model-specific `additionalModelRequestFields`),
-        // so it is promoted from THERE (see `top_k` below). These two are ALSO preserved verbatim in
-        // the raw `inferenceConfig` captured into `extra` for the same-protocol passthrough; the IR
-        // fields are what carry them across the cross-protocol seam (where `extra` is cleared). The
-        // writer's overlay re-emits the typed fields onto the raw object, so a Bedrock->Bedrock
-        // round-trip is unaffected (the overlaid value equals the captured one).
-        let top_p = inference_config.and_then(|ic| ic.get("topP").and_then(|v| v.as_f64()));
+        // `inferenceConfig.{temperature, topP, stopSequences}` are rows of the mapping file, read
+        // below. They are ALSO preserved verbatim in the raw `inferenceConfig` captured into `extra`
+        // for the same-protocol passthrough; the writer overlays the typed fields onto the raw
+        // object, so a Bedrock->Bedrock round-trip is unaffected. `topK` is NOT an inferenceConfig
+        // field (it lives in model-specific `additionalModelRequestFields`, see `top_k` below).
         // Promote `top_k` (fidelity fix). Bedrock's Converse API carries `top_k` only via the
         // model-specific `additionalModelRequestFields` escape hatch (it has no `inferenceConfig`
         // home). Anthropic-on-Bedrock and several model families spell it `top_k`; some use `topK`.
@@ -659,9 +653,6 @@ impl ProtocolReader for BedrockReader {
         // Only meaningful when a usable top_k actually came from the camel key; reset otherwise so a
         // present-but-`top_k`-spelled (or absent/out-of-range) value never stamps the sentinel.
         top_k_was_camel &= top_k.is_some();
-        let stop = crate::codec::ir::read_stop_sequences(
-            inference_config.and_then(|ic| ic.get("stopSequences")),
-        );
 
         // Stash any captured `cachePoint` markers (with their original positions) under the sentinel
         // so `write_request` re-emits them at the same spots on a same-protocol passthrough. Only
@@ -746,7 +737,7 @@ impl ProtocolReader for BedrockReader {
         // BED-08: Converse's native structured output, `outputConfig.textFormat`.
         let response_format = read_bedrock_response_format(obj);
 
-        Ok(crate::codec::ir::IrRequest {
+        let mut ir = crate::codec::ir::IrRequest {
             reasoning,
             reasoning_budgets: None,
             logprobs: None,
@@ -761,10 +752,10 @@ impl ProtocolReader for BedrockReader {
             messages,
             tools,
             max_tokens,
-            temperature,
-            top_p,
+            temperature: None,
+            top_p: None,
             top_k,
-            stop,
+            stop: Vec::new(),
             tool_choice,
             // Bedrock's native Converse request body has no `stream` field — streaming is selected
             // by the endpoint (converse vs converse-stream). The Bedrock ingress route therefore
@@ -796,7 +787,9 @@ impl ProtocolReader for BedrockReader {
             hosted_tools: Vec::new(),
             system_role: None,
             output_modalities: None,
-        })
+        };
+        crate::codec::carry::read(super::map::REQUEST, obj, &mut ir);
+        Ok(ir)
     }
 
     fn read_response_events(

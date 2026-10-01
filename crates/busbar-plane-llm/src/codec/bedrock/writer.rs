@@ -1200,53 +1200,28 @@ impl BedrockWriter {
         if let Some(max_tokens) = req.max_tokens {
             inference_config.insert("maxTokens".to_string(), serde_json::json!(max_tokens));
         }
-        if thinking_emitted && req.temperature.is_some_and(|t| t != 1.0) {
-            // Claude rejects a temperature != 1 alongside thinking; the think-ask wins, observably.
-            tracing::warn!(
-                temperature = ?req.temperature,
-                "omitting temperature on Bedrock egress: not compatible with thinking"
-            );
-        }
-        if let Some(temperature) = req.temperature.filter(|_| !thinking_emitted) {
-            // Clamp to Bedrock's native [0.0, 1.0]. OpenAI / Responses accept temperature up
-            // to 2.0, so a cross-protocol request can carry a value Bedrock's API rejects with a hard
-            // 400 ValidationException; clamping forwards the closest valid value instead. NON-SILENT
-            // (mirrors the Anthropic writer): warn ONLY when the clamp actually changed the value, so
-            // the divergence is visible in logs rather than silently rewriting a caller's temperature.
-            let (clamped, was_clamped) = clamp_temperature_for_bedrock(temperature);
-            if was_clamped {
-                tracing::warn!(
-                    requested_temperature = temperature,
-                    clamped_temperature = clamped,
-                    "clamping temperature to Bedrock's [0.0, 1.0] range; the requested value was \
-                     out of range and would be rejected with a 400 ValidationException",
-                );
-            }
-            inference_config.insert("temperature".to_string(), serde_json::json!(clamped));
-        }
-        // Promoted sampling controls overlaid in Bedrock's inferenceConfig shape (typed IR wins over
-        // the raw captured value, so same-protocol round-trips re-emit the identical value and
-        // cross-protocol egress emits the value carried in the IR). `top_k` has no inferenceConfig
-        // home — it is emitted below via `additionalModelRequestFields` (fidelity fix).
-        if let Some(top_p) = req.top_p {
-            if thinking_emitted {
-                tracing::warn!(
-                    top_p,
-                    "omitting topP on Bedrock egress: not compatible with thinking"
-                );
-            } else {
-                inference_config.insert("topP".to_string(), serde_json::json!(top_p));
-            }
-        }
-        if !req.stop.is_empty() {
-            inference_config.insert("stopSequences".to_string(), serde_json::json!(req.stop));
-        }
-
-        if !inference_config.is_empty() {
-            out.insert(
-                "inferenceConfig".to_string(),
-                serde_json::Value::Object(inference_config),
-            );
+        // `inferenceConfig.{temperature, topP, stopSequences}`: rows of the mapping file, overlaid
+        // on the raw object (typed IR wins over the captured value, so a same-protocol round-trip
+        // re-emits the identical value). Temperature is clamped to Converse's [0.0, 1.0]; beside an
+        // emitted thinking ask temperature and topP are omitted, observably (the think-ask wins).
+        out.insert(
+            "inferenceConfig".to_string(),
+            serde_json::Value::Object(inference_config),
+        );
+        crate::codec::carry::write(
+            super::map::REQUEST,
+            req,
+            crate::codec::carry::Egress {
+                thinking: thinking_emitted,
+            },
+            &mut out,
+        );
+        if out
+            .get("inferenceConfig")
+            .and_then(|v| v.as_object())
+            .is_some_and(serde_json::Map::is_empty)
+        {
+            out.remove("inferenceConfig");
         }
 
         // response_format: Bedrock Converse has NO native top-level `response_format` /

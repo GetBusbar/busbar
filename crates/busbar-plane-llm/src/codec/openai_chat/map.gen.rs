@@ -9,22 +9,41 @@ use crate::codec::carry::{Codec, Dir, Field, Hook, Slot, Table, Word, row};
 
 /// Row group `chat`.
 pub(crate) const ROWS_CHAT: &[Field] = &[
-    row(&["verbosity"], Slot::Verbosity, Codec::Plain),
-    row(&["modalities"], Slot::OutputModalities, Codec::Hook(Hook::ChatModalities)),
-    row(&["web_search_options"], Slot::WebSearch, Codec::Hook(Hook::ChatWebSearch)),
+    row(&["verbosity"], Slot::Verbosity, Codec::Plain).park(),
+    row(&["modalities"], Slot::OutputModalities, Codec::Hook(Hook::ChatModalities)).park(),
+    row(&["web_search_options"], Slot::WebSearch, Codec::Hook(Hook::ChatWebSearch)).park(),
+];
+
+/// Row group `chat_sampling`.
+pub(crate) const ROWS_CHAT_SAMPLING: &[Field] = &[
+    row(&["stop"], Slot::Stop, Codec::Plain).cap(4, "OpenAI"),
+    row(&["n"], Slot::N, Codec::Plain),
 ];
 
 /// Row group `openai_family`.
 pub(crate) const ROWS_OPENAI_FAMILY: &[Field] = &[
-    row(&["metadata"], Slot::Metadata, Codec::Plain),
-    row(&["service_tier"], Slot::ServiceTier, Codec::Plain),
-    row(&["store"], Slot::Store, Codec::Plain),
-    row(&["safety_identifier"], Slot::SafetyIdentifier, Codec::Plain),
-    row(&["prompt_cache_key"], Slot::PromptCacheKey, Codec::Plain),
+    row(&["metadata"], Slot::Metadata, Codec::Plain).park(),
+    row(&["service_tier"], Slot::ServiceTier, Codec::Plain).park(),
+    row(&["store"], Slot::Store, Codec::Plain).park(),
+    row(&["safety_identifier"], Slot::SafetyIdentifier, Codec::Plain).park(),
+    row(&["prompt_cache_key"], Slot::PromptCacheKey, Codec::Plain).park(),
+];
+
+/// Row group `openai_penalties`.
+pub(crate) const ROWS_OPENAI_PENALTIES: &[Field] = &[
+    row(&["frequency_penalty"], Slot::FrequencyPenalty, Codec::Plain),
+    row(&["presence_penalty"], Slot::PresencePenalty, Codec::Plain),
+    row(&["seed"], Slot::Seed, Codec::Plain),
+];
+
+/// Row group `openai_sampling`.
+pub(crate) const ROWS_OPENAI_SAMPLING: &[Field] = &[
+    row(&["temperature"], Slot::Temperature, Codec::Plain),
+    row(&["top_p"], Slot::TopP, Codec::Plain),
 ];
 
 /// The request table, walked in order.
-pub(crate) const REQUEST: Table = &[ROWS_OPENAI_FAMILY, ROWS_CHAT];
+pub(crate) const REQUEST: Table = &[ROWS_OPENAI_SAMPLING, ROWS_OPENAI_PENALTIES, ROWS_CHAT_SAMPLING, ROWS_OPENAI_FAMILY, ROWS_CHAT];
 
 /// Word table `openai_served_tier`: (wire word, IR word, direction).
 pub(crate) const WORDS_OPENAI_SERVED_TIER: &[Word] = &[

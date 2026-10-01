@@ -28,6 +28,9 @@ use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming
 
 mod citations;
 pub mod handler;
+#[rustfmt::skip]
+#[path = "map.gen.rs"]
+mod map;
 mod reader;
 mod writer;
 
@@ -433,25 +436,6 @@ const FIELD_LATENCY_MS: &str = "latencyMs";
 /// `extra` is cleared on the cross-protocol seam, so cross-protocol egress (no sentinel) always emits
 /// the canonical `top_k`. The leading `__busbar` prefix never collides with a real Bedrock field.
 const TOP_K_CAMEL_SENTINEL: &str = "__busbar_top_k_camel";
-
-/// Clamp a temperature to Bedrock's native `[0.0, 1.0]` range, returning `(clamped, was_clamped)`
-/// where `was_clamped` is `true` iff the clamp ACTUALLY changed the value. Mirrors
-/// `anthropic::clamp_temperature_for_anthropic` (PF non-silent clamp): OpenAI / Responses accept
-/// temperature up to 2.0, so a cross-protocol request can carry a value Bedrock's API rejects with a
-/// hard 400 ValidationException; the writer forwards the closest valid value instead of bouncing the
-/// request, and uses `was_clamped` to emit a `warn!` so the mutation is NOT silent. Factored out so
-/// the non-silent-on-change contract is unit-testable without a tracing subscriber.
-fn clamp_temperature_for_bedrock(temperature: f64) -> (f64, bool) {
-    // Totality guard, mirroring `anthropic::clamp_temperature_for_anthropic`: a non-finite value
-    // (NaN/±Inf) is unreachable via valid JSON (sonic_rs rejects it at parse), but `f64::clamp`
-    // would return NaN and `NaN != NaN` would spuriously report `was_clamped`. Pass it through
-    // unchanged with `was_clamped == false` so the helper is total and the two siblings agree.
-    if !temperature.is_finite() {
-        return (temperature, false);
-    }
-    let clamped = temperature.clamp(0.0, 1.0);
-    (clamped, clamped != temperature)
-}
 
 /// Read a native Bedrock Converse `reasoningContent` content block into an IR `Thinking` block, or
 /// `None` when the block carries neither known member (forward-compatibility: a future

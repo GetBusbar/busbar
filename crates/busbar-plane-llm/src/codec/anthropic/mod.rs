@@ -24,6 +24,9 @@
 //! self reference is relative.
 
 pub mod handler;
+#[rustfmt::skip]
+#[path = "map.gen.rs"]
+mod map;
 mod reader;
 mod writer;
 
@@ -521,24 +524,6 @@ fn read_clamped_block_index(data: &serde_json::Value) -> Option<usize> {
     data.get("index")
         .and_then(|i| i.as_u64())
         .map(|v| v.min(MAX_ANTHROPIC_BLOCK_INDEX) as usize)
-}
-
-/// Clamp a temperature to Anthropic's native `[0.0, 1.0]` range, returning `(clamped, was_clamped)`
-/// where `was_clamped` is `true` iff the clamp ACTUALLY changed the value. OpenAI / Responses
-/// accept temperature up to 2.0, so a cross-protocol request
-/// can carry a value Anthropic's API rejects with a 422; the writer forwards the closest valid value
-/// instead of bouncing a 422, and uses `was_clamped` to emit a `warn!` so the mutation is NOT silent.
-/// Factored out so the non-silent-on-change contract is unit-testable without a tracing subscriber.
-fn clamp_temperature_for_anthropic(temperature: f64) -> (f64, bool) {
-    // Guard against non-finite input (NaN/±Inf): `f64::clamp` panics on a NaN bound but not a NaN
-    // value, yet a NaN/Inf temperature is not a "real value clamped from range" — return it unchanged
-    // with was_clamped=false so the helper is total. This is confirmed unreachable via valid JSON
-    // (sonic_rs rejects NaN/Inf at parse), so it is a defensive no-op, not a behavior change.
-    if !temperature.is_finite() {
-        return (temperature, false);
-    }
-    let clamped = temperature.clamp(0.0, 1.0);
-    (clamped, clamped != temperature)
 }
 
 #[derive(Clone)]

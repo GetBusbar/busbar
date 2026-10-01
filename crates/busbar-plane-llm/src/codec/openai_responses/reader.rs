@@ -582,11 +582,8 @@ impl ProtocolReader for ResponsesReader {
             .and_then(|v| v.as_u64())
             .filter(|&v| v > 0)
             .and_then(|v| u32::try_from(v).ok());
-        let temperature = obj.get("temperature").and_then(|v| v.as_f64());
-        // The Responses API supports `top_p` but has NO `top_k` and no top-level stop-sequence param,
-        // so only top_p is promoted here; `top_k`/`stop` stay None/empty (any unmodeled knob remains
-        // in `extra`).
-        let top_p = obj.get("top_p").and_then(|v| v.as_f64());
+        // `temperature` / `top_p` are rows of the mapping file, read below. The Responses API has
+        // NO `top_k` and no top-level stop-sequence param; `top_k`/`stop` stay None/empty.
         // The Responses API carries `stream` in the request body — read it (don't drop the intent).
         let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
         // `tool_choice`: promote to the IR union so a forced/targeted directive survives the
@@ -710,8 +707,8 @@ impl ProtocolReader for ResponsesReader {
             messages,
             tools,
             max_tokens,
-            temperature,
-            top_p,
+            temperature: None,
+            top_p: None,
             top_k: None,
             stop: vec![],
             tool_choice,

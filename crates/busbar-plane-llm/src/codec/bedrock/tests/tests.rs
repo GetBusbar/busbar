@@ -2589,13 +2589,13 @@ fn test_top_k_camel_spelling_round_trips_and_cross_protocol_stays_snake() {
 #[test]
 fn test_clamp_temperature_for_bedrock_signals_on_change() {
     // Out-of-range values are clamped AND flagged as changed.
-    assert_eq!(clamp_temperature_for_bedrock(1.8), (1.0, true));
-    assert_eq!(clamp_temperature_for_bedrock(2.0), (1.0, true));
-    assert_eq!(clamp_temperature_for_bedrock(-0.5), (0.0, true));
+    assert_eq!(crate::codec::carry::clamp(1.8, 0.0, 1.0), (1.0, true));
+    assert_eq!(crate::codec::carry::clamp(2.0, 0.0, 1.0), (1.0, true));
+    assert_eq!(crate::codec::carry::clamp(-0.5, 0.0, 1.0), (0.0, true));
     // In-range values pass through unchanged and are NOT flagged.
-    assert_eq!(clamp_temperature_for_bedrock(0.7), (0.7, false));
-    assert_eq!(clamp_temperature_for_bedrock(0.0), (0.0, false));
-    assert_eq!(clamp_temperature_for_bedrock(1.0), (1.0, false));
+    assert_eq!(crate::codec::carry::clamp(0.7, 0.0, 1.0), (0.7, false));
+    assert_eq!(crate::codec::carry::clamp(0.0, 0.0, 1.0), (0.0, false));
+    assert_eq!(crate::codec::carry::clamp(1.0, 0.0, 1.0), (1.0, false));
 }
 
 /// The typed IR fields WIN over a same-named raw `inferenceConfig` entry

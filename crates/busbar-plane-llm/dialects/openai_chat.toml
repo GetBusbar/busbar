@@ -3,17 +3,37 @@
 # `cargo xtask dialect compile` emits it as src/codec/openai_chat/map.gen.rs; the `dialect-map`
 # gate refuses a committed map.gen.rs that differs from a fresh compile.
 #
-# A row is `"<wire path>" = { ir = "<slot>" [, words = "<table>"] [, hook = "<name>"] }`, in walk
-# order: the path in inventory notation, the slot and hook by their registry names
-# (codec::carry::{Slot, Hook}). A word table row is `"<ir word>" = { wire = "<word>" [, dir =
-# "read" | "write"] }`; `base` names a table whose rows come first.
+# A row is `"<wire path>" = { ir = "<slot>" [, words = "<table>"] [, hook = "<name>"]
+# [, modifiers] }`, in walk order: the path in notation A, the slot and hook by their registry
+# names (codec::carry::{Slot, Hook}); the modifiers are listed in xtask/src/dialect.rs. A word
+# table row is `"<ir word>" = { wire = "<word>" [, dir = "read" | "write"] }`; `base` names a
+# table whose rows come first.
 
 [dialect]
 wire = "openai"  # the wire lock: dialects/openai.wire.json (notation A paths)
-request = ["openai_family", "chat"]
+label = "OpenAI"
+request = ["openai_sampling", "openai_penalties", "chat_sampling", "openai_family", "chat"]
 
-# The Q57 request members Chat and Responses spell alike (ir-slots-landed.md IR-03..06).
+# Sampling Chat and Responses spell alike.
+[rows.openai_sampling]
+"temperature" = { ir = "temperature" }
+"top_p" = { ir = "top_p" }
+
+# Sampling Chat and Cohere v2 spell alike.
+[rows.openai_penalties]
+"frequency_penalty" = { ir = "frequency_penalty" }
+"presence_penalty" = { ir = "presence_penalty" }
+"seed" = { ir = "seed" }
+
+# 1.5.4 silent-degrade: a stop list past OpenAI's cap of 4 is truncated, not refused.
+[rows.chat_sampling]
+"stop" = { ir = "stop", cap = 4 }
+"n" = { ir = "n" }
+
+# The Q57 request members Chat and Responses spell alike (ir-slots-landed.md IR-03..06). A raw
+# member the slot cannot reproduce is parked in `extra` (same-dialect fidelity).
 [rows.openai_family]
+park = true
 "metadata" = { ir = "metadata" }
 "service_tier" = { ir = "service_tier" }
 "store" = { ir = "store" }
@@ -21,6 +41,7 @@ request = ["openai_family", "chat"]
 "prompt_cache_key" = { ir = "prompt_cache_key" }
 
 [rows.chat]
+park = true
 "verbosity" = { ir = "verbosity" }
 "modalities" = { ir = "output_modalities", hook = "chat_modalities" }
 "web_search_options" = { ir = "web_search", hook = "chat_web_search" }

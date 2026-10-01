@@ -29,6 +29,9 @@ use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming
 mod citations;
 mod framer;
 pub mod handler;
+#[rustfmt::skip]
+#[path = "map.gen.rs"]
+mod map;
 mod reader;
 mod schema;
 mod slots;

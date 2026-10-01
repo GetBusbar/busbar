@@ -400,50 +400,10 @@ impl ProtocolWriter for OpenAiWriter {
             out.insert(key.to_string(), serde_json::json!(max_tokens));
         }
 
-        if let Some(temperature) = req.temperature {
-            out.insert("temperature".to_string(), serde_json::json!(temperature));
-        }
+        // The sampling controls (temperature, top_p, stop capped at 4, the penalties, seed, n)
+        // are rows of the mapping file, written with the other rows below. OpenAI has NO top_k
+        // parameter: a source protocol's top_k is not written (lossy-by-target).
 
-        // Promoted sampling controls: emit `top_p` and `stop` in OpenAI's native shape. OpenAI has NO
-        // top_k parameter, so `req.top_k` is intentionally NOT emitted (lossy-by-target — a source
-        // protocol's top_k cannot be honored by the OpenAI API). `stop` serializes as the array form
-        // (OpenAI accepts both a string and an array; the array is always valid).
-        if let Some(top_p) = req.top_p {
-            out.insert("top_p".to_string(), serde_json::json!(top_p));
-        }
-        if !req.stop.is_empty() {
-            // v1.5.4 silent-degrade (restored): a cross-protocol request whose stop list exceeds
-            // OpenAI's cap of 4 is CLAMPED to the cap here (with a `warn!` naming what was dropped)
-            // and forwarded at HTTP 200, rather than rejected up front with a 400. A same-protocol
-            // OpenAI->OpenAI request never rebuilds its body from the IR (verbatim relay), so it
-            // never reaches this writer and is never clamped. The published cap in the declaration
-            // (`stop_sequence_cap`) is retained for other planes.
-            out.insert(
-                "stop".to_string(),
-                serde_json::json!(crate::codec::ir::clamp_stop(&req.stop, 4, "OpenAI")),
-            );
-        }
-
-        // First-class sampling/output controls. Emitted in OpenAI's native top-level shape and
-        // omitted entirely when None. `response_format` is written back verbatim (the raw Value read in).
-        if let Some(frequency_penalty) = req.frequency_penalty {
-            out.insert(
-                "frequency_penalty".to_string(),
-                serde_json::json!(frequency_penalty),
-            );
-        }
-        if let Some(presence_penalty) = req.presence_penalty {
-            out.insert(
-                "presence_penalty".to_string(),
-                serde_json::json!(presence_penalty),
-            );
-        }
-        if let Some(seed) = req.seed {
-            out.insert("seed".to_string(), serde_json::json!(seed));
-        }
-        if let Some(n) = req.n {
-            out.insert("n".to_string(), serde_json::json!(n));
-        }
         // The Anthropic-analog carries, re-emitted in OpenAI's native spelling (an Anthropic
         // `metadata.user_id` arrives here as `user`; `disable_parallel_tool_use` arrives inverted).
         if let Some(user) = &req.user {
@@ -598,7 +558,12 @@ impl ProtocolWriter for OpenAiWriter {
 
         // The flat request fields (`map.gen.rs`). Written before `extra`, which wins on the same
         // dialect (the reader parks there only a raw member the slot cannot reproduce).
-        crate::codec::carry::write(super::map::REQUEST, req, &mut out);
+        crate::codec::carry::write(
+            super::map::REQUEST,
+            req,
+            crate::codec::carry::Egress::default(),
+            &mut out,
+        );
 
         // Add extra fields
         for (key, value) in &req.extra {

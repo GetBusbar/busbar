@@ -4,8 +4,9 @@
 
 [dialect]
 wire = "responses"  # the wire lock: dialects/responses.wire.json (notation A paths)
-request = ["openai_chat.openai_family", "responses"]
+request = ["openai_chat.openai_sampling", "openai_chat.openai_family", "responses"]
 
 # `text.verbosity` (IR-07), beside the `text.format` the dialect writes from `response_format`.
 [rows.responses]
+park = true
 "text.verbosity" = { ir = "verbosity" }

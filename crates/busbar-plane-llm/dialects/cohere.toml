@@ -1,0 +1,15 @@
+# crates/busbar-plane-llm/dialects/cohere.toml: the HAND-WRITTEN wire <> IR mapping of the Cohere
+# v2 /chat dialect (stage 0: flat request fields). Format: see openai_chat.toml.
+
+[dialect]
+wire = "cohere"  # the wire lock: dialects/cohere.wire.json (notation A paths)
+label = "Cohere"
+request = ["sampling", "openai_chat.openai_penalties"]
+
+# Cohere v2 names top_p `p` and top_k `k`. Temperature is clamped to Cohere's [0.0, 1.0] (it 400s
+# above). 1.5.4 silent-degrade: a stop list past Cohere's cap of 5 is truncated, not refused.
+[rows.sampling]
+"temperature" = { ir = "temperature", clamp = [0.0, 1.0], clamp_warn = "clamping temperature to Cohere's [0.0, 1.0] range; the requested value was outside it (e.g. an OpenAI/Responses value up to 2.0) and would 400 — the forwarded value diverges from the caller's request", clamp_parameter = true }
+"p" = { ir = "top_p" }
+"k" = { ir = "top_k" }
+"stop_sequences" = { ir = "stop", cap = 5 }

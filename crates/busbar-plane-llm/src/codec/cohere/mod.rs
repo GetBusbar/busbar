@@ -23,6 +23,9 @@ use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming
 use std::sync::OnceLock;
 
 pub mod handler;
+#[rustfmt::skip]
+#[path = "map.gen.rs"]
+mod map;
 mod reader;
 mod writer;
 
@@ -368,26 +371,6 @@ fn read_cohere_tool_choice(
         COHERE_TOOL_CHOICE_NONE => Some(crate::codec::ir::IrToolChoice::None),
         _ => None,
     }
-}
-
-/// Clamp a temperature to Cohere v2's native `[0.0, 1.0]` range, returning `(clamped, was_clamped)`
-/// where `was_clamped` is `true` iff the clamp ACTUALLY changed the value (clamp + non-silent
-/// signal, mirroring `anthropic::clamp_temperature_for_anthropic` /
-/// `bedrock::clamp_temperature_for_bedrock`). OpenAI / Responses accept temperature up to 2.0, so a
-/// cross-protocol request can carry a value Cohere's API rejects with a hard 400 ValidationException;
-/// the writer forwards the closest valid value instead of bouncing a 400, and uses `was_clamped` to
-/// emit a `warn!` so the mutation is NOT silent (previously the Cohere writer clamped SILENTLY).
-/// Factored out so the non-silent-on-change contract is unit-testable without a tracing subscriber.
-fn clamp_temperature_for_cohere(temperature: f64) -> (f64, bool) {
-    // Guard against non-finite input (NaN/±Inf): `f64::clamp` panics on a NaN bound but not a NaN
-    // value, yet a NaN/Inf temperature is not a "real value clamped from range" — return it unchanged
-    // with was_clamped=false so the helper is total. This is confirmed unreachable via valid JSON
-    // (the parser rejects NaN/Inf), so it is a defensive no-op, not a behavior change.
-    if !temperature.is_finite() {
-        return (temperature, false);
-    }
-    let clamped = temperature.clamp(0.0, 1.0);
-    (clamped, clamped != temperature)
 }
 
 /// Read a Cohere v2 `response_format` into the protocol-agnostic [`crate::codec::ir::IrResponseFormat`]. The
