@@ -849,6 +849,17 @@ pub(crate) fn pool_union(granting: &[&crate::config::RoleBindingCfg]) -> Option<
     Some(pool_names)
 }
 
+/// A pool grant as key scopes, intent carried intact: `None` = all pools; `Some([])` = none.
+pub(crate) fn pool_scopes(
+    allowed_pools: Option<Vec<String>>,
+) -> Option<Vec<busbar_contract::records::ScopeRef>> {
+    allowed_pools.map(|list| {
+        list.into_iter()
+            .map(busbar_contract::records::ScopeRef::pool)
+            .collect()
+    })
+}
+
 fn synthesize_key(
     principal: &crate::auth::Principal,
     bindings: Option<&std::collections::BTreeMap<String, crate::config::RoleBindingCfg>>,
@@ -895,11 +906,7 @@ fn synthesize_key(
             .name
             .clone()
             .unwrap_or_else(|| principal.id.clone()),
-        allowed_scopes: allowed_pools.map(|list| {
-            list.into_iter()
-                .map(busbar_contract::records::ScopeRef::pool)
-                .collect()
-        }),
+        allowed_scopes: pool_scopes(allowed_pools),
         enabled: true,
         created_at: 0,
         group,

@@ -136,11 +136,7 @@ impl GovState {
             generation_hash: binding_marker(&id, &generation),
             name: format!("self-serve key ({user_sub})"),
             // Intent carried intact: None = all pools; Some([]) = none.
-            allowed_scopes: allowed_pools.map(|list| {
-                list.into_iter()
-                    .map(busbar_contract::records::ScopeRef::pool)
-                    .collect()
-            }),
+            allowed_scopes: crate::governance::pool_scopes(allowed_pools),
             enabled: true,
             created_at: now,
             group: Some(format!("{SELF_KEY_GROUP_PREFIX}{user_sub}")),
@@ -188,11 +184,7 @@ impl GovState {
         match self.current_self_binding(user_sub) {
             Some(existing) => {
                 // The pools the caller resolved THIS login (from the possibly-changed binding).
-                let new_scopes = allowed_pools.clone().map(|list| {
-                    list.into_iter()
-                        .map(busbar_contract::records::ScopeRef::pool)
-                        .collect::<Vec<_>>()
-                });
+                let new_scopes = crate::governance::pool_scopes(allowed_pools.clone());
                 if new_scopes != existing.allowed_scopes {
                     // allowed_pools CHANGED since the binding was created (an admin narrowed or
                     // widened the group) — update THE EXISTING ROW in place with the fresh pools,
