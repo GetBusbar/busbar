@@ -68,7 +68,9 @@ def gen_cert():
     key = os.path.join(TMP, "tls.key")
     subprocess.run(
         ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", CERT_OUT,
-         "-days", "2", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"],
+         "-days", "2", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1",
+         # webpki refuses a CA certificate presented as the end entity; the certificate is both.
+         "-addext", "basicConstraints=critical,CA:FALSE"],
         check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     return key
