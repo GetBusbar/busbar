@@ -300,6 +300,96 @@ fn a_config_targeted_need_dialing_elsewhere_is_refused() {
     });
 }
 
+/// An outbound need over the test transport whose target comes from `target_from`.
+fn config_targeted_need(target_from: &str) -> ReadNeed {
+    ReadNeed {
+        direction: DIRECTION_OUTBOUND,
+        egress_class: crate::DEFAULT_CLASS,
+        transport: "bytes".to_owned(),
+        auth: String::new(),
+        target_from: target_from.to_owned(),
+        trust_from: String::new(),
+        details: busbar_contract::abi::mechanism::rendering::ReadBlob {
+            fmt: 0,
+            flags: 0,
+            bytes: Vec::new(),
+        },
+        timeout_ms: 0,
+    }
+}
+
+/// RED: a need the loader's conns fill declares with the target its `target_from` resolved to is
+/// pinned to it (ARCHITECT ruling 2026-09-30 on the conns fill, option A): an open to another host
+/// is refused before any dial, while the resolved target opens. Declaring it again with another
+/// target (a refresh) moves the pin.
+#[test]
+fn a_fill_declared_need_is_pinned_to_its_resolved_target() {
+    worker().block_on(async {
+        let (_listening, resolved) = far_end().await;
+        let c = literal_connector();
+        let need = config_targeted_need("settings.upstream");
+        assert_eq!(
+            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&resolved)),
+            Ok(())
+        );
+        let open = |target: &str| {
+            c.open(
+                OWNER,
+                NeedId(0),
+                &OpenDesc {
+                    target,
+                    ..OpenDesc::default()
+                },
+            )
+        };
+        assert_eq!(
+            open("127.0.0.2:443"),
+            Err(ConnError::Refused),
+            "another host"
+        );
+        let id = open(&resolved).expect("the resolved target opens");
+        c.close(OWNER, id).unwrap();
+        let (_moved_listening, moved) = far_end().await;
+        assert_eq!(
+            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&moved)),
+            Ok(())
+        );
+        assert_eq!(open(&resolved), Err(ConnError::Refused), "the old pin");
+        let id = open(&moved).expect("the re-declared target opens");
+        c.close(OWNER, id).unwrap();
+    });
+}
+
+/// RED: a need whose `target_from` resolved to nothing is refused, its answer kept, and nothing
+/// opens on it, even after an earlier declaration pinned it.
+#[test]
+fn a_fill_declared_need_whose_target_resolved_to_nothing_is_refused() {
+    worker().block_on(async {
+        let (_listening, resolved) = far_end().await;
+        let c = literal_connector();
+        let need = config_targeted_need("settings.upstream");
+        let _ = DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&resolved));
+        assert_eq!(
+            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, None),
+            Err(ConnError::Refused)
+        );
+        assert_eq!(
+            DeclaredConns::declared(&c, OWNER, NeedId(0)),
+            Some(Err(ConnError::Refused))
+        );
+        assert!(c
+            .open(
+                OWNER,
+                NeedId(0),
+                &OpenDesc {
+                    target: &resolved,
+                    ..OpenDesc::default()
+                },
+            )
+            .is_err());
+    });
+}
+
 /// A need whose target the plugin names (no `target_from`) is judged by its egress class only: any
 /// host the class admits opens.
 #[test]

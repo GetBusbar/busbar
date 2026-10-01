@@ -40,11 +40,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, DeadlineClass, Diag, InHead, MetricEntry, Op, OutHead, Outcome, RawOutcome, DIAG_LOG,
-    DIAG_LOG_DROPPED, METRIC_ADD, METRIC_OBSERVE, METRIC_SET, SEVERITY_ERROR, SEVERITY_TRACE,
+    AbiStr, Blob, DeadlineClass, Diag, InHead, MetricEntry, Op, OutHead, Outcome, RawOutcome,
+    DIAG_LOG, DIAG_LOG_DROPPED, METRIC_ADD, METRIC_OBSERVE, METRIC_SET, SEVERITY_ERROR,
+    SEVERITY_TRACE,
 };
 use busbar_contract::abi::mechanism::door::{FAMILY_COUNTER, FAMILY_GAUGE, FAMILY_HISTOGRAM};
-use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut, ValidateIn};
+use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut, RefreshIn, ValidateIn};
+use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::conn::{InstanceId, NeedId};
@@ -278,6 +280,10 @@ struct FamilyShape {
 pub(crate) struct Instance {
     /// The instance's identity on the host's connection table.
     instance: InstanceId,
+    /// The needs its Statement declares, in Statement order (empty when it was handed no table).
+    /// Each whose `target_from` names a config path is declared at every `open` and `refresh`,
+    /// pinned to what that path resolves to in the settings it is handed.
+    needs: Box<[ReadNeed]>,
     pub(crate) kind: KindCode,
     name: String,
     slots: Box<[Op]>,
@@ -457,6 +463,33 @@ impl Instance {
             .is_ok()
     }
 
+    /// Declare each need whose `target_from` names a config path, pinned to what that path
+    /// resolves to in `settings` (the settings `open` or `refresh` hands the plugin), before the
+    /// plugin sees them. A path that resolves to nothing is declared without a target, which the
+    /// table refuses; a refresh re-declares, so a changed value moves the pin.
+    fn declare_targeted(&self, settings: Blob) {
+        let Some((instance, table)) = self.wake.conn.get() else {
+            return;
+        };
+        let bytes: &[u8] = if settings.ptr.is_null() {
+            &[]
+        } else {
+            // SAFETY: the host's own settings blob, live for the crossing it is handed to.
+            unsafe { std::slice::from_raw_parts(settings.ptr, settings.len) }
+        };
+        let doc = serde_json::from_slice::<serde_json::Value>(bytes).ok();
+        for (i, need) in self.needs.iter().enumerate() {
+            if need.target_from.is_empty() {
+                continue;
+            }
+            let target = doc
+                .as_ref()
+                .and_then(|d| resolve_target(d, &need.target_from));
+            let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
+            let _ = table.declare(*instance, id, need, target.as_deref());
+        }
+    }
+
     pub(crate) fn leave_lifecycle(&self) {
         self.lifecycle_busy.store(false, Ordering::Release);
     }
@@ -572,6 +605,13 @@ impl Instance {
                 open.err_buf = err_buf;
                 open.err_cap = err_cap;
             }
+            // SAFETY: as above.
+            self.declare_targeted(unsafe { (*input.cast::<OpenIn>()).settings });
+        }
+        // SAFETY: the host wrote `in.size`; a frame that holds a `RefreshIn` is read as one.
+        if s == slot::REFRESH && unsafe { (*input).size } as usize >= size_of::<RefreshIn>() {
+            // SAFETY: as above.
+            self.declare_targeted(unsafe { (*input.cast::<RefreshIn>()).settings });
         }
         // THE HOST ZEROES THE WHOLE `out` BEFORE EVERY CALL, RESUME included (FAULT = 0, every
         // tail field absent), then states its size: the plugin writes at most min(out.size, own).
@@ -883,6 +923,7 @@ impl<K: Kind> Plugin<K> {
         // THE CONNECTION TABLE: minted an identity and declared on the host's one table, need by
         // need under its Statement index, when the Statement declares a need; otherwise none.
         let instance = InstanceId(NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed));
+        let mut declared_needs: Box<[ReadNeed]> = Box::default();
         let conns: *const busbar_contract::abi::host::conn::connector::ConnectorSlots =
             match (&bind.conns, st.needs_len) {
                 (Some(table), n) if n > 0 => {
@@ -894,11 +935,17 @@ impl<K: Kind> Plugin<K> {
                         .map(|r| r.needs)
                         .ok_or_else(|| LoadError::BadStatement("the needs do not render".into()))?;
                     for (i, need) in needs.iter().enumerate() {
+                        // A need whose target comes from config is declared once its settings
+                        // arrive (`open`, `refresh`); until then an open on it is undeclared.
+                        if !need.target_from.is_empty() {
+                            continue;
+                        }
                         let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
                         // The answer is the connection table's to keep; a need the host will not
                         // carry is refused at its open, not at bind.
-                        let _ = table.declare(instance, id, need);
+                        let _ = table.declare(instance, id, need, None);
                     }
+                    declared_needs = needs.into_boxed_slice();
                     let _ = wake.conn.set((instance, Arc::clone(table)));
                     &super::conn_services::CONN_SLOTS
                 }
@@ -925,6 +972,7 @@ impl<K: Kind> Plugin<K> {
         let plugin = Self {
             inner: Arc::new(Instance {
                 instance,
+                needs: declared_needs,
                 kind: v.kind,
                 name: String::from_utf8_lossy(name).into_owned(),
                 slots: v.slots,
@@ -1104,3 +1152,14 @@ mod open_reason_plugins;
 #[cfg(test)]
 #[path = "../tests/open_reason_tests.rs"]
 mod open_reason_tests;
+
+/// What a need's `target_from` names in an instance's settings: `settings.<key>[.<key>...]`, walked
+/// through the settings object to a non-empty string. Anything else resolves to nothing.
+pub(crate) fn resolve_target(settings: &serde_json::Value, path: &str) -> Option<String> {
+    let rest = path.strip_prefix("settings.")?;
+    rest.split('.')
+        .try_fold(settings, |v, key| v.get(key))
+        .and_then(serde_json::Value::as_str)
+        .filter(|t| !t.is_empty())
+        .map(str::to_owned)
+}

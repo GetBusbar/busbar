@@ -217,17 +217,29 @@ pub trait Conns: Send + Sync {
 }
 
 /// THE HOST'S CONNECTION TABLE, as the host declares an instance's needs on it (host-side: never
-/// lowered to a plugin). The loader declares every need an instance's signed Statement states at
-/// bind; the host's need-admission service reads the answers back.
+/// lowered to a plugin). The loader declares every need an instance's signed Statement states: a
+/// need whose target the plugin names at bind, a need whose `target_from` names a config path at
+/// every `open` and `refresh`, with the target that path resolved to in the instance's settings.
+/// The host's need-admission service reads the answers back.
 pub trait DeclaredConns: Conns {
     /// Record that `owner` declared `need` (its index in the instance's Statement), as the Statement
     /// states it: the whole need — direction, transport, auth, egress class, target and trust
-    /// sources, details. The answer is kept: [`DeclaredConns::declared`] reads it back.
+    /// sources, details. `target` is what the need's `target_from` resolved to in the instance's
+    /// settings (`None`: it resolved to nothing, or the need has no `target_from`); a need declared
+    /// with a target dials that target only. Declaring the same need again replaces its record. The
+    /// answer is kept: [`DeclaredConns::declared`] reads it back.
     ///
     /// # Errors
     ///
-    /// [`ConnError::Refused`] when the host will not carry the need as declared.
-    fn declare(&self, owner: InstanceId, need: NeedId, spec: &ReadNeed) -> Result<(), ConnError>;
+    /// [`ConnError::Refused`] when the host will not carry the need as declared, and for a need
+    /// whose `target_from` resolved to nothing.
+    fn declare(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        spec: &ReadNeed,
+        target: Option<&str>,
+    ) -> Result<(), ConnError>;
 
     /// What [`DeclaredConns::declare`] answered for `owner`'s `need`; `None` = never declared.
     fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>>;

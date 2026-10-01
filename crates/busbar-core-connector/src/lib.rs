@@ -435,16 +435,29 @@ impl Connector {
 }
 
 impl DeclaredConns for Connector {
-    fn declare(&self, owner: InstanceId, need: NeedId, spec: &ReadNeed) -> Result<(), ConnError> {
+    fn declare(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        spec: &ReadNeed,
+        target: Option<&str>,
+    ) -> Result<(), ConnError> {
         // An outbound need is carried over the transport its claim names, its dials judged in its
-        // own egress class; an inbound need is recorded (the listener binds it).
-        let answer = if spec.direction == DIRECTION_OUTBOUND && spec.transport.is_empty() {
+        // own egress class, and pinned to the target its config names when it names one (a
+        // `target_from` that resolved to nothing is refused, and any earlier pin is dropped); an
+        // inbound need is recorded (the listener binds it).
+        let outbound = spec.direction == DIRECTION_OUTBOUND;
+        let unresolved = !spec.target_from.is_empty() && target.is_none();
+        let answer = if outbound && (spec.transport.is_empty() || unresolved) {
+            self.over.lock().expect("needs").remove(&(owner, need));
             Err(ConnError::Refused)
         } else {
-            if spec.direction == DIRECTION_OUTBOUND {
-                self.declare_need(owner, need, &spec.transport, spec.egress_class);
-            } else {
-                self.slab.declare(owner, need);
+            match (outbound, target) {
+                (true, Some(t)) => {
+                    self.declare_need_to(owner, need, &spec.transport, spec.egress_class, t);
+                }
+                (true, None) => self.declare_need(owner, need, &spec.transport, spec.egress_class),
+                (false, _) => self.slab.declare(owner, need),
             }
             Ok(())
         };
