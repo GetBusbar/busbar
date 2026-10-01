@@ -1,5 +1,6 @@
 //! Gemini `usageMetadata` → billed [`crate::codec::ir::IrUsage`].
 
+use crate::codec::usage_count::{read_count, read_count_opt};
 use super::*;
 
 /// Parse a Gemini `usageMetadata` block into `IrUsage`, defaulting every counter to 0 when the
@@ -17,17 +18,17 @@ pub(super) fn gemini_billed_usage(
     data: &serde_json::Value,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
     let u = data.get(FIELD_USAGE_METADATA);
-    let prompt = billed(u, FIELD_PROMPT_TOKEN_COUNT)?;
-    let cached = billed_opt(u, FIELD_CACHED_CONTENT_TOKEN_COUNT)?;
+    let prompt = read_count(COUNT_LABEL, u, FIELD_PROMPT_TOKEN_COUNT)?;
+    let cached = read_count_opt(COUNT_LABEL, u, FIELD_CACHED_CONTENT_TOKEN_COUNT)?;
     // What this turn will BILL, computed here so the identity cross-check below can compare it
     // against Google's own stated total. Mirrors the field construction that follows exactly:
     // uncached input + cache read + visible output + thinking output.
-    let candidates = billed(u, FIELD_CANDIDATES_TOKEN_COUNT)?;
-    let thoughts = billed_opt(u, FIELD_THOUGHTS_TOKEN_COUNT)?;
+    let candidates = read_count(COUNT_LABEL, u, FIELD_CANDIDATES_TOKEN_COUNT)?;
+    let thoughts = read_count_opt(COUNT_LABEL, u, FIELD_THOUGHTS_TOKEN_COUNT)?;
     // THE FOURTH ADDITIVE TERM. `toolUsePromptTokenCount` is not a slice of `promptTokenCount` —
     // see [`GEMINI_USAGE_ADDITIVE_TERMS`] for the recording that settles it — and Google charges it
     // at the INPUT rate, so it belongs in `input_tokens` beside the uncached prompt.
-    let tool_use = billed_opt(u, FIELD_TOOL_USE_PROMPT_TOKEN_COUNT)?;
+    let tool_use = read_count_opt(COUNT_LABEL, u, FIELD_TOOL_USE_PROMPT_TOKEN_COUNT)?;
     let billed_total = prompt
         .saturating_add(candidates)
         .saturating_add(thoughts.unwrap_or(0))
@@ -113,54 +114,7 @@ pub(super) fn gemini_usage(data: &serde_json::Value) -> crate::codec::ir::IrUsag
     gemini_billed_usage(data).expect("test fixture carries readable usage counts")
 }
 
-// ── BILLED COUNTS (#42) ──────────────────────────────────────────────────────────────────────────
+// ── USAGE COUNTS (#42) ───────────────────────────────────────────────────────────────────────────
 
-/// Read one BILLED count off a usage object under `usage_count::billed_count`'s contract: an absent
-/// usage object, an absent field or a JSON `null` is 0 (exactly as before), a readable count is the
-/// count (through the crate's one seam, `read_count_u64`), and a present-but-UNREADABLE count
-/// REFUSES. The lenient read this replaces defaulted an unreadable count to zero, so a stringified
-/// `"1500"` was ledgered as no work at all.
-///
-/// The read itself IS `usage_count::billed_count` — this adapter only lifts its absent-usage-object
-/// case (zero) and maps its refusal onto this reader's error shape, so the contract and the bounded
-/// spelling live in one place and cannot drift per dialect.
-pub(super) fn billed(
-    usage: Option<&serde_json::Value>,
-    field: &'static str,
-) -> Result<u64, IrError> {
-    usage.map_or(Ok(0), |u| {
-        crate::codec::usage_count::billed_count(u, field).map_err(refuse_unreadable_count)
-    })
-}
-
-/// [`billed`] for a count whose ABSENCE the IR keeps distinct from zero (a cache tier): absent or
-/// `null` is `None`, readable is `Some`, unreadable REFUSES.
-pub(super) fn billed_opt(
-    usage: Option<&serde_json::Value>,
-    field: &'static str,
-) -> Result<Option<u64>, IrError> {
-    match usage.and_then(|u| u.get(field)) {
-        None => Ok(None),
-        Some(v) if v.is_null() => Ok(None),
-        Some(_) => billed(usage, field).map(Some),
-    }
-}
-
-/// The refusal a present-but-unreadable billed count becomes — the same `ir_parse` shape as every
-/// other response this reader cannot read, with the field and the BOUNDED spelling `billed_count`
-/// quoted (cut on a character boundary there, so a hostile multi-byte spelling cannot panic the cut).
-pub(super) fn refuse_unreadable_count(
-    unreadable: crate::codec::usage_count::UnreadableCount,
-) -> IrError {
-    tracing::warn!(
-        protocol = "gemini",
-        field = unreadable.field,
-        spelling = %unreadable.spelling,
-        "usage count is present but unreadable; refusing rather than billing it as zero (#42)"
-    );
-    IrError {
-        class: StatusClass::ClientError,
-        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.into()),
-        retry_after: None,
-    }
-}
+/// This reader's label on a refused usage count (`usage_count::read_count`).
+pub(super) const COUNT_LABEL: &str = "gemini";

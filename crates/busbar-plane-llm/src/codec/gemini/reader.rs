@@ -1,3 +1,4 @@
+use crate::codec::usage_count::{read_count, read_count_opt};
 use crate::codec::dialect::ir_parse_error;
 use super::*;
 
@@ -15,11 +16,11 @@ impl ProtocolReader for GeminiReader {
 
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usageMetadata\"")?;
-        // Every count that reaches the bill is read through `billed`/`billed_opt`: an unreadable
+        // Every count the kernel prices is read through `read_count`/`read_count_opt`: an unreadable
         // one yields NO recovered usage, never a zero one (#42), and the caller then bills its
         // conservative floor estimate for the truncated body instead of $0.
         let u = Some(&v);
-        let cached = billed_opt(u, FIELD_CACHED_CONTENT_TOKEN_COUNT).ok()?;
+        let cached = read_count_opt(COUNT_LABEL, u, FIELD_CACHED_CONTENT_TOKEN_COUNT).ok()?;
         // THINKING TOKENS ARE OUTPUT TOKENS — mirror `gemini_usage` exactly. `candidatesTokenCount`
         // counts only the visible answer; the 2.5-series reasoning tokens arrive in the separate,
         // ADDITIVE `thoughtsTokenCount` (Google's `totalTokenCount = prompt + candidates + thoughts`).
@@ -30,21 +31,21 @@ impl ProtocolReader for GeminiReader {
         // `output_tokens` so a truncated response bills the same as a complete one, and record the
         // thinking count as the reasoning sub-bucket (pure attribution; it is already folded into
         // `output_tokens`).
-        let thoughts = billed_opt(u, FIELD_THOUGHTS_TOKEN_COUNT).ok()?;
+        let thoughts = read_count_opt(COUNT_LABEL, u, FIELD_THOUGHTS_TOKEN_COUNT).ok()?;
         // THE TOOL-USE PROMPT TERM IS ADDITIVE — mirror `gemini_usage` exactly here too. It is not a
         // slice of `promptTokenCount` (`GEMINI_USAGE_ADDITIVE_TERMS` records the recording that
         // proves it: 32 tool-use tokens against an 18-token prompt) and Google charges it at the
         // input rate. Reading only `promptTokenCount` here billed a grounded turn 32 tokens less
         // when it was large enough to be truncated than when it was not — the same under-count the
         // buffered path shed in 1.6.0, surviving on exactly the responses nobody can inspect.
-        let tool_use = billed_opt(u, FIELD_TOOL_USE_PROMPT_TOKEN_COUNT).ok()?;
+        let tool_use = read_count_opt(COUNT_LABEL, u, FIELD_TOOL_USE_PROMPT_TOKEN_COUNT).ok()?;
         Some(
             crate::codec::ir::IrUsage {
-                input_tokens: billed(u, FIELD_PROMPT_TOKEN_COUNT)
+                input_tokens: read_count(COUNT_LABEL, u, FIELD_PROMPT_TOKEN_COUNT)
                     .ok()?
                     .saturating_sub(cached.unwrap_or(0))
                     .saturating_add(tool_use.unwrap_or(0)),
-                output_tokens: billed(u, FIELD_CANDIDATES_TOKEN_COUNT)
+                output_tokens: read_count(COUNT_LABEL, u, FIELD_CANDIDATES_TOKEN_COUNT)
                     .ok()?
                     .saturating_add(thoughts.unwrap_or(0)),
                 cache_creation_input_tokens: None,

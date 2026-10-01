@@ -158,6 +158,67 @@ pub fn billed_count_opt(
     }
 }
 
+// ── USAGE COUNTS, AS A DIALECT READER REFUSES THEM (#42) ────────────────────────────────────────
+
+/// Read one usage count off a usage object under [`billed_count`]'s contract: an absent usage
+/// object, an absent field or a JSON `null` is 0 (exactly as before), a readable count is the count
+/// (through the crate's one seam, [`read_count_u64`]), and a present-but-UNREADABLE count REFUSES.
+/// The lenient read this replaces defaulted an unreadable count to zero, so a stringified `"1500"`
+/// reached the kernel as no work at all.
+///
+/// The read itself IS [`billed_count`]; this only lifts its absent-usage-object case (zero) and
+/// maps its refusal onto the readers' error shape, so the contract, the bounded spelling and the
+/// refusal live in one place and cannot drift per dialect. `protocol` is the reader's label on the
+/// refusal's warn.
+///
+/// # Errors
+/// The field is present, is not `null`, and is not a count.
+pub fn read_count(
+    protocol: &'static str,
+    usage: Option<&serde_json::Value>,
+    field: &'static str,
+) -> Result<u64, busbar_contract::protocol::IrError> {
+    usage.map_or(Ok(0), |u| {
+        billed_count(u, field).map_err(refuse_unreadable_count(protocol))
+    })
+}
+
+/// [`read_count`] for a count whose ABSENCE the IR keeps distinct from zero (a cache tier, a
+/// search/classification unit): absent or `null` is `None`, readable is `Some`,
+/// unreadable REFUSES.
+///
+/// # Errors
+/// The field is present, is not `null`, and is not a count.
+pub fn read_count_opt(
+    protocol: &'static str,
+    usage: Option<&serde_json::Value>,
+    field: &'static str,
+) -> Result<Option<u64>, busbar_contract::protocol::IrError> {
+    match usage.and_then(|u| u.get(field)) {
+        None => Ok(None),
+        Some(v) if v.is_null() => Ok(None),
+        Some(_) => read_count(protocol, usage, field).map(Some),
+    }
+}
+
+/// The refusal a present-but-unreadable usage count becomes, for a reader labelled `protocol` —
+/// the same `ir_parse` shape as every other response a reader cannot read, with the field and the
+/// BOUNDED spelling [`billed_count`] quoted (cut on a character boundary there, so a hostile
+/// multi-byte spelling cannot panic the cut). Readers `map_err` their other count reads through it.
+pub fn refuse_unreadable_count(
+    protocol: &'static str,
+) -> impl Fn(UnreadableCount) -> busbar_contract::protocol::IrError {
+    move |unreadable| {
+        tracing::warn!(
+            protocol,
+            field = unreadable.field,
+            spelling = %unreadable.spelling,
+            "usage count is present but unreadable; refusing rather than billing it as zero (#42)"
+        );
+        crate::codec::dialect::ir_parse_error()
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/usage_count_tests.rs"]
 mod tests;

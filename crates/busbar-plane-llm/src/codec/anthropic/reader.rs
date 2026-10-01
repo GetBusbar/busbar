@@ -1,3 +1,4 @@
+use crate::codec::usage_count::{read_count, read_count_opt, refuse_unreadable_count};
 use crate::codec::dialect::ir_parse_error;
 use super::*;
 
@@ -9,10 +10,10 @@ impl ProtocolReader for AnthropicReader {
         let u = Some(&v);
         Some(
             crate::codec::ir::IrUsage {
-                input_tokens: billed(u, "input_tokens").ok()?,
-                output_tokens: billed(u, "output_tokens").ok()?,
-                cache_creation_input_tokens: billed_opt(u, "cache_creation_input_tokens").ok()?,
-                cache_read_input_tokens: billed_opt(u, "cache_read_input_tokens").ok()?,
+                input_tokens: read_count(COUNT_LABEL, u, "input_tokens").ok()?,
+                output_tokens: read_count(COUNT_LABEL, u, "output_tokens").ok()?,
+                cache_creation_input_tokens: read_count_opt(COUNT_LABEL, u, "cache_creation_input_tokens").ok()?,
+                cache_read_input_tokens: read_count_opt(COUNT_LABEL, u, "cache_read_input_tokens").ok()?,
                 detail: crate::codec::ir::IrUsageDetail::default(),
             }
             .to_token_usage(),
@@ -498,13 +499,13 @@ impl ProtocolReader for AnthropicReader {
                     .and_then(|m| m.get("usage"))
                     .map(|u| -> Result<IrUsage, IrError> {
                         Ok(IrUsage {
-                            input_tokens: billed(Some(u), "input_tokens")?,
-                            output_tokens: billed(Some(u), "output_tokens")?,
-                            cache_creation_input_tokens: billed_opt(
+                            input_tokens: read_count(COUNT_LABEL, Some(u), "input_tokens")?,
+                            output_tokens: read_count(COUNT_LABEL, Some(u), "output_tokens")?,
+                            cache_creation_input_tokens: read_count_opt(COUNT_LABEL,
                                 Some(u),
                                 "cache_creation_input_tokens",
                             )?,
-                            cache_read_input_tokens: billed_opt(
+                            cache_read_input_tokens: read_count_opt(COUNT_LABEL,
                                 Some(u),
                                 "cache_read_input_tokens",
                             )?,
@@ -513,7 +514,7 @@ impl ProtocolReader for AnthropicReader {
                             // reports cache writes on an Anthropic stream, so defaulting it away
                             // lost the whole tier split on every streamed request.
                             detail: read_cache_tier_detail(Some(u))
-                                .map_err(refuse_unreadable_count)?,
+                                .map_err(refuse_unreadable_count(COUNT_LABEL))?,
                         })
                     })
                     .transpose()
@@ -646,17 +647,17 @@ impl ProtocolReader for AnthropicReader {
                 let usage_val = data.get("usage");
                 let usage = match (|| -> Result<IrUsage, IrError> {
                     Ok(IrUsage {
-                        input_tokens: billed(usage_val, "input_tokens")?,
-                        output_tokens: billed(usage_val, "output_tokens")?,
-                        cache_creation_input_tokens: billed_opt(
+                        input_tokens: read_count(COUNT_LABEL, usage_val, "input_tokens")?,
+                        output_tokens: read_count(COUNT_LABEL, usage_val, "output_tokens")?,
+                        cache_creation_input_tokens: read_count_opt(COUNT_LABEL,
                             usage_val,
                             "cache_creation_input_tokens",
                         )?,
-                        cache_read_input_tokens: billed_opt(usage_val, "cache_read_input_tokens")?,
+                        cache_read_input_tokens: read_count_opt(COUNT_LABEL, usage_val, "cache_read_input_tokens")?,
                         // `message_delta.usage` repeats the `cache_creation` tier object when the
                         // turn wrote cache; read it for the same reason `message_start` does.
                         detail: read_cache_tier_detail(usage_val)
-                            .map_err(refuse_unreadable_count)?,
+                            .map_err(refuse_unreadable_count(COUNT_LABEL))?,
                     })
                 })() {
                     Ok(usage) => usage,
@@ -850,16 +851,16 @@ impl ProtocolReader for AnthropicReader {
         // PRESENT and unreadable is not absent: it refuses (#42) instead of ledgering zero.
         let usage_val = obj.get("usage");
         let usage = crate::codec::ir::IrUsage {
-            input_tokens: billed(usage_val, "input_tokens")?,
-            output_tokens: billed(usage_val, "output_tokens")?,
-            cache_creation_input_tokens: billed_opt(usage_val, "cache_creation_input_tokens")?,
-            cache_read_input_tokens: billed_opt(usage_val, "cache_read_input_tokens")?,
+            input_tokens: read_count(COUNT_LABEL, usage_val, "input_tokens")?,
+            output_tokens: read_count(COUNT_LABEL, usage_val, "output_tokens")?,
+            cache_creation_input_tokens: read_count_opt(COUNT_LABEL, usage_val, "cache_creation_input_tokens")?,
+            cache_read_input_tokens: read_count_opt(COUNT_LABEL, usage_val, "cache_read_input_tokens")?,
             // The 5m/1h cache-creation TIER SPLIT. These are SLICES of
             // `cache_creation_input_tokens`, never additions to it — but the two tiers are PRICED
             // DIFFERENTLY, so collapsing them into the one total leaves a bill that reconciles in
             // aggregate and cannot be reconciled per line. Shared with the two STREAMING sites so a
             // stream does not silently lose a split the buffered path reports.
-            detail: read_cache_tier_detail(usage_val).map_err(refuse_unreadable_count)?,
+            detail: read_cache_tier_detail(usage_val).map_err(refuse_unreadable_count(COUNT_LABEL))?,
         };
 
         // Treat an empty `model` string as absent (`None`). The writer emits `model: ""` as the
@@ -909,52 +910,10 @@ impl ProtocolReader for AnthropicReader {
     }
 }
 
-// ── BILLED COUNTS (#42) ──────────────────────────────────────────────────────────────────────────
+// ── USAGE COUNTS (#42) ───────────────────────────────────────────────────────────────────────────
 
-/// Read one BILLED count off a usage object under `usage_count::billed_count`'s contract: an absent
-/// usage object, an absent field or a JSON `null` is 0 (exactly as before), a readable count is the
-/// count (through the crate's one seam, `read_count_u64`), and a present-but-UNREADABLE count
-/// REFUSES. The lenient read this replaces defaulted an unreadable count to zero, so a stringified
-/// `"1500"` was ledgered as no work at all.
-///
-/// The read itself IS `usage_count::billed_count` — this adapter only lifts its absent-usage-object
-/// case (zero) and maps its refusal onto this reader's error shape, so the contract and the bounded
-/// spelling live in one place and cannot drift per dialect.
-fn billed(usage: Option<&serde_json::Value>, field: &'static str) -> Result<u64, IrError> {
-    usage.map_or(Ok(0), |u| {
-        crate::codec::usage_count::billed_count(u, field).map_err(refuse_unreadable_count)
-    })
-}
-
-/// [`billed`] for a count whose ABSENCE the IR keeps distinct from zero (a cache tier): absent or
-/// `null` is `None`, readable is `Some`, unreadable REFUSES.
-fn billed_opt(
-    usage: Option<&serde_json::Value>,
-    field: &'static str,
-) -> Result<Option<u64>, IrError> {
-    match usage.and_then(|u| u.get(field)) {
-        None => Ok(None),
-        Some(v) if v.is_null() => Ok(None),
-        Some(_) => billed(usage, field).map(Some),
-    }
-}
-
-/// The refusal a present-but-unreadable billed count becomes — the same `ir_parse` shape as every
-/// other response this reader cannot read, with the field and the BOUNDED spelling `billed_count`
-/// quoted (cut on a character boundary there, so a hostile multi-byte spelling cannot panic the cut).
-fn refuse_unreadable_count(unreadable: crate::codec::usage_count::UnreadableCount) -> IrError {
-    tracing::warn!(
-        protocol = "anthropic",
-        field = unreadable.field,
-        spelling = %unreadable.spelling,
-        "usage count is present but unreadable; refusing rather than billing it as zero (#42)"
-    );
-    IrError {
-        class: StatusClass::ClientError,
-        provider_signal: Some(busbar_contract::protocol::SIGNAL_IR_PARSE.into()),
-        retry_after: None,
-    }
-}
+/// This reader's label on a refused usage count (`usage_count::read_count`).
+const COUNT_LABEL: &str = "anthropic";
 
 #[cfg(test)]
 #[path = "tests/unreadable_count_refusal_tests.rs"]
