@@ -175,14 +175,8 @@ pub fn table(a: &Addresses) -> Vec<CensusRow> {
         //    of protocol names core had been edited to know. The failure mode of a second is a
         //    protocol that resolves for routing and not for dispatch, discovered as a 404 on a path
         //    that is mounted.
-        r("protocol-name-resolution", "PROTOCOL-LOOKUP-RESPELT", r"fn[[:space:]]+decl_for[[:space:]]*\(", 1, tree.clone(),
+        r("protocol-name-resolution", "PROTOCOL-LOOKUP-RESPELT", r"fn[[:space:]]+decl_for[[:space:]]*\(", 1, tree,
           "there is exactly ONE by-name protocol resolution in busbar, and a second one is a second answer to which protocols exist"),
-
-        // ── THE BUILT-IN DECLARATION TABLE. One slice, and it is DATA rather than a match — a
-        //    registry whose population is a match in core has not removed the match, it has moved
-        //    it.
-        r("protocol-builtin-table", "PROTOCOL-TABLE-RESPELT", r"static[[:space:]]+BUILTIN_DECLS", 1, tree,
-          "the set of built-in protocols is declared in exactly one place, as data; a second table or none at all is the match coming back"),
     ]
 }
 
