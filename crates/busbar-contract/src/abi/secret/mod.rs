@@ -4,8 +4,8 @@
 //! THE SECRET KIND'S ABI: its version and its table (the design's locked plugin ABI: one
 //! mechanism, every shape in `abi/`). M0 landed the skeleton (the shared lifecycle head only);
 //! this is M3-SHAPES (`abi-v2-perkind.md` B.2): the kind's one own operation, `resolve`, and its
-//! data shapes. NOTHING dispatches through this yet (M3-wire, after M1) — this crate defines the
-//! shapes and their compile-time layout only.
+//! data shapes. The one dispatcher calls this table (`busbar-plugin-loader`,
+//! `dispatch::kinds::secret`); the layout golden pins its layout.
 //!
 //! B.2, transcribed:
 //! - `resolve(settings blob)` returns a [`BLOB_SECRET`](super::mechanism::call::BLOB_SECRET)
@@ -138,46 +138,38 @@ pub mod cancel {
 unsafe impl super::sdk::door::AbiIn for ResolveIn {}
 unsafe impl super::sdk::door::AbiOut for ResolveOut {}
 
-/// `resolve`'s `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]' docs. A plugin
-/// wiring the slot to another op's structs does not compile:
-///
-/// ```compile_fail,E0271
-/// use busbar_contract::abi::secret::{ResolveIn, ResolveOut};
-/// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
-/// use busbar_contract::abi::mechanism::lifecycle::*;
-/// use busbar_contract::abi::sdk::door::Slot;
-/// # use std::ffi::c_void;
-/// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
-/// #     struct $n;
-/// #     impl Slot for $n { type In = $i; type Out = $o;
-/// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
-/// # } }
-/// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
-/// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
-/// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
-/// ready!(Wrong, InHead, OutHead); // `resolve` wired to the bare lifecycle shapes: refused
-/// busbar_contract::plugin_door! {
-///     ops: busbar_contract::abi::secret::Ops,
-///     statement: busbar_contract::abi::sdk::door::statement("wrong", "0", 1),
-///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
-///                  cancel: Cn, release: Rl, close: Cl },
-///     kind_ops: { resolve: Wrong },
-/// }
-/// # fn main() { let _ = door(); }
-/// ```
-///
-/// With `Resolve` reading [`ResolveIn`] and writing [`ResolveOut`] the same plugin compiles
-/// (`abi/sdk/tests/door_tests.rs`, `a_secret_plugin_wires_every_kind_op`).
-macro_rules! kind_slots {
-    ($($slot:ident => $in:ty, $out:ty;)*) => {$(
-        // SAFETY: the structs `Ops`' doc states for this slot.
-        unsafe impl super::sdk::door::KindSlot<{ slot::$slot }> for Ops {
-            type In = $in;
-            type Out = $out;
-        }
-    )*};
-}
-
-kind_slots! {
-    RESOLVE => ResolveIn, ResolveOut;
-}
+super::sdk::door::slot_structs!(
+    /// `resolve`'s `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]' docs. A plugin
+    /// wiring the slot to another op's structs does not compile:
+    ///
+    /// ```compile_fail,E0271
+    /// use busbar_contract::abi::secret::{ResolveIn, ResolveOut};
+    /// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
+    /// use busbar_contract::abi::mechanism::lifecycle::*;
+    /// use busbar_contract::abi::sdk::door::Slot;
+    /// # use std::ffi::c_void;
+    /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
+    /// #     struct $n;
+    /// #     impl Slot for $n { type In = $i; type Out = $o;
+    /// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+    /// # } }
+    /// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
+    /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
+    /// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
+    /// ready!(Wrong, InHead, OutHead); // `resolve` wired to the bare lifecycle shapes: refused
+    /// busbar_contract::plugin_door! {
+    ///     ops: busbar_contract::abi::secret::Ops,
+    ///     statement: busbar_contract::abi::sdk::door::statement("wrong", "0", 1),
+    ///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
+    ///                  cancel: Cn, release: Rl, close: Cl },
+    ///     kind_ops: { resolve: Wrong },
+    /// }
+    /// # fn main() { let _ = door(); }
+    /// ```
+    ///
+    /// With `Resolve` reading [`ResolveIn`] and writing [`ResolveOut`] the same plugin compiles
+    /// (`abi/sdk/tests/door_tests.rs`, `a_secret_plugin_wires_every_kind_op`).
+    Ops {
+        slot::RESOLVE => ResolveIn, ResolveOut;
+    }
+);

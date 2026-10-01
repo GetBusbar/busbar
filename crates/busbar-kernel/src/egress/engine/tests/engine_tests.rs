@@ -502,6 +502,88 @@ fn request_moves_url_userinfo_into_a_sensitive_basic_auth_header() {
     assert!(req.headers().get(http::header::AUTHORIZATION).is_none());
 }
 
+/// 1.5.5's reqwest client added `accept: */*` to every request that named no Accept, after the
+/// caller's own fields: the token hop went out `content-type, accept, host, content-length` and the
+/// plugin fetch `accept, host` (golden/1.5.5 egress.auth|jwt-bearer|mint-refresh,
+/// egress.fetch|plugins|url). A URL's userinfo becomes `authorization` before the default, as
+/// reqwest's builder did. A caller's own Accept is kept as it is.
+#[test]
+fn client_request_adds_the_reqwest_default_accept_after_the_callers_fields() {
+    let fields = |req: &http::Request<Full<Bytes>>| -> Vec<(String, String)> {
+        req.headers()
+            .iter()
+            .map(|(n, v)| (n.as_str().to_owned(), v.to_str().unwrap().to_owned()))
+            .collect()
+    };
+    let mut headers = http::HeaderMap::new();
+    headers.insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("application/x-www-form-urlencoded"),
+    );
+    let req = client_request(
+        http::Method::POST,
+        "http://127.0.0.1:1/token".parse().unwrap(),
+        headers,
+        Bytes::from_static(b"grant_type=x"),
+    );
+    let want = [
+        ("content-type", "application/x-www-form-urlencoded"),
+        ("accept", "*/*"),
+    ];
+    assert_eq!(
+        fields(&req),
+        want.map(|(n, v)| (n.to_owned(), v.to_owned()))
+    );
+
+    let fetch = client_request(
+        http::Method::GET,
+        "http://127.0.0.1:1/releases/p.tar.gz".parse().unwrap(),
+        http::HeaderMap::new(),
+        Bytes::new(),
+    );
+    assert_eq!(fields(&fetch), [("accept".to_owned(), "*/*".to_owned())]);
+
+    let login = client_request(
+        http::Method::POST,
+        "http://u:p@127.0.0.1:1/token".parse().unwrap(),
+        http::HeaderMap::new(),
+        Bytes::new(),
+    );
+    let names: Vec<String> = fields(&login).into_iter().map(|(n, _)| n).collect();
+    assert_eq!(names, ["authorization", "accept"]);
+
+    let mut own = http::HeaderMap::new();
+    own.insert(
+        http::header::ACCEPT,
+        http::HeaderValue::from_static("application/json"),
+    );
+    let req = client_request(
+        http::Method::POST,
+        "http://127.0.0.1:1/rpc".parse().unwrap(),
+        own,
+        Bytes::new(),
+    );
+    let accepts: Vec<_> = req.headers().get_all(http::header::ACCEPT).iter().collect();
+    assert_eq!(accepts, ["application/json"]);
+}
+
+/// A plane hop goes out with exactly the fields its plane named: `request` adds no Accept (the new
+/// planes' bytes are predev's, e.g. the a2a fence cell's `[host]`-only hops). Only the four 1.5.5
+/// reqwest hops take the client default, through `client_request`.
+#[test]
+fn request_adds_no_accept_a_plane_hop_did_not_name() {
+    let req = request(
+        http::Method::GET,
+        "http://127.0.0.1:1/.well-known/agent-card.json"
+            .parse()
+            .unwrap(),
+        http::HeaderMap::new(),
+        Bytes::new(),
+    );
+    assert!(req.headers().get(http::header::ACCEPT).is_none());
+    assert!(req.headers().is_empty());
+}
+
 /// AN OPERATOR'S PROXY PASSWORD MUST NOT REACH THE REFUSAL TEXT.
 ///
 /// `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY` may carry userinfo (RFC 3986 §3.2.1) and a corporate

@@ -1,5 +1,6 @@
 use super::*;
 use crate::codec::dialect::ir_parse_error;
+use crate::codec::keys;
 
 impl ProtocolReader for BedrockReader {
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
@@ -25,14 +26,14 @@ impl ProtocolReader for BedrockReader {
             match crate::codec::json::parse::<serde_json::Value>(body) {
                 Ok(json) => {
                     let provider_code = json
-                        .get("message")
+                        .get(keys::MESSAGE)
                         .and_then(|m| m.as_str())
                         .map(String::from);
                     // AWS may also serialise the type as `__type` containing a
                     // shape ARN suffix (e.g. `com.amazon...#ThrottlingException`);
                     // keep only the trailing type token in that case.
                     let structured_type = json
-                        .get("__type")
+                        .get(super::DUNDER_TYPE)
                         .and_then(|t| t.as_str())
                         .map(|t| t.rsplit(['#', '/']).next().unwrap_or(t).to_string());
                     (provider_code, structured_type)
@@ -61,9 +62,9 @@ impl ProtocolReader for BedrockReader {
         let provider_code = if status == StatusCode::BAD_REQUEST {
             let lower = String::from_utf8_lossy(body).to_lowercase();
             if lower.contains("input is longer than the maximum number of tokens")
-                || (lower.contains("maximum-tokens") && lower.contains("requested"))
+                || (lower.contains(keys::MAXIMUM_TOKENS) && lower.contains(keys::REQUESTED))
                 || (lower.contains("exceeds the maximum")
-                    && (lower.contains("token") || lower.contains("context")))
+                    && (lower.contains(keys::TOKEN) || lower.contains(keys::CONTEXT)))
             {
                 Some(busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
             } else {
@@ -96,9 +97,9 @@ impl ProtocolReader for BedrockReader {
         // below.
         if status == StatusCode::BAD_REQUEST
             && (lower.contains("input is longer than the maximum number of tokens")
-                || (lower.contains("maximum-tokens") && lower.contains("requested"))
+                || (lower.contains(keys::MAXIMUM_TOKENS) && lower.contains(keys::REQUESTED))
                 || (lower.contains("exceeds the maximum")
-                    && (lower.contains("token") || lower.contains("context"))))
+                    && (lower.contains(keys::TOKEN) || lower.contains(keys::CONTEXT))))
         {
             return CanonicalSignal {
                 class: StatusClass::ContextLength,
@@ -120,7 +121,7 @@ impl ProtocolReader for BedrockReader {
         if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
             return CanonicalSignal {
                 class: StatusClass::Auth,
-                provider_signal: Some("auth".to_string()),
+                provider_signal: Some(keys::AUTH_WORD.to_string()),
                 retry_after: None,
             };
         }
@@ -192,18 +193,8 @@ impl ProtocolReader for BedrockReader {
         // verbatim) and let `write_request` overlay the typed `tools` array onto that raw object. The
         // `tools` array is still parsed into the structured IR below for cross-protocol egress; the raw
         // capture is what makes a Bedrock->Bedrock passthrough re-emit `toolChoice` faithfully.
-        const MODELED_KEYS: &[&str] = &["messages", "model", "stream", "system"];
-        debug_assert!(
-            MODELED_KEYS.windows(2).all(|w| w[0] < w[1]),
-            "MODELED_KEYS must stay sorted for binary_search"
-        );
-
         let mut extra = serde_json::Map::new();
-        for (key, value) in obj.iter() {
-            if MODELED_KEYS.binary_search(&key.as_str()).is_err() {
-                extra.insert(key.clone(), value.clone());
-            }
-        }
+        crate::codec::carry::keep_unmodelled(super::map::REQUEST, obj, &mut extra);
 
         // Captures native `cachePoint` markers (with their ORIGINAL absolute array index) so the
         // writer can re-emit them at the same position on a same-protocol passthrough. See
@@ -225,22 +216,22 @@ impl ProtocolReader for BedrockReader {
             bedrock_signature_origin(obj.get("model").and_then(|m| m.as_str()));
 
         let mut system_blocks: Vec<crate::codec::ir::IrBlock> = Vec::new();
-        if let Some(system_arr) = obj.get("system").and_then(|s| s.as_array()) {
+        if let Some(system_arr) = obj.get(keys::SYSTEM).and_then(|s| s.as_array()) {
             for (idx, sys_val) in system_arr.iter().enumerate() {
-                if let Some(text_val) = sys_val.get("text").and_then(|t| t.as_str()) {
+                if let Some(text_val) = sys_val.get(keys::TEXT).and_then(|t| t.as_str()) {
                     system_blocks.push(crate::codec::ir::IrBlock::Text {
                         text: text_val.to_string(),
                         cache_control: None,
                         citations: Vec::new(),
                         refusal: false,
                     });
-                } else if let Some(cache_point) = sys_val.get("cachePoint") {
+                } else if let Some(cache_point) = sys_val.get(super::CACHE_POINT) {
                     // No IR counterpart for a prompt-cache marker; stash it with its original index
                     // so the writer re-emits it verbatim at the same position (a same-protocol
                     // passthrough keeps prompt caching enabled instead of silently dropping it).
                     system_cache_points.push(serde_json::json!({
-                        "i": idx,
-                        "block": { "cachePoint": cache_point.clone() },
+                        (keys::I): idx,
+                        (keys::BLOCK): { (super::CACHE_POINT): cache_point.clone() },
                     }));
                     // ALSO map the marker onto the preceding block's first-class IR `cache_control`
                     // (cross-protocol): the positional stash above is dropped on the cross-protocol
@@ -249,7 +240,7 @@ impl ProtocolReader for BedrockReader {
                     // round-trip; the writer suppresses the inline `cache_control` emission whenever
                     // the stash is present, so the two never double-emit.
                     set_preceding_block_cache_control(&mut system_blocks);
-                } else if let Some(guard_content) = sys_val.get("guardContent") {
+                } else if let Some(guard_content) = sys_val.get(super::GUARD_CONTENT) {
                     // The guardrail QUALIFIERS have no IR counterpart; stash the whole block with its
                     // original index so the writer re-emits it verbatim at the same position (a
                     // same-protocol passthrough keeps the guardrail span the caller marked). See
@@ -257,9 +248,9 @@ impl ProtocolReader for BedrockReader {
                     // the writer matches to suppress its own emission (see the `document` arm).
                     let modelled = guard_content_block(guard_content);
                     system_guard_content.push(serde_json::json!({
-                        "i": idx,
-                        "b": modelled.as_ref().map(|_| system_blocks.len()),
-                        "block": { "guardContent": guard_content.clone() },
+                        (keys::I): idx,
+                        (super::B): modelled.as_ref().map(|_| system_blocks.len()),
+                        (keys::BLOCK): { (super::GUARD_CONTENT): guard_content.clone() },
                     }));
                     // BED-02: the guarded span IS prompt content — model it too, so a cross-protocol
                     // hop (where the stash is cleared) still sends the text the caller wrote.
@@ -269,18 +260,21 @@ impl ProtocolReader for BedrockReader {
         }
 
         let mut messages: Vec<crate::codec::ir::IrMessage> = Vec::new();
-        if let Some(messages_val) = obj.get("messages") {
+        if let Some(messages_val) = obj.get(keys::MESSAGES) {
             // EDGE-VALIDATE the top-level `messages` TYPE: a PRESENT-but-wrong-typed `messages`
             // (string/number/object where the array is required) is a genuine structural violation.
             // Reject with a 400 rather than silently coercing to an empty conversation (matching the
             // strict openai_chat/cohere readers). ABSENT `messages` stays lenient.
             let msgs_arr = messages_val.as_array().ok_or_else(ir_parse_error)?;
             for (msg_idx, msg_val) in msgs_arr.iter().enumerate() {
-                let role_str = msg_val.get("role").and_then(|r| r.as_str()).unwrap_or("");
+                let role_str = msg_val
+                    .get(keys::ROLE)
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("");
 
                 let role = match role_str {
-                    "user" => crate::codec::ir::IrRole::User,
-                    "assistant" => crate::codec::ir::IrRole::Assistant,
+                    keys::USER => crate::codec::ir::IrRole::User,
+                    keys::ASSISTANT => crate::codec::ir::IrRole::Assistant,
                     _ => return Err(ir_parse_error()),
                 };
 
@@ -289,38 +283,39 @@ impl ProtocolReader for BedrockReader {
                 // array-only; a PRESENT-but-wrong-typed `content` (string/number/object) is a genuine
                 // TYPE violation the lenient projection below would silently drop into an empty turn —
                 // reject with a 400 instead. An ABSENT `content` stays lenient.
-                if let Some(cv) = msg_val.get("content") {
+                if let Some(cv) = msg_val.get(keys::CONTENT) {
                     if !cv.is_array() {
                         return Err(ir_parse_error());
                     }
                 }
-                if let Some(content_arr) = msg_val.get("content").and_then(|c| c.as_array()) {
+                if let Some(content_arr) = msg_val.get(keys::CONTENT).and_then(|c| c.as_array()) {
                     for (block_idx, content_val) in content_arr.iter().enumerate() {
-                        if let Some(text_val) = content_val.get("text").and_then(|t| t.as_str()) {
+                        if let Some(text_val) = content_val.get(keys::TEXT).and_then(|t| t.as_str())
+                        {
                             msg_content.push(crate::codec::ir::IrBlock::Text {
                                 text: text_val.to_string(),
                                 cache_control: None,
                                 citations: Vec::new(),
                                 refusal: false,
                             });
-                        } else if let Some(tool_use) = content_val.get("toolUse") {
+                        } else if let Some(tool_use) = content_val.get(super::TOOL_USE_CAMEL) {
                             // A present `toolUse` block MUST carry a non-empty string `toolUseId`: it
                             // is the correlation key a later `toolResult` (and any egress dialect)
                             // pairs against. An absent/blank/wrong-typed id yields an empty IR id that
                             // silently breaks that pairing — reject rather than invent an id.
                             let tu_id = tool_use
-                                .get("toolUseId")
+                                .get(super::TOOL_USE_ID)
                                 .and_then(|id| id.as_str())
                                 .filter(|s| !s.is_empty())
                                 .ok_or_else(ir_parse_error)?
                                 .to_string();
                             let name = tool_use
-                                .get("name")
+                                .get(keys::NAME)
                                 .and_then(|n| n.as_str())
                                 .unwrap_or("")
                                 .to_string();
                             let input = tool_use
-                                .get("input")
+                                .get(keys::INPUT)
                                 .cloned()
                                 .unwrap_or(serde_json::Value::Null);
 
@@ -332,20 +327,20 @@ impl ProtocolReader for BedrockReader {
                                 // Bedrock's wire has no Gemini thoughtSignature concept.
                                 thought_signature: None,
                             });
-                        } else if let Some(tool_result) = content_val.get("toolResult") {
+                        } else if let Some(tool_result) = content_val.get(super::TOOL_RESULT) {
                             let tu_id = tool_result
-                                .get("toolUseId")
+                                .get(super::TOOL_USE_ID)
                                 .and_then(|id| id.as_str())
                                 .unwrap_or("")
                                 .to_string();
 
                             let mut inner_content: Vec<crate::codec::ir::IrBlock> = Vec::new();
                             if let Some(inner_arr) =
-                                tool_result.get("content").and_then(|c| c.as_array())
+                                tool_result.get(keys::CONTENT).and_then(|c| c.as_array())
                             {
                                 for inner_val in inner_arr {
                                     if let Some(text_val) =
-                                        inner_val.get("text").and_then(|t| t.as_str())
+                                        inner_val.get(keys::TEXT).and_then(|t| t.as_str())
                                     {
                                         inner_content.push(crate::codec::ir::IrBlock::Text {
                                             text: text_val.to_string(),
@@ -353,7 +348,7 @@ impl ProtocolReader for BedrockReader {
                                             citations: Vec::new(),
                                             refusal: false,
                                         });
-                                    } else if let Some(json_val) = inner_val.get("json") {
+                                    } else if let Some(json_val) = inner_val.get(keys::JSON) {
                                         // A native Converse `{"json": <value>}` tool-result block is
                                         // structured data with no text/image analog — carry it as the
                                         // typed `IrBlock::Json` so `write_request` re-emits a faithful
@@ -363,7 +358,7 @@ impl ProtocolReader for BedrockReader {
                                         inner_content.push(crate::codec::ir::IrBlock::Json(
                                             json_val.clone(),
                                         ));
-                                    } else if let Some(image) = inner_val.get("image") {
+                                    } else if let Some(image) = inner_val.get(keys::IMAGE) {
                                         // The Converse `ToolResultContentBlock` union also includes
                                         // `image` (and `document`/`video`). Decode `image`
                                         // symmetric with the WRITER, which emits an `image` inside a
@@ -373,7 +368,7 @@ impl ProtocolReader for BedrockReader {
                                         if let Some(block) = read_bedrock_image_block(image) {
                                             inner_content.push(block);
                                         }
-                                    } else if let Some(document) = inner_val.get("document") {
+                                    } else if let Some(document) = inner_val.get(keys::DOCUMENT) {
                                         // BED-05: the ToolResultContentBlock `document` member is the
                                         // same DocumentBlock as the top-level one, so it models as the
                                         // same IR `Media` (bytes, s3, or a text source).
@@ -381,7 +376,7 @@ impl ProtocolReader for BedrockReader {
                                             crate::codec::ir::IrMediaKind::Document,
                                             document,
                                         ));
-                                    } else if let Some(video) = inner_val.get("video") {
+                                    } else if let Some(video) = inner_val.get(super::VIDEO) {
                                         // BED-05: likewise the `video` member.
                                         inner_content.push(bedrock_media_block(
                                             crate::codec::ir::IrMediaKind::Video,
@@ -392,9 +387,9 @@ impl ProtocolReader for BedrockReader {
                             }
 
                             let is_error = tool_result
-                                .get("status")
+                                .get(keys::STATUS)
                                 .and_then(|s| s.as_str())
-                                .map(|s| s == "error")
+                                .map(|s| s == keys::ERROR_WORD)
                                 .unwrap_or(false);
 
                             msg_content.push(crate::codec::ir::IrBlock::ToolResult {
@@ -403,7 +398,7 @@ impl ProtocolReader for BedrockReader {
                                 is_error,
                                 cache_control: None,
                             });
-                        } else if let Some(image) = content_val.get("image") {
+                        } else if let Some(image) = content_val.get(keys::IMAGE) {
                             // Decode both `source.bytes` (base64) AND `source.s3Location` (an S3
                             // URI) — the two members of the Converse `ImageSource` union. An
                             // S3-referenced image is carried on the typed
@@ -414,7 +409,7 @@ impl ProtocolReader for BedrockReader {
                             if let Some(block) = read_bedrock_image_block(image) {
                                 msg_content.push(block);
                             }
-                        } else if let Some(reasoning) = content_val.get("reasoningContent") {
+                        } else if let Some(reasoning) = content_val.get(super::REASONING_CONTENT) {
                             // A native Converse `reasoningContent` (extended-thinking) block maps onto
                             // IR `Thinking { text, signature }` (mirroring anthropic.rs `thinking`).
                             // The old reader skipped every non-text/toolUse/toolResult/image/cachePoint
@@ -442,19 +437,19 @@ impl ProtocolReader for BedrockReader {
                                 }
                                 msg_content.push(block);
                             }
-                        } else if let Some(cc) = content_val.get("citationsContent") {
+                        } else if let Some(cc) = content_val.get(super::CITATIONS_CONTENT) {
                             // BED-01: a cited assistant turn carries its answer text INSIDE
                             // `citationsContent`; without this arm the turn arrived empty.
                             msg_content.push(read_bedrock_citations_content(cc));
-                        } else if let Some(cache_point) = content_val.get("cachePoint") {
+                        } else if let Some(cache_point) = content_val.get(super::CACHE_POINT) {
                             // No IR counterpart for a prompt-cache marker; stash it with its
                             // (message, block) index so the writer re-emits it verbatim at the same
                             // position on a same-protocol passthrough (prompt caching stays enabled
                             // instead of being silently dropped — a real cost regression otherwise).
                             message_cache_points.push(serde_json::json!({
-                                "m": msg_idx,
-                                "i": block_idx,
-                                "block": { "cachePoint": cache_point.clone() },
+                                (keys::M): msg_idx,
+                                (keys::I): block_idx,
+                                (keys::BLOCK): { (super::CACHE_POINT): cache_point.clone() },
                             }));
                             // ALSO map the marker onto the preceding block's first-class IR
                             // `cache_control` (cross-protocol) so the prompt-cache boundary
@@ -462,7 +457,7 @@ impl ProtocolReader for BedrockReader {
                             // Additive — see `set_preceding_block_cache_control`; the writer suppresses
                             // the inline emission while the stash is present, so no double-emit.
                             set_preceding_block_cache_control(&mut msg_content);
-                        } else if let Some(guard_content) = content_val.get("guardContent") {
+                        } else if let Some(guard_content) = content_val.get(super::GUARD_CONTENT) {
                             // The guardrail qualifiers have no IR counterpart; stash the block with its
                             // (message, block) index so the writer re-emits it verbatim at the same
                             // position on a same-protocol passthrough. See `GUARD_CONTENT_SENTINEL`.
@@ -470,16 +465,16 @@ impl ProtocolReader for BedrockReader {
                             // for why the wire and IR indices are recorded separately).
                             let modelled = guard_content_block(guard_content);
                             message_guard_content.push(serde_json::json!({
-                                "m": msg_idx,
-                                "i": block_idx,
-                                "b": modelled.as_ref().map(|_| msg_content.len()),
-                                "block": { "guardContent": guard_content.clone() },
+                                (keys::M): msg_idx,
+                                (keys::I): block_idx,
+                                (super::B): modelled.as_ref().map(|_| msg_content.len()),
+                                (keys::BLOCK): { (super::GUARD_CONTENT): guard_content.clone() },
                             }));
                             // BED-02: the guarded text/image IS the caller's prompt content; model it
                             // so a cross-protocol hop still carries it (the writer suppresses this
                             // modelled block whenever the stash is present — no double emission).
                             msg_content.extend(modelled);
-                        } else if let Some(document) = content_val.get("document") {
+                        } else if let Some(document) = content_val.get(keys::DOCUMENT) {
                             // A native Converse `document` block (a PDF/CSV/etc. the model reasons
                             // over) has no IR counterpart; stash it verbatim with its (message, block)
                             // index so the writer re-emits it at the same position on a same-protocol
@@ -495,10 +490,10 @@ impl ProtocolReader for BedrockReader {
                             // fails, the suppression does not fire, and the document goes upstream
                             // TWICE — once modelled, once spliced.
                             message_doc_video.push(serde_json::json!({
-                                "m": msg_idx,
-                                "i": block_idx,
-                                "b": msg_content.len(),
-                                "block": { "document": document.clone() },
+                                (keys::M): msg_idx,
+                                (keys::I): block_idx,
+                                (super::B): msg_content.len(),
+                                (keys::BLOCK): { (keys::DOCUMENT): document.clone() },
                             }));
                             // ALSO model it (cross-protocol), the same additive pattern
                             // `set_preceding_block_cache_control` uses for `cachePoint`: the stash
@@ -512,17 +507,17 @@ impl ProtocolReader for BedrockReader {
                                 crate::codec::ir::IrMediaKind::Document,
                                 document,
                             ));
-                        } else if let Some(video) = content_val.get("video") {
+                        } else if let Some(video) = content_val.get(super::VIDEO) {
                             // A native Converse `video` block likewise has no IR counterpart; stash it
                             // verbatim so the writer re-emits it at the same position on a same-protocol
                             // passthrough. See `DOC_VIDEO_SENTINEL`.
                             // `b` is the IR index of the modelled block below; `i` the wire slot.
                             // See the `document` arm for why the two must be recorded separately.
                             message_doc_video.push(serde_json::json!({
-                                "m": msg_idx,
-                                "i": block_idx,
-                                "b": msg_content.len(),
-                                "block": { "video": video.clone() },
+                                (keys::M): msg_idx,
+                                (keys::I): block_idx,
+                                (super::B): msg_content.len(),
+                                (keys::BLOCK): { (super::VIDEO): video.clone() },
                             }));
                             // Modelled for the cross-protocol hop as well — see the `document` arm.
                             msg_content.push(bedrock_media_block(
@@ -541,28 +536,30 @@ impl ProtocolReader for BedrockReader {
         }
 
         let mut tools: Vec<crate::codec::ir::IrTool> = Vec::new();
-        if let Some(tool_config) = obj.get("toolConfig").and_then(|t| t.as_object()) {
-            if let Some(tools_arr) = tool_config.get("tools").and_then(|t| t.as_array()) {
+        if let Some(tool_config) = obj.get(keys::TOOL_CONFIG).and_then(|t| t.as_object()) {
+            if let Some(tools_arr) = tool_config.get(keys::TOOLS).and_then(|t| t.as_array()) {
                 for tool_val in tools_arr {
-                    if let Some(tool_spec) = tool_val.get("toolSpec").and_then(|t| t.as_object()) {
+                    if let Some(tool_spec) =
+                        tool_val.get(super::TOOL_SPEC).and_then(|t| t.as_object())
+                    {
                         let name = tool_spec
-                            .get("name")
+                            .get(keys::NAME)
                             .and_then(|n| n.as_str())
                             .unwrap_or("")
                             .to_string();
                         let description = tool_spec
-                            .get("description")
+                            .get(keys::DESCRIPTION)
                             .and_then(|d| d.as_str().map(String::from));
 
-                        let input_schema = if let Some(input_schema) = tool_spec.get("inputSchema")
-                        {
-                            input_schema
-                                .get("json")
-                                .cloned()
-                                .unwrap_or(serde_json::Value::Null)
-                        } else {
-                            serde_json::Value::Null
-                        };
+                        let input_schema =
+                            if let Some(input_schema) = tool_spec.get(super::INPUT_SCHEMA_CAMEL) {
+                                input_schema
+                                    .get(keys::JSON)
+                                    .cloned()
+                                    .unwrap_or(serde_json::Value::Null)
+                            } else {
+                                serde_json::Value::Null
+                            };
 
                         tools.push(crate::codec::ir::IrTool {
                             name,
@@ -572,9 +569,9 @@ impl ProtocolReader for BedrockReader {
                             hosted: None,
                             // BED-08: Converse `toolSpec.strict` (structured-output enforcement on
                             // the tool's input) is the same per-tool switch the IR carries.
-                            strict: tool_spec.get("strict").and_then(|v| v.as_bool()),
+                            strict: tool_spec.get(keys::STRICT).and_then(|v| v.as_bool()),
                         });
-                    } else if tool_val.get("cachePoint").is_some() {
+                    } else if tool_val.get(super::CACHE_POINT).is_some() {
                         // A `cachePoint` entry in the `toolConfig.tools` array marks the prompt-cache
                         // boundary for the tool DEFINITIONS preceding it (Anthropic places the same
                         // breakpoint on a tool). Map it onto the preceding tool's first-class IR
@@ -603,13 +600,13 @@ impl ProtocolReader for BedrockReader {
 
         // Promote Bedrock's native `toolConfig.toolChoice` into the IR union so a forced /
         // targeted directive survives the cross-protocol seam instead of degrading to `auto`.
-        let tool_choice = read_bedrock_tool_choice(obj.get("toolConfig"));
+        let tool_choice = read_bedrock_tool_choice(obj.get(keys::TOOL_CONFIG));
 
         let max_tokens = if let Some(inference_config) =
-            obj.get("inferenceConfig").and_then(|i| i.as_object())
+            obj.get(super::INFERENCE_CONFIG).and_then(|i| i.as_object())
         {
             inference_config
-                .get("maxTokens")
+                .get(super::MAX_TOKENS_CAMEL)
                 .and_then(|v| v.as_u64())
                 .filter(|&v| v > 0)
                 // Bounds-checked: a bare `as u32` would silently TRUNCATE (wrap) a value above
@@ -621,17 +618,11 @@ impl ProtocolReader for BedrockReader {
             None
         };
 
-        let inference_config = obj.get("inferenceConfig").and_then(|i| i.as_object());
-        let temperature =
-            inference_config.and_then(|ic| ic.get("temperature").and_then(|v| v.as_f64()));
-        // Promoted sampling controls in Bedrock's `inferenceConfig`: topP and stopSequences. `topK`
-        // is NOT an inferenceConfig field (it lives in model-specific `additionalModelRequestFields`),
-        // so it is promoted from THERE (see `top_k` below). These two are ALSO preserved verbatim in
-        // the raw `inferenceConfig` captured into `extra` for the same-protocol passthrough; the IR
-        // fields are what carry them across the cross-protocol seam (where `extra` is cleared). The
-        // writer's overlay re-emits the typed fields onto the raw object, so a Bedrock->Bedrock
-        // round-trip is unaffected (the overlaid value equals the captured one).
-        let top_p = inference_config.and_then(|ic| ic.get("topP").and_then(|v| v.as_f64()));
+        // `inferenceConfig.{temperature, topP, stopSequences}` are rows of the mapping file, read
+        // below. They are ALSO preserved verbatim in the raw `inferenceConfig` captured into `extra`
+        // for the same-protocol passthrough; the writer overlays the typed fields onto the raw
+        // object, so a Bedrock->Bedrock round-trip is unaffected. `topK` is NOT an inferenceConfig
+        // field (it lives in model-specific `additionalModelRequestFields`, see `top_k` below).
         // Promote `top_k` (fidelity fix). Bedrock's Converse API carries `top_k` only via the
         // model-specific `additionalModelRequestFields` escape hatch (it has no `inferenceConfig`
         // home). Anthropic-on-Bedrock and several model families spell it `top_k`; some use `topK`.
@@ -644,14 +635,14 @@ impl ProtocolReader for BedrockReader {
         // value came from the `topK` key, so a same-protocol passthrough that spelled it `topK`
         // round-trips byte-identically instead of being renamed to `top_k`.
         let amrf = obj
-            .get("additionalModelRequestFields")
+            .get(super::ADDITIONAL_MODEL_REQUEST_FIELDS)
             .and_then(|v| v.as_object());
         let mut top_k_was_camel = false;
         let top_k = amrf
             .and_then(|amrf| {
-                amrf.get("top_k").or_else(|| {
+                amrf.get(super::TOP_K).or_else(|| {
                     top_k_was_camel = true;
-                    amrf.get("topK")
+                    amrf.get(super::TOP_K_CAMEL)
                 })
             })
             .and_then(|v| v.as_u64())
@@ -659,9 +650,6 @@ impl ProtocolReader for BedrockReader {
         // Only meaningful when a usable top_k actually came from the camel key; reset otherwise so a
         // present-but-`top_k`-spelled (or absent/out-of-range) value never stamps the sentinel.
         top_k_was_camel &= top_k.is_some();
-        let stop = crate::codec::ir::read_stop_sequences(
-            inference_config.and_then(|ic| ic.get("stopSequences")),
-        );
 
         // Stash any captured `cachePoint` markers (with their original positions) under the sentinel
         // so `write_request` re-emits them at the same spots on a same-protocol passthrough. Only
@@ -671,13 +659,13 @@ impl ProtocolReader for BedrockReader {
             let mut cache_points = serde_json::Map::new();
             if !system_cache_points.is_empty() {
                 cache_points.insert(
-                    "system".to_string(),
+                    keys::SYSTEM.to_string(),
                     serde_json::Value::Array(system_cache_points),
                 );
             }
             if !message_cache_points.is_empty() {
                 cache_points.insert(
-                    "messages".to_string(),
+                    keys::MESSAGES.to_string(),
                     serde_json::Value::Array(message_cache_points),
                 );
             }
@@ -695,13 +683,13 @@ impl ProtocolReader for BedrockReader {
             let mut guard_content = serde_json::Map::new();
             if !system_guard_content.is_empty() {
                 guard_content.insert(
-                    "system".to_string(),
+                    keys::SYSTEM.to_string(),
                     serde_json::Value::Array(system_guard_content),
                 );
             }
             if !message_guard_content.is_empty() {
                 guard_content.insert(
-                    "messages".to_string(),
+                    keys::MESSAGES.to_string(),
                     serde_json::Value::Array(message_guard_content),
                 );
             }
@@ -718,7 +706,7 @@ impl ProtocolReader for BedrockReader {
         if !message_doc_video.is_empty() {
             let mut doc_video = serde_json::Map::new();
             doc_video.insert(
-                "messages".to_string(),
+                keys::MESSAGES.to_string(),
                 serde_json::Value::Array(message_doc_video),
             );
             extra.insert(
@@ -746,25 +734,13 @@ impl ProtocolReader for BedrockReader {
         // BED-08: Converse's native structured output, `outputConfig.textFormat`.
         let response_format = read_bedrock_response_format(obj);
 
-        Ok(crate::codec::ir::IrRequest {
+        let mut ir = crate::codec::ir::IrRequest {
             reasoning,
-            reasoning_budgets: None,
-            logprobs: None,
-            top_logprobs: None,
-            user: None,
-            parallel_tool_calls: None,
             system: system_blocks,
-            // Bedrock's Converse `system` is its own top-level wire field, never folded out of
-            // `messages` — the 1.5.5 raw-array count and the IR-normalized count already agree.
-            system_turns_folded: 0,
-            system_folds: Vec::new(),
             messages,
             tools,
             max_tokens,
-            temperature,
-            top_p,
             top_k,
-            stop,
             tool_choice,
             // Bedrock's native Converse request body has no `stream` field — streaming is selected
             // by the endpoint (converse vs converse-stream). The Bedrock ingress route therefore
@@ -776,27 +752,15 @@ impl ProtocolReader for BedrockReader {
             // (a native Bedrock egress reads the flag from the endpoint, not the body, so this is
             // a no-op for the same-protocol path).
             stream: obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false),
-            frequency_penalty: None,
-            presence_penalty: None,
-            seed: None,
-            n: None,
             response_format,
             // IR-03: `requestMetadata` crosses as the typed metadata (the raw object stays in
             // `extra` for the same-protocol re-emission).
             metadata: read_bedrock_request_metadata(obj),
             extra,
-            // BED-14 / IR-04: Converse `serviceTier: {type}` (priority / default /
-            // flex); `reserved` has no IR tier and rides `extra` only.
-            service_tier: super::read_bedrock_service_tier(obj),
-            store: None,
-            safety_identifier: None,
-            prompt_cache_key: None,
-            verbosity: None,
-            allowed_tools: None,
-            hosted_tools: Vec::new(),
-            system_role: None,
-            output_modalities: None,
-        })
+            ..Default::default()
+        };
+        crate::codec::carry::read_fields(super::map::REQUEST, obj, &mut ir);
+        Ok(ir)
     }
 
     fn read_response_events(
@@ -811,7 +775,7 @@ impl ProtocolReader for BedrockReader {
             return out;
         }
 
-        match data.get("type").and_then(|t| t.as_str()) {
+        match data.get(keys::TYPE).and_then(|t| t.as_str()) {
             Some(ET_MESSAGE_START) => {
                 if !state.started {
                     state.started = true;
@@ -828,8 +792,11 @@ impl ProtocolReader for BedrockReader {
             Some(ET_CONTENT_BLOCK_START) => {
                 let idx = clamp_content_block_index(data);
 
-                if let Some(start_obj) = data.get("start").and_then(|s| s.as_object()) {
-                    if let Some(tool_use) = start_obj.get("toolUse").and_then(|t| t.as_object()) {
+                if let Some(start_obj) = data.get(keys::START).and_then(|s| s.as_object()) {
+                    if let Some(tool_use) = start_obj
+                        .get(super::TOOL_USE_CAMEL)
+                        .and_then(|t| t.as_object())
+                    {
                         // Mirror the `state.started` guard the text branch (below) enforces: a
                         // BlockStart must NEVER precede the MessageStart it belongs to. Without this
                         // guard, a `contentBlockStart` arriving before `messageStart` (malformed or
@@ -837,12 +804,12 @@ impl ProtocolReader for BedrockReader {
                         // breaking the IR ordering invariant downstream consumers rely on. Skip it.
                         if state.started {
                             let tu_id = tool_use
-                                .get("toolUseId")
+                                .get(super::TOOL_USE_ID)
                                 .and_then(|id| id.as_str())
                                 .unwrap_or("")
                                 .to_string();
                             let name = tool_use
-                                .get("name")
+                                .get(keys::NAME)
                                 .and_then(|n| n.as_str())
                                 .unwrap_or("")
                                 .to_string();
@@ -860,7 +827,7 @@ impl ProtocolReader for BedrockReader {
                                 refusal: false,
                             });
                         }
-                    } else if start_obj.contains_key("reasoningContent")
+                    } else if start_obj.contains_key(super::REASONING_CONTENT)
                         && state.started
                         && !state.thinking_block_open
                     {
@@ -905,10 +872,10 @@ impl ProtocolReader for BedrockReader {
             Some(ET_CONTENT_BLOCK_DELTA) => {
                 let idx = clamp_content_block_index(data);
 
-                if let Some(delta_obj) = data.get("delta").and_then(|d| d.as_object()) {
-                    if delta_obj.contains_key("text") {
+                if let Some(delta_obj) = data.get(keys::DELTA).and_then(|d| d.as_object()) {
+                    if delta_obj.contains_key(keys::TEXT) {
                         let text_val = delta_obj
-                            .get("text")
+                            .get(keys::TEXT)
                             .and_then(|t| t.as_str())
                             .unwrap_or("")
                             .to_string();
@@ -943,14 +910,16 @@ impl ProtocolReader for BedrockReader {
                                 delta: crate::codec::ir::IrDelta::TextDelta(text_val),
                             });
                         }
-                    } else if let Some(tool_use) =
-                        delta_obj.get("toolUse").and_then(|t| t.as_object())
+                    } else if let Some(tool_use) = delta_obj
+                        .get(super::TOOL_USE_CAMEL)
+                        .and_then(|t| t.as_object())
                     {
                         // A tool-use input delta is valid only inside a tool block the
                         // `contentBlockStart` arm already opened (recorded in `open_tools`). On a
                         // malformed/reordered stream where the delta precedes its start, drop it
                         // rather than emit an orphan delta (the guard every sibling arm has).
-                        if let Some(input_str) = tool_use.get("input").and_then(|i| i.as_str()) {
+                        if let Some(input_str) = tool_use.get(keys::INPUT).and_then(|i| i.as_str())
+                        {
                             if state.started && state.open_tools.contains(&idx) {
                                 out.push(IrStreamEvent::BlockDelta {
                                     index: idx,
@@ -961,7 +930,7 @@ impl ProtocolReader for BedrockReader {
                             }
                         }
                     } else if let Some(citation) =
-                        delta_obj.get("citation").filter(|c| c.is_object())
+                        delta_obj.get(keys::CITATION).filter(|c| c.is_object())
                     {
                         // BED-01: a ConverseStream `citation` delta (one `CitationsDelta` per frame)
                         // arrives interleaved with the `text` deltas of the block it cites, at the
@@ -984,7 +953,7 @@ impl ProtocolReader for BedrockReader {
                             });
                         }
                     } else if let Some(reasoning) = delta_obj
-                        .get("reasoningContent")
+                        .get(super::REASONING_CONTENT)
                         .and_then(|r| r.as_object())
                     {
                         // Native Bedrock ConverseStream streams the model's extended-thinking as a
@@ -1014,7 +983,7 @@ impl ProtocolReader for BedrockReader {
                             // `redacted_thinking` start instead of a plaintext `thinking` seed — the
                             // faithful inverse of how this reader synthesizes the pair. The opaque bytes
                             // still ride the `RedactedReasoningDelta` emitted just below.
-                            let block = if reasoning.contains_key("redactedContent") {
+                            let block = if reasoning.contains_key(super::REDACTED_CONTENT) {
                                 crate::codec::ir::IrBlockMeta::RedactedThinking
                             } else {
                                 crate::codec::ir::IrBlockMeta::Thinking { kind: None }
@@ -1026,7 +995,7 @@ impl ProtocolReader for BedrockReader {
                             });
                         }
                         if state.thinking_block_open {
-                            if let Some(text) = reasoning.get("text").and_then(|t| t.as_str()) {
+                            if let Some(text) = reasoning.get(keys::TEXT).and_then(|t| t.as_str()) {
                                 out.push(IrStreamEvent::BlockDelta {
                                     index: idx,
                                     delta: crate::codec::ir::IrDelta::ThinkingDelta(
@@ -1034,7 +1003,7 @@ impl ProtocolReader for BedrockReader {
                                     ),
                                 });
                             } else if let Some(sig) =
-                                reasoning.get("signature").and_then(|s| s.as_str())
+                                reasoning.get(keys::SIGNATURE).and_then(|s| s.as_str())
                             {
                                 out.push(IrStreamEvent::BlockDelta {
                                     index: idx,
@@ -1042,8 +1011,9 @@ impl ProtocolReader for BedrockReader {
                                         sig.to_string(),
                                     ),
                                 });
-                            } else if let Some(redacted) =
-                                reasoning.get("redactedContent").and_then(|r| r.as_str())
+                            } else if let Some(redacted) = reasoning
+                                .get(super::REDACTED_CONTENT)
+                                .and_then(|r| r.as_str())
                             {
                                 out.push(IrStreamEvent::BlockDelta {
                                     index: idx,
@@ -1137,14 +1107,14 @@ impl ProtocolReader for BedrockReader {
                 // ordering. A bedrock->bedrock round-trip is unaffected: the `MessageStop` IR event
                 // maps to no wire frame (`BedrockWriter` returns `None`), and the combined delta is
                 // re-split into the native `messageStop` + `metadata` frame pair by `StreamTranslate`.
-                let stop_reason = data.get("stopReason").and_then(|s| s.as_str());
+                let stop_reason = data.get(super::STOP_REASON).and_then(|s| s.as_str());
                 state.pending_stop_reason = stop_reason.map(stop_reason_map);
                 // IR-16 (BED-10) and BED-11: the refinement and the matched stop string ride this
                 // frame too, and are buffered with the reason for the combined delta.
                 state.pending_stop_detail = stop_reason.and_then(stop_detail_map);
                 state.pending_stop_sequence = data
-                    .get("additionalModelResponseFields")
-                    .and_then(|f| f.get("stop_sequence"))
+                    .get(super::ADDITIONAL_MODEL_RESPONSE_FIELDS)
+                    .and_then(|f| f.get(keys::STOP_SEQUENCE))
                     .and_then(|v| v.as_str())
                     .map(String::from);
             }
@@ -1183,7 +1153,7 @@ impl ProtocolReader for BedrockReader {
                 // rides the buffered `usage`: the two TTLs price differently, so reading only the
                 // total made the same turn's bill reconcilable buffered and not reconcilable
                 // streamed.
-                let usage_val = data.get("usage");
+                let usage_val = data.get(keys::USAGE);
                 let usage = match read_bedrock_usage(usage_val) {
                     Ok(usage) => usage,
                     Err(refusal) => {
@@ -1212,14 +1182,14 @@ impl ProtocolReader for BedrockReader {
             // terminates the client stream with a protocol-shaped error rather than silently dropping
             // the event and leaving the client on a hanging / EOF-without-terminator stream.
             Some(
-                exc @ ("internalServerException"
-                | "modelStreamErrorException"
-                | "throttlingException"
-                | "validationException"
-                | "serviceUnavailableException"),
+                exc @ (super::INTERNAL_SERVER_EXCEPTION
+                | super::MODEL_STREAM_ERROR_EXCEPTION
+                | super::THROTTLING_EXCEPTION
+                | super::VALIDATION_EXCEPTION
+                | super::SERVICE_UNAVAILABLE_EXCEPTION),
             ) => {
                 let message = data
-                    .get("message")
+                    .get(keys::MESSAGE)
                     .and_then(|m| m.as_str())
                     .map(String::from);
                 // Map each of the five outer-bound exception strings to its StatusClass. Every one
@@ -1230,10 +1200,10 @@ impl ProtocolReader for BedrockReader {
                 // `other =>` arm, which we keep (not a `_` wildcard) only because `&str` matches are
                 // never type-exhaustive; the outer pattern is the real guard.
                 let class = match exc {
-                    "throttlingException" => StatusClass::RateLimit,
-                    "validationException" => StatusClass::ClientError,
-                    "serviceUnavailableException" => StatusClass::Overloaded,
-                    "internalServerException" | "modelStreamErrorException" => {
+                    super::THROTTLING_EXCEPTION => StatusClass::RateLimit,
+                    super::VALIDATION_EXCEPTION => StatusClass::ClientError,
+                    super::SERVICE_UNAVAILABLE_EXCEPTION => StatusClass::Overloaded,
+                    super::INTERNAL_SERVER_EXCEPTION | super::MODEL_STREAM_ERROR_EXCEPTION => {
                         StatusClass::ServerError
                     }
                     // Unreachable given the outer `Some(exc @ (...))` guard restricts `exc` to the
@@ -1280,8 +1250,8 @@ impl ProtocolReader for BedrockReader {
         // (`IrResponse` has no `extra` carrier by design; a foreign client cannot receive these, so
         // there is nothing to carry them TO.)
         for dropped in [
-            "trace",
-            "additionalModelResponseFields",
+            super::TRACE,
+            super::ADDITIONAL_MODEL_RESPONSE_FIELDS,
             "performanceConfig",
         ] {
             if obj.contains_key(dropped) {
@@ -1295,35 +1265,37 @@ impl ProtocolReader for BedrockReader {
             }
         }
 
-        let output_val = obj.get("output").ok_or_else(ir_parse_error)?;
+        let output_val = obj.get(keys::OUTPUT).ok_or_else(ir_parse_error)?;
 
-        let message_val = output_val.get("message").ok_or_else(ir_parse_error)?;
+        let message_val = output_val.get(keys::MESSAGE).ok_or_else(ir_parse_error)?;
 
         let mut content: Vec<crate::codec::ir::IrBlock> = Vec::new();
 
-        if let Some(content_arr) = message_val.get("content").and_then(|c| c.as_array()) {
+        if let Some(content_arr) = message_val.get(keys::CONTENT).and_then(|c| c.as_array()) {
             for block_val in content_arr {
-                if let Some(text_val) = block_val.get("text").and_then(|t| t.as_str()) {
+                if let Some(text_val) = block_val.get(keys::TEXT).and_then(|t| t.as_str()) {
                     content.push(crate::codec::ir::IrBlock::Text {
                         text: text_val.to_string(),
                         cache_control: None,
                         citations: Vec::new(),
                         refusal: false,
                     });
-                } else if let Some(tool_use) = block_val.get("toolUse").and_then(|t| t.as_object())
+                } else if let Some(tool_use) = block_val
+                    .get(super::TOOL_USE_CAMEL)
+                    .and_then(|t| t.as_object())
                 {
                     let tu_id = tool_use
-                        .get("toolUseId")
+                        .get(super::TOOL_USE_ID)
                         .and_then(|id| id.as_str())
                         .unwrap_or("")
                         .to_string();
                     let name = tool_use
-                        .get("name")
+                        .get(keys::NAME)
                         .and_then(|n| n.as_str())
                         .unwrap_or("")
                         .to_string();
                     let input = tool_use
-                        .get("input")
+                        .get(keys::INPUT)
                         .cloned()
                         .unwrap_or(serde_json::Value::Null);
 
@@ -1334,11 +1306,11 @@ impl ProtocolReader for BedrockReader {
                         cache_control: None,
                         thought_signature: None,
                     });
-                } else if let Some(cc) = block_val.get("citationsContent") {
+                } else if let Some(cc) = block_val.get(super::CITATIONS_CONTENT) {
                     // BED-01: a cited answer carries its TEXT inside `citationsContent`, beside the
                     // citations. With no arm here the answer text itself was deleted.
                     content.push(read_bedrock_citations_content(cc));
-                } else if let Some(reasoning) = block_val.get("reasoningContent") {
+                } else if let Some(reasoning) = block_val.get(super::REASONING_CONTENT) {
                     // A Converse response message can carry a `reasoningContent` (extended-thinking)
                     // block — the model's reasoning output. Mirror the request-side reader: map it
                     // onto IR `Thinking { text, signature }` via `read_bedrock_reasoning_block` (and
@@ -1354,7 +1326,7 @@ impl ProtocolReader for BedrockReader {
                              member (neither reasoningText nor redactedContent)"
                         );
                     }
-                } else if let Some(image) = block_val.get("image") {
+                } else if let Some(image) = block_val.get(keys::IMAGE) {
                     // An assistant Converse response can carry an `image` content block (model
                     // image output / tool-rendered image). Mirror the request-side readers
                     // (`read_request` content loop + the `toolResult` inner loop), which both decode
@@ -1377,13 +1349,13 @@ impl ProtocolReader for BedrockReader {
         }
 
         let stop_reason_val = obj
-            .get("stopReason")
+            .get(super::STOP_REASON)
             .and_then(|s| s.as_str())
             .map(stop_reason_map);
         // IR-16 (BED-10): the refinement beside the coarse reason (`model_context_window_exceeded`
         // is `MaxTokens` + `ContextWindowExceeded`).
         let stop_detail = obj
-            .get("stopReason")
+            .get(super::STOP_REASON)
             .and_then(|s| s.as_str())
             .and_then(stop_detail_map);
 
@@ -1392,7 +1364,7 @@ impl ProtocolReader for BedrockReader {
         // fall back to zero counts rather than hard-erroring. A missing `usage` is an upstream
         // response-format quirk (mock/staging backend, or a future model variant), not a client
         // error, so a spurious `ClientError` here would mislabel the cause and confuse retry logic.
-        let usage_obj = obj.get("usage");
+        let usage_obj = obj.get(keys::USAGE);
         // `cacheDetails` — the per-TTL breakdown of `cacheWriteInputTokens` — rides the same table
         // as the totals (see `USAGE`). Absent is zero, a present-but-UNREADABLE count REFUSES (#42).
         let usage = read_bedrock_usage(usage_obj)?;
@@ -1418,8 +1390,8 @@ impl ProtocolReader for BedrockReader {
             // BED-11 (buffered half): Anthropic-on-Bedrock echoes the matched stop string under
             // `additionalModelResponseFields.stop_sequence`.
             stop_sequence: obj
-                .get("additionalModelResponseFields")
-                .and_then(|f| f.get("stop_sequence"))
+                .get(super::ADDITIONAL_MODEL_RESPONSE_FIELDS)
+                .and_then(|f| f.get(keys::STOP_SEQUENCE))
                 .and_then(|v| v.as_str())
                 .map(String::from),
 

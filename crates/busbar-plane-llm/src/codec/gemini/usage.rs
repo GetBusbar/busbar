@@ -54,27 +54,26 @@ pub(super) const USAGE: &[UsageCount] = &[
         CountSlot::InputAudio,
         CountRead::ListFirst {
             list: &["promptTokensDetails"],
-            key: "modality",
-            value: "AUDIO",
-            count: "tokenCount",
+            key: FIELD_MODALITY,
+            value: GEMINI_AUDIO,
+            count: FIELD_TOKEN_COUNT,
         },
     ),
     (
         CountSlot::OutputAudio,
         CountRead::ListFirst {
             list: &["candidatesTokensDetails"],
-            key: "modality",
-            value: "AUDIO",
-            count: "tokenCount",
+            key: FIELD_MODALITY,
+            value: GEMINI_AUDIO,
+            count: FIELD_TOKEN_COUNT,
         },
     ),
 ];
 
 /// A Gemini response (or stream frame) → the IR usage: its `usageMetadata` through [`USAGE`], plus
 /// what rides beside the counts — the identity cross-check against Google's own `totalTokenCount`
-/// (`None` when they agree), `usageMetadata.trafficType` (INFORMATIONAL, ON_DEMAND vs PROVISIONED)
-/// and the top-level `createTime`, a sibling of `usageMetadata` (OWNER RULING Q1,
-/// docs/design/1.6.0-QUESTIONS.md Q36).
+/// (`None` when they agree), `usageMetadata.trafficType` (INFORMATIONAL, ON_DEMAND vs PROVISIONED,
+/// docs/design/1.6.0-QUESTIONS.md Q36) and the top-level `createTime` (a sibling of `usageMetadata`).
 pub(super) fn read_gemini_usage(
     data: &serde_json::Value,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {

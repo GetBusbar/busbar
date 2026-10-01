@@ -4,7 +4,8 @@
 //! THE EXPORT KIND'S ABI: its version and its table (the design's locked plugin ABI: one
 //! mechanism, every shape in `abi/`). M0 landed the skeleton; this is M3-SHAPES
 //! (`abi-v2-perkind.md` B.5): `deliver`, `scrape`, `status`, `check` and `serve`, and the frozen
-//! [`ExportStream`] tail. NOTHING dispatches through this yet (M3-wire, after M1).
+//! [`ExportStream`] tail. The one dispatcher calls this table (`busbar-plugin-loader`,
+//! `dispatch::kinds::export`).
 //!
 //! **ARCHITECT REVIEW RULING (fresh-Opus M3-SHAPES review, 2026-09-28), folded in on top of the
 //! first landing:**
@@ -455,53 +456,45 @@ unsafe impl super::sdk::door::AbiOut for StatusOut {}
 unsafe impl super::sdk::door::AbiOut for CheckOut {}
 unsafe impl super::sdk::door::AbiOut for ServeOut {}
 
-/// Each export kind op's `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]' docs.
-/// A plugin wiring a slot to another op's structs does not compile:
-///
-/// ```compile_fail,E0271
-/// use busbar_contract::abi::export::{CheckIn, CheckOut, DeliverIn, ScrapeIn, ScrapeOut};
-/// use busbar_contract::abi::export::{ServeIn, ServeOut, StatusOut};
-/// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
-/// use busbar_contract::abi::mechanism::lifecycle::*;
-/// use busbar_contract::abi::sdk::door::Slot;
-/// # use std::ffi::c_void;
-/// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
-/// #     struct $n;
-/// #     impl Slot for $n { type In = $i; type Out = $o;
-/// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
-/// # } }
-/// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
-/// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
-/// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
-/// # ready!(Deliver, DeliverIn, OutHead); ready!(Status, InHead, StatusOut);
-/// # ready!(Check, CheckIn, CheckOut); ready!(Serve, ServeIn, ServeOut);
-/// ready!(Scrape, DeliverIn, OutHead); // `deliver`'s structs on `scrape`: refused
-/// busbar_contract::plugin_door! {
-///     ops: busbar_contract::abi::export::Ops,
-///     statement: busbar_contract::abi::sdk::door::statement("wrong", "0", 1),
-///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
-///                  cancel: Cn, release: Rl, close: Cl },
-///     kind_ops: { deliver: Deliver, scrape: Scrape, status: Status, check: Check, serve: Serve },
-/// }
-/// # fn main() { let _ = door(); }
-/// ```
-///
-/// With `Scrape` reading [`ScrapeIn`] and writing [`ScrapeOut`] the same plugin compiles
-/// (`abi/sdk/tests/door_tests.rs`, `an_export_plugin_wires_every_kind_op`).
-macro_rules! kind_slots {
-    ($($slot:ident => $in:ty, $out:ty;)*) => {$(
-        // SAFETY: the structs `Ops`' doc states for this slot.
-        unsafe impl super::sdk::door::KindSlot<{ slot::$slot }> for Ops {
-            type In = $in;
-            type Out = $out;
-        }
-    )*};
-}
-
-kind_slots! {
-    DELIVER => DeliverIn, OutHead;
-    SCRAPE => ScrapeIn, ScrapeOut;
-    STATUS => InHead, StatusOut;
-    CHECK => CheckIn, CheckOut;
-    SERVE => ServeIn, ServeOut;
-}
+super::sdk::door::slot_structs!(
+    /// Each export kind op's `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]' docs.
+    /// A plugin wiring a slot to another op's structs does not compile:
+    ///
+    /// ```compile_fail,E0271
+    /// use busbar_contract::abi::export::{CheckIn, CheckOut, DeliverIn, ScrapeIn, ScrapeOut};
+    /// use busbar_contract::abi::export::{ServeIn, ServeOut, StatusOut};
+    /// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
+    /// use busbar_contract::abi::mechanism::lifecycle::*;
+    /// use busbar_contract::abi::sdk::door::Slot;
+    /// # use std::ffi::c_void;
+    /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
+    /// #     struct $n;
+    /// #     impl Slot for $n { type In = $i; type Out = $o;
+    /// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+    /// # } }
+    /// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
+    /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
+    /// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
+    /// # ready!(Deliver, DeliverIn, OutHead); ready!(Status, InHead, StatusOut);
+    /// # ready!(Check, CheckIn, CheckOut); ready!(Serve, ServeIn, ServeOut);
+    /// ready!(Scrape, DeliverIn, OutHead); // `deliver`'s structs on `scrape`: refused
+    /// busbar_contract::plugin_door! {
+    ///     ops: busbar_contract::abi::export::Ops,
+    ///     statement: busbar_contract::abi::sdk::door::statement("wrong", "0", 1),
+    ///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
+    ///                  cancel: Cn, release: Rl, close: Cl },
+    ///     kind_ops: { deliver: Deliver, scrape: Scrape, status: Status, check: Check, serve: Serve },
+    /// }
+    /// # fn main() { let _ = door(); }
+    /// ```
+    ///
+    /// With `Scrape` reading [`ScrapeIn`] and writing [`ScrapeOut`] the same plugin compiles
+    /// (`abi/sdk/tests/door_tests.rs`, `an_export_plugin_wires_every_kind_op`).
+    Ops {
+        slot::DELIVER => DeliverIn, OutHead;
+        slot::SCRAPE => ScrapeIn, ScrapeOut;
+        slot::STATUS => InHead, StatusOut;
+        slot::CHECK => CheckIn, CheckOut;
+        slot::SERVE => ServeIn, ServeOut;
+    }
+);

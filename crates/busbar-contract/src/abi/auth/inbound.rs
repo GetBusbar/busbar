@@ -2,23 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE INBOUND FAMILY: `verify` and the `begin_login`/`complete_login` pair, plus the shapes the
-//! outbound family shares with them ([`Span`], [`RequestFacts`], [`NamedValue`]).
+//! outbound family shares with them ([`RequestFacts`], [`NamedValue`]).
 //!
 //! An identity is WHO the caller is, never what they may do: nothing here has a slot for a pool, a
 //! scope or a policy decision. The kernel resolves `groups -> role_bindings -> policy` afterwards.
 
-use crate::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead};
-
-/// A slice of a HOST buffer the plugin wrote: `off` and `len` in bytes. `off ==`
-/// [`super::SPAN_ABSENT`] = absent (distinct from present and empty).
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Span {
-    /// Byte offset into the buffer; [`super::SPAN_ABSENT`] = absent.
-    pub off: u32,
-    /// Byte length.
-    pub len: u32,
-}
+use crate::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Span};
 
 /// A named value the host hands in: an inbound carrier field, or a submitted login field. A
 /// credential-bearing value carries [`BLOB_SECRET`](crate::abi::mechanism::call::BLOB_SECRET).

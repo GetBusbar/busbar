@@ -5,6 +5,7 @@
 
 use crate::codec::dialect::ir_parse_error;
 use crate::codec::ir::IrStreamEvent;
+use crate::codec::keys;
 use busbar_contract::http::StatusCode;
 // `bearer_error_code` and `CODE_INVALID_API_KEY` now live in the neutral substrate; read them there
 // so this plugin names no `busbar-core` implementation path for them.
@@ -33,6 +34,9 @@ use crate::codec::usage_count::{CountRead, CountSlot, UsageCount};
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+#[rustfmt::skip]
+#[path = "map.gen.rs"]
+mod map;
 pub mod handler;
 mod reader;
 mod slots;
@@ -42,7 +46,7 @@ mod writer;
 /// resolution: `ResponsesWriter` carries per-STREAM mutable state (`sequence`, `response_id`).
 /// Mirrors `super::anthropic::protocol`.
 pub fn protocol() -> Protocol {
-    Protocol::new("responses", ResponsesReader, ResponsesWriter)
+    Protocol::new(VENDOR_NAME, ResponsesReader, ResponsesWriter)
 }
 
 /// THE RESPONSES ROUTER DETECTION — its single rung of the old core `protocol_id` ladder:
@@ -69,13 +73,8 @@ fn residual_claims(path: &str) -> Option<busbar_contract::protocol::ClaimStrengt
 /// THE `/v1/responses` DECLARATION. Shares OpenAI's `call_…` tool-id shape (it is the same vendor's
 /// second surface) and declares its own name, because a metric label is a protocol's own.
 pub const DECL: ProtocolDecl = ProtocolDecl {
-    name: "responses",
-    codec: {
-        // The dialect's neutral codec facade as a STATIC, so the decl hands out a `&'static dyn`
-        // borrow (pure memory, zero alloc per `dialect()` call) — the seam's perf contract.
-        static CODEC: super::proto_codec::DialectRef = super::proto_codec::dialect_ref("responses");
-        Some(&CODEC)
-    },
+    name: VENDOR_NAME,
+    codec: dialect_codec!(VENDOR_NAME),
     handler: Some(&handler::ResponsesRequestHandler),
     verbs: &[busbar_contract::operation::OpVerb::CHAT],
     head_keys: super::proto_codec::LLM_CHAT_HEAD_KEYS,
@@ -127,7 +126,6 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     list_models_fingerprint_headers: &[],
     static_headers: &[],
 };
-use std::sync::OnceLock;
 
 /// Largest wire `output_index` we accept in a streaming Responses event before clamping. The
 /// Responses API, like Chat Completions, documents at most 128 parallel output items, so any larger
@@ -276,10 +274,56 @@ const EVT_RESPONSE_FAILED: &str = "response.failed";
 const EVT_RESPONSE_INCOMPLETE: &str = "response.incomplete";
 /// The Responses stream's TOP-LEVEL mid-stream failure event (`{"type":"error","code","message",
 /// "param"}`), distinct from the terminal `response.failed`.
-const EVT_ERROR: &str = "error";
+const EVT_ERROR: &str = keys::ERROR_WORD;
 /// The `include` entry that asks a Responses backend for per-token logprobs on every `output_text`
 /// part — the Responses spelling of the Chat Completions `logprobs: true` switch.
 const INCLUDE_OUTPUT_TEXT_LOGPROBS: &str = "message.output_text.logprobs";
+
+// One spelling per wire word (OWNER 2026-10-01): each word-shaped literal is written once.
+/// Wire word `call_id`.
+const CALL_ID: &str = "call_id";
+/// Wire word `code_interpreter`.
+const CODE_INTERPRETER: &str = "code_interpreter";
+/// Wire word `content_index`.
+const CONTENT_INDEX: &str = "content_index";
+/// Wire word `encrypted_content`.
+const ENCRYPTED_CONTENT: &str = "encrypted_content";
+/// Wire word `file_url`.
+const FILE_URL: &str = "file_url";
+/// Wire word `filters`.
+const FILTERS: &str = "filters";
+/// Wire word `function_call_output`.
+const FUNCTION_CALL_OUTPUT: &str = "function_call_output";
+/// Wire word `include`.
+const INCLUDE: &str = "include";
+/// Wire word `incomplete_details`.
+const INCOMPLETE_DETAILS: &str = "incomplete_details";
+/// Wire word `input_file`.
+const INPUT_FILE: &str = "input_file";
+/// Wire word `input_image`.
+const INPUT_IMAGE: &str = "input_image";
+/// Wire word `input_tokens_details`.
+const INPUT_TOKENS_DETAILS: &str = "input_tokens_details";
+/// Wire word `item`.
+const ITEM: &str = "item";
+/// Wire word `item_id`.
+const ITEM_ID: &str = "item_id";
+/// Wire word `output_index`.
+const OUTPUT_INDEX: &str = "output_index";
+/// Wire word `part`.
+const PART: &str = "part";
+/// Wire word `previous_response_id`.
+const PREVIOUS_RESPONSE_ID: &str = "previous_response_id";
+/// Wire word `store`.
+const FIELD_STORE: &str = "store";
+/// Wire word `summary`.
+const SUMMARY: &str = "summary";
+/// Wire word `summary_index`.
+const SUMMARY_INDEX: &str = "summary_index";
+/// Wire word `summary_text`.
+const SUMMARY_TEXT: &str = "summary_text";
+/// Wire word `top_p`.
+const TOP_P: &str = "top_p";
 
 /// Internal `provider_signal` sentinel emitted when a `response.failed` event carries no recognizable
 /// `error.code`/`error.type`. Distinct from the `EVT_RESPONSE_FAILED` wire event type ("response.failed"):
@@ -299,8 +343,8 @@ const STATUS_INCOMPLETE: &str = "incomplete";
 // string literals — two independent copies of "what item types exist" is how a hook-visibility
 // gap recurs.
 pub const ITEM_TYPE_FUNCTION_CALL: &str = "function_call";
-const ITEM_TYPE_MESSAGE: &str = "message";
-pub const ITEM_TYPE_REASONING: &str = "reasoning";
+const ITEM_TYPE_MESSAGE: &str = keys::MESSAGE;
+pub const ITEM_TYPE_REASONING: &str = keys::REASONING;
 
 /// Content part `type` values on the `/v1/responses` wire.
 pub const CONTENT_TYPE_OUTPUT_TEXT: &str = "output_text";
@@ -313,7 +357,7 @@ const INCOMPLETE_REASON_CONTENT_FILTER: &str = "content_filter";
 const INCOMPLETE_REASON_OTHER: &str = "other";
 
 /// Top-level `object` field value and vendor tag for the Responses protocol.
-const OBJ_RESPONSE: &str = "response";
+const OBJ_RESPONSE: &str = keys::RESPONSE;
 const VENDOR_NAME: &str = "responses";
 
 /// Synthesized id prefixes (bare prefix without trailing underscore for item ids).
@@ -465,14 +509,14 @@ fn build_responses_usage(usage: &crate::codec::ir::IrUsage) -> serde_json::Value
         .saturating_add(cache_write);
     let total = input_total.saturating_add(usage.output_tokens);
     serde_json::json!({
-        "input_tokens": input_total,
-        "input_tokens_details": {
-            "cached_tokens": cache_read,
-            "cache_write_tokens": cache_write,
+        (keys::INPUT_TOKENS): input_total,
+        (INPUT_TOKENS_DETAILS): {
+            (keys::CACHED_TOKENS): cache_read,
+            (keys::CACHE_WRITE_TOKENS): cache_write,
         },
-        "output_tokens": usage.output_tokens,
-        "output_tokens_details": {
-            "reasoning_tokens": usage.detail.reasoning_tokens.unwrap_or(0),
+        (keys::OUTPUT_TOKENS): usage.output_tokens,
+        (keys::OUTPUT_TOKENS_DETAILS): {
+            (keys::REASONING_TOKENS): usage.detail.reasoning_tokens.unwrap_or(0),
         },
         "total_tokens": total,
     })
@@ -518,34 +562,34 @@ fn fill_required_response_members(
             .cloned()
     };
     let defaults: [(&str, serde_json::Value); 8] = [
-        ("incomplete_details", serde_json::Value::Null),
+        (INCOMPLETE_DETAILS, serde_json::Value::Null),
         (
-            "instructions",
-            echoed("instructions").unwrap_or(serde_json::Value::Null),
+            keys::INSTRUCTIONS,
+            echoed(keys::INSTRUCTIONS).unwrap_or(serde_json::Value::Null),
         ),
         (
-            "tools",
-            echoed("tools").unwrap_or_else(|| serde_json::json!([])),
+            keys::TOOLS,
+            echoed(keys::TOOLS).unwrap_or_else(|| serde_json::json!([])),
         ),
         (
-            "tool_choice",
-            echoed("tool_choice").unwrap_or_else(|| serde_json::json!("auto")),
+            keys::TOOL_CHOICE,
+            echoed(keys::TOOL_CHOICE).unwrap_or_else(|| serde_json::json!(keys::AUTO)),
         ),
         (
-            "parallel_tool_calls",
-            echoed("parallel_tool_calls").unwrap_or(serde_json::Value::Bool(true)),
+            keys::PARALLEL_TOOL_CALLS,
+            echoed(keys::PARALLEL_TOOL_CALLS).unwrap_or(serde_json::Value::Bool(true)),
         ),
         (
-            "metadata",
-            echoed("metadata").unwrap_or_else(|| serde_json::json!({})),
+            keys::METADATA,
+            echoed(keys::METADATA).unwrap_or_else(|| serde_json::json!({})),
         ),
         (
-            "temperature",
-            echoed("temperature").unwrap_or_else(|| serde_json::json!(1.0)),
+            keys::TEMPERATURE,
+            echoed(keys::TEMPERATURE).unwrap_or_else(|| serde_json::json!(1.0)),
         ),
         (
-            "top_p",
-            echoed("top_p").unwrap_or_else(|| serde_json::json!(1.0)),
+            TOP_P,
+            echoed(TOP_P).unwrap_or_else(|| serde_json::json!(1.0)),
         ),
     ];
     for (key, value) in defaults {
@@ -562,7 +606,7 @@ fn write_responses_part_logprobs(lps: &[crate::codec::ir::IrTokenLogprob]) -> se
         return serde_json::json!([]);
     }
     super::openai_chat::write_openai_logprobs(lps)
-        .get_mut("content")
+        .get_mut(keys::CONTENT)
         .map(serde_json::Value::take)
         .unwrap_or_else(|| serde_json::json!([]))
 }
@@ -577,12 +621,12 @@ fn write_responses_event_logprobs(lps: &[crate::codec::ir::IrTokenLogprob]) -> s
             let top: Vec<serde_json::Value> = lp
                 .top
                 .iter()
-                .map(|t| serde_json::json!({ "token": t.token, "logprob": t.logprob }))
+                .map(|t| serde_json::json!({ (keys::TOKEN): t.token, (keys::LOGPROB): t.logprob }))
                 .collect();
             serde_json::json!({
-                "token": lp.token,
-                "logprob": lp.logprob,
-                "top_logprobs": top,
+                (keys::TOKEN): lp.token,
+                (keys::LOGPROB): lp.logprob,
+                (keys::TOP_LOGPROBS): top,
             })
         })
         .collect();
@@ -597,7 +641,9 @@ fn write_responses_event_logprobs(lps: &[crate::codec::ir::IrTokenLogprob]) -> s
 fn read_responses_logprobs(v: Option<&serde_json::Value>) -> Vec<crate::codec::ir::IrTokenLogprob> {
     match v {
         Some(arr @ serde_json::Value::Array(entries)) if !entries.is_empty() => {
-            super::openai_chat::read_openai_logprobs(Some(&serde_json::json!({ "content": arr })))
+            super::openai_chat::read_openai_logprobs(Some(
+                &serde_json::json!({ (keys::CONTENT): arr }),
+            ))
         }
         _ => Vec::new(),
     }
@@ -608,37 +654,9 @@ fn read_responses_logprobs(v: Option<&serde_json::Value>) -> Vec<crate::codec::i
 /// IR's `XHigh`, above `high`; the other words map 1:1. An unknown word is `None`.
 fn read_responses_reasoning_effort(word: &str) -> Option<crate::codec::ir::IrReasoningAsk> {
     match word {
-        "none" => Some(crate::codec::ir::IrReasoningAsk::Off),
+        keys::NONE_WORD => Some(crate::codec::ir::IrReasoningAsk::Off),
         other => crate::codec::ir::IrReasoningEffort::parse_extended(other)
             .map(crate::codec::ir::IrReasoningAsk::Effort),
-    }
-}
-
-/// The Responses top-level `service_tier` (the tier that SERVED the response) → the IR attribution
-/// slot [`crate::codec::ir::IrUsageDetail::service_tier`], whose vocabulary is the Anthropic one
-/// (`standard` / `priority` / `batch`). Only the tiers both vocabularies name are mapped: OpenAI's
-/// `default` IS the standard tier, and `priority` is `priority`. `flex` / `scale` have no word in
-/// the IR vocabulary and `auto` is a request-side instruction, not a served tier, so they are not
-/// carried (an invented equivalent would mis-state the tier). RSP-17.
-fn read_responses_service_tier(resp: &serde_json::Value) -> Option<String> {
-    match resp.get("service_tier").and_then(|t| t.as_str())? {
-        "default" => Some("standard".to_string()),
-        "priority" => Some("priority".to_string()),
-        _ => None,
-    }
-}
-
-/// The inverse of [`read_responses_service_tier`]: the IR served tier → the Responses
-/// `service_tier` word, or `None` (member omitted) for a tier the Responses vocabulary has no word
-/// for (Anthropic `batch`). The OpenAI-family words are accepted as-is so a tier that arrived in
-/// that vocabulary is not lost either.
-fn write_responses_service_tier(tier: Option<&str>) -> Option<&'static str> {
-    match tier? {
-        "standard" | "default" => Some("default"),
-        "priority" => Some("priority"),
-        "flex" => Some("flex"),
-        "scale" => Some("scale"),
-        _ => None,
     }
 }
 
@@ -684,7 +702,7 @@ fn push_system_content(
         Some(serde_json::Value::String(s)) => push_text(s),
         Some(serde_json::Value::Array(arr)) => {
             for block in arr {
-                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                if let Some(text) = block.get(keys::TEXT).and_then(|t| t.as_str()) {
                     push_text(text);
                 }
             }
@@ -747,18 +765,18 @@ fn read_responses_tool_choice_directive(
 ) -> Option<crate::codec::ir::IrToolChoice> {
     match val {
         serde_json::Value::String(s) => match s.as_str() {
-            "auto" => Some(crate::codec::ir::IrToolChoice::Auto),
-            "none" => Some(crate::codec::ir::IrToolChoice::None),
-            "required" => Some(crate::codec::ir::IrToolChoice::Required),
+            keys::AUTO => Some(crate::codec::ir::IrToolChoice::Auto),
+            keys::NONE_WORD => Some(crate::codec::ir::IrToolChoice::None),
+            keys::REQUIRED => Some(crate::codec::ir::IrToolChoice::Required),
             _ => None,
         },
         serde_json::Value::Object(o) => {
-            if o.get("type").and_then(|t| t.as_str()) == Some("function") {
-                o.get("name")
+            if o.get(keys::TYPE).and_then(|t| t.as_str()) == Some(keys::FUNCTION) {
+                o.get(keys::NAME)
                     .and_then(|n| n.as_str())
                     .or_else(|| {
-                        o.get("function")
-                            .and_then(|f| f.get("name"))
+                        o.get(keys::FUNCTION)
+                            .and_then(|f| f.get(keys::NAME))
                             .and_then(|n| n.as_str())
                     })
                     .map(|name| crate::codec::ir::IrToolChoice::Tool {
@@ -770,7 +788,7 @@ fn read_responses_tool_choice_directive(
                 // directive is not carried and the target applies its default. Say so rather than
                 // drop it silently.
                 tracing::warn!(
-                    tool_choice_type = o.get("type").and_then(|t| t.as_str()).unwrap_or(""),
+                    tool_choice_type = o.get(keys::TYPE).and_then(|t| t.as_str()).unwrap_or(""),
                     "dropping Responses tool_choice on ir parse: this tool_choice form has no IR \
                      carrier; the backend's default tool choice applies"
                 );
@@ -785,11 +803,11 @@ fn read_responses_tool_choice_directive(
 /// auto/none/required, the FLAT `{"type":"function","name":...}` object for a targeted tool.
 fn write_responses_tool_choice(tc: &crate::codec::ir::IrToolChoice) -> serde_json::Value {
     match tc {
-        crate::codec::ir::IrToolChoice::Auto => serde_json::json!("auto"),
-        crate::codec::ir::IrToolChoice::None => serde_json::json!("none"),
-        crate::codec::ir::IrToolChoice::Required => serde_json::json!("required"),
+        crate::codec::ir::IrToolChoice::Auto => serde_json::json!(keys::AUTO),
+        crate::codec::ir::IrToolChoice::None => serde_json::json!(keys::NONE_WORD),
+        crate::codec::ir::IrToolChoice::Required => serde_json::json!(keys::REQUIRED),
         crate::codec::ir::IrToolChoice::Tool { name } => {
-            serde_json::json!({"type": "function", "name": name})
+            serde_json::json!({(keys::TYPE): keys::FUNCTION, (keys::NAME): name})
         }
     }
 }
@@ -866,52 +884,17 @@ fn responses_error_code(err: &busbar_contract::protocol::IrError) -> String {
     .to_string()
 }
 
-/// The set of top-level Responses API request keys that `ResponsesReader::read_request` MODELS
-/// into `IrRequest` fields. Keys in this set are EXCLUDED from `extra` (the pass-through map) so
-/// they are not double-emitted by the writer's extra-forwarding loop. Built once per process via
-/// `OnceLock` instead of being reconstructed on every `read_request` call — the rebuild was a
-/// pointless per-request allocation on the Responses ingress hot path.
-///
-/// NOTE: `metadata` is deliberately NOT in this set. The Responses API accepts a top-level
-/// `metadata` object (user-defined key/value tagging); it is read into `IrRequest.metadata` (IR-03)
-/// so it crosses the seam, AND kept in `extra` so a same-protocol write re-emits the caller's exact
-/// member. The same holds for `service_tier`, `store`, `safety_identifier`, `prompt_cache_key` and
-/// `text.verbosity` (IR-04..07): the typed slot carries them across, `extra` keeps them verbatim.
-fn responses_modeled_keys() -> &'static std::collections::HashSet<&'static str> {
-    static MODELED_KEYS: OnceLock<std::collections::HashSet<&'static str>> = OnceLock::new();
-    MODELED_KEYS.get_or_init(|| {
-        [
-            "model",
-            "instructions",
-            "input",
-            "tools",
-            "max_output_tokens",
-            "temperature",
-            "top_p",
-            "top_logprobs",
-            "stream",
-            "tool_choice",
-            "parallel_tool_calls",
-            // RSP-05: read into `IrRequest.user`, written back from it.
-            "user",
-        ]
-        .iter()
-        .cloned()
-        .collect()
-    })
-}
-
 #[derive(Clone)]
 pub struct ResponsesReader;
 
 fn responses_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::IrBlock, IrError> {
     let obj = block_val.as_object().ok_or_else(ir_parse_error)?;
 
-    let block_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let block_type = obj.get(keys::TYPE).and_then(|v| v.as_str()).unwrap_or("");
 
     match block_type {
         CONTENT_TYPE_INPUT_TEXT | CONTENT_TYPE_OUTPUT_TEXT => {
-            let text_val = obj.get("text");
+            let text_val = obj.get(keys::TEXT);
             let text = text_val.and_then(|t| t.as_str()).unwrap_or("").to_string();
             // A prior-turn assistant `output_text` part carries an `annotations` array (URL
             // citations) exactly as the RESPONSE-side `output_text` part does. The prior reader
@@ -921,7 +904,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::Ir
             // annotation and a cross-protocol hop carries the citation url/title. `input_text` never
             // carries annotations, so this only fires for `output_text`.
             let citations = obj
-                .get("annotations")
+                .get(keys::ANNOTATIONS)
                 .map(super::openai_annotations::read_url_annotations)
                 .unwrap_or_default();
             Ok(crate::codec::ir::IrBlock::Text {
@@ -931,7 +914,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::Ir
                 refusal: false,
             })
         }
-        "input_image" => {
+        INPUT_IMAGE => {
             // Handle a file_id-referenced image (no inline `image_url`) faithfully rather than
             // emitting an empty Image block. Shared with the request-input reader.
             responses_input_image_block(block_val).ok_or_else(ir_parse_error)
@@ -941,20 +924,20 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::Ir
         // fall into the degrade arm below and reach the backend as `{"type":"input_text","text":""}`
         // — the caller's PDF replaced by an empty turn on every cross-protocol hop, even though
         // Gemini, Bedrock and Anthropic all have a native slot for it.
-        "input_file" => {
+        INPUT_FILE => {
             let name = obj
-                .get("filename")
+                .get(keys::FILENAME)
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .map(String::from);
             let source = if let Some(data_uri) = obj
-                .get("file_data")
+                .get(keys::FILE_DATA)
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
             {
                 super::ir_encode::parse_image_url(data_uri)
             } else if let Some(url) = obj
-                .get("file_url")
+                .get(FILE_URL)
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
             {
@@ -964,7 +947,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::Ir
                 crate::codec::ir::IrImageSource::Vendor {
                     vendor: VENDOR_NAME,
                     value: serde_json::json!({
-                        "file_id": obj.get("file_id").and_then(|v| v.as_str()).unwrap_or("")
+                        (keys::FILE_ID): obj.get(keys::FILE_ID).and_then(|v| v.as_str()).unwrap_or("")
                     }),
                 }
             };
@@ -990,9 +973,9 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::Ir
         // empty text).
         // IR-02: the part IS a refusal, so the Text block says so — a Chat / Responses writer puts
         // it back in its refusal slot; every other writer keeps it as ordinary assistant text.
-        "refusal" => Ok(crate::codec::ir::IrBlock::Text {
+        keys::REFUSAL => Ok(crate::codec::ir::IrBlock::Text {
             text: obj
-                .get("refusal")
+                .get(keys::REFUSAL)
                 .and_then(|r| r.as_str())
                 .unwrap_or("")
                 .to_string(),
@@ -1004,15 +987,15 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::Ir
         // "format":"wav"|"mp3"}}`) is the same part Chat Completions carries, read the same way
         // (`openai_chat`'s reader): the bare format token becomes the `audio/<format>` mime the
         // neutral IR speaks, so a Gemini/Bedrock/Chat backend receives the clip.
-        "input_audio" => {
-            let audio_obj = obj.get("input_audio").ok_or_else(ir_parse_error)?;
+        keys::INPUT_AUDIO => {
+            let audio_obj = obj.get(keys::INPUT_AUDIO).ok_or_else(ir_parse_error)?;
             let data = audio_obj
                 .get("data")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
             let format = audio_obj
-                .get("format")
+                .get(keys::FORMAT)
                 .and_then(|v| v.as_str())
                 .unwrap_or("wav");
             Ok(crate::codec::ir::IrBlock::Media {
@@ -1059,7 +1042,7 @@ fn responses_input_image_block(item: &serde_json::Value) -> Option<crate::codec:
     // IR-08: `detail` ("low"/"high"/"auto") is the per-image fidelity knob Chat and Cohere carry
     // too; it rides the IR `Image.detail` slot (an unknown word is dropped with a warn).
     let detail = slots::read_image_detail(item);
-    let image_url = item.get("image_url").and_then(|u| u.as_str());
+    let image_url = item.get(keys::IMAGE_URL).and_then(|u| u.as_str());
     if let Some(url) = image_url.filter(|u| !u.is_empty()) {
         return Some(crate::codec::ir::IrBlock::Image {
             source: super::ir_encode::parse_image_url(url),
@@ -1068,14 +1051,14 @@ fn responses_input_image_block(item: &serde_json::Value) -> Option<crate::codec:
         });
     }
     if let Some(file_id) = item
-        .get("file_id")
+        .get(keys::FILE_ID)
         .and_then(|f| f.as_str())
         .filter(|f| !f.is_empty())
     {
         return Some(crate::codec::ir::IrBlock::Image {
             source: crate::codec::ir::IrImageSource::Vendor {
                 vendor: VENDOR_NAME,
-                value: serde_json::json!({ "file_id": file_id }),
+                value: serde_json::json!({ (keys::FILE_ID): file_id }),
             },
             cache_control: None,
             detail,
@@ -1109,8 +1092,8 @@ pub fn read_reasoning_text(item: &serde_json::Value) -> std::borrow::Cow<'_, str
     use std::borrow::Cow;
     let mut acc: Option<Cow<'_, str>> = None;
     for (arr_key, type_key) in [
-        ("content", CONTENT_TYPE_REASONING_TEXT),
-        ("summary", "summary_text"),
+        (keys::CONTENT, CONTENT_TYPE_REASONING_TEXT),
+        (SUMMARY, SUMMARY_TEXT),
     ] {
         if let Some(arr) = item.get(arr_key).and_then(|c| c.as_array()) {
             for part in arr {
@@ -1119,13 +1102,13 @@ pub fn read_reasoning_text(item: &serde_json::Value) -> std::borrow::Cow<'_, str
                 // string is present. The `type_key` is checked only to skip a non-matching typed part
                 // (e.g. a future part kind) while still accepting an untyped `{text}` shorthand.
                 let type_ok = part
-                    .get("type")
+                    .get(keys::TYPE)
                     .and_then(|t| t.as_str())
                     .is_none_or(|t| t == type_key);
                 if !type_ok {
                     continue;
                 }
-                let Some(t) = part.get("text").and_then(|t| t.as_str()) else {
+                let Some(t) = part.get(keys::TEXT).and_then(|t| t.as_str()) else {
                     continue;
                 };
                 acc = Some(match acc {
@@ -1157,7 +1140,7 @@ pub fn read_reasoning_text(item: &serde_json::Value) -> std::borrow::Cow<'_, str
 /// encrypted-content-only hook-visibility fix) so the hook seam recognizes the SAME opaque-blob
 /// shape the reader admits to the provider, instead of a second hand-rolled copy of this rule.
 pub fn read_reasoning_encrypted_content(item: &serde_json::Value) -> Option<&str> {
-    item.get("encrypted_content")
+    item.get(ENCRYPTED_CONTENT)
         .and_then(|s| s.as_str())
         .filter(|s| !s.is_empty())
 }
@@ -1169,7 +1152,7 @@ fn read_responses_incomplete_reason(reason: &str) -> crate::codec::ir::IrStopRea
     match reason {
         INCOMPLETE_REASON_MAX_OUTPUT => S::MaxTokens,
         INCOMPLETE_REASON_CONTENT_FILTER => S::Safety,
-        "refusal" => S::Refusal,
+        keys::REFUSAL => S::Refusal,
         _ => S::Other,
     }
 }
@@ -1209,10 +1192,10 @@ fn write_responses_incomplete_reason(reason: crate::codec::ir::IrStopReason) -> 
 fn read_text_format(
     text_val: Option<&serde_json::Value>,
 ) -> Option<crate::codec::ir::IrResponseFormat> {
-    let format = text_val.and_then(|t| t.get("format"))?;
+    let format = text_val.and_then(|t| t.get(keys::FORMAT))?;
     let o = format.as_object()?;
-    match o.get("type").and_then(|t| t.as_str()) {
-        Some("text") => Some(crate::codec::ir::IrResponseFormat {
+    match o.get(keys::TYPE).and_then(|t| t.as_str()) {
+        Some(keys::TEXT) => Some(crate::codec::ir::IrResponseFormat {
             json: false,
             schema: None,
             name: None,
@@ -1221,13 +1204,13 @@ fn read_text_format(
         }),
         // The Responses `text.format` json_schema form is FLAT — name/schema/strict/description sit
         // beside `type` (not nested under `json_schema` as in OpenAI).
-        Some("json_schema") => Some(crate::codec::ir::IrResponseFormat {
+        Some(keys::JSON_SCHEMA) => Some(crate::codec::ir::IrResponseFormat {
             json: true,
-            schema: o.get("schema").cloned(),
-            name: o.get("name").and_then(|n| n.as_str()).map(String::from),
-            strict: o.get("strict").and_then(|s| s.as_bool()),
+            schema: o.get(keys::SCHEMA).cloned(),
+            name: o.get(keys::NAME).and_then(|n| n.as_str()).map(String::from),
+            strict: o.get(keys::STRICT).and_then(|s| s.as_bool()),
             description: o
-                .get("description")
+                .get(keys::DESCRIPTION)
                 .and_then(|d| d.as_str())
                 .map(String::from),
         }),
@@ -1249,26 +1232,26 @@ fn read_text_format(
 /// `format` value to place under `text.format`; the caller wraps it in `{"text":{"format":...}}`.
 fn write_text_format(rf: &crate::codec::ir::IrResponseFormat) -> serde_json::Value {
     if !rf.json {
-        return serde_json::json!({"type": "text"});
+        return serde_json::json!({(keys::TYPE): keys::TEXT});
     }
     match &rf.schema {
         Some(schema) => {
             let mut f = serde_json::Map::new();
-            f.insert("type".to_string(), serde_json::json!("json_schema"));
+            f.insert(keys::TYPE.to_string(), serde_json::json!(keys::JSON_SCHEMA));
             f.insert(
-                "name".to_string(),
-                serde_json::json!(rf.name.as_deref().unwrap_or("response")),
+                keys::NAME.to_string(),
+                serde_json::json!(rf.name.as_deref().unwrap_or(keys::RESPONSE)),
             );
-            f.insert("schema".to_string(), schema.clone());
+            f.insert(keys::SCHEMA.to_string(), schema.clone());
             if let Some(s) = rf.strict {
-                f.insert("strict".to_string(), serde_json::json!(s));
+                f.insert(keys::STRICT.to_string(), serde_json::json!(s));
             }
             if let Some(d) = &rf.description {
-                f.insert("description".to_string(), serde_json::json!(d));
+                f.insert(keys::DESCRIPTION.to_string(), serde_json::json!(d));
             }
             serde_json::Value::Object(f)
         }
-        None => serde_json::json!({"type": "json_object"}),
+        None => serde_json::json!({(keys::TYPE): "json_object"}),
     }
 }
 
@@ -1281,27 +1264,27 @@ fn write_text_format(rf: &crate::codec::ir::IrResponseFormat) -> serde_json::Val
 /// The buffered response, the stream's terminal usage and a truncated-body recovery read this one
 /// table.
 const USAGE: &[UsageCount] = &[
-    (CountSlot::Input, CountRead::Zero(&["input_tokens"])),
+    (CountSlot::Input, CountRead::Zero(&[keys::INPUT_TOKENS])),
     (
         CountSlot::Input,
-        CountRead::Less(&["input_tokens_details", "cached_tokens"]),
+        CountRead::Less(&[INPUT_TOKENS_DETAILS, keys::CACHED_TOKENS]),
     ),
     (
         CountSlot::Input,
-        CountRead::Less(&["input_tokens_details", "cache_write_tokens"]),
+        CountRead::Less(&[INPUT_TOKENS_DETAILS, keys::CACHE_WRITE_TOKENS]),
     ),
-    (CountSlot::Output, CountRead::Zero(&["output_tokens"])),
+    (CountSlot::Output, CountRead::Zero(&[keys::OUTPUT_TOKENS])),
     (
         CountSlot::CacheWrite,
-        CountRead::Opt(&["input_tokens_details", "cache_write_tokens"]),
+        CountRead::Opt(&[INPUT_TOKENS_DETAILS, keys::CACHE_WRITE_TOKENS]),
     ),
     (
         CountSlot::CacheRead,
-        CountRead::Opt(&["input_tokens_details", "cached_tokens"]),
+        CountRead::Opt(&[INPUT_TOKENS_DETAILS, keys::CACHED_TOKENS]),
     ),
     (
         CountSlot::Reasoning,
-        CountRead::Lenient(&["output_tokens_details", "reasoning_tokens"]),
+        CountRead::Lenient(&[keys::OUTPUT_TOKENS_DETAILS, keys::REASONING_TOKENS]),
     ),
 ];
 
@@ -1312,7 +1295,10 @@ fn read_responses_usage(
     response: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
     let mut usage = crate::codec::usage_count::read_usage("openai_responses", usage, USAGE)?;
-    usage.detail.service_tier = response.and_then(read_responses_service_tier);
+    usage.detail.service_tier = crate::codec::carry::read_word(
+        crate::codec::openai_chat::map::WORDS_OPENAI_SERVED_TIER,
+        response.and_then(|r| r.get(keys::SERVICE_TIER)),
+    );
     Ok(usage)
 }
 

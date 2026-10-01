@@ -1,5 +1,10 @@
 //! Gemini citation offsets (UTF-8 bytes on the wire, characters in the IR) and the
 //! `citationMetadata` / `groundingMetadata` read and write.
+use super::{
+    FIELD_CITATION_METADATA, FIELD_CITATION_SOURCES, FIELD_END_INDEX, FIELD_RETRIEVED_CONTEXT,
+    FIELD_START_INDEX, FIELD_URI,
+};
+use crate::codec::keys;
 
 /// Byte→character offset index for ONE response text, built in a single ordered pass over the
 /// text's `char_indices()` and then answering each citation offset by binary search.
@@ -104,8 +109,8 @@ pub(super) fn read_gemini_citations(
     anchor_text: Option<&str>,
 ) -> Vec<crate::codec::ir::IrCitation> {
     let sources = candidate
-        .get("citationMetadata")
-        .and_then(|m| m.get("citationSources"))
+        .get(FIELD_CITATION_METADATA)
+        .and_then(|m| m.get(FIELD_CITATION_SOURCES))
         .and_then(|s| s.as_array());
     let Some(sources) = sources else {
         // No `citationMetadata`, but a GROUNDED answer carries its sources in the OTHER slot. Fall
@@ -118,8 +123,8 @@ pub(super) fn read_gemini_citations(
     let mut out: Vec<crate::codec::ir::IrCitation> = sources
         .iter()
         .map(|src| {
-            let raw_start = src.get("startIndex").and_then(|v| v.as_i64());
-            let raw_end = src.get("endIndex").and_then(|v| v.as_i64());
+            let raw_start = src.get(FIELD_START_INDEX).and_then(|v| v.as_i64());
+            let raw_end = src.get(FIELD_END_INDEX).and_then(|v| v.as_i64());
             let (start_index, end_index) = match char_index.as_ref() {
                 Some(idx) => (
                     raw_start.map(|b| idx.char_offset(b)),
@@ -131,13 +136,16 @@ pub(super) fn read_gemini_citations(
             };
             crate::codec::ir::IrCitation {
                 domain: None,
-                kind: Some("web_search_result_location".to_string()),
+                kind: Some(keys::WEB_SEARCH_RESULT_LOCATION.to_string()),
                 cited_text: None,
                 title: src
-                    .get("title")
+                    .get(keys::TITLE)
                     .and_then(|v| v.as_str())
                     .map(str::to_string),
-                url: src.get("uri").and_then(|v| v.as_str()).map(str::to_string),
+                url: src
+                    .get(FIELD_URI)
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
                 document_index: None,
                 start_index,
                 end_index,
@@ -202,17 +210,17 @@ pub(super) fn read_gemini_grounding_citations(
     // docs/design/1.6.0-QUESTIONS.md Q36, rather than dropped.
     let chunk_source = |chunk: &serde_json::Value| -> (Option<String>, Option<String>) {
         let inner = chunk
-            .get("web")
-            .or_else(|| chunk.get("retrievedContext"))
+            .get(keys::WEB)
+            .or_else(|| chunk.get(FIELD_RETRIEVED_CONTEXT))
             .unwrap_or(chunk);
         (
             inner
-                .get("uri")
+                .get(FIELD_URI)
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
             inner
-                .get("title")
+                .get(keys::TITLE)
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
@@ -239,16 +247,16 @@ pub(super) fn read_gemini_grounding_citations(
         let segment = support.get("segment");
         let start = convert(
             segment
-                .and_then(|s| s.get("startIndex"))
+                .and_then(|s| s.get(FIELD_START_INDEX))
                 .and_then(|v| v.as_i64()),
         );
         let end = convert(
             segment
-                .and_then(|s| s.get("endIndex"))
+                .and_then(|s| s.get(FIELD_END_INDEX))
                 .and_then(|v| v.as_i64()),
         );
         let cited_text = segment
-            .and_then(|s| s.get("text"))
+            .and_then(|s| s.get(keys::TEXT))
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(str::to_string);
@@ -267,7 +275,7 @@ pub(super) fn read_gemini_grounding_citations(
             }
             out.push(crate::codec::ir::IrCitation {
                 domain: None,
-                kind: Some("web_search_result_location".to_string()),
+                kind: Some(keys::WEB_SEARCH_RESULT_LOCATION.to_string()),
                 cited_text: cited_text.clone(),
                 title,
                 url,
@@ -294,7 +302,7 @@ pub(super) fn read_gemini_grounding_citations(
             }
             out.push(crate::codec::ir::IrCitation {
                 domain: None,
-                kind: Some("web_search_result_location".to_string()),
+                kind: Some(keys::WEB_SEARCH_RESULT_LOCATION.to_string()),
                 cited_text: None,
                 title,
                 url,
@@ -421,9 +429,9 @@ pub(super) fn write_gemini_citation(
     byte_prefix: i64,
 ) -> serde_json::Value {
     if let Some(raw) = &c.raw {
-        if raw.get("uri").is_some()
-            || raw.get("startIndex").is_some()
-            || raw.get("endIndex").is_some()
+        if raw.get(FIELD_URI).is_some()
+            || raw.get(FIELD_START_INDEX).is_some()
+            || raw.get(FIELD_END_INDEX).is_some()
         {
             return raw.clone();
         }
@@ -441,16 +449,16 @@ pub(super) fn write_gemini_citation(
     };
     let mut obj = serde_json::Map::new();
     if let Some(s) = c.start_index {
-        obj.insert("startIndex".to_string(), serde_json::json!(convert(s)));
+        obj.insert(FIELD_START_INDEX.to_string(), serde_json::json!(convert(s)));
     }
     if let Some(e) = c.end_index {
-        obj.insert("endIndex".to_string(), serde_json::json!(convert(e)));
+        obj.insert(FIELD_END_INDEX.to_string(), serde_json::json!(convert(e)));
     }
     if let Some(u) = &c.url {
-        obj.insert("uri".to_string(), serde_json::json!(u));
+        obj.insert(FIELD_URI.to_string(), serde_json::json!(u));
     }
     if let Some(t) = &c.title {
-        obj.insert("title".to_string(), serde_json::json!(t));
+        obj.insert(keys::TITLE.to_string(), serde_json::json!(t));
     }
     // `domain` has no home in Gemini's `citationSources[]` shape (only a `groundingChunks[].web`
     // object carries one, and this writer always re-emits INTO `citationMetadata.citationSources`
@@ -466,11 +474,11 @@ pub(super) fn write_gemini_citation(
     if let Some(d) = c
         .raw
         .as_ref()
-        .and_then(|r| r.get("web").or_else(|| r.get("retrievedContext")))
-        .and_then(|w| w.get("domain"))
+        .and_then(|r| r.get(keys::WEB).or_else(|| r.get(FIELD_RETRIEVED_CONTEXT)))
+        .and_then(|w| w.get(keys::DOMAIN))
         .and_then(|d| d.as_str())
     {
-        obj.insert("domain".to_string(), serde_json::json!(d));
+        obj.insert(keys::DOMAIN.to_string(), serde_json::json!(d));
     }
     serde_json::Value::Object(obj)
 }

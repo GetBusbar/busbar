@@ -61,7 +61,7 @@ pub mod leaf_handles;
 /// Only the dialect label and the two reads differ per cell; anything else a cell says (a usage
 /// tap, an egress content type) follows the `;` verbatim.
 macro_rules! leaf_op {
-    ($op:ident: $dialect:literal, $req:ident = $read_req:ident, $resp:ident = $read_resp:ident; $($extra:tt)*) => {
+    ($op:ident: $dialect:expr, $req:ident = $read_req:ident, $resp:ident = $read_resp:ident; $($extra:tt)*) => {
         impl busbar_contract::codec::OperationHandler for $op {
             fn extract_error(
                 &self,
@@ -90,12 +90,44 @@ macro_rules! leaf_op {
     };
 }
 
+/// A dialect's neutral codec facade as a STATIC, so its `DECL` hands out a `&'static dyn` borrow
+/// (pure memory, zero alloc per `dialect()` call) — the seam's perf contract.
+macro_rules! dialect_codec {
+    ($name:expr) => {{
+        static CODEC: $crate::codec::proto_codec::DialectRef =
+            $crate::codec::proto_codec::dialect_ref($name);
+        Some(&CODEC)
+    }};
+}
+
+/// The two `RequestHandler` answers every dialect gives alike: its protocol name, and the leaf
+/// cell for an operation from its `CELLS` table.
+macro_rules! dialect_identity {
+    ($name:expr) => {
+        fn protocol_name(&self) -> &'static str {
+            $name
+        }
+        fn operation_handler(
+            &self,
+            op: busbar_contract::operation::OpVerb,
+        ) -> Option<&dyn busbar_contract::codec::OperationHandler> {
+            busbar_contract::codec::cell_of(CELLS, op)
+        }
+    };
+}
+
 pub mod anthropic;
 pub mod bedrock;
 pub mod cohere;
 pub mod gemini;
 pub mod openai_chat;
 pub mod openai_responses;
+
+/// The flat field carry: the slot schema, the per-dialect field-table types and the one walker.
+pub mod carry;
+
+/// The wire words two or more dialects spell alike, one const each.
+pub mod keys;
 
 /// The plane's own CRC-32 (the event-stream framing checksum).
 pub mod crc32;
@@ -294,6 +326,11 @@ mod ir_seam_tests;
 #[cfg(test)]
 #[path = "tests/ir_slot_carry_tests.rs"]
 mod ir_slot_carry_tests;
+
+/// The members CARRY-TABLE parked: what crosses the seam is still the typed slot.
+#[cfg(test)]
+#[path = "tests/parked_rows_cross_dialect_tests.rs"]
+mod parked_rows_cross_dialect_tests;
 
 /// The usage-tap count pin (#83a SD-3, R-USAGE): every same-protocol tap fault counts once on the
 /// host's counter, under its reason, whichever cell or direct call raised it.

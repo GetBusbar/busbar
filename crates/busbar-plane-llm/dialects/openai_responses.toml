@@ -1,0 +1,45 @@
+# crates/busbar-plane-llm/dialects/openai_responses.toml: the HAND-WRITTEN wire <> IR mapping of
+# the OpenAI Responses dialect (stage 0: flat request fields). Format: see openai_chat.toml.
+# The served-tier words are openai_chat.toml's `openai_served_tier`.
+
+[dialect]
+wire = "responses"  # the wire lock: dialects/responses.wire.json (notation A paths)
+request = [
+    "responses_structure",
+    "openai_chat.openai_sampling",
+    "openai_chat.openai_family",
+    "responses",
+]
+
+# Members the dialect's own code models (`prim`). `text` is NOT one: its `format` is
+# `response_format`, its other members ride `extra`.
+[rows.responses_structure]
+"model" = { prim = "model" }
+"instructions" = { prim = "system" }
+"input" = { prim = "messages" }
+"tools" = { prim = "tools" }
+"max_output_tokens" = { prim = "max_output" }
+"top_logprobs" = { prim = "logprobs" }
+"stream" = { prim = "stream" }
+"tool_choice" = { prim = "tool_choice" }
+"parallel_tool_calls" = { prim = "parallel_tool_calls" }
+"user" = { prim = "user" }
+
+# `text.verbosity` (IR-07), beside the `text.format` the dialect writes from `response_format`.
+[rows.responses]
+park = true
+"text.verbosity" = { ir = "verbosity" }
+
+# Controls beyond the rows. The /v1/responses create API models no top_k, stop, penalties, seed or n
+# (openai-python ResponseCreateParamsBase); each drop is warned in these words and audited. The
+# output-modality drop is the writer's own code (reported as `modalities`); custom tools are flat
+# tools[] entries.
+[controls]
+"top_k" = { warn = "responses writer: the /v1/responses API models no `top_k` parameter; dropping top_k (lossy-by-target)" }
+"stop" = { warn = "responses writer: the /v1/responses API models no `stop` parameter; dropping {count} stop sequence(s) (lossy-by-target)", value = true }
+"frequency_penalty" = { warn = "responses writer: the /v1/responses API models no `frequency_penalty`; dropping it (lossy-by-target)", value = true }
+"presence_penalty" = { warn = "responses writer: the /v1/responses API models no `presence_penalty`; dropping it (lossy-by-target)", value = true }
+"seed" = { warn = "responses writer: the /v1/responses API models no `seed`; dropping it (lossy-by-target)", value = true }
+"n" = { warn = "responses writer: the /v1/responses API models no `n` candidate-count; dropping it (lossy-by-target)", value = true }
+"output_modalities" = { code = "responses_modalities" }
+"custom_tool" = { code = "responses_custom_tools" }

@@ -23,10 +23,10 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome};
+use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    OnPieceIn, OnPieceOut, OutField, RecordWrite, Span, UnitCount, EMIT_DONE, EMIT_TO_FAR_END,
+    OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, EMIT_DONE, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};

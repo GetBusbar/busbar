@@ -640,7 +640,7 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         // (instance-noun-neutrality, plane-abi-neutrality, c1-literals) still scan every byte of
         // `abi/` exactly as before — only the kind-isolation MATRIX stops filing it into a cell. Code
         // in `busbar-contract` OUTSIDE `abi/` is still counted, same as any other crate, except the
-        // two layout mirrors that restate `abi/`'s shapes ([`CONTRACT_ABI_LAYOUT_MIRRORS`]).
+        // three mirrors that restate `abi/`'s shapes ([`CONTRACT_ABI_LAYOUT_MIRRORS`]).
         if c.name == CONTRACT_PACKAGE && is_contract_abi_shape(&rel) {
             continue;
         }
@@ -708,14 +708,17 @@ const CONTRACT_PACKAGE: &str = "busbar-contract";
 /// this does and does not touch.
 const CONTRACT_ABI_PREFIX: &str = "crates/busbar-contract/src/abi/";
 
-/// THE TWO LAYOUT MIRRORS of [`CONTRACT_ABI_PREFIX`]: the layout golden and the test that writes
-/// it. They exist only to restate, field by field, the shapes that live in `src/abi/` (the export
-/// tail's `streams`/`streams_len` fields, for one), so the same ARCHITECT ruling that scopes
-/// `src/abi/` covers them. Named exactly, two files and nothing else: every other file under
-/// `busbar-contract/tests/` is still counted, and no word is exempted anywhere.
+/// THE THREE MIRRORS of [`CONTRACT_ABI_PREFIX`]: the layout golden, the test that writes it, and
+/// the generated C header (`BUSBAR-1.6.0.md` §11.5, "a generated C header"; the `abi-header` gate
+/// pins it to `src/abi/`, ARCHITECT ruling 2026-09-30). They exist only to restate, field by field,
+/// the shapes that live in `src/abi/` (the export tail's `streams`/`streams_len` fields, for one),
+/// so the same ARCHITECT ruling that scopes `src/abi/` covers them. Named exactly, three files and
+/// nothing else: every other file under `busbar-contract/tests/` or any `include/` is still
+/// counted, and no word is exempted anywhere.
 const CONTRACT_ABI_LAYOUT_MIRRORS: &[&str] = &[
     "crates/busbar-contract/tests/golden/abi-layout.golden",
     "crates/busbar-contract/tests/layout_golden.rs",
+    "crates/busbar-contract/include/busbar_plugin.h",
 ];
 
 /// Whether `rel` (a path under `crates/`) is inside [`CONTRACT_ABI_PREFIX`] or is one of its
@@ -2814,10 +2817,10 @@ pub fn selftest<'a>(
         ),
     ));
 
-    // THE LAYOUT MIRRORS, BOTH WAYS. `tests/golden/abi-layout.golden` and `tests/layout_golden.rs`
-    // restate `src/abi/`'s shapes and are named, exactly, as part of the carve-out
-    // ([`CONTRACT_ABI_LAYOUT_MIRRORS`]). The carve-out is two files, not `tests/`: the same noun in
-    // any other `busbar-contract` test file still counts.
+    // THE LAYOUT MIRRORS, BOTH WAYS. `tests/golden/abi-layout.golden`, `tests/layout_golden.rs`
+    // and `include/busbar_plugin.h` restate `src/abi/`'s shapes and are named, exactly, as part of
+    // the carve-out ([`CONTRACT_ABI_LAYOUT_MIRRORS`]). The carve-out is three files, not `tests/`
+    // or `include/`: the same noun in any other `busbar-contract` test file or header still counts.
     report.push(prove_rows_red(
         cx,
         gate,
@@ -2827,6 +2830,18 @@ pub fn selftest<'a>(
             cx,
             "crates/busbar-contract/tests/planted_plane_word.rs",
             "//! Not a layout mirror: the mcp plane's frames are described here.\n",
+        ),
+        &["busbar-contract", "plane"],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a plane word in a hand-written header beside the generated one still counts",
+        &[ROW_MATRIX],
+        plant(
+            cx,
+            "crates/busbar-contract/include/hand_written.h",
+            "/* Not the generated header: the mcp plane's frames are described here. */\n",
         ),
         &["busbar-contract", "plane"],
     ));

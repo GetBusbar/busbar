@@ -27,7 +27,7 @@ use busbar_contract::abi::host::service::{
     op as service_op, ClockNowIn, ClockReading, HostSlots, ServiceHead, ServiceOut,
 };
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, DeadlineClass, OutHead, Outcome, RawOutcome, BLOB_ABSENT, FLAG_RESUME,
+    AbiStr, Blob, DeadlineClass, OutHead, Outcome, RawOutcome, Span, BLOB_ABSENT, FLAG_RESUME,
 };
 use busbar_contract::abi::mechanism::call::{MetricEntry, METRIC_SET};
 use busbar_contract::abi::mechanism::door::{
@@ -39,8 +39,8 @@ use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, Claim, OnPieceIn, OnPieceOut, OpClass, Ops, OutField,
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneSnapshot, PlaneTail, RefusalIn,
-    RefusalOut, Section, Span, UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL,
-    EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE,
+    RefusalOut, Section, UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, EMIT_DONE,
+    EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE,
     INGRESS_RESPONSE_STREAM, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_OPTIONAL, SECTION_DECLARING,
     SHAPE_WHOLE, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };

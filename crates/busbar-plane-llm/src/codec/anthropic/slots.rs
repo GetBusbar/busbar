@@ -3,6 +3,8 @@
 
 //! The Anthropic spelling of the Q57 typed request slots: hosted (server) tools, service tier and the slots Anthropic cannot carry.
 
+use crate::codec::keys;
+
 /// Versioned `type` prefixes of the Anthropic server tools whose KIND the IR models (IR-11). The
 /// version suffix names Anthropic's own schema revision and is not carried; the writer picks one.
 pub(super) const HOSTED_TYPE_PREFIX_WEB_SEARCH: &str = "web_search_";
@@ -25,9 +27,9 @@ pub(super) fn read_hosted_tool(
     tool_val: &serde_json::Value,
 ) -> Option<crate::codec::ir::IrHostedTool> {
     let obj = tool_val.as_object()?;
-    let ty = obj.get("type")?.as_str()?;
+    let ty = obj.get(keys::TYPE)?.as_str()?;
     let max_uses = || {
-        obj.get("max_uses")
+        obj.get(super::MAX_USES)
             .and_then(|v| v.as_u64())
             .and_then(|v| u32::try_from(v).ok())
     };
@@ -43,22 +45,14 @@ pub(super) fn read_hosted_tool(
     };
     if ty.starts_with(HOSTED_TYPE_PREFIX_WEB_SEARCH) {
         let user_location = obj
-            .get("user_location")
+            .get(keys::USER_LOCATION)
             .and_then(|v| v.as_object())
-            .map(|l| {
-                let text = |k: &str| l.get(k).and_then(|v| v.as_str()).map(String::from);
-                crate::codec::ir::IrUserLocation {
-                    city: text("city"),
-                    region: text("region"),
-                    country: text("country"),
-                    timezone: text("timezone"),
-                }
-            });
+            .map(crate::codec::ir::IrUserLocation::read_members);
         Some(crate::codec::ir::IrHostedTool::WebSearch(
             crate::codec::ir::IrWebSearch {
                 max_uses: max_uses(),
-                allowed_domains: domains("allowed_domains"),
-                blocked_domains: domains("blocked_domains"),
+                allowed_domains: domains(keys::ALLOWED_DOMAINS),
+                blocked_domains: domains(super::BLOCKED_DOMAINS),
                 user_location,
                 search_context_size: None,
             },
@@ -67,8 +61,8 @@ pub(super) fn read_hosted_tool(
         Some(crate::codec::ir::IrHostedTool::WebFetch(
             crate::codec::ir::IrWebFetch {
                 max_uses: max_uses(),
-                allowed_domains: domains("allowed_domains"),
-                blocked_domains: domains("blocked_domains"),
+                allowed_domains: domains(keys::ALLOWED_DOMAINS),
+                blocked_domains: domains(super::BLOCKED_DOMAINS),
             },
         ))
     } else if ty.starts_with(HOSTED_TYPE_PREFIX_CODE_EXECUTION) {
@@ -92,10 +86,13 @@ pub(super) fn write_hosted_tool(
         blocked: &[String],
     ) {
         if let Some(n) = max_uses {
-            obj.insert("max_uses".to_string(), serde_json::json!(n));
+            obj.insert(super::MAX_USES.to_string(), serde_json::json!(n));
         }
         if !allowed.is_empty() {
-            obj.insert("allowed_domains".to_string(), serde_json::json!(allowed));
+            obj.insert(
+                keys::ALLOWED_DOMAINS.to_string(),
+                serde_json::json!(allowed),
+            );
             if !blocked.is_empty() {
                 tracing::warn!(
                     "dropping hosted-tool blocked_domains on Anthropic egress: Anthropic accepts \
@@ -103,39 +100,30 @@ pub(super) fn write_hosted_tool(
                 );
             }
         } else if !blocked.is_empty() {
-            obj.insert("blocked_domains".to_string(), serde_json::json!(blocked));
+            obj.insert(
+                super::BLOCKED_DOMAINS.to_string(),
+                serde_json::json!(blocked),
+            );
         }
     }
     let mut obj = serde_json::Map::new();
     match tool {
-        crate::codec::ir::IrHostedTool::WebSearch(ws) => {
+        crate::codec::ir::IrHostedTool::WebSearch(search) => {
             obj.insert(
-                "type".to_string(),
+                keys::TYPE.to_string(),
                 serde_json::json!(HOSTED_TOOL_WEB_SEARCH),
             );
-            obj.insert("name".to_string(), serde_json::json!("web_search"));
+            obj.insert(keys::NAME.to_string(), serde_json::json!("web_search"));
             put_limits(
                 &mut obj,
-                ws.max_uses,
-                &ws.allowed_domains,
-                &ws.blocked_domains,
+                search.max_uses,
+                &search.allowed_domains,
+                &search.blocked_domains,
             );
-            if let Some(loc) = &ws.user_location {
-                let mut l = serde_json::Map::new();
-                l.insert("type".to_string(), serde_json::json!("approximate"));
-                for (k, v) in [
-                    ("city", &loc.city),
-                    ("region", &loc.region),
-                    ("country", &loc.country),
-                    ("timezone", &loc.timezone),
-                ] {
-                    if let Some(v) = v {
-                        l.insert(k.to_string(), serde_json::json!(v));
-                    }
-                }
-                obj.insert("user_location".to_string(), serde_json::Value::Object(l));
+            if let Some(loc) = &search.user_location {
+                obj.insert(keys::USER_LOCATION.to_string(), loc.write_flat());
             }
-            if ws.search_context_size.is_some() {
+            if search.search_context_size.is_some() {
                 tracing::warn!(
                     "dropping web search search_context_size on Anthropic egress: the Anthropic web \
                      search tool has no such member; the tool is kept"
@@ -143,8 +131,11 @@ pub(super) fn write_hosted_tool(
             }
         }
         crate::codec::ir::IrHostedTool::WebFetch(wf) => {
-            obj.insert("type".to_string(), serde_json::json!(HOSTED_TOOL_WEB_FETCH));
-            obj.insert("name".to_string(), serde_json::json!("web_fetch"));
+            obj.insert(
+                keys::TYPE.to_string(),
+                serde_json::json!(HOSTED_TOOL_WEB_FETCH),
+            );
+            obj.insert(keys::NAME.to_string(), serde_json::json!("web_fetch"));
             put_limits(
                 &mut obj,
                 wf.max_uses,
@@ -154,10 +145,10 @@ pub(super) fn write_hosted_tool(
         }
         crate::codec::ir::IrHostedTool::CodeExecution => {
             obj.insert(
-                "type".to_string(),
+                keys::TYPE.to_string(),
                 serde_json::json!(HOSTED_TOOL_CODE_EXECUTION),
             );
-            obj.insert("name".to_string(), serde_json::json!("code_execution"));
+            obj.insert(keys::NAME.to_string(), serde_json::json!("code_execution"));
         }
         // OAI-09: Anthropic has no free-text / grammar tool (N): dropped with a warn and reported
         // by `dropped_egress_controls`.
@@ -172,46 +163,3 @@ pub(super) fn write_hosted_tool(
     }
     Some(serde_json::Value::Object(obj))
 }
-
-/// Anthropic request `service_tier` → IR (IR-04): `auto` → Auto, `standard_only` → Default.
-pub(super) fn read_anthropic_service_tier(word: &str) -> Option<crate::codec::ir::IrServiceTier> {
-    match word {
-        "auto" => Some(crate::codec::ir::IrServiceTier::Auto),
-        "standard_only" => Some(crate::codec::ir::IrServiceTier::Default),
-        _ => None,
-    }
-}
-
-/// IR service tier → Anthropic request `service_tier` (IR-04): Auto / Priority → `auto` (use
-/// Priority capacity when the org has it), Default → `standard_only`. Flex / Scale have no
-/// Anthropic form: `None` (dropped with a warn, reported by `dropped_egress_controls`).
-pub(super) fn write_anthropic_service_tier(
-    tier: crate::codec::ir::IrServiceTier,
-) -> Option<&'static str> {
-    match tier {
-        crate::codec::ir::IrServiceTier::Auto | crate::codec::ir::IrServiceTier::Priority => {
-            Some("auto")
-        }
-        crate::codec::ir::IrServiceTier::Default => Some("standard_only"),
-        crate::codec::ir::IrServiceTier::Flex | crate::codec::ir::IrServiceTier::Scale => None,
-    }
-}
-
-/// The Q57 request slots the Anthropic Messages API has no form for (ir-slots-landed.md "N" for
-/// Anthropic): each one a request carries is dropped by `write_request` with a warn and reported
-/// from `dropped_egress_controls`. `metadata` is the free-form map (Anthropic's `metadata` holds
-/// only `user_id`, which carries as `user`); output modalities other than text have no form.
-pub(super) const ANTHROPIC_UNREPRESENTABLE: &[crate::codec::dialect::Control] = &[
-    crate::codec::dialect::METADATA,
-    ("service_tier", |r| {
-        r.service_tier
-            .is_some_and(|t| write_anthropic_service_tier(t).is_none())
-    }),
-    crate::codec::dialect::STORE,
-    crate::codec::dialect::SAFETY_IDENTIFIER,
-    crate::codec::dialect::PROMPT_CACHE_KEY,
-    crate::codec::dialect::VERBOSITY,
-    crate::codec::dialect::OUTPUT_MODALITIES,
-    // OAI-09: an OpenAI custom tool has no Anthropic form.
-    crate::codec::dialect::CUSTOM_TOOL,
-];

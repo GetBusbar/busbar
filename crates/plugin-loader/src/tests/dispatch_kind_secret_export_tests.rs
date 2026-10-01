@@ -118,13 +118,13 @@ fn export_scrape_is_checked_against_the_hosts_cap() {
     let over = scrape_out(Outcome::Ready, 65, 0);
     assert_eq!(
         Export::check(&answer(s, Outcome::Ready, &input, &over)),
-        Err(fault(Rule::OverCap, "scrape.written"))
+        Err(fault(Rule::OverCap, "scrape.bytes"))
     );
     // RED: FAILED with needed <= cap wastes the one re-call.
     let wasted = scrape_out(Outcome::Failed, 0, 64);
     assert_eq!(
         Export::check(&answer(s, Outcome::Failed, &input, &wasted)),
-        Err(fault(Rule::WastedRecall, "scrape.needed_within_cap"))
+        Err(fault(Rule::WastedRecall, "scrape.bytes"))
     );
     // SHORT: FAILED with needed above the cap, nothing written.
     let short = scrape_out(Outcome::Failed, 0, 65);

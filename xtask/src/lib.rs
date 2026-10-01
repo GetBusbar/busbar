@@ -40,6 +40,7 @@ pub mod cli;
 pub mod conformance_check;
 pub mod ctx;
 pub mod denylist;
+pub mod dialect;
 pub mod discovery;
 pub mod ere;
 pub mod fleet;

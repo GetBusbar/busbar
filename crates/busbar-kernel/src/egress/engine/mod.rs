@@ -430,6 +430,9 @@ fn rustls_client_config(spec: &EngineSpec) -> Result<rustls::ClientConfig, Strin
 /// from the host alone) but it WOULD sit in hyper's per-authority pool key — which hyper traces
 /// at debug level, turning an operator's embedded credential into a log leak. An explicitly-set
 /// `Authorization` header wins over the URL's.
+///
+/// No default header is added here: a plane hop goes out with exactly the caller's fields. The
+/// four hops that were reqwest requests in 1.5.5 take [`client_request`] instead.
 pub fn request(
     method: http::Method,
     uri: http::Uri,
@@ -441,6 +444,22 @@ pub fn request(
     *req.method_mut() = method;
     *req.uri_mut() = uri;
     *req.headers_mut() = headers;
+    req
+}
+
+/// [`request`] plus reqwest's client default: `accept: */*` after the caller's fields when the
+/// caller names no Accept. Only the four hops that were reqwest requests in 1.5.5 use it: the
+/// jwt-bearer and client-credentials token mints, the login token exchange and the plugin fetch.
+pub fn client_request(
+    method: http::Method,
+    uri: http::Uri,
+    headers: http::HeaderMap,
+    body: Bytes,
+) -> http::Request<Full<Bytes>> {
+    // After the userinfo move, as reqwest merged its defaults: `authorization` precedes `accept`.
+    let mut req = request(method, uri, headers, body);
+    let entry = req.headers_mut().entry(http::header::ACCEPT);
+    entry.or_insert(http::HeaderValue::from_static("*/*"));
     req
 }
 

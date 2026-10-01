@@ -46,7 +46,8 @@ pub type Later = Box<dyn FnOnce(Stored) + Send>;
 
 /// THE HOST SERVICES, as the kernel implements them. The dispatcher holds one for every instance it
 /// adopts; each slot validates the caller's `in`, applies the mechanism's rules, and calls in here
-/// at most once per completion handle.
+/// at most once per completion handle. Every service is required, with no default body (spec
+/// #38(a)): an implementor that does not serve one says so in its own body, never by inheriting.
 pub trait HostServices: Send + Sync {
     /// `clock.now`: the kernel's one clock. Never pends.
     fn now(&self) -> Reading;
@@ -59,17 +60,11 @@ pub trait HostServices: Send + Sync {
 
     /// `records.get`: `caller`'s record of `kind` under `key`, its own queued writes first.
     /// READY `FOUND` with span `0`'s value the record, or READY `ABSENT`.
-    fn records_get(&self, caller: &Caller, kind: &str, key: &[u8], later: Later) -> Ran {
-        let _ = (caller, kind, key, later);
-        Ran::Now(Stored::refused(UNSERVED))
-    }
+    fn records_get(&self, caller: &Caller, kind: &str, key: &[u8], later: Later) -> Ran;
 
     /// `records.list`: `caller`'s records of `kind` under `prefix`, after `after`, in key order, at
     /// most `limit` (`0` = as many as one answer carries); one span per record, key and value.
-    fn records_list(&self, caller: &Caller, list: RecordsList, later: Later) -> Ran {
-        let _ = (caller, list, later);
-        Ran::Now(Stored::refused(UNSERVED))
-    }
+    fn records_list(&self, caller: &Caller, list: RecordsList, later: Later) -> Ran;
 
     /// `records.claim`: put `key` of `kind` if absent, standing `ttl_ms` (never `0`). READY
     /// `CLAIM_WON` or `CLAIM_TAKEN`.
@@ -80,46 +75,28 @@ pub trait HostServices: Send + Sync {
         key: &[u8],
         ttl_ms: u64,
         later: Later,
-    ) -> Ran {
-        let _ = (caller, kind, key, ttl_ms, later);
-        Ran::Now(Stored::refused(UNSERVED))
-    }
+    ) -> Ran;
 
     /// `sign`: sign `data` under `caller`'s declared signing domain. Span `0`: key = the key id,
     /// value = the signature. Never pends.
-    fn sign(&self, caller: &Caller, data: &[u8]) -> Stored {
-        let _ = (caller, data);
-        Stored::refused(UNSERVED)
-    }
+    fn sign(&self, caller: &Caller, data: &[u8]) -> Stored;
 
     /// `trust.sight`: judge `hash`, the catalogue `counterparty` reports, against the kernel's trust
     /// state. READY with a `TRUST_*` verdict.
-    fn trust_sight(&self, caller: &Caller, counterparty: &str, hash: &str, later: Later) -> Ran {
-        let _ = (caller, counterparty, hash, later);
-        Ran::Now(Stored::refused(UNSERVED))
-    }
+    fn trust_sight(&self, caller: &Caller, counterparty: &str, hash: &str, later: Later) -> Ran;
 
     /// `trust.due`: the counterparties of `caller` the kernel's tick marked for re-verification, one
     /// span each (key = the counterparty), drained. Never pends.
-    fn trust_due(&self, caller: &Caller) -> Stored {
-        let _ = caller;
-        Stored::refused(UNSERVED)
-    }
+    fn trust_due(&self, caller: &Caller) -> Stored;
 
     /// `entitlement.check`: whether the principal of `unit` (the unit the calling crossing
     /// serves, `None` for a crossing that serves none) is entitled to `target`,
     /// `"<scope_kind>:<name>"`. READY `ENTITLED` or `NOT_ENTITLED`. Never pends.
-    fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored {
-        let _ = (caller, unit, target);
-        Stored::refused(UNSERVED)
-    }
+    fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored;
 
     /// `random.fill`: `len` bytes from the kernel's CSPRNG, READY with exactly those bytes; `len`
     /// outside `1..=MAX_RANDOM_FILL` is REFUSED, an OS randomness failure FAILED. Never pends.
-    fn random_fill(&self, len: u64) -> Stored {
-        let _ = len;
-        Stored::refused(UNSERVED)
-    }
+    fn random_fill(&self, len: u64) -> Stored;
 }
 
 /// A `records.list` request, as the host copied it out of the caller's `in`.

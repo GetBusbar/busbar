@@ -6,7 +6,7 @@
 //! every other operation.
 
 use busbar_contract::codec::EgressCtx;
-use busbar_contract::codec::{OperationHandler, RequestHandler};
+use busbar_contract::codec::RequestHandler;
 use busbar_contract::operation::OpVerb;
 
 /// Endpoint paths — each appears on BOTH the egress side (`upstream_path`) and the ingress match
@@ -17,7 +17,7 @@ pub struct AnthropicRequestHandler;
 /// This protocol's OWN chat instance — delete this line (and the registry arm) and this
 /// protocol's chat 404s via the standard no-handler path; everything else keeps working.
 static CHAT: super::super::chat_handle::ChatOperation =
-    super::super::chat_handle::ChatOperation("anthropic");
+    super::super::chat_handle::ChatOperation(super::VENDOR_NAME);
 
 /// ANTHROPIC'S ROW OF THE SUPPORT MATRIX — one verb. Every other verb is the standard no-handler
 /// 404, and it is the SAME answer for the LLM verbs Anthropic lacks and for the protocol-surface
@@ -26,12 +26,7 @@ static CHAT: super::super::chat_handle::ChatOperation =
 static CELLS: &[busbar_contract::codec::Cell] = &[(OpVerb::CHAT, &CHAT)];
 
 impl RequestHandler for AnthropicRequestHandler {
-    fn protocol_name(&self) -> &'static str {
-        "anthropic"
-    }
-    fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
-        busbar_contract::codec::cell_of(CELLS, op)
-    }
+    dialect_identity!(super::VENDOR_NAME);
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         match ctx.path_base {
             // Claude-on-Vertex: the model rides the URL via `:rawPredict` / `:streamRawPredict` (native

@@ -141,7 +141,7 @@ pub mod check;
 
 use super::hook::{RequestView, SignalEntry};
 use super::host::conn::connector::Need;
-use super::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead};
+use super::mechanism::call::{AbiStr, Blob, Field, InHead, Op, OutHead, Span};
 pub use super::mechanism::check::SPAN_ABSENT;
 use super::mechanism::check::{contract, OpContract};
 use super::mechanism::door::KindTailHead;
@@ -649,26 +649,6 @@ pub struct PlaneRefreshOut {
 }
 
 // ── per-call shapes ──────────────────────────────────────────────────────────────────────────────
-
-/// One head field the HOST hands in, borrowed for the call.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct Field {
-    /// The name.
-    pub name: AbiStr,
-    /// The value.
-    pub value: AbiStr,
-}
-
-/// A byte range of the call's HOST `arena`; [`SPAN_ABSENT`] = none.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct Span {
-    /// Offset into the arena.
-    pub offset: u32,
-    /// Length.
-    pub len: u32,
-}
 
 /// One head field the plugin writes, its bytes in the call's `arena`.
 #[repr(C)]

@@ -2879,12 +2879,11 @@ fn test_response_failed_carries_empty_output_skeleton() {
     );
 }
 
-/// A top-level `metadata` object must NOT be in the modeled-key
-/// exclusion set, so it flows into `IrRequest.extra` on read and is re-emitted verbatim by
+/// A top-level `metadata` object is carried by the typed slot (IR-03) and re-emitted by
 /// `write_request`. A prior revision listed `metadata` in `modeled_keys` while never emitting it,
 /// silently dropping the caller's response tagging / billing-attribution field.
 #[test]
-fn test_metadata_round_trips_through_extra() {
+fn test_metadata_round_trips_through_the_slot() {
     let json = serde_json::json!({
         "model": "gpt-4o",
         "input": [{"role": "user", "content": [{"type": CONTENT_TYPE_INPUT_TEXT, "text": "hi"}]}],
@@ -2894,14 +2893,18 @@ fn test_metadata_round_trips_through_extra() {
     let writer = ResponsesWriter;
 
     let ir = reader.read_request(&json).expect("read_request ok");
-    // metadata must have landed in extra (it is not a modeled IrRequest field).
+    // metadata landed in the typed slot; a member the slot reproduces is not parked in extra too.
     assert_eq!(
-        ir.extra.get("metadata"),
-        Some(&serde_json::json!({"trace_id": "abc-123", "team": "billing"})),
-        "metadata must flow into extra, not be dropped"
+        ir.metadata,
+        Some(vec![
+            ("team".to_string(), "billing".to_string()),
+            ("trace_id".to_string(), "abc-123".to_string()),
+        ]),
+        "metadata must land in the typed slot, not be dropped"
     );
+    assert!(!ir.extra.contains_key("metadata"));
 
-    // write_request forwards extra verbatim, so metadata survives to the upstream body.
+    // write_request writes the slot back, so metadata survives to the upstream body.
     let out = writer.write_request(&ir);
     assert_eq!(
         out.get("metadata"),

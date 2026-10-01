@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::abi::mechanism::call::{AbiStr, Blob, Envelope, OutHead, RawOutcome, BLOB_SECRET};
+use crate::abi::mechanism::check::HARD_MAX_BYTES;
 use crate::abi::secret::ERROR_KIND_UNAVAILABLE;
 
 fn base_out() -> ResolveOut {

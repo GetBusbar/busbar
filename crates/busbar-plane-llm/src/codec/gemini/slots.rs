@@ -2,7 +2,12 @@
 //! (IR-11), `labels` (IR-03), `allowedFunctionNames` (IR-10), `responseModalities` (IR-19), and the
 //! slots Gemini has no form for (IR-04..07), which the writer drops with a warn and reports.
 
+use super::{
+    FIELD_ALLOWED_FUNCTION_NAMES, FIELD_FUNCTION_CALLING_CONFIG, FIELD_FUNCTION_DECLARATIONS,
+    FIELD_RESPONSE_MODALITIES, GEMINI_ANY, GEMINI_AUTO,
+};
 use crate::codec::ir::{IrHostedTool, IrModality, IrTool, IrWebFetch, IrWebSearch};
+use crate::codec::keys;
 
 /// Gemini's hosted-tool keys that have a neutral IR kind (IR-11).
 const GEMINI_GOOGLE_SEARCH: &str = "googleSearch";
@@ -27,7 +32,7 @@ pub(super) fn read_gemini_hosted_tools(
     };
     for (k, v) in obj {
         let kind = match k.as_str() {
-            "functionDeclarations" => continue,
+            FIELD_FUNCTION_DECLARATIONS => continue,
             GEMINI_GOOGLE_SEARCH => Some(IrHostedTool::WebSearch(IrWebSearch::default())),
             GEMINI_CODE_EXECUTION => Some(IrHostedTool::CodeExecution),
             GEMINI_URL_CONTEXT => Some(IrHostedTool::WebFetch(IrWebFetch::default())),
@@ -84,13 +89,13 @@ pub(super) fn write_gemini_hosted_tools(hosted: &[IrHostedTool]) -> Vec<serde_js
                     );
                     return None;
                 }
-                IrHostedTool::WebSearch(ws) => (
+                IrHostedTool::WebSearch(search) => (
                     GEMINI_GOOGLE_SEARCH,
-                    ws.max_uses.is_some()
-                        || !ws.allowed_domains.is_empty()
-                        || !ws.blocked_domains.is_empty()
-                        || ws.user_location.is_some()
-                        || ws.search_context_size.is_some(),
+                    search.max_uses.is_some()
+                        || !search.allowed_domains.is_empty()
+                        || !search.blocked_domains.is_empty()
+                        || search.user_location.is_some()
+                        || search.search_context_size.is_some(),
                 ),
                 IrHostedTool::CodeExecution => (GEMINI_CODE_EXECUTION, false),
                 IrHostedTool::WebFetch(wf) => (
@@ -183,17 +188,17 @@ pub(super) fn write_gemini_labels(metadata: &[(String, String)]) -> serde_json::
 pub(super) fn read_gemini_allowed_tools(
     tool_config: Option<&serde_json::Value>,
 ) -> Option<Vec<String>> {
-    let fcc = tool_config?.get("functionCallingConfig")?;
-    let mode = fcc.get("mode").and_then(|m| m.as_str())?.to_uppercase();
+    let fcc = tool_config?.get(FIELD_FUNCTION_CALLING_CONFIG)?;
+    let mode = fcc.get(keys::MODE).and_then(|m| m.as_str())?.to_uppercase();
     let names: Vec<String> = fcc
-        .get("allowedFunctionNames")?
+        .get(FIELD_ALLOWED_FUNCTION_NAMES)?
         .as_array()?
         .iter()
         .filter_map(|n| n.as_str().map(str::to_string))
         .collect();
     match mode.as_str() {
-        "ANY" if names.len() > 1 => Some(names),
-        "AUTO" if !names.is_empty() => Some(names),
+        GEMINI_ANY if names.len() > 1 => Some(names),
+        GEMINI_AUTO if !names.is_empty() => Some(names),
         _ => None,
     }
 }
@@ -203,7 +208,7 @@ pub(super) fn read_gemini_allowed_tools(
 pub(super) fn read_gemini_response_modalities(
     gen_config: Option<&serde_json::Value>,
 ) -> Option<Vec<IrModality>> {
-    let arr = gen_config?.get("responseModalities")?.as_array()?;
+    let arr = gen_config?.get(FIELD_RESPONSE_MODALITIES)?.as_array()?;
     let mut out = Vec::with_capacity(arr.len());
     for word in arr {
         match word.as_str().and_then(IrModality::parse) {
@@ -226,19 +231,6 @@ pub(super) fn write_gemini_response_modalities(modalities: &[IrModality]) -> ser
             .collect(),
     )
 }
-
-/// The Q57 request slots Gemini has no form for (IR-04 `service_tier`, IR-05 `store`, IR-06
-/// `safety_identifier`/`prompt_cache_key`, IR-07 `verbosity`): the writer drops each one a request
-/// carries with a warn, and the seam audits the drop through `dropped_egress_controls`.
-pub(super) const GEMINI_UNSUPPORTED: &[crate::codec::dialect::Control] = &[
-    crate::codec::dialect::SERVICE_TIER,
-    crate::codec::dialect::STORE,
-    crate::codec::dialect::SAFETY_IDENTIFIER,
-    crate::codec::dialect::PROMPT_CACHE_KEY,
-    crate::codec::dialect::VERBOSITY,
-    // OAI-09: an OpenAI custom tool has no Gemini form.
-    crate::codec::dialect::CUSTOM_TOOL,
-];
 
 /// Whether a Gemini model accepts `thinkingBudget: 0` — reasoning switched off (IR-09). Only the
 /// gemini-2.5-flash family (flash and flash-lite, any version or preview suffix) can stop thinking;

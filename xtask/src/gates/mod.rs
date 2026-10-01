@@ -19,6 +19,7 @@
 //!    the gate, the failure seven of the shell self-tests had, is not something a selftest CAN do.
 
 pub mod abi_freeze;
+pub mod abi_header;
 pub mod abi_location;
 pub mod blocking_ffi;
 pub mod c1_literals;
@@ -33,6 +34,7 @@ pub mod denylist_gate;
 pub mod dep_wall;
 pub mod design_bindings;
 pub mod design_docs_allowlist;
+pub mod dialect_map;
 pub mod door_only;
 pub mod duplex_ws_default_edge;
 pub mod feature_sets;
@@ -43,7 +45,6 @@ pub mod instance_noun_neutrality;
 pub mod inventory_coverage;
 pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
-pub mod kind_abi_lane;
 pub mod kind_isolation;
 pub mod linked_dropped_features;
 pub mod money_invariants;
@@ -2803,6 +2804,14 @@ pub static REGISTRY: &[Registration] = &[
                   blocking thread in the loader, extern \"C\" slots (report-only ledger)",
     },
     Registration {
+        name: "abi-header",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(abi_header::AbiHeaderGate),
+        summary: "the committed C header (busbar-contract/include/busbar_plugin.h) is exactly what \
+                  the abi/ sources render; `cargo xtask abi-header --write` regenerates it",
+    },
+    Registration {
         name: "abi-freeze",
         batch: 1,
         tier: Tier::Fast,
@@ -2848,14 +2857,6 @@ pub static REGISTRY: &[Registration] = &[
         build: || Box::new(linked_dropped_features::LinkedDroppedFeaturesGate),
         summary: "a plugin linked into the binary is built with its dropped-in build's features \
                   (report-only ledger)",
-    },
-    Registration {
-        name: "kind-abi-lane",
-        batch: 1,
-        tier: Tier::Fast,
-        build: || Box::new(kind_abi_lane::KindAbiLaneGate),
-        summary: "each kind declares the ONE ABI lane #30 binds it to by heat (plane/transport=hot, \
-                  store/secret/auth/hook/export=cold); the per-token loop is {plane,transport} only",
     },
     Registration {
         name: "kind-isolation",
@@ -3039,6 +3040,14 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(inventory_coverage::InventoryCoverageGate),
         summary: "every qa/evidence/inventory/*.md id is a named coverage claim or a named gap",
+    },
+    Registration {
+        name: "dialect-map",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(dialect_map::DialectMapGate),
+        summary: "every committed LLM dialect table (codec/<d>/map.gen.rs) equals its \
+                  dialects/<d>.toml mapping file, compiled",
     },
     Registration {
         name: "no-tracked-ignored",

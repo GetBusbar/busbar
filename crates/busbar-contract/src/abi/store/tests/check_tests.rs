@@ -107,7 +107,7 @@ fn reserve_ready_with_a_reason_is_fault() {
     let out = reserve_out(1, RESERVE_EXHAUSTED, RESERVE_NO_FAILED_CELL);
     assert_eq!(
         check_reserve(R, &out, &[cell(1)], 1, &[grant(1)]),
-        Err(Fault::Vocabulary)
+        Err(VOCABULARY)
     );
 }
 
@@ -116,7 +116,7 @@ fn reserve_ready_naming_a_failed_cell_is_fault() {
     let out = reserve_out(1, 0, 0);
     assert_eq!(
         check_reserve(R, &out, &[cell(1)], 1, &[grant(1)]),
-        Err(Fault::FailedCellOutOfRange)
+        Err(FAILED_CELL_OUT_OF_RANGE)
     );
 }
 
@@ -125,7 +125,7 @@ fn reserve_ready_grants_over_capacity_is_fault() {
     let out = reserve_out(2, 0, RESERVE_NO_FAILED_CELL);
     assert_eq!(
         check_reserve(R, &out, &[cell(1), cell(1)], 1, &[grant(1)]),
-        Err(Fault::CountOverCap)
+        Err(COUNT_OVER_CAP)
     );
 }
 
@@ -134,7 +134,7 @@ fn reserve_ready_grants_not_one_per_cell_is_fault() {
     let out = reserve_out(1, 0, RESERVE_NO_FAILED_CELL);
     assert_eq!(
         check_reserve(R, &out, &[cell(1), cell(1)], 2, &[grant(1)]),
-        Err(Fault::CountMismatch)
+        Err(COUNT_MISMATCH)
     );
 }
 
@@ -143,7 +143,7 @@ fn reserve_ready_a_zero_grant_is_fault() {
     let out = reserve_out(1, 0, RESERVE_NO_FAILED_CELL);
     assert_eq!(
         check_reserve(R, &out, &[cell(3)], 1, &[grant(0)]),
-        Err(Fault::GrantOutOfRange)
+        Err(GRANT_OUT_OF_RANGE)
     );
 }
 
@@ -153,7 +153,7 @@ fn reserve_ready_a_partial_grant_is_fault() {
     let out = reserve_out(1, 0, RESERVE_NO_FAILED_CELL);
     assert_eq!(
         check_reserve(R, &out, &[cell(3)], 1, &[grant(2)]),
-        Err(Fault::GrantOutOfRange)
+        Err(GRANT_OUT_OF_RANGE)
     );
 }
 
@@ -162,7 +162,7 @@ fn reserve_ready_a_grant_over_the_amount_is_fault() {
     let out = reserve_out(1, 0, RESERVE_NO_FAILED_CELL);
     assert_eq!(
         check_reserve(R, &out, &[cell(3)], 1, &[grant(4)]),
-        Err(Fault::GrantOutOfRange)
+        Err(GRANT_OUT_OF_RANGE)
     );
 }
 
@@ -184,26 +184,20 @@ fn reserve_failed_with_grants_is_fault() {
     let out = reserve_out(1, RESERVE_EXHAUSTED, 0);
     assert_eq!(
         check_reserve(F, &out, &[cell(1)], 1, &[]),
-        Err(Fault::WrittenOnFailed)
+        Err(WRITTEN_ON_FAILED)
     );
 }
 
 #[test]
 fn reserve_failed_reason_zero_is_fault() {
     let out = reserve_out(0, 0, 0);
-    assert_eq!(
-        check_reserve(F, &out, &[cell(1)], 1, &[]),
-        Err(Fault::Vocabulary)
-    );
+    assert_eq!(check_reserve(F, &out, &[cell(1)], 1, &[]), Err(VOCABULARY));
 }
 
 #[test]
 fn reserve_failed_reason_five_is_fault() {
     let out = reserve_out(0, RESERVE_NO_CAP + 1, 0);
-    assert_eq!(
-        check_reserve(F, &out, &[cell(1)], 1, &[]),
-        Err(Fault::Vocabulary)
-    );
+    assert_eq!(check_reserve(F, &out, &[cell(1)], 1, &[]), Err(VOCABULARY));
 }
 
 #[test]
@@ -211,7 +205,7 @@ fn reserve_failed_cell_past_the_cells_is_fault() {
     let out = reserve_out(0, RESERVE_EXHAUSTED, 1);
     assert_eq!(
         check_reserve(F, &out, &[cell(1)], 1, &[]),
-        Err(Fault::FailedCellOutOfRange)
+        Err(FAILED_CELL_OUT_OF_RANGE)
     );
 }
 
@@ -245,7 +239,7 @@ fn slice_release_clamped_passes() {
 fn slice_release_over_capacity_is_fault() {
     assert_eq!(
         check_slice_release(R, &release_out(2), &[item(1), item(1)], 1, &[1]),
-        Err(Fault::CountOverCap)
+        Err(COUNT_OVER_CAP)
     );
 }
 
@@ -253,7 +247,7 @@ fn slice_release_over_capacity_is_fault() {
 fn slice_release_not_one_per_item_is_fault() {
     assert_eq!(
         check_slice_release(R, &release_out(1), &[item(1), item(1)], 2, &[1]),
-        Err(Fault::CountMismatch)
+        Err(COUNT_MISMATCH)
     );
 }
 
@@ -261,7 +255,7 @@ fn slice_release_not_one_per_item_is_fault() {
 fn slice_release_over_unspent_is_fault() {
     assert_eq!(
         check_slice_release(R, &release_out(1), &[item(2)], 1, &[3]),
-        Err(Fault::ReleaseOverUnspent)
+        Err(RELEASE_OVER_UNSPENT)
     );
 }
 
@@ -269,7 +263,7 @@ fn slice_release_over_unspent_is_fault() {
 fn slice_release_failed_with_amounts_is_fault() {
     assert_eq!(
         check_slice_release(F, &release_out(1), &[item(2)], 1, &[]),
-        Err(Fault::WrittenOnFailed)
+        Err(WRITTEN_ON_FAILED)
     );
 }
 
@@ -299,7 +293,7 @@ fn record_get_well_formed_passes() {
 fn a_found_outside_the_vocabulary_is_fault() {
     assert_eq!(
         check_record_get(R, &bytes_out(2, 0, 0), 512),
-        Err(Fault::Vocabulary)
+        Err(VOCABULARY)
     );
 }
 
@@ -307,7 +301,7 @@ fn a_found_outside_the_vocabulary_is_fault() {
 fn needed_on_ready_is_fault() {
     assert_eq!(
         check_record_get(R, &bytes_out(FOUND, 1, 9), 512),
-        Err(Fault::NeededNotFailed)
+        Err(NEEDED_NOT_FAILED)
     );
 }
 
@@ -315,7 +309,7 @@ fn needed_on_ready_is_fault() {
 fn written_over_capacity_is_fault() {
     assert_eq!(
         check_record_get(R, &bytes_out(FOUND, 65, 0), 64),
-        Err(Fault::CountOverCap)
+        Err(COUNT_OVER_CAP)
     );
 }
 
@@ -323,7 +317,7 @@ fn written_over_capacity_is_fault() {
 fn a_record_over_the_record_ceiling_is_fault() {
     assert_eq!(
         check_record_get(R, &bytes_out(FOUND, 513, 0), 4096),
-        Err(Fault::CountOverCap)
+        Err(COUNT_OVER_CAP)
     );
 }
 
@@ -331,7 +325,7 @@ fn a_record_over_the_record_ceiling_is_fault() {
 fn absent_with_bytes_is_fault() {
     assert_eq!(
         check_record_get(R, &bytes_out(ABSENT, 3, 0), 512),
-        Err(Fault::AbsentWithLen)
+        Err(ABSENT_WITH_LEN)
     );
 }
 
@@ -339,24 +333,21 @@ fn absent_with_bytes_is_fault() {
 fn failed_with_bytes_written_is_fault() {
     assert_eq!(
         check_get_plane_record(F, &bytes_out(FOUND, 1, 900), 512),
-        Err(Fault::WrittenOnFailed)
+        Err(WRITTEN_ON_FAILED)
     );
 }
 
 #[test]
 fn needed_bytes_over_u32_max_is_fault() {
     let out = bytes_out(FOUND, 0, u64::from(u32::MAX) + 1);
-    assert_eq!(
-        check_get_plane_record(F, &out, 512),
-        Err(Fault::NeededTooLarge)
-    );
+    assert_eq!(check_get_plane_record(F, &out, 512), Err(NEEDED_TOO_LARGE));
 }
 
 #[test]
 fn needed_within_the_capacity_is_fault() {
     assert_eq!(
         check_get_plane_record(F, &bytes_out(FOUND, 0, 100), 512),
-        Err(Fault::NeededWithinCap)
+        Err(NEEDED_WITHIN_CAP)
     );
 }
 
@@ -425,7 +416,7 @@ fn list_needed_on_ready_is_fault() {
     let host = b.host();
     assert_eq!(
         check_list_plane_records(R, &list_out(0, 0, 1, 0), &host, &[]),
-        Err(Fault::NeededNotFailed)
+        Err(NEEDED_NOT_FAILED)
     );
 }
 
@@ -435,7 +426,7 @@ fn list_items_over_capacity_is_fault() {
     let host = b.host();
     assert_eq!(
         check_list_plane_records(R, &list_out(5, 0, 0, 0), &host, &[]),
-        Err(Fault::CountOverCap)
+        Err(COUNT_OVER_CAP)
     );
 }
 
@@ -445,7 +436,7 @@ fn list_bytes_over_capacity_is_fault() {
     let host = b.host();
     assert_eq!(
         check_list_plane_records(R, &list_out(0, 65, 0, 0), &host, &[]),
-        Err(Fault::CountOverCap)
+        Err(COUNT_OVER_CAP)
     );
 }
 
@@ -456,7 +447,7 @@ fn list_count_disagreeing_with_the_items_is_fault() {
     let items = [b.at(0, 1)];
     assert_eq!(
         check_list_plane_records(R, &list_out(2, 1, 0, 0), &host, &items),
-        Err(Fault::CountMismatch)
+        Err(COUNT_MISMATCH)
     );
 }
 
@@ -468,7 +459,7 @@ fn list_count_with_a_null_array_is_fault() {
     let items = [b.at(0, 1)];
     assert_eq!(
         check_list_plane_records(R, &list_out(1, 1, 0, 0), &host, &items),
-        Err(Fault::NullWithCount)
+        Err(NULL_WITH_COUNT)
     );
 }
 
@@ -479,7 +470,7 @@ fn list_absent_item_with_a_length_is_fault() {
     let items = [blob(null(), 3, BLOB_OCTETS)];
     assert_eq!(
         check_list_plane_records(R, &list_out(1, 0, 0, 0), &host, &items),
-        Err(Fault::AbsentWithLen)
+        Err(ABSENT_WITH_LEN)
     );
 }
 
@@ -490,7 +481,7 @@ fn list_item_past_the_written_bytes_is_fault() {
     let items = [b.at(4, 8)];
     assert_eq!(
         check_list_plane_records(R, &list_out(1, 8, 0, 0), &host, &items),
-        Err(Fault::SpanOutOfBounds)
+        Err(SPAN_OUT_OF_BOUNDS)
     );
 }
 
@@ -502,7 +493,7 @@ fn list_item_outside_the_host_buffer_is_fault() {
     let items = [blob(elsewhere.as_ptr(), 4, BLOB_OCTETS)];
     assert_eq!(
         check_list_plane_records(R, &list_out(1, 4, 0, 0), &host, &items),
-        Err(Fault::SpanOutOfBounds)
+        Err(SPAN_OUT_OF_BOUNDS)
     );
 }
 
@@ -514,7 +505,7 @@ fn list_blob_format_outside_the_vocabulary_is_fault() {
     bad.fmt = BLOB_OCTETS + 1;
     assert_eq!(
         check_list_plane_records(R, &list_out(1, 1, 0, 0), &host, &[bad]),
-        Err(Fault::Vocabulary)
+        Err(VOCABULARY)
     );
 }
 
@@ -524,7 +515,7 @@ fn list_failed_with_items_written_is_fault() {
     let host = b.host();
     assert_eq!(
         check_list_plane_records(F, &list_out(1, 0, 9, 0), &host, &[]),
-        Err(Fault::WrittenOnFailed)
+        Err(WRITTEN_ON_FAILED)
     );
 }
 
@@ -534,7 +525,7 @@ fn list_needed_items_over_the_hard_max_is_fault() {
     let host = b.host();
     assert_eq!(
         check_list_plane_records(F, &list_out(0, 0, LIST_ITEMS_HARD_MAX + 1, 0), &host, &[]),
-        Err(Fault::NeededTooLarge)
+        Err(NEEDED_TOO_LARGE)
     );
 }
 
@@ -545,7 +536,7 @@ fn list_needed_bytes_over_u32_max_is_fault() {
     let out = list_out(0, 0, 0, u64::from(u32::MAX) + 1);
     assert_eq!(
         check_list_plane_records(F, &out, &host, &[]),
-        Err(Fault::NeededTooLarge)
+        Err(NEEDED_TOO_LARGE)
     );
 }
 
@@ -571,7 +562,7 @@ fn list_short_with_both_dimensions_fitting_is_fault() {
     let host = b.host();
     assert_eq!(
         check_list_plane_records(F, &list_out(0, 0, 2, 10), &host, &[]),
-        Err(Fault::NeededWithinCap)
+        Err(NEEDED_WITHIN_CAP)
     );
 }
 
@@ -581,11 +572,11 @@ fn list_needed_within_the_capacity_is_fault() {
     let host = b.host();
     assert_eq!(
         check_list_plane_records(F, &list_out(0, 0, 4, 0), &host, &[]),
-        Err(Fault::NeededWithinCap)
+        Err(NEEDED_WITHIN_CAP)
     );
     assert_eq!(
         check_list_plane_records(F, &list_out(0, 0, 0, 64), &host, &[]),
-        Err(Fault::NeededWithinCap)
+        Err(NEEDED_WITHIN_CAP)
     );
 }
 
@@ -621,7 +612,7 @@ fn sessions_for_checks_each_node_string() {
     }];
     assert_eq!(
         check_sessions_for(R, &list_out(1, 4, 0, 0), &host, &past),
-        Err(Fault::SpanOutOfBounds)
+        Err(SPAN_OUT_OF_BOUNDS)
     );
 }
 
@@ -657,7 +648,7 @@ fn record_scan_checks_limit_keys_and_values() {
     // More entries than the scan's limit (limit 0 means nothing).
     assert_eq!(
         check_record_scan(R, &list_out(1, 8, 0, 0), &host, &[e], 0),
-        Err(Fault::CountOverCap)
+        Err(COUNT_OVER_CAP)
     );
     // A value over the record ceiling.
     let big = RecordEntry {
@@ -666,7 +657,7 @@ fn record_scan_checks_limit_keys_and_values() {
     };
     assert_eq!(
         check_record_scan(R, &list_out(1, 515, 0, 0), &host, &[big], 4),
-        Err(Fault::CountOverCap)
+        Err(COUNT_OVER_CAP)
     );
     // A key past the written bytes.
     let past = RecordEntry {
@@ -675,7 +666,7 @@ fn record_scan_checks_limit_keys_and_values() {
     };
     assert_eq!(
         check_record_scan(R, &list_out(1, 8, 0, 0), &host, &[past], 4),
-        Err(Fault::SpanOutOfBounds)
+        Err(SPAN_OUT_OF_BOUNDS)
     );
 }
 
@@ -701,22 +692,19 @@ fn leased_blob_rules() {
         found: ABSENT,
         ..found
     };
-    assert_eq!(
-        check_leased_blob(R, &absent_with),
-        Err(Fault::AbsentWithLen)
-    );
+    assert_eq!(check_leased_blob(R, &absent_with), Err(ABSENT_WITH_LEN));
     let null_with = LeasedBlobOut {
         record: blob(null(), 2, BLOB_JSON),
         ..found
     };
-    assert_eq!(check_leased_blob(R, &null_with), Err(Fault::NullWithCount));
+    assert_eq!(check_leased_blob(R, &null_with), Err(NULL_WITH_COUNT));
     let bad_found = LeasedBlobOut { found: 2, ..found };
-    assert_eq!(check_leased_blob(R, &bad_found), Err(Fault::Vocabulary));
+    assert_eq!(check_leased_blob(R, &bad_found), Err(VOCABULARY));
     let bad_fmt = LeasedBlobOut {
         record: blob(rec.as_ptr(), 2, BLOB_OCTETS + 1),
         ..found
     };
-    assert_eq!(check_leased_blob(R, &bad_fmt), Err(Fault::Vocabulary));
+    assert_eq!(check_leased_blob(R, &bad_fmt), Err(VOCABULARY));
 }
 
 #[test]
@@ -735,22 +723,16 @@ fn leased_list_rules() {
     };
     assert_eq!(
         check_leased_list(R, &null_arr, &items),
-        Err(Fault::NullWithCount)
+        Err(NULL_WITH_COUNT)
     );
     let too_many = LeasedListOut {
         items_len: (LIST_ITEMS_HARD_MAX + 1) as usize,
         ..out
     };
-    assert_eq!(
-        check_leased_list(R, &too_many, &items),
-        Err(Fault::CountOverCap)
-    );
-    assert_eq!(check_leased_list(R, &out, &[]), Err(Fault::CountMismatch));
+    assert_eq!(check_leased_list(R, &too_many, &items), Err(COUNT_OVER_CAP));
+    assert_eq!(check_leased_list(R, &out, &[]), Err(COUNT_MISMATCH));
     let null_item = [blob(null(), 2, BLOB_JSON)];
-    assert_eq!(
-        check_leased_list(R, &out, &null_item),
-        Err(Fault::NullWithCount)
-    );
+    assert_eq!(check_leased_list(R, &out, &null_item), Err(NULL_WITH_COUNT));
 }
 
 #[test]
@@ -765,7 +747,7 @@ fn leased_strings_and_heads_rules() {
     assert_eq!(check_leased_strs(R, &out, &strs), Ok(()));
     assert_eq!(
         check_leased_strs(R, &out, &[s(null(), 1)]),
-        Err(Fault::NullWithCount)
+        Err(NULL_WITH_COUNT)
     );
     let heads = [StreamHead {
         stream: s(name.as_ptr(), 6),
@@ -782,7 +764,7 @@ fn leased_strings_and_heads_rules() {
         stream: s(null(), 6),
         ..heads[0]
     }];
-    assert_eq!(check_heads(R, &hout, &bad), Err(Fault::NullWithCount));
+    assert_eq!(check_heads(R, &hout, &bad), Err(NULL_WITH_COUNT));
 }
 
 #[test]
@@ -793,23 +775,20 @@ fn verdict_and_cancel_vocabularies() {
         _reserved: 0,
     };
     assert_eq!(check_verdict(R, &v(1)), Ok(()));
-    assert_eq!(check_verdict(R, &v(2)), Err(Fault::Vocabulary));
+    assert_eq!(check_verdict(R, &v(2)), Err(VOCABULARY));
     let c = |disposition| CancelOut {
         head: head(),
         disposition,
         _reserved: 0,
     };
     assert_eq!(check_cancel(R, &c(2)), Ok(()));
-    assert_eq!(check_cancel(R, &c(3)), Err(Fault::Vocabulary));
+    assert_eq!(check_cancel(R, &c(3)), Err(VOCABULARY));
 }
 
 #[test]
 fn reserve_more_cells_than_failed_cell_can_index_is_fault() {
     assert_eq!(check_cells_len(u64::from(u32::MAX - 1)), Ok(()));
-    assert_eq!(
-        check_cells_len(u64::from(u32::MAX)),
-        Err(Fault::CountOverCap)
-    );
+    assert_eq!(check_cells_len(u64::from(u32::MAX)), Err(COUNT_OVER_CAP));
 }
 
 #[test]
@@ -819,21 +798,18 @@ fn window_caps_refusal_names_a_cap() {
         check_window_caps(Outcome::Refused, 3, Some(b"2: STORE_CAP_CONFLICT")),
         Ok(())
     );
-    assert_eq!(
-        check_window_caps(Outcome::Refused, 3, None),
-        Err(Fault::Missing)
-    );
+    assert_eq!(check_window_caps(Outcome::Refused, 3, None), Err(MISSING));
     assert_eq!(
         check_window_caps(Outcome::Refused, 3, Some(b"conflict")),
-        Err(Fault::Missing)
+        Err(MISSING)
     );
     assert_eq!(
         check_window_caps(Outcome::Refused, 3, Some(b"3: out of range")),
-        Err(Fault::CountOverCap)
+        Err(COUNT_OVER_CAP)
     );
     assert_eq!(
         check_window_caps(Outcome::Ready, LIST_ITEMS_HARD_MAX + 1, None),
-        Err(Fault::CountOverCap)
+        Err(COUNT_OVER_CAP)
     );
 }
 
@@ -870,7 +846,7 @@ fn reserve_needed_with_a_non_failed_outcome_is_fault() {
     for o in [R, Outcome::Refused, Outcome::Pending] {
         assert_eq!(
             check_reserve(o, &short_reserve(2), &cells, 1, &[grant(1)]),
-            Err(Fault::NeededNotFailed)
+            Err(NEEDED_NOT_FAILED)
         );
     }
 }
@@ -880,7 +856,7 @@ fn reserve_needed_within_the_capacity_is_fault() {
     let cells = [cell(1), cell(1)];
     assert_eq!(
         check_reserve(F, &short_reserve(2), &cells, 2, &[]),
-        Err(Fault::NeededWithinCap)
+        Err(NEEDED_WITHIN_CAP)
     );
 }
 
@@ -892,7 +868,7 @@ fn reserve_short_answer_with_a_reason_is_fault() {
     };
     assert_eq!(
         check_reserve(F, &out, &[cell(1), cell(1)], 1, &[]),
-        Err(Fault::Vocabulary)
+        Err(VOCABULARY)
     );
 }
 
@@ -904,7 +880,7 @@ fn reserve_short_answer_naming_a_cell_is_fault() {
     };
     assert_eq!(
         check_reserve(F, &out, &[cell(1), cell(1)], 1, &[]),
-        Err(Fault::FailedCellOutOfRange)
+        Err(FAILED_CELL_OUT_OF_RANGE)
     );
 }
 
@@ -912,7 +888,7 @@ fn reserve_short_answer_naming_a_cell_is_fault() {
 fn reserve_short_answer_needing_other_than_one_grant_per_cell_is_fault() {
     assert_eq!(
         check_reserve(F, &short_reserve(3), &[cell(1), cell(1)], 1, &[]),
-        Err(Fault::CountMismatch)
+        Err(COUNT_MISMATCH)
     );
 }
 
@@ -920,7 +896,7 @@ fn reserve_short_answer_needing_other_than_one_grant_per_cell_is_fault() {
 fn reserve_needed_over_the_hard_max_is_fault() {
     assert_eq!(
         check_reserve(F, &short_reserve(u64::from(u32::MAX)), &[cell(1)], 0, &[]),
-        Err(Fault::NeededTooLarge)
+        Err(NEEDED_TOO_LARGE)
     );
 }
 
@@ -940,19 +916,19 @@ fn slice_release_short_answer_rules() {
     );
     assert_eq!(
         check_slice_release(R, &short_release(2), &items, 2, &[1, 1]),
-        Err(Fault::NeededNotFailed)
+        Err(NEEDED_NOT_FAILED)
     );
     assert_eq!(
         check_slice_release(F, &short_release(2), &items, 2, &[]),
-        Err(Fault::NeededWithinCap)
+        Err(NEEDED_WITHIN_CAP)
     );
     assert_eq!(
         check_slice_release(F, &short_release(3), &items, 1, &[]),
-        Err(Fault::CountMismatch)
+        Err(COUNT_MISMATCH)
     );
     assert_eq!(
         check_slice_release(F, &short_release(LIST_ITEMS_HARD_MAX + 1), &items, 1, &[]),
-        Err(Fault::NeededTooLarge)
+        Err(NEEDED_TOO_LARGE)
     );
 }
 
@@ -960,13 +936,13 @@ fn slice_release_short_answer_rules() {
 fn needed_with_refused_is_fault_on_reads_and_lists() {
     assert_eq!(
         check_record_get(Outcome::Refused, &bytes_out(FOUND, 0, 900), 512),
-        Err(Fault::NeededNotFailed)
+        Err(NEEDED_NOT_FAILED)
     );
     let mut b = Bufs::new();
     let host = b.host();
     assert_eq!(
         check_list_plane_records(Outcome::Refused, &list_out(0, 0, 9, 0), &host, &[]),
-        Err(Fault::NeededNotFailed)
+        Err(NEEDED_NOT_FAILED)
     );
 }
 
@@ -1037,7 +1013,7 @@ fn count_ready_passes() {
 
 #[test]
 fn count_on_failed_is_fault() {
-    assert_eq!(check_count(F, &count_out(1)), Err(Fault::WrittenOnFailed));
+    assert_eq!(check_count(F, &count_out(1)), Err(WRITTEN_ON_FAILED));
 }
 
 // ── append_batch: the shipping ack's head ────────────────────────────────────────────────────
@@ -1060,7 +1036,7 @@ fn append_batch_ready_passes() {
 fn append_batch_seq_on_failed_is_fault() {
     assert_eq!(
         check_append_batch(F, &head_out(41, 0)),
-        Err(Fault::WrittenOnFailed)
+        Err(WRITTEN_ON_FAILED)
     );
 }
 
@@ -1068,6 +1044,6 @@ fn append_batch_seq_on_failed_is_fault() {
 fn append_batch_epoch_on_failed_is_fault() {
     assert_eq!(
         check_append_batch(F, &head_out(0, 3)),
-        Err(Fault::WrittenOnFailed)
+        Err(WRITTEN_ON_FAILED)
     );
 }

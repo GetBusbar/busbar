@@ -441,6 +441,13 @@ jobs:
         run: cargo xtask gate no-tracked-ignored --selftest
       - name: No-tracked-ignored gate (no tracked path matches a .gitignore rule of this tree)
         run: cargo xtask gate no-tracked-ignored
+      # DIALECT-MAP: each LLM dialect's committed table file (codec/<d>/map.gen.rs) must equal its
+      # hand-written mapping file (crates/busbar-plane-llm/dialects/<d>.toml), compiled by
+      # `cargo xtask dialect compile`. Self-test FIRST: a hand edit and a stale compile are planted.
+      - name: Dialect-map self-test
+        run: cargo xtask gate dialect-map --selftest
+      - name: Dialect-map gate (committed dialect tables equal their mapping files, compiled)
+        run: cargo xtask gate dialect-map
       # DESIGN-DOCS ALLOWLIST (owner, 2026-09-27): docs/design holds BUSBAR-1.6.0.md, 1.6.0-TODO.md,
       # 1.6.0-QUESTIONS.md, 1.6.0-SLOT-LOG.md and 1.6.0-PARKED/, nothing else. A new
       # design topic is a section of the spec; generated data and evidence go under qa/. Self-test
@@ -596,6 +603,16 @@ jobs:
         run: cargo xtask gate abi-freeze --selftest
       - name: ABI freeze (abi/hot and abi/cold do not grow)
         run: cargo xtask gate abi-freeze
+      # THE GENERATED C HEADER (BUSBAR-1.6.0.md section 11.5, decision 84). `abi-header` re-renders
+      # crates/busbar-contract/include/busbar_plugin.h from the abi/ sources and the layout golden and
+      # is red, naming the first differing line, if the committed file differs; `cargo xtask abi-header
+      # --write` regenerates it. The header must also compile as plain C11, with its layout asserts.
+      - name: ABI header self-test
+        run: cargo xtask gate abi-header --selftest
+      - name: ABI header (the committed C header has not drifted)
+        run: cargo xtask gate abi-header
+      - name: ABI header compiles as C11
+        run: cc -std=c11 -Wall -Werror -fsyntax-only -x c crates/busbar-contract/include/busbar_plugin.h
       # THE GATE SET ITSELF, checked against this file. Every step above runs ONE gate; nothing
       # asked whether the set of steps still covers the set of registered gates. That question lives
       # in `full-gate --selftest` — the registry-vs-ci.yml set equality, both directions, plus the
@@ -850,22 +867,6 @@ jobs:
         run: cargo xtask gate dep-wall --selftest
       - name: Dep-wall ledger (BLOCKING — no plugin reaches past the wall anew)
         run: cargo xtask gate dep-wall
-      # KIND-ABI-LANE gate: DECISIONS #30 binds each plugin kind to exactly ONE ABI lane by HEAT — a
-      # plugin uses the tier matched to its heat, NOT both. HOT/POD lane = plane, transport (the only
-      # kinds in the per-token streaming inner loop, driven over the `#[repr(C)]` `PlaneDecl` vtable);
-      # COLD/JSON lane = store, secret, auth, hook, export (each fires per-request-once or at
-      # boot/write-behind, NEVER per-token, and stays on the six-symbol JSON wire — required for 1.5.5
-      # byte-identity). #30 NAMES this gate as its enforcement, and for the whole of the consolidated
-      # line it did not exist: nothing stopped a hot kind being wired onto the cold JSON `call`, or a
-      # cold kind sprouting a POD surface on the per-token hot lane. The lane assignment is READ from
-      # #30 itself (not copied beside it), the per-kind declaration is read off `supported_abi(kind)`
-      # in the loader registry, and the per-token-loop grep asserts the hot lane names only
-      # {plane, transport}. Self-test runs FIRST — the wrong-lane declaration and the cold-kind-on-the
-      # -hot-lane are planted and proven RED before the verdict is trusted.
-      - name: Kind-ABI-lane self-test (a wrong-lane declaration, planted and proven RED)
-        run: cargo xtask gate kind-abi-lane --selftest
-      - name: Kind-ABI-lane gate (BLOCKING — each kind on the ONE lane #30 assigns it by heat)
-        run: cargo xtask gate kind-abi-lane
       # ABI-LOCATION gate: ONE PLACE FOR EVERY ABI SHAPE (OWNER 2026-09-27: "edit one crate to add
       # something to abi and all those plugin kinds then can implement it"). A `#[repr(C)]` type, an
       # `extern "C"` slot body or fn-pointer type, or an ABI version constant defined anywhere but

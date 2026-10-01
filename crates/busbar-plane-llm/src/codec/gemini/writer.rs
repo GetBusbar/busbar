@@ -1,10 +1,25 @@
 use super::*;
+use crate::codec::keys;
+
+/// One streamed `GenerateContentResponse` frame carrying `part` as the model's only part.
+fn model_part_frame(part: serde_json::Value) -> (String, serde_json::Value) {
+    (
+        String::new(),
+        serde_json::json!({
+            (FIELD_CANDIDATES): [{
+                (keys::CONTENT): { (keys::ROLE): keys::MODEL, (FIELD_PARTS): [part] }
+            }]
+        }),
+    )
+}
 
 impl ProtocolWriter for GeminiWriter {
-    /// The Q57 request slots Gemini has no form for (IR-04..07); `write_request` drops each with a
-    /// warn and the seam audits it from here.
+    /// The controls Gemini has no form for, derived from the mapping file; `write_request` drops
+    /// each with a warn and the seam audits it from here.
     fn dropped_egress_controls(&self, req: &crate::codec::ir::IrRequest) -> Vec<&'static str> {
-        crate::codec::dialect::carried(req, GEMINI_UNSUPPORTED).collect()
+        crate::codec::carry::dropped(super::map::REQUEST, super::map::CONTROLS, req)
+            .map(crate::codec::carry::Slot::name)
+            .collect()
     }
 
     fn probe_request(&self) -> serde_json::Value {
@@ -57,7 +72,10 @@ impl ProtocolWriter for GeminiWriter {
         messages: &[serde_json::Value],
         _tools: &[serde_json::Value],
     ) -> bool {
-        if !obj.get("contents").is_some_and(serde_json::Value::is_array) {
+        if !obj
+            .get(FIELD_CONTENTS)
+            .is_some_and(serde_json::Value::is_array)
+        {
             return false;
         }
         let Some(pairs) = crate::codec::dialect::rewrite_text_pairs(messages) else {
@@ -66,15 +84,15 @@ impl ProtocolWriter for GeminiWriter {
         let framed: Vec<serde_json::Value> = pairs
             .into_iter()
             .map(|(role, text)| {
-                let g_role = if role == "assistant" || role == "model" {
-                    "model"
+                let g_role = if role == "assistant" || role == keys::MODEL {
+                    keys::MODEL
                 } else {
-                    "user"
+                    keys::USER
                 };
-                serde_json::json!({ "role": g_role, "parts": [{ "text": text }] })
+                serde_json::json!({ (keys::ROLE): g_role, (FIELD_PARTS): [{ (keys::TEXT): text }] })
             })
             .collect();
-        obj.insert("contents".to_string(), serde_json::Value::Array(framed));
+        obj.insert(FIELD_CONTENTS.to_string(), serde_json::Value::Array(framed));
         true
     }
 
@@ -100,7 +118,7 @@ impl ProtocolWriter for GeminiWriter {
                 .iter()
                 .filter_map(|block| match block {
                     crate::codec::ir::IrBlock::Text { text, .. } => {
-                        Some(serde_json::json!({ "text": text }))
+                        Some(serde_json::json!({ (keys::TEXT): text }))
                     }
                     // Gemini's systemInstruction.parts carries text only. Drop any non-Text system
                     // block WITH a warn (matching cohere's warn for the same case) rather than
@@ -116,8 +134,8 @@ impl ProtocolWriter for GeminiWriter {
                 .collect();
             if !parts.is_empty() {
                 out.insert(
-                    "systemInstruction".to_string(),
-                    serde_json::json!({ "parts": parts }),
+                    FIELD_SYSTEM_INSTRUCTION.to_string(),
+                    serde_json::json!({ (FIELD_PARTS): parts }),
                 );
             }
         }
@@ -154,8 +172,8 @@ impl ProtocolWriter for GeminiWriter {
         let mut contents_arr: Vec<serde_json::Value> = Vec::new();
         for msg in &req.messages {
             let role_str = match msg.role {
-                crate::codec::ir::IrRole::User => "user",
-                crate::codec::ir::IrRole::Assistant => "model",
+                crate::codec::ir::IrRole::User => keys::USER,
+                crate::codec::ir::IrRole::Assistant => keys::MODEL,
                 // A Tool-role IR message carries `ToolResult` blocks, emitted below as Gemini
                 // `functionResponse` parts. In the native Gemini GenerateContentRequest schema a
                 // `functionResponse` MUST be sent under a `user`-side turn: the `model` role is
@@ -163,7 +181,7 @@ impl ProtocolWriter for GeminiWriter {
                 // `functionResponse`s). Emitting a `functionResponse` under `role:"model"` is a
                 // non-native shape the real Gemini API / google-genai SDK rejects. Map Tool →
                 // "user" (matching the Bedrock writer's `toolResult` handling).
-                crate::codec::ir::IrRole::Tool => "user",
+                crate::codec::ir::IrRole::Tool => keys::USER,
                 crate::codec::ir::IrRole::System => continue, // Already in systemInstruction
             };
 
@@ -173,7 +191,7 @@ impl ProtocolWriter for GeminiWriter {
                     // COH-17: an empty text part carrying only citations has no Gemini form.
                     b @ crate::codec::ir::IrBlock::Text { .. } if b.is_citation_carrier() => {}
                     crate::codec::ir::IrBlock::Text { text, .. } => {
-                        parts_arr.push(serde_json::json!({ "text": text }))
+                        parts_arr.push(serde_json::json!({ (keys::TEXT): text }))
                     }
                     crate::codec::ir::IrBlock::ToolUse {
                         id,
@@ -190,10 +208,10 @@ impl ProtocolWriter for GeminiWriter {
                         let args_val = coerce_tool_args(input);
                         let mut fc_obj = serde_json::Map::new();
                         if !id.is_empty() {
-                            fc_obj.insert("id".to_string(), serde_json::json!(id));
+                            fc_obj.insert(keys::ID.to_string(), serde_json::json!(id));
                         }
-                        fc_obj.insert("name".to_string(), serde_json::json!(name));
-                        fc_obj.insert("args".to_string(), args_val);
+                        fc_obj.insert(keys::NAME.to_string(), serde_json::json!(name));
+                        fc_obj.insert(FIELD_ARGS.to_string(), args_val);
                         let mut part_obj = serde_json::Map::new();
                         part_obj.insert(
                             FIELD_FUNCTION_CALL.to_string(),
@@ -208,7 +226,7 @@ impl ProtocolWriter for GeminiWriter {
                         // traffic — so this writer stays dumb and just emits what it's given. Omit the
                         // key entirely when absent rather than emit an empty string.
                         if let Some(sig) = thought_signature {
-                            part_obj.insert("thoughtSignature".to_string(), serde_json::json!(sig));
+                            part_obj.insert(FIELD_THOUGHT_SIGNATURE.to_string(), serde_json::json!(sig));
                         }
                         parts_arr.push(serde_json::Value::Object(part_obj))
                     }
@@ -279,36 +297,36 @@ impl ProtocolWriter for GeminiWriter {
                         // payload that already names `error` is kept as the error it states.
                         let response_val: serde_json::Value = if *is_error {
                             match payload {
-                                serde_json::Value::Object(o) if o.contains_key("error") => {
+                                serde_json::Value::Object(o) if o.contains_key(keys::ERROR_WORD) => {
                                     serde_json::Value::Object(o)
                                 }
-                                serde_json::Value::Null => serde_json::json!({ "error": {} }),
-                                other => serde_json::json!({ "error": other }),
+                                serde_json::Value::Null => serde_json::json!({ (keys::ERROR_WORD): {} }),
+                                other => serde_json::json!({ (keys::ERROR_WORD): other }),
                             }
                         } else if payload.is_object() {
                             payload
                         } else if payload.is_null() {
                             serde_json::json!({})
                         } else {
-                            serde_json::json!({ "output": payload })
+                            serde_json::json!({ (keys::OUTPUT): payload })
                         };
                         let mut fr_obj = serde_json::Map::new();
                         // Gemini's optional `functionResponse.id`, the pair of `functionCall.id`
                         // (GEM-08) — only for a result whose id names a call in this request.
                         if known_call.is_some() && !tool_use_id.is_empty() {
-                            fr_obj.insert("id".to_string(), serde_json::json!(tool_use_id));
+                            fr_obj.insert(keys::ID.to_string(), serde_json::json!(tool_use_id));
                         }
-                        fr_obj.insert("name".to_string(), serde_json::json!(name));
-                        fr_obj.insert("response".to_string(), response_val);
+                        fr_obj.insert(keys::NAME.to_string(), serde_json::json!(name));
+                        fr_obj.insert(keys::RESPONSE.to_string(), response_val);
                         // An image / document the tool returned rides Gemini's multimodal
                         // `functionResponse.parts` (GEM-06) instead of vanishing.
                         let media_parts: Vec<serde_json::Value> =
                             content.iter().filter_map(write_gemini_media_part).collect();
                         if !media_parts.is_empty() {
-                            fr_obj.insert("parts".to_string(), serde_json::Value::Array(media_parts));
+                            fr_obj.insert(FIELD_PARTS.to_string(), serde_json::Value::Array(media_parts));
                         }
                         parts_arr.push(serde_json::json!({
-                            "functionResponse": serde_json::Value::Object(fr_obj)
+                            (FIELD_FUNCTION_RESPONSE): serde_json::Value::Object(fr_obj)
                         }))
                     }
                     crate::codec::ir::IrBlock::Image { source, .. } => match source {
@@ -320,12 +338,12 @@ impl ProtocolWriter for GeminiWriter {
                         // (an OpenAI/Anthropic image URL), so derive a representative `image/*` from
                         // the URL extension, defaulting to `image/jpeg`.
                         crate::codec::ir::IrImageSource::Url(uri) => parts_arr.push(serde_json::json!({
-                            "fileData": { "fileUri": uri, "mimeType": gemini_image_mime_for_url(uri) }
+                            (FIELD_FILE_DATA): { (FIELD_FILE_URI): uri, (FIELD_MIME_TYPE): gemini_image_mime_for_url(uri) }
                         })),
                         // Inline base64 → `inlineData{mimeType, data}`.
                         crate::codec::ir::IrImageSource::Base64 { media_type, data } => {
                             parts_arr.push(serde_json::json!({
-                                "inlineData": { "mimeType": media_type, "data": data }
+                                (FIELD_INLINE_DATA): { (FIELD_MIME_TYPE): media_type, (keys::DATA): data }
                             }))
                         }
                         // A Responses `file_id` / Bedrock `s3Location` reference has no Gemini
@@ -348,12 +366,12 @@ impl ProtocolWriter for GeminiWriter {
                             // container guess is better than omitting it: Gemini uses `mimeType` to
                             // decide how to decode the referenced file.
                             parts_arr.push(serde_json::json!({
-                                "fileData": { "fileUri": uri, "mimeType": gemini_mime_for_kind(*kind) }
+                                (FIELD_FILE_DATA): { (FIELD_FILE_URI): uri, (FIELD_MIME_TYPE): gemini_mime_for_kind(*kind) }
                             }))
                         }
                         crate::codec::ir::IrImageSource::Base64 { media_type, data } => {
                             parts_arr.push(serde_json::json!({
-                                "inlineData": { "mimeType": media_type, "data": data }
+                                (FIELD_INLINE_DATA): { (FIELD_MIME_TYPE): media_type, (keys::DATA): data }
                             }))
                         }
                         crate::codec::ir::IrImageSource::Vendor { .. } => {
@@ -384,11 +402,11 @@ impl ProtocolWriter for GeminiWriter {
                         // is not a Gemini signature, and Gemini rejects or misreads it. An unknown
                         // origin (`None`) keeps the pre-slot behaviour and is emitted.
                         let mut part = serde_json::Map::new();
-                        part.insert("text".to_string(), serde_json::json!(text));
-                        part.insert("thought".to_string(), serde_json::json!(true));
+                        part.insert(keys::TEXT.to_string(), serde_json::json!(text));
+                        part.insert(FIELD_THOUGHT.to_string(), serde_json::json!(true));
                         match (signature, signature_origin) {
                             (Some(sig), None | Some(crate::codec::ir::IrSignatureOrigin::Gemini)) => {
-                                part.insert("thoughtSignature".to_string(), serde_json::json!(sig));
+                                part.insert(FIELD_THOUGHT_SIGNATURE.to_string(), serde_json::json!(sig));
                             }
                             (Some(_), Some(origin)) => tracing::warn!(
                                 ?origin,
@@ -410,24 +428,24 @@ impl ProtocolWriter for GeminiWriter {
             // the seam and alternation is preserved. System-role messages never reach here (they
             // `continue` during role mapping).
             if parts_arr.is_empty() {
-                parts_arr.push(serde_json::json!({ "text": "" }));
+                parts_arr.push(serde_json::json!({ (keys::TEXT): "" }));
             }
             let mut content_obj = serde_json::Map::new();
-            content_obj.insert("role".to_string(), serde_json::json!(role_str));
-            content_obj.insert("parts".to_string(), serde_json::Value::Array(parts_arr));
+            content_obj.insert(keys::ROLE.to_string(), serde_json::json!(role_str));
+            content_obj.insert(FIELD_PARTS.to_string(), serde_json::Value::Array(parts_arr));
             contents_arr.push(serde_json::Value::Object(content_obj));
         }
 
         // Write contents to output after building all messages
         if !contents_arr.is_empty() {
             out.insert(
-                "contents".to_string(),
+                FIELD_CONTENTS.to_string(),
                 serde_json::Value::Array(contents_arr),
             );
         }
 
         // tools → tools[0].functionDeclarations[]
-        super::super::ir_encode::warn_dropped_tool_strict(&req.tools, "gemini");
+        super::super::ir_encode::warn_dropped_tool_strict(&req.tools, COUNT_LABEL);
         // A tool SUBSET (IR-10) with a "may call" directive (`Auto` or none) has no Gemini form —
         // `allowedFunctionNames` is only valid with mode ANY — so it is expressed by omission: only
         // the listed tools are declared. A "must call" subset (`Required`) is written natively as
@@ -447,9 +465,9 @@ impl ProtocolWriter for GeminiWriter {
                 .iter()
                 .map(|tool| {
                     let mut obj = serde_json::Map::new();
-                    obj.insert("name".to_string(), serde_json::json!(tool.name));
+                    obj.insert(keys::NAME.to_string(), serde_json::json!(tool.name));
                     if let Some(desc) = &tool.description {
-                        obj.insert("description".to_string(), serde_json::json!(desc));
+                        obj.insert(keys::DESCRIPTION.to_string(), serde_json::json!(desc));
                     }
                     // Gemini's tool `parameters` accept only a strict OpenAPI-3.0 Schema subset,
                     // NOT full JSON Schema. A cross-protocol tool def (OpenAI/Anthropic) routinely
@@ -461,7 +479,7 @@ impl ProtocolWriter for GeminiWriter {
                     // structure survives, then `sanitize_gemini_schema` strips the rest recursively;
                     // same-protocol Gemini schemas (which never carry these) are unaffected.
                     obj.insert(
-                        "parameters".to_string(),
+                        keys::PARAMETERS.to_string(),
                         sanitize_gemini_schema(&resolve_gemini_schema_refs(&tool.input_schema)),
                     );
                     serde_json::Value::Object(obj)
@@ -470,10 +488,13 @@ impl ProtocolWriter for GeminiWriter {
             // Hosted tools (IR-11, GEM-10) are their own `tools[]` entries after the functions.
             let mut tool_entries = Vec::with_capacity(1 + hosted_entries.len());
             if !func_decls.is_empty() {
-                tool_entries.push(serde_json::json!({"functionDeclarations": func_decls}));
+                tool_entries.push(serde_json::json!({(FIELD_FUNCTION_DECLARATIONS): func_decls}));
             }
             tool_entries.extend(hosted_entries);
-            out.insert("tools".to_string(), serde_json::Value::Array(tool_entries));
+            out.insert(
+                keys::TOOLS.to_string(),
+                serde_json::Value::Array(tool_entries),
+            );
         }
 
         // ToolConfig{functionCallingConfig{mode, allowedFunctionNames}}.
@@ -486,7 +507,7 @@ impl ProtocolWriter for GeminiWriter {
         // the `generationConfig` overlay below. Emitted only when there is something to say.
         let mut tool_config = req
             .extra
-            .get("toolConfig")
+            .get(keys::TOOL_CONFIG)
             .and_then(|tc| tc.as_object())
             .cloned()
             .unwrap_or_default();
@@ -506,16 +527,16 @@ impl ProtocolWriter for GeminiWriter {
                 let fcc = match (tc, &req.allowed_tools) {
                     // "Must call one of these" is Gemini's native ANY + allowedFunctionNames (IR-10).
                     (crate::codec::ir::IrToolChoice::Required, Some(names)) => {
-                        serde_json::json!({"mode": "ANY", "allowedFunctionNames": names})
+                        serde_json::json!({(keys::MODE): GEMINI_ANY, (FIELD_ALLOWED_FUNCTION_NAMES): names})
                     }
                     _ => write_gemini_tool_choice(tc),
                 };
-                tool_config.insert("functionCallingConfig".to_string(), fcc);
+                tool_config.insert(FIELD_FUNCTION_CALLING_CONFIG.to_string(), fcc);
             }
         }
         if !tool_config.is_empty() {
             out.insert(
-                "toolConfig".to_string(),
+                keys::TOOL_CONFIG.to_string(),
                 serde_json::Value::Object(tool_config),
             );
         }
@@ -541,52 +562,43 @@ impl ProtocolWriter for GeminiWriter {
         // only the 5 typed fields and no foreign Gemini sub-field leaks to a non-Gemini backend.
         let mut gen_config = req
             .extra
-            .get("generationConfig")
+            .get(FIELD_GENERATION_CONFIG)
             .and_then(|gc| gc.as_object())
             .cloned()
             .unwrap_or_default();
         if let Some(max_tokens) = req.max_tokens {
-            gen_config.insert("maxOutputTokens".to_string(), serde_json::json!(max_tokens));
-        }
-        if let Some(temperature) = req.temperature {
-            gen_config.insert("temperature".to_string(), serde_json::json!(temperature));
-        }
-        // Promoted sampling controls in Gemini's native generationConfig shape.
-        if let Some(top_p) = req.top_p {
-            gen_config.insert("topP".to_string(), serde_json::json!(top_p));
-        }
-        if let Some(top_k) = req.top_k {
-            gen_config.insert("topK".to_string(), serde_json::json!(top_k));
-        }
-        if !req.stop.is_empty() {
-            // v1.5.4 silent-degrade (restored): a cross-protocol request whose stop list exceeds
-            // Gemini's cap of 5 is CLAMPED to the cap here (with a `warn!` naming what was dropped)
-            // and forwarded at HTTP 200, rather than rejected up front with a 400. A same-protocol
-            // Gemini->Gemini request never rebuilds its body from the IR (verbatim relay), so it
-            // never reaches this writer and is never clamped. The published cap in the declaration
-            // (`stop_sequence_cap`) is retained for other planes.
             gen_config.insert(
-                "stopSequences".to_string(),
-                serde_json::json!(crate::codec::ir::clamp_stop(&req.stop, 5, "Gemini")),
+                FIELD_MAX_OUTPUT_TOKENS.to_string(),
+                serde_json::json!(max_tokens),
             );
         }
-        // Promoted sampling controls in Gemini's native generationConfig shape (cross-protocol
-        // survival, inverse of the reader's promotion). `n` → `candidateCount` (Gemini's name).
-        // Omitted when None so a request that never carried them gains nothing.
-        if let Some(frequency_penalty) = req.frequency_penalty {
-            gen_config.insert(
-                "frequencyPenalty".to_string(),
-                serde_json::json!(frequency_penalty),
-            );
-        }
+        // The sampling rows of the mapping file (temperature, topP, topK, stopSequences capped at 5,
+        // frequencyPenalty, presencePenalty, seed, candidateCount), overlaid on the raw object.
+        out.insert(
+            FIELD_GENERATION_CONFIG.to_string(),
+            serde_json::Value::Object(gen_config),
+        );
+        crate::codec::carry::write_fields(
+            super::map::REQUEST,
+            req,
+            crate::codec::carry::Egress::default(),
+            &mut out,
+        );
+        let mut gen_config = match out.remove(FIELD_GENERATION_CONFIG) {
+            Some(serde_json::Value::Object(gc)) => gc,
+            _ => serde_json::Map::new(),
+        };
         // The logprobs ask in Gemini's native spellings (an OpenAI `logprobs`/`top_logprobs`
         // arrives here via the IR): boolean `responseLogprobs`, top-count `logprobs`.
         // Gemini requires `responseLogprobs: true` for the `logprobs` top-count to be valid. Force
         // it whenever the count is present (even if the source only set the count), or Gemini 400s.
         if req.top_logprobs.is_some() {
-            gen_config.insert("responseLogprobs".to_string(), serde_json::json!(true));
+            gen_config.insert(FIELD_RESPONSE_LOGPROBS.to_string(), serde_json::json!(true));
         } else if let Some(logprobs) = req.logprobs {
-            gen_config.insert("responseLogprobs".to_string(), serde_json::json!(logprobs));
+            gen_config.insert(
+                FIELD_RESPONSE_LOGPROBS.to_string(),
+                serde_json::json!(logprobs),
+            );
         }
         if let Some(top_logprobs) = req.top_logprobs {
             // Gemini's `logprobs` top-count caps at 5 on most models (OpenAI allows up to 20).
@@ -606,7 +618,7 @@ impl ProtocolWriter for GeminiWriter {
             // `responseLogprobs: true` (forced above) still returns the chosen token's logprob, so
             // omit the alternatives count entirely for 0 rather than send an invalid value.
             if clamped >= 1 {
-                gen_config.insert("logprobs".to_string(), serde_json::json!(clamped));
+                gen_config.insert(keys::LOGPROBS.to_string(), serde_json::json!(clamped));
             }
         }
         // The reasoning carry in Gemini's native spelling: `thinkingConfig.thinkingBudget`.
@@ -645,26 +657,15 @@ impl ProtocolWriter for GeminiWriter {
             // Gemini spends the budget thinking but returns NO thought parts — the carry would come
             // back empty. We always want the thoughts back to translate them to the caller.
             // Off asks for no thoughts, so there are none to include.
-            if let (Some(budget), false) = (budget, gen_config.contains_key("thinkingConfig")) {
+            if let (Some(budget), false) = (budget, gen_config.contains_key(FIELD_THINKING_CONFIG))
+            {
                 let thinking_config = if matches!(ask, crate::codec::ir::IrReasoningAsk::Off) {
-                    serde_json::json!({"thinkingBudget": budget})
+                    serde_json::json!({(FIELD_THINKING_BUDGET): budget})
                 } else {
-                    serde_json::json!({"thinkingBudget": budget, "includeThoughts": true})
+                    serde_json::json!({(FIELD_THINKING_BUDGET): budget, "includeThoughts": true})
                 };
-                gen_config.insert("thinkingConfig".to_string(), thinking_config);
+                gen_config.insert(FIELD_THINKING_CONFIG.to_string(), thinking_config);
             }
-        }
-        if let Some(presence_penalty) = req.presence_penalty {
-            gen_config.insert(
-                "presencePenalty".to_string(),
-                serde_json::json!(presence_penalty),
-            );
-        }
-        if let Some(seed) = req.seed {
-            gen_config.insert("seed".to_string(), serde_json::json!(seed));
-        }
-        if let Some(n) = req.n {
-            gen_config.insert("candidateCount".to_string(), serde_json::json!(n));
         }
         // response_format: map the IR's normalized object back into Gemini's
         // `responseMimeType` / `responseSchema` (overlaying any raw copy preserved in `extra`). The
@@ -676,16 +677,16 @@ impl ProtocolWriter for GeminiWriter {
         // Requested output modalities (IR-19), synthesized only when the request did not carry a
         // native `responseModalities` (the thinkingConfig rule above: same-protocol stays verbatim).
         if let Some(modalities) = &req.output_modalities {
-            if !gen_config.contains_key("responseModalities") {
+            if !gen_config.contains_key(FIELD_RESPONSE_MODALITIES) {
                 gen_config.insert(
-                    "responseModalities".to_string(),
+                    FIELD_RESPONSE_MODALITIES.to_string(),
                     write_gemini_response_modalities(modalities),
                 );
             }
         }
         if !gen_config.is_empty() {
             out.insert(
-                "generationConfig".to_string(),
+                FIELD_GENERATION_CONFIG.to_string(),
                 serde_json::Value::Object(gen_config),
             );
         }
@@ -705,15 +706,15 @@ impl ProtocolWriter for GeminiWriter {
         // Caller metadata → `labels` (IR-03). A raw `labels` the reader kept in `extra` overrides it
         // below, so a same-protocol body stays verbatim.
         if let Some(metadata) = &req.metadata {
-            out.insert("labels".to_string(), write_gemini_labels(metadata));
+            out.insert(FIELD_LABELS.to_string(), write_gemini_labels(metadata));
         }
-        // The Q57 slots with no Gemini form (IR-04..07): drop with a warn; the seam audits them
-        // through `dropped_egress_controls`.
-        crate::codec::dialect::warn_dropped(
-            crate::codec::dialect::carried(req, GEMINI_UNSUPPORTED),
-            &crate::codec::dialect::DropWarn::Control(
-                "dropping a request control on Gemini egress: generateContent has no form for it",
-            ),
+        // The controls with no Gemini form: drop with a warn; the seam audits them through
+        // `dropped_egress_controls`.
+        crate::codec::carry::warn_drops(
+            super::map::REQUEST,
+            super::map::CONTROLS,
+            Some(&super::map::DROP_WARN),
+            req,
         );
 
         // Merge extra fields (may override, but that's expected behavior). `generationConfig` AND
@@ -726,7 +727,7 @@ impl ProtocolWriter for GeminiWriter {
         // override would build correctly above, then get overwritten right back to the stale raw
         // value by this loop. Every OTHER unmodeled top-level key still round-trips verbatim.
         for (key, value) in &req.extra {
-            if key == "generationConfig" || key == "toolConfig" {
+            if key == FIELD_GENERATION_CONFIG || key == keys::TOOL_CONFIG {
                 continue;
             }
             out.insert(key.clone(), value.clone());
@@ -750,21 +751,15 @@ impl ProtocolWriter for GeminiWriter {
     fn write_error(&self, status: u16, kind: &str, message: &str) -> serde_json::Value {
         // google.rpc.Code name for an HTTP status (the canonical Generative Language API mapping).
         fn status_name_for_http(status: u16) -> &'static str {
+            if let Some((name, _)) = STATUS_HTTP.iter().find(|(_, code)| *code == status) {
+                return name;
+            }
             match status {
-                400 => GRPC_INVALID_ARGUMENT,
-                401 => GRPC_UNAUTHENTICATED,
-                403 => GRPC_PERMISSION_DENIED,
-                404 => GRPC_NOT_FOUND,
-                409 => "ABORTED",
-                429 => GRPC_RESOURCE_EXHAUSTED,
-                499 => "CANCELLED",
-                500 => GRPC_INTERNAL,
-                501 => GRPC_UNIMPLEMENTED,
-                503 => GRPC_UNAVAILABLE,
-                504 => GRPC_DEADLINE_EXCEEDED,
+                409 => GEMINI_ABORTED,
+                499 => GEMINI_CANCELLED,
                 s if (400..500).contains(&s) => GRPC_INVALID_ARGUMENT,
                 s if (500..600).contains(&s) => GRPC_INTERNAL,
-                _ => "UNKNOWN",
+                _ => GEMINI_UNKNOWN,
             }
         }
 
@@ -779,7 +774,9 @@ impl ProtocolWriter for GeminiWriter {
                 ERR_TYPE_INVALID_REQUEST | "invalid_argument" | "bad_request" => {
                     Some(GRPC_INVALID_ARGUMENT)
                 }
-                ERR_TYPE_AUTHENTICATION | "unauthenticated" | "auth" => Some(GRPC_UNAUTHENTICATED),
+                ERR_TYPE_AUTHENTICATION | "unauthenticated" | keys::AUTH_WORD => {
+                    Some(GRPC_UNAUTHENTICATED)
+                }
                 ERR_TYPE_PERMISSION | "permission_denied" | "forbidden" => {
                     Some(GRPC_PERMISSION_DENIED)
                 }
@@ -805,20 +802,12 @@ impl ProtocolWriter for GeminiWriter {
         // `status_name_for_http`. Used to detect a code/status DISAGREEMENT: the real Generative
         // Language API never emits, e.g., `code:503` with `status:INTERNAL` (INTERNAL pairs with
         // 500; UNAVAILABLE pairs with 503). Exhaustive over the names `status_name_for_kind` can
-        // return (no `_ =>` collapse) so a new kind→name arm forces a conscious choice here.
+        // return (it reads the same `STATUS_HTTP` table) so a new kind→name arm needs its row there.
         fn http_for_status_name(name: &str) -> Option<u16> {
-            match name {
-                GRPC_INVALID_ARGUMENT => Some(400),
-                GRPC_UNAUTHENTICATED => Some(401),
-                GRPC_PERMISSION_DENIED => Some(403),
-                GRPC_NOT_FOUND => Some(404),
-                GRPC_RESOURCE_EXHAUSTED => Some(429),
-                GRPC_UNAVAILABLE => Some(503),
-                GRPC_DEADLINE_EXCEEDED => Some(504),
-                GRPC_INTERNAL => Some(500),
-                GRPC_UNIMPLEMENTED => Some(501),
-                _ => None,
-            }
+            STATUS_HTTP
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, code)| *code)
         }
 
         // Prefer the `kind`-derived google.rpc.Code name ONLY when it is internally CONSISTENT with
@@ -849,18 +838,18 @@ impl ProtocolWriter for GeminiWriter {
         // at real Google) is left untouched, so we neither under-fill the auth surface nor over-fill
         // an unrelated 400 with a reason it should not carry.
         let is_auth_bad_key = status == 400
-                && status_str == "INVALID_ARGUMENT" // golden wire-contract literal (kept bare on purpose)
+                && status_str == GRPC_INVALID_ARGUMENT // golden wire-contract literal (kept bare on purpose)
                 && message == GEMINI_BAD_KEY_MESSAGE;
         if is_auth_bad_key {
             serde_json::json!({
-                "error": {
-                    "code": status,
-                    "message": message,
-                    "status": status_str,
-                    "details": [{
+                (keys::ERROR_WORD): {
+                    (keys::CODE): status,
+                    (keys::MESSAGE): message,
+                    (keys::STATUS): status_str,
+                    (FIELD_DETAILS): [{
                         "@type": GEMINI_ERROR_INFO_TYPE_URL,
-                        "reason": GEMINI_ERROR_REASON_API_KEY_INVALID,
-                        "domain": "googleapis.com",
+                        (keys::REASON): GEMINI_ERROR_REASON_API_KEY_INVALID,
+                        (keys::DOMAIN): "googleapis.com",
                         "metadata": {
                             "service": "generativelanguage.googleapis.com"
                         }
@@ -869,10 +858,10 @@ impl ProtocolWriter for GeminiWriter {
             })
         } else {
             serde_json::json!({
-                "error": {
-                    "code": status,
-                    "message": message,
-                    "status": status_str,
+                (keys::ERROR_WORD): {
+                    (keys::CODE): status,
+                    (keys::MESSAGE): message,
+                    (keys::STATUS): status_str,
                 }
             })
         }
@@ -984,17 +973,7 @@ impl ProtocolWriter for GeminiWriter {
                         }
                         st.text.push_str(text);
                     }
-                    Some((
-                        "".to_string(),
-                        serde_json::json!({
-                            "candidates": [{
-                                "content": {
-                                    "role": "model",
-                                    "parts": [{"text": text}]
-                                }
-                            }]
-                        }),
-                    ))
+                    Some(model_part_frame(serde_json::json!({(keys::TEXT): text})))
                 }
 
                 // InputJsonDelta → ACCUMULATE this fragment into the open tool block's arg buffer and
@@ -1055,16 +1034,8 @@ impl ProtocolWriter for GeminiWriter {
                 // the same per-chunk shape used for a `TextDelta`, just flagged `thought:true`. So we
                 // emit one chunk per fragment, mirroring the non-stream `{text, thought:true}` shape.
                 // Previously this returned None, silently dropping a cross-protocol reasoning stream.
-                crate::codec::ir::IrDelta::ThinkingDelta(thinking) => Some((
-                    "".to_string(),
-                    serde_json::json!({
-                        "candidates": [{
-                            "content": {
-                                "role": "model",
-                                "parts": [{"text": thinking, "thought": true}]
-                            }
-                        }]
-                    }),
+                crate::codec::ir::IrDelta::ThinkingDelta(thinking) => Some(model_part_frame(
+                    serde_json::json!({(keys::TEXT): thinking, (FIELD_THOUGHT): true}),
                 )),
 
                 // SignatureDelta → a streamed thought part carrying the opaque resumable
@@ -1073,16 +1044,8 @@ impl ProtocolWriter for GeminiWriter {
                 // signature arrives as its own IR delta, so emit a minimal thought part bearing the
                 // signature (empty text, `thought:true`) — the closest faithful streamed form, since a
                 // bare signature has no accompanying incremental text. Previously dropped (None).
-                crate::codec::ir::IrDelta::SignatureDelta(sig) => Some((
-                    "".to_string(),
-                    serde_json::json!({
-                        "candidates": [{
-                            "content": {
-                                "role": "model",
-                                "parts": [{"text": "", "thought": true, "thoughtSignature": sig}]
-                            }
-                        }]
-                    }),
+                crate::codec::ir::IrDelta::SignatureDelta(sig) => Some(model_part_frame(
+                    serde_json::json!({(keys::TEXT): "", (FIELD_THOUGHT): true, (FIELD_THOUGHT_SIGNATURE): sig}),
                 )),
                 // A streamed redacted-reasoning delta (opaque encrypted bytes) has no Gemini analog —
                 // drop it rather than emit a non-native part.
@@ -1090,16 +1053,7 @@ impl ProtocolWriter for GeminiWriter {
                 // IR-21: a generated image / audio part re-emits as the Gemini
                 // `inlineData` / `fileData` part the buffered writer uses.
                 crate::codec::ir::IrDelta::MediaDelta(block) => {
-                    super::write_gemini_media_part(block).map(|part| {
-                        (
-                            "".to_string(),
-                            serde_json::json!({
-                                "candidates": [{
-                                    "content": { "role": "model", "parts": [part] }
-                                }]
-                            }),
-                        )
-                    })
+                    super::write_gemini_media_part(block).map(model_part_frame)
                 }
 
                 // STREAMING citations → emit a candidate-level `citationMetadata.citationSources`
@@ -1144,8 +1098,8 @@ impl ProtocolWriter for GeminiWriter {
                         Some((
                             "".to_string(),
                             serde_json::json!({
-                                "candidates": [{
-                                    "citationMetadata": { "citationSources": sources }
+                                (FIELD_CANDIDATES): [{
+                                    (FIELD_CITATION_METADATA): { (FIELD_CITATION_SOURCES): sources }
                                 }]
                             }),
                         ))
@@ -1161,8 +1115,8 @@ impl ProtocolWriter for GeminiWriter {
                         Some((
                             "".to_string(),
                             serde_json::json!({
-                                "candidates": [{
-                                    "logprobsResult": write_gemini_logprobs_result(lps)
+                                (FIELD_CANDIDATES): [{
+                                    (FIELD_LOGPROBS_RESULT): write_gemini_logprobs_result(lps)
                                 }]
                             }),
                         ))
@@ -1200,26 +1154,16 @@ impl ProtocolWriter for GeminiWriter {
                     let mut fc_obj = serde_json::Map::new();
                     // The streamed call's id, as on the buffered path (GEM-08).
                     if !id.is_empty() {
-                        fc_obj.insert("id".to_string(), serde_json::json!(id));
+                        fc_obj.insert(keys::ID.to_string(), serde_json::json!(id));
                     }
-                    fc_obj.insert("name".to_string(), serde_json::json!(name));
-                    fc_obj.insert("args".to_string(), args);
+                    fc_obj.insert(keys::NAME.to_string(), serde_json::json!(name));
+                    fc_obj.insert(FIELD_ARGS.to_string(), args);
                     let mut part_obj = serde_json::Map::new();
                     part_obj.insert(
                         FIELD_FUNCTION_CALL.to_string(),
                         serde_json::Value::Object(fc_obj),
                     );
-                    (
-                        "".to_string(),
-                        serde_json::json!({
-                            "candidates": [{
-                                "content": {
-                                    "role": "model",
-                                    "parts": [serde_json::Value::Object(part_obj)]
-                                }
-                            }]
-                        }),
-                    )
+                    model_part_frame(serde_json::Value::Object(part_obj))
                 })
             }
 
@@ -1301,7 +1245,7 @@ impl ProtocolWriter for GeminiWriter {
                 );
                 let mut out_obj = serde_json::Map::new();
                 out_obj.insert(
-                    "candidates".to_string(),
+                    FIELD_CANDIDATES.to_string(),
                     serde_json::Value::Array(vec![serde_json::Value::Object(candidate_obj)]),
                 );
                 out_obj.insert(
@@ -1333,14 +1277,14 @@ impl ProtocolWriter for GeminiWriter {
                 let message = err
                     .provider_signal
                     .clone()
-                    .unwrap_or_else(|| "error".to_string());
+                    .unwrap_or_else(|| keys::ERROR_WORD.to_string());
                 Some((
                     "".to_string(),
                     serde_json::json!({
-                        "error": {
-                            "code": code,
-                            "message": message,
-                            "status": status_name,
+                        (keys::ERROR_WORD): {
+                            (keys::CODE): code,
+                            (keys::MESSAGE): message,
+                            (keys::STATUS): status_name,
                         }
                     }),
                 ))
@@ -1378,7 +1322,7 @@ impl ProtocolWriter for GeminiWriter {
                     }
                     byte_prefix += text.len() as i64;
                     if !text.is_empty() {
-                        parts_arr.push(serde_json::json!({"text": text}));
+                        parts_arr.push(serde_json::json!({(keys::TEXT): text}));
                     }
                 }
 
@@ -1397,10 +1341,10 @@ impl ProtocolWriter for GeminiWriter {
                     // The call's id rides Gemini's optional `functionCall.id` (GEM-08), so the
                     // client answers it with a `functionResponse.id` busbar pairs back to the call.
                     if !id.is_empty() {
-                        fc_obj.insert("id".to_string(), serde_json::json!(id));
+                        fc_obj.insert(keys::ID.to_string(), serde_json::json!(id));
                     }
-                    fc_obj.insert("name".to_string(), serde_json::json!(name));
-                    fc_obj.insert("args".to_string(), args_val);
+                    fc_obj.insert(keys::NAME.to_string(), serde_json::json!(name));
+                    fc_obj.insert(FIELD_ARGS.to_string(), args_val);
                     let mut part_obj = serde_json::Map::new();
                     part_obj.insert(
                         FIELD_FUNCTION_CALL.to_string(),
@@ -1412,7 +1356,8 @@ impl ProtocolWriter for GeminiWriter {
                     // Gemini was the response SOURCE and its own reader captured one. Never fabricate
                     // one here; omit the key when absent.
                     if let Some(sig) = thought_signature {
-                        part_obj.insert("thoughtSignature".to_string(), serde_json::json!(sig));
+                        part_obj
+                            .insert(FIELD_THOUGHT_SIGNATURE.to_string(), serde_json::json!(sig));
                     }
                     parts_arr.push(serde_json::Value::Object(part_obj));
                 }
@@ -1428,10 +1373,10 @@ impl ProtocolWriter for GeminiWriter {
                     text, signature, ..
                 } => {
                     let mut part = serde_json::Map::new();
-                    part.insert("text".to_string(), serde_json::json!(text));
-                    part.insert("thought".to_string(), serde_json::json!(true));
+                    part.insert(keys::TEXT.to_string(), serde_json::json!(text));
+                    part.insert(FIELD_THOUGHT.to_string(), serde_json::json!(true));
                     if let Some(sig) = signature {
-                        part.insert("thoughtSignature".to_string(), serde_json::json!(sig));
+                        part.insert(FIELD_THOUGHT_SIGNATURE.to_string(), serde_json::json!(sig));
                     }
                     parts_arr.push(serde_json::Value::Object(part));
                 }
@@ -1539,27 +1484,27 @@ impl ProtocolWriter for GeminiWriter {
             );
         }
         let mut candidate = serde_json::json!({
-            "content": {
-                "role": "model",
-                "parts": parts_arr
+            (keys::CONTENT): {
+                (keys::ROLE): keys::MODEL,
+                (FIELD_PARTS): parts_arr
             }
         });
         candidate[FIELD_FINISH_REASON] = serde_json::json!(finish_reason);
         // Re-emit candidate-level citationMetadata when the IR carried citations (grounding /
         // web-search). Only emitted when non-empty so a normal response stays byte-identical.
         if !citation_sources.is_empty() {
-            candidate["citationMetadata"] = serde_json::json!({
-                "citationSources": citation_sources
+            candidate[FIELD_CITATION_METADATA] = serde_json::json!({
+                (FIELD_CITATION_SOURCES): citation_sources
             });
         }
         // Carried per-token logprobs (e.g. from an OpenAI backend's `choices[].logprobs`) in
         // Gemini's native candidate shape. Only emitted when the backend produced them, matching
         // Gemini's own omission when `responseLogprobs` was not requested.
         if !resp.logprobs.is_empty() {
-            candidate["logprobsResult"] = write_gemini_logprobs_result(&resp.logprobs);
+            candidate[FIELD_LOGPROBS_RESULT] = write_gemini_logprobs_result(&resp.logprobs);
         }
         let mut out = serde_json::json!({
-            "candidates": [candidate]
+            (FIELD_CANDIDATES): [candidate]
         });
         out[FIELD_USAGE_METADATA] = serde_json::Value::Object(usage_metadata);
         // model that served the response (preserved across cross-protocol translation)

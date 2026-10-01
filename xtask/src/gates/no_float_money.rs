@@ -624,7 +624,7 @@ pub const ALLOWED_COUNT_READS: &[Allow] = &[
     // ── Not a count, permanently ──────────────────────────────────────────────────────────────
     Allow {
         file: "crates/busbar-plane-llm/src/codec/bedrock/mod.rs",
-        needle: "contentBlockIndex",
+        needle: "CONTENT_BLOCK_INDEX",
         class: AllowClass::NotACount,
         why: "a frame's position in a sequence, not a quantity anybody is billed for",
     },
@@ -642,13 +642,13 @@ pub const ALLOWED_COUNT_READS: &[Allow] = &[
     },
     Allow {
         file: "crates/busbar-plane-llm/src/codec/openai_chat/handler.rs",
-        needle: "get(\"start\")",
+        needle: "get(keys::START)",
         class: AllowClass::NotACount,
         why: "a transcription timing offset — metadata echoed back, never metered",
     },
     Allow {
         file: "crates/busbar-plane-llm/src/codec/openai_chat/handler.rs",
-        needle: "get(\"end\")",
+        needle: "get(keys::END)",
         class: AllowClass::NotACount,
         why: "a transcription timing offset — metadata echoed back, never metered",
     },

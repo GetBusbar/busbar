@@ -2226,8 +2226,10 @@ fn read_request_routes_unmodeled_keys_to_extra() {
         "top_k": 40,
         "stop_sequences": ["x"],
         "stream": true,
-        // Unmodeled passthrough keys:
+        // Unmodeled passthrough key:
         "metadata": {"user_id": "u1"},
+        // A mapping row (IR-04): carried by the slot, and kept raw in extra only when the slot
+        // cannot reproduce it.
         "service_tier": "auto"
     });
     let ir = AnthropicReader
@@ -2237,9 +2239,18 @@ fn read_request_routes_unmodeled_keys_to_extra() {
         ir.extra.contains_key("metadata"),
         "unmodeled `metadata` must flow into extra"
     );
-    assert!(
-        ir.extra.contains_key("service_tier"),
-        "unmodeled `service_tier` must flow into extra"
+    assert_eq!(ir.service_tier, Some(crate::codec::ir::IrServiceTier::Auto));
+    assert!(!ir.extra.contains_key("service_tier"));
+    let mut unknown_tier = body.clone();
+    unknown_tier["service_tier"] = serde_json::json!("turbo");
+    let ir2 = AnthropicReader
+        .read_request(&unknown_tier)
+        .expect("request must parse");
+    assert_eq!(ir2.service_tier, None);
+    assert_eq!(
+        ir2.extra.get("service_tier"),
+        Some(&serde_json::json!("turbo")),
+        "a tier word the slot cannot hold rides extra raw (same-dialect fidelity)"
     );
     for modeled in [
         "model",
@@ -2670,13 +2681,13 @@ fn temperature_above_one_is_clamped_not_422() {
 #[test]
 fn test_clamp_temperature_for_anthropic_signals_on_change() {
     // An out-of-range value is clamped AND flagged as changed (so the writer warns).
-    assert_eq!(clamp_temperature_for_anthropic(1.5), (1.0, true));
-    assert_eq!(clamp_temperature_for_anthropic(2.0), (1.0, true));
-    assert_eq!(clamp_temperature_for_anthropic(-0.3), (0.0, true));
+    assert_eq!(crate::codec::carry::clamp(1.5, 0.0, 1.0), (1.0, true));
+    assert_eq!(crate::codec::carry::clamp(2.0, 0.0, 1.0), (1.0, true));
+    assert_eq!(crate::codec::carry::clamp(-0.3, 0.0, 1.0), (0.0, true));
     // An in-range value is untouched AND NOT flagged (no spurious warn on a faithful value).
-    assert_eq!(clamp_temperature_for_anthropic(0.7), (0.7, false));
-    assert_eq!(clamp_temperature_for_anthropic(0.0), (0.0, false));
-    assert_eq!(clamp_temperature_for_anthropic(1.0), (1.0, false));
+    assert_eq!(crate::codec::carry::clamp(0.7, 0.0, 1.0), (0.7, false));
+    assert_eq!(crate::codec::carry::clamp(0.0, 0.0, 1.0), (0.0, false));
+    assert_eq!(crate::codec::carry::clamp(1.0, 0.0, 1.0), (1.0, false));
 }
 
 // ---- is_finite guard: a non-finite temperature is returned unchanged, was_clamped=false. ----
@@ -2684,15 +2695,15 @@ fn test_clamp_temperature_for_anthropic_signals_on_change() {
 // NaN/Inf must NOT be treated as a real value clamped from range.
 #[test]
 fn test_clamp_temperature_for_anthropic_passes_through_non_finite() {
-    let (nan_out, nan_clamped) = clamp_temperature_for_anthropic(f64::NAN);
+    let (nan_out, nan_clamped) = crate::codec::carry::clamp(f64::NAN, 0.0, 1.0);
     assert!(nan_out.is_nan(), "NaN must pass through unchanged");
     assert!(!nan_clamped, "NaN must NOT be flagged as clamped");
     assert_eq!(
-        clamp_temperature_for_anthropic(f64::INFINITY),
+        crate::codec::carry::clamp(f64::INFINITY, 0.0, 1.0),
         (f64::INFINITY, false)
     );
     assert_eq!(
-        clamp_temperature_for_anthropic(f64::NEG_INFINITY),
+        crate::codec::carry::clamp(f64::NEG_INFINITY, 0.0, 1.0),
         (f64::NEG_INFINITY, false)
     );
 }

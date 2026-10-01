@@ -2,6 +2,7 @@
 //! the JSON-Schema sanitizing and `$ref` inlining Gemini's schema subset needs.
 
 use super::*;
+use crate::codec::keys;
 
 /// Read Gemini's structured-output directive out of `generationConfig` into the protocol-agnostic
 /// [`crate::codec::ir::IrResponseFormat`]. The ONLY code that knows Gemini's structured-output wire shape:
@@ -17,7 +18,7 @@ pub(super) fn read_gemini_response_format(
     // the JSON-Schema `responseJsonSchema` (read as-is, GEM-04 — it used to be ignored, so JSON mode
     // reached a foreign target with no schema). The API accepts one or the other.
     let schema = gc
-        .get("responseSchema")
+        .get(FIELD_RESPONSE_SCHEMA)
         .map(gemini_openapi_schema_to_json_schema)
         .or_else(|| gc.get("responseJsonSchema").cloned());
     if mime.is_none() && schema.is_none() {
@@ -49,7 +50,7 @@ pub(super) fn write_gemini_response_format(
     );
     if let Some(schema) = &rf.schema {
         gen_config.insert(
-            "responseSchema".to_string(),
+            FIELD_RESPONSE_SCHEMA.to_string(),
             sanitize_gemini_schema(&resolve_gemini_schema_refs(schema)),
         );
     }
@@ -99,7 +100,7 @@ pub(super) const GEMINI_SCHEMA_REJECTED_KEYS: &[&str] = &[
     "$id",
     "$ref",
     "$defs",
-    "definitions",
+    keys::DEFINITIONS,
     "additionalItems",
     "patternProperties",
     "unevaluatedProperties",
@@ -113,7 +114,7 @@ pub(super) const GEMINI_SCHEMA_REJECTED_KEYS: &[&str] = &[
 /// so [`GEMINI_SCHEMA_REJECTED_KEYS`] must not be applied to them — see [`sanitize_gemini_schema`].
 /// (`$defs`, `definitions` and `patternProperties` are name-keyed too, but they are stripped whole,
 /// so they never reach the descent.)
-pub(super) const GEMINI_SCHEMA_NAME_KEYED_MAPS: &[&str] = &["properties", "dependentSchemas"];
+pub(super) const GEMINI_SCHEMA_NAME_KEYED_MAPS: &[&str] = &[keys::PROPERTIES, "dependentSchemas"];
 
 /// Recursively strip the JSON-Schema keywords Gemini rejects (`GEMINI_SCHEMA_REJECTED_KEYS`) from a
 /// schema value so a cross-protocol tool / `responseSchema` definition does not hard-fail with a
@@ -138,7 +139,7 @@ pub(super) fn sanitize_gemini_schema(schema: &serde_json::Value) -> serde_json::
                 // `additionalProperties` is value-dependent, not a blanket reject: the live API
                 // accepts the boolean form but 400s on the schema form (see the research note on
                 // GEMINI_SCHEMA_REJECTED_KEYS), so it is handled here rather than in that list.
-                if k == "additionalProperties" {
+                if k == keys::ADDITIONAL_PROPERTIES {
                     if matches!(v, serde_json::Value::Bool(_)) {
                         cleaned.insert(k.clone(), v.clone());
                     }
@@ -192,7 +193,7 @@ pub(super) fn collect_gemini_schema_defs(
 ) {
     match schema {
         serde_json::Value::Object(map) => {
-            for defs_key in ["$defs", "definitions"] {
+            for defs_key in ["$defs", keys::DEFINITIONS] {
                 if let Some(serde_json::Value::Object(defs)) = map.get(defs_key) {
                     for (k, v) in defs {
                         out.entry(k.clone()).or_insert_with(|| v.clone());
@@ -200,7 +201,7 @@ pub(super) fn collect_gemini_schema_defs(
                 }
             }
             for (k, v) in map {
-                if k == "$defs" || k == "definitions" {
+                if k == "$defs" || k == keys::DEFINITIONS {
                     continue;
                 }
                 if GEMINI_SCHEMA_NAME_KEYED_MAPS.contains(&k.as_str()) {
@@ -319,7 +320,7 @@ pub(super) fn inline_gemini_schema_refs_within_budget(
             }
             let cleaned: serde_json::Map<String, serde_json::Value> = map
                 .iter()
-                .filter(|(k, _)| k.as_str() != "$defs" && k.as_str() != "definitions")
+                .filter(|(k, _)| k.as_str() != "$defs" && k.as_str() != keys::DEFINITIONS)
                 .map(|(k, v)| {
                     let resolved = if GEMINI_SCHEMA_NAME_KEYED_MAPS.contains(&k.as_str()) {
                         match v {

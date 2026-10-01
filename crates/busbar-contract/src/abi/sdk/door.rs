@@ -127,8 +127,15 @@ pub unsafe trait KindOps: Copy + 'static {
 #[derive(Debug, Clone, Copy)]
 pub struct Lifecycle;
 
-/// `unsafe impl KindSlot<{ INDEX }> for T { In, Out }`, once per row.
+/// `unsafe impl KindSlot<{ INDEX }> for T { In, Out }`, once per row: THE ONE way every kind
+/// states its slots' structs. Leading doc attributes (a kind's `compile_fail` proof that a slot
+/// wired to another op's structs is refused) document an empty `impl T`.
 macro_rules! slot_structs {
+    ($(#[$doc:meta])+ $t:ty { $($rows:tt)* }) => {
+        $(#[$doc])+
+        impl $t {}
+        $crate::abi::sdk::door::slot_structs!($t { $($rows)* });
+    };
     ($t:ty { $($index:expr => $in:ty, $out:ty;)* }) => {$(
         // SAFETY: the structs the kind's ABI states for this slot.
         unsafe impl $crate::abi::sdk::door::KindSlot<{ $index }> for $t {

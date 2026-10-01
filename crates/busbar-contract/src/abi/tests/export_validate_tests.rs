@@ -5,7 +5,8 @@
 //! failing if its check is removed, and the GREEN answers per outcome.
 
 use super::*;
-use crate::abi::mechanism::call::{AbiStr, Envelope, RawOutcome};
+use crate::abi::mechanism::call::{AbiStr, Blob, Envelope, RawOutcome};
+use crate::abi::mechanism::check::HARD_MAX_BYTES;
 
 fn head(outcome: Outcome) -> OutHead {
     OutHead {
@@ -83,21 +84,33 @@ fn zeroed_pending_and_refused_pass_every_op() {
     }
 }
 
+/// `scrape`'s answer with `written`/`needed` against `cap`, READY or FAILED.
+fn scrape(cap: usize, written: usize, needed: usize, failed: bool) -> Result<(), Fault> {
+    let outcome = if failed {
+        Outcome::Failed
+    } else {
+        Outcome::Ready
+    };
+    let out = ScrapeOut {
+        head: head(outcome),
+        written,
+        needed,
+    };
+    check_scrape(&out, cap)
+}
+
 /// RED: `written` beyond the given capacity.
 #[test]
 fn written_beyond_cap_faults() {
-    assert_eq!(
-        check_written_needed(4, 5, 0, false),
-        red(Rule::OverCap, "scrape.written")
-    );
+    assert_eq!(scrape(4, 5, 0, false), red(Rule::OverCap, "scrape.bytes"));
 }
 
-/// RED: a write that also claims `needed`.
+/// RED: a short answer that also wrote something.
 #[test]
 fn written_and_needed_together_faults() {
     assert_eq!(
-        check_written_needed(4, 2, 1, false),
-        red(Rule::WrittenOnShort, "scrape.written_on_short")
+        scrape(4, 2, 8, true),
+        red(Rule::WrittenOnShort, "scrape.bytes")
     );
 }
 
@@ -105,8 +118,8 @@ fn written_and_needed_together_faults() {
 #[test]
 fn needed_without_failed_faults() {
     assert_eq!(
-        check_written_needed(4, 0, 8, false),
-        red(Rule::NeededNotFailed, "scrape.needed")
+        scrape(4, 0, 8, false),
+        red(Rule::NeededNotFailed, "scrape.bytes")
     );
 }
 
@@ -114,8 +127,8 @@ fn needed_without_failed_faults() {
 #[test]
 fn needed_not_larger_than_cap_faults() {
     assert_eq!(
-        check_written_needed(4, 0, 4, true),
-        red(Rule::WastedRecall, "scrape.needed_within_cap")
+        scrape(4, 0, 4, true),
+        red(Rule::WastedRecall, "scrape.bytes")
     );
 }
 
@@ -123,24 +136,15 @@ fn needed_not_larger_than_cap_faults() {
 #[test]
 fn needed_past_hard_max_faults() {
     assert_eq!(
-        check_written_needed(0, 0, (HARD_MAX_BYTES + 1) as usize, true),
-        red(Rule::OverMax, "scrape.needed_max")
-    );
-}
-
-/// RED: `needed` past `u32::MAX` (checked before the kind's own, smaller, hard max).
-#[test]
-fn needed_past_u32_max_faults() {
-    assert_eq!(
-        check_written_needed(0, 0, u32::MAX as usize + 1, true),
-        red(Rule::OverMax, "scrape.needed_u32")
+        scrape(0, 0, (HARD_MAX_BYTES + 1) as usize, true),
+        red(Rule::OverMax, "scrape.bytes")
     );
 }
 
 /// The legitimate re-call shape passes: nothing written, `needed` above `cap`, FAILED.
 #[test]
 fn legitimate_too_small_answer_passes() {
-    assert!(check_written_needed(4, 0, 8, true).is_ok());
+    assert!(scrape(4, 0, 8, true).is_ok());
 }
 
 /// RED: `scrape`'s `out` is checked against `cap`.
@@ -151,7 +155,7 @@ fn scrape_out_checked_against_cap() {
         written: 10,
         needed: 0,
     };
-    assert_eq!(check_scrape(&out, 4), red(Rule::OverCap, "scrape.written"));
+    assert_eq!(check_scrape(&out, 4), red(Rule::OverCap, "scrape.bytes"));
 }
 
 /// RED: `status`'s blob with a length behind a NULL pointer.

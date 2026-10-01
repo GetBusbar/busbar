@@ -38,11 +38,11 @@
 use std::mem::{size_of, zeroed};
 use std::path::PathBuf;
 
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead, BLOB_JSON};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, InHead, Op, OutHead, BLOB_JSON};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::transport::{
-    slot, BeginIn, ConnFacts, EmitIn, EncodeIn, Field, FramePiece, FramerOut, FramerSink, IngestIn,
-    Ops, SIDE_DIAL,
+    slot, BeginIn, ConnFacts, EmitIn, EncodeIn, FramePiece, FramerOut, FramerSink, IngestIn, Ops,
+    SIDE_DIAL,
 };
 use serde_json::Value;
 

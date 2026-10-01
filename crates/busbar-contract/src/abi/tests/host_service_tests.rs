@@ -217,10 +217,11 @@ fn a_service_with_no_buffer_that_wrote_bytes_is_fault() {
 fn a_span_outside_the_bytes_written_is_fault() {
     let (mut b, mut s) = ([0u8; 4], [ItemSpan::default_absent(); 1]);
     s[0] = ItemSpan {
-        key_off: SPAN_ABSENT,
-        key_len: 0,
-        value_off: 2,
-        value_len: 3,
+        key: Span {
+            offset: SPAN_ABSENT,
+            len: 0,
+        },
+        value: Span { offset: 2, len: 3 },
     };
     let i = get_in(TICKET, bufs(&mut b, &mut s));
     let mut o = out(Outcome::Ready);
@@ -236,7 +237,7 @@ fn a_span_outside_the_bytes_written_is_fault() {
 #[test]
 fn an_absent_span_with_a_length_is_fault() {
     let (mut b, mut s) = ([0u8; 4], [ItemSpan::default_absent(); 1]);
-    s[0].key_len = 1;
+    s[0].key.len = 1;
     let i = get_in(TICKET, bufs(&mut b, &mut s));
     let mut o = out(Outcome::Ready);
     o.value = FOUND;
@@ -251,8 +252,8 @@ fn an_absent_span_with_a_length_is_fault() {
 #[test]
 fn a_well_formed_found_record_is_legal() {
     let (mut b, mut s) = ([0u8; 4], [ItemSpan::default_absent(); 1]);
-    s[0].value_off = 0;
-    s[0].value_len = 4;
+    s[0].value.offset = 0;
+    s[0].value.len = 4;
     let i = get_in(TICKET, bufs(&mut b, &mut s));
     let mut o = out(Outcome::Ready);
     o.value = FOUND;
@@ -427,10 +428,14 @@ fn the_table_holds_one_slot_per_service() {
 impl ItemSpan {
     fn default_absent() -> Self {
         ItemSpan {
-            key_off: SPAN_ABSENT,
-            key_len: 0,
-            value_off: SPAN_ABSENT,
-            value_len: 0,
+            key: Span {
+                offset: SPAN_ABSENT,
+                len: 0,
+            },
+            value: Span {
+                offset: SPAN_ABSENT,
+                len: 0,
+            },
         }
     }
 }
@@ -473,4 +478,53 @@ fn every_service_field_sits_at_its_op_index() {
     }
     assert_eq!(table.len(), SERVICES as usize);
     assert_eq!(size_of::<HostSlots>(), slot(SERVICES));
+}
+
+/// RED ARM (`service.rs` `answer`, the `service.out.size` arm): an `out` whose `size` is not this
+/// layout's is `Foreign`, named by field.
+#[test]
+fn red_an_out_of_a_foreign_size_names_service_out_size() {
+    let i = judge_in(TICKET);
+    let mut o = out(Outcome::Ready);
+    o.size += 8;
+    assert_eq!(
+        check_dest_judge(&i, ready(&o), &o).unwrap_err(),
+        fault(Rule::Foreign, "service.out.size")
+    );
+}
+
+/// RED ARM (`check_clock_now`, the `clock_now.reading` arm): a READY answer with a NULL reading slot
+/// is `NullWithCount`, named by field.
+#[test]
+fn red_a_ready_clock_answer_with_no_reading_names_clock_now_reading() {
+    let o = out(Outcome::Ready);
+    let i = ClockNowIn {
+        head: head(op::CLOCK_NOW, Ticket::NONE, 0),
+        reading: core::ptr::null_mut(),
+    };
+    assert_eq!(
+        check_clock_now(&i, ready(&o), &o).unwrap_err(),
+        fault(Rule::NullWithCount, "clock_now.reading")
+    );
+}
+
+/// RED ARM (`check_clock_now`, the `clock_now.reading.size` arm): a READY answer whose reading is
+/// not this layout's size is `Foreign`, named by field.
+#[test]
+fn red_a_ready_clock_answer_of_a_foreign_reading_names_clock_now_reading_size() {
+    let o = out(Outcome::Ready);
+    let mut reading = ClockReading {
+        size: core::mem::size_of::<ClockReading>() as u32 + 8,
+        _reserved: 0,
+        wall_ns: 1,
+        mono_ns: 1,
+    };
+    let i = ClockNowIn {
+        head: head(op::CLOCK_NOW, Ticket::NONE, 0),
+        reading: &mut reading,
+    };
+    assert_eq!(
+        check_clock_now(&i, ready(&o), &o).unwrap_err(),
+        fault(Rule::Foreign, "clock_now.reading.size")
+    );
 }

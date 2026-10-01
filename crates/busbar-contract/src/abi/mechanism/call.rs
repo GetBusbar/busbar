@@ -123,6 +123,29 @@ impl AbiStr {
     }
 }
 
+/// A byte range of a buffer the call names, in bytes; `offset ==`
+/// [`SPAN_ABSENT`](super::check::SPAN_ABSENT) = absent (distinct from present and empty). THE one
+/// span of every kind.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    /// Byte offset into the buffer; [`SPAN_ABSENT`](super::check::SPAN_ABSENT) = absent.
+    pub offset: u32,
+    /// Byte length.
+    pub len: u32,
+}
+
+/// One named field borrowed for the call: a name and its value (any bytes). THE one field of
+/// every kind.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Field {
+    /// The name.
+    pub name: AbiStr,
+    /// The value.
+    pub value: AbiStr,
+}
+
 /// [`Blob::fmt`]: absent.
 pub const BLOB_ABSENT: u32 = 0;
 /// [`Blob::fmt`]: one JSON document.
