@@ -27,7 +27,8 @@ use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest, OutboundAuth
 
 use super::*;
 use crate::dispatch::{
-    load_linked, Adopter, Bind, Budgets, DispatchConfig, Dispatcher, EnvelopeSink, NO_BLOB,
+    load_linked, Adopter, Bind, Budgets, DispatchConfig, Dispatcher, EnvelopeSink, LinkedRow,
+    NO_BLOB,
 };
 
 /// The style whose fields fit the host's starting buffers.
@@ -211,13 +212,15 @@ fn opened() -> OutboundInstance {
         },
         watchdog_period: Duration::from_millis(20),
     }));
+    let row = LinkedRow::of(plugin::door).expect("the test auth door states its Statement");
     let p = load_linked::<Auth>(
-        plugin::door,
+        &row,
         Bind {
             instance: Arc::from("the-instance"),
             max_inflight_cap: 64,
             sink: Arc::new(Quiet),
             dispatcher: Adopter::unwatched(),
+            conns: None,
         },
     )
     .expect("the test auth door loads");
@@ -235,10 +238,13 @@ fn opened() -> OutboundInstance {
                     secrets: std::ptr::null(),
                     secrets_len: 0,
                     generation: 1,
+                    err_buf: std::ptr::null_mut(),
+                    err_cap: 0,
                 },
                 OpenOut {
                     head: out_head(),
                     instance: std::ptr::null_mut(),
+                    err_len: 0,
                 },
             ),
             DeadlineClass::Call,
