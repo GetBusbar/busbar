@@ -286,6 +286,22 @@ pub fn out_head() -> OutHead {
     }
 }
 
+/// A `cancel` frame for `ticket`. `cancel` may not pend: its head carries NONE; the cancelled
+/// ticket is its field.
+pub(crate) fn cancel_frame(ticket: Ticket) -> Frame<CancelIn, CancelOut> {
+    Frame::new(
+        CancelIn {
+            head: in_head(),
+            ticket,
+        },
+        CancelOut {
+            head: out_head(),
+            disposition: 0,
+            _reserved: 0,
+        },
+    )
+}
+
 /// The host's coarse monotonic clock, in nanoseconds since first use: the clock `deadline_ns`,
 /// `wake_at_ns` and `TickIn::now_ns` are on.
 pub fn now_ns() -> u64 {

@@ -37,7 +37,7 @@ use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::{DeadlineClass, InHead, OutHead, Outcome, FLAG_RESUME};
-use busbar_contract::abi::mechanism::lifecycle::{slot, CancelIn, CancelOut};
+use busbar_contract::abi::mechanism::lifecycle::{slot, CancelIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 
 use super::plugin::{is_lifecycle, Crossed, Instance, Plugin};
@@ -45,7 +45,7 @@ use super::services::{HostServices, Served, ServiceStore};
 use super::ticket::{
     decode, encode, recycled_generation, Completions, WakeRoute, MAX_INDEX, MAX_WORKERS,
 };
-use super::{in_head, now_ns, out_head, watchdog, DriveFrame, Frame, InFrame, Kind, OutFrame};
+use super::{cancel_frame, now_ns, watchdog, DriveFrame, Frame, InFrame, Kind, OutFrame};
 
 /// The longest a crossing may take before the watchdog faults it, per class. A crossing never
 /// blocks by contract, so these bound a wedged plugin, not a slow request (that is the deadline).
@@ -904,17 +904,7 @@ impl Worker {
                     return Some(st);
                 }
                 // `cancel` may not pend: its head carries NONE; the cancelled ticket is its field.
-                let mut frame = Frame::new(
-                    CancelIn {
-                        head: in_head(),
-                        ticket,
-                    },
-                    CancelOut {
-                        head: out_head(),
-                        disposition: 0,
-                        _reserved: 0,
-                    },
-                );
+                let mut frame = cancel_frame(ticket);
                 frame.input.head.size = size_of::<CancelIn>() as u32;
                 frame.input.head.deadline_class = class as u8;
                 let budget = env.budgets.of(slot::CANCEL, class);

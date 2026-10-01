@@ -13,7 +13,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome};
-use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelIn, CancelOut};
+use busbar_contract::abi::mechanism::lifecycle::slot as life;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, RefusalIn, RefusalOut,
@@ -21,7 +21,9 @@ use busbar_contract::abi::plane::{
 use busbar_contract::plane_calls::{Answered, Grow, Lent, PieceInFlight, PlaneCalls};
 
 use super::kinds::plane::Plane;
-use super::{in_head, now_ns, out_head, Dispatcher, Done, Frame, InFrame, OutFrame, Plugin, Reply};
+use super::{
+    cancel_frame, in_head, now_ns, Dispatcher, Done, Frame, InFrame, OutFrame, Plugin, Reply,
+};
 
 /// One open plane instance, the dispatcher that adopted it, and the worker its unit tickets are
 /// minted on.
@@ -87,17 +89,7 @@ impl PlaneCalls for PlaneInstance {
     }
 
     fn cancel(&self, ticket: Ticket) -> Option<u32> {
-        let mut frame = Frame::new(
-            CancelIn {
-                head: in_head(),
-                ticket,
-            },
-            CancelOut {
-                head: out_head(),
-                disposition: 0,
-                _reserved: 0,
-            },
-        );
+        let mut frame = cancel_frame(ticket);
         let called = self.plugin.call(life::CANCEL, &mut frame);
         (called.outcome == Outcome::Ready).then_some(frame.out.disposition)
     }
