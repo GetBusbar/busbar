@@ -798,7 +798,8 @@ fn a_boot_rehydrate_counts_active_terminal_and_unreadable() {
                 terminal: false,
                 cursor: 0,
             }
-            .record().view(),
+            .record()
+            .view(),
         )
         .unwrap();
     store
@@ -810,7 +811,8 @@ fn a_boot_rehydrate_counts_active_terminal_and_unreadable() {
                 terminal: true,
                 cursor: 0,
             }
-            .record().view(),
+            .record()
+            .view(),
         )
         .unwrap();
     store

@@ -583,7 +583,8 @@ impl<R: NeutralRecord> Journal<R> {
             // evidence row is never invisible; `unreadable` still carries the count back for the
             // wrapper's aggregate. This is the one place this "reports, does not judge" journal
             // speaks in a coded word — mirroring a downstream task store's per-row skip report.
-            let raw = store.list_plane_records(kind, &PlaneSelector::Parent(scope.as_str().into()))?;
+            let raw =
+                store.list_plane_records(kind, &PlaneSelector::Parent(scope.as_str().into()))?;
             // Whether the store literally returned NOTHING for this scope, decided BEFORE decoding:
             // an enumerated-but-empty scope (a wholesale deletion of one scope's evidence) is a
             // different condition from a scope whose rows were all UNREADABLE, which is already

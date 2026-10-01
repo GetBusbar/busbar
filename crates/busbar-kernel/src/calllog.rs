@@ -581,8 +581,8 @@ impl PlaneCallLog {
         let principals = store.list_plane_record_parents(KIND_CALL)?;
         let mut out = Restored::default();
         for principal in &principals {
-            let raw =
-                store.list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.as_str().into()))?;
+            let raw = store
+                .list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.as_str().into()))?;
             out.principals += 1;
             let store_returned_nothing = raw.is_empty();
             // Decode each stored body per-record BEFORE seeding, so a single undecodable row is

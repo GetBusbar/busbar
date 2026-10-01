@@ -484,8 +484,8 @@ impl PlaneAuditLog {
         let scopes = store.list_plane_record_parents(KIND_AUDIT)?;
         let mut out = AuditRestored::default();
         for scope in &scopes {
-            let bodies =
-                store.list_plane_records(KIND_AUDIT, &PlaneSelector::Parent(scope.as_str().into()))?;
+            let bodies = store
+                .list_plane_records(KIND_AUDIT, &PlaneSelector::Parent(scope.as_str().into()))?;
             // Decode each stored body per-record BEFORE seeding the chain, so a single undecodable
             // row is COUNTED and SKIPPED rather than faulting the seam seed and `?`-aborting the
             // WHOLE restore — which would leave the host-side chain position UNSEEDED and fork the
