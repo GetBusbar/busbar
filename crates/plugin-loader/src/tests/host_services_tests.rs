@@ -715,7 +715,12 @@ fn trust_verify_reaches_the_kernel_without_a_ticket_and_answers_into_the_callers
     let d = double();
     let mut buf = [0u8; 8];
     let i = TrustVerifyIn {
-        head: head(op::TRUST_VERIFY, Ticket::NONE, 0, size_of::<TrustVerifyIn>()),
+        head: head(
+            op::TRUST_VERIFY,
+            Ticket::NONE,
+            0,
+            size_of::<TrustVerifyIn>(),
+        ),
         counterparty: text("peer"),
         payload: blob(b"doc"),
         signatures: blob(b"[]"),
@@ -737,7 +742,12 @@ fn trust_verify_reaches_the_kernel_without_a_ticket_and_answers_into_the_callers
 fn trust_verify_with_a_null_blob_of_a_length_is_fault() {
     let d = double();
     let mut i = TrustVerifyIn {
-        head: head(op::TRUST_VERIFY, Ticket::NONE, 0, size_of::<TrustVerifyIn>()),
+        head: head(
+            op::TRUST_VERIFY,
+            Ticket::NONE,
+            0,
+            size_of::<TrustVerifyIn>(),
+        ),
         counterparty: text("peer"),
         payload: blob(b"doc"),
         signatures: blob(b""),

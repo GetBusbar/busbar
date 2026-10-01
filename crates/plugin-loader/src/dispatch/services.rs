@@ -733,11 +733,7 @@ extern "C" fn trust_due(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
     )
 }
 
-extern "C" fn trust_verify(
-    ctx: HostCtx,
-    input: *const c_void,
-    out: *mut ServiceOut,
-) -> RawOutcome {
+extern "C" fn trust_verify(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     scoped(
         ctx,
         input,

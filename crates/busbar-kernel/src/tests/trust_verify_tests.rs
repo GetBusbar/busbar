@@ -97,7 +97,10 @@ fn a_signature_by_the_root_key_verifies() {
     let s = host();
     let sigs = json!([signature(&key(1), &eddsa(), PAYLOAD)]);
     let st = verify(&s, "issuer", PAYLOAD, &sigs);
-    assert_eq!(verdict(&st), (Outcome::Ready, svc::SIGNED_VERIFIED, &b""[..]));
+    assert_eq!(
+        verdict(&st),
+        (Outcome::Ready, svc::SIGNED_VERIFIED, &b""[..])
+    );
     assert!(st.spans.is_empty());
 }
 
@@ -112,7 +115,10 @@ fn a_tampered_signature_is_not_by_the_root() {
     raw[10] ^= 0x01;
     sig["signature"] = Value::String(URL_SAFE_NO_PAD.encode(raw));
     let st = verify(&s, "issuer", PAYLOAD, &json!([sig]));
-    assert_eq!(verdict(&st), (Outcome::Ready, svc::SIGNED_NOT_BY_ROOT, &b""[..]));
+    assert_eq!(
+        verdict(&st),
+        (Outcome::Ready, svc::SIGNED_NOT_BY_ROOT, &b""[..])
+    );
 }
 
 /// RED: a payload changed after signing, and a signature by another key, are never accepted.
@@ -123,7 +129,10 @@ fn a_tampered_payload_or_another_key_is_not_by_the_root() {
     let st = verify(&s, "issuer", br#"{"name":"peer","version":"2"}"#, &sigs);
     assert_eq!(st.value, svc::SIGNED_NOT_BY_ROOT);
     let other = json!([signature(&key(2), &eddsa(), PAYLOAD)]);
-    assert_eq!(verify(&s, "issuer", PAYLOAD, &other).value, svc::SIGNED_NOT_BY_ROOT);
+    assert_eq!(
+        verify(&s, "issuer", PAYLOAD, &other).value,
+        svc::SIGNED_NOT_BY_ROOT
+    );
 }
 
 /// A signature by another key beside the root's (a rotation) still verifies; a malformed one
@@ -135,7 +144,10 @@ fn a_second_signature_by_the_root_verifies_and_a_malformed_one_refuses() {
         signature(&key(2), &eddsa(), PAYLOAD),
         signature(&key(1), &eddsa(), PAYLOAD)
     ]);
-    assert_eq!(verify(&s, "issuer", PAYLOAD, &both).value, svc::SIGNED_VERIFIED);
+    assert_eq!(
+        verify(&s, "issuer", PAYLOAD, &both).value,
+        svc::SIGNED_VERIFIED
+    );
     let garbage_first = json!([
         { "protected": URL_SAFE_NO_PAD.encode(eddsa().to_string()), "signature": "AAAA" },
         signature(&key(1), &eddsa(), PAYLOAD)
@@ -168,10 +180,23 @@ fn the_header_algorithm_only_agrees_with_the_key() {
 fn a_critical_member_is_refused_by_name() {
     let s = host();
     let crit = json!({ "alg": "EdDSA", "crit": ["b64"], "b64": false });
-    let st = verify(&s, "issuer", PAYLOAD, &json!([signature(&key(1), &crit, PAYLOAD)]));
-    assert_eq!(verdict(&st), (Outcome::Ready, svc::SIGNED_CRITICAL, &b"b64"[..]));
+    let st = verify(
+        &s,
+        "issuer",
+        PAYLOAD,
+        &json!([signature(&key(1), &crit, PAYLOAD)]),
+    );
+    assert_eq!(
+        verdict(&st),
+        (Outcome::Ready, svc::SIGNED_CRITICAL, &b"b64"[..])
+    );
     let empty = json!({ "alg": "EdDSA", "crit": [] });
-    let st = verify(&s, "issuer", PAYLOAD, &json!([signature(&key(1), &empty, PAYLOAD)]));
+    let st = verify(
+        &s,
+        "issuer",
+        PAYLOAD,
+        &json!([signature(&key(1), &empty, PAYLOAD)]),
+    );
     assert_eq!(st.value, svc::SIGNED_MALFORMED_HEADER);
 }
 
@@ -180,10 +205,16 @@ fn no_signature_too_many_and_malformed_parts_each_answer_their_verdict() {
     let s = host();
     let none = s.trust_verify(&caller("inst"), "issuer", PAYLOAD, b"");
     assert_eq!(verdict(&none), (Outcome::Ready, svc::SIGNED_NONE, &b""[..]));
-    assert_eq!(verify(&s, "issuer", PAYLOAD, &json!([])).value, svc::SIGNED_NONE);
+    assert_eq!(
+        verify(&s, "issuer", PAYLOAD, &json!([])).value,
+        svc::SIGNED_NONE
+    );
     let one = signature(&key(1), &eddsa(), PAYLOAD);
     let nine = Value::Array(vec![one; 9]);
-    assert_eq!(verify(&s, "issuer", PAYLOAD, &nine).value, svc::SIGNED_TOO_MANY);
+    assert_eq!(
+        verify(&s, "issuer", PAYLOAD, &nine).value,
+        svc::SIGNED_TOO_MANY
+    );
     let not_b64 = json!([{ "protected": "!!", "signature": "AAAA" }]);
     assert_eq!(
         verify(&s, "issuer", PAYLOAD, &not_b64).value,
@@ -209,7 +240,10 @@ fn no_signature_too_many_and_malformed_parts_each_answer_their_verdict() {
 fn a_root_key_that_is_not_a_key_is_malformed_before_anything_else() {
     let s = host();
     let st = s.trust_verify(&caller("inst"), "bad-root", PAYLOAD, b"");
-    assert_eq!(verdict(&st), (Outcome::Ready, svc::SIGNED_MALFORMED_ROOT, &b""[..]));
+    assert_eq!(
+        verdict(&st),
+        (Outcome::Ready, svc::SIGNED_MALFORMED_ROOT, &b""[..])
+    );
 }
 
 /// Only a declared root verifies: no root key, an undeclared counterparty, an instance never

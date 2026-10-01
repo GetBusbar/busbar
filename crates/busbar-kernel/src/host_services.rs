@@ -70,8 +70,8 @@ use crate::host_records::{
 };
 use crate::plane::quarantine::DemotionRecord;
 use crate::trust::book::{Effect, Sight, TrustBook, Unjudged};
-use crate::trust::signed;
 use crate::trust::section::TrustEntry;
+use crate::trust::signed;
 
 use crate::net_guard::{
     check_structure, pin_answer_under, split_url, AddressRefusal, Denylist, GuardPolicy,
@@ -1074,7 +1074,9 @@ impl HostServices for KernelServices {
             },
         };
         let judged = signed::root_key(&key).and_then(|root| signed::verify(payload, &sigs, &root));
-        let (value, named) = judged.err().unwrap_or((svc::SIGNED_VERIFIED, String::new()));
+        let (value, named) = judged
+            .err()
+            .unwrap_or((svc::SIGNED_VERIFIED, String::new()));
         Stored {
             bytes: named.into_bytes(),
             ..Stored::ready(value)
