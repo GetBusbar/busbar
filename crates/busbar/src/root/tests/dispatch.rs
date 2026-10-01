@@ -30,7 +30,9 @@ fn the_binarys_dispatcher_serves_dest_judge_once_composed() {
     use busbar_contract::services::{Ran, Stored};
 
     let judged = |d: &Dispatcher, dest: &str| -> Stored {
-        let services = d.host_services().expect("the binary's dispatcher has a provider");
+        let services = d
+            .host_services()
+            .expect("the binary's dispatcher has a provider");
         match services.dest_judge(dest, crate::root::serve::DEFAULT_EGRESS_CLASS, false, None) {
             Ran::Now(stored) => stored,
             Ran::Later => panic!("an unresolved judgement answers at once"),
