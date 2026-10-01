@@ -1390,4 +1390,3 @@ async fn a_request_expecting_a_continue_is_answered_before_its_body_is_waited_fo
         .unwrap();
     assert!(head.bytes.as_slice().starts_with(b"POST /x HTTP/1.1"));
 }
-

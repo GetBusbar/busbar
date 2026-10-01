@@ -240,8 +240,10 @@ async fn a_never_closing_event_stream_delivers_its_events_as_they_arrive() {
     let mut frames = sse.frames(conn);
     for i in 0..2 {
         // One event at a time, and the layer below never ends its stream: `more` stays held.
-        more.send(Ok(body_frame(format!("data: {{\"n\":{i}}}\n\n").as_bytes())))
-            .unwrap();
+        more.send(Ok(body_frame(
+            format!("data: {{\"n\":{i}}}\n\n").as_bytes(),
+        )))
+        .unwrap();
         let (_s, frame) = tokio::time::timeout(std::time::Duration::from_secs(2), frames.next())
             .await
             .expect("an event arrives while the stream below is still open")
