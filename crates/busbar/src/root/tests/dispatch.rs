@@ -18,3 +18,45 @@ fn one_plugin_worker_per_data_worker() {
     assert_eq!(config(4).workers, 4);
     assert_eq!(config(0).workers, 1, "never zero workers");
 }
+
+/// THE BINARY'S DISPATCHER SERVES THE KERNEL'S HOST SERVICES, booted as `run()` boots it: the
+/// dispatcher over the composition's late services, then the composition once the configuration
+/// resolves. Before the composition every service answers REFUSED; after it `dest.judge` answers
+/// READY with the kernel's verdicts. The RED arm: a dispatcher built with no provider (the binary
+/// before U8) serves nothing, so every service answers REFUSED.
+#[test]
+fn the_binarys_dispatcher_serves_dest_judge_once_composed() {
+    use busbar_contract::abi::host::service as svc;
+    use busbar_contract::services::{Ran, Stored};
+
+    let judged = |d: &Dispatcher, dest: &str| -> Stored {
+        let services = d.host_services().expect("the binary's dispatcher has a provider");
+        match services.dest_judge(dest, crate::root::serve::DEFAULT_EGRESS_CLASS, false, None) {
+            Ran::Now(stored) => stored,
+            Ran::Later => panic!("an unresolved judgement answers at once"),
+        }
+    };
+    let late = crate::root::serve::LateServices::new();
+    let dispatcher = build(1, late.clone());
+    assert_eq!(
+        judged(&dispatcher, "https://93.184.216.34/"),
+        Stored::refused(crate::root::serve::NOT_INSTALLED),
+        "before the composition every service answers REFUSED"
+    );
+    let deploy = busbar_kernel::config::deploy_from_yaml_str("providers: {}\nmodels: {}\n")
+        .expect("a minimal deployment");
+    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+    crate::root::serve::compose(&cfg, &late);
+    assert_eq!(
+        judged(&dispatcher, "https://93.184.216.34/"),
+        Stored::ready(svc::DEST_ALLOWED)
+    );
+    assert_eq!(
+        judged(&dispatcher, "https://169.254.169.254/latest/meta-data/"),
+        Stored::ready(svc::DEST_METADATA)
+    );
+    assert!(
+        Dispatcher::new(config(1)).host_services().is_none(),
+        "RED arm: a dispatcher built with no provider serves no host service"
+    );
+}

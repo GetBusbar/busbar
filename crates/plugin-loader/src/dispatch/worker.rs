@@ -1168,6 +1168,12 @@ impl Dispatcher {
         &self.pool.env.services
     }
 
+    /// The host services this dispatcher serves; `None` when it was built with none, and then
+    /// every service answers REFUSED.
+    pub fn host_services(&self) -> Option<&Arc<dyn HostServices>> {
+        self.pool.env.provider.as_ref()
+    }
+
     fn worker(&self, worker: u32) -> Option<Arc<Worker>> {
         self.pool.slots.get(worker as usize).map(WorkerSlot::get)
     }

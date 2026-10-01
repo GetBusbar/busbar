@@ -33,9 +33,13 @@ pub fn config(workers: usize) -> DispatchConfig {
 /// serving `services` (the composition's [`crate::root::serve::LateServices`], installed once the
 /// configuration loads). The first build stands; a later call answers it.
 pub fn boot(workers: usize, services: Arc<dyn HostServices>) -> Arc<Dispatcher> {
-    Arc::clone(
-        DISPATCHER.get_or_init(|| Arc::new(Dispatcher::with_services(config(workers), services))),
-    )
+    Arc::clone(DISPATCHER.get_or_init(|| Arc::new(build(workers, services))))
+}
+
+/// The dispatcher [`boot`] builds, for `workers` data workers, serving `services`.
+#[must_use]
+pub fn build(workers: usize, services: Arc<dyn HostServices>) -> Dispatcher {
+    Dispatcher::with_services(config(workers), services)
 }
 
 /// The process's dispatcher (built at boot; built with one worker and no installed services on
