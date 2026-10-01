@@ -35,15 +35,18 @@ use std::sync::Arc;
 /// body into the neutral [`CallRecorded`] the seam persists.
 trait CallStoreTestExt: RecordStore {
     fn append_call(&self, rec: &CallRecorded) -> RecordStoreResult<()> {
-        self.append_plane_record(busbar_contract::records::PlaneRecord {
-            kind: KIND_CALL.to_string(),
-            id: rec.principal.clone(),
-            parent: Some(rec.principal.clone()),
-            seq: rec.seq,
-            ts: rec.ts,
-            disposition: busbar_contract::records::PlaneDisposition::Active,
-            body: call_record_to_journal_body(rec)?,
-        }.view())
+        self.append_plane_record(
+            busbar_contract::records::PlaneRecord {
+                kind: KIND_CALL.to_string(),
+                id: rec.principal.clone(),
+                parent: Some(rec.principal.clone()),
+                seq: rec.seq,
+                ts: rec.ts,
+                disposition: busbar_contract::records::PlaneDisposition::Active,
+                body: call_record_to_journal_body(rec)?,
+            }
+            .view(),
+        )
     }
     fn list_calls(&self, principal: &str) -> RecordStoreResult<Vec<CallRecorded>> {
         self.list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.into()))?

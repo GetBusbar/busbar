@@ -212,20 +212,23 @@ fn plane_store_view_forwards_to_the_real_backend() {
         "a fresh backend holds no demotions"
     );
     store
-        .upsert_plane_record(PlaneRecord {
-            kind: crate::plane::store::KIND_DEMOTION.to_string(),
-            id: "srv-1".to_string(),
-            parent: None,
-            seq: 0,
-            ts: 100,
-            disposition: PlaneDisposition::Active,
-            body: crate::plane::store::encode(&DemoRow {
-                server: "srv-1".to_string(),
-                reason: "drift".to_string(),
-                recorded_at: 100,
-            })
-            .unwrap(),
-        }.view())
+        .upsert_plane_record(
+            PlaneRecord {
+                kind: crate::plane::store::KIND_DEMOTION.to_string(),
+                id: "srv-1".to_string(),
+                parent: None,
+                seq: 0,
+                ts: 100,
+                disposition: PlaneDisposition::Active,
+                body: crate::plane::store::encode(&DemoRow {
+                    server: "srv-1".to_string(),
+                    reason: "drift".to_string(),
+                    recorded_at: 100,
+                })
+                .unwrap(),
+            }
+            .view(),
+        )
         .unwrap();
     let rows = list_demotions(&store);
     assert_eq!(rows.len(), 1, "the write forwarded to the inner backend");

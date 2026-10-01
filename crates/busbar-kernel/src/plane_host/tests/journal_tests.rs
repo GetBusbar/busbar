@@ -547,15 +547,18 @@ fn journal_restore_surfaces_the_unreadable_row_count() {
         // A raw UNDECODABLE body under the SAME (kind, parent) — decodes as neither a neutral body nor
         // a legacy row. The registered kind is `durable_test_event` (see `register`).
         store
-            .append_plane_record(busbar_contract::records::PlaneRecord {
-                kind: "durable_test_event".to_string(),
-                id: String::from_utf8_lossy(scope).to_string(),
-                parent: Some(String::from_utf8_lossy(scope).to_string()),
-                seq: 2,
-                ts: 0,
-                disposition: busbar_contract::records::PlaneDisposition::Active,
-                body: b"{ not a neutral body".to_vec(),
-            })
+            .append_plane_record(
+                busbar_contract::records::PlaneRecord {
+                    kind: "durable_test_event".to_string(),
+                    id: String::from_utf8_lossy(scope).to_string(),
+                    parent: Some(String::from_utf8_lossy(scope).to_string()),
+                    seq: 2,
+                    ts: 0,
+                    disposition: busbar_contract::records::PlaneDisposition::Active,
+                    body: b"{ not a neutral body".to_vec(),
+                }
+                .view(),
+            )
             .unwrap();
 
         let mut rout = MaybeUninit::<RestoredHdr>::uninit();
@@ -577,7 +580,7 @@ fn journal_restore_surfaces_the_unreadable_row_count() {
             rhdr.records, 1,
             "only the decodable row is a restored record"
         );
-        assert_eq!(rhdr.scopes, 1);.view()
+        assert_eq!(rhdr.scopes, 1);
     });
 }
 
@@ -781,15 +784,18 @@ extern "C-unwind" fn admin_reframe(
 fn put_frozen(store: &GenericPlaneStore, kind: &str, parent: &str, seq: u64, body: &[u8]) {
     use busbar_contract::records::{PlaneDisposition, PlaneRecord, RecordStore};
     store
-        .append_plane_record(PlaneRecord {
-            kind: kind.to_string(),
-            id: parent.to_string(),
-            parent: Some(parent.to_string()),
-            seq,
-            ts: 0,
-            disposition: PlaneDisposition::Active,
-            body: body.to_vec(),
-        }.view())
+        .append_plane_record(
+            PlaneRecord {
+                kind: kind.to_string(),
+                id: parent.to_string(),
+                parent: Some(parent.to_string()),
+                seq,
+                ts: 0,
+                disposition: PlaneDisposition::Active,
+                body: body.to_vec(),
+            }
+            .view(),
+        )
         .expect("frozen body persists");
 }
 

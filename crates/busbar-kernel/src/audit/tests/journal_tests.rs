@@ -494,15 +494,18 @@ fn restore_scoped_skips_one_undecodable_record_and_keeps_the_rest() {
 
     // Wedge in a body the reframe decode cannot parse, under the same scope.
     store
-        .append_plane_record(PlaneRecord {
-            kind: KIND_NEUTRAL.to_string(),
-            id: "acme".to_string(),
-            parent: Some("acme".to_string()),
-            seq: 3,
-            ts: 0,
-            disposition: busbar_contract::records::PlaneDisposition::Active,
-            body: b"{ not a neutral body".to_vec(),
-        }.view())
+        .append_plane_record(
+            PlaneRecord {
+                kind: KIND_NEUTRAL.to_string(),
+                id: "acme".to_string(),
+                parent: Some("acme".to_string()),
+                seq: 3,
+                ts: 0,
+                disposition: busbar_contract::records::PlaneDisposition::Active,
+                body: b"{ not a neutral body".to_vec(),
+            }
+            .view(),
+        )
         .unwrap();
 
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -586,16 +589,19 @@ fn a_scope_with_only_undecodable_rows_is_unreadable_not_empty() {
     // The store RETURNED rows for "acme" — two of them — but neither decodes.
     for seq in 1..=2 {
         store
-            .append_plane_record(PlaneRecord {
-                kind: KIND_NEUTRAL.to_string(),
-                id: "acme".to_string(),
-                parent: Some("acme".to_string()),
-                seq,
-                ts: 0,
-                disposition: busbar_contract::records::PlaneDisposition::Active,
-                body: b"{ not a neutral body".to_vec(),
-            })
-            .unwrap();.view()
+            .append_plane_record(
+                PlaneRecord {
+                    kind: KIND_NEUTRAL.to_string(),
+                    id: "acme".to_string(),
+                    parent: Some("acme".to_string()),
+                    seq,
+                    ts: 0,
+                    disposition: busbar_contract::records::PlaneDisposition::Active,
+                    body: b"{ not a neutral body".to_vec(),
+                }
+                .view(),
+            )
+            .unwrap();
     }
 
     let j: Journal<NeutralRec> = Journal::new(1024);

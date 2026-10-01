@@ -831,15 +831,18 @@ pub(crate) fn migrate_legacy_table_to_plane_records(
         // The neutral envelope the seam persists: kind `audit`, id/parent the constant `admin` scope,
         // ordered by the record's own seq. seq/prev_hash/hash cross VERBATIM from the legacy record so
         // the migrated chain is byte-identical to what the seam would have written.
-        store.append_plane_record(PlaneRecord {
-            kind: KIND_AUDIT.to_string(),
-            id: ADMIN_LOG.to_string(),
-            parent: Some(ADMIN_LOG.to_string()),
-            seq: r.seq,
-            ts: r.ts,
-            disposition: PlaneDisposition::Active,
-            body,
-        }.view())?;
+        store.append_plane_record(
+            PlaneRecord {
+                kind: KIND_AUDIT.to_string(),
+                id: ADMIN_LOG.to_string(),
+                parent: Some(ADMIN_LOG.to_string()),
+                seq: r.seq,
+                ts: r.ts,
+                disposition: PlaneDisposition::Active,
+                body,
+            }
+            .view(),
+        )?;
     }
     Ok(records.len())
 }

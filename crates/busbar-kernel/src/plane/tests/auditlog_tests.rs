@@ -533,15 +533,18 @@ fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row(
     // A raw UNDECODABLE body appended under the SAME (audit, admin) parent: it decodes as neither the
     // neutral body the seam writes nor a legacy `AuditRecord` — a corrupt/tampered row.
     store
-        .append_plane_record(busbar_contract::records::PlaneRecord {
-            kind: KIND_AUDIT.to_string(),
-            id: ADMIN_LOG.to_string(),
-            parent: Some(ADMIN_LOG.to_string()),
-            seq: 2,
-            ts: 0,
-            disposition: busbar_contract::records::PlaneDisposition::Active,
-            body: b"{ not an audit body".to_vec(),
-        }.view())
+        .append_plane_record(
+            busbar_contract::records::PlaneRecord {
+                kind: KIND_AUDIT.to_string(),
+                id: ADMIN_LOG.to_string(),
+                parent: Some(ADMIN_LOG.to_string()),
+                seq: 2,
+                ts: 0,
+                disposition: busbar_contract::records::PlaneDisposition::Active,
+                body: b"{ not an audit body".to_vec(),
+            }
+            .view(),
+        )
         .unwrap();
 
     // Process 2 (a "restart"): a FRESH log over the SAME store restores from plane_records under a
@@ -600,15 +603,18 @@ fn restore_does_not_fork_the_chain_when_one_row_is_undecodable() {
 
     // A raw UNDECODABLE body under the SAME (audit, admin) parent — a corrupt/tampered row.
     store
-        .append_plane_record(busbar_contract::records::PlaneRecord {
-            kind: KIND_AUDIT.to_string(),
-            id: ADMIN_LOG.to_string(),
-            parent: Some(ADMIN_LOG.to_string()),
-            seq: 2,
-            ts: 0,
-            disposition: busbar_contract::records::PlaneDisposition::Active,
-            body: b"{ not an audit body".to_vec(),
-        }.view())
+        .append_plane_record(
+            busbar_contract::records::PlaneRecord {
+                kind: KIND_AUDIT.to_string(),
+                id: ADMIN_LOG.to_string(),
+                parent: Some(ADMIN_LOG.to_string()),
+                seq: 2,
+                ts: 0,
+                disposition: busbar_contract::records::PlaneDisposition::Active,
+                body: b"{ not an audit body".to_vec(),
+            }
+            .view(),
+        )
         .unwrap();
 
     // Process 2 (a "restart"): a FRESH log over the SAME store restores. The undecodable sibling must

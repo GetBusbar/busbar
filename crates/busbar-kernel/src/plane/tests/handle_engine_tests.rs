@@ -814,15 +814,18 @@ fn a_boot_rehydrate_counts_active_terminal_and_unreadable() {
         )
         .unwrap();
     store
-        .upsert_plane_record(PlaneRecord {
-            kind: "demo".into(),
-            id: "junk".into(),
-            parent: None,
-            seq: 0,
-            ts: 5,
-            disposition: PlaneDisposition::Active,
-            body: b"not json".to_vec(),
-        }.view())
+        .upsert_plane_record(
+            PlaneRecord {
+                kind: "demo".into(),
+                id: "junk".into(),
+                parent: None,
+                seq: 0,
+                ts: 5,
+                disposition: PlaneDisposition::Active,
+                body: b"not json".to_vec(),
+            }
+            .view(),
+        )
         .unwrap();
 
     let engine = DurableHandleEngine::new();
