@@ -48,6 +48,8 @@ enum Script {
 
 /// One open: its target, head, body and timeout.
 type Opened = (String, Vec<(String, Vec<u8>)>, Vec<u8>, u64);
+/// One open's head words: its method and its head target.
+type Words = (Vec<u8>, Vec<u8>);
 /// The facts one auth call saw: method, authority, path.
 type Facts = (Vec<u8>, String, Vec<u8>);
 
@@ -56,6 +58,7 @@ type Facts = (Vec<u8>, String, Vec<u8>);
 struct Table {
     scripts: HashMap<&'static str, Script>,
     opened: Mutex<Vec<Opened>>,
+    words: Mutex<Vec<Words>>,
     live: Mutex<HashMap<u64, VecDeque<Piece>>>,
     bytes: Mutex<HashMap<u64, VecDeque<Vec<u8>>>>,
     next: AtomicU64,
@@ -98,6 +101,10 @@ impl Conns for Table {
             d.body.to_vec(),
             d.timeout_ms,
         ));
+        self.words
+            .lock()
+            .unwrap()
+            .push((d.method.to_vec(), d.head_target.to_vec()));
         let script = self
             .scripts
             .iter()
@@ -543,11 +550,15 @@ async fn one_attempt_end_to_end() {
     let names: Vec<&str> = head.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
         names,
-        ["method", "path", "authorization", "content-type"],
+        ["authorization", "content-type"],
         "1.5.5's egress order: the auth fields before the plane's"
     );
-    assert_eq!(head[1].1, b"/v1/chat");
-    assert_eq!(head[2].1, b"Bearer sk-test");
+    assert_eq!(head[0].1, b"Bearer sk-test");
+    assert_eq!(
+        r.table.words.lock().unwrap()[0],
+        (b"POST".to_vec(), b"/v1/chat".to_vec()),
+        "the method and the path ride as the head words"
+    );
     assert_eq!(body, b"{}");
     assert_eq!(
         r.auth.calls.load(Ordering::SeqCst),
@@ -758,6 +769,39 @@ fn the_unit_deadline_is_the_pools_request_timeout() {
     );
 }
 
+/// THE HEAD WORDS (P1 HEAD-FIELDS): the plane's verb and the joined path, its query kept, reach the
+/// upstream request as the open's head words (`OpenDesc::method`, `OpenDesc::head_target`), byte
+/// for byte; neither rides as a field, which a field block refuses to carry.
+#[tokio::test]
+async fn the_method_and_path_arrive_as_the_upstream_requests_head_words() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    let mut req = request();
+    req.verb = b"GET".to_vec();
+    req.target = b"/models?limit=2&after=m%201".to_vec();
+    assert!(far.send(&t, req).await);
+    let _ = drain(&far, &t).await;
+    assert_eq!(
+        *r.table.words.lock().unwrap(),
+        vec![(b"GET".to_vec(), b"/v1/models?limit=2&after=m%201".to_vec())]
+    );
+    let opened = r.table.opened.lock().unwrap().clone();
+    assert_eq!(opened[0].0, "https://a.test/v1/models?limit=2&after=m%201");
+    let names: Vec<&str> = opened[0].1.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(
+        names
+            .iter()
+            .all(|n| *n != "method" && *n != "path" && !n.starts_with(':')),
+        "no head word rides as a field: {names:?}"
+    );
+}
+
 /// A target that is not a path never leaves: joined onto the base it could move the authority
 /// (`api.host@evil.test`) and carry the member's auth fields there. Nothing is opened, the auth
 /// binding is never called, nothing is recorded against the member.
@@ -810,8 +854,8 @@ async fn a_stalled_auth_call_is_bounded_by_the_attempt_cap() {
 #[test]
 fn the_head_wipes_its_auth_values() {
     let mut head = Head(vec![
-        ("method".into(), b"POST".to_vec()),
         ("authorization".into(), b"Bearer sk-test".to_vec()),
+        ("content-type".into(), b"application/json".to_vec()),
     ]);
     head.wipe();
     assert!(head.0.iter().all(|(_, v)| v.iter().all(|b| *b == 0)));
