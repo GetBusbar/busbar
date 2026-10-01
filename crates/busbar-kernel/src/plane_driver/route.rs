@@ -531,7 +531,10 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 Ok(Pick::Exhausted {
                     status,
                     retry_after,
-                }) if attempt_no == 1 => ((String::new(), String::new()), Some((status, retry_after))),
+                }) if attempt_no == 1 => (
+                    (String::new(), String::new()),
+                    Some((status, retry_after)),
+                ),
                 Ok(Pick::Exhausted {
                     status,
                     retry_after,
