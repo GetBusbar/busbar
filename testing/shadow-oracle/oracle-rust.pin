@@ -169,18 +169,19 @@
 # for the owner; no golden is recorded by this move. Still a feature branch head; re-pin to the merge
 # commit when it lands.
 #
-# 2026-10-01 (ARCHITECT, lane ORACLE-CELLS-2): moved 7168e25 -> 76e732b (busbar-release branch
+# 2026-10-01 (ARCHITECT, lane ORACLE-CELLS-2): moved 7168e25 -> 76e732b -> e58d85c (busbar-release branch
 # `lane-oracle-cells-2` = PR #7 `oracle-capture-reap` + the owner-review cells). 7efd38a: a capture boot
 # that outlives its expected exit is reaped (it used to be dropped unkilled and held the listen port for
 # every later capture cell), a cell never boots beside a listener already on its port, and an expected-
 # exit cell with steps runs them against a boot that did not exit. 237f9fc: the h2 compare drops the
 # client's timing-placed SETTINGS ACK from the frame-order view (1.5.5 recorded egress.auth|h2|bearer as
 # 3 and as 4 frames). 76e732b: the cross-dialect beta cell reaches an upstream, ABI-o1 drives the plugin,
-# 574's clock pin is withdrawn. No golden is recorded by this move. Feature branch head; re-pin to the
+# 574's clock pin is withdrawn. e58d85c: the corpus fixture re-vendored (2484 -> 2504, the twenty owner-review
+# cells; cells.json moves with it in this commit). No golden is recorded by this move. Feature branch head; re-pin to the
 # merge commit when it lands.
 #
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=76e732b
+release_ref=e58d85c
 crate=busbar-release-oracle
 bin=busbar-oracle
