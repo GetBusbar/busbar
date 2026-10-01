@@ -702,6 +702,30 @@ fn enqueue_pending_audit(scope: &str, suffix: Vec<u8>) {
 /// rebuilt into an [`AuditEntry`] via [`parse_audit_suffix`] (the same decode [`audit_entry_from_body`]
 /// uses) and pushed into [`AUDIT_LOG`], so it becomes visible on `GET /audit` exactly as a live write
 /// would — recovery is not merely durable, it is also VISIBLE.
+/// A durable audit write failed: QUEUE the record for the next successful write on this stream
+/// (recoverable, not terminal) and say so — an error the first time `latch` trips, a debug line
+/// while it stays latched. The caller clears `latch` on its next successful write.
+fn queue_unwritten(latch: &AtomicBool, scope: &str, suffix: Vec<u8>) {
+    enqueue_pending_audit(scope, suffix);
+    if !latch.swap(true, Ordering::Relaxed) {
+        crate::diagnostics::diag_error!(
+            crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
+            "the durable admin audit record could NOT be written through the journal seam: this \
+             mutation is being served and its evidence is QUEUED for recovery rather than lost — it \
+             will be retried the next time this stream writes successfully. The chain position is \
+             unchanged, so the chain stays contiguous — what is missing FOR NOW is this record, not \
+             the ones after it."
+        );
+    } else {
+        crate::diagnostics::diag_debug!(
+            crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
+            "the durable admin audit record could NOT be written through the journal seam; its \
+             evidence is QUEUED for recovery. The chain position is unchanged, so the chain stays \
+             contiguous."
+        );
+    }
+}
+
 fn drain_pending_audit() {
     PENDING_AUDIT.drain_with(
         |scope, suffix| {
@@ -756,24 +780,7 @@ pub(crate) fn emit(host: HostCtx, scope: &str, suffix: Vec<u8>) {
         suffix.len(),
     );
     if seq == Seq::NONE {
-        enqueue_pending_audit(scope, suffix);
-        if !WRITE_FAILED_LATCHED.swap(true, Ordering::Relaxed) {
-            crate::diagnostics::diag_error!(
-                crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
-                "the durable admin audit record could NOT be written through the journal seam: this \
-                 mutation is being served and its evidence is QUEUED for recovery rather than lost — \
-                 it will be retried the next time this stream writes successfully. The chain position \
-                 is unchanged, so the chain stays contiguous — what is missing FOR NOW is this record, \
-                 not the ones after it."
-            );
-        } else {
-            crate::diagnostics::diag_debug!(
-                crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
-                "the durable admin audit record could NOT be written through the journal seam; its \
-                 evidence is QUEUED for recovery. The chain position is unchanged, so the chain stays \
-                 contiguous."
-            );
-        }
+        queue_unwritten(&WRITE_FAILED_LATCHED, scope, suffix);
     } else {
         WRITE_FAILED_LATCHED.store(false, Ordering::Relaxed);
     }
@@ -943,24 +950,7 @@ pub(crate) fn emit_admin_hostless(
             // RECOVERABLE, not terminal: queue this record so the next successful write (through
             // this function's own `drain_pending_audit()` above, or `emit`'s) delivers it instead of
             // losing it — see the `PendingAuditQueue` section above.
-            enqueue_pending_audit(ADMIN_LOG, suffix);
-            if !WRITE_FAILED_LATCHED.swap(true, Ordering::Relaxed) {
-                crate::diagnostics::diag_error!(
-                    crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
-                    "the durable admin audit record could NOT be written through the journal seam: \
-                     this mutation is being served and its evidence is QUEUED for recovery rather \
-                     than lost — it will be retried the next time this stream writes successfully. \
-                     The chain position is unchanged, so the chain stays contiguous — what is \
-                     missing FOR NOW is this record, not the ones after it."
-                );
-            } else {
-                crate::diagnostics::diag_debug!(
-                    crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
-                    "the durable admin audit record could NOT be written through the journal seam; \
-                     its evidence is QUEUED for recovery. The chain position is unchanged, so the \
-                     chain stays contiguous."
-                );
-            }
+            queue_unwritten(&WRITE_FAILED_LATCHED, ADMIN_LOG, suffix);
         }
     }
 }
