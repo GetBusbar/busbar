@@ -13,6 +13,10 @@
 //! (`crates/busbar/src/ir/mod.rs` `IrRequest`) and cleared `extra` on the seam
 //! (`crates/busbar/src/ir/variant.rs:295`), so in v1.5.5 every one of these members was DROPPED
 //! cross-dialect; the carry below is the Q57 wave's, not this lane's.
+//!
+//! That carry is the signed-off 1.6.0 behaviour: docs/design/1.6.0-QUESTIONS.md Q61 (owner) —
+//! "the IR maps 100% wherever a target dialect can carry a field — a drop is a defect". Every drop
+//! pinned below is a target with no member for the field.
 
 use crate::codec::proto_codec::protocol_for;
 use serde_json::{json, Value};
