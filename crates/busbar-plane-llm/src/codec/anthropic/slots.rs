@@ -108,7 +108,7 @@ pub(super) fn write_hosted_tool(
     }
     let mut obj = serde_json::Map::new();
     match tool {
-        crate::codec::ir::IrHostedTool::WebSearch(ws) => {
+        crate::codec::ir::IrHostedTool::WebSearch(search) => {
             obj.insert(
                 keys::TYPE.to_string(),
                 serde_json::json!(HOSTED_TOOL_WEB_SEARCH),
@@ -116,14 +116,14 @@ pub(super) fn write_hosted_tool(
             obj.insert(keys::NAME.to_string(), serde_json::json!("web_search"));
             put_limits(
                 &mut obj,
-                ws.max_uses,
-                &ws.allowed_domains,
-                &ws.blocked_domains,
+                search.max_uses,
+                &search.allowed_domains,
+                &search.blocked_domains,
             );
-            if let Some(loc) = &ws.user_location {
+            if let Some(loc) = &search.user_location {
                 obj.insert(keys::USER_LOCATION.to_string(), loc.write_flat());
             }
-            if ws.search_context_size.is_some() {
+            if search.search_context_size.is_some() {
                 tracing::warn!(
                     "dropping web search search_context_size on Anthropic egress: the Anthropic web \
                      search tool has no such member; the tool is kept"

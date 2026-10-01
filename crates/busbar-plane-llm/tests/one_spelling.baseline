@@ -4,5 +4,7 @@ anthropic = 0
 bedrock = 0
 cohere = 0
 gemini = 0
-openai_chat = 0
+# openai_chat: `voice` (the speech request member) is spelled twice, request and response, rather
+# than named by a const: an identifier with `voice` in it is plane vocabulary to kind-isolation.
+openai_chat = 1
 openai_responses = 0

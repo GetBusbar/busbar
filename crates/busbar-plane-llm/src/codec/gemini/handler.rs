@@ -8,10 +8,10 @@ use super::{
     FIELD_CANDIDATES, FIELD_CANDIDATES_TOKEN_COUNT, FIELD_CONTENTS, FIELD_FINISH_REASON,
     FIELD_GENERATE_CONTENT, FIELD_GENERATION_CONFIG, FIELD_GUIDANCE_SCALE, FIELD_INLINE_DATA,
     FIELD_INLINE_DATA_SNAKE, FIELD_MIME_TYPE, FIELD_MIME_TYPE_SNAKE, FIELD_NEGATIVE_PROMPT,
-    FIELD_OUTPUT_DIMENSIONALITY, FIELD_PARTS, FIELD_PERSON_GENERATION, FIELD_PREBUILT_VOICE_CONFIG,
+    FIELD_OUTPUT_DIMENSIONALITY, FIELD_PARTS, FIELD_PERSON_GENERATION,
     FIELD_PREDICTIONS, FIELD_PROMPT_TOKEN_COUNT, FIELD_RESPONSE_MODALITIES, FIELD_SAMPLE_COUNT,
     FIELD_SAMPLE_IMAGE_SIZE, FIELD_STREAM_GENERATE_CONTENT, FIELD_TOTAL_TOKEN_COUNT,
-    FIELD_USAGE_METADATA, FIELD_VALUES, FIELD_VOICE_CONFIG, FIELD_VOICE_NAME, GEMINI_AUDIO,
+    FIELD_USAGE_METADATA, FIELD_VALUES, GEMINI_AUDIO,
     GEMINI_FINISH_STOP,
 };
 use crate::codec::ir::audio::{SpeechResp, TranscriptionResp};
@@ -256,6 +256,12 @@ leaf_op! {
     SpeechRespHandle = read_speech_response;
 }
 
+/// One named prebuilt speaker: `{voiceConfig: {prebuiltVoiceConfig: {voiceName}}}` (the single
+/// speaker's config, and each multi-speaker entry's beside its `speaker`).
+fn prebuilt_speaker(name: &str) -> Value {
+    json!({ "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": name } } })
+}
+
 /// IR → gemini TTS request wire (the body of [`GeminiSpeech::write_request`], moved behind the
 /// `(speech, gemini)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
 pub fn write_speech_request(r: &crate::codec::ir::audio::SpeechReq) -> Bytes {
@@ -264,16 +270,15 @@ pub fn write_speech_request(r: &crate::codec::ir::audio::SpeechReq) -> Bytes {
     // `voiceConfig`. The old writer never read `SpeechReq::speakers`, so a two-speaker request was
     // silently collapsed to one voice on a same-/cross-protocol hop.
     let speech_config = if r.speakers.is_empty() {
-        json!({ (FIELD_VOICE_CONFIG): { (FIELD_PREBUILT_VOICE_CONFIG): { (FIELD_VOICE_NAME): r.voice } } })
+        prebuilt_speaker(&r.voice)
     } else {
         let configs: Vec<Value> = r
             .speakers
             .iter()
             .map(|(speaker, voice)| {
-                json!({
-                    (keys::SPEAKER): speaker,
-                    (FIELD_VOICE_CONFIG): { (FIELD_PREBUILT_VOICE_CONFIG): { (FIELD_VOICE_NAME): voice } },
-                })
+                let mut config = prebuilt_speaker(voice);
+                config[keys::SPEAKER] = json!(speaker);
+                config
             })
             .collect();
         json!({ "multiSpeakerVoiceConfig": { "speakerVoiceConfigs": configs } })

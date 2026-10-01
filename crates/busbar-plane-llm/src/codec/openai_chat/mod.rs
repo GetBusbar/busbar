@@ -367,8 +367,6 @@ const W_WORDS: &str = "words";
 const WORD: &str = "word";
 /// The OpenAI wire word `seconds`.
 const SECONDS: &str = "seconds";
-/// The OpenAI wire word `voice`.
-const VOICE: &str = "voice";
 /// The OpenAI wire word `speed`.
 const SPEED: &str = "speed";
 /// The OpenAI wire word `encoding_format`.

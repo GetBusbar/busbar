@@ -89,13 +89,13 @@ pub(super) fn write_gemini_hosted_tools(hosted: &[IrHostedTool]) -> Vec<serde_js
                     );
                     return None;
                 }
-                IrHostedTool::WebSearch(ws) => (
+                IrHostedTool::WebSearch(search) => (
                     GEMINI_GOOGLE_SEARCH,
-                    ws.max_uses.is_some()
-                        || !ws.allowed_domains.is_empty()
-                        || !ws.blocked_domains.is_empty()
-                        || ws.user_location.is_some()
-                        || ws.search_context_size.is_some(),
+                    search.max_uses.is_some()
+                        || !search.allowed_domains.is_empty()
+                        || !search.blocked_domains.is_empty()
+                        || search.user_location.is_some()
+                        || search.search_context_size.is_some(),
                 ),
                 IrHostedTool::CodeExecution => (GEMINI_CODE_EXECUTION, false),
                 IrHostedTool::WebFetch(wf) => (

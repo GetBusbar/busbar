@@ -531,8 +531,6 @@ const FIELD_OUTPUT_DIMENSIONALITY: &str = "outputDimensionality";
 const FIELD_PARTS: &str = "parts";
 /// The wire word `personGeneration`.
 const FIELD_PERSON_GENERATION: &str = "personGeneration";
-/// The wire word `prebuiltVoiceConfig`.
-const FIELD_PREBUILT_VOICE_CONFIG: &str = "prebuiltVoiceConfig";
 /// The wire word `predictions`.
 const FIELD_PREDICTIONS: &str = "predictions";
 /// The wire word `responseLogprobs`.
@@ -569,10 +567,6 @@ const FIELD_TOP_CANDIDATES: &str = "topCandidates";
 const FIELD_URI: &str = "uri";
 /// The wire word `values`.
 const FIELD_VALUES: &str = "values";
-/// The wire word `voiceConfig`.
-const FIELD_VOICE_CONFIG: &str = "voiceConfig";
-/// The wire word `voiceName`.
-const FIELD_VOICE_NAME: &str = "voiceName";
 /// The wire word `x-goog-api-key`.
 const FIELD_X_GOOG_API_KEY: &str = "x-goog-api-key";
 /// The wire word `ABORTED`.

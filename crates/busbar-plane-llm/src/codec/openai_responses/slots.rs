@@ -152,13 +152,13 @@ pub(super) fn read_hosted_tool(tool: &serde_json::Value) -> Option<crate::codec:
             if obj.keys().any(|k| !WEB_SEARCH_KEYS.contains(&k.as_str())) {
                 return None;
             }
-            let mut ws = crate::codec::ir::IrWebSearch::default();
+            let mut search = crate::codec::ir::IrWebSearch::default();
             if let Some(filters) = obj.get(FILTERS).filter(|f| !f.is_null()) {
                 let fobj = filters.as_object()?;
                 if fobj.keys().any(|k| k != keys::ALLOWED_DOMAINS) {
                     return None;
                 }
-                ws.allowed_domains = fobj
+                search.allowed_domains = fobj
                     .get(keys::ALLOWED_DOMAINS)
                     .and_then(|d| d.as_array())
                     .map(|arr| {
@@ -169,15 +169,15 @@ pub(super) fn read_hosted_tool(tool: &serde_json::Value) -> Option<crate::codec:
                     .unwrap_or_default();
             }
             if let Some(loc) = obj.get(keys::USER_LOCATION).filter(|l| !l.is_null()) {
-                ws.user_location = Some(crate::codec::ir::IrUserLocation::read_members(
+                search.user_location = Some(crate::codec::ir::IrUserLocation::read_members(
                     loc.as_object()?,
                 ));
             }
             if let Some(size) = obj.get(keys::SEARCH_CONTEXT_SIZE).filter(|s| !s.is_null()) {
-                ws.search_context_size =
+                search.search_context_size =
                     Some(crate::codec::ir::IrVerbosity::parse(size.as_str()?)?);
             }
-            Some(crate::codec::ir::IrHostedTool::WebSearch(ws))
+            Some(crate::codec::ir::IrHostedTool::WebSearch(search))
         }
         CODE_INTERPRETER => {
             let auto_container = obj.get(keys::CONTAINER).is_some_and(|c| {
@@ -201,25 +201,25 @@ pub(super) fn write_hosted_tool(
     tool: &crate::codec::ir::IrHostedTool,
 ) -> Option<serde_json::Value> {
     match tool {
-        crate::codec::ir::IrHostedTool::WebSearch(ws) => {
+        crate::codec::ir::IrHostedTool::WebSearch(search) => {
             let mut out = serde_json::Map::new();
             out.insert(keys::TYPE.to_string(), serde_json::json!(keys::WEB_SEARCH));
-            if !ws.allowed_domains.is_empty() {
+            if !search.allowed_domains.is_empty() {
                 out.insert(
                     FILTERS.to_string(),
-                    serde_json::json!({ (keys::ALLOWED_DOMAINS): ws.allowed_domains }),
+                    serde_json::json!({ (keys::ALLOWED_DOMAINS): search.allowed_domains }),
                 );
             }
-            if let Some(loc) = &ws.user_location {
+            if let Some(loc) = &search.user_location {
                 out.insert(keys::USER_LOCATION.to_string(), loc.write_flat());
             }
-            if let Some(size) = ws.search_context_size {
+            if let Some(size) = search.search_context_size {
                 out.insert(
                     keys::SEARCH_CONTEXT_SIZE.to_string(),
                     serde_json::json!(size.as_str()),
                 );
             }
-            if ws.max_uses.is_some() || !ws.blocked_domains.is_empty() {
+            if search.max_uses.is_some() || !search.blocked_domains.is_empty() {
                 tracing::warn!(
                     "responses writer: the web_search tool models no `max_uses` / \
                      `blocked_domains`; dropping them and keeping the tool (lossy-by-target)"
