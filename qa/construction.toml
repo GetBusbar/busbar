@@ -515,11 +515,13 @@ because = "OWNER GRANT 2026-09-29 (3), ARCHITECT approval: line-limit re-arm at 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY WIRE-STORE C1 + CONNECTOR-19 (the store SDK door; the
 #    framer over the host socket and the blank in/out) — measured at the tip
 
+# [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25682 -> 26157 (train BIG) — EXPIRED AND STRUCK: its commit reached the base.
+
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 25682
-to      = 27103
-because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception at the measure, itemised per lane over predev 25682: E12 (SWEEP-L2 -186 kinds.rs traits, SWEEP-L3 -57) measured 25439 (-243); URL-SEAM busbar_contract::net +489; H2 Caller, caller-scoped host services, merge_list, entitlement and random.fill wrappers +229. 25682 - 243 + 489 + 229 = 26157. Then the llm fold, plane ABI v1 pre-tag edits (abi/plane/mod.rs RefusalStatus, REFUSAL_ANY_DIALECT, the tail's refusal_statuses, the RefusalIn/ArriveIn/ArriveOut/OnPieceIn/Claim fields and the wire refusal-code table; abi/plane/check.rs; layout pins; the TRANSITIONAL head seam, 1.6.0-TODO.md row 34c), +301 measured over the plane driver core: 26157 + 301 = 26458. Then K2's contract half at the measurement, +631: the auth kind's calls and the safe verify door +434, the outbound auth half +70, the host-side PollConns reader +10, a need's kept head fields +51, the plane ABI's piece claim/dialect/caller and head FieldList +59, one class per report +7: 26458 + 631 = 27089. Then a plane's fee units are billable classes it can report (the tail check, step 17), +16 at the measurement: 27089 + 16 = 27105. Measured on the stacked unit tip, the kernel-only money verdicts included (ARCHITECT ruling R5, spec #83(a)): 27103."
+from    = 26157
+to      = 27108
+because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception at the measure, itemised per lane over predev 25682: E12 (SWEEP-L2 -186 kinds.rs traits, SWEEP-L3 -57) measured 25439 (-243); URL-SEAM busbar_contract::net +489; H2 Caller, caller-scoped host services, merge_list, entitlement and random.fill wrappers +229. 25682 - 243 + 489 + 229 = 26157. Then the llm fold, plane ABI v1 pre-tag edits (abi/plane/mod.rs RefusalStatus, REFUSAL_ANY_DIALECT, the tail's refusal_statuses, the RefusalIn/ArriveIn/ArriveOut/OnPieceIn/Claim fields and the wire refusal-code table; abi/plane/check.rs; layout pins; the TRANSITIONAL head seam, 1.6.0-TODO.md row 34c), +301 measured over the plane driver core: 26157 + 301 = 26458. Then K2's contract half at the measurement, +631: the auth kind's calls and the safe verify door +434, the outbound auth half +70, the host-side PollConns reader +10, a need's kept head fields +51, the plane ABI's piece claim/dialect/caller and head FieldList +59, one class per report +7: 26458 + 631 = 27089. Then a plane's fee units are billable classes it can report (the tail check, step 17), +16 at the measurement: 27089 + 16 = 27105. Measured on the stacked unit tip, the kernel-only money verdicts included (ARCHITECT ruling R5, spec #83(a)): 27103. Then ABI-TRIM F3 ($), abi::sdk::store reserve and slice_release write into host-lent buffers, +27; summed on the trunk by CONVERGER: 27081 + 27 = 27108, re-armed at the segment-tip measurement."
 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
@@ -539,11 +541,13 @@ because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan a
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 24189 -> 24237 (STEP-20) — EXPIRED AND STRUCK: its commit reached the base;
 # struck by the K1 plane driver re-arm above, which declares the next figure.
 
+# [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 25682 -> 26157 (train BIG) — EXPIRED AND STRUCK: its commit reached the base.
+
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 25682
-to      = 27103
-because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception at the measure, itemised per lane over predev 25682: E12 (SWEEP-L2 -186 kinds.rs traits, SWEEP-L3 -57) measured 25439 (-243); URL-SEAM busbar_contract::net +489; H2 Caller, caller-scoped host services, merge_list, entitlement and random.fill wrappers +229. 25682 - 243 + 489 + 229 = 26157. Then the llm fold, plane ABI v1 pre-tag edits (abi/plane/mod.rs RefusalStatus, REFUSAL_ANY_DIALECT, the tail's refusal_statuses, the RefusalIn/ArriveIn/ArriveOut/OnPieceIn/Claim fields and the wire refusal-code table; abi/plane/check.rs; layout pins; the TRANSITIONAL head seam, 1.6.0-TODO.md row 34c), +301 measured over the plane driver core: 26157 + 301 = 26458. Then K2's contract half at the measurement, +631: the auth kind's calls and the safe verify door +434, the outbound auth half +70, the host-side PollConns reader +10, a need's kept head fields +51, the plane ABI's piece claim/dialect/caller and head FieldList +59, one class per report +7: 26458 + 631 = 27089. Then a plane's fee units are billable classes it can report (the tail check, step 17), +16 at the measurement: 27089 + 16 = 27105. Measured on the stacked unit tip, the kernel-only money verdicts included (ARCHITECT ruling R5, spec #83(a)): 27103."
+from    = 26157
+to      = 27108
+because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception at the measure, itemised per lane over predev 25682: E12 (SWEEP-L2 -186 kinds.rs traits, SWEEP-L3 -57) measured 25439 (-243); URL-SEAM busbar_contract::net +489; H2 Caller, caller-scoped host services, merge_list, entitlement and random.fill wrappers +229. 25682 - 243 + 489 + 229 = 26157. Then the llm fold, plane ABI v1 pre-tag edits (abi/plane/mod.rs RefusalStatus, REFUSAL_ANY_DIALECT, the tail's refusal_statuses, the RefusalIn/ArriveIn/ArriveOut/OnPieceIn/Claim fields and the wire refusal-code table; abi/plane/check.rs; layout pins; the TRANSITIONAL head seam, 1.6.0-TODO.md row 34c), +301 measured over the plane driver core: 26157 + 301 = 26458. Then K2's contract half at the measurement, +631: the auth kind's calls and the safe verify door +434, the outbound auth half +70, the host-side PollConns reader +10, a need's kept head fields +51, the plane ABI's piece claim/dialect/caller and head FieldList +59, one class per report +7: 26458 + 631 = 27089. Then a plane's fee units are billable classes it can report (the tail check, step 17), +16 at the measurement: 27089 + 16 = 27105. Measured on the stacked unit tip, the kernel-only money verdicts included (ARCHITECT ruling R5, spec #83(a)): 27103. Then ABI-TRIM F3 ($), abi::sdk::store reserve and slice_release write into host-lent buffers, +27; summed on the trunk by CONVERGER: 27081 + 27 = 27108, re-armed at the segment-tip measurement."
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
@@ -877,7 +881,9 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # ── SUMMED on the trunk (CONVERGER): contract_caps 27068 + (26608 - 26596) = 27080; the measurement at the segment tip re-arms it.
 # RE-ARMED 26608 -> 26609 with its pair, AT THE MEASUREMENT: A line refuses a class no plane declared (the refusal, its diagnostic, the posting flag): kernel +19, contract +1.
 # ── SUMMED on the trunk (CONVERGER): contract_caps 27080 + (26609 - 26608) = 27081; the measurement at the segment tip re-arms it.
-contract_caps = 27081
+# RE-ARMED 26157 -> 26184 with its pair (ABI-TRIM F3 $, +27).
+# ── SUMMED on the trunk (CONVERGER): contract_caps 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
+contract_caps = 27108
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1639,7 +1645,9 @@ contract_crate = "busbar-contract"
 # ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27068 + (26608 - 26596) = 27080; the measurement at the segment tip re-arms it.
 # RE-ARMED 26608 -> 26609 with its pair: A line refuses a class no plane declared (the refusal, its diagnostic, the posting flag): kernel +19, contract +1.
 # ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27080 + (26609 - 26608) = 27081; the measurement at the segment tip re-arms it.
-caps_contract_ceiling = 27081
+# RE-ARMED 26157 -> 26184 with its pair (ABI-TRIM F3 $, +27).
+# ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
+caps_contract_ceiling = 27108
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
