@@ -372,6 +372,7 @@ dependencies = [
  "busbar-plugin-example-plane",
  "busbar-plugin-loader",
  "busbar-store-memory",
+ "busbar-transport-grpc",
  "busbar-transport-http",
  "busbar-transport-stdio",
  "busbar-transport-tcp",
@@ -999,6 +1000,27 @@ dependencies = [
  "busbar-contract",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "busbar-transport-grpc"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "bytes",
+ "futures",
+ "http",
+ "http-body",
+ "hyper",
+ "hyper-util",
+ "libloading",
+ "rcgen",
+ "rustls",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+ "tonic",
+ "tower",
 ]
 
 [[package]]

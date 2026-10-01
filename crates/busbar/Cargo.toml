@@ -154,6 +154,8 @@ busbar-export-otlp = { workspace = true, optional = true }
 # Which wires a build links is the `transport` rows of the linked table below; the source names none.
 busbar-transport-tcp = { path = "../busbar-transport-tcp" }
 busbar-transport-http = { path = "../busbar-transport-http" }
+# gRPC: its own framer door over the carrier (OWNER 2026-09-29, "1 new transport").
+busbar-transport-grpc = { path = "../busbar-transport-grpc" }
 # WebSocket, and the ONE transport that is optional: it is the voice plane's edge and nothing else
 # reaches it, so a build without voice must not carry it. Non-optional, `--no-default-features` still
 # pulled `tokio-tungstenite` through this line and voice stopped being strong-form deletable — the
@@ -341,7 +343,7 @@ transport-tcp = "busbar-transport-tcp"
 transport-http = "busbar-transport-http"
 transport-sse = "busbar-transport-http"
 transport-ws = "busbar-transport-ws"
-transport-grpc = "busbar-transport-http"
+transport-grpc = "busbar-transport-grpc"
 transport-stdio = "busbar-transport-stdio"
 
 # What each linked feature's crate registers (keyed by the feature, as the linked row is), axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
@@ -372,7 +374,7 @@ transport-tcp = "transport transport-door"
 transport-http = "transport"
 transport-sse = "transport"
 transport-ws = "transport"
-transport-grpc = "transport"
+transport-grpc = "transport transport-door"
 transport-stdio = "transport"
 
 # A linked crate whose entry module is not `<crate>::linked`: the decisions plane is a PURE plane
@@ -382,7 +384,6 @@ transport-stdio = "transport"
 busbar-plane-decisions = "crate::root::plane_decisions"
 # One crate, several wires: each row past the crate's own `linked` names its entry.
 transport-sse = "busbar_transport_http::linked::sse"
-transport-grpc = "busbar_transport_http::linked::grpc"
 # An auth plugin's boundary is the SDK's, at its crate root.
 busbar-auth-admin-tokens-plugin = "busbar_auth_admin_tokens_plugin"
 
