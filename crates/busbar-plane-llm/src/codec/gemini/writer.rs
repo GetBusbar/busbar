@@ -752,7 +752,7 @@ impl ProtocolWriter for GeminiWriter {
         // google.rpc.Code name for an HTTP status (the canonical Generative Language API mapping).
         fn status_name_for_http(status: u16) -> &'static str {
             if let Some((name, _)) = STATUS_HTTP.iter().find(|(_, code)| *code == status) {
-                return *name;
+                return name;
             }
             match status {
                 409 => GEMINI_ABORTED,
