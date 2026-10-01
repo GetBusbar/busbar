@@ -224,7 +224,6 @@ land_construction_standing_reds() {
   local reds
   reds="$(cat <<'EOF'
 one-pick-site
-one-pricing-site
 token-sealed
 token-sealed:admit-token-mint
 token-sealed:kernel-seal
