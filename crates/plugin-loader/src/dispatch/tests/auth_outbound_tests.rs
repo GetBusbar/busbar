@@ -216,6 +216,7 @@ fn opened() -> OutboundInstance {
     let p = load_linked::<Auth>(
         plugin::door,
         Bind {
+            instance: Arc::from("the-instance"),
             max_inflight_cap: 64,
             sink: Arc::new(Quiet),
             dispatcher: Adopter::unwatched(),
