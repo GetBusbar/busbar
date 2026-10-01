@@ -857,6 +857,39 @@ unsafe fn array<'a, T>(p: *const T, len: usize) -> Option<&'a [T]> {
     }
 }
 
+/// `st`'s kind tail as this host's `T`, by THE KIND TAIL GROWTH RULE
+/// (`abi::mechanism::door::tail_read_len`): the plugin's first `min(size, host)` bytes, the rest
+/// zero (a field the plugin predates reads absent); refused when NULL or smaller than `frozen`, the
+/// kind's last frozen size. `who` names the plugin in the refusal.
+///
+/// # Safety
+/// `T` is a `#[repr(C)]` kind tail of plain integers and pointers leading with a `KindTailHead`, so
+/// all-zero bytes are a valid `T`; a non-NULL `st.kind_tail` is `'static` plugin data of at least its
+/// stated size.
+pub(crate) unsafe fn kind_tail<T: Copy>(
+    st: &busbar_contract::abi::mechanism::door::Statement,
+    who: &str,
+    frozen: usize,
+) -> Result<T, String> {
+    let p = st.kind_tail;
+    if p.is_null() {
+        return Err(format!("{who} states no kind tail"));
+    }
+    // SAFETY: a non-NULL kind tail leads with a `KindTailHead` (the caller's contract).
+    let size = unsafe { (*p).size };
+    let read = busbar_contract::abi::mechanism::door::tail_read_len(size, frozen, size_of::<T>())
+        .ok_or_else(|| {
+        format!("{who} states a {size}-byte tail, smaller than its frozen {frozen}")
+    })?;
+    let mut tail = std::mem::MaybeUninit::<T>::zeroed();
+    // SAFETY: `read` is at most the plugin's stated size and at most `size_of::<T>()`; the rest of
+    // `tail` stays zero, a valid `T` (the caller's contract).
+    unsafe {
+        std::ptr::copy_nonoverlapping(p.cast::<u8>(), tail.as_mut_ptr().cast::<u8>(), read);
+        Ok(tail.assume_init())
+    }
+}
+
 /// A borrowed string's bytes; NULL-and-empty reads as empty. The length is capped BEFORE any
 /// slice is made: over [`MAX_TEXT`], or non-empty behind NULL, is `None` (a malformed answer).
 pub(crate) fn str_bytes<'a>(s: AbiStr) -> Option<&'a [u8]> {

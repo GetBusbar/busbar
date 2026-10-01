@@ -183,6 +183,11 @@ pub const FACT_INBOUND_NEEDS_BODY_HASH: u32 = 2;
 /// host passes them all in [`VerifyIn::lines`]. An inbound signature check needs it: the set of
 /// signed headers varies per request.
 pub const FACT_INBOUND_ALL_HEADERS: u32 = 4;
+/// [`AuthTail::facts`]: this plugin's `verify` judges THE OPERATOR CREDENTIAL, the one admin
+/// credential that is full by definition; [`AuthTail::operator_principal`] names the principal id
+/// it identifies. Needs [`CAP_INBOUND`] and a non-empty principal; a tail stating it otherwise
+/// refuses the load.
+pub const FACT_OPERATOR: u32 = 8;
 
 /// THE CACHE-FLUSH COUNT's metric family name. An auth plugin that caches verdicts declares a
 /// counter family of this name (no labels) in its Statement, and on `refresh` adds to it the number
@@ -230,7 +235,8 @@ pub struct AuthTail {
     pub head: KindTailHead,
     /// [`CAP_INBOUND`] | [`CAP_LOGIN`] | [`CAP_OUTBOUND`].
     pub caps: u32,
-    /// [`FACT_CACHEABLE`] | [`FACT_INBOUND_NEEDS_BODY_HASH`] | [`FACT_INBOUND_ALL_HEADERS`].
+    /// [`FACT_CACHEABLE`] | [`FACT_INBOUND_NEEDS_BODY_HASH`] | [`FACT_INBOUND_ALL_HEADERS`] |
+    /// [`FACT_OPERATOR`].
     pub facts: u32,
     /// [`LOGIN_KIND_NONE`] | [`LOGIN_KIND_REDIRECT`] | [`LOGIN_KIND_CREDENTIAL`]: the
     /// classification the login chooser reads without calling `begin_login`. It is `NONE` exactly
@@ -245,7 +251,15 @@ pub struct AuthTail {
     pub styles: *const StyleDecl,
     /// How many.
     pub styles_len: usize,
+    /// With [`FACT_OPERATOR`]: the principal id the operator credential identifies; empty
+    /// otherwise. APPENDED after the tail froze at [`AUTH_TAIL_FROZEN`] bytes: a tail of that size
+    /// reads it empty.
+    pub operator_principal: AbiStr,
 }
+
+/// The size [`AuthTail`] froze at before [`AuthTail::operator_principal`] was appended: the
+/// smallest auth tail a host reads (THE KIND TAIL GROWTH RULE, `mechanism::door::tail_read_len`).
+pub const AUTH_TAIL_FROZEN: usize = 40;
 
 /// [`CancelOut::disposition`](super::mechanism::lifecycle::CancelOut) for an auth op: abandoned,
 /// nothing kept.

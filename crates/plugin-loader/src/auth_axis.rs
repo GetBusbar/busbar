@@ -30,7 +30,7 @@ use busbar_contract::auth_calls::{
 };
 
 use crate::auth_door::{AuthInstance, AuthSink};
-use crate::dispatch::kinds::auth::Auth;
+use crate::dispatch::kinds::auth::{Auth, AuthFacts};
 use crate::dispatch::{load_dropped_bytes, load_linked, Bind, Dispatcher, LinkedRow, Plugin};
 use crate::registry::LoadablePlugin;
 use crate::PluginRegistry;
@@ -143,6 +143,26 @@ impl AuthRows {
             .any(|p| p.manifest.alias == module || stated_aliases(p).iter().any(|a| a == module))
     }
 
+    /// THE OPERATOR CREDENTIAL'S ROW: the auth row whose Statement states `FACT_OPERATOR`, as its
+    /// config key and the principal id it names; linked rows first, then the plugins directory's.
+    /// A row whose door will not load states nothing here (its own open reports why).
+    #[must_use]
+    pub fn operator(&self) -> Option<(String, String)> {
+        let rows = self
+            .registry
+            .linked()
+            .iter()
+            .chain(self.registry.loadable());
+        rows.filter(|p| p.manifest.kind == AUTH).find_map(|row| {
+            let alias = &row.manifest.alias;
+            let Ok(Door::Memory(plugin, _)) = self.load(row, alias) else {
+                return None;
+            };
+            let principal = plugin.context::<AuthFacts>()?.operator_principal.clone()?;
+            Some((alias.clone(), principal))
+        })
+    }
+
     /// OPEN one instance of `module` over `settings` under the host's instance `label`.
     ///
     /// # Errors
@@ -223,6 +243,10 @@ impl busbar_contract::auth_calls::AuthAxis for AuthRows {
 
     fn linked(&self, module: &str) -> bool {
         AuthRows::linked(self, module)
+    }
+
+    fn operator(&self) -> Option<(String, String)> {
+        AuthRows::operator(self)
     }
 
     fn open(

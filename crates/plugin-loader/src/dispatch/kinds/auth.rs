@@ -73,6 +73,8 @@ pub struct AuthFacts {
     /// The auth points `verify` is called at (THE DESIGN, "Auth points and guest lists"):
     /// non-empty exactly when it states `CAP_INBOUND`.
     pub inbound_points: AuthPoints,
+    /// With `abi::auth::FACT_OPERATOR`: the principal id the operator credential identifies.
+    pub operator_principal: Option<String>,
 }
 
 /// A `'static` Statement string, copied; `None` when malformed.
@@ -106,20 +108,12 @@ fn carriers(st: &Statement) -> Result<Vec<String>, String> {
 
 /// Read the auth tail, the carriers and the cache-flush family out of `st`.
 fn facts(st: &Statement) -> Result<AuthFacts, String> {
-    let p = st.kind_tail;
-    if p.is_null() {
-        return Err("an auth plugin states no kind tail".into());
-    }
-    // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`; the
-    // whole tail is read only once its size covers this host's `AuthTail`.
-    let size = unsafe { (*p).size };
-    if (size as usize) < std::mem::size_of::<auth::AuthTail>() {
-        return Err(format!(
-            "the auth tail is {size} bytes, smaller than this host's"
-        ));
-    }
-    // SAFETY: as above.
-    let t = unsafe { p.cast::<auth::AuthTail>().read_unaligned() };
+    // SAFETY: `AuthTail` is a `#[repr(C)]` kind tail of integers, pointers and strings (all-zero
+    // valid: an appended field the plugin predates reads absent); a non-NULL kind tail is `'static`
+    // plugin data of its stated size.
+    let t: auth::AuthTail = unsafe {
+        crate::dispatch::plugin::kind_tail(st, "an auth plugin", auth::AUTH_TAIL_FROZEN)
+    }?;
     let carriers = carriers(st)?;
     // The login classification agrees with the login capability, and is one the host knows.
     let logs_in = t.caps & auth::CAP_LOGIN != 0;
@@ -141,6 +135,18 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
             t.inbound_points
         )
     })?;
+    // The operator fact agrees with its principal, and with the inbound capability: the operator
+    // credential is a `verify` that names the principal it identifies. Either without the other
+    // refuses the load.
+    let principal =
+        owned(t.operator_principal).ok_or("the auth operator principal is over-long")?;
+    let operator = t.facts & auth::FACT_OPERATOR != 0;
+    if operator == principal.is_empty() || (operator && t.caps & auth::CAP_INBOUND == 0) {
+        return Err(format!(
+            "the auth tail's operator fact disagrees with its principal ({} bytes) or capabilities",
+            principal.len()
+        ));
+    }
     // Every style states known flags and the points it needs; a stray bit refuses the load.
     if t.styles_len > MAX_STYLES || (t.styles.is_null() && t.styles_len != 0) {
         return Err(format!("the auth tail states {} styles", t.styles_len));
@@ -179,6 +185,7 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
         secret_refs,
         login_kind: t.login_kind,
         inbound_points,
+        operator_principal: operator.then_some(principal),
     })
 }
 
