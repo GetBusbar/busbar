@@ -173,10 +173,13 @@ fn open(settings: &[u8]) -> (Outcome, OpenOut) {
         secrets: secret.as_ptr(),
         secrets_len: 1,
         generation: 1,
+        err_buf: ptr::null_mut(),
+        err_cap: 0,
     };
     let mut out = OpenOut {
         head: out_head(size_of::<OpenOut>()),
         instance: ptr::null_mut(),
+        err_len: 0,
     };
     let o = cross(ops().head.open, ptr::null_mut(), &input, &mut out);
     (o, out)
