@@ -95,3 +95,71 @@ fn generations_are_instance_state() {
     fn state<T: Send + Sync + 'static>() {}
     state::<Generations<PlaneSnapshot>>();
 }
+
+/// The payload a generation was published with is the newest live one's until a newer generation
+/// is published; a holder keeps its own after `retire`, and `retire` drops the SDK's hold.
+#[test]
+fn the_current_payload_is_the_newest_live_generations_and_retire_drops_it() {
+    let gens: Generations<PlaneSnapshot, String> = Generations::new();
+    assert_eq!(gens.current(), None);
+    gens.publish_with(1, &SnapshotSpec::default(), "one".to_string());
+    let held = gens.current().expect("one is live");
+    assert_eq!(*held, "one");
+    // Not visible before its own publish; visible from it on.
+    gens.publish_with(2, &SnapshotSpec::default(), "two".to_string());
+    assert_eq!(gens.current().as_deref().map(String::as_str), Some("two"));
+    assert_eq!(gens.at(1).as_deref().map(String::as_str), Some("one"));
+    // Retiring the newest makes the older one current again; the request that held one keeps it.
+    gens.retire(2);
+    assert_eq!(gens.current().as_deref().map(String::as_str), Some("one"));
+    gens.retire(1);
+    assert_eq!((gens.current(), gens.at(1)), (None, None));
+    assert_eq!(*held, "one");
+    assert_eq!(
+        std::sync::Arc::strong_count(&held),
+        1,
+        "retire dropped the SDK's hold"
+    );
+}
+
+/// Two instances' keyed state are two maps: nothing one inserts is seen by the other.
+#[test]
+fn keyed_state_belongs_to_its_instance() {
+    let first: Keyed<u64, String> = Keyed::new();
+    let second: Keyed<u64, String> = Keyed::new();
+    assert_eq!(first.insert(7, "a".to_string()), None);
+    assert_eq!(second.get(&7), None);
+    assert!(second.is_empty());
+    assert_eq!(first.insert(7, "b".to_string()).as_deref(), Some("a"));
+    assert_eq!(first.with(&7, |v| v.map(|s| s.len())), Some(1));
+    assert_eq!(first.with_all(|m| m.len()), 1);
+    assert_eq!(first.remove(&7).as_deref(), Some("b"));
+    assert_eq!(first.len(), 0);
+    fn state<T: Send + Sync + 'static>() {}
+    state::<Keyed<u64, String>>();
+    state::<Generations<PlaneSnapshot, String>>();
+}
+
+/// Two instances' generations are two holds: what one publishes, retires or answers as current is
+/// never the other's, even under the same generation number.
+#[test]
+fn generations_belong_to_their_instance() {
+    let first: Generations<PlaneSnapshot, String> = Generations::new();
+    let second: Generations<PlaneSnapshot, String> = Generations::new();
+    first.publish_with(1, &SnapshotSpec::default(), "first".to_string());
+    assert_eq!(second.current(), None);
+    assert_eq!(second.at(1), None);
+    assert_eq!(second.live(), 0);
+    second.publish_with(1, &SnapshotSpec::default(), "second".to_string());
+    assert_eq!(
+        first.current().as_deref().map(String::as_str),
+        Some("first")
+    );
+    assert_eq!(
+        second.current().as_deref().map(String::as_str),
+        Some("second")
+    );
+    second.retire(1);
+    assert_eq!(first.at(1).as_deref().map(String::as_str), Some("first"));
+    assert_eq!((first.live(), second.live()), (1, 0));
+}

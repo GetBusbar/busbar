@@ -41,7 +41,8 @@
 //! ```
 
 use std::any::Any;
-use std::sync::Mutex;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 use crate::abi::mechanism::call::{AbiStr, Blob, BLOB_ABSENT, BLOB_JSON};
 use crate::abi::plane::{AdminRoute, Claim, PlaneSnapshot};
@@ -288,27 +289,35 @@ impl Publish for PlaneSnapshot {
     }
 }
 
-/// One published generation: the value (boxed: its address is what the host holds) and the arena
-/// it points into.
-struct Generation<T> {
+/// One published generation: the value (boxed: its address is what the host holds), the arena
+/// it points into, and the plugin's own payload for that generation.
+struct Generation<T, P> {
     generation: u64,
     _value: Box<T>,
     _arena: Arena,
+    payload: Arc<P>,
 }
 
 // SAFETY: `T: Publish` is plain data whose pointers point into `_arena`, owned by the same value;
-// nothing reads through them on a safe path, and nothing mutates either after publishing.
-unsafe impl<T> Send for Generation<T> {}
+// nothing reads through them on a safe path, and nothing mutates either after publishing. The
+// payload is the plugin's own `Send + Sync` value behind an `Arc`.
+unsafe impl<T, P: Send + Sync> Send for Generation<T, P> {}
 // SAFETY: as `Send`.
-unsafe impl<T> Sync for Generation<T> {}
+unsafe impl<T, P: Send + Sync> Sync for Generation<T, P> {}
 
 /// THE PUBLISHED GENERATIONS of one instance: instance state (`Send + Sync`), holding each
-/// published value and its storage until `retire` of its generation, or until it drops (`close`).
-pub struct Generations<T: Publish> {
-    live: Mutex<Vec<Generation<T>>>,
+/// published value and its storage, and the plugin's payload `P` for that generation (what it
+/// built from that generation's settings), until `retire` of its generation, or until it drops
+/// (`close`).
+///
+/// [`Generations::current`] is the NEWEST live generation's payload: what a request arriving now
+/// is answered from. A plugin keeps the `Arc` it took for as long as that request lives, so a
+/// request keeps reading the generation it arrived under while a refresh publishes the next one.
+pub struct Generations<T: Publish, P = ()> {
+    live: Mutex<Vec<Generation<T, P>>>,
 }
 
-impl<T: Publish> std::fmt::Debug for Generations<T> {
+impl<T: Publish, P> std::fmt::Debug for Generations<T, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Generations")
             .field("live", &self.live())
@@ -316,13 +325,21 @@ impl<T: Publish> std::fmt::Debug for Generations<T> {
     }
 }
 
-impl<T: Publish> Default for Generations<T> {
+impl<T: Publish, P> Default for Generations<T, P> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: Publish> Generations<T> {
+impl<T: Publish> Generations<T, ()> {
+    /// Publish `spec` as `generation`, with no payload: the SDK's copy, lowered; the address the
+    /// host reads, valid until [`Generations::retire`] of `generation` or until this drops.
+    pub fn publish(&self, generation: u64, spec: &T::Spec) -> *const T {
+        self.publish_with(generation, spec, ())
+    }
+}
+
+impl<T: Publish, P> Generations<T, P> {
     /// None published.
     #[must_use]
     pub const fn new() -> Self {
@@ -331,15 +348,16 @@ impl<T: Publish> Generations<T> {
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Generation<T>>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Generation<T, P>>> {
         self.live
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Publish `spec` as `generation`: the SDK's copy, lowered; the address the host reads, valid
-    /// until [`Generations::retire`] of `generation` or until this drops.
-    pub fn publish(&self, generation: u64, spec: &T::Spec) -> *const T {
+    /// Publish `spec` as `generation` with the plugin's `payload` for it: the SDK's copy, lowered;
+    /// the address the host reads. Both are held until [`Generations::retire`] of `generation` or
+    /// until this drops.
+    pub fn publish_with(&self, generation: u64, spec: &T::Spec, payload: P) -> *const T {
         let mut arena = Arena::new();
         let value = Box::new(T::lower(spec, generation, &mut arena));
         let p = std::ptr::from_ref::<T>(&*value);
@@ -347,19 +365,132 @@ impl<T: Publish> Generations<T> {
             generation,
             _value: value,
             _arena: arena,
+            payload: Arc::new(payload),
         });
         p
     }
 
-    /// Drop every value published as `generation`, and its storage.
+    /// The newest live generation's payload; `None` when none is live.
+    #[must_use]
+    pub fn current(&self) -> Option<Arc<P>> {
+        self.lock()
+            .iter()
+            .max_by_key(|g| g.generation)
+            .map(|g| Arc::clone(&g.payload))
+    }
+
+    /// The payload of `generation`, while it is live.
+    #[must_use]
+    pub fn at(&self, generation: u64) -> Option<Arc<P>> {
+        self.lock()
+            .iter()
+            .rev()
+            .find(|g| g.generation == generation)
+            .map(|g| Arc::clone(&g.payload))
+    }
+
+    /// Drop every value published as `generation`, its storage, and the SDK's hold on its
+    /// payload (a request still holding the `Arc` keeps its own).
     pub fn retire(&self, generation: u64) {
-        self.lock().retain(|g| g.generation != generation);
+        let gone: Vec<Generation<T, P>> = {
+            let mut live = self.lock();
+            let (gone, keep) = std::mem::take(&mut *live)
+                .into_iter()
+                .partition(|g| g.generation == generation);
+            *live = keep;
+            gone
+        };
+        drop(gone);
     }
 
     /// How many published values are held.
     #[must_use]
     pub fn live(&self) -> usize {
         self.lock().len()
+    }
+}
+
+/// PER-INSTANCE KEYED STATE: a map the SDK locks for the plugin, so a `forbid(unsafe_code)` plugin
+/// that holds no lock of its own can keep per-session and per-request state (what a session set,
+/// what a request was admitted under) across calls.
+///
+/// It lives INSIDE the instance state and nowhere else: a plugin holds no process-global state, so
+/// what it keeps is per-instance and dropped with the instance (`close`). It is not `const`
+/// constructible, so it cannot be a `static`. The plugin bounds it: [`Keyed::len`] is what it
+/// checks before an insert that grows it.
+pub struct Keyed<K, V> {
+    map: Mutex<BTreeMap<K, V>>,
+}
+
+impl<K, V> std::fmt::Debug for Keyed<K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Keyed").field("len", &self.len()).finish()
+    }
+}
+
+impl<K: Ord, V> Default for Keyed<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K, V> Keyed<K, V> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<K, V>> {
+        self.map
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// How many entries are held.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    /// Whether none is held.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.lock().is_empty()
+    }
+}
+
+impl<K: Ord, V> Keyed<K, V> {
+    /// None held.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            map: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    /// Hold `value` under `key`, answering what it replaced.
+    pub fn insert(&self, key: K, value: V) -> Option<V> {
+        self.lock().insert(key, value)
+    }
+
+    /// Drop what `key` holds, answering it.
+    pub fn remove(&self, key: &K) -> Option<V> {
+        self.lock().remove(key)
+    }
+
+    /// Run `f` over the entry `key` names, or `None`, under the lock. `f` must not reach this
+    /// same `Keyed` again.
+    pub fn with<R>(&self, key: &K, f: impl FnOnce(Option<&mut V>) -> R) -> R {
+        f(self.lock().get_mut(key))
+    }
+
+    /// Run `f` over the whole map, under the lock. `f` must not reach this same `Keyed` again.
+    pub fn with_all<R>(&self, f: impl FnOnce(&mut BTreeMap<K, V>) -> R) -> R {
+        f(&mut self.lock())
+    }
+
+    /// A copy of what `key` holds.
+    #[must_use]
+    pub fn get(&self, key: &K) -> Option<V>
+    where
+        V: Clone,
+    {
+        self.lock().get(key).cloned()
     }
 }
 
