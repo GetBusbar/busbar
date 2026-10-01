@@ -457,8 +457,8 @@ const _: () = assert!(MAX_REFUSAL_TEXT >= LARGEST_ADMITTED_FIELD_LINE);
 /// from [`REFUSAL_GATE`]; [`RefusalOut::marker`] from a plane is always `0`.
 pub const MARK_GATE_REJECTED: u32 = 1;
 
-/// [`RecordWrite::op`]: put, the one record write there is. A record is never deleted by a write:
-/// a code past it is FAULT, never a write the kernel drops.
+/// [`RecordWrite::op`]: put, the one record write there is. A put of an EMPTY value is a tombstone:
+/// the record reads as absent. A code past it is FAULT, never a write the kernel drops.
 pub const RECORD_PUT: u32 = 1;
 
 /// [`AdminRoute::flags`]: a public route. [`slot::SERVE`] serves it to an unauthenticated caller;

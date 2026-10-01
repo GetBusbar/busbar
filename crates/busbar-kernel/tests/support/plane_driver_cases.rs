@@ -60,7 +60,7 @@ pub mod stat {
 // ── the doubles ──────────────────────────────────────────────────────────────────────────────────
 
 /// A far end that answers every attempt with the same script, and records what it was sent.
-struct Far {
+pub(crate) struct Far {
     members: Vec<&'static str>,
     script: Vec<FarPiece>,
     sent: Mutex<Vec<OutboundRequest>>,
@@ -68,7 +68,7 @@ struct Far {
 }
 
 impl Far {
-    fn new(members: &[&'static str], chunks: &[&[u8]]) -> Self {
+    pub(crate) fn new(members: &[&'static str], chunks: &[&[u8]]) -> Self {
         let n = chunks.len();
         let script = chunks
             .iter()
@@ -177,7 +177,7 @@ type Head = (u32, Vec<(Vec<u8>, Vec<u8>)>);
 
 /// A caller whose every write waits one turn of the runtime (its side becoming writable).
 #[derive(Default)]
-struct Caller {
+pub(crate) struct Caller {
     head: Mutex<Option<Head>>,
     bytes: Mutex<Vec<u8>>,
     writes: AtomicU64,
@@ -207,7 +207,7 @@ impl Caller {
     fn text(&self) -> String {
         String::from_utf8_lossy(&self.bytes.lock().unwrap()).into_owned()
     }
-    fn status(&self) -> Option<u32> {
+    pub(crate) fn status(&self) -> Option<u32> {
         self.head.lock().unwrap().as_ref().map(|h| h.0)
     }
 }
@@ -265,7 +265,7 @@ impl Book {
     }
 }
 
-fn arrival(target: &str, body: &[u8]) -> Arrival {
+pub(crate) fn arrival(target: &str, body: &[u8]) -> Arrival {
     arrival_by("POST", target, body)
 }
 
@@ -285,7 +285,7 @@ fn after(ms: u64) -> u64 {
 }
 
 /// Run one unit through the one loop; its outcome.
-async fn drive(units: &PlaneUnits<'_, TestUnits, Far, Caller>) -> Outcome {
+pub(crate) async fn drive(units: &PlaneUnits<'_, TestUnits, Far, Caller>) -> Outcome {
     let kernel = Kernel::new();
     let (gauge, canary, leases, meter) = (
         ConcurrencyGauge::new(),

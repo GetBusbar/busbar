@@ -23,3 +23,10 @@ fn the_list_lays_queued_writes_over_the_store_then_applies_after_and_limit() {
     );
     assert_eq!(merge_list(stored, queued, None, 1), vec![kv("a", "s")]);
 }
+
+#[test]
+fn a_tombstone_is_absent_and_a_queued_one_hides_the_stored_row_before_the_limit() {
+    let stored = vec![kv("a", "s"), kv("b", ""), kv("c", "s")];
+    let queued = vec![kv("a", "")];
+    assert_eq!(merge_list(stored, queued, None, 1), vec![kv("c", "s")]);
+}

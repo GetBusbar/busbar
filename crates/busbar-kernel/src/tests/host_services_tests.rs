@@ -596,6 +596,27 @@ fn records_list_merges_queued_writes_in_key_order_after_the_cursor() {
 }
 
 #[test]
+fn a_queued_tombstone_hides_the_stored_record_from_get_and_list() {
+    let r = rig();
+    let me = caller("inst");
+    put(&r.store, "a", "stored");
+    put(&r.store, "b", "");
+    r.s.pending().enqueue("inst", "approval", b"a", Vec::new());
+    let all = RecordsList {
+        kind: "approval".into(),
+        prefix: Vec::new(),
+        after: None,
+        limit: 0,
+    };
+    for key in [&b"a"[..], &b"b"[..]] {
+        let s = run(|l| r.s.records_get(&me, "approval", key, l));
+        assert_eq!(s.value, svc::ABSENT, "{key:?}");
+    }
+    let s = run(|l| r.s.records_list(&me, all, l));
+    assert!(s.bytes.is_empty() && s.spans.is_empty());
+}
+
+#[test]
 fn a_claim_is_won_once_and_taken_after_until_it_lapses() {
     let r = rig();
     let me = caller("inst");

@@ -49,6 +49,7 @@ use busbar_contract::caps::{
     Refusal, Route, RoutePlan, SeatVerdict as StepAnswer, VerifiedDestination, Verify,
 };
 use busbar_contract::plane_calls::PlaneCalls;
+use busbar_contract::services::Caller;
 use tokio::sync::watch;
 
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
@@ -60,6 +61,7 @@ pub use money::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
 pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick};
 
 use crate::auth::CallerRefKey;
+use crate::host_services::KernelServices;
 use crate::slice::GroupLeaseSlip;
 use crate::teller::{Ended, Evidence, RouteAwait, RouteLeg, UnitCtx, Units};
 
@@ -158,6 +160,8 @@ pub struct PlaneDriver {
     money: Arc<dyn MoneySeam>,
     buried: Mutex<Vec<cancel::Buried>>,
     reload: watch::Sender<bool>,
+    /// The kernel's record write path and the instance the plane's writes are keyed by.
+    records: Option<(Arc<KernelServices>, Caller)>,
 }
 
 impl std::fmt::Debug for PlaneDriver {
@@ -181,7 +185,16 @@ impl PlaneDriver {
             money,
             buried: Mutex::new(Vec::new()),
             reload: watch::channel(false).0,
+            records: None,
         }
+    }
+
+    /// Apply the plane's record writes through `services`, as the instance `caller`. Without it a
+    /// piece that writes a record fails its unit: a write is never dropped.
+    #[must_use]
+    pub fn with_records(mut self, services: Arc<KernelServices>, caller: Caller) -> Self {
+        self.records = Some((services, caller));
+        self
     }
 
     /// The plane's generation is being replaced: every running unit is cancelled by the driver

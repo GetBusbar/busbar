@@ -581,6 +581,15 @@ impl KernelServices {
         Ok(())
     }
 
+    /// The caller's record kind at `index` of its tail ([`RecordWrite::kind`] indexes it).
+    ///
+    /// [`RecordWrite::kind`]: busbar_contract::abi::plane::RecordWrite::kind
+    #[must_use]
+    pub fn record_kind(&self, caller: &Caller, index: u32) -> Option<RecordSchemaId> {
+        let facts = self.facts(caller)?;
+        facts.record_kinds.get(index as usize).copied()
+    }
+
     /// CLAIM `(op, key)` for the instance labelled `instance` for `ttl_ms`, or, with `held`, extend
     /// the epoch it won. The kernel calls it on the instance's behalf (the inbound-auth replay claim
     /// is one: `held` is always `None`, so a second sighting inside the window is Taken and nothing
@@ -852,14 +861,19 @@ impl HostServices for KernelServices {
             });
             s
         };
+        // An empty value is a tombstone: the record is absent.
         if let Some(v) = self.pending.get(&caller.instance, kind, key) {
-            return Ran::Now(found(v));
+            return Ran::Now(if v.is_empty() {
+                Stored::ready(svc::ABSENT)
+            } else {
+                found(v)
+            });
         }
         let reads = Arc::clone(&records.reads);
         let key = record_key(&caller.instance, key);
         submit(pool, later, move || match reads.record_get(schema, &key) {
-            Ok(Some(v)) => found(v.as_slice().to_vec()),
-            Ok(None) => Stored::ready(svc::ABSENT),
+            Ok(Some(v)) if !v.as_slice().is_empty() => found(v.as_slice().to_vec()),
+            Ok(_) => Stored::ready(svc::ABSENT),
             Err(_) => failed(STORE_FAILED),
         })
     }

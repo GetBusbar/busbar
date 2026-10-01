@@ -26,10 +26,10 @@ use std::time::{Duration, Instant};
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, RefusalIn, RefusalOut, UnitCount,
-    CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER,
-    FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT,
-    PRINCIPAL_OPTIONAL, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, RecordWrite, RefusalIn, RefusalOut,
+    UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_TO_FAR_END,
+    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
+    PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, RECORD_PUT, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };
 use busbar_contract::caps::OpClassId;
 use busbar_contract::plane_calls::{Answered, Grow, Lent, PieceInFlight, PlaneCalls};
@@ -279,6 +279,29 @@ impl Double {
                     let n = u.body.len().min(i.reply_cap);
                     std::ptr::copy_nonoverlapping(u.body.as_ptr(), i.reply_buf, n);
                     o.emitted = n as u64;
+                    o.flags = EMIT_DONE;
+                    return (ready(Outcome::Ready), Hold::No);
+                }
+                if head.as_slice() == b"/records" {
+                    // A plane that writes records: `key=value;...` puts, an empty value a
+                    // tombstone; it answers locally with nothing.
+                    let mut at = 0;
+                    let mut n = 0;
+                    for kv in u.body.split(|b| *b == b';') {
+                        let eq = kv.iter().position(|b| *b == b'=').unwrap_or(kv.len());
+                        let key = put(i, &mut at, &kv[..eq]);
+                        let value = put(i, &mut at, kv.get(eq + 1..).unwrap_or_default());
+                        *i.records_buf.add(n) = RecordWrite {
+                            kind: 0,
+                            op: RECORD_PUT,
+                            key,
+                            value,
+                        };
+                        n += 1;
+                    }
+                    o.records_written = n as u32;
+                    o.arena_written = at as u64;
+                    o.reply_status = 204;
                     o.flags = EMIT_DONE;
                     return (ready(Outcome::Ready), Hold::No);
                 }
@@ -645,4 +668,129 @@ fn the_flush_epoch_is_one_counter_across_its_clones() {
     epoch.bump();
     epoch.bump();
     assert_eq!(reader.now(), 2, "a clone reads the bumps of the tick");
+}
+
+// ── record writes ────────────────────────────────────────────────────────────────────────────────
+
+use busbar_contract::abi::host::service as svc;
+use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::ids::RecordSchemaId;
+use busbar_contract::kinds::{RecordBytes, StoreError};
+use busbar_contract::services::{Caller as Instance, HostServices, Ran, RecordsList, Stored};
+use busbar_kernel::governance::MemoryStore;
+use busbar_kernel::host_records::RecordRows;
+use busbar_kernel::host_services::{InstanceFacts, KernelServices, Offload, SystemResolver};
+
+/// The memory store's typed records.
+struct Rows(Arc<MemoryStore>);
+
+impl RecordRows for Rows {
+    fn record_put(&self, s: RecordSchemaId, k: &[u8], v: &RecordBytes) -> Result<(), StoreError> {
+        self.0.record_put(s, k, v)
+    }
+
+    fn record_get(&self, s: RecordSchemaId, k: &[u8]) -> Result<Option<RecordBytes>, StoreError> {
+        self.0.record_get(s, k)
+    }
+
+    fn record_scan(
+        &self,
+        s: RecordSchemaId,
+        prefix: &[u8],
+        limit: u32,
+    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError> {
+        self.0.record_scan(s, prefix, limit)
+    }
+}
+
+/// Runs every store call at once, on the caller's thread.
+struct Inline;
+
+impl Offload for Inline {
+    fn run(&self, job: Box<dyn FnOnce() + Send>) {
+        job();
+    }
+}
+
+fn instance() -> Instance {
+    Instance {
+        instance: Arc::from("inst"),
+        plugin: Arc::from("the-plane"),
+        kind: KindCode::Plane,
+    }
+}
+
+/// The kernel's records services over a memory store, the instance admitted with one kind.
+fn records() -> Arc<KernelServices> {
+    let store = Arc::new(MemoryStore::new());
+    let s = KernelServices::new(HashMap::new(), Arc::new(SystemResolver))
+        .with_records(Arc::new(Rows(Arc::clone(&store))), store)
+        .with_pool(Arc::new(Inline));
+    let facts = InstanceFacts {
+        record_kinds: vec![RecordSchemaId::new("task")],
+        ..InstanceFacts::default()
+    };
+    s.admit("inst", facts).unwrap();
+    Arc::new(s)
+}
+
+/// A may-pend service's answer.
+fn answer(f: impl FnOnce(busbar_contract::services::Later) -> Ran) -> Stored {
+    let slot = Arc::new(Mutex::new(None));
+    let put = Arc::clone(&slot);
+    match f(Box::new(move |s| *put.lock().unwrap() = Some(s))) {
+        Ran::Now(s) => s,
+        Ran::Later => slot.lock().unwrap().take().expect("answered"),
+    }
+}
+
+fn get(s: &KernelServices, key: &[u8]) -> Stored {
+    answer(|l| s.records_get(&instance(), "task", key, l))
+}
+
+fn list(s: &KernelServices) -> Vec<u8> {
+    let all = RecordsList {
+        kind: "task".into(),
+        prefix: Vec::new(),
+        after: None,
+        limit: 0,
+    };
+    answer(|l| s.records_list(&instance(), all, l)).bytes
+}
+
+/// One unit whose plane writes `body`'s records and answers locally.
+async fn write(driver: &PlaneDriver, body: &[u8]) -> busbar_contract::caps::Outcome {
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&[], &[]),
+        cases::Caller::default(),
+    );
+    let units = driver.unit(&steps, &far, &caller, cases::arrival("/records", body), 0);
+    cases::drive(&units).await
+}
+
+/// THE PUMP APPLIES A PIECE'S RECORD WRITES (`RecordWrite`) through the kernel's record write
+/// path, keyed by the instance: a put reads back through `records.get` and `records.list`, and a
+/// put of an empty value is a tombstone that hides the record from both.
+#[tokio::test]
+async fn a_pieces_record_writes_reach_the_records_and_a_tombstone_hides_one() {
+    let s = records();
+    let mut r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    r.driver = r.driver.with_records(Arc::clone(&s), instance());
+    let done = |o| matches!(o, busbar_contract::caps::Outcome::Completed);
+    assert!(done(write(&r.driver, b"a=1;b=2").await));
+    let a = get(&s, b"a");
+    assert_eq!((a.value, a.bytes.as_slice()), (svc::FOUND, &b"1"[..]));
+    assert_eq!(list(&s), b"a1b2");
+    assert!(done(write(&r.driver, b"a=").await));
+    assert_eq!(get(&s, b"a").value, svc::ABSENT);
+    assert_eq!(list(&s), b"b2");
+}
+
+/// A record write is never dropped: with no record path the unit that wrote it fails.
+#[tokio::test]
+async fn a_record_write_with_no_record_path_fails_the_unit() {
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let o = write(&r.driver, b"a=1").await;
+    assert!(!matches!(o, busbar_contract::caps::Outcome::Completed), "{o:?}");
 }
