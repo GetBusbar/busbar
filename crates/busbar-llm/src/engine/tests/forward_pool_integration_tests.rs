@@ -432,7 +432,7 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
             1_000_000_000,
         )
         .unwrap();
-    let secret = token.as_str();
+    let secret = token.expose_secret().as_str();
     let groups = std::collections::BTreeMap::from([(
         "tpmgrp".to_string(),
         busbar_kernel::config::groups::GroupCfg {
@@ -569,7 +569,7 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
             1_000_000_000,
         )
         .unwrap();
-    let secret = token.as_str();
+    let secret = token.expose_secret().as_str();
     let groups = std::collections::BTreeMap::from([(
         "tpmsgrp".to_string(),
         busbar_kernel::config::groups::GroupCfg {
@@ -1044,7 +1044,7 @@ async fn test_governance_vkey_auth_and_pool_acl() {
             1_000_000_000,
         )
         .unwrap();
-    let secret = token.as_str();
+    let secret = token.expose_secret().as_str();
 
     let app = TestApp::new().keys_chain().governance_kit(gov).build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -1125,7 +1125,7 @@ async fn test_governance_budget_over_quota() {
             1_000_000_000,
         )
         .unwrap();
-    let secret = token.as_str();
+    let secret = token.expose_secret().as_str();
     // Pre-seed usage past the group's 100c budget (window 0 = "total") in the DURABLE store:
     // 250 requests at a 1c flat fee derive to 250 cents of spend on the group's total bucket.
     store
@@ -1248,7 +1248,7 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
             1_000_000_000,
         )
         .unwrap();
-    let secret = token;
+    let secret = token.expose_secret().clone();
     // Seed 250 requests on the GROUP's total bucket: at a 1c flat fee the DERIVED spend is
     // 250 cents, past the group's 100-cent cap, so admission rejects before any forwarding.
     store
@@ -1501,7 +1501,7 @@ async fn test_governance_rate_limit_429() {
             1_000_000_000,
         )
         .unwrap();
-    let secret = token.as_str();
+    let secret = token.expose_secret().as_str();
 
     let groups = std::collections::BTreeMap::from([(
         "rl2".to_string(),
@@ -1614,7 +1614,7 @@ async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>
             1_000_000_000,
         )
         .unwrap();
-    let secret = token;
+    let secret = token.expose_secret().clone();
 
     let groups = std::collections::BTreeMap::from([(
         "rl0".to_string(),

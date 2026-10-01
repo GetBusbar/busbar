@@ -72,7 +72,7 @@ fn mint_then_expire_the_row(
     row.expires_at = Some(row_expired_at);
     store.put_key(&row).expect("rewrite the row");
     gov.refresh().expect("reload caches");
-    token
+    token.expose_secret().clone()
 }
 
 /// Governance seam: the token verifies and resolves the binding even though the row's

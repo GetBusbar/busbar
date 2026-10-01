@@ -315,7 +315,8 @@ impl GovState {
 
     /// MINT a signed-token key (1.5.0): persist the policy BINDING row (subject id -> group,
     /// allowed_pools, labels; NO inline limits - keys are pure auth) and issue a busbar-SIGNED
-    /// token `{sub, exp, kid}` for it. Returns `(binding, token)`; the token is shown ONCE. The
+    /// token `{sub, exp, kid}` for it. Returns `(binding, token)`; the token is shown ONCE and
+    /// comes back [`Redacted`] (a `{:?}`/`{}` prints `[REDACTED]`), read via `expose_secret`. The
     /// subject id is a fresh unguessable `vk_<hex>` from the OS CSPRNG (its own bucket namespace).
     /// FAIL-CLOSED: no signer configured is an error (a key with no token is useless).
     pub fn mint_signed(
@@ -323,7 +324,7 @@ impl GovState {
         spec: NewKeySpec,
         exp: u64,
         now: u64,
-    ) -> RecordStoreResult<(VirtualKey, String)> {
+    ) -> RecordStoreResult<(VirtualKey, Redacted<String>)> {
         let Some(material) = self.signing_material() else {
             return Err(RecordStoreError(
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
@@ -333,7 +334,7 @@ impl GovState {
         self.store.put_key(&binding)?;
         self.refresh()?;
         let token = material.signer.mint(&binding.id, exp, Some(&generation));
-        Ok((binding, token))
+        Ok((binding, token.into()))
     }
 
     /// MINT a signed-token key that ALSO carries an AWS-style credential for inbound SigV4 (the

@@ -852,7 +852,7 @@ pub(crate) async fn create_key(
     /// What the mint's blocking half produced: the key (bearer-only or with AWS credentials), or the
     /// anti-sprawl ceiling it hit.
     enum MintOutcome {
-        TokenOnly(Box<(busbar_kernel::governance::VirtualKey, String)>),
+        TokenOnly(Box<(busbar_kernel::governance::VirtualKey, Redacted<String>)>),
         Aws(
             Box<(
                 busbar_kernel::governance::VirtualKey,
@@ -1040,7 +1040,7 @@ pub(crate) async fn create_key(
         }
         MintOutcome::TokenOnly(b) => {
             let (key, token) = *b;
-            (key, Redacted::new(token), None)
+            (key, token, None)
         }
         MintOutcome::Aws(b) => {
             let (key, token, access_key_id, secret_access_key) = *b;

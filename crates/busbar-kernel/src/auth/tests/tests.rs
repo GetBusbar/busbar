@@ -1120,7 +1120,7 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
     let verifier = TokenVerifier::single(signer.kid(), signer.verifying_key());
     let generation = verifier
-        .verify(plain_token.as_str(), 1_000_000_000, None)
+        .verify(plain_token.expose_secret().as_str(), 1_000_000_000, None)
         .expect("plain claims")
         .generation;
     let bound_token = signer.mint_for_audience(
@@ -1184,7 +1184,7 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
     // Control: the PLAIN sibling for the same binding is admitted on /stats.
     let r = client
         .get(format!("http://{addr}/stats"))
-        .header("authorization", format!("Bearer {}", plain_token.as_str()))
+        .header("authorization", format!("Bearer {}", plain_token.expose_secret()))
         .send()
         .await
         .unwrap();
@@ -2072,7 +2072,7 @@ fn dp_gov_with_key() -> (std::sync::Arc<crate::governance::GovState>, String) {
             1_000_000_000,
         )
         .unwrap();
-    (gov, secret.as_str().to_string())
+    (gov, secret.expose_secret().as_str().to_string())
 }
 
 fn dp_ok_state() -> std::sync::Arc<crate::test_support::MockServerState> {
@@ -2150,7 +2150,7 @@ fn test_1_5_2_keys_arm_is_cache_exempt() {
             1_000_000_000,
         )
         .unwrap();
-    let secret = secret.as_str();
+    let secret = secret.expose_secret().as_str();
     let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys"]));
     let cache = crate::auth_cache::CredentialCache::new();
     let now = busbar_kernel::store::now();

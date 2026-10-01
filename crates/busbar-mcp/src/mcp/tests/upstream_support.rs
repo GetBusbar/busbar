@@ -767,7 +767,7 @@ pub(crate) fn minted_keys(
                 )
                 .unwrap();
             let generation = TokenVerifier::single(signer.kid(), signer.verifying_key())
-                .verify(plain.as_str(), now(), None)
+                .verify(plain.expose_secret().as_str(), now(), None)
                 .expect("the plain token verifies")
                 .generation;
             let token = signer.mint_for_audience(

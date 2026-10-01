@@ -230,7 +230,7 @@ async fn rig(reject_at_gate: bool) -> (Rig, Arc<dyn Fn() -> Ledger + Send + Sync
     (
         Rig {
             addr,
-            secret,
+            secret: secret.expose_secret().clone(),
             log,
             request_tap,
             candidate_tap,

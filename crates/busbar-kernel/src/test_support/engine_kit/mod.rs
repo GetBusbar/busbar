@@ -93,13 +93,14 @@ pub trait CostKit: Any + Send + Sync {}
 pub trait GovKit: Any + Send + Sync {
     /// Mint an UNSIGNED key from `spec` at `now`: the persisted key and its plaintext secret.
     fn create_key(&self, spec: NewKeySpec, now: u64) -> Result<(VirtualKey, String), String>;
-    /// Mint a SIGNED (bearer-token) key from `spec`, expiring at `exp`, minted at `now`.
+    /// Mint a SIGNED (bearer-token) key from `spec`, expiring at `exp`, minted at `now`. The token
+    /// comes back redacted; a test reads it with `expose_secret` where it presents or asserts it.
     fn mint_signed(
         &self,
         spec: NewKeySpec,
         exp: u64,
         now: u64,
-    ) -> Result<(VirtualKey, String), String>;
+    ) -> Result<(VirtualKey, busbar_contract::redacted::Redacted<String>), String>;
     /// Mint a key that ALSO carries a generated AWS SigV4 credential: the persisted key, its
     /// plaintext bearer secret, and the credential's access-key id and secret access key. What a
     /// test needs to sign a SigV4 request against its own fixture.

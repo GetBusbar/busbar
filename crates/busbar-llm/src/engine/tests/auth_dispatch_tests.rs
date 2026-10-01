@@ -163,7 +163,7 @@ fn dp_gov_with_key() -> (
             1_000_000_000,
         )
         .unwrap();
-    (gov, secret.as_str().to_string())
+    (gov, secret.expose_secret().as_str().to_string())
 }
 
 fn dp_ok_state() -> std::sync::Arc<crate::test_support::MockServerState> {
@@ -411,8 +411,8 @@ async fn test_disabled_virtual_key_is_rejected_401() {
         .unwrap();
     // Freeze the first key via the PATCH-shaped update (mint always starts `enabled: true`).
     gov.update_key(&dis_key.id, Some(false), None).unwrap();
-    let disabled_secret = disabled_secret.as_str();
-    let enabled_secret = enabled_secret.as_str();
+    let disabled_secret = disabled_secret.expose_secret().as_str();
+    let enabled_secret = enabled_secret.expose_secret().as_str();
 
     let app = TestApp::new()
         .lane(
@@ -544,7 +544,7 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
             1_000_000_000,
         )
         .unwrap();
-    let secret = token.as_str();
+    let secret = token.expose_secret().as_str();
 
     let app = TestApp::new()
         .lane(
@@ -667,7 +667,7 @@ async fn test_governance_revoked_signed_token_key_rejected() {
             1_000_000_000,
         )
         .unwrap();
-    let secret = token.as_str();
+    let secret = token.expose_secret().as_str();
 
     let app = TestApp::new()
         .lane(
@@ -961,7 +961,7 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
             1_000_000_000,
         )
         .unwrap();
-    let secret = token.as_str();
+    let secret = token.expose_secret().as_str();
 
     let app = TestApp::new()
         .lane(
@@ -1212,7 +1212,7 @@ async fn test_active_governance_persisted_key_is_enforced() {
             1_000_000_000,
         )
         .unwrap();
-    let persisted_secret = persisted_secret.as_str();
+    let persisted_secret = persisted_secret.expose_secret().as_str();
 
     let app = TestApp::new()
         .lane(

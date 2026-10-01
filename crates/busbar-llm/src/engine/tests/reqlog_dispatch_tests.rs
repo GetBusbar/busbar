@@ -120,7 +120,7 @@ async fn a_governed_deployment(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    (addr, handle, server, secret, key.id)
+    (addr, handle, server, secret.expose_secret().clone(), key.id)
 }
 
 /// Send one native Anthropic request at `pool` as `secret`, and hand back the status.
