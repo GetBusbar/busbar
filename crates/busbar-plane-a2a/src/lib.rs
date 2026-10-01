@@ -50,6 +50,7 @@ pub mod a2a {
     pub mod task;
 }
 
+pub mod arrival;
 pub mod claims;
 pub mod diagnostics;
 pub mod door;

@@ -11,8 +11,11 @@
 //!   each read through the loader's own copy (`Plugin<Plane>::open`/`refresh`), so the test reads
 //!   no plugin memory;
 //! * `retire` drops the first; `tick`, `drive` and `cancel` answer their dispositions;
-//! * every request-path op answers REFUSED (TRANSITIONAL: filled when the kernel's plane driver
-//!   serves the request path).
+//! * `arrive` on the JSON-RPC line decides a request (its op class, dialect and principal need)
+//!   and refuses a wrong media type in the plane's own words, which `refusal` renders with the
+//!   plane's status; a kernel refusal renders at the kernel's status on the HTTP+JSON line;
+//! * every other request-path op answers REFUSED (TRANSITIONAL: filled when the kernel's plane
+//!   driver serves the request path).
 //!
 //! The two transcripts must be identical, and the validate refusal must be the exact sentence.
 
@@ -26,9 +29,10 @@ use busbar_contract::abi::mechanism::lifecycle::{
 };
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    slot, ArriveIn, ArriveOut, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut,
-    PlaneRefreshOut,
+    slot, ArriveIn, ArriveOut, Field, OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn,
+    PlaneOpenOut, PlaneRefreshOut, RefusalIn, RefusalOut, Span, REFUSAL_ARRIVE, REFUSAL_KERNEL,
 };
+use busbar_plane_a2a::door::{DIALECT_DOCUMENT, DIALECT_TARGET, ROUTES};
 
 use crate::root::loader::dispatch::kinds::plane::{OwnedSnapshot, Plane};
 use crate::root::loader::dispatch::{
@@ -136,6 +140,67 @@ fn gen_frame(generation: u64) -> Frame<GenIn, busbar_contract::abi::mechanism::c
             generation,
         },
         out_head(),
+    )
+}
+
+/// One JSON-RPC request the line classes.
+const SEND: &[u8] = br#"{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{}}"#;
+
+/// `refusal` over `words` for `cause` at `status` in `dialect`, as one line: the outcome, the
+/// status the rendering names, its head fields and its body.
+fn refuse(p: &Plugin<Plane>, cause: u32, status: u32, dialect: u32, words: &[u8]) -> String {
+    let none = Span { offset: 0, len: 0 };
+    let mut reply = vec![0_u8; 4096];
+    let mut fields = vec![
+        OutField {
+            name: none,
+            value: none,
+        };
+        4
+    ];
+    let mut arena = vec![0_u8; 256];
+    let mut r = Frame::new(
+        RefusalIn {
+            head: in_head(),
+            cause,
+            status,
+            dialect,
+            _reserved: 0,
+            text: AbiStr {
+                ptr: words.as_ptr(),
+                len: words.len(),
+            },
+            reply_buf: reply.as_mut_ptr(),
+            reply_cap: reply.len(),
+            fields_buf: fields.as_mut_ptr(),
+            fields_cap: fields.len(),
+            arena_buf: arena.as_mut_ptr(),
+            arena_cap: arena.len(),
+        },
+        RefusalOut {
+            head: out_head(),
+            reply_written: 0,
+            reply_needed: 0,
+            arena_written: 0,
+            arena_needed: 0,
+            marker: 0,
+            fields_written: 0,
+            fields_needed: 0,
+            status: 0,
+        },
+    );
+    let c = p.call(slot::REFUSAL, &mut r);
+    let at = |s: Span| String::from_utf8_lossy(&arena[s.offset as usize..][..s.len as usize]);
+    let named: Vec<String> = fields[..r.out.fields_written as usize]
+        .iter()
+        .map(|f| format!("{}: {}", at(f.name), at(f.value)))
+        .collect();
+    format!(
+        "refusal cause={cause} {:?} status={} [{}] {}",
+        c.outcome,
+        r.out.status,
+        named.join(", "),
+        String::from_utf8_lossy(&reply[..r.out.reply_written as usize])
     )
 }
 
@@ -263,8 +328,8 @@ fn script(p: &Plugin<Plane>) -> Vec<String> {
         c.outcome, x.out.disposition
     ));
 
-    // The request path, TRANSITIONAL until the kernel's plane driver serves it: every op answers
-    // REFUSED.
+    // The request path. An arrival on a line other than JSON-RPC is REFUSED, TRANSITIONAL until
+    // the kernel's plane driver serves it.
     let mut a = Frame::new(
         ArriveIn {
             head: in_head(),
@@ -294,6 +359,44 @@ fn script(p: &Plugin<Plane>) -> Vec<String> {
         },
     );
     t.push(format!("arrive {:?}", p.call(slot::ARRIVE, &mut a).outcome));
+
+    // The JSON-RPC line: a request is classed, spoken in the line's dialect, and needs a principal.
+    let line = ROUTES
+        .iter()
+        .position(|r| r.verb == "POST" && r.target == "/a2a")
+        .expect("the JSON-RPC endpoint");
+    a.input.claim = u32::try_from(line).expect("an index");
+    a.input.unit = 2;
+    a.input.body = json(SEND);
+    let c = p.call(slot::ARRIVE, &mut a);
+    t.push(format!(
+        "arrive jsonrpc {:?} op={} dialect={} principal={}",
+        c.outcome, a.out.op_class, a.out.dialect, a.out.principal_need
+    ));
+    // A media type the line does not read is refused in the plane's own words ...
+    let head = [Field {
+        name: text(b"content-type"),
+        value: text(b"text/plain"),
+    }];
+    a.input.unit = 3;
+    a.input.fields = head.as_ptr();
+    a.input.fields_len = head.len();
+    let c = p.call(slot::ARRIVE, &mut a);
+    let words = c.error.unwrap_or_default();
+    t.push(format!(
+        "arrive refused {:?} {}",
+        c.outcome,
+        String::from_utf8_lossy(&words)
+    ));
+    // ... which `refusal` renders with the plane's status; a kernel refusal keeps the kernel's.
+    t.push(refuse(p, REFUSAL_ARRIVE, 400, DIALECT_DOCUMENT, &words));
+    t.push(refuse(
+        p,
+        REFUSAL_KERNEL,
+        403,
+        DIALECT_TARGET,
+        b"this key may not reach that agent",
+    ));
     for s in [slot::HYDRATE, slot::START] {
         t.push(format!("{s} {:?}", p.call(s, &mut gen_frame(2)).outcome));
     }
@@ -320,6 +423,40 @@ fn the_a2a_door_answers_identically_linked_and_dropped_in() {
         linked[3].starts_with(&format!("refresh {:?} gen=2", Outcome::Ready)),
         "{}",
         linked[3]
+    );
+    let line = |prefix: &str| {
+        linked
+            .iter()
+            .find(|l| l.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no `{prefix}` line in {linked:?}"))
+            .clone()
+    };
+    assert_eq!(
+        line("arrive jsonrpc"),
+        format!(
+            "arrive jsonrpc {:?} op=0 dialect={DIALECT_DOCUMENT} principal=1",
+            Outcome::Ready
+        ),
+        "SendMessage is the message_send class, on the JSON-RPC dialect, with a principal"
+    );
+    assert!(
+        line("arrive refused").starts_with(&format!("arrive refused {:?} {{", Outcome::Refused)),
+        "{}",
+        line("arrive refused")
+    );
+    let own = line(&format!("refusal cause={REFUSAL_ARRIVE}"));
+    assert!(
+        own.contains("status=415 [content-type: application/json] {")
+            && own.contains(r#""code":-32005"#)
+            && own.contains(r#""reason":"CONTENT_TYPE_NOT_SUPPORTED""#),
+        "{own}"
+    );
+    let kernel = line(&format!("refusal cause={REFUSAL_KERNEL}"));
+    assert!(
+        kernel.contains("status=0 [content-type: application/json] {")
+            && kernel.contains(r#""code":403"#)
+            && kernel.contains(r#""status":"UNIMPLEMENTED""#),
+        "{kernel}"
     );
     if let Some(dropped) = dropped() {
         assert_eq!(

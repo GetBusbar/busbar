@@ -22,7 +22,7 @@
 use busbar_contract::abi::mechanism::call::AbiStr;
 use busbar_contract::abi::mechanism::door::{KindTailHead, Section, SECTION_DECLARING};
 use busbar_contract::abi::plane::{
-    AdminRoute, BillableClass, PinMechanism, PlaneTail, TrustKey, CLAIM_EXACT, CLAIM_OPEN,
+    AdminRoute, BillableClass, OpClass, PinMechanism, PlaneTail, TrustKey, CLAIM_EXACT, CLAIM_OPEN,
     CLAIM_PATTERN, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, MECHANISM_ROOT,
     PIN_FINGERPRINT, SHAPE_PIECEWISE, TRUST_PIN, TRUST_RECOVERY_BACKOFF, TRUST_REVERIFY_TTL,
 };
@@ -75,6 +75,45 @@ const DIALECTS: &[AbiStr] = &[
 ];
 
 const SCOPE_KINDS: &[AbiStr] = &[abi_str(SCOPE)];
+
+/// [`DIALECTS`] index of the JSON-RPC line's dialect.
+pub const DIALECT_DOCUMENT: u32 = 0;
+/// [`DIALECTS`] index of the HTTP+JSON line's dialect.
+pub const DIALECT_TARGET: u32 = 1;
+/// [`DIALECTS`] index of the gRPC line's dialect.
+pub const DIALECT_FRAMED: u32 = 2;
+
+const fn op_class(i: usize) -> OpClass {
+    OpClass {
+        op: abi_str(crate::ops::OP_CLASSES[i].as_str()),
+        name: abi_str(crate::ops::OP_CLASSES[i].as_str()),
+    }
+}
+
+/// The operation classes, in [`crate::ops::OP_CLASSES`] order: `arrive` names one by its index.
+const OP_CLASS_TABLE: &[OpClass] = &[
+    op_class(0),
+    op_class(1),
+    op_class(2),
+    op_class(3),
+    op_class(4),
+    op_class(5),
+    op_class(6),
+    op_class(7),
+    op_class(8),
+    op_class(9),
+    op_class(10),
+    op_class(11),
+];
+
+/// The [`OP_CLASS_TABLE`] index of `op`; `None` when the plane does not declare it.
+#[must_use]
+pub fn op_class_index(op: busbar_contract::ids::OpClassId) -> Option<u32> {
+    crate::ops::OP_CLASSES
+        .iter()
+        .position(|c| *c == op)
+        .and_then(|i| u32::try_from(i).ok())
+}
 
 const BILLABLE_CLASSES: &[BillableClass] = &[BillableClass {
     class: abi_str(crate::meta::CLASS_BYTES.as_str()),
@@ -165,8 +204,8 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     dialect_auth_len: 0,
     scope_kinds: SCOPE_KINDS.as_ptr(),
     scope_kinds_len: SCOPE_KINDS.len(),
-    op_classes: std::ptr::null(),
-    op_classes_len: 0,
+    op_classes: OP_CLASS_TABLE.as_ptr(),
+    op_classes_len: OP_CLASS_TABLE.len(),
     billable_classes: BILLABLE_CLASSES.as_ptr(),
     billable_classes_len: BILLABLE_CLASSES.len(),
     route_cost: std::ptr::null(),
@@ -252,6 +291,49 @@ pub const ROUTES: &[Route] = &[
         open: false,
     },
 ];
+
+/// Which line of the one A2A dialect a route is (spec ruling log 2026-09-30, a2a plane: JSON-RPC,
+/// REST and gRPC are its lines, each with its own refusal dialect), or an open document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Line {
+    /// The JSON-RPC endpoint, in both spellings, and one agent addressed by name.
+    Document,
+    /// The HTTP+JSON binding's named operations and the authenticated card.
+    Target,
+    /// The gRPC service.
+    Framed,
+    /// A discovery document, the push callback, or one agent's card.
+    Open,
+}
+
+impl Line {
+    /// The [`DIALECTS`] index its refusals are rendered in; `None` for an open document, whose
+    /// refusals are its own slice's.
+    #[must_use]
+    pub const fn dialect(self) -> Option<u32> {
+        match self {
+            Line::Document => Some(DIALECT_DOCUMENT),
+            Line::Target => Some(DIALECT_TARGET),
+            Line::Framed => Some(DIALECT_FRAMED),
+            Line::Open => None,
+        }
+    }
+}
+
+/// The line `route` is.
+#[must_use]
+pub fn line_of(route: &Route) -> Line {
+    if route.carrier == FRAMED_TRANSPORT {
+        return Line::Framed;
+    }
+    if route.open || (route.verb == "GET" && route.target == "/a2a/agents/{agent_id}") {
+        return Line::Open;
+    }
+    if route.verb == "POST" && matches!(route.target, "/a2a" | "/a2a/" | "/a2a/agents/{agent_id}") {
+        return Line::Document;
+    }
+    Line::Target
+}
 
 /// The trust verbs the plane serves on the kernel's admin mount, relative to it: `(verb, target)`.
 pub const ADMIN_VERBS: &[(&str, &str)] = &[

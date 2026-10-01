@@ -561,7 +561,7 @@ impl Wire {
             .unwrap_or("0.3")
     }
 
-    fn refuse(&self) -> Option<Response> {
+    pub(super) fn refuse(&self) -> Option<Response> {
         if let Some(ct) = self.content_type.as_deref() {
             // The media type is everything before the first `;`, case-insensitively. A caller that
             // sent NO `Content-Type` has not sent a WRONG one and is not refused here — the body

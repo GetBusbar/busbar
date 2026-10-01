@@ -207,3 +207,42 @@ fn a_valid_section_reads_and_a_bad_entry_is_refused_in_the_grammars_words() {
     let err = read_settings(&bad).expect_err("refused");
     assert!(err.contains("`agents.vendor`: `url:` must be an"), "{err}");
 }
+
+#[test]
+fn every_route_is_one_line_of_the_dialect_in_mount_order() {
+    use Line::{Document, Framed, Open, Target};
+    let lines: Vec<Line> = ROUTES.iter().map(line_of).collect();
+    assert_eq!(
+        lines,
+        [
+            Target, Target, Target, Target, Target, Target, Target, Target, Target, Target, Open,
+            Open, Open, Document, Document, Document, Open, Framed,
+        ]
+    );
+    // Each line's refusals speak the binding its dialect index names.
+    let lens: Vec<usize> = [Document, Target, Framed]
+        .iter()
+        .map(|l| DIALECTS[l.dialect().expect("a line") as usize].len)
+        .collect();
+    assert_eq!(
+        lens,
+        [
+            BINDING_DOCUMENT.len(),
+            BINDING_TARGET.len(),
+            BINDING_FRAMED.len()
+        ]
+    );
+    assert_eq!(Open.dialect(), None);
+}
+
+#[test]
+fn the_tail_declares_the_op_class_of_every_method_arrive_can_name() {
+    assert_eq!(TAIL.op_classes_len, crate::ops::OP_CLASSES.len());
+    for (i, class) in OP_CLASS_TABLE.iter().enumerate() {
+        assert_eq!(class.op.len, crate::ops::OP_CLASSES[i].as_str().len());
+    }
+    for row in crate::ops::METHODS {
+        let i = op_class_index(row.op).expect("declared");
+        assert_eq!(crate::ops::OP_CLASSES[i as usize], row.op);
+    }
+}
