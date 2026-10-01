@@ -108,6 +108,12 @@ fn an_open_route_claims_open_and_a_templated_target_claims_a_pattern() {
         assert_eq!(c.flags & CLAIM_OPEN != 0, r.open, "{}", r.target);
         assert_eq!(c.flags & CLAIM_EXACT != 0, !templated, "{}", r.target);
         assert_eq!(c.flags & CLAIM_PATTERN != 0, templated, "{}", r.target);
+        assert_eq!(
+            busbar_contract::abi::plane::check::check_claim_target(r.target, c.flags),
+            Ok(()),
+            "{}",
+            r.target
+        );
         let selector = busbar_contract::abi::plane::check::claim_selector(r.target, c.flags, |v| {
             Box::leak(v.into_boxed_slice())
         });

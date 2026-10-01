@@ -588,9 +588,10 @@ pub fn check_snapshot(s: &PlaneSnapshot, generation: u64) -> Result<(), Fault> {
     text(s.resource_metadata, "snapshot.resource_metadata")
 }
 
-/// Every snapshot claim: a verb, a target, a carrier, known flags, and a refusal dialect the tail
-/// declares (`0` when the tail declares none). Two claims of one route are not judged here:
-/// overlapping claims resolve by precedence in the kernel's registry.
+/// Every snapshot claim: a verb, a target, a carrier, known flags, never EXACT with PATTERN, and a
+/// refusal dialect the tail declares (`0` when the tail declares none). The target's TEXT is judged
+/// at bind by [`check_claim_target`], once the host has read it. Two claims of one route are not
+/// judged here: overlapping claims resolve by precedence in the kernel's registry.
 ///
 /// # Errors
 ///
@@ -619,30 +620,65 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
     Ok(())
 }
 
-/// A [`CLAIM_PATTERN`] target read as its segment pattern: the target starts with `/`, and each
-/// `/`-separated segment is a literal or a placeholder `{name}`, which is one [`PathSeg::Var`]. A
-/// pattern names at least one placeholder; one that names none is an exact target.
-///
-/// # Errors
-///
-/// [`Rule::Contradiction`] for an empty or half-braced segment, [`Rule::Missing`] for no
-/// placeholder.
-pub fn claim_pattern(target: &'static str) -> Result<Vec<PathSeg>, Fault> {
+/// THE PATTERN GRAMMAR, once: the target starts with `/`, and each `/`-separated segment is a
+/// brace-free literal or a whole placeholder `{name}` with a non-empty, brace-free name. A pattern
+/// names at least one placeholder; one that names none is an exact target.
+fn pattern_shape(target: &str) -> Result<(), Fault> {
     let bad = || fault(Rule::Contradiction, "claim.pattern");
     let rest = target.strip_prefix('/').ok_or_else(bad)?;
-    let mut out = Vec::new();
+    let mut placeholders = 0;
     for seg in rest.split('/') {
-        let name = seg.strip_prefix('{').and_then(|s| s.strip_suffix('}'));
-        match name {
-            Some(n) if !n.is_empty() && !n.contains(['{', '}']) => out.push(PathSeg::Var),
-            None if !seg.is_empty() && !seg.contains(['{', '}']) => out.push(PathSeg::Lit(seg)),
+        match seg.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+            Some(n) if !n.is_empty() && !n.contains(['{', '}']) => placeholders += 1,
+            None if !seg.is_empty() && !seg.contains(['{', '}']) => {}
             _ => return Err(bad()),
         }
     }
-    if !out.contains(&PathSeg::Var) {
+    if placeholders == 0 {
         return Err(fault(Rule::Missing, "claim.pattern"));
     }
-    Ok(out)
+    Ok(())
+}
+
+/// ONE CLAIM'S TARGET, judged at bind once the host has read it out of the snapshot: the flag pair
+/// ([`CLAIM_EXACT`] never with [`CLAIM_PATTERN`]) and, for a pattern, its grammar
+/// ([`claim_selector`] reads the same one). [`check_claims`] judges the claims' shape without
+/// reading their text; the host runs this on every target it copies into the generation.
+///
+/// # Errors
+///
+/// [`Rule::Contradiction`] for both flags or a malformed pattern, [`Rule::Missing`] for a pattern
+/// with no placeholder.
+pub fn check_claim_target(target: &str, flags: u32) -> Result<(), Fault> {
+    if flags & CLAIM_EXACT != 0 && flags & CLAIM_PATTERN != 0 {
+        return Err(fault(Rule::Contradiction, "claim.flags"));
+    }
+    if flags & CLAIM_PATTERN != 0 {
+        pattern_shape(target)?;
+    }
+    Ok(())
+}
+
+/// A [`CLAIM_PATTERN`] target read as its segment pattern, by the one grammar
+/// ([`check_claim_target`]): each literal segment is a [`PathSeg::Lit`], each placeholder one
+/// [`PathSeg::Var`].
+///
+/// # Errors
+///
+/// The grammar's fault: [`Rule::Contradiction`] for an empty or half-braced segment,
+/// [`Rule::Missing`] for no placeholder.
+pub fn claim_pattern(target: &'static str) -> Result<Vec<PathSeg>, Fault> {
+    pattern_shape(target)?;
+    Ok(target[1..]
+        .split('/')
+        .map(|seg| {
+            if seg.starts_with('{') {
+                PathSeg::Var
+            } else {
+                PathSeg::Lit(seg)
+            }
+        })
+        .collect())
 }
 
 /// THE HOST'S READING OF ONE PLANE CLAIM as the claim grammar's selector: [`CLAIM_EXACT`] is

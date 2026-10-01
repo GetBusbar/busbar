@@ -822,6 +822,33 @@ fn a_pattern_target_parses_into_literals_and_one_level_placeholders() {
     );
 }
 
+/// RED: a malformed pattern is refused AT BIND, by the same grammar the selector reads, so a bad
+/// claim never waits for its first route.
+#[test]
+fn a_malformed_pattern_is_refused_at_bind_by_the_selectors_grammar() {
+    for bad in [
+        "t/{id}", "/t//{id}", "/t/{}", "/t/{id", "/t/id}", "/t/{i}d}", "/t/{id}/",
+    ] {
+        let at_bind = check_claim_target(bad, CLAIM_PATTERN);
+        assert_eq!(at_bind, f(Rule::Contradiction, "claim.pattern"), "{bad}");
+        assert_eq!(
+            at_bind,
+            claim_selector(bad, CLAIM_PATTERN, kept).map(|_| ()),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        check_claim_target("/t/id", CLAIM_PATTERN),
+        f(Rule::Missing, "claim.pattern")
+    );
+    assert_eq!(
+        check_claim_target("/t/{id}", CLAIM_EXACT | CLAIM_PATTERN),
+        f(Rule::Contradiction, "claim.flags")
+    );
+    assert_eq!(check_claim_target("/t/{id}", CLAIM_PATTERN), Ok(()));
+    assert_eq!(check_claim_target("/t/{id}", CLAIM_EXACT), Ok(()));
+}
+
 #[test]
 fn a_claim_reads_as_the_grammars_selector_by_its_flags() {
     use crate::grammar::{PathSeg, Selector};
