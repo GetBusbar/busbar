@@ -8,8 +8,9 @@
 //! * the unit's spend is its far-end-REPORTED counts (never an estimate), ledgered once, at the end,
 //!   through the governance book's one accrual (`GovState::record_usage`), which files it in the
 //!   window of the unit's ARRIVAL epoch (THE DESIGN, section 7: "same balance, same window, same row");
-//! * a far end that did not deliver refunds the unit's flat request fee (`GovState::refund_request`,
-//!   1.5.5's non-2xx refund), a separate act from the ledgering;
+//! * the unit's flat request fee is refunded as a separate act from the ledgering
+//!   (`GovState::refund_request`), decided by the unit's [`FeeRefund`] rule: 1.5.5's non-2xx
+//!   caller status, or, for a plane new in 1.6.0, the plane's own fee-unit report;
 //! * a cancelled unit's bill (the four 1.5.5 cancel rules, computed by the driver) is ledgered the
 //!   same way, and the unit's later end ledgers nothing twice;
 //! * `on_exhaustion: finish-unit` (the default, 1.5.5) never cuts. `cut-stream` (new in 1.6.0) cuts
@@ -63,6 +64,46 @@ pub struct UnitMoney {
     pub arrived: u64,
     /// The unit's budget mode, resolved by the root from its governing limits.
     pub mode: ExhaustionMode,
+    /// Who decides the unit's flat-fee refund, chosen by the root for the unit's plane.
+    pub fee: FeeRefund,
+}
+
+/// WHO DECIDES A UNIT'S FLAT-FEE REFUND. The design's money section: the plane reports the units it
+/// did "and whether a fee unit was incurred"; the one fee decider is the plane's report. The llm
+/// plane keeps 1.5.5's caller-status rule byte-identical until it runs on the driver, where it
+/// moves to its fee-unit report, so the end state has one decider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FeeRefund {
+    /// 1.5.5's rule (`busbar-kernel/src/ingress/mod.rs`, the finish's `refund_on_non_2xx`): an end
+    /// whose caller status is not a success refunds the fee charged at admission.
+    CallerStatus,
+    /// The plane decides: these indices into [`UnitMoney::classes`] are its declared fee units,
+    /// each also a billable class (the tail check holds `fee_units ⊆ billable_classes`) reported as a
+    /// [`UNITS_REPORTED`] count of 0 or 1. An end whose fee units report no count above zero
+    /// refunds the fee. A fee unit's count is never ledgered as usage: the fee itself was charged
+    /// at admission (#21).
+    PlaneFeeUnits(Arc<[u32]>),
+}
+
+impl FeeRefund {
+    /// Whether `class` is one of the plane's fee units (never ledgered as usage).
+    fn is_fee(&self, class: u32) -> bool {
+        match self {
+            FeeRefund::CallerStatus => false,
+            FeeRefund::PlaneFeeUnits(fees) => fees.contains(&class),
+        }
+    }
+
+    /// Whether the end refunds the fee: `caller_status` under 1.5.5's rule, else the plane's report
+    /// in `last` (no fee unit reported above zero).
+    fn refunds(&self, caller_status: u32, last: &[UnitCount]) -> bool {
+        match self {
+            FeeRefund::CallerStatus => !(200..=299).contains(&caller_status),
+            FeeRefund::PlaneFeeUnits(fees) => !last
+                .iter()
+                .any(|u| u.source == UNITS_REPORTED && u.amount > 0 && fees.contains(&u.class)),
+        }
+    }
 }
 
 /// One open unit: its facts, its last cumulative counts, whether it has been ledgered, and whether
@@ -115,12 +156,14 @@ impl PlaneMoney {
     }
 
     /// THE UNIT'S END, returned to its caller with `caller_status`: ledger its last far-end-
-    /// reported counts (unless its cancel bill already did), and refund its flat request fee when
-    /// that status is not a success, exactly 1.5.5's rule (`busbar-kernel/src/ingress/mod.rs`, the
-    /// finish's `refund_on_non_2xx && !is_success` arm: "REFUND it for a request that produced no
-    /// usable upstream result"). A unit whose caller went away before any answer returns through
-    /// [`MoneySeam::abandoned`], never here, and is refunded nothing, as 1.5.5's dropped request
-    /// never reached that arm. The unit's facts are closed either way.
+    /// reported counts (unless its cancel bill already did), and refund its flat request fee as
+    /// the unit's [`FeeRefund`] rule decides: under [`FeeRefund::CallerStatus`] when that status is
+    /// not a success, exactly 1.5.5's rule (`busbar-kernel/src/ingress/mod.rs`, the finish's
+    /// `refund_on_non_2xx && !is_success` arm: "REFUND it for a request that produced no usable
+    /// upstream result"); under [`FeeRefund::PlaneFeeUnits`] when the plane reported no fee unit.
+    /// A unit whose caller went away before any answer returns through [`MoneySeam::abandoned`],
+    /// never here, and is refunded nothing, as 1.5.5's dropped request never reached that arm. The
+    /// unit's facts are closed either way.
     pub fn settle_end(&self, key: UnitKey, caller_status: u32) {
         let Some(open) = self.lock().remove(&key) else {
             return;
@@ -129,7 +172,7 @@ impl PlaneMoney {
         if !open.ledgered {
             self.ledger(m, &reported(&open.last));
         }
-        if !(200..=299).contains(&caller_status) {
+        if m.fee.refunds(caller_status, &open.last) {
             self.gov.refund_request(&m.cost, &m.key, &m.pool, m.arrived);
         }
     }
@@ -153,6 +196,7 @@ impl PlaneMoney {
     /// that would overflow bills the saturated figure, never a wrapped or zero one (fail closed);
     /// the plane check refuses a class counted twice, so a validated report never gets here.
     fn ledger(&self, m: &UnitMoney, counts: &[(u32, u64)]) {
+        let counts = &usage_only(m, counts);
         let units = named(&m.classes, counts, u64::checked_add)
             .or_else(|| named(&m.classes, counts, |a, b| Some(a.saturating_add(b))))
             .unwrap_or_default();
@@ -173,7 +217,7 @@ impl PlaneMoney {
         let Some(remaining) = remaining else {
             return false; // no budget applies: nothing to run dry
         };
-        let Some(usage_units) = named(&m.classes, counts, u64::checked_add) else {
+        let Some(usage_units) = named(&m.classes, &usage_only(m, counts), u64::checked_add) else {
             return true; // a report that does not add up is a plane fault: fail closed
         };
         let usage = busbar_contract::billing::Usage { usage_units };
@@ -185,6 +229,16 @@ impl PlaneMoney {
             None => true,
         }
     }
+}
+
+/// `counts` without the unit's fee units: a fee unit's count says whether the fee was incurred and
+/// is never usage (the fee was charged at admission, #21).
+fn usage_only(m: &UnitMoney, counts: &[(u32, u64)]) -> Vec<(u32, u64)> {
+    counts
+        .iter()
+        .copied()
+        .filter(|(class, _)| !m.fee.is_fee(*class))
+        .collect()
 }
 
 /// `counts` under the plane's class names, each class's sum added by `add`; a class index the

@@ -101,6 +101,10 @@ struct Rig {
 }
 
 fn rig(budget_cents: Option<u64>, fee: i64, mode: ExhaustionMode) -> Rig {
+    rig_with(budget_cents, fee, mode, FeeRefund::CallerStatus)
+}
+
+fn rig_with(budget_cents: Option<u64>, fee: i64, mode: ExhaustionMode, rule: FeeRefund) -> Rig {
     let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("gov"));
     let posted = Arc::new(Posted::default());
     let money = PlaneMoney::new(gov.clone(), posted.clone());
@@ -112,9 +116,14 @@ fn rig(budget_cents: Option<u64>, fee: i64, mode: ExhaustionMode) -> Rig {
             cost: cost.clone(),
             pool: String::new(),
             model: "m".into(),
-            classes: Arc::from(vec!["input".to_string(), "output".to_string()]),
+            classes: Arc::from(vec![
+                "input".to_string(),
+                "output".to_string(),
+                busbar_contract::plane::PER_REQUEST.to_string(),
+            ]),
             arrived: NOW,
             mode,
+            fee: rule,
         },
     );
     Rig {
@@ -216,6 +225,68 @@ fn a_delivered_end_keeps_the_flat_fee() {
     r.gov.try_admit(&r.cost, &r.key, "", NOW).expect("admitted");
     r.money.settle_end(UnitKey::new(1), 200);
     assert_eq!(usage(&r).1, 5);
+}
+
+// A plane new in 1.6.0 decides its fee refund through its own fee-unit report; the class at index 2 is its declared fee unit.
+
+const FEE_UNIT: u32 = 2;
+
+fn plane_fees() -> FeeRefund {
+    FeeRefund::PlaneFeeUnits(Arc::from(vec![FEE_UNIT]))
+}
+
+fn fee_reported(amount: u64) -> UnitCount {
+    UnitCount {
+        class: FEE_UNIT,
+        source: UNITS_REPORTED,
+        amount,
+    }
+}
+
+/// The plane reported no fee unit: the fee charged at admission is refunded, whatever the status.
+/// RED: under the caller-status rule a 200 end keeps the fee.
+#[test]
+fn a_plane_that_reports_no_fee_unit_has_its_fee_refunded() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+    r.gov.try_admit(&r.cost, &r.key, "", NOW).expect("admitted");
+    let _ = r.money.checkpoint(&ctx(1), &[fee_reported(0)]);
+    r.money.settle_end(UnitKey::new(1), 200);
+    assert_eq!(usage(&r).1, 0, "the plane decides: no fee unit, no fee");
+}
+
+/// The plane reported its fee unit: the fee stays, even on a non-2xx end (the plane decides, not
+/// the caller status). RED: under the caller-status rule a 503 end refunds it.
+#[test]
+fn a_plane_that_reports_its_fee_unit_keeps_the_fee() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+    r.gov.try_admit(&r.cost, &r.key, "", NOW).expect("admitted");
+    let _ = r.money.checkpoint(&ctx(1), &[fee_reported(1)]);
+    r.money.settle_end(UnitKey::new(1), 503);
+    assert_eq!(usage(&r).1, 5, "the plane reported its fee unit");
+}
+
+/// RED arm: a fee unit's count is never ledgered as usage. The card prices `input` and
+/// `output` only, so a fee count reaching the ledger as usage would make the bucket's spend a
+/// refusal (#42) and its tokens would not be the input alone.
+#[test]
+fn a_fee_unit_count_is_never_ledgered_as_usage() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+    r.gov.try_admit(&r.cost, &r.key, "", NOW).expect("admitted");
+    let report = [
+        UnitCount {
+            class: INPUT,
+            source: UNITS_REPORTED,
+            amount: 40,
+        },
+        fee_reported(1),
+    ];
+    let _ = r.money.checkpoint(&ctx(1), &report);
+    r.money.settle_end(UnitKey::new(1), 200);
+    assert_eq!(
+        usage(&r),
+        (40, 5),
+        "the input counts and the admission's fee, nothing else"
+    );
 }
 
 /// finish-unit (the default, 1.5.5) never cuts, however far past the budget the unit runs.

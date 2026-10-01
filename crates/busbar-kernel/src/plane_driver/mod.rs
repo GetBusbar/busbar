@@ -56,7 +56,7 @@ pub use epoch::FlushEpoch;
 pub use far_end::{
     AuthBinding, Egress, EgressFarEnd, MemberRoute, UnitRoute, DEFAULT_ERROR_BODY_MAX,
 };
-pub use money::{EndPost, PlaneMoney, UnitMoney};
+pub use money::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
 pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick};
 
 use crate::auth::CallerRefKey;

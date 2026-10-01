@@ -615,8 +615,9 @@ pub fn check_admin_routes(routes: &[AdminRoute]) -> Result<(), Fault> {
 
 /// The Statement tail, at load: known flags, ingress bits and dispatch shape; at least one ingress
 /// shape; no string or list counted with a NULL pointer. Its elements: [`check_sections`],
-/// [`check_dialect_auth`], [`check_route_cost`], [`check_billable_classes`], [`check_needs`],
-/// [`check_record_chains`], [`check_trust_keys`] and each pin's [`check_pin_mechanisms`], and
+/// [`check_dialect_auth`], [`check_route_cost`], [`check_billable_classes`], [`check_fee_units`],
+/// [`check_needs`], [`check_record_chains`], [`check_trust_keys`] and each pin's
+/// [`check_pin_mechanisms`], and
 /// [`check_refusal_statuses`].
 ///
 /// # Errors
@@ -739,6 +740,33 @@ pub fn check_billable_classes(classes: &[BillableClass]) -> Result<(), Fault> {
     for c in classes {
         named(c.class, "billable_class.class")?;
         named(c.family, "billable_class.family")?;
+    }
+    Ok(())
+}
+
+/// The fee units: each named and each ALSO one of the tail's billable classes, so the plane
+/// reports "a fee unit was incurred" as a `UNITS_REPORTED` count of 0 or 1 on that class
+/// (the design's money section: the plane reports whether a fee unit was incurred). A fee unit the
+/// classes do not list is [`Rule::Contradiction`]: the plane could never report it.
+///
+/// # Errors
+///
+/// The rule a fee unit breaks.
+pub fn check_fee_units(fee_units: &[AbiStr], classes: &[BillableClass]) -> Result<(), Fault> {
+    const FIELD: &str = "tail.fee_units";
+    for f in fee_units {
+        named(*f, FIELD)?;
+        // SAFETY: `named` checked the string non-NULL with its length; the plugin's static bytes.
+        let fee = unsafe { core::slice::from_raw_parts(f.ptr, f.len) };
+        let listed = classes.iter().any(|c| {
+            c.class.len == fee.len()
+                && !c.class.ptr.is_null()
+                // SAFETY: a non-NULL class string of its stated length; the plugin's static bytes.
+                && unsafe { core::slice::from_raw_parts(c.class.ptr, c.class.len) } == fee
+        });
+        if !listed {
+            return Err(fault(Rule::Contradiction, FIELD));
+        }
     }
     Ok(())
 }

@@ -706,6 +706,26 @@ fn billable_classes_are_named() {
     );
 }
 
+/// Every fee unit is also a billable class, so the plane can report it as a count. RED: a fee
+/// unit the classes do not list is refused.
+#[test]
+fn fee_units_are_billable_classes() {
+    let c = BillableClass {
+        class: s("per_request"),
+        family: s("request"),
+    };
+    assert_eq!(check_fee_units(&[s("per_request")], &[c]), Ok(()));
+    assert_eq!(check_fee_units(&[], &[]), Ok(()));
+    assert_eq!(
+        check_fee_units(&[s("per_session")], &[c]),
+        f(Rule::Contradiction, "tail.fee_units")
+    );
+    assert_eq!(
+        check_fee_units(&[z()], &[c]),
+        f(Rule::Missing, "tail.fee_units")
+    );
+}
+
 #[test]
 fn needs_have_a_known_direction_and_a_transport() {
     let mut n: Need = z();
