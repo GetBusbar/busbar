@@ -29,11 +29,14 @@ use crate::dispatch::{in_head, out_head, Adopter, Bind, Frame, NoSink, Plugin, N
 use crate::dispatch_test_plugin as plug;
 use crate::dispatch_tests::TestKind;
 
+/// One declaration as it reached the table: owner, need, the need, the target it resolved to.
+type Declared = (InstanceId, NeedId, ReadNeed, Option<String>);
+
 /// A connection table that records what reached it, ownership kept by the shared [`ConnSlab`].
 #[derive(Default)]
 struct Recording {
     slab: ConnSlab<()>,
-    declared: Mutex<Vec<(InstanceId, NeedId, ReadNeed, Option<String>)>>,
+    declared: Mutex<Vec<Declared>>,
     opened: Mutex<Vec<(InstanceId, NeedId, String)>>,
 }
 
