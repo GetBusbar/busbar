@@ -10,9 +10,6 @@
 // The transport-facing vocabulary, folded in from the former `busbar-contract-transport` crate
 // (DECISIONS #38): a KIND is a match-arm, not a crate, so the transport half lives here as one
 // module tree rather than a sibling crate the contract depended on.
-// The OPAQUE kernel-built configuration handle a transport's session layer is handed in place of key
-// material (#40(b), #36), and the sink a transport implements to receive it.
-pub mod config_handle;
 pub mod dest;
 pub mod driver;
 pub mod registry;
@@ -27,7 +24,6 @@ pub mod transport;
 pub mod trust;
 pub mod wire;
 
-pub use config_handle::{ConfigRole, TransportConfigHandle, TransportConfigSink};
 pub use stack::{
     role_of, BytesOut, Carrier, CarrierFacts, CarrierPoll, Claim, ConnFacts, Dest, Framed, Framer,
     FramerOut, HostTime, Located, Role, Side, TransportRow,
@@ -98,9 +94,9 @@ pub use driver::{Answer, Arrival, Detached, Outcome, UnitDriver};
 /// module root because a plane builds one when it says where a unit wants to go.
 pub use dest::UpstreamAddress;
 
-/// The host-owned trust seam currency: the client identity and the egress/inbound trust a
+/// The host-owned trust seam currency: the client identity and the egress trust a
 /// composition root fills in and hands across to the transport that applies it.
-pub use trust::{ClientIdentity, EgressTrust, InboundTrust};
+pub use trust::{ClientIdentity, EgressTrust};
 
 /// The transport wire vocabulary a plane still touches, re-exported at the transport module root so
 /// `busbar_contract::transport::<name>` resolves exactly as `busbar_contract::transport::<name>` did.

@@ -190,12 +190,6 @@ impl Count {
         self.0 < 0
     }
 
-    /// Whether this quantity is a whole number of units.
-    #[must_use]
-    pub const fn is_whole(self) -> bool {
-        self.0 % SCALE_FACTOR == 0
-    }
-
     /// Whether this quantity's mantissa fits a signed 64-bit store column.
     ///
     /// See [`MAX_ACROSS_A_64_BIT_COLUMN`]. A quantity that does not fit cannot be written down, and
@@ -268,17 +262,6 @@ impl Count {
     /// [`CountError::Overflow`] when the difference leaves the range.
     pub const fn checked_sub(self, rhs: Count) -> Result<Count, CountError> {
         match self.0.checked_sub(rhs.0) {
-            Some(m) => Ok(Count(m)),
-            None => Err(CountError::Overflow),
-        }
-    }
-
-    /// `self * n` for a whole multiplier, exactly.
-    ///
-    /// # Errors
-    /// [`CountError::Overflow`] when the product leaves the range.
-    pub const fn checked_mul_integer(self, n: i128) -> Result<Count, CountError> {
-        match self.0.checked_mul(n) {
             Some(m) => Ok(Count(m)),
             None => Err(CountError::Overflow),
         }

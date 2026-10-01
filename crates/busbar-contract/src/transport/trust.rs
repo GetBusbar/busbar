@@ -94,34 +94,6 @@ impl EgressTrust {
     }
 }
 
-/// The host's decision seam for an INBOUND document's authenticity — the "decided fact" a plane
-/// CONSUMES rather than a mechanism it owns.
-///
-/// A composition root that owns the verifying mechanism implements this; a plane that used to carry
-/// the pin/verify machinery itself instead asks the host across this seam and records the decision.
-/// The trait is deliberately small and names no protocol: a document is bytes, an issuer key is the
-/// operator-supplied string that roots it, and a fingerprint is the canonical identity the decision
-/// is pinned to.
-///
-/// Unused until a plane opts in — declaring the seam does not wire any caller onto it.
-pub trait InboundTrust: Send + Sync {
-    /// Verify a fetched `document` against the operator-supplied `issuer_key`, returning the
-    /// document's canonical fingerprint when at least one signature verifies against that key, or an
-    /// operator-facing reason when none does.
-    ///
-    /// # Errors
-    /// Returns the refusal reason when the document is unsigned, malformed, or signed by no key the
-    /// operator named.
-    fn verify_signed(&self, document: &[u8], issuer_key: &str) -> Result<String, String>;
-
-    /// The canonical fingerprint of a `document`, independent of any signature — the identity a
-    /// transport-layer (unsigned) pin binds to.
-    ///
-    /// # Errors
-    /// Returns the reason when the document cannot be canonicalised.
-    fn fingerprint(&self, document: &[u8]) -> Result<String, String>;
-}
-
 #[cfg(test)]
 #[path = "tests/redaction_tests.rs"]
 mod redaction_tests;

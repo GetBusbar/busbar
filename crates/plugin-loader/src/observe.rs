@@ -81,8 +81,9 @@ pub fn install_plugin_observer(observer: &'static dyn PluginObserver) -> bool {
     OBSERVER.set(observer).is_ok()
 }
 
-/// Whether a host observer has been installed — for a boot cell that wants to say so, and for the
-/// tests that prove the un-installed path drops rather than panics.
+/// Whether a host observer has been installed — for the tests that prove the un-installed path
+/// drops rather than panics.
+#[cfg(test)]
 pub fn observer_installed() -> bool {
     OBSERVER.get().is_some()
 }
