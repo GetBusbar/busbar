@@ -590,7 +590,7 @@ fn records_list_merges_queued_writes_in_key_order_after_the_cursor() {
     let s = list(None, 0);
     assert_eq!(s.bytes, b"a1sa2ra3q");
     assert_eq!(s.spans.len(), 3);
-    assert_eq!((s.spans[1].key_off, s.spans[1].value_off), (3, 5));
+    assert_eq!((s.spans[1].key.offset, s.spans[1].value.offset), (3, 5));
     assert_eq!(list(Some("a1"), 0).bytes, b"a2ra3q");
     assert_eq!(list(None, 1).bytes, b"a1s");
 }
@@ -656,8 +656,8 @@ fn sign_signs_under_the_declared_domain_with_the_prefixed_key_id() {
     let s = r.s.sign(&caller("inst"), b"data");
     assert_eq!(s.outcome, Outcome::Ready);
     assert_eq!(s.bytes, b"p-K1dom:data");
-    assert_eq!((s.spans[0].key_off, s.spans[0].key_len), (0, 4));
-    assert_eq!((s.spans[0].value_off, s.spans[0].value_len), (4, 8));
+    assert_eq!((s.spans[0].key.offset, s.spans[0].key.len), (0, 4));
+    assert_eq!((s.spans[0].value.offset, s.spans[0].value.len), (4, 8));
 }
 
 #[test]
@@ -742,11 +742,8 @@ fn trust_due_answers_the_ticks_marks_one_span_each() {
     r.s.mark_due();
     let s = r.s.trust_due(&me);
     assert_eq!(s.bytes, b"cp");
-    assert_eq!((s.spans[0].key_off, s.spans[0].key_len), (0, 2));
-    assert_eq!(
-        s.spans[0].value_off,
-        busbar_contract::abi::mechanism::check::SPAN_ABSENT
-    );
+    assert_eq!((s.spans[0].key.offset, s.spans[0].key.len), (0, 2));
+    assert_eq!(s.spans[0].value.offset, busbar_contract::abi::mechanism::check::SPAN_ABSENT);
 }
 
 #[test]
@@ -1473,8 +1470,8 @@ fn every_answered_write_is_durable_once_across_a_graceful_restart() {
     assert_eq!(listed.spans.len(), 100);
     let value = |n: usize| {
         let sp = listed.spans[n];
-        let at = sp.value_off as usize;
-        listed.bytes[at..at + sp.value_len as usize].to_vec()
+        let at = sp.value.offset as usize;
+        listed.bytes[at..at + sp.value.len as usize].to_vec()
     };
     assert_eq!(value(0), b"last0");
     assert_eq!(value(99), b"last99");
