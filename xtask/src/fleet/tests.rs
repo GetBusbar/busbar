@@ -684,9 +684,9 @@ fn a_top_level_path_outside_the_twin_shape_is_red() {
     // ...and anything under .github/ the render does not produce, not just workflows and scripts.
     let f = plant(&|r| {
         r.files
-            .insert(".github/dependabot.yml".into(), "version: 2\n".into());
+            .insert(".github/FUNDING.yml".into(), "github: x\n".into());
     });
-    one(&f, a, ".github/dependabot.yml", "unmanaged");
+    one(&f, a, ".github/FUNDING.yml", "unmanaged");
 }
 
 #[test]
@@ -1140,4 +1140,67 @@ fn sync_reports_a_missing_release_branch_and_never_touches_main_or_qa() {
     ] {
         assert!(!src.contains(forbidden), "sync.rs holds {forbidden}");
     }
+}
+
+#[test]
+fn dependabot_is_a_fleet_file_every_repo_carries_identically() {
+    let (fleet, t) = (fixture(), templates());
+    let path = ".github/dependabot.yml";
+    let content = |p: &super::registry::Plugin| {
+        render(&fleet, p, &t)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.path == path)
+            .unwrap_or_else(|| panic!("the render does not own {path}"))
+    };
+    let (a, b) = (content(&fleet.plugins[0]), content(&fleet.plugins[1]));
+    assert_eq!(a.mode, Mode::Whole);
+    assert_eq!(
+        a.content, b.content,
+        "every repo carries the identical file"
+    );
+    assert!(
+        a.content.starts_with(
+            "# Dependency updates target dev; they reach main only through a release.\n"
+        ),
+        "{}",
+        a.content
+    );
+    let v: Value = serde_yaml::from_str(&a.content).expect("dependabot.yml is YAML");
+    assert_eq!(v["version"], 2);
+    let updates = v["updates"].as_array().unwrap();
+    let ecosystems: Vec<&str> = updates
+        .iter()
+        .map(|u| u["package-ecosystem"].as_str().unwrap())
+        .collect();
+    assert_eq!(ecosystems, ["cargo", "github-actions"]);
+    for u in updates {
+        assert_eq!(u["directory"], "/");
+        assert_eq!(u["target-branch"], "dev");
+        assert_eq!(u["schedule"]["interval"], "weekly");
+    }
+    // The render owns it: a conforming repo is green, a drifted or missing one is red.
+    let plant = |edit: &dyn Fn(&mut Repo)| {
+        let fake = conforming(&fleet, &t);
+        edit(
+            fake.repos
+                .borrow_mut()
+                .get_mut("busbar-store-alpha")
+                .unwrap(),
+        );
+        run(&fleet, &t, &fake)
+    };
+    let f = plant(&|r| {
+        r.files.insert(path.into(), "version: 2\n".into());
+    });
+    one(&f, "busbar-store-alpha", path, "differs from the render");
+    let f = plant(&|r| {
+        r.files.remove(path);
+    });
+    one(
+        &f,
+        "busbar-store-alpha",
+        path,
+        "missing (the render owns it)",
+    );
 }
