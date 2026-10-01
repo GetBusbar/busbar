@@ -101,23 +101,13 @@ pub type PluginsFetch = fn(
     &dyn Fn(&str) -> Result<Vec<u8>, String>,
 ) -> Result<Vec<Fetched>, Vec<String>>;
 
-/// No root installed a fetch: every fetch refuses, naming the missing root.
-fn no_root_fetch(
-    _: &std::path::Path,
-    _: &[config::FetchTarget],
-    _: bool,
-    _: &dyn Fn(&str) -> Result<Vec<u8>, String>,
-) -> Result<Vec<Fetched>, Vec<String>> {
-    Err(vec![
-        "no composition root installed the plugins fetch".to_owned()
-    ])
-}
-
 /// WHAT THE COMPOSITION ROOT INSTALLS into the kernel, by name: its linked entries, the default
 /// store it resolved and its registry build — and, as each kind's axis lands, that kind's
 /// `<kind>_axis` field (ARCHITECT ruling Q8: the kernel receives contract `<Kind>Axis` seams from
-/// the root, never the loader). A field is added by name; nothing is positional.
-#[derive(Clone, Copy)]
+/// the root, never the loader). A field is added by name; nothing is positional. Nothing
+/// installed ([`Default`]): no linked rows, no default store, and a build and a fetch that refuse,
+/// naming the missing root.
+#[derive(Clone, Copy, Default)]
 pub struct RootInstall {
     /// The build's linked in-process stores.
     pub stores: &'static [LinkedStore],
@@ -127,26 +117,12 @@ pub struct RootInstall {
     /// declares itself the default (empty when no row claims it).
     pub default_store_module: &'static str,
     /// The root's registry build.
-    pub registry_build: RegistryBuild,
+    pub registry_build: Option<RegistryBuild>,
     /// The root's `plugins.fetch`.
-    pub plugins_fetch: PluginsFetch,
+    pub plugins_fetch: Option<PluginsFetch>,
 }
 
-impl RootInstall {
-    /// Nothing installed: no linked rows, no default store, and a registry build that refuses.
-    pub const NONE: Self = Self {
-        stores: &[],
-        hooks: &[],
-        default_store_module: "",
-        registry_build: no_root,
-        plugins_fetch: no_root_fetch,
-    };
-}
 
-/// No root installed a registry build: every build refuses, naming the missing root.
-fn no_root(_: RegistryIn<'_>, _: &mut dyn FnMut(boot::Note<'_>)) -> Result<PluginRegistry, String> {
-    Err("no composition root installed the plugin registry build".to_owned())
-}
 
 /// A test build has no root: its store and ranking fixtures stand in for the root's entries, the
 /// stand-in store (which claims the default) as the default.
@@ -158,8 +134,8 @@ const STAND_IN: RootInstall = RootInstall {
         fixture_hook::linked::HOOK,
     ],
     default_store_module: fixture_store::linked::STORE.0,
-    registry_build: crate::test_support::registry_stand_in,
-    plugins_fetch: crate::test_support::fetch_stand_in,
+    registry_build: Some(crate::test_support::registry_stand_in),
+    plugins_fetch: Some(crate::test_support::fetch_stand_in),
 };
 
 /// The composition root's linked store and hook entries (the build's in-process stores and, when
@@ -181,7 +157,7 @@ pub fn install_linked_rows(rows: RootInstall) {
 pub fn root_rows() -> RootInstall {
     #[cfg(any(test, feature = "test-support"))]
     let _ = ROOT_ROWS.set(STAND_IN);
-    ROOT_ROWS.get().copied().unwrap_or(RootInstall::NONE)
+    ROOT_ROWS.get().copied().unwrap_or_default()
 }
 
 /// THE ROOT'S DOOR onto the auth axis: its linked table's `auths` entries (the first install
@@ -461,7 +437,10 @@ pub fn plugins_preflight(
         plugins: Some(plugins_cfg),
         data_dir: data_dir.as_deref(),
     };
-    let registry = (root_rows().registry_build)(build, &mut |n| log_build(n, &plugins_cfg.dir))?;
+    let registry_build = root_rows()
+        .registry_build
+        .ok_or("no composition root installed the plugin registry build")?;
+    let registry = registry_build(build, &mut |n| log_build(n, &plugins_cfg.dir))?;
     if !plugins_cfg.enabled {
         return Ok(registry);
     }

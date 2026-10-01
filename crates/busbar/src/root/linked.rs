@@ -302,8 +302,8 @@ pub fn register_stores(linked: &Linked) {
             stores: linked.stores,
             hooks: linked.hooks,
             default_store_module: default.unwrap_or_default(),
-            registry_build: crate::root::boot::registry,
-            plugins_fetch: crate::root::boot::plugins_fetch,
+            registry_build: Some(crate::root::boot::registry),
+            plugins_fetch: Some(crate::root::boot::plugins_fetch),
         }),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
