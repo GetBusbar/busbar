@@ -14,12 +14,18 @@
 //! process, so none sees the refusal.
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
+use axum::body::{Body, Bytes};
+use axum::http::{HeaderName, HeaderValue, StatusCode};
+use axum::response::Response;
+use busbar_contract::caps::ReasonCode;
 use busbar_contract::services::{Caller, HostServices, Later, Ran, Reading, RecordsList, Stored};
 use busbar_kernel::config::RootCfg;
 use busbar_kernel::host_services::{DestRules, KernelServices, SystemResolver};
 use busbar_kernel::net_guard::{Denylist, GuardPolicy};
+use busbar_kernel::plane_driver::{refusal_status, CallerEnd};
+use tokio::sync::{mpsc, oneshot};
 
 /// The egress class `dest.judge` applies when a plugin names none: the deployment's own stance.
 pub const DEFAULT_EGRESS_CLASS: u32 = 0;
@@ -190,6 +196,104 @@ impl HostServices for LateServices {
             Ok(s) => s.random_fill(len),
             Err(r) => r,
         }
+    }
+}
+
+// ── the driver's caller side over today's ingress ────────────────────────────────────────────────
+
+/// THE CALLER'S SIDE OF A DRIVEN UNIT over today's hyper ingress (TRANSITIONAL: deleted when
+/// INBOUND-LISTEN's `accepted::Caller` serves the data door, 1.6.0-TODO "TRANSITIONAL ROWS").
+///
+/// The head goes to the handler once; the bytes go into the response body through a channel of one
+/// piece, so a `write` resolves only once the body has taken the piece before it (the caller's side
+/// was writable). A body the server dropped (the caller went away) answers `false`.
+#[derive(Debug)]
+pub struct IngressCaller {
+    head: Mutex<Option<oneshot::Sender<Head>>>,
+    body: mpsc::Sender<Bytes>,
+}
+
+/// A reply head: the status number and the head fields.
+type Head = (u32, Vec<(Vec<u8>, Vec<u8>)>);
+
+/// The handler's end of an [`IngressCaller`]: the reply, once the unit states its head.
+#[derive(Debug)]
+pub struct IngressReply {
+    head: oneshot::Receiver<Head>,
+    body: mpsc::Receiver<Bytes>,
+}
+
+impl IngressCaller {
+    /// A caller side and the reply it feeds.
+    #[must_use]
+    pub fn new() -> (Self, IngressReply) {
+        let (head_tx, head) = oneshot::channel();
+        let (body_tx, body) = mpsc::channel(1);
+        let caller = IngressCaller {
+            head: Mutex::new(Some(head_tx)),
+            body: body_tx,
+        };
+        (caller, IngressReply { head, body })
+    }
+}
+
+impl CallerEnd for IngressCaller {
+    fn head(&self, status: u32, fields: Vec<(Vec<u8>, Vec<u8>)>) {
+        let sender = self
+            .head
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(sender) = sender {
+            // A handler that went away takes no head; its body's `write` answers `false`.
+            let _gone = sender.send((status, fields));
+        }
+    }
+
+    async fn write(&self, bytes: &[u8]) -> bool {
+        self.body.send(Bytes::copy_from_slice(bytes)).await.is_ok()
+    }
+}
+
+impl IngressReply {
+    /// The response, once the unit has stated its head; `None` when the unit ended without one.
+    /// A status the wire cannot carry is the plane's fault, answered as the driver answers a
+    /// plane fault; a field the wire cannot carry is not sent.
+    pub async fn response(self) -> Option<Response> {
+        let (status, fields) = self.head.await.ok()?;
+        // The driver's own status for a plane fault, when the plane's cannot go on the wire.
+        let status = [status, refusal_status(ReasonCode::PlanePanic)]
+            .into_iter()
+            .find_map(|s| StatusCode::from_u16(u16::try_from(s).ok()?).ok())?;
+        let mut response = Response::new(Body::new(ReplyBody(self.body)));
+        *response.status_mut() = status;
+        let headers = response.headers_mut();
+        for (name, value) in fields {
+            if let (Ok(name), Ok(value)) = (
+                HeaderName::from_bytes(&name),
+                HeaderValue::from_bytes(&value),
+            ) {
+                headers.append(name, value);
+            }
+        }
+        Some(response)
+    }
+}
+
+/// The response body: the pieces the unit writes, in order, until its caller side is dropped.
+struct ReplyBody(mpsc::Receiver<Bytes>);
+
+impl http_body::Body for ReplyBody {
+    type Data = Bytes;
+    type Error = std::convert::Infallible;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Bytes>, Self::Error>>> {
+        self.0
+            .poll_recv(cx)
+            .map(|piece| piece.map(|bytes| Ok(http_body::Frame::data(bytes))))
     }
 }
 

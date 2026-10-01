@@ -193,3 +193,76 @@ fn the_default_egress_class_is_the_deployments_security_stance() {
         "without the override the metadata address is refused"
     );
 }
+
+// ── the caller side over today's ingress (TRANSITIONAL) ──────────────────────────────────────────
+
+/// The head becomes the response's status and fields; the writes become its body, in order.
+#[tokio::test]
+async fn the_ingress_caller_answers_with_the_units_head_and_bytes() {
+    let (caller, reply) = IngressCaller::new();
+    let unit = async {
+        caller.head(201, vec![(b"x-plane".to_vec(), b"one".to_vec())]);
+        assert!(caller.write(b"hello ").await);
+        assert!(caller.write(b"world").await);
+        drop(caller);
+    };
+    let handler = async {
+        let response = reply.response().await.expect("a head");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(response.headers()["x-plane"], "one");
+        axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("the body")
+    };
+    let ((), body) = tokio::join!(unit, handler);
+    assert_eq!(&body[..], b"hello world");
+}
+
+/// A write resolves only once the body has taken the piece before it: one piece in flight.
+#[tokio::test]
+async fn an_ingress_write_waits_for_the_body_to_take_the_piece_before_it() {
+    use http_body_util::BodyExt;
+    let (caller, reply) = IngressCaller::new();
+    caller.head(200, Vec::new());
+    let mut body = reply.response().await.expect("a head").into_body();
+    assert!(caller.write(b"a").await, "the first piece fits the window");
+    let second = caller.write(b"b");
+    tokio::pin!(second);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), &mut second)
+            .await
+            .is_err(),
+        "the second write waits while the first piece is untaken"
+    );
+    let first = body.frame().await.expect("a frame").expect("data");
+    assert_eq!(first.into_data().expect("bytes").as_ref(), b"a");
+    assert!(second.await, "taken: the second write resolves");
+}
+
+/// A caller that went away: every write answers `false` (the driver's ClientGone), and a head
+/// after it, or a unit that ends without one, panics nowhere.
+#[tokio::test]
+async fn an_ingress_caller_whose_handler_went_away_answers_false() {
+    let (caller, reply) = IngressCaller::new();
+    drop(reply);
+    caller.head(200, Vec::new());
+    assert!(!caller.write(b"x").await);
+    let (caller, reply) = IngressCaller::new();
+    drop(caller);
+    assert!(reply.response().await.is_none(), "no head, no response");
+}
+
+/// A status the wire cannot carry is answered as the driver answers a plane fault; a field the
+/// wire cannot carry is not sent.
+#[tokio::test]
+async fn an_ingress_head_the_wire_cannot_carry_is_a_plane_fault() {
+    let (caller, reply) = IngressCaller::new();
+    caller.head(0, vec![(b"bad name".to_vec(), b"v".to_vec())]);
+    drop(caller);
+    let response = reply.response().await.expect("a head");
+    assert_eq!(
+        u32::from(response.status().as_u16()),
+        refusal_status(ReasonCode::PlanePanic)
+    );
+    assert!(response.headers().is_empty());
+}
