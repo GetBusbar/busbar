@@ -746,9 +746,8 @@ impl PluginRegistry {
     /// ([`Self::open_plane`]).
     ///
     /// M6-HOT-PLANE: the HOT-lane branch is transitional. Each linked HOT-lane plane leaves it in its
-    /// own fold's series (FOLD-LLM, FOLD-MCP, FOLD-A2A, the decisions and streaming folds), which
-    /// ship the plane's door export and its linked door row; the last fold deletes this branch and
-    /// the HOT declaration read.
+    /// own fold's series (one per plane, `1.6.0-TODO.md`), which ship the plane's door export and its
+    /// linked door row; the last fold deletes this branch and the HOT declaration read.
     ///
     /// # Errors
     ///
