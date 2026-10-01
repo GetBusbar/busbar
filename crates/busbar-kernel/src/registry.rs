@@ -150,12 +150,7 @@ impl Registry {
     /// releases it.
     pub fn replace(&mut self, plugin: Arc<dyn Plugin>) -> Generation {
         let (key, kind) = (plugin.key(), plugin.kind());
-        let next = self.generation.next();
-        for entry in &mut self.entries {
-            if entry.kind == kind && entry.key == key && entry.until.is_none() {
-                entry.until = Some(next);
-            }
-        }
+        let next = self.retire(kind, key);
         self.entries.push(Registered {
             key,
             kind,
@@ -163,7 +158,6 @@ impl Registry {
             until: None,
             plugin,
         });
-        self.generation = next;
         next
     }
 
