@@ -46,7 +46,7 @@
 //! carrier op.
 
 pub mod engine;
-pub mod target;
+pub mod dest_head;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -611,12 +611,12 @@ impl SafeSlot for Encode {
                 .then(|| f.field(|x| &x.value).bytes())
         });
         // The target goes out as 1.5.5's client wrote it: percent-encoded, never refused for a
-        // space (`target::encode_target`).
+        // space (`dest_head::encode_target`).
         let target = match (word, envelope_path) {
             (w, _) if !w.is_empty() => Some(w),
             (_, p) => p,
         }
-        .map(target::encode_target)
+        .map(dest_head::encode_target)
         .transpose();
         let Ok(target) = target else {
             return failed(

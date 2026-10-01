@@ -108,7 +108,7 @@ fn a_field_block_is_cut_only_where_a_continuation_extends_a_value() {
 /// `%20` is not encoded twice, and CR, LF and NUL are refused.
 #[test]
 fn a_target_is_percent_encoded_as_1_5_5_wrote_it() {
-    let enc = |t: &str| String::from_utf8(target::encode_target(t.as_bytes()).unwrap()).unwrap();
+    let enc = |t: &str| String::from_utf8(dest_head::encode_target(t.as_bytes()).unwrap()).unwrap();
     assert_eq!(
         enc("/v1beta/models/my model:generateContent"),
         "/v1beta/models/my%20model:generateContent"
@@ -116,8 +116,8 @@ fn a_target_is_percent_encoded_as_1_5_5_wrote_it() {
     assert_eq!(enc("/v1/a%20b"), "/v1/a%20b");
     for bad in ["/a\rb", "/a\nb", "/a\0b"] {
         assert_eq!(
-            target::encode_target(bad.as_bytes()),
-            Err(target::REFUSED),
+            dest_head::encode_target(bad.as_bytes()),
+            Err(dest_head::REFUSED),
             "{bad:?}"
         );
     }
@@ -168,7 +168,7 @@ fn the_target_encoder_matches_the_url_parser_1_5_5_used() {
         };
         let url = url::Url::parse(&format!("http://h{absolute}")).unwrap();
         let want = &url[url::Position::BeforePath..url::Position::AfterQuery];
-        let got = target::encode_target(t.as_bytes()).unwrap();
+        let got = dest_head::encode_target(t.as_bytes()).unwrap();
         assert_eq!(String::from_utf8(got).unwrap(), want, "{t:?}");
     }
 }
