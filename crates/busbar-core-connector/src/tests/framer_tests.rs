@@ -95,15 +95,27 @@ fn an_accepted_framing_yields_its_request_head_typed() {
 fn a_continued_field_piece_is_judged_by_the_host_not_the_framer() {
     let mut l = FieldLines::default();
     assert_eq!(l.piece(1, false, false, b"x: y\r\n"), Ok(()));
-    assert!(l.piece(1, true, true, b":path: /admin\r\n").is_err(), "smuggle");
+    assert!(
+        l.piece(1, true, true, b":path: /admin\r\n").is_err(),
+        "smuggle"
+    );
     let mut l = FieldLines::default();
     assert!(l.piece(1, true, true, b"rest\r\n").is_err(), "orphan");
     let mut l = FieldLines::default();
     assert_eq!(l.piece(1, false, false, b"x-lo"), Ok(()));
-    assert!(l.piece(1, true, true, b"ng: v\r\n").is_err(), "inside a name");
+    assert!(
+        l.piece(1, true, true, b"ng: v\r\n").is_err(),
+        "inside a name"
+    );
     let mut l = FieldLines::default();
-    assert!(l.piece(1, false, true, b":path: /\r\n").is_err(), "pseudo-field");
-    assert!(l.piece(2, false, true, b"x: 1\r").is_err(), "ends inside a line");
+    assert!(
+        l.piece(1, false, true, b":path: /\r\n").is_err(),
+        "pseudo-field"
+    );
+    assert!(
+        l.piece(2, false, true, b"x: 1\r").is_err(),
+        "ends inside a line"
+    );
 }
 
 /// A long value split across pieces reassembles byte-identically, and the stream's next block
@@ -124,7 +136,11 @@ fn a_long_value_split_across_pieces_reassembles_byte_identically() {
         joined.extend_from_slice(bytes);
     }
     assert_eq!(joined, block);
-    assert_eq!(l.piece(7, false, true, b""), Ok(()), "an empty block after it");
+    assert_eq!(
+        l.piece(7, false, true, b""),
+        Ok(()),
+        "an empty block after it"
+    );
 }
 
 /// RED: a payload piece inside a stream's open field block is refused; a failed stream drops its
@@ -134,8 +150,15 @@ fn a_payload_piece_inside_an_open_block_is_refused_and_a_failure_drops_the_block
     let fields = |continued, end| FieldPiece::Fields { continued, end };
     let mut l = FieldLines::default();
     assert_eq!(l.take(3, fields(false, false), b"x: y\r\n"), Ok(()));
-    assert!(l.take(3, FieldPiece::Payload, b"body").is_err(), "payload inside");
-    assert_eq!(l.take(4, FieldPiece::Payload, b"body"), Ok(()), "another stream");
+    assert!(
+        l.take(3, FieldPiece::Payload, b"body").is_err(),
+        "payload inside"
+    );
+    assert_eq!(
+        l.take(4, FieldPiece::Payload, b"body"),
+        Ok(()),
+        "another stream"
+    );
     assert_eq!(l.take(3, fields(false, false), b"x-lo"), Ok(()));
     assert_eq!(l.take(3, FieldPiece::Failed, b"reset"), Ok(()));
     assert!(l.open.is_empty(), "the failed stream's block is gone");

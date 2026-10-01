@@ -619,7 +619,10 @@ impl SafeSlot for Encode {
         .map(target::encode_target)
         .transpose();
         let Ok(target) = target else {
-            return failed(&mut o, "encode: a request target holds CR, LF or NUL".into());
+            return failed(
+                &mut o,
+                "encode: a request target holds CR, LF or NUL".into(),
+            );
         };
         if !method.is_empty() {
             pairs.push(("method", method));

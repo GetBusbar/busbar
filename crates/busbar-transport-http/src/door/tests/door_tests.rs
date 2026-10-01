@@ -109,10 +109,17 @@ fn a_field_block_is_cut_only_where_a_continuation_extends_a_value() {
 #[test]
 fn a_target_is_percent_encoded_as_1_5_5_wrote_it() {
     let enc = |t: &str| String::from_utf8(target::encode_target(t.as_bytes()).unwrap()).unwrap();
-    assert_eq!(enc("/v1beta/models/my model:generateContent"), "/v1beta/models/my%20model:generateContent");
+    assert_eq!(
+        enc("/v1beta/models/my model:generateContent"),
+        "/v1beta/models/my%20model:generateContent"
+    );
     assert_eq!(enc("/v1/a%20b"), "/v1/a%20b");
     for bad in ["/a\rb", "/a\nb", "/a\0b"] {
-        assert_eq!(target::encode_target(bad.as_bytes()), Err(target::REFUSED), "{bad:?}");
+        assert_eq!(
+            target::encode_target(bad.as_bytes()),
+            Err(target::REFUSED),
+            "{bad:?}"
+        );
     }
 }
 

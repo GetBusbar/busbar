@@ -56,8 +56,14 @@ pub fn encode_target(target: &[u8]) -> Result<Vec<u8>, &'static str> {
     }
     // As the parser reads its input: leading and trailing C0 controls and spaces go, and so does
     // every tab.
-    let start = target.iter().position(|b| *b > 0x20).unwrap_or(target.len());
-    let end = target.iter().rposition(|b| *b > 0x20).map_or(start, |at| at + 1);
+    let start = target
+        .iter()
+        .position(|b| *b > 0x20)
+        .unwrap_or(target.len());
+    let end = target
+        .iter()
+        .rposition(|b| *b > 0x20)
+        .map_or(start, |at| at + 1);
     let target: Vec<u8> = target[start..end]
         .iter()
         .copied()
