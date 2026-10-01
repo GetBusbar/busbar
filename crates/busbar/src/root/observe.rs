@@ -5,7 +5,7 @@
 //! response's metrics and diagnostics to an observer, and the kernel's observer decides what a
 //! plugin is allowed to have said. The composition root joins the two, so neither names the other:
 //! the loader's observer calls the kernel's fold, and the kernel's fold asks the loader's grants
-//! (first-party, granted series) through the kernel's own seam.
+//! (first-party, granted series), handed in on every call: the kernel holds no installed seam.
 //!
 //! Installed once, before the first plugin loads: a plugin's own constructor is exactly where it
 //! has something worth reporting. Unconditional: the `metrics` facade is a no-op without a
@@ -26,7 +26,7 @@ impl PluginObserver for Observer {
         metrics: &[serde_json::Value],
         diagnostics: &[serde_json::Value],
     ) {
-        KernelPluginObserver.observe(plugin, kind, metrics, diagnostics);
+        KernelPluginObserver.observe(&LoaderGrants, plugin, kind, metrics, diagnostics);
     }
 }
 
@@ -45,6 +45,5 @@ impl Grants for LoaderGrants {
 /// Join the loader's observer to the kernel's fold. The first install wins; a second boot inside
 /// one test binary installs nothing, which is not an error.
 pub fn install() {
-    let _ = busbar_kernel::metrics::observe::install_grants(&LoaderGrants);
     let _ = crate::root::loader::observe::install_plugin_observer(&Observer);
 }

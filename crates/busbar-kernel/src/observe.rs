@@ -229,9 +229,9 @@ pub(crate) fn admits_cardinality_opaque(plugin: &str, series: &str, labels: &[u8
 pub struct KernelPluginObserver;
 
 /// WHAT THE LOADER GRANTED AT OPEN, as the kernel's observer asks it: whether a plugin was opened
-/// first-party, and which of its declared series it was granted. The composition root installs the
-/// loader's answers ([`install_grants`]) before any plugin loads, so the kernel never names the
-/// loader; with none installed, nothing is first-party and nothing is granted.
+/// first-party, and which of its declared series it was granted. The composition root hands the
+/// loader's answers to every [`KernelPluginObserver::observe`] call, so the kernel never names the
+/// loader and holds no installed seam (spec R6: no static fn-pointer seam into the kernel).
 pub trait Grants: Send + Sync {
     /// Was `plugin` opened first-party (a linked door, or signed by the release key)?
     fn first_party(&self, plugin: &str) -> bool;
@@ -239,28 +239,12 @@ pub trait Grants: Send + Sync {
     fn first_party_series(&self, plugin: &str, name: &str, kind: &str) -> bool;
 }
 
-static GRANTS: std::sync::OnceLock<&'static dyn Grants> = std::sync::OnceLock::new();
-
-/// Install the loader's grants. The first install wins; a later one returns `false`.
-pub fn install_grants(grants: &'static dyn Grants) -> bool {
-    GRANTS.set(grants).is_ok()
-}
-
-fn first_party(plugin: &str) -> bool {
-    GRANTS.get().is_some_and(|g| g.first_party(plugin))
-}
-
-fn first_party_series(plugin: &str, name: &str, kind: &str) -> bool {
-    GRANTS
-        .get()
-        .is_some_and(|g| g.first_party_series(plugin, name, kind))
-}
-
 impl KernelPluginObserver {
     /// Fold one call's back-channel: what the loader's observer hands the kernel for every plugin
     /// response (installed by the composition root).
     pub fn observe(
         &self,
+        grants: &dyn Grants,
         plugin: &str,
         kind: &str,
         metrics: &[serde_json::Value],
@@ -284,11 +268,11 @@ impl KernelPluginObserver {
         // path — `hooks::scrape` knows no diagnostic, and a 1.5.5 hook had no way to raise one — so
         // silencing them here would not preserve any frozen behaviour, it would only drop the one
         // banner the host promises to look up and emit. They are folded for every kind, first.
-        fold_diagnostics(plugin, diagnostics);
+        fold_diagnostics(grants, plugin, diagnostics);
         if kind == busbar_contract::abi::cold::kind::HOOK {
             return;
         }
-        fold_metrics(plugin, metrics);
+        fold_metrics(grants, plugin, metrics);
     }
 }
 
@@ -300,7 +284,7 @@ impl KernelPluginObserver {
 /// build and a dropped-in build both report increments, so the exposition is the sum of the same
 /// events either way. Reading a counter as a level instead would make the last drain win and lose
 /// every sample a slow scrape interval skipped over.
-fn fold_metrics(plugin: &str, raw: &[serde_json::Value]) {
+fn fold_metrics(grants: &dyn Grants, plugin: &str, raw: &[serde_json::Value]) {
     if raw.is_empty() {
         return;
     }
@@ -310,7 +294,7 @@ fn fold_metrics(plugin: &str, raw: &[serde_json::Value]) {
         // THE FIRST-PARTY NAMESPACE (K9a S1): a series the loader GRANTED this plugin at open — a
         // first-party plugin's declared series, of its declared type — is the host's to render as
         // declared: it may be reserved, and it carries no provenance label.
-        let granted = first_party_series(plugin, &m.name, &m.kind);
+        let granted = grants.first_party_series(plugin, &m.name, &m.kind);
         if !granted && !admits_metric_name(&m.name) {
             // Reserved first-party namespace — a plugin cannot impersonate a `busbar_*` series.
             // (The charset half is already guaranteed by the validator; naming both through one
@@ -403,7 +387,7 @@ fn labels_for(plugin: Option<&str>, m: &crate::hooks::wire::HookMetric) -> Vec<m
 /// A plugin NAMES a code; the host is what looks it up and emits it. A code the catalogue does not
 /// hold is dropped: a `BUSBAR-NNNN` banner is a promise that pasting it into the docs lands on an
 /// entry, and a plugin cannot be allowed to mint that promise.
-fn fold_diagnostics(plugin: &str, raw: &[serde_json::Value]) {
+fn fold_diagnostics(grants: &dyn Grants, plugin: &str, raw: &[serde_json::Value]) {
     if raw.is_empty() {
         return;
     }
@@ -425,7 +409,7 @@ fn fold_diagnostics(plugin: &str, raw: &[serde_json::Value]) {
         let level = clamp_level(d.level, diag.severity);
         // A FIRST-PARTY plugin's diagnostic renders as the host renders its own (K9c): the
         // catalogue line, its fields in the order it attached them, no provenance label.
-        if first_party(plugin) {
+        if grants.first_party(plugin) {
             let fields: Vec<(String, String)> = d
                 .ordered_fields()
                 .into_iter()
