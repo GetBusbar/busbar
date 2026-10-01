@@ -107,6 +107,7 @@ fn complete_login_in(out_buf: IdentityBuf) -> CompleteLoginIn {
         submitted: std::ptr::null(),
         submitted_len: 0,
         out_buf,
+        nonce: NO_STR,
     }
 }
 
@@ -382,7 +383,7 @@ fn fields_green_one_field_and_none() {
 #[test]
 fn fields_red_an_unknown_flag() {
     let mut bytes = [0u8; BUF_CAP];
-    let mut fields = [field(FIELD_SENSITIVE << 1), field(0)];
+    let mut fields = [field(FIELD_SENSITIVE << 2), field(0)];
     let input = fields_in(&mut bytes, fields.as_mut_ptr(), FIELDS_CAP);
     let f = check(slot::FIELDS, Outcome::Ready, &input, &fields_out(1)).unwrap_err();
     assert_eq!(f.rule, Rule::UnknownCode);
@@ -545,4 +546,49 @@ fn short_is_a_failed_answer_asking_for_more() {
         &fields_out(0),
     );
     assert!(!Auth::short(&a));
+}
+
+/// THE TAIL'S LOGIN RULE: the login classification is `NONE` exactly when `CAP_LOGIN` is absent,
+/// and one the host knows; a tail where the two disagree refuses the load. The agreeing tails read
+/// back their login kind.
+#[test]
+fn a_tail_whose_login_kind_disagrees_with_its_login_capability_refuses() {
+    use busbar_contract::abi::auth::{
+        AuthTail, CAP_INBOUND, CAP_LOGIN, LOGIN_KIND_CREDENTIAL, LOGIN_KIND_NONE,
+        LOGIN_KIND_REDIRECT,
+    };
+    use busbar_contract::abi::mechanism::door::KindTailHead;
+    use busbar_contract::abi::sdk::door::statement;
+    let bind = |caps: u32, login_kind: u32| {
+        let tail = Box::leak(Box::new(AuthTail {
+            head: KindTailHead {
+                size: size_of::<AuthTail>() as u32,
+                _reserved: 0,
+            },
+            caps,
+            facts: 0,
+            login_kind,
+            _reserved: 0,
+            styles: std::ptr::null(),
+            styles_len: 0,
+            aliases: std::ptr::null(),
+            aliases_len: 0,
+            carriers: std::ptr::null(),
+            carriers_len: 0,
+        }));
+        let st = busbar_contract::abi::mechanism::door::Statement {
+            kind_tail: std::ptr::from_ref(tail).cast(),
+            ..statement("t", "1", 0)
+        };
+        <Auth as Kind>::context(&st).map(|c| {
+            c.and_then(|c| c.downcast::<crate::dispatch::kinds::auth::AuthFacts>().ok())
+                .map(|f| f.login_kind)
+        })
+    };
+    assert_eq!(bind(CAP_INBOUND, LOGIN_KIND_NONE), Ok(Some(LOGIN_KIND_NONE)));
+    assert_eq!(bind(CAP_LOGIN, LOGIN_KIND_REDIRECT), Ok(Some(LOGIN_KIND_REDIRECT)));
+    assert_eq!(bind(CAP_LOGIN, LOGIN_KIND_CREDENTIAL), Ok(Some(LOGIN_KIND_CREDENTIAL)));
+    assert!(bind(CAP_LOGIN, LOGIN_KIND_NONE).is_err(), "login without a kind");
+    assert!(bind(CAP_INBOUND, LOGIN_KIND_REDIRECT).is_err(), "a kind without login");
+    assert!(bind(CAP_LOGIN, 9).is_err(), "an unknown kind");
 }

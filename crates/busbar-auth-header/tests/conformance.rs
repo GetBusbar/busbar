@@ -315,6 +315,15 @@ fn script(p: &Plugin<Auth>) -> Vec<String> {
     ));
     t.push(fields(p, keyless, MODE_OWN, z(), (256, 4)));
     t.push(fields(p, 999, MODE_OWN, z(), (256, 4)));
+    // THE QUERY STYLE: the credential as a query parameter the framer appends, flagged
+    // FIELD_QUERY (2), under the dialect's parameter name.
+    let (l, query) = open_outbound(p, "query-key", Some("gem-key"), "{}");
+    t.push(l);
+    let (l, named) = open_outbound(p, "query-key", Some("gem-key"), r#"{"param":"api_key"}"#);
+    t.push(l);
+    t.push(fields(p, query, MODE_OWN, z(), (256, 4)));
+    t.push(fields(p, named, MODE_OWN, z(), (256, 4)));
+    t.push(fields(p, query, MODE_PASSTHROUGH, secret("caller-tok"), (256, 4)));
 
     for h in [bearer, api_key, goog, keyless] {
         t.push(ready(p, h));
@@ -406,6 +415,11 @@ const EXPECTED: &[&str] = &[
     "fields Ready  authorization: Bearer caller-tok [flags=0]",
     "fields Ready  ",
     "fields Refused ",
+    "open_outbound query-key Ready ",
+    "open_outbound query-key Ready ",
+    "fields Ready  key: gem-key [flags=2]",
+    "fields Ready  api_key: gem-key [flags=2]",
+    "fields Ready  key: caller-tok [flags=2]",
     "ready Ready 1",
     "ready Ready 1",
     "ready Ready 1",

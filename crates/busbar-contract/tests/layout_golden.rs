@@ -1357,7 +1357,8 @@ fn compute_layout() -> String {
             code_verifier,
             submitted,
             submitted_len,
-            out_buf
+            out_buf,
+            nonce
         ]
     );
     record!(s, AuthOpenOutboundIn, [head, style, credential, settings]);

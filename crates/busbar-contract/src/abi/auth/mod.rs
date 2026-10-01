@@ -131,9 +131,9 @@ pub struct Ops {
     /// `OutHead.lease`).
     pub begin_login: Option<Op>,
     /// Finish a login: the token exchange runs over the plugin's own need to its need-declared
-    /// targets. OFF-PATH; may pend; `Call`. In [`CompleteLoginIn`] (fixed 216 B), out
+    /// targets. OFF-PATH; may pend; `Call`. In [`CompleteLoginIn`] (fixed 232 B), out
     /// [`IdentifyOut`] (fixed 208 B; host [`IdentityBuf`]). The verdict is [`LOGIN_IDENTITY`],
-    /// [`LOGIN_BAD_CREDENTIAL`] or [`LOGIN_OUTAGE`].
+    /// [`LOGIN_BAD_CREDENTIAL`], [`LOGIN_OUTAGE`] or [`LOGIN_SECURITY_CHECK_FAILED`].
     pub complete_login: Option<Op>,
     /// Bind one outbound style to its credential and answer a handle. OFF-PATH, at generation
     /// seal; never pends (the first mint runs in the background on `tick`); `Call`. In
@@ -257,6 +257,11 @@ pub const LOGIN_BAD_CREDENTIAL: u32 = 2;
 /// [`IdentifyOut::verdict`] for `complete_login`: the directory or IdP could not answer (connect,
 /// TLS, timeout, malformed reply). Distinct from a bad credential.
 pub const LOGIN_OUTAGE: u32 = 3;
+/// [`IdentifyOut::verdict`] for `complete_login`: the IdP answered, and its answer failed the
+/// login's security check (an identity token whose `nonce` is not the one `begin_login` was
+/// handed). No identity is trusted. Distinct from a declined credential: 1.5.5 rendered it as its
+/// own page ("Sign-in couldn't be verified"). Appended.
+pub const LOGIN_SECURITY_CHECK_FAILED: u32 = 4;
 
 /// The identity buffer the host hands `verify`/`complete_login` to start: bytes.
 pub const IDENTITY_BUF_BYTES: usize = 16 * 1024;
@@ -277,6 +282,13 @@ pub const MODE_PASSTHROUGH: u32 = 2;
 /// the 1.5.5 bytes win); marking them is a behaviour change taken only with the owner. Set or not,
 /// the whole field buffer is never logged and is zeroised after encode.
 pub const FIELD_SENSITIVE: u32 = 1;
+/// [`FieldSpan::flags`]: this field is a QUERY PARAMETER, not a header. The host's framer appends
+/// it to the request target (`name=value`, each percent-encoded outside RFC 3986's unreserved set,
+/// after any query the target already has, in the order written) and never sends it as a header.
+/// The plane never sees it, and every target the host logs, reports in an error or labels a metric
+/// with has its value redacted (the egress seam's `query_auth`). Optional: a style that presents
+/// only headers never sets it. For an upstream that takes its key as a query parameter (`?key=`).
+pub const FIELD_QUERY: u32 = 2;
 
 /// [`LoginField::kind`]: plain text.
 pub const FORM_TEXT: u32 = 1;

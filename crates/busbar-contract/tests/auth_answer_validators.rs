@@ -8,9 +8,9 @@
 use busbar_contract::abi::auth::{
     check_begin_login, check_complete_login, check_fields, check_identify, check_style_decl,
     BeginLoginOut, FieldSpan, FieldsOut, IdentifyOut, IdentityBuf, LoginField, BEGIN_AUTHORIZE,
-    BEGIN_FORM, FIELDS_HARD_MAX, IDENTITY_GROUPS_HARD_MAX, LOGIN_IDENTITY, LOGIN_OUTAGE, SPAN_ABSENT,
-    STYLE_CALLER_CREDENTIAL, STYLE_NEEDS_BODY_HASH, STYLE_NEEDS_HEADERS,
-    VERDICT_IDENTITY, VERDICT_REJECT,
+    BEGIN_FORM, FIELDS_HARD_MAX, FIELD_QUERY, FIELD_SENSITIVE, IDENTITY_GROUPS_HARD_MAX,
+    LOGIN_IDENTITY, LOGIN_OUTAGE, LOGIN_SECURITY_CHECK_FAILED, SPAN_ABSENT, STYLE_CALLER_CREDENTIAL,
+    STYLE_NEEDS_BODY_HASH, STYLE_NEEDS_HEADERS, VERDICT_IDENTITY, VERDICT_REJECT,
 };
 use busbar_contract::abi::mechanism::call::{Outcome, Span};
 use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
@@ -254,11 +254,23 @@ fn an_unknown_flag_bit_is_fault() {
         red(Rule::UnknownCode, "verify.unknown_flags")
     );
     let mut f = field();
-    f.flags = 2;
+    f.flags = 4;
     assert_eq!(
         check_fields(Outcome::Ready, &fields_out(1), CAP, FIELDS_CAP, &[f]),
         red(Rule::UnknownCode, "fields.unknown_flags")
     );
+}
+
+#[test]
+fn a_query_field_is_a_known_flag() {
+    for flags in [FIELD_QUERY, FIELD_QUERY | FIELD_SENSITIVE] {
+        let mut f = field();
+        f.flags = flags;
+        assert_eq!(
+            check_fields(Outcome::Ready, &fields_out(1), CAP, FIELDS_CAP, &[f]),
+            Ok(())
+        );
+    }
 }
 
 #[test]
@@ -446,7 +458,12 @@ fn complete_login_checks_its_own_vocabulary() {
         check_complete_login(Outcome::Ready, &o, &buf(), &[]),
         Ok(())
     );
-    o.verdict = LOGIN_OUTAGE + 1;
+    o.verdict = LOGIN_SECURITY_CHECK_FAILED;
+    assert_eq!(
+        check_complete_login(Outcome::Ready, &o, &buf(), &[]),
+        Ok(())
+    );
+    o.verdict = LOGIN_SECURITY_CHECK_FAILED + 1;
     assert_eq!(
         check_complete_login(Outcome::Ready, &o, &buf(), &[]),
         red(Rule::UnknownCode, "complete_login.vocabulary")

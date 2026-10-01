@@ -65,7 +65,7 @@ pub struct FieldSpan {
     pub name: Span,
     /// The field value.
     pub value: Span,
-    /// [`super::FIELD_SENSITIVE`].
+    /// [`super::FIELD_SENSITIVE`] | [`super::FIELD_QUERY`].
     pub flags: u32,
     /// Alignment padding.
     pub _reserved: u32,
@@ -114,7 +114,7 @@ pub struct FieldsIn {
 /// THE ANSWER RULES, enforced by [`super::check_fields`] in `u64` math (any violation is FAULT).
 /// On REFUSED or PENDING, every `needed_*` is `0`. On READY, `needed_fields == 0` and `needed_bytes == 0`, `fields_len <= fields_cap`, every
 /// written [`FieldSpan`]'s name and value are present with `off + len <= field_buf_cap`, and its
-/// `flags` hold only [`super::FIELD_SENSITIVE`]. On FAILED, `needed_bytes <= u32::MAX` and
+/// `flags` hold only [`super::FIELD_SENSITIVE`] and [`super::FIELD_QUERY`]. On FAILED, `needed_bytes <= u32::MAX` and
 /// `needed_fields <=` [`super::FIELDS_HARD_MAX`]; both `0` fails the attempt;
 /// otherwise each reports its FULL size and at least one exceeds its capacity (a fitting
 /// dimension's full size is legal; none exceeding is FAULT, a wasted re-call).

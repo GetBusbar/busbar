@@ -140,3 +140,22 @@ fn an_unknown_style_or_malformed_settings_is_refused() {
         "jwt-bearer is a different mechanism, busbar-auth-oauth"
     );
 }
+
+/// THE QUERY STYLE: the credential verbatim under the dialect's parameter (`key` by default), its
+/// binding marked as query parameters, never a header; the header styles are not.
+#[test]
+fn the_query_style_presents_a_query_parameter() {
+    let b = open(QUERY_KEY, Some("gem-1"), "{}").0.expect("opens");
+    assert!(b.query());
+    assert_eq!(b.own(), &[("key".to_string(), "gem-1".to_string())]);
+    assert_eq!(
+        b.passthrough("caller-1"),
+        vec![("key".to_string(), "caller-1".to_string())]
+    );
+    let named = open(QUERY_KEY, Some("gem-1"), r#"{"param":"api_key"}"#).0.expect("opens");
+    assert_eq!(named.own(), &[("api_key".to_string(), "gem-1".to_string())]);
+    for style in [BEARER, API_KEY, X_GOOG_API_KEY] {
+        assert!(!open(style, Some("k"), "{}").0.expect("opens").query(), "{style}");
+    }
+    assert!(own(open(QUERY_KEY, None, "{}").0).is_empty(), "no credential, no parameter");
+}

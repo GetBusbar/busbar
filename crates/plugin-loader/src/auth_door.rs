@@ -638,6 +638,33 @@ impl AuthCalls for AuthInstance {
         }
         Ok(self.sink.0.flushed.load(Ordering::Acquire))
     }
+
+    fn login_kind(&self) -> Option<busbar_contract::auth::LoginKind> {
+        use busbar_contract::abi::auth::{CAP_LOGIN, LOGIN_KIND_CREDENTIAL, LOGIN_KIND_REDIRECT};
+        use busbar_contract::auth::LoginKind;
+        if self.facts.caps & CAP_LOGIN == 0 {
+            return None;
+        }
+        match self.facts.login_kind {
+            LOGIN_KIND_REDIRECT => Some(LoginKind::Redirect),
+            LOGIN_KIND_CREDENTIAL => Some(LoginKind::Credential),
+            _ => None,
+        }
+    }
+
+    fn begin_login(
+        &self,
+        request: busbar_contract::auth::BeginLogin,
+    ) -> Box<dyn busbar_contract::auth_calls::LoginCall> {
+        login::begin(&self.shared, request)
+    }
+
+    fn complete_login(
+        &self,
+        request: busbar_contract::auth_calls::LoginCallback,
+    ) -> Box<dyn busbar_contract::auth_calls::LoginCall> {
+        login::complete(&self.shared, request)
+    }
 }
 
 /// A verify answered before it was submitted (overload).
@@ -733,6 +760,9 @@ impl Drop for Submitted {
         self.shared.dispatcher.recycle(self.ticket);
     }
 }
+
+#[path = "auth_login.rs"]
+mod login;
 
 #[cfg(test)]
 #[path = "tests/auth_door_tests.rs"]
