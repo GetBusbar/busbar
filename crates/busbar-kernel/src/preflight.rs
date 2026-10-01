@@ -122,8 +122,6 @@ pub struct RootInstall {
     pub plugins_fetch: Option<PluginsFetch>,
 }
 
-
-
 /// A test build has no root: its store and ranking fixtures stand in for the root's entries, the
 /// stand-in store (which claims the default) as the default.
 #[cfg(any(test, feature = "test-support"))]
