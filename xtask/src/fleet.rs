@@ -4,7 +4,7 @@
 //! drifted the way copies drift: four different busbar pins, five shapes of the same pin check, a
 //! macOS leg on some and not others, stale branches by the dozen, protection on `main` only. The fix
 //! is at the root: what a plugin repo's skeleton IS (owner, 2026-09-30: "25 repos that are TWINS") —
-//! CI, release, repin, toolchain, lint config, workspace manifest, .gitignore, .mailmap, LICENSE,
+//! CI, release, repin, dependabot, toolchain, lint config, workspace manifest, .gitignore, .mailmap, LICENSE,
 //! NOTICE, community files, the README header and its section headings — is a pure function of
 //! `plugins.yaml` plus the templates in `.github/fleet/`, and the CI
 //! logic itself lives once, in busbar's reusable workflows (`plugin-ci.yml`, `plugin-release.yml`,
@@ -13,7 +13,8 @@
 //! * `fleet render <repo> [--out <dir>]` — the files the render owns in that repo (printed, or
 //!   written under `<dir>`). Nothing but `plugins.yaml` and the templates goes in.
 //! * `fleet check [--repo <repo>]...` — every registered repo's `dev` against its render, plus: the
-//!   release branches (`fleet.branches`) exist with IDENTICAL protection (`.github/fleet/protection.json`),
+//!   release branches (`fleet.branches`) exist, `dev` with the protection `.github/fleet/protection.json`
+//!   states and `main` and `qa` locked by the org ruleset (an `update` rule covers each),
 //!   no other branch remains, `.busbar-ref` and every manifest's busbar rev are the fleet pin, the
 //!   repo is named `busbar-<kind>-<name>` for its own kind, no file under `.github/` exists that the
 //!   render does not produce or the entry does not `keep`, every top-level path is the render's, one
@@ -24,7 +25,8 @@
 //! * `fleet sync [--repo <repo>]... [--workdir <dir>] [--dry-run]` — applies the render to each
 //!   repo's `dev` (seeding an EMPTY registered repo by pushing `dev` first; it never creates a repo
 //!   or changes a repo setting; moving the pin with scripts/fleet/repin.sh), commits and
-//!   pushes `dev` ONLY, creates a missing release branch from `dev`, applies the protection, and
+//!   pushes `dev` ONLY, REPORTS a missing `qa` or `main` (the ARCHITECT seeds them; sync never
+//!   creates or touches one), applies the protection to `dev` alone, and
 //!   lists every other branch: one fully merged into `dev`, `qa` or `main` is deleted, an unmerged
 //!   one is reported and never touched.
 //!
