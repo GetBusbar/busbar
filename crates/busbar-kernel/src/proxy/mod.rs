@@ -43,10 +43,6 @@ pub use proxy_vocab::{
 // router's `.scope()` and the plane's `.try_with()` read the ONE task-local. Re-exported here for
 // core's own `proxy::UPSTREAM_RTT_US` call sites (`router.rs`).
 
-// A PLANE'S CONTRIBUTION TO THE ONE AUDIT CHAIN — a record type, nothing more. `pub(crate)`
-// because the append happens at the plane's single terminal (`ingress::finish_inner`), which is
-// where the plane's metrics and its refund decision are already made.
-pub mod reqlog;
 // THE EGRESS ENGINE moved to the neutral substrate (`busbar_kernel::egress::engine`) — the
 // one-egress-stack ruling's home for the owned outbound client every plane builds from. Core
 // re-exports the engine names at their old `crate::proxy::` paths so every call site (state.rs's
@@ -64,18 +60,11 @@ pub use busbar_kernel::egress::engine::{
 // reaching into `busbar-core`; re-exported here for core's own `crate::proxy::build_egress_client`
 // call sites (`preflight`, `auth::token`, `egress_auth`, `engine_facade`).
 
-// THE PLANE'S AUDIT CHAIN, DRIVEN THROUGH THE REAL ROUTER. Mounted from the plane rather than from
-// `reqlog.rs` (which has its own record-level battery) for the reason the file's header gives: the
-// claim is that a CUSTOMER'S REQUEST reaches the chain, and only a test that goes through
-// `crate::build_router` and a real socket can see that. A record-level test would pass just as
-// happily against a log with no production call site — which is the state this plane was in.
-
 // THE MONEY-PATH ENGINE TESTS (usage_tap / on_exhausted / egress_differential / forward_once_pool_cell
 // / pool_upstream_creds / ordered_walk / reroute_pool / probe_* / hook_seam / signal_catalog /
 // *_degrade / egress_dropped_controls_audit / alloc_gate / … ) RELOCATED to `busbar-llm`
 // (`src/engine/tests/`, declared under `engine/mod.rs`) with the engine they drive
-// (`forward_with_pool` et al.). Only the record/dispatch audit tests that go
-// through core's `build_router` (`reqlog_dispatch_tests`, above; `reqlog_tests`, in `reqlog.rs`) stay.
+// (`forward_with_pool` et al.).
 
 // THE EGRESS UNIT'S upstream-exchange vocabulary (#83a O1) — the capped body read, the operator
 // body caps, the network-failure labels and the client-header transparency — at its historical
