@@ -20,7 +20,6 @@ use std::sync::Arc;
 
 use crate::abi::auth::AuthPoint;
 use crate::auth::{BeginLogin, CompleteLogin, LoginKind, LoginOutcome};
-use crate::redacted::Redacted;
 
 /// One inbound request at one AUTH POINT, as the host hands it to `verify` (THE DESIGN, "Auth
 /// points and guest lists"). Owned: the answer is awaited, so nothing here borrows the request.
@@ -355,10 +354,20 @@ pub trait AuthAxis: Send + Sync {
 // when the generation was sealed. The plugin caches inside itself; the kernel keeps only the handle
 // and no auth cache, and never branches per plugin or per style.
 
-/// One attempt's fixed facts, as the kernel hands them to `fields`. Owned: the answer may be
-/// awaited, so nothing here borrows the request.
-#[derive(Default)]
+/// One attempt's fixed facts at one AUTH POINT, as the kernel hands them to `fields` (THE
+/// DESIGN, "Auth points and guest lists", step 4: outbound sign is the same kind's other op, made
+/// at the points the style states). Owned: the answer may be awaited, so nothing here borrows the
+/// request.
 pub struct FieldsRequest {
+    /// The point the call is made at: one of the style's `StyleDecl::points`.
+    pub point: AuthPoint,
+    /// The connection the binding sends on; `0` while none is dialed yet.
+    pub conn: u64,
+    /// The unit the request belongs to; `0` = none.
+    pub unit: u64,
+    /// The whole body; `Some` only at [`AuthPoint::HeadBody`]. A style that signs the body hashes
+    /// it itself.
+    pub body: Option<Vec<u8>>,
     /// The method.
     pub method: Vec<u8>,
     /// The authority (host\[:port\]).
@@ -369,8 +378,6 @@ pub struct FieldsRequest {
     pub query: Option<Vec<u8>>,
     /// Wall-clock seconds since the Unix epoch, read once by the kernel for this call.
     pub timestamp: u64,
-    /// SHA-256 of the body, when the style declares `abi::auth::STYLE_NEEDS_BODY_HASH`.
-    pub body_hash: Option<[u8; 32]>,
     /// The exact head envelope the framer will send, in order, when the style declares
     /// `abi::auth::STYLE_NEEDS_HEADERS`; empty otherwise.
     pub headers: Vec<(Vec<u8>, Vec<u8>)>,
@@ -379,10 +386,30 @@ pub struct FieldsRequest {
     pub caller_credential: Option<Redacted<Vec<u8>>>,
 }
 
+impl Default for FieldsRequest {
+    /// A request at [`AuthPoint::Head`] with nothing in it.
+    fn default() -> Self {
+        Self {
+            point: AuthPoint::Head,
+            conn: 0,
+            unit: 0,
+            body: None,
+            method: Vec::new(),
+            authority: String::new(),
+            path: Vec::new(),
+            query: None,
+            timestamp: 0,
+            headers: Vec::new(),
+            caller_credential: None,
+        }
+    }
+}
+
 impl std::fmt::Debug for FieldsRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Never the caller's credential: it is secret material.
         f.debug_struct("FieldsRequest")
+            .field("point", &self.point)
             .field("method", &String::from_utf8_lossy(&self.method))
             .field("authority", &self.authority)
             .field(

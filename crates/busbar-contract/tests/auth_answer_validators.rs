@@ -9,8 +9,8 @@ use busbar_contract::abi::auth::{
     check_begin_login, check_complete_login, check_fields, check_identify, check_style_decl,
     BeginLoginOut, FieldSpan, FieldsOut, IdentifyOut, IdentityBuf, LoginField, BEGIN_AUTHORIZE,
     BEGIN_FORM, FIELDS_HARD_MAX, FIELD_QUERY, FIELD_SENSITIVE, IDENTITY_GROUPS_HARD_MAX,
-    LOGIN_IDENTITY, LOGIN_OUTAGE, LOGIN_SECURITY_CHECK_FAILED, SPAN_ABSENT, STYLE_CALLER_CREDENTIAL,
-    STYLE_NEEDS_HEADERS, VERDICT_IDENTITY, VERDICT_PASS, VERDICT_REJECT,
+    LOGIN_IDENTITY, LOGIN_OUTAGE, LOGIN_SECURITY_CHECK_FAILED, SPAN_ABSENT,
+    STYLE_CALLER_CREDENTIAL, STYLE_NEEDS_HEADERS, VERDICT_IDENTITY, VERDICT_PASS, VERDICT_REJECT,
 };
 use busbar_contract::abi::auth::{
     check_inbound_points, check_points, AuthPoint, AuthPoints, StripName, CAP_INBOUND, CAP_LOGIN,
@@ -565,14 +565,20 @@ fn a_style_decl_flag_vocabulary_is_the_two_known_bits() {
 
 #[test]
 fn a_style_decl_flag_outside_the_vocabulary_is_fault() {
-    assert_eq!(check_style_decl(1 << 31, POINT_HEAD), red(Rule::UnknownCode, "style.unknown_flags"));
+    assert_eq!(
+        check_style_decl(1 << 31, POINT_HEAD),
+        red(Rule::UnknownCode, "style.unknown_flags")
+    );
     assert_eq!(
         check_style_decl(STYLE_CALLER_CREDENTIAL | (1 << 3), POINT_HEAD),
         red(Rule::UnknownCode, "style.unknown_flags")
     );
     // RED: the retired body-hash flag bit (1) is no longer in the vocabulary: a style that signs
     // the body needs `HeadBody` instead.
-    assert_eq!(check_style_decl(1, POINT_HEAD), red(Rule::UnknownCode, "style.unknown_flags"));
+    assert_eq!(
+        check_style_decl(1, POINT_HEAD),
+        red(Rule::UnknownCode, "style.unknown_flags")
+    );
 }
 
 /// RED: a style needs at least one point, and a valid set (THE DESIGN, "Auth points and guest
@@ -580,21 +586,36 @@ fn a_style_decl_flag_outside_the_vocabulary_is_fault() {
 #[test]
 fn a_style_decl_needs_a_valid_non_empty_point_set() {
     assert_eq!(check_style_decl(0, 0), red(Rule::Missing, "points.missing"));
-    assert_eq!(check_style_decl(0, POINT_FRAME), red(Rule::UnknownCode, "points.reserved_point"));
+    assert_eq!(
+        check_style_decl(0, POINT_FRAME),
+        red(Rule::UnknownCode, "points.reserved_point")
+    );
     assert_eq!(
         check_style_decl(0, POINT_HEAD | POINT_HEAD_BODY),
         red(Rule::Contradiction, "points.points_overlap")
     );
-    assert_eq!(check_style_decl(0, 1 << 9), red(Rule::UnknownCode, "style.unknown_flags"));
+    assert_eq!(
+        check_style_decl(1 << 9, POINT_HEAD),
+        red(Rule::UnknownCode, "style.unknown_flags")
+    );
 }
 
 /// THE POINT SET RULES, one RED each: an unknown bit, the reserved `Frame`, `Head` with `HeadBody`,
 /// and empty where a set is required. Every other set is accepted.
 #[test]
 fn check_points_refuses_each_broken_set() {
-    assert_eq!(check_points(1 << 4, false), red(Rule::UnknownCode, "points.unknown_flags"));
-    assert_eq!(check_points(u32::MAX, false), red(Rule::UnknownCode, "points.unknown_flags"));
-    assert_eq!(check_points(POINT_FRAME, false), red(Rule::UnknownCode, "points.reserved_point"));
+    assert_eq!(
+        check_points(1 << 4, false),
+        red(Rule::UnknownCode, "points.unknown_flags")
+    );
+    assert_eq!(
+        check_points(u32::MAX, false),
+        red(Rule::UnknownCode, "points.unknown_flags")
+    );
+    assert_eq!(
+        check_points(POINT_FRAME, false),
+        red(Rule::UnknownCode, "points.reserved_point")
+    );
     assert_eq!(
         check_points(POINT_HEAD | POINT_FRAME, false),
         red(Rule::UnknownCode, "points.reserved_point")
@@ -654,7 +675,10 @@ fn the_inbound_points_follow_the_inbound_capability() {
     assert_eq!(check_inbound_points(CAP_OUTBOUND, 0), Ok(AuthPoints::EMPTY));
     assert_eq!(check_inbound_points(CAP_LOGIN, 0), Ok(AuthPoints::EMPTY));
     // RED: an inbound plugin with no point, or a bad set.
-    assert_eq!(check_inbound_points(CAP_INBOUND, 0), red(Rule::Missing, "points.missing"));
+    assert_eq!(
+        check_inbound_points(CAP_INBOUND, 0),
+        red(Rule::Missing, "points.missing")
+    );
     assert_eq!(
         check_inbound_points(CAP_INBOUND | CAP_LOGIN, POINT_FRAME),
         red(Rule::UnknownCode, "points.reserved_point")
@@ -721,7 +745,11 @@ fn a_decision_outside_the_vocabulary_is_fault() {
     assert_eq!(ready_verify(&o, &STRIPS), Ok(()));
     for bad in [0, 3, u32::MAX] {
         o.decision = bad;
-        assert_eq!(ready_verify(&o, &STRIPS), red(Rule::UnknownCode, "verify.vocabulary"), "{bad}");
+        assert_eq!(
+            ready_verify(&o, &STRIPS),
+            red(Rule::UnknownCode, "verify.vocabulary"),
+            "{bad}"
+        );
     }
 }
 
@@ -731,9 +759,15 @@ fn a_decision_outside_the_vocabulary_is_fault() {
 fn each_broken_strip_is_fault() {
     let mut o = stripped(VERDICT_REJECT);
     o.strip_len = STRIP_CAP + 1;
-    assert_eq!(ready_verify(&o, &STRIPS), red(Rule::OverCap, "verify.count_over_cap"));
+    assert_eq!(
+        ready_verify(&o, &STRIPS),
+        red(Rule::OverCap, "verify.count_over_cap")
+    );
     o.strip_len = 1;
-    assert_eq!(ready_verify(&o, &STRIPS), red(Rule::Contradiction, "verify.count_mismatch"));
+    assert_eq!(
+        ready_verify(&o, &STRIPS),
+        red(Rule::Contradiction, "verify.count_mismatch")
+    );
     let o = stripped(VERDICT_REJECT);
     assert_eq!(
         ready_verify(&o, &[STRIPS[0], strip(21, 3, 0)]),
@@ -760,11 +794,18 @@ fn a_credential_rides_only_an_identity() {
     o.identity.credential = sp(24, 6);
     assert_eq!(ready_verify(&o, &STRIPS), Ok(()));
     o.identity.credential = sp(60, 6);
-    assert_eq!(ready_verify(&o, &STRIPS), red(Rule::SpanOutOfBounds, "verify.span_out_of_bounds"));
+    assert_eq!(
+        ready_verify(&o, &STRIPS),
+        red(Rule::SpanOutOfBounds, "verify.span_out_of_bounds")
+    );
     for v in [VERDICT_REJECT, VERDICT_PASS] {
         let mut o = stripped(v);
         o.identity.credential = sp(24, 6);
-        assert_eq!(ready_verify(&o, &STRIPS), red(Rule::Contradiction, "verify.unexpected"), "{v}");
+        assert_eq!(
+            ready_verify(&o, &STRIPS),
+            red(Rule::Contradiction, "verify.unexpected"),
+            "{v}"
+        );
         o.identity.credential = sp(24, 0);
         assert_eq!(ready_verify(&o, &STRIPS), Ok(()), "len 0 is absent");
     }
@@ -793,7 +834,10 @@ fn the_strip_array_has_the_short_buffer_rules() {
     );
     let mut r = stripped(VERDICT_PASS);
     r.needed_strip = 1;
-    assert_eq!(ready_verify(&r, &STRIPS), red(Rule::NeededNotFailed, "verify.strip"));
+    assert_eq!(
+        ready_verify(&r, &STRIPS),
+        red(Rule::NeededNotFailed, "verify.strip")
+    );
     for outcome in [Outcome::Refused, Outcome::Pending] {
         let mut p: IdentifyOut = zeroed();
         p.needed_strip = 1;

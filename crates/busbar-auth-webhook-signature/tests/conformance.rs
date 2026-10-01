@@ -17,10 +17,11 @@ use std::sync::{Arc, Mutex};
 
 use busbar_auth_webhook_signature::signature::twilio_sign;
 use busbar_contract::abi::auth::{
-    slot, IdentifyOut, IdentityBuf, NamedValue, RequestFacts, Span, StripName, VerifyIn,
+    slot, IdentifyOut, IdentityBuf, NamedValue, RequestFacts, StripName, VerifyIn,
     DECISION_CONTINUE, DECISION_STOP, POINT_HEAD_BODY, SPAN_ABSENT, STRIP_FIELD, VERDICT_IDENTITY,
     VERDICT_PASS, VERDICT_REJECT,
 };
+use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
@@ -158,10 +159,10 @@ fn verify_answer(
     headers: &[(&str, &str)],
 ) -> (String, u32, Vec<String>) {
     let mut buf = vec![0u8; 256];
-    let mut groups = vec![Span { off: 0, len: 0 }; 4];
+    let mut groups = vec![Span { offset: 0, len: 0 }; 4];
     let mut strips = vec![
         StripName {
-            name: Span { off: 0, len: 0 },
+            name: Span { offset: 0, len: 0 },
             place: 0,
             _reserved: 0,
         };
@@ -214,21 +215,25 @@ fn verify_answer(
     let subject = f.out.identity.subject;
     let subject = if c.outcome == Outcome::Ready
         && f.out.verdict == VERDICT_IDENTITY
-        && subject.off != SPAN_ABSENT
+        && subject.offset != SPAN_ABSENT
     {
-        String::from_utf8_lossy(&buf[subject.off as usize..(subject.off + subject.len) as usize])
-            .into_owned()
+        String::from_utf8_lossy(
+            &buf[subject.offset as usize..(subject.offset + subject.len) as usize],
+        )
+        .into_owned()
     } else {
         String::new()
     };
     let replay = f.out.identity.replay_key;
     let replay = if c.outcome == Outcome::Ready
         && f.out.verdict == VERDICT_IDENTITY
-        && replay.off != SPAN_ABSENT
+        && replay.offset != SPAN_ABSENT
     {
         format!(
             " replay={}/{}s",
-            String::from_utf8_lossy(&buf[replay.off as usize..(replay.off + replay.len) as usize]),
+            String::from_utf8_lossy(
+                &buf[replay.offset as usize..(replay.offset + replay.len) as usize]
+            ),
             f.out.identity.replay_ttl_secs
         )
     } else {
@@ -240,7 +245,7 @@ fn verify_answer(
             .map(|n| {
                 assert_eq!(n.place, STRIP_FIELD, "a signature header is a field line");
                 String::from_utf8_lossy(
-                    &buf[n.name.off as usize..(n.name.off + n.name.len) as usize],
+                    &buf[n.name.offset as usize..(n.name.offset + n.name.len) as usize],
                 )
                 .to_ascii_lowercase()
             })

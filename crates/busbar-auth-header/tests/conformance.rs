@@ -164,9 +164,9 @@ impl Buffers {
         (0..n as usize)
             .map(|i| {
                 let f = self.spans[i];
-                let at = |sp: auth::Span| {
+                let at = |sp: busbar_contract::abi::mechanism::call::Span| {
                     String::from_utf8_lossy(
-                        &self.buf[sp.off as usize..sp.off as usize + sp.len as usize],
+                        &self.buf[sp.offset as usize..sp.offset as usize + sp.len as usize],
                     )
                     .into_owned()
                 };

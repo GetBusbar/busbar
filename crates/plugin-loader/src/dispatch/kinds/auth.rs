@@ -34,7 +34,7 @@ use busbar_contract::abi::auth::{
     VERDICT_IDENTITY,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, Span};
-use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
+use busbar_contract::abi::mechanism::check::{reported, Fault};
 use busbar_contract::abi::mechanism::door::{Statement, MARK_WORD_CARRIER};
 use busbar_contract::abi::mechanism::KindCode;
 

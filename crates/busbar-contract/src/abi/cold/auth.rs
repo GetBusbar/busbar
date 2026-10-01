@@ -422,10 +422,7 @@ impl AuthResponse {
             LoginOutcome::Prompt(form) => AuthResponse::Prompt(form.into()),
             LoginOutcome::Exchange(hop) => AuthResponse::TokenExchange(hop.into()),
             LoginOutcome::Identify(p) => AuthResponse::Identity(p.into()),
-            // The cold lane's answer set has no outage; it refuses, as it always has.
-            LoginOutcome::Reject | LoginOutcome::Outage | LoginOutcome::SecurityCheckFailed => {
-                AuthResponse::Reject
-            }
+            _ => AuthResponse::Reject,
         }
     }
 

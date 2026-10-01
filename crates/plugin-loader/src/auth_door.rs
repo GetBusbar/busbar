@@ -34,10 +34,11 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use busbar_contract::abi::auth::{
-    slot, IdentifyOut, IdentityBuf, IdentityOut, NamedValue, RequestFacts, Span, StripName,
-    VerifyIn, DECISION_CONTINUE, FIELDS_HARD_MAX, FIELDS_MAX, IDENTITY_BUF_BYTES, IDENTITY_GROUPS,
+    slot, IdentifyOut, IdentityBuf, IdentityOut, NamedValue, RequestFacts, StripName, VerifyIn,
+    DECISION_CONTINUE, FIELDS_HARD_MAX, FIELDS_MAX, IDENTITY_BUF_BYTES, IDENTITY_GROUPS,
     IDENTITY_HAS_TTL, SPAN_ABSENT, STRIP_QUERY, VERDICT_IDENTITY, VERDICT_REJECT,
 };
+use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
@@ -97,7 +98,7 @@ fn blob(b: &[u8], fmt: u32, flags: u32) -> Blob {
 /// A fresh `verify` `out`: no verdict, no identity, no decision, no strip.
 fn identify_out() -> IdentifyOut {
     let absent = Span {
-        off: SPAN_ABSENT,
+        offset: SPAN_ABSENT,
         len: 0,
     };
     IdentifyOut {
@@ -182,7 +183,7 @@ impl Held {
     fn new(req: &VerifyRequest, buf_cap: usize, groups_cap: u32, strip_cap: u32) -> Arc<Self> {
         let buf = Box::into_raw(vec![0u8; buf_cap].into_boxed_slice()).cast::<u8>();
         let empty = Span {
-            off: SPAN_ABSENT,
+            offset: SPAN_ABSENT,
             len: 0,
         };
         let groups =
@@ -306,10 +307,10 @@ impl Held {
 
     /// The text at `s` in the identity buffer; `None` when absent.
     fn text(&self, s: Span) -> Option<String> {
-        if s.off == SPAN_ABSENT {
+        if s.offset == SPAN_ABSENT {
             return None;
         }
-        let (off, len) = (s.off as usize, s.len as usize);
+        let (off, len) = (s.offset as usize, s.len as usize);
         if off.checked_add(len)? > self.buf_cap {
             return None;
         }
