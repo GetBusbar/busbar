@@ -487,10 +487,15 @@ kind = "plane"
 count = "115"
 
 
+# 233 -> 236, Q77-PENDING (a), a MOVE forced by a cited ruling (ARCHITECT RULINGS 2026-09-30, URL-PARSE
+# SEAM: the URL/host reader lives in busbar-contract/src/net.rs). The three hits are the web scheme
+# names the reader must spell: net.rs:398 (`"http"`, moved verbatim from kernel-egress trust::net) and
+# net.rs:518 (`"http" | "https" | "ws" | "wss"`, the WHATWG family, folded from the two split_ws_url
+# copies). busbar-kernel-egress x transport falls 56 -> 55 and x plane 16 -> 13 in the same commit.
 [[cell]]
 crate = "busbar-contract"
 kind = "transport"
-count = "233"
+count = "236"
 
 [[cell]]
 crate = "busbar-kernel"
@@ -527,15 +532,17 @@ crate = "busbar-kernel-egress"
 kind = "kernel"
 count = "22"
 
+# 16 -> 13, the measurement: the pure URL/host atoms left for busbar_contract::net (URL-SEAM).
 [[cell]]
 crate = "busbar-kernel-egress"
 kind = "plane"
-count = "16"
+count = "13"
 
+# 56 -> 55, the measurement: the pure URL/host atoms left for busbar_contract::net (URL-SEAM).
 [[cell]]
 crate = "busbar-kernel-egress"
 kind = "transport"
-count = "56"
+count = "55"
 
 [[cell]]
 crate = "busbar-kernel-identity"
