@@ -39,9 +39,6 @@ busbar-core-admin = { path = "../busbar-core-admin", default-features = false }
 # to `busbar_kernel::tls::serve`. A mandatory sibling, like `busbar-admin`/`busbar-oauth2` above —
 # never a plugin, always linked.
 busbar-core-connector = { path = "../busbar-core-connector" }
-# The root's one Connector (`root::connector`) is handed its connection-security client config by
-# type; the crate is already in the tree through the connector (no new package).
-rustls = { workspace = true }
 # `amend_rate_history` decodes the correction body and digests the operator's free-text reason
 # into the fixed-width `reason_hash` the dated rate-card history seals (the same SHA-256 the substrate
 # signs with). These are the composition root's, used only by the admin verb's effect half.

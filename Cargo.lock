@@ -391,7 +391,6 @@ dependencies = [
  "prost",
  "rcgen",
  "reqwest 0.12.28",
- "rustls",
  "serde_json",
  "serde_yaml_ng",
  "sha2 0.11.0",
@@ -1021,6 +1020,7 @@ dependencies = [
  "tokio-util",
  "tonic",
  "tower",
+ "url",
  "url",
 ]
 
