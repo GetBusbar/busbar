@@ -221,7 +221,7 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 // A FRAMED need opens when its request is whole (`WRITE_REQUEST`'s end): its
                 // request is the connection's opening message.
                 let stream = held_id();
-                streams().insert(
+                held_conns().insert(
                     (id, stream),
                     Stream {
                         conn: Conn::Held {
@@ -316,7 +316,7 @@ extern "C" fn close(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
         |id, table, _| {
             // SAFETY: the head covered a `StreamIn`.
             let i = unsafe { input.cast::<StreamIn>().read_unaligned() };
-            let held = streams().remove(&(id, i.stream));
+            let held = held_conns().remove(&(id, i.stream));
             let conn = match held.map(|s| s.conn) {
                 // Never opened, or refused: nothing on the table to close.
                 Some(Conn::Held { .. } | Conn::Failed(_)) => return Answer::ready(0, 0),
@@ -377,7 +377,7 @@ pub(crate) fn forget_worker(worker: u32) {
     kept_answers().retain(|(_, t), _| super::ticket::decode(t.slot).0 != worker);
 }
 
-// ── FRAMED STREAMS AND REPLIES ───────────────────────────────────────────────────────────────────
+// ── FRAMED REQUESTS AND REPLIES ──────────────────────────────────────────────────────────────────
 
 /// The bit a stream the host holds unopened carries (a connection table's ids never set it).
 const HELD: u64 = 1 << 63;
@@ -421,11 +421,11 @@ struct Stream {
     ended: bool,
 }
 
-type Streams = HashMap<(InstanceId, u64), Stream>;
+type HeldConns = HashMap<(InstanceId, u64), Stream>;
 
-fn streams() -> MutexGuard<'static, Streams> {
-    static STREAMS: OnceLock<Mutex<Streams>> = OnceLock::new();
-    STREAMS
+fn held_conns() -> MutexGuard<'static, HeldConns> {
+    static HELD_CONNS: OnceLock<Mutex<HeldConns>> = OnceLock::new();
+    HELD_CONNS
         .get_or_init(Mutex::default)
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -448,7 +448,7 @@ fn resolve(
     if stream & HELD == 0 {
         return Ok(ConnId(stream));
     }
-    let mut all = streams();
+    let mut all = held_conns();
     let s = all.get_mut(&(id, stream)).ok_or(ConnError::Closed)?;
     match &s.conn {
         Conn::Open(c) => Ok(*c),
@@ -512,7 +512,7 @@ extern "C" fn write_request(
             let Some(bytes) = (unsafe { bytes(i.buf.cast_mut(), i.len) }) else {
                 return Answer::with(Outcome::Fault, "");
             };
-            let mut all = streams();
+            let mut all = held_conns();
             let Some(s) = all.get_mut(&(id, i.stream)) else {
                 return Answer::with(
                     Outcome::Refused,
@@ -634,7 +634,7 @@ fn reply(
     buf: &mut [u8],
 ) -> (Option<ReplyPiece>, Answer) {
     {
-        let mut all = streams();
+        let mut all = held_conns();
         let s = all.entry((id, stream)).or_insert(Stream {
             conn: Conn::Open(ConnId(stream)),
             headed: false,
@@ -666,7 +666,7 @@ fn reply(
     let ticket = conn_ticket(head.handle.ticket);
     loop {
         let got = table.read(id, conn, ticket, buf);
-        let mut all = streams();
+        let mut all = held_conns();
         let Some(s) = all.get_mut(&(id, stream)) else {
             return (None, Answer::of(ConnError::Closed));
         };
