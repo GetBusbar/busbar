@@ -80,6 +80,8 @@ kind-isolation:matrix	unlisted-cell	busbar-plane-decisions × transport	25
 kind-isolation:matrix	unlisted-cell	busbar-plane-llm × legacy	40
 kind-isolation:matrix	unlisted-cell	busbar-plane-streaming × legacy	32
 kind-isolation:matrix	unlisted-cell	busbar-plugin-example-plane × plane	2
+kind-isolation:matrix	unlisted-cell	busbar-transport-grpc × plane	3
+kind-isolation:matrix	unlisted-cell	busbar-transport-grpc × transport	14
 kind-isolation:matrix	unlisted-cell	busbar-transport-http × legacy	8
 kind-isolation:matrix	unlisted-cell	busbar-voice × kernel	9
 kind-isolation:matrix	unlisted-cell	busbar-voice × legacy	9

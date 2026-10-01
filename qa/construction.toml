@@ -1869,8 +1869,12 @@ reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-tra
 [rules.manifest-allowlist.reviewed_extra]
 busbar-transport-http = [
   "tokio-util", "memchr", "futures", "tokio", "rustls", "hyper", "hyper-util",
-  "hyper-rustls", "http-body-util", "http", "webpki-roots", "tonic", "tower",
+  "hyper-rustls", "http-body-util", "http", "webpki-roots",
 ]
+# The gRPC door (OWNER 2026-09-29, "1 new transport"): HTTP/2 is hyper's, driven over the host's
+# bytes through the contract's hyper_io!; first cells as GRPC-DOOR's tip check measured them
+# (ARCHITECT cells ruling 2026-10-01).
+busbar-transport-grpc = ["hyper", "http", "http-body"]
 busbar-transport-stdio = ["tokio", "futures"]
 # The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
