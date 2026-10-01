@@ -709,7 +709,7 @@ async fn no_frame_is_emitted_after_the_terminal_framing_error() {
 async fn an_event_stream_that_ends_mid_event_is_a_framing_error() {
     // One whole event, then an event with no terminator — and a body that ends anyway.
     let body: &[u8] = b"data: {\"a\":1}\n\ndata: {\"a\":2}";
-    let sse = SseTransport::over(ScriptedLower::answering(200, &[&body[..]]));
+    let sse = SseTransport::over(ScriptedLower::answering(200, &[body]));
     let conn = sse
         .dial(&upstream_dest("10.0.0.1:443"), &fixture_key())
         .await
