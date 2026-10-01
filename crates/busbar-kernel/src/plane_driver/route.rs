@@ -73,6 +73,8 @@ pub enum Pick {
         /// Whether the member relays the caller's own credential to the far end (its upstream
         /// credentials are passthrough); the plane is told on every piece from this attempt on.
         passthrough: bool,
+        /// The provider the member is served by (the metering row's provider).
+        provider: String,
     },
     /// No member is left: the walk's exhaustion terminal, the status the caller is told and its
     /// Retry-After seconds (the floor the walk applies), when it names one.
@@ -159,6 +161,8 @@ pub(crate) struct PieceBufs {
     member: Vec<u8>,
     /// The pool the current attempt's member was picked from.
     pool: Vec<u8>,
+    /// The provider of the current attempt's member.
+    provider: String,
     /// The snapshot claim the unit arrived on, lent on every piece.
     pub(crate) claim: u32,
     /// The dialect `arrive` answered, lent on every piece.
@@ -183,6 +187,7 @@ impl PieceBufs {
             input: Vec::new(),
             member: Vec::new(),
             pool: Vec::new(),
+            provider: String::new(),
             claim: 0,
             dialect: 0,
             caller_ref: Vec::new(),
@@ -588,8 +593,10 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     name,
                     pool,
                     passthrough,
+                    provider,
                 }) => {
                     run.bufs.passthrough = passthrough;
+                    run.bufs.provider = provider;
                     ((name, pool), None)
                 }
                 Ok(Pick::Exhausted {
@@ -775,6 +782,14 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         return Step::Retry;
                     }
                     if !streamed && (out.reply_status != 0 || !emitted.is_empty()) {
+                        // THE ANSWER COMMITS: no failover after the first byte, so the member that
+                        // answered is the unit's serving member, the one 1.5.5 ledgered and metered
+                        // the response under (v1.5.5 `crates/busbar/src/proxy/usage.rs`
+                        // `ledger_and_meter`: "`lane` is the SERVING lane"). A local answer has none.
+                        if !bufs.member.is_empty() {
+                            let model = String::from_utf8_lossy(&bufs.member);
+                            self.driver.money.served(run.ctx, &model, &bufs.provider);
+                        }
                         self.caller
                             .head(out.reply_status, bufs.fields_of(out.fields_written));
                     }

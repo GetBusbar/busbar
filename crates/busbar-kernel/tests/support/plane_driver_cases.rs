@@ -98,6 +98,9 @@ impl Far {
 /// The pool the test walk picks every member from.
 const POOL: &str = "pool-a";
 
+/// The provider every test member is served by.
+const PROVIDER: &str = "acme";
+
 /// The member whose far end answers 529, which the walk's status table fails over.
 const OVERLOADED: &str = "overloaded";
 
@@ -112,6 +115,7 @@ impl FarEnd for Far {
                 name: (*m).to_string(),
                 pool: POOL.to_string(),
                 passthrough: false,
+                provider: PROVIDER.to_string(),
             },
             None => Pick::Exhausted {
                 status: 503,
@@ -216,10 +220,17 @@ pub(crate) struct Book {
     checkpoints: Mutex<Vec<u64>>,
     bills: Mutex<Vec<CancelBill>>,
     abandoned: AtomicU64,
+    /// Every serving member the driver named, in order.
+    served: Mutex<Vec<(String, String)>>,
+    /// The production money steps every call is also handed to, when set.
+    forward: Option<Arc<dyn MoneySeam>>,
 }
 
 impl MoneySeam for Book {
-    fn checkpoint(&self, _ctx: &UnitCtx, units: &[UnitCount]) -> Checkpoint {
+    fn checkpoint(&self, ctx: &UnitCtx, units: &[UnitCount]) -> Checkpoint {
+        if let Some(f) = &self.forward {
+            let _ = f.checkpoint(ctx, units);
+        }
         let amount = units.iter().map(|u| u.amount).max().unwrap_or(0);
         self.checkpoints.lock().unwrap().push(amount);
         match self.cut_at {
@@ -235,11 +246,22 @@ impl MoneySeam for Book {
     fn abandoned(&self, _ctx: &UnitCtx, _ended: Ended) {
         self.abandoned.fetch_add(1, Ordering::SeqCst);
     }
+
+    fn served(&self, ctx: &UnitCtx, model: &str, provider: &str) {
+        if let Some(f) = &self.forward {
+            f.served(ctx, model, provider);
+        }
+        (self.served.lock().unwrap()).push((model.to_string(), provider.to_string()));
+    }
 }
 
 impl Book {
     fn bills(&self) -> Vec<CancelBill> {
         self.bills.lock().unwrap().clone()
+    }
+
+    fn served(&self) -> Vec<(String, String)> {
+        self.served.lock().unwrap().clone()
     }
 }
 
@@ -661,6 +683,124 @@ async fn a_retry_verdict_before_the_first_byte_fails_over() {
         assert_eq!(sent[1].fields, vec![(b"x-attempt".to_vec(), b"2".to_vec())]);
         assert_eq!(caller.text(), "hello far end");
     }
+}
+
+// THE SERVING MEMBER (the per-response metering; v1.5.5 `crates/busbar/src/proxy/usage.rs`
+// `ledger_and_meter`: "`lane` is the SERVING lane"): when the answer commits, the driver names the
+// member that answered to the money steps, once.
+
+/// RED: without the driver's call the money steps never learn the serving member.
+#[tokio::test]
+async fn the_answering_member_is_named_to_the_money_steps_once() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), Book::default());
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], CHUNKS),
+            Caller::default(),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival("/call", b"p"), 0);
+        assert!(matches!(drive(&units).await, Outcome::Completed));
+        assert_eq!(
+            r.book.served(),
+            vec![("ok".to_string(), PROVIDER.to_string())],
+            "{way:?}"
+        );
+    }
+}
+
+/// A failover before the first byte serves from the member that answered, never the one tried.
+#[tokio::test]
+async fn a_failed_over_unit_names_the_member_that_answered() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), Book::default());
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["retry", "ok"], CHUNKS),
+            Caller::default(),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival("/call", b"p"), 0);
+        assert!(matches!(drive(&units).await, Outcome::Completed));
+        assert_eq!(
+            r.book.served(),
+            vec![("ok".to_string(), PROVIDER.to_string())],
+            "{way:?}"
+        );
+    }
+}
+
+/// THE ROW: a served unit, over the production money steps and a real governance book, writes
+/// EXACTLY ONE metering row, keyed as `GovState`'s class mirror keys an unqualified lane
+/// `(model, provider)`, with its one request (v1.5.5 `proxy/usage.rs` :99-106: "even a zero-token
+/// delivered response counts its request"). RED: drop the driver's `served` call and no row is
+/// written; drop the money steps' metering and no row is written.
+#[tokio::test]
+async fn a_served_unit_writes_exactly_one_metering_row() {
+    use busbar_kernel::governance::{metering_bucket, GovState, MemoryStore};
+    use busbar_kernel::plane_driver::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
+    struct NoPost;
+    impl EndPost for NoPost {
+        fn post(&self, _: &UnitCtx, _: Ended) {}
+    }
+    let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("gov"));
+    let money = Arc::new(PlaneMoney::new(gov.clone(), Arc::new(NoPost)));
+    let at = 1_700_000_000;
+    let unit = ctx(7);
+    money.open(
+        unit.key,
+        UnitMoney {
+            key: Arc::new(busbar_contract::records::VirtualKey {
+                id: "k".into(),
+                enabled: true,
+                ..Default::default()
+            }),
+            cost: Arc::new(busbar_kernel::cost::CostModel::resolve_parts(
+                None,
+                0,
+                &std::collections::BTreeMap::new(),
+            )),
+            pool: String::new(),
+            model: "opened".into(),
+            classes: Arc::from(vec!["input".to_string()]),
+            arrived: at,
+            mode: busbar_kernel::config::groups::ExhaustionMode::FinishUnit,
+            fee: FeeRefund::CallerStatus,
+        },
+    );
+    let book = Book {
+        forward: Some(money.clone()),
+        ..Book::default()
+    };
+    let way = ways()[0];
+    let r = rig(way, BufferCaps::default(), book);
+    let (steps, far, caller) = (
+        TestUnits::passing(),
+        Far::new(&["retry", "ok"], CHUNKS),
+        Caller::default(),
+    );
+    let units = r
+        .driver
+        .unit(&steps, &far, &caller, arrival("/call", b"p"), 0);
+    assert!(matches!(drive(&units).await, Outcome::Completed));
+    money.settle_end(unit.key, 200);
+    gov.flush_metering();
+    let rows = gov
+        .metering_for(metering_bucket(at))
+        .expect("metering read");
+    assert_eq!(rows.len(), 1, "exactly one row");
+    assert_eq!(
+        (
+            rows[0].model.as_str(),
+            rows[0].provider.as_str(),
+            rows[0].requests
+        ),
+        ("ok", PROVIDER, 1),
+        "the serving member's row, one request"
+    );
 }
 
 /// An attempt names the pool the walk picked its member from: the far end is sent both.

@@ -423,6 +423,7 @@ fn rig(
                 MemberRoute {
                     need: NeedId(0),
                     base_url: format!("https://{host}/v1/"),
+                    provider: format!("p{k}"),
                     auth: Some(AuthBinding {
                         auth: auth.clone() as Arc<dyn OutboundAuth>,
                         handle: 1,
@@ -521,6 +522,7 @@ async fn one_attempt_end_to_end() {
             name: "m0".into(),
             pool: POOL.into(),
             passthrough: false,
+            provider: "p0".into(),
         }
     );
     assert!(far.send(&t, request()).await);
@@ -627,6 +629,7 @@ async fn a_401_takes_the_member_down_and_fails_over() {
             name: "m0".into(),
             pool: POOL.into(),
             passthrough: false,
+            provider: "p0".into(),
         }
     );
     assert!(far.send(&t, request()).await);
