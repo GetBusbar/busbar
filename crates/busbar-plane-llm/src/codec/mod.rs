@@ -327,6 +327,11 @@ mod ir_seam_tests;
 #[path = "tests/ir_slot_carry_tests.rs"]
 mod ir_slot_carry_tests;
 
+/// The members CARRY-TABLE parked: what crosses the seam is still the typed slot.
+#[cfg(test)]
+#[path = "tests/parked_rows_cross_dialect_tests.rs"]
+mod parked_rows_cross_dialect_tests;
+
 /// The usage-tap count pin (#83a SD-3, R-USAGE): every same-protocol tap fault counts once on the
 /// host's counter, under its reason, whichever cell or direct call raised it.
 #[cfg(test)]
