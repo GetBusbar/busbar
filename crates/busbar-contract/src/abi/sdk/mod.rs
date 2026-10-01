@@ -886,38 +886,6 @@ pub use crate::abi::cold::export::{
     HttpRequest, HttpResponse, MetricFamily, MetricSample, Rotation, RotationFault,
 };
 
-/// The Prometheus text exposition's content type — what [`ExportHandler::render`] answers by
-/// default.
-pub const TEXT_EXPOSITION: &str = "text/plain; version=0.0.4";
-
-/// Render the host recorder's snapshot (export ABI minor 6) in the Prometheus TEXT exposition
-/// format, family by family: `# HELP` (when present), `# TYPE`, the samples, a blank line. Every
-/// label value and number is written as the snapshot carries it, so rendering a snapshot of the
-/// host's own exposition reproduces it byte for byte.
-pub fn render_exposition(families: &[MetricFamily]) -> String {
-    let mut out = String::new();
-    for f in families {
-        if let Some(help) = &f.help {
-            out.push_str(&format!("# HELP {} {help}\n", f.name));
-        }
-        out.push_str(&format!("# TYPE {} {}\n", f.name, f.kind));
-        for s in &f.samples {
-            out.push_str(&s.name);
-            if !s.labels.is_empty() {
-                let labels: Vec<String> = s
-                    .labels
-                    .iter()
-                    .map(|(k, v)| format!("{k}=\"{v}\""))
-                    .collect();
-                out.push_str(&format!("{{{}}}", labels.join(",")));
-            }
-            out.push_str(&format!(" {}\n", s.value));
-        }
-        out.push('\n');
-    }
-    out
-}
-
 /// What a sink answers a delivery (or a resume) with when it has the host act for it (export ABI
 /// minor 4): finished, or these [`HostOp`]s first — the host performs them and calls
 /// [`ExportHandler::resume`] with their results under the same `token`.
@@ -1031,10 +999,11 @@ pub trait ExportHandler: Send + Sync {
     }
 
     /// Render the host recorder's snapshot (export ABI minor 6) into the exposition the host
-    /// serves: `(content_type, body)`. Default: the Prometheus text format
-    /// ([`render_exposition`]), which reproduces the host's own exposition byte for byte.
-    fn render(&self, families: &[MetricFamily]) -> (String, String) {
-        (TEXT_EXPOSITION.to_string(), render_exposition(families))
+    /// serves: `(content_type, body)`. Default: the Prometheus text content type with an empty
+    /// body. A metrics-serving sink overrides `render` (the prometheus sink does) and renders the
+    /// snapshot itself.
+    fn render(&self, _families: &[MetricFamily]) -> (String, String) {
+        ("text/plain; version=0.0.4".to_string(), String::new())
     }
 
     /// The results of the [`HostOp`]s a [`HostStep::Host`] asked for, in order, under its `token`.
