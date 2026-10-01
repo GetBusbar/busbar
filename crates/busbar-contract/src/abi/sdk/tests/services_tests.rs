@@ -6,7 +6,11 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use super::*;
-use crate::abi::host::service::{MAX_RANDOM_FILL, NOT_ENTITLED, SERVICES};
+use crate::abi::host::service::{
+    MAX_RANDOM_FILL, NOT_ENTITLED, SERVICES, DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, TRUST_NEW,
+    TRUST_SAME,
+};
+use crate::abi::mechanism::call::Span;
 use crate::abi::mechanism::ticket::Ticket;
 
 /// A host that entitles exactly `item:one`.
@@ -208,4 +212,164 @@ fn random_fill_fills_the_buffer_fresh_each_call_and_refuses_outside_its_cap_befo
         services(&old).random_fill(handle(), &mut a),
         Err(ServiceError::Unserved)
     );
+}
+
+// ── dest.judge, trust.sight, trust.due ────────────────────────────────────────────────────────
+
+/// Answer `outcome` with `value`, `len` bytes and `items` spans into the live `out`.
+fn answer(out: *mut ServiceOut, outcome: Outcome, value: u64, len: u64, items: u64) -> RawOutcome {
+    // SAFETY: the caller's live `out`.
+    unsafe {
+        (*out).value = value;
+        (*out).len = len;
+        (*out).items = items;
+        (*out).outcome = RawOutcome::of(outcome);
+    }
+    RawOutcome::of(outcome)
+}
+
+/// A judge that pends a resolving call on a ticket, refuses the metadata address by name, answers
+/// INTERNAL for class 9 and admits the rest.
+extern "C" fn judges(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a `DestJudgeIn` naming its live text, and a live `out`.
+    unsafe {
+        let i = input.cast::<DestJudgeIn>().read_unaligned();
+        let dest = std::slice::from_raw_parts(i.dest.ptr, i.dest.len);
+        let verdict = if dest.starts_with(b"http://169.254.169.254") {
+            DEST_METADATA
+        } else if i.flags & DEST_RESOLVE != 0 && !i.head.handle.ticket.is_none() {
+            return answer(out, Outcome::Pending, 0, 0, 0);
+        } else if i.egress_class == 9 {
+            DEST_INTERNAL
+        } else {
+            DEST_ALLOWED
+        };
+        answer(out, Outcome::Ready, verdict, 0, 0)
+    }
+}
+
+/// A host that answers PENDING whatever the call.
+extern "C" fn pends(_ctx: HostCtx, _input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    answer(out, Outcome::Pending, 0, 0, 0)
+}
+
+/// A kernel that pins the hash `h1`: SAME for it, NEW for any other; `slow` pends.
+extern "C" fn sights(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a `TrustSightIn` naming its live texts, and a live `out`.
+    unsafe {
+        let i = input.cast::<TrustSightIn>().read_unaligned();
+        let who = std::slice::from_raw_parts(i.counterparty.ptr, i.counterparty.len);
+        let hash = std::slice::from_raw_parts(i.catalogue_hash.ptr, i.catalogue_hash.len);
+        if who == b"slow" {
+            return answer(out, Outcome::Pending, 0, 0, 0);
+        }
+        answer(out, Outcome::Ready, if hash == b"h1" { TRUST_SAME } else { TRUST_NEW }, 0, 0)
+    }
+}
+
+/// The names [`dues`] answers, in the kernel's layout: key = the name, value absent.
+const DUE: [&str; 2] = ["alpha", "beta"];
+
+/// Write `DUE` into the caller's buffers, or answer FAILED with what it needs when they are short.
+fn write_due(input: *const c_void, out: *mut ServiceOut, key: impl Fn(u32, u32) -> Span) -> RawOutcome {
+    let need = DUE.iter().map(|n| n.len()).sum::<usize>();
+    // SAFETY: the wrapper hands a `TrustDueIn` naming its live buffers, and a live `out`.
+    unsafe {
+        let i = input.cast::<TrustDueIn>().read_unaligned();
+        if i.into.cap < need || i.into.spans_cap < DUE.len() {
+            (*out).needed_bytes = need as u64;
+            (*out).needed_items = DUE.len() as u64;
+            return answer(out, Outcome::Failed, 0, 0, 0);
+        }
+        let mut at = 0;
+        for (n, name) in DUE.iter().enumerate() {
+            std::ptr::copy_nonoverlapping(name.as_ptr(), i.into.buf.add(at), name.len());
+            *i.into.spans.add(n) = ItemSpan {
+                key: key(at as u32, name.len() as u32),
+                value: Span { offset: SPAN_ABSENT, len: 0 },
+            };
+            at += name.len();
+        }
+        answer(out, Outcome::Ready, 0, at as u64, DUE.len() as u64)
+    }
+}
+
+extern "C" fn dues(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    write_due(input, out, |offset, len| Span { offset, len })
+}
+
+/// A host whose names are absent spans.
+extern "C" fn dues_nameless(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    write_due(input, out, |_, _| Span { offset: SPAN_ABSENT, len: 0 })
+}
+
+fn ticketed(seq: u32) -> CompletionHandle {
+    CompletionHandle {
+        ticket: Ticket { slot: 1, generation: 1 },
+        seq,
+        _reserved: 0,
+    }
+}
+
+const NO_SPAN: ItemSpan = ItemSpan {
+    key: Span { offset: 0, len: 0 },
+    value: Span { offset: 0, len: 0 },
+};
+
+#[test]
+fn dest_judge_answers_the_hosts_verdict_and_pends_only_on_a_ticket() {
+    let t = HostSlots { dest_judge: Some(judges), ..table(None) };
+    let s = services(&t);
+    let meta = "http://169.254.169.254/latest";
+    assert_eq!(s.dest_judge(handle(), meta, 0, true), Poll::Ready(Ok(DEST_METADATA)));
+    assert_eq!(s.dest_judge(handle(), "https://a.example/", 0, false), Poll::Ready(Ok(DEST_ALLOWED)));
+    assert_eq!(s.dest_judge(handle(), "https://a.example/", 9, false), Poll::Ready(Ok(DEST_INTERNAL)));
+    assert_eq!(s.dest_judge(ticketed(0), "https://a.example/", 0, true), Poll::Pending);
+    // PENDING on no ticket breaks the service's rule; a verdict in range passes as answered.
+    let p = HostSlots { dest_judge: Some(pends), ..table(None) };
+    assert_eq!(services(&p).dest_judge(handle(), "x", 0, true), Poll::Ready(Err(ServiceError::Broken)));
+    let b = HostSlots { dest_judge: Some(breaks), ..table(None) };
+    assert_eq!(services(&b).dest_judge(handle(), "x", 0, false), Poll::Ready(Ok(7)));
+    let f = HostSlots { dest_judge: Some(fails), ..table(None) };
+    assert_eq!(
+        services(&f).dest_judge(handle(), "x", 0, false),
+        Poll::Ready(Err(ServiceError::Declined(Outcome::Failed)))
+    );
+    assert_eq!(services(&table(None)).dest_judge(handle(), "x", 0, false), Poll::Ready(Err(ServiceError::Unserved)));
+}
+
+#[test]
+fn trust_sight_answers_the_kernels_judgement_and_pends_on_a_ticket() {
+    let t = HostSlots { trust_sight: Some(sights), ..table(None) };
+    let s = services(&t);
+    assert_eq!(s.trust_sight(ticketed(0), "srv", "h1"), Poll::Ready(Ok(TRUST_SAME)));
+    assert_eq!(s.trust_sight(ticketed(1), "srv", "h2"), Poll::Ready(Ok(TRUST_NEW)));
+    assert_eq!(s.trust_sight(ticketed(2), "slow", "h1"), Poll::Pending);
+    assert_eq!(s.trust_sight(handle(), "slow", "h1"), Poll::Ready(Err(ServiceError::Broken)));
+    // `7` is no `TRUST_*` verdict.
+    let b = HostSlots { trust_sight: Some(breaks), ..table(None) };
+    assert_eq!(services(&b).trust_sight(ticketed(0), "srv", "h1"), Poll::Ready(Err(ServiceError::Broken)));
+    assert_eq!(services(&table(None)).trust_sight(ticketed(0), "srv", "h1"), Poll::Ready(Err(ServiceError::Unserved)));
+}
+
+#[test]
+fn trust_due_views_the_names_in_the_callers_buffers_and_reports_a_short_one() {
+    let t = HostSlots { trust_due: Some(dues), ..table(None) };
+    let s = services(&t);
+    let (mut buf, mut spans) = ([0u8; 4], [NO_SPAN; 1]);
+    assert_eq!(
+        s.trust_due(handle(), &mut buf, &mut spans).map(|d| d.len()),
+        Err(ServiceError::Short { bytes: 9, items: 2 })
+    );
+    let (mut buf, mut spans) = ([0u8; 9], [NO_SPAN; 2]);
+    let due = s.trust_due(handle(), &mut buf, &mut spans).expect("two are due");
+    assert_eq!(due.len(), 2);
+    assert!(due.names().eq(DUE));
+    let n = HostSlots { trust_due: Some(dues_nameless), ..table(None) };
+    let (mut buf, mut spans) = ([0u8; 9], [NO_SPAN; 2]);
+    assert_eq!(services(&n).trust_due(handle(), &mut buf, &mut spans).map(|d| d.len()), Err(ServiceError::Broken));
+    // It never pends: a host that does broke its rule.
+    let p = HostSlots { trust_due: Some(pends), ..table(None) };
+    assert_eq!(services(&p).trust_due(ticketed(0), &mut buf, &mut spans).map(|d| d.len()), Err(ServiceError::Broken));
+    assert_eq!(services(&table(None)).trust_due(handle(), &mut buf, &mut spans).map(|d| d.len()), Err(ServiceError::Unserved));
 }

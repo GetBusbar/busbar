@@ -370,6 +370,40 @@ fn dest_judge_pends_on_the_ticket_and_the_recall_reads_the_verdict() {
     assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 1);
 }
 
+/// THE SDK'S WRAPPER over this table: `dest.judge` pends on the op's ticket, the answer wakes it,
+/// and the op's re-entry re-issues the same handle and reads the stored verdict (the kernel judged
+/// once).
+#[test]
+fn the_sdk_dest_judge_pends_and_its_reissue_reads_the_stored_verdict() {
+    use busbar_contract::abi::mechanism::ticket::HostTables;
+    use busbar_contract::abi::sdk::Services;
+    let d = double();
+    let tables = HostTables {
+        size: size_of::<HostTables>() as u32,
+        _reserved: 0,
+        ctx: d.ctx,
+        wake: None,
+        conns: std::ptr::null(),
+        services: &HOST_SLOTS,
+    };
+    let s = Services::of(&tables).expect("the table is handed");
+    let handle = CompletionHandle {
+        ticket: TICKET,
+        seq: 2,
+        _reserved: 0,
+    };
+    let url = "https://api.example.com/v1";
+    assert!(s.dest_judge(handle, url, 0, true).is_pending());
+    let later = d.route.provider.held.lock().unwrap().pop().unwrap();
+    later(Stored::ready(DEST_INTERNAL));
+    assert_eq!(*d.route.wakes.lock().unwrap(), vec![TICKET]);
+    assert_eq!(
+        s.dest_judge(handle, url, 0, true),
+        std::task::Poll::Ready(Ok(DEST_INTERNAL))
+    );
+    assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 1);
+}
+
 // ── the mechanism, kind-neutral ──────────────────────────────────────────────────────────────
 
 /// A service body that answers eight bytes in one span and counts its runs.
