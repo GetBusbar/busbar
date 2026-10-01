@@ -858,12 +858,24 @@ fn dest(authority: &'static str) -> busbar_contract::VerifiedDestination {
 /// A host is blocked IFF `!allow_all` AND on-denylist AND NOT in the allow overrides. Every one of
 /// those three has been the whole answer in some earlier reading of this rule, which is why all
 /// four corners are asserted rather than the interesting one.
+///
+/// THE OVERRIDES ARE 1.5.5'S, AND THEY REACH THE ADDRESS TOO. 1.5.5 (`crates/busbar/src/config/
+/// mod.rs:445`) stated the nuclear override as:
+///
+/// > Nuclear override (`security.allow_all_metadata`): when true the metadata SSRF guard is fully
+/// > DISABLED — every cloud-metadata endpoint is reachable by every provider. Logs a startup WARN.
+///
+/// So IMDS is reachable only with an explicit operator opt-in, and with one it is reachable: no
+/// override, refused; `allow_all`, admitted; a carve-out naming `169.254.169.254`, admitted. The
+/// address arm judges through the same list decision ([`judge_addresses_under`]) the denylist arm
+/// does, so the two cannot disagree. IPv6 link-local had no knob in 1.5.5 and gets none here: it is
+/// not on the metadata list, so `allow_all` leaves its internal-address refusal exactly as it was.
 #[test]
 fn the_denylist_precedence_is_allow_all_then_allow_override_then_block() {
     let base = "https://169.254.169.254/latest/meta-data";
     let none = Denylist::default();
 
-    // On the denylist, nothing overriding it: blocked.
+    // No override: refused.
     assert_eq!(
         check_destination(&dest(base), &[], &NeverAsked, strict(), &none),
         Err(NetworkRefusal::MetadataDenied(
@@ -871,29 +883,30 @@ fn the_denylist_precedence_is_allow_all_then_allow_override_then_block() {
         ))
     );
 
-    // A surgical carve-out and the nuclear override both get the destination PAST the denylist —
-    // and the address guard below it still refuses, because this address is IMDS. That is the whole
-    // point of the two being separate checks: a deployment can say "this host is not a metadata
-    // host to me", and it still cannot say "hand out cloud credentials". Neither knob is a way to
-    // reach `169.254.169.254`, and there is deliberately no knob that is.
-    for past_the_denylist in [
+    // An explicit carve-out for the address, and the nuclear override: admitted.
+    for opted_in in [
         Denylist::new(&[], &["169.254.169.254".to_string()], false),
         Denylist::new(&[], &[], true),
     ] {
         assert!(
             matches!(
-                check_destination(
-                    &dest(base),
-                    &[],
-                    &NeverAsked,
-                    private_ok(),
-                    &past_the_denylist
-                ),
-                Err(NetworkRefusal::Guard(
-                    AddressRefusal::CloudMetadataAddress { .. }
-                ))
+                check_destination(&dest(base), &[], &NeverAsked, strict(), &opted_in),
+                Ok(Some(_))
             ),
-            "the denylist is not the only thing standing between a caller and IMDS"
+            "an explicit operator opt-in reaches IMDS, as in 1.5.5"
+        );
+    }
+
+    // IPv6 link-local is not on the metadata list, so the nuclear override does not touch it: the
+    // internal-address refusal is the same with the override as without.
+    let link_local = "https://[fe80::1]/";
+    for lists in [Denylist::default(), Denylist::new(&[], &[], true)] {
+        assert!(
+            matches!(
+                check_destination(&dest(link_local), &[], &NeverAsked, strict(), &lists),
+                Err(NetworkRefusal::Guard(AddressRefusal::InternalAddress { .. }))
+            ),
+            "allow_all leaves link-local as it was"
         );
     }
 
