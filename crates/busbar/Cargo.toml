@@ -135,7 +135,7 @@ busbar-export-file = { workspace = true, optional = true }
 # through the `exports` axis (K9c) — the same row a signed tarball of it registers when dropped in. It
 # lives in its own repo (GetBusbar/busbar-export-webhook) and is pulled at a PINNED rev; the workspace
 # `[patch]` points the busbar crates it names back at this tree.
-busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "5e0170432aa2dc7640c8b6f6e89c9d38edad1df0", optional = true }
+busbar-export-webhook = { workspace = true, optional = true }
 # THE PROMETHEUS EXPORT SINK (`module: prometheus`), a first-party EXPORT plugin linked through the
 # `exports` axis (K9d) — the same row a signed tarball of it registers when dropped in. The host
 # keeps the recorder and serves `/metrics`; this sink renders the recorder's snapshot. It lives in its

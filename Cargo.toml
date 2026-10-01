@@ -75,6 +75,11 @@ busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", 
 busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "02f463307f9820faedda131467dcfaa83b25df78" }
 busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "ae383d230e9a8e6af4c2d10f31e476845fe6e46d" }
 busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "ae383d230e9a8e6af4c2d10f31e476845fe6e46d" }
+# THE REQUEST-LOG WEBHOOK SINK: the one home of its pinned rev (a rev bump is this one edit). `busbar`
+# links the logic crate; `busbar-plugin-loader`'s conformance test builds the cdylib crate. Same repo,
+# same rev, one resolved copy in Cargo.lock.
+busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "3ad5a711aad433f2015a980cf3a792afa5fd3a7a" }
+busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "3ad5a711aad433f2015a980cf3a792afa5fd3a7a" }
 # ── A2A, from the a2aproject's OWN crates ──────────────────────────────────────────────────────
 # THE OBVIOUS NAME IS THE WRONG ONE. `a2a-rs` on crates.io is `emillindfors/a2a-rs` (MIT, v0.5.0) —
 # a different author entirely. The a2aproject family is the `a2a-*-lf` / `a2a-pb` set, all

@@ -134,7 +134,7 @@ busbar-plugin-example-plane = { path = "../plane-example" }
 # that checkable for the thing #11 was silently false about — what a plugin OBSERVES. Their
 # busbar-contract resolves to this tree through the workspace `[patch]` table.
 busbar-export-file-plugin = { workspace = true }
-busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "5e0170432aa2dc7640c8b6f6e89c9d38edad1df0" }
+busbar-export-webhook-plugin = { workspace = true }
 busbar-export-prometheus-plugin = { workspace = true }
 busbar-export-otlp-plugin = { workspace = true }
 # The `kind: store` BOTH-WAYS proof is a REAL store (owner FIXTURES ruling: "store: store-memory +
