@@ -204,11 +204,6 @@ impl CancelToken {
         }
     }
 
-    /// Whether the unit has been told to stop.
-    pub fn is_tripped(&self) -> bool {
-        self.tripped.load(Ordering::Acquire)
-    }
-
     /// Why, if it has.
     pub fn reason(&self) -> Option<ReasonCode> {
         let index = self.reason.load(Ordering::Acquire);
@@ -577,12 +572,6 @@ impl SessionSlot {
         *self.principal.lock().unwrap_or_else(|e| e.into_inner()) = Some(principal);
     }
 
-    /// Forget the principal and everything about the connection's negotiated state, as an in-band
-    /// upgrade does.
-    pub fn clear_principal(&self) {
-        *self.principal.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    }
-
     /// Claim the one open slot for a direction of a stream.
     ///
     /// One open unit per direction, and the second one is refused rather than queued: two units
@@ -624,14 +613,6 @@ impl SessionSlot {
         if open.get(&(stream, direction)) == Some(&unit) {
             open.remove(&(stream, direction));
         }
-    }
-
-    /// Give the direction back, at the unit's end.
-    pub fn release_open(&self, stream: StreamId, direction: Direction) {
-        self.open
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&(stream, direction));
     }
 
     /// Pair another upstream connection with this session.

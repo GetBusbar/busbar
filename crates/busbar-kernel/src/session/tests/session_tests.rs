@@ -73,17 +73,6 @@ fn a_pinned_slot_is_never_evicted_even_over_capacity_or_past_ttl() {
 }
 
 #[test]
-fn pinning_clears_ttl_and_unpinning_reapplies_it() {
-    let s = SessionStore::new(64, None);
-    s.put(SessionKey(1), GATE, Arc::new(1u8), 0, false, Some(100));
-    assert!(s.set_pinned(SessionKey(1), GATE, true, 0, None));
-    assert!(s.get::<u8>(SessionKey(1), GATE, 10_000).is_some()); // pinned → TTL ignored
-    assert!(s.set_pinned(SessionKey(1), GATE, false, 10_000, Some(100)));
-    assert!(s.get::<u8>(SessionKey(1), GATE, 10_050).is_some()); // within new TTL
-    assert!(s.get::<u8>(SessionKey(1), GATE, 10_100).is_none()); // expired again
-}
-
-#[test]
 fn remove_drops_a_pinned_slot_the_only_way_it_leaves() {
     let s = SessionStore::new(64, None);
     s.put(SessionKey(1), TASK, Arc::new(1u8), 0, true, None);

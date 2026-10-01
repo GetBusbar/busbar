@@ -66,7 +66,6 @@ impl Due {
     /// Marshal this reason onto the neutral [`VerifyDecision`](busbar_contract::abi::hot::VerifyDecision) the
     /// host `verify_decide_q` slot returns BY VALUE — the outbound half of the reason mapping the slot
     /// uses so a full `Due` crosses the `#[repr(C)]` seam rather than a lossy `Fresh`/`Stale` bool.
-    /// The exact inverse of [`from_verify_decision`](Self::from_verify_decision) for every reason.
     pub fn to_verify_decision(self) -> busbar_contract::abi::hot::VerifyDecision {
         use busbar_contract::abi::hot::VerifyDecision as V;
         match self {
@@ -75,26 +74,6 @@ impl Due {
             Due::TtlExpired => V::TtlExpired,
             Due::OperatorSync => V::OperatorSync,
             Due::ClockWentBackwards => V::ClockWentBackwards,
-        }
-    }
-
-    /// Reconstruct the reason from the neutral [`VerifyDecision`](busbar_contract::abi::hot::VerifyDecision)
-    /// the host `verify_decide_q` slot answered with — the inbound half of the mapping the a2a
-    /// re-verify job uses so `reverify_once` reconstructs the SAME rich `Due` it audits in `Pass{due}`,
-    /// byte-identical to the compiled-in veneer for every genuine input. [`Stale`](busbar_contract::abi::hot::VerifyDecision::Stale)
-    /// is the slot's GENERIC fail-closed due (null query / caught panic) — reconstructed as
-    /// [`TtlExpired`](Due::TtlExpired), a due reason so `should_check()` holds; the slot never answers
-    /// it for a real query, so the audit bytes never depend on this arm.
-    #[cfg(feature = "relay")]
-    pub fn from_verify_decision(decision: busbar_contract::abi::hot::VerifyDecision) -> Self {
-        use busbar_contract::abi::hot::VerifyDecision as V;
-        match decision {
-            V::Fresh => Due::No,
-            V::NeverChecked => Due::NeverChecked,
-            V::TtlExpired => Due::TtlExpired,
-            V::OperatorSync => Due::OperatorSync,
-            V::ClockWentBackwards => Due::ClockWentBackwards,
-            V::Stale => Due::TtlExpired,
         }
     }
 }

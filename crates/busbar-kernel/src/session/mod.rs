@@ -151,33 +151,6 @@ impl SessionStore {
         self.lock().remove(&(session, owner)).is_some()
     }
 
-    /// Set/clear the pin on an existing slot. Pinning also clears its TTL; unpinning applies `ttl_ms`
-    /// (or the default) from `now_ms`. No-op if the slot is absent; returns whether it existed.
-    pub fn set_pinned(
-        &self,
-        session: SessionKey,
-        owner: OwnerKey,
-        pinned: bool,
-        now_ms: u64,
-        ttl_ms: Option<u64>,
-    ) -> bool {
-        let mut map = self.lock();
-        match map.get_mut(&(session, owner)) {
-            Some(slot) => {
-                slot.pinned = pinned;
-                slot.expires_at_ms = if pinned {
-                    None
-                } else {
-                    ttl_ms
-                        .or(self.default_ttl_ms)
-                        .map(|d| now_ms.saturating_add(d))
-                };
-                true
-            }
-            None => false,
-        }
-    }
-
     /// Current live slot count (after no sweep — for tests/metrics).
     pub fn len(&self) -> usize {
         self.lock().len()

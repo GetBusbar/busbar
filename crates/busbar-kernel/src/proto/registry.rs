@@ -12,7 +12,7 @@
 //! editing core. A `match` on a string literal is exactly that edit.
 //!
 //! **A REGISTRY WHOSE POPULATION IS A `match` IN CORE HAS NOT REMOVED THE MATCH, IT HAS MOVED IT.**
-//! So [`builtin_decls`] is DATA — a slice of `&'static ProtocolDecl`, one entry per protocol, each
+//! So `builtin_decls` is DATA — a slice of `&'static ProtocolDecl`, one entry per protocol, each
 //! declared in the protocol's OWN module — and [`Registry::new`] takes an ITERATOR of declarations,
 //! so a protocol that is not in that slice joins by being handed to the same constructor.
 //!
@@ -22,7 +22,7 @@
 //! resolves them through the neutral ABI rather than reaching BACK into `busbar-core`. This module
 //! re-exports every one of them at its historical `super::installed::registry::…` path so every
 //! in-core / plugin caller compiles unchanged and the values are byte-identical. What STAYS here is
-//! the population glue core alone owns and nothing else: the built-in table (empty in production;
+//! the population glue core alone owns and nothing else: the built-in table (none in production;
 //! core's own test set named in a `tests/` file the lint excludes and handed to the substrate through
 //! its `set_test_builtins` hook) and the `cfg(test)` accessors that seed it.
 //!
@@ -64,27 +64,6 @@ pub use busbar_contract::protocol::{
 // for nobody would be exactly the longer-named reach this cut removed.
 pub use super::installed::{merged_boot_decls, Registry};
 
-/// THE BUILT-INS — one line per protocol, and every line is DATA. Production carries NO built-in
-/// protocol rows: every protocol is a plugin crate the composition root installs through
-/// [`super::installed::install_protocols`]. Naming a protocol crate's `&DECL` here would be a
-/// protocol-crate symbol
-/// reference in neutral source — a side channel around the ABI — so this stays empty.
-///
-/// Core's OWN test binary still needs the shipped protocol set; the plugin crates are dev-dependencies
-/// there. That list names each plugin crate's own declaration table, which belongs OFF the
-/// neutral source, so it is defined in the test module ([`test_builtins`], a `tests/` file the
-/// neutral-purity lint excludes) and handed to the substrate registry through its
-/// [`super::installed::set_test_builtins`] hook by the `cfg(test)` accessors below.
-#[cfg(not(test))]
-static BUILTIN_DECLS: &[&ProtocolDecl] = &[];
-
-/// The built-in declarations. Empty in production and under `test-support`; under core's own
-/// `#[cfg(test)]` binary it is the test-module list, so no protocol crate is named in neutral source.
-#[cfg(not(test))]
-pub fn builtin_decls() -> &'static [&'static ProtocolDecl] {
-    BUILTIN_DECLS
-}
-
 /// The extracted-dialect built-in list for core's OWN test binary — each shipped plugin crate's own
 /// declaration table, named in a `tests/` file the neutral-purity lint excludes so the neutral
 /// source spells no protocol crate.
@@ -92,6 +71,9 @@ pub fn builtin_decls() -> &'static [&'static ProtocolDecl] {
 #[path = "tests/registry_builtins.rs"]
 mod test_builtins;
 
+/// The built-in declarations of core's OWN test binary: the test-module list, so no protocol crate
+/// is named in neutral source. Production carries none: every protocol is a plugin crate the
+/// composition root installs through [`super::installed::install_protocols`].
 #[cfg(test)]
 pub fn builtin_decls() -> &'static [&'static ProtocolDecl] {
     test_builtins::test_builtin_decls()
