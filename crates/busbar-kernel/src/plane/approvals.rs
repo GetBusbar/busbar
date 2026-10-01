@@ -267,13 +267,10 @@ pub fn digest_arguments(arguments: &serde_json::Value) -> String {
 /// not survivable here, because a predictable nonce is a `multi-round` scenario that passes by
 /// accident and a replay window that is wider than it looks.
 ///
-/// Pure `getrandom` + `hex` (no core reach), relocated here beside the seal so a plane crate mints a
-/// nonce without naming `busbar_kernel::plane::approvals`; core re-exports it, so
-/// `crate::plane::approvals::nonce` still resolves for the tests and the extracted plane crate.
+/// The draw itself is governance's one 128-bit hex draw (`governance::generate_binding_generation`);
+/// it is named here beside the seal so a plane mints a nonce through `plane::approvals::nonce`.
 pub fn nonce() -> Result<String, getrandom::Error> {
-    let mut b = [0u8; 16];
-    getrandom::fill(&mut b)?;
-    Ok(hex::encode(b))
+    crate::governance::generate_binding_generation()
 }
 
 /// Domain separation for the derived key. Changing these BYTES invalidates every outstanding state,
