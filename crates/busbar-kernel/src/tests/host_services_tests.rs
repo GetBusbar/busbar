@@ -743,7 +743,10 @@ fn trust_due_answers_the_ticks_marks_one_span_each() {
     let s = r.s.trust_due(&me);
     assert_eq!(s.bytes, b"cp");
     assert_eq!((s.spans[0].key.offset, s.spans[0].key.len), (0, 2));
-    assert_eq!(s.spans[0].value.offset, busbar_contract::abi::mechanism::check::SPAN_ABSENT);
+    assert_eq!(
+        s.spans[0].value.offset,
+        busbar_contract::abi::mechanism::check::SPAN_ABSENT
+    );
 }
 
 #[test]
