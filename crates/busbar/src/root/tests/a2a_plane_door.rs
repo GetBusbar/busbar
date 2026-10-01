@@ -22,16 +22,15 @@
 use std::ptr::{null, null_mut};
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, BLOB_JSON};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, Outcome, Span, BLOB_JSON};
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, TickIn, TickOut,
     ValidateIn,
 };
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    slot, ArriveIn, ArriveOut, Field, OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn,
-    PlaneOpenOut, PlaneRefreshOut, RefusalIn, RefusalOut, Span, REFUSAL_ARRIVE, REFUSAL_GATE,
-    REFUSAL_KERNEL,
+    slot, ArriveIn, ArriveOut, OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut,
+    PlaneRefreshOut, RefusalIn, RefusalOut, REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL,
 };
 use busbar_plane_a2a::door::{DIALECT_DOCUMENT, DIALECT_FRAMED, DIALECT_TARGET, ROUTES};
 
@@ -166,7 +165,7 @@ fn refuse(p: &Plugin<Plane>, cause: u32, status: u32, dialect: u32, words: &[u8]
             cause,
             status,
             dialect,
-            _reserved: 0,
+            reason: 0,
             text: AbiStr {
                 ptr: words.as_ptr(),
                 len: words.len(),
@@ -177,6 +176,13 @@ fn refuse(p: &Plugin<Plane>, cause: u32, status: u32, dialect: u32, words: &[u8]
             fields_cap: fields.len(),
             arena_buf: arena.as_mut_ptr(),
             arena_cap: arena.len(),
+            unit: 0,
+            plane_code: 0,
+            retry_after_s: 0,
+            target: AbiStr {
+                ptr: null(),
+                len: 0,
+            },
         },
         RefusalOut {
             head: out_head(),

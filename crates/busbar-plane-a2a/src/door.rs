@@ -431,9 +431,13 @@ pub fn snapshot_spec(public_url: Option<&str>) -> SnapshotSpec {
 }
 
 /// A route as the snapshot's claim: an open route takes no inbound credential; a target with a
-/// path variable is a pattern, one level per variable, and any other target matches exactly.
+/// path variable is a pattern, one level per variable, and any other target matches exactly. Its
+/// refusals are rendered in its line's dialect; an open document's in the JSON-RPC one.
 fn claim(r: &Route) -> ClaimSpec {
-    ClaimSpec::new(r.verb, r.target, r.carrier, claim_flags(r))
+    let mut spec = ClaimSpec::new(r.verb, r.target, r.carrier, claim_flags(r));
+    spec.refusal_dialect =
+        u16::try_from(line_of(r).dialect().unwrap_or(DIALECT_DOCUMENT)).unwrap_or_default();
+    spec
 }
 
 /// The claim flags a route states.

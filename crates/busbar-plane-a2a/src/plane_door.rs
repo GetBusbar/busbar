@@ -115,6 +115,24 @@ fn public_url(bytes: &[u8]) -> Option<String> {
         .map(str::to_string)
 }
 
+/// [`ArriveOut::refusal`]: the arrival is refused in the plane's own words, at its own status
+/// (the words ride in the head's error, and `refusal` renders them).
+pub const REFUSED_IN_OWN_WORDS: u32 = 1;
+
+/// [`ArriveOut::refusal`]: no line of this door serves the arrival yet (a 404).
+pub const UNSERVED: u32 = 2;
+
+/// The status of an arrival no line of this door serves yet.
+const STATUS_NOT_FOUND: u32 = 404;
+
+/// REFUSED: no line of this door serves the arrival yet. TRANSITIONAL: the lines other than
+/// JSON-RPC are filled when the kernel's plane driver serves the door's request path.
+fn unserved(out: &mut Out<'_, ArriveOut>) -> Outcome {
+    out.set(|o| &o.refusal, UNSERVED);
+    out.set(|o| &o.refusal_status, STATUS_NOT_FOUND);
+    out.fail(Refusal::bare())
+}
+
 /// One slot body on the SDK's safe surface, over this plane's [`A2aDoor`].
 macro_rules! slot {
     ($(#[$doc:meta])* $name:ident, $in:ty, $out:ty,
@@ -240,7 +258,7 @@ slot!(
         let given = input.get();
         let line = door::ROUTES.get(given.claim as usize).map(door::line_of);
         if line != Some(Line::Document) {
-            return out.fail(Refusal::bare());
+            return unserved(&mut out);
         }
         let body = input.field(|i| &i.body).bytes();
         let fields = input.fields();
@@ -255,10 +273,12 @@ slot!(
                 .and_then(|f| f.field(|f| &f.value).as_str().ok())
         });
         if let Decision::Refused(refusal) = &decision {
+            out.set(|o| &o.refusal, REFUSED_IN_OWN_WORDS);
+            out.set(|o| &o.refusal_status, refusal.status);
             return out.fail(Refusal::refused(refusal.words()));
         }
         let Some(op) = decision.op_class().and_then(door::op_class_index) else {
-            return out.fail(Refusal::bare());
+            return unserved(&mut out);
         };
         out.set(|o| &o.op_class, op);
         out.set(|o| &o.principal_need, PRINCIPAL_REQUIRED);
