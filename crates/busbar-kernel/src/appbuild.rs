@@ -498,7 +498,7 @@ impl InstalledLimits {
     pub fn keep(self) {
         let InstalledLimits { guard, rates, dial } = self;
         guard.commit();
-        crate::egress::engine::DialTable::process().publish(dial);
+        crate::egress::engine::process_dial_table().publish(dial);
         crate::rate_apply::rates_applied(&crate::rate_apply::RawRates {
             lanes: &rates.lanes,
             units: &rates.units,
@@ -689,8 +689,7 @@ pub fn build_app_from_config(
         cfg.providers.values().flat_map(|p| {
             std::iter::once(p.base_url.as_str())
                 .chain(p.token_url.as_deref())
-                .filter_map(crate::net_guard::extract_normalized_host)
-                .map(move |host| (host, p.allow_metadata_hosts.as_slice()))
+                .map(move |url| (url, p.allow_metadata_hosts.as_slice()))
         }),
     );
 

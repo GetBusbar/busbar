@@ -907,22 +907,24 @@ pub struct DialDenylist {
 impl DialDenylist {
     /// Build the table. `blocked`, `allowed` and `allow_all` are the deployment-wide
     /// `security.blocked_metadata_hosts`, `security.allow_metadata_hosts` and
-    /// `security.allow_all_metadata`; `per_host` pairs each host a provider's URLs name with that
-    /// provider's own `allow_metadata_hosts`.
+    /// `security.allow_all_metadata`; `per_url` pairs each URL a provider names (its base and its
+    /// token endpoint) with that provider's own `allow_metadata_hosts`, read by the one URL reader.
     #[must_use]
     pub fn new<'a>(
         blocked: &[String],
         allowed: &[String],
         allow_all: bool,
-        per_host: impl IntoIterator<Item = (String, &'a [String])>,
+        per_url: impl IntoIterator<Item = (&'a str, &'a [String])>,
     ) -> Self {
         let mut carve_outs: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
-        for (host, own) in per_host {
-            carve_outs
-                .entry(dial_key(&host))
-                .or_insert_with(|| allowed.to_vec())
-                .extend(own.iter().cloned());
+        for (url, own) in per_url {
+            if let Some(host) = extract_normalized_host(url) {
+                carve_outs
+                    .entry(dial_key(&host))
+                    .or_insert_with(|| allowed.to_vec())
+                    .extend(own.iter().cloned());
+            }
         }
         DialDenylist {
             default: Denylist::new(blocked, allowed, allow_all),
@@ -949,6 +951,39 @@ impl DialDenylist {
             }),
             None => Ok(()),
         }
+    }
+}
+
+/// THE DIAL TABLE A CLIENT JUDGES THROUGH: one [`DialDenylist`], replaced whole when a configuration
+/// is committed ([`DialTable::publish`]) and read by every resolution after it, so a warm client
+/// reused across an apply judges under the new lists. A handle, cloned into each client; the lock is
+/// taken once per new connection, never per request.
+#[derive(Clone, Default)]
+pub struct DialTable(std::sync::Arc<std::sync::RwLock<std::sync::Arc<DialDenylist>>>);
+
+impl DialTable {
+    /// A table holding `lists`.
+    #[must_use]
+    pub fn new(lists: DialDenylist) -> Self {
+        DialTable(std::sync::Arc::new(std::sync::RwLock::new(std::sync::Arc::new(lists))))
+    }
+
+    /// Replace the lists every holder of this table judges by.
+    pub fn publish(&self, lists: DialDenylist) {
+        *self.0.write().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            std::sync::Arc::new(lists);
+    }
+
+    /// Judge one resolution's answer under the lists in force now ([`DialDenylist::judge`]).
+    ///
+    /// # Errors
+    ///
+    /// The first answered address the lists refuse.
+    pub fn judge(&self, host: &str, addrs: &[IpAddr]) -> Result<(), AddressRefusal> {
+        let lists = std::sync::Arc::clone(
+            &self.0.read().unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        lists.judge(host, addrs)
     }
 }
 

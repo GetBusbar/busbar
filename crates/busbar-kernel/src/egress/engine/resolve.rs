@@ -32,47 +32,27 @@ use std::task::{Context, Poll};
 
 use hyper_util::client::legacy::connect::dns::{GaiAddrs, GaiFuture, GaiResolver, Name};
 
-use crate::net_guard::{AddressRefusal, DialDenylist};
+use crate::net_guard::{AddressRefusal, DialTable};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-/// THE DIAL TABLE every pooled client judges through: one [`DialDenylist`], replaced whole when a
-/// configuration is committed ([`DialTable::publish`]) and read by every resolution after it, so a
-/// warm client reused across an apply judges under the new lists.
-#[derive(Clone)]
-pub struct DialTable(Arc<arc_swap::ArcSwap<DialDenylist>>);
+/// THE PROCESS'S DIAL TABLE: the one the composition root publishes each committed configuration
+/// into (`InstalledLimits::keep`). Before the first commit it holds the built-in metadata list and
+/// no carve-outs.
+pub fn process_dial_table() -> DialTable {
+    static PROCESS: std::sync::OnceLock<DialTable> = std::sync::OnceLock::new();
+    PROCESS.get_or_init(DialTable::default).clone()
+}
 
-impl DialTable {
-    /// A table of its own, holding `lists`.
-    pub fn new(lists: DialDenylist) -> Self {
-        DialTable(Arc::new(arc_swap::ArcSwap::from_pointee(lists)))
-    }
-
-    /// The process's table: the one the composition root publishes each committed configuration
-    /// into. Before the first commit it holds the built-in metadata list and no carve-outs.
-    pub fn process() -> Self {
-        static PROCESS: std::sync::OnceLock<DialTable> = std::sync::OnceLock::new();
-        PROCESS
-            .get_or_init(|| DialTable::new(DialDenylist::default()))
-            .clone()
-    }
-
-    /// Replace the lists every holder of this table judges by.
-    pub fn publish(&self, lists: DialDenylist) {
-        self.0.store(Arc::new(lists));
-    }
-
-    /// Judge one resolution's answer, refusing it whole. The refusal ([`AddressRefusal`]) is the
-    /// resolver's error, so `HttpConnector` reports the dial as a connect failure caused by it: not
-    /// a timeout, so a plane fails it over as it does a refused connection.
-    fn judge(&self, host: &str, addrs: Vec<SocketAddr>) -> Result<ResolvedAddrs, BoxError> {
-        let ips: Vec<IpAddr> = addrs.iter().map(SocketAddr::ip).collect();
-        self.0
-            .load()
-            .judge(host, &ips)
-            .map_err(|refusal| Box::new(refusal) as BoxError)?;
-        Ok(ResolvedAddrs::Listed(addrs.into_iter()))
-    }
+/// Judge one resolution's answer, refusing it whole. The refusal ([`AddressRefusal`]) is the
+/// resolver's error, so `HttpConnector` reports the dial as a connect failure caused by it: not a
+/// timeout, so a plane fails it over as it does a refused connection.
+fn judged(table: &DialTable, host: &str, addrs: Vec<SocketAddr>) -> Result<ResolvedAddrs, BoxError> {
+    let ips: Vec<IpAddr> = addrs.iter().map(SocketAddr::ip).collect();
+    table
+        .judge(host, &ips)
+        .map_err(|refusal: AddressRefusal| Box::new(refusal) as BoxError)?;
+    Ok(ResolvedAddrs::Listed(addrs.into_iter()))
 }
 
 /// The dial posture a pooled client is built with: the process table over the system resolver.
@@ -84,7 +64,7 @@ pub(crate) fn pooled_dial() -> (DialTable, Option<Arc<dyn ResolveNames>>) {
     if let Some(scoped) = SCOPED_DIAL.with(|s| s.borrow().clone()) {
         return (scoped.0, Some(scoped.1));
     }
-    (DialTable::process(), None)
+    (process_dial_table(), None)
 }
 
 /// A test's scoped dial posture: its table and its names.
@@ -205,7 +185,7 @@ impl Future for ResolveFuture {
                 .map(|r| r.map(|addrs| ResolvedAddrs::Listed(addrs.into_iter()))),
             ResolveFuture::Judged { names, host, table } => {
                 let answered = std::task::ready!(Pin::new(names.as_mut()).poll(cx));
-                Poll::Ready(answered.and_then(|addrs| table.judge(host, addrs.collect())))
+                Poll::Ready(answered.and_then(|addrs| judged(table, host, addrs.collect())))
             }
         }
     }

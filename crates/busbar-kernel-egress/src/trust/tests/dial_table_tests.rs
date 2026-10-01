@@ -58,7 +58,7 @@ fn a_provider_carve_out_admits_its_own_host_only() {
         &[],
         &[],
         false,
-        [("IMDS.example.".to_string(), own.as_slice())],
+        [("https://IMDS.example./v1", own.as_slice())],
     );
     assert!(table.judge("imds.example", &[ip("169.254.169.254")]).is_ok());
     assert!(table.judge("other.example", &[ip("169.254.169.254")]).is_err());
@@ -69,7 +69,7 @@ fn a_provider_carve_out_admits_its_own_host_only() {
         &[],
         &[],
         false,
-        [("named.example".to_string(), by_name.as_slice())],
+        [("https://named.example", by_name.as_slice())],
     );
     assert!(table.judge("named.example", &[ip("169.254.169.254")]).is_ok());
 }

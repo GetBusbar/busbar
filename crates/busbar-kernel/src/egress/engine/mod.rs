@@ -70,7 +70,8 @@ pub mod tls;
 
 pub use deadline::ConnectDeadline;
 pub use observe::{peer_key_pin, KeyPinObserve, ObservedIo, PeerKeyPin};
-pub use resolve::{DialTable, EgressResolver, ResolveNames};
+pub use crate::net_guard::DialTable;
+pub use resolve::{process_dial_table, EgressResolver, ResolveNames};
 #[cfg(any(test, feature = "test-support"))]
 pub use resolve::with_scoped_dial;
 pub use tls::{ClientIdentity, Trust};
@@ -220,7 +221,7 @@ impl EngineSpec {
             h2_prior_knowledge: false,
             pin: Some(PinnedDest { host, addr }),
             dns: Dns::System,
-            dial: DialTable::process(),
+            dial: process_dial_table(),
             observe_key_pin: true,
             trust: Trust::WebpkiPlus(extra_roots),
             identity,

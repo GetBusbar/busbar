@@ -93,7 +93,7 @@ pub use lane::{
 };
 pub use net::{
     check_destination, check_destination_facts, AddressRefusal, Denylist, DialDenylist,
-    GuardPolicy, NetworkRefusal, PinnedTarget, Resolver,
+    DialTable, GuardPolicy, NetworkRefusal, PinnedTarget, Resolver,
 };
 pub use order::{
     pick, reconcile_order, sticky_position, OrderVerdict, OrderingHook, Pick, PickOutcome,
