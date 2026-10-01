@@ -80,6 +80,7 @@
 pub mod amend;
 pub mod expose;
 pub mod heads;
+pub mod journal;
 pub mod legacy;
 pub mod recipe;
 pub mod record;
@@ -91,6 +92,7 @@ pub use amend::{
     Reader, AMENDMENTS_RETAINED,
 };
 pub use heads::{HeadHistory, SignedHead, HEAD_SAMPLE_SECONDS};
+pub use journal::{from_journal_body, journal_body, JOURNAL_TAG};
 pub use legacy::{
     AuditEntry, AuditInput, AuditLog, Chain, ChainBreak, ChainBreakKind, ChainedRecord, Clock,
     DurableSeam, NoSeam, PositionsExhausted, ADMIN_LOG, AUDIT_ACTIONS,

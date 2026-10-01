@@ -147,6 +147,10 @@ pub use book::{MoneyBook, PostingStamp, Settled, Settling, SharedBook};
 /// (architect ruling 2026-09-26, "checkpoint retention"). The journal holds every one.
 pub const CHECKPOINT_RING: usize = 1_024;
 
+/// How many sealed audit records a node keeps in memory: a CACHE of the newest, never the record.
+/// The journal holds every one (`audit.v4`), and a window older than this is read back off it.
+pub const AUDIT_RING: usize = 1_024;
+
 /// What the root reads out of configuration to decide the durability shape.
 ///
 /// One field, because there is one decision. Its absence is the previous release's shape and its
@@ -184,6 +188,12 @@ pub struct Durability {
     /// record of every seal; the audit chain's head history (#82(d)) is kept forever on its own.
     /// The checkpoints read serves this ring.
     pub checkpoints: Vec<Checkpoint>,
+    /// THE NEWEST SEALED AUDIT RECORDS, oldest first, at most [`AUDIT_RING`]: a cache over the
+    /// journal, which keeps every record this chain ever sealed. Rebuilt from the journal at boot.
+    pub audit_records: Vec<AuditRecord>,
+    /// What the boot could not read back of the audit chain: a journalled record that does not
+    /// decode, or names a class nobody declares here. Each is a restart finding.
+    pub audit_findings: Vec<String>,
     /// WHERE EVERY SEALED CHECKPOINT IS ANCHORED, and the head `GET /admin/verify` compares the
     /// checkpoint it verifies against: a rewound checkpoint reads as `AnchorHeadDiffers`. The
     /// default is the self-attesting in-memory anchor, seeded at boot from the last checkpoint the
@@ -290,34 +300,123 @@ impl Durability {
         self.journal.record_quarantines(token, at, wall)
     }
 
-    /// Put a sealed audit record on the journal.
+    /// REBUILD THE AUDIT CACHE FROM THE CHAIN and continue the audit chain from its tail: every
+    /// `audit.v4` record is read back, the newest [`AUDIT_RING`] are kept, and the next record this
+    /// boot seals links to the last one a predecessor sealed. A record that will not read back is a
+    /// finding, never silently skipped.
+    fn resume_audit(&mut self, records: &[JournalRecord]) {
+        let mut sealed = Vec::new();
+        for record in records {
+            match decode_audit(record) {
+                Ok(Some(audit)) => sealed.push(audit),
+                Ok(None) => {}
+                Err(why) => self.audit_findings.push(format!(
+                    "node {} record {}: {why}",
+                    record.node, record.node_seq
+                )),
+            }
+        }
+        if let Some(last) = sealed.last() {
+            self.record = AuditChain::resume(last.hash.clone(), last.seq.saturating_add(1));
+        }
+        let keep = sealed.len().saturating_sub(AUDIT_RING);
+        self.audit_records = sealed.split_off(keep);
+    }
+
+    /// SEAL A UNIT'S ONE FIXED AUDIT RECORD and put it on the journal, where the unit's one line is
+    /// written.
     ///
-    /// The audit unit sealed it; this puts it in the one order. The record's own chain is unchanged
-    /// and the previous release's chain is not touched at all — the body here is the sealed record's
-    /// two digests and the facts an auditor reads it for, and the class is `Transaction` because a
-    /// sealed record is what a unit's money movement looks like when it is finished.
+    /// `pass` is the audit pass the unit's own audit step was lent, handed back with its facts
+    /// (`Units::audited`): a unit that never passed its audit step has none, so it has no record,
+    /// and a pass seals once. The record is sealed under this boot's [`Durability::incarnation`] —
+    /// a unit key restarts with the process, the incarnation does not — and journalled whole
+    /// (`audit.v4`), so the journal can answer for it after the in-memory cache has let it go.
     ///
     /// # Errors
     ///
     /// The journal could not make the record durable. Without a data directory that means the store
-    /// refused the batch; with one it means a write or a sync failed.
-    pub fn journal_audit(
+    /// refused the batch; with one it means a write or a sync failed. The record is sealed on the
+    /// chain and kept in the cache either way.
+    pub fn seal_unit(
         &mut self,
-        record: &AuditRecord,
+        mut inputs: busbar_kernel_audit::AuditInputs,
+        pass: busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
         token: &Grant<DurableWrite>,
-        at: StepName,
-    ) -> Result<JournalAck, DurabilityLost> {
-        let entry = Entry::new(RecordClass::Transaction, audit_body(record))
+    ) -> Result<AuditRecord, DurabilityLost> {
+        use busbar_kernel_audit::Audit;
+        inputs.what.incarnation = self.incarnation;
+        let record = self.record.seal(inputs, &pass);
+        let entry = Entry::new(RecordClass::Transaction, audit_body(&record))
             .at(record.wall, record.mono)
             .under(record.controls.lease_epoch, record.controls.policy_epoch);
-        self.journal.append(token, at, &[entry])
+        let appended = self.journal.append(token, StepName::Audit, &[entry]);
+        self.audit_records.push(record.clone());
+        if self.audit_records.len() > AUDIT_RING {
+            let over = self.audit_records.len() - AUDIT_RING;
+            self.audit_records.drain(..over);
+        }
+        appended.map(|_| record)
+    }
+
+    /// The sealed audit records at positions `from` through `to`, oldest first, at most
+    /// [`AUDIT_RING`] of them. From the cache when it covers `from`; otherwise read back off the
+    /// journal, which keeps every record — so a window older than the cache is never answered as
+    /// empty.
+    #[must_use]
+    pub fn audit_window(&self, from: u64, to: u64) -> Vec<AuditRecord> {
+        let covered = self.audit_records.first().is_some_and(|r| r.seq <= from);
+        let pick = |r: &&AuditRecord| r.seq >= from && r.seq <= to;
+        if covered || self.audit_records.is_empty() && !self.on_disk() {
+            return self
+                .audit_records
+                .iter()
+                .filter(pick)
+                .take(AUDIT_RING)
+                .cloned()
+                .collect();
+        }
+        let Ok(Ok(records)) = self.journal.replay() else {
+            return Vec::new();
+        };
+        records
+            .iter()
+            .filter_map(|r| decode_audit(r).ok().flatten())
+            .filter(|r| r.seq >= from && r.seq <= to)
+            .take(AUDIT_RING)
+            .collect()
+    }
+
+    /// WHAT A WALK OF THE RETAINED AUDIT CHAIN FINDS, as `GET /admin/verify` reports it: a record
+    /// whose digest, link or position does not hold, a signature that does not verify under the
+    /// key it names. (What the boot could not read back is a restart finding.) Empty is the only
+    /// good answer.
+    #[must_use]
+    pub fn retained_audit_findings(&self) -> Vec<String> {
+        let mut findings = Vec::new();
+        if let Err(broken) = AuditChain::verify_window(&self.audit_records) {
+            findings.push(format!("{broken:?}"));
+        }
+        let keys = keyset_of(&self.record);
+        for record in &self.audit_records {
+            let Some(key_id) = record.key_id.as_deref() else {
+                continue;
+            };
+            let verified = keys
+                .get(key_id)
+                .ok_or(busbar_kernel_audit::KeyError::Unsigned)
+                .and_then(|key| AuditChain::verify_signature(record, key));
+            if let Err(e) = verified {
+                findings.push(format!("record {} signed by {key_id}: {e:?}", record.seq));
+            }
+        }
+        findings
     }
 
     /// Put a settlement on the journal.
     ///
     /// # Errors
     ///
-    /// As [`Durability::journal_audit`].
+    /// As [`Durability::seal_unit`].
     pub fn journal_posting(
         &mut self,
         posting: &Posting,
@@ -345,7 +444,7 @@ impl Durability {
     ///
     /// # Errors
     ///
-    /// As [`Durability::journal_audit`].
+    /// As [`Durability::seal_unit`].
     pub fn journal_checkpoint(
         &mut self,
         checkpoint: &Checkpoint,
@@ -413,7 +512,7 @@ impl Durability {
     ///
     /// # Errors
     ///
-    /// As [`Durability::journal_audit`]. The book has moved either way, and a failed append is
+    /// As [`Durability::seal_unit`]. The book has moved either way, and a failed append is
     /// retained and re-offered by the log — it is never a refusal at the door.
     pub fn open_hold(
         &mut self,
@@ -669,7 +768,7 @@ impl Durability {
     ///
     /// # Errors
     ///
-    /// As [`Durability::journal_audit`]. A failed append is retained and re-offered by the log — it
+    /// As [`Durability::seal_unit`]. A failed append is retained and re-offered by the log — it
     /// is never a refusal of the dispatch.
     pub fn journal_dispatch(&mut self, at: &Settling<'_>) -> Result<JournalAck, DurabilityLost> {
         self.journal_mark(at, Mark::Dispatched)
@@ -763,7 +862,7 @@ impl Durability {
     ///
     /// # Errors
     ///
-    /// As [`Durability::journal_audit`]. The books have already moved when this fails — value was
+    /// As [`Durability::seal_unit`]. The books have already moved when this fails — value was
     /// delivered and the settlement is the truth about it — so the failure is a durability loss to
     /// be retained and re-appended, never a settlement that is rolled back.
     pub fn settle(
@@ -857,7 +956,7 @@ impl Durability {
     ///
     /// # Errors
     ///
-    /// As [`Durability::journal_audit`]. The row is kept in memory either way and a failed append
+    /// As [`Durability::seal_unit`]. The row is kept in memory either way and a failed append
     /// is retained and re-offered by the log.
     pub fn post_counts(
         &mut self,
@@ -1885,29 +1984,29 @@ fn read_key(body: &mut BodyReader<'_>) -> Option<TotalsKey> {
     Some(TotalsKey::new(bucket, dimension, scope))
 }
 
-/// The journal body of a sealed audit record.
-///
-/// The two digests first, because they are what ties this journal record back to the audit chain the
-/// record is also on; then the facts an auditor asks for. Content is not here for the same reason it
-/// is not in the audit record: the journal is a financial record exempt from erasure, so anything put
-/// in it can never be taken out.
+/// The journal body of a sealed audit record: the whole record, `audit.v4`
+/// ([`busbar_kernel_audit::journal_body`]), so the journal can answer for it after the cache has let
+/// it go. Content is not in it for the same reason it is not in the record: the journal is a
+/// financial record exempt from erasure, so anything put in it can never be taken out.
 #[must_use]
 pub fn audit_body(record: &AuditRecord) -> Vec<u8> {
-    let mut body = BodyWriter::new();
-    body.text(&record.prev_hash);
-    body.text(&record.hash);
-    body.num(record.what.unit_key.get());
-    body.text(record.what.op_class.as_str());
-    body.text(record.what.destination.as_deref().unwrap_or(""));
-    body.text(record.origin_kind);
-    body.text(&format!("{:?}", record.outcome.unit_end));
-    body.text(&format!("{:?}", record.outcome.finish));
-    body.num(u64::from(record.usage.tier_bp));
-    body.num(u64::from(record.usage.fee_count));
-    body.num(record.usage.rate_card_version);
-    body.text(&record.usage.bucket_chain_ref);
-    body.text(record.correlation_hash.as_deref().unwrap_or(""));
-    body.finish()
+    busbar_kernel_audit::journal_body(record)
+}
+
+/// Read one journal record back as the sealed audit record it keeps, if it keeps one. A usage
+/// line's class resolves against the registered vocabulary; one that does not is an error.
+///
+/// # Errors
+///
+/// The record is an `audit.v4` body that does not decode, or names a class nobody declares here.
+pub fn decode_audit(record: &JournalRecord) -> Result<Option<AuditRecord>, String> {
+    if record.class != RecordClass::Transaction {
+        return Ok(None);
+    }
+    busbar_kernel_audit::from_journal_body(
+        &record.body,
+        &busbar_contract::Registration::meter_class,
+    )
 }
 
 /// The journal body of a sealed checkpoint.
@@ -2216,6 +2315,8 @@ pub fn build_with_cards(
         ledger: Ledger::dual_writing(legacy_rows),
         record: AuditChain::new(),
         checkpoints: Vec::new(),
+        audit_records: Vec::new(),
+        audit_findings: Vec::new(),
         // Seeded from the chain below, with everything else the chain rebuilds.
         anchor: SelfAttestingAnchor::new(),
         // Set from the chain below, before anything can write under it.
@@ -2273,6 +2374,7 @@ pub fn build_with_cards(
     let (replayed, unreadable) = match chain {
         Ok(Ok(records)) => {
             durability.anchor = SelfAttestingAnchor::seeded(last_anchored_on(&records));
+            durability.resume_audit(&records);
             (
                 replay_into(&mut durability.ledger, &records, view.as_ref(), false),
                 None,
@@ -2287,7 +2389,15 @@ pub fn build_with_cards(
             Some(format!("the journal could not be read: {e}")),
         ),
     };
-    durability.incarnation = replayed.incarnation.saturating_add(1);
+    // A sealed audit record names the boot that wrote it too, so a chain whose newest record is an
+    // audit record still hands this boot the next incarnation.
+    let audited = durability
+        .audit_records
+        .iter()
+        .map(|r| r.what.incarnation)
+        .max()
+        .unwrap_or(0);
+    durability.incarnation = replayed.incarnation.max(audited).saturating_add(1);
     durability.refused = replayed.refused;
 
     // THE HOLDS A PREDECESSOR LEFT OPEN ARE RECOVERED HERE, before anything can settle onto this
@@ -2338,6 +2448,12 @@ pub fn build_with_cards(
             .map(|q| JournalDisagreement::Quarantined(q.to_string())),
     );
     findings.extend(durability.open_quarantined.iter().cloned());
+    findings.extend(
+        durability
+            .audit_findings
+            .iter()
+            .map(|why| JournalDisagreement::Unreadable(format!("audit chain: {why}"))),
+    );
     findings.extend(durability.reconcile_with_journal());
     findings.dedup();
     for finding in &findings {

@@ -424,3 +424,79 @@ fn verify_names_what_the_boot_reconciliation_found() {
         "a boot finding must be a /verify finding: {body}"
     );
 }
+
+/// A RETAINED AUDIT RECORD EDITED AFTER IT WAS SEALED IS A `GET /admin/verify` FINDING: the walk of
+/// the fixed audit chain the node holds runs on every verify, and the answer is `ok: false`.
+#[test]
+fn verify_names_a_tampered_retained_audit_record() {
+    use crate::root::units_admin::{LegacyRowsRead, NodeLedger};
+    let node_book = crate::root::durability::node_book();
+    let legacy: std::sync::Arc<dyn LegacyRowsRead> = node_book.rows.clone();
+    let view = NodeLedger::new(std::sync::Arc::clone(&node_book.durability), legacy);
+    let verify = || {
+        String::from_utf8(
+            crate::root::units_admin::bound::verify_effect(&view)
+                .expect("verify answers")
+                .body,
+        )
+        .expect("utf-8")
+    };
+    {
+        let mut durability = node_book.durability.lock().expect("unpoisoned");
+        let token = busbar_kernel::teller::Kernel::new().durability_token();
+        for unit in 1..=2 {
+            let inputs = busbar_kernel_audit::AuditInputs {
+                subject: busbar_kernel_audit::Subject::PrincipalId(format!("p-{unit}")),
+                what: busbar_kernel_audit::What {
+                    unit_key: busbar_contract::UnitKey::new(unit),
+                    incarnation: 0,
+                    op_class: busbar_kernel_audit::OpClassId::new("chat"),
+                    destination: None,
+                    parent: None,
+                    pre_hook_head: None,
+                    post_hook_head: None,
+                },
+                wall: 1_700_000_000,
+                mono: unit,
+                origin: busbar_contract::caps::Origin::seal(
+                    &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+                    busbar_contract::caps::OriginKind::Client,
+                ),
+                outcome: busbar_kernel_audit::OutcomeFacts {
+                    unit_end: busbar_contract::caps::Outcome::Completed,
+                    step: None,
+                    finish: busbar_kernel_audit::FinishClass::Complete,
+                    hook_failed: false,
+                    emission_delta: 0,
+                    stale_policy: false,
+                },
+                usage: busbar_kernel_audit::Usage {
+                    lines: Vec::new(),
+                    tier_bp: 10_000,
+                    fee_count: 1,
+                    rate_card_version: 0,
+                    bucket_chain_ref: String::new(),
+                },
+                controls: busbar_kernel_audit::Controls::default(),
+                correlation_label: None,
+            };
+            let pass = busbar_contract::caps::Pass::mint(
+                &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+            );
+            durability.seal_unit(inputs, pass, &token).expect("sealed");
+        }
+    }
+    assert!(verify().contains(r#""ok":true"#), "{}", verify());
+    node_book
+        .durability
+        .lock()
+        .expect("unpoisoned")
+        .audit_records[0]
+        .usage
+        .fee_count = 9;
+    let body = verify();
+    assert!(
+        body.contains("audit chain: ") && body.contains(r#""ok":false"#),
+        "a tampered retained record must be a /verify finding: {body}"
+    );
+}

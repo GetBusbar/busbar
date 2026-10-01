@@ -1196,6 +1196,85 @@ async fn a_driven_planes_abandoned_end_posts_once_onto_the_nodes_book() {
     rig.server.shutdown().await;
 }
 
+/// A DRIVEN PLANE'S ABANDONED END SEALS EXACTLY ONE AUDIT RECORD with its one line, from the facts
+/// and pass its audit door handed back; an abandoned unit whose audit door never answered seals none.
+/// RED: without the held pass the posting site seals no record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
+    use busbar_kernel::plane_driver::EndPost;
+    let rig = rig(Fixture::BufferedOk).await;
+    let node = Arc::new(Node::new());
+    let durability = crate::root::durability::build(
+        &crate::root::durability::DurabilityConfig { data_dir: None },
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+    )
+    .expect("a memory-buffered journal cannot fail to open");
+    let book = Arc::new(std::sync::Mutex::new(durability));
+    node.bind_book(Arc::clone(&book));
+    let records = || {
+        book.lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .audit_records
+            .len()
+    };
+    let site = NodeEndPost::new(Arc::clone(&node));
+    let ctx = |key: u64| UnitCtx {
+        key: UnitKey::new(key),
+        origin: OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    let who = PrincipalId::new("acct:node");
+    let facts = busbar_contract::caps::AuditFacts {
+        op_class: busbar_contract::caps::OpClassId::new("call"),
+        finish: busbar_contract::FinishClass::Complete,
+    };
+    // The audit door answered: one record, with the line.
+    let ended = drive_to_end(
+        &rig,
+        &node,
+        Fixture::BufferedOk,
+        rig.gov(),
+        plane::native_seats(),
+    )
+    .await;
+    site.open(
+        UnitKey::new(51),
+        who.clone(),
+        Arrived::at(EPOCH * 1_000, 0),
+        None,
+    );
+    site.audited(
+        UnitKey::new(51),
+        facts,
+        Pass::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel()),
+    );
+    let before = records();
+    site.post(&ctx(51), ended);
+    assert_eq!(
+        records(),
+        before + 1,
+        "exactly one audit record for the abandoned unit"
+    );
+    // The audit door never answered: the line is posted, and no record is minted for it.
+    let ended = drive_to_end(
+        &rig,
+        &node,
+        Fixture::BufferedOk,
+        rig.gov(),
+        plane::native_seats(),
+    )
+    .await;
+    site.open(UnitKey::new(52), who, Arrived::at(EPOCH * 1_000, 1), None);
+    let before = records();
+    site.post(&ctx(52), ended);
+    assert_eq!(records(), before, "no pass, no record");
+    rig.server.shutdown().await;
+}
+
 /// THE FLAT FEE IS A CLIENT'S FEE, and this plane reads which it has off the sealed origin.
 ///
 /// One unit, driven once and then asked the same question under two origins. The delivered
@@ -1320,6 +1399,7 @@ async fn drive_keeping_the_unit(
         principal: &principal,
         arrived: Arrived::at(EPOCH * 1_000, 0),
         history: history.as_ref(),
+        sealing: Mutex::new(None),
     };
     let ended = busbar_kernel::teller::run_unit_async(
         &node.kernel,
@@ -4035,6 +4115,7 @@ const RERANK_UNITS: u64 = 50;
 /// book's row held no `search_units` and priced the fee alone, while the governance ledger held 50.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_served_rerank_puts_identical_search_units_on_both_books() {
+    declare_test_classes();
     plane::install_test_seams();
     busbar_kernel::metrics::init();
 
@@ -4156,6 +4237,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         principal: &principal,
         arrived,
         history: Some(&history),
+        sealing: Mutex::new(None),
     };
     let ended = busbar_kernel::teller::run_unit_async(
         &node.kernel,
@@ -4180,7 +4262,17 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         .expect("the served unit posted its terminal")
         .into_response();
     assert_eq!(response.status(), StatusCode::OK, "the rerank was served");
-    let response = node.tail(ended, response, late, &principal, arrived, Some(&history));
+    let seal = driven.take_seal(ctx.key);
+    assert!(seal.is_some(), "the audit door handed its pass back");
+    let response = node.tail(
+        ended,
+        response,
+        late,
+        &principal,
+        arrived,
+        Some(&history),
+        seal,
+    );
     let _body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("the served body drains");
@@ -4219,6 +4311,35 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         fee_count: ledger.billable_requests,
         classes,
     };
+
+    // THE UNIT'S ONE FIXED AUDIT RECORD, sealed where its one line was written (the late arm): its
+    // amount is the line's counts, and it is sealed under this boot's incarnation.
+    {
+        let durability = book.durability.lock().expect("unpoisoned");
+        assert_eq!(
+            durability.audit_records.len(),
+            1,
+            "one record per unit: {:?}",
+            durability.audit_records
+        );
+        let record = &durability.audit_records[0];
+        assert_eq!(record.what.unit_key, key_n);
+        assert_eq!(record.what.incarnation, durability.incarnation);
+        assert_eq!(
+            record.outcome.unit_end,
+            busbar_contract::caps::Outcome::Completed
+        );
+        assert!(
+            record
+                .usage
+                .lines
+                .iter()
+                .any(|l| l.class.as_str() == SEARCH_UNITS && l.quantity == RERANK_UNITS),
+            "the record's amount is the line's counts: {:?}",
+            record.usage.lines
+        );
+        assert!(durability.retained_audit_findings().is_empty());
+    }
 
     // THE SECOND BOOK: the late arm's row, and it is the unit's ONLY line (KERNEL<>PLUGINS step
     // 14): the exit wrote none, and the one line is a settlement carrying the counts.
@@ -4480,6 +4601,8 @@ fn a_late_arm_with_no_reading_writes_the_exits_own_line() {
         arrived: Arrived::at(EPOCH * 1_000, 3),
         late: Box::new(|| None),
         exit: Some(exit),
+        outcome: None,
+        seal: None,
     };
     arm.post();
     let rows = second_book_rows(&book);

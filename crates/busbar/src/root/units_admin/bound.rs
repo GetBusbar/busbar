@@ -135,6 +135,14 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
     if let Err(broken) = crate::root::durability::verify_held() {
         findings.push(format!("amendment chain: {broken}"));
     }
+    // THE FIXED AUDIT CHAIN, walked as it is held now: a retained record edited, relinked or
+    // re-signed after it was sealed is a finding.
+    findings.extend(
+        ledger
+            .retained_audit_findings()
+            .into_iter()
+            .map(|finding| format!("audit chain: {finding}")),
+    );
     answer(&serde_json::json!({
         "checkpoints": checkpoints.len(),
         "since": since.map(|c| serde_json::json!({

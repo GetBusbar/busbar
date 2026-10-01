@@ -402,6 +402,12 @@ pub trait LedgerView: Send + Sync {
         Vec::new()
     }
 
+    /// What a walk of this node's retained audit chain finds: a record whose digest, link or
+    /// position does not hold, or whose signature does not verify. Empty for a view with no chain.
+    fn retained_audit_findings(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// [`LedgerView::verify_snapshot`] with the anchor's head, all as of one moment. `None`
     /// is "this view holds no anchor", which the verifier writes down as such; the default is that.
     fn verify_snapshot_anchored(
@@ -708,6 +714,10 @@ impl LedgerView for NodeLedger {
             .collect()
     }
 
+    fn retained_audit_findings(&self) -> Vec<String> {
+        self.lock().retained_audit_findings()
+    }
+
     /// All three under ONE hold of the lock a seal takes, so a checkpoint sealed between reads
     /// cannot read as a head that differs.
     fn verify_snapshot_anchored(
@@ -807,6 +817,21 @@ pub trait AuditView: Send + Sync {
         ),
     );
 
+    /// [`AuditView::read`] for the records at positions `from` through `to`: a view whose records
+    /// outlive what it holds in memory answers an older window from where it keeps them. The
+    /// default is [`AuditView::read`].
+    fn read_window(
+        &self,
+        _from: u64,
+        _to: u64,
+        take: &mut dyn FnMut(
+            &busbar_kernel_audit::AuditChain,
+            Option<&[busbar_kernel_audit::AuditRecord]>,
+        ),
+    ) {
+        self.read(take);
+    }
+
     /// The PUBLIC halves of every key this node has signed records under.
     ///
     /// Public halves only, and there is no path from this seam to a secret one:
@@ -824,17 +849,14 @@ pub trait AuditView: Send + Sync {
 /// no answer at all. The head is read HERE, per request, under the lock a seal holds — so no read
 /// can catch the chain half-sealed.
 ///
-/// ## What it does NOT have, said out loud
+/// ## The records
 ///
-/// The records. This node's sealed records go onto the journal
-/// ([`crate::root::durability::Durability::journal_audit`]) and the journal keeps a record's two
-/// digests and the facts an auditor reads it for — deliberately not the record — so there is no
-/// list of [`busbar_kernel_audit::AuditRecord`] here to hand a window read. So [`AuditView::read`]
-/// answers `None` for the records, the range verb refuses with a `NotFound` naming the absence, and
-/// the head and key reads answer in full from what the node genuinely holds. That is the honest
-/// shape: the alternative is a 200 carrying `"records": []`, which tells an auditor that the window
-/// they asked about is empty when the truth is that nobody kept it. Retention is a product decision
-/// with a storage cost attached, and it is not this seam's to invent.
+/// Each unit this node serves seals ONE record where its one line is written
+/// ([`crate::root::durability::Durability::seal_unit`]), and the journal keeps it whole
+/// (`audit.v4`). The node holds the newest [`crate::root::durability::AUDIT_RING`] in memory as a
+/// cache; a range read older than the cache is answered by reading the journal back
+/// ([`crate::root::durability::Durability::audit_window`]), so retention never loses a record the
+/// chain holds and a window is never answered as empty because the cache let it go.
 pub struct NodeAudit {
     durability: Arc<Mutex<crate::root::durability::Durability>>,
 }
@@ -868,7 +890,21 @@ impl AuditView for NodeAudit {
         ),
     ) {
         let durability = self.lock();
-        take(&durability.record, None);
+        take(&durability.record, Some(&durability.audit_records));
+    }
+
+    fn read_window(
+        &self,
+        from: u64,
+        to: u64,
+        take: &mut dyn FnMut(
+            &busbar_kernel_audit::AuditChain,
+            Option<&[busbar_kernel_audit::AuditRecord]>,
+        ),
+    ) {
+        let durability = self.lock();
+        let records = durability.audit_window(from, to);
+        take(&durability.record, Some(&records));
     }
 
     fn keys(&self) -> busbar_kernel_audit::AuditKeySet {
@@ -944,7 +980,7 @@ fn render_audit_view(
             // Two layers, and they are two different answers: the outer says whether the view
             // answered, the inner says whether it retains records to answer with.
             let mut answered: Option<Option<String>> = None;
-            view.read(&mut |chain, records| {
+            view.read_window(from, to, &mut |chain, records| {
                 answered = Some(records.map(|records| {
                     busbar_kernel_audit::expose::range_body(chain, records, from, to)
                 }));

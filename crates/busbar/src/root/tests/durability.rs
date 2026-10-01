@@ -294,14 +294,16 @@ fn audit_inputs(unit: u64) -> busbar_kernel_audit::AuditInputs {
     }
 }
 
-/// A sealed audit record goes on the journal, carrying the two digests that tie it back to the
-/// audit unit's own chain — and the epochs it ran under land in the journal header, which is
-/// where a reader asking "under which policy" looks.
-#[test]
-fn a_sealed_audit_record_goes_on_the_journal() {
-    use busbar_contract::caps::{Audit as AuditStep, KernelSeal, Pass};
-    use busbar_kernel_audit::Audit as _;
+/// A pass the audit step was lent, as the loop hands it back with the unit's facts.
+fn audit_pass() -> busbar_contract::caps::Pass<busbar_contract::caps::Audit> {
+    busbar_contract::caps::Pass::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel())
+}
 
+/// A UNIT'S RECORD GOES ON THE JOURNAL WHOLE (`audit.v4`): the record read back off the chain is the
+/// record sealed, stamped with this boot's incarnation — and the epochs it ran under land in the
+/// journal header, which is where a reader asking "under which policy" looks.
+#[test]
+fn a_sealed_audit_record_goes_on_the_journal_whole() {
     let mut durability = build_for_node(
         &DurabilityConfig { data_dir: None },
         4,
@@ -310,28 +312,152 @@ fn a_sealed_audit_record_goes_on_the_journal() {
     )
     .expect("memory-buffered cannot fail");
     let token = token();
-    let audit_token: Pass<AuditStep> = Pass::mint(&KernelSeal::acquire_for_kernel());
-
-    let sealed = durability.record.seal(audit_inputs(11), &audit_token);
-    let ack = durability
-        .journal_audit(&sealed, &token, StepName::Meter)
+    let sealed = durability
+        .seal_unit(audit_inputs(11), audit_pass(), &token)
         .expect("the record goes on the chain");
+    assert_eq!(sealed.what.incarnation, durability.incarnation);
+    assert_eq!(sealed.recipe, busbar_kernel_audit::Recipe::V4);
 
-    let record = &ack.sealed[0];
+    let records = durability.journal.replay().unwrap().unwrap();
+    let on_chain: Vec<_> = records
+        .iter()
+        .filter_map(|r| decode_audit(r).expect("it decodes").map(|a| (r, a)))
+        .collect();
+    assert_eq!(on_chain.len(), 1);
+    let (record, back) = &on_chain[0];
     assert_eq!(record.class, RecordClass::Transaction);
     assert_eq!(record.wall, sealed.wall);
     assert_eq!(record.mono, sealed.mono);
     assert_eq!(record.lease_epoch, 4);
     assert_eq!(record.policy_epoch, 7);
-    assert_eq!(
-        record.body,
-        audit_body(&sealed),
-        "the body is the sealed record's, digests first"
-    );
-    // The tie back to the audit unit's chain: the journal body opens with that chain's two
-    // hashes, so a reader holding one can find the other.
-    assert!(String::from_utf8_lossy(&record.body).contains(&sealed.hash));
+    assert_eq!(*back, sealed, "the journal keeps the whole record");
     assert_eq!(durability.record.sealed(), 1);
+    assert_eq!(durability.audit_records, vec![sealed]);
+}
+
+/// TWO BOOTS THAT MINT THE SAME UNIT KEY SEAL TWO DIFFERENT, VERIFIED RECORDS. The unit key restarts
+/// with the process; the incarnation does not. The second boot's record continues the first boot's
+/// chain (its link names the first record), and the whole chain read back verifies from genesis.
+#[test]
+fn two_boots_minting_the_same_unit_key_seal_distinct_verified_records() {
+    let scratch = ScratchDir::new("audit-two-boots");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let first = {
+        let mut durability = boot(&cfg, 7).expect("the directory is writable");
+        durability
+            .seal_unit(audit_inputs(1), audit_pass(), &token())
+            .expect("sealed")
+    };
+    let mut restarted = boot(&cfg, 7).expect("the journal reopens");
+    let second = restarted
+        .seal_unit(audit_inputs(1), audit_pass(), &token())
+        .expect("sealed");
+    assert_eq!(first.what.unit_key, second.what.unit_key);
+    assert_ne!(first.what.incarnation, second.what.incarnation);
+    assert_ne!(first.hash, second.hash, "the boot is in the digest");
+    assert_eq!(
+        second.prev_hash, first.hash,
+        "the chain continues across the boot"
+    );
+    assert_eq!(second.seq, first.seq + 1);
+
+    let reread = boot(&cfg, 7).expect("the journal reopens");
+    let whole = reread.audit_window(1, u64::MAX);
+    assert_eq!(whole, vec![first, second]);
+    assert!(busbar_kernel_audit::AuditChain::verify_chain(&whole).is_ok());
+    assert!(reread.retained_audit_findings().is_empty());
+}
+
+/// A WINDOW OLDER THAN THE CACHE IS READ BACK OFF THE JOURNAL after a restart — never answered as
+/// empty because the in-memory ring let it go.
+#[test]
+fn a_range_older_than_the_ring_is_read_back_after_a_restart() {
+    let scratch = ScratchDir::new("audit-older-than-ring");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let total = (AUDIT_RING + 5) as u64;
+    {
+        let mut durability = boot(&cfg, 7).expect("the directory is writable");
+        for unit in 1..=total {
+            durability
+                .seal_unit(audit_inputs(unit), audit_pass(), &token())
+                .expect("sealed");
+        }
+        assert_eq!(durability.audit_records.len(), AUDIT_RING);
+    }
+    let restarted = boot(&cfg, 7).expect("the journal reopens");
+    assert_eq!(restarted.audit_records.len(), AUDIT_RING);
+    assert_eq!(
+        restarted.audit_records[0].seq, 6,
+        "the cache holds the newest"
+    );
+    let old = restarted.audit_window(1, 3);
+    assert_eq!(
+        old.iter().map(|r| r.seq).collect::<Vec<_>>(),
+        vec![1, 2, 3],
+        "the journal answers for what the cache let go"
+    );
+    assert!(busbar_kernel_audit::AuditChain::verify_window(&old).is_ok());
+    assert_eq!(restarted.audit_window(total, total)[0].seq, total);
+}
+
+/// A RETAINED RECORD EDITED AFTER IT WAS SEALED IS A `/verify` FINDING.
+#[test]
+fn a_tampered_retained_record_is_a_verify_finding() {
+    let mut durability = build_for_node(
+        &DurabilityConfig { data_dir: None },
+        4,
+        Box::new(NullShipper::new()),
+        rows(),
+    )
+    .expect("memory-buffered cannot fail");
+    for unit in 1..=3 {
+        durability
+            .seal_unit(audit_inputs(unit), audit_pass(), &token())
+            .expect("sealed");
+    }
+    assert!(durability.retained_audit_findings().is_empty());
+    durability.audit_records[1].usage.fee_count += 1;
+    let findings = durability.retained_audit_findings();
+    assert!(
+        findings.iter().any(|f| f.contains("DigestMismatch")),
+        "{findings:?}"
+    );
+}
+
+/// A JOURNALLED RECORD NAMING A CLASS NOBODY DECLARES HERE IS A RESTART FINDING, never a record
+/// silently skipped or a line silently dropped.
+#[test]
+fn an_audit_record_naming_an_undeclared_class_is_a_restart_finding() {
+    let scratch = ScratchDir::new("audit-undeclared-class");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    {
+        let mut durability = boot(&cfg, 7).expect("the directory is writable");
+        let mut inputs = audit_inputs(1);
+        inputs.usage.lines.push(busbar_kernel_audit::UsageLine {
+            class: busbar_contract::MeterClassId::new("a_class_this_node_never_registered"),
+            quantity: 3,
+            source: busbar_contract::caps::QuantitySource::Count,
+            estimated: false,
+        });
+        durability
+            .seal_unit(inputs, audit_pass(), &token())
+            .expect("sealed");
+    }
+    let restarted = boot(&cfg, 7).expect("the journal reopens");
+    assert!(
+        restarted.restart_findings.iter().any(|f| {
+            let f = f.to_string();
+            f.contains("audit chain") && f.contains("a_class_this_node_never_registered")
+        }),
+        "{:?}",
+        restarted.restart_findings
+    );
 }
 
 /// The set branch: the operator asked for a journal on this node's disk, so one appears. The

@@ -260,6 +260,11 @@ fn named(sites: &[(String, Reason)]) -> BTreeSet<&str> {
         .collect()
 }
 
+/// The audit journal's decoder (`audit.v4`): it reads a sealed record's outcome back — every reason
+/// a record can carry, so the whole vocabulary — and hands it to nothing but the record it rebuilds,
+/// whose digest must then match. It never raises an abort and never refuses a unit.
+const AUDIT_JOURNAL_DECODER: &str = "busbar-kernel-audit/src/journal.rs";
+
 /// The kernel's abort vocabulary is `ClientGone` and `Drain`, and no money reason is in it.
 ///
 /// These are the two ends a kernel raises on its own initiative: the client went away, and the node
@@ -268,9 +273,12 @@ fn named(sites: &[(String, Reason)]) -> BTreeSet<&str> {
 #[test]
 fn no_abort_the_shipped_kernel_can_raise_carries_a_money_reason() {
     let built = census(abort_sites_in);
+    // THE ONE EXEMPT READER: the audit journal decoder rebuilds an outcome a sealed record already
+    // carries, and accepts it only when it renders back to exactly the recorded tag. It ends no unit
+    // and raises no abort; it reads one back. Named here so a second reader is still refused.
     let computed: Vec<&(String, Reason)> = built
         .iter()
-        .filter(|(_, r)| matches!(r, Reason::Computed(_)))
+        .filter(|(file, r)| matches!(r, Reason::Computed(_)) && file != AUDIT_JOURNAL_DECODER)
         .collect();
     assert!(
         computed.is_empty(),
@@ -511,7 +519,7 @@ fn every_value_a_computed_refusal_could_carry_excludes_the_ceiling_and_the_stale
         .collect();
     assert_eq!(
         decoders,
-        BTreeSet::from(["busbar-kernel/src/inflight.rs"]),
+        BTreeSet::from(["busbar-kernel/src/inflight.rs", AUDIT_JOURNAL_DECODER]),
         "a new reader of the whole reason vocabulary can hand out any reason, the two included"
     );
 }
