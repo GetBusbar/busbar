@@ -398,8 +398,8 @@ because = "Test anchors for the failover-after-refusal test the ARCHITECT asked 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
 file    = "qa/construction.toml"
 from    = 53148
-to      = 55793
-because = "OWNER GRANT 2026-09-29 (3) / ARCHITECT GRANT 3, kernel line-limit at the measured value, itemised per lane over predev 53148: E12 (SWEEP-KERNEL + LLM-CLEAN, lower-only) measured 52945 (-203); URL-SEAM -17 and RESOLVE-PIN +66 (the pooled client's dial judge; ARCHITECT approved) = +49; H2 host services +1260 (ARCHITECT approved 2026-10-01). 53148 - 203 + 49 + 1260 = 54254. Then the llm fold (step 34a and the plane ABI v1 refusal/arrival edits: the plane driver chooses a refusal's status from the plane's stated rows, keeps a refused arrive's own code and 4xx and the unit key, and hands refusal the reason, unit, code, target and the method on arrive), +41 measured over the plane driver core: 54254 + 41 = 54295. Then the production far end and money seam for the plane driver, +1313 at the measurement (ARCHITECT cap from the itemised table, 2026-10-01): step 15's budget modes +80; the walk's pick in the pump +33; the far end over the kernel's egress walk and the connector +831 and its follow-ups +116; the production money seam +180 and its checked sums and once-only ledger +68; the piece's claim, dialect and caller reference +64; one identity re-export home +3; drains -64: 54295 + 1313 = 55608. Then the hold sizing and fee refund on the plane driver (step 17) at the measurement, +185: the estimate budget mode +45; a plane's fee refund off its own fee lane and the refund primitive +40; the fee-unit report decides the refund +30; ledgering and metering under the serving member +60; the driver names the serving member at the answer's commit +10: 55608 + 185 = 55793."
+to      = 55799
+because = "OWNER GRANT 2026-09-29 (3) / ARCHITECT GRANT 3, kernel line-limit at the measured value, itemised per lane over predev 53148: E12 (SWEEP-KERNEL + LLM-CLEAN, lower-only) measured 52945 (-203); URL-SEAM -17 and RESOLVE-PIN +66 (the pooled client's dial judge; ARCHITECT approved) = +49; H2 host services +1260 (ARCHITECT approved 2026-10-01). 53148 - 203 + 49 + 1260 = 54254. Then the llm fold (step 34a and the plane ABI v1 refusal/arrival edits: the plane driver chooses a refusal's status from the plane's stated rows, keeps a refused arrive's own code and 4xx and the unit key, and hands refusal the reason, unit, code, target and the method on arrive), +41 measured over the plane driver core: 54254 + 41 = 54295. Then the production far end and money seam for the plane driver, +1313 at the measurement (ARCHITECT cap from the itemised table, 2026-10-01): step 15's budget modes +80; the walk's pick in the pump +33; the far end over the kernel's egress walk and the connector +831 and its follow-ups +116; the production money seam +180 and its checked sums and once-only ledger +68; the piece's claim, dialect and caller reference +64; one identity re-export home +3; drains -64: 54295 + 1313 = 55608. Then the hold sizing and fee refund on the plane driver (step 17) at the measurement, +185: the estimate budget mode +45; a plane's fee refund off its own fee lane and the refund primitive +40; the fee-unit report decides the refund +30; ledgering and metering under the serving member +60; the driver names the serving member at the answer's commit +10: 55608 + 185 = 55793. Measured on the stacked unit tip: 55799 (+6 over the summed ledger, the driver's own verify seat beside the forwarded seats)."
 
 # ── THE KERNEL CEILING, RE-ARMED BY T13b (WIRE-STORE C1 + CONNECTOR-19 + T13B-FIX) — EXPIRED AND STRUCK
 #
@@ -518,8 +518,8 @@ because = "OWNER GRANT 2026-09-29 (3), ARCHITECT approval: line-limit re-arm at 
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
 from    = 25682
-to      = 27105
-because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception at the measure, itemised per lane over predev 25682: E12 (SWEEP-L2 -186 kinds.rs traits, SWEEP-L3 -57) measured 25439 (-243); URL-SEAM busbar_contract::net +489; H2 Caller, caller-scoped host services, merge_list, entitlement and random.fill wrappers +229. 25682 - 243 + 489 + 229 = 26157. Then the llm fold, plane ABI v1 pre-tag edits (abi/plane/mod.rs RefusalStatus, REFUSAL_ANY_DIALECT, the tail's refusal_statuses, the RefusalIn/ArriveIn/ArriveOut/OnPieceIn/Claim fields and the wire refusal-code table; abi/plane/check.rs; layout pins; the TRANSITIONAL head seam, 1.6.0-TODO.md row 34c), +301 measured over the plane driver core: 26157 + 301 = 26458. Then K2's contract half at the measurement, +631: the auth kind's calls and the safe verify door +434, the outbound auth half +70, the host-side PollConns reader +10, a need's kept head fields +51, the plane ABI's piece claim/dialect/caller and head FieldList +59, one class per report +7: 26458 + 631 = 27089. Then a plane's fee units are billable classes it can report (the tail check, step 17), +16 at the measurement: 27089 + 16 = 27105."
+to      = 27103
+because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception at the measure, itemised per lane over predev 25682: E12 (SWEEP-L2 -186 kinds.rs traits, SWEEP-L3 -57) measured 25439 (-243); URL-SEAM busbar_contract::net +489; H2 Caller, caller-scoped host services, merge_list, entitlement and random.fill wrappers +229. 25682 - 243 + 489 + 229 = 26157. Then the llm fold, plane ABI v1 pre-tag edits (abi/plane/mod.rs RefusalStatus, REFUSAL_ANY_DIALECT, the tail's refusal_statuses, the RefusalIn/ArriveIn/ArriveOut/OnPieceIn/Claim fields and the wire refusal-code table; abi/plane/check.rs; layout pins; the TRANSITIONAL head seam, 1.6.0-TODO.md row 34c), +301 measured over the plane driver core: 26157 + 301 = 26458. Then K2's contract half at the measurement, +631: the auth kind's calls and the safe verify door +434, the outbound auth half +70, the host-side PollConns reader +10, a need's kept head fields +51, the plane ABI's piece claim/dialect/caller and head FieldList +59, one class per report +7: 26458 + 631 = 27089. Then a plane's fee units are billable classes it can report (the tail check, step 17), +16 at the measurement: 27089 + 16 = 27105. Measured on the stacked unit tip, the kernel-only money verdicts included (ARCHITECT ruling R5, spec #83(a)): 27103."
 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
@@ -542,8 +542,8 @@ because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan a
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
 from    = 25682
-to      = 27105
-because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception at the measure, itemised per lane over predev 25682: E12 (SWEEP-L2 -186 kinds.rs traits, SWEEP-L3 -57) measured 25439 (-243); URL-SEAM busbar_contract::net +489; H2 Caller, caller-scoped host services, merge_list, entitlement and random.fill wrappers +229. 25682 - 243 + 489 + 229 = 26157. Then the llm fold, plane ABI v1 pre-tag edits (abi/plane/mod.rs RefusalStatus, REFUSAL_ANY_DIALECT, the tail's refusal_statuses, the RefusalIn/ArriveIn/ArriveOut/OnPieceIn/Claim fields and the wire refusal-code table; abi/plane/check.rs; layout pins; the TRANSITIONAL head seam, 1.6.0-TODO.md row 34c), +301 measured over the plane driver core: 26157 + 301 = 26458. Then K2's contract half at the measurement, +631: the auth kind's calls and the safe verify door +434, the outbound auth half +70, the host-side PollConns reader +10, a need's kept head fields +51, the plane ABI's piece claim/dialect/caller and head FieldList +59, one class per report +7: 26458 + 631 = 27089. Then a plane's fee units are billable classes it can report (the tail check, step 17), +16 at the measurement: 27089 + 16 = 27105."
+to      = 27103
+because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception at the measure, itemised per lane over predev 25682: E12 (SWEEP-L2 -186 kinds.rs traits, SWEEP-L3 -57) measured 25439 (-243); URL-SEAM busbar_contract::net +489; H2 Caller, caller-scoped host services, merge_list, entitlement and random.fill wrappers +229. 25682 - 243 + 489 + 229 = 26157. Then the llm fold, plane ABI v1 pre-tag edits (abi/plane/mod.rs RefusalStatus, REFUSAL_ANY_DIALECT, the tail's refusal_statuses, the RefusalIn/ArriveIn/ArriveOut/OnPieceIn/Claim fields and the wire refusal-code table; abi/plane/check.rs; layout pins; the TRANSITIONAL head seam, 1.6.0-TODO.md row 34c), +301 measured over the plane driver core: 26157 + 301 = 26458. Then K2's contract half at the measurement, +631: the auth kind's calls and the safe verify door +434, the outbound auth half +70, the host-side PollConns reader +10, a need's kept head fields +51, the plane ABI's piece claim/dialect/caller and head FieldList +59, one class per report +7: 26458 + 631 = 27089. Then a plane's fee units are billable classes it can report (the tail check, step 17), +16 at the measurement: 27089 + 16 = 27105. Measured on the stacked unit tip, the kernel-only money verdicts included (ARCHITECT ruling R5, spec #83(a)): 27103."
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
@@ -867,7 +867,9 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # plane ABI's piece claim/dialect/caller, head FieldList and trailers +59, one class per report +7.
 # RE-ARMED 27089 -> 27105 with its pair, AT THE MEASUREMENT (OWNER GRANT 2026-09-29 (3)): a plane's
 # fee units are billable classes it can report (the tail check), +16.
-contract_caps = 27105
+# LOWERED 27105 -> 27103 with its pair, AT THE MEASUREMENT of the unit tip (spec #83(a)): the
+# kernel-only money verdicts decode from no plane, measured on the stacked unit.
+contract_caps = 27103
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1491,7 +1493,10 @@ kernel_crate = "busbar-kernel"
 # fee lane and the refund primitive +40; the plane's fee-unit report decides its refund, fee counts
 # never usage +30; ledgering and metering under the serving member, one lane-to-row rule +60; the
 # driver names the serving member when the answer commits +10.
-kernel_ceiling = 55793
+# ── RE-ARMED 55793 -> 55799 AT THE MEASUREMENT of the unit tip (OWNER GRANT 2026-09-29 (3)): the
+# plane driver restacked onto the deduplicated driver keeps its own verify seat (the caller
+# reference is derived there) beside the forwarded seats, +6 over the summed ledger.
+kernel_ceiling = 55799
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -1606,7 +1611,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 26458 -> 27089 with its pair (K2's contract half: auth calls and verify door, outbound
 # auth, PollConns, kept head fields, piece claim/dialect/caller, +631).
 # RE-ARMED 27089 -> 27105 with its pair (the tail check that fee units are billable classes, +16).
-caps_contract_ceiling = 27105
+# LOWERED 27105 -> 27103 with its pair, at the measurement of the unit tip (spec #83(a)).
+caps_contract_ceiling = 27103
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
