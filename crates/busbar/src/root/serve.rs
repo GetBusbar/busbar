@@ -15,7 +15,6 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use busbar_contract::services::{HostServices, Later, Ran, Reading, Stored};
 use busbar_kernel::config::RootCfg;
@@ -68,9 +67,10 @@ pub fn compose(cfg: &RootCfg, late: &LateServices) {
 }
 
 /// The kernel's host services, installed once after the configuration loads (see the module doc).
-#[derive(Default)]
 pub struct LateServices {
     installed: OnceLock<Arc<dyn HostServices>>,
+    /// The clock before the install: the kernel's own, mapping no egress class.
+    clock: KernelServices,
 }
 
 impl std::fmt::Debug for LateServices {
@@ -92,7 +92,10 @@ impl LateServices {
     /// No services yet: every service answers REFUSED.
     #[must_use]
     pub fn new() -> Arc<Self> {
-        Arc::new(Self::default())
+        Arc::new(LateServices {
+            installed: OnceLock::new(),
+            clock: KernelServices::new(HashMap::new(), Arc::new(SystemResolver)),
+        })
     }
 
     /// Install the kernel's services. Once per process: a second install is refused and changes
@@ -110,20 +113,11 @@ impl LateServices {
 
 impl HostServices for LateServices {
     /// The kernel's clock once installed. `clock.now` has no refusal to answer, so before the
-    /// install it reads the system clock (a monotonic origin of the process start is not yet set:
-    /// the reading's `mono_ns` is then the wall reading, never earlier than a later one).
+    /// install it is the kernel's own clock with no egress class, started with this value.
     fn now(&self) -> Reading {
         match self.installed.get() {
             Some(s) => s.now(),
-            None => {
-                let wall_ns = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
-                Reading {
-                    wall_ns,
-                    mono_ns: wall_ns,
-                }
-            }
+            None => self.clock.now(),
         }
     }
 
