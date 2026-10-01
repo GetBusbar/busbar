@@ -20,7 +20,7 @@
   "unmapped": 0,
   "gap": 0,
   "checks_by_kind": {
-   "gate": 13,
+   "gate": 9,
    "lint": 5,
    "oracle-cell": 65,
    "oracle-family": 5,
@@ -113,17 +113,10 @@
      "proves": "queue max_ms elapses to a 503",
      "source": "curated",
      "status": "mapped"
-    },
-    {
-     "kind": "gate",
-     "ref": "scripts/release-check.sh",
-     "proves": "phase-0c-soak-reject: real binary at max_concurrent 1 sheds excess with a fast 503",
-     "source": "curated",
-     "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:excluded_reasons_records_at_capacity, test:at_capacity_reject_sheds_503_not_queued, test:queue_dispatches_when_permit_frees_before_deadline, test:queue_times_out_to_503_when_capacity_never_frees, gate:scripts/release-check.sh"
+   "verdict_detail": "test:excluded_reasons_records_at_capacity, test:at_capacity_reject_sheds_503_not_queued, test:queue_dispatches_when_permit_frees_before_deadline, test:queue_times_out_to_503_when_capacity_never_frees"
   },
   {
    "id": "PB-3",
@@ -282,17 +275,10 @@
      "proves": "the busbar_pool_queued gauge",
      "source": "curated",
      "status": "mapped"
-    },
-    {
-     "kind": "gate",
-     "ref": "scripts/release-check.sh",
-     "proves": "reject SLO on the real binary: 503 + Retry-After >= 2; soak-queue phase sees busbar_pool_queued > 0",
-     "source": "curated",
-     "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:crosscut.traps|exhausted-retry-after-floor, oracle-cell:route.failover|fo|all-down, oracle-cell:route.failover|lb|member-down, test:at_capacity_default_no_on_exhausted_sheds_503, test:retry_after_reflects_cooldown_when_a_member_is_tripped, test:retry_after_has_saturation_floor_when_purely_at_capacity, test:retry_after_empty_candidate_set_uses_floor_not_one, test:least_bad_still_serves_the_only_member_after_it_was_tried, test:a_fallback_pool_applies_its_own_exclusions, test:at_capacity_fallback_chain_spills_through_to_third_pool, test:at_capacity_self_referential_fallback_stays_503, test:queue_skips_wait_and_rejects_when_no_candidate_at_capacity, test:queue_won_permit_but_breaker_now_open_never_dispatches, test:queue_two_waiters_one_freed_permit_wakes_exactly_one, test:test_scrape_gauges_pool_queued_reads_live_depth, gate:scripts/release-check.sh"
+   "verdict_detail": "oracle-cell:crosscut.traps|exhausted-retry-after-floor, oracle-cell:route.failover|fo|all-down, oracle-cell:route.failover|lb|member-down, test:at_capacity_default_no_on_exhausted_sheds_503, test:retry_after_reflects_cooldown_when_a_member_is_tripped, test:retry_after_has_saturation_floor_when_purely_at_capacity, test:retry_after_empty_candidate_set_uses_floor_not_one, test:least_bad_still_serves_the_only_member_after_it_was_tried, test:a_fallback_pool_applies_its_own_exclusions, test:at_capacity_fallback_chain_spills_through_to_third_pool, test:at_capacity_self_referential_fallback_stays_503, test:queue_skips_wait_and_rejects_when_no_candidate_at_capacity, test:queue_won_permit_but_breaker_now_open_never_dispatches, test:queue_two_waiters_one_freed_permit_wakes_exactly_one, test:test_scrape_gauges_pool_queued_reads_live_depth"
   },
   {
    "id": "PB-5",
@@ -1641,17 +1627,10 @@
      "proves": "/auth/token is in the unauthenticated exact-path bypass set",
      "source": "curated",
      "status": "mapped"
-    },
-    {
-     "kind": "gate",
-     "ref": "scripts/release-check-1.5.2.sh",
-     "proves": "live-hermetic GET /auth/token?method= through the IdP callback to a key",
-     "source": "curated",
-     "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:http.crosscut|auth-token|GET-none, test:chooser_renders_0_1_n_buttons, test:redirect_begin_still_redirects, test:logout_renders_signed_out_and_clears_cookie, test:callback_state_mismatch_400, test:refresh_rotates_key_and_revokes_the_old_one, test:an_audience_bound_token_is_confined_to_its_door_plane, gate:scripts/release-check-1.5.2.sh"
+   "verdict_detail": "oracle-cell:http.crosscut|auth-token|GET-none, test:chooser_renders_0_1_n_buttons, test:redirect_begin_still_redirects, test:logout_renders_signed_out_and_clears_cookie, test:callback_state_mismatch_400, test:refresh_rotates_key_and_revokes_the_old_one, test:an_audience_bound_token_is_confined_to_its_door_plane"
   },
   {
    "id": "PB-34",
@@ -3461,7 +3440,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-family:documented, gate:scripts/documented-claims-check.sh"
+   "verdict_detail": "oracle-family:documented"
   },
   {
    "id": "PB-72",

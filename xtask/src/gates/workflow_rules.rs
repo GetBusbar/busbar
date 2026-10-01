@@ -840,7 +840,7 @@ fn mutations() -> Vec<Mutation> {
             file: "zz-planted-verify.yml",
             rule: "R15",
             apply: |_| {
-                "jobs:\n  v:\n    steps:\n      - run: gh attestation verify ./x --repo GetBusbar/busbar\n"
+                "jobs:\n  v:\n    steps:\n      - run: |\n          gh attestation verify ./x --repo GetBusbar/busbar\n"
                     .to_string()
             },
             creates: true,
@@ -853,7 +853,7 @@ fn mutations() -> Vec<Mutation> {
             file: "zz-planted-verify.yml",
             rule: "R15",
             apply: |_| {
-                "jobs:\n  v:\n    steps:\n      - run: gh attestation verify ./x --repo GetBusbar/busbar --signer-workflow GetBusbar/busbar/.github/workflows/promote.yml\n"
+                "jobs:\n  v:\n    steps:\n      - run: |\n          gh attestation verify ./x --repo GetBusbar/busbar --signer-workflow GetBusbar/busbar/.github/workflows/promote.yml\n"
                     .to_string()
             },
             creates: true,
