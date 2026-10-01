@@ -395,6 +395,13 @@ pub trait LedgerView: Send + Sync {
         (self.checkpoints(), None)
     }
 
+    /// What this node's boot reconciliation found: the book it rebuilt from its journal against a
+    /// second replay, and every record the chain could not read. Empty for a view with no book, and
+    /// for a node that booted clean.
+    fn restart_findings(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// [`LedgerView::verify_snapshot`] with the anchor's head, all as of one moment. `None`
     /// is "this view holds no anchor", which the verifier writes down as such; the default is that.
     fn verify_snapshot_anchored(
@@ -691,6 +698,14 @@ impl LedgerView for NodeLedger {
             durability.checkpoints.clone(),
             Some(durability.ledger.book().snapshot()),
         )
+    }
+
+    fn restart_findings(&self) -> Vec<String> {
+        self.lock()
+            .restart_findings
+            .iter()
+            .map(ToString::to_string)
+            .collect()
     }
 
     /// All three under ONE hold of the lock a seal takes, so a checkpoint sealed between reads

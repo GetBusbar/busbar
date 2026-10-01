@@ -389,3 +389,38 @@ fn the_anchor_is_seeded_from_the_chain_at_boot() {
         "the restarted node's anchor holds the chain's last checkpoint"
     );
 }
+
+/// WHAT THE BOOT RECONCILIATION FOUND IS A `/verify` FINDING. A node that booted over a journal it
+/// could not wholly read serves on (a corrupt journal does not stop the boot) and logs the finding;
+/// `GET /admin/verify` names it too, and is not `ok`.
+#[test]
+fn verify_names_what_the_boot_reconciliation_found() {
+    use crate::root::units_admin::{LegacyRowsRead, NodeLedger};
+    let node_book = crate::root::durability::node_book();
+    let legacy: std::sync::Arc<dyn LegacyRowsRead> = node_book.rows.clone();
+    let view = NodeLedger::new(std::sync::Arc::clone(&node_book.durability), legacy);
+    let verify = || {
+        String::from_utf8(
+            crate::root::units_admin::bound::verify_effect(&view)
+                .expect("verify answers")
+                .body,
+        )
+        .expect("utf-8")
+    };
+    assert!(verify().contains(r#""ok":true"#));
+    node_book
+        .durability
+        .lock()
+        .expect("unpoisoned")
+        .restart_findings
+        .push(JournalDisagreement::Unreadable(
+            "the journal does not verify: a forged record".to_string(),
+        ));
+    let body = verify();
+    assert!(
+        body.contains("restart: ")
+            && body.contains("a forged record")
+            && body.contains(r#""ok":false"#),
+        "a boot finding must be a /verify finding: {body}"
+    );
+}

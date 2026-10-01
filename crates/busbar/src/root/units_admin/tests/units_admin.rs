@@ -4432,11 +4432,8 @@ fn a_card_at(micro_per_unit: f64, fee_minor: i64) -> busbar_kernel_ledger::cost:
     )
 }
 
-/// One booked line: the quantities, the lane the card is keyed by, and THE INSTANT IT ARRIVED.
-///
-/// The cached figure is seeded at an absurd 999,999,999 nano-units on purpose. The cache is what a
-/// node computed at settlement and is never authoritative; a read that summed caches would answer
-/// that absurdity, so a rendering that leaked one is obvious here rather than plausible.
+/// One booked line: the quantities, the lane the card is keyed by, and THE INSTANT IT ARRIVED. It
+/// carries no price: what it is worth is the dated history's answer at read time.
 fn a_booked_line(
     bucket: &str,
     arrived_ms: u64,
@@ -4462,12 +4459,6 @@ fn a_booked_line(
         fee_count,
         tier_bp: busbar_kernel_ledger::cost::STANDARD_TIER_BP,
         arrived_ms,
-        cached: busbar_kernel_ledger::DerivedPrice {
-            history_seq: busbar_kernel_ledger::cost::HistorySeq::OPENING,
-            card_seq: busbar_kernel_ledger::cost::HistorySeq::OPENING,
-            pre_tier_nanos: 999_999_999,
-            priced_nanos: 999_999_999,
-        },
         origin: busbar_kernel_ledger::PostingOrigin::Client,
     }
 }

@@ -1934,3 +1934,57 @@ fn a_mid_log_corrupt_journal_boots_quarantines_and_records_it() {
     assert_eq!(ack.sealed.len(), 1);
     assert_eq!(ack.sealed[0].class, RecordClass::ChainBreak);
 }
+
+/// A SETTLED FIGURE TAMPERED ON DISK IS CAUGHT AT BOOT (the boot reconciliation is the check a stored
+/// price would otherwise need). A settlement's counts (the figure it prices to) are edited in the journal segment while the
+/// node is down; the next boot does not take the edited figure onto its book silently — the
+/// restart findings name the journal that no longer verifies. (A booked line carries no stored price
+/// to recompute, #71; this is the check that re-derives every settled figure from the counts.)
+#[test]
+fn a_settled_figure_tampered_on_disk_is_caught_at_boot() {
+    let scratch = ScratchDir::new("tampered-figure");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let key = totals_key("vk_tampered");
+    {
+        let mut durability = boot(&cfg, 21).expect("the directory is writable");
+        settle_one(&mut durability, &key, 5_000, 4_321, 1);
+        // A later settlement, so the edited record is inside the chain rather than its torn tail.
+        settle_one(&mut durability, &totals_key("vk_after"), 1_000, 700, 2);
+    }
+    let clean = boot(&cfg, 21).expect("reopens");
+    assert!(
+        clean.restart_findings.is_empty(),
+        "{:?}",
+        clean.restart_findings
+    );
+    assert_eq!(clean.ledger.book().get(&key, 86_400).settled, 4_321);
+    drop(clean);
+    // Edit the settled counts in place: 4,321 input units become 4,322, on disk.
+    let needle = 4_321u64.to_le_bytes();
+    let forged = 4_322u64.to_le_bytes();
+    let mut edited = 0;
+    for entry in std::fs::read_dir(&scratch.path).expect("the data directory lists") {
+        let path = entry.expect("an entry").path();
+        let Ok(mut bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let mut at = 0;
+        while let Some(i) = bytes[at..].windows(8).position(|w| w == needle) {
+            bytes[at + i..at + i + 8].copy_from_slice(&forged);
+            at += i + 8;
+            edited += 1;
+        }
+        if edited > 0 {
+            std::fs::write(&path, &bytes).expect("the segment rewrites");
+            break;
+        }
+    }
+    assert!(edited > 0, "the fixture found the settled counts on disk");
+    let restarted = boot(&cfg, 21).expect("a corrupt journal does not stop the boot");
+    assert!(
+        !restarted.restart_findings.is_empty(),
+        "a figure edited on disk must be a restart finding, never taken silently onto the book"
+    );
+}

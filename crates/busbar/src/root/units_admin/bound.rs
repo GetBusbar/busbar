@@ -121,6 +121,15 @@ pub(crate) fn verify_effect(ledger: &dyn LedgerView) -> Result<AdminAnswer, Gove
         .map_err(|_| GovernanceError::Store)?;
     let identity_holds = discrepancies.is_empty();
     let mut findings: Vec<String> = findings.iter().map(ToString::to_string).collect();
+    // WHAT THE BOOT RECONCILIATION FOUND: a journal record the chain could not read, or a balance
+    // the book and a second replay disagree on. A settled figure edited on disk is caught here; the
+    // boot logs it and serves on, and this is where an operator asking reads it.
+    findings.extend(
+        ledger
+            .restart_findings()
+            .into_iter()
+            .map(|finding| format!("restart: {finding}")),
+    );
     // THE AMENDMENT CHAIN, verified as it is held now: an edit made to the node's held
     // corrections and content accesses after boot is a finding, as a rewound checkpoint is.
     if let Err(broken) = crate::root::durability::verify_held() {
