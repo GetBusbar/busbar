@@ -3,9 +3,9 @@
 
 //! The `agents:` section's grammar, and the value rules that make the object pin worth having.
 
-use crate::a2a::config::{
-    pin_declaration, policy_for, AgentDefCfg, AgentPinCfg, AgentsCfg, PinMechanism,
-    DEFAULT_REVERIFY_TTL, TRUST_KEYS,
+use crate::a2a::{
+    config::{AgentDefCfg, AgentPinCfg, AgentsCfg, PinMechanism, DEFAULT_REVERIFY_TTL, TRUST_KEYS},
+    section::{pin_declaration, policy_for},
 };
 use busbar_kernel::{
     plane::config::{plane_sections, validate_plane_entry, validate_plane_section},

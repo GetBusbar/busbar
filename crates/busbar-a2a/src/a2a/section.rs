@@ -2,14 +2,15 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE `agents:` SECTION, as the host reads it. The grammar itself (the entry and section types,
-//! [`validate_agent`], the kernel-owned [`TRUST_KEYS`]) is the plane's and is defined in the plane
-//! crate (`busbar_plane_a2a::a2a::config`), re-exported here so every caller path resolves the same
-//! items. What stays here is what names the host: the section as the kernel's config trait object
+//! `validate_agent`, the kernel-owned `TRUST_KEYS`) is the plane's, and has ONE home: the plane
+//! crate's `busbar_plane_a2a::a2a::config`, which [`super::config`] re-exports under its old path.
+//! What stays in the host is what names the host: the section as the kernel's config trait object
 //! ([`AgentsSection`]), the cadence as the kernel's reverify policy ([`policy_for`]), and a `pin:`
 //! as the kernel's trust declaration ([`pin_declaration`]).
 
-pub use super::plane_crate::config::*;
-
+use super::config::{
+    AgentDefCfg, AgentPinCfg, AgentsCfg, ClientIdentityCfg, PinMechanism, DEFAULT_REVERIFY_TTL,
+};
 use super::creds::OutboundCredential;
 
 /// THE `agents:` SECTION AS THE KERNEL'S CONFIG TRAIT OBJECT. A wrapper, because the section type is

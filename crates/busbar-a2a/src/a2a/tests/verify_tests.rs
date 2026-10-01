@@ -570,7 +570,8 @@ fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
             })
     };
     let reverify_src = read("../busbar-kernel/src/trust/reverify.rs");
-    let config_src = read("src/a2a/config.rs");
+    let config_src = read("../busbar-plane-a2a/src/a2a/config.rs");
+    let section_src = read("src/a2a/section.rs");
     let verify_src = read("src/a2a/verify.rs");
     // THE SHARED GATE EVERY PLANE RUNS, held to the identical rule. Every plane with a `verify_ttl:`
     // drives the SAME `due`. `trust/verify.rs` — the on-call single-flight gate that REPLACED the
@@ -594,6 +595,7 @@ fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
     for (what, src) in [
         ("trust/reverify.rs", code(&reverify_src)),
         ("a2a/config.rs", code(&config_src)),
+        ("a2a/section.rs", code(&section_src)),
         ("a2a/verify.rs", code(&verify_src)),
         ("trust/verify.rs", code(&shared_verify_src)),
     ] {

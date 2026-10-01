@@ -224,7 +224,7 @@ fn a2a_parse_section(
 ) -> Result<Box<dyn busbar_kernel::plane::config::PlaneCfg>, String> {
     serde_yaml::from_value::<crate::a2a::config::AgentsCfg>(v.clone())
         .map(|c| {
-            Box::new(crate::a2a::config::AgentsSection(c))
+            Box::new(crate::a2a::section::AgentsSection(c))
                 as Box<dyn busbar_kernel::plane::config::PlaneCfg>
         })
         .map_err(|e| e.to_string())
@@ -233,7 +233,7 @@ fn a2a_parse_section(
 /// [`busbar_kernel::plane::registry::PlaneDecl::default_section`] hook — the empty `agents:` registry, so an
 /// ABSENT section defaults to `AgentsCfg::default()` byte-identically to the pre-seam typed field.
 fn a2a_default_section() -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {
-    Box::<crate::a2a::config::AgentsSection>::default()
+    Box::<crate::a2a::section::AgentsSection>::default()
 }
 
 /// PRUNE THE A2A VERIFY-ON-CALL GATES to the agents THIS generation fronts — the
@@ -579,7 +579,10 @@ pub(crate) use busbar_plane_a2a::a2a::anomaly;
 /// so `super::canonical::…` and `crate::a2a::canonical::…` resolve unchanged.
 pub(crate) use busbar_plane_a2a::a2a::canonical;
 pub(crate) mod card;
-pub mod config;
+/// The `agents:` grammar has ONE home, the plane crate's (`busbar_plane_a2a::a2a::config`), and is
+/// re-exported here under its old in-crate path so `super::config::…` and
+/// `crate::a2a::config::…` resolve unchanged. What the host adds to it is [`section`].
+pub use busbar_plane_a2a::a2a::config;
 pub(crate) mod creds;
 pub(crate) mod fetch;
 pub(crate) mod grpc;
@@ -631,6 +634,9 @@ pub(crate) mod words;
 // before a second copy can drift from the first.
 pub(crate) use busbar_kernel::trust::reverify;
 pub(crate) mod key_info;
+/// The `agents:` section as the host reads it: the kernel's config trait object, reverify policy
+/// and trust declaration over the plane's grammar.
+pub(crate) mod section;
 pub mod serve;
 pub(crate) mod sign;
 pub use busbar_plane_a2a::a2a::task;
