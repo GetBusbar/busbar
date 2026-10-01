@@ -2226,8 +2226,10 @@ fn read_request_routes_unmodeled_keys_to_extra() {
         "top_k": 40,
         "stop_sequences": ["x"],
         "stream": true,
-        // Unmodeled passthrough keys:
+        // Unmodeled passthrough key:
         "metadata": {"user_id": "u1"},
+        // A mapping row (IR-04): carried by the slot, and kept raw in extra only when the slot
+        // cannot reproduce it.
         "service_tier": "auto"
     });
     let ir = AnthropicReader
@@ -2237,9 +2239,21 @@ fn read_request_routes_unmodeled_keys_to_extra() {
         ir.extra.contains_key("metadata"),
         "unmodeled `metadata` must flow into extra"
     );
-    assert!(
-        ir.extra.contains_key("service_tier"),
-        "unmodeled `service_tier` must flow into extra"
+    assert_eq!(
+        ir.service_tier,
+        Some(crate::codec::ir::IrServiceTier::Auto)
+    );
+    assert!(!ir.extra.contains_key("service_tier"));
+    let mut unknown_tier = body.clone();
+    unknown_tier["service_tier"] = serde_json::json!("turbo");
+    let ir2 = AnthropicReader
+        .read_request(&unknown_tier)
+        .expect("request must parse");
+    assert_eq!(ir2.service_tier, None);
+    assert_eq!(
+        ir2.extra.get("service_tier"),
+        Some(&serde_json::json!("turbo")),
+        "a tier word the slot cannot hold rides extra raw (same-dialect fidelity)"
     );
     for modeled in [
         "model",

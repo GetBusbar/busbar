@@ -20,7 +20,6 @@ use super::proto_codec::*;
 // THIS crate's own `proto_codec` rather than the `busbar_contract::protocol::*` glob.
 #[allow(unused_imports)]
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
-use std::sync::OnceLock;
 
 pub mod handler;
 #[rustfmt::skip]

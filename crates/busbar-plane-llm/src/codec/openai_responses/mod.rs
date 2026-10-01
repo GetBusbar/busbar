@@ -130,7 +130,6 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     list_models_fingerprint_headers: &[],
     static_headers: &[],
 };
-use std::sync::OnceLock;
 
 /// Largest wire `output_index` we accept in a streaming Responses event before clamping. The
 /// Responses API, like Chat Completions, documents at most 128 parallel output items, so any larger
