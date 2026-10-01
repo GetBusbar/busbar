@@ -32,8 +32,9 @@ mod route;
 
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome as AbiOutcome, BLOB_OCTETS};
-use busbar_contract::abi::mechanism::call::{Field, Span};
+use busbar_contract::abi::mechanism::call::{
+    AbiStr, Blob, Field, Outcome as AbiOutcome, Span, BLOB_OCTETS,
+};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, OutField, RefusalIn, RefusalOut, UnitCount, REFUSAL_GATE, REFUSAL_KERNEL,
