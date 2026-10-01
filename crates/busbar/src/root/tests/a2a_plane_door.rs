@@ -14,6 +14,10 @@
 //! * `arrive` on the JSON-RPC line decides a request (its op class, dialect and principal need)
 //!   and refuses a wrong media type in the plane's own words, which `refusal` renders with the
 //!   plane's status; a kernel refusal renders at the kernel's status on the HTTP+JSON line;
+//! * `on_piece` relays the extended-card read addressed to one agent: the ATTEMPT names `POST` at
+//!   the agent's own path with the engine's three fields, the caller's body goes to the far end
+//!   verbatim, and the far end's answer comes back as the caller's, `reply_cap` bytes at a time
+//!   (`more = 1`), with the hop's moved bytes as its reported units;
 //! * every other request-path op answers REFUSED (TRANSITIONAL: filled when the kernel's plane
 //!   driver serves the request path).
 //!
@@ -29,8 +33,10 @@ use busbar_contract::abi::mechanism::lifecycle::{
 };
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    slot, ArriveIn, ArriveOut, OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut,
-    PlaneRefreshOut, RefusalIn, RefusalOut, REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL,
+    slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneDriveIn, PlaneDriveOut,
+    PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, RecordWrite, RefusalIn, RefusalOut, UnitCount,
+    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, REFUSAL_ARRIVE,
+    REFUSAL_GATE, REFUSAL_KERNEL,
 };
 use busbar_plane_a2a::door::{DIALECT_DOCUMENT, DIALECT_FRAMED, DIALECT_TARGET, ROUTES};
 
@@ -209,6 +215,136 @@ fn refuse(p: &Plugin<Plane>, cause: u32, status: u32, dialect: u32, words: &[u8]
         r.out.marker,
         named.join(", "),
         String::from_utf8_lossy(&reply[..r.out.reply_written as usize])
+    )
+}
+
+/// The extended-card read the relay script sends one agent.
+const CARD_ASK: &[u8] = br#"{"jsonrpc":"2.0","id":9,"method":"GetExtendedAgentCard"}"#;
+/// The agent's answer to it.
+const CARD_ANSWER: &[u8] = br#"{"jsonrpc":"2.0","id":9,"result":{"name":"Vendor"}}"#;
+
+/// One `on_piece` of `unit` from `from` (with `flags`, `status`, `bytes`, the ATTEMPT's `member`),
+/// over a reply buffer of `reply_cap` bytes, as one line: the outcome, the emit flags, `more`, the
+/// reply status, the verb and target, the head fields, the units and the emitted bytes.
+#[allow(clippy::too_many_arguments)] // one piece's inputs, each a column of the line
+fn piece(
+    p: &Plugin<Plane>,
+    unit: u64,
+    from: u32,
+    flags: u32,
+    status: u32,
+    bytes: &'static [u8],
+    member: &'static [u8],
+    reply_cap: usize,
+) -> String {
+    let none = Span { offset: 0, len: 0 };
+    let mut reply = vec![0_u8; reply_cap];
+    let mut units = vec![
+        UnitCount {
+            class: 0,
+            source: 0,
+            amount: 0,
+        };
+        2
+    ];
+    let mut records = vec![
+        RecordWrite {
+            kind: 0,
+            op: 0,
+            key: none,
+            value: none,
+        };
+        1
+    ];
+    let mut fields = vec![
+        OutField {
+            name: none,
+            value: none,
+        };
+        4
+    ];
+    let mut arena = vec![0_u8; 256];
+    let blank = AbiStr {
+        ptr: null(),
+        len: 0,
+    };
+    let mut f = Frame::new(
+        OnPieceIn {
+            head: in_head(),
+            unit,
+            from,
+            flags,
+            stream: 0,
+            bytes: json(bytes),
+            status_code: status,
+            status_class: 0,
+            reply_buf: reply.as_mut_ptr(),
+            reply_cap: reply.len(),
+            units_buf: units.as_mut_ptr(),
+            units_cap: units.len(),
+            records_buf: records.as_mut_ptr(),
+            records_cap: records.len(),
+            fields_buf: fields.as_mut_ptr(),
+            fields_cap: fields.len(),
+            arena_buf: arena.as_mut_ptr(),
+            arena_cap: arena.len(),
+            member: if member.is_empty() {
+                blank
+            } else {
+                text(member)
+            },
+            attempt_no: u32::from(from == FROM_KERNEL),
+            _reserved: 0,
+            pool: blank,
+            caller_ref: blank,
+            claim: 0,
+            dialect: DIALECT_DOCUMENT,
+            head_fields: null(),
+            head_fields_len: 0,
+            passthrough: 0,
+            _reserved_tail: 0,
+        },
+        OnPieceOut {
+            head: out_head(),
+            emitted: 0,
+            more: 0,
+            flags: 0,
+            reply_status: 0,
+            fields_written: 0,
+            fields_needed: 0,
+            units_written: 0,
+            units_needed: 0,
+            records_written: 0,
+            records_needed: 0,
+            verdict: 0,
+            arena_written: 0,
+            arena_needed: 0,
+            verb: none,
+            target: none,
+        },
+    );
+    let c = p.call(slot::ON_PIECE, &mut f);
+    let o = f.out;
+    let at = |s: Span| String::from_utf8_lossy(&arena[s.offset as usize..][..s.len as usize]);
+    let named: Vec<String> = fields[..o.fields_written as usize]
+        .iter()
+        .map(|f| format!("{}: {}", at(f.name), at(f.value)))
+        .collect();
+    let counted: Vec<String> = units[..o.units_written as usize]
+        .iter()
+        .map(|u| format!("{}/{}={}", u.class, u.source, u.amount))
+        .collect();
+    format!(
+        "piece {:?} flags={} more={} status={} {} {} [{}] units=[{}] {}",
+        c.outcome,
+        o.flags,
+        o.more,
+        o.reply_status,
+        at(o.verb),
+        at(o.target),
+        named.join(", "),
+        counted.join(" "),
+        String::from_utf8_lossy(&reply[..o.emitted as usize])
     )
 }
 
@@ -425,6 +561,31 @@ fn script(p: &Plugin<Plane>) -> Vec<String> {
         "arrive unlisted {:?} op={} dialect={}",
         c.outcome, a.out.op_class, a.out.dialect
     ));
+    // THE UNARY RELAY: the extended card of the agent the caller addressed.
+    let line = ROUTES
+        .iter()
+        .position(|r| r.verb == "POST" && r.target == "/a2a/agents/{agent_id}")
+        .expect("the per-agent JSON-RPC endpoint");
+    a.input.claim = u32::try_from(line).expect("an index");
+    a.input.unit = 5;
+    a.input.target = text(b"/a2a/agents/vendor");
+    a.input.body = json(CARD_ASK);
+    let c = p.call(slot::ARRIVE, &mut a);
+    t.push(format!("arrive card {:?}", c.outcome));
+    t.push(piece(p, 5, FROM_KERNEL, 0, 0, b"", b"vendor", 64));
+    t.push(piece(p, 5, FROM_CALLER, PIECE_LAST, 0, CARD_ASK, b"", 4096));
+    let last = PIECE_LAST | PIECE_HAS_STATUS;
+    t.push(piece(p, 5, FROM_FAR_END, last, 200, CARD_ANSWER, b"", 32));
+    t.push(piece(p, 5, FROM_FAR_END, 0, 0, b"", b"", 4096));
+    t.push(format!(
+        "piece after done {}",
+        piece(p, 5, FROM_FAR_END, last, 200, CARD_ANSWER, b"", 4096)
+    ));
+    // A unit `on_piece` does not serve yet (a task-bearing verb) is REFUSED.
+    t.push(format!(
+        "piece unserved {}",
+        piece(p, 2, FROM_KERNEL, 0, 0, b"", b"vendor", 64)
+    ));
     for s in [slot::HYDRATE, slot::START] {
         t.push(format!("{s} {:?}", p.call(s, &mut gen_frame(2)).outcome));
     }
@@ -518,6 +679,69 @@ fn the_a2a_door_answers_identically_linked_and_dropped_in() {
             Outcome::Ready
         ),
         "an unlisted method is the message_send class, never refused"
+    );
+    // THE UNARY RELAY, in the engine's bytes (`relay::build_request`, `receive::unary_hop`).
+    let relay: Vec<&String> = linked
+        .iter()
+        .skip_while(|l| !l.starts_with("arrive card"))
+        .take(7)
+        .collect();
+    let ready = format!("{:?}", Outcome::Ready);
+    assert_eq!(relay[0], &format!("arrive card {ready}"));
+    assert_eq!(
+        relay[1],
+        &format!(
+            "piece {ready} flags=1 more=0 status=0 POST /a2a [content-type: application/json, \
+             accept: application/json, a2a-version: 0.3] units=[] "
+        ),
+        "the ATTEMPT posts to the agent's own path with the engine's three fields"
+    );
+    assert_eq!(
+        relay[2],
+        &format!(
+            "piece {ready} flags=1 more=0 status=0   [] units=[] {}",
+            String::from_utf8_lossy(CARD_ASK)
+        ),
+        "the caller's body goes to the far end verbatim"
+    );
+    let moved = CARD_ASK.len() + CARD_ANSWER.len();
+    // Built as the engine builds it: the envelope's members in the order `json!` writes them.
+    let answer = serde_json::to_string(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 9,
+        "result": {"name": "Vendor"},
+    }))
+    .expect("json");
+    assert_eq!(
+        relay[3],
+        &format!(
+            "piece {ready} flags=0 more=1 status=200   [content-type: application/json] \
+             units=[0/1={moved}] {}",
+            &answer[..32]
+        ),
+        "the answer starts with its status and media type, {} bytes at a time",
+        32
+    );
+    assert_eq!(
+        relay[4],
+        &format!(
+            "piece {ready} flags=2 more=0 status=0   [] units=[0/1={moved}] {}",
+            &answer[32..]
+        ),
+        "the re-call writes the rest and ends the unit"
+    );
+    assert_eq!(
+        relay[5],
+        &format!(
+            "piece after done piece {:?} flags=0 more=0 status=0   [] units=[] ",
+            Outcome::Refused
+        ),
+        "a finished unit is forgotten"
+    );
+    assert!(
+        relay[6].starts_with(&format!("piece unserved piece {:?}", Outcome::Refused)),
+        "{}",
+        relay[6]
     );
     if let Some(dropped) = dropped() {
         assert_eq!(

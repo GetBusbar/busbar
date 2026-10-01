@@ -18,6 +18,9 @@
 //!   with the generation it arrived under, keyed by its unit (`Keyed`); a refused arrival states
 //!   its refusal in its own words, and `refusal` renders those, or the kernel's, in the line's
 //!   dialect ([`crate::arrival::render`]);
+//! * `on_piece` drives a unit's unary hop ([`crate::relay::Relay`]): the request each ATTEMPT
+//!   sends the agent the kernel picked, the caller's body relayed verbatim, and the caller's
+//!   answer from the far end's, written into the host's buffers across `more` re-calls;
 //! * `tick` wants no tick, `drive` has no session with unsolicited output, `cancel` finds nothing
 //!   in flight, and `release`/`close` hold nothing the SDK does not already drop.
 
@@ -29,7 +32,9 @@ use busbar_contract::abi::mechanism::lifecycle::{
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn,
     PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, ProjectIn, ProjectOut, RefusalIn, RefusalOut,
-    ServeIn, ServeOut, CANCEL_ABORTED, PRINCIPAL_REQUIRED, REFUSAL_ARRIVE,
+    ServeIn, ServeOut, UnitCount, CANCEL_ABORTED, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER,
+    FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_REQUIRED, REFUSAL_ARRIVE,
+    UNITS_REPORTED,
 };
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::abi::sdk::life::Refusal;
@@ -41,6 +46,7 @@ use std::sync::Arc;
 use crate::a2a::config::AgentsCfg;
 use crate::arrival::{self, Decision, Dialect};
 use crate::door::{self, Line};
+use crate::relay::{self, Answer, Relay};
 
 /// The most calls the kernel keeps in flight on one instance, as the transport doors state it.
 const MAX_INFLIGHT: u32 = 64;
@@ -70,6 +76,77 @@ pub struct Unit {
     pub agent: Option<String>,
     /// The section of the newest generation when it arrived.
     pub section: Option<Arc<AgentsCfg>>,
+    /// The unit's unary hop and what it still owes the host; `None` for a unit `on_piece` does not
+    /// serve yet.
+    pub hop: Option<Hop>,
+}
+
+/// One unit's unary hop, and the answer it is part way through writing.
+#[derive(Debug)]
+pub struct Hop {
+    relay: Relay,
+    outbox: Outbox,
+}
+
+impl Hop {
+    /// A hop answering the request `id`, declaring `version`.
+    #[must_use]
+    pub fn new(id: serde_json::Value, version: &'static str) -> Self {
+        Hop {
+            relay: Relay::new(id, version),
+            outbox: Outbox::default(),
+        }
+    }
+}
+
+/// What a piece's answer still owes the host: its head, once, then its bytes, `reply_cap` at a
+/// time. `live` while any of it is unwritten; `recall` after a short answer, whose re-call carries
+/// the same piece and must not apply it twice.
+#[derive(Debug, Default)]
+struct Outbox {
+    live: bool,
+    recall: bool,
+    to_far: bool,
+    done: bool,
+    head: Option<Head>,
+    bytes: Vec<u8>,
+    at: usize,
+}
+
+/// The head an answer starts with.
+#[derive(Debug)]
+enum Head {
+    /// The request bound for the far end: verb, target, fields.
+    Attempt(relay::Attempt),
+    /// The caller's reply: its status and media type.
+    Reply(u32, &'static str),
+}
+
+impl Outbox {
+    /// The outbox for `answer`; `None` for a piece the hop refuses.
+    fn of(answer: Answer) -> Option<Self> {
+        let (to_far, done, head, bytes) = match answer {
+            Answer::Nothing => (false, false, None, Vec::new()),
+            Answer::Refused => return None,
+            Answer::Attempt(a) => (true, false, Some(Head::Attempt(a)), Vec::new()),
+            Answer::ToFarEnd(bytes) => (true, false, None, bytes),
+            Answer::ToCaller(r) => (
+                false,
+                true,
+                Some(Head::Reply(r.status, r.content_type)),
+                r.body,
+            ),
+        };
+        Some(Outbox {
+            live: true,
+            recall: false,
+            to_far,
+            done,
+            head,
+            bytes,
+            at: 0,
+        })
+    }
 }
 
 /// One instance: the public base URL `open` was given, every live generation's snapshot and
@@ -242,8 +319,8 @@ slot!(
 // ── the request path ──────────────────────────────────────────────────────────────────────────
 //
 // Nothing routes to these before the flip: the engine still serves every request, and no
-// production path loads this door (`tests/door_unrouted.rs` holds that). `arrive` and `refusal`
-// serve the JSON-RPC line; every other op is REFUSED.
+// production path loads this door (`tests/door_unrouted.rs` holds that). `arrive`, `on_piece` and
+// `refusal` serve the JSON-RPC line; every other op is REFUSED.
 
 slot!(
     /// `arrive`: an arrival on the JSON-RPC line decided and kept, with the generation it arrived
@@ -284,19 +361,171 @@ slot!(
         out.set(|o| &o.principal_need, PRINCIPAL_REQUIRED);
         out.set(|o| &o.dialect, door::DIALECT_DOCUMENT);
         let target = input.field(|i| &i.target).as_str().unwrap_or_default();
+        let agent = agent_of(target);
+        let hop = hop_of(&decision, agent.is_some());
         let unit = Unit {
             decision,
-            agent: agent_of(target),
+            agent,
             section: plane.generations.current(),
+            hop,
         };
         keep(&plane.units, MAX_UNITS, given.unit, unit);
         Outcome::Ready
     }
 );
 
+/// The hop a unit's `on_piece` serves: the extended-card read addressed to one agent, which the
+/// engine relays task-less (`receive::unary_hop`, its `card_fetch` arm). A task-bearing verb has
+/// no hop here: its reply carries busbar's task identity and its rows, which the plane does not
+/// keep yet, so its pieces are REFUSED.
+fn hop_of(decision: &Decision, addressed: bool) -> Option<Hop> {
+    match decision {
+        Decision::Request { row, id, version }
+            if addressed && row.op == crate::ops::OP_AGENT_CARD =>
+        {
+            Some(Hop::new(id.clone(), version))
+        }
+        _ => None,
+    }
+}
+
+/// The URL the operator wrote for agent `member` in the section the unit arrived under.
+fn url_of<'a>(unit: &'a Unit, member: &str) -> Option<&'a str> {
+    unit.section
+        .as_ref()?
+        .agents
+        .get(member)
+        .map(|a| a.url.as_str())
+}
+
+/// One piece of `unit`'s hop: applied (unless it continues or re-calls the answer still owed) and
+/// written into the host's buffers. Answers the outcome and whether the unit is done.
+fn piece(
+    unit: &mut Unit,
+    input: Lent<'_, OnPieceIn>,
+    out: &mut Out<'_, OnPieceOut>,
+) -> (Outcome, bool) {
+    let given = input.get();
+    let bytes = input.field(|i| &i.bytes).bytes();
+    let member = input.field(|i| &i.member).as_str().unwrap_or_default();
+    let url = url_of(unit, member).map(str::to_string);
+    let Some(hop) = unit.hop.as_mut() else {
+        return (Outcome::Refused, false);
+    };
+    // A re-call carries the same piece again (after a short answer) or nothing at all (after
+    // `more = 1`: no bytes, no flags, no attempt); either way it is served from what is owed.
+    let continues = hop.outbox.live
+        && (hop.outbox.recall || (bytes.is_empty() && given.flags == 0 && given.attempt_no == 0));
+    if !continues {
+        let from = match given.from {
+            FROM_KERNEL => relay::From::Kernel(url.as_deref()),
+            FROM_CALLER => relay::From::Caller,
+            FROM_FAR_END => relay::From::FarEnd,
+            _ => return (Outcome::Refused, false),
+        };
+        let answer = hop.relay.on_piece(relay::Piece {
+            from,
+            bytes,
+            status: (given.flags & PIECE_HAS_STATUS != 0).then_some(given.status_code),
+            last: given.flags & PIECE_LAST != 0,
+        });
+        let Some(outbox) = Outbox::of(answer) else {
+            return (Outcome::Refused, false);
+        };
+        hop.outbox = outbox;
+    }
+    let ob = &mut hop.outbox;
+    let (mut reply, mut fields, mut arena, mut units) = (
+        input.reply_buf(),
+        input.fields_buf(),
+        input.arena_buf(),
+        input.units_buf(),
+    );
+    let moved = hop.relay.moved();
+    if moved != 0 {
+        units.push(UnitCount {
+            class: 0,
+            source: UNITS_REPORTED,
+            amount: moved,
+        });
+    }
+    let mut head_fields = |list: &[(&'static str, String)]| {
+        for (name, value) in list {
+            fields.push(OutField {
+                name: arena.span(name.as_bytes()),
+                value: arena.span(value.as_bytes()),
+            });
+        }
+    };
+    let (mut verb, mut target, mut status) = (None, None, 0);
+    match &ob.head {
+        Some(Head::Attempt(a)) => {
+            head_fields(&a.fields);
+            verb = Some(arena.span(a.verb.as_bytes()));
+            target = Some(arena.span(a.target.as_bytes()));
+        }
+        Some(Head::Reply(s, content_type)) => {
+            head_fields(&[(relay::H_CONTENT_TYPE, (*content_type).to_string())]);
+            status = *s;
+        }
+        None => {}
+    }
+    let short = !(fields.fits() && arena.fits() && units.fits());
+    let (fw, fnd) = fields.settle(short);
+    let (aw, and) = arena.settle(short);
+    let (uw, und) = units.settle(short);
+    out.set(|o| &o.fields_written, fw as u32);
+    out.set(|o| &o.fields_needed, fnd as u32);
+    out.set(|o| &o.arena_written, aw as u64);
+    out.set(|o| &o.arena_needed, and as u64);
+    out.set(|o| &o.units_written, uw as u32);
+    out.set(|o| &o.units_needed, und as u32);
+    if short {
+        ob.recall = true;
+        return (Outcome::Failed, false);
+    }
+    let n = reply.stream(&ob.bytes[ob.at..]);
+    ob.at += n;
+    ob.head = None;
+    ob.recall = false;
+    let more = ob.at < ob.bytes.len();
+    ob.live = more;
+    let mut flags = 0;
+    if ob.to_far {
+        flags |= EMIT_TO_FAR_END;
+    }
+    let done = ob.done && !more;
+    if done {
+        flags |= EMIT_DONE;
+    }
+    if let (Some(v), Some(t)) = (verb, target) {
+        out.set(|o| &o.verb, v);
+        out.set(|o| &o.target, t);
+    }
+    out.set(|o| &o.emitted, n as u64);
+    out.set(|o| &o.more, u32::from(more));
+    out.set(|o| &o.flags, flags);
+    out.set(|o| &o.reply_status, status);
+    (Outcome::Ready, done)
+}
+
 slot!(
-    /// `on_piece`. TRANSITIONAL: filled when the kernel's plane driver serves the door's request path.
-    OnPiece, OnPieceIn, OnPieceOut, |_, _, _| { Outcome::Refused }
+    /// `on_piece`: the unit's unary hop, one piece at a time ([`crate::relay`]); a unit whose
+    /// arrival names no hop the door serves is REFUSED. A finished unit is forgotten.
+    OnPiece, OnPieceIn, OnPieceOut, |instance, input, mut out| {
+        let Some(plane) = instance.get() else {
+            return Outcome::Failed;
+        };
+        let unit = input.get().unit;
+        let (outcome, done) = plane.units.with(&unit, |u| match u {
+            Some(u) => piece(u, input, &mut out),
+            None => (Outcome::Refused, false),
+        });
+        if done {
+            plane.units.remove(&unit);
+        }
+        outcome
+    }
 );
 
 slot!(

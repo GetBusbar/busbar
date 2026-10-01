@@ -63,6 +63,7 @@ pub mod plane;
 pub mod plane_door;
 pub mod record;
 pub mod records;
+pub mod relay;
 pub mod sse;
 pub mod surface;
 
