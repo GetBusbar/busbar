@@ -395,11 +395,6 @@ abi = ["crates/busbar-contract"]
 # commit reached the base; struck by the FOLD-LLM C3' re-arm above, which declares the pair's next
 # figure.
 
-[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
-file    = "qa/construction.toml"
-from    = 52136
-to      = 53380
-because = "R-KERNEL / OWNER GRANT 2026-09-29 (3), KERNEL<>PLUGINS step 4 (BUSBAR-1.6.0.md Part 3, §12): the plane driver core, busbar-kernel/src/plane_driver/ (PlaneUnits implementing Units and RouteAwait over the contract's PlaneCalls; the on_piece pump and the buffers it lends until a crossing returns; cancel and its bill; the money seam and its flush epoch; the kernel-minted unit key on arrive and on_piece). Measured by cargo xtask gate construction, base origin/predev f882c3ce6: ceiling 52002, branch 53151. The ceiling is pinned at the measurement. Re-measured on predev 9cbd0288a (KERNEL-VALIDATE's landed kernel lines under the plane driver): 53156. kernel x plugin-tooling drain: the observer's grants seam (observe::Grants, install_grants), +13; 53169 measured on k1-kpt-drain. Re-measured on the stack k1-plane-driver d8e5e5b23 + k1-kpt-drain on predev 3cc28b00e (rule L local answer, +20): 53189. Rebased over predev with MW3 (money view scrape memo, +167) and T13b (+35) landed, kernel files disjoint: 53189 + 167 + 35 = 53391; from 52136, the ceiling T13b landed. The observer's grants are then handed in per call instead of through an installed seam (door-only), -11: 53380, measured."
 
 [gate.ceiling_raises."rules.loc-ceilings.kernel_files.teller.ceiling"]
 file    = "qa/construction.toml"
@@ -506,11 +501,6 @@ because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan a
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 24237 -> 25636 (WIRE-STORE C1 + CONNECTOR-19) — EXPIRED AND STRUCK: its commit
 # reached the base; struck by the K1 re-arm below.
 
-[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
-file    = "qa/construction.toml"
-from    = 25636
-to      = 25683
-because = "K1, the standing contract-pair exception, KERNEL<>PLUGINS step 4 (BUSBAR-1.6.0.md Part 3, §12): busbar_contract::plane_calls (PlaneCalls, PieceInFlight, Answered, Grow, Lent), the plane's call surface the kernel's plane driver reaches a plane through, so the kernel names no loader type; and the plane ABI v1 unit key (ArriveIn.unit, OnPieceIn.unit). +47, measured by cargo xtask gate construction on origin/predev f882c3ce6 (24189 -> 24236) and re-armed over STEP-20's landed 24237 on rebase: 24237 -> 24284. Rebased over T13b's landed pair (WIRE-STORE C1 + CONNECTOR-19, 24237 -> 25636), contract lines additive: 25636 + 47 = 25683."
 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 24189 -> 24237 (STEP-20) — EXPIRED AND STRUCK: its commit reached the base;
 # struck by the K1 plane driver re-arm above, which declares the next figure.
@@ -521,11 +511,6 @@ because = "K1, the standing contract-pair exception, KERNEL<>PLUGINS step 4 (BUS
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 24237 -> 25636 (WIRE-STORE C1 + CONNECTOR-19) — EXPIRED AND STRUCK: its commit
 # reached the base; struck by the K1 re-arm below.
 
-[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
-file    = "qa/construction.toml"
-from    = 25636
-to      = 25683
-because = "K1, the standing contract-pair exception, KERNEL<>PLUGINS step 4 (BUSBAR-1.6.0.md Part 3, §12): busbar_contract::plane_calls (PlaneCalls, PieceInFlight, Answered, Grow, Lent), the plane's call surface the kernel's plane driver reaches a plane through, so the kernel names no loader type; and the plane ABI v1 unit key (ArriveIn.unit, OnPieceIn.unit). +47, measured by cargo xtask gate construction on origin/predev f882c3ce6 (24189 -> 24236) and re-armed over STEP-20's landed 24237 on rebase: 24237 -> 24284. Rebased over T13b's landed pair (WIRE-STORE C1 + CONNECTOR-19, 24237 -> 25636), contract lines additive: 25636 + 47 = 25683."
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 24189 -> 24237 (STEP-20) — EXPIRED AND STRUCK: its commit reached the base;
 # struck by the K1 plane driver re-arm above, which declares the next figure.
