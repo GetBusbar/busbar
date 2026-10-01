@@ -585,10 +585,25 @@ fn a_tail_whose_login_kind_disagrees_with_its_login_capability_refuses() {
                 .map(|f| f.login_kind)
         })
     };
-    assert_eq!(bind(CAP_INBOUND, LOGIN_KIND_NONE), Ok(Some(LOGIN_KIND_NONE)));
-    assert_eq!(bind(CAP_LOGIN, LOGIN_KIND_REDIRECT), Ok(Some(LOGIN_KIND_REDIRECT)));
-    assert_eq!(bind(CAP_LOGIN, LOGIN_KIND_CREDENTIAL), Ok(Some(LOGIN_KIND_CREDENTIAL)));
-    assert!(bind(CAP_LOGIN, LOGIN_KIND_NONE).is_err(), "login without a kind");
-    assert!(bind(CAP_INBOUND, LOGIN_KIND_REDIRECT).is_err(), "a kind without login");
+    assert_eq!(
+        bind(CAP_INBOUND, LOGIN_KIND_NONE),
+        Ok(Some(LOGIN_KIND_NONE))
+    );
+    assert_eq!(
+        bind(CAP_LOGIN, LOGIN_KIND_REDIRECT),
+        Ok(Some(LOGIN_KIND_REDIRECT))
+    );
+    assert_eq!(
+        bind(CAP_LOGIN, LOGIN_KIND_CREDENTIAL),
+        Ok(Some(LOGIN_KIND_CREDENTIAL))
+    );
+    assert!(
+        bind(CAP_LOGIN, LOGIN_KIND_NONE).is_err(),
+        "login without a kind"
+    );
+    assert!(
+        bind(CAP_INBOUND, LOGIN_KIND_REDIRECT).is_err(),
+        "a kind without login"
+    );
     assert!(bind(CAP_LOGIN, 9).is_err(), "an unknown kind");
 }

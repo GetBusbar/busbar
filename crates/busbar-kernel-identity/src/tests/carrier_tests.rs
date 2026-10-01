@@ -111,3 +111,16 @@ fn test_caller_token_debug_redacts_value() {
     assert!(present.contains("<present>"));
     assert!(format!("{:?}", CallerToken(None)).contains("<absent>"));
 }
+
+/// ONE DEFINITION PER SHAPE: the identity crate's `CallerToken` IS the contract's. A second
+/// definition here would be a distinct type and this would not compile.
+#[test]
+fn the_caller_token_is_the_contracts_one_definition() {
+    fn contract_shape(t: busbar_contract::auth::CallerToken) -> Option<String> {
+        t.0
+    }
+    assert_eq!(
+        contract_shape(CallerToken(Some("t".to_string()))),
+        Some("t".to_string())
+    );
+}

@@ -217,7 +217,8 @@ pub enum LinkedEntry {
         aliases: &'static [&'static str],
     },
     /// A compiled-in plugin on its kind's memory ABI: the logic crate's `plugin_door!` door function,
-    /// the same door a dropped-in build exports as `busbar_plugin_door` (THE DESIGN §11.4). Loaded
+    /// the same door a dropped-in build exports as `busbar_plugin_door` (THE DESIGN: compiled-in =
+    /// dropped-in). Loaded
     /// through [`crate::dispatch::load_linked`].
     Door(busbar_contract::abi::mechanism::door::DoorFn),
 }
@@ -232,8 +233,8 @@ impl LinkedPlugin {
         }
     }
 
-    /// A linked MEMORY-ABI plugin: `manifest` and its door (THE DESIGN §11.4: the same door the
-    /// dropped-in build exports).
+    /// A linked MEMORY-ABI plugin: `manifest` and its door (THE DESIGN: compiled-in = dropped-in,
+    /// the same door the dropped-in build exports).
     pub fn door(manifest: Manifest, door: busbar_contract::abi::mechanism::door::DoorFn) -> Self {
         LinkedPlugin {
             manifest,

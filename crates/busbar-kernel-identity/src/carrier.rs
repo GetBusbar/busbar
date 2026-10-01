@@ -13,7 +13,6 @@
 //!   THROUGH to the next carrier rather than terminating the search. Signed requests authenticate
 //!   on their own path.
 
-use std::fmt;
 
 /// The header the Anthropic SDK carries its key in.
 const X_API_KEY: &str = "x-api-key";
@@ -34,24 +33,10 @@ pub trait HeaderView {
     fn header(&self, name: &str) -> Option<&str>;
 }
 
-/// The caller's bearer token, carried alongside the unit so a passthrough route can forward it.
-///
-/// Its `Debug` prints presence and nothing else. A derived one would print the credential the first
-/// time anything formatted the structure that holds it, and even the length is a small oracle.
-#[derive(Clone, Default)]
-pub struct CallerToken(pub Option<String>);
-
-impl fmt::Debug for CallerToken {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("CallerToken")
-            .field(&if self.0.is_some() {
-                "<present>"
-            } else {
-                "<absent>"
-            })
-            .finish()
-    }
-}
+/// The caller's bearer token, carried alongside the unit so a passthrough route can forward it: the
+/// contract's one definition (`busbar_contract::auth::CallerToken`, a presence-only `Debug`), never a
+/// second shape of it here.
+pub use busbar_contract::auth::CallerToken;
 
 /// Pull the token out of an authorization header value, when the scheme is bearer.
 ///

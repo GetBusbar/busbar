@@ -1772,6 +1772,12 @@ async fn callback_security_check_failed_renders_the_state_mismatch_bytes() {
         .get(header::SET_COOKIE)
         .is_some_and(|v| v.to_str().is_ok_and(|v| v.contains("Max-Age=0"))));
     let (a, b) = (body_of(failed), body_of(mismatch));
-    assert!(a.contains("Sign-in couldn&#39;t be verified") || a.contains("Sign-in couldn't be verified"));
-    assert_eq!(a, b, "one page for a state mismatch and a failed security check");
+    assert!(
+        a.contains("Sign-in couldn&#39;t be verified")
+            || a.contains("Sign-in couldn't be verified")
+    );
+    assert_eq!(
+        a, b,
+        "one page for a state mismatch and a failed security check"
+    );
 }

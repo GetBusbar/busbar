@@ -306,3 +306,61 @@ fn a_failed_open_writes_its_reason_into_the_lent_buffer_cut_on_a_char_boundary()
     );
     assert_eq!(out.err_len, 0);
 }
+
+/// THE LOGIN LISTS: `begin_login`'s scopes and `complete_login`'s submitted fields lend each
+/// element, stop at their length, and read as EMPTY for a zero length or a NULL pointer, as
+/// `verify`'s carriers do.
+#[test]
+fn the_login_lists_lend_within_bounds_and_empty_when_null_or_zero() {
+    use crate::abi::auth::{BeginLoginIn, CompleteLoginIn, NamedValue};
+    let scopes = [
+        AbiStr {
+            ptr: b"openid".as_ptr(),
+            len: 6,
+        },
+        AbiStr {
+            ptr: b"email".as_ptr(),
+            len: 5,
+        },
+    ];
+    let mut b: BeginLoginIn = zeroed();
+    b.scopes = scopes.as_ptr();
+    b.scopes_len = scopes.len();
+    let list = lend(&b).scopes();
+    assert_eq!(list.len(), 2);
+    let got: Vec<&[u8]> = list.iter().map(|s| s.bytes()).collect();
+    assert_eq!(got, [&b"openid"[..], &b"email"[..]]);
+    assert!(list.get(2).is_none(), "nothing past the length");
+    b.scopes_len = 0;
+    assert!(lend(&b).scopes().is_empty(), "a zero length is empty");
+    b.scopes = ptr::null();
+    b.scopes_len = 2;
+    assert!(lend(&b).scopes().is_empty(), "a NULL list is empty whatever its length");
+
+    let fields = [NamedValue {
+        name: AbiStr {
+            ptr: b"username".as_ptr(),
+            len: 8,
+        },
+        value: Blob {
+            ptr: b"alice".as_ptr(),
+            len: 5,
+            fmt: 0,
+            flags: 0,
+        },
+    }];
+    let mut c: CompleteLoginIn = zeroed();
+    c.submitted = fields.as_ptr();
+    c.submitted_len = 1;
+    let list = lend(&c).submitted();
+    assert_eq!(list.len(), 1);
+    let one = list.get(0).expect("one field");
+    assert_eq!(one.field(|f| &f.name).bytes(), b"username");
+    assert_eq!(one.field(|f| &f.value).bytes(), b"alice");
+    assert!(list.get(1).is_none(), "nothing past the length");
+    c.submitted_len = 0;
+    assert!(lend(&c).submitted().is_empty(), "a zero length is empty");
+    c.submitted = ptr::null();
+    c.submitted_len = 3;
+    assert!(lend(&c).submitted().is_empty(), "a NULL list is empty whatever its length");
+}

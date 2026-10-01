@@ -545,19 +545,18 @@ async fn callback(
             }
             LoginOutcome::Exchange(hop) => {
                 // Execute the hop, CORE-injecting the client_secret VALUE into the named form field.
-                let (status, body) =
-                    match execute_hop(
-                        http,
-                        &hop,
-                        m.client_secret.as_ref().map(|r| r.expose_secret().as_str()),
-                        &m.allowed_hosts,
-                        Duration::from_secs(HOP_TIMEOUT_SECS),
-                    )
-                    .await
-                    {
-                        Ok(v) => v,
-                        Err(_) => return clear_and(provider_unreachable()),
-                    };
+                let (status, body) = match execute_hop(
+                    http,
+                    &hop,
+                    m.client_secret.as_ref().map(|r| r.expose_secret().as_str()),
+                    &m.allowed_hosts,
+                    Duration::from_secs(HOP_TIMEOUT_SECS),
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(_) => return clear_and(provider_unreachable()),
+                };
                 // NONCE BINDING (core's job — the ABI CompleteLogin has no nonce field): if the hop
                 // body carries an id_token, its `nonce` claim MUST equal the cookie nonce BEFORE any
                 // identity is trusted. A mismatch is a rejected callback with NO identity established.

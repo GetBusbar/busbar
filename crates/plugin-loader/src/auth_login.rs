@@ -36,9 +36,7 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::lifecycle::{slot as lc, ReleaseIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
-use busbar_contract::auth::{
-    BeginLogin, FieldKind, LoginForm, LoginOutcome, Principal,
-};
+use busbar_contract::auth::{BeginLogin, FieldKind, LoginForm, LoginOutcome, Principal};
 use busbar_contract::auth_calls::{LoginCall, LoginCallback, LoginSettled, VerifyRequest};
 
 use super::{blob, grown, identify_out, lend, lend_opt, zero, Held, Shared};
@@ -313,8 +311,9 @@ impl CompleteHeld {
 
     fn input(&self) -> CompleteLoginIn {
         let secret = |b: &Option<Vec<u8>>| {
-            b.as_deref()
-                .map_or(crate::dispatch::NO_BLOB, |b| blob(b, BLOB_OCTETS, BLOB_SECRET))
+            b.as_deref().map_or(crate::dispatch::NO_BLOB, |b| {
+                blob(b, BLOB_OCTETS, BLOB_SECRET)
+            })
         };
         CompleteLoginIn {
             head: in_head(),
@@ -336,7 +335,10 @@ impl CompleteHeld {
 
 impl Drop for CompleteHeld {
     fn drop(&mut self) {
-        for b in [&mut self.code, &mut self.code_verifier].into_iter().flatten() {
+        for b in [&mut self.code, &mut self.code_verifier]
+            .into_iter()
+            .flatten()
+        {
             zero(b);
         }
         for (_, v) in &mut self.submitted {

@@ -152,10 +152,18 @@ fn the_query_style_presents_a_query_parameter() {
         b.passthrough("caller-1"),
         vec![("key".to_string(), "caller-1".to_string())]
     );
-    let named = open(QUERY_KEY, Some("gem-1"), r#"{"param":"api_key"}"#).0.expect("opens");
+    let named = open(QUERY_KEY, Some("gem-1"), r#"{"param":"api_key"}"#)
+        .0
+        .expect("opens");
     assert_eq!(named.own(), &[("api_key".to_string(), "gem-1".to_string())]);
     for style in [BEARER, API_KEY, X_GOOG_API_KEY] {
-        assert!(!open(style, Some("k"), "{}").0.expect("opens").query(), "{style}");
+        assert!(
+            !open(style, Some("k"), "{}").0.expect("opens").query(),
+            "{style}"
+        );
     }
-    assert!(own(open(QUERY_KEY, None, "{}").0).is_empty(), "no credential, no parameter");
+    assert!(
+        own(open(QUERY_KEY, None, "{}").0).is_empty(),
+        "no credential, no parameter"
+    );
 }
