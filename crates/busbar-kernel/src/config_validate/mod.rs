@@ -11,7 +11,7 @@ use crate::diagnostics::{
     CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
 };
 use crate::plane::registry::plane_decl_for;
-use busbar_contract::abi::cold::export::CheckPhase;
+use busbar_contract::abi::export::CheckPhase;
 use busbar_kernel_ledger::cost::{
     flat_card_present, split_plane_lane, PER_REQUEST, PER_SESSION, PLANE_LANE_SEP,
 };

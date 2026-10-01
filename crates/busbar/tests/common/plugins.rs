@@ -17,7 +17,7 @@
 
 #![allow(dead_code)]
 
-use busbar_contract::abi::cold::export::ExportStream;
+use busbar_contract::abi::export::ExportStream;
 use busbar_plugin_loader::{
     dispatch::{
         kinds::transport::{Transport, TransportFacts},

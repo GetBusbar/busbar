@@ -895,9 +895,10 @@ pub unsafe fn hook_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
 /// Re-export the export wire types so a plugin author names `busbar_contract::abi::sdk::ExportStream` (etc.)
 /// without a direct `busbar-plugin` dependency, mirroring the hook/auth re-export path.
 pub use crate::abi::cold::export::{
-    CheckPhase, ExportField, ExportRequest, ExportResponse, ExportStream, HostOp, HostResult,
-    HttpRequest, HttpResponse, MetricFamily, MetricSample, Rotation, RotationFault,
+    ExportRequest, ExportResponse, HostOp, HostResult, HttpRequest, HttpResponse, MetricFamily,
+    MetricSample, Rotation, RotationFault,
 };
+pub use crate::abi::export::{CheckPhase, ExportField, ExportStream};
 
 /// What a sink answers a delivery (or a resume) with when it has the host act for it (export ABI
 /// minor 4): finished, or these [`HostOp`]s first — the host performs them and calls

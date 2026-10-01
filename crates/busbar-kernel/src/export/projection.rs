@@ -35,7 +35,7 @@
 //! 3. a `fields:` list that omits a **pinned** field, or names a field this release does not
 //!    produce.
 
-use busbar_contract::abi::cold::export::{ExportField, ExportStream};
+use busbar_contract::abi::export::{ExportField, ExportStream};
 use serde_json::Value;
 
 // ───────────────────────────────────────────────────────────────────────────────────────────────

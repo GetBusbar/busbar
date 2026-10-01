@@ -43,9 +43,8 @@
 
 use super::both_ways::{export_fixture, export_otlp_fixture, export_webhook_fixture};
 use super::*;
-use busbar_contract::abi::cold::export::{
-    ExportRequest, ExportResponse, ExportStream, HostResult, Rotation,
-};
+use busbar_contract::abi::cold::export::{ExportRequest, ExportResponse, HostResult, Rotation};
+use busbar_contract::abi::export::ExportStream;
 
 /// The export row's sink — the request-log FILE sink — opened with a destination and a rotation
 /// size, so a delivery is a host-written append the host may rotate first.
@@ -1128,12 +1127,12 @@ fn a_sink_starts_and_checks_the_same_through_either_door() {
             "{:?} {:?} {:?}",
             sink.start(),
             sink.check(
-                busbar_contract::abi::cold::export::CheckPhase::Instances,
+                busbar_contract::abi::export::CheckPhase::Instances,
                 &instances
             ),
             registry.check_export(
                 "k9c-sink",
-                busbar_contract::abi::cold::export::CheckPhase::Limits,
+                busbar_contract::abi::export::CheckPhase::Limits,
                 &instances
             )
         )
@@ -1177,7 +1176,7 @@ fn a_sink_starts_and_checks_the_same_through_either_door() {
     assert_eq!(sink.start(), Ok(None));
     assert_eq!(
         sink.check(
-            busbar_contract::abi::cold::export::CheckPhase::Instances,
+            busbar_contract::abi::export::CheckPhase::Instances,
             &[]
         ),
         Ok(Vec::new())
