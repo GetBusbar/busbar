@@ -880,7 +880,7 @@ impl Durability {
             wall: at.stamp.wall,
             mono: at.stamp.mono,
             arrived_ms,
-            flags: PostingFlags::NONE,
+            flags: undeclared_flag(PostingFlags::NONE, refusal.as_deref()),
             counts: Some(counts.clone()),
             refusal,
             era: RecordEra::Counts,
@@ -996,7 +996,7 @@ impl Durability {
             wall: stamp.wall,
             mono: stamp.mono,
             arrived_ms: counts.map_or(0, |_| arrived_ms),
-            flags: settlement.posted.flags(),
+            flags: undeclared_flag(settlement.posted.flags(), refusal.as_deref()),
             counts: counts.cloned(),
             refusal,
             era: RecordEra::Counts,
@@ -1244,7 +1244,7 @@ impl std::fmt::Display for RefusedCounts {
 impl std::error::Error for RefusedCounts {}
 
 /// The posting flags, as the record carries them: one bit per flag, in a fixed order.
-const FLAG_BITS: [PostingFlags; 8] = [
+const FLAG_BITS: [PostingFlags; 9] = [
     PostingFlags::ESTIMATED,
     PostingFlags::METER_DISPUTED,
     PostingFlags::OVERDRAFT,
@@ -1253,6 +1253,7 @@ const FLAG_BITS: [PostingFlags; 8] = [
     PostingFlags::VOIDED,
     PostingFlags::UNPOSTED,
     PostingFlags::DOWNGRADED,
+    PostingFlags::UNDECLARED,
 ];
 
 fn flags_to_bits(flags: PostingFlags) -> u64 {
@@ -1486,6 +1487,20 @@ fn read_counts_tail(body: &mut BodyReader<'_>) -> Option<(Option<UnitCounts>, Op
         }),
         refusal,
     ))
+}
+
+/// The refusal a unit's line carries when its plane reported a class nobody declared (§7). The
+/// record keeps it as [`PostingFlags::UNDECLARED`] and every replay honours it: a declaration is a
+/// fact about the unit when it was written, so the refusal is never re-derived away — not by a card
+/// that prices the class later, not by an absent card that prices everything at nothing.
+pub const UNDECLARED_CLASS: &str = "UndeclaredClass";
+
+/// `flags`, with [`PostingFlags::UNDECLARED`] set when `refusal` is the undeclared-class refusal.
+fn undeclared_flag(flags: PostingFlags, refusal: Option<&str>) -> PostingFlags {
+    match refusal {
+        Some(why) if why.starts_with(UNDECLARED_CLASS) => flags.with(PostingFlags::UNDECLARED),
+        _ => flags,
+    }
 }
 
 /// Which of a settlement's two records a [`Posting`] is.

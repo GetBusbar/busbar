@@ -1152,6 +1152,38 @@ fn post_late(
     // The same pinned snapshot the amount below is PRICED against, so the figure and the entry
     // number the posting claims priced it cannot come from two different reads.
     let at = settling_at(&key, arrived, Some(history), tokens.durability);
+    let refuse = |refusal: String, exit: Option<busbar_contract::caps::Posted>| match exit {
+        Some(exit) => {
+            let _line =
+                book.settle_counted_refusing(&at, exit, &counts, arrived.ms(), Some(refusal));
+        }
+        None => {
+            let _row = book.post_counts(&at, principal, &counts, arrived.ms(), Some(refusal));
+        }
+    };
+    // A CLASS NOBODY DECLARED (`BUSBAR-1.6.0.md` §7: a plane declares every class it reports). The
+    // registered vocabulary holds the reserved four, every installed plane's declared billable
+    // classes and every configured `units:` class; a reported class outside it is a plane fault.
+    // FAIL-CLOSED: the line keeps every count and its money is refused — never priced at zero,
+    // never dropped.
+    if let Some(class) = counts
+        .classes
+        .keys()
+        .find(|class| busbar_contract::Registration::resolve(class).is_none())
+    {
+        busbar_kernel::diagnostics::diag_error!(
+            busbar_kernel::diagnostics::METER_CLASS_UNDECLARED,
+            principal = principal.as_str(),
+            lane = %report.lane,
+            class = %class,
+            "a unit reported a usage class its plane never declared; its line is refused"
+        );
+        refuse(
+            format!("{}({class:?})", crate::root::durability::UNDECLARED_CLASS),
+            exit,
+        );
+        return;
+    }
     let amount = match priced_amount(history, arrived, tokens.usage, report) {
         Ok(amount) => amount,
         Err(refusal) => {
@@ -1164,16 +1196,7 @@ fn post_late(
                 "late accrual refused at settlement: the card cannot price these counts; \
                  the counts row is posted with no figure"
             );
-            let refusal = Some(format!("{refusal:?}"));
-            match exit {
-                Some(exit) => {
-                    let _line =
-                        book.settle_counted_refusing(&at, exit, &counts, arrived.ms(), refusal);
-                }
-                None => {
-                    let _row = book.post_counts(&at, principal, &counts, arrived.ms(), refusal);
-                }
-            }
+            refuse(format!("{refusal:?}"), exit);
             return;
         }
     };

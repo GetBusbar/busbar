@@ -274,6 +274,20 @@ fn derived_figures(
     reserved: u64,
     history: Option<&HistoryView<'_>>,
 ) -> Result<Option<Figures>, Unplaced> {
+    // A line refused because its plane reported a class nobody declared stays refused: the
+    // declaration is a fact about the unit when it was written, and no card — present, absent or
+    // amended — can price a class that was never declared.
+    if posting.flags.contains(PostingFlags::UNDECLARED) {
+        return Err(Refused(format!(
+            "{}({:?})",
+            super::UNDECLARED_CLASS,
+            posting
+                .counts
+                .as_ref()
+                .map(|counts| counts.classes.keys().collect::<Vec<_>>())
+                .unwrap_or_default()
+        )));
+    }
     let settled = match &posting.counts {
         None => 0,
         Some(counts) => price_counts(history, counts, posting.arrived_ms)

@@ -3591,6 +3591,17 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
 /// this crate does not depend on the codec.
 const SEARCH_UNITS: &str = "search_units";
 
+/// The classes the units these tests drive report are DECLARED — what the boot's registration
+/// (`register_classes`: the reserved four, the llm plane's declared `search_units`) makes true in a
+/// real process. The vocabulary is the process's, so registering them again is idempotent.
+fn declare_test_classes() {
+    let mut registration = crate::root::kernel::new_registration();
+    for class in busbar_contract::records::RESERVED_UNITS {
+        let _ = registration.key(class);
+    }
+    let _ = registration.key(SEARCH_UNITS);
+}
+
 /// Run the late arm's posting for one drained `report` onto a fresh node book, and hand the book
 /// back.
 fn late_post(
@@ -3599,6 +3610,7 @@ fn late_post(
     principal: &str,
     report: &Report,
 ) -> crate::root::durability::NodeBook {
+    declare_test_classes();
     // The book prices its chain against the same history the arm priced the unit against.
     let pinned = history.clone();
     let node = crate::root::durability::node_book_over(Box::new(move || Some(pinned.clone())));
@@ -4478,4 +4490,84 @@ fn a_late_arm_with_no_reading_writes_the_exits_own_line() {
         "and it is the exit's settlement: {rows:?}"
     );
     assert_eq!(rows[0].settled, 0);
+}
+
+/// **A CLASS NO PLANE DECLARED IS REFUSED FAIL-CLOSED, NEVER BILLED AT ZERO** (§7). The unit read
+/// 1,000 input tokens and 40 units of a class nothing declares or configures. The line is still
+/// written with EVERY count, its money is refused (`UndeclaredClass`), no balance moves, and the read
+/// over it refuses — even on a card that prices input.
+#[test]
+fn a_class_no_plane_declared_is_refused_and_keeps_its_counts() {
+    let history = cache_silent_history();
+    let mut report = split_report(1_000, 0, 1);
+    report
+        .usage
+        .usage_units
+        .insert("units_nobody_declared".to_string(), 40);
+    let at = Arrived::at(4_000, 7);
+    let node = late_post(&history, at, "vk_undeclared", &report);
+
+    let rows = second_book_rows(&node);
+    assert_eq!(rows.len(), 1, "one line per unit: {rows:?}");
+    let row = &rows[0];
+    let counts = row.counts.as_ref().expect("the line carries the counts");
+    assert_eq!(counts.classes.get("units_nobody_declared"), Some(&40));
+    assert_eq!(
+        counts.classes.get(busbar_contract::records::UNIT_INPUT),
+        Some(&1_000)
+    );
+    assert!(
+        row.refusal.as_deref().is_some_and(
+            |why| why.contains("UndeclaredClass") && why.contains("units_nobody_declared")
+        ),
+        "the money is refused and names the class: {:?}",
+        row.refusal
+    );
+    assert_eq!((row.reserved, row.settled, row.overdraft), (0, 0, 0));
+    let durability = node.durability.lock().expect("unpoisoned");
+    let key = balance(&PrincipalId::new("vk_undeclared"));
+    let window =
+        busbar_kernel_budget::budget_window(busbar_kernel_budget::window::WINDOW_DAY, at.secs());
+    assert_eq!(durability.ledger.book().get(&key, window).settled, 0);
+    assert!(durability.settled_read(&key, window).is_err());
+    drop(durability);
+
+    // And on a node with NO card, where a declared class would post at nothing, the undeclared one
+    // is still refused — the written line and every replay of it (`read_back` re-derives the chain).
+    let absent = fee_history_of(&[(0, 0.0, 0.0, 0)], false);
+    let node = late_post(&absent, at, "vk_undeclared_absent", &report);
+    let rows = second_book_rows(&node);
+    assert_eq!(rows.len(), 1, "one line per unit: {rows:?}");
+    assert!(
+        rows[0]
+            .refusal
+            .as_deref()
+            .is_some_and(|why| why.contains("UndeclaredClass")),
+        "never billed at zero, and a replay keeps the refusal: {:?}",
+        rows[0].refusal
+    );
+}
+
+/// **A DECLARED OPEN CLASS ON AN ABSENT CARD IS NOT REFUSED** — 1.5.5's billing-off shape is
+/// unchanged: a rerank's declared `search_units` on a node with no card posts its counts row at
+/// nothing, with no refusal, exactly as before the undeclared-class rule.
+#[test]
+fn a_declared_open_class_on_an_absent_card_posts_its_counts_unrefused() {
+    let absent = fee_history_of(&[(0, 0.0, 0.0, 0)], false);
+    let mut report = split_report(0, 0, 0);
+    report
+        .usage
+        .usage_units
+        .insert(SEARCH_UNITS.to_string(), 50);
+    let node = late_post(&absent, Arrived::at(4_000, 7), "vk_absent", &report);
+    let rows = second_book_rows(&node);
+    assert_eq!(rows.len(), 1, "one line per unit: {rows:?}");
+    assert_eq!(rows[0].refusal, None, "a declared class is never refused");
+    assert_eq!(
+        rows[0]
+            .counts
+            .as_ref()
+            .and_then(|c| c.classes.get(SEARCH_UNITS)),
+        Some(&50)
+    );
 }

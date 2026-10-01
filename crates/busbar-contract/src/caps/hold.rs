@@ -613,6 +613,8 @@ impl PostingFlags {
     pub const UNPOSTED: PostingFlags = PostingFlags(1 << 6);
     /// The unit was served from a bucket it was downgraded into.
     pub const DOWNGRADED: PostingFlags = PostingFlags(1 << 7);
+    /// The unit reported a class no plane declared: its money is refused, never priced.
+    pub const UNDECLARED: PostingFlags = PostingFlags(1 << 8);
 
     /// Whether every flag in `other` is set here.
     pub fn contains(self, other: PostingFlags) -> bool {

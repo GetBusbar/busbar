@@ -1897,6 +1897,26 @@ pub const ENTITLEMENT_UNDECLARED_SCOPE_KIND: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// A unit's one line carried a class its plane never declared.
+pub const METER_CLASS_UNDECLARED: Diagnostic = Diagnostic {
+    code: 8022,
+    class: Class::Governance,
+    slug: "meter-class-undeclared",
+    title:
+        "A unit reported a usage class its plane never declared (the line is refused, not billed)",
+    severity: Severity::Actionable,
+    summary: "A unit's drained usage report named a class that no installed plane declares as \
+              billable, no configured `units:` entry names, and is not one of the reserved four. \
+              The unit's one line is still written with every count, but its money is REFUSED \
+              rather than priced: a class nobody declared is never billed at zero and never \
+              dropped. Every read of the balance the line sits on refuses until it is explained.",
+    action: "The plane that served the unit reported a class outside its declaration, which is a \
+             plugin defect: upgrade or fix the plane so it declares every class it reports, or \
+             configure the class under the lane's `units:` if it is an operator-priced open class.",
+    since: "1.6.0",
+    retired: false,
+};
+
 /// auth.chain is empty (open relay) — emitted at error so RUST_LOG=error cannot mask it.
 pub const OPEN_RELAY_NO_AUTH: Diagnostic = Diagnostic {
     code: 8014,
@@ -3230,6 +3250,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &SAFE_MODE_OVERLAY_QUARANTINED,
     &PROVIDER_API_KEY_UNRESOLVED,
     &PROVIDER_API_KEY_UNRESOLVABLE,
+    &METER_CLASS_UNDECLARED,
     &OPEN_RELAY_NO_AUTH,
     &STORE_SECRET_REF_UNRESOLVED,
     &GOVERNANCE_STORE_EPHEMERAL,
