@@ -369,9 +369,9 @@ fn ticked(plugin: &Plugin<Plane>) -> [u64; plane::TICKED] {
     out
 }
 
-/// The kernel's driver of `plugin`'s instance, its unit tickets on worker 1.
+/// The kernel's driver of `plugin`'s instance, on the dispatcher's one worker (worker 0).
 fn driver_of(plugin: &Plugin<Plane>, dispatcher: Arc<Dispatcher>) -> PlaneDriver {
-    let calls = Arc::new(PlaneInstance::new(plugin.clone(), dispatcher, 1));
+    let calls = Arc::new(PlaneInstance::new(plugin.clone(), dispatcher, 0));
     let refusal_statuses = calls.refusal_statuses();
     PlaneDriver::new(
         calls,
