@@ -150,8 +150,16 @@
 # script cells change; the four plugins.store-persist cells record their 1.5.5 bytes again. Still a feature
 # branch head; re-pin to the integration/merge commit when that branch lands.
 #
+# 2026-10-01 (ARCHITECT ruling, STANDING-REDS boot.* load flake): moved a73c6fc -> ccef3c1 (branch
+# `oracle-boot-leak`, cut from 6250056 = predev-red-oracle-h2-r2, so it also carries d589e42/6250056, the h2c
+# transcript fix that was waiting for this pin). ccef3c1: a recording boot that fails after its spawn (a key mint
+# outrunning its timeout under host load) stops the busbar it spawned. It used to stay running and registered,
+# the next boot overwrote it unsignalled, and the orphan held the band's listen/admin ports (SO_REUSEPORT) and
+# answered later cells from stale state, outliving the run. Still a feature branch head; re-pin to the
+# integration/merge commit when that branch lands.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=a73c6fc
+release_ref=ccef3c1
 crate=busbar-release-oracle
 bin=busbar-oracle
