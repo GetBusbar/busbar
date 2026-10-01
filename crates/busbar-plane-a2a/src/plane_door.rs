@@ -229,9 +229,10 @@ slot!(
 
 slot!(
     /// `arrive`: an arrival on the JSON-RPC line decided and kept, with the generation it arrived
-    /// under, keyed by its unit; a refused one refused in its own words. TRANSITIONAL: an arrival on
-    /// any other line, and a message whose method the vocabulary does not class, is filled when the
-    /// kernel's plane driver serves the door's request path.
+    /// under, keyed by its unit; a refused one refused in its own words. A message whose method the
+    /// vocabulary does not list is classed as the hop the engine relays it on, never refused.
+    /// TRANSITIONAL: an arrival on any other line is filled when the kernel's plane driver serves
+    /// the door's request path.
     Arrive, ArriveIn, ArriveOut, |instance, input, mut out| {
         let Some(plane) = instance.get() else {
             return Outcome::Failed;
@@ -253,15 +254,10 @@ slot!(
                 })
                 .and_then(|f| f.field(|f| &f.value).as_str().ok())
         });
-        let op = match &decision {
-            Decision::Refused(refusal) => return out.fail(Refusal::refused(refusal.words())),
-            Decision::Unlisted { .. } => return out.fail(Refusal::bare()),
-            Decision::Request { row, .. } => door::op_class_index(row.op),
-            Decision::Notice { method } => {
-                crate::ops::row_for(method).and_then(|row| door::op_class_index(row.op))
-            }
-        };
-        let Some(op) = op else {
+        if let Decision::Refused(refusal) = &decision {
+            return out.fail(Refusal::refused(refusal.words()));
+        }
+        let Some(op) = decision.op_class().and_then(door::op_class_index) else {
             return out.fail(Refusal::bare());
         };
         out.set(|o| &o.op_class, op);
@@ -285,14 +281,15 @@ slot!(
 
 slot!(
     /// `refusal`: a refused arrival rendered in its own words and status, and a kernel or gate
-    /// refusal in the engine's admission words at the kernel's status, each in the line's dialect.
-    /// TRANSITIONAL: the gRPC line's `grpc-status` rendering is filled when the kernel's plane
-    /// driver serves the door's request path.
+    /// refusal in the engine's admission words at the kernel's status, each in the line's dialect;
+    /// on the gRPC line, the envelope at its neutral status, for the grpc transport to map. The
+    /// gate-rejected marker is the kernel's: this rendering never sets it.
     RefusalSlot, RefusalIn, RefusalOut, |_, input, mut out| {
         let given = input.get();
         let dialect = match given.dialect {
             door::DIALECT_DOCUMENT => Dialect::JsonRpc,
             door::DIALECT_TARGET => Dialect::RestJson,
+            door::DIALECT_FRAMED => Dialect::Framed,
             _ => return Outcome::Refused,
         };
         let text = input.field(|i| &i.text).bytes();

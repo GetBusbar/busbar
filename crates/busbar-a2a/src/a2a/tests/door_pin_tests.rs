@@ -261,3 +261,66 @@ fn the_doors_rest_rendering_is_the_engines_reframe() {
         );
     }
 }
+
+/// THE DOOR'S `Origin` REFUSAL IS THE ENGINE'S (spec ruling log 2026-09-30, new-plane refusals
+/// follow predev bytes): an origin the engine's sequence refused, the door refuses with the same
+/// status, words and id, and one it admitted, the door admits.
+#[test]
+fn the_doors_origin_refusal_is_the_engines() {
+    let engine = answered(words::A2aWords.refuse(CoreRefusal::ForbiddenOrigin));
+    for origin in [
+        "http://evil.example",
+        "https://localhost.evil.example",
+        "null",
+        "file://x",
+        "http://localhost",
+        "http://127.0.0.1:8080",
+        "https://[::1]:3000",
+    ] {
+        let door = arrival::origin_refusal(|name| (name == arrival::H_ORIGIN).then_some(origin));
+        let refused = !busbar_contract::jsonrpc::origin_admitted(origin, &[]);
+        assert_eq!(
+            door.err().map(|r| rendered(&r)),
+            refused.then(|| engine.clone()),
+            "{origin}"
+        );
+    }
+}
+
+/// AN UNLISTED METHOD IS CLASSED AS THE HOP THE ENGINE RELAYS IT ON: the streaming class exactly
+/// when the engine's relay reads the method as a stream.
+#[cfg(feature = "test-support")]
+#[test]
+fn the_doors_class_for_an_unlisted_method_is_the_engines_hop() {
+    for method in [
+        "vendor/Thing",
+        "Frobnicate",
+        "vendor/stream",
+        "x/stream/more",
+        "tasks/frobnicate",
+        "",
+    ] {
+        assert_eq!(
+            busbar_plane_a2a::ops::relay_class(method) == busbar_plane_a2a::ops::OP_MESSAGE_STREAM,
+            receive::reads_as_stream_for_test(method),
+            "{method}"
+        );
+    }
+}
+
+/// THE gRPC LINE'S RENDERING IS WHAT THE ENGINE'S gRPC BRIDGE READ: the engine answered a gRPC call
+/// through its JSON-RPC ingress and mapped that envelope and status to `grpc-status`, so the door
+/// hands the grpc transport the same envelope at the same status.
+#[test]
+fn the_doors_grpc_rendering_is_the_envelope_the_engines_bridge_read() {
+    let r = arrival::origin_refusal(|_| Some("http://evil.example")).expect_err("refused");
+    let out = arrival::render(arrival::Dialect::Framed, &r, true);
+    assert_eq!(
+        (
+            u16::try_from(out.status).expect("a status"),
+            out.content_type.to_string(),
+            out.body
+        ),
+        answered(words::A2aWords.refuse(CoreRefusal::ForbiddenOrigin))
+    );
+}

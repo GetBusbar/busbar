@@ -8,9 +8,11 @@
 //!
 //! The order is the served engine's (`busbar-a2a` `receive::invoke_inner`, then the shared
 //! JSON-RPC sequence it runs). The steps before it are the kernel's: whether the plane is present,
-//! the `Origin` rule, and governance (spec ruling log 2026-09-30, a2a plane: the kernel owns
-//! admission). What the plane decides:
+//! and governance (spec ruling log 2026-09-30, a2a plane: the kernel owns admission). What the plane
+//! decides (spec ruling log 2026-09-30, new-plane refusals follow predev bytes):
 //!
+//! 0. An `Origin` that is neither loopback nor listed is `403` + `-32004`, judged first, by the
+//!    contract's one rule ([`busbar_contract::jsonrpc::origin_admitted`]); this plane lists none.
 //! 1. A declared `Content-Type` that is not a JSON media type is `415` + `-32005`, judged BEFORE the
 //!    body is parsed, so a header fault is never answered as a body fault. No `Content-Type` at all
 //!    is not refused here.
@@ -19,7 +21,8 @@
 //! 3. The body must be JSON (`400` + `-32700`) and one JSON-RPC message (`400` + `-32600`, the
 //!    contract's reader, echoing the id it could read).
 //! 4. A NOTIFICATION is acknowledged and never answered.
-//! 5. A request names a method; [`crate::ops::row_for`] classes it.
+//! 5. A request names a method; [`crate::ops::relay_class`] classes it, a method the vocabulary
+//!    does not list included: the engine relays that one verbatim, so it is never refused here.
 //!
 //! Every refusal before the body is read carries the id `null` (JSON-RPC 2.0 section 5).
 
@@ -43,6 +46,13 @@ pub const H_CONTENT_TYPE: &str = "content-type";
 /// The head field naming the protocol version the caller asks for.
 pub const H_VERSION: &str = "a2a-version";
 
+/// The head field naming the browser origin a request was driven from.
+pub const H_ORIGIN: &str = "origin";
+
+/// The message an `Origin` this plane does not admit is refused with.
+pub const ORIGIN_REFUSED: &str =
+    "this Origin is not allowed: a browser origin may drive this plane only from loopback";
+
 /// The message a body that is not JSON is refused with.
 pub const NOT_JSON: &str = "the request body is not JSON";
 
@@ -63,6 +73,9 @@ pub const STATUS_BAD_REQUEST: u32 = 400;
 
 /// The status of a media type this endpoint does not read.
 pub const STATUS_UNSUPPORTED_MEDIA_TYPE: u32 = 415;
+
+/// The status of an `Origin` this plane does not admit.
+pub const STATUS_FORBIDDEN: u32 = 403;
 
 /// The status of a notification: received, never answered.
 pub const STATUS_ACCEPTED: u32 = 202;
@@ -92,27 +105,33 @@ impl Refusal {
         }
     }
 
-    /// The words a refused `arrive` carries in its `head.error`, read back by [`Refusal::from_words`].
+    /// The words a refused `arrive` carries in its `head.error`, read back by [`Refusal::from_words`]:
+    /// `<status> <code> <id as JSON>`, a newline, then the message AS IS. The message is never
+    /// escaped, so words that echo a field line the caller sent are that line plus a fixed sentence,
+    /// and stay under `MAX_REFUSAL_TEXT` for every field line a transport admits.
     #[must_use]
     pub fn words(&self) -> String {
-        json!({
-            "status": self.status,
-            "id": self.id,
-            "code": self.code,
-            "message": self.message,
-        })
-        .to_string()
+        let id = self
+            .id
+            .as_ref()
+            .map_or_else(|| "null".to_string(), Value::to_string);
+        format!("{} {} {id}\n{}", self.status, self.code, self.message)
     }
 
     /// A refused arrival's words read back; `None` when they are not this plane's.
     #[must_use]
     pub fn from_words(text: &[u8]) -> Option<Self> {
-        let v: Value = serde_json::from_slice(text).ok()?;
+        let text = std::str::from_utf8(text).ok()?;
+        let (head, message) = text.split_once('\n')?;
+        let mut head = head.splitn(3, ' ');
+        let status = head.next()?.parse().ok()?;
+        let code = head.next()?.parse().ok()?;
+        let id: Value = serde_json::from_str(head.next()?).ok()?;
         Some(Refusal {
-            status: u32::try_from(v.get("status")?.as_u64()?).ok()?,
-            id: v.get("id").filter(|i| !i.is_null()).cloned(),
-            code: v.get("code")?.as_i64()?,
-            message: v.get("message")?.as_str()?.to_string(),
+            status,
+            id: (!id.is_null()).then_some(id),
+            code,
+            message: message.to_string(),
         })
     }
 
@@ -226,6 +245,22 @@ pub enum Decision {
     Refused(Refusal),
 }
 
+impl Decision {
+    /// The operation class an admitted arrival is a unit of: its row's, or for a method the
+    /// vocabulary does not list, the class the engine relays it as ([`crate::ops::relay_class`]).
+    /// `None` for a refused arrival.
+    #[must_use]
+    pub fn op_class(&self) -> Option<busbar_contract::ids::OpClassId> {
+        match self {
+            Decision::Request { row, .. } => Some(row.op),
+            Decision::Unlisted { method, .. } | Decision::Notice { method } => {
+                Some(ops::relay_class(method))
+            }
+            Decision::Refused(_) => None,
+        }
+    }
+}
+
 /// Whether a declared media type is one this endpoint reads: `application/json`, or any RFC 6839
 /// `+json` type.
 #[must_use]
@@ -283,9 +318,27 @@ pub fn head_refusal<'a>(field: impl Fn(&str) -> Option<&'a str>) -> Result<&'sta
     }
 }
 
+/// The `Origin` refusal: a request driven from a browser origin that is neither loopback nor one
+/// this plane lists (it lists none). A request with no `Origin` is not a browser's and passes.
+///
+/// # Errors
+///
+/// The refusal the origin earns.
+pub fn origin_refusal<'a>(field: impl Fn(&str) -> Option<&'a str>) -> Result<(), Refusal> {
+    match field(H_ORIGIN) {
+        Some(origin) if !busbar_contract::jsonrpc::origin_admitted(origin, &[]) => Err(
+            Refusal::unnamed(STATUS_FORBIDDEN, CODE_UNSUPPORTED_OPERATION, ORIGIN_REFUSED),
+        ),
+        _ => Ok(()),
+    }
+}
+
 /// DECIDE ONE ARRIVAL on the JSON-RPC line. `field` reads a request head field by its lower-case
 /// name (the first, as sent; one that is not UTF-8 reads as absent).
-pub fn decide<'a>(body: &[u8], field: impl Fn(&str) -> Option<&'a str>) -> Decision {
+pub fn decide<'a>(body: &[u8], field: impl Fn(&str) -> Option<&'a str> + Copy) -> Decision {
+    if let Err(refusal) = origin_refusal(field) {
+        return Decision::Refused(refusal);
+    }
     let version = match head_refusal(field) {
         Ok(v) => v,
         Err(refusal) => return Decision::Refused(refusal),
@@ -335,6 +388,10 @@ pub enum Dialect {
     JsonRpc,
     /// The HTTP+JSON line: the AIP-193 document.
     RestJson,
+    /// The gRPC line: the JSON-RPC error envelope at the refusal's neutral status, which the grpc
+    /// transport maps to `grpc-status` and its trailers exactly as the engine's gRPC bridge maps
+    /// the envelope its ingress answered.
+    Framed,
 }
 
 /// Render `refusal` in `dialect`. `own_status` is whether the status is the plane's own (a refused
@@ -342,7 +399,7 @@ pub enum Dialect {
 #[must_use]
 pub fn render(dialect: Dialect, refusal: &Refusal, own_status: bool) -> Rendered {
     let doc = match dialect {
-        Dialect::JsonRpc => refusal.envelope(),
+        Dialect::JsonRpc | Dialect::Framed => refusal.envelope(),
         Dialect::RestJson => refusal.aip193(),
     };
     Rendered {

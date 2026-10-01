@@ -8,8 +8,21 @@
 use super::*;
 
 /// A head with the given `content-type` and `a2a-version`.
-fn head<'a>(ct: Option<&'a str>, version: Option<&'a str>) -> impl Fn(&str) -> Option<&'a str> {
+fn head<'a>(
+    ct: Option<&'a str>,
+    version: Option<&'a str>,
+) -> impl Fn(&str) -> Option<&'a str> + Copy {
+    with_origin(None, ct, version)
+}
+
+/// A head with the given `origin`, `content-type` and `a2a-version`.
+fn with_origin<'a>(
+    origin: Option<&'a str>,
+    ct: Option<&'a str>,
+    version: Option<&'a str>,
+) -> impl Fn(&str) -> Option<&'a str> + Copy {
     move |name: &str| match name {
+        H_ORIGIN => origin,
         H_CONTENT_TYPE => ct,
         H_VERSION => version,
         _ => None,
@@ -261,15 +274,111 @@ fn a_kernel_refusal_keeps_the_kernels_status_and_is_worded_as_an_unsupported_ope
     assert_eq!(doc["error"]["data"][0]["reason"], "UNSUPPORTED_OPERATION");
 }
 
+/// THE WORDS NEVER OVERFLOW THE ABI CAP (spec ruling log 2026-09-30, new-plane refusals follow
+/// predev bytes): a refusal that echoes a field line of the largest size a transport admits, made
+/// of the characters JSON escapes, still fits `MAX_REFUSAL_TEXT`, and reads back whole.
 #[test]
-fn the_words_of_every_head_refusal_fit_the_abi_cap_for_a_bounded_header() {
-    let cap = busbar_contract::abi::plane::MAX_REFUSAL_TEXT as usize;
-    let long = "x".repeat(1024);
-    let ct = format!("text/{long}");
+fn the_words_of_a_head_refusal_echoing_the_largest_admitted_field_line_fit_the_abi_cap() {
+    use busbar_contract::abi::plane::{LARGEST_ADMITTED_FIELD_LINE, MAX_REFUSAL_TEXT};
+    let line = |name: &str, c: char| {
+        c.to_string()
+            .repeat(LARGEST_ADMITTED_FIELD_LINE as usize - name.len() - 2)
+    };
+    let (quotes, slashes) = (line(H_CONTENT_TYPE, '"'), line(H_VERSION, '\\'));
     for r in [
-        refused(decide(b"", head(Some(&ct), None))),
-        refused(decide(b"", head(None, Some(&long)))),
+        refused(decide(b"", head(Some(&quotes), None))),
+        refused(decide(b"", head(None, Some(&slashes)))),
     ] {
-        assert!(r.words().len() <= cap, "{}", r.words().len());
+        let words = r.words();
+        assert!(
+            words.len() as u64 <= MAX_REFUSAL_TEXT,
+            "{} > {MAX_REFUSAL_TEXT}",
+            words.len()
+        );
+        assert_eq!(Refusal::from_words(words.as_bytes()), Some(r));
     }
+}
+
+/// AN `Origin` IS JUDGED FIRST, as the engine's sequence judged it before every request-line rule:
+/// a non-loopback origin over a wrong media type, an unspoken version and a body that is not JSON
+/// is refused for its origin, `403` + `-32004`, no id.
+#[test]
+fn an_origin_that_is_not_loopback_is_refused_before_every_other_rule() {
+    for origin in [
+        "http://evil.example",
+        "null",
+        "file://x",
+        "https://localhost.evil.example",
+    ] {
+        let r = refused(decide(
+            b"not json",
+            with_origin(Some(origin), Some("text/plain"), Some("9.9")),
+        ));
+        assert_eq!(
+            r,
+            Refusal {
+                status: STATUS_FORBIDDEN,
+                id: None,
+                code: CODE_UNSUPPORTED_OPERATION,
+                message: ORIGIN_REFUSED.to_string(),
+            },
+            "{origin}"
+        );
+    }
+    for origin in [
+        "http://localhost",
+        "http://127.0.0.1:8080",
+        "https://[::1]:3000",
+    ] {
+        assert!(
+            matches!(
+                decide(SEND, with_origin(Some(origin), None, None)),
+                Decision::Request { .. }
+            ),
+            "{origin}"
+        );
+    }
+}
+
+/// A METHOD THE VOCABULARY DOES NOT LIST IS RELAYED, NEVER REFUSED: classed as the hop the engine
+/// relays it on, a request or a notification alike.
+#[test]
+fn an_unlisted_method_is_classed_as_the_hop_the_engine_relays_it_on() {
+    use crate::ops::{OP_MESSAGE_SEND, OP_MESSAGE_STREAM, OP_TASK_GET};
+    for (method, op) in [
+        ("vendor/Thing", OP_MESSAGE_SEND),
+        ("Frobnicate", OP_MESSAGE_SEND),
+        ("vendor/stream", OP_MESSAGE_STREAM),
+        ("tasks/get", OP_TASK_GET),
+    ] {
+        let request = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}"}}"#);
+        let notice = format!(r#"{{"jsonrpc":"2.0","method":"{method}"}}"#);
+        for body in [request, notice] {
+            assert_eq!(
+                decide(body.as_bytes(), head(None, None)).op_class(),
+                Some(op),
+                "{body}"
+            );
+        }
+    }
+    assert_eq!(
+        Decision::Refused(refused(decide(b"{", head(None, None)))).op_class(),
+        None
+    );
+}
+
+/// THE gRPC LINE'S RENDERING is the JSON-RPC envelope at the refusal's neutral status, the bytes
+/// the grpc transport maps to `grpc-status`; a kernel refusal keeps the kernel's status.
+#[test]
+fn the_grpc_rendering_is_the_envelope_at_the_neutral_status() {
+    let own = refused(decide(b"", head(Some("text/plain"), None)));
+    assert_eq!(
+        render(Dialect::Framed, &own, true),
+        render(Dialect::JsonRpc, &own, true)
+    );
+    assert_eq!(render(Dialect::Framed, &own, true).status, 415);
+    let kernel = kernel_refusal(429, "this key's budget is spent");
+    let out = render(Dialect::Framed, &kernel, false);
+    assert_eq!(out.status, 0);
+    assert_eq!(out, render(Dialect::JsonRpc, &kernel, false));
 }

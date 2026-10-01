@@ -30,9 +30,10 @@ use busbar_contract::abi::mechanism::lifecycle::{
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, Field, OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn,
-    PlaneOpenOut, PlaneRefreshOut, RefusalIn, RefusalOut, Span, REFUSAL_ARRIVE, REFUSAL_KERNEL,
+    PlaneOpenOut, PlaneRefreshOut, RefusalIn, RefusalOut, Span, REFUSAL_ARRIVE, REFUSAL_GATE,
+    REFUSAL_KERNEL,
 };
-use busbar_plane_a2a::door::{DIALECT_DOCUMENT, DIALECT_TARGET, ROUTES};
+use busbar_plane_a2a::door::{DIALECT_DOCUMENT, DIALECT_FRAMED, DIALECT_TARGET, ROUTES};
 
 use crate::root::loader::dispatch::kinds::plane::{OwnedSnapshot, Plane};
 use crate::root::loader::dispatch::{
@@ -196,9 +197,10 @@ fn refuse(p: &Plugin<Plane>, cause: u32, status: u32, dialect: u32, words: &[u8]
         .map(|f| format!("{}: {}", at(f.name), at(f.value)))
         .collect();
     format!(
-        "refusal cause={cause} {:?} status={} [{}] {}",
+        "refusal cause={cause} dialect={dialect} {:?} status={} marker={} [{}] {}",
         c.outcome,
         r.out.status,
+        r.out.marker,
         named.join(", "),
         String::from_utf8_lossy(&reply[..r.out.reply_written as usize])
     )
@@ -397,6 +399,26 @@ fn script(p: &Plugin<Plane>) -> Vec<String> {
         DIALECT_TARGET,
         b"this key may not reach that agent",
     ));
+    // On the gRPC line the plane's own refusal is the envelope at its neutral status; a gate's no
+    // keeps the kernel's status and its marker, which the plane never sets.
+    t.push(refuse(p, REFUSAL_ARRIVE, 400, DIALECT_FRAMED, &words));
+    t.push(refuse(
+        p,
+        REFUSAL_GATE,
+        403,
+        DIALECT_DOCUMENT,
+        b"a gate said no",
+    ));
+    // A method the vocabulary does not list is relayed, never refused: classed as the unary hop.
+    a.input.unit = 4;
+    a.input.fields = null();
+    a.input.fields_len = 0;
+    a.input.body = json(br#"{"jsonrpc":"2.0","id":2,"method":"vendor/Thing"}"#);
+    let c = p.call(slot::ARRIVE, &mut a);
+    t.push(format!(
+        "arrive unlisted {:?} op={} dialect={}",
+        c.outcome, a.out.op_class, a.out.dialect
+    ));
     for s in [slot::HYDRATE, slot::START] {
         t.push(format!("{s} {:?}", p.call(s, &mut gen_frame(2)).outcome));
     }
@@ -440,23 +462,56 @@ fn the_a2a_door_answers_identically_linked_and_dropped_in() {
         "SendMessage is the message_send class, on the JSON-RPC dialect, with a principal"
     );
     assert!(
-        line("arrive refused").starts_with(&format!("arrive refused {:?} {{", Outcome::Refused)),
+        line("arrive refused").starts_with(&format!(
+            "arrive refused {:?} 415 -32005 null\n",
+            Outcome::Refused
+        )),
         "{}",
         line("arrive refused")
     );
-    let own = line(&format!("refusal cause={REFUSAL_ARRIVE}"));
+    let own = line(&format!(
+        "refusal cause={REFUSAL_ARRIVE} dialect={DIALECT_DOCUMENT}"
+    ));
     assert!(
-        own.contains("status=415 [content-type: application/json] {")
+        own.contains("status=415 marker=0 [content-type: application/json] {")
             && own.contains(r#""code":-32005"#)
             && own.contains(r#""reason":"CONTENT_TYPE_NOT_SUPPORTED""#),
         "{own}"
     );
     let kernel = line(&format!("refusal cause={REFUSAL_KERNEL}"));
     assert!(
-        kernel.contains("status=0 [content-type: application/json] {")
+        kernel.contains("status=0 marker=0 [content-type: application/json] {")
             && kernel.contains(r#""code":403"#)
             && kernel.contains(r#""status":"UNIMPLEMENTED""#),
         "{kernel}"
+    );
+    let framed = line(&format!(
+        "refusal cause={REFUSAL_ARRIVE} dialect={DIALECT_FRAMED}"
+    ));
+    assert_eq!(
+        framed.split_once(' ').map(|(_, rest)| rest.replacen(
+            &format!("dialect={DIALECT_FRAMED}"),
+            &format!("dialect={DIALECT_DOCUMENT}"),
+            1
+        )),
+        own.split_once(' ').map(|(_, rest)| rest.to_string()),
+        "the gRPC line renders the envelope at the same neutral status"
+    );
+    let gate = line(&format!("refusal cause={REFUSAL_GATE}"));
+    assert!(
+        gate.contains("marker=0"),
+        "the plane never sets the gate marker: {gate}"
+    );
+    for l in linked.iter().filter(|l| l.starts_with("refusal")) {
+        assert!(l.contains(" marker=0 "), "{l}");
+    }
+    assert_eq!(
+        line("arrive unlisted"),
+        format!(
+            "arrive unlisted {:?} op=0 dialect={DIALECT_DOCUMENT}",
+            Outcome::Ready
+        ),
+        "an unlisted method is the message_send class, never refused"
     );
     if let Some(dropped) = dropped() {
         assert_eq!(
