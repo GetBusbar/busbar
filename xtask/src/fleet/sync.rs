@@ -1,8 +1,11 @@
-//! `fleet sync`: make each repo match the render and the policy. It pushes `dev` ONLY. It creates a
-//! missing release branch from `dev` (the owner-approved design) and applies the protection; it never
-//! pushes to `qa` or `main` otherwise. It NEVER creates a repo and never changes a repo setting: an
-//! EMPTY registered repo (created by hand) is seeded by pushing `dev` first and alone, which GitHub
-//! makes the default branch by itself; `qa` and `main` follow from it. It never overwrites a root
+//! `fleet sync`: make each repo match the render and the policy. It pushes `dev` ONLY and never
+//! touches `qa` or `main`: those are locked by the org ruleset and seeded by the ARCHITECT in an
+//! owner-approved window (an orphan commit holding the README "not yet released; development is on
+//! dev", LICENSE and .github/dependabot.yml). A missing release branch is REPORTED, never created
+//! from `dev`, because that would be an unreviewed release. The classic protection
+//! (`.github/fleet/protection.json`) is applied to `dev` alone. It NEVER creates a repo and never
+//! changes a repo setting: an EMPTY registered repo (created by hand) is seeded by pushing `dev`
+//! first and alone, which GitHub makes the default branch by itself. It never overwrites a root
 //! `Cargo.toml` that is not a twin's (a repo whose crates are not the two twin crate dirs needs its
 //! code moved first); that repo is reported. A branch outside the release set is deleted only when it is
 //! FULLY MERGED into `dev`, `qa` or `main` (GitHub's compare says it is behind or identical); an
@@ -25,7 +28,8 @@ pub struct Outcome {
     pub committed: bool,
     /// The repo itself was created by this run.
     pub seeded: bool,
-    pub created: Vec<String>,
+    /// Release branches the repo lacks: reported, never created.
+    pub missing: Vec<String>,
     pub deleted: Vec<String>,
     pub left: Vec<String>,
     pub errors: Vec<String>,
@@ -83,7 +87,7 @@ pub fn sync(
         }
         outcomes.push(o);
     }
-    println!("\nrepo\tdev\tseeded\tcommitted\tcreated\tdeleted\tleft (unmerged)\terrors");
+    println!("\nrepo\tdev\tseeded\tcommitted\tmissing release branches\tdeleted\tleft (unmerged)\terrors");
     let mut failed = false;
     for o in &outcomes {
         failed |= !o.errors.is_empty();
@@ -97,7 +101,7 @@ pub fn sync(
             },
             o.seeded,
             o.committed,
-            join(&o.created),
+            join(&o.missing),
             join(&o.deleted),
             join(&o.left),
             join(&o.errors)
@@ -109,8 +113,12 @@ pub fn sync(
 /// The release branches (`fleet.branches`) the repo lacks. Sync reports them and never creates one:
 /// a branch cut from `dev` would be an unreviewed release.
 pub fn missing_release_branches(fleet: &Fleet, existing: &[String]) -> Vec<String> {
-    let _ = (fleet, existing);
-    Vec::new()
+    fleet
+        .branches
+        .iter()
+        .filter(|b| !existing.contains(b))
+        .cloned()
+        .collect()
 }
 
 fn join(v: &[String]) -> String {
@@ -167,7 +175,7 @@ fn sync_repo(
     } else if git(&dir, &["branch", "-r"])?.trim().is_empty() {
         // An EMPTY repo (created by hand; sync never creates a repo or changes a setting): dev starts
         // as an orphan and is the FIRST and only branch this run pushes, so GitHub makes it the
-        // default branch by itself. qa and main follow from dev in step 3.
+        // default branch by itself. qa and main are the ARCHITECT's to seed.
         git(&dir, &["checkout", "-q", "--orphan", DEV])?;
         o.seeded = true;
         git(&dir, &["clean", "-q", "-fd"])?;
@@ -257,7 +265,8 @@ fn sync_repo(
     }
     o.dev_sha = git(&dir, &["rev-parse", "HEAD"])?;
 
-    // 3. Release branches: a missing one is created from dev.
+    // 3. Release branches: a missing one is reported, never created (not from dev: that would be an
+    // unreviewed release).
     let branches: Vec<String> = gh_ok(&[
         "api",
         "--paginate",
@@ -268,39 +277,26 @@ fn sync_repo(
     .lines()
     .map(str::to_string)
     .collect();
-    for b in &fleet.branches {
-        if !branches.contains(b) {
-            if !dry_run {
-                gh_ok(&[
-                    "api",
-                    "-X",
-                    "POST",
-                    &format!("repos/{ORG}/{repo}/git/refs"),
-                    "-f",
-                    &format!("ref=refs/heads/{b}"),
-                    "-f",
-                    &format!("sha={}", o.dev_sha),
-                ])?;
-            }
-            o.created.push(b.clone());
-        }
+    o.missing = missing_release_branches(fleet, &branches);
+    for b in &o.missing {
+        println!(
+            "== {repo}: release branch `{b}` is missing; the ARCHITECT seeds it, sync never does"
+        );
     }
 
-    // 4. The one protection, on every release branch.
+    // 4. The one protection, on dev alone: main and qa are locked by the org ruleset.
     let spec = t.protection_json()?;
     let body = std::env::temp_dir().join(format!("fleet-protection-{repo}.json"));
     std::fs::write(&body, spec.to_string()).map_err(|e| format!("{}: {e}", body.display()))?;
-    for b in &fleet.branches {
-        if !dry_run {
-            gh_ok(&[
-                "api",
-                "-X",
-                "PUT",
-                &format!("repos/{ORG}/{repo}/branches/{b}/protection"),
-                "--input",
-                &body.to_string_lossy(),
-            ])?;
-        }
+    if !dry_run {
+        gh_ok(&[
+            "api",
+            "-X",
+            "PUT",
+            &format!("repos/{ORG}/{repo}/branches/{DEV}/protection"),
+            "--input",
+            &body.to_string_lossy(),
+        ])?;
     }
     let _ = std::fs::remove_file(&body);
 
@@ -308,7 +304,7 @@ fn sync_repo(
     for b in branches.iter().filter(|b| !fleet.branches.contains(b)) {
         let mut merged_into = None;
         for base in &fleet.branches {
-            if !branches.contains(base) && !o.created.contains(base) {
+            if !branches.contains(base) {
                 continue;
             }
             let status = gh_ok(&[
