@@ -481,7 +481,8 @@ slot!(
 );
 
 slot!(
-    /// `refuse`: on an accepted stream, the call's end with its trailer block. A connection is
+    /// `refuse`: on an accepted stream, the call's end with its trailer block, or with the
+    /// refusal's neutral status mapped when the block states no `grpc-status`. A connection is
     /// never refused whole, and a dialled call is never answered.
     Refuse, RefuseIn, FramerOut, |p, i, o| {
         if i.has_stream == 0 {
@@ -489,7 +490,7 @@ slot!(
             return Outcome::Refused;
         }
         let bytes = i.bytes();
-        with(&p, i.framing, i.field(|x| &x.sink), &mut o, |c| c.end_call(i.stream, bytes))
+        with(&p, i.framing, i.field(|x| &x.sink), &mut o, |c| c.end_call(i.stream, bytes, i.status))
     }
 );
 

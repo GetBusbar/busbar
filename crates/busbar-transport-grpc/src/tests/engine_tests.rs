@@ -147,7 +147,7 @@ fn a_unary_call_half_closes_and_its_answer_ends_with_status_ok() {
     p.a.emit(1, b"\r\n", false, 0, p.now).expect("answer head");
     p.a.emit(1, &msg::frame(b"hi"), false, 0, p.now)
         .expect("answer message");
-    p.a.end_call(1, b"grpc-status: 0\r\n").expect("end");
+    p.a.end_call(1, b"grpc-status: 0\r\n", 0).expect("end");
     p.settle();
 
     // The dialled side: the head (no code), the message, the trailers carrying grpc-status, and
@@ -198,7 +198,7 @@ fn a_server_stream_carries_each_message_as_its_own_frame() {
             .expect("message");
         p.settle();
     }
-    p.a.end_call(1, b"grpc-status: 0\r\n").expect("end");
+    p.a.end_call(1, b"grpc-status: 0\r\n", 0).expect("end");
     p.settle();
     assert_eq!(
         field(&head(&p.got_d, 1).bytes, "x-answer").as_deref(),
@@ -224,7 +224,7 @@ fn a_non_zero_status_fails_the_stream_with_the_decoded_message() {
         .expect("emit");
     p.settle();
     p.a.emit(1, b"\r\n", false, 0, p.now).expect("head");
-    p.a.end_call(1, b"grpc-status: 5\r\ngrpc-message: no%20such%20key\r\n")
+    p.a.end_call(1, b"grpc-status: 5\r\ngrpc-message: no%20such%20key\r\n", 0)
         .expect("end");
     p.settle();
     let t = terminal(&p.got_d, 1).expect("the trailers");
@@ -241,7 +241,7 @@ fn a_trailers_only_answer_carries_its_status_in_the_head() {
         .expect("emit");
     p.settle();
     // Nothing emitted first: the status goes out in the one HEADERS frame.
-    p.a.end_call(1, b"grpc-status: 7\r\ngrpc-message: denied\r\n")
+    p.a.end_call(1, b"grpc-status: 7\r\ngrpc-message: denied\r\n", 0)
         .expect("end");
     p.settle();
     assert!(frames(&p.got_d, 1).is_empty(), "no message");
@@ -261,12 +261,49 @@ fn a_refusal_without_a_status_is_unknown_with_its_text() {
     p.d.emit(1, &call("/pkg.Svc/Get", &[], &[b"k"]), true, 0, p.now)
         .expect("emit");
     p.settle();
-    p.a.end_call(1, b"it broke").expect("end");
+    p.a.end_call(1, b"it broke", 0).expect("end");
     p.settle();
     let t = terminal(&p.got_d, 1).expect("the trailers");
     assert_eq!(t.status, Some(msg::UNKNOWN));
     let end = last(&p.got_d, 1).expect("terminal");
     assert_eq!(end.bytes.as_ref(), b"it broke");
+}
+
+#[test]
+fn a_refusal_naming_no_grpc_status_ends_with_its_neutral_status_mapped_as_predev() {
+    for (status, code) in [
+        (401, msg::UNAUTHENTICATED),
+        (403, msg::PERMISSION_DENIED),
+        (413, msg::RESOURCE_EXHAUSTED),
+        (429, msg::UNAVAILABLE),
+    ] {
+        let mut p = Pair::new();
+        p.d.emit(1, &call("/pkg.Svc/Get", &[], &[b"k"]), true, 0, p.now)
+            .expect("emit");
+        p.settle();
+        p.a.end_call(1, b"", status).expect("end");
+        p.settle();
+        let t = terminal(&p.got_d, 1).expect("the trailers");
+        assert_eq!(t.status, Some(code), "{status}");
+        let end = last(&p.got_d, 1).expect("terminal");
+        let words = format!("busbar answered HTTP {status}");
+        assert_eq!(end.bytes.as_ref(), words.as_bytes());
+    }
+}
+
+#[test]
+fn a_trailer_block_stating_grpc_status_wins_over_the_neutral_status() {
+    let mut p = Pair::new();
+    p.d.emit(1, &call("/pkg.Svc/Get", &[], &[b"k"]), true, 0, p.now)
+        .expect("emit");
+    p.settle();
+    p.a.end_call(1, b"grpc-status: 5\r\ngrpc-message: gone\r\n", 401)
+        .expect("end");
+    p.settle();
+    let t = terminal(&p.got_d, 1).expect("the trailers");
+    assert_eq!(t.status, Some(5));
+    let end = last(&p.got_d, 1).expect("terminal");
+    assert_eq!(end.bytes.as_ref(), b"gone");
 }
 
 #[test]
@@ -332,8 +369,8 @@ fn two_calls_share_one_connection() {
         paths,
         vec![Some(b"/pkg.Svc/A".to_vec()), Some(b"/pkg.Svc/B".to_vec())]
     );
-    p.a.end_call(2, b"grpc-status: 0\r\n").expect("end 2");
-    p.a.end_call(1, b"grpc-status: 0\r\n").expect("end 1");
+    p.a.end_call(2, b"grpc-status: 0\r\n", 0).expect("end 2");
+    p.a.end_call(1, b"grpc-status: 0\r\n", 0).expect("end 1");
     p.settle();
     assert_eq!(terminal(&p.got_d, 1).and_then(|t| t.status), Some(0));
     assert_eq!(terminal(&p.got_d, 3).and_then(|t| t.status), Some(0));

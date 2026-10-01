@@ -362,13 +362,15 @@ impl Conn {
         }
     }
 
-    /// End accepted `stream` with `trailers` (a block of `name: value` lines; `grpc-status` is
-    /// `UNKNOWN` with the bytes as its message when the block does not state one).
+    /// End accepted `stream` with `trailers` (a block of `name: value` lines). A block that does
+    /// not state `grpc-status` ends the call with the refusal's neutral `status` mapped
+    /// ([`msg::status_of_refusal`], with [`msg::refusal_message`]); with no status stated either
+    /// (`0`), `UNKNOWN` with the bytes as its message.
     ///
     /// # Errors
     ///
     /// This is a dialled connection, or no such stream.
-    pub fn end_call(&mut self, stream: u64, trailers: &[u8]) -> Result<(), Failure> {
+    pub fn end_call(&mut self, stream: u64, trailers: &[u8], status: u32) -> Result<(), Failure> {
         let Side::Accept(a) = &mut self.side else {
             return Err(Failure("a dialled call is not answered".into()));
         };
@@ -385,20 +387,14 @@ impl Conn {
             }
             block.extend_from_slice(b"\r\n");
         }
-        let head = match msg::read_head(&block, usize::MAX) {
-            Ok(Some((h, _))) if h.get(msg::GRPC_STATUS).is_some() => h,
-            _ => Head {
-                fields: vec![
-                    (msg::GRPC_STATUS.into(), msg::UNKNOWN.to_string().into_bytes()),
-                    (
-                        msg::GRPC_MESSAGE.into(),
-                        msg::encode_message(trailers).into_bytes(),
-                    ),
-                ],
-                content_length: None,
-            },
-        };
-        s.finish(&head);
+        match msg::read_head(&block, usize::MAX) {
+            Ok(Some((h, _))) if h.get(msg::GRPC_STATUS).is_some() => s.finish(&h),
+            _ if status != 0 => s.fail_reply(
+                msg::status_of_refusal(status),
+                msg::refusal_message(status).as_bytes(),
+            ),
+            _ => s.fail_reply(msg::UNKNOWN, trailers),
+        }
         Ok(())
     }
 

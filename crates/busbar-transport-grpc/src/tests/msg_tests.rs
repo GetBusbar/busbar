@@ -341,3 +341,24 @@ fn a_rendered_head_reads_back_the_same() {
         ]
     );
 }
+
+#[test]
+fn a_refusals_neutral_status_maps_as_predevs_grpc_line_answered_it() {
+    for (status, code) in [
+        (400, INTERNAL),
+        (401, UNAUTHENTICATED),
+        (403, PERMISSION_DENIED),
+        (404, UNIMPLEMENTED),
+        (413, RESOURCE_EXHAUSTED),
+        (429, UNAVAILABLE),
+        (502, UNAVAILABLE),
+        (503, UNAVAILABLE),
+        (504, UNAVAILABLE),
+        (500, UNKNOWN),
+        (418, UNKNOWN),
+        (70_000, UNKNOWN),
+    ] {
+        assert_eq!(status_of_refusal(status), code, "{status}");
+    }
+    assert_eq!(refusal_message(401), "busbar answered HTTP 401");
+}

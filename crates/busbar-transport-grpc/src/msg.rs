@@ -199,6 +199,8 @@ pub const UNKNOWN: u16 = 2;
 pub const DEADLINE_EXCEEDED: u16 = 4;
 /// `PERMISSION_DENIED`.
 pub const PERMISSION_DENIED: u16 = 7;
+/// `RESOURCE_EXHAUSTED`.
+pub const RESOURCE_EXHAUSTED: u16 = 8;
 /// `UNIMPLEMENTED`.
 pub const UNIMPLEMENTED: u16 = 12;
 /// `INTERNAL`.
@@ -220,6 +222,27 @@ pub fn status_of_http(code: u16) -> u16 {
         429 | 502 | 503 | 504 => UNAVAILABLE,
         _ => UNKNOWN,
     }
+}
+
+/// The `grpc-status` a refusal's neutral status ([`RefuseIn::status`]) stands for on a call's
+/// end: the HTTP-to-status table, and `413` as `RESOURCE_EXHAUSTED`, the table predev's gRPC line
+/// answered a refusal with (byte-equal, spec ruling 2026-09-30 "new-plane refusals follow predev
+/// bytes").
+///
+/// [`RefuseIn::status`]: busbar_contract::abi::transport::RefuseIn::status
+#[must_use]
+pub fn status_of_refusal(status: u32) -> u16 {
+    match status {
+        413 => RESOURCE_EXHAUSTED,
+        s => u16::try_from(s).map_or(UNKNOWN, status_of_http),
+    }
+}
+
+/// The `grpc-message` a refusal's neutral status ends a call with when its trailer block states
+/// no `grpc-status`: predev's words for it, byte-equal.
+#[must_use]
+pub fn refusal_message(status: u32) -> String {
+    format!("busbar answered HTTP {status}")
 }
 
 /// A `grpc-status` value, read: the canonical codes are `0..=16`; anything else is `UNKNOWN`.

@@ -515,14 +515,20 @@ impl Host {
         assert_eq!(self.emit(stream, &c, true, deadline_ns), Outcome::Ready);
     }
 
-    /// `refuse` accepted `stream` with the trailer block `bytes`.
+    /// `refuse` accepted `stream` with the trailer block `bytes`, stating no neutral status.
     pub fn refuse(&mut self, stream: u64, bytes: &[u8]) -> Outcome {
+        self.refuse_as(stream, bytes, 0)
+    }
+
+    /// `refuse` accepted `stream` with the trailer block `bytes` and the neutral `status`.
+    pub fn refuse_as(&mut self, stream: u64, bytes: &[u8], status: u32) -> Outcome {
         let mut i: RefuseIn = z();
         i.framing = self.framing;
         i.stream = stream;
         i.has_stream = 1;
         i.bytes = bytes.as_ptr();
         i.len = bytes.len();
+        i.status = status;
         i.sink = self.sink();
         let mut o: FramerOut = z();
         let r = call(self.ops.refuse, self.inst, &mut i, &mut o, slot::REFUSE);

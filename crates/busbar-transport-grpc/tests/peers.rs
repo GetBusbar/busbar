@@ -388,3 +388,35 @@ fn tonic_sees_the_status_and_message_the_host_refuses_with() {
     );
     host.close();
 }
+
+#[test]
+fn tonic_sees_a_neutral_refusal_status_as_predevs_grpc_line_answered_it() {
+    let rt = runtime();
+    let (rx, channel) = listening(&rt);
+    let call = rt.spawn(async move {
+        let mut g = tonic::client::Grpc::new(channel);
+        g.ready().await.expect("ready");
+        g.unary(
+            tonic::Request::new(b"k".to_vec()),
+            http::uri::PathAndQuery::from_static("/t.T/Get"),
+            RawCodec,
+        )
+        .await
+    });
+    let mut host = accept(&rt, &rx);
+    assert_eq!(host.pump_until(BOUND, last_in(1)), Outcome::Ready);
+    // No grpc-status in the block: the door maps the refusal's neutral status.
+    assert_eq!(host.refuse_as(1, b"", 401), Outcome::Ready);
+    host.pump(QUIET);
+    let st = rt
+        .block_on(async { tokio::time::timeout(BOUND, call).await })
+        .expect("bounded")
+        .expect("join")
+        .expect_err("a status");
+    println!("PROOF neutral refusal: {:?} {:?}", st.code(), st.message());
+    assert_eq!(
+        (st.code(), st.message()),
+        (tonic::Code::Unauthenticated, "busbar answered HTTP 401")
+    );
+    host.close();
+}
