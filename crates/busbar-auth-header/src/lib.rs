@@ -97,10 +97,6 @@ const TAIL: &AuthTail = &AuthTail {
     inbound_points: 0,
     styles: STYLE_DECLS.as_ptr(),
     styles_len: STYLE_DECLS.len(),
-    aliases: ptr::null(),
-    aliases_len: 0,
-    carriers: ptr::null(),
-    carriers_len: 0,
 };
 
 /// The diagnostic ids, in [`instance::diag`] order: 1.5.5's catalog codes where the line had one.

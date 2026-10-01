@@ -589,6 +589,8 @@ impl AuthInstance {
             ValidateIn {
                 head: in_head(),
                 settings: blob(settings, BLOB_JSON, 0),
+                err_buf: std::ptr::null_mut(),
+                err_cap: 0,
             },
             out_head(),
         );
@@ -609,10 +611,13 @@ impl AuthInstance {
                 },
                 secrets_len: blobs.len(),
                 generation: 1,
+                err_buf: std::ptr::null_mut(),
+                err_cap: 0,
             },
             OpenOut {
                 head: out_head(),
                 instance: std::ptr::null_mut(),
+                err_len: 0,
             },
         );
         let called = plugin.call(lc::OPEN, &mut f);

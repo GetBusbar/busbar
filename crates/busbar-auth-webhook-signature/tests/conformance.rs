@@ -24,12 +24,12 @@ use busbar_contract::abi::auth::{
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
+use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
-use busbar_contract::abi::mechanism::{KindCode, MECHANISM_VERSION};
 use busbar_plugin_loader::dispatch::kinds::auth::Auth;
 use busbar_plugin_loader::dispatch::{
-    in_head, load_dropped, load_linked, out_head, Bind, Diagnostic, DispatchConfig, Dispatcher,
-    Dropped, EnvelopeSink, Frame, ManifestFacts, Metric, Plugin,
+    in_head, load_dropped, load_linked, out_head, rendering_of, Bind, Diagnostic, DispatchConfig,
+    Dispatcher, Dropped, EnvelopeSink, Frame, LinkedRow, Metric, Plugin,
 };
 
 const TOKEN: &str = "twilio-auth-token";
@@ -76,14 +76,21 @@ impl EnvelopeSink for Folds {
 
 fn bind(folds: &Arc<Folds>, d: &Dispatcher) -> Bind {
     Bind {
+        instance: Arc::from("conformance"),
         max_inflight_cap: 64,
         sink: folds.clone(),
         dispatcher: d.adopter(),
+        conns: None,
     }
 }
 
+/// The compiled-in row `door` states: its Statement rendering and the door.
+fn row(door: DoorFn) -> LinkedRow {
+    LinkedRow::of(door).expect("the door states its Statement")
+}
+
 fn linked(folds: &Arc<Folds>, d: &Dispatcher) -> Plugin<Auth> {
-    load_linked::<Auth>(busbar_auth_webhook_signature::door, bind(folds, d))
+    load_linked::<Auth>(&row(busbar_auth_webhook_signature::door), bind(folds, d))
         .expect("the linked door loads")
 }
 
@@ -107,12 +114,9 @@ fn dropped(folds: &Arc<Folds>, d: &Dispatcher) -> Option<Plugin<Auth>> {
         path.is_some() || std::env::var_os("CI").is_none(),
         "the webhook-signature dropped-in image is not built under CI; a both-ways proof must not skip"
     );
-    let facts = ManifestFacts {
-        mechanism_version: MECHANISM_VERSION,
-        kind: KindCode::Auth,
-        kind_abi: KindCode::Auth.abi_version(),
-    };
-    path.map(|p| load_dropped::<Auth>(&p, &facts, bind(folds, d)).expect("the dropped door loads"))
+    let stated =
+        rendering_of(busbar_auth_webhook_signature::door).expect("the door renders its Statement");
+    path.map(|p| load_dropped::<Auth>(&p, &stated, bind(folds, d)).expect("the dropped door loads"))
 }
 
 fn open(p: &Plugin<Auth>, settings: &str, secret: &str) -> Outcome {

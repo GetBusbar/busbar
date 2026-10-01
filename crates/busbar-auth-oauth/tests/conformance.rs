@@ -25,16 +25,15 @@ use busbar_contract::abi::auth::{
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, Op, Outcome, RawOutcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
-use busbar_contract::abi::mechanism::door::Door;
+use busbar_contract::abi::mechanism::door::{Door, DoorFn};
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, CancelIn, CancelOut, GenIn, OpenIn, OpenOut, RefreshIn, TickIn, TickOut,
     ValidateIn,
 };
-use busbar_contract::abi::mechanism::{KindCode, MECHANISM_VERSION};
 use busbar_plugin_loader::dispatch::kinds::auth::Auth;
 use busbar_plugin_loader::dispatch::{
-    in_head, load_dropped, load_linked, out_head, Bind, Diagnostic, DispatchConfig, Dispatcher,
-    Dropped, EnvelopeSink, Frame, ManifestFacts, Metric, Plugin,
+    in_head, load_dropped, load_linked, out_head, rendering_of, Bind, Diagnostic, DispatchConfig,
+    Dispatcher, Dropped, EnvelopeSink, Frame, LinkedRow, Metric, Plugin,
 };
 
 fn z<T>() -> T {
@@ -88,14 +87,22 @@ impl EnvelopeSink for Folds {
 
 fn bind(folds: &Arc<Folds>, dispatcher: &Dispatcher) -> Bind {
     Bind {
+        instance: Arc::from("conformance"),
         max_inflight_cap: 64,
         sink: folds.clone(),
         dispatcher: dispatcher.adopter(),
+        conns: None,
     }
 }
 
+/// The compiled-in row `door` states: its Statement rendering and the door.
+fn row(door: DoorFn) -> LinkedRow {
+    LinkedRow::of(door).expect("the door states its Statement")
+}
+
 fn linked(folds: &Arc<Folds>, d: &Dispatcher) -> Plugin<Auth> {
-    load_linked::<Auth>(busbar_auth_oauth::door, bind(folds, d)).expect("the linked door loads")
+    load_linked::<Auth>(&row(busbar_auth_oauth::door), bind(folds, d))
+        .expect("the linked door loads")
 }
 
 fn dropped(folds: &Arc<Folds>, d: &Dispatcher) -> Option<Plugin<Auth>> {
@@ -113,12 +120,8 @@ fn dropped(folds: &Arc<Folds>, d: &Dispatcher) -> Option<Plugin<Auth>> {
         path.is_some() || std::env::var_os("CI").is_none(),
         "the busbar-auth-oauth cdylib is not built under CI; a both-ways proof must not skip"
     );
-    let facts = ManifestFacts {
-        mechanism_version: MECHANISM_VERSION,
-        kind: KindCode::Auth,
-        kind_abi: KindCode::Auth.abi_version(),
-    };
-    path.map(|p| load_dropped::<Auth>(&p, &facts, bind(folds, d)).expect("the dropped door loads"))
+    let stated = rendering_of(busbar_auth_oauth::door).expect("the door renders its Statement");
+    path.map(|p| load_dropped::<Auth>(&p, &stated, bind(folds, d)).expect("the dropped door loads"))
 }
 
 fn err(e: &Option<Vec<u8>>) -> String {
@@ -241,6 +244,8 @@ fn script(p: &Plugin<Auth>) -> Vec<String> {
         ValidateIn {
             head: in_head(),
             settings: json("[1]"),
+            err_buf: std::ptr::null_mut(),
+            err_cap: 0,
         },
         out_head(),
     );
@@ -460,7 +465,7 @@ extern "C" fn sensitive_door() -> *const Door {
 fn red_a_sensitive_field_flag_is_not_the_1_5_5_bytes() {
     let d = Dispatcher::new(DispatchConfig::default());
     let folds = Arc::new(Folds::default());
-    let red = load_linked::<Auth>(sensitive_door, bind(&folds, &d)).expect("the door loads");
+    let red = load_linked::<Auth>(&row(sensitive_door), bind(&folds, &d)).expect("the door loads");
     let t = script(&red);
     assert_eq!(
         t, EXPECTED,
@@ -488,7 +493,8 @@ extern "C" fn overrunning_door() -> *const Door {
 fn red_a_writer_that_ignores_the_host_capacity_faults() {
     let d = Dispatcher::new(DispatchConfig::default());
     let folds = Arc::new(Folds::default());
-    let red = load_linked::<Auth>(overrunning_door, bind(&folds, &d)).expect("the door loads");
+    let red =
+        load_linked::<Auth>(&row(overrunning_door), bind(&folds, &d)).expect("the door loads");
     let mut o: Frame<OpenIn, OpenOut> = Frame::new(z(), z());
     o.input.head = in_head();
     o.out.head = out_head();

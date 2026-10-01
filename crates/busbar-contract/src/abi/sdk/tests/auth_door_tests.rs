@@ -94,11 +94,10 @@ mod plugin {
         }
     }
 
-    const CARRIERS: &[AbiStr] = &[abi_str("x-alt")];
+    const CARRIERS: &[crate::abi::mechanism::door::MarkWord] = &[carrier("x-alt")];
     const TAIL: &AuthTail = &verify_tail(
         FACT_CACHEABLE,
         crate::abi::auth::AuthPoints(POINT_HEAD_BODY),
-        CARRIERS,
     );
     const FAMILIES: &[MetricFamily] = &[MetricFamily {
         name: abi_str(crate::abi::auth::METRIC_CACHE_FLUSHED),
@@ -122,6 +121,8 @@ mod plugin {
                 families_len: FAMILIES.len(),
                 secret_refs: SECRET_REFS.as_ptr(),
                 secret_refs_len: SECRET_REFS.len(),
+                mark_words: CARRIERS.as_ptr(),
+                mark_words_len: CARRIERS.len(),
                 ..statement("judge", "1.0.0", 8)
             },
             TAIL
@@ -207,10 +208,13 @@ fn open(settings: &[u8]) -> (Outcome, OpenOut) {
         secrets: secret.as_ptr(),
         secrets_len: 1,
         generation: 1,
+        err_buf: ptr::null_mut(),
+        err_cap: 0,
     };
     let mut out = OpenOut {
         head: out_head(size_of::<OpenOut>()),
         instance: ptr::null_mut(),
+        err_len: 0,
     };
     let o = cross(ops().head.open, ptr::null_mut(), &input, &mut out);
     (o, out)
@@ -483,7 +487,17 @@ fn the_ops_it_does_not_serve_are_refused_and_the_tail_states_inbound_only() {
     let tail = unsafe { &*st.kind_tail.cast::<AuthTail>() };
     assert_eq!(tail.caps, crate::abi::auth::CAP_INBOUND);
     assert_eq!(tail.inbound_points, POINT_HEAD_BODY);
-    assert_eq!(tail.carriers_len, 1);
+    // The carrier is the Statement's word mark, never a tail fact.
+    // SAFETY: the door's `'static` Statement states `mark_words_len` word marks.
+    let words = unsafe { std::slice::from_raw_parts(st.mark_words, st.mark_words_len) };
+    assert_eq!(words.len(), 1);
+    assert_eq!(
+        words[0].class,
+        crate::abi::mechanism::door::MARK_WORD_CARRIER
+    );
+    // SAFETY: the word is `'static` Statement data of `len` bytes.
+    let word = unsafe { std::slice::from_raw_parts(words[0].word.ptr, words[0].word.len) };
+    assert_eq!(word, b"x-alt");
     assert_eq!(tail.facts, FACT_CACHEABLE);
 }
 

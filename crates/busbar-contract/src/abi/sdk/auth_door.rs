@@ -33,8 +33,8 @@ use crate::abi::auth::{
     DECISION_CONTINUE, DECISION_STOP, IDENTITY_HAS_TTL, SPAN_ABSENT, STRIP_FIELD, STRIP_QUERY,
     VERDICT_IDENTITY, VERDICT_PASS, VERDICT_REJECT,
 };
-use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, Span, BLOB_ABSENT};
-use crate::abi::mechanism::door::{KindTailHead, Statement};
+use crate::abi::mechanism::call::{Blob, Outcome, Span, BLOB_ABSENT};
+use crate::abi::mechanism::door::{KindTailHead, MarkWord, Statement, MARK_WORD_CARRIER};
 use crate::abi::sdk::door::{AbiIn, AbiOut};
 use crate::abi::sdk::lent::{HostBuf, Lent};
 use crate::abi::sdk::life::{Counted, Held, Life, Refreshed, Refusal};
@@ -481,10 +481,11 @@ macro_rules! auth_verify_door {
     };
 }
 
-/// An [`AuthTail`] for a verify-only plugin reading `carriers`, with `facts` (`FACT_*`), called at
-/// the inbound `points` (a valid, non-empty set: the loader refuses any other).
+/// An [`AuthTail`] for a verify-only plugin, with `facts` (`FACT_*`), called at the inbound `points`
+/// (a valid, non-empty set: the loader refuses any other). The carriers it reads are its
+/// Statement's [`carrier`] word marks, not a tail fact.
 #[must_use]
-pub const fn verify_tail(facts: u32, points: AuthPoints, carriers: &'static [AbiStr]) -> AuthTail {
+pub const fn verify_tail(facts: u32, points: AuthPoints) -> AuthTail {
     AuthTail {
         head: KindTailHead {
             size: std::mem::size_of::<AuthTail>() as u32,
@@ -496,10 +497,17 @@ pub const fn verify_tail(facts: u32, points: AuthPoints, carriers: &'static [Abi
         inbound_points: points.bits(),
         styles: ptr::null(),
         styles_len: 0,
-        aliases: ptr::null(),
-        aliases_len: 0,
-        carriers: carriers.as_ptr(),
-        carriers_len: carriers.len(),
+    }
+}
+
+/// One inbound carrier `verify` reads (a field line's name), as the Statement states it: a
+/// [`MARK_WORD_CARRIER`] word mark in [`Statement::mark_words`].
+#[must_use]
+pub const fn carrier(name: &'static str) -> MarkWord {
+    MarkWord {
+        class: MARK_WORD_CARRIER,
+        _reserved: 0,
+        word: crate::abi::sdk::door::abi_str(name),
     }
 }
 
