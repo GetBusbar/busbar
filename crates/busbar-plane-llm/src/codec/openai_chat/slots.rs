@@ -184,8 +184,8 @@ pub(crate) fn write_web_search(req: &IrRequest) -> Option<serde_json::Value> {
     let mut written = None;
     for tool in &req.hosted_tools {
         match tool {
-            IrHostedTool::WebSearch(ws) if written.is_none() => {
-                written = Some(web_search_options(ws));
+            IrHostedTool::WebSearch(search) if written.is_none() => {
+                written = Some(web_search_options(search));
             }
             IrHostedTool::WebSearch(_) => {
                 tracing::warn!(
@@ -208,21 +208,21 @@ pub(crate) fn write_web_search(req: &IrRequest) -> Option<serde_json::Value> {
 
 /// One web search as `web_search_options`. `max_uses` and the domain filters have no Chat member:
 /// they are dropped with a warn and the search itself is kept.
-fn web_search_options(ws: &IrWebSearch) -> serde_json::Value {
-    if ws.max_uses.is_some() || !ws.allowed_domains.is_empty() || !ws.blocked_domains.is_empty() {
+fn web_search_options(search: &IrWebSearch) -> serde_json::Value {
+    if search.max_uses.is_some() || !search.allowed_domains.is_empty() || !search.blocked_domains.is_empty() {
         tracing::warn!(
             "dropping web search max_uses / domain filters on OpenAI Chat egress: \
              `web_search_options` has no member for them; the search itself is kept"
         );
     }
     let mut o = serde_json::Map::new();
-    if let Some(size) = ws.search_context_size {
+    if let Some(size) = search.search_context_size {
         o.insert(
             keys::SEARCH_CONTEXT_SIZE.to_string(),
             serde_json::json!(size.as_str()),
         );
     }
-    if let Some(loc) = &ws.user_location {
+    if let Some(loc) = &search.user_location {
         // Chat nests the members under the type's own name.
         let approx = IrUserLocation::TYPE_APPROXIMATE;
         o.insert(
