@@ -197,6 +197,13 @@ fn signer_value(cmd: &str) -> Option<String> {
     }
 }
 
+/// `\bkey\s*:\s*` at the head of a trimmed line, returning what follows.
+fn after_key<'a>(trimmed: &'a str, key: &str) -> Option<&'a str> {
+    let rest = trimmed.strip_prefix(key)?;
+    let rest = rest.trim_start();
+    rest.strip_prefix(':')
+}
+
 /// A `v*` tag trigger, in BOTH of YAML's sequence spellings.
 ///
 /// The original test saw only the block form. The flow form (`tags: ["v*"]`) is ordinary,
