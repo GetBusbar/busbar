@@ -62,7 +62,10 @@ fn an_overlay_patch_merges_onto_the_base_entry_it_names() {
         .get("corp")
         .expect("the base entry is still there");
     assert_eq!(corp.max_admin_scope.as_deref(), Some("full"), "patched");
-    assert_eq!(corp.module, "test-idp-double", "an unnamed field keeps its base value");
+    assert_eq!(
+        corp.module, "test-idp-double",
+        "an unnamed field keeps its base value"
+    );
     assert_eq!(
         corp.settings.get("issuer").and_then(|v| v.as_str()),
         Some("https://idp.example.com"),

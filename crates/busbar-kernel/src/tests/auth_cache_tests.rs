@@ -116,10 +116,22 @@ fn a_flush_cannot_be_undone_by_an_authentication_already_in_flight() {
     // A request begins: capture the generation, THEN consult the (slow) module.
     let in_flight = c.generation();
     // Meanwhile the operator revokes: flush_all clears everything and closes the window.
-    c.put("test-idp-double", "seed", &ident(Some(3600)), t, c.generation());
+    c.put(
+        "test-idp-double",
+        "seed",
+        &ident(Some(3600)),
+        t,
+        c.generation(),
+    );
     assert_eq!(c.flush_all(), 1, "the flush reports what it dropped");
     // …and only NOW does the in-flight authentication come back with its stale allow verdict.
-    c.put("test-idp-double", "victim", &ident(Some(3600)), t, in_flight);
+    c.put(
+        "test-idp-double",
+        "victim",
+        &ident(Some(3600)),
+        t,
+        in_flight,
+    );
 
     assert!(
         c.get("test-idp-double", "victim", t + 1).is_none(),
@@ -139,7 +151,13 @@ fn a_flush_cannot_be_undone_by_an_authentication_already_in_flight() {
     // A per-MODULE flush closes the same window (the generation is global on purpose).
     let in_flight2 = c.generation();
     c.flush_module("test-idp-double");
-    c.put("test-idp-double", "victim2", &ident(Some(3600)), t, in_flight2);
+    c.put(
+        "test-idp-double",
+        "victim2",
+        &ident(Some(3600)),
+        t,
+        in_flight2,
+    );
     assert!(
         c.get("test-idp-double", "victim2", t + 1).is_none(),
         "flush_module must also invalidate in-flight verdicts"

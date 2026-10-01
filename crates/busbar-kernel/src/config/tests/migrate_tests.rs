@@ -182,12 +182,26 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
     assert_eq!(token_env.as_deref(), Some("BUSBAR_ADMIN_TOKEN"));
     // group_map -> role_bindings nested under the ONE external chain module.
     assert_eq!(
-        get(&["auth", "role_bindings", "test-idp-double", "growth-eng", "group"]).as_str(),
+        get(&[
+            "auth",
+            "role_bindings",
+            "test-idp-double",
+            "growth-eng",
+            "group"
+        ])
+        .as_str(),
         Some("growth")
     );
     // Inline caps became a generated group bound to the role.
     assert_eq!(
-        get(&["auth", "role_bindings", "test-idp-double", "capped", "group"]).as_str(),
+        get(&[
+            "auth",
+            "role_bindings",
+            "test-idp-double",
+            "capped",
+            "group"
+        ])
+        .as_str(),
         Some("migrated-capped")
     );
     let ml = get(&["groups", "migrated-capped", "limits"]);
@@ -897,9 +911,11 @@ pools:
     // (b) the test-idp-double provider's max_admin_scope: hooks-register -> full. 1.5.3: the cap lives on the
     // `identity-providers:` DEFINITION, which the chain now references by bare name — so
     // the scope rewrite and the definition lift compose in ONE migrator run.
-    let oidc_cap =
-        dig(&doc, &["identity-providers", "test-idp-double", "max_admin_scope"])
-            .and_then(|v| v.as_str());
+    let oidc_cap = dig(
+        &doc,
+        &["identity-providers", "test-idp-double", "max_admin_scope"],
+    )
+    .and_then(|v| v.as_str());
     assert_eq!(
         oidc_cap,
         Some("full"),
@@ -1598,21 +1614,37 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
         Some("test-idp-double")
     );
     assert_eq!(
-        dig(&doc, &["identity-providers", "test-idp-double", "max_admin_scope"])
-            .and_then(|v| v.as_str()),
+        dig(
+            &doc,
+            &["identity-providers", "test-idp-double", "max_admin_scope"]
+        )
+        .and_then(|v| v.as_str()),
         Some("full"),
         "the ceiling written on the ADMIN chain entry lands on the one definition"
     );
     assert_eq!(
-        dig(&doc, &["identity-providers", "test-idp-double", "settings", "issuer"])
-            .and_then(|v| v.as_str()),
+        dig(
+            &doc,
+            &[
+                "identity-providers",
+                "test-idp-double",
+                "settings",
+                "issuer"
+            ]
+        )
+        .and_then(|v| v.as_str()),
         Some("https://idp.example/"),
         "the settings written on the DATA chain entry land on the same definition"
     );
     assert_eq!(
         dig(
             &doc,
-            &["identity-providers", "test-idp-double", "settings", "audience"]
+            &[
+                "identity-providers",
+                "test-idp-double",
+                "settings",
+                "audience"
+            ]
         )
         .and_then(|v| v.as_str()),
         Some("busbar"),
@@ -1621,7 +1653,12 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
     assert_eq!(
         dig(
             &doc,
-            &["identity-providers", "test-idp-double", "browser_login", "client_id"]
+            &[
+                "identity-providers",
+                "test-idp-double",
+                "browser_login",
+                "client_id"
+            ]
         )
         .and_then(|v| v.as_str()),
         Some("busbar-web"),
@@ -1629,11 +1666,7 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
     );
     // The operator credential rides onto its own definition, not the chain entry.
     assert_eq!(
-        dig(
-            &doc,
-            &["identity-providers", op, "token", "env"]
-        )
-        .and_then(|v| v.as_str()),
+        dig(&doc, &["identity-providers", op, "token", "env"]).and_then(|v| v.as_str()),
         Some("BUSBAR_ADMIN_TOKEN")
     );
     assert!(
@@ -1757,7 +1790,8 @@ fn migrate_never_drops_a_malformed_auth_block() {
 /// fell through to `Mapping::new()`), taking the operator's line with it.
 #[test]
 fn migrate_never_drops_a_malformed_identity_providers_block() {
-    let raw = "auth:\n  chain: [{ test-idp-double: { settings: { issuer: https://a.example.com } } }]\n\
+    let raw =
+        "auth:\n  chain: [{ test-idp-double: { settings: { issuer: https://a.example.com } } }]\n\
                identity-providers: 7\nproviders: {}\nmodels: {}\npools: {}\n";
     let (out, doc) = migrate_to_value(raw);
     assert_eq!(
@@ -1828,8 +1862,16 @@ fn migrate_identity_providers_splits_a_per_plane_settings_conflict() {
     let (out, doc) = migrate_to_value(raw);
 
     assert_eq!(
-        dig(&doc, &["identity-providers", "test-idp-double", "settings", "issuer"])
-            .and_then(|v| v.as_str()),
+        dig(
+            &doc,
+            &[
+                "identity-providers",
+                "test-idp-double",
+                "settings",
+                "issuer"
+            ]
+        )
+        .and_then(|v| v.as_str()),
         Some("https://data.example.com"),
         "the first plane keeps the module-named definition:\n{}",
         out.yaml
@@ -1837,7 +1879,12 @@ fn migrate_identity_providers_splits_a_per_plane_settings_conflict() {
     assert_eq!(
         dig(
             &doc,
-            &["identity-providers", "test-idp-double-admin", "settings", "issuer"]
+            &[
+                "identity-providers",
+                "test-idp-double-admin",
+                "settings",
+                "issuer"
+            ]
         )
         .and_then(|v| v.as_str()),
         Some("https://admin.example.com"),
@@ -1846,8 +1893,11 @@ fn migrate_identity_providers_splits_a_per_plane_settings_conflict() {
         out.yaml
     );
     assert_eq!(
-        dig(&doc, &["identity-providers", "test-idp-double-admin", "module"])
-            .and_then(|v| v.as_str()),
+        dig(
+            &doc,
+            &["identity-providers", "test-idp-double-admin", "module"]
+        )
+        .and_then(|v| v.as_str()),
         Some("test-idp-double"),
         "the split definition still names the same backing module"
     );
@@ -1863,7 +1913,9 @@ fn migrate_identity_providers_splits_a_per_plane_settings_conflict() {
         "the data plane keeps referencing the original definition"
     );
     assert!(
-        out.todos.iter().any(|t| t.contains("test-idp-double-admin")),
+        out.todos
+            .iter()
+            .any(|t| t.contains("test-idp-double-admin")),
         "a split must be explained in the todos; got {:?}",
         out.todos
     );

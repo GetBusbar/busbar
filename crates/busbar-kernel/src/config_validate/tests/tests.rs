@@ -1686,11 +1686,15 @@ fn test_validate_rejects_admin_token_without_module() {
     auth.admin_auth = vec![entry];
     cfg.auth = Some(auth);
     let errs = validate(&cfg).expect_err("must be a boot error");
+    // v1.5.5's text over the handed-in word (this build's double); the root pins 1.5.5's bytes.
+    let op = config::operator_provider();
     assert!(
-        errs.iter().any(|e| e
-            == "an admin-tokens token is configured but this binary was built WITHOUT the \
-                `auth-admin-tokens` feature — the admin API would be silently disabled. Rebuild \
-                with default features or wire an external admin auth module."),
+        errs.iter().any(|e| *e
+            == format!(
+                "an {op} token is configured but this binary was built WITHOUT the \
+                 `auth-{op}` feature — the admin API would be silently disabled. Rebuild \
+                 with default features or wire an external admin auth module."
+            )),
         "{errs:?}"
     );
 }
@@ -1953,11 +1957,15 @@ fn test_validate_token_on_non_operator_entry_rejected() {
     auth.chain = vec![entry];
     cfg.auth = Some(auth);
     let errs = validate(&cfg).expect_err("token on a non-operator entry must fail validation");
+    // v1.5.5's text over the handed-in word (this build's double); the root pins 1.5.5's bytes.
+    let op = config::operator_provider();
     assert!(
-        errs.iter().any(|e| e
-            == "auth chain entry 'keys' sets `token:`, which belongs to the built-in \
-                `admin-tokens` module only; move it, e.g.:\n\n    admin_auth:\n      - \
-                admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }\n"),
+        errs.iter().any(|e| *e
+            == format!(
+                "auth chain entry 'keys' sets `token:`, which belongs to the built-in \
+                 `{op}` module only; move it, e.g.:\n\n    admin_auth:\n      - \
+                 {op}: {{ token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n"
+            )),
         "expected the misplaced-token error with its relocation hint; got: {errs:?}"
     );
 }
@@ -4725,10 +4733,11 @@ fn test_validate_role_binding_module_must_be_in_a_chain() {
     ));
     let errs = validate(&cfg).expect_err("a binding under an inactive module must fail");
     assert!(
-        errs.iter()
-            .any(|e| e.contains("role_bindings names module 'test-idp-double'")
+        errs.iter().any(
+            |e| e.contains("role_bindings names module 'test-idp-double'")
                 && e.contains("neither auth.chain nor auth.admin_auth")
-                && e.contains("chain:")),
+                && e.contains("chain:")
+        ),
         "expected the inactive-module error with the chain paste stub; got: {errs:?}"
     );
 

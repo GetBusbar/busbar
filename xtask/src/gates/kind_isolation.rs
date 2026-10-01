@@ -928,8 +928,8 @@ struct MatrixCell {
 /// One `[[core-name]]` row: a word the instance vocabulary learns off a module-name constant that is
 /// NOT a plugin instance, because the spec names it as core's own (ARCHITECT ruling 2026-09-30,
 /// KERNEL-AUTH-ZERO Q1: a lower-only measurement correction, the class of INBOUND-LISTEN's
-/// "Tcp* = OS words"). `keys` is the badge press's own signed-key verifier (THE DESIGN §1: "is part
-/// of it and is not a plugin"); `literal` and `none` are core secret grammar (§1). `cite` is the
+/// "Tcp* = OS words"). `keys` is the badge press's own signed-key verifier (BUSBAR-1.6.0.md:155: "is part
+/// of it and is not a plugin"); `literal` and `none` are core secret grammar (BUSBAR-1.6.0.md:175). `cite` is the
 /// `BUSBAR-1.6.0.md:<line>` that says so.
 ///
 /// It is a MASK over the learned vocabulary, and it is refused the moment it would mask a plugin:
@@ -1399,9 +1399,10 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
             let digits: String = line.chars().take_while(char::is_ascii_digit).collect();
             if digits.is_empty() {
                 reg.errors.push(format!(
-                    "bad-core-name-cite\t{REGISTRY_FILE}:{at}\t`[[core-name]] cite = \"{}\"` \
-                     does not open with `BUSBAR-1.6.0.md:<line>`. A word is core's own only where \
-                     the spec says so; a mask no clause grants is an exemption",
+                    "bad-core-name-cite\t{REGISTRY_FILE}:{at}\t`[[core-name]] name = \"{}\"`, \
+                     cite = \"{}\"` does not open with `BUSBAR-1.6.0.md:<line>`. A word is core's \
+                     own only where the spec says so; a mask no clause grants is an exemption",
+                    v[1],
                     v[2]
                 ));
                 return;

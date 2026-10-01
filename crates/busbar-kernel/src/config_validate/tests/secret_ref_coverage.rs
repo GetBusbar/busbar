@@ -479,18 +479,21 @@ listen: "127.0.0.1:8080"
 providers: {}
 models: {}
 identity-providers:
-  admin-tokens:
-    module: admin-tokens
+  OPERATOR:
+    module: OPERATOR
     token: { env: BUSBAR_TEST_NEVER_SET_ADMIN_TOKEN }
   oracle-keys:
     module: keys
     token: { env: BUSBAR_TEST_NEVER_SET_ORACLE_UNUSED_TOKEN }
 auth:
   chain: [keys]
-  admin_auth: [admin-tokens]
+  admin_auth: [OPERATOR]
 "#;
+    // The operator credential's provider is the word the root hands in (this build's double).
+    let op = crate::config::operator_provider();
+    let yaml = yaml.replace("OPERATOR", op);
     let deploy: crate::config::DeployCfg =
-        serde_yaml::from_str(yaml).expect("the fixture DeployCfg yaml must parse");
+        serde_yaml::from_str(&yaml).expect("the fixture DeployCfg yaml must parse");
     let cfg = crate::config::resolve(&deploy, &std::collections::HashMap::new())
         .expect("the fixture config must resolve");
     let boot: Vec<String> = super::boot_resolved_secret_refs(&cfg)
@@ -500,13 +503,13 @@ auth:
     let tokens: Vec<&String> = boot.iter().filter(|p| p.ends_with(".token")).collect();
     assert_eq!(
         tokens,
-        vec![&"auth.admin_auth.admin-tokens.token".to_string()],
+        vec![&format!("auth.admin_auth.{op}.token")],
         "exactly the operator credential boot resolves must be reported; got: {boot:?}"
     );
     let err = crate::preflight::validate_builtin_secrets_resolve(&cfg)
         .expect_err("the referenced operator token cannot resolve and must be refused");
     assert!(
-        err.starts_with("auth.admin_auth.admin-tokens.token: ")
+        err.starts_with(&format!("auth.admin_auth.{op}.token: "))
             && err.contains("BUSBAR_TEST_NEVER_SET_ADMIN_TOKEN"),
         "the refusal must name the operator token, not the unreferenced definition; got: {err}"
     );
@@ -578,8 +581,8 @@ admin_tls:
   cert: { file: /run/secrets/admin-cert.pem }
   key: { file: /run/secrets/admin-key.pem }
 identity-providers:
-  admin-tokens:
-    module: admin-tokens
+  OPERATOR:
+    module: OPERATOR
     token: { env: BUSBAR_TEST_ADMIN_TOKEN }
   corp-oidc:
     module: oidc
@@ -588,11 +591,13 @@ identity-providers:
       client_secret: { env: BUSBAR_TEST_OIDC_CLIENT_SECRET }
 auth:
   chain: [keys]
-  admin_auth: [admin-tokens]
+  admin_auth: [OPERATOR]
   signing_key: { file: /run/secrets/signing.key }
 "#;
+    // The operator credential's provider is the word the root hands in (this build's double).
+    let yaml = yaml.replace("OPERATOR", crate::config::operator_provider());
     let deploy: crate::config::DeployCfg =
-        serde_yaml::from_str(yaml).expect("the fixture DeployCfg yaml must parse");
+        serde_yaml::from_str(&yaml).expect("the fixture DeployCfg yaml must parse");
     // Both providers need a catalog entry (`providers.yaml`); only the credential differs between
     // them, which is the whole point of the fixture.
     let defs: std::collections::HashMap<String, crate::config::ProviderDef> = ["hosted", "local"]

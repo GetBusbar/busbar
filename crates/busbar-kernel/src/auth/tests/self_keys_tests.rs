@@ -591,7 +591,10 @@ async fn resolve_then_issue_via_real_seam() {
 async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
     let gov = gov();
     let rb = bindings("test-idp-double", "eng", Some("team"));
-    let v = identified("test-idp-double", principal("test-idp-double:alice", &["eng"]));
+    let v = identified(
+        "test-idp-double",
+        principal("test-idp-double:alice", &["eng"]),
+    );
     let (p, team, pools) = resolve_exchange(&v, &rb, None)
         .expect("a module-namespaced subject is legitimate + verified");
     let keys = DeterministicEd25519Keys::new(gov.clone(), team, pools, Arc::new(NoopProvisioner));

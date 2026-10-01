@@ -847,11 +847,11 @@ pub use busbar_kernel::config::providers::{
 // so no caller (this module's own definition-to-registry lowering, validation, `config_validate`,
 // `store`) moves.
 pub use busbar_kernel::config::hooks::{
-    caller_in_hook_groups, default_on_error, default_policy_timeout_ms, on_error_terminal, HookCfg,
-    HookDefCfg, HookDefs, HookKind, HookStage, OnErrorCfg, PromptAccess, UserAccess,
-    is_reserved_hook_name, ALL_HOOK_STAGES, CORE_HOOK_PHASES, DEFAULT_POLICY_TIMEOUT_MS,
-    FROZEN_HOOK_NAME_WORD_SPACE,
-    ON_ERROR_FIRST, ON_ERROR_NOTHING, ON_ERROR_REJECT, ON_ERROR_WEIGHTED, RESERVED_HOOK_NAMES,
+    caller_in_hook_groups, default_on_error, default_policy_timeout_ms, is_reserved_hook_name,
+    on_error_terminal, HookCfg, HookDefCfg, HookDefs, HookKind, HookStage, OnErrorCfg,
+    PromptAccess, UserAccess, ALL_HOOK_STAGES, CORE_HOOK_PHASES, DEFAULT_POLICY_TIMEOUT_MS,
+    FROZEN_HOOK_NAME_WORD_SPACE, ON_ERROR_FIRST, ON_ERROR_NOTHING, ON_ERROR_REJECT,
+    ON_ERROR_WEIGHTED, RESERVED_HOOK_NAMES,
 };
 pub use busbar_kernel::config::pools::{
     default_consecutive_n, default_cooldown, default_failover_timeout, default_max_cooldown,

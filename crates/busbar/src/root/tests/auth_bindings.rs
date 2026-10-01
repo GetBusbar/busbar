@@ -253,7 +253,9 @@ fn the_frozen_hook_name_word_space_is_1_5_5_s() {
     );
     assert!(busbar_kernel::config::is_reserved_hook_name("admin-tokens"));
     assert!(busbar_kernel::config::is_reserved_hook_name("tokens"));
-    assert!(!busbar_kernel::config::is_reserved_hook_name("admin-tokens-2"));
+    assert!(!busbar_kernel::config::is_reserved_hook_name(
+        "admin-tokens-2"
+    ));
 }
 
 /// Walk `path` down a migrated document.
@@ -282,7 +284,11 @@ fn migration_writes_the_14x_admin_token_as_1_5_5_did() {
         Some("admin-tokens")
     );
     assert_eq!(
-        dig(&doc, &["identity-providers", "admin-tokens", "token", "env"]).and_then(|v| v.as_str()),
+        dig(
+            &doc,
+            &["identity-providers", "admin-tokens", "token", "env"]
+        )
+        .and_then(|v| v.as_str()),
         Some("BUSBAR_ADMIN_TOKEN")
     );
 }
@@ -304,7 +310,116 @@ fn migration_lifts_the_inline_operator_entry_as_1_5_5_did() {
         .collect();
     assert_eq!(chain, ["admin-tokens"]);
     assert_eq!(
-        dig(&doc, &["identity-providers", "admin-tokens", "token", "env"]).and_then(|v| v.as_str()),
+        dig(
+            &doc,
+            &["identity-providers", "admin-tokens", "token", "env"]
+        )
+        .and_then(|v| v.as_str()),
         Some("BUSBAR_ADMIN_TOKEN")
+    );
+}
+
+/// Every `${NAME}` token in `raw` (the brace interpolation form), deduped.
+fn braced_env_vars(raw: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = raw;
+    while let Some(i) = rest.find("${") {
+        rest = &rest[i + 2..];
+        let Some(j) = rest.find('}') else { break };
+        let name = &rest[..j];
+        if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            out.push(name.to_string());
+        }
+        rest = &rest[j + 1..];
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// One lock for this file's set -> interpolate -> remove env sequences.
+static SHIPPED_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The shipped example config.yaml must parse and resolve cleanly against providers.yaml
+/// (every referenced provider/model exists; the example stays a working starting point).
+///
+/// MOVED FROM the kernel's config tests (ARCHITECT 2026-09-30, KERNEL-AUTH-ZERO Q2): the shipped
+/// config names the operator credential by the root legacy table's word, so it resolves on the
+/// words this root hands in, not on the kernel's test double.
+#[test]
+fn test_shipped_example_config_resolves() {
+    use busbar_kernel::config::{interpolate_env, resolve, DeployCfg, ProviderDef};
+    use std::collections::HashMap;
+    hand_in_the_root_words();
+    busbar_kernel::test_support::register_neutral_test_plane();
+    let _env_guard = SHIPPED_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let providers_raw =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../providers.yaml"))
+            .unwrap();
+    let defs: HashMap<String, ProviderDef> =
+        serde_yaml::from_str(&providers_raw).expect("parse providers.yaml");
+
+    let config_raw =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config.yaml")).unwrap();
+    if config_raw.contains("api_key_env:") {
+        eprintln!(
+            "SKIP test_shipped_example_config_resolves: config.yaml still uses the pre-1.5.0 \
+             surface (api_key_env:); re-enable by migrating the shipped example"
+        );
+        return;
+    }
+
+    // Booting the shipped default config must NOT require BUSBAR_ADMIN_TOKEN to be set: no
+    // brace-form interpolation of it may appear anywhere (comments included, since
+    // interpolate_env scans the whole file).
+    assert!(
+        !config_raw.contains("${BUSBAR_ADMIN_TOKEN}"),
+        "the shipped config must not force a mandatory boot failure on unset BUSBAR_ADMIN_TOKEN"
+    );
+    std::env::remove_var("BUSBAR_ADMIN_TOKEN");
+
+    // Satisfy every `${VAR}` the example interpolates, with placeholder values; record which vars
+    // this test set so it can clean up (process-global env, parallel tests).
+    let mut set_here: Vec<String> = Vec::new();
+    for var in braced_env_vars(&config_raw) {
+        if std::env::var(&var).is_err() {
+            std::env::set_var(&var, "example-token");
+            set_here.push(var);
+        }
+    }
+
+    let expanded = interpolate_env(&config_raw).expect("expand ${ENV} in example config.yaml");
+    let deploy: DeployCfg = serde_yaml::from_str(&expanded).expect("parse example config.yaml");
+    let cfg = resolve(&deploy, &defs).expect("example config.yaml must resolve");
+    assert!(
+        !cfg.models.is_empty(),
+        "the shipped example must configure at least one model"
+    );
+
+    for var in set_here {
+        std::env::remove_var(var);
+    }
+}
+
+/// The operator credential's refusals, byte for byte v1.5.5's, over the root's words (moved from the
+/// kernel's config_validate tests, which now assert the same text over the kernel's double).
+/// `git show v1.5.5:crates/busbar/src/config_validate/mod.rs`, 1175.
+#[test]
+fn the_operator_refusals_are_1_5_5_s_bytes() {
+    let op = operator_words().provider;
+    assert_eq!(
+        busbar_kernel_identity::operator::unanswered_token(op),
+        "an admin-tokens token is configured but this binary was built WITHOUT the \
+         `auth-admin-tokens` feature — the admin API would be silently disabled. Rebuild \
+         with default features or wire an external admin auth module."
+    );
+    assert_eq!(
+        busbar_kernel_identity::operator::misplaced_token(op, "keys"),
+        "auth chain entry 'keys' sets `token:`, which belongs to the built-in \
+         `admin-tokens` module only; move it, e.g.:\n\n    admin_auth:\n      - \
+         admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }\n"
     );
 }

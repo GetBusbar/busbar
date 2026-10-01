@@ -225,7 +225,7 @@ fn module_decls(rel: &str, text: &str) -> Vec<Decl> {
 ///
 /// `core` is the ledger's `[[core-name]]` table: words a module-name constant spells that the spec
 /// names as CORE'S OWN rather than a plugin's (`keys`, the badge press's verifier; `literal` and
-/// `none`, core secret grammar — THE DESIGN §1). They are struck from the learned vocabulary after
+/// `none`, core secret grammar — BUSBAR-1.6.0.md:155,175). They are struck from the learned vocabulary after
 /// both derivations run, and ONLY when no plugin could be what they name: a census id (a plugin
 /// crate is named for it) or a constant declared outside the kernel and contract tiers keeps the
 /// name counted and turns the row RED (`core-name-is-plugin`).
@@ -301,8 +301,8 @@ pub fn vocabulary(
             .unwrap_or("")
             .trim_end_matches(".rs")
             .to_string();
-        let decl_kind = super::owning_dir(&d.rel)
-            .and_then(|dir| dir_kind.get(dir.as_str()).copied().flatten());
+        let decl_kind =
+            super::owning_dir(&d.rel).and_then(|dir| dir_kind.get(dir.as_str()).copied().flatten());
         let krate_kind = decl_kind.filter(|k| axes.contains(k));
         for val in vals {
             if val.trim().is_empty() {
@@ -331,7 +331,10 @@ pub fn vocabulary(
                     kinds.extend(ks.iter().copied());
                 }
             }
-            declared_in.entry(val.clone()).or_default().insert(decl_kind);
+            declared_in
+                .entry(val.clone())
+                .or_default()
+                .insert(decl_kind);
             let e = values.entry(val).or_default();
             e.0.extend(kinds);
             e.1.push(format!("{}:{} {}", d.rel, d.line, d.ident));
@@ -399,7 +402,10 @@ pub fn vocabulary(
                             .join("; ")
                     )
                 } else {
-                    format!("the plugin crate(s) {} are named for it", plugin_owner.join(", "))
+                    format!(
+                        "the plugin crate(s) {} are named for it",
+                        plugin_owner.join(", ")
+                    )
                 }
             ));
             continue;
@@ -848,7 +854,7 @@ pub fn selftest<'a>(
         );
         if plugin {
             ov.set(
-                "crates/busbar-auth-zebedee/Cargo.toml".to_string(),
+                "crates/busbar-auth-zebedee/Cargo.toml",
                 "[package]\nname = \"busbar-auth-zebedee\"\nversion = \"0.0.0\"\n".to_string(),
             );
         }

@@ -3534,7 +3534,7 @@ mod disposition_matrix_tests {
                     .to_string(),
                 admin_tls: None,
                 auth: None,
-                admin_auth: busbar_kernel::config::default_admin_auth_names(),
+                admin_auth: vec!["admin-tokens".to_string()],
                 groups: std::collections::BTreeMap::new(),
                 rate_card: None,
                 per_request_fee: 0,

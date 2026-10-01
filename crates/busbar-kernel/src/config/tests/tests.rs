@@ -614,87 +614,10 @@ fn a_config_naming_a_plane_owned_section_refuses_cleanly_with_no_plane_registere
     );
 }
 
-/// The shipped example config.yaml must parse and resolve cleanly against providers.yaml
-/// (every referenced provider/model exists; the example stays a working starting point).
-///
-/// TRANSITIONAL SKIP: until the shipped config.yaml is migrated to the 1.5.0 surface (SecretRefs,
-/// auth chain, no governance block), a pre-1.5 marker (`api_key_env:`) short-circuits this test
-/// with a loud note instead of failing the suite on a file another change owns. Remove the guard
-/// once config.yaml is migrated.
-#[test]
-fn test_shipped_example_config_resolves() {
-    crate::test_support::register_neutral_test_plane();
-    // Hold the shared-env lock across the whole set/interpolate/remove sequence (recover on
-    // poison: a panic in another holder must not block this test).
-    let _env_guard = CLIENT_TOKEN_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-    let providers_raw =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../providers.yaml"))
-            .unwrap();
-    let defs: HashMap<String, ProviderDef> =
-        serde_yaml::from_str(&providers_raw).expect("parse providers.yaml");
-
-    let config_raw =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config.yaml")).unwrap();
-    if config_raw.contains("api_key_env:") {
-        eprintln!(
-            "SKIP test_shipped_example_config_resolves: config.yaml still uses the pre-1.5.0 \
-             surface (api_key_env:); re-enable by migrating the shipped example"
-        );
-        return;
-    }
-
-    // Booting the shipped default config must NOT require BUSBAR_ADMIN_TOKEN to
-    // be set: no brace-form interpolation of it may appear anywhere (comments included, since
-    // interpolate_env scans the whole file).
-    assert!(
-        !config_raw.contains("${BUSBAR_ADMIN_TOKEN}"),
-        "the shipped config must not force a mandatory boot failure on unset BUSBAR_ADMIN_TOKEN"
-    );
-    std::env::remove_var("BUSBAR_ADMIN_TOKEN");
-
-    // Satisfy every `${VAR}` the example interpolates, with unique-per-run placeholder values;
-    // record which vars this test set so it can clean up (process-global env, parallel tests).
-    let mut set_here: Vec<String> = Vec::new();
-    for var in braced_env_vars(&config_raw) {
-        if std::env::var(&var).is_err() {
-            std::env::set_var(&var, "example-token");
-            set_here.push(var);
-        }
-    }
-
-    let expanded = interpolate_env(&config_raw).expect("expand ${ENV} in example config.yaml");
-    let deploy: DeployCfg = serde_yaml::from_str(&expanded).expect("parse example config.yaml");
-    let cfg = resolve(&deploy, &defs).expect("example config.yaml must resolve");
-    assert!(
-        !cfg.models.is_empty(),
-        "the shipped example must configure at least one model"
-    );
-
-    for var in set_here {
-        std::env::remove_var(var);
-    }
-}
-
-/// Every `${NAME}` token in `raw` (the brace interpolation form), deduped.
-fn braced_env_vars(raw: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut rest = raw;
-    while let Some(i) = rest.find("${") {
-        rest = &rest[i + 2..];
-        let Some(j) = rest.find('}') else { break };
-        let name = &rest[..j];
-        if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            out.push(name.to_string());
-        }
-        rest = &rest[j + 1..];
-    }
-    out.sort();
-    out.dedup();
-    out
-}
+// `test_shipped_example_config_resolves` lives in the composition root
+// (crates/busbar/src/root/tests/auth_bindings.rs): the shipped config.yaml names the operator
+// credential by the root legacy table's word, which the kernel does not spell (ARCHITECT
+// 2026-09-30, KERNEL-AUTH-ZERO Q2).
 
 /// Tests sharing a process-global env var use a set -> interpolate -> remove
 /// sequence. Under the default parallel test runner, an unguarded sibling could `remove_var`
@@ -2130,13 +2053,14 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
 #[test]
 fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
     crate::test_support::register_neutral_test_plane();
-    let deploy: DeployCfg = serde_yaml::from_str(
+    let op = crate::config::operator_provider();
+    let deploy: DeployCfg = serde_yaml::from_str(&format!(
         "identity-providers:\n  \
-           corp-ad: { module: ad, max_admin_scope: full, settings: { server: \"ldaps://corp\" } }\n  \
-           admin-tokens: { module: admin-tokens, token: { env: BUSBAR_T_AD_TOKEN } }\n\
-         auth:\n  chain: [keys, corp-ad]\n  admin_auth: [admin-tokens, corp-ad]\n\
-         providers: {}\nmodels: {}\npools: {}\n",
-    )
+           corp-ad: {{ module: ad, max_admin_scope: full, settings: {{ server: \"ldaps://corp\" }} }}\n  \
+           {op}: {{ module: {op}, token: {{ env: BUSBAR_T_AD_TOKEN }} }}\n\
+         auth:\n  chain: [keys, corp-ad]\n  admin_auth: [{op}, corp-ad]\n\
+         providers: {{}}\nmodels: {{}}\npools: {{}}\n",
+    ))
     .expect("the 1.5.3 identity-providers grammar parses");
 
     let mut errors = Vec::new();
@@ -2182,11 +2106,12 @@ fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
 #[test]
 fn test_max_admin_scope_default_is_most_restrictive_except_the_operator_credential() {
     crate::test_support::register_neutral_test_plane();
-    let deploy: DeployCfg = serde_yaml::from_str(
-        "identity-providers:\n  corp-ad: { module: ad }\n  admin-tokens: { module: admin-tokens }\n\
-         auth:\n  chain: [corp-ad]\n  admin_auth: [admin-tokens, corp-ad]\n\
-         providers: {}\nmodels: {}\npools: {}\n",
-    )
+    let op = crate::config::operator_provider();
+    let deploy: DeployCfg = serde_yaml::from_str(&format!(
+        "identity-providers:\n  corp-ad: {{ module: ad }}\n  {op}: {{ module: {op} }}\n\
+         auth:\n  chain: [corp-ad]\n  admin_auth: [{op}, corp-ad]\n\
+         providers: {{}}\nmodels: {{}}\npools: {{}}\n",
+    ))
     .expect("parses");
     let mut errors = Vec::new();
     let auth = crate::config::resolve_auth(
@@ -2895,15 +2820,16 @@ fn test_resolve_projects_admin_auth_names() {
 
     // auth present with a custom admin chain: names projected in order.
     let mut deploy = base_deploy();
+    let op = crate::config::operator_provider();
     let auth: crate::config::AuthDeployCfg =
-        serde_yaml::from_str("chain: [keys]\nadmin_auth: [admin-tokens, ad]\n")
+        serde_yaml::from_str(&format!("chain: [keys]\nadmin_auth: [{op}, ad]\n"))
             .expect("auth parses");
     deploy.auth = Some(auth);
     // 1.5.3: the operator credential + the external IdP's ceiling live on their DEFINITIONS.
-    deploy.identity_providers = serde_yaml::from_str(
-        "admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }\n\
-         ad: { module: ad, max_admin_scope: read-only }\n",
-    )
+    deploy.identity_providers = serde_yaml::from_str(&format!(
+        "{op}: {{ module: {op}, token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n\
+         ad: {{ module: ad, max_admin_scope: read-only }}\n",
+    ))
     .expect("identity-providers parse");
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
     assert_eq!(cfg.admin_auth, [crate::config::operator_provider(), "ad"]);

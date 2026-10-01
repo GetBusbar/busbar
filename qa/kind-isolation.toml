@@ -1846,17 +1846,17 @@ drain = "none: the #36 kernel group is intra-tier by design. What the paired [[c
 [[core-name]]
 kind = "auth"
 name = "keys"
-cite = "BUSBAR-1.6.0.md:155 — THE DESIGN §1: the badge press's auth verify (`keys`, core's own signed-key verifier, is part of it and is not a plugin)"
+cite = "BUSBAR-1.6.0.md:155 — THE DESIGN, the kernel: the badge press's auth verify (`keys`, core's own signed-key verifier, is part of it and is not a plugin)"
 
 [[core-name]]
 kind = "secret"
 name = "literal"
-cite = "BUSBAR-1.6.0.md:175 — THE DESIGN §1: `literal` and `none` are core secret grammar"
+cite = "BUSBAR-1.6.0.md:175 — THE DESIGN, the kernel: `literal` and `none` are core secret grammar"
 
 [[core-name]]
 kind = "secret"
 name = "none"
-cite = "BUSBAR-1.6.0.md:175 — THE DESIGN §1: `literal` and `none` are core secret grammar"
+cite = "BUSBAR-1.6.0.md:175 — THE DESIGN, the kernel: `literal` and `none` are core secret grammar"
 
 [[instance]]
 crate = "busbar"

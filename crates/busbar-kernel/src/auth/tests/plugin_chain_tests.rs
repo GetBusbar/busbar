@@ -656,7 +656,10 @@ fn untrusted_auth_plugin_fails_closed_not_open() {
         &Default::default(),
     )
     .unwrap_err();
-    assert!(err.contains("test-idp-double"), "names the auth module: {err}");
+    assert!(
+        err.contains("test-idp-double"),
+        "names the auth module: {err}"
+    );
     assert!(
         err.contains("allow_unsigned"),
         "carries the trust reason: {err}"
@@ -707,7 +710,10 @@ fn missing_auth_plugin_is_loud_boot_failure() {
         &Default::default(),
     )
     .unwrap_err();
-    assert!(err.contains("test-idp-double"), "names the missing module: {err}");
+    assert!(
+        err.contains("test-idp-double"),
+        "names the missing module: {err}"
+    );
     assert!(
         err.contains("no plugin matching") && err.contains("is installed in"),
         "explains it is unresolved: {err}"
@@ -731,7 +737,10 @@ fn missing_auth_plugin_is_loud_boot_failure() {
         &crate::config::secret::SecretResolver::builtins_only(),
     )
     .unwrap_err();
-    assert!(mw_err.contains("test-idp-double"), "middleware names it: {mw_err}");
+    assert!(
+        mw_err.contains("test-idp-double"),
+        "middleware names it: {mw_err}"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -757,7 +766,10 @@ fn auth_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
     )
     .unwrap_err();
     assert!(err.contains("plugins.enabled"), "names the flag: {err}");
-    assert!(err.contains("test-idp-double"), "names the auth module: {err}");
+    assert!(
+        err.contains("test-idp-double"),
+        "names the auth module: {err}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
