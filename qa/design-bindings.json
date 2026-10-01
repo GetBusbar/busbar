@@ -15,16 +15,16 @@
  },
  "counts": {
   "bindings": 104,
-  "mapped": 104,
-  "unproven": 0,
+  "mapped": 100,
+  "unproven": 4,
   "unmapped": 0,
   "gap": 0,
   "checks_by_kind": {
-   "gate": 13,
+   "gate": 9,
    "lint": 5,
-   "oracle-cell": 65,
-   "oracle-family": 5,
-   "test": 458
+   "oracle-cell": 61,
+   "oracle-family": 4,
+   "test": 436
   }
  },
  "dropped_since_last_write": [],
@@ -84,7 +84,7 @@
    "surface": "per-lane `max_concurrent`",
    "binding": "fail, never wait: `try_admit` → `AtCapacity`, the lane is skipped within the pick; waiting only under `on_exhausted: queue { max_ms }` with 1.5.5's semaphore",
    "inventory": "proxy-hooks, governance",
-   "status": "mapped",
+   "status": "unproven",
    "checks": [
     {
      "kind": "test",
@@ -122,8 +122,8 @@
      "status": "mapped"
     }
    ],
-   "verdict": "PASS",
-   "verdict_detail": "test:excluded_reasons_records_at_capacity, test:at_capacity_reject_sheds_503_not_queued, test:queue_dispatches_when_permit_frees_before_deadline, test:queue_times_out_to_503_when_capacity_never_frees, gate:scripts/release-check.sh"
+   "verdict": "FAIL",
+   "verdict_detail": "partly proven; a referenced check settles nothing: gate:scripts/release-check.sh (exists on disk, but nothing under .github/workflows invokes it, directly or through the qa segment manifest, and it is no registered gate the turnstile runs -- a gate nobody runs compares nothing)"
   },
   {
    "id": "PB-3",
@@ -176,7 +176,7 @@
    "surface": "`on_exhausted` terminals",
    "binding": "default (key absent; `Status503` is the variant name, not a config spelling): 503 + `Retry-After` = the soonest GENUINE (> 0) cooldown among `lane_admissible` members as-is, else `AT_CAPACITY_RETRY_AFTER_SECS` = 2, the whole `.max(1)` · `least_bad` (one breaker-bypassing attempt) · `{ fallback_pool }` (cross-pool hop, restricts re-applied, plain SWRR, multi-level, visited guard; the charge follows the ATTEMPTED pool — PB-47) · `{ queue: { max_ms } }` (FIFO permit park ONLY if some exclusion was `AtCapacity`, else the 503 immediately; the winner re-checks `try_admit_breaker`; `busbar_pool_queued` gauge) — implemented by the egress unit's walk",
    "inventory": "proxy-hooks (`walk.rs:49-65`, `:176-334`), config",
-   "status": "mapped",
+   "status": "unproven",
    "checks": [
     {
      "kind": "oracle-cell",
@@ -291,8 +291,8 @@
      "status": "mapped"
     }
    ],
-   "verdict": "PASS",
-   "verdict_detail": "oracle-cell:crosscut.traps|exhausted-retry-after-floor, oracle-cell:route.failover|fo|all-down, oracle-cell:route.failover|lb|member-down, test:at_capacity_default_no_on_exhausted_sheds_503, test:retry_after_reflects_cooldown_when_a_member_is_tripped, test:retry_after_has_saturation_floor_when_purely_at_capacity, test:retry_after_empty_candidate_set_uses_floor_not_one, test:least_bad_still_serves_the_only_member_after_it_was_tried, test:a_fallback_pool_applies_its_own_exclusions, test:at_capacity_fallback_chain_spills_through_to_third_pool, test:at_capacity_self_referential_fallback_stays_503, test:queue_skips_wait_and_rejects_when_no_candidate_at_capacity, test:queue_won_permit_but_breaker_now_open_never_dispatches, test:queue_two_waiters_one_freed_permit_wakes_exactly_one, test:test_scrape_gauges_pool_queued_reads_live_depth, gate:scripts/release-check.sh"
+   "verdict": "FAIL",
+   "verdict_detail": "partly proven; a referenced check settles nothing: gate:scripts/release-check.sh (exists on disk, but nothing under .github/workflows invokes it, directly or through the qa segment manifest, and it is no registered gate the turnstile runs -- a gate nobody runs compares nothing)"
   },
   {
    "id": "PB-5",
@@ -1591,7 +1591,7 @@
    "surface": "`GET /auth/token`",
    "binding": "the browser exchange verbatim: unauthenticated exact-path bypass, `200 text/html` or `302` to the IdP, `?logout` / `?code` / `?method` / `?refresh` dispatch",
    "inventory": "routes-admin",
-   "status": "mapped",
+   "status": "unproven",
    "checks": [
     {
      "kind": "oracle-cell",
@@ -1650,8 +1650,8 @@
      "status": "mapped"
     }
    ],
-   "verdict": "PASS",
-   "verdict_detail": "oracle-cell:http.crosscut|auth-token|GET-none, test:chooser_renders_0_1_n_buttons, test:redirect_begin_still_redirects, test:logout_renders_signed_out_and_clears_cookie, test:callback_state_mismatch_400, test:refresh_rotates_key_and_revokes_the_old_one, test:an_audience_bound_token_is_confined_to_its_door_plane, gate:scripts/release-check-1.5.2.sh"
+   "verdict": "FAIL",
+   "verdict_detail": "partly proven; a referenced check settles nothing: gate:scripts/release-check-1.5.2.sh (exists on disk, but nothing under .github/workflows invokes it, directly or through the qa segment manifest, and it is no registered gate the turnstile runs -- a gate nobody runs compares nothing)"
   },
   {
    "id": "PB-34",
@@ -3450,7 +3450,7 @@
    "surface": "documented behaviour",
    "binding": "the 27 README (:1047-1073) and 29 CHANGELOG (:1087-1115) claims, the two CONTRADICTED rows (:1061, :1099) each with an explicit cell of the ops cross-check are pinned as code-wins: each row's actual behaviour is the parity target, not the documented one; one cell family (`documented-vs-actual`)",
    "inventory": "ops",
-   "status": "mapped",
+   "status": "unproven",
    "checks": [
     {
      "kind": "oracle-family",
@@ -3467,8 +3467,8 @@
      "proves": "the 27 README and 29 CHANGELOG documented-behaviour claims: every claim is pinned by a shadow-oracle cell the golden RECORDED or excused in writing as prose, the claim run for each document is complete and contiguous, the counts are re-derived rather than trusted, and both CONTRADICTED rows stay flagged, cell-pinned and code-wins. Reads qa/documented-claims.json, which is the register the gate asserts, not a gate itself."
     }
    ],
-   "verdict": "PASS",
-   "verdict_detail": "oracle-family:documented, gate:scripts/documented-claims-check.sh"
+   "verdict": "FAIL",
+   "verdict_detail": "partly proven; a referenced check settles nothing: gate:scripts/documented-claims-check.sh (exists on disk, but nothing under .github/workflows invokes it, directly or through the qa segment manifest, and it is no registered gate the turnstile runs -- a gate nobody runs compares nothing)"
   },
   {
    "id": "PB-72",

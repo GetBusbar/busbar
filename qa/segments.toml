@@ -7,7 +7,7 @@
 # can never read as a full one).
 #
 # Adding a segment is a ONE-LINE change: a new [[segment]] block. Arming a reserved segment is
-# `status = "reserved"` -> `"active"`. No YAML plumbing changes — the same posture qa-gate.yml
+# `status = "reserved"` -> `"active"`. No YAML plumbing changes — the same posture scripts/qa-gate-run.sh
 # already uses looping the plugins.yaml registry feed.
 #
 # ── THE HONESTY RULE ─────────────────────────────────────────────────────────────────────────────
@@ -21,7 +21,7 @@
 #   id            segment name (also the CI job/leg name).
 #   status        active   -> runs its `run` command; the umbrella is red if it fails.
 #                 reserved -> defined-but-INERT. NOT part of the green claim; named in the scope line.
-#   tier          fast      -> pure in-process / fixture / script; cheap, per-push ci.yml cadence.
+#   tier          fast      -> pure in-process / fixture / script; cheap, per-push cadence.
 #                 live-mock -> stands up REAL upstreams/receivers (the release-check soak); runs on
 #                              the `qa`-branch promotion, NOT every dev push.
 #   run           the command the segment runs (cwd = repo root). Reserved segments still name their
@@ -34,7 +34,7 @@
 # FIELDS ([[segment_template]])
 #   id_prefix     expanded ids are `<id_prefix>-<repo>`.
 #   source        the registry the set is drawn from. `plugins.yaml` is read through
-#                 scripts/plugin-registry-check.sh --list (the same feed qa-gate.yml's checkout loop
+#                 scripts/plugin-registry-check.sh --list (the same feed qa-gate-run.sh's checkout loop
 #                 and release-check.sh's suite loop already iterate).
 #   status/tier   applied to every expanded segment.
 #   run           `{repo} {dir} {alias} {kind} {service} {release_gate} {gate}` are substituted per

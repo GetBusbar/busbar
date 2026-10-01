@@ -269,7 +269,7 @@ def verdict_plane_neutrality(root, hits_dir):
         "count": total,
         "breakdown": cats,
         "selftest": "pass" if st_code == 0 else "fail",
-        "runs_in": ["ci.yml:structure-lint", "qa/segments.toml:plane-purity"],
+        "runs_in": ["gate:plane-purity", "qa/segments.toml:plane-purity"],
         "drilldown": {"type": "hit-list", "artifact": "plane-purity-hits.tsv"},
     })
 
@@ -361,7 +361,7 @@ def verdict_composability(root, run_cargo):
         noplugins_status = "pass" if code == 0 else "fail"
         code, _ = run(["bash", "scripts/proto-deletion-gate.sh"], cwd=root, timeout=5400)
         proto_status = "pass" if code == 0 else "fail"
-    # EVERY SOURCE NAMES ITS OWN EVIDENCE. These three are marked from sibling ci.yml job results,
+    # EVERY SOURCE NAMES ITS OWN EVIDENCE. These three are marked from sibling job results,
     # and mark_sources() will not stamp a pass onto a source whose evidence is not in the tree — so
     # each one names the gate script that job actually runs. Without an `evidence` key at all they
     # were exempt from that guard entirely (see mark_sources' docstring).
@@ -372,7 +372,7 @@ def verdict_composability(root, run_cargo):
         "unit": "failed assertions",
         "evidence": "scripts/no-plugins-gate.sh",
         "evidence_present": (root / "scripts/no-plugins-gate.sh").is_file(),
-        "note": "cargo-backed; run in ci.yml no-plugins-gate job",
+        "note": "cargo-backed; run by scripts/no-plugins-gate.sh",
     })
     sources.append({
         "id": "plane-delete-test",
@@ -381,7 +381,7 @@ def verdict_composability(root, run_cargo):
         "planes": planes,
         "evidence": "scripts/plane-delete-test.sh",
         "evidence_present": (root / "scripts/plane-delete-test.sh").is_file(),
-        "note": "cargo-backed; run in ci.yml structure-lint (--all)",
+        "note": "cargo-backed; run by scripts/plane-delete-test.sh --all",
     })
     sources.append({
         "id": "proto-deletion-gate",
@@ -389,7 +389,7 @@ def verdict_composability(root, run_cargo):
         "status": proto_status,
         "evidence": "scripts/proto-deletion-gate.sh",
         "evidence_present": (root / "scripts/proto-deletion-gate.sh").is_file(),
-        "note": "cargo-backed; run in ci.yml deletion area",
+        "note": "cargo-backed; run by scripts/proto-deletion-gate.sh",
     })
     return {
         "class": "composability",

@@ -23,8 +23,8 @@
 #              Linux service container; postgres and valkey are provisioned from Homebrew).
 #   coverage   informational only (llvm-cov; uploaded when CODECOV_TOKEN is present).
 #
-# The moving leg (a plugin's `dev` against busbar's own tree) is busbar's side: ci.yml's `consumers`
-# job. plugin-conformance.yml is the conformance job on its own, callable against any busbar commit.
+# The moving leg (a plugin's `dev` against busbar's own tree) is busbar's side: the release engine
+# in busbar-release runs it when it admits a busbar candidate.
 name: plugin-ci
 
 on:

@@ -112,8 +112,8 @@ busbar-contract = { path = "../busbar-contract" }
 
 [dev-dependencies]
 # Turns on the plane dependency's `test-support` feature under this crate's own `--all-targets`
-# test build. Nothing in this crate's tests reads the feature; this edge exists so `feature-sets`
-# sees that feature built somewhere, matching the fuzz target's own coverage of the same feature.
+# test build. Nothing in this crate's tests reads the feature; this edge exists so that feature is
+# built somewhere in the workspace, matching the fuzz target's own coverage of the same feature.
 busbar-plane-llm = { path = "../busbar-plane-llm", features = ["test-support"] }
 # THE NEUTRAL TEST KIT (`busbar_substrate::testkit`: the built-app seam the money-path tests forward
 # through, the warn-capture layer, the fixture seams), named explicitly here so this crate's test build
