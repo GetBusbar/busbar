@@ -342,7 +342,8 @@ pub fn host_is_cloud_metadata(host: &str) -> bool {
 /// TRUE when a normalized host is an IPv6 link-local literal (fe80::/10, [`is_link_local_v6`]) in
 /// any spelling [`host_ip`] reads, a zone included. Not a metadata fact: the IPv4 link-local range
 /// is in the metadata list because the metadata services live there, while this is the IPv6 twin a
-/// caller that refuses link-local on every need (the connector endpoint check, PB-100) asks beside
+/// caller that refuses link-local on every need, whatever the egress class (the connector endpoint
+/// check), asks beside
 /// [`host_is_cloud_metadata`]. Nothing is resolved.
 pub fn host_is_link_local_v6(host: &str) -> bool {
     matches!(host_ip(host), Some(IpAddr::V6(v6)) if is_link_local_v6(&v6))

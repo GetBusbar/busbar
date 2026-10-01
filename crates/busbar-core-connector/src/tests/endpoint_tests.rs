@@ -98,7 +98,7 @@ fn a_url_target_and_every_shared_metadata_host_is_refused() {
 }
 
 /// RED: IPv6 link-local, fe80::/10, is refused in every spelling, as predev's private list refused
-/// it (PB-100); the addresses just outside the /10 pass.
+/// it (metadata and link-local are refused on every need); the addresses just outside the /10 pass.
 #[test]
 fn ipv6_link_local_is_refused_in_every_spelling() {
     for (target, host) in [
