@@ -280,7 +280,7 @@ pub fn check_prompt_view(view: &PromptView) -> Result<(), Fault> {
     if view.message_count != view.messages_len as u64 {
         return Err(fault(Rule::Contradiction, "prompt.message_count"));
     }
-    check_blob("prompt.body", "prompt.body.len", &view.body)
+    blob(&view.body, "prompt.body", "prompt.body.len")
 }
 
 /// The most signal entries one view may carry (a FAULT ceiling: the catalog holds ten signals).
