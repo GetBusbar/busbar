@@ -70,7 +70,7 @@ use crate::host_records::{
 };
 use crate::plane::quarantine::DemotionRecord;
 use crate::trust::book::{Effect, Sight, TrustBook, Unjudged};
-use crate::trust::signed::{self, Refused};
+use crate::trust::signed;
 use crate::trust::section::TrustEntry;
 
 use crate::net_guard::{
@@ -1066,25 +1066,15 @@ impl HostServices for KernelServices {
             Err(Unjudged::UnknownInstance) => return Stored::refused(NOT_ADMITTED),
             Err(Unjudged::UnknownCounterparty) => return Stored::refused(NOT_A_COUNTERPARTY),
         };
-        let Ok(sigs) = (if sigs.is_empty() {
-            Ok(serde_json::Value::Null)
-        } else {
-            serde_json::from_slice(sigs)
-        }) else {
-            return Stored::refused(SIGNATURES_NOT_JSON);
+        let sigs = match sigs {
+            [] => serde_json::Value::Null,
+            json => match serde_json::from_slice(json) {
+                Ok(v) => v,
+                Err(_) => return Stored::refused(SIGNATURES_NOT_JSON),
+            },
         };
         let judged = signed::root_key(&key).and_then(|root| signed::verify(payload, &sigs, &root));
-        let (value, named) = match judged {
-            Ok(()) => (svc::SIGNED_VERIFIED, String::new()),
-            Err(Refused::MalformedRoot) => (svc::SIGNED_MALFORMED_ROOT, String::new()),
-            Err(Refused::Unsigned) => (svc::SIGNED_NONE, String::new()),
-            Err(Refused::TooMany) => (svc::SIGNED_TOO_MANY, String::new()),
-            Err(Refused::MalformedHeader) => (svc::SIGNED_MALFORMED_HEADER, String::new()),
-            Err(Refused::Algorithm(alg)) => (svc::SIGNED_ALGORITHM, alg),
-            Err(Refused::Critical(name)) => (svc::SIGNED_CRITICAL, name),
-            Err(Refused::MalformedSignature) => (svc::SIGNED_MALFORMED_SIGNATURE, String::new()),
-            Err(Refused::NotByRoot) => (svc::SIGNED_NOT_BY_ROOT, String::new()),
-        };
+        let (value, named) = judged.err().unwrap_or((svc::SIGNED_VERIFIED, String::new()));
         Stored {
             bytes: named.into_bytes(),
             ..Stored::ready(value)

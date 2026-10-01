@@ -19,6 +19,7 @@
 
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
+use busbar_contract::abi::host::service as svc;
 use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
 use serde_json::{Map, Value};
 
@@ -34,42 +35,28 @@ pub const MAX_SIGNATURES: usize = 8;
 /// The one algorithm the root key implies.
 const ALGORITHM: &str = "EdDSA";
 
-/// Why a document was not accepted as signed by the root key. There is no arm meaning "could not
-/// check, proceeding".
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Refused {
-    /// The root key is not a base64 Ed25519 SubjectPublicKeyInfo.
-    MalformedRoot,
-    /// No signature at all.
-    Unsigned,
-    /// More than [`MAX_SIGNATURES`].
-    TooMany,
-    /// A protected header that is not a base64url JSON object.
-    MalformedHeader,
-    /// A header `alg` other than the key's, as written (empty when absent).
-    Algorithm(String),
-    /// A `crit` member, by name.
-    Critical(String),
-    /// A signature that is not 64 bytes of base64url.
-    MalformedSignature,
-    /// Well-formed, and no signature is the root key's.
-    NotByRoot,
+/// Why a document was not accepted as signed by the root key: its `SIGNED_*` verdict, and the
+/// algorithm or critical member it names (empty otherwise). No verdict means "unchecked".
+pub type Refused = (u64, String);
+
+fn refused(verdict: u64) -> Refused {
+    (verdict, String::new())
 }
 
 /// The root key, read from the operator's out-of-band form: base64 Ed25519 SPKI.
 ///
 /// # Errors
 ///
-/// [`Refused::MalformedRoot`].
+/// `SIGNED_MALFORMED_ROOT`.
 pub fn root_key(key_info: &str) -> Result<VerifyingKey, Refused> {
     let der = STANDARD
         .decode(key_info.trim())
-        .map_err(|_| Refused::MalformedRoot)?;
+        .map_err(|_| refused(svc::SIGNED_MALFORMED_ROOT))?;
     let raw: [u8; 32] = der
         .strip_prefix(&KEY_INFO_HEAD[..])
         .and_then(|k| k.try_into().ok())
-        .ok_or(Refused::MalformedRoot)?;
-    VerifyingKey::from_bytes(&raw).map_err(|_| Refused::MalformedRoot)
+        .ok_or_else(|| refused(svc::SIGNED_MALFORMED_ROOT))?;
+    VerifyingKey::from_bytes(&raw).map_err(|_| refused(svc::SIGNED_MALFORMED_ROOT))
 }
 
 /// Verify `signatures` (the document's list as written) over `payload` against `root`: at least
@@ -77,14 +64,14 @@ pub fn root_key(key_info: &str) -> Result<VerifyingKey, Refused> {
 ///
 /// # Errors
 ///
-/// The first [`Refused`] in the list's order.
+/// The first refusal in the list's order.
 pub fn verify(payload: &[u8], signatures: &Value, root: &VerifyingKey) -> Result<(), Refused> {
     let list = signatures
         .as_array()
         .filter(|a| !a.is_empty())
-        .ok_or(Refused::Unsigned)?;
+        .ok_or_else(|| refused(svc::SIGNED_NONE))?;
     if list.len() > MAX_SIGNATURES {
-        return Err(Refused::TooMany);
+        return Err(refused(svc::SIGNED_TOO_MANY));
     }
     let payload = URL_SAFE_NO_PAD.encode(payload);
     let mut verified = false;
@@ -92,16 +79,16 @@ pub fn verify(payload: &[u8], signatures: &Value, root: &VerifyingKey) -> Result
         let protected = sig
             .get("protected")
             .and_then(Value::as_str)
-            .ok_or(Refused::MalformedHeader)?;
+            .ok_or_else(|| refused(svc::SIGNED_MALFORMED_HEADER))?;
         let header = header(protected)?;
         match header.get("alg").and_then(Value::as_str) {
             Some(ALGORITHM) => {}
-            other => return Err(Refused::Algorithm(other.unwrap_or_default().to_string())),
+            other => return Err((svc::SIGNED_ALGORITHM, other.unwrap_or_default().into())),
         }
         if let Some(crit) = header.get("crit") {
             return Err(match crit.as_array().and_then(|c| c.first()) {
-                Some(Value::String(name)) => Refused::Critical(name.clone()),
-                _ => Refused::MalformedHeader,
+                Some(Value::String(name)) => (svc::SIGNED_CRITICAL, name.clone()),
+                _ => refused(svc::SIGNED_MALFORMED_HEADER),
             });
         }
         let raw = sig
@@ -109,22 +96,24 @@ pub fn verify(payload: &[u8], signatures: &Value, root: &VerifyingKey) -> Result
             .and_then(Value::as_str)
             .and_then(|s| URL_SAFE_NO_PAD.decode(s).ok())
             .and_then(|b| <[u8; 64]>::try_from(b).ok())
-            .ok_or(Refused::MalformedSignature)?;
+            .ok_or_else(|| refused(svc::SIGNED_MALFORMED_SIGNATURE))?;
         let input = format!("{protected}.{payload}");
         verified |= root
             .verify(input.as_bytes(), &Signature::from_bytes(&raw))
             .is_ok();
     }
-    verified.then_some(()).ok_or(Refused::NotByRoot)
+    verified
+        .then_some(())
+        .ok_or_else(|| refused(svc::SIGNED_NOT_BY_ROOT))
 }
 
 /// A protected header: base64url of a JSON object.
 fn header(protected: &str) -> Result<Map<String, Value>, Refused> {
     let raw = URL_SAFE_NO_PAD
         .decode(protected)
-        .map_err(|_| Refused::MalformedHeader)?;
+        .map_err(|_| refused(svc::SIGNED_MALFORMED_HEADER))?;
     match serde_json::from_slice(&raw) {
         Ok(Value::Object(map)) => Ok(map),
-        _ => Err(Refused::MalformedHeader),
+        _ => Err(refused(svc::SIGNED_MALFORMED_HEADER)),
     }
 }
