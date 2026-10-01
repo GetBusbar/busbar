@@ -57,7 +57,9 @@ fn a_direction_trimmed_below_its_floor_reds_both_directions_only() {
 fn a_repinned_spec_without_a_regenerated_lock_is_refused() {
     let cx = cx();
     let tsv = cx.read(wire_lock::spec::DIGESTS).expect("tsv");
-    let pin = wire_lock::spec::pins(&cx).expect("pins")["bedrock"].sha256.clone();
+    let pin = wire_lock::spec::pins(&cx).expect("pins")["bedrock"]
+        .sha256
+        .clone();
     let mut ov = Overlay::new();
     ov.set(wire_lock::spec::DIGESTS, tsv.replace(&pin, &"f".repeat(64)));
     let v = FieldInventoryGate.run(&cx.with_overlay(ov));

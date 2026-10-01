@@ -229,7 +229,11 @@ fn the_evidence_check_refuses_a_helper_a_comment_an_empty_test_and_production_co
 #[test]
 fn pinned_missing_set_is_exact() {
     let cov = classify();
-    let computed: Vec<&str> = cov.unclassified().into_iter().map(|w| w.id.as_str()).collect();
+    let computed: Vec<&str> = cov
+        .unclassified()
+        .into_iter()
+        .map(|w| w.id.as_str())
+        .collect();
     let want: BTreeSet<&str> = computed.iter().copied().collect();
     let pinned: BTreeSet<&str> = cov.pinned.iter().map(String::as_str).collect();
     let newly_missing: Vec<&&str> = want.difference(&pinned).collect();
@@ -249,11 +253,7 @@ fn pinned_missing_set_is_exact() {
          {no_longer_missing:#?}",
         coverage::MISSING
     );
-    let first_out_of_rank = cov
-        .pinned
-        .iter()
-        .zip(&computed)
-        .position(|(p, c)| p != c);
+    let first_out_of_rank = cov.pinned.iter().zip(&computed).position(|(p, c)| p != c);
     assert_eq!(
         first_out_of_rank,
         None,
@@ -304,7 +304,11 @@ fn unclassified_new_report() {
             a visible red queue is the honest shape of a partial sweep"]
 fn every_field_is_carried_or_waived() {
     let cov = classify();
-    let open: Vec<&str> = cov.unclassified().into_iter().map(|w| w.id.as_str()).collect();
+    let open: Vec<&str> = cov
+        .unclassified()
+        .into_iter()
+        .map(|w| w.id.as_str())
+        .collect();
     assert!(
         open.is_empty(),
         "{} field(s) are neither carried nor waived:\n{open:#?}",

@@ -219,7 +219,12 @@ impl Lock {
 
     pub fn parse(text: &str) -> Result<Lock, String> {
         let v: Value = serde_json::from_str(text).map_err(|e| format!("not JSON: {e}"))?;
-        let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+        let s = |k: &str| {
+            v.get(k)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
         let spec = v.get("spec").cloned().unwrap_or(Value::Null);
         let ss = |k: &str| {
             spec.get(k)

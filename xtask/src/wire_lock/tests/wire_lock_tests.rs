@@ -147,7 +147,12 @@ fn botocore_unions_are_member_presence_and_uri_members_are_not_body() {
     assert_eq!(req["fields"].ty, "map<string>");
     assert_eq!(
         paths(&lock, "stream"),
-        ["messageStop", "metadata", "metadata.format", "metadata.size"]
+        [
+            "messageStop",
+            "metadata",
+            "metadata.format",
+            "metadata.size"
+        ]
     );
     assert_eq!(lock.dirs["stream"]["messageStop"].ty, "ref:Resp");
 }
@@ -209,7 +214,14 @@ fn the_inventory_marks_only_streaming_dialects() {
     let inv: Value = serde_json::from_str(&render_inventory(&locks)).expect("json");
     assert_eq!(
         inv["dialects"],
-        json!(["anthropic", "openai", "responses", "gemini", "bedrock", "cohere"])
+        json!([
+            "anthropic",
+            "openai",
+            "responses",
+            "gemini",
+            "bedrock",
+            "cohere"
+        ])
     );
     let streaming: Vec<&str> = inv["fields"]
         .as_array()
@@ -227,8 +239,11 @@ fn the_inventory_marks_only_streaming_dialects() {
 
 fn anthropic() -> Lock {
     let cx = Ctx::workspace().expect("workspace");
-    Lock::parse(&cx.read(lock_path("anthropic")).expect("the committed anthropic lock"))
-        .expect("parse")
+    Lock::parse(
+        &cx.read(lock_path("anthropic"))
+            .expect("the committed anthropic lock"),
+    )
+    .expect("parse")
 }
 
 #[test]
@@ -236,7 +251,9 @@ fn selftest_a_planted_rename_is_a_probable_rename() {
     let old = anthropic();
     let mut new = old.clone();
     let req = new.dirs.get_mut("request").expect("request");
-    let e = req.remove("stop_sequences").expect("stop_sequences is in the lock");
+    let e = req
+        .remove("stop_sequences")
+        .expect("stop_sequences is in the lock");
     req.insert("stop".to_string(), e.clone());
     let changes = diff::diff(&old, &new);
     assert_eq!(
@@ -334,9 +351,6 @@ fn a_yaml_integer_beyond_i64_keeps_its_exact_digits() {
     )
     .expect("parses");
     assert_eq!(doc["seed"]["minimum"], json!("-9223372036854776000"));
-    assert_eq!(
-        doc["seed"]["maximum"],
-        json!("18446744073709551616")
-    );
+    assert_eq!(doc["seed"]["maximum"], json!("18446744073709551616"));
     assert_eq!(doc["seed"]["small"], json!(-5));
 }

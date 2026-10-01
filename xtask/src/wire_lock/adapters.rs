@@ -121,7 +121,10 @@ impl Adapter for OpenApi<'_> {
             if n.kinds.is_empty() {
                 n.kinds.insert("object".to_string());
             }
-            n.props = p.iter().map(|(k, s)| (k.clone(), Handle::Node(s))).collect();
+            n.props = p
+                .iter()
+                .map(|(k, s)| (k.clone(), Handle::Node(s)))
+                .collect();
         }
         if let Some(it) = o.get("items").filter(|i| i.is_object()) {
             if n.kinds.is_empty() {
@@ -236,14 +239,22 @@ impl Adapter for Discovery<'_> {
         if let Some(t) = v.get("type").and_then(Value::as_str) {
             n.kinds.insert(t.to_string());
         }
-        for e in v.get("enum").and_then(Value::as_array).into_iter().flatten() {
+        for e in v
+            .get("enum")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             n.enums.insert(json_text(e));
         }
         if let Some(p) = v.get("properties").and_then(Value::as_object) {
             if n.kinds.is_empty() {
                 n.kinds.insert("object".to_string());
             }
-            n.props = p.iter().map(|(k, s)| (k.clone(), Handle::Node(s))).collect();
+            n.props = p
+                .iter()
+                .map(|(k, s)| (k.clone(), Handle::Node(s)))
+                .collect();
         }
         if let Some(it) = v.get("items").filter(|i| i.is_object()) {
             n.items = Some(Handle::Node(it));
@@ -329,7 +340,12 @@ impl Adapter for Botocore<'_> {
                     .find(|(b, _)| *b == other)
                     .map_or(other, |(_, k)| *k);
                 n.kinds.insert(kind.to_string());
-                for e in v.get("enum").and_then(Value::as_array).into_iter().flatten() {
+                for e in v
+                    .get("enum")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
                     n.enums.insert(json_text(e));
                 }
             }

@@ -202,9 +202,15 @@ fn duplicates(texts: &[(String, String)]) -> Vec<String> {
         let mut dir = String::new();
         let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
         for line in text.lines() {
-            if let Some(k) = line.strip_prefix("  \"").and_then(|r| r.split_once("\": {")) {
+            if let Some(k) = line
+                .strip_prefix("  \"")
+                .and_then(|r| r.split_once("\": {"))
+            {
                 dir = k.0.to_string();
-            } else if let Some((key, _)) = line.strip_prefix("    \"").and_then(|r| r.split_once("\": {")) {
+            } else if let Some((key, _)) = line
+                .strip_prefix("    \"")
+                .and_then(|r| r.split_once("\": {"))
+            {
                 if !seen.insert((dir.clone(), key.to_string())) {
                     out.push(format!("{path}: {dir} path '{key}' appears twice"));
                 }
@@ -229,10 +235,9 @@ fn short_pairs(locks: &[Lock]) -> Vec<String> {
                 .find(|(n, x, _)| *n == d.name && x == dir)
             {
                 Some((_, _, floor)) if got >= *floor => {}
-                Some((_, _, floor)) => short.push(format!(
-                    "{}/{dir} ({got} path(s), floor {floor})",
-                    d.name
-                )),
+                Some((_, _, floor)) => {
+                    short.push(format!("{}/{dir} ({got} path(s), floor {floor})", d.name))
+                }
                 None => short.push(format!("{}/{dir} (no floor is armed)", d.name)),
             }
         }
@@ -406,7 +411,11 @@ impl Gate for FieldInventoryGate {
         let path = wire_lock::lock_path("cohere");
         let mut ov = Overlay::new();
         let text = cx.read(&path).unwrap_or_default();
-        let doubled = text.replacen("    \"model\": ", "    \"model\": {\"type\":\"string\"},\n    \"model\": ", 1);
+        let doubled = text.replacen(
+            "    \"model\": ",
+            "    \"model\": {\"type\":\"string\"},\n    \"model\": ",
+            1,
+        );
         ov.set(&path, doubled);
         report.push(prove_red(
             cx,

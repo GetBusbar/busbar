@@ -4,7 +4,7 @@
   "spec": {"format":"openapi-3.1","name":"cohere","request":"#/paths/~1v2~1chat/post/requestBody/content/application~1json/schema","response":"#/components/schemas/ChatResponseV2","sha256":"6f64ec87c66df5857f14283d43c816da5d6a729ca98edd25f23807cd4989a599","stream":"#/components/schemas/StreamedChatResponseV2"},
   "request": {
     "citation_options": {"type":"object"},
-    "citation_options.mode": {"enum":["ACCURATE","DISABLED","ENABLED","FAST",false],"type":"string"},
+    "citation_options.mode": {"enum":["ACCURATE","DISABLED","ENABLED","FAST","OFF"],"type":"string"},
     "documents": {"type":"array<object|string>"},
     "documents[].data": {"type":"object"},
     "documents[].id": {"type":"string"},
@@ -68,7 +68,7 @@
     "response_format.type=json_object": {"arm":true,"type":"object"},
     "response_format.type=json_object.json_schema": {"type":"object"},
     "response_format.type=text": {"arm":true,"type":"object"},
-    "safety_mode": {"enum":["CONTEXTUAL","STRICT",false],"type":"any"},
+    "safety_mode": {"enum":["CONTEXTUAL","OFF","STRICT"],"type":"any"},
     "seed": {"type":"integer"},
     "stop_sequences": {"type":"array<string>"},
     "stream": {"type":"boolean"},

@@ -183,9 +183,10 @@ pub fn parse_status() -> BTreeMap<String, Status> {
                 test: test.to_string(),
             }
         } else if let Some(w) = rest.strip_prefix("waived ") {
-            let (date, reason) = w.trim().split_once(' ').unwrap_or_else(|| {
-                panic!("{STATUS}:{lineno}: `waived` needs a date AND a reason")
-            });
+            let (date, reason) = w
+                .trim()
+                .split_once(' ')
+                .unwrap_or_else(|| panic!("{STATUS}:{lineno}: `waived` needs a date AND a reason"));
             assert!(
                 date.len() == 10 && date.chars().filter(|c| *c == '-').count() == 2,
                 "{STATUS}:{lineno}: waiver date must be YYYY-MM-DD, got {date:?}"
