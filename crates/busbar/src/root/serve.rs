@@ -73,14 +73,6 @@ pub struct LateServices {
     clock: KernelServices,
 }
 
-impl std::fmt::Debug for LateServices {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LateServices")
-            .field("installed", &self.installed.get().is_some())
-            .finish()
-    }
-}
-
 /// Why [`LateServices::install`] would not take a second set of services.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AlreadyInstalled;
