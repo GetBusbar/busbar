@@ -1,7 +1,7 @@
 //! `cargo xtask gate field-inventory` — THE WIRE LOCKS ARE WHOLE, PINNED AND REGISTERED.
 //!
 //! Every request, response and stream path of every chat dialect lives in one place: the wire lock
-//! `crates/busbar-plane-llm/dialects/<dialect>.wire.json`, which `cargo xtask dialect wire --write`
+//! `testing/llm-conformance/wire/<dialect>.wire.json`, which `cargo xtask dialect wire --write`
 //! GENERATES from the provider specs pinned in `testing/llm-conformance/spec-digests.tsv` (see
 //! [`crate::wire_lock`]). `crates/busbar/tests/field_coverage.rs` reads its denominator from those
 //! locks. This gate holds the locks to what a denominator must be, reading only committed files

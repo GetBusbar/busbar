@@ -1,4 +1,4 @@
-# PINNED UNCLASSIFIED-NEW LIST -- every wire path of crates/busbar-plane-llm/dialects/*.wire.json
+# PINNED UNCLASSIFIED-NEW LIST -- every wire path of testing/llm-conformance/wire/*.wire.json
 # that qa/field-coverage.status does not classify, RANKED: request fields, then block types (union
 # arms), stream events, response fields, stream fields; shallower paths first within a tier.
 #

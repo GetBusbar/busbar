@@ -46,4 +46,6 @@ proc-macro2 = { workspace = true }
 # `yaml_lite` is deliberately the workflow subset only, so the spec reader uses the workspace's
 # existing YAML parser (already in Cargo.lock via busbar-contract); no new crate enters the lock.
 serde_yaml = { workspace = true }
+# The spec reader's YAML -> JSON visitor (serde is already in the closure via serde_json).
+serde = { workspace = true }
 syn = { workspace = true }

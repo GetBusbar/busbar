@@ -323,3 +323,20 @@ fn an_unchanged_lock_diffs_to_nothing() {
     let old = anthropic();
     assert!(diff::diff(&old, &old.clone()).is_empty());
 }
+
+/// An integer outside i64/u64 in a YAML spec keeps its exact digits (OpenAI writes
+/// `seed.minimum: -9223372036854776000`); it is never rounded to a float.
+#[test]
+fn a_yaml_integer_beyond_i64_keeps_its_exact_digits() {
+    let doc = spec::parse(
+        "spec.yaml",
+        "seed:\n  minimum: -9223372036854776000\n  maximum: 18446744073709551616\n  small: -5\n",
+    )
+    .expect("parses");
+    assert_eq!(doc["seed"]["minimum"], json!("-9223372036854776000"));
+    assert_eq!(
+        doc["seed"]["maximum"],
+        json!("18446744073709551616")
+    );
+    assert_eq!(doc["seed"]["small"], json!(-5));
+}

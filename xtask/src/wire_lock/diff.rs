@@ -165,11 +165,11 @@ pub fn diff(old: &Lock, new: &Lock) -> Vec<Change> {
             });
         }
         out.extend(removed.iter().map(|p| Change::Removed {
-            id: id(*p),
+            id: id(p),
             ty: a[*p].ty.clone(),
         }));
         out.extend(added.iter().map(|p| Change::Added {
-            id: id(*p),
+            id: id(p),
             ty: b[*p].ty.clone(),
         }));
         for p in a_keys.intersection(&b_keys).copied() {

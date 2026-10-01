@@ -1,4 +1,4 @@
-# FIELD COVERAGE STATUS -- the only place a wire path of crates/busbar-plane-llm/dialects/*.wire.json
+# FIELD COVERAGE STATUS -- the only place a wire path of testing/llm-conformance/wire/*.wire.json
 # may be declared anything other than UNCLASSIFIED.
 #
 # IDS. `<dialect>/<request|response|stream>/<path>` in wire-lock notation (exact paths from the spec

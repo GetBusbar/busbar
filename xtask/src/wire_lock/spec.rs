@@ -70,50 +70,84 @@ pub fn parse(path: &str, text: &str) -> Result<Value, String> {
     if path.ends_with(".json") {
         return serde_json::from_str(text).map_err(|e| format!("{path}: {e}"));
     }
-    let y: serde_yaml::Value = serde_yaml::from_str(text).map_err(|e| format!("{path}: {e}"))?;
-    yaml_to_json(y).map_err(|e| format!("{path}: {e}"))
+    serde_yaml::from_str::<Json>(text)
+        .map(|j| j.0)
+        .map_err(|e| format!("{path}: {e}"))
 }
 
-fn yaml_key(k: serde_yaml::Value) -> Result<String, String> {
-    match k {
-        serde_yaml::Value::String(s) => Ok(s),
-        serde_yaml::Value::Number(n) => Ok(n.to_string()),
-        serde_yaml::Value::Bool(b) => Ok(b.to_string()),
-        other => Err(format!("unsupported mapping key {other:?}")),
+/// A YAML document read straight into a JSON value. Not through `serde_yaml::Value`: that type
+/// refuses an integer outside i64/u64, and the OpenAI spec writes `seed.minimum` as
+/// -9223372036854776000. A JSON number cannot hold that without rounding, so an integer outside
+/// i64/u64 is kept as the string of its exact digits; nothing is ever rounded.
+struct Json(Value);
+
+impl<'de> serde::Deserialize<'de> for Json {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Json, D::Error> {
+        d.deserialize_any(JsonVisitor).map(Json)
     }
 }
 
-fn yaml_to_json(y: serde_yaml::Value) -> Result<Value, String> {
-    Ok(match y {
-        serde_yaml::Value::Null => Value::Null,
-        serde_yaml::Value::Bool(b) => Value::Bool(b),
-        serde_yaml::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Value::from(i)
-            } else if let Some(u) = n.as_u64() {
-                Value::from(u)
-            } else {
-                n.as_f64()
-                    .and_then(serde_json::Number::from_f64)
-                    .map_or(Value::Null, Value::Number)
-            }
+struct JsonVisitor;
+
+fn float(f: f64) -> Value {
+    serde_json::Number::from_f64(f).map_or(Value::Null, Value::Number)
+}
+
+impl<'de> serde::de::Visitor<'de> for JsonVisitor {
+    type Value = Value;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("any YAML value")
+    }
+    fn visit_bool<E>(self, v: bool) -> Result<Value, E> {
+        Ok(Value::Bool(v))
+    }
+    fn visit_i64<E>(self, v: i64) -> Result<Value, E> {
+        Ok(Value::from(v))
+    }
+    fn visit_u64<E>(self, v: u64) -> Result<Value, E> {
+        Ok(Value::from(v))
+    }
+    fn visit_i128<E>(self, v: i128) -> Result<Value, E> {
+        Ok(i64::try_from(v).map_or_else(|_| Value::String(v.to_string()), Value::from))
+    }
+    fn visit_u128<E>(self, v: u128) -> Result<Value, E> {
+        Ok(u64::try_from(v).map_or_else(|_| Value::String(v.to_string()), Value::from))
+    }
+    fn visit_f64<E>(self, v: f64) -> Result<Value, E> {
+        Ok(float(v))
+    }
+    fn visit_str<E>(self, v: &str) -> Result<Value, E> {
+        Ok(Value::String(v.to_string()))
+    }
+    fn visit_string<E>(self, v: String) -> Result<Value, E> {
+        Ok(Value::String(v))
+    }
+    fn visit_unit<E>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+    fn visit_none<E>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+    fn visit_some<D: serde::Deserializer<'de>>(self, d: D) -> Result<Value, D::Error> {
+        d.deserialize_any(JsonVisitor)
+    }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
+        let mut out = Vec::new();
+        while let Some(Json(v)) = seq.next_element()? {
+            out.push(v);
         }
-        serde_yaml::Value::String(s) => Value::String(s),
-        serde_yaml::Value::Sequence(seq) => Value::Array(
-            seq.into_iter()
-                .map(yaml_to_json)
-                .collect::<Result<Vec<_>, _>>()?,
-        ),
-        serde_yaml::Value::Mapping(m) => {
-            let mut out = serde_json::Map::new();
-            for (k, v) in m {
-                out.insert(yaml_key(k)?, yaml_to_json(v)?);
-            }
-            Value::Object(out)
+        Ok(Value::Array(out))
+    }
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
+        let mut out = serde_json::Map::new();
+        while let Some((Json(k), Json(v))) = map.next_entry()? {
+            let key = match k {
+                Value::String(s) => s,
+                other => other.to_string(),
+            };
+            out.insert(key, v);
         }
-        serde_yaml::Value::Tagged(t) => {
-            let t = *t;
-            yaml_to_json(t.value)?
-        }
-    })
+        Ok(Value::Object(out))
+    }
 }

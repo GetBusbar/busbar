@@ -180,9 +180,9 @@ impl Adapter for OpenApi<'_> {
             .collect();
         let mut untagged: Vec<Handle<'a>> = Vec::new();
         for m in &members {
-            match self.tag_value(&Handle::Node(*m), &tagprop) {
-                Some(t) => tagged.push((t, Handle::Node(*m))),
-                None => untagged.push(Handle::Node(*m)),
+            match self.tag_value(&Handle::Node(m), &tagprop) {
+                Some(t) => tagged.push((t, Handle::Node(m))),
+                None => untagged.push(Handle::Node(m)),
             }
         }
         if !tagged.is_empty() && (disc.is_some() || tagged.len() >= 2) {
