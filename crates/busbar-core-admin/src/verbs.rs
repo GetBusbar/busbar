@@ -38,7 +38,7 @@
 //! and nothing in the type system would have asked it not to.
 
 use crate::governance::{Governance, GovernanceError, RotateOutcome};
-use crate::idempotency::{ClaimJournal, IdempotencyCache, Probe, ReplayEncoder};
+use crate::idempotency::{ClaimJournal, IdempotencyCache, Probe, ReplayEncoder, Reservation};
 use crate::mint::{plan_mint_group, GroupLookup, MintPlan};
 use crate::posture::{ApprovalState, PostureCtx};
 use crate::rate::{ConfigClassRule, MutationClass, MutationLimiter, RateCheck};
@@ -47,7 +47,8 @@ use crate::verb::{
     KernelVerb, VerbScope, AUDIT_VERBS, LEDGER_VERBS, LEGACY_VERBS, NEW_VERBS, READ_ONLY_NEW_VERBS,
 };
 use busbar_contract::caps::{AdminVerb, Grant, SecretOnce, UnitKey};
-use busbar_contract::verb_store::Store;
+use busbar_contract::verb_store::{Store, StoreError};
+use std::ops::ControlFlow;
 use std::sync::Arc;
 
 /// The nonce seam. This crate has no CSPRNG dependency of its own, so the 128-bit nonce a
@@ -141,20 +142,26 @@ impl MintOutcome {
             MintOutcome::Replayed { body } => body,
         }
     }
+}
 
-    /// Whether this outcome is a replay (no fresh secret was minted).
-    pub fn is_replay(&self) -> bool {
-        matches!(self, MintOutcome::Replayed { .. })
-    }
-
-    /// The freshly minted or rotated capability, or `None` for a replay — a replay never carries
-    /// one: there is no decode step that could reconstruct, and thereby re-mint, a fresh
-    /// `SecretOnce`.
-    pub fn minted_outcome(&self) -> Option<&MintedKeyOutcome> {
-        match self {
-            MintOutcome::Minted { outcome, .. } => Some(outcome),
-            MintOutcome::Replayed { .. } => None,
-        }
+/// Probe a mint verb's replay cache: a cached body or an in-flight claim ends the call (`Break`),
+/// anything else continues with the reservation this call now owns, if it presented a key.
+fn reserve(
+    cache: &IdempotencyCache<Vec<u8>>,
+    key: Option<(String, String)>,
+    now: u64,
+) -> ControlFlow<Result<MintOutcome, Refusal>, Option<Reservation<'_, Vec<u8>>>> {
+    let Some(key) = key else {
+        return ControlFlow::Continue(None);
+    };
+    match cache.probe(key, now) {
+        Probe::NoKey => ControlFlow::Continue(None),
+        Probe::Replay(body) => ControlFlow::Break(Ok(MintOutcome::Replayed { body })),
+        Probe::InFlight => ControlFlow::Break(Err(Refusal::new(
+            RefusalStep::Admit,
+            ReasonCode::IdempotencyInFlight,
+        ))),
+        Probe::Reserved(r) => ControlFlow::Continue(Some(r)),
     }
 }
 
@@ -333,19 +340,9 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
             return Err(Refusal::new(RefusalStep::Verify, ReasonCode::Validation));
         }
         let ck = idempotency_key.map(|k| (actor.to_string(), k.to_string()));
-        let reservation = match ck.clone() {
-            None => None,
-            Some(key) => match self.create_key_cache.probe(key, now) {
-                Probe::NoKey => None,
-                Probe::Replay(body) => return Ok(MintOutcome::Replayed { body }),
-                Probe::InFlight => {
-                    return Err(Refusal::new(
-                        RefusalStep::Admit,
-                        ReasonCode::IdempotencyInFlight,
-                    ))
-                }
-                Probe::Reserved(r) => Some(r),
-            },
+        let reservation = match reserve(&self.create_key_cache, ck.clone(), now) {
+            ControlFlow::Break(answer) => return answer,
+            ControlFlow::Continue(reservation) => reservation,
         };
 
         let plan = plan_mint_group(
@@ -409,19 +406,9 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
     ) -> Result<MintOutcome, Refusal> {
         self.admit(KernelVerb::PostKeysIdRotate, actor, granted, now)?;
         let ck = idempotency_key.map(|k| (actor.to_string(), rotate_replay_key(id, k)));
-        let reservation = match ck {
-            None => None,
-            Some(key) => match self.rotate_key_cache.probe(key, now) {
-                Probe::NoKey => None,
-                Probe::Replay(body) => return Ok(MintOutcome::Replayed { body }),
-                Probe::InFlight => {
-                    return Err(Refusal::new(
-                        RefusalStep::Admit,
-                        ReasonCode::IdempotencyInFlight,
-                    ))
-                }
-                Probe::Reserved(r) => Some(r),
-            },
+        let reservation = match reserve(&self.rotate_key_cache, ck, now) {
+            ControlFlow::Break(answer) => return answer,
+            ControlFlow::Continue(reservation) => reservation,
         };
         match self.governance.rotate_key(admin, id) {
             Ok(RotateOutcome::NotFound) => {
@@ -531,7 +518,8 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         &self.store
     }
 
-    /// The gate the three disaster-recovery verbs run through before they reach the store.
+    /// The gate the three disaster-recovery verbs run through before they reach the store, and the
+    /// store call itself.
     ///
     /// Identical to what [`Verbs::execute`] runs for any other new verb — scope, rate class, then
     /// the operator ceremony and dual control — because these three are new verbs; the only thing
@@ -540,7 +528,8 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
     /// posture the caller did not resolve is REFUSED rather than unwrapped, for the same reason it
     /// is in `execute`: a miswired caller must not turn the gate protecting a chain break into a
     /// downed process.
-    fn admit_recovery_verb(
+    #[allow(clippy::too_many_arguments)]
+    fn run_recovery_verb(
         &self,
         verb: KernelVerb,
         actor: &str,
@@ -548,16 +537,18 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         now: u64,
         posture: Option<PostureCtx>,
         approval: ApprovalState,
+        effect: impl FnOnce(&S) -> Result<(), StoreError>,
     ) -> Result<(), Refusal> {
         self.admit(verb, actor, granted, now)?;
         let Some(ctx) = posture else {
             return Err(Refusal::new(RefusalStep::Verify, ReasonCode::Validation));
         };
-        crate::posture::check_new_verb_admission(verb, ctx, approval)
+        crate::posture::check_new_verb_admission(verb, ctx, approval)?;
+        effect(&self.store).map_err(store_error_into_refusal)
     }
 
     /// `chain_break` — deliberately break the journal chain. Admitted through
-    /// [`Verbs::admit_recovery_verb`] and only then handed to the store.
+    /// [`Verbs::run_recovery_verb`] and only then handed to the store.
     pub fn chain_break(
         &self,
         admin: &Grant<AdminVerb>,
@@ -567,21 +558,19 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         posture: Option<PostureCtx>,
         approval: ApprovalState,
     ) -> Result<(), Refusal> {
-        self.admit_recovery_verb(
+        self.run_recovery_verb(
             KernelVerb::ChainBreak,
             actor,
             granted,
             now,
             posture,
             approval,
-        )?;
-        self.store
-            .chain_break(admin)
-            .map_err(store_error_into_refusal)
+            |store| store.chain_break(admin),
+        )
     }
 
     /// `store_restore` — restore the store from a named backup. Admitted through
-    /// [`Verbs::admit_recovery_verb`] and only then handed to the store.
+    /// [`Verbs::run_recovery_verb`] and only then handed to the store.
     #[allow(clippy::too_many_arguments)]
     pub fn store_restore(
         &self,
@@ -593,21 +582,19 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         approval: ApprovalState,
         backup_ref: &str,
     ) -> Result<(), Refusal> {
-        self.admit_recovery_verb(
+        self.run_recovery_verb(
             KernelVerb::StoreRestore,
             actor,
             granted,
             now,
             posture,
             approval,
-        )?;
-        self.store
-            .store_restore(admin, backup_ref)
-            .map_err(store_error_into_refusal)
+            |store| store.store_restore(admin, backup_ref),
+        )
     }
 
     /// `reseal_epoch_floor` — reseal the epoch floor after a chain break or restore. Admitted
-    /// through [`Verbs::admit_recovery_verb`] and only then handed to the store.
+    /// through [`Verbs::run_recovery_verb`] and only then handed to the store.
     pub fn reseal_epoch_floor(
         &self,
         admin: &Grant<AdminVerb>,
@@ -617,17 +604,15 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         posture: Option<PostureCtx>,
         approval: ApprovalState,
     ) -> Result<(), Refusal> {
-        self.admit_recovery_verb(
+        self.run_recovery_verb(
             KernelVerb::ResealEpochFloor,
             actor,
             granted,
             now,
             posture,
             approval,
-        )?;
-        self.store
-            .reseal_epoch_floor(admin)
-            .map_err(store_error_into_refusal)
+            |store| store.reseal_epoch_floor(admin),
+        )
     }
 }
 

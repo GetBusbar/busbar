@@ -10,12 +10,28 @@ use crate::idempotency::ReplayEncoder;
 use crate::posture::{ApprovalState, DualControl, OperatorState, PostureCtx};
 use crate::rate::CONFIG_CLASS_RULES;
 use crate::verb::{KernelVerb, VerbScope};
-use crate::verbs::{MintedKeyOutcome, NonceSource, Verbs};
+use crate::verbs::{MintOutcome, MintedKeyOutcome, NonceSource, Verbs};
 use busbar_contract::caps::{AdminVerb, Grant, KernelSeal, UnitKey};
 use busbar_contract::verb_store::{Store, StoreError};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
+
+/// Probes of a live mint outcome that only these tests ask.
+impl MintOutcome {
+    /// Whether this outcome is a replay (no fresh secret was minted).
+    fn is_replay(&self) -> bool {
+        matches!(self, MintOutcome::Replayed { .. })
+    }
+
+    /// The freshly minted or rotated capability, or `None` for a replay.
+    fn minted_outcome(&self) -> Option<&MintedKeyOutcome> {
+        match self {
+            MintOutcome::Minted { outcome, .. } => Some(outcome),
+            MintOutcome::Replayed { .. } => None,
+        }
+    }
+}
 
 /// A deterministic, test-only nonce source: fills the buffer from a counter, so two mints in the
 /// same test produce different, reproducible nonces. Never used outside tests — the seam has no
