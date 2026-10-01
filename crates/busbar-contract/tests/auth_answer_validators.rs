@@ -6,9 +6,10 @@
 //! asserts the named FAULT, so removing any one check turns its test red.
 
 use busbar_contract::abi::auth::{
-    check_begin_login, check_complete_login, check_fields, check_identify, BeginLoginOut,
-    FieldSpan, FieldsOut, IdentifyOut, IdentityBuf, LoginField, BEGIN_AUTHORIZE, BEGIN_FORM,
-    FIELDS_HARD_MAX, IDENTITY_GROUPS_HARD_MAX, LOGIN_IDENTITY, LOGIN_OUTAGE, SPAN_ABSENT,
+    check_begin_login, check_complete_login, check_fields, check_identify, check_style_decl,
+    BeginLoginOut, FieldSpan, FieldsOut, IdentifyOut, IdentityBuf, LoginField, BEGIN_AUTHORIZE,
+    BEGIN_FORM, FIELDS_HARD_MAX, IDENTITY_GROUPS_HARD_MAX, LOGIN_IDENTITY, LOGIN_OUTAGE, SPAN_ABSENT,
+    STYLE_CALLER_CREDENTIAL, STYLE_NEEDS_BODY_HASH, STYLE_NEEDS_HEADERS,
     VERDICT_IDENTITY, VERDICT_REJECT,
 };
 use busbar_contract::abi::mechanism::call::{Outcome, Span};
@@ -500,5 +501,26 @@ fn a_short_fields_reports_every_dimension_full_size() {
     assert_eq!(
         check_fields(Outcome::Failed, &f, CAP, FIELDS_CAP, &[]),
         red(Rule::WastedRecall, "fields")
+    );
+}
+
+#[test]
+fn a_style_decl_flag_vocabulary_is_the_three_known_bits() {
+    assert_eq!(check_style_decl(0), Ok(()));
+    assert_eq!(check_style_decl(STYLE_NEEDS_BODY_HASH), Ok(()));
+    assert_eq!(check_style_decl(STYLE_NEEDS_HEADERS), Ok(()));
+    assert_eq!(check_style_decl(STYLE_CALLER_CREDENTIAL), Ok(()));
+    assert_eq!(
+        check_style_decl(STYLE_NEEDS_BODY_HASH | STYLE_NEEDS_HEADERS | STYLE_CALLER_CREDENTIAL),
+        Ok(())
+    );
+}
+
+#[test]
+fn a_style_decl_flag_outside_the_vocabulary_is_fault() {
+    assert_eq!(check_style_decl(1 << 31), red(Rule::UnknownCode, "style.unknown_flags"));
+    assert_eq!(
+        check_style_decl(STYLE_CALLER_CREDENTIAL | (1 << 3)),
+        red(Rule::UnknownCode, "style.unknown_flags")
     );
 }

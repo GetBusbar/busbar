@@ -1,0 +1,48 @@
+[package]
+name = "busbar-auth-sigv4"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The sigv4 auth style, served in both the operator's own credential and the caller's, as one auth-kind plugin on the auth kind's memory ABI."
+license = "Apache-2.0"
+
+# STAGED IN-TREE (ARCHITECT ruling 2026-09-28, placement (B)): this plugin's home is its own repo;
+# it is staged here, as the transport plugins are, and extracts at KERNEL<>PLUGINS step 40 once the
+# auth kind's conformance suite is green. The extraction is a pure move: its only busbar edge is
+# `busbar-contract`.
+
+[lib]
+# rlib: the LINKED door (`busbar_auth_sigv4::door`, the `DoorFn` a compiled-in row holds) and the
+# tests. cdylib: the DROPPED door, the same `door` exported by `export_door!` under `dropped-in`.
+crate-type = ["rlib", "cdylib"]
+
+[features]
+# THE DROPPED-IN DOOR: `export_door!` emits the one `busbar_plugin_door` symbol. OFF in a build that
+# links this crate beside other plugins (each would export the same symbol); the dropped-in artifact
+# is built with `--features dropped-in`.
+dropped-in = []
+
+# DEPENDENCY POLICY. A plugin's closure is `busbar-contract` plus the third-party crates it needs to
+# do its job (owner ruling 2026-09-28, PLUGIN LIBRARIES): the SigV4 HMAC chain (`hmac`, `sha2`,
+# `hex`), and zeroisation of derived key material (`zeroize`). No kernel crate, no plane, no sibling
+# auth-kind plugin.
+[dependencies]
+busbar-contract = { path = "../busbar-contract" }
+hex = { workspace = true }
+hmac = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+# THE PLUGIN TESTS ITSELF (BUSBAR-1.6.0.md THE DESIGN, §2): `tests/conformance.rs` links this crate AND loads its own
+# cdylib through the real loader, through the same table (BUSBAR-1.6.0.md §11.4).
+busbar-plugin-loader = { path = "../plugin-loader" }
+
+[[test]]
+name = "conformance"
+path = "tests/conformance.rs"
+# The dropped-in arm needs the cdylib's door symbol.
+required-features = ["dropped-in"]

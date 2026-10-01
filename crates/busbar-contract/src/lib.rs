@@ -62,6 +62,7 @@ pub mod dest;
 pub mod diagnostic;
 pub mod duration;
 pub mod grammar;
+pub mod header;
 #[allow(missing_docs)]
 pub mod hooks;
 pub mod ids;
