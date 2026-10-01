@@ -382,6 +382,7 @@ extern "C" {
 #define BB_TRANSPORT_MAX_PIECES UINT64_C(4096) /* The most frame pieces one framer answer may produce. */
 #define BB_TRANSPORT_MAX_CLAIMS UINT64_C(1024) /* The most claims one transport entry may make. */
 #define BB_TRANSPORT_MAX_ALPN_BYTES UINT64_C(65535) /* The most bytes one protocol offer may take (a TLS ProtocolNameList is at most `2^16 - 1`). */
+#define BB_TRANSPORT_MAX_ROUTE_FIELDS UINT64_C(32) /* The most field predicates one route may carry. */
 #define BB_TRANSPORT_SEPARATOR ": " /* Between a field's name and its value. */
 #define BB_TRANSPORT_LINE_END "\x0d\n" /* After a field's value. */
 #define BB_TRANSPORT_ABI_VERSION UINT32_C(1) /* The transport kind's ABI version: new in 1.6.0 (v1.5.5 had no transport kind ABI), so it ships `1`. */
@@ -454,6 +455,23 @@ extern "C" {
 #define BB_TRANSPORT_YIELD_ENDED UINT32_C(1) /* [`FramerYield::flags`]: no frame follows on this connection. */
 #define BB_TRANSPORT_YIELD_MORE UINT32_C(2) /* [`FramerYield::flags`]: a buffer filled; call the same op again once drained. */
 #define BB_TRANSPORT_YIELD_HAS_DEADLINE UINT32_C(4) /* [`FramerYield::flags`]: `next_deadline_ns` is set; call [`slot::TIMER`] then. */
+#define BB_TRANSPORT_METHOD_GET UINT32_C(1) /* `GET`. */
+#define BB_TRANSPORT_METHOD_HEAD UINT32_C(2) /* `HEAD`. */
+#define BB_TRANSPORT_METHOD_POST UINT32_C(4) /* `POST`. */
+#define BB_TRANSPORT_METHOD_PUT UINT32_C(8) /* `PUT`. */
+#define BB_TRANSPORT_METHOD_PATCH UINT32_C(16) /* `PATCH`. */
+#define BB_TRANSPORT_METHOD_DELETE UINT32_C(32) /* `DELETE`. */
+#define BB_TRANSPORT_METHOD_OPTIONS UINT32_C(64) /* `OPTIONS`. */
+#define BB_TRANSPORT_METHOD_CONNECT UINT32_C(128) /* `CONNECT`. */
+#define BB_TRANSPORT_METHOD_TRACE UINT32_C(256) /* `TRACE`. */
+#define BB_TRANSPORT_METHOD_ANY UINT32_C(511) /* Every method. */
+#define BB_TRANSPORT_PATH_EXACT UINT32_C(1) /* The whole path equals the route's path. */
+#define BB_TRANSPORT_PATH_PATTERN UINT32_C(2) /* A segment pattern: `/` separated, a `{name}` segment matches one segment of any value, a last */
+#define BB_TRANSPORT_PATH_PREFIX UINT32_C(3) /* Exactly one segment under the route's path (`/a` admits `/a/b`, never `/a`, `/ab` or `/a/b/c`). */
+#define BB_TRANSPORT_PATH_SUFFIX UINT32_C(4) /* The path ends with the route's path. */
+#define BB_TRANSPORT_PATH_CONTAINS UINT32_C(5) /* The path contains the route's path. */
+#define BB_TRANSPORT_FIELD_PRESENT UINT32_C(1) /* The field line is present, whatever its value. */
+#define BB_TRANSPORT_FIELD_VALUE_PREFIX UINT32_C(2) /* The field line is present and its value starts with the predicate's value. */
 
 /* hconn */
 #define BB_HCONN_DIRECTION_INBOUND UINT32_C(1) /* [`Need::direction`]: the plugin is reached (it listens). */
@@ -833,6 +851,8 @@ typedef struct bb_transport_RefuseIn bb_transport_RefuseIn;
 typedef struct bb_transport_FinishIn bb_transport_FinishIn;
 typedef struct bb_transport_FramingIn bb_transport_FramingIn;
 typedef struct bb_transport_AdoptIn bb_transport_AdoptIn;
+typedef struct bb_transport_FieldPredicate bb_transport_FieldPredicate;
+typedef struct bb_transport_RouteMatch bb_transport_RouteMatch;
 typedef struct bb_hconn_Need bb_hconn_Need;
 typedef struct bb_hconn_EstablishIn bb_hconn_EstablishIn;
 typedef struct bb_hconn_StreamIn bb_hconn_StreamIn;
@@ -2949,6 +2969,25 @@ struct bb_transport_AdoptIn {
     bb_transport_FramerSink sink;
 };
 
+/* One field predicate of a route. */
+struct bb_transport_FieldPredicate {
+    uint32_t op;
+    uint32_t _reserved;
+    bb_mech_AbiStr name;
+    bb_mech_AbiStr value;
+};
+
+/* One route: which requests a guest-list line is for. */
+struct bb_transport_RouteMatch {
+    uint32_t methods;
+    uint32_t path_form;
+    bb_mech_AbiStr path;
+    const bb_transport_FieldPredicate *fields;
+    size_t fields_len;
+    uint32_t rung;
+    uint32_t _reserved;
+};
+
 /* ONE NEED, declared once per direction: which transport claim carries it and which auth style */
 struct bb_hconn_Need {
     uint32_t direction;
@@ -3319,7 +3358,7 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn need_admit;
 };
 
-/* ---- layout proof: 255 of 256 structures are pinned by the golden ---- */
+/* ---- layout proof: 255 of 258 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
