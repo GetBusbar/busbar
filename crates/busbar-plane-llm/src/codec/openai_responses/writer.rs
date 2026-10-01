@@ -684,7 +684,10 @@ impl ProtocolWriter for ResponsesWriter {
                 // `tool_choice`, `parallel_tool_calls`, `metadata`, `temperature`, `top_p`) and a
                 // nullable `incomplete_details` on EVERY Response object, including this skeleton.
                 fill_required_response_members(&mut resp_obj, self.carried_request_echo().as_ref());
-                vec![event(EVT_RESPONSE_CREATED, serde_json::json!({ "response": resp_obj }))]
+                vec![event(
+                    EVT_RESPONSE_CREATED,
+                    serde_json::json!({ "response": resp_obj }),
+                )]
             }
 
             IrStreamEvent::BlockStart {
@@ -729,7 +732,9 @@ impl ProtocolWriter for ResponsesWriter {
                         })
                     };
                     vec![
-                        event(EVT_OUTPUT_ITEM_ADDED, serde_json::json!({
+                        event(
+                            EVT_OUTPUT_ITEM_ADDED,
+                            serde_json::json!({
                                 "output_index": index,
                                 "item_id": item_id,
                                 "item": {
@@ -739,8 +744,11 @@ impl ProtocolWriter for ResponsesWriter {
                                     "status": STATUS_IN_PROGRESS,
                                     "content": []
                                 }
-                            })),
-                        event(EVT_CONTENT_PART_ADDED, serde_json::json!({
+                            }),
+                        ),
+                        event(
+                            EVT_CONTENT_PART_ADDED,
+                            serde_json::json!({
                                 "output_index": index,
                                 "item_id": item_id,
                                 // The single text content part of the message item; the deltas and
@@ -753,7 +761,8 @@ impl ProtocolWriter for ResponsesWriter {
                                 // (`type`/`text`/`annotations`/`logprobs` — the spec requires all
                                 // four on an `output_text` part, so the empty part carries `[]`).
                                 "part": part
-                            })),
+                            }),
+                        ),
                     ]
                 }
                 crate::codec::ir::IrBlockMeta::ToolUse { id, name } => {
@@ -779,7 +788,9 @@ impl ProtocolWriter for ResponsesWriter {
                     // fully finalized item (native `done` carries call_id/name/arguments; the IR
                     // BlockStop carries only the index).
                     self.record_tool_meta(*index, id, name);
-                    vec![event(EVT_OUTPUT_ITEM_ADDED, serde_json::json!({
+                    vec![event(
+                        EVT_OUTPUT_ITEM_ADDED,
+                        serde_json::json!({
                             "output_index": index,
                             "item_id": item_id,
                             // `arguments` is a REQUIRED member of the published `FunctionToolCall`
@@ -798,7 +809,8 @@ impl ProtocolWriter for ResponsesWriter {
                                 "name": name,
                                 "arguments": ""
                             }
-                        }))]
+                        }),
+                    )]
                 }
                 // A REDACTED thinking block has no Responses OUTPUT shape (the Responses writer drops
                 // redacted reasoning on both request and response paths — there is no encrypted-
@@ -822,7 +834,9 @@ impl ProtocolWriter for ResponsesWriter {
                     if *kind == Some(crate::codec::ir::IrThinkingKind::Summary) {
                         self.mark_summary_reasoning(*index);
                         vec![
-                            event(EVT_OUTPUT_ITEM_ADDED, serde_json::json!({
+                            event(
+                                EVT_OUTPUT_ITEM_ADDED,
+                                serde_json::json!({
                                     "output_index": index,
                                     "item_id": item_id,
                                     "item": {
@@ -830,16 +844,22 @@ impl ProtocolWriter for ResponsesWriter {
                                         "id": item_id,
                                         "summary": []
                                     }
-                                })),
-                            event(EVT_REASONING_SUMMARY_PART_ADDED, serde_json::json!({
+                                }),
+                            ),
+                            event(
+                                EVT_REASONING_SUMMARY_PART_ADDED,
+                                serde_json::json!({
                                     "output_index": index,
                                     "item_id": item_id,
                                     "summary_index": 0,
                                     "part": { "type": "summary_text", "text": "" }
-                                })),
+                                }),
+                            ),
                         ]
                     } else {
-                        vec![event(EVT_OUTPUT_ITEM_ADDED, serde_json::json!({
+                        vec![event(
+                            EVT_OUTPUT_ITEM_ADDED,
+                            serde_json::json!({
                                 "output_index": index,
                                 "item_id": item_id,
                                 "item": {
@@ -848,7 +868,8 @@ impl ProtocolWriter for ResponsesWriter {
                                     "summary": [],
                                     "content": []
                                 }
-                            }))]
+                            }),
+                        )]
                     }
                 }
                 crate::codec::ir::IrBlockMeta::Image => Vec::new(),
@@ -860,12 +881,15 @@ impl ProtocolWriter for ResponsesWriter {
                     if !text.is_empty() && self.is_refusal(*index) =>
                 {
                     self.append_text(*index, text);
-                    vec![event(EVT_REFUSAL_DELTA, serde_json::json!({
+                    vec![event(
+                        EVT_REFUSAL_DELTA,
+                        serde_json::json!({
                             "output_index": index,
                             "item_id": self.item_id_for(ITEM_ID_PREFIX_MSG, *index),
                             "content_index": 0,
                             "delta": text
-                        }))]
+                        }),
+                    )]
                 }
                 crate::codec::ir::IrDelta::TextDelta(text) if !text.is_empty() => {
                     // Native `output_text.delta` carries `item_id` (the enclosing message item) and
@@ -881,24 +905,30 @@ impl ProtocolWriter for ResponsesWriter {
                     // token logprobs as a SEPARATE `LogprobsDelta` (buffered below and emitted on
                     // `output_text.done` and the finalized part), so a text delta carries the
                     // present-but-empty `[]` rather than omitting the member.
-                    vec![event(EVT_OUTPUT_TEXT_DELTA, serde_json::json!({
+                    vec![event(
+                        EVT_OUTPUT_TEXT_DELTA,
+                        serde_json::json!({
                             "output_index": index,
                             "item_id": self.item_id_for(ITEM_ID_PREFIX_MSG, *index),
                             "content_index": 0,
                             "delta": text,
                             "logprobs": []
-                        }))]
+                        }),
+                    )]
                 }
                 crate::codec::ir::IrDelta::InputJsonDelta(json_str) => {
                     // Accumulate the arguments fragment so the matching `output_item.done` emits the
                     // COMPLETE arguments string the native event (and the SDK's `event.item.arguments`)
                     // carries.
                     self.append_tool_arguments(*index, json_str);
-                    vec![event(EVT_FUNCTION_CALL_ARGS_DELTA, serde_json::json!({
+                    vec![event(
+                        EVT_FUNCTION_CALL_ARGS_DELTA,
+                        serde_json::json!({
                             "output_index": index,
                             "item_id": self.item_id_for(ITEM_ID_PREFIX_FC, *index),
                             "delta": json_str
-                        }))]
+                        }),
+                    )]
                 }
                 &crate::codec::ir::IrDelta::TextDelta(_) => Vec::new(),
                 crate::codec::ir::IrDelta::ThinkingDelta(text) if !text.is_empty() => {
@@ -1015,37 +1045,52 @@ impl ProtocolWriter for ResponsesWriter {
                     self.record_output_item(*index, item.clone());
                     if summary {
                         vec![
-                            event(EVT_REASONING_SUMMARY_TEXT_DONE, serde_json::json!({
+                            event(
+                                EVT_REASONING_SUMMARY_TEXT_DONE,
+                                serde_json::json!({
                                     "output_index": index,
                                     "item_id": item_id,
                                     "summary_index": 0,
                                     "text": text,
-                                })),
-                            event(EVT_REASONING_SUMMARY_PART_DONE, serde_json::json!({
+                                }),
+                            ),
+                            event(
+                                EVT_REASONING_SUMMARY_PART_DONE,
+                                serde_json::json!({
                                     "output_index": index,
                                     "item_id": item_id,
                                     "summary_index": 0,
                                     "part": { "type": "summary_text", "text": text },
-                                })),
-                            event(EVT_OUTPUT_ITEM_DONE, serde_json::json!({
+                                }),
+                            ),
+                            event(
+                                EVT_OUTPUT_ITEM_DONE,
+                                serde_json::json!({
                                     "output_index": index,
                                     "item_id": item_id,
                                     "item": item,
-                                })),
+                                }),
+                            ),
                         ]
                     } else {
                         vec![
-                            event(EVT_REASONING_TEXT_DONE, serde_json::json!({
+                            event(
+                                EVT_REASONING_TEXT_DONE,
+                                serde_json::json!({
                                     "output_index": index,
                                     "item_id": item_id,
                                     "content_index": 0,
                                     "text": text,
-                                })),
-                            event(EVT_OUTPUT_ITEM_DONE, serde_json::json!({
+                                }),
+                            ),
+                            event(
+                                EVT_OUTPUT_ITEM_DONE,
+                                serde_json::json!({
                                     "output_index": index,
                                     "item_id": item_id,
                                     "item": item,
-                                })),
+                                }),
+                            ),
                         ]
                     }
                 } else if self.take_tool_open(*index) {
@@ -1071,11 +1116,14 @@ impl ProtocolWriter for ResponsesWriter {
                     // `response.incomplete` event emits the fully assembled `output[]` array (the
                     // SDK reads `event.response.output` to materialize `Response.output`).
                     self.record_output_item(*index, item.clone());
-                    vec![event(EVT_OUTPUT_ITEM_DONE, serde_json::json!({
+                    vec![event(
+                        EVT_OUTPUT_ITEM_DONE,
+                        serde_json::json!({
                             "output_index": index,
                             "item_id": item_id,
                             "item": item,
-                        }))]
+                        }),
+                    )]
                 } else if self.is_refusal(*index) && self.take_text_open(*index) {
                     // IR-02: close a refusal item — `refusal.done` (the assembled refusal) →
                     // `content_part.done` (the `refusal` part) → `output_item.done`. A refusal part
@@ -1095,23 +1143,32 @@ impl ProtocolWriter for ResponsesWriter {
                     });
                     self.record_output_item(*index, item.clone());
                     vec![
-                        event(EVT_REFUSAL_DONE, serde_json::json!({
+                        event(
+                            EVT_REFUSAL_DONE,
+                            serde_json::json!({
                                 "output_index": index,
                                 "item_id": item_id,
                                 "content_index": 0,
                                 "refusal": text,
-                            })),
-                        event(EVT_CONTENT_PART_DONE, serde_json::json!({
+                            }),
+                        ),
+                        event(
+                            EVT_CONTENT_PART_DONE,
+                            serde_json::json!({
                                 "output_index": index,
                                 "item_id": item_id,
                                 "content_index": 0,
                                 "part": part,
-                            })),
-                        event(EVT_OUTPUT_ITEM_DONE, serde_json::json!({
+                            }),
+                        ),
+                        event(
+                            EVT_OUTPUT_ITEM_DONE,
+                            serde_json::json!({
                                 "output_index": index,
                                 "item_id": item_id,
                                 "item": item,
-                            })),
+                            }),
+                        ),
                     ]
                 } else if self.take_text_open(*index) {
                     // Close the message item opened by the Text BlockStart. A native stream closes a
@@ -1156,14 +1213,19 @@ impl ProtocolWriter for ResponsesWriter {
                     // assembled `output[]` array.
                     self.record_output_item(*index, item.clone());
                     vec![
-                        event(EVT_OUTPUT_TEXT_DONE, serde_json::json!({
+                        event(
+                            EVT_OUTPUT_TEXT_DONE,
+                            serde_json::json!({
                                 "output_index": index,
                                 "item_id": item_id,
                                 "content_index": 0,
                                 "text": text,
                                 "logprobs": event_logprobs,
-                            })),
-                        event(EVT_CONTENT_PART_DONE, serde_json::json!({
+                            }),
+                        ),
+                        event(
+                            EVT_CONTENT_PART_DONE,
+                            serde_json::json!({
                                 "output_index": index,
                                 "item_id": item_id,
                                 "content_index": 0,
@@ -1175,12 +1237,16 @@ impl ProtocolWriter for ResponsesWriter {
                                     "annotations": annotations,
                                     "logprobs": part_logprobs,
                                 }
-                            })),
-                        event(EVT_OUTPUT_ITEM_DONE, serde_json::json!({
+                            }),
+                        ),
+                        event(
+                            EVT_OUTPUT_ITEM_DONE,
+                            serde_json::json!({
                                 "output_index": index,
                                 "item_id": item_id,
                                 "item": item,
-                            })),
+                            }),
+                        ),
                     ]
                 } else {
                     // Nothing open at this index (e.g. a repeated BlockStop, or an index whose
@@ -1302,7 +1368,10 @@ impl ProtocolWriter for ResponsesWriter {
                 }
                 // RSP-17: the tier that served the response, as `write_response` emits it.
                 if let Some(tier) = usage.detail.service_tier.as_deref().and_then(|t| {
-                    crate::codec::carry::word_out(crate::codec::openai_chat::map::WORDS_OPENAI_SERVED_TIER, t)
+                    crate::codec::carry::word_out(
+                        crate::codec::openai_chat::map::WORDS_OPENAI_SERVED_TIER,
+                        t,
+                    )
                 }) {
                     resp_obj.insert("service_tier".to_string(), serde_json::json!(tier));
                 }
@@ -1396,7 +1465,10 @@ impl ProtocolWriter for ResponsesWriter {
                 fill_required_response_members(&mut resp_obj, self.carried_request_echo().as_ref());
                 // RSP-11: this is the stream's terminal event; a later `MessageDelta` writes nothing.
                 self.failed.store(true, Ordering::Relaxed);
-                vec![event(EVT_RESPONSE_FAILED, serde_json::json!({ "response": resp_obj }))]
+                vec![event(
+                    EVT_RESPONSE_FAILED,
+                    serde_json::json!({ "response": resp_obj }),
+                )]
             }
         };
 
@@ -1610,7 +1682,10 @@ impl ProtocolWriter for ResponsesWriter {
         // backend's own), in the Responses vocabulary; omitted when the IR carries none or a tier
         // this vocabulary has no word for.
         if let Some(tier) = resp.usage.detail.service_tier.as_deref().and_then(|t| {
-            crate::codec::carry::word_out(crate::codec::openai_chat::map::WORDS_OPENAI_SERVED_TIER, t)
+            crate::codec::carry::word_out(
+                crate::codec::openai_chat::map::WORDS_OPENAI_SERVED_TIER,
+                t,
+            )
         }) {
             obj.insert("service_tier".to_string(), serde_json::json!(tier));
         }

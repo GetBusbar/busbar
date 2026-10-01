@@ -44,9 +44,9 @@ pub use ids::{request_id_from_entropy, synth_anthropic_request_id};
 use slots::*;
 use usage::*;
 
-use crate::codec::ir::{IrBlockMeta, IrDelta, IrStreamEvent};
 #[cfg(test)]
 use crate::codec::ir::IrUsage;
+use crate::codec::ir::{IrBlockMeta, IrDelta, IrStreamEvent};
 use busbar_contract::http::StatusCode;
 use busbar_contract::protocol::*;
 #[cfg(test)]

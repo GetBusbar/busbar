@@ -209,7 +209,8 @@ pub fn parse_text(raw: &str) -> Document {
 
 /// Split `body` on every `sep` that is outside a double-quoted string and outside `[..]` / `{..}`.
 fn split_top(body: &str, sep: char) -> Vec<&str> {
-    let (mut out, mut depth, mut in_str, mut escaped, mut start) = (Vec::new(), 0i32, false, false, 0);
+    let (mut out, mut depth, mut in_str, mut escaped, mut start) =
+        (Vec::new(), 0i32, false, false, 0);
     for (i, c) in body.char_indices() {
         if in_str {
             match c {

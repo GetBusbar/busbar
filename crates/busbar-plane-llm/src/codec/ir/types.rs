@@ -1866,7 +1866,10 @@ impl IrUserLocation {
     /// The flat `{type: "approximate", city, region, country, timezone}` (Anthropic, Responses).
     pub fn write_flat(&self) -> serde_json::Value {
         let mut out = self.write_members();
-        out.insert("type".to_string(), serde_json::json!(Self::TYPE_APPROXIMATE));
+        out.insert(
+            "type".to_string(),
+            serde_json::json!(Self::TYPE_APPROXIMATE),
+        );
         serde_json::Value::Object(out)
     }
 }

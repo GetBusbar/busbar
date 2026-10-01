@@ -206,7 +206,9 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
                     format!("ValueCodec::Hook(Hook::{})", camel(&toml_lite::string_value(h)))
                 }
                 (Some(_), Some(_)) => {
-                    return Err(format!("{source}: [{path}] \"{key}\" names both words and a hook"))
+                    return Err(format!(
+                        "{source}: [{path}] \"{key}\" names both words and a hook"
+                    ))
                 }
             };
             uses.insert("ValueCodec");
@@ -226,7 +228,9 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
             ];
             for (k, _) in &f {
                 if !KNOWN.contains(&k.as_str()) {
-                    return Err(format!("{source}: [{path}] \"{key}\": unknown modifier `{k}`"));
+                    return Err(format!(
+                        "{source}: [{path}] \"{key}\": unknown modifier `{k}`"
+                    ));
                 }
             }
             let text = |name: &str| field(&f, name).map(toml_lite::string_value);
@@ -241,9 +245,12 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
                     .iter()
                     .filter_map(|b| b.parse().ok())
                     .collect();
-                let (Some(min), Some(max), Some(warn), 2) =
-                    (bounds.first(), bounds.get(1), text("clamp_warn"), bounds.len())
-                else {
+                let (Some(min), Some(max), Some(warn), 2) = (
+                    bounds.first(),
+                    bounds.get(1),
+                    text("clamp_warn"),
+                    bounds.len(),
+                ) else {
                     return Err(format!(
                         "{source}: [{path}] \"{key}\": clamp needs [min, max] and clamp_warn"
                     ));
@@ -271,8 +278,9 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
                         ))
                     }
                 };
-                let warn = text("drop_warn")
-                    .ok_or_else(|| format!("{source}: [{path}] \"{key}\": drop_if needs drop_warn"))?;
+                let warn = text("drop_warn").ok_or_else(|| {
+                    format!("{source}: [{path}] \"{key}\": drop_if needs drop_warn")
+                })?;
                 uses.insert("Cond");
                 mods.push_str(&format!(
                     ".drop_if({cond}, {}, {})",
@@ -363,7 +371,11 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
             name.to_ascii_uppercase()
         ));
         for (wire, ir, dir) in word_rows(all, &d.name, name, 0)? {
-            body.push_str(&format!("    ({}, {}, Dir::{dir}),\n", lit(&wire), lit(&ir)));
+            body.push_str(&format!(
+                "    ({}, {}, Dir::{dir}),\n",
+                lit(&wire),
+                lit(&ir)
+            ));
         }
         body.push_str("];\n");
     }

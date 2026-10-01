@@ -37,7 +37,10 @@ impl Gate for DialectMapGate {
                     Row::pass(
                         ROW_DRIFT,
                         "every committed dialect table equals its mapping file, compiled",
-                        format!("{} mapping file(s) compiled; no table file differs", compiled.len()),
+                        format!(
+                            "{} mapping file(s) compiled; no table file differs",
+                            compiled.len()
+                        ),
                     )
                 } else {
                     Row::fail(
@@ -69,7 +72,9 @@ impl Gate for DialectMapGate {
         let mut edited = Overlay::new();
         edited.set(
             &target,
-            cx.read(&target).unwrap_or_default().replace("Dir::Both", "Dir::Read"),
+            cx.read(&target)
+                .unwrap_or_default()
+                .replace("Dir::Both", "Dir::Read"),
         );
         report.push(prove_red(
             cx,
@@ -85,7 +90,9 @@ impl Gate for DialectMapGate {
         let mut stale = Overlay::new();
         stale.set(
             &source,
-            cx.read(&source).unwrap_or_default().replace("\"verbosity\"", "\"tone\""),
+            cx.read(&source)
+                .unwrap_or_default()
+                .replace("\"verbosity\"", "\"tone\""),
         );
         let responses = crate::dialect::gen_path("openai_responses");
         report.push(prove_red(

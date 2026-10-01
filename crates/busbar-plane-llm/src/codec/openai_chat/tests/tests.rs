@@ -4817,7 +4817,10 @@ fn test_modeled_request_keys_are_the_mapping_rows() {
             "modeled key set must contain {k}"
         );
     }
-    assert!(!crate::codec::carry::models(super::map::REQUEST, "unknown_passthrough_key"));
+    assert!(!crate::codec::carry::models(
+        super::map::REQUEST,
+        "unknown_passthrough_key"
+    ));
 }
 
 /// Non-stream `read_response` cache-token NORMALIZATION (ir.rs:457): OpenAI's `prompt_tokens` is a
