@@ -822,7 +822,7 @@ pub struct TestApp {
     admin_chain: Option<Vec<String>>,
     /// Resolved external admin auth modules for the built App (1.5.2 admin-plane OIDC). `None` = the
     /// empty chain (the operator credential alone, runs inline). A test that needs the OFFLOAD path populates
-    /// this with a boxed test module and `has_plugin: true`.
+    /// this with a boxed test module.
     admin_modules: Option<crate::auth::AdminAuthChain>,
     /// Resolved hosted-login methods (1.5.2). `None` = empty (no hosted login). A test that
     /// drives `GET /auth/token` populates this with a test login module.
@@ -1277,14 +1277,13 @@ impl TestApp {
     }
 
     /// Inject a resolved external admin auth module under `name` (the config module name that both
-    /// `admin_chain` and `role_bindings.<name>` key off), marking the chain as plugin-backed so the
-    /// admin auth middleware OFFLOADS it off the reactor — the seam the 1.5.2 admin-plane OIDC
-    /// offload test drives. `has_plugin` is forced true.
+    /// `admin_chain` and `role_bindings.<name>` key off): an external module, so the admin auth
+    /// middleware OFFLOADS its call off the reactor — the seam the 1.5.2 admin-plane OIDC offload
+    /// test drives.
     pub fn admin_module(mut self, name: &str, module: Box<dyn crate::auth::AuthModule>) -> Self {
         let chain = self
             .admin_modules
             .get_or_insert_with(crate::auth::AdminAuthChain::empty);
-        chain.has_plugin = true;
         chain.modules.insert(name.to_string(), module);
         self
     }
@@ -1929,7 +1928,8 @@ impl TestApp {
                     .admin_modules
                     .unwrap_or_else(crate::auth::AdminAuthChain::empty);
                 let digest = self.governance.as_ref().and_then(|g| g.admin_token_hash());
-                let reg = crate::preflight::linked().expect("the linked registry");
+                let reg =
+                    std::sync::Arc::new(crate::preflight::linked().expect("the linked registry"));
                 chain.operator = crate::auth::open_operator(&reg, digest, &self.identity_providers)
                     .expect("the linked operator credential opens");
                 std::sync::Arc::new(chain)
@@ -2282,25 +2282,25 @@ impl Drop for EnvVarGuard {
 }
 
 /// TEST REGISTRY ROW — link the operator credential's auth row into this test binary's auth axis,
-/// as the composition root links it into the shipped one: `entry` is the SDK boundary
-/// (`BUSBAR_COLD_ENTRY`) of whichever auth plugin the test binary links for the purpose, registered
+/// as the composition root links it into the shipped one: `door` is the memory-ABI door of whichever
+/// auth plugin the test binary links for the purpose, registered
 /// under the operator words this build answers to: with no root, the kind-neutral `stand-in` double
 /// that `test-support` turns on (BUSBAR-1.6.0.md:175, "Kernel tests use kind-neutral doubles"). The
 /// first install stands (the axis is process-wide). A test crate names that plugin only in its
-/// manifest; its build script turns the manifest row into the `entry` it hands here.
-pub fn install_operator_auth_row(entry: AuthBoundary) {
+/// manifest; its build script turns the manifest row into the `door` it hands here.
+pub fn install_operator_auth_row(door: AuthDoor) {
     let words = OperatorWords {
         provider: crate::config::operator_provider(),
         principal_id: crate::config::operator_principal_id(),
     };
-    install_operator_auth_row_as(words, entry)
+    install_operator_auth_row_as(words, door)
 }
 
-/// `install_operator_auth_row_as(words, entry)`: [`install_operator_auth_row`] under a test binary's
+/// `install_operator_auth_row_as(words, door)`: [`install_operator_auth_row`] under a test binary's
 /// OWN operator words — a binary that links the operator plugin the composition root links, and pins
 /// the root's bytes, hands in the root's words as the root does. The first install stands.
 pub use busbar_kernel_identity::operator::{
-    install_row as install_operator_auth_row_as, AuthBoundary, OperatorWords,
+    install_row as install_operator_auth_row_as, AuthDoor, OperatorWords,
 };
 
 /// The builtin-only `SecretResolver` (env/file sugar, no plugin modules) for a dependent crate's

@@ -75,8 +75,10 @@ pub(crate) const DOOR_AXIS: &str = "transport-door";
 /// the claims it declares (`CLAIMS`); rides on `plane`.
 const CLAIMS_AXIS: &str = "claims";
 
-/// The auth axis (#2 rule (1), #40): each row's entry exports the SDK boundary every `kind: auth`
-/// plugin exports (`BUSBAR_COLD_ENTRY`), registered under the key its `linked-name` row states.
+/// The auth axis (#2 rule (1), #40): each row's entry (its crate root) exports, at `door::door`, the
+/// memory-ABI door every `kind: auth` plugin exports (the same door its dropped-in build exports as
+/// `busbar_plugin_door`: THE DESIGN, compiled-in = dropped-in), registered under the key its
+/// `linked-name` row states.
 const AUTH_AXIS: &str = "auths";
 
 /// The `value` of `key` under the `[table]` header, when the table and the row exist. The optional
@@ -357,7 +359,7 @@ pub(crate) fn linked_source(
                          `[package.metadata.busbar.linked-name]` row naming its registry key"
                     )
                 });
-            out.push_str(&format!("({name:?}, &{entry}::BUSBAR_COLD_ENTRY), "));
+            out.push_str(&format!("({name:?}, {entry}::door::door), "));
         }
     }
     out.push_str("],\n");

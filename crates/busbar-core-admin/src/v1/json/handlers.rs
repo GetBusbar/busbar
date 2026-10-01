@@ -2125,17 +2125,8 @@ pub(crate) async fn put_auth(
         let mut next = (**current).clone();
         next.config_version = current.config_version.wrapping_add(1);
         next.admin_chain = req.admin_auth;
-        // DRY-RUN GUARD: this very request's carriers, evaluated under the CANDIDATE chain.
-        let authz_credential = headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(busbar_kernel::auth::AuthMiddleware::extract_bearer_token);
-        let header_tok = headers
-            .get(busbar_kernel::auth::X_ADMIN_TOKEN)
-            .and_then(|v| v.to_str().ok())
-            .filter(|t| !t.is_empty())
-            .map(str::to_string);
-        let survives = busbar_kernel::auth::dry_run_admin_scope(&next, authz_credential.as_deref(), header_tok.as_deref())
+        // DRY-RUN GUARD: this very request's credential, evaluated under the CANDIDATE chain.
+        let survives = busbar_kernel::auth::dry_run_admin_scope(&next, &headers)
             .contains(busbar_kernel::admin::v1::contract::Scope::Full);
         if !survives {
             return Err(AdminError::Conflict(

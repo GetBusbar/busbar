@@ -360,17 +360,18 @@ pub fn live_planes(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneLookup {
     })
 }
 
-/// THE PRODUCTION ADMIN DOOR: the request's two admin carriers judged on the LIVE snapshot's admin
-/// chain, through the kernel's own verdict — the chain the kernel middleware reads and a
-/// `PUT /api/v1/admin/admin-auth` swaps, read per call, so the swap is the next unit's door.
+/// THE PRODUCTION ADMIN DOOR: the request judged on the LIVE snapshot's admin chain, through the
+/// kernel's own verdict — the chain the kernel middleware reads and a
+/// `PUT /api/v1/admin/admin-auth` swaps, read per call, so the swap is the next unit's door. The
+/// operator credential reads the request's head through its door, on the spot.
 #[must_use]
 pub fn live_admin_door(app: Arc<busbar_kernel::state::AppHandle>) -> super::AdminDoorFn {
     Arc::new(move |request: &super::AdminRequest| {
         let headers: axum::http::HeaderMap = (request.headers.iter())
             .filter_map(|(name, value)| Some((name.parse().ok()?, value.parse().ok()?)))
             .collect();
-        let (bearer, header) = busbar_kernel::auth::admin_carriers(&headers);
-        busbar_kernel::auth::admin_door(&app.snapshot(), bearer.as_deref(), header.as_deref())
+        let snapshot = app.snapshot();
+        busbar_kernel::auth::admin_door(&snapshot, &request.method, &request.path, &headers)
     })
 }
 

@@ -166,6 +166,29 @@ pub use busbar_kernel_identity::operator::{
     install_linked as install_linked_auth, linked_names as linked_auth_names,
 };
 
+/// Opens one build's AUTH AXIS over that build's registry, on the process's one dispatcher: the
+/// composition root's (it holds the dispatcher), installed once; the kernel names neither the
+/// dispatcher nor the rows it opens (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1).
+pub type AuthAxisOpener = fn(Arc<PluginRegistry>) -> Arc<dyn busbar_contract::auth_calls::AuthAxis>;
+
+static AUTH_AXIS: std::sync::OnceLock<AuthAxisOpener> = std::sync::OnceLock::new();
+
+/// THE ROOT'S DOOR onto the auth axis's opener (the first install stands).
+pub fn install_auth_axis(open: AuthAxisOpener) {
+    let _ = AUTH_AXIS.set(open);
+}
+
+/// This build's auth axis over `registry`; `None` (no opener installed, no stand-in): no auth row
+/// answers anything. A test build has no root: the loader's test stand-in opens the build's rows on a
+/// dispatcher of its own.
+pub(crate) fn auth_axis(
+    registry: Arc<PluginRegistry>,
+) -> Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>> {
+    #[cfg(feature = "test-support")]
+    let _ = AUTH_AXIS.set(busbar_plugin_loader::auth_axis::stand_in);
+    AUTH_AXIS.get().map(|open| open(registry))
+}
+
 /// The rows this build LINKS onto the cold-kind axis, ahead of the plugins directory's: the root's
 /// stores, the kernel's own secret modules, the root's hooks — a test build (no root) stands its
 /// fixture entries in. Registered through `PluginRegistry::link`, the admission a dropped-in row
@@ -182,7 +205,7 @@ fn linked_rows() -> Vec<LinkedPlugin> {
     let rows = stores.iter().map(store).chain(secrets);
     let auths = busbar_kernel_identity::operator::linked().iter();
     let rows = rows.chain(hooks.iter().map(hook));
-    rows.chain(auths.map(|&(name, entry)| LinkedPlugin::auth(name, entry)))
+    rows.chain(auths.map(|&(name, door)| LinkedPlugin::auth_door(name, door)))
         .collect()
 }
 

@@ -27,6 +27,7 @@ fn link() {
         crate::LINKED.auths,
         crate::root::auth_bindings::operator_words(),
     );
+    busbar_kernel::preflight::install_auth_axis(crate::root::dispatch::auth_axis);
     for decls in crate::LINKED.protocols {
         busbar_kernel::proto::register_test_protocols(decls);
     }
@@ -212,7 +213,6 @@ async fn without_the_root_row_the_operator_token_is_refused() {
     let mut without_row = (*with_row).clone();
     without_row.admin_modules = Arc::new(AdminAuthChain {
         modules: HashMap::new(),
-        has_plugin: false,
         operator: Operator::new(config::operator_provider()),
     });
     let without_row = Arc::new(without_row);
@@ -414,11 +414,11 @@ fn admin_token_secret_ref_re_resolves_on_apply() {
     // opened over the digest this apply resolved.
     use busbar_contract::authz::Scope;
     assert!(
-        busbar_kernel::auth::dry_run_admin_scope(&next, Some("tok-v2"), None).allows(Scope::Full),
+        busbar_kernel::auth::dry_run_admin_scope(&next, &bearer("tok-v2")).allows(Scope::Full),
         "the applied admin chain admits the rotated token"
     );
     assert!(
-        !busbar_kernel::auth::dry_run_admin_scope(&next, Some("tok-v1"), None).allows(Scope::Full),
+        !busbar_kernel::auth::dry_run_admin_scope(&next, &bearer("tok-v1")).allows(Scope::Full),
         "the applied admin chain refuses the pre-rotation token"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -588,7 +588,7 @@ async fn a_renamed_provider_backed_by_the_operator_module_is_the_operator_creden
 
     use busbar_contract::authz::Scope;
     assert!(
-        busbar_kernel::auth::dry_run_admin_scope(&app, Some(TOKEN), None).allows(Scope::Full),
+        busbar_kernel::auth::dry_run_admin_scope(&app, &bearer(TOKEN)).allows(Scope::Full),
         "the operator token earns full scope through the renamed provider"
     );
     for (bearer, header) in [(Some(TOKEN), None), (None, Some(TOKEN))] {
@@ -627,7 +627,6 @@ async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that
                 op.to_string(),
                 Box::new(AnyCredential) as Box<dyn AuthModule>,
             )]),
-            has_plugin: false,
             operator,
         });
         Arc::new(named)
@@ -824,4 +823,14 @@ fn a_swapped_admin_chain_is_the_loops_next_door() {
     handle.swap(closed);
     assert_eq!(ask(&node), 401, "and swapping it back closes it");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A request's head presenting `token` as its Bearer: what the admin chain's dry run judges.
+fn bearer(token: &str) -> axum::http::HeaderMap {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::AUTHORIZATION,
+        format!("Bearer {token}").parse().expect("a header value"),
+    );
+    headers
 }

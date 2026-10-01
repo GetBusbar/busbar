@@ -322,8 +322,8 @@ pub struct App {
     /// The RESOLVED admin auth modules — every `admin_auth:` entry opened through the auth kind's
     /// registry (1.5.2 admin-plane OIDC). Keyed by the config module name (the same string
     /// `admin_chain` names and `role_bindings.<module>` binds); the operator credential is held apart
-    /// (`AdminAuthChain::operator`), opened over its token's digest. `has_plugin` gates the
-    /// off-reactor offload of the admin chain (a plugin can do blocking JWKS/introspection I/O).
+    /// (`AdminAuthChain::operator`), opened over its token's digest. Each external module's call
+    /// is offloaded off the reactor (a plugin can do blocking JWKS/introspection I/O).
     /// Rebuilt on boot AND reload (`build_app_from_config`), Arc-shared so `App::clone` is cheap.
     pub admin_modules: Arc<crate::auth::AdminAuthChain>,
     /// The RESOLVED hosted-login methods (`auth.methods:`, 1.5.2) — each opened as a login

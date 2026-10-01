@@ -20,6 +20,10 @@ license = "Apache-2.0"
 #   cargo build --release -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
 [features]
 pack = ["dep:jsonschema"]
+# The auth axis's TEST STAND-IN (`auth_axis::stand_in`): a build with no composition root opens its
+# auth rows on a dispatcher of its own. A test double, so it never ships: a dependent crate's
+# `test-support` forwards here.
+test-support = []
 
 [[bin]]
 name = "busbar-plugin-pack"
@@ -214,11 +218,9 @@ busbar-auth-oidc-plugin = { workspace = true }
 # plugin — door + both-ways conformance, the AUTH kind proof). The row above proves the
 # login-capable surface, but its token can only be REFUSED (the issuer's keys are unreachable
 # offline); this one runs the token cases to every verdict — the accepted token IDENTIFIES, a wrong
-# one is REJECTED, another scheme's token and no credential PASS — on both doors. `dropped-in`: the
-# door is compiled only under it (a build that links the module must not carry a second door
-# registration), and this proof needs both halves of it.
-# From its own repo at the rev busbar-kernel pins: the repo's plugin crate, which turns the module's
-# `dropped-in` door on and re-exports it whole; its cdylib is built under `deps/`, hashed.
+# one is REJECTED, another scheme's token and no credential PASS — on both doors, on the auth kind's
+# memory ABI (ARCHITECT 2026-09-30, AUTH-DOOR Q1): its `rlib`'s `door::door` is the linked door, its
+# cdylib (built under `deps/`, hashed) the dropped-in one.
 busbar-auth-admin-tokens-plugin = { workspace = true }
 # The libraries the plugin-logging witness logs through from inside a call (`log_witness_plugin`).
 h2 = { workspace = true }

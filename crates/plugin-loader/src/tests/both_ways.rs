@@ -38,6 +38,19 @@ pub(crate) fn fixture(kind: &str) -> (&'static str, &'static ColdEntry) {
         })
 }
 
+/// The memory-ABI both-ways fixture of `row`: its `cdylib`'s crate name and its linked door.
+pub(crate) fn door_fixture(
+    row: &str,
+) -> (&'static str, busbar_contract::abi::mechanism::door::DoorFn) {
+    DOOR_FIXTURES
+        .iter()
+        .find(|(k, ..)| *k == row)
+        .map(|&(_, krate, door)| (krate, door))
+        .unwrap_or_else(|| {
+            panic!("no `{row}` memory-ABI row in Cargo.toml's [package.metadata.busbar.both-ways]")
+        })
+}
+
 /// The manifest both doors state for the plugin: a first-party `name`/`alias` of `kind` at payload
 /// schema `abi_version`, with no artifact.
 pub(crate) fn statement(kind: &str, name: &str, alias: &str, abi_version: u32) -> Manifest {

@@ -199,6 +199,17 @@ fn stated_aliases(row: &LoadablePlugin) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// TEST STAND-IN: one build's auth axis over `registry` on a dispatcher of its own, for a build
+/// with no composition root to hold the process's one dispatcher (a test binary). Never shipped.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn stand_in(registry: Arc<PluginRegistry>) -> Arc<dyn busbar_contract::auth_calls::AuthAxis> {
+    static DISPATCHER: std::sync::OnceLock<Arc<Dispatcher>> = std::sync::OnceLock::new();
+    let dispatcher = DISPATCHER
+        .get_or_init(|| Arc::new(Dispatcher::new(crate::dispatch::DispatchConfig::default())));
+    Arc::new(AuthRows::new(registry, dispatcher.clone()))
+}
+
 /// The contract's auth axis over one build's rows: what the kernel's identity chain opens auth
 /// instances through, naming neither this crate nor the root.
 impl busbar_contract::auth_calls::AuthAxis for AuthRows {

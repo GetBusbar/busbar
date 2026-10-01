@@ -448,17 +448,19 @@ dependencies = [
 [[package]]
 name = "busbar-auth-admin-tokens"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=47cb5047e4c9a73341c613c09a056b4a4bb8eb99#47cb5047e4c9a73341c613c09a056b4a4bb8eb99"
+source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=1c5d01df9a87b1e717a70b2c9e4f32a85220ab61#1c5d01df9a87b1e717a70b2c9e4f32a85220ab61"
 dependencies = [
  "busbar-contract",
+ "serde_json",
 ]
 
 [[package]]
 name = "busbar-auth-admin-tokens-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=47cb5047e4c9a73341c613c09a056b4a4bb8eb99#47cb5047e4c9a73341c613c09a056b4a4bb8eb99"
+source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=1c5d01df9a87b1e717a70b2c9e4f32a85220ab61#1c5d01df9a87b1e717a70b2c9e4f32a85220ab61"
 dependencies = [
  "busbar-auth-admin-tokens",
+ "busbar-contract",
 ]
 
 [[package]]

@@ -120,13 +120,13 @@ mod test_seams {
             // table, `root::auth_bindings::OPERATOR_AUTH_MODULE`; ARCHITECT 2026-09-30,
             // KERNEL-AUTH-ZERO Q2).
             for_each_operator_auth_row!(install_operator_row);
-            fn install_operator_row(entry: busbar_kernel::test_support::AuthBoundary) {
+            fn install_operator_row(door: busbar_kernel::test_support::AuthDoor) {
                 const ROOT_WORDS: busbar_kernel::test_support::OperatorWords =
                     busbar_kernel::test_support::OperatorWords {
                         provider: "admin-tokens",
                         principal_id: "admin",
                     };
-                busbar_kernel::test_support::install_operator_auth_row_as(ROOT_WORDS, entry);
+                busbar_kernel::test_support::install_operator_auth_row_as(ROOT_WORDS, door);
             }
             for entry in TEST_LINKED {
                 register_test_plane_seam(entry);
