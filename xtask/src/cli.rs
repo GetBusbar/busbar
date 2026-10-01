@@ -32,7 +32,6 @@ usage:
   cargo xtask loc --selftest
   cargo xtask teller-steps [--root-legs] [--root-legs-gating]
   cargo xtask ledger {sync|status|next|record|fixed|move} | --check
-  cargo xtask full-gate [--list] [--selftest] [--dump-gates|--dump-cargo [FILE]]
   cargo xtask conformance check --suite <id>|all|--musts [--sha <sha>] [--manifest <path>] [--format=tsv]
   cargo xtask conformance check --selftest
   cargo xtask dialect wire [--write | --diff] <dialect|all>
@@ -55,7 +54,6 @@ const LEGACY_LEDGER_ENV: &str = "LEDGER";
 /// gates and the register that RECORDS the audit, neither of which has an owed row set. Listed
 /// here, beside the dispatch arms that prove it, so the reader and the dispatcher cannot drift.
 pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
-    "full-gate",
     "ledger",
     "conformance",
     "loc",
@@ -105,12 +103,6 @@ pub fn main(args: &[String]) -> i32 {
         // THE AUDIT REGISTER's commands. `cargo xtask gate audit-ledger` is `--check` as a
         // reconciled row set; this is the same computation plus the four commands that WRITE the
         // register (`sync`/`record`/`fixed`) or the report (`status`), which a gate must not do.
-        // RUN LOCALLY WHAT CI RUNS. Not a gate: it is the runner that discovers and drives the
-        // gates, so it has no owed row set of its own and nothing reconciles it.
-        Some("full-gate") => match open_ctx() {
-            Ok(cx) => crate::full_gate::main(&cx, &args[1..]),
-            Err(code) => code,
-        },
         // THE ONE LINE COUNTER. Not a gate: it is an INSTRUMENT, and the gates that ratchet a
         // line ceiling call the same library in process. It is listed in
         // `NON_GATE_SUBCOMMANDS` for the same reason `ledger` is — a reader of `ci.yml` cannot
@@ -437,14 +429,7 @@ fn gate(args: &[String]) -> i32 {
             // disagree about what the tree measures; what the flag changes is whether the answer
             // is printed or committed.
             "construction" => crate::gates::construction::ceilings::rewrite(&cx),
-            // The declared shape is a DERIVED projection of the workflow (structural JSON), never
-            // hand-edited — see `qa_gate_dispatch::DECLARED`'s doc comment. `--write` regenerates it
-            // from whatever `qa-gate.yml` this branch carries, exactly like `design-bindings` and
-            // `construction` regenerate their own derived artifacts from what this branch measures.
             "abi-header" => crate::gates::abi_header::write(&cx),
-            "qa-gate-dispatch" => {
-                crate::gates::qa_gate_dispatch::QaGateDispatchGate::new().write_declared(&cx)
-            }
             _ => {
                 eprintln!("xtask gate {name}: this gate has nothing to write");
                 return 2;

@@ -217,7 +217,7 @@ pub fn golden_recorded(ledger: &Path) -> BTreeSet<String> {
 }
 
 /// A file's content with the lines that cannot run anything removed — comments and step `name:`
-/// labels, stripped exactly as `scripts/full-gate.sh`'s own discovery strips them, because a script
+/// labels, because a script
 /// named in a comment or in a step's human-readable title is being TALKED ABOUT, not run.
 fn runnable_text(path: &Path) -> String {
     let Ok(text) = std::fs::read_to_string(path) else {
@@ -256,6 +256,15 @@ pub fn ci_invoked_refs(root: &Path) -> Result<BTreeSet<String>, String> {
         Regex::new(r"(?:scripts|testing|qa|xtask)/(?:[A-Za-z0-9._+-]+/)*[A-Za-z0-9._+-]+")?;
     let gate_call = Regex::new(r"cargo[ \t]+xtask[ \t]+gate[ \t]+([a-z0-9][a-z0-9-]*)")?;
     let mut gate_modules: BTreeSet<String> = BTreeSet::new();
+
+    // THE PIPELINE'S TURNSTILE RUNS EVERY REGISTERED GATE. It discovers them with `cargo xtask gate
+    // --list` (busbar-release's `discover_gates`) and runs each by name on every hop, so no
+    // workflow in this tree names them one by one any more. The registry IS that list, so a gate
+    // module is invoked exactly when it is registered; a module that is not registered is run by
+    // nothing and is still refused.
+    for name in crate::gates::names() {
+        gate_modules.insert(xtask_gate_module(name, root));
+    }
 
     let refs_in = |text: &str, gate_modules: &mut BTreeSet<String>| -> BTreeSet<String> {
         for m in gate_call.find_iter(text.as_bytes()) {
@@ -401,8 +410,8 @@ pub fn check_verdict(c: &J, ctx: &Ctx) -> (bool, String) {
                     false,
                     format!(
                         "{k}:{r} (exists on disk, but nothing under .github/workflows invokes it, \
-                         directly or through the qa segment manifest -- a gate nobody runs \
-                         compares nothing)"
+                         directly or through the qa segment manifest, and it is no registered \
+                         gate the turnstile runs -- a gate nobody runs compares nothing)"
                     ),
                 );
             }

@@ -8,7 +8,7 @@
 //! NOTICE, community files, the README header and its section headings — is a pure function of
 //! `plugins.yaml` plus the templates in `.github/fleet/`, and the CI
 //! logic itself lives once, in busbar's reusable workflows (`plugin-ci.yml`, `plugin-release.yml`,
-//! `plugin-repin.yml`, `plugin-conformance.yml`), taken by each repo at the busbar commit it pins.
+//! `plugin-repin.yml`, `plugin-consumer-verify.yml`), taken by each repo at the busbar commit it pins.
 //!
 //! * `fleet render <repo> [--out <dir>]` — the files the render owns in that repo (printed, or
 //!   written under `<dir>`). Nothing but `plugins.yaml` and the templates goes in.

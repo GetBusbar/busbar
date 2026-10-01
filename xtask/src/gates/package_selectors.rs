@@ -43,7 +43,7 @@
 //! 2. A `tests:` or `features:` MATRIX CELL. `tests:` is passed verbatim after `cargo test`;
 //!    `features:` is `<pkg>/<feature>`, so its left half is a package selector in all but spelling.
 //! 3. A Rust string literal under `xtask/src` that BEGINS with `cargo ` — the command strings
-//!    `full_gate` mirrors CI with. The "begins with" is load-bearing: the same tuples carry PROSE
+//!    a runner mirrors a pipeline with. The "begins with" is load-bearing: the same tuples carry PROSE
 //!    strings that quote dead selectors on purpose, and prose is not a command.
 //!
 //! WHAT IS DELIBERATELY NOT COVERED, stated so it is not mistaken for held: the general "no string
@@ -429,9 +429,9 @@ fn scan_matrix(rel: &str, text: &str, out: &mut Vec<Site>) {
 
 /// Rule 3: a Rust string literal that BEGINS with `cargo `.
 ///
-/// `full_gate`'s `CARGO_CI_ONLY` is a list of (command, reason) tuples on ONE line each, and the
-/// reason quotes dead selectors deliberately — `"(It read '-p busbar-core' here for as long as
-/// ci.yml did …)"`. A literal that begins with `cargo ` is a command; one that begins with anything
+/// A list of (command, reason) tuples on ONE line each (a command mirror) carries reasons that
+/// quote dead selectors deliberately — `"(It read '-p busbar-core' here for as long as the old
+/// workflow did …)"`. A literal that begins with `cargo ` is a command; one that begins with anything
 /// else is prose about a command, and prose is out of scope by construction rather than by
 /// allowlist.
 fn scan_rust_commands(rel: &str, text: &str, out: &mut Vec<Site>) {

@@ -62,8 +62,8 @@ pub struct ShipReadyGate;
 /// `HEAD` and the empty string are folded in here for the same reason: `git rev-parse --abbrev-ref
 /// HEAD` answers `HEAD` on a detached checkout, which is git saying it cannot name a branch, not
 /// git naming a branch called HEAD. Reading it as a dev-line name is the same fail-open one step
-/// removed. CI sets `XTASK_SHIP_TARGET` explicitly (`ci.yml`, `${{ github.ref_name }}`), which is
-/// the supported way to say what a detached checkout is a checkout OF.
+/// removed. The pipeline sets `XTASK_SHIP_TARGET` explicitly (`promote.yml`, the PR's base branch), which
+/// is the supported way to say what a detached checkout is a checkout OF.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Posture {
     /// The target, named: `XTASK_SHIP_TARGET` when set and non-empty, else the branch git reports.

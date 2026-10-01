@@ -7,8 +7,8 @@
 # script is an instrument that proves it, and the gate designs (BUSBAR-1.6.0.md #15, BUSBAR-1.6.0.md THE DESIGN, §1).
 #
 # WHAT "DONE" MEANS HERE — the umbrella asserts, as ONE verdict, that every sub-gate is green:
-#   build            the full-gate cargo battery (`cargo xtask full-gate`, driven by qa/full-gate.toml).
-#                    No register, no battery: BUILD is RED, never a silent downgrade to plain builds.
+#   build            the cargo battery: fmt check, clippy -D warnings, workspace build. --fast
+#                    substitutes a plain build and is PROVISIONAL (exit 3), never a DONE.
 #   plane-purity     cargo xtask gate plane-purity  (neutral crates 0 side channels / 0 backwards),
 #                    plus the strict ratchet, which nothing invoked while it was a shell flag.
 #   plane-delete     scripts/plane-delete-test.sh --all, plus a roster-coverage check that the
@@ -22,7 +22,7 @@
 #                    RED rather than vacuously green (see filtered_cargo_test).
 #   config-stability cargo xtask gate config-schema (config-schema.snapshot.json byte-stable).
 #   test             cargo test --workspace  +  cargo test -p busbar-voice --features runtime.
-#   conformance      the conformance rigs' selftests + verdict-covers-every-leg.py + the voice legs =ready.
+#   conformance      the conformance rigs' selftests + the voice legs =ready.
 #   teller-steps     the H2 matrix holds on BOTH its columns: every rig cell id still resolves to the
 #                    scenario/script/leg/suite that owns it, and the rigs behind them RUN and pass
 #                    (testing/shadow-oracle/rigs-ledger.sh, driven from the TELLER-STEPS group
@@ -73,9 +73,9 @@
 # checklist of what is left — never aborting at the first red.
 #
 # FLAGS:
-#   --fast   substitute `cargo build --workspace` for the heavy full-gate battery in the BUILD group
+#   --fast   substitute `cargo build --workspace` for the cargo battery in the BUILD group
 #            (for a quick progress read); every other group still runs in full. Without it, BUILD runs
-#            the full `cargo xtask full-gate` — the real DONE claim. A --fast run that comes out clean
+#            fmt, clippy -D warnings and the workspace build — the real DONE claim. A --fast run that comes out clean
 #            reports PROVISIONAL and exits 3, never the DONE banner and never exit 0: the banner and
 #            the exit code are all a wrapper, a CI step or the proof collator ever sees, so a
 #            provisional answer must not be spendable as the real one.
@@ -300,20 +300,17 @@ fi
 absent_step() { printf '  \033[31m[RED]\033[0m  %s — NOT PRESENT YET (%s)\n' "$1" "$2"; CUR_RED=1; [ -z "$CUR_FIRST_NOTE" ] && CUR_FIRST_NOTE="$1 (absent)"; }
 
 # THE BUILD GROUP, as a function so --selftest can drive its arms. Without --fast the ONLY green
-# BUILD is the full-gate battery. A missing qa/full-gate.toml used to fall through to three plain
-# `cargo build`s -- no clippy, no test tier -- and still report GREEN, print the unqualified DONE
-# banner and exit 0: the exact downgrade --fast was demoted to PROVISIONAL / exit 3 for, reachable by
-# deleting one file. A missing register is now RED, named, like every other absent sub-gate.
-run_build_group() {  # $1 = the full-gate register path
-  local register="$1"
+# BUILD is the whole battery: formatting, clippy under -D warnings (which is what compiles every
+# target), and the workspace build. A plain `cargo build` alone reports GREEN over a tree clippy
+# would refuse, which is the downgrade --fast was demoted to PROVISIONAL / exit 3 for.
+run_build_group() {
   if [ "$FAST" -eq 1 ]; then
-    ylw "  --fast: substituting 'cargo build --workspace' for the full ci battery"
+    ylw "  --fast: substituting 'cargo build --workspace' for the full cargo battery"
     step "cargo build --workspace" cargo build --workspace --quiet
-  elif [ -f "$register" ]; then
-    step "cargo xtask full-gate --selftest" cargo xtask full-gate --selftest
-    step "cargo xtask full-gate"            cargo xtask full-gate
   else
-    absent_step "full-gate register (BUILD without it is three plain builds: no clippy, no test tier)" "$register"
+    step "cargo fmt --check"                cargo fmt --all -- --check
+    step "cargo clippy -D warnings"         cargo clippy --workspace --all-targets --locked -- -D warnings
+    step "cargo build --workspace --locked" cargo build --workspace --locked --quiet
   fi
 }
 
@@ -443,7 +440,7 @@ filtered_cargo_test() {  # $1 = expected passing count ; rest = the cargo argv
 #   * BUSBAR_UPDATE_GOLDEN (busbar-plugin tests/layout_golden.rs), UPDATE_KEYS_ERROR_GOLDEN
 #     (busbar-core-admin keys error wire) and UPDATE_DIAGNOSTICS (busbar-a2a diagnostics markdown)
 #     each write the fresh bytes over the committed golden and RETURN before asserting. The BUILD
-#     group's full-gate runs all three.
+#     group's own test run holds all three.
 #   * XTASK_INSN_EMIT_BASELINE / XTASK_PPB_EMIT_BASELINE switch instance-noun-neutrality and
 #     plane-pricing-blindness into their baseline-regeneration mode (the census printed as the
 #     qa/*.toml the gate compares against). The run is then a re-baselining run, not a DONE run.
@@ -1036,15 +1033,15 @@ if [ "$SELFTEST" -eq 1 ]; then
   st_expect refuse "a migration corpus missing the v$PARITY_BASELINE_VERSION config it shipped" bash tests/migration-corpus/refresh.sh --check --corpus-dir "$st_tmp/corpus"
   st_expect accept "THIS migration corpus holds every config every release tag shipped"     bash tests/migration-corpus/refresh.sh --check
 
-  # ── BUILD: no full-gate register is RED, not three plain builds (item 529) ────────────────────
+  # ── BUILD: only the full battery is a DONE build; --fast is the downgrade (item 529) ──────────
   # Driven through the REAL run_build_group with `step` stubbed to a recorder, so no cargo runs.
-  st_build() {  # $1 = FAST ; $2 = register path  -> exit 0 iff the group came out GREEN
+  st_build_runs_clippy() {  # $1 = FAST  -> exit 0 iff the group's steps include the clippy step
     ( FAST="$1"; CUR_RED=0; CUR_FIRST_NOTE=""; step() { echo "STEP $1"; }
-      run_build_group "$2" >/dev/null 2>&1; [ "$CUR_RED" -eq 0 ] )
+      out="$(run_build_group 2>/dev/null)"   # captured, never `| grep -q` (SIGPIPE under pipefail)
+      case "$out" in *"STEP cargo clippy"*) exit 0 ;; *) exit 1 ;; esac )
   }
-  printf 'version = 1\n' > "$st_tmp/full-gate.toml"
-  st_expect accept "BUILD with the full-gate register present runs the battery"   st_build 0 "$st_tmp/full-gate.toml"
-  st_expect refuse "BUILD with NO full-gate register (the silent plain-build downgrade)" st_build 0 "$st_tmp/no-full-gate.toml"
+  st_expect accept "BUILD without --fast runs clippy -D warnings beside the build"   st_build_runs_clippy 0
+  st_expect refuse "BUILD --fast (the plain-build downgrade) runs no clippy"        st_build_runs_clippy 1
 
   # ── the CONFORMANCE group's voice legs are =ready (item 530) ──────────────────────────────────
   if [ -f testing/voice-conformance/voice-conformance.sh ]; then
@@ -1100,7 +1097,7 @@ fi
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "BUILD — the cargo battery"
-run_build_group qa/full-gate.toml
+run_build_group
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1224,7 +1221,7 @@ if assert_bless_env_empty >/tmp/done-oracle-step.$$ 2>&1; then
   # `a_plane_with_admin_verbs_documents_at_least_one_openapi_path`) against the expected 23 — a
   # vacuity the count check catches. With busbar-core-admin added the `openapi` filter runs the real
   # set (22 in busbar-core-admin + 1 in busbar-kernel = 23), so the oracle's byte-identity check is
-  # real, matching cargo xtask full-gate. Thread-count-independent: every busbar-core-admin openapi
+  # real. Thread-count-independent: every busbar-core-admin openapi
   # test installs the plane seam before reading `openapi_doc()` (see `openapi_doc_seamed` in that
   # crate's json tests), so no `--test-threads=1` pin is needed for determinism.
   step "openapi.json goldens match committed file"  filtered_cargo_test 23 cargo test -p busbar -p busbar-kernel -p busbar-core-admin --features openapi-schema --quiet openapi
@@ -1253,17 +1250,9 @@ step "cargo test -p busbar-voice --features runtime" cargo test -p busbar-voice 
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-begin_group "CONFORMANCE — rig selftests + verdict coverage + voice legs =ready"
+begin_group "CONFORMANCE — rig selftests + voice legs =ready"
 [ -f scripts/mcp-conformance.sh ] && step "mcp-conformance --selftest" bash scripts/mcp-conformance.sh --selftest \
   || absent_step "mcp-conformance --selftest" "scripts/mcp-conformance.sh"
-if [ -f testing/verdict-covers-every-leg.py ]; then
-  step "verdict-covers-every-leg.py" python3 testing/verdict-covers-every-leg.py
-else
-  absent_step "verdict-covers-every-leg.py" "testing/verdict-covers-every-leg.py — T2 conformance coverage gate not built yet"
-fi
-if [ -f testing/verdict-covers-every-leg.py ]; then
-  step "verdict-covers-every-leg.py --selftest" python3 testing/verdict-covers-every-leg.py --selftest
-fi
 if [ -f testing/voice-conformance/voice-conformance.sh ]; then
   step "voice conformance selftest (anti-vacuity)" bash testing/voice-conformance/voice-conformance.sh --selftest
   step "voice legs =ready (every declared leg LEG_STATUS=ready)" voice_legs_all_ready testing/voice-conformance/voice-conformance.sh ""

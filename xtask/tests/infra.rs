@@ -684,59 +684,34 @@ jobs:
 }
 
 #[test]
-fn the_real_ci_workflow_parses_and_its_gate_call_sites_are_discoverable() {
-    let text = std::fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).unwrap();
-    let wf = yaml_lite::parse_workflow(&text).expect("the real ci.yml parses");
+fn the_real_pipeline_workflow_parses_and_its_gate_call_sites_are_discoverable() {
+    let text = std::fs::read_to_string(repo_root().join(".github/workflows/promote.yml")).unwrap();
+    let wf = yaml_lite::parse_workflow(&text).expect("the real promote.yml parses");
     assert!(
-        wf.job_names().len() > 15,
-        "ci.yml carries ~24 jobs: {:?}",
+        wf.job_names().len() >= 2,
+        "promote.yml carries the preflight and hop jobs: {:?}",
         wf.job_names()
     );
     assert!(
         wf.job_names()
             .iter()
             .any(|j| wf.job(j).unwrap().steps.iter().any(|s| s.run.is_some())),
-        "every job's `run:` steps must be visible to the discovery"
+        "every job's `run:` steps must be visible to the reader"
     );
 
-    // EVERY GATE ci.yml CALLS IS ONE THE RUNNER ANSWERS TO. This replaces the placeholder that
-    // pinned "no call site has been switched yet": that assertion had exactly one job, to prove the
-    // discovery reads the file rather than a cached list, and the first switched call site did the
-    // proving. What survives it is the direction that keeps mattering — a `cargo xtask gate <typo>`
-    // in `ci.yml` is a step that exits 2 on every push, and the registry is what can say so here
-    // rather than in a red run.
-    //
-    // The OTHER direction — a registered gate absent from `ci.yml` — is deliberately not asserted
-    // here. It is `cargo xtask gate full`'s set-equality rule, which owns the SKIP_REASON table
-    // that makes a deliberate absence say why; duplicating half of it here would be a second place
-    // for that reasoning to rot.
+    // EVERY GATE THE PIPELINE CALLS BY NAME IS ONE THE REGISTRY ANSWERS TO: a `cargo xtask gate
+    // <typo>` is a step that exits 2 on every hop, and the registry is what can say so here rather
+    // than in a red run.
     let called = yaml_lite::xtask_gate_invocations(&text);
     assert!(
-        !called.is_empty(),
-        "ci.yml calls no `cargo xtask gate` at all — either every call site was reverted or the \
-         discovery stopped reading the file"
-    );
-    let registered = gates::names();
-    let unknown: Vec<&String> = called
-        .iter()
-        .filter(|n| !registered.contains(&n.as_str()))
-        .collect();
-    assert!(
-        unknown.is_empty(),
-        "ci.yml calls gate(s) the registry does not answer to: {unknown:?} — every one of those \
-         steps exits 2 on every push. Registered: {registered:?}"
-    );
-    // And ONE NAME IS PINNED BY HAND, because `!called.is_empty()` above would still hold if every
-    // call site but one were reverted. `plane-purity` is the one the batch that switched it named
-    // here; a `called` set that has lost it is a call site that went back to a script.
-    assert!(
-        called.contains(&"plane-purity".to_string()),
-        "the plane-purity call site is switched; discovery must see it: {called:?}"
+        called.contains(&"abi-header".to_string()),
+        "promote.yml's preflight calls `cargo xtask gate abi-header`; the reader must see it: \
+         {called:?}"
     );
     for name in &called {
         assert!(
             gates::find(name).is_some(),
-            "ci.yml calls `cargo xtask gate {name}`, which no registration answers to"
+            "promote.yml calls `cargo xtask gate {name}`, which no registration answers to"
         );
     }
     assert_eq!(

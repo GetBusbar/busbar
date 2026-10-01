@@ -30,22 +30,22 @@
 # from whatever they currently are, so running this script can never regress
 # a protection setting that was configured through some other means.
 #
-# THE FOUR REQUIRED STATUS CHECKS
-# --------------------------------
+# THE TWO REQUIRED STATUS CHECKS
+# -------------------------------
 # The contexts below are matched by GitHub against the `name:` of the GitHub
 # Actions job that reports the check, not the workflow file name and not the
-# step name. Three of the four ("ci umbrella", "structure lint",
-# "construction gate (how the tree is built vs the design — BLOCKING, on its
-# posture)") were verified against .github/workflows/ci.yml at the time
-# this script was written — they are the literal `name:` fields of jobs in
-# that file.
+# step name. Both are the literal job names of .github/workflows/promote.yml,
+# busbar's one pipeline workflow: `preflight` (the free-runner checks: fmt,
+# Cargo.lock, the C header) and `promote` (the hop: the turnstile admits the
+# candidate, and on a green rung the base is fast-forwarded to the tested sha).
+# Every other workflow in this repo is a `workflow_call` reusable for the
+# plugin repos, whose status bubbles into the CALLER's job, so none is a
+# context of this repo.
 #
-# "gate-mutants" (the mutation-strength gate, from .github/workflows/gate-mutants.yml)
-# was a fifth required check. Per owner ruling (DECISIONS #78) it is now
-# MANUAL-ONLY and OPTIONAL — it tests the tests, it does not gate a release —
-# so it is NO LONGER a required status check and is absent from
-# REQUIRED_CONTEXTS_JSON below. The workflow may still be run manually, but
-# qa/main no longer require it.
+# The retired contexts below are the ones the deleted workflows used to report
+# (ci.yml's umbrella and gates, qa-gate.yml's umbrella, release-stage.yml's
+# staged-digest record). None can report any more, so each would hold qa/main
+# unmergeable forever if it stayed required.
 #
 # ABSENT FROM THE REQUIRED LIST IS NOT THE SAME AS REMOVED FROM PROTECTION.
 # `build_body` unions `required` with whatever contexts the branch ALREADY
@@ -64,8 +64,7 @@
 # script actively retires.
 #
 # A REQUIRED CONTEXT MUST BE ABLE TO REPORT, OR WRITING IT IS A WEDGE (item 488).
-# "ship-ready" and "construction gate (...)" exist as job names in `ci.yml` on `predev`, but not on
-# `dev`, `qa` or `main`. promote.sh reads the TARGET branch's required contexts and resolves each
+# A job name that exists on `predev` but not yet on `dev`, `qa` or `main` is the case: promote.sh reads the TARGET branch's required contexts and resolves each
 # against the check-runs of the SOURCE sha, refusing on any that never reported ("a missing context
 # is a refusal too"). So writing a context onto qa that dev's workflows cannot produce makes
 # `promote.sh dev --to qa` impossible, and the promotion that would land the job is the very thing
@@ -116,14 +115,12 @@ FEEDERS="${CI_PROTECTION_FEEDERS:-qa=dev main=qa}"
 # The git checkout whose origin/* refs the preflight reads (the one this script lives in).
 PROTECTION_GIT_DIR="${CI_PROTECTION_GIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 
-# These four strings are GitHub Actions job `name:` values, matched verbatim
+# These two strings are GitHub Actions job `name:` values, matched verbatim
 # by the status-checks API. See the block comment above for provenance /
 # verification notes on each one.
 REQUIRED_CONTEXTS_JSON='[
-  "ci umbrella",
-  "structure lint",
-  "construction gate (how the tree is built vs the design — BLOCKING, on its posture)",
-  "ship-ready"
+  "preflight",
+  "promote"
 ]'
 
 # Contexts this script ACTIVELY STRIPS from a branch's required-status-checks,
@@ -143,9 +140,19 @@ REQUIRED_CONTEXTS_JSON='[
 # 599). The job now reports as "construction gate (how the tree is built vs the design — BLOCKING, on its posture)";
 # a context that no job reports any more would hold qa/main unmergeable forever, so the old name is
 # stripped in the same apply that adds the new one.
+# The jobs of the deleted workflows (ci.yml, qa-gate.yml, release-stage.yml): "ci umbrella",
+# "structure lint", the construction gate job, "ship-ready" and "qa-gate umbrella".
+# The branch's one pipeline is promote.yml now (OWNER 2026-10-01), so none of them can report, and
+# each left required would wedge the branch. (A hand-added "record the staged digest ..." context on
+# main is the same case; its spelling carries an apostrophe this JSON cannot, so strip it by hand.)
 RETIRED_CONTEXTS_JSON='[
   "gate-mutants",
-  "construction gate (how the tree is built vs ARCHITECTURE.md — BLOCKING, on its posture)"
+  "construction gate (how the tree is built vs ARCHITECTURE.md — BLOCKING, on its posture)",
+  "construction gate (how the tree is built vs the design — BLOCKING, on its posture)",
+  "ci umbrella",
+  "structure lint",
+  "ship-ready",
+  "qa-gate umbrella"
 ]'
 
 feeder_of() {
@@ -249,18 +256,18 @@ fetch_current_protection() {
 # carried through from `current` untouched.
 #
 # CONTEXTS ARE A UNION, NEVER A REPLACEMENT — WITH ONE NAMED EXCEPTION: this
-# script's job is to guarantee a FLOOR of four required checks on qa/main,
+# script's job is to guarantee a FLOOR of two required checks on qa/main,
 # not to be the sole authority over the complete list of required contexts.
 # main, for example, already requires "qa-gate umbrella" and "record the
 # staged digest (the promote's only input)" in addition to the shared ones —
 # those were added by hand for reasons specific to how release promotion
 # works, and this script has no opinion about them and no business deleting
-# them. If this script set `contexts` to exactly its four required strings,
+# them. If this script set `contexts` to exactly its two required strings,
 # every hand-added context on every branch would become a casualty of the
 # next run — the exact silent-loss-of-protection hazard the rest of this
 # script is built around avoiding for every other field. So the contexts we
 # send are (current contexts) UNION (required contexts): anything already
-# required keeps being required, and the four required contexts are added
+# required keeps being required, and the two required contexts are added
 # if they're missing.
 #
 # Removing a context from protection is, in general, a deliberate action for
@@ -426,14 +433,14 @@ cmd_selftest() {
 
   # Fixture: a realistic "current protection" object for an already-protected
   # branch. It deliberately: (1) is missing required contexts (e.g. the
-  # "construction gate ..." check and "ship-ready") from its contexts, so the
+  # "preflight" and "promote" checks) from its contexts, so the
   # compliance check must catch that; (2) has strict=true, which this
   # script must flip to false; (3) carries an unrelated, unrequested setting
   # (required_conversation_resolution.enabled = true) that must survive the
   # merge untouched, proving read-modify-write actually preserves state
   # instead of dropping it; (4) carries a pre-existing, hand-added context
-  # ("qa-gate umbrella", modelled on main's real protection) that is not one
-  # of the four required contexts and must survive the merge too, proving
+  # ("CodeQL", modelled on main's real protection) that is not one
+  # of the required contexts and must survive the merge too, proving
   # contexts are unioned rather than replaced; (5) carries "gate-mutants" —
   # modelled on qa/main's REAL protection at the time this fixture was last
   # updated, where it was still required despite the header above already
@@ -442,7 +449,7 @@ cmd_selftest() {
   local fixture_current='{
     "required_status_checks": {
       "strict": true,
-      "contexts": ["ci umbrella", "structure lint", "qa-gate umbrella", "gate-mutants"]
+      "contexts": ["ci umbrella", "structure lint", "CodeQL", "gate-mutants"]
     },
     "enforce_admins": {"enabled": false},
     "allow_force_pushes": {"enabled": true},
@@ -454,7 +461,7 @@ cmd_selftest() {
   local body
   body=$(printf '%s' "$fixture_current" | build_body)
 
-  # (a) all four desired contexts present in the built body.
+  # (a) all desired contexts present in the built body.
   local a_result
   a_result=$(python3 -c "
 import json, sys
@@ -463,7 +470,7 @@ required = json.loads(sys.argv[2])
 contexts = body['required_status_checks']['contexts']
 print('ok' if all(c in contexts for c in required) else 'FAIL')
 " "$body" "$REQUIRED_CONTEXTS_JSON")
-  echo "selftest (a) four contexts present after build: ${a_result}"
+  echo "selftest (a) required contexts present after build: ${a_result}"
   [ "$a_result" = "ok" ] || failures=$((failures + 1))
 
   # (b) the unrelated fixture setting (required_conversation_resolution) is
@@ -511,7 +518,7 @@ print('ok' if required_keys.issubset(body.keys()) else 'FAIL')
   [ "$d_result" = "ok" ] || failures=$((failures + 1))
 
   # (e) removing a context from the desired list is detected: a branch whose
-  # current contexts are missing one of the four must be reported as NOT
+  # current contexts are missing a required one must be reported as NOT
   # COMPLIANT by the summariser (using the original fixture, which is
   # missing "construction gate ..." and "ship-ready").
   local e_summary e_result
@@ -525,8 +532,7 @@ print('ok' if required_keys.issubset(body.keys()) else 'FAIL')
   [ "$e_result" = "ok" ] || failures=$((failures + 1))
 
   # (f) contexts are a UNION, never a replacement: the fixture's pre-existing,
-  # unrelated context ("qa-gate umbrella", not one of the four required
-  # strings) must still be present in the built body. This case must fail
+  # unrelated context ("CodeQL", not one of the required strings) must still be present in the built body. This case must fail
   # if someone reverts build_body to set contexts = required verbatim
   # instead of required UNION existing.
   local f_result
@@ -534,7 +540,7 @@ print('ok' if required_keys.issubset(body.keys()) else 'FAIL')
 import json, sys
 body = json.loads(sys.argv[1])
 contexts = body['required_status_checks']['contexts']
-print('ok' if 'qa-gate umbrella' in contexts else 'FAIL')
+print('ok' if 'CodeQL' in contexts else 'FAIL')
 " "$body")
   echo "selftest (f) pre-existing unrelated context survives union merge: ${f_result}"
   [ "$f_result" = "ok" ] || failures=$((failures + 1))
@@ -542,8 +548,8 @@ print('ok' if 'qa-gate umbrella' in contexts else 'FAIL')
   # (g) THE REMOVAL PATH ITSELF: "gate-mutants" is in the fixture's current
   # contexts (see the fixture comment above — this models qa/main's real,
   # observed state) and MUST NOT survive into the built body, even though the
-  # union step alone would have carried it through exactly like "qa-gate
-  # umbrella" did in case (f). This is the case that fails if someone reverts
+  # union step alone would have carried it through exactly like "CodeQL"
+  # did in case (f). This is the case that fails if someone reverts
   # the union to a plain union with no retired-context subtraction — the
   # exact bug this defect was filed against: REQUIRED_CONTEXTS_JSON not
   # naming a context was assumed to be enough to drop it, and it never was.
@@ -571,7 +577,7 @@ print('ok' if 'gate-mutants' not in contexts else 'FAIL')
   [ "$h_result" = "ok" ] || failures=$((failures + 1))
 
   # (i) item 488 — a required context the feeder's workflows cannot report is REFUSED before any
-  # PUT; the same preflight over workflows that do carry all four jobs passes. Built in a scratch
+  # PUT; the same preflight over workflows that do carry both jobs passes. Built in a scratch
   # git repo so the refs are real and nothing touches the network.
   local st_repo i_result="FAIL" j_result="FAIL" k_result="FAIL"
   st_repo="$(mktemp -d)"
@@ -580,18 +586,18 @@ print('ok' if 'gate-mutants' not in contexts else 'FAIL')
     cd "$st_repo"; git init -q; git config user.email selftest@example.invalid; git config user.name selftest
     git config core.hooksPath /dev/null   # a host's global commit hooks must not decide a fixture
     mkdir -p .github/workflows
-    printf 'on: push\njobs:\n  umbrella:\n    name: ci umbrella\n    runs-on: x\n# a column-0 comment inside jobs: must not end the job list\n  lint:\n    name: "structure lint"\n    runs-on: x\n  construction-gate:\n    name: construction gate (how the tree is built vs the design — BLOCKING, on its posture)\n    runs-on: x\n' > .github/workflows/ci.yml
+    printf 'on: pull_request\njobs:\n# a column-0 comment inside jobs: must not end the job list\n  preflight:\n    name: preflight\n    runs-on: x\n' > .github/workflows/promote.yml
     git add -A; git commit -q --no-verify -m stale; git update-ref refs/remotes/origin/dev HEAD
-    printf '  ship-ready:\n    runs-on: x\n' >> .github/workflows/ci.yml
+    printf '  hop:\n    name: promote\n    runs-on: x\n' >> .github/workflows/promote.yml
     git commit -q --no-verify -am fresh; git update-ref refs/remotes/origin/qa HEAD
   ) >/dev/null 2>&1 || true
   local i_out i_rc=0
   i_out="$(FEEDERS="qa=dev main=qa" PROTECTION_GIT_DIR="$st_repo" preflight_branch qa 2>&1)" || i_rc=$?
-  if [ "$i_rc" -ne 0 ] && printf '%s' "$i_out" | grep -q '^    ship-ready$' && ! printf '%s' "$i_out" | grep -q '^    ci umbrella$'; then i_result="ok"; fi
-  echo "selftest (i) a required context the feeder cannot report (ship-ready at origin/dev) is REFUSED, by name: ${i_result}"
+  if [ "$i_rc" -ne 0 ] && printf '%s' "$i_out" | grep -q '^    promote$' && ! printf '%s' "$i_out" | grep -q '^    preflight$'; then i_result="ok"; fi
+  echo "selftest (i) a required context the feeder cannot report (promote at origin/dev) is REFUSED, by name: ${i_result}"
   [ "$i_result" = "ok" ] || failures=$((failures + 1))
   if FEEDERS="qa=dev main=qa" PROTECTION_GIT_DIR="$st_repo" preflight_branch main >/dev/null 2>&1; then j_result="ok"; fi
-  echo "selftest (j) all four contexts reportable at the feeder (ship-ready by job id) passes preflight: ${j_result}"
+  echo "selftest (j) both contexts reportable at the feeder (promote by job name, hop by id) passes preflight: ${j_result}"
   [ "$j_result" = "ok" ] || failures=$((failures + 1))
   if ! FEEDERS="qa=nosuchbranch" PROTECTION_GIT_DIR="$st_repo" preflight_branch qa >/dev/null 2>&1; then k_result="ok"; fi
   echo "selftest (k) an unreadable feeder ref is REFUSED, not waved through: ${k_result}"
