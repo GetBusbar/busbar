@@ -848,16 +848,8 @@ fn open_http(
 
     // The EgressHead borrows the backend's own SPKI + response-header bytes, which live until close — so
     // the pointers handed back stay valid while the plane holds the EgressOpen.
-    let (pin_ptr, pin_len) = if egress.observed_pin.is_empty() {
-        (std::ptr::null(), 0)
-    } else {
-        (egress.observed_pin.as_ptr(), egress.observed_pin.len())
-    };
-    let (rh_ptr, rh_len) = if egress.resp_headers.is_empty() {
-        (std::ptr::null(), 0)
-    } else {
-        (egress.resp_headers.as_ptr(), egress.resp_headers.len())
-    };
+    let (pin_ptr, pin_len) = borrowed_range(&egress.observed_pin);
+    let (rh_ptr, rh_len) = borrowed_range(&egress.resp_headers);
     let open = EgressOpen {
         size: std::mem::size_of::<EgressOpen>() as u32,
         version: POD_VERSION,
@@ -1484,6 +1476,16 @@ pub(crate) fn egress_close_scoped(egress: EgressId) -> StatusClass {
 // `unsafe` in the one sanctioned module while the neutral adapter (and the `Response`/`StreamHead`
 // projection) stays plane-blind in `crate::egress`.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A borrowed byte range as the ABI's `(ptr, len)` pair: an empty range is `(null, 0)`, never a
+/// dangling non-null pointer. Shared with the seam so a desc and a head encode "absent" one way.
+pub(crate) fn borrowed_range(bytes: &[u8]) -> (*const u8, usize) {
+    if bytes.is_empty() {
+        (std::ptr::null(), 0)
+    } else {
+        (bytes.as_ptr(), bytes.len())
+    }
+}
 
 /// Map two host allowlist-scope bools onto the [`EgressDesc::allowlist_scope`] bit convention this
 /// module reads. Exposed so the seam builds a desc without duplicating the bit values.
