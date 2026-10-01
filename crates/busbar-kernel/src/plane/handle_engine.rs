@@ -454,7 +454,7 @@ impl DurableHandleEngine {
     /// Upsert one durable row record (no-op with no sink).
     fn upsert_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
         if let Some(store) = self.sink() {
-            store.upsert_plane_record(record)?;
+            store.upsert_plane_record(record.view())?;
         }
         Ok(())
     }
@@ -462,7 +462,7 @@ impl DurableHandleEngine {
     /// Append one durable event record (no-op with no sink).
     fn append_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
         if let Some(store) = self.sink() {
-            store.append_plane_record(record)?;
+            store.append_plane_record(record.view())?;
         }
         Ok(())
     }

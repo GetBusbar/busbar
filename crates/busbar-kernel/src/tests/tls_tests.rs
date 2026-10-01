@@ -822,6 +822,15 @@ async fn tcp_pair(
     (client, server, peer)
 }
 
+/// A server-accepted stream as the accept source admits it.
+fn admitted(s: tokio::net::TcpStream, peer: std::net::SocketAddr) -> super::Admitted {
+    super::Admitted {
+        stream: s.into_std().unwrap(),
+        peer,
+        hold: None,
+    }
+}
+
 #[tokio::test]
 async fn balancer_hands_off_only_past_margin_and_counts_exactly() {
     let mut handles = super::ConnBalancer::build(3);
@@ -832,20 +841,20 @@ async fn balancer_hands_off_only_past_margin_and_counts_exactly() {
 
     // Below the margin (0 vs 0): serve locally — no handoff.
     let (_c1, s1, p1) = tcp_pair(&listener).await;
-    let kept = b0.try_hand_off(s1, p1);
+    let kept = b0.try_hand_off(admitted(s1, p1));
     assert!(kept.is_some(), "at equal load the connection stays local");
     let g1 = b0.place_local();
 
     // One more local: still below margin (1 vs 0 < 0+2).
     let (_c2, s2, p2) = tcp_pair(&listener).await;
-    assert!(b0.try_hand_off(s2, p2).is_some());
+    assert!(b0.try_hand_off(admitted(s2, p2)).is_some());
     let g2 = b0.place_local();
 
     // Now 2 vs 0 == min+2: the margin is met — the next accept hands off to a least-loaded
     // worker, its count incremented by the SENDER.
     let (_c3, s3, p3) = tcp_pair(&listener).await;
     assert!(
-        b0.try_hand_off(s3, p3).is_none(),
+        b0.try_hand_off(admitted(s3, p3)).is_none(),
         "at min+2 the connection must be handed to the least-loaded worker"
     );
     let others: u32 = [&b1, &b2]
@@ -882,7 +891,7 @@ async fn balancer_hands_off_only_past_margin_and_counts_exactly() {
     // channel to capacity, then force a handoff attempt at margin.
     for _ in 0..2 {
         let (_c, s, p) = tcp_pair(&listener).await;
-        b0.try_hand_off(s, p);
+        b0.try_hand_off(admitted(s, p));
         b0.place_local();
     }
     // b1/b2 both at 0; drain nothing — fill b1's queue directly.
@@ -890,7 +899,7 @@ async fn balancer_hands_off_only_past_margin_and_counts_exactly() {
     loop {
         let (_c, s, p) = tcp_pair(&listener).await;
         fillers.push(_c);
-        match b0.txs[1].try_send((s.into_std().unwrap(), p)) {
+        match b0.txs[1].try_send(admitted(s, p)) {
             Ok(()) => continue,
             Err(_) => break, // full
         }
@@ -903,7 +912,7 @@ async fn balancer_hands_off_only_past_margin_and_counts_exactly() {
         .0
         .load(std::sync::atomic::Ordering::Relaxed);
     let (_c, s, p) = tcp_pair(&listener).await;
-    let kept = b0.try_hand_off(s, p);
+    let kept = b0.try_hand_off(admitted(s, p));
     assert!(
         kept.is_some(),
         "a full target channel must fall back to serving locally, never dropping the connection"

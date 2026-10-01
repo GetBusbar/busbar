@@ -32,8 +32,8 @@
 
 use crate::governance::MemoryStore;
 use busbar_contract::records::{
-    MeteringDelta, MeteringRow, PlaneRecord, PlaneSelector, RecordStore, RecordStoreError,
-    RecordStoreResult, UsageLedger, VirtualKey,
+    MeteringDelta, MeteringRow, PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStore,
+    RecordStoreError, RecordStoreResult, UsageLedger, VirtualKey,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -54,8 +54,8 @@ impl Write {
     fn apply(&self, s: &MemoryStore) -> RecordStoreResult<serde_json::Value> {
         use serde_json::json;
         Ok(match self {
-            Write::Upsert(r) => json!(s.upsert_plane_record(r)?),
-            Write::Append(r) => json!(s.append_plane_record(r)?),
+            Write::Upsert(r) => json!(s.upsert_plane_record(r.view())?),
+            Write::Append(r) => json!(s.append_plane_record(r.view())?),
             Write::Purge(kind, before) => json!(s.purge_plane_records_before(kind, *before)?),
             Write::Delete(kind, id) => json!(s.delete_plane_record(kind, id)?),
             Write::Redeem(k, token, exp, now) => json!(s.redeem_plane_token(k, token, *exp, *now)?),
@@ -178,10 +178,12 @@ impl RecordStore for DurableStore {
         self.required.list_metering(bucket)
     }
 
-    fn upsert_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
+    fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        let record = &record.to_record();
         self.write(Write::Upsert(record.clone()))
     }
-    fn append_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
+    fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        let record = &record.to_record();
         self.write(Write::Append(record.clone()))
     }
     fn purge_plane_records_before(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {

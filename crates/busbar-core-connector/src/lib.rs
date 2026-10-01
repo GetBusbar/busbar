@@ -21,8 +21,12 @@
 //! * [`io`] is readiness on the per-worker reactor (`io.{register, poll_ready, clear_ready,
 //!   deregister}`); [`socket`] the host's OS sockets; [`stream`] a host socket as a byte stream.
 //! * [`framer`] drives one transport entry's framer table host-side; [`compose`] builds a dialled
-//!   connection as socket -> \[TLS\] -> framer; [`registry`] is the view of which entry serves which
-//!   scheme; [`wire`] presents a framer entry over host sockets to the kernel's transport seam.
+//!   connection as socket -> \[TLS\] -> framer; [`listen`] binds one listener per inbound need and
+//!   composes each accepted connection the same way, begun on the accept side; [`registry`] is the
+//!   view of which entry serves which scheme; [`wire`] presents a framer entry over host sockets to
+//!   the kernel's transport seam.
+//! * [`process`] builds the process's one connector for the root: the kernel's destination rules,
+//!   one set per egress class, behind the one dial judge, and the default outbound trust.
 //!
 //! No `unsafe` is written here outside the tests' framer entry, which writes a host sink through its
 //! raw pointers as a plugin does.
@@ -38,6 +42,8 @@ pub mod dtls;
 pub mod endpoint;
 pub mod framer;
 pub mod io;
+pub mod listen;
+pub mod process;
 pub mod registry;
 pub mod socket;
 pub mod stream;
@@ -46,7 +52,7 @@ pub mod udp;
 pub mod wire;
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
@@ -67,6 +73,7 @@ use busbar_contract::transport::ConnFacts;
 use crate::compose::{
     Connection, Dial, Failure, Planned, DEFAULT_OPEN_TIMEOUT, WRITE_BUFFER_BYTES,
 };
+use crate::listen::{AcceptLimits, Listening};
 use crate::registry::Transports;
 
 /// What an open for a DECLARED need answers while no transport serves it: refused, never a silent
@@ -102,8 +109,8 @@ pub trait DialJudge: Send + Sync {
     ) -> Option<Result<SocketAddr, Verdict>>;
 }
 
-/// Any function of the judge's shape is a judge: the root joins the kernel's one judge
-/// (`KernelServices::judge_dial`) here without the connector naming a kernel type.
+/// Any function of the judge's shape is a judge: [`process::judge`] joins the kernel's one judge
+/// (`KernelServices::judge_dial`) here, so the connection table itself names no kernel type.
 impl<F> DialJudge for F
 where
     F: Fn(&str, u32, Judged) -> Option<Result<SocketAddr, Verdict>> + Send + Sync,
@@ -133,12 +140,16 @@ impl DialJudge for LiteralsOnly {
 /// loopback-allowed over connection security, or in plaintext to loopback only; every other
 /// class takes the scheme its target names (operator-infrastructure's plaintext and private
 /// targets included). Which addresses a class admits at all is the kernel judge's, per class.
-fn class_admits(egress_class: u32, secure: bool, addr: SocketAddr) -> bool {
-    match egress_class {
-        EGRESS_OPEN_WEB => secure,
-        EGRESS_LOOPBACK_ALLOWED => secure || addr.ip().is_loopback(),
-        _ => true,
-    }
+/// THE LANDING RULE rides with it: a dial stated `within` an address set (`EstablishIn::within`)
+/// lands only on an address in it, so a name that resolves elsewhere since the plugin judged it
+/// is refused at the connect, before any byte is written; an empty set states no pin.
+fn class_admits(egress_class: u32, secure: bool, within: &[IpAddr], addr: SocketAddr) -> bool {
+    (within.is_empty() || within.contains(&addr.ip()))
+        && match egress_class {
+            EGRESS_OPEN_WEB => secure,
+            EGRESS_LOOPBACK_ALLOWED => secure || addr.ip().is_loopback(),
+            _ => true,
+        }
 }
 
 /// What the connector holds for one declared need.
@@ -153,12 +164,17 @@ struct DeclaredNeed {
 /// A judgement's answer once it came, and the waker of the read or wait that found none.
 type Answer = Arc<Mutex<(Option<Result<SocketAddr, Verdict>>, Option<Waker>)>>;
 
+/// The listeners, one per inbound need, by the need's owner and need.
+type Listeners = Mutex<HashMap<(InstanceId, NeedId), Arc<Mutex<Listening>>>>;
+
 /// A dial whose judgement pended: what to dial once it answers, the answer, and the waker of the
 /// read or wait that found it unanswered.
 struct Judging {
     planned: Option<Planned>,
     /// The need's egress class, whose scheme rule the pinned address is held to.
     egress_class: u32,
+    /// The address set the pinned address must be in (`OpenDesc::within`); empty = any.
+    within: Vec<IpAddr>,
     /// Writes the caller made before the dial, in order.
     early: Vec<(Vec<u8>, bool)>,
     answer: Answer,
@@ -197,6 +213,8 @@ pub struct Connector {
     tls: Option<Arc<rustls::ClientConfig>>,
     wake: WakeTicket,
     judge: Arc<dyn DialJudge>,
+    /// One listener per inbound need.
+    listeners: Listeners,
 }
 
 impl std::fmt::Debug for Connector {
@@ -215,6 +233,7 @@ impl Default for Connector {
             tls: None,
             wake: Arc::new(|_| {}),
             judge: Arc::new(LiteralsOnly),
+            listeners: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -343,6 +362,115 @@ impl Connector {
         );
     }
 
+    /// Bind the one listener for `owner`'s INBOUND `need` on `bind` (`ip:port`), over the transport
+    /// the need was declared over, secured by `tls` where set (the protocols agreed off the entry's
+    /// registered offer), bounded by `limits`. Answers the address bound. Called on a worker.
+    ///
+    /// # Errors
+    ///
+    /// The need is not `owner`'s or names no transport served here ([`ConnError::Refused`]), it
+    /// already listens, or the address cannot be bound ([`ConnError::Fault`]).
+    pub fn listen(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        bind: &str,
+        tls: Option<Arc<rustls::ServerConfig>>,
+        limits: AcceptLimits,
+    ) -> Result<SocketAddr, ConnError> {
+        self.slab.check_need(owner, need)?;
+        let scheme = self
+            .over
+            .lock()
+            .expect("needs")
+            .get(&(owner, need))
+            .map(|d| d.transport.clone())
+            .ok_or(NO_TRANSPORT_YET)?;
+        let (door, alpn) = {
+            let view = self.transports.read().expect("transports");
+            let served = view.serving(&scheme).ok_or(NO_TRANSPORT_YET)?;
+            (Arc::clone(&served.entry.door), served.entry.alpn.clone())
+        };
+        let mut listeners = self.listeners.lock().expect("listeners");
+        if listeners.contains_key(&(owner, need)) {
+            return Err(ConnError::Refused);
+        }
+        let l = Listening::bind(door, bind, tls, alpn, limits).map_err(|_| ConnError::Fault)?;
+        let addr = l.local_addr();
+        listeners.insert((owner, need), Arc::new(Mutex::new(l)));
+        Ok(addr)
+    }
+
+    /// The next connection `owner`'s inbound `need` admitted, held for `owner` like one it
+    /// opened: read, written (`emit` on the piece's stream), waited and closed through the same
+    /// table. [`ConnError::Pending`] wakes `ticket` when one arrives.
+    ///
+    /// # Errors
+    ///
+    /// The need does not listen for `owner` ([`ConnError::Refused`]); an accepted socket that could
+    /// not be composed ([`ConnError::Fault`]; the listener stays up).
+    pub fn accept(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        ticket: Ticket,
+    ) -> Result<(ConnId, SocketAddr), ConnError> {
+        self.slab.check_need(owner, need)?;
+        let l = self
+            .listeners
+            .lock()
+            .expect("listeners")
+            .get(&(owner, need))
+            .cloned()
+            .ok_or(ConnError::Refused)?;
+        let waker = self.waker(ticket);
+        let got = l
+            .lock()
+            .expect("listener")
+            .poll_accept(&mut Context::from_waker(&waker));
+        match got {
+            Poll::Pending => Err(ConnError::Pending),
+            Poll::Ready(Err(f)) => Err(map(&f)),
+            Poll::Ready(Ok(a)) => {
+                let id = self.slab.insert(
+                    owner,
+                    need,
+                    Held {
+                        conn: Mutex::new(Some(a.conn)),
+                        judging: Mutex::new(None),
+                        rest: Mutex::new((None, Vec::new(), false)),
+                        reason: Mutex::new(None),
+                    },
+                )?;
+                Ok((id, a.peer))
+            }
+        }
+    }
+
+    /// Offer `bytes` on `stream` of `caller`'s connection `conn` (`end` = the stream's message is
+    /// complete): an accepted connection answers each piece on the stream it came on.
+    ///
+    /// # Errors
+    ///
+    /// The connection is not `caller`'s, is closed or failed, or the framer refused the bytes.
+    pub fn emit(
+        &self,
+        caller: InstanceId,
+        conn: ConnId,
+        stream: u64,
+        bytes: &[u8],
+        end: bool,
+    ) -> Result<usize, ConnError> {
+        let (_, held) = self.slab.get(caller, conn)?;
+        if !Self::settle(&held, None)? {
+            return Err(ConnError::Pending);
+        }
+        let mut c = held.conn.lock().expect("connection");
+        let c = c.as_mut().ok_or(ConnError::Closed)?;
+        c.emit(stream, bytes, end, &mut Context::from_waker(Waker::noop()))
+            .map_err(|f| map(&f))
+    }
+
     /// Dial a held connection whose judgement has answered. `Ok(false)`: still judging, `waker`
     /// (where given) registered for the answer. A refusal stays the connection's answer.
     fn settle(held: &Held, waker: Option<&Waker>) -> Result<bool, ConnError> {
@@ -364,7 +492,7 @@ impl Connector {
         };
         let addr = got.map_err(|_| ConnError::Refused)?;
         let secure = j.planned.as_ref().is_some_and(Planned::secure);
-        if !class_admits(j.egress_class, secure, addr) {
+        if !class_admits(j.egress_class, secure, &j.within, addr) {
             // The refusal stays the connection's answer.
             j.answer.lock().expect("judgement").0 = Some(Err(DEST_PLAINTEXT));
             return Err(ConnError::Refused);
@@ -622,7 +750,7 @@ impl Conns for Connector {
         let (conn, judging) = match judged {
             // Decided at once: a refusal answers the open, as 1.5.5 answered it.
             Some(Err(_)) => return Err(ConnError::Refused),
-            Some(Ok(addr)) if !class_admits(egress_class, planned.secure(), addr) => {
+            Some(Ok(addr)) if !class_admits(egress_class, planned.secure(), desc.within, addr) => {
                 return Err(ConnError::Refused)
             }
             Some(Ok(addr)) => (Some(planned.dial_at(addr).map_err(|f| map(&f))?), None),
@@ -633,6 +761,7 @@ impl Conns for Connector {
                 Some(Judging {
                     planned: Some(planned),
                     egress_class,
+                    within: desc.within.to_vec(),
                     early: Vec::new(),
                     answer,
                 }),

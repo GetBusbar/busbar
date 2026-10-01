@@ -32,11 +32,13 @@ use busbar_contract::abi::plane::{
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, ReasonCode, Route};
+use busbar_contract::kinds::RecordBytes;
 use busbar_contract::plane_calls::{Answered, Lent, PieceInFlight};
 use tokio::sync::watch;
 
 use super::cancel::{Buried, CancelBill, Checkpoint};
 use super::{blob, BufferCaps, HeadFields, PlaneDriver, UnitState, NO_FIELD, NO_SPAN, ZERO_UNIT};
+use crate::host_records::Acked;
 use crate::teller::UnitCtx;
 
 /// One piece of the far end's reply.
@@ -357,6 +359,7 @@ struct Answer {
     reply_status: u32,
     fields_written: u32,
     units_written: u32,
+    records_written: u32,
     verdict: u32,
     verb: Span,
     target: Span,
@@ -375,6 +378,7 @@ impl Answer {
             reply_status: o.reply_status,
             fields_written: o.fields_written,
             units_written: o.units_written,
+            records_written: o.records_written,
             verdict: o.verdict,
             verb: o.verb,
             target: o.target,
@@ -494,6 +498,46 @@ impl<'u> Pumping<'u> {
         let bill = CancelBill::new(cause, disposition, &facts);
         self.driver.money.cancelled(self.ctx, &bill);
         bill
+    }
+
+    /// THE PIECE'S RECORD WRITES, in the plane's order, through the kernel's one record write path
+    /// ([`crate::host_services::KernelServices::record_write`], keyed by the instance). The piece
+    /// completes only once the store took every one ([`RecordWrite`]: "a write is DURABLE before
+    /// the op that carried it completes ... a write the store refuses fails the op"). An empty
+    /// value is a tombstone, written like any value.
+    async fn write_records(&mut self, written: u32) -> Result<(), End> {
+        let n = (written as usize).min(self.bufs.records.len());
+        if n == 0 {
+            return Ok(());
+        }
+        let refused = || End::Failed(ReasonCode::DurabilityUnavailable);
+        let Some((services, caller)) = self.driver.records.as_ref() else {
+            return Err(refused());
+        };
+        let mut acks = Vec::with_capacity(n);
+        for w in &self.bufs.records[..n] {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let kind = services.record_kind(caller, w.kind);
+            let value = RecordBytes::new(self.bufs.arena(w.value).to_vec());
+            let (Some(kind), Ok(value)) = (kind, value) else {
+                return Err(refused());
+            };
+            let acked: Acked = Box::new(move |r| {
+                let _ = tx.send(r);
+            });
+            services
+                .record_write(caller, kind.as_str(), self.bufs.arena(w.key), value, acked)
+                .map_err(|_| refused())?;
+            acks.push(rx);
+        }
+        for rx in acks {
+            match guarded_run(self, rx).await {
+                Ok(Ok(Ok(()))) => {}
+                Ok(_) => return Err(refused()),
+                Err(cause) => return Err(End::Cancel(cause, None)),
+            }
+        }
+        Ok(())
     }
 
     /// Lend the unit's own facts on every piece it pushes: the claim it arrived on, the dialect
@@ -753,6 +797,10 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 drop(st);
                 self.driver.money.checkpoint(run.ctx, units)
             };
+            if let Err(end) = run.write_records(out.records_written).await {
+                return Step::End(end);
+            }
+            let bufs = &run.bufs;
             let emitted = &bufs.reply[..(out.emitted as usize).min(bufs.reply.len())];
             // A LOCAL ANSWER: the plane answered a piece bound for the far end with its reply done
             // and nothing for the far end. The unit is the plane's to finish: its bytes go to the

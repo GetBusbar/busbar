@@ -107,19 +107,20 @@ pub fn plugins_fetch(
 /// references stay raw; environment references are interpolated leniently, as the boot's early
 /// reads do). An unreadable file uses nothing: the boot's own load reports why.
 pub fn plan(path: &std::path::Path) -> Uses {
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return Uses::default();
-    };
-    let Ok(text) = busbar_kernel::config::interpolate_env_with(
+    document(path).map(|doc| Uses::of(&doc)).unwrap_or_default()
+}
+
+/// The raw document at `path` (secret references raw, environment interpolated leniently); `None`
+/// when it does not read.
+fn document(path: &std::path::Path) -> Option<serde_json::Value> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let text = busbar_kernel::config::interpolate_env_with(
         &raw,
         busbar_kernel::config::EnvSubst::Lenient,
         &mut Vec::new(),
-    ) else {
-        return Uses::default();
-    };
-    serde_yaml::from_str::<serde_json::Value>(&text)
-        .map(|doc| Uses::of(&doc))
-        .unwrap_or_default()
+    )
+    .ok()?;
+    serde_yaml::from_str::<serde_json::Value>(&text).ok()
 }
 
 /// STAGE 1, DISCOVER (the dropped-in half): every admitted plugin in `registry` whose signed
@@ -157,6 +158,9 @@ pub struct Stages {
     pub candidates: Vec<Candidate>,
     /// The instances selected over them.
     pub selected: Vec<Selected>,
+    /// THE ONE LIST OF LISTENERS (boot stage 3f's input): the root's own, then every selected
+    /// instance's inbound listener, each with its bind.
+    pub inbound: Vec<InboundBind>,
 }
 
 impl Stages {
@@ -185,6 +189,18 @@ impl Stages {
                     kind_word(c.kind)
                 )
             })
+            .chain(
+                self.inbound
+                    .iter()
+                    .filter(|b| b.owner != BindOwner::Root)
+                    .map(|b| {
+                        let tls = if b.tls.is_some() { "tls" } else { "clear" };
+                        format!(
+                            "    listens: {} on {} over {} ({tls}, at most {} connections)",
+                            b.at, b.listen, b.transport, b.max_conns
+                        )
+                    }),
+            )
             .collect()
     }
 }
@@ -194,17 +210,76 @@ fn kind_word(k: KindCode) -> String {
 }
 
 /// `--validate`'s STAGES 0-2 over the configuration at `path` and the dropped-in plugins the
-/// preflight admitted: Plan, Discover, Select — and the loader's version refusal for every SELECTED
-/// plugin whose Statement states a mechanism or kind ABI version other than this host's, naming
-/// the rebuild (BUSBAR-1.6.0.md §11.8). Nothing is opened.
+/// preflight admitted: Plan, Discover, Select — see [`stages`]. `root` are the host's own listeners
+/// ([`root_binds`]). Nothing is opened.
 ///
 /// # Errors
 ///
 /// The first refusal.
-pub fn validate(path: &std::path::Path, registry: &PluginRegistry) -> Result<Stages, String> {
-    let uses = plan(path);
-    let candidates = discover(registry)?;
+pub fn validate(
+    path: &std::path::Path,
+    registry: &PluginRegistry,
+    root: &RootListens<'_>,
+) -> Result<Stages, String> {
+    let doc = document(path).unwrap_or_default();
+    let root = root_binds(&doc, root);
+    stages(&doc, discover(registry)?, root)
+}
+
+/// The addresses the host's own listeners take, as the resolved configuration states them.
+#[derive(Debug, Clone, Copy)]
+pub struct RootListens<'a> {
+    /// The data door (`listen`).
+    pub listen: &'a str,
+    /// The admin surface (`admin_listen`).
+    pub admin_listen: &'a str,
+}
+
+/// THE ROOT'S OWN LISTENERS AS BINDS, the head of the one list: the data door at `listen` with the
+/// raw `tls` block, and the admin surface at `admin_listen` with the raw `admin_tls` block. They
+/// keep 1.5.5's bound: no connection cap. An address is a socket address or a name it resolves to
+/// (its first address, as 1.5.5's listener bound); one that resolves to none binds nothing here.
+#[must_use]
+pub fn root_binds(doc: &serde_json::Value, root: &RootListens<'_>) -> Vec<InboundBind> {
+    [
+        ("listen", root.listen, "tls"),
+        ("admin_listen", root.admin_listen, "admin_tls"),
+    ]
+    .into_iter()
+    .filter_map(|(setting, addr, tls)| {
+        Some(InboundBind {
+            owner: BindOwner::Root,
+            transport: String::new(),
+            at: setting.to_string(),
+            listen: addr
+                .parse()
+                .ok()
+                .or_else(|| std::net::ToSocketAddrs::to_socket_addrs(addr).ok()?.next())?,
+            tls: doc.get(tls).filter(|v| !v.is_null()).cloned(),
+            max_conns: u64::MAX,
+        })
+    })
+    .collect()
+}
+
+/// STAGES 0 and 2 over `doc` and the discovered `candidates`: Select; the one list of listeners,
+/// `root` first, then every selected instance's inbound listener read from its settings — two
+/// listeners on one address are refused here, before anything binds; and the loader's version refusal for every
+/// SELECTED plugin whose Statement states a mechanism or kind ABI version other than this host's,
+/// naming the rebuild (BUSBAR-1.6.0.md §11.8).
+///
+/// # Errors
+///
+/// The first refusal.
+pub fn stages(
+    doc: &serde_json::Value,
+    candidates: Vec<Candidate>,
+    root: Vec<InboundBind>,
+) -> Result<Stages, String> {
+    let uses = Uses::of(doc);
     let selected = select(&uses, &candidates);
+    refuse_inbound(&candidates, &selected)?;
+    let inbound = inbound(doc, &candidates, &selected, root)?;
     for s in &selected {
         let c = &candidates[s.candidate];
         let facts =
@@ -231,7 +306,52 @@ pub fn validate(path: &std::path::Path, registry: &PluginRegistry) -> Result<Sta
     Ok(Stages {
         candidates,
         selected,
+        inbound,
     })
+}
+
+/// NO ACCEPTED CONNECTION HAS A CONSUMER YET (ARCHITECT ruling 2026-09-30): a selected plugin
+/// that declares an inbound need is refused, naming the need, rather than bound and closed. The
+/// driver binding that serves an accepted connection removes this refusal.
+///
+/// # Errors
+///
+/// The first selected instance with an inbound need.
+fn refuse_inbound(candidates: &[Candidate], selected: &[Selected]) -> Result<(), String> {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
+    for s in selected {
+        let Some(c) = candidates.get(s.candidate) else {
+            continue;
+        };
+        if let Some((i, n)) = c
+            .needs
+            .iter()
+            .enumerate()
+            .find(|(_, n)| n.direction == DIRECTION_INBOUND)
+        {
+            return Err(format!(
+                "{} ({}): inbound need {i} over `{}` cannot be served by this build (nothing \
+                 serves an accepted connection yet); remove the plugin from the configuration",
+                s.instance, c.name, n.transport
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// BOOT'S HALF OF [`refuse_inbound`]: the configuration at `path` over the dropped-in plugins
+/// `registry` admitted, discovered and selected as `--validate` does, refused the same way.
+///
+/// # Errors
+///
+/// A Statement that does not read back, or a selected plugin with an inbound need.
+pub fn refuse_unserved_inbound(
+    path: &std::path::Path,
+    registry: &PluginRegistry,
+) -> Result<(), String> {
+    let doc = document(path).unwrap_or_default();
+    let candidates = discover(registry)?;
+    refuse_inbound(&candidates, &select(&Uses::of(&doc), &candidates))
 }
 
 #[cfg(test)]

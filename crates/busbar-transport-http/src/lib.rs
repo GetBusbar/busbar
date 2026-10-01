@@ -8,60 +8,30 @@
 //! the design's settlement table reads. It composes over `tcp` for its byte stream;
 //! TLS on that stream is core's connection security, never a layer.
 //!
-//! ## What moved here, byte-identical
+//! ## Dialling is not this transport's
 //!
-//! [`HttpTransport::dial`] builds ONE pooled `hyper_util` client per transport instance, with the
-//! exact posture 1.5.5's egress client used (read off that client before this was written; the
-//! module is deliberately not named here, because a transport is a wire and names no core path —
-//! see this crate's `no_plane_names` test): redirects never followed (hyper's client is structurally incapable of following
-//! one — no policy to set), `connect_timeout` 10s, TCP keepalive 60s + nodelay, HTTP/2 keep-alive
-//! interval 30s / timeout 10s with the adaptive window on, `pool_max_idle_per_host` /
-//! `pool_idle_timeout` from [`ClientSettings`], and `upstream_http1_only` /
-//! `upstream_h2_prior_knowledge` selecting the connector's ALPN offer exactly as the engine did.
-//! The wait for a response HEAD is bounded too, at [`ClientSettings::request_timeout_secs`] —
-//! connect and keepalive were both bounded already; this is the one wait between them that was not.
+//! This transport serves: it binds, accepts and frames what arrives. It does not open a connection
+//! to an upstream. [`Transport::dial`](busbar_contract::Transport::dial) answers
+//! `AddressRefused` for every destination, before any name is resolved or any socket is opened.
+//! An upstream request leaves through the connector, which dials only an IP literal the kernel's
+//! one destination judge has passed (`DialJudge`), with this crate's [`door`] framing it. A client
+//! of its own here would resolve a name the judge never saw, and would resolve it again on every
+//! pooled reconnect (TODO #145).
 //!
 //! ## Bodies larger than one call
 //!
-//! [`Transport::dial`]/`listen`/`accept` return an opaque `Conn`; the actual HTTP exchange happens
-//! at `write`/`frames`, because the trait carries no request payload at dial time. A body is not
-//! one call's worth of bytes, though: the large-body design is a HEAD frame followed by body-chunk
-//! frames, and a request body is accepted up to the configured maximum regardless of how many
-//! chunks it took. That maximum is [`ClientSettings::request_body_max_bytes`], carried here from
-//! the operator's own `limits.request_body_max_bytes` — the SAME knob the served door's body limit
-//! is built from, so the two caps cannot disagree about what this gateway accepts. Both
-//! accumulators are held to it: the ingress reader refuses a declared length past it without
-//! reading the body behind it, and `write`'s pending buffer refuses to grow past it.
-//!
-//! So `write` ACCUMULATES. Each call appends to the connection's pending message, and the exchange
-//! runs when the message is complete and not before — at the declared `Content-Length`, or at the
-//! terminal chunk of a chunked body, or immediately for a message that declares neither and
-//! therefore carries no body. The reader is the mirror of that: it reads a `Content-Length` body or
-//! decodes a chunked one across as many reads as it arrives in, emits one body frame per chunk the
-//! sender wrote, and hands the trailer section up as its own final frame rather than folding it
-//! into the body. The answer side does the same with an upstream's response trailers, for the same
-//! reason: a header that arrived late is still a header.
+//! A body is not one read's worth of bytes: an accepted request arrives as a HEAD frame followed by
+//! body-chunk frames, and is accepted up to the configured maximum however many chunks it took.
+//! That maximum is [`ClientSettings::request_body_max_bytes`], carried here from the operator's own
+//! `limits.request_body_max_bytes`, the SAME knob the served door's body limit is built from, so
+//! the two caps cannot disagree about what this gateway accepts. The ingress reader refuses a
+//! declared length past it without reading the body behind it.
 //!
 //! A request that asks to be told before it uploads is told. `Expect: 100-continue` is what a
 //! client sets when it would rather be refused than send a body — `curl` sets it itself past about
 //! a kibibyte — and it then waits for the interim answer before writing a byte, so a reader that
 //! only parks on the body leaves both sides waiting on each other. The interim answer goes out once
 //! the head has passed its framing checks and before the body is waited for.
-//!
-//! ## The response leaves as it arrives
-//!
-//! The answer to that exchange is a STREAM, and it is handed up as one: the HEAD frame goes out as
-//! soon as the response head is in hand, and each body chunk as hyper yields it. That is what makes
-//! anything composable over this transport — `sse` re-segments the bytes `http` gives it, so a body
-//! withheld until the upstream closed would be one `sse` could not segment until then either, and a
-//! stream that never closes would deliver nothing at all. It is also why `write` answers on the
-//! head: the caller's write deadline is a deadline on the exchange STARTING, not on an upstream
-//! choosing to stop talking.
-//!
-//! The response body carries a cap of its own, [`ClientSettings::response_body_max_bytes`]. The
-//! request cap has the served door above it; a response has nothing above it, and declares no total
-//! when it streams — so the cap is held against the bytes that actually arrive, and an upstream past
-//! it ends the frame stream rather than growing this node's heap.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -70,24 +40,16 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use busbar_contract::transport::wire::ConnHandle;
 use busbar_contract::transport::wire::Direction;
 use busbar_contract::transport::wire::FrameMeta;
 use busbar_contract::transport::wire::ListenerHandle;
 use busbar_contract::transport::wire::TransportError;
-use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::{Frame, SlabBytes, StreamId};
-use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
-use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::client::legacy::Client;
-use hyper_util::rt::TokioExecutor;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
 use tokio::sync::Mutex as AsyncMutex;
 
 mod claims;
@@ -115,7 +77,7 @@ pub use raw::{RawMessage, RawStartLine};
 /// against — the same "scanned prefix, at most the cursor cap" shape `MAX_CURSOR_BYTES` names.
 pub const READ_CHUNK_BYTES: usize = busbar_contract::MAX_CURSOR_BYTES;
 
-/// The client-affecting settings this transport's egress client is built from — the contract's
+/// The settings this transport is built from — the contract's
 /// [`TransportSettings`](busbar_contract::transport::TransportSettings), the one shape the
 /// composition root resolves off the deployment's `limits:` and hands every transport's build. Named
 /// here too so this crate's own callers read the name they always did.
@@ -197,63 +159,33 @@ pub mod linked {
     }
 }
 
-type EgressClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>>;
-
-/// One frame, or the transport error that ended the stream in its place.
-type FrameResult = Result<(StreamId, Frame), TransportError>;
-
-/// The sending half of the response-frame channel an egress `write` populates.
-type RespSender = mpsc::UnboundedSender<FrameResult>;
-/// The receiving half `frames` drains.
-type RespReceiver = mpsc::UnboundedReceiver<FrameResult>;
-
-enum Inner {
-    /// An accepted connection: the raw framing lives here, one request per connection in this
-    /// delivery (no HTTP/1.1 keep-alive pipelining — see the crate doc).
-    Ingress {
-        read: AsyncMutex<ReadSide>,
-        write: AsyncMutex<OwnedWriteHalf>,
-        leftover: AsyncMutex<Vec<u8>>,
-        /// Set once this connection has been finalised. A frame stream captured its own clone of
-        /// this state before the close, and a request the peer half-wrote parks that stream on a
-        /// read the peer may never answer; the registry removal alone would never reach it. This is
-        /// the flag it checks, so it ends and the socket halves actually drop.
-        closed: AtomicBool,
-        /// What WAKES that pump. The flag is only ever read once a read has returned, and the read
-        /// a half-written request parks on returns when the peer sends more — which is precisely
-        /// what a peer that has gone quiet never does. Against that peer the flag alone leaves the
-        /// pump parked for the life of the process, holding the last clone of the socket: one
-        /// leaked descriptor per closed connection and a drain that never finishes. The close
-        /// notifies this, every read is raced against it, and the stream ends where it was parked.
-        /// The sibling `tcp` crate closes the same way.
-        closing: tokio::sync::Notify,
-        /// The local port this connection was accepted on.
-        ///
-        /// `Port` is one of the selector forms this transport declares, and a claim by port reads
-        /// the arrival record: zero there made every arrival on every listener look alike. It is
-        /// taken off the ACCEPTED SOCKET rather than off the bind string, which is the only place
-        /// the fact exists at all on an ephemeral (`:0`) bind — the sibling `tcp` and `ws`
-        /// crates record it the same way.
-        local_port: u16,
-    },
-    /// A dialled destination: the exchange happens inside `write` once the message it is
-    /// accumulating is complete, and pushes the response's frames into this channel for `frames` to
-    /// drain.
-    Egress {
-        uri: http::Uri,
-        client: Arc<EgressClient>,
-        resp_tx: Mutex<Option<RespSender>>,
-        resp_rx: AsyncMutex<RespReceiver>,
-        /// What `write` has been handed so far, and not yet sent. A body arrives across as many
-        /// calls as the plane chose to write it in, and the exchange runs when the message is
-        /// whole — never on a prefix of one.
-        pending: AsyncMutex<Vec<u8>>,
-        /// The parsed header block of that pending message, once its terminator has arrived, the
-        /// decoder reading its body, and this connection's own counts of both. Behind a box: it is
-        /// the per-message working set, and the accepted variant of this enum has no use for a
-        /// byte of it.
-        head: Box<AsyncMutex<EgressHead>>,
-    },
+/// An accepted connection: the raw framing lives here, one request per connection in this delivery
+/// (no HTTP/1.1 keep-alive pipelining — see the crate doc).
+struct Inner {
+    read: AsyncMutex<ReadSide>,
+    write: AsyncMutex<OwnedWriteHalf>,
+    leftover: AsyncMutex<Vec<u8>>,
+    /// Set once this connection has been finalised. A frame stream captured its own clone of
+    /// this state before the close, and a request the peer half-wrote parks that stream on a
+    /// read the peer may never answer; the registry removal alone would never reach it. This is
+    /// the flag it checks, so it ends and the socket halves actually drop.
+    closed: AtomicBool,
+    /// What WAKES that pump. The flag is only ever read once a read has returned, and the read
+    /// a half-written request parks on returns when the peer sends more — which is precisely
+    /// what a peer that has gone quiet never does. Against that peer the flag alone leaves the
+    /// pump parked for the life of the process, holding the last clone of the socket: one
+    /// leaked descriptor per closed connection and a drain that never finishes. The close
+    /// notifies this, every read is raced against it, and the stream ends where it was parked.
+    /// The sibling `tcp` crate closes the same way.
+    closing: tokio::sync::Notify,
+    /// The local port this connection was accepted on.
+    ///
+    /// `Port` is one of the selector forms this transport declares, and a claim by port reads
+    /// the arrival record: zero there made every arrival on every listener look alike. It is
+    /// taken off the ACCEPTED SOCKET rather than off the bind string, which is the only place
+    /// the fact exists at all on an ephemeral (`:0`) bind — the sibling `tcp` and `ws`
+    /// crates record it the same way.
+    local_port: u16,
 }
 
 /// A connection's read half and the buffer every read on it fills.
@@ -297,14 +229,8 @@ pub struct HttpTransport {
     next_id: AtomicU64,
     conns: Mutex<HashMap<u64, Arc<Inner>>>,
     listeners: Mutex<HashMap<String, Arc<TcpListener>>>,
-    egress_client: Arc<EgressClient>,
     /// The operator's body cap, carried from [`ClientSettings`] and applied to both accumulators.
     max_body_bytes: usize,
-    /// The cap on one exchange's response body, carried from [`ClientSettings`].
-    max_response_bytes: usize,
-    /// The bound on the egress `client.request()` wait, carried from
-    /// [`ClientSettings::request_timeout_secs`].
-    request_timeout_secs: u64,
 }
 
 impl std::fmt::Debug for HttpTransport {
@@ -314,18 +240,14 @@ impl std::fmt::Debug for HttpTransport {
 }
 
 impl HttpTransport {
-    /// Build the transport, and with it the ONE pooled egress client this instance dials through
-    /// — see the crate doc for the byte-identical posture this reproduces.
+    /// Build the transport. It holds no client: it serves, and never dials (see the crate doc).
     #[must_use]
     pub fn new(settings: ClientSettings) -> Self {
         Self {
             next_id: AtomicU64::new(1),
             conns: Mutex::new(HashMap::new()),
             listeners: Mutex::new(HashMap::new()),
-            egress_client: Arc::new(build_egress_client(&settings)),
             max_body_bytes: settings.request_body_max_bytes,
-            max_response_bytes: settings.response_body_max_bytes,
-            request_timeout_secs: settings.request_timeout_secs,
         }
     }
 
@@ -349,10 +271,7 @@ impl HttpTransport {
     #[cfg(test)]
     pub(crate) async fn scratch_addr(&self, id: u64) -> Option<usize> {
         let inner = self.inner(id)?;
-        let Inner::Ingress { read, .. } = &*inner else {
-            return None;
-        };
-        let guard = read.lock().await;
+        let guard = inner.read.lock().await;
         Some(guard.scratch.as_ptr() as usize)
     }
 
@@ -368,62 +287,6 @@ impl HttpTransport {
             }
             _ => TransportError::Closed,
         }
-    }
-}
-
-/// Build the pinned egress client. Free function (not a method) so a battery test can build one
-/// without a whole transport, to assert the posture directly.
-///
-/// The platform-roots, no-client-auth posture, and the only one a transport holds: extra trust
-/// anchors, a per-destination SPKI pin and a client identity for a mutual handshake are core's
-/// connection security (TRANSPORT-STACK), built host-side, never inside a transport.
-#[must_use]
-pub fn build_egress_client(settings: &ClientSettings) -> EgressClient {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let mut http = HttpConnector::new();
-    http.enforce_http(false);
-    http.set_connect_timeout(Some(Duration::from_secs(10)));
-    http.set_keepalive(Some(Duration::from_secs(60)));
-    http.set_nodelay(true);
-
-    let tls = rustls::ClientConfig::builder()
-        .with_root_certificates(webpki_roots_store())
-        .with_no_client_auth();
-    let builder = hyper_rustls::HttpsConnectorBuilder::new().with_tls_config(tls);
-    let https = if settings.upstream_http1_only {
-        builder.https_or_http().enable_http1().wrap_connector(http)
-    } else {
-        builder
-            .https_or_http()
-            .enable_all_versions()
-            .wrap_connector(http)
-    };
-
-    let mut builder = Client::builder(TokioExecutor::new());
-    builder
-        .pool_max_idle_per_host(settings.pool_max_idle_per_host)
-        .pool_idle_timeout(Duration::from_secs(settings.pool_idle_timeout_secs))
-        .http2_keep_alive_interval(Some(Duration::from_secs(30)))
-        .http2_keep_alive_timeout(Duration::from_secs(10))
-        .http2_adaptive_window(true);
-    if settings.upstream_h2_prior_knowledge && !settings.upstream_http1_only {
-        builder.http2_only(true);
-    }
-    builder.build(https)
-}
-
-fn webpki_roots_store() -> rustls::RootCertStore {
-    let mut roots = rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    roots
-}
-
-fn status_class(status: u16) -> WireStatusClass {
-    match status {
-        200..=299 => WireStatusClass::Success,
-        400..=499 => WireStatusClass::CallerFault,
-        500..=599 => WireStatusClass::FarEndFault,
-        _ => WireStatusClass::Other,
     }
 }
 
@@ -520,49 +383,6 @@ fn civil_to_epoch_secs(
     Some(days_since_epoch * 86_400 + hour * 3600 + minute * 60 + second)
 }
 
-/// The wall clock, read once at the instant the answer arrived, as a Unix timestamp in seconds.
-/// A `Retry-After` in HTTP-date form is a question about how far away an instant is, and this is
-/// the reading that makes the answer the frame carries the one measured AT the answer.
-fn now_unix_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-/// What actually went wrong with an egress exchange, read off the error's own source chain.
-///
-/// Everything a hyper client can fail with used to come back as `Refused`, which is a specific
-/// claim: nothing was listening. A connect that timed out, a keep-alive ping that went unanswered,
-/// and a connection reset halfway through a response are three different facts about an upstream,
-/// and an operator reading `Refused` for all three is being told the upstream is down when it may
-/// be slow, or wedged, or resetting mid-body. The chain is walked because the io error that carries
-/// the fact is wrapped by however many layers of connector and pool the client is built from.
-///
-/// `Refused` stays as the fallback: an error carrying no io fact at all is one this transport has
-/// nothing more specific to say about than that the exchange did not happen.
-fn map_egress_err(err: &(dyn std::error::Error + 'static)) -> TransportError {
-    let mut cursor = Some(err);
-    while let Some(current) = cursor {
-        if let Some(io) = current.downcast_ref::<io::Error>() {
-            return HttpTransport::map_io_err(io);
-        }
-        if let Some(h) = current.downcast_ref::<hyper::Error>() {
-            // No io error underneath, but hyper knows the exchange had already started: a body cut
-            // short, a request abandoned, a stream the peer took away. That is a reset, not a
-            // refusal — the connection existed.
-            if h.is_incomplete_message() || h.is_body_write_aborted() || h.is_canceled() {
-                return TransportError::Reset;
-            }
-            if h.is_timeout() {
-                return TransportError::Timeout;
-            }
-        }
-        cursor = current.source();
-    }
-    TransportError::Refused
-}
-
 /// Where an egress request actually goes: the dialled scheme and authority, carrying the path the
 /// ENVELOPE named.
 ///
@@ -587,7 +407,7 @@ fn request_target(dial: &http::Uri, path: &str) -> Result<http::Uri, TransportEr
 /// clone of its state ends rather than staying parked on a socket nobody is going to write to.
 fn finalise(conns: &Mutex<HashMap<u64, Arc<Inner>>>, id: u64) {
     let removed = conns.lock().expect("poisoned").remove(&id);
-    if let Some(Inner::Ingress {
+    if let Some(Inner {
         closed, closing, ..
     }) = removed.as_deref()
     {
@@ -625,94 +445,6 @@ async fn read_or_closed(
     }
 }
 
-/// Drain an upstream response body into the connection's frame channel, one frame per chunk hyper
-/// yields, and end the stream when the body ends, when the receiver goes away, or when the upstream
-/// has written more than this node agreed to carry.
-///
-/// The cap is held against the bytes that ACTUALLY arrive, not against a total the peer declared: a
-/// streamed body declares none, and it is a response, so there is no accumulator one layer up
-/// holding it — the served door's request-body limit does not reach what an upstream answers with.
-/// Nothing past the cap is emitted; the stream ends with `Framing` instead.
-///
-/// The upstream's TRAILERS — whatever it chose to say only once it knew the body: a checksum, a
-/// token count, a `grpc-status` — go up as ONE FINAL FRAME after the last body chunk, in the same
-/// wire form the ingress reader hands a request's trailers up in. That is where they were on the
-/// wire, and a byte-blind transport has no business deciding that a header which arrived late is
-/// the one header not worth carrying.
-async fn pump_response_body(mut body: hyper::body::Incoming, tx: RespSender, max_bytes: usize) {
-    let mut carried = 0_usize;
-    let mut trailers: Vec<u8> = Vec::new();
-    while let Some(next) = body.frame().await {
-        let Ok(frame) = next else {
-            let _ = tx.send(Err(TransportError::Reset));
-            return;
-        };
-        let data = match frame.into_data() {
-            Ok(data) => data,
-            // Not a data frame: the only other thing hyper yields here is the trailer section.
-            // Rendered as it arrives and emitted after the loop, so it lands where it belongs —
-            // behind every body chunk rather than in front of the ones still to come.
-            Err(other) => {
-                if let Ok(fields) = other.into_trailers() {
-                    for (name, value) in &fields {
-                        trailers.extend_from_slice(name.as_str().as_bytes());
-                        trailers.extend_from_slice(b": ");
-                        trailers.extend_from_slice(value.as_bytes());
-                        trailers.extend_from_slice(b"\r\n");
-                    }
-                }
-                continue;
-            }
-        };
-        if data.is_empty() {
-            continue;
-        }
-        carried = carried.saturating_add(data.len());
-        if carried > max_bytes {
-            let _ = tx.send(Err(TransportError::Framing));
-            return;
-        }
-        let bytes: Arc<[u8]> = Arc::from(&data[..]);
-        let len = data.len() as u64;
-        let body_frame = Frame {
-            direction: Direction::Inbound,
-            stream: StreamId(0),
-            bytes: SlabBytes::new(bytes),
-            meta: FrameMeta {
-                bytes: len,
-                transport_units: None,
-                // Only the HEAD frame carries the status leg: it is per-frame meta on the FIRST
-                // response frame (`StatusAt::FirstFrame`), never repeated, so a composed layer
-                // (`sse`) can tell a head frame from a body frame by this field alone.
-                status: None,
-                status_code: None,
-                retry_after_secs: None,
-            },
-        };
-        if tx.send(Ok((StreamId(0), body_frame))).is_err() {
-            return;
-        }
-    }
-    if !trailers.is_empty() {
-        let len = trailers.len() as u64;
-        let trailer_frame = Frame {
-            direction: Direction::Inbound,
-            stream: StreamId(0),
-            bytes: SlabBytes::new(Arc::from(trailers.into_boxed_slice())),
-            meta: FrameMeta {
-                bytes: len,
-                transport_units: None,
-                // Not the head, so no status leg — the same reading every body frame above gets,
-                // and what a composed layer tells the head from the rest by.
-                status: None,
-                status_code: None,
-                retry_after_secs: None,
-            },
-        };
-        let _ = tx.send(Ok((StreamId(0), trailer_frame)));
-    }
-}
-
 /// Put a Unit 0 refusal's bytes on the wire and report whether they actually left.
 ///
 /// `write_all` only proves the bytes reached the writer's own buffer. The kernel is told a refusal
@@ -727,27 +459,6 @@ where
         .await
         .map_err(|e| HttpTransport::map_io_err(&e))?;
     w.flush().await.map_err(|e| HttpTransport::map_io_err(&e))
-}
-
-/// Holds the exchange's end-of-stream promise for as long as the exchange is in flight.
-///
-/// The response sender lives in the connection until the exchange finishes and hands it the
-/// frames. If the `write` future is DROPPED in between — a timeout, a `select`, a cancelled task —
-/// nothing else ever takes that sender, so the channel stays open and `frames` waits on a receive
-/// that can never complete: an unrecoverable hang rather than a degradation. This guard takes the
-/// sender on an undisarmed drop, which closes the channel and ends the stream. A half-sent exchange
-/// is not resumable and this does not pretend otherwise; the connection just ends observably.
-struct ExchangeGuard<'a> {
-    resp_tx: &'a Mutex<Option<RespSender>>,
-    armed: bool,
-}
-
-impl Drop for ExchangeGuard<'_> {
-    fn drop(&mut self) {
-        if self.armed {
-            let _ = self.resp_tx.lock().expect("poisoned").take();
-        }
-    }
 }
 
 /// A message this transport has been handed enough of to send, or `None` for a prefix of one.
@@ -843,9 +554,9 @@ fn complete_message(
     }))
 }
 
-/// The parsed header block of the message `write` is still accumulating.
+/// The parsed header block of the message the door's `emit` is still accumulating.
 ///
-/// `write` asks whether the message is whole on EVERY chunk, and the header prefix does not change
+/// `emit` asks whether the message is whole on EVERY chunk, and the header prefix does not change
 /// between those asks. Parsing it each time allocates a fresh vector and two strings per header and
 /// throws them away — the same waste the chunked decoder was written incrementally to avoid. Held
 /// beside the pending bytes, and taken when the message completes so it can never outlive it.
@@ -856,14 +567,14 @@ struct CachedHead {
 }
 
 /// [`CachedHead`], plus this connection's own count of how many times it has parsed one — the cell
-/// that pins the egress side to one parse per message rather than one per `write` call. Per
+/// that pins the egress side to one parse per message rather than one per `emit` call. Per
 /// instance rather than a crate-global counter, so a test reading it back sees only its own
 /// connection's work, never a sibling test's sharing the same binary.
 #[derive(Default)]
 struct EgressHead {
     head: Option<CachedHead>,
     parses: usize,
-    /// The chunked decoder this message is being decoded by, kept across `write` calls so each
+    /// The chunked decoder this message is being decoded by, kept across `emit` calls so each
     /// call feeds only the bytes that arrived with it — the same discipline the ingress reader
     /// keeps across reads. Behind a box because it is a per-message working set that most
     /// connections never allocate, and inline it would be carried by every connection ever dialled.
@@ -890,17 +601,14 @@ async fn read_ingress_message(
     inner: &Inner,
     max_body_bytes: usize,
 ) -> Result<Option<Vec<(StreamId, Frame)>>, TransportError> {
-    let Inner::Ingress {
+    let Inner {
         read,
         write,
         leftover,
         closed,
         closing,
         ..
-    } = inner
-    else {
-        return Err(TransportError::Framing);
-    };
+    } = inner;
     if closed.load(Ordering::Acquire) {
         return Ok(None);
     }

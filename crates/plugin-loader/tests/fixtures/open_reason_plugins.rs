@@ -32,7 +32,7 @@ pub mod store {
     use busbar_contract::abi::store::OpId;
     use busbar_contract::kinds::{Head, RecordBytes};
     use busbar_contract::records::{
-        AuditRecord, MeteringDelta, MeteringRow, PlaneRecord, RecordStore, RecordStoreResult,
+        AuditRecord, MeteringDelta, MeteringRow, PlaneRecordRef, RecordStore, RecordStoreResult,
         UsageDelta, UsageLedger, VirtualKey,
     };
 
@@ -82,13 +82,13 @@ pub mod store {
                 -> OpResult<()>;
             add_metering_op(&self, op: OpId, delta: &MeteringDelta) -> OpResult<()>;
             append_audit_op(&self, op: OpId, entry: &AuditRecord) -> OpResult<()>;
-            append_plane_record_op(&self, op: OpId, record: &PlaneRecord) -> OpResult<()>;
+            append_plane_record_op(&self, op: OpId, record: PlaneRecordRef<'_>) -> OpResult<()>;
             append_batch(&self, op: OpId, stream: &str, records: &[RecordBytes]) -> OpResult<Head>;
             heads(&self) -> Result<Vec<(String, Head)>, String>;
             session_put(&self, session: u64, node: &str, principal: &str) -> Result<(), String>;
             session_remove(&self, session: u64) -> Result<(), String>;
             sessions_for(&self, principal: &str) -> Result<Vec<(u64, String)>, String>;
-            record_put(&self, schema: &str, key: &[u8], value: &RecordBytes)
+            record_put(&self, schema: &str, key: &[u8], value: &[u8])
                 -> Result<(), String>;
             record_get(&self, schema: &str, key: &[u8]) -> Result<Option<RecordBytes>, String>;
             record_scan(&self, schema: &str, prefix: &[u8], limit: u32)

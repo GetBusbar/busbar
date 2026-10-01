@@ -15,8 +15,9 @@
 
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
-    PlaneRecord, PlaneSelector, RecordStore as Store, RecordStoreError as StoreError,
-    RecordStoreResult as StoreResult, UsageDelta, UsageLedger, VirtualKey,
+    PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStore as Store,
+    RecordStoreError as StoreError, RecordStoreResult as StoreResult, UsageDelta, UsageLedger,
+    VirtualKey,
 };
 // The record half of the store protocol: the three verbs a `PlaneRecord` leg is run over, at the
 // contract's own spelling. `StoreError` is imported under a second name because the two protocols
@@ -315,9 +316,9 @@ impl MemoryStore {
     }
     /// A plane record's identity in the one map: its `parent` when it is an APPENDED child (a chain
     /// position is `(parent, seq)`), else its own `id` at `seq` 0.
-    fn plane_key(record: &PlaneRecord) -> (String, String, u64) {
-        let identity = record.parent.clone().unwrap_or_else(|| record.id.clone());
-        (record.kind.clone(), identity, record.seq)
+    fn plane_key(record: PlaneRecordRef<'_>) -> (String, String, u64) {
+        let identity = record.parent.unwrap_or(record.id).to_string();
+        (record.kind.to_string(), identity, record.seq)
     }
     /// The two credential-table preconditions, factored out of `put_credential` so the ATOMIC
     /// `put_key_with_credential` can run the identical rules under its own single critical section
@@ -780,9 +781,9 @@ impl Store for MemoryStore {
             .collect())
     }
 
-    fn upsert_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+    fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> StoreResult<()> {
         self.plane_records()
-            .insert(Self::plane_key(record), record.clone());
+            .insert(Self::plane_key(record), record.to_record());
         Ok(())
     }
 
@@ -793,7 +794,7 @@ impl Store for MemoryStore {
             .map(|r| r.body.clone()))
     }
 
-    fn append_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+    fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> StoreResult<()> {
         // Keyed by `(parent, seq)`. APPEND-ONLY, never a blind overwrite — mirrors `append_audit`'s
         // own fork detection above so the two append-only paths can never disagree about what a
         // fork is: a second record at an already-occupied position is EITHER the write-through
@@ -805,16 +806,16 @@ impl Store for MemoryStore {
         let mut records = self.plane_records();
         let key = Self::plane_key(record);
         match records.get(&key) {
-            Some(existing) if existing == record => Ok(()),
+            Some(existing) if existing.view() == record => Ok(()),
             Some(_) => Err(StoreError(format!(
                 "append_plane_record: kind '{}' parent '{}' seq {} already holds a DIFFERENT \
                  record — the chain has forked",
                 record.kind,
-                record.parent.as_deref().unwrap_or(&record.id),
+                record.parent.unwrap_or(record.id),
                 record.seq
             ))),
             None => {
-                records.insert(key, record.clone());
+                records.insert(key, record.to_record());
                 Ok(())
             }
         }
@@ -823,7 +824,7 @@ impl Store for MemoryStore {
     fn list_plane_records(
         &self,
         kind: &str,
-        selector: &PlaneSelector,
+        selector: &PlaneSelector<'_>,
     ) -> StoreResult<Vec<Vec<u8>>> {
         let records = self.plane_records_read();
         let mut rows: Vec<(u64, Vec<u8>)> = records
@@ -832,7 +833,7 @@ impl Store for MemoryStore {
                 k == kind
                     && match selector {
                         PlaneSelector::All => true,
-                        PlaneSelector::Parent(p) => r.parent.as_deref() == Some(p.as_str()),
+                        PlaneSelector::Parent(p) => r.parent.as_deref() == Some(&**p),
                     }
             })
             .map(|(_, r)| (r.seq, r.body.clone()))

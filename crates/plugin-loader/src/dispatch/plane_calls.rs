@@ -17,8 +17,11 @@ use busbar_contract::abi::mechanism::lifecycle::slot as life;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, RefusalIn, RefusalOut, RefusalStatus,
+    ServeIn, ServeOut,
 };
-use busbar_contract::plane_calls::{Answered, Grow, Lent, PieceInFlight, PlaneCalls};
+use busbar_contract::plane_calls::{
+    Answered, Grow, Lent, PieceInFlight, PlaneCalls, ServeInFlight,
+};
 
 use super::kinds::plane::Plane;
 use super::{
@@ -130,17 +133,38 @@ impl PlaneCalls for PlaneInstance {
             0,
             lent,
         );
-        Box::new(Piece { reply, done: None })
+        Box::new(InFlight { reply, done: None })
+    }
+
+    fn serve(
+        &self,
+        ticket: Ticket,
+        mut input: ServeIn,
+        out: ServeOut,
+        lent: Lent,
+    ) -> Box<dyn ServeInFlight> {
+        input.head = in_head();
+        // As `on_piece`'s: the request's buffers ride with the job.
+        let reply = self.dispatcher.submit_lent(
+            &self.plugin,
+            ticket,
+            slot::SERVE,
+            Frame::new(input, out),
+            DeadlineClass::Call,
+            0,
+            lent,
+        );
+        Box::new(InFlight { reply, done: None })
     }
 }
 
-/// An `on_piece` in flight: its reply, then its answer.
-struct Piece {
-    reply: Reply<OnPieceIn, OnPieceOut>,
-    done: Option<Done<OnPieceIn, OnPieceOut>>,
+/// A ticketed op in flight (`on_piece`, `serve`): its reply, then its answer.
+struct InFlight<I, O> {
+    reply: Reply<I, O>,
+    done: Option<Done<I, O>>,
 }
 
-fn answered(d: &Done<OnPieceIn, OnPieceOut>) -> Answered {
+fn answered<I, O>(d: &Done<I, O>) -> Answered {
     Answered {
         outcome: d.outcome,
         short: d.short,
@@ -148,7 +172,7 @@ fn answered(d: &Done<OnPieceIn, OnPieceOut>) -> Answered {
     }
 }
 
-impl Future for Piece {
+impl<I: InFrame, O: OutFrame> Future for InFlight<I, O> {
     type Output = Answered;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Answered> {
@@ -166,7 +190,22 @@ impl Future for Piece {
     }
 }
 
-impl PieceInFlight for Piece {
+impl<I: InFrame, O: OutFrame> InFlight<I, O> {
+    fn answer_out(&self) -> Option<O> {
+        self.done
+            .as_ref()
+            .and_then(|d| d.frame.as_deref())
+            .map(|f| f.out)
+    }
+}
+
+impl ServeInFlight for InFlight<ServeIn, ServeOut> {
+    fn out(&self) -> Option<ServeOut> {
+        self.answer_out()
+    }
+}
+
+impl PieceInFlight for InFlight<OnPieceIn, OnPieceOut> {
     fn settled(&mut self) -> Option<Answered> {
         if self.done.is_none() {
             self.done = self.reply.wait(Duration::ZERO);
@@ -175,9 +214,6 @@ impl PieceInFlight for Piece {
     }
 
     fn out(&self) -> Option<OnPieceOut> {
-        self.done
-            .as_ref()
-            .and_then(|d| d.frame.as_deref())
-            .map(|f| f.out)
+        self.answer_out()
     }
 }

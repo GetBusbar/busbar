@@ -54,7 +54,7 @@ use busbar_contract::abi::store::{
 use busbar_contract::kinds::{Head, RecordBytes};
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
-    PlaneRecord, PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult, UsageDelta,
+    PlaneRecordRef, PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult, UsageDelta,
     UsageLedger, VirtualKey,
 };
 use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
@@ -725,11 +725,11 @@ impl Req for ReleaseReq {
     }
 }
 
-fn plane_row(r: &PlaneRecord) -> PlaneRecordRow {
+fn plane_row(r: PlaneRecordRef<'_>) -> PlaneRecordRow {
     PlaneRecordRow {
-        kind: text(&r.kind),
-        id: text(&r.id),
-        parent: opt_text(r.parent.as_deref()),
+        kind: text(r.kind),
+        id: text(r.id),
+        parent: opt_text(r.parent),
         seq: r.seq,
         ts: r.ts,
         disposition: match r.disposition {
@@ -737,7 +737,7 @@ fn plane_row(r: &PlaneRecord) -> PlaneRecordRow {
             PlaneDisposition::Terminal => st::DISPOSITION_TERMINAL,
         },
         _reserved: 0,
-        body: octets(&r.body),
+        body: octets(r.body),
     }
 }
 
@@ -860,7 +860,7 @@ impl LoadedStore {
     fn list_plane_req(kind: &str, selector: &PlaneSelector) -> ListReq<ListPlaneRecordsIn, Blob> {
         let (sel, parent) = match selector {
             PlaneSelector::All => (SELECT_ALL, None),
-            PlaneSelector::Parent(p) => (SELECT_PARENT, Some(p.as_str())),
+            PlaneSelector::Parent(p) => (SELECT_PARENT, Some(&**p)),
         };
         ListReq::new(
             slot::LIST_PLANE_RECORDS,
@@ -1247,7 +1247,7 @@ impl StoreCalls for LoadedStore {
         })
     }
 
-    fn upsert_plane_record<'a>(&'a self, record: &'a PlaneRecord) -> StoreCall<'a, ()> {
+    fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
         boxed(async move {
             let mut r = fixed::<_, OutHead>(
                 slot::UPSERT_PLANE_RECORD,
@@ -1272,7 +1272,11 @@ impl StoreCalls for LoadedStore {
         })
     }
 
-    fn append_plane_record<'a>(&'a self, op: OpId, record: &'a PlaneRecord) -> StoreCall<'a, ()> {
+    fn append_plane_record<'a>(
+        &'a self,
+        op: OpId,
+        record: PlaneRecordRef<'a>,
+    ) -> StoreCall<'a, ()> {
         boxed(async move {
             let mut r = fixed::<_, OutHead>(
                 slot::APPEND_PLANE_RECORD,
@@ -1289,7 +1293,7 @@ impl StoreCalls for LoadedStore {
     fn list_plane_records<'a>(
         &'a self,
         kind: &'a str,
-        selector: &'a PlaneSelector,
+        selector: &'a PlaneSelector<'a>,
     ) -> StoreCall<'a, Vec<Vec<u8>>> {
         boxed(async move {
             let mut r = Self::list_plane_req(kind, selector);
@@ -1590,7 +1594,7 @@ impl RecordStore for LoadedStore {
         self.many(slot::LIST_AUDIT_TAIL, Self::value(limit))
     }
 
-    fn upsert_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
+    fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         self.plain(
             slot::UPSERT_PLANE_RECORD,
             in_of(|head| UpsertPlaneRecordIn {
@@ -1606,7 +1610,7 @@ impl RecordStore for LoadedStore {
         bridge(r.read(&ran))
     }
 
-    fn append_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
+    fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         self.plain(
             slot::APPEND_PLANE_RECORD,
             in_of(|head| AppendPlaneRecordIn {
@@ -1620,7 +1624,7 @@ impl RecordStore for LoadedStore {
     fn list_plane_records(
         &self,
         kind: &str,
-        selector: &PlaneSelector,
+        selector: &PlaneSelector<'_>,
     ) -> RecordStoreResult<Vec<Vec<u8>>> {
         let mut r = Self::list_plane_req(kind, selector);
         let ran = run!(self, now, r);

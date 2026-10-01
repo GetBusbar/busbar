@@ -161,7 +161,8 @@ pub enum Ran {
 }
 
 /// THE LIST RULE: `stored` (the store's rows under the prefix) with `queued` laid over them, the
-/// keys after `after`, in key order, at most `limit`.
+/// keys after `after`, in key order, at most `limit`. An empty value is a tombstone: its key is
+/// absent, and a queued tombstone hides the stored row under it.
 #[must_use]
 pub fn merge_list(
     stored: Vec<(Vec<u8>, Vec<u8>)>,
@@ -172,7 +173,7 @@ pub fn merge_list(
     let mut rows: BTreeMap<Vec<u8>, Vec<u8>> = stored.into_iter().collect();
     rows.extend(queued);
     rows.into_iter()
-        .filter(|(k, _)| after.is_none_or(|a| k.as_slice() > a))
+        .filter(|(k, v)| !v.is_empty() && after.is_none_or(|a| k.as_slice() > a))
         .take(limit)
         .collect()
 }

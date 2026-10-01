@@ -120,7 +120,7 @@ fn unsupported_alone_opens_the_inert_default_on_every_defaulting_verb() {
     for (status, body, who) in UNSUPPORTED_SHAPES {
         let rec = record("task", "t-1");
         assert_eq!(
-            run(&store, *status, body, |s| s.upsert_plane_record(&rec))
+            run(&store, *status, body, |s| s.upsert_plane_record(rec.view()))
                 .unwrap_or_else(|e| panic!("upsert_plane_record under {who}: {e:?}")),
             (),
         );
@@ -131,7 +131,7 @@ fn unsupported_alone_opens_the_inert_default_on_every_defaulting_verb() {
             "get_plane_record under {who} must read as absent"
         );
         assert_eq!(
-            run(&store, *status, body, |s| s.append_plane_record(&rec))
+            run(&store, *status, body, |s| s.append_plane_record(rec.view()))
                 .unwrap_or_else(|e| panic!("append_plane_record under {who}: {e:?}")),
             (),
         );
@@ -215,7 +215,7 @@ fn a_real_answer_passes_through_untouched() {
 
     assert_eq!(
         run(&store, ok, wire(&StoreResponse::Unit), |s| s
-            .upsert_plane_record(&record("task", "t-1")))
+            .upsert_plane_record(record("task", "t-1").view()))
         .unwrap(),
         ()
     );
@@ -231,7 +231,7 @@ fn a_real_answer_passes_through_untouched() {
     );
     assert_eq!(
         run(&store, ok, wire(&StoreResponse::Unit), |s| s
-            .append_plane_record(&record("event", "e-1")))
+            .append_plane_record(record("event", "e-1").view()))
         .unwrap(),
         ()
     );
@@ -328,7 +328,7 @@ fn every_other_failure_shape_propagates_on_every_verb() {
         let checks: Vec<(&str, bool)> = vec![
             (
                 "upsert_plane_record",
-                run(&store, *status, body, |s| s.upsert_plane_record(&rec)).is_err(),
+                run(&store, *status, body, |s| s.upsert_plane_record(rec.view())).is_err(),
             ),
             (
                 "get_plane_record",
@@ -339,7 +339,7 @@ fn every_other_failure_shape_propagates_on_every_verb() {
             ),
             (
                 "append_plane_record",
-                run(&store, *status, body, |s| s.append_plane_record(&rec)).is_err(),
+                run(&store, *status, body, |s| s.append_plane_record(rec.view())).is_err(),
             ),
             (
                 "list_plane_records",

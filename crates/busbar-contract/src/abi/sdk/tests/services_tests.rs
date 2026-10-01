@@ -6,7 +6,11 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use super::*;
-use crate::abi::host::service::{MAX_RANDOM_FILL, NOT_ENTITLED, SERVICES};
+use crate::abi::host::service::{
+    DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, MAX_RANDOM_FILL, NOT_ENTITLED, SERVICES, TRUST_NEW,
+    TRUST_SAME,
+};
+use crate::abi::mechanism::call::Span;
 use crate::abi::mechanism::ticket::Ticket;
 
 /// A host that entitles exactly `item:one`.
@@ -206,6 +210,340 @@ fn random_fill_fills_the_buffer_fresh_each_call_and_refuses_outside_its_cap_befo
     };
     assert_eq!(
         services(&old).random_fill(handle(), &mut a),
+        Err(ServiceError::Unserved)
+    );
+}
+
+// ── dest.judge, trust.sight, trust.due ────────────────────────────────────────────────────────
+
+/// Answer `outcome` with `value`, `len` bytes and `items` spans into the live `out`.
+fn answer(out: *mut ServiceOut, outcome: Outcome, value: u64, len: u64, items: u64) -> RawOutcome {
+    // SAFETY: the caller's live `out`.
+    unsafe {
+        (*out).value = value;
+        (*out).len = len;
+        (*out).items = items;
+        (*out).outcome = RawOutcome::of(outcome);
+    }
+    RawOutcome::of(outcome)
+}
+
+/// A judge that pends a resolving call on a ticket, refuses the metadata address by name, answers
+/// INTERNAL for class 9 and admits the rest.
+extern "C" fn judges(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a `DestJudgeIn` naming its live text, and a live `out`.
+    unsafe {
+        let i = input.cast::<DestJudgeIn>().read_unaligned();
+        let dest = std::slice::from_raw_parts(i.dest.ptr, i.dest.len);
+        let verdict = if dest.starts_with(b"http://169.254.169.254") {
+            DEST_METADATA
+        } else if i.flags & DEST_RESOLVE != 0 && !i.head.handle.ticket.is_none() {
+            return answer(out, Outcome::Pending, 0, 0, 0);
+        } else if i.egress_class == 9 {
+            DEST_INTERNAL
+        } else {
+            DEST_ALLOWED
+        };
+        answer(out, Outcome::Ready, verdict, 0, 0)
+    }
+}
+
+/// A host that answers PENDING whatever the call.
+extern "C" fn pends(_ctx: HostCtx, _input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    answer(out, Outcome::Pending, 0, 0, 0)
+}
+
+/// A kernel that pins the hash `h1`: SAME for it, NEW for any other; `slow` pends.
+extern "C" fn sights(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a `TrustSightIn` naming its live texts, and a live `out`.
+    unsafe {
+        let i = input.cast::<TrustSightIn>().read_unaligned();
+        let who = std::slice::from_raw_parts(i.counterparty.ptr, i.counterparty.len);
+        let hash = std::slice::from_raw_parts(i.catalogue_hash.ptr, i.catalogue_hash.len);
+        if who == b"slow" {
+            return answer(out, Outcome::Pending, 0, 0, 0);
+        }
+        answer(
+            out,
+            Outcome::Ready,
+            if hash == b"h1" { TRUST_SAME } else { TRUST_NEW },
+            0,
+            0,
+        )
+    }
+}
+
+/// The names [`dues`] answers, in the kernel's layout: key = the name, value absent.
+const DUE: [&str; 2] = ["alpha", "beta"];
+
+/// The addresses [`resolves`] answers as judged, in the kernel's layout.
+const JUDGED: [&str; 2] = ["203.0.113.5", "2001:db8::1"];
+
+/// Write `DUE` into the buffers of the `TrustDueIn` at `input`.
+fn write_due(
+    input: *const c_void,
+    out: *mut ServiceOut,
+    key: impl Fn(u32, u32) -> Span,
+) -> RawOutcome {
+    // SAFETY: the wrapper hands a `TrustDueIn`.
+    let into = unsafe { input.cast::<TrustDueIn>().read_unaligned() }.into;
+    write_names(into, &DUE, out, key)
+}
+
+/// Write `names` into the caller's buffers `into`, READY with value `0`, or answer FAILED with what
+/// it needs when they are short.
+fn write_names(
+    into: ServiceBufs,
+    names: &[&str],
+    out: *mut ServiceOut,
+    key: impl Fn(u32, u32) -> Span,
+) -> RawOutcome {
+    let need = names.iter().map(|n| n.len()).sum::<usize>();
+    // SAFETY: the wrapper's live buffers and a live `out`.
+    unsafe {
+        if into.cap < need || into.spans_cap < names.len() {
+            (*out).needed_bytes = need as u64;
+            (*out).needed_items = names.len() as u64;
+            return answer(out, Outcome::Failed, 0, 0, 0);
+        }
+        let mut at = 0;
+        for (n, name) in names.iter().enumerate() {
+            std::ptr::copy_nonoverlapping(name.as_ptr(), into.buf.add(at), name.len());
+            *into.spans.add(n) = ItemSpan {
+                key: key(at as u32, name.len() as u32),
+                value: Span {
+                    offset: SPAN_ABSENT,
+                    len: 0,
+                },
+            };
+            at += name.len();
+        }
+        answer(out, Outcome::Ready, 0, at as u64, names.len() as u64)
+    }
+}
+
+/// A judge that, asked to resolve, admits and writes [`JUDGED`]; not asked, admits and writes none.
+extern "C" fn resolves(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a `DestJudgeIn`.
+    let i = unsafe { input.cast::<DestJudgeIn>().read_unaligned() };
+    if i.flags & DEST_RESOLVE == 0 {
+        return answer(out, Outcome::Ready, DEST_ALLOWED, 0, 0);
+    }
+    write_names(i.into, &JUDGED, out, |offset, len| Span { offset, len })
+}
+
+/// Resolve, with no room for an address.
+fn no_room<'a>() -> Option<(&'a mut [u8], &'a mut [ItemSpan])> {
+    Some(Default::default())
+}
+
+/// The verdict of a `dest.judge` answer.
+fn verdict_of(p: Pend<Judged<'_>>) -> Pend<u64> {
+    p.map(|r| r.map(|j| j.verdict))
+}
+
+extern "C" fn dues(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    write_due(input, out, |offset, len| Span { offset, len })
+}
+
+/// A host whose names are absent spans.
+extern "C" fn dues_nameless(
+    _ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    write_due(input, out, |_, _| Span {
+        offset: SPAN_ABSENT,
+        len: 0,
+    })
+}
+
+fn ticketed(seq: u32) -> CompletionHandle {
+    CompletionHandle {
+        ticket: Ticket {
+            slot: 1,
+            generation: 1,
+        },
+        seq,
+        _reserved: 0,
+    }
+}
+
+const NO_SPAN: ItemSpan = ItemSpan {
+    key: Span { offset: 0, len: 0 },
+    value: Span { offset: 0, len: 0 },
+};
+
+#[test]
+fn dest_judge_answers_the_hosts_verdict_and_pends_only_on_a_ticket() {
+    let t = HostSlots {
+        dest_judge: Some(judges),
+        ..table(None)
+    };
+    let s = services(&t);
+    let meta = "http://169.254.169.254/latest";
+    assert_eq!(
+        verdict_of(s.dest_judge(handle(), meta, 0, no_room())),
+        Poll::Ready(Ok(DEST_METADATA))
+    );
+    assert_eq!(
+        verdict_of(s.dest_judge(handle(), "https://a.example/", 0, None)),
+        Poll::Ready(Ok(DEST_ALLOWED))
+    );
+    assert_eq!(
+        verdict_of(s.dest_judge(handle(), "https://a.example/", 9, None)),
+        Poll::Ready(Ok(DEST_INTERNAL))
+    );
+    assert_eq!(
+        verdict_of(s.dest_judge(ticketed(0), "https://a.example/", 0, no_room())),
+        Poll::Pending
+    );
+    // PENDING on no ticket breaks the service's rule; a verdict in range passes as answered.
+    let p = HostSlots {
+        dest_judge: Some(pends),
+        ..table(None)
+    };
+    assert_eq!(
+        verdict_of(services(&p).dest_judge(handle(), "x", 0, no_room())),
+        Poll::Ready(Err(ServiceError::Broken))
+    );
+    let b = HostSlots {
+        dest_judge: Some(breaks),
+        ..table(None)
+    };
+    assert_eq!(
+        verdict_of(services(&b).dest_judge(handle(), "x", 0, None)),
+        Poll::Ready(Ok(7))
+    );
+    let f = HostSlots {
+        dest_judge: Some(fails),
+        ..table(None)
+    };
+    assert_eq!(
+        verdict_of(services(&f).dest_judge(handle(), "x", 0, None)),
+        Poll::Ready(Err(ServiceError::Declined(Outcome::Failed)))
+    );
+    assert_eq!(
+        verdict_of(services(&table(None)).dest_judge(handle(), "x", 0, None)),
+        Poll::Ready(Err(ServiceError::Unserved))
+    );
+}
+
+/// THE JUDGED ADDRESSES (ARCHITECT DEST-PIN 2026-10-01): asked to resolve, the wrapper answers the
+/// verdict with the addresses the host wrote, views into the caller's buffers, and their joined
+/// form is the set an ESTABLISH's dial lands within; short buffers are a short answer naming what
+/// it needs; not asked, no address and an empty set. RED on the wrapper that answered the verdict
+/// alone.
+#[test]
+fn dest_judge_answers_the_judged_addresses_as_the_set_a_dial_lands_within() {
+    let t = HostSlots {
+        dest_judge: Some(resolves),
+        ..table(None)
+    };
+    let s = services(&t);
+    let dest = "https://push.example/hook";
+    let (mut buf, mut spans) = ([0u8; 4], [NO_SPAN; 1]);
+    assert_eq!(
+        s.dest_judge(handle(), dest, 0, Some((&mut buf[..], &mut spans[..]))),
+        Poll::Ready(Err(ServiceError::Short {
+            bytes: 22,
+            items: 2
+        }))
+    );
+    let (mut buf, mut spans) = ([0u8; 22], [NO_SPAN; 2]);
+    let Poll::Ready(Ok(j)) = s.dest_judge(handle(), dest, 0, Some((&mut buf[..], &mut spans[..])))
+    else {
+        panic!("admitted, with its addresses");
+    };
+    assert_eq!(j.verdict, DEST_ALLOWED);
+    assert!(j.addresses.names().eq(JUDGED));
+    assert_eq!(j.within(), "203.0.113.5,2001:db8::1");
+    let Poll::Ready(Ok(j)) = s.dest_judge(handle(), dest, 0, None) else {
+        panic!("admitted");
+    };
+    assert!(j.addresses.is_empty());
+    assert_eq!(j.within(), "");
+}
+
+#[test]
+fn trust_sight_answers_the_kernels_judgement_and_pends_on_a_ticket() {
+    let t = HostSlots {
+        trust_sight: Some(sights),
+        ..table(None)
+    };
+    let s = services(&t);
+    assert_eq!(
+        s.trust_sight(ticketed(0), "srv", "h1"),
+        Poll::Ready(Ok(TRUST_SAME))
+    );
+    assert_eq!(
+        s.trust_sight(ticketed(1), "srv", "h2"),
+        Poll::Ready(Ok(TRUST_NEW))
+    );
+    assert_eq!(s.trust_sight(ticketed(2), "slow", "h1"), Poll::Pending);
+    assert_eq!(
+        s.trust_sight(handle(), "slow", "h1"),
+        Poll::Ready(Err(ServiceError::Broken))
+    );
+    // `7` is no `TRUST_*` verdict.
+    let b = HostSlots {
+        trust_sight: Some(breaks),
+        ..table(None)
+    };
+    assert_eq!(
+        services(&b).trust_sight(ticketed(0), "srv", "h1"),
+        Poll::Ready(Err(ServiceError::Broken))
+    );
+    assert_eq!(
+        services(&table(None)).trust_sight(ticketed(0), "srv", "h1"),
+        Poll::Ready(Err(ServiceError::Unserved))
+    );
+}
+
+#[test]
+fn trust_due_views_the_names_in_the_callers_buffers_and_reports_a_short_one() {
+    let t = HostSlots {
+        trust_due: Some(dues),
+        ..table(None)
+    };
+    let s = services(&t);
+    let (mut buf, mut spans) = ([0u8; 4], [NO_SPAN; 1]);
+    assert_eq!(
+        s.trust_due(handle(), &mut buf, &mut spans).map(|d| d.len()),
+        Err(ServiceError::Short { bytes: 9, items: 2 })
+    );
+    let (mut buf, mut spans) = ([0u8; 9], [NO_SPAN; 2]);
+    let due = s
+        .trust_due(handle(), &mut buf, &mut spans)
+        .expect("two are due");
+    assert_eq!(due.len(), 2);
+    assert!(due.names().eq(DUE));
+    let n = HostSlots {
+        trust_due: Some(dues_nameless),
+        ..table(None)
+    };
+    let (mut buf, mut spans) = ([0u8; 9], [NO_SPAN; 2]);
+    assert_eq!(
+        services(&n)
+            .trust_due(handle(), &mut buf, &mut spans)
+            .map(|d| d.len()),
+        Err(ServiceError::Broken)
+    );
+    // It never pends: a host that does broke its rule.
+    let p = HostSlots {
+        trust_due: Some(pends),
+        ..table(None)
+    };
+    assert_eq!(
+        services(&p)
+            .trust_due(ticketed(0), &mut buf, &mut spans)
+            .map(|d| d.len()),
+        Err(ServiceError::Broken)
+    );
+    assert_eq!(
+        services(&table(None))
+            .trust_due(handle(), &mut buf, &mut spans)
+            .map(|d| d.len()),
         Err(ServiceError::Unserved)
     );
 }

@@ -43,7 +43,7 @@
 //! failing is the tripwire working.
 
 use crate::plane::store::{decode, PlaneStore, KIND_AUDIT, KIND_CALL};
-use busbar_contract::records::{AuditRecord, PlaneRecord, PlaneSelector, RecordStoreResult};
+use busbar_contract::records::{AuditRecord, PlaneRecordRef, PlaneSelector, RecordStoreResult};
 
 /// The one field this golden reads back off a frozen `call`-stream body — the tail digest. Decoded
 /// through a NEUTRAL local shape (matching the on-disk field name) so this core test names no plane
@@ -103,13 +103,13 @@ impl FrozenStore {
 }
 
 impl PlaneStore for FrozenStore {
-    fn upsert_plane_record(&self, _record: &PlaneRecord) -> RecordStoreResult<()> {
+    fn upsert_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         Ok(())
     }
     fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
         Ok(None)
     }
-    fn append_plane_record(&self, _record: &PlaneRecord) -> RecordStoreResult<()> {
+    fn append_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         Ok(())
     }
     fn list_plane_records(
@@ -119,7 +119,7 @@ impl PlaneStore for FrozenStore {
     ) -> RecordStoreResult<Vec<Vec<u8>>> {
         let parent = match selector {
             PlaneSelector::All => None,
-            PlaneSelector::Parent(p) => Some(p.clone()),
+            PlaneSelector::Parent(p) => Some(p.to_string()),
         };
         Ok(self
             .rows

@@ -25,7 +25,7 @@ pub mod door;
 
 use crate::abi::store::OpId;
 use crate::kinds::{Head, RecordBytes};
-use crate::records::{AuditRecord, MeteringDelta, PlaneRecord, RecordStore, UsageDelta};
+use crate::records::{AuditRecord, MeteringDelta, PlaneRecordRef, RecordStore, UsageDelta};
 
 /// Why an `op_id`-carrying write answered without applying anything.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,7 +187,7 @@ pub trait StoreSlots: RecordStore + Sized {
     ///
     /// # Errors
     /// [`OpRefused`].
-    fn append_plane_record_op(&self, op: OpId, record: &PlaneRecord) -> OpResult<()>;
+    fn append_plane_record_op(&self, op: OpId, record: PlaneRecordRef<'_>) -> OpResult<()>;
 
     /// `append_batch` (slot 33): append `records` to `stream`; the head it reached.
     ///
@@ -219,11 +219,12 @@ pub trait StoreSlots: RecordStore + Sized {
     /// A backend text.
     fn sessions_for(&self, principal: &str) -> Result<Vec<(u64, String)>, String>;
 
-    /// `record_put` (slot 40): an upsert on `(schema, key)`.
+    /// `record_put` (slot 40): an upsert on `(schema, key)`. `value` is the host's bytes, borrowed,
+    /// and at most `MAX_RECORD_BYTES` (the door refuses a longer one before calling).
     ///
     /// # Errors
     /// A backend text.
-    fn record_put(&self, schema: &str, key: &[u8], value: &RecordBytes) -> Result<(), String>;
+    fn record_put(&self, schema: &str, key: &[u8], value: &[u8]) -> Result<(), String>;
 
     /// `record_get` (slot 41).
     ///

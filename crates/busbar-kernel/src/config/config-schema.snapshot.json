@@ -2593,6 +2593,10 @@
       "kind": "alias",
       "target": "indexmap::IndexMap<String, IdentityProviderCfg>"
     },
+    "type Listeners": {
+      "kind": "alias",
+      "target": "Mutex<HashMap<(InstanceId, NeedId), Arc<Mutex<Listening>>>>"
+    },
     "type Opening": {
       "kind": "alias",
       "target": "(Vec<(String, Vec<u8>)>, Vec<u8>)"

@@ -12,12 +12,12 @@
 //! make impossible.
 //!
 //! [`PlaneStore`] is the narrower of the two. It declares ONLY the eight neutral kind-tagged
-//! PLANE-RECORD verbs (`upsert_plane_record`/`append_plane_record`/… over the [`PlaneRecord`]
+//! PLANE-RECORD verbs (`upsert_plane_record`/`append_plane_record`/… over the [`PlaneRecord`](busbar_contract::records::PlaneRecord)
 //! envelope), and NONE of the audit-chain, credential, key, usage or metering methods.
 //!
 //! ## Neutral kind-tagged verbs, OPAQUE bodies
 //!
-//! The neutral verbs speak in an OPAQUE `body: Vec<u8>` carried on a [`PlaneRecord`] whose every other
+//! The neutral verbs speak in an OPAQUE `body: Vec<u8>` carried on a [`PlaneRecord`](busbar_contract::records::PlaneRecord) whose every other
 //! field is a typed sidecar column. This crate names NO concrete plane record type: the mapping
 //! between a plane concept and its `kind`, and how a plane row is serialized into (and back out of)
 //! an opaque body, lives PLANE-SIDE now (each plane crate's own `to_plane_record`/`from_body`
@@ -33,7 +33,7 @@
 //! wrapper — receives an already-sealed row and persists it verbatim; it never computes or recomputes
 //! a digest.
 
-use busbar_contract::records::{RecordStoreError, RecordStoreResult};
+use busbar_contract::records::{PlaneRecordRef, RecordStoreError, RecordStoreResult};
 
 // THE NARROWING ADAPTER — the `PlaneStore` trait a plane persists through and the `PlaneStoreView`
 // that narrows a real `busbar_contract::records::RecordStore` to it — lives in the neutral substrate so a plane crate
@@ -62,7 +62,7 @@ pub(crate) const KIND_DEMOTION: &str = "demotion";
 /// The spent-approval ledger kind (a single-use token).
 pub(crate) const KIND_ASK: &str = "ask";
 
-/// Serialize a typed plane row into an opaque [`PlaneRecord::body`]. `serde_json`, matching the store
+/// Serialize a typed plane row into an opaque [`PlaneRecord::body`](busbar_contract::records::PlaneRecord::body). `serde_json`, matching the store
 /// plugins' decode, so the bytes round-trip identically across the plugin ABI. Generic over any
 /// `Serialize`, so this names no plane type — the caller supplies whatever neutral or plane-owned row
 /// it is persisting.
@@ -70,7 +70,7 @@ pub fn encode<T: serde::Serialize>(row: &T) -> RecordStoreResult<Vec<u8>> {
     serde_json::to_vec(row).map_err(|e| RecordStoreError(format!("plane body encode: {e}")))
 }
 
-/// Decode an opaque [`PlaneRecord::body`] back into its typed plane row — the exact inverse of
+/// Decode an opaque [`PlaneRecord::body`](busbar_contract::records::PlaneRecord::body) back into its typed plane row — the exact inverse of
 /// [`encode`]. A malformed body is a STORE ERROR the caller sees, never a silently-dropped read.
 pub fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> RecordStoreResult<T> {
     serde_json::from_slice(body).map_err(|e| RecordStoreError(format!("plane body decode: {e}")))
@@ -81,7 +81,7 @@ pub fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> RecordStoreResult<
 mod store_seam_tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
-use busbar_contract::records::{PlaneRecord, PlaneSelector, RecordStore};
+use busbar_contract::records::{PlaneSelector, RecordStore};
 use std::sync::Arc;
 
 /// The PLANE-FACING durable sink: exactly the eight neutral kind-tagged verbs of
@@ -94,11 +94,11 @@ use std::sync::Arc;
 /// modification of `Store` — this is an additional, strictly-narrower trait owned by core.
 pub trait PlaneStore: Send + Sync + 'static {
     /// See [`RecordStore::upsert_plane_record`] — the neutral upsert (kind `task` / `demotion`).
-    fn upsert_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()>;
+    fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()>;
     /// See [`RecordStore::get_plane_record`] — the neutral point read (kind `task`).
     fn get_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<Option<Vec<u8>>>;
     /// See [`RecordStore::append_plane_record`] — the neutral append (kind `task_event` / `call`).
-    fn append_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()>;
+    fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()>;
     /// See [`RecordStore::list_plane_records`] — the neutral list (kind × selector).
     fn list_plane_records(
         &self,
@@ -150,13 +150,13 @@ impl PlaneStoreView {
 }
 
 impl PlaneStore for PlaneStoreView {
-    fn upsert_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
+    fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         self.0.upsert_plane_record(record)
     }
     fn get_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
         self.0.get_plane_record(kind, id)
     }
-    fn append_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
+    fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         self.0.append_plane_record(record)
     }
     fn list_plane_records(

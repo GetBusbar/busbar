@@ -581,7 +581,7 @@ impl TaskRegistry {
             let mut events: Vec<TaskEventRow> = Vec::new();
             let mut event_unreadable = 0usize;
             for b in store
-                .list_plane_records(KIND_TASK_EVENT, &PlaneSelector::Parent(row.task_id.clone()))?
+                .list_plane_records(KIND_TASK_EVENT, &PlaneSelector::Parent(row.task_id.as_str().into()))?
                 .iter()
             {
                 match TaskEventRow::from_body(b) {
@@ -940,7 +940,7 @@ impl TaskRegistry {
         task_id: &str,
     ) -> RecordStoreResult<Result<usize, ChainBreak>> {
         let events: Vec<TaskEventRow> = store
-            .list_plane_records(KIND_TASK_EVENT, &PlaneSelector::Parent(task_id.to_string()))?
+            .list_plane_records(KIND_TASK_EVENT, &PlaneSelector::Parent(task_id.into()))?
             .iter()
             .map(|b| TaskEventRow::from_body(b))
             .collect::<RecordStoreResult<_>>()?;
@@ -986,7 +986,7 @@ impl TaskTestHarness {
 #[allow(dead_code)] // a complete named-vocabulary surface; not every method is exercised by every suite
 pub trait TaskStoreTestExt: busbar_contract::records::RecordStore {
     fn put_task(&self, task: &TaskRow) -> RecordStoreResult<()> {
-        self.upsert_plane_record(&task.to_plane_record()?)
+        self.upsert_plane_record(task.to_plane_record()?.view())
     }
     fn get_task(&self, task_id: &str) -> RecordStoreResult<Option<TaskRow>> {
         self.get_plane_record(KIND_TASK, task_id)?
@@ -1003,7 +1003,7 @@ pub trait TaskStoreTestExt: busbar_contract::records::RecordStore {
         self.purge_plane_records_before(KIND_TASK, before)
     }
     fn append_task_event(&self, event: &TaskEventRow) -> RecordStoreResult<()> {
-        self.append_plane_record(&event.to_plane_record()?)
+        self.append_plane_record(event.to_plane_record()?.view())
     }
     fn list_task_events(&self, task_id: &str) -> RecordStoreResult<Vec<TaskEventRow>> {
         self.list_plane_records(KIND_TASK_EVENT, &TaskEventRow::parent_selector(task_id))?

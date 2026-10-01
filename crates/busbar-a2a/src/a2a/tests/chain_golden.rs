@@ -6,7 +6,7 @@
 //! tests-in-their-own-file convention.
 
 use super::*;
-use busbar_contract::records::{PlaneRecord, PlaneSelector, RecordStoreResult};
+use busbar_contract::records::{PlaneRecordRef, PlaneSelector, RecordStoreResult};
 
 // The LEGACY v1 (pipe-join) GENESIS event and its successor, frozen — typed `TaskEventRow` JSON
 // bodies EXACTLY as a pre-fix deployment persisted them: no `digest_version` field, so serde
@@ -28,13 +28,13 @@ const A2A_V2_TAIL_HASH: &str = "c77eb9be8b1da1f46888ba29c137914b17c91ec0303c61bd
 /// A read-only store returning exactly the one working task and its two frozen events.
 struct FrozenStore;
 impl PlaneStore for FrozenStore {
-    fn upsert_plane_record(&self, _r: &PlaneRecord) -> RecordStoreResult<()> {
+    fn upsert_plane_record(&self, _r: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         Ok(())
     }
     fn get_plane_record(&self, _k: &str, _i: &str) -> RecordStoreResult<Option<Vec<u8>>> {
         Ok(None)
     }
-    fn append_plane_record(&self, _r: &PlaneRecord) -> RecordStoreResult<()> {
+    fn append_plane_record(&self, _r: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         Ok(())
     }
     fn list_plane_records(
@@ -213,13 +213,13 @@ fn a_boot_restore_of_the_frozen_chain_reports_no_tamper() {
 /// tolerance fix a single decode `Err` `?`-aborted the entire rehydrate.
 struct PartlyUnreadableStore;
 impl PlaneStore for PartlyUnreadableStore {
-    fn upsert_plane_record(&self, _r: &PlaneRecord) -> RecordStoreResult<()> {
+    fn upsert_plane_record(&self, _r: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         Ok(())
     }
     fn get_plane_record(&self, _k: &str, _i: &str) -> RecordStoreResult<Option<Vec<u8>>> {
         Ok(None)
     }
-    fn append_plane_record(&self, _r: &PlaneRecord) -> RecordStoreResult<()> {
+    fn append_plane_record(&self, _r: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         Ok(())
     }
     fn list_plane_records(

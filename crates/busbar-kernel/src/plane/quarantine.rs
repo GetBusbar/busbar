@@ -131,7 +131,7 @@ impl DemotionRecord {
         };
         if let Err(e) = row
             .to_plane_record()
-            .and_then(|rec| store.upsert_plane_record(&rec))
+            .and_then(|rec| store.upsert_plane_record(rec.view()))
         {
             crate::diagnostics::diag_error!(
                 crate::diagnostics::PLANE_DEMOTION_WRITE_FAILED,

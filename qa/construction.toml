@@ -399,7 +399,7 @@ because = "Test anchors for the failover-after-refusal test the ARCHITECT asked 
 file    = "qa/construction.toml"
 from    = 54254
 to      = 55817
-because = "OWNER GRANT 2026-09-29 (3) / ARCHITECT GRANT 3, kernel line-limit at the measured value, itemised per lane over predev 53148: E12 (SWEEP-KERNEL + LLM-CLEAN, lower-only) measured 52945 (-203); URL-SEAM -17 and RESOLVE-PIN +66 (the pooled client's dial judge; ARCHITECT approved) = +49; H2 host services +1260 (ARCHITECT approved 2026-10-01). 53148 - 203 + 49 + 1260 = 54254. Then the llm fold (step 34a and the plane ABI v1 refusal/arrival edits: the plane driver chooses a refusal's status from the plane's stated rows, keeps a refused arrive's own code and 4xx and the unit key, and hands refusal the reason, unit, code, target and the method on arrive), +41 measured over the plane driver core: 54254 + 41 = 54295. Then the production far end and money seam for the plane driver, +1313 at the measurement (ARCHITECT cap from the itemised table, 2026-10-01): step 15's budget modes +80; the walk's pick in the pump +33; the far end over the kernel's egress walk and the connector +831 and its follow-ups +116; the production money seam +180 and its checked sums and once-only ledger +68; the piece's claim, dialect and caller reference +64; one identity re-export home +3; drains -64: 54295 + 1313 = 55608. Then the hold sizing and fee refund on the plane driver (step 17) at the measurement, +185: the estimate budget mode +45; a plane's fee refund off its own fee lane and the refund primitive +40; the fee-unit report decides the refund +30; ledgering and metering under the serving member +60; the driver names the serving member at the answer's commit +10: 55608 + 185 = 55793. Measured on the stacked unit tip: 55799 (+6 over the summed ledger, the driver's own verify seat beside the forwarded seats). THEN (summed on the trunk by CONVERGER, +18 -> 55817): OWNER GRANT 2026-09-29 (3) / ARCHITECT GRANT 3, kernel line-limit at the measured value, itemised per lane over BIG 54254 (the P1 core unit: KIND-SHARE A3/A4/TL, KERNEL-AUTH-ZERO, BOOT-CHAIN, CONNECTOR-19 item 2, HEAD-FIELDS, CONNECTOR-19-U12): BOOT-CHAIN +22 (the One Statement, claims and conns fill; lane-measured 52136 -> 52158, GRANT 3), KERNEL-AUTH-ZERO -3 (lane-measured 52136 -> 52133), the rest 0; composed and measured by cargo xtask gate construction on the unit tip: 54272 (+18; the one-line difference from +19 is the composition). Then the S3+S4 chunk measured 55691 at 83743044b: ARCHITECT S3S4-KERNEL-67 2026-10-01 grants exactly 55691 (q176 Q17-6 refund +48 ruled GRANT3; the S3/S4 stacking resolutions and fmt +19), consuming the 73-line R-KERNEL reservation."
+because = "OWNER GRANT 2026-09-29 (3) / ARCHITECT GRANT 3, kernel line-limit at the measured value, itemised per lane over predev 53148: E12 (SWEEP-KERNEL + LLM-CLEAN, lower-only) measured 52945 (-203); URL-SEAM -17 and RESOLVE-PIN +66 (the pooled client's dial judge; ARCHITECT approved) = +49; H2 host services +1260 (ARCHITECT approved 2026-10-01). 53148 - 203 + 49 + 1260 = 54254. Then the llm fold (step 34a and the plane ABI v1 refusal/arrival edits: the plane driver chooses a refusal's status from the plane's stated rows, keeps a refused arrive's own code and 4xx and the unit key, and hands refusal the reason, unit, code, target and the method on arrive), +41 measured over the plane driver core: 54254 + 41 = 54295. Then the production far end and money seam for the plane driver, +1313 at the measurement (ARCHITECT cap from the itemised table, 2026-10-01): step 15's budget modes +80; the walk's pick in the pump +33; the far end over the kernel's egress walk and the connector +831 and its follow-ups +116; the production money seam +180 and its checked sums and once-only ledger +68; the piece's claim, dialect and caller reference +64; one identity re-export home +3; drains -64: 54295 + 1313 = 55608. Then the hold sizing and fee refund on the plane driver (step 17) at the measurement, +185: the estimate budget mode +45; a plane's fee refund off its own fee lane and the refund primitive +40; the fee-unit report decides the refund +30; ledgering and metering under the serving member +60; the driver names the serving member at the answer's commit +10: 55608 + 185 = 55793. Measured on the stacked unit tip: 55799 (+6 over the summed ledger, the driver's own verify seat beside the forwarded seats). THEN (summed on the trunk by CONVERGER, +18 -> 55817): OWNER GRANT 2026-09-29 (3) / ARCHITECT GRANT 3, kernel line-limit at the measured value, itemised per lane over BIG 54254 (the P1 core unit: KIND-SHARE A3/A4/TL, KERNEL-AUTH-ZERO, BOOT-CHAIN, CONNECTOR-19 item 2, HEAD-FIELDS, CONNECTOR-19-U12): BOOT-CHAIN +22 (the One Statement, claims and conns fill; lane-measured 52136 -> 52158, GRANT 3), KERNEL-AUTH-ZERO -3 (lane-measured 52136 -> 52133), the rest 0; composed and measured by cargo xtask gate construction on the unit tip: 54272 (+18; the one-line difference from +19 is the composition). Then the S3+S4 chunk measured 55691 at 83743044b: ARCHITECT S3S4-KERNEL-67 2026-10-01 grants exactly 55691 (q176 Q17-6 refund +48 ruled GRANT3; the S3/S4 stacking resolutions and fmt +19), consuming the 73-line R-KERNEL reservation. Then R-KERNEL exception, ARCHITECT C2c S5 K-SERVE 2026-10-01 (escalate.q 17:29:52Z Q1-Q6: serve layer + admin mount; 17:31:11Z Q4: the abi/plane append): the plane serve driver (crates/busbar-kernel/src/plane_driver/serve.rs), +320 at the measurement: 55440 at predev 8fc5e67e2 -> 55760 at the lane tip; the ceiling re-arms 55691 -> 55760 (within this declaration's 55817). Repaid at the a2a flip (C2c S8)."
 
 # ── THE KERNEL CEILING, RE-ARMED BY TRAIN BIG 53148 -> 54254 (E12 lowers, URL-SEAM + RESOLVE-PIN, H2) — EXPIRED
 #    AND STRUCK: its commit reached the base; struck by the P1 core unit's re-arm above, which declares the next
@@ -521,11 +521,13 @@ because = "OWNER GRANT 2026-09-29 (3), ARCHITECT approval: line-limit re-arm at 
 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25682 -> 26157 (train BIG) — EXPIRED AND STRUCK: its commit reached the base.
 
+# [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 26157 -> 29284 (REARM cg-31) — EXPIRED AND STRUCK: its commit reached the base; struck by REARM cg-58 below.
+
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 26157
-to      = 29284
-because = "REARM cg-31 (pipeline v2 section 6; OWNER GRANT 2026-09-29 (3), ARCHITECT GRANT 3: line-limit re-arm at the measured value): gate.surface_ceilings.contract_caps measured 29284 by cargo xtask gate construction at 15c46528b; predev 5c325b58a carries 26157; the cap is 29604 = the tree value 29604 (predev plus the ruled deltas stacked on it). Ruled deltas: +# ── SUMMED on the trunk (CONVERGER): contract_caps 27103 + (26656 - 26631) = 27128; the measurement at the segment tip re-arms it.; +# ── SUMMED on the trunk (CONVERGER): contract_caps 27128 + (26596 - 26656) = 27068; the measurement at the segment tip re-arms it.; +# ── SUMMED on the trunk (CONVERGER): contract_caps 27068 + (26608 - 26596) = 27080; the measurement at the segment tip re-arms it.; +# ── SUMMED on the trunk (CONVERGER): contract_caps 27080 + (26609 - 26608) = 27081; the measurement at the segment tip re-arms it.; +# ── SUMMED on the trunk (CONVERGER): contract_caps 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.; 48ba21a97 qa/construction.toml: the P1 core unit's ledger, one declaration per ceiling over BIG; 6c72c29b9 qa/construction.toml: contract pair re-arms 26157 -> 26184 (ABI-TRIM F3); 8d38eca86 qa/construction.toml: kernel ceiling re-arms 54707 -> 54726, contract pair 26608 -> 26609, at the measurement (GRANT3); eac9f4c7a qa/construction.toml: kernel ceiling re-arms 54702 -> 54707, contract pair 26596 -> 26608, teller.rs 595 -> 600, at the measurement (GRANT3); c19dfbe69 qa/construction.toml: kernel ceiling lowers 54900 -> 54702, contract pair 26656 -> 26596, at the measurement (GRANT3); 122f90f71 qa/construction.toml: contract pair re-arms 26631 -> 26656, at the measurement (GRANT3);  ."
+from    = 29284
+to      = 29803
+because = "REARM cg-58 then cg-60 (K-SERVE abi/plane append +31, ARCHITECT C2c S5 Q4: 29772 + 31 = 29803) (CONVERGER; ARCHITECT ruling 2026-10-01: ceilings land as approved DELTAS on top of what predev measures): gate.surface_ceilings.contract_caps measured 29772 by cargo xtask gate construction on the DEST-PIN tip 93c14402a (lane-fast2); predev 8fc5e67e2 carries 29284 and already measures 29590 (the standing loc-ceilings:caps-contract / surface-ceiling:contract red); the bundle adds exactly the approved +182 (SDK-SVC wrappers +130, ARCHITECT S7-TICK 2026-10-01; DEST-PIN judged-address pin +52, ARCHITECT DEST-PIN 2026-10-01): 29590 + 182 = 29772."
 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25682 -> 26157 (TRAIN BIG: E12 -243, URL-SEAM +489, H2 +229) — EXPIRED AND
 # STRUCK: its commit reached the base; struck by the P1 core unit's re-arm above.
@@ -550,11 +552,13 @@ because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan a
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 25682 -> 26157 (train BIG) — EXPIRED AND STRUCK: its commit reached the base.
 
+# [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 26157 -> 29284 (REARM cg-31) — EXPIRED AND STRUCK: its commit reached the base; struck by REARM cg-58 below.
+
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 26157
-to      = 29284
-because = "REARM cg-31 (pipeline v2 section 6; OWNER GRANT 2026-09-29 (3), ARCHITECT GRANT 3: line-limit re-arm at the measured value): rules.loc-ceilings.caps_contract_ceiling measured 29284 by cargo xtask gate construction at 15c46528b; predev 5c325b58a carries 26157; the cap is 29604 = the tree value 29604 (predev plus the ruled deltas stacked on it). Ruled deltas: +# ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27103 + (26656 - 26631) = 27128; the measurement at the segment tip re-arms it.; +# ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27128 + (26596 - 26656) = 27068; the measurement at the segment tip re-arms it.; +# ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27068 + (26608 - 26596) = 27080; the measurement at the segment tip re-arms it.; +# ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27080 + (26609 - 26608) = 27081; the measurement at the segment tip re-arms it.; +# ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.; 48ba21a97 qa/construction.toml: the P1 core unit's ledger, one declaration per ceiling over BIG; 6c72c29b9 qa/construction.toml: contract pair re-arms 26157 -> 26184 (ABI-TRIM F3); 8d38eca86 qa/construction.toml: kernel ceiling re-arms 54707 -> 54726, contract pair 26608 -> 26609, at the measurement (GRANT3); eac9f4c7a qa/construction.toml: kernel ceiling re-arms 54702 -> 54707, contract pair 26596 -> 26608, teller.rs 595 -> 600, at the measurement (GRANT3); c19dfbe69 qa/construction.toml: kernel ceiling lowers 54900 -> 54702, contract pair 26656 -> 26596, at the measurement (GRANT3); 122f90f71 qa/construction.toml: contract pair re-arms 26631 -> 26656, at the measurement (GRANT3);  ."
+from    = 29284
+to      = 29803
+because = "REARM cg-58 then cg-60 (K-SERVE abi/plane append +31, ARCHITECT C2c S5 Q4: 29772 + 31 = 29803) (CONVERGER; ARCHITECT ruling 2026-10-01: ceilings land as approved DELTAS on top of what predev measures): rules.loc-ceilings.caps_contract_ceiling measured 29772 by cargo xtask gate construction on the DEST-PIN tip 93c14402a (lane-fast2); predev 8fc5e67e2 carries 29284 and already measures 29590 (the standing loc-ceilings:caps-contract / surface-ceiling:contract red); the bundle adds exactly the approved +182 (SDK-SVC wrappers +130, ARCHITECT S7-TICK 2026-10-01; DEST-PIN judged-address pin +52, ARCHITECT DEST-PIN 2026-10-01): 29590 + 182 = 29772."
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 25682 -> 26157 (TRAIN BIG: E12 -243, URL-SEAM +489, H2 +229) — EXPIRED AND
 # STRUCK: its commit reached the base; struck by the P1 core unit's re-arm above.
@@ -894,7 +898,7 @@ because = "Q77-PENDING (a), a MOVE forced by a cited ruling: ARCHITECT RULINGS 2
 # ── SUMMED on the trunk (CONVERGER): contract_caps 27080 + (26609 - 26608) = 27081; the measurement at the segment tip re-arms it.
 # RE-ARMED 26157 -> 26184 with its pair (ABI-TRIM F3 $, +27).
 # ── SUMMED on the trunk (CONVERGER): contract_caps 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
-contract_caps = 29284
+contract_caps = 29803
 # RE-ARMED 26157 -> 28653 with its pair (the P1 core unit: KIND-SHARE +1826, BOOT-CHAIN +506, HEAD-FIELDS +111, CONNECTOR-19-U12 +57; composed -4), declared above.
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
@@ -1534,7 +1538,11 @@ kernel_crate = "busbar-kernel"
 # ── SUMMED on the trunk (CONVERGER): kernel_ceiling 55587 + (54726 - 54707) = 55606; the measurement at the segment tip re-arms it.
 # ── RE-ARMED 55624 -> 55691 at the measurement of the S3+S4 chunk (83743044b), ARCHITECT S3S4-KERNEL-67 2026-10-01:
 #    the reservation of 73 is consumed by this excess; the unruled lines are a debt the owning lanes repay at the fold flips.
-kernel_ceiling = 55691
+# ── RE-ARMED 55691 -> 55760 at the measurement, R-KERNEL exception, ARCHITECT C2c S5 K-SERVE 2026-10-01 (escalate.q 17:29:52Z Q1-Q6: serve layer + admin mount; 17:31:11Z Q4: the abi/plane append):
+#    the plane serve driver (plane_driver/serve.rs) +320 over predev 8fc5e67e2's 55440; repaid at the a2a flip (C2c S8).
+# ── RE-ARMED 55760 -> 55789 by CONVERGER cg-60 (ARCHITECT 2026-10-01: approved deltas over what predev measures; replaces K-SERVE's absolute 55760):
+#    predev 335d02828 measures 55440; DEST-PIN +29 (cg-58, under its approved +28 ruling plus the ceiling) + K-SERVE +320 (C2c S5) = 55789.
+kernel_ceiling = 55789
 # ── RE-ARMED 54254 -> 54272 for the P1 core unit (BOOT-CHAIN +22, KERNEL-AUTH-ZERO -3; composed -1), declared above.
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
@@ -1662,7 +1670,7 @@ contract_crate = "busbar-contract"
 # ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27080 + (26609 - 26608) = 27081; the measurement at the segment tip re-arms it.
 # RE-ARMED 26157 -> 26184 with its pair (ABI-TRIM F3 $, +27).
 # ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
-caps_contract_ceiling = 29284
+caps_contract_ceiling = 29803
 # RE-ARMED 26157 -> 28653 with its pair (the P1 core unit), declared above.
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
@@ -1847,17 +1855,14 @@ reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-tra
 # of which wire library a transport links to reach them.
 [rules.manifest-allowlist.reviewed_extra]
 busbar-transport-http = [
-  "tokio-util", "memchr", "futures", "tokio", "tokio-rustls", "rustls", "hyper", "hyper-util",
+  "tokio-util", "memchr", "futures", "tokio", "rustls", "hyper", "hyper-util",
   "hyper-rustls", "http-body-util", "http", "webpki-roots", "tonic", "tower",
 ]
 busbar-transport-stdio = ["tokio", "futures"]
 # The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
 busbar-plane-mcp = ["base64"]
-busbar-transport-ws = [
-  "tokio-util", "tokio", "tokio-tungstenite", "tokio-rustls", "rustls", "rustls-pki-types",
-  "webpki-roots", "futures",
-]
+busbar-transport-ws = ["tokio-util", "tokio", "tokio-tungstenite", "futures"]
 # Ratchet, NOT a review: each busbar-plane-* adapter names its own dialect's legacy engine crate
 # (busbar-llm/-mcp/-a2a/-voice) for codecs only, read-only, no engine state crossing back — but
 # those engine crates are ALSO named in gate.plane_crates, so this is structurally the exact "a
@@ -2335,6 +2340,8 @@ max_sites = 0
 #   panicking one mean the same thing — this handle was not abandoned.
 known_sites = [
   "crates/busbar-contract/src/ids.rs::key",
+  # boot/reload-time route-literal interning, deduplicated, never a money hold
+  "crates/busbar-contract/src/abi/transport/route.rs::intern",
   # was crates/busbar-core/src/plane_host/ (a whole directory) — the ten files of it that carry a
   # reviewed escape, so the seven substrate-origin files the merge added stay uncovered.
   "crates/busbar-kernel/src/plane_host/breaker.rs",

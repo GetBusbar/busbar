@@ -1344,7 +1344,7 @@ async fn a_delete_whose_durable_clear_fails_keeps_the_config_and_returns_the_err
         }
         fn upsert_plane_record(
             &self,
-            record: &busbar_contract::records::PlaneRecord,
+            record: busbar_contract::records::PlaneRecordRef<'_>,
         ) -> busbar_contract::records::RecordStoreResult<()> {
             if record.id == "push-delfail" {
                 return Err(busbar_contract::records::RecordStoreError(

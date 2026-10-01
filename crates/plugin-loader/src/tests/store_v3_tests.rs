@@ -218,16 +218,16 @@ fn audit_appends_and_a_fork_fails() {
 fn plane_records_and_tokens_cross_the_request_path_slots() {
     let store = open();
     let s: &dyn RecordStore = &store;
-    s.upsert_plane_record(&record("task", "t1", None, 0, b"body".to_vec()))
+    s.upsert_plane_record(record("task", "t1", None, 0, b"body".to_vec()).view())
         .expect("upsert");
     assert_eq!(
         s.get_plane_record("task", "t1").expect("get"),
         Some(b"body".to_vec())
     );
     assert_eq!(s.get_plane_record("task", "t-absent").expect("get"), None);
-    s.append_plane_record(&record("event", "e", Some("t1"), 1, b"one".to_vec()))
+    s.append_plane_record(record("event", "e", Some("t1"), 1, b"one".to_vec()).view())
         .expect("append");
-    s.append_plane_record(&record("event", "e", Some("t1"), 2, b"two".to_vec()))
+    s.append_plane_record(record("event", "e", Some("t1"), 2, b"two".to_vec()).view())
         .expect("append");
     assert_eq!(
         s.list_plane_records("event", &PlaneSelector::Parent("t1".into()))
@@ -249,7 +249,7 @@ fn a_body_over_the_first_buffer_is_re_asked_once_at_its_size() {
     let store = open();
     let s: &dyn RecordStore = &store;
     let big = vec![7u8; 100 * 1024];
-    s.upsert_plane_record(&record("task", "big", None, 0, big.clone()))
+    s.upsert_plane_record(record("task", "big", None, 0, big.clone()).view())
         .expect("upsert");
     assert_eq!(
         s.get_plane_record("task", "big").expect("get"),
@@ -264,7 +264,7 @@ fn a_list_over_the_first_buffers_is_re_asked_once() {
     let store = open();
     let s: &dyn RecordStore = &store;
     for i in 0..400u64 {
-        s.append_plane_record(&record("event", "e", Some("p"), i + 1, vec![1; 100]))
+        s.append_plane_record(record("event", "e", Some("p"), i + 1, vec![1; 100]).view())
             .expect("append");
     }
     let rows = s

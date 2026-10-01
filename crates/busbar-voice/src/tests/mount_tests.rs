@@ -24,7 +24,9 @@ use crate::runtime::scope::rehydrate_sessions;
 use crate::runtime::{EchoToolExecutor, SessionHandle, VoiceRuntime};
 use crate::topology::telephony::{begin_telephony, g711_config};
 use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-use busbar_contract::records::{PlaneRecord, PlaneSelector, RecordStoreError, RecordStoreResult};
+use busbar_contract::records::{
+    PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStoreError, RecordStoreResult,
+};
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use busbar_kernel::plane::registry::{BuildCtx, CardIssuer, PlaneBootCtx, RestoredSummary};
 use busbar_kernel::plane::store::PlaneStore;
@@ -55,7 +57,8 @@ impl MemStore {
 }
 
 impl PlaneStore for MemStore {
-    fn upsert_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
+    fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        let record = &record.to_record();
         if self.down {
             return Err(RecordStoreError("store down".to_string()));
         }
@@ -76,7 +79,7 @@ impl PlaneStore for MemStore {
             .find(|r| r.id == id)
             .map(|r| r.body.clone()))
     }
-    fn append_plane_record(&self, _record: &PlaneRecord) -> RecordStoreResult<()> {
+    fn append_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         Ok(())
     }
     fn list_plane_records(

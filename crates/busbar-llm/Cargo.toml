@@ -97,10 +97,6 @@ smallvec = { workspace = true }
 # The relocated native-plane gauntlet (`native_ingress::NativePlane`) implements the async
 # `busbar_substrate::plane_host::GauntletPlane` trait.
 async-trait = { workspace = true }
-# Synthesized wire ids (anthropic `req_…`, gemini/bedrock request ids, responses `resp_…`): random
-# bytes, hex-encoded.
-getrandom = { workspace = true }
-hex = { workspace = true }
 # T3 inbound webhook signature verification (Standard Webhooks / OpenAI Responses async webhooks):
 # HMAC-SHA256 over the signed content, base64 for the `whsec_` secret decode + signature encode. The
 # generic HMAC-SHA256 helper in `busbar_substrate::sigv4` is PRIVATE (SigV4-only, no public
@@ -135,11 +131,9 @@ tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "test-util"] }
 reqwest = { workspace = true, features = ["http2", "json"] }
 proptest = { workspace = true }
-hyper-util = { workspace = true }
 # The relocated money-path tests drive these directly (config round-trips + the audit-chain crc).
 serde_yaml = { workspace = true }
 crc32fast = { workspace = true }
-rcgen = { workspace = true }
 http-body-util = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }

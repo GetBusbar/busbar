@@ -56,7 +56,7 @@ use std::sync::Arc;
 /// framing, so the decode lives on the plane.
 fn list_mcp_calls(store: &Arc<dyn RecordStore>, principal: &str) -> Vec<McpCallRecord> {
     store
-        .list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.to_string()))
+        .list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.into()))
         .expect("list the call chain over the generic plane-record ABI")
         .iter()
         .map(|body| {

@@ -923,14 +923,6 @@ fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
         .registry
         .resolve(PluginKind::Transport, wire.key)
         .is_some());
-    let door = sealed
-        .dropped_door()
-        .expect("the data door rests on the dropped-in wire");
-    assert_eq!(door.key(), wire.key);
-    assert!(
-        linked.dropped_door().is_none(),
-        "a linked wire under the door is served by the kernel's own listener"
-    );
 }
 
 /// A DROPPED-IN WIRE CLAIMING A LINKED KEY IS REFUSED EXACTLY AS A SECOND LINKED ROW IS: the same

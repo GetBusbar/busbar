@@ -20,7 +20,8 @@ use super::{Journal, JournalRecord, NeutralRecord, Restored};
 use crate::audit::{frame_prelude, ChainLabels, ChainedRecord, Digest, Framing};
 use crate::plane::store::{decode, encode, PlaneStore};
 use busbar_contract::records::{
-    PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreError, RecordStoreResult,
+    PlaneDisposition, PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStoreError,
+    RecordStoreResult,
 };
 use std::sync::{Arc, Mutex};
 
@@ -139,14 +140,16 @@ impl MockStore {
 }
 
 impl PlaneStore for MockStore {
-    fn upsert_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
+    fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        let record = &record.to_record();
         self.rows.lock().unwrap().push(record.clone());
         Ok(())
     }
     fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
         Ok(None)
     }
-    fn append_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
+    fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        let record = &record.to_record();
         if *self.fail_appends.lock().unwrap() {
             return Err(RecordStoreError("append refused (test)".to_string()));
         }
@@ -164,7 +167,7 @@ impl PlaneStore for MockStore {
             .filter(|r| r.kind == kind)
             .filter(|r| match selector {
                 PlaneSelector::All => true,
-                PlaneSelector::Parent(p) => r.parent.as_deref() == Some(p.as_str()),
+                PlaneSelector::Parent(p) => r.parent.as_deref() == Some(&**p),
             })
             .map(|r| r.body.clone())
             .collect())
@@ -491,15 +494,18 @@ fn restore_scoped_skips_one_undecodable_record_and_keeps_the_rest() {
 
     // Wedge in a body the reframe decode cannot parse, under the same scope.
     store
-        .append_plane_record(&PlaneRecord {
-            kind: KIND_NEUTRAL.to_string(),
-            id: "acme".to_string(),
-            parent: Some("acme".to_string()),
-            seq: 3,
-            ts: 0,
-            disposition: busbar_contract::records::PlaneDisposition::Active,
-            body: b"{ not a neutral body".to_vec(),
-        })
+        .append_plane_record(
+            PlaneRecord {
+                kind: KIND_NEUTRAL.to_string(),
+                id: "acme".to_string(),
+                parent: Some("acme".to_string()),
+                seq: 3,
+                ts: 0,
+                disposition: busbar_contract::records::PlaneDisposition::Active,
+                body: b"{ not a neutral body".to_vec(),
+            }
+            .view(),
+        )
         .unwrap();
 
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -583,15 +589,18 @@ fn a_scope_with_only_undecodable_rows_is_unreadable_not_empty() {
     // The store RETURNED rows for "acme" — two of them — but neither decodes.
     for seq in 1..=2 {
         store
-            .append_plane_record(&PlaneRecord {
-                kind: KIND_NEUTRAL.to_string(),
-                id: "acme".to_string(),
-                parent: Some("acme".to_string()),
-                seq,
-                ts: 0,
-                disposition: busbar_contract::records::PlaneDisposition::Active,
-                body: b"{ not a neutral body".to_vec(),
-            })
+            .append_plane_record(
+                PlaneRecord {
+                    kind: KIND_NEUTRAL.to_string(),
+                    id: "acme".to_string(),
+                    parent: Some("acme".to_string()),
+                    seq,
+                    ts: 0,
+                    disposition: busbar_contract::records::PlaneDisposition::Active,
+                    body: b"{ not a neutral body".to_vec(),
+                }
+                .view(),
+            )
             .unwrap();
     }
 
@@ -771,7 +780,7 @@ fn append_scoped_stamps_a_real_instant_so_a_fresh_row_survives_retention() {
     );
 
     let remaining = store
-        .list_plane_records(KIND_NEUTRAL, &PlaneSelector::Parent("acme".to_string()))
+        .list_plane_records(KIND_NEUTRAL, &PlaneSelector::Parent("acme".into()))
         .expect("list");
     assert_eq!(
         remaining.len(),

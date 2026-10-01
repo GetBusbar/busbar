@@ -30,7 +30,7 @@ use busbar_contract::abi::store::{
 };
 use busbar_contract::kinds::{Head, RecordBytes};
 use busbar_contract::records::{
-    AuditRecord, MeteringDelta, MeteringRow, PlaneRecord, RecordStore, RecordStoreResult,
+    AuditRecord, MeteringDelta, MeteringRow, PlaneRecordRef, RecordStore, RecordStoreResult,
     UsageDelta, UsageLedger, VirtualKey,
 };
 
@@ -112,7 +112,7 @@ impl StoreSlots for Flat {
     fn append_audit_op(&self, _: OpId, _: &AuditRecord) -> OpResult<()> {
         Ok(())
     }
-    fn append_plane_record_op(&self, _: OpId, _: &PlaneRecord) -> OpResult<()> {
+    fn append_plane_record_op(&self, _: OpId, _: PlaneRecordRef<'_>) -> OpResult<()> {
         Ok(())
     }
     fn append_batch(&self, _: OpId, _: &str, _: &[RecordBytes]) -> OpResult<Head> {
@@ -130,7 +130,7 @@ impl StoreSlots for Flat {
     fn sessions_for(&self, _: &str) -> Result<Vec<(u64, String)>, String> {
         Ok(Vec::new())
     }
-    fn record_put(&self, _: &str, _: &[u8], _: &RecordBytes) -> Result<(), String> {
+    fn record_put(&self, _: &str, _: &[u8], _: &[u8]) -> Result<(), String> {
         Ok(())
     }
     fn record_get(&self, _: &str, _: &[u8]) -> Result<Option<RecordBytes>, String> {

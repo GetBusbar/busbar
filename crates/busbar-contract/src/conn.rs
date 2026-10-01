@@ -16,6 +16,7 @@
 //! This is the LINKED source of truth; `abi::host::conn` is its mechanical `#[repr(C)]` lowering, one
 //! slot per [`Conns`] method.
 
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
@@ -58,6 +59,10 @@ pub struct OpenDesc<'a> {
     /// The opening message's target, a head word (`RequestPiece::target`: the path and query, or
     /// what the framer's protocol names a target); empty = none.
     pub head_target: &'a [u8],
+    /// The addresses the dial must land on (`EstablishIn::within`): the address the judgement
+    /// pins is held against them at the connect, before any byte is written, and one outside
+    /// them refuses the open. Empty = no pin beyond the judgement's own.
+    pub within: &'a [IpAddr],
 }
 
 /// What a piece a connection delivered carries.

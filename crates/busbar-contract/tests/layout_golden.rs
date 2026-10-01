@@ -1406,6 +1406,16 @@ fn compute_layout() -> String {
         ]
     );
     record!(s, tkind::StatusRow, [claim, lo, hi, class]);
+    record!(
+        s,
+        tkind::route::FieldPredicate,
+        [op, _reserved, name, value]
+    );
+    record!(
+        s,
+        tkind::route::RouteMatch,
+        [methods, path_form, path, fields, fields_len, rung, _reserved]
+    );
     record!(s, tkind::SettingDecl, [path, kind, _reserved, default]);
     record!(
         s,
@@ -1659,7 +1669,11 @@ fn compute_layout() -> String {
         pkind::Claim,
         [verb, target, carrier, flags, refusal_dialect, _pad]
     );
-    record!(s, pkind::AdminRoute, [verb, target, flags, _reserved]);
+    record!(
+        s,
+        pkind::AdminRoute,
+        [verb, target, flags, _reserved, audit_verb]
+    );
     record!(
         s,
         pkind::PlaneSnapshot,
@@ -1821,7 +1835,7 @@ fn compute_layout() -> String {
             status,
             fields_written,
             fields_needed,
-            _reserved
+            audit
         ]
     );
     record!(s, pkind::PlaneDriveIn, [drive, sessions_buf, sessions_cap]);
@@ -1876,7 +1890,11 @@ fn compute_layout() -> String {
             timeout_ms
         ]
     );
-    record!(s, hconn::EstablishIn, [head, need, _reserved, target]);
+    record!(
+        s,
+        hconn::EstablishIn,
+        [head, need, _reserved, target, within]
+    );
     record!(s, hconn::StreamIn, [head, stream]);
     record!(s, hconn::IoIn, [head, stream, buf, len]);
     record!(s, hconn::UpgradeIn, [head, stream, offered_name, trust]);
@@ -1953,7 +1971,11 @@ fn compute_layout() -> String {
         [head, kind, prefix, after, limit, _reserved, into]
     );
     record!(s, hsvc::RecordsClaimIn, [head, kind, key, ttl_ms]);
-    record!(s, hsvc::DestJudgeIn, [head, dest, egress_class, flags]);
+    record!(
+        s,
+        hsvc::DestJudgeIn,
+        [head, dest, egress_class, flags, into]
+    );
     record!(s, hsvc::SignIn, [head, data, into]);
     record!(s, hsvc::UnitNestIn, [head, verb, target, body, into]);
     record!(s, hsvc::WorkOpenIn, [head, kind, record]);

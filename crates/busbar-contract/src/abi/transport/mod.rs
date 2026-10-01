@@ -130,6 +130,7 @@
 
 pub mod check;
 pub mod fields;
+pub mod route;
 
 use super::mechanism::call::{AbiStr, Field, InHead, Op, OutHead};
 use super::mechanism::check::{contract, OpContract};

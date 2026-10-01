@@ -333,7 +333,12 @@ fn validate_config_command() -> i32 {
     // STAGES 0-2 (BUSBAR-1.6.0.md §3: `--validate` runs Plan, Discover and Select, and nothing is
     // opened): what the configuration uses, each dropped-in plugin's stated facts, the plugins it
     // selects, and the version refusal for a selected plugin built for another host.
-    let stages = match crate::root::boot::validate(&config_path, &registry) {
+    // The host's own listeners head the one list of listeners.
+    let root = crate::root::boot::RootListens {
+        listen: &cfg.listen,
+        admin_listen: &cfg.admin_listen,
+    };
+    let stages = match crate::root::boot::validate(&config_path, &registry, &root) {
         Ok(s) => s,
         Err(e) => {
             eprintln!(

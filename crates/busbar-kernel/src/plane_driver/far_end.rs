@@ -817,6 +817,7 @@ impl EgressFarEnd<'_> {
                 timeout_ms: cap_ms,
                 method: &request.verb,
                 head_target: path.as_bytes(),
+                within: &[],
             },
         );
         let now_ms = e.clock.now_millis();

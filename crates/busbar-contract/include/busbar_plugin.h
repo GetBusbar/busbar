@@ -366,8 +366,11 @@ extern "C" {
 #define BB_PLANE_MAX_REFUSAL_TEXT UINT64_C(0x80000) /* The most bytes of text a REFUSED `arrive` may carry in its `head.error`. More is a FAULT of */
 #define BB_PLANE_LARGEST_ADMITTED_FIELD_LINE UINT64_C(0x66000) /* The largest field line a transport admits: a textual head is read into at most 8 KiB plus */
 #define BB_PLANE_MARK_GATE_REJECTED UINT32_C(1) /* The gate-rejected audit marker (the `GateRejected` marker the kernel keeps). The kernel sets it */
-#define BB_PLANE_RECORD_PUT UINT32_C(1) /* [`RecordWrite::op`]: put, the one record write there is. A record is never deleted by a write: */
+#define BB_PLANE_RECORD_PUT UINT32_C(1) /* [`RecordWrite::op`]: put, the one record write there is. A put of an EMPTY value is a tombstone: */
 #define BB_PLANE_ROUTE_PUBLIC UINT32_C(1) /* [`AdminRoute::flags`]: a public route. [`slot::SERVE`] serves it to an unauthenticated caller; */
+#define BB_PLANE_AUDIT_NONE UINT32_C(0) /* [`ServeOut::audit`]: no audit row. */
+#define BB_PLANE_AUDIT_APPLIED UINT32_C(1) /* [`ServeOut::audit`]: the request applied; the row's outcome is `applied`. */
+#define BB_PLANE_AUDIT_REJECTED UINT32_C(2) /* [`ServeOut::audit`]: the request was rejected after it was judged; the row's outcome is */
 #define BB_PLANE_CHAIN_LENGTH_PREFIXED UINT32_C(1) /* [`RecordChain::framing`]: each field of the record's digest is length-prefixed. */
 #define BB_PLANE_CHAIN_PIPE_SEPARATED UINT32_C(2) /* [`RecordChain::framing`]: the fields of the record's digest are joined by `|`. */
 #define BB_PLANE_CHAIN_DIGESTS_SCOPE UINT32_C(1) /* [`RecordChain::flags`]: the record's scope enters its digest. */
@@ -382,6 +385,7 @@ extern "C" {
 #define BB_TRANSPORT_MAX_PIECES UINT64_C(4096) /* The most frame pieces one framer answer may produce. */
 #define BB_TRANSPORT_MAX_CLAIMS UINT64_C(1024) /* The most claims one transport entry may make. */
 #define BB_TRANSPORT_MAX_ALPN_BYTES UINT64_C(65535) /* The most bytes one protocol offer may take (a TLS ProtocolNameList is at most `2^16 - 1`). */
+#define BB_TRANSPORT_MAX_ROUTE_FIELDS UINT64_C(32) /* The most field predicates one route may carry. */
 #define BB_TRANSPORT_SEPARATOR ": " /* Between a field's name and its value. */
 #define BB_TRANSPORT_LINE_END "\x0d\n" /* After a field's value. */
 #define BB_TRANSPORT_ABI_VERSION UINT32_C(1) /* The transport kind's ABI version: new in 1.6.0 (v1.5.5 had no transport kind ABI), so it ships `1`. */
@@ -454,6 +458,23 @@ extern "C" {
 #define BB_TRANSPORT_YIELD_ENDED UINT32_C(1) /* [`FramerYield::flags`]: no frame follows on this connection. */
 #define BB_TRANSPORT_YIELD_MORE UINT32_C(2) /* [`FramerYield::flags`]: a buffer filled; call the same op again once drained. */
 #define BB_TRANSPORT_YIELD_HAS_DEADLINE UINT32_C(4) /* [`FramerYield::flags`]: `next_deadline_ns` is set; call [`slot::TIMER`] then. */
+#define BB_TRANSPORT_METHOD_GET UINT32_C(1) /* `GET`. */
+#define BB_TRANSPORT_METHOD_HEAD UINT32_C(2) /* `HEAD`. */
+#define BB_TRANSPORT_METHOD_POST UINT32_C(4) /* `POST`. */
+#define BB_TRANSPORT_METHOD_PUT UINT32_C(8) /* `PUT`. */
+#define BB_TRANSPORT_METHOD_PATCH UINT32_C(16) /* `PATCH`. */
+#define BB_TRANSPORT_METHOD_DELETE UINT32_C(32) /* `DELETE`. */
+#define BB_TRANSPORT_METHOD_OPTIONS UINT32_C(64) /* `OPTIONS`. */
+#define BB_TRANSPORT_METHOD_CONNECT UINT32_C(128) /* `CONNECT`. */
+#define BB_TRANSPORT_METHOD_TRACE UINT32_C(256) /* `TRACE`. */
+#define BB_TRANSPORT_METHOD_ANY UINT32_C(511) /* Every method. */
+#define BB_TRANSPORT_PATH_EXACT UINT32_C(1) /* The whole path equals the route's path. */
+#define BB_TRANSPORT_PATH_PATTERN UINT32_C(2) /* A segment pattern: `/` separated, a `{name}` segment matches one segment of any value, a last */
+#define BB_TRANSPORT_PATH_PREFIX UINT32_C(3) /* Exactly one segment under the route's path (`/a` admits `/a/b`, never `/a`, `/ab` or `/a/b/c`). */
+#define BB_TRANSPORT_PATH_SUFFIX UINT32_C(4) /* The path ends with the route's path. */
+#define BB_TRANSPORT_PATH_CONTAINS UINT32_C(5) /* The path contains the route's path. */
+#define BB_TRANSPORT_FIELD_PRESENT UINT32_C(1) /* The field line is present, whatever its value. */
+#define BB_TRANSPORT_FIELD_VALUE_PREFIX UINT32_C(2) /* The field line is present and its value starts with the predicate's value. */
 
 /* hconn */
 #define BB_HCONN_DIRECTION_INBOUND UINT32_C(1) /* [`Need::direction`]: the plugin is reached (it listens). */
@@ -479,6 +500,7 @@ extern "C" {
 #define BB_HCONN_SERVICE_READ_REPLY UINT32_C(12) /* Read the next piece of the far end's reply to what the plugin sent, with its descriptor. */
 #define BB_HCONN_SERVICE_WRITE_REQUEST UINT32_C(13) /* Write one piece of a request on a FRAMED stream, with its descriptor: the framer builds its */
 #define BB_HCONN_SERVICES UINT32_C(14) /* How many services [`ConnectorSlots`] holds. */
+#define BB_HCONN_WITHIN_SEPARATOR "," /* The separator between the addresses of [`EstablishIn::within`]. */
 #define BB_HCONN_CHECKIN_REUSE UINT32_C(0) /* [`CheckinIn::disposition`]: return the stream to the pool as is. */
 #define BB_HCONN_CHECKIN_RESET UINT32_C(1) /* [`CheckinIn::disposition`]: return it after the plugin kind's reset op. */
 #define BB_HCONN_CHECKIN_DROP UINT32_C(2) /* [`CheckinIn::disposition`]: close it; it is not fit for reuse. */
@@ -517,7 +539,7 @@ extern "C" {
 #define BB_HSVC_FOUND UINT64_C(1) /* `value` of [`op::RECORDS_GET`]: the record is in span `0`. */
 #define BB_HSVC_CLAIM_WON UINT64_C(1) /* `value` of [`op::RECORDS_CLAIM`]: this call made the claim. */
 #define BB_HSVC_CLAIM_TAKEN UINT64_C(2) /* `value` of [`op::RECORDS_CLAIM`]: the key was already claimed. */
-#define BB_HSVC_DEST_RESOLVE UINT32_C(1) /* [`DestJudgeIn::flags`]: resolve a name and judge every address it answers; without it the */
+#define BB_HSVC_DEST_RESOLVE UINT32_C(1) /* [`DestJudgeIn::flags`]: resolve a name and judge every address it answers, and write the */
 #define BB_HSVC_DEST_ALLOWED UINT64_C(0) /* `dest.judge` verdict: admissible. */
 #define BB_HSVC_DEST_SCHEME UINT64_C(1) /* `dest.judge` verdict: not an admitted scheme. */
 #define BB_HSVC_DEST_NO_HOST UINT64_C(2) /* `dest.judge` verdict: no usable host. */
@@ -833,6 +855,8 @@ typedef struct bb_transport_RefuseIn bb_transport_RefuseIn;
 typedef struct bb_transport_FinishIn bb_transport_FinishIn;
 typedef struct bb_transport_FramingIn bb_transport_FramingIn;
 typedef struct bb_transport_AdoptIn bb_transport_AdoptIn;
+typedef struct bb_transport_FieldPredicate bb_transport_FieldPredicate;
+typedef struct bb_transport_RouteMatch bb_transport_RouteMatch;
 typedef struct bb_hconn_Need bb_hconn_Need;
 typedef struct bb_hconn_EstablishIn bb_hconn_EstablishIn;
 typedef struct bb_hconn_StreamIn bb_hconn_StreamIn;
@@ -2344,6 +2368,7 @@ struct bb_plane_AdminRoute {
     bb_mech_AbiStr target;
     uint32_t flags;
     uint32_t _reserved;
+    bb_mech_AbiStr audit_verb;
 };
 
 /* THE GENERATION SNAPSHOT: what the plane answers for THIS generation's settings. Valid until */
@@ -2542,7 +2567,7 @@ struct bb_plane_ServeOut {
     uint32_t status;
     uint32_t fields_written;
     uint32_t fields_needed;
-    uint32_t _reserved;
+    uint32_t audit;
 };
 
 /* The plane's `drive` `in`: the lifecycle's, plus a HOST buffer for the sessions with output */
@@ -2949,6 +2974,25 @@ struct bb_transport_AdoptIn {
     bb_transport_FramerSink sink;
 };
 
+/* One field predicate of a route. */
+struct bb_transport_FieldPredicate {
+    uint32_t op;
+    uint32_t _reserved;
+    bb_mech_AbiStr name;
+    bb_mech_AbiStr value;
+};
+
+/* One route: which requests a guest-list line is for. */
+struct bb_transport_RouteMatch {
+    uint32_t methods;
+    uint32_t path_form;
+    bb_mech_AbiStr path;
+    const bb_transport_FieldPredicate *fields;
+    size_t fields_len;
+    uint32_t rung;
+    uint32_t _reserved;
+};
+
 /* ONE NEED, declared once per direction: which transport claim carries it and which auth style */
 struct bb_hconn_Need {
     uint32_t direction;
@@ -2976,6 +3020,7 @@ struct bb_hconn_EstablishIn {
     uint32_t need;
     uint32_t _reserved;
     bb_mech_AbiStr target;
+    bb_mech_AbiStr within;
 };
 
 /* The `in` of [`service::REJECT_ENDPOINT`], [`service::SIDE_STREAM`] and [`service::CLOSE`]. */
@@ -3183,6 +3228,7 @@ struct bb_hsvc_DestJudgeIn {
     bb_mech_AbiStr dest;
     uint32_t egress_class;
     uint32_t flags;
+    bb_hsvc_ServiceBufs into;
 };
 
 /* [`op::SIGN`]'s `in`: sign bytes with busbar's key under the plugin's declared signing domain and */
@@ -3319,7 +3365,7 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn need_admit;
 };
 
-/* ---- layout proof: 255 of 256 structures are pinned by the golden ---- */
+/* ---- layout proof: 255 of 258 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -4452,12 +4498,13 @@ BB_ASSERT(offsetof(bb_plane_Claim, carrier) == 32, "bb_plane_Claim.carrier: offs
 BB_ASSERT(offsetof(bb_plane_Claim, flags) == 48, "bb_plane_Claim.flags: offset");
 BB_ASSERT(offsetof(bb_plane_Claim, refusal_dialect) == 52, "bb_plane_Claim.refusal_dialect: offset");
 BB_ASSERT(offsetof(bb_plane_Claim, _pad) == 54, "bb_plane_Claim._pad: offset");
-BB_ASSERT(sizeof(bb_plane_AdminRoute) == 40, "bb_plane_AdminRoute: size");
+BB_ASSERT(sizeof(bb_plane_AdminRoute) == 56, "bb_plane_AdminRoute: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_AdminRoute) == 8, "bb_plane_AdminRoute: alignment");
 BB_ASSERT(offsetof(bb_plane_AdminRoute, verb) == 0, "bb_plane_AdminRoute.verb: offset");
 BB_ASSERT(offsetof(bb_plane_AdminRoute, target) == 16, "bb_plane_AdminRoute.target: offset");
 BB_ASSERT(offsetof(bb_plane_AdminRoute, flags) == 32, "bb_plane_AdminRoute.flags: offset");
 BB_ASSERT(offsetof(bb_plane_AdminRoute, _reserved) == 36, "bb_plane_AdminRoute._reserved: offset");
+BB_ASSERT(offsetof(bb_plane_AdminRoute, audit_verb) == 40, "bb_plane_AdminRoute.audit_verb: offset");
 BB_ASSERT(sizeof(bb_plane_PlaneSnapshot) == 104, "bb_plane_PlaneSnapshot: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneSnapshot) == 8, "bb_plane_PlaneSnapshot: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, size) == 0, "bb_plane_PlaneSnapshot.size: offset");
@@ -4626,7 +4673,7 @@ BB_ASSERT(offsetof(bb_plane_ServeOut, arena_needed) == 120, "bb_plane_ServeOut.a
 BB_ASSERT(offsetof(bb_plane_ServeOut, status) == 128, "bb_plane_ServeOut.status: offset");
 BB_ASSERT(offsetof(bb_plane_ServeOut, fields_written) == 132, "bb_plane_ServeOut.fields_written: offset");
 BB_ASSERT(offsetof(bb_plane_ServeOut, fields_needed) == 136, "bb_plane_ServeOut.fields_needed: offset");
-BB_ASSERT(offsetof(bb_plane_ServeOut, _reserved) == 140, "bb_plane_ServeOut._reserved: offset");
+BB_ASSERT(offsetof(bb_plane_ServeOut, audit) == 140, "bb_plane_ServeOut.audit: offset");
 BB_ASSERT(sizeof(bb_plane_PlaneDriveIn) == 112, "bb_plane_PlaneDriveIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneDriveIn) == 8, "bb_plane_PlaneDriveIn: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneDriveIn, drive) == 0, "bb_plane_PlaneDriveIn.drive: offset");
@@ -4963,12 +5010,13 @@ BB_ASSERT(offsetof(bb_hconn_Need, details) == 72, "bb_hconn_Need.details: offset
 BB_ASSERT(offsetof(bb_hconn_Need, keep_response_headers) == 96, "bb_hconn_Need.keep_response_headers: offset");
 BB_ASSERT(offsetof(bb_hconn_Need, keep_response_headers_len) == 104, "bb_hconn_Need.keep_response_headers_len: offset");
 BB_ASSERT(offsetof(bb_hconn_Need, timeout_ms) == 112, "bb_hconn_Need.timeout_ms: offset");
-BB_ASSERT(sizeof(bb_hconn_EstablishIn) == 48, "bb_hconn_EstablishIn: size");
+BB_ASSERT(sizeof(bb_hconn_EstablishIn) == 64, "bb_hconn_EstablishIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hconn_EstablishIn) == 8, "bb_hconn_EstablishIn: alignment");
 BB_ASSERT(offsetof(bb_hconn_EstablishIn, head) == 0, "bb_hconn_EstablishIn.head: offset");
 BB_ASSERT(offsetof(bb_hconn_EstablishIn, need) == 24, "bb_hconn_EstablishIn.need: offset");
 BB_ASSERT(offsetof(bb_hconn_EstablishIn, _reserved) == 28, "bb_hconn_EstablishIn._reserved: offset");
 BB_ASSERT(offsetof(bb_hconn_EstablishIn, target) == 32, "bb_hconn_EstablishIn.target: offset");
+BB_ASSERT(offsetof(bb_hconn_EstablishIn, within) == 48, "bb_hconn_EstablishIn.within: offset");
 BB_ASSERT(sizeof(bb_hconn_StreamIn) == 32, "bb_hconn_StreamIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hconn_StreamIn) == 8, "bb_hconn_StreamIn: alignment");
 BB_ASSERT(offsetof(bb_hconn_StreamIn, head) == 0, "bb_hconn_StreamIn.head: offset");
@@ -5127,12 +5175,13 @@ BB_ASSERT(offsetof(bb_hsvc_RecordsClaimIn, head) == 0, "bb_hsvc_RecordsClaimIn.h
 BB_ASSERT(offsetof(bb_hsvc_RecordsClaimIn, kind) == 24, "bb_hsvc_RecordsClaimIn.kind: offset");
 BB_ASSERT(offsetof(bb_hsvc_RecordsClaimIn, key) == 40, "bb_hsvc_RecordsClaimIn.key: offset");
 BB_ASSERT(offsetof(bb_hsvc_RecordsClaimIn, ttl_ms) == 56, "bb_hsvc_RecordsClaimIn.ttl_ms: offset");
-BB_ASSERT(sizeof(bb_hsvc_DestJudgeIn) == 48, "bb_hsvc_DestJudgeIn: size");
+BB_ASSERT(sizeof(bb_hsvc_DestJudgeIn) == 80, "bb_hsvc_DestJudgeIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_DestJudgeIn) == 8, "bb_hsvc_DestJudgeIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_DestJudgeIn, head) == 0, "bb_hsvc_DestJudgeIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_DestJudgeIn, dest) == 24, "bb_hsvc_DestJudgeIn.dest: offset");
 BB_ASSERT(offsetof(bb_hsvc_DestJudgeIn, egress_class) == 40, "bb_hsvc_DestJudgeIn.egress_class: offset");
 BB_ASSERT(offsetof(bb_hsvc_DestJudgeIn, flags) == 44, "bb_hsvc_DestJudgeIn.flags: offset");
+BB_ASSERT(offsetof(bb_hsvc_DestJudgeIn, into) == 48, "bb_hsvc_DestJudgeIn.into: offset");
 BB_ASSERT(sizeof(bb_hsvc_SignIn) == 80, "bb_hsvc_SignIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_SignIn) == 8, "bb_hsvc_SignIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_SignIn, head) == 0, "bb_hsvc_SignIn.head: offset");

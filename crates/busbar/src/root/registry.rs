@@ -203,40 +203,7 @@ pub struct BootRegistry {
     pub dropped: Vec<&'static str>,
 }
 
-impl BootRegistry {
-    /// THE WIRE UNDER THE DATA DOOR, WHEN IT CAME IN DROPPED IN.
-    ///
-    /// The data door speaks the claims' transports, and each rests on the byte stream its
-    /// declaration composes over: from a claimed wire, follow the first declared layer this
-    /// composition registered (`COMPOSES_OVER` order is the composition order, as the fold reads it)
-    /// down to a wire that declares none registered. When that bottom wire is a dropped-in row, the
-    /// data listener accepts through it (`crate::root::transports::serve_door`), because this
-    /// process then has no socket of its own for those bytes; when it is linked, the listener is the
-    /// kernel's own, as it has always been. `None` when no claim rests on a dropped-in wire.
-    #[must_use]
-    pub fn dropped_door(&self) -> Option<Arc<dyn Transport>> {
-        let at = |key: &str| self.registered.iter().position(|r| r.key == key);
-        let bottom = |claimed: &str| {
-            let mut here = at(claimed)?;
-            for _ in 0..self.registered.len() {
-                let lower = self.registered[here]
-                    .composes_over
-                    .iter()
-                    .find_map(|l| at(l));
-                here = match lower {
-                    Some(lower) => lower,
-                    None => return Some(here),
-                };
-            }
-            None
-        };
-        self.claims
-            .iter()
-            .filter_map(|c| bottom(c.claim.transport))
-            .find(|&at| self.dropped.contains(&self.registered[at].key))
-            .map(|at| Arc::clone(&self.transports[at]))
-    }
-}
+impl BootRegistry {}
 
 /// The core plane every build carries: the admin surface, registered after the linked planes.
 fn core_planes() -> [LinkedClaims; 1] {

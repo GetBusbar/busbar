@@ -652,6 +652,12 @@ moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
 
 ### Added
 
+- **A plugin's inbound listener binds what its settings block states, capped at 1024 connections.**
+  A need a plugin declares inbound names a settings block `{listen, tls: {cert, key, client_ca?},
+  max_conns?}` (1.5.5's `listen` / `tls` shape; `cert` and `key` are secret references). The listener
+  holds at most `max_conns` connections at once, default 1024 (new in 1.6.0); the one past the cap is
+  accepted and closed without a byte. A TLS handshake is bounded as 1.5.5's was (10 s). Two listeners
+  on one address, or one on the root `listen` or `admin_listen`, are refused at `--validate`.
 - **`POST /api/v1/admin/adjust` names the pool it corrects.** A count correction now carries a required
   `pool` (a configured pool, else 400 `invalid_request`), sealed on the record, so a pool-scoped group
   budget takes the correction and its `/groups` usage and `/metrics` bucket gauges agree with

@@ -163,7 +163,7 @@ impl AdminTransport for JsonV1 {
             // `method_not_allowed`). Without these, axum's nest semantics leak an empty-body 405
             // from the inner MethodRouter and fall unmatched paths through to the data plane's
             // vendor-native shaping.
-            .fallback(|| async { err_json(&AdminError::not_found("resource")) })
+            .fallback(plane_serve_or_not_found)
             .method_not_allowed_fallback(|| async { err_json(&AdminError::MethodNotAllowed) });
         // TEST-SUPPORT: the taxonomy recording layer. `Router::layer` runs AFTER routing, so it sees
         // the `MatchedPath` (the operation) alongside the tag `err_json` stamped on the response —
@@ -296,6 +296,15 @@ fn mount_plane_admin_routes(mut router: Router<Arc<AppHandle>>) -> Router<Arc<Ap
         }
     }
     router
+}
+
+/// THE ADMIN SURFACE'S FALLBACK: a path no route above matched is a published plane instance's
+/// admin route, served by its `serve` op (`busbar_kernel::plane_driver::serve`, ARCHITECT C2c S5
+/// Q1), or the unmatched `404`. The auth middleware has already judged it like every admin path.
+async fn plane_serve_or_not_found(req: axum::extract::Request) -> Response {
+    busbar_kernel::plane_driver::serve::answer(req)
+        .await
+        .unwrap_or_else(|| err_json(&AdminError::not_found("resource")))
 }
 
 /// LAW 7 (BUSBAR-1.6.0.md: "Core loads a plugin **iff** its configuration section is present"): an admin

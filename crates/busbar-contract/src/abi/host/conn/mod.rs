@@ -420,6 +420,8 @@ extern "C-unwind" fn host_open(
                     timeout_ms: d.timeout_ms,
                     method: bytes(d.method.ptr, d.method.len)?,
                     head_target: bytes(d.head_target.ptr, d.head_target.len)?,
+                    // A pin is stated through the connector's ESTABLISH (`EstablishIn::within`).
+                    within: &[],
                 },
             )?;
             set(out_conn, conn.0)

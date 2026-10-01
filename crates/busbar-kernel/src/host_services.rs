@@ -13,8 +13,10 @@
 //!   metadata denylist, then the refusals the name decides,
 //!   answered at once and before any resolution, as 1.5.5 answered them. Asked to resolve
 //!   (`DEST_RESOLVE`), a name is resolved off the caller's thread, the call pends, and the address
-//!   judgement decides what it answered; not asked, the name's own judgement is the verdict (the
-//!   1.5.5 judgement of a destination named in a request argument, which resolved nothing).
+//!   judgement decides what it answered; admitted, every address it judged is written, one span
+//!   each, so the caller can state them as the set its dial must land on (`EstablishIn::within`).
+//!   Not asked, the name's own judgement is the verdict (the 1.5.5 judgement of a destination named
+//!   in a request argument, which resolved nothing).
 //!
 //! * `records.get` / `records.list` — the caller's records of a kind it declared, through the
 //!   store's typed record reads ([`RecordRows`]), its own unacknowledged writes laid over them
@@ -581,6 +583,15 @@ impl KernelServices {
         Ok(())
     }
 
+    /// The caller's record kind at `index` of its tail ([`RecordWrite::kind`] indexes it).
+    ///
+    /// [`RecordWrite::kind`]: busbar_contract::abi::plane::RecordWrite::kind
+    #[must_use]
+    pub fn record_kind(&self, caller: &Caller, index: u32) -> Option<RecordSchemaId> {
+        let facts = self.facts(caller)?;
+        facts.record_kinds.get(index as usize).copied()
+    }
+
     /// CLAIM `(op, key)` for the instance labelled `instance` for `ttl_ms`, or, with `held`, extend
     /// the epoch it won. The kernel calls it on the instance's behalf (the inbound-auth replay claim
     /// is one: `held` is always `None`, so a second sighting inside the window is Taken and nothing
@@ -820,7 +831,7 @@ impl HostServices for KernelServices {
         };
         match check_structure(dest, &[], rules.policy, &rules.denylist) {
             Err(r) => return Ran::Now(Stored::ready(verdict(dest, &r))),
-            Ok(Structure::Name { .. }) if resolve => {}
+            Ok(_) if resolve => {}
             Ok(_) => return Ran::Now(Stored::ready(svc::DEST_ALLOWED)),
         }
         let Some(later) = later else {
@@ -828,11 +839,9 @@ impl HostServices for KernelServices {
                 "a service that may pend is callable only inside a ticketed op",
             ));
         };
-        // The one judge; the verdict is its answer with the pinned address dropped.
-        let answer =
-            |v: Result<SocketAddr, u64>| Stored::ready(v.map_or_else(|v| v, |_| svc::DEST_ALLOWED));
-        match self.judge_dial(dest, class, Box::new(move |v| later(answer(v)))) {
-            Some(v) => Ran::Now(answer(v)),
+        // The one judge; the verdict is its answer, and admitted, every address it judged.
+        match self.judge(dest, class, Box::new(move |v| later(judged(v)))) {
+            Some(v) => Ran::Now(judged(v)),
             None => Ran::Later,
         }
     }
@@ -852,14 +861,19 @@ impl HostServices for KernelServices {
             });
             s
         };
+        // An empty value is a tombstone: the record is absent.
         if let Some(v) = self.pending.get(&caller.instance, kind, key) {
-            return Ran::Now(found(v));
+            return Ran::Now(if v.is_empty() {
+                Stored::ready(svc::ABSENT)
+            } else {
+                found(v)
+            });
         }
         let reads = Arc::clone(&records.reads);
         let key = record_key(&caller.instance, key);
         submit(pool, later, move || match reads.record_get(schema, &key) {
-            Ok(Some(v)) => found(v.as_slice().to_vec()),
-            Ok(None) => Stored::ready(svc::ABSENT),
+            Ok(Some(v)) if !v.as_slice().is_empty() => found(v.as_slice().to_vec()),
+            Ok(_) => Stored::ready(svc::ABSENT),
             Err(_) => failed(STORE_FAILED),
         })
     }
@@ -1043,6 +1057,29 @@ impl HostServices for KernelServices {
 /// refused it. Called once, from any thread.
 pub type Judged = Box<dyn FnOnce(Result<SocketAddr, u64>) + Send>;
 
+/// THE ONE JUDGEMENT'S ANSWER: the pinned address and every address judged with it (the pin
+/// first), or the `DEST_*` verdict refusing them.
+type Admitted = Result<(SocketAddr, Vec<IpAddr>), u64>;
+
+/// `dest.judge`'s stored answer for a judgement: the verdict, and admitted, one span per judged
+/// address (key = the address as text, value absent).
+fn judged(v: Admitted) -> Stored {
+    let addrs = match v {
+        Ok((_, addrs)) => addrs,
+        Err(verdict) => return Stored::ready(verdict),
+    };
+    let mut s = Stored::ready(svc::DEST_ALLOWED);
+    for a in addrs {
+        let at = s.bytes.len();
+        s.bytes.extend_from_slice(a.to_string().as_bytes());
+        s.spans.push(ItemSpan {
+            value: absent_span(),
+            ..span(at, s.bytes.len() - at, 0, 0)
+        });
+    }
+    s
+}
+
 impl KernelServices {
     /// THE ONE JUDGE, for a dial: `dest` against egress class `class`'s rules, and the address to
     /// dial — exactly the one the judgement pinned, so nothing resolves the name a second time. A
@@ -1056,12 +1093,28 @@ impl KernelServices {
         class: u32,
         done: Judged,
     ) -> Option<Result<SocketAddr, u64>> {
+        let pin = |v: Admitted| v.map(|(addr, _)| addr);
+        self.judge(dest, class, Box::new(move |v| done(pin(v))))
+            .map(pin)
+    }
+
+    /// The one judgement both [`Self::judge_dial`] and `dest.judge` read: [`Admitted`], at once
+    /// (`Some`) or through `done` (`None`), on the terms `judge_dial` states.
+    fn judge(
+        &self,
+        dest: &str,
+        class: u32,
+        done: Box<dyn FnOnce(Admitted) + Send>,
+    ) -> Option<Admitted> {
         let Some(rules) = self.classes.get(&class) else {
             return Some(Err(svc::DEST_NO_HOST));
         };
         let (host, port, https) = match check_structure(dest, &[], rules.policy, &rules.denylist) {
             Err(r) => return Some(Err(verdict(dest, &r))),
-            Ok(Structure::Pinned(p)) => return Some(Ok(p.socket_addr())),
+            Ok(Structure::Pinned(p)) => {
+                let addr = p.socket_addr();
+                return Some(Ok((addr, vec![addr.ip()])));
+            }
             Ok(Structure::Name { host, port, https }) => (host, port, https),
         };
         let policy = rules.policy;
@@ -1073,7 +1126,7 @@ impl KernelServices {
                 done(match answer {
                     Err(_) => Err(svc::DEST_UNRESOLVABLE),
                     Ok(addrs) => pin_answer_under(&host, port, https, &addrs, policy, &denylist)
-                        .map(|p| p.socket_addr())
+                        .map(|p| (p.socket_addr(), addrs))
                         .map_err(|r| guard_verdict(&r)),
                 });
             }),
