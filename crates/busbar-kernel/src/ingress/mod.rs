@@ -699,6 +699,10 @@ pub fn ingress_error(proto: &str, status: StatusCode, kind: &str, message: &str)
 // its wire reader". This is the envelope half of that.
 pub mod jsonrpc;
 
+#[cfg(test)]
+#[path = "tests/terminal_tests.rs"]
+mod terminal_tests;
+
 /// THE NEUTRAL PATH-MODEL ARRIVAL SEAM — the `ArrivalHost` ABI a URL-model dialect calls to reach the
 /// core request pipeline, and the protocol-name-keyed side-table the composition root registers those
 /// arrivals through. Absorbed from busbar-substrate (W4.b P2).
