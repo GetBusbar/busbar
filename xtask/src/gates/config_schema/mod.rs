@@ -45,7 +45,6 @@ pub mod declared;
 pub mod scan;
 pub mod schema;
 
-use std::collections::BTreeMap;
 
 use serde_json::Value;
 
