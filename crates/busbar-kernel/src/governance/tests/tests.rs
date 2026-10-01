@@ -5564,6 +5564,68 @@ fn a_planes_session_fee_charges_one_per_session() {
     assert_eq!(spend(&gov, &cost), 80, "2 sessions × 40");
 }
 
+/// The fee refund returns the bucket actually charged (the design's money section): a plane's
+/// refunded request gives back ONE fee unit from THAT plane's fee lane, where its admission
+/// charged it, and never touches the flat fee base it never charged. RED: before, the refund read
+/// the qualified pool as a pool and decremented the pools plane's flat base instead (spend 11,
+/// billable 1, the `tp` lane still 2).
+#[test]
+fn a_planes_refund_returns_its_own_fee_unit_never_the_flat_base() {
+    let (store, gov, k) = team_gov();
+    let cost = plane_fee_cost(1_000);
+    let tp = plane_pool("tp", "srv_read");
+    for _ in 0..2 {
+        assert!(gov.try_admit(&cost, &k, "", AT).is_ok(), "a pools request");
+        assert!(gov.try_admit(&cost, &k, &tp, AT).is_ok(), "a `tp` request");
+    }
+    assert_eq!(spend(&gov, &cost), 16, "2 × 5 + 2 × 3");
+    gov.refund_request(&cost, &k, &tp, AT);
+    assert_eq!(
+        spend(&gov, &cost),
+        13,
+        "one `tp` fee back, the pools fees kept"
+    );
+    gov.flush_budgets();
+    let ledger = store.get_usage("k1", 0).unwrap();
+    assert_eq!(
+        ledger.billable_requests, 2,
+        "the flat fee base is untouched"
+    );
+    let lane = busbar_kernel_ledger::cost::plane_fee_lane("tp");
+    let row = ledger
+        .models
+        .iter()
+        .find(|m| m.model == lane)
+        .expect("fee lane");
+    assert_eq!(row.usage_units[busbar_kernel_ledger::cost::PER_REQUEST], 1);
+    assert_eq!(
+        gov.usage_for(&cost, "k1", AT).unwrap().unwrap().requests,
+        4,
+        "a refund never gives back a request slot"
+    );
+    // The pools plane's refund is 1.5.5's arm, unchanged.
+    gov.refund_request(&cost, &k, "", AT);
+    assert_eq!(spend(&gov, &cost), 8);
+}
+
+/// The refund primitive gives a session-account owner back one `per_session` fee unit from the
+/// plane's fee lane; when a session's fee is refunded is the session owner's rule.
+#[test]
+fn the_fee_refund_primitive_returns_one_session_fee_unit() {
+    use busbar_kernel_ledger::cost::{plane_fee_lane, PER_SESSION};
+    let (_store, gov, k) = team_gov();
+    let cost = plane_fee_cost(1_000);
+    let one = std::collections::BTreeMap::from([(PER_SESSION.to_string(), 1)]);
+    for _ in 0..2 {
+        gov.record_usage(&cost, &k, "", &plane_fee_lane("sp"), &one, AT);
+    }
+    gov.refund_fee_unit(&cost, &k, &plane_pool("sp", ""), AT, PER_SESSION);
+    assert_eq!(spend(&gov, &cost), 40, "one session fee back");
+    gov.refund_fee_unit(&cost, &k, &plane_pool("sp", ""), AT, PER_SESSION);
+    gov.refund_fee_unit(&cost, &k, &plane_pool("sp", ""), AT, PER_SESSION);
+    assert_eq!(spend(&gov, &cost), 0, "floored at zero");
+}
+
 /// P2-usagegaps: THE METERING ROW CARRIES WHAT THE BUDGET BOOK HOLDS. Every class the book's accrual
 /// receives outside the token split lands on the key's metering row, keyed as the plane's own series
 /// row — a session count on `("", <plane>)`, a tool call on `(<tool>, <plane>)`, a pools open class

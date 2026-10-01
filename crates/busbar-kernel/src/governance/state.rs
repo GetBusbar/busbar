@@ -2039,6 +2039,12 @@ impl GovState {
     /// OLDER than this request's window is a no-op: that is a window already left behind rather
     /// than one this request reached.
     /// Floored at 0 - a refund can never drive a counter negative.
+    ///
+    /// PER-PLANE FEES (#47): a `pool` qualified
+    /// `"<plane>\u{1f}<pool>"` is that plane's request, exactly as [`GovState::try_admit`] reads it:
+    /// the pool predicate reads the unqualified part, and what comes back is ONE [`PER_REQUEST`]
+    /// fee unit from that plane's own fee lane — never the flat fee base, which that request never
+    /// charged ([`GovState::refund_fee_unit`]).
     pub fn refund_request(
         &self,
         cost: &crate::cost::CostModel,
@@ -2046,20 +2052,47 @@ impl GovState {
         pool: &str,
         now: u64,
     ) {
+        self.refund_fee_unit(cost, key, pool, now, PER_REQUEST);
+    }
+
+    /// THE FEE REFUND PRIMITIVE (the design's money section: the budget refund is a separate act,
+    /// and a refund returns the bucket actually charged): give back one `fee_unit` charged at admission
+    /// across exactly the buckets that admission charged, in the cell its pinned `now` reached.
+    /// An unqualified `pool` (the pools plane) refunds the flat fee base, 1.5.5's arm, unchanged; a
+    /// plane-qualified one refunds one `fee_unit` count ([`PER_REQUEST`] or, for a session-account
+    /// owner, `PER_SESSION`) from that plane's fee lane, newest era first, as the flat base's
+    /// [`FeeEras::refund`] does. The admission's `requests` count is never touched. Floored at 0.
+    pub fn refund_fee_unit(
+        &self,
+        cost: &crate::cost::CostModel,
+        key: &VirtualKey,
+        pool: &str,
+        now: u64,
+        fee_unit: &str,
+    ) {
+        let (plane, pool) = split_plane_lane(pool);
+        let lane = (!plane.is_empty()).then(|| (plane_fee_lane(plane), fee_unit));
+        let lane = lane.as_ref().map(|(l, u)| (l.as_str(), *u));
         let Ok(chain) = cost.chain_for(key) else {
             // The charge failed closed on a missing group, so nothing was charged; refund only the
             // key bucket defensively (it floors at 0 on a no-op).
-            self.refund_bucket(&key.id, super::WINDOW_TOTAL, now);
+            self.refund_bucket(&key.id, super::WINDOW_TOTAL, now, lane);
             return;
         };
         // Refund EXACTLY the buckets the admission charged: the same pool predicate, so a
         // pool-scoped bucket another pool's request never charged is never eroded by its refund.
         for bucket in chain.iter().filter(|b| b.applies_to_pool(pool)) {
-            self.refund_bucket(bucket.bucket_id, bucket.window, now);
+            self.refund_bucket(bucket.bucket_id, bucket.window, now, lane);
         }
     }
 
-    fn refund_bucket(&self, bucket_id: &str, budget_period: &str, now: u64) {
+    fn refund_bucket(
+        &self,
+        bucket_id: &str,
+        budget_period: &str,
+        now: u64,
+        lane: Option<(&str, &str)>,
+    ) {
         let window = budget_window(budget_period, now);
         let mut map = self.budget.write(bucket_id);
         if let Some(cell) = map.get_mut(bucket_id) {
@@ -2073,8 +2106,31 @@ impl GovState {
                 // admission `requests` counter is NEVER refunded, so a failed request still
                 // consumed its requests-limit slot (a caller cannot escape the requests cap by
                 // hammering failures).
-                cell.billable_requests = cell.billable_requests.saturating_sub(1);
-                cell.fee_eras.refund();
+                match lane {
+                    None => {
+                        cell.billable_requests = cell.billable_requests.saturating_sub(1);
+                        cell.fee_eras.refund();
+                    }
+                    // A plane's fee unit: one count off its fee lane, from the newest era still
+                    // holding one (the charge accrued it there at admission).
+                    Some((lane, unit)) => {
+                        let held = cell
+                            .models
+                            .iter_mut()
+                            .filter(|m| {
+                                &*m.model == lane && m.cur.get(unit).is_some_and(|n| *n > 0)
+                            })
+                            .max_by_key(|m| m.era);
+                        if let Some(m) = held {
+                            if let Some(n) = m.cur.get_mut(unit) {
+                                *n -= 1;
+                                if *n == 0 {
+                                    m.cur.remove(unit);
+                                }
+                            }
+                        }
+                    }
+                }
                 cell.dirty = true;
             }
         }
