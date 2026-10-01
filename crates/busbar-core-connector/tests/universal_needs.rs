@@ -196,23 +196,22 @@ fn dropped_door(name: &str) -> std::sync::Arc<dyn busbar_core_connector::framer:
     open_door(&path).expect("the door is admitted")
 }
 
-/// A door that frames the host's socket (an empty `composes_over`), found by KIND among the
-/// libraries beside this test binary (uplifted, under `deps/`, or an example `cdylib` such as the
-/// tcp crate's `tcp_door`): the first the one dispatcher admits as such a transport.
+/// The byte-transparent door that frames the host's socket (an empty `composes_over`): the tcp
+/// crate's `tcp_door` example, beside this test binary (uplifted, under `deps/`, or under
+/// `examples/`). Named, not found by kind: a framed wire also frames the host's socket (the grpc
+/// door composes over nothing too), and these cases need one that passes bytes through unchanged.
 fn socket_framer_door() -> Option<std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>> {
     let exe = std::env::current_exe().ok()?;
     let profile = exe.parent()?.parent()?.to_path_buf();
+    let file = busbar_plugin_loader::plugin_library_filename("tcp_door");
     [
         profile.clone(),
         profile.join("deps"),
         profile.join("examples"),
     ]
     .iter()
-    .flat_map(|dir| {
-        busbar_plugin_loader::list_plugin_files(dir)
-            .into_iter()
-            .map(move |f| dir.join(f))
-    })
+    .map(|dir| dir.join(&file))
+    .filter(|p| p.exists())
     .filter_map(|p| open_door(&p))
     .find(|d| d.facts().composes_over.is_empty())
 }
