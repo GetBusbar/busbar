@@ -10,6 +10,11 @@
 use super::*;
 use serde_json::json;
 
+/// The canonical status name of `err`, from its one home in the plane.
+fn status_of(err: A2aError) -> &'static str {
+    busbar_plane_a2a::arrival::status_name_of(i64::from(err.code())).unwrap_or_default()
+}
+
 #[test]
 fn every_error_is_a_json_rpc_2_0_envelope_with_an_integer_code() {
     for err in [
@@ -126,7 +131,7 @@ fn unsupported_operation_and_version_not_supported_are_unimplemented() {
         assert_eq!(A2aError::from_code(code), Some(err), "from_code({code})");
         assert_eq!(err.code(), code as i32, "{err:?} code round-trips");
         assert_eq!(err.http_status(), 400, "{err:?} is HTTP 400");
-        assert_eq!(err.status(), "UNIMPLEMENTED", "{err:?} status");
+        assert_eq!(status_of(err), "UNIMPLEMENTED", "{err:?} status");
         assert_eq!(
             err.grpc_status(),
             tonic::Code::Unimplemented,
@@ -134,7 +139,7 @@ fn unsupported_operation_and_version_not_supported_are_unimplemented() {
         );
     }
     // MethodNotFound shares UNIMPLEMENTED — it is a genuinely unknown method.
-    assert_eq!(A2aError::MethodNotFound.status(), "UNIMPLEMENTED");
+    assert_eq!(status_of(A2aError::MethodNotFound), "UNIMPLEMENTED");
     assert_eq!(
         A2aError::MethodNotFound.grpc_status(),
         tonic::Code::Unimplemented
@@ -142,7 +147,10 @@ fn unsupported_operation_and_version_not_supported_are_unimplemented() {
     // TaskNotCancelable is the neighbour that STAYS FAILED_PRECONDITION — a well-formed request
     // the task's own state declines, not a capability the server lacks. Pinned so the two rows
     // cannot be confused again.
-    assert_eq!(A2aError::TaskNotCancelable.status(), "FAILED_PRECONDITION");
+    assert_eq!(
+        status_of(A2aError::TaskNotCancelable),
+        "FAILED_PRECONDITION"
+    );
     assert_eq!(
         A2aError::TaskNotCancelable.grpc_status(),
         tonic::Code::FailedPrecondition
@@ -175,7 +183,7 @@ fn push_notification_not_supported_and_extension_support_required_round_trip() {
         assert_eq!(A2aError::from_code(code), Some(err), "from_code({code})");
         assert_eq!(err.code(), code as i32, "{err:?} code round-trips");
         assert_eq!(err.http_status(), 400, "{err:?} is HTTP 400");
-        assert_eq!(err.status(), status, "{err:?} status");
+        assert_eq!(status_of(err), status, "{err:?} status");
         assert_eq!(err.reason(), Some(reason), "{err:?} reason");
         // The relay path (receive.rs) looks the backend code up here and re-emits err.code(), so a
         // backend -32003 now reaches the caller as -32003 rather than -32006.

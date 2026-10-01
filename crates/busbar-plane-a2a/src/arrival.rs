@@ -164,17 +164,33 @@ impl Refusal {
     /// JSON-RPC error into (`rpcerror::aip193`).
     #[must_use]
     pub fn aip193(&self) -> Value {
-        let status = status_name_of(self.code).unwrap_or_else(|| status_name_of_http(self.status));
-        let mut out = json!({
-            "code": self.status,
-            "status": status,
-            "message": self.message,
-        });
-        if let Some(details) = self.error().get("data").filter(|d| d.is_array()) {
-            out["details"] = details.clone();
-        }
-        json!({ "error": out })
+        aip193(self.status, &self.error())
     }
+}
+
+/// A JSON-RPC `error` object at `http_status` as the AIP-193 error document the HTTP+JSON line
+/// answers (the engine's `rpcerror::aip193`): the status name is the error code's when it has one,
+/// else the HTTP status's; `details` is the error's `data` array, only when there is one.
+#[must_use]
+pub fn aip193(http_status: u32, error: &Value) -> Value {
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let status = error
+        .get("code")
+        .and_then(Value::as_i64)
+        .and_then(status_name_of)
+        .unwrap_or_else(|| status_name_of_http(http_status));
+    let mut out = json!({
+        "code": http_status,
+        "status": status,
+        "message": message,
+    });
+    if let Some(details) = error.get("data").filter(|d| d.is_array()) {
+        out["details"] = details.clone();
+    }
+    json!({ "error": out })
 }
 
 /// The `ErrorInfo` reason an A2A-defined code carries ([`crate::ERRORS`]); JSON-RPC's own codes
@@ -187,8 +203,10 @@ pub fn reason_of(code: i64) -> Option<&'static str> {
         .map(|(_, reason)| *reason)
 }
 
-/// The canonical status name a known code maps to (the engine's `A2aError::status`).
-fn status_name_of(code: i64) -> Option<&'static str> {
+/// The canonical status name a known code maps to: the `gRPC Status` column of A2A section 5.4,
+/// which AIP-193 puts in `error.status`; `None` for a code A2A and JSON-RPC do not define.
+#[must_use]
+pub fn status_name_of(code: i64) -> Option<&'static str> {
     Some(match code {
         -32001 => "NOT_FOUND",
         -32002 | -32007 | -32008 => "FAILED_PRECONDITION",

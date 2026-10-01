@@ -586,6 +586,33 @@ fn script(p: &Plugin<Plane>) -> Vec<String> {
         "piece unserved {}",
         piece(p, 2, FROM_KERNEL, 0, 0, b"", b"vendor", 64)
     ));
+    // THE HTTP+JSON LINE: the envelope its request spells, decided as the JSON-RPC line decides it,
+    // in the line's dialect; a `POST /tasks/{id}` naming no verb is the engine's 404 in its words.
+    let rest_line = |verb: &str, target: &str| {
+        let at = ROUTES
+            .iter()
+            .position(|r| r.verb == verb && r.target == target)
+            .expect("an HTTP+JSON route");
+        u32::try_from(at).expect("an index")
+    };
+    a.input.claim = rest_line("GET", "/a2a/tasks");
+    a.input.unit = 6;
+    a.input.target = text(b"/a2a/tasks?pageSize=5&status=working");
+    a.input.body = json(b"");
+    let c = p.call(slot::ARRIVE, &mut a);
+    t.push(format!(
+        "arrive rest {:?} op={} dialect={}",
+        c.outcome, a.out.op_class, a.out.dialect
+    ));
+    a.input.claim = rest_line("POST", "/a2a/tasks/{id}");
+    a.input.unit = 7;
+    a.input.target = text(b"/a2a/tasks/t-1:bogus");
+    let c = p.call(slot::ARRIVE, &mut a);
+    t.push(format!(
+        "arrive rest refused {:?} {}",
+        c.outcome,
+        String::from_utf8_lossy(&c.error.unwrap_or_default())
+    ));
     for s in [slot::HYDRATE, slot::START] {
         t.push(format!("{s} {:?}", p.call(s, &mut gen_frame(2)).outcome));
     }
@@ -627,6 +654,24 @@ fn the_a2a_door_answers_identically_linked_and_dropped_in() {
             Outcome::Ready
         ),
         "SendMessage is the message_send class, on the JSON-RPC dialect, with a principal"
+    );
+    let list = busbar_plane_a2a::door::op_class_index(busbar_plane_a2a::ops::OP_TASK_LIST)
+        .expect("ListTasks is a declared class");
+    assert_eq!(
+        line("arrive rest "),
+        format!(
+            "arrive rest {:?} op={list} dialect={DIALECT_TARGET}",
+            Outcome::Ready
+        ),
+        "GET /a2a/tasks arrives as ListTasks on the HTTP+JSON dialect"
+    );
+    assert!(
+        line("arrive rest refused").starts_with(&format!(
+            "arrive rest refused {:?} 404 -32601 null\n`t-1:bogus` names no operation",
+            Outcome::Refused
+        )),
+        "{}",
+        line("arrive rest refused")
     );
     assert!(
         line("arrive refused").starts_with(&format!(

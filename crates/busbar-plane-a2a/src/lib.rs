@@ -66,6 +66,7 @@ pub mod push;
 pub mod record;
 pub mod records;
 pub mod relay;
+pub mod rest;
 pub mod sse;
 pub mod surface;
 pub mod task_door;

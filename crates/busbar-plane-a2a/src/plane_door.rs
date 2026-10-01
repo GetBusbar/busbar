@@ -87,6 +87,10 @@ pub struct Unit {
     pub hop: Option<Hop>,
     /// The host services its pieces have made so far, and the piece in flight.
     pub pass: crate::task_door::Pass,
+    /// The JSON-RPC envelope an HTTP+JSON arrival's request spells ([`crate::rest::compose`]):
+    /// what its unit answers and relays in place of the caller's body, its answers re-framed for
+    /// the line ([`crate::rest::reframe`]). `None` on the JSON-RPC line.
+    pub envelope: Option<Vec<u8>>,
 }
 
 /// One unit's unary hop, and the answer it is part way through writing.
@@ -212,8 +216,16 @@ pub const UNSERVED: u32 = 2;
 /// The status of an arrival no line of this door serves yet.
 const STATUS_NOT_FOUND: u32 = 404;
 
-/// REFUSED: no line of this door serves the arrival yet. TRANSITIONAL: the lines other than
-/// JSON-RPC are filled when the kernel's plane driver serves the door's request path.
+/// REFUSED in the plane's own words, at its own status: `refusal` renders them in the line's
+/// dialect.
+fn refused(out: &mut Out<'_, ArriveOut>, refusal: &arrival::Refusal) -> Outcome {
+    out.set(|o| &o.refusal, REFUSED_IN_OWN_WORDS);
+    out.set(|o| &o.refusal_status, refusal.status);
+    out.fail(Refusal::refused(refusal.words()))
+}
+
+/// REFUSED: no line of this door serves the arrival yet. TRANSITIONAL: the gRPC and open lines
+/// are filled when the kernel's plane driver serves the door's request path.
 fn unserved(out: &mut Out<'_, ArriveOut>) -> Outcome {
     out.set(|o| &o.refusal, UNSERVED);
     out.set(|o| &o.refusal_status, STATUS_NOT_FOUND);
@@ -332,26 +344,36 @@ slot!(
 //
 // Nothing routes to these before the flip: the engine still serves every request, and no
 // production path loads this door (`tests/door_unrouted.rs` holds that). `arrive`, `on_piece` and
-// `refusal` serve the JSON-RPC line; every other op is REFUSED.
+// `refusal` serve the JSON-RPC and HTTP+JSON lines; every other op is REFUSED.
 
 slot!(
-    /// `arrive`: an arrival on the JSON-RPC line decided and kept, with the generation it arrived
+    /// `arrive`: an arrival on the JSON-RPC line, or on the HTTP+JSON line as the envelope its
+    /// request spells ([`crate::rest::compose`]), decided and kept with the generation it arrived
     /// under, keyed by its unit; a refused one refused in its own words. A message whose method the
     /// vocabulary does not list is classed as the hop the engine relays it on, never refused.
-    /// TRANSITIONAL: an arrival on any other line is filled when the kernel's plane driver serves
-    /// the door's request path.
+    /// TRANSITIONAL: an arrival on the gRPC line or an open line is filled when the kernel's plane
+    /// driver serves the door's request path.
     Arrive, ArriveIn, ArriveOut, |instance, input, mut out| {
         let Some(plane) = instance.get() else {
             return Outcome::Failed;
         };
         let given = input.get();
-        let line = door::ROUTES.get(given.claim as usize).map(door::line_of);
-        if line != Some(Line::Document) {
+        let Some(route) = door::ROUTES.get(given.claim as usize) else {
             return unserved(&mut out);
-        }
+        };
+        let target = input.field(|i| &i.target).as_str().unwrap_or_default();
         let body = input.field(|i| &i.body).bytes();
+        let (dialect, envelope) = match door::line_of(route) {
+            Line::Document => (door::DIALECT_DOCUMENT, None),
+            Line::Target => match crate::rest::compose(route, target, body) {
+                Ok(Some(envelope)) => (door::DIALECT_TARGET, Some(envelope)),
+                Ok(None) => return unserved(&mut out),
+                Err(refusal) => return refused(&mut out, &refusal),
+            },
+            Line::Framed | Line::Open => return unserved(&mut out),
+        };
         let fields = input.fields();
-        let decision = arrival::decide(body, |name| {
+        let decision = arrival::decide(envelope.as_deref().unwrap_or(body), |name| {
             fields
                 .iter()
                 .find(|f| {
@@ -362,17 +384,14 @@ slot!(
                 .and_then(|f| f.field(|f| &f.value).as_str().ok())
         });
         if let Decision::Refused(refusal) = &decision {
-            out.set(|o| &o.refusal, REFUSED_IN_OWN_WORDS);
-            out.set(|o| &o.refusal_status, refusal.status);
-            return out.fail(Refusal::refused(refusal.words()));
+            return refused(&mut out, refusal);
         }
         let Some(op) = decision.op_class().and_then(door::op_class_index) else {
             return unserved(&mut out);
         };
         out.set(|o| &o.op_class, op);
         out.set(|o| &o.principal_need, PRINCIPAL_REQUIRED);
-        out.set(|o| &o.dialect, door::DIALECT_DOCUMENT);
-        let target = input.field(|i| &i.target).as_str().unwrap_or_default();
+        out.set(|o| &o.dialect, dialect);
         let agent = agent_of(target);
         let hop = hop_of(&decision, agent.is_some());
         let unit = Unit {
@@ -381,6 +400,7 @@ slot!(
             section: plane.generations.current(),
             hop,
             pass: crate::task_door::Pass::default(),
+            envelope,
         };
         keep(&plane.units, MAX_UNITS, given.unit, unit);
         Outcome::Ready

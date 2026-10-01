@@ -126,9 +126,13 @@ pub fn on_piece(
     mut out: Out<'_, OnPieceOut>,
 ) -> Option<Outcome> {
     let unit = input.get().unit;
-    let (verb, rest) = plane.units.with(&unit, |u| {
+    let (verb, rest, composed) = plane.units.with(&unit, |u| {
         let u = u?;
-        Some((verb_of(&u.decision)?, std::mem::take(&mut u.pass.rest)))
+        Some((
+            verb_of(&u.decision)?,
+            std::mem::take(&mut u.pass.rest),
+            u.envelope.clone(),
+        ))
     })?;
     // The next window of a reply already answered.
     if !rest.is_empty() {
@@ -152,8 +156,11 @@ pub fn on_piece(
         Some((u.pass.issued, entry))
     })?;
     let mut via = Via(host.connector_from(instance.ticket(), base));
-    let envelope: Value =
-        serde_json::from_slice(input.field(|i| &i.bytes).bytes()).unwrap_or(Value::Null);
+    // An HTTP+JSON unit answers the envelope its request spelled, not the caller's body.
+    let raw = composed
+        .as_deref()
+        .unwrap_or_else(|| input.field(|i| &i.bytes).bytes());
+    let envelope: Value = serde_json::from_slice(raw).unwrap_or(Value::Null);
     let caller = input.field(|i| &i.caller_ref).as_str().unwrap_or_default();
     let mut writes = Vec::new();
     if entry.sweep {
@@ -176,12 +183,16 @@ pub fn on_piece(
         Ok(Some(answer)) => answer,
     };
     let issued = via.0.issued();
+    let body = match composed {
+        Some(_) => crate::rest::reframe(answer.status, &answer.body),
+        None => answer.body,
+    };
     let done = window(
         plane,
         unit,
         &input,
         &mut out,
-        (answer.status, &answer.body),
+        (answer.status, &body),
         &writes,
     );
     if done == Outcome::Ready {
