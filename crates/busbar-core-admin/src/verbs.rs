@@ -146,7 +146,7 @@ impl MintOutcome {
 
 /// Probe a mint verb's replay cache: a cached body or an in-flight claim ends the call (`Break`),
 /// anything else continues with the reservation this call now owns, if it presented a key.
-fn reserve(
+fn claim_mint_slot(
     cache: &IdempotencyCache<Vec<u8>>,
     key: Option<(String, String)>,
     now: u64,
@@ -340,7 +340,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
             return Err(Refusal::new(RefusalStep::Verify, ReasonCode::Validation));
         }
         let ck = idempotency_key.map(|k| (actor.to_string(), k.to_string()));
-        let reservation = match reserve(&self.create_key_cache, ck.clone(), now) {
+        let reservation = match claim_mint_slot(&self.create_key_cache, ck.clone(), now) {
             ControlFlow::Break(answer) => return answer,
             ControlFlow::Continue(reservation) => reservation,
         };
@@ -406,7 +406,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
     ) -> Result<MintOutcome, Refusal> {
         self.admit(KernelVerb::PostKeysIdRotate, actor, granted, now)?;
         let ck = idempotency_key.map(|k| (actor.to_string(), rotate_replay_key(id, k)));
-        let reservation = match reserve(&self.rotate_key_cache, ck, now) {
+        let reservation = match claim_mint_slot(&self.rotate_key_cache, ck, now) {
             ControlFlow::Break(answer) => return answer,
             ControlFlow::Continue(reservation) => reservation,
         };

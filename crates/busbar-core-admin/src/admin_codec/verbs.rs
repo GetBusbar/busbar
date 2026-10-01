@@ -33,15 +33,10 @@ pub(crate) struct VerbEntry {
     pub(crate) read_only: bool,
 }
 
-/// The HTTP method of every read-only row below.
-const GET: &str = "GET";
-/// The HTTP method of every mutating row below.
-const POST: &str = "POST";
-
 /// A read-only `GET` row.
-const fn read(path: &'static str, verb: &'static str) -> VerbEntry {
+const fn get_row(path: &'static str, verb: &'static str) -> VerbEntry {
     VerbEntry {
-        method: GET,
+        method: "GET",
         path,
         verb,
         read_only: true,
@@ -49,9 +44,9 @@ const fn read(path: &'static str, verb: &'static str) -> VerbEntry {
 }
 
 /// A mutating `POST` row.
-const fn write(path: &'static str, verb: &'static str) -> VerbEntry {
+const fn post_row(path: &'static str, verb: &'static str) -> VerbEntry {
     VerbEntry {
-        method: POST,
+        method: "POST",
         path,
         verb,
         read_only: false,
@@ -67,19 +62,19 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
     // here made the live admin gate — the (method, path) matrix, under which every non-dry-run
     // `POST` is `full` — demand `full` of a verb `verbs::required_scope` answers `read-only` for
     // (1.6.0 item 149).
-    read("/api/v1/admin/verify", "verify"),
-    read("/api/v1/admin/plane-facts", "plane_facts"),
-    write("/api/v1/admin/plane-record-write", "plane_record_write"),
-    write("/api/v1/admin/chain-break", "chain_break"),
-    write("/api/v1/admin/store-restore", "store_restore"),
-    write("/api/v1/admin/reseal-epoch-floor", "reseal_epoch_floor"),
-    write("/api/v1/admin/commit-upgrade", "commit_upgrade"),
-    write("/api/v1/admin/adjust", "adjust"),
+    get_row("/api/v1/admin/verify", "verify"),
+    get_row("/api/v1/admin/plane-facts", "plane_facts"),
+    post_row("/api/v1/admin/plane-record-write", "plane_record_write"),
+    post_row("/api/v1/admin/chain-break", "chain_break"),
+    post_row("/api/v1/admin/store-restore", "store_restore"),
+    post_row("/api/v1/admin/reseal-epoch-floor", "reseal_epoch_floor"),
+    post_row("/api/v1/admin/commit-upgrade", "commit_upgrade"),
+    post_row("/api/v1/admin/adjust", "adjust"),
     // `amend_rate_history`: unlike the eight above, its path is NOT a judgment call. The
     // dated rate-card-history design binds it at `POST /api/v1/admin/ledger/amend-rate-history` —
     // under the `/ledger/` prefix the five views share, because it is the one write among them — and
     // `full` + irreducible, because it corrects what the past cost.
-    write("/api/v1/admin/ledger/amend-rate-history", "amend_rate_history"),
+    post_row("/api/v1/admin/ledger/amend-rate-history", "amend_rate_history"),
 ];
 
 /// The five 1.6.0 ledger views, mounted under one sub-prefix of the admin surface.
@@ -93,11 +88,11 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
 /// legacy `GET /usage`: the same credential that may read what a bucket spent may read what the
 /// ledger posted for it, and neither may write anything.
 const LEDGER_VERBS_1_6_0: &[VerbEntry] = &[
-    read("/api/v1/admin/ledger/totals", "get_ledger_totals"),
-    read("/api/v1/admin/ledger/checkpoints", "get_ledger_checkpoints"),
-    read("/api/v1/admin/ledger/reconciliation", "get_ledger_reconciliation"),
-    read("/api/v1/admin/ledger/migration", "get_ledger_migration"),
-    read("/api/v1/admin/ledger/openapi.json", "get_ledger_openapi_json"),
+    get_row("/api/v1/admin/ledger/totals", "get_ledger_totals"),
+    get_row("/api/v1/admin/ledger/checkpoints", "get_ledger_checkpoints"),
+    get_row("/api/v1/admin/ledger/reconciliation", "get_ledger_reconciliation"),
+    get_row("/api/v1/admin/ledger/migration", "get_ledger_migration"),
+    get_row("/api/v1/admin/ledger/openapi.json", "get_ledger_openapi_json"),
 ];
 
 /// THE THREE AUDIT-CHAIN READS, and their paths are not a judgment call either.
@@ -120,9 +115,9 @@ const LEDGER_VERBS_1_6_0: &[VerbEntry] = &[
 /// because a query names ARGUMENTS to an operation and `from`/`to` are arguments — the same reason
 /// `GET /audit?limit=4` and `GET /audit` are one row here (see [`operation_target`]).
 const AUDIT_VERBS_1_6_0: &[VerbEntry] = &[
-    read("/api/v1/admin/audit/head", "get_audit_head"),
-    read("/api/v1/admin/audit/range", "get_audit_range"),
-    read("/api/v1/admin/audit/keys", "get_audit_keys"),
+    get_row("/api/v1/admin/audit/head", "get_audit_head"),
+    get_row("/api/v1/admin/audit/range", "get_audit_range"),
+    get_row("/api/v1/admin/audit/keys", "get_audit_keys"),
 ];
 
 /// How many rows the closed table declares: 66 from the pinned 1.5.5 tag, the 9 1.6.0
