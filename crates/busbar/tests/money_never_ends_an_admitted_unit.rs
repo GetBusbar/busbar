@@ -280,6 +280,25 @@ fn no_abort_the_shipped_kernel_can_raise_carries_a_money_reason() {
         .iter()
         .filter(|(file, r)| matches!(r, Reason::Computed(_)) && file != AUDIT_JOURNAL_DECODER)
         .collect();
+    // THE EXEMPTION CANNOT QUIETLY WIDEN: the exempt decoder names nothing that can refuse a unit,
+    // end one, post money or decide a step. The day it does, it is no longer only a reader.
+    let decoder = std::fs::read_to_string(crates_root().join(AUDIT_JOURNAL_DECODER))
+        .expect("the audit journal decoder exists");
+    for forbidden in [
+        "Refusal",
+        "UnitEnd",
+        "Posted",
+        "HoldAccrual",
+        "Decision",
+        "Grant<",
+        "teller",
+    ] {
+        assert!(
+            !decoder.contains(forbidden),
+            "{AUDIT_JOURNAL_DECODER} names `{forbidden}`: the exempt decoder may only read an \
+             outcome back, never refuse, end, post or decide"
+        );
+    }
     assert!(
         computed.is_empty(),
         "an abort whose reason is not written at the site cannot be answered by reading: {computed:?}"
