@@ -307,8 +307,8 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     http.set_nodelay(true);
 
     // rustls client config over the compiled-in webpki roots — the same trust anchors reqwest's
-    // rustls-tls used. ALPN is set by the connector builder below (`enable_http1` pins h1;
-    // `enable_all_versions` offers h2 then h1), which asserts the config arrives ALPN-empty.
+    // rustls-tls used. ALPN is set below: `http1_only` offers `http/1.1`; the builder's
+    // `enable_all_versions` offers h2 then h1 and asserts the config arrives ALPN-empty.
     // The tunnel wrapper sits BETWEEN TCP and TLS: with no proxy env (every known deployment) it
     // delegates to the plain connector untouched; with one, it CONNECTs through the proxy the
     // target's SCHEME selects and TLS then handshakes over the tunnel with the real target's SNI
@@ -325,11 +325,16 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     let http = tunnel::TunnelConnector::new(http, proxy, dial_bound);
 
     let tls = rustls_client_config(spec)?;
-    let builder = hyper_rustls::HttpsConnectorBuilder::new().with_tls_config(tls);
     let https = if spec.http1_only {
-        builder.https_or_http().enable_http1().wrap_connector(http)
+        // hyper-rustls leaves an http1-only config's ALPN empty; 1.5.5's hello (reqwest) offered
+        // `http/1.1`, so the engine states it. `From` is the builder's `https_or_http` minus its
+        // empty-ALPN assertion.
+        let mut tls = tls;
+        tls.alpn_protocols = vec![b"http/1.1".to_vec()];
+        hyper_rustls::HttpsConnector::from((http, tls))
     } else {
-        builder
+        hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(tls)
             .https_or_http()
             .enable_all_versions()
             .wrap_connector(http)
