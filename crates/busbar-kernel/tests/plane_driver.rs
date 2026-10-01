@@ -284,10 +284,10 @@ impl Double {
                 }
                 if head.as_slice() == b"/records" {
                     // A plane that writes records: `key=value;...` puts, an empty value a
-                    // tombstone; it answers locally with nothing.
-                    let mut at = 0;
-                    let mut n = 0;
-                    for kv in u.body.split(|b| *b == b';') {
+                    // tombstone; it answers locally with nothing. The body is taken: the cases
+                    // drive every unit under one key.
+                    let (mut at, mut n) = (0, 0);
+                    for kv in std::mem::take(&mut u.body).split(|b| *b == b';') {
                         let eq = kv.iter().position(|b| *b == b'=').unwrap_or(kv.len());
                         let key = put(i, &mut at, &kv[..eq]);
                         let value = put(i, &mut at, kv.get(eq + 1..).unwrap_or_default());
@@ -792,5 +792,8 @@ async fn a_pieces_record_writes_reach_the_records_and_a_tombstone_hides_one() {
 async fn a_record_write_with_no_record_path_fails_the_unit() {
     let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
     let o = write(&r.driver, b"a=1").await;
-    assert!(!matches!(o, busbar_contract::caps::Outcome::Completed), "{o:?}");
+    assert!(
+        !matches!(o, busbar_contract::caps::Outcome::Completed),
+        "{o:?}"
+    );
 }
