@@ -97,6 +97,9 @@ pub mod gemini;
 pub mod openai_chat;
 pub mod openai_responses;
 
+/// The flat field carry: the slot schema, the per-dialect field-table types and the one walker.
+pub mod carry;
+
 /// The plane's own CRC-32 (the event-stream framing checksum).
 pub mod crc32;
 
