@@ -489,6 +489,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-auth-webhook-signature"
+version = "1.6.0"
+dependencies = [
+ "base64 0.23.1",
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "ring",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "busbar-contract"
 version = "1.6.0"
 dependencies = [

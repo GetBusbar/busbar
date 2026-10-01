@@ -1023,6 +1023,15 @@ impl<K: Kind> Plugin<K> {
         self.inner.kind
     }
 
+    /// The [`Kind::context`] built from the Statement at bind, as `T`; `None` when the kind builds
+    /// none, or another type.
+    pub fn context<T: 'static>(&self) -> Option<&T> {
+        self.inner
+            .context
+            .as_deref()
+            .and_then(|c| c.downcast_ref::<T>())
+    }
+
     /// The Statement's name.
     pub fn name(&self) -> &str {
         self.inner.name()

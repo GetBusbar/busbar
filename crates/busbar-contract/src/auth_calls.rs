@@ -62,6 +62,19 @@ pub struct VerifiedIdentity {
     pub groups: Vec<String>,
     /// The suggested cache TTL, seconds.
     pub ttl_secs: Option<u64>,
+    /// A key the kernel admits only once within its TTL, claimed in the record store as
+    /// `<plugin name>/<key>` after this identity; `None` (or an empty key) = no claim. Never reaches
+    /// a plane. Boxed: most identities carry none.
+    pub replay: Option<Box<Replay>>,
+}
+
+/// A replay claim an identity asks the kernel to make.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Replay {
+    /// The key, unique per signed message (a webhook's message id).
+    pub key: String,
+    /// How long the claim stands, seconds.
+    pub ttl_secs: u64,
 }
 
 /// One `verify`'s answer, as the kernel's chain reads it.

@@ -193,6 +193,12 @@ fn identify(
     if id.claims_fmt > BLOB_OCTETS {
         return Err(fault(Rule::UnknownCode, a.vocabulary));
     }
+    // A replay TTL with no replay key is half an answer (its key is Missing): never half-read.
+    if id.replay_ttl_secs != 0
+        && (id.replay_key.offset == SPAN_ABSENT || id.replay_key.len == 0)
+    {
+        return Err(fault(Rule::Missing, a.missing));
+    }
     if id.groups_len > buf.groups_cap {
         return Err(fault(Rule::OverCap, a.count_over_cap));
     }
@@ -207,6 +213,7 @@ fn identify(
         id.provider,
         id.name,
         id.claims,
+        id.replay_key,
     ] {
         span(s, cap, true, a)?;
     }

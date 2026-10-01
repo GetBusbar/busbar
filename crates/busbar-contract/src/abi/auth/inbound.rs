@@ -90,6 +90,15 @@ pub struct IdentityOut {
     pub groups_len: u32,
     /// Alignment padding.
     pub _reserved: u32,
+    /// A key the kernel must see only ONCE within [`Self::replay_ttl_secs`] (a signed webhook's
+    /// message id). After a `verify` identity carrying one, the kernel claims
+    /// `<plugin name>/<replay_key>` in its record store for that long, and a key already claimed
+    /// refuses the request (replay). Absent or empty = no claim. The plane never sees it. Appended
+    /// last (a pre-tag layout edit).
+    pub replay_key: Span,
+    /// How long the replay claim stands, seconds. Read only when [`Self::replay_key`] is present
+    /// and non-empty.
+    pub replay_ttl_secs: u64,
 }
 
 /// `verify`'s `in`.

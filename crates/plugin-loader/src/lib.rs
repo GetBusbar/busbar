@@ -33,6 +33,8 @@ use std::os::raw::c_void;
 use std::path::Path;
 
 pub mod auth;
+pub mod auth_axis;
+pub mod auth_door;
 // The two BUILT-IN secret modules (`env`, `file`) the registry's built-in secret rows resolve through.
 /// THE BOOT STAGES the loader owns: what config uses, Discover, Select and the one load
 /// (`BUSBAR-1.6.0.md` THE DESIGN, §3).

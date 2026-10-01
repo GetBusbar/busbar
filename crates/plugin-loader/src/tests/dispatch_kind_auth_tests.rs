@@ -130,6 +130,8 @@ fn identified(verdict: u32, groups_len: u32) -> IdentifyOut {
             ttl_secs: 0,
             groups_len,
             _reserved: 0,
+            replay_key: ABSENT,
+            replay_ttl_secs: 0,
         },
     }
 }

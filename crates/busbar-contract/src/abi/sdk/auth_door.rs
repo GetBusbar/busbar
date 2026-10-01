@@ -360,6 +360,7 @@ fn write_identity(
         id.user.as_deref(),
         id.provider.as_deref(),
         id.name.as_deref(),
+        id.replay.as_ref().map(|r| r.key.as_str()),
     ];
     let need_bytes = texts.iter().flatten().map(|t| t.len()).sum::<usize>()
         + id.groups.iter().map(String::len).sum::<usize>();
@@ -384,7 +385,7 @@ fn write_identity(
             }
         }
     };
-    let [subject, key_id, key_name, user, provider, name] = texts.map(&mut span);
+    let [subject, key_id, key_name, user, provider, name, replay_key] = texts.map(&mut span);
     for g in &id.groups {
         let s = span(Some(g));
         groups.push(s);
@@ -402,6 +403,8 @@ fn write_identity(
         Some(t) => (IDENTITY_HAS_TTL, t),
         None => (0, 0),
     };
+    o.replay_key = replay_key;
+    o.replay_ttl_secs = id.replay.as_ref().map_or(0, |r| r.ttl_secs);
     out.verdict = VERDICT_IDENTITY;
     Outcome::Ready
 }

@@ -31,15 +31,93 @@ use busbar_contract::abi::auth::{
     IdentityBuf, OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, VerifyIn,
     LOGIN_IDENTITY, VERDICT_IDENTITY,
 };
-use busbar_contract::abi::mechanism::call::{Outcome, Span};
-use busbar_contract::abi::mechanism::check::{reported, Fault};
+use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, Span};
+use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
+use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::KindCode;
 
-use crate::dispatch::{lifecycle_name, Answer, InFrame, Kind, OutFrame};
+use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
 
 /// The auth kind.
 #[derive(Debug, Clone, Copy)]
 pub struct Auth;
+
+/// The most carrier names an auth tail may state.
+const MAX_CARRIERS: usize = 64;
+
+/// What an auth instance's Statement states, copied out once at bind and read back through
+/// [`crate::dispatch::Plugin::context`]: its capabilities, its facts, the inbound carrier fields
+/// `verify` reads (lower-case, in the tail's order), and the index of its
+/// [`METRIC_CACHE_FLUSHED`](busbar_contract::abi::auth::METRIC_CACHE_FLUSHED) counter family, when
+/// it declares one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AuthFacts {
+    /// `abi::auth::CAP_*`.
+    pub caps: u32,
+    /// `abi::auth::FACT_*`.
+    pub facts: u32,
+    /// The carrier field names, lower-case.
+    pub carriers: Vec<String>,
+    /// The Statement family index of the cache-flush counter.
+    pub cache_family: Option<u32>,
+    /// The settings keys the Statement names as secret-refs (service credentials), in order: the
+    /// host hands their resolved values to `open`/`refresh` as `secrets`, not in the settings.
+    pub secret_refs: Vec<String>,
+}
+
+/// A `'static` Statement string, copied; `None` when malformed.
+fn owned(s: AbiStr) -> Option<String> {
+    crate::dispatch::plugin::str_bytes(s).map(|b| String::from_utf8_lossy(b).into_owned())
+}
+
+/// Read the auth tail and the cache-flush family out of `st`.
+fn facts(st: &Statement) -> Result<AuthFacts, String> {
+    let p = st.kind_tail;
+    if p.is_null() {
+        return Err("an auth plugin states no kind tail".into());
+    }
+    // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`; the
+    // whole tail is read only once its size covers this host's `AuthTail`.
+    let size = unsafe { (*p).size };
+    if (size as usize) < std::mem::size_of::<auth::AuthTail>() {
+        return Err(format!(
+            "the auth tail is {size} bytes, smaller than this host's"
+        ));
+    }
+    // SAFETY: as above.
+    let t = unsafe { p.cast::<auth::AuthTail>().read_unaligned() };
+    if t.carriers_len > MAX_CARRIERS || (t.carriers.is_null() && t.carriers_len != 0) {
+        return Err(format!("the auth tail states {} carriers", t.carriers_len));
+    }
+    let carriers = (0..t.carriers_len)
+        // SAFETY: `carriers` holds `carriers_len` `'static` strings (checked non-NULL above).
+        .map(|i| {
+            owned(unsafe { t.carriers.add(i).read_unaligned() }).map(|c| c.to_ascii_lowercase())
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or("an auth carrier name is over-long")?;
+    let mut cache_family = None;
+    for i in 0..st.families_len {
+        // SAFETY: the loader's Statement check: `families` holds `families_len` `'static` entries.
+        let f = unsafe { st.families.add(i).read_unaligned() };
+        if owned(f.name).as_deref() == Some(auth::METRIC_CACHE_FLUSHED) {
+            cache_family = u32::try_from(i).ok();
+        }
+    }
+    let secret_refs = (0..st.secret_refs_len)
+        // SAFETY: the loader's Statement check refused a NULL `secret_refs` with a count; it holds
+        // `secret_refs_len` `'static` strings.
+        .map(|i| owned(unsafe { st.secret_refs.add(i).read_unaligned() }))
+        .collect::<Option<Vec<_>>>()
+        .ok_or("an auth secret-ref key is over-long")?;
+    Ok(AuthFacts {
+        caps: t.caps,
+        facts: t.facts,
+        carriers,
+        cache_family,
+        secret_refs,
+    })
+}
 
 // SAFETY: `#[repr(C)]` in `abi/auth/`, each leading with its head, plain data whose pointers are
 // host buffers or plugin memory held under the lease; host buffers only.
@@ -85,6 +163,10 @@ impl Kind for Auth {
     const CODE: KindCode = KindCode::Auth;
     type Ops = auth::Ops;
     const TIMEOUT: Outcome = Outcome::Failed;
+
+    fn context(st: &Statement) -> Result<Option<Box<Context>>, String> {
+        Ok(Some(Box::new(facts(st)?)))
+    }
 
     fn op_name(s: u32) -> &'static str {
         match s {

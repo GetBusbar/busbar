@@ -416,22 +416,14 @@ const PLANE_ALIASES: &[(&str, &str, &str)] = &[
 /// `dialect` was a pending kind and it is not a kind at all (DECISIONS #4). `secret` and `export`
 /// are pending because their instances live OUTSIDE this repo: the owner deleted the in-tree
 /// fixtures ("FIXTURES", docs/design/1.6.0-QUESTIONS.md) and each kind is proven by its real plugin
-/// repos. `auth` is pending on the same terms: its last in-tree crate, the built-in admin-tokens
-/// module, moved to its own repo and is pulled at a pinned rev.
+/// repos. `auth` is no longer pending: `busbar-auth-webhook-signature` is staged in-tree (placement
+/// (B), ARCHITECT 2026-09-28), so the dead-kind rule watches it like every other kind.
 const PENDING_KINDS: &[(&str, &str)] = &[
     (
         "secret",
         "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
          secret fixture is deleted (\"FIXTURES\") and the kind is proven by GetBusbar/busbar-secret-vault \
          through crates/plugin-loader/src/tests/plugin_proof_tests.rs",
-    ),
-    (
-        "auth",
-        "every plugin lives in its own repo (owner, 1.6.0-QUESTIONS.md \"PLUGIN HOME\"); the in-tree \
-         auth fixture is deleted (\"FIXTURES\") and the built-in admin-tokens module moved to \
-         GetBusbar/busbar-auth-admin-tokens (ARCHITECT 2026-09-27), pulled by busbar-kernel at a pinned \
-         rev; the kind is proven both ways by crates/plugin-loader/src/tests/auth_conformance_tests.rs \
-         and auth_verify_conformance_tests.rs over the pinned real plugins",
     ),
     (
         "export",
