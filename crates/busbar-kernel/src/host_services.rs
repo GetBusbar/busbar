@@ -30,8 +30,8 @@ use busbar_contract::abi::host::service as svc;
 use busbar_contract::services::{HostServices, Later, Ran, Reading, Stored};
 
 use crate::net_guard::{
-    check_structure, pin_answer, split_url, AddressRefusal, Denylist, GuardPolicy, NetworkRefusal,
-    Structure,
+    check_structure, pin_answer_under, split_url, AddressRefusal, Denylist, GuardPolicy,
+    NetworkRefusal, Structure,
 };
 
 /// The rules `dest.judge` applies for one egress class.
@@ -175,13 +175,14 @@ impl KernelServices {
             Ok(Structure::Name { host, port, https }) => (host, port, https),
         };
         let policy = rules.policy;
+        let denylist = Arc::clone(&rules.denylist);
         let name = host.clone();
         self.resolver.resolve(
             &name,
             Box::new(move |answer| {
                 done(match answer {
                     Err(_) => Err(svc::DEST_UNRESOLVABLE),
-                    Ok(addrs) => pin_answer(&host, port, https, &addrs, policy)
+                    Ok(addrs) => pin_answer_under(&host, port, https, &addrs, policy, &denylist)
                         .map(|p| p.socket_addr())
                         .map_err(|r| guard_verdict(&r)),
                 });

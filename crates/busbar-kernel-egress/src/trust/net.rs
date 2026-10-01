@@ -492,8 +492,36 @@ pub fn judge_addresses(
     addrs: &[IpAddr],
     policy: GuardPolicy,
 ) -> Result<(), AddressRefusal> {
-    for addr in addrs {
-        judge_address(host, *addr, policy)?;
+    judge_addresses_under(host, addrs, policy, &Denylist::default())
+}
+
+/// THE ADDRESS JUDGEMENT UNDER A DEPLOYMENT'S LISTS — the one decision every judge that carries a
+/// [`Denylist`] asks (`dest.judge`, the connector's dial, the pooled client's dial table, the check
+/// over a sealed destination). An address the list names (metadata, or operator-blocked) is refused
+/// unless the list's overrides lift it, and an address it lifts is admitted whole, as 1.5.5's
+/// `allow_all_metadata` / `allow_metadata_hosts` admitted it; every other address meets the policy's
+/// own judgement ([`judge_address`]). Under the default list this IS [`judge_address`], metadata first.
+///
+/// # Errors
+///
+/// The first answered address refused, by the list or by the policy.
+pub fn judge_addresses_under(
+    host: &str,
+    addrs: &[IpAddr],
+    policy: GuardPolicy,
+    denylist: &Denylist,
+) -> Result<(), AddressRefusal> {
+    for &addr in addrs {
+        if denylist.lists(host, addr) {
+            if denylist.refuses_address(host, addr) {
+                return Err(AddressRefusal::CloudMetadataAddress {
+                    host: host.to_string(),
+                    addr,
+                });
+            }
+        } else {
+            judge_address(host, addr, policy)?;
+        }
     }
     Ok(())
 }
@@ -511,10 +539,26 @@ pub fn pin_answer(
     addrs: &[IpAddr],
     policy: GuardPolicy,
 ) -> Result<PinnedTarget, AddressRefusal> {
+    pin_answer_under(host, port, https, addrs, policy, &Denylist::default())
+}
+
+/// [`pin_answer`] under a deployment's lists ([`judge_addresses_under`]).
+///
+/// # Errors
+///
+/// No address answered, or an answered address was refused.
+pub fn pin_answer_under(
+    host: &str,
+    port: u16,
+    https: bool,
+    addrs: &[IpAddr],
+    policy: GuardPolicy,
+    denylist: &Denylist,
+) -> Result<PinnedTarget, AddressRefusal> {
     if addrs.is_empty() {
         return Err(AddressRefusal::NoAddresses(host.to_string()));
     }
-    judge_addresses(host, addrs, policy)?;
+    judge_addresses_under(host, addrs, policy, denylist)?;
     // The FIRST admissible address is pinned. All of them passed, so "first" is a choice between
     // equals rather than a filter, and taking the first preserves the resolver's own ordering
     // (which is where happy-eyeballs and geo-DNS preferences live).
@@ -878,14 +922,25 @@ impl Denylist {
     /// configuration time.
     #[must_use]
     pub fn refuses_address(&self, host: &str, addr: IpAddr) -> bool {
-        if self.allow_all {
-            return false;
-        }
         let literal = addr.to_string();
-        let listed = ip_is_cloud_metadata(&addr)
-            || self.blocked.matches(&literal)
-            || self.blocked.matches(host);
-        listed && !(self.allowed.matches(host) || self.allowed.matches(&literal))
+        self.lists(host, addr)
+            && !(self.allow_all || self.allowed.matches(host) || self.allowed.matches(&literal))
+    }
+
+    /// Whether `addr` is on the list at all, override or not: a cloud-metadata address, or one the
+    /// operator blocked (by address, or by the name that answered it).
+    fn lists(&self, host: &str, addr: IpAddr) -> bool {
+        ip_is_cloud_metadata(&addr)
+            || self.blocked.matches(&addr.to_string())
+            || self.blocked.matches(host)
+    }
+
+    /// Whether the list lifts the guard's metadata refusal of the NAME `host`: the guard is off
+    /// (`allow_all`), or the name is carved out. 1.5.5's overrides spoke for names and addresses
+    /// alike.
+    #[must_use]
+    pub fn lifts_name(&self, host: &str) -> bool {
+        self.allow_all || self.allowed.matches(host)
     }
 }
 
@@ -944,13 +999,12 @@ impl DialDenylist {
     /// The first answered address the host's lists refuse.
     pub fn judge(&self, host: &str, addrs: &[IpAddr]) -> Result<(), AddressRefusal> {
         let lists = self.by_host.get(&dial_key(host)).unwrap_or(&self.default);
-        match addrs.iter().find(|a| lists.refuses_address(host, **a)) {
-            Some(addr) => Err(AddressRefusal::CloudMetadataAddress {
-                host: host.to_string(),
-                addr: *addr,
-            }),
-            None => Ok(()),
-        }
+        // A provider may be private or loopback (1.5.5's provider rule), so only the list refuses.
+        let provider = GuardPolicy {
+            allow_private: true,
+            ..GuardPolicy::default()
+        };
+        judge_addresses_under(host, addrs, provider, lists)
     }
 }
 
@@ -1093,7 +1147,13 @@ pub fn check_destination_facts(
     match check_structure(authority, paths, policy, denylist)? {
         Structure::Pinned(pinned) => Ok(Some(pinned)),
         Structure::Name { host, port, https } => {
-            resolve_and_pin(&host, port, https, resolver, policy)
+            let addrs = resolver.resolve(&host).map_err(|reason| {
+                NetworkRefusal::Guard(AddressRefusal::Unresolvable {
+                    host: host.clone(),
+                    reason,
+                })
+            })?;
+            pin_answer_under(&host, port, https, &addrs, policy, denylist)
                 .map(Some)
                 .map_err(NetworkRefusal::Guard)
         }
@@ -1161,9 +1221,13 @@ pub fn check_structure(
         Err(other) => return Err(NetworkRefusal::Guard(other)),
     };
 
-    judge_host_name(&host, policy).map_err(NetworkRefusal::Guard)?;
+    match judge_host_name(&host, policy) {
+        // The list's overrides speak for the metadata NAMES too, as 1.5.5's did.
+        Err(AddressRefusal::MetadataName(_)) if denylist.lifts_name(&host) => {}
+        other => other.map_err(NetworkRefusal::Guard)?,
+    }
     if let Ok(addr) = host.parse::<IpAddr>() {
-        return pin_answer(&host, port, https, &[addr], policy)
+        return pin_answer_under(&host, port, https, &[addr], policy, denylist)
             .map(Structure::Pinned)
             .map_err(NetworkRefusal::Guard);
     }

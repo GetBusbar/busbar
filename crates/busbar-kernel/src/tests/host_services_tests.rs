@@ -217,3 +217,88 @@ fn judge_dial_answers_the_pinned_address_the_verdict_judged() {
         "an unmapped class dials nothing"
     );
 }
+
+fn services_under(resolver: Arc<HandResolver>, denylist: Denylist) -> KernelServices {
+    let rules = DestRules {
+        policy: GuardPolicy::default(),
+        denylist: Arc::new(denylist),
+    };
+    KernelServices::new(HashMap::from([(0, rules)]), resolver)
+}
+
+/// 1.5.5's OVERRIDES, ON THE ONE JUDGE: under `security.allow_all_metadata` the metadata guard is
+/// off for `dest.judge` and for the connector's dial alike (both are `judge_dial`): a metadata
+/// literal is admitted and pinned, a metadata name is resolved and its metadata answer pinned.
+/// RED on the judge that lifted only the denylist and kept the address guard's own metadata refusal.
+#[test]
+fn allow_all_metadata_admits_metadata_on_the_dial_and_on_dest_judge() {
+    let r = Arc::new(HandResolver::default());
+    let s = services_under(Arc::clone(&r), Denylist::new(&[], &[], true));
+    let imds: SocketAddr = "169.254.169.254:80".parse().unwrap();
+    assert_eq!(
+        s.judge_dial("169.254.169.254:80", 0, Box::new(|_| {})),
+        Some(Ok(imds))
+    );
+    let (_, later) = recorder();
+    let got = verdict_now(s.dest_judge("https://169.254.169.254/latest", 0, true, Some(later)));
+    assert_eq!(got.value, svc::DEST_ALLOWED);
+
+    let pinned = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&pinned);
+    assert!(s
+        .judge_dial(
+            "metadata.google.internal:80",
+            0,
+            Box::new(move |v| *slot.lock().unwrap() = Some(v)),
+        )
+        .is_none());
+    let done = r.held.lock().unwrap().pop().expect("the name was resolved");
+    done(Ok(vec![imds.ip()]));
+    assert_eq!(*pinned.lock().unwrap(), Some(Ok(imds)));
+}
+
+/// A CARVE-OUT lifts exactly what it names: `allow_metadata_hosts: [169.254.169.254]` admits that
+/// address (literal, or answered for a name) and nothing else on the list.
+#[test]
+fn a_metadata_carve_out_admits_only_what_it_names() {
+    let r = Arc::new(HandResolver::default());
+    let s = services_under(
+        Arc::clone(&r),
+        Denylist::new(&[], &["169.254.169.254".to_string()], false),
+    );
+    assert_eq!(
+        s.judge_dial("169.254.169.254:80", 0, Box::new(|_| {})),
+        Some(Ok("169.254.169.254:80".parse().unwrap()))
+    );
+    assert_eq!(
+        s.judge_dial("100.100.100.200:80", 0, Box::new(|_| {})),
+        Some(Err(svc::DEST_METADATA))
+    );
+    let pinned = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&pinned);
+    assert!(s
+        .judge_dial("rebind.example:80", 0, Box::new(move |v| *slot.lock().unwrap() = Some(v)))
+        .is_none());
+    let done = r.held.lock().unwrap().pop().expect("resolved");
+    done(Ok(vec!["100.100.100.200".parse().unwrap()]));
+    assert_eq!(*pinned.lock().unwrap(), Some(Err(svc::DEST_METADATA)));
+}
+
+/// With no override nothing changes: metadata is refused on the dial, by literal and by answer.
+#[test]
+fn without_an_override_metadata_stays_refused_on_the_dial() {
+    let r = Arc::new(HandResolver::default());
+    let s = services(Arc::clone(&r));
+    assert_eq!(
+        s.judge_dial("169.254.169.254:80", 0, Box::new(|_| {})),
+        Some(Err(svc::DEST_METADATA))
+    );
+    let pinned = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&pinned);
+    assert!(s
+        .judge_dial("rebind.example:80", 0, Box::new(move |v| *slot.lock().unwrap() = Some(v)))
+        .is_none());
+    let done = r.held.lock().unwrap().pop().expect("resolved");
+    done(Ok(vec!["169.254.169.254".parse().unwrap()]));
+    assert_eq!(*pinned.lock().unwrap(), Some(Err(svc::DEST_METADATA)));
+}
