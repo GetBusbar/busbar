@@ -21,13 +21,13 @@ impl ProtocolReader for ResponsesReader {
         let (provider_code, structured_type) =
             match crate::codec::json::parse::<serde_json::Value>(body) {
                 Ok(json) => {
-                    let error = json.get("error").and_then(|e| e.as_object());
+                    let error = json.get(keys::ERROR_WORD).and_then(|e| e.as_object());
                     let provider_code = error
-                        .and_then(|e_obj| e_obj.get("code"))
+                        .and_then(|e_obj| e_obj.get(keys::CODE))
                         .and_then(|c| c.as_str())
                         .map(String::from);
                     let structured_type = error
-                        .and_then(|e_obj| e_obj.get("type"))
+                        .and_then(|e_obj| e_obj.get(keys::TYPE))
                         .and_then(|t| t.as_str())
                         .map(String::from);
                     (provider_code, structured_type)
@@ -106,13 +106,13 @@ impl ProtocolReader for ResponsesReader {
         // Absent or `null` stays lenient (an omitted knob is not a violation); a present value of the
         // correct type still flows through `extra` untouched.
         if obj
-            .get("previous_response_id")
+            .get(PREVIOUS_RESPONSE_ID)
             .is_some_and(|v| !v.is_null() && !v.is_string())
         {
             return Err(ir_parse_error());
         }
         if obj
-            .get("store")
+            .get(STORE)
             .is_some_and(|v| !v.is_null() && !v.is_boolean())
         {
             return Err(ir_parse_error());
@@ -131,7 +131,7 @@ impl ProtocolReader for ResponsesReader {
         // whether a role-less top-level `instructions` string was folded beside them.
         let (mut saw_system, mut saw_developer, mut saw_instructions) = (false, false, false);
 
-        if let Some(instructions) = obj.get("instructions").and_then(|v| v.as_str()) {
+        if let Some(instructions) = obj.get(keys::INSTRUCTIONS).and_then(|v| v.as_str()) {
             if !instructions.is_empty() {
                 saw_instructions = true;
                 system_blocks.push(crate::codec::ir::IrBlock::Text {
@@ -145,7 +145,7 @@ impl ProtocolReader for ResponsesReader {
 
         let mut messages: Vec<crate::codec::ir::IrMessage> = Vec::new();
 
-        if let Some(input_val) = obj.get("input") {
+        if let Some(input_val) = obj.get(keys::INPUT) {
             // EDGE-VALIDATE the top-level `input` TYPE: Responses `input` is legally a bare string or
             // an array of input items. A PRESENT number/bool/object is a genuine structural violation
             // the lenient string/array projection below would silently coerce to an empty
@@ -167,10 +167,10 @@ impl ProtocolReader for ResponsesReader {
                 });
             } else if let Some(arr) = input_val.as_array() {
                 for item in arr {
-                    match item.get("type").and_then(|t| t.as_str()) {
+                    match item.get(keys::TYPE).and_then(|t| t.as_str()) {
                         Some(CONTENT_TYPE_INPUT_TEXT) => {
                             let text = item
-                                .get("text")
+                                .get(keys::TEXT)
                                 .and_then(|t| t.as_str())
                                 .unwrap_or("")
                                 .to_string();
@@ -184,7 +184,7 @@ impl ProtocolReader for ResponsesReader {
                                 }],
                             });
                         }
-                        Some("input_image") => {
+                        Some(INPUT_IMAGE) => {
                             // A Responses `input_image` can reference an uploaded file by
                             // `file_id` INSTEAD of carrying an inline `image_url`. The prior code only
                             // read `image_url`, so a file_id-only image produced an EMPTY Image block
@@ -201,7 +201,7 @@ impl ProtocolReader for ResponsesReader {
                         }
                         Some(CONTENT_TYPE_OUTPUT_TEXT) => {
                             let text = item
-                                .get("text")
+                                .get(keys::TEXT)
                                 .and_then(|t| t.as_str())
                                 .unwrap_or("")
                                 .to_string();
@@ -210,7 +210,7 @@ impl ProtocolReader for ResponsesReader {
                             // the content-array path (`responses_block`) and the response-side reader.
                             // Dropping them lost an assistant turn's grounding sources on replay.
                             let citations = item
-                                .get("annotations")
+                                .get(keys::ANNOTATIONS)
                                 .map(super::super::openai_annotations::read_url_annotations)
                                 .unwrap_or_default();
                             messages.push(crate::codec::ir::IrMessage {
@@ -229,13 +229,13 @@ impl ProtocolReader for ResponsesReader {
                             // dialect) pairs against. An absent/blank/wrong-typed id yields an empty
                             // IR id that silently breaks that pairing — reject rather than invent.
                             let call_id = item
-                                .get("call_id")
+                                .get(CALL_ID)
                                 .and_then(|c| c.as_str())
                                 .filter(|s| !s.is_empty())
                                 .ok_or_else(ir_parse_error)?
                                 .to_string();
                             let name = item
-                                .get("name")
+                                .get(keys::NAME)
                                 .and_then(|n| n.as_str())
                                 .unwrap_or("")
                                 .to_string();
@@ -243,7 +243,7 @@ impl ProtocolReader for ResponsesReader {
                             // string is preserved verbatim rather than dropped). A non-string
                             // (already-parsed object) is used directly instead of being collapsed to
                             // `{}` — losing the caller's tool arguments is a lossy cross-protocol bug.
-                            let input = tool_input_from_arguments(item.get("arguments"));
+                            let input = tool_input_from_arguments(item.get(keys::ARGUMENTS));
 
                             messages.push(crate::codec::ir::IrMessage {
                                 role: crate::codec::ir::IrRole::Assistant,
@@ -256,13 +256,13 @@ impl ProtocolReader for ResponsesReader {
                                 }],
                             });
                         }
-                        Some("function_call_output") => {
+                        Some(FUNCTION_CALL_OUTPUT) => {
                             let call_id = item
-                                .get("call_id")
+                                .get(CALL_ID)
                                 .and_then(|c| c.as_str())
                                 .unwrap_or("")
                                 .to_string();
-                            let output_val = item.get("output");
+                            let output_val = item.get(keys::OUTPUT);
                             let content_blocks: Vec<crate::codec::ir::IrBlock> = match output_val {
                                 Some(serde_json::Value::String(out_str)) => {
                                     vec![crate::codec::ir::IrBlock::Text {
@@ -301,19 +301,19 @@ impl ProtocolReader for ResponsesReader {
                             // content parts, or absent/`null`. A present number/bool/object is a
                             // genuine TYPE violation `message_content_blocks`/`push_system_content`
                             // would silently drop into an empty (vanished) turn — reject with a 400.
-                            if let Some(cv) = item.get("content") {
+                            if let Some(cv) = item.get(keys::CONTENT) {
                                 if !cv.is_null() && !cv.is_string() && !cv.is_array() {
                                     return Err(ir_parse_error());
                                 }
                             }
-                            let role_str = item.get("role").and_then(|r| r.as_str()).unwrap_or("");
+                            let role_str = item.get(keys::ROLE).and_then(|r| r.as_str()).unwrap_or("");
                             // `system`/`developer` turns carry the system prompt. They have no
                             // IrRole and must NOT become conversation messages — accumulate their
                             // text into `system_blocks` (which feeds `IrRequest.system` ->
                             // top-level instructions), or the system prompt is silently lost on a
                             // cross-protocol hop. Content can be an array of `input_text` blocks or
                             // a bare string; handle both.
-                            if role_str == "system" || role_str == "developer" {
+                            if role_str == keys::SYSTEM || role_str == keys::DEVELOPER {
                                 // A `system`/`developer` item can legally appear ANYWHERE in
                                 // `input`, but the IR cannot express a positioned system turn
                                 // (`IrRole` has no such member, and every writer that models
@@ -334,14 +334,14 @@ impl ProtocolReader for ResponsesReader {
                                     );
                                 }
                                 system_turns_folded += 1;
-                                saw_system |= role_str == "system";
-                                saw_developer |= role_str == "developer";
+                                saw_system |= role_str == keys::SYSTEM;
+                                saw_developer |= role_str == keys::DEVELOPER;
                                 let blocks_before = system_blocks.len();
-                                push_system_content(&mut system_blocks, item.get("content"));
+                                push_system_content(&mut system_blocks, item.get(keys::CONTENT));
                                 crate::codec::ir::IrSystemFold::record(
                                     &mut system_folds,
                                     messages.len(),
-                                    if role_str == "developer" {
+                                    if role_str == keys::DEVELOPER {
                                         crate::codec::ir::IrSystemRole::Developer
                                     } else {
                                         crate::codec::ir::IrSystemRole::System
@@ -352,8 +352,8 @@ impl ProtocolReader for ResponsesReader {
                                 continue;
                             }
                             let role = match role_str {
-                                "user" => Some(crate::codec::ir::IrRole::User),
-                                "assistant" => Some(crate::codec::ir::IrRole::Assistant),
+                                keys::USER => Some(crate::codec::ir::IrRole::User),
+                                keys::ASSISTANT => Some(crate::codec::ir::IrRole::Assistant),
                                 _ => None,
                             };
                             if let Some(role) = role {
@@ -361,7 +361,7 @@ impl ProtocolReader for ResponsesReader {
                                 // shorthand; `message_content_blocks` handles both so a
                                 // string-content turn is not silently dropped.
                                 if let Some(msg_content) =
-                                    message_content_blocks(item.get("content"))
+                                    message_content_blocks(item.get(keys::CONTENT))
                                 {
                                     messages.push(crate::codec::ir::IrMessage {
                                         role,
@@ -392,13 +392,13 @@ impl ProtocolReader for ResponsesReader {
                             // re-emission, so the reasoning TEXT/encrypted_content round-trip while the
                             // specific id does not. Gated on presence so an id-less item emits no warn.
                             if item
-                                .get("id")
+                                .get(keys::ID)
                                 .and_then(|i| i.as_str())
                                 .is_some_and(|i| !i.is_empty())
                             {
                                 tracing::warn!(
                                     reasoning_id =
-                                        item.get("id").and_then(|i| i.as_str()).unwrap_or(""),
+                                        item.get(keys::ID).and_then(|i| i.as_str()).unwrap_or(""),
                                     "dropping reasoning input item `id` on Responses ir parse: the \
                                      IR Thinking block models no reasoning-item id; the reasoning \
                                      text/encrypted_content survive, the specific id is re-minted"
@@ -435,9 +435,9 @@ impl ProtocolReader for ResponsesReader {
                     // item carries no `type` field. A typed item (e.g. "output_text") that also
                     // happens to include a `role` must NOT be re-processed here, or the turn would
                     // be duplicated in the resulting conversation.
-                    if item.get("type").is_none() && item.get("role").is_some() {
-                        let role_str = item.get("role").and_then(|r| r.as_str()).unwrap_or("");
-                        let content_val = item.get("content");
+                    if item.get(keys::TYPE).is_none() && item.get(keys::ROLE).is_some() {
+                        let role_str = item.get(keys::ROLE).and_then(|r| r.as_str()).unwrap_or("");
+                        let content_val = item.get(keys::CONTENT);
 
                         // EDGE-VALIDATE the message `content` TYPE (see the typed `message` arm):
                         // string/array/absent/null are legal; a present number/bool/object is a TYPE
@@ -451,7 +451,7 @@ impl ProtocolReader for ResponsesReader {
                         // As in the typed `message` arm, untyped `system`/`developer` turns carry
                         // the system prompt and must be accumulated into `system_blocks` rather than
                         // dropped (the prior `_ => continue` lost them on cross-protocol hops).
-                        if role_str == "system" || role_str == "developer" {
+                        if role_str == keys::SYSTEM || role_str == keys::DEVELOPER {
                             // Same hoist-visibility warn as the typed `message` arm above.
                             if !messages.is_empty() {
                                 tracing::warn!(
@@ -464,14 +464,14 @@ impl ProtocolReader for ResponsesReader {
                                 );
                             }
                             system_turns_folded += 1;
-                            saw_system |= role_str == "system";
-                            saw_developer |= role_str == "developer";
+                            saw_system |= role_str == keys::SYSTEM;
+                            saw_developer |= role_str == keys::DEVELOPER;
                             let blocks_before = system_blocks.len();
                             push_system_content(&mut system_blocks, content_val);
                             crate::codec::ir::IrSystemFold::record(
                                 &mut system_folds,
                                 messages.len(),
-                                if role_str == "developer" {
+                                if role_str == keys::DEVELOPER {
                                     crate::codec::ir::IrSystemRole::Developer
                                 } else {
                                     crate::codec::ir::IrSystemRole::System
@@ -483,8 +483,8 @@ impl ProtocolReader for ResponsesReader {
                         }
 
                         let role = match role_str {
-                            "user" => crate::codec::ir::IrRole::User,
-                            "assistant" => crate::codec::ir::IrRole::Assistant,
+                            keys::USER => crate::codec::ir::IrRole::User,
+                            keys::ASSISTANT => crate::codec::ir::IrRole::Assistant,
                             _ => continue,
                         };
 
@@ -500,13 +500,13 @@ impl ProtocolReader for ResponsesReader {
                     }
                 }
             }
-        } else if !obj.contains_key("instructions") {
+        } else if !obj.contains_key(keys::INSTRUCTIONS) {
             return Err(ir_parse_error());
         }
 
         let mut tools: Vec<crate::codec::ir::IrTool> = Vec::new();
         let mut hosted_tools: Vec<crate::codec::ir::IrHostedTool> = Vec::new();
-        if let Some(tools_val) = obj.get("tools") {
+        if let Some(tools_val) = obj.get(keys::TOOLS) {
             // A PRESENT `tools` that is not an array is a malformed request — reject it (mirroring the
             // `input` type-check) rather than coercing to empty, which would forward a tool-less
             // request upstream at HTTP 200 and silently strip the caller's tools.
@@ -521,11 +521,11 @@ impl ProtocolReader for ResponsesReader {
                 // exactly `"function"` (or, defensively, when `type` is absent but a `name` is present,
                 // the pre-Responses shorthand); ANY other `type` is a hosted tool and must round-trip
                 // its raw JSON verbatim so the writer re-emits it unchanged.
-                let type_str = tool_val.get("type").and_then(|t| t.as_str());
+                let type_str = tool_val.get(keys::TYPE).and_then(|t| t.as_str());
                 let is_function = match type_str {
-                    Some("function") => true,
+                    Some(keys::FUNCTION) => true,
                     Some(_) => false,
-                    None => tool_val.get("name").is_some(),
+                    None => tool_val.get(keys::NAME).is_some(),
                 };
                 if !is_function {
                     // IR-11: a hosted tool whose KIND (and every member) the IR models neutrally
@@ -547,15 +547,15 @@ impl ProtocolReader for ResponsesReader {
                 }
 
                 let name = tool_val
-                    .get("name")
+                    .get(keys::NAME)
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
                 let description = tool_val
-                    .get("description")
+                    .get(keys::DESCRIPTION)
                     .and_then(|v| v.as_str().map(String::from));
                 let input_schema = tool_val
-                    .get("parameters")
+                    .get(keys::PARAMETERS)
                     .or_else(|| tool_val.get("input_schema"))
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
@@ -568,7 +568,7 @@ impl ProtocolReader for ResponsesReader {
                     hosted: None,
                     // STRICT function calling. Flat on a Responses tool (the Chat shape nests it
                     // under `function`). Absent ⇒ `None`, never `Some(false)`.
-                    strict: tool_val.get("strict").and_then(|v| v.as_bool()),
+                    strict: tool_val.get(keys::STRICT).and_then(|v| v.as_bool()),
                 });
             }
         }
@@ -578,19 +578,19 @@ impl ProtocolReader for ResponsesReader {
         // bedrock readers). `try_from` also rejects negatives, so an explicit `> 0` filter is moot;
         // a value of 0 is preserved as Some(0) just as the prior code dropped it — keep dropping it.
         let max_tokens = obj
-            .get("max_output_tokens")
+            .get(INCOMPLETE_REASON_MAX_OUTPUT)
             .and_then(|v| v.as_u64())
             .filter(|&v| v > 0)
             .and_then(|v| u32::try_from(v).ok());
         // `temperature` / `top_p` are rows of the mapping file, read below. The Responses API has
         // NO `top_k` and no top-level stop-sequence param; `top_k`/`stop` stay None/empty.
         // The Responses API carries `stream` in the request body — read it (don't drop the intent).
-        let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+        let stream = obj.get(keys::STREAM).and_then(|v| v.as_bool()).unwrap_or(false);
         // `tool_choice`: promote to the IR union so a forced/targeted directive survives the
         // cross-protocol seam instead of degrading to `auto`. "tool_choice" is added to the modeled
         // keys below so it does not also linger in `extra`.
         // IR-10 (RSP-15): the `allowed_tools` form yields the subset beside an Auto/Required choice.
-        let (tool_choice, allowed_tools) = read_responses_tool_choice(obj.get("tool_choice"));
+        let (tool_choice, allowed_tools) = read_responses_tool_choice(obj.get(keys::TOOL_CHOICE));
 
         // response_format: the Responses API carries structured-output config under `text.format`
         // (NOT a top-level `response_format` as Chat Completions does). Read `text.format` and
@@ -604,7 +604,7 @@ impl ProtocolReader for ResponsesReader {
         // so none are promoted here (they stay None) and none are added to the modeled-keys exclusion.
         // STOP: the Responses create API has NO `stop`/`stop_sequences` param either, so `stop`
         // stays empty and is not read.
-        let response_format = read_text_format(obj.get("text"));
+        let response_format = read_text_format(obj.get(keys::TEXT));
 
         // NOTE: `text` is NOT in the modeled-keys set — it is intercepted by its own branch in the
         // loop below (its `format` sub-key → IR `response_format`, the remainder preserved
@@ -620,15 +620,15 @@ impl ProtocolReader for ResponsesReader {
             // entirely (the writer re-synthesizes it from `response_format`). Checked BEFORE the
             // modeled-keys short-circuit so the format-stripped remainder is preserved even though
             // `text` is listed as modeled.
-            if key == "text" {
+            if key == keys::TEXT {
                 if let Some(text_obj) = value.as_object() {
                     let remainder: serde_json::Map<String, serde_json::Value> = text_obj
                         .iter()
-                        .filter(|(k, _)| k.as_str() != "format")
+                        .filter(|(k, _)| k.as_str() != keys::FORMAT)
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect();
                     if !remainder.is_empty() {
-                        extra.insert("text".to_string(), serde_json::Value::Object(remainder));
+                        extra.insert(keys::TEXT.to_string(), serde_json::Value::Object(remainder));
                     }
                 }
                 continue;
@@ -639,8 +639,8 @@ impl ProtocolReader for ResponsesReader {
             extra.insert(key.clone(), value.clone());
         }
 
-        if let Some(model_val) = obj.get("model") {
-            extra.insert("model".to_string(), model_val.clone());
+        if let Some(model_val) = obj.get(keys::MODEL) {
+            extra.insert(keys::MODEL.to_string(), model_val.clone());
         }
 
         // The reasoning ASK: Responses spells it `reasoning: {effort}`. Promote the effort word so
@@ -648,8 +648,8 @@ impl ProtocolReader for ResponsesReader {
         // also carry `summary`) STAYS in extra for same-protocol fidelity — the writer emits from
         // the typed field only when extra does not already carry the verbatim original.
         let reasoning = obj
-            .get("reasoning")
-            .and_then(|r| r.get("effort"))
+            .get(keys::REASONING)
+            .and_then(|r| r.get(keys::EFFORT))
             .and_then(|v| v.as_str())
             .and_then(read_responses_reasoning_effort);
 
@@ -658,7 +658,7 @@ impl ProtocolReader for ResponsesReader {
         // Bedrock/Gemini/Cohere (whose native dialects genuinely have no such parameter, so `None`
         // there is the accurate "caller never said") — is total ingress loss for Responses callers
         // who explicitly set it.
-        let parallel_tool_calls = obj.get("parallel_tool_calls").and_then(|v| v.as_bool());
+        let parallel_tool_calls = obj.get(keys::PARALLEL_TOOL_CALLS).and_then(|v| v.as_bool());
 
         // The `/v1/responses` create API models a top-level `top_logprobs` integer (0–20), identically
         // to Chat Completions. Previously hardcoded `None`, which was total ingress loss for a
@@ -669,7 +669,7 @@ impl ProtocolReader for ResponsesReader {
         // via `top_logprobs` alone (there is no top-level `logprobs` boolean — response-side logprobs
         // ride `include`), so `logprobs` stays `None` here; the presence of `top_logprobs` is the ask.
         let top_logprobs = obj
-            .get("top_logprobs")
+            .get(keys::TOP_LOGPROBS)
             .and_then(|v| v.as_u64())
             .and_then(|v| u32::try_from(v).ok());
 
@@ -678,7 +678,7 @@ impl ProtocolReader for ResponsesReader {
         // `logprobs` ask so a Chat/Gemini/Cohere backend is asked for them too. `include` itself
         // stays in `extra` (it can name other response members this reader does not model).
         let logprobs = obj
-            .get("include")
+            .get(INCLUDE)
             .and_then(|i| i.as_array())
             .is_some_and(|arr| {
                 arr.iter()
@@ -688,7 +688,7 @@ impl ProtocolReader for ResponsesReader {
 
         // RSP-05: the end-user id. A string `user` is the same field Chat Completions carries.
         let user = obj
-            .get("user")
+            .get(keys::USER)
             .and_then(|u| u.as_str())
             .filter(|u| !u.is_empty())
             .map(String::from);
@@ -754,16 +754,16 @@ impl ProtocolReader for ResponsesReader {
                     // Capture stream identity from the nested `response` object so a same-protocol
                     // passthrough preserves it. `created_at` is the Responses field name (mapped to
                     // the IR's `created`).
-                    let resp = data.get("response");
+                    let resp = data.get(keys::RESPONSE);
                     let id = resp
-                        .and_then(|r| r.get("id"))
+                        .and_then(|r| r.get(keys::ID))
                         .and_then(|i| i.as_str())
                         .map(String::from);
                     let created = resp
-                        .and_then(|r| r.get("created_at"))
+                        .and_then(|r| r.get(keys::CREATED_AT))
                         .and_then(|c| c.as_u64());
                     let model = resp
-                        .and_then(|r| r.get("model"))
+                        .and_then(|r| r.get(keys::MODEL))
                         .and_then(|m| m.as_str())
                         .map(String::from);
                     out.push(IrStreamEvent::MessageStart {
@@ -777,21 +777,21 @@ impl ProtocolReader for ResponsesReader {
             }
 
             EVT_OUTPUT_ITEM_ADDED => {
-                if let Some(item_obj) = data.get("item") {
-                    if item_obj.get("type").and_then(|t| t.as_str())
+                if let Some(item_obj) = data.get(ITEM) {
+                    if item_obj.get(keys::TYPE).and_then(|t| t.as_str())
                         == Some(ITEM_TYPE_FUNCTION_CALL)
                     {
                         let raw_call_id = item_obj
-                            .get("call_id")
+                            .get(CALL_ID)
                             .and_then(|c| c.as_str())
                             .unwrap_or("");
                         let name = item_obj
-                            .get("name")
+                            .get(keys::NAME)
                             .and_then(|n| n.as_str())
                             .unwrap_or("")
                             .to_string();
                         if let Some(output_index) =
-                            data.get("output_index").and_then(|i| i.as_u64())
+                            data.get(OUTPUT_INDEX).and_then(|i| i.as_u64())
                         {
                             // RSP-16: a BLANK `call_id` gets the SAME synthesized id the buffered
                             // `read_response` mints for this item. `output_index` is the item's
@@ -850,7 +850,7 @@ impl ProtocolReader for ResponsesReader {
                                 });
                             }
                         }
-                    } else if item_obj.get("type").and_then(|t| t.as_str())
+                    } else if item_obj.get(keys::TYPE).and_then(|t| t.as_str())
                         == Some(ITEM_TYPE_REASONING)
                     {
                         // REASONING (stream): a native Responses stream opens a chain-of-thought
@@ -862,7 +862,7 @@ impl ProtocolReader for ResponsesReader {
                         // already-open guard as the tool arm so a malformed stream cannot double-open
                         // or grow the set without bound.
                         if let Some(output_index) =
-                            data.get("output_index").and_then(|i| i.as_u64())
+                            data.get(OUTPUT_INDEX).and_then(|i| i.as_u64())
                         {
                             let idx = (output_index as usize).min(MAX_OUTPUT_INDEX);
                             let already_open = state.open_tools.contains(&idx)
@@ -875,14 +875,14 @@ impl ProtocolReader for ResponsesReader {
                                     // its arrays fill on the deltas that follow).
                                     block: crate::codec::ir::IrBlockMeta::Thinking {
                                         kind: data
-                                            .get("item")
+                                            .get(ITEM)
                                             .and_then(super::slots::reasoning_kind),
                                     },
                                     refusal: false,
                                 });
                             }
                         }
-                    } else if item_obj.get("type").and_then(|t| t.as_str())
+                    } else if item_obj.get(keys::TYPE).and_then(|t| t.as_str())
                         == Some(ITEM_TYPE_MESSAGE)
                     {
                     }
@@ -897,15 +897,15 @@ impl ProtocolReader for ResponsesReader {
             // opening the Thinking BlockStart if the `output_item.added` was absent (some backends emit
             // reasoning deltas with no preceding `added`). The block is tracked at the RAW idx in
             // `open_tools`, closed once by the terminal `output_item.done`/stream end.
-            EVT_REASONING_TEXT_DELTA | "response.reasoning_summary_text.delta" => {
+            EVT_REASONING_TEXT_DELTA | EVT_REASONING_SUMMARY_TEXT_DELTA => {
                 let delta = data
-                    .get("delta")
+                    .get(keys::DELTA)
                     .and_then(|d| d.as_str())
                     .unwrap_or("")
                     .to_string();
                 if !delta.is_empty() {
                     let idx = data
-                        .get("output_index")
+                        .get(OUTPUT_INDEX)
                         .and_then(|i| i.as_u64())
                         .map_or(0, |v| (v as usize).min(MAX_OUTPUT_INDEX));
                     // Lazily open the Thinking block if `output_item.added` did not already. Guard the
@@ -940,7 +940,7 @@ impl ProtocolReader for ResponsesReader {
 
             EVT_OUTPUT_TEXT_DELTA => {
                 let delta = data
-                    .get("delta")
+                    .get(keys::DELTA)
                     .and_then(|d| d.as_str())
                     .unwrap_or("")
                     .to_string();
@@ -964,7 +964,7 @@ impl ProtocolReader for ResponsesReader {
                     // multi-part text items. Until then the keying assumes one `output_text` part per
                     // message item.
                     let idx = data
-                        .get("output_index")
+                        .get(OUTPUT_INDEX)
                         .and_then(|i| i.as_u64())
                         .map_or(0, |v| (v as usize).min(MAX_OUTPUT_INDEX));
                     // Track open TEXT indices PER INDEX in `open_tools` under a disjoint key offset
@@ -1014,7 +1014,7 @@ impl ProtocolReader for ResponsesReader {
                     // ride the SAME text block as a `LogprobsDelta`, the way the buffered read
                     // carries the part's `logprobs` onto `IrResponse.logprobs`. An empty or absent
                     // array (the caller asked for none) emits nothing.
-                    let lps = read_responses_logprobs(data.get("logprobs"));
+                    let lps = read_responses_logprobs(data.get(keys::LOGPROBS));
                     if !lps.is_empty() {
                         out.push(IrStreamEvent::BlockDelta {
                             index: idx,
@@ -1036,7 +1036,7 @@ impl ProtocolReader for ResponsesReader {
             // emitted as an orphan delta.
             EVT_OUTPUT_TEXT_ANNOTATION_ADDED => {
                 let idx = data
-                    .get("output_index")
+                    .get(OUTPUT_INDEX)
                     .and_then(|i| i.as_u64())
                     .map_or(0, |v| (v as usize).min(MAX_OUTPUT_INDEX));
                 if state.open_tools.contains(&(idx + TEXT_INDEX_KEY_OFFSET)) {
@@ -1056,12 +1056,12 @@ impl ProtocolReader for ResponsesReader {
 
             EVT_FUNCTION_CALL_ARGS_DELTA => {
                 let delta = data
-                    .get("delta")
+                    .get(keys::DELTA)
                     .and_then(|d| d.as_str())
                     .unwrap_or("")
                     .to_string();
                 if !delta.is_empty() {
-                    if let Some(output_index) = data.get("output_index").and_then(|i| i.as_u64()) {
+                    if let Some(output_index) = data.get(OUTPUT_INDEX).and_then(|i| i.as_u64()) {
                         let idx = (output_index as usize).min(MAX_OUTPUT_INDEX);
                         // Route the argument delta ONLY to an index that actually emitted a
                         // BlockStart (tracked in `open_tools` by the `output_item.added` arm).
@@ -1081,8 +1081,8 @@ impl ProtocolReader for ResponsesReader {
                 }
             }
 
-            EVT_OUTPUT_ITEM_DONE | "response.content_part.done" => {
-                if let Some(output_index) = data.get("output_index").and_then(|i| i.as_u64()) {
+            EVT_OUTPUT_ITEM_DONE | EVT_CONTENT_PART_DONE => {
+                if let Some(output_index) = data.get(OUTPUT_INDEX).and_then(|i| i.as_u64()) {
                     let idx = (output_index as usize).min(MAX_OUTPUT_INDEX);
                     // Native Responses closes a single text item with TWO terminal frames at the
                     // SAME `output_index`: `content_part.done` (the text content part) immediately
@@ -1111,9 +1111,9 @@ impl ProtocolReader for ResponsesReader {
                         // read carries it into `Thinking.signature` — the rule both paths share is
                         // `read_reasoning_encrypted_content`.
                         if let Some(sig) = data
-                            .get("item")
+                            .get(ITEM)
                             .filter(|it| {
-                                it.get("type").and_then(|t| t.as_str()) == Some(ITEM_TYPE_REASONING)
+                                it.get(keys::TYPE).and_then(|t| t.as_str()) == Some(ITEM_TYPE_REASONING)
                             })
                             .and_then(read_reasoning_encrypted_content)
                         {
@@ -1182,9 +1182,9 @@ impl ProtocolReader for ResponsesReader {
                         }
                     };
 
-                if let Some(response_obj) = data.get("response") {
+                if let Some(response_obj) = data.get(keys::RESPONSE) {
                     let status = response_obj
-                        .get("status")
+                        .get(keys::STATUS)
                         .and_then(|s| s.as_str())
                         .unwrap_or("");
 
@@ -1195,13 +1195,13 @@ impl ProtocolReader for ResponsesReader {
                     // the stream so consumers do not hang.
                     if status == STATUS_FAILED {
                         let provider_signal = response_obj
-                            .get("error")
-                            .and_then(|e| e.get("code"))
+                            .get(keys::ERROR_WORD)
+                            .and_then(|e| e.get(keys::CODE))
                             .and_then(|c| c.as_str())
                             .or_else(|| {
                                 response_obj
-                                    .get("error")
-                                    .and_then(|e| e.get("type"))
+                                    .get(keys::ERROR_WORD)
+                                    .and_then(|e| e.get(keys::TYPE))
                                     .and_then(|t| t.as_str())
                             })
                             .map(String::from)
@@ -1233,8 +1233,8 @@ impl ProtocolReader for ResponsesReader {
                         // An `incomplete` is NOT a successful end_turn; map its machine-readable
                         // reason, or surface None (don't mask the truncation) when there is none.
                         STATUS_INCOMPLETE => response_obj
-                            .get("incomplete_details")
-                            .and_then(|d| d.get("reason"))
+                            .get(INCOMPLETE_DETAILS)
+                            .and_then(|d| d.get(keys::REASON))
                             .and_then(|r| r.as_str())
                             .map(read_responses_incomplete_reason),
                         _ => None,
@@ -1250,11 +1250,11 @@ impl ProtocolReader for ResponsesReader {
                     let stop_reason = if stop_reason
                         == Some(crate::codec::ir::IrStopReason::EndTurn)
                         && response_obj
-                            .get("output")
+                            .get(keys::OUTPUT)
                             .and_then(|o| o.as_array())
                             .is_some_and(|items| {
                                 items.iter().any(|it| {
-                                    it.get("type").and_then(|t| t.as_str())
+                                    it.get(keys::TYPE).and_then(|t| t.as_str())
                                         == Some(ITEM_TYPE_FUNCTION_CALL)
                                 })
                             }) {
@@ -1274,18 +1274,18 @@ impl ProtocolReader for ResponsesReader {
                     // non-Responses client still sees the refusal. Anthropic/Bedrock have no distinct
                     // refusal part, so a refusal is plain assistant text + a `refusal` stop there.
                     let mut saw_refusal = false;
-                    if let Some(items) = response_obj.get("output").and_then(|o| o.as_array()) {
+                    if let Some(items) = response_obj.get(keys::OUTPUT).and_then(|o| o.as_array()) {
                         for (item_pos, item) in items.iter().enumerate() {
-                            let Some(content) = item.get("content").and_then(|c| c.as_array())
+                            let Some(content) = item.get(keys::CONTENT).and_then(|c| c.as_array())
                             else {
                                 continue;
                             };
                             for block in content {
-                                if block.get("type").and_then(|t| t.as_str()) != Some("refusal") {
+                                if block.get(keys::TYPE).and_then(|t| t.as_str()) != Some(keys::REFUSAL) {
                                     continue;
                                 }
                                 let Some(text) = block
-                                    .get("refusal")
+                                    .get(keys::REFUSAL)
                                     .and_then(|r| r.as_str())
                                     .filter(|s| !s.is_empty())
                                 else {
@@ -1329,7 +1329,7 @@ impl ProtocolReader for ResponsesReader {
                     // BILLED COUNTS: absent is zero, a present-but-UNREADABLE count REFUSES (#42)
                     // — the stream ends in an error instead of ledgering zero tokens.
                     let usage = response_obj
-                        .get("usage")
+                        .get(keys::USAGE)
                         .map(|u| read_responses_usage(Some(u), Some(response_obj)))
                         .transpose();
                     let usage = match usage {
@@ -1341,7 +1341,7 @@ impl ProtocolReader for ResponsesReader {
                             detail: crate::codec::ir::IrUsageDetail {
                                 service_tier: crate::codec::carry::read_word(
                                     crate::codec::openai_chat::map::WORDS_OPENAI_SERVED_TIER,
-                                    response_obj.get("service_tier"),
+                                    response_obj.get(keys::SERVICE_TIER),
                                 ),
                                 ..Default::default()
                             },
@@ -1430,12 +1430,12 @@ impl ProtocolReader for ResponsesReader {
             // `class_for_response_failed`, then close every open block and stop.
             EVT_ERROR => {
                 let provider_signal = data
-                    .get("code")
+                    .get(keys::CODE)
                     .and_then(|c| c.as_str())
                     .filter(|c| !c.is_empty())
                     .or_else(|| {
-                        data.get("error")
-                            .and_then(|e| e.get("code"))
+                        data.get(keys::ERROR_WORD)
+                            .and_then(|e| e.get(keys::CODE))
                             .and_then(|c| c.as_str())
                     })
                     .unwrap_or(SIGNAL_RESPONSE_FAILED)
@@ -1471,7 +1471,7 @@ impl ProtocolReader for ResponsesReader {
     ) -> Result<crate::codec::ir::IrResponse, IrError> {
         let obj = body.as_object().ok_or_else(ir_parse_error)?;
 
-        let status = obj.get("status").and_then(|s| s.as_str()).unwrap_or("");
+        let status = obj.get(keys::STATUS).and_then(|s| s.as_str()).unwrap_or("");
 
         // A non-streaming Responses body with `status:"failed"` is an upstream provider failure
         // (rate_limit, content_filter, server_error, etc.), NOT a parse failure. The writer emits
@@ -1485,12 +1485,12 @@ impl ProtocolReader for ResponsesReader {
         // the `error.code` enum, fall back to `error.type`, then a generic `response_failed`.
         if status == STATUS_FAILED {
             let provider_signal = obj
-                .get("error")
-                .and_then(|e| e.get("code"))
+                .get(keys::ERROR_WORD)
+                .and_then(|e| e.get(keys::CODE))
                 .and_then(|c| c.as_str())
                 .or_else(|| {
-                    obj.get("error")
-                        .and_then(|e| e.get("type"))
+                    obj.get(keys::ERROR_WORD)
+                        .and_then(|e| e.get(keys::TYPE))
                         .and_then(|t| t.as_str())
                 })
                 .map(String::from)
@@ -1511,8 +1511,8 @@ impl ProtocolReader for ResponsesReader {
         let mut stop_reason: Option<crate::codec::ir::IrStopReason> = match status {
             STATUS_COMPLETED => Some(crate::codec::ir::IrStopReason::EndTurn),
             STATUS_INCOMPLETE => obj
-                .get("incomplete_details")
-                .and_then(|d| d.get("reason"))
+                .get(INCOMPLETE_DETAILS)
+                .and_then(|d| d.get(keys::REASON))
                 .and_then(|r| r.as_str())
                 .map(read_responses_incomplete_reason),
             _ => None,
@@ -1523,35 +1523,35 @@ impl ProtocolReader for ResponsesReader {
         // SIGNAL is not in `status`. Track it here to promote `stop_reason` to `Refusal` below.
         let mut saw_refusal = false;
         let mut logprobs: Vec<crate::codec::ir::IrTokenLogprob> = Vec::new();
-        if let Some(output_arr) = obj.get("output").and_then(|o| o.as_array()) {
+        if let Some(output_arr) = obj.get(keys::OUTPUT).and_then(|o| o.as_array()) {
             for (item_ordinal, item) in output_arr.iter().enumerate() {
-                let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                let item_type = item.get(keys::TYPE).and_then(|t| t.as_str()).unwrap_or("");
 
                 match item_type {
                     ITEM_TYPE_MESSAGE => {
-                        if let Some(content_arr) = item.get("content").and_then(|c| c.as_array()) {
+                        if let Some(content_arr) = item.get(keys::CONTENT).and_then(|c| c.as_array()) {
                             for block_item in content_arr {
                                 let block_type = block_item
-                                    .get("type")
+                                    .get(keys::TYPE)
                                     .and_then(|t| t.as_str())
                                     .unwrap_or("");
 
                                 if block_type == CONTENT_TYPE_OUTPUT_TEXT {
                                     if let Some(text) =
-                                        block_item.get("text").and_then(|t| t.as_str())
+                                        block_item.get(keys::TEXT).and_then(|t| t.as_str())
                                     {
                                         // `annotations` is a sibling key on this same content-part
                                         // object. See `read_url_annotations` for why offsets are
                                         // deliberately not carried.
                                         let citations = block_item
-                                            .get("annotations")
+                                            .get(keys::ANNOTATIONS)
                                             .map(super::super::openai_annotations::read_url_annotations)
                                             .unwrap_or_default();
                                         // RSP-03: the part's token `logprobs` join the response's
                                         // one IR logprob run, in part order — the writer's inverse
                                         // attaches that run to the first text part.
                                         logprobs.extend(read_responses_logprobs(
-                                            block_item.get("logprobs"),
+                                            block_item.get(keys::LOGPROBS),
                                         ));
                                         content.push(crate::codec::ir::IrBlock::Text {
                                             text: text.to_string(),
@@ -1560,7 +1560,7 @@ impl ProtocolReader for ResponsesReader {
                                             refusal: false,
                                         });
                                     }
-                                } else if block_type == "refusal" {
+                                } else if block_type == keys::REFUSAL {
                                     // A model refusal rides on a `{type:"refusal", refusal:"..."}`
                                     // content part (the status stays `completed`). The prior reader
                                     // only matched `output_text`, SILENTLY DROPPING the refusal text.
@@ -1569,7 +1569,7 @@ impl ProtocolReader for ResponsesReader {
                                     // a refusal is plain assistant text there). The refusal SIGNAL is
                                     // separately promoted onto `stop_reason` below.
                                     if let Some(text) =
-                                        block_item.get("refusal").and_then(|t| t.as_str())
+                                        block_item.get(keys::REFUSAL).and_then(|t| t.as_str())
                                     {
                                         saw_refusal = true;
                                         // IR-02: flagged, so a Chat / Responses client gets it
@@ -1588,7 +1588,7 @@ impl ProtocolReader for ResponsesReader {
 
                     ITEM_TYPE_FUNCTION_CALL => {
                         let name = item
-                            .get("name")
+                            .get(keys::NAME)
                             .and_then(|n| n.as_str())
                             .unwrap_or("")
                             .to_string();
@@ -1600,7 +1600,7 @@ impl ProtocolReader for ResponsesReader {
                         // the backend supplied none, so the correlation key is never blank.
                         // (`unwrap_or("")` previously let an empty id reach egress.)
                         let raw_call_id =
-                            item.get("call_id").and_then(|c| c.as_str()).unwrap_or("");
+                            item.get(CALL_ID).and_then(|c| c.as_str()).unwrap_or("");
                         let call_id = if raw_call_id.is_empty() {
                             synth_response_tool_call_id(item_ordinal, &name)
                         } else {
@@ -1609,7 +1609,7 @@ impl ProtocolReader for ResponsesReader {
                         // Native `arguments` is a JSON string (malformed strings preserved verbatim);
                         // a non-string (already-parsed object) is used directly rather than collapsed
                         // to `{}`, avoiding a lossy drop of the caller's tool arguments.
-                        let input = tool_input_from_arguments(item.get("arguments"));
+                        let input = tool_input_from_arguments(item.get(keys::ARGUMENTS));
 
                         content.push(crate::codec::ir::IrBlock::ToolUse {
                             id: call_id,
@@ -1720,21 +1720,21 @@ impl ProtocolReader for ResponsesReader {
         // `usage` on an otherwise valid 200 is an upstream response-format quirk (a mock/staging/
         // proxy backend that omits it), NOT a client mistake: a `ClientError` here would make
         // proxy engine discard a valid body and emit a spurious 500.
-        let usage_val = obj.get("usage");
+        let usage_val = obj.get(keys::USAGE);
 
         // Absent is zero, a present-but-UNREADABLE count REFUSES (#42). See `USAGE` for the cache
         // normalization; RSP-17's serving tier is the top-level `service_tier`.
         let usage = read_responses_usage(usage_val, Some(body))?;
 
-        let model = obj.get("model").and_then(|m| m.as_str()).map(String::from);
+        let model = obj.get(keys::MODEL).and_then(|m| m.as_str()).map(String::from);
 
         // Capture the upstream response's identity so a same-protocol (responses → responses)
         // passthrough preserves `id`/`created_at` exactly. The Responses API names its creation
         // timestamp `created_at` (NOT `created`, which is the Chat Completions field); we map it
         // into the shared IR `created` slot. `system_fingerprint`/`stop_sequence` have no analog in
         // the Responses shape, so they stay `None`.
-        let id = obj.get("id").and_then(|i| i.as_str()).map(String::from);
-        let created = obj.get("created_at").and_then(|c| c.as_u64());
+        let id = obj.get(keys::ID).and_then(|i| i.as_str()).map(String::from);
+        let created = obj.get(keys::CREATED_AT).and_then(|c| c.as_u64());
 
         // A native Responses response ECHOES the request's `instructions` (system prompt) and
         // `metadata` (user key/value tags) back on the response object. The IR `IrResponse` models
@@ -1745,7 +1745,7 @@ impl ProtocolReader for ResponsesReader {
         // separately carried on the REQUEST hop (system blocks / `extra`); only the redundant response
         // echo is not reconstructed. Gated on presence so a response without them emits no warn.
         if obj
-            .get("instructions")
+            .get(keys::INSTRUCTIONS)
             .is_some_and(|v| !v.is_null() && v != &serde_json::json!(""))
         {
             tracing::warn!(
@@ -1754,7 +1754,7 @@ impl ProtocolReader for ResponsesReader {
             );
         }
         if obj
-            .get("metadata")
+            .get(keys::METADATA)
             .and_then(|m| m.as_object())
             .is_some_and(|m| !m.is_empty())
         {
@@ -1772,7 +1772,7 @@ impl ProtocolReader for ResponsesReader {
         // not a request echo, exactly like `instructions`/`metadata` above), so it is dropped — but
         // drop-with-warn per this file's convention, never silently. Gated on presence.
         if obj
-            .get("previous_response_id")
+            .get(PREVIOUS_RESPONSE_ID)
             .is_some_and(|v| !v.is_null() && v != &serde_json::json!(""))
         {
             tracing::warn!(
@@ -1781,7 +1781,7 @@ impl ProtocolReader for ResponsesReader {
                  and the request-side `previous_response_id` is carried on the request hop"
             );
         }
-        if obj.get("store").is_some_and(|v| !v.is_null()) {
+        if obj.get(STORE).is_some_and(|v| !v.is_null()) {
             tracing::warn!(
                 "dropping response `store` echo on Responses ir parse: IrResponse models no \
                  request-echo slot; the request-side `store` flag is carried on the request hop"

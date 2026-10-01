@@ -5,4 +5,4 @@ bedrock = 3
 cohere = 2
 gemini = 388
 openai_chat = 552
-openai_responses = 524
+openai_responses = 0

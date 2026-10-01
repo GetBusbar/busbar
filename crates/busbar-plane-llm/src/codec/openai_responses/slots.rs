@@ -13,7 +13,7 @@ use super::*;
 pub(super) fn read_image_detail(
     item: &serde_json::Value,
 ) -> Option<crate::codec::ir::IrImageDetail> {
-    let word = item.get("detail").and_then(|d| d.as_str())?;
+    let word = item.get(keys::DETAIL).and_then(|d| d.as_str())?;
     let detail = crate::codec::ir::IrImageDetail::parse(word);
     if detail.is_none() {
         tracing::warn!(
@@ -32,13 +32,13 @@ pub(super) fn reasoning_kind(item: &serde_json::Value) -> Option<crate::codec::i
     let has_text = |key: &str| {
         item.get(key).and_then(|a| a.as_array()).is_some_and(|arr| {
             arr.iter().any(|p| {
-                p.get("text")
+                p.get(keys::TEXT)
                     .and_then(|t| t.as_str())
                     .is_some_and(|t| !t.is_empty())
             })
         })
     };
-    match (has_text("content"), has_text("summary")) {
+    match (has_text(keys::CONTENT), has_text(SUMMARY)) {
         (true, false) => Some(crate::codec::ir::IrThinkingKind::Full),
         (false, true) => Some(crate::codec::ir::IrThinkingKind::Summary),
         _ => None,
@@ -55,14 +55,14 @@ pub(super) fn insert_reasoning_text(
 ) {
     if kind == Some(crate::codec::ir::IrThinkingKind::Summary) {
         item.insert(
-            "summary".to_string(),
-            serde_json::json!([{ "type": "summary_text", "text": text }]),
+            SUMMARY.to_string(),
+            serde_json::json!([{ (keys::TYPE): SUMMARY_TEXT, (keys::TEXT): text }]),
         );
     } else {
-        item.insert("summary".to_string(), serde_json::Value::Array(Vec::new()));
+        item.insert(SUMMARY.to_string(), serde_json::Value::Array(Vec::new()));
         item.insert(
-            "content".to_string(),
-            serde_json::json!([{ "type": CONTENT_TYPE_REASONING_TEXT, "text": text }]),
+            keys::CONTENT.to_string(),
+            serde_json::json!([{ (keys::TYPE): CONTENT_TYPE_REASONING_TEXT, (keys::TEXT): text }]),
         );
     }
 }
@@ -84,25 +84,25 @@ pub(super) fn own_signature(origin: Option<crate::codec::ir::IrSignatureOrigin>)
 pub(super) fn read_allowed_tools(
     o: &serde_json::Map<String, serde_json::Value>,
 ) -> Option<(crate::codec::ir::IrToolChoice, Vec<String>)> {
-    if o.get("type").and_then(|t| t.as_str()) != Some("allowed_tools") {
+    if o.get(keys::TYPE).and_then(|t| t.as_str()) != Some(keys::ALLOWED_TOOLS) {
         return None;
     }
-    let choice = match o.get("mode").and_then(|m| m.as_str()) {
-        Some("required") => crate::codec::ir::IrToolChoice::Required,
+    let choice = match o.get(keys::MODE).and_then(|m| m.as_str()) {
+        Some(keys::REQUIRED) => crate::codec::ir::IrToolChoice::Required,
         _ => crate::codec::ir::IrToolChoice::Auto,
     };
     let mut names = Vec::new();
     for t in o
-        .get("tools")
+        .get(keys::TOOLS)
         .and_then(|t| t.as_array())
         .into_iter()
         .flatten()
     {
         match (
-            t.get("type").and_then(|v| v.as_str()),
-            t.get("name").and_then(|v| v.as_str()),
+            t.get(keys::TYPE).and_then(|v| v.as_str()),
+            t.get(keys::NAME).and_then(|v| v.as_str()),
         ) {
-            (Some("function"), Some(name)) => names.push(name.to_string()),
+            (Some(keys::FUNCTION), Some(name)) => names.push(name.to_string()),
             (kind, _) => tracing::warn!(
                 tool_type = kind.unwrap_or(""),
                 "dropping a non-function entry from a Responses allowed_tools tool_choice on ir \
@@ -120,19 +120,19 @@ pub(super) fn write_allowed_tools(
     choice: Option<&crate::codec::ir::IrToolChoice>,
 ) -> serde_json::Value {
     let mode = if choice == Some(&crate::codec::ir::IrToolChoice::Required) {
-        "required"
+        keys::REQUIRED
     } else {
-        "auto"
+        keys::AUTO
     };
     let tools: Vec<serde_json::Value> = names
         .iter()
-        .map(|n| serde_json::json!({ "type": "function", "name": n }))
+        .map(|n| serde_json::json!({ (keys::TYPE): keys::FUNCTION, (keys::NAME): n }))
         .collect();
-    serde_json::json!({ "type": "allowed_tools", "mode": mode, "tools": tools })
+    serde_json::json!({ (keys::TYPE): keys::ALLOWED_TOOLS, (keys::MODE): mode, (keys::TOOLS): tools })
 }
 
 /// The members a Responses `web_search` tool carries that the IR models.
-const WEB_SEARCH_KEYS: [&str; 4] = ["type", "filters", "user_location", "search_context_size"];
+const WEB_SEARCH_KEYS: [&str; 4] = [keys::TYPE, FILTERS, keys::USER_LOCATION, keys::SEARCH_CONTEXT_SIZE];
 
 /// IR-11. A Responses hosted tool the IR models NEUTRALLY: `web_search` / `web_search_preview` →
 /// `WebSearch`, `code_interpreter` on an auto container → `CodeExecution`. A tool is recognised
@@ -142,19 +142,19 @@ const WEB_SEARCH_KEYS: [&str; 4] = ["type", "filters", "user_location", "search_
 /// with its existing warn — never a typed tool that silently lost part of its configuration.
 pub(super) fn read_hosted_tool(tool: &serde_json::Value) -> Option<crate::codec::ir::IrHostedTool> {
     let obj = tool.as_object()?;
-    match obj.get("type").and_then(|t| t.as_str())? {
-        "web_search" | "web_search_preview" => {
+    match obj.get(keys::TYPE).and_then(|t| t.as_str())? {
+        keys::WEB_SEARCH | "web_search_preview" => {
             if obj.keys().any(|k| !WEB_SEARCH_KEYS.contains(&k.as_str())) {
                 return None;
             }
             let mut ws = crate::codec::ir::IrWebSearch::default();
-            if let Some(filters) = obj.get("filters").filter(|f| !f.is_null()) {
+            if let Some(filters) = obj.get(FILTERS).filter(|f| !f.is_null()) {
                 let fobj = filters.as_object()?;
-                if fobj.keys().any(|k| k != "allowed_domains") {
+                if fobj.keys().any(|k| k != keys::ALLOWED_DOMAINS) {
                     return None;
                 }
                 ws.allowed_domains = fobj
-                    .get("allowed_domains")
+                    .get(keys::ALLOWED_DOMAINS)
                     .and_then(|d| d.as_array())
                     .map(|arr| {
                         arr.iter()
@@ -163,27 +163,27 @@ pub(super) fn read_hosted_tool(tool: &serde_json::Value) -> Option<crate::codec:
                     })
                     .unwrap_or_default();
             }
-            if let Some(loc) = obj.get("user_location").filter(|l| !l.is_null()) {
+            if let Some(loc) = obj.get(keys::USER_LOCATION).filter(|l| !l.is_null()) {
                 ws.user_location = Some(crate::codec::ir::IrUserLocation::read_members(
                     loc.as_object()?,
                 ));
             }
-            if let Some(size) = obj.get("search_context_size").filter(|s| !s.is_null()) {
+            if let Some(size) = obj.get(keys::SEARCH_CONTEXT_SIZE).filter(|s| !s.is_null()) {
                 ws.search_context_size =
                     Some(crate::codec::ir::IrVerbosity::parse(size.as_str()?)?);
             }
             Some(crate::codec::ir::IrHostedTool::WebSearch(ws))
         }
-        "code_interpreter" => {
-            let auto_container = obj.get("container").is_some_and(|c| {
-                c.get("type").and_then(|t| t.as_str()) == Some("auto")
+        CODE_INTERPRETER => {
+            let auto_container = obj.get(keys::CONTAINER).is_some_and(|c| {
+                c.get(keys::TYPE).and_then(|t| t.as_str()) == Some(keys::AUTO)
                     && c.as_object().is_some_and(|co| co.len() == 1)
             });
             (auto_container && obj.len() == 2)
                 .then_some(crate::codec::ir::IrHostedTool::CodeExecution)
         }
         // OAI-09: the flat Responses custom tool.
-        "custom" => crate::codec::ir::IrCustomTool::read_members(obj, &["type"])
+        keys::CUSTOM => crate::codec::ir::IrCustomTool::read_members(obj, &[keys::TYPE])
             .map(crate::codec::ir::IrHostedTool::Custom),
         _ => None,
     }
@@ -198,19 +198,19 @@ pub(super) fn write_hosted_tool(
     match tool {
         crate::codec::ir::IrHostedTool::WebSearch(ws) => {
             let mut out = serde_json::Map::new();
-            out.insert("type".to_string(), serde_json::json!("web_search"));
+            out.insert(keys::TYPE.to_string(), serde_json::json!(keys::WEB_SEARCH));
             if !ws.allowed_domains.is_empty() {
                 out.insert(
-                    "filters".to_string(),
-                    serde_json::json!({ "allowed_domains": ws.allowed_domains }),
+                    FILTERS.to_string(),
+                    serde_json::json!({ (keys::ALLOWED_DOMAINS): ws.allowed_domains }),
                 );
             }
             if let Some(loc) = &ws.user_location {
-                out.insert("user_location".to_string(), loc.write_flat());
+                out.insert(keys::USER_LOCATION.to_string(), loc.write_flat());
             }
             if let Some(size) = ws.search_context_size {
                 out.insert(
-                    "search_context_size".to_string(),
+                    keys::SEARCH_CONTEXT_SIZE.to_string(),
                     serde_json::json!(size.as_str()),
                 );
             }
@@ -223,8 +223,8 @@ pub(super) fn write_hosted_tool(
             Some(serde_json::Value::Object(out))
         }
         crate::codec::ir::IrHostedTool::CodeExecution => Some(serde_json::json!({
-            "type": "code_interpreter",
-            "container": { "type": "auto" }
+            (keys::TYPE): CODE_INTERPRETER,
+            (keys::CONTAINER): { (keys::TYPE): keys::AUTO }
         })),
         crate::codec::ir::IrHostedTool::WebFetch(_) => {
             tracing::warn!(
@@ -237,7 +237,7 @@ pub(super) fn write_hosted_tool(
         // OAI-09: a custom (free-text / grammar) tool, flat on this wire.
         crate::codec::ir::IrHostedTool::Custom(c) => {
             let mut out = serde_json::Map::new();
-            out.insert("type".to_string(), serde_json::json!("custom"));
+            out.insert(keys::TYPE.to_string(), serde_json::json!(keys::CUSTOM));
             out.extend(c.write_members());
             Some(serde_json::Value::Object(out))
         }

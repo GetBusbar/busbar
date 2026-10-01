@@ -4,7 +4,7 @@ use super::*;
 /// once per frame here; `sequence_number` is stamped by `write_response_events`).
 fn event(name: &'static str, mut data: serde_json::Value) -> (String, serde_json::Value) {
     if let Some(obj) = data.as_object_mut() {
-        obj.insert("type".to_string(), serde_json::Value::from(name));
+        obj.insert(keys::TYPE.to_string(), serde_json::Value::from(name));
     }
     (name.to_string(), data)
 }
@@ -57,7 +57,7 @@ impl ProtocolWriter for ResponsesWriter {
         messages: &[serde_json::Value],
         _tools: &[serde_json::Value],
     ) -> bool {
-        if obj.get("input").is_none() {
+        if obj.get(keys::INPUT).is_none() {
             return false;
         }
         let Some(pairs) = crate::codec::dialect::rewrite_text_pairs(messages) else {
@@ -65,9 +65,9 @@ impl ProtocolWriter for ResponsesWriter {
         };
         let framed: Vec<serde_json::Value> = pairs
             .into_iter()
-            .map(|(role, text)| serde_json::json!({ "role": role, "content": text }))
+            .map(|(role, text)| serde_json::json!({ (keys::ROLE): role, (keys::CONTENT): text }))
             .collect();
-        obj.insert("input".to_string(), serde_json::Value::Array(framed));
+        obj.insert(keys::INPUT.to_string(), serde_json::Value::Array(framed));
         true
     }
 
@@ -104,11 +104,11 @@ impl ProtocolWriter for ResponsesWriter {
             if !instructions.is_empty() {
                 if req.system_role == Some(crate::codec::ir::IrSystemRole::Developer) {
                     input_arr.push(serde_json::json!({
-                        "role": crate::codec::ir::IrSystemRole::Developer.as_str(),
-                        "content": instructions
+                        (keys::ROLE): crate::codec::ir::IrSystemRole::Developer.as_str(),
+                        (keys::CONTENT): instructions
                     }));
                 } else {
-                    out.insert("instructions".to_string(), serde_json::json!(instructions));
+                    out.insert(keys::INSTRUCTIONS.to_string(), serde_json::json!(instructions));
                 }
             }
         }
@@ -117,9 +117,9 @@ impl ProtocolWriter for ResponsesWriter {
             match msg.role {
                 crate::codec::ir::IrRole::User | crate::codec::ir::IrRole::Assistant => {
                     let role_str = if msg.role == crate::codec::ir::IrRole::User {
-                        "user"
+                        keys::USER
                     } else {
-                        "assistant"
+                        keys::ASSISTANT
                     };
 
                     let mut content_arr: Vec<serde_json::Value> = Vec::new();
@@ -141,8 +141,8 @@ impl ProtocolWriter for ResponsesWriter {
                                 ..
                             } if msg.role == crate::codec::ir::IrRole::Assistant => {
                                 content_arr.push(serde_json::json!({
-                                    "type": "refusal",
-                                    "refusal": text
+                                    (keys::TYPE): keys::REFUSAL,
+                                    (keys::REFUSAL): text
                                 }));
                             }
                             crate::codec::ir::IrBlock::Text {
@@ -154,8 +154,8 @@ impl ProtocolWriter for ResponsesWriter {
                                     CONTENT_TYPE_OUTPUT_TEXT
                                 };
                                 let mut part = serde_json::Map::new();
-                                part.insert("type".to_string(), serde_json::json!(type_str));
-                                part.insert("text".to_string(), serde_json::json!(text));
+                                part.insert(keys::TYPE.to_string(), serde_json::json!(type_str));
+                                part.insert(keys::TEXT.to_string(), serde_json::json!(text));
                                 // Re-emit the assistant `output_text` part's URL-citation
                                 // `annotations` when the IR carried any (an assistant turn replayed as
                                 // input keeps its grounding sources). `input_text` (user) carries no
@@ -170,7 +170,7 @@ impl ProtocolWriter for ResponsesWriter {
                                         );
                                     if !annotations.is_empty() {
                                         part.insert(
-                                            "annotations".to_string(),
+                                            keys::ANNOTATIONS.to_string(),
                                             serde_json::Value::Array(annotations),
                                         );
                                     }
@@ -202,10 +202,10 @@ impl ProtocolWriter for ResponsesWriter {
                                 let args_str =
                                     crate::codec::dialect::tool_arguments_to_string(input);
                                 tool_items.push(serde_json::json!({
-                                    "type": ITEM_TYPE_FUNCTION_CALL,
-                                    "call_id": id,
-                                    "name": name,
-                                    "arguments": args_str
+                                    (keys::TYPE): ITEM_TYPE_FUNCTION_CALL,
+                                    (CALL_ID): id,
+                                    (keys::NAME): name,
+                                    (keys::ARGUMENTS): args_str
                                 }));
                             }
                             crate::codec::ir::IrBlock::ToolResult {
@@ -218,9 +218,9 @@ impl ProtocolWriter for ResponsesWriter {
                                 let output_value = function_call_output_value(content);
 
                                 tool_items.push(serde_json::json!({
-                                    "type": "function_call_output",
-                                    "call_id": tool_use_id,
-                                    "output": output_value
+                                    (keys::TYPE): FUNCTION_CALL_OUTPUT,
+                                    (CALL_ID): tool_use_id,
+                                    (keys::OUTPUT): output_value
                                 }));
                             }
                             // A prior-turn Thinking block re-emits as a top-level Responses
@@ -263,18 +263,18 @@ impl ProtocolWriter for ResponsesWriter {
                                 if !text.is_empty() || emit_sig.is_some() {
                                     let mut item = serde_json::Map::new();
                                     item.insert(
-                                        "type".to_string(),
+                                        keys::TYPE.to_string(),
                                         serde_json::json!(ITEM_TYPE_REASONING),
                                     );
                                     item.insert(
-                                        "id".to_string(),
+                                        keys::ID.to_string(),
                                         serde_json::json!(synthesize_item_id(ITEM_ID_PREFIX_RS)),
                                     );
                                     // IR-17: a summary goes back into `summary[]`.
                                     super::slots::insert_reasoning_text(&mut item, text, *kind);
                                     if let Some(sig) = emit_sig {
                                         item.insert(
-                                            "encrypted_content".to_string(),
+                                            ENCRYPTED_CONTENT.to_string(),
                                             serde_json::json!(sig),
                                         );
                                     }
@@ -310,9 +310,9 @@ impl ProtocolWriter for ResponsesWriter {
                     // message items.
                     if !content_arr.is_empty() {
                         let mut msg_obj = serde_json::Map::new();
-                        msg_obj.insert("role".to_string(), serde_json::json!(role_str));
+                        msg_obj.insert(keys::ROLE.to_string(), serde_json::json!(role_str));
                         msg_obj
-                            .insert("content".to_string(), serde_json::Value::Array(content_arr));
+                            .insert(keys::CONTENT.to_string(), serde_json::Value::Array(content_arr));
                         input_arr.push(serde_json::Value::Object(msg_obj));
                     }
                     // Then the flat tool items, in order, AFTER the message they belong to.
@@ -332,9 +332,9 @@ impl ProtocolWriter for ResponsesWriter {
                             let output_value = function_call_output_value(content);
 
                             input_arr.push(serde_json::json!({
-                                "type": "function_call_output",
-                                "call_id": tool_use_id,
-                                "output": output_value
+                                (keys::TYPE): FUNCTION_CALL_OUTPUT,
+                                (CALL_ID): tool_use_id,
+                                (keys::OUTPUT): output_value
                             }));
                         }
                     }
@@ -345,7 +345,7 @@ impl ProtocolWriter for ResponsesWriter {
         }
 
         if !input_arr.is_empty() {
-            out.insert("input".to_string(), serde_json::Value::Array(input_arr));
+            out.insert(keys::INPUT.to_string(), serde_json::Value::Array(input_arr));
         }
 
         // IR-11: the neutral hosted tools in the Responses spelling (a kind with no Responses tool
@@ -371,11 +371,11 @@ impl ProtocolWriter for ResponsesWriter {
                     continue;
                 }
                 let mut tool_obj = serde_json::Map::new();
-                tool_obj.insert("type".to_string(), serde_json::json!("function"));
-                tool_obj.insert("name".to_string(), serde_json::json!(tool.name));
+                tool_obj.insert(keys::TYPE.to_string(), serde_json::json!(keys::FUNCTION));
+                tool_obj.insert(keys::NAME.to_string(), serde_json::json!(tool.name));
 
                 if let Some(desc) = &tool.description {
-                    tool_obj.insert("description".to_string(), serde_json::json!(desc));
+                    tool_obj.insert(keys::DESCRIPTION.to_string(), serde_json::json!(desc));
                 }
 
                 let params = if !tool.input_schema.is_null() {
@@ -383,19 +383,19 @@ impl ProtocolWriter for ResponsesWriter {
                 } else {
                     serde_json::json!({})
                 };
-                tool_obj.insert("parameters".to_string(), params);
+                tool_obj.insert(keys::PARAMETERS.to_string(), params);
 
                 // STRICT function calling, flat on a Responses tool (Chat nests it under
                 // `function`). Emitted only when the source stated it, so `None` never becomes an
                 // invented `strict: false`.
                 if let Some(strict) = tool.strict {
-                    tool_obj.insert("strict".to_string(), serde_json::json!(strict));
+                    tool_obj.insert(keys::STRICT.to_string(), serde_json::json!(strict));
                 }
 
                 tools_arr.push(serde_json::Value::Object(tool_obj));
             }
             tools_arr.extend(hosted_arr);
-            out.insert("tools".to_string(), serde_json::Value::Array(tools_arr));
+            out.insert(keys::TOOLS.to_string(), serde_json::Value::Array(tools_arr));
         }
 
         // Emit `tool_choice` in the Responses native shape when present so a forced/targeted
@@ -413,7 +413,7 @@ impl ProtocolWriter for ResponsesWriter {
                 );
             } else {
                 out.insert(
-                    "tool_choice".to_string(),
+                    keys::TOOL_CHOICE.to_string(),
                     super::slots::write_allowed_tools(names, req.tool_choice.as_ref()),
                 );
             }
@@ -425,7 +425,7 @@ impl ProtocolWriter for ResponsesWriter {
                      stripped on the cross-protocol seam)"
                 );
             } else {
-                out.insert("tool_choice".to_string(), write_responses_tool_choice(tc));
+                out.insert(keys::TOOL_CHOICE.to_string(), write_responses_tool_choice(tc));
             }
         }
         // `parallel_tool_calls`: `/v1/responses` documents it the same way as
@@ -441,7 +441,7 @@ impl ProtocolWriter for ResponsesWriter {
                 );
             } else {
                 out.insert(
-                    "parallel_tool_calls".to_string(),
+                    keys::PARALLEL_TOOL_CALLS.to_string(),
                     serde_json::json!(parallel),
                 );
             }
@@ -449,7 +449,7 @@ impl ProtocolWriter for ResponsesWriter {
 
         if let Some(max_tokens) = req.max_tokens {
             out.insert(
-                "max_output_tokens".to_string(),
+                INCOMPLETE_REASON_MAX_OUTPUT.to_string(),
                 serde_json::json!(max_tokens),
             );
         }
@@ -462,12 +462,12 @@ impl ProtocolWriter for ResponsesWriter {
         // reaches this surface. (There is no top-level `logprobs` boolean on `/v1/responses`; the
         // enabling flag is implicit in `top_logprobs`, and response-side logprobs ride `include`.)
         if let Some(top_logprobs) = req.top_logprobs {
-            out.insert("top_logprobs".to_string(), serde_json::json!(top_logprobs));
+            out.insert(keys::TOP_LOGPROBS.to_string(), serde_json::json!(top_logprobs));
         }
 
         // RSP-06: the end-user id rides the Responses `user` member, as it does on Chat.
         if let Some(user) = &req.user {
-            out.insert("user".to_string(), serde_json::json!(user));
+            out.insert(keys::USER.to_string(), serde_json::json!(user));
         }
 
         if crate::codec::carry::Slot::OutputModalities.carried(req) {
@@ -495,12 +495,12 @@ impl ProtocolWriter for ResponsesWriter {
             // reader preserved), so non-`format` sub-keys like `verbosity` survive alongside `format`.
             let mut text_obj = req
                 .extra
-                .get("text")
+                .get(keys::TEXT)
                 .and_then(|t| t.as_object())
                 .cloned()
                 .unwrap_or_default();
-            text_obj.insert("format".to_string(), format);
-            out.insert("text".to_string(), serde_json::Value::Object(text_obj));
+            text_obj.insert(keys::FORMAT.to_string(), format);
+            out.insert(keys::TEXT.to_string(), serde_json::Value::Object(text_obj));
             // The extra-forwarding loop below SKIPS `text` when `response_format` is Some (see its
             // guard), so the bare extra `text` cannot clobber this merged object back to format-less.
         }
@@ -517,7 +517,7 @@ impl ProtocolWriter for ResponsesWriter {
         // `stream` is a modeled key (excluded from `extra`), so it must be emitted explicitly or it
         // is silently dropped — a `stream: true` request would otherwise be answered non-streaming,
         // stalling the SSE translation loop. Mirrors the OpenAI writer.
-        out.insert("stream".to_string(), serde_json::json!(req.stream));
+        out.insert(keys::STREAM.to_string(), serde_json::json!(req.stream));
 
         // The reasoning carry in the Responses spelling: `reasoning: {effort}`. A numeric budget
         // (Anthropic/Gemini source) is bucketized through the effort table. Emitted from the typed
@@ -530,11 +530,11 @@ impl ProtocolWriter for ResponsesWriter {
         // the ask is omitted (with a warn). A Responses-origin `"none"` still rides `extra`
         // verbatim on a same-protocol write.
         if req.reasoning == Some(crate::codec::ir::IrReasoningAsk::Off) {
-            if !req.extra.contains_key("reasoning") {
+            if !req.extra.contains_key(keys::REASONING) {
                 if caps.reasoning_none {
                     out.insert(
-                        "reasoning".to_string(),
-                        serde_json::json!({"effort": "none"}),
+                        keys::REASONING.to_string(),
+                        serde_json::json!({(keys::EFFORT): keys::NONE_WORD}),
                     );
                 } else {
                     tracing::warn!(
@@ -545,13 +545,13 @@ impl ProtocolWriter for ResponsesWriter {
                 }
             }
         } else if let Some(ask) = req.reasoning {
-            if !req.extra.contains_key("reasoning") {
+            if !req.extra.contains_key(keys::REASONING) {
                 let table = req
                     .reasoning_budgets
                     .unwrap_or(crate::codec::ir::REASONING_BUDGET_DEFAULTS);
                 out.insert(
-                    "reasoning".to_string(),
-                    serde_json::json!({"effort": ask.to_effort(table).as_openai_reasoning_effort()}),
+                    keys::REASONING.to_string(),
+                    serde_json::json!({(keys::EFFORT): ask.to_effort(table).as_openai_reasoning_effort()}),
                 );
             }
         }
@@ -561,7 +561,7 @@ impl ProtocolWriter for ResponsesWriter {
             // carried a `response_format`, the merged `text` (remainder + format) was already inserted
             // above; do NOT let the bare extra `text` clobber it back to format-less. When the IR
             // carried NO response_format, fall through and forward the extra `text` verbatim.
-            if key == "text" && req.response_format.is_some() {
+            if key == keys::TEXT && req.response_format.is_some() {
                 continue;
             }
             out.insert(key.clone(), value.clone());
@@ -573,7 +573,7 @@ impl ProtocolWriter for ResponsesWriter {
         // the caller already sent keeps its other entries and never gains a duplicate).
         if req.logprobs == Some(true) {
             let include = out
-                .entry("include".to_string())
+                .entry(INCLUDE.to_string())
                 .or_insert_with(|| serde_json::Value::Array(Vec::new()));
             if let Some(arr) = include.as_array_mut() {
                 if !arr
@@ -650,10 +650,10 @@ impl ProtocolWriter for ResponsesWriter {
                 // replay the SAME timestamp — a native stream's `created_at` is constant across
                 // every event.
                 self.set_created_at(created_at);
-                resp_obj.insert("id".to_string(), serde_json::json!(id));
-                resp_obj.insert("object".to_string(), serde_json::json!(OBJ_RESPONSE));
-                resp_obj.insert("created_at".to_string(), serde_json::json!(created_at));
-                resp_obj.insert("status".to_string(), serde_json::json!(STATUS_IN_PROGRESS));
+                resp_obj.insert(keys::ID.to_string(), serde_json::json!(id));
+                resp_obj.insert(keys::OBJECT.to_string(), serde_json::json!(OBJ_RESPONSE));
+                resp_obj.insert(keys::CREATED_AT.to_string(), serde_json::json!(created_at));
+                resp_obj.insert(keys::STATUS.to_string(), serde_json::json!(STATUS_IN_PROGRESS));
                 // `Response.model` is a REQUIRED non-nullable string in the official SDK; emit it
                 // unconditionally with the DEFAULT_MODEL fallback when the IR carries none (a
                 // cross-protocol stream where `translate_event` strips the model to None) rather
@@ -662,7 +662,7 @@ impl ProtocolWriter for ResponsesWriter {
                 // Carry this stream's model forward so the terminal events (and any failure) replay
                 // the SAME `model` — a native stream's `model` is constant across every event.
                 self.set_model(model_name);
-                resp_obj.insert("model".to_string(), serde_json::json!(model_name));
+                resp_obj.insert(keys::MODEL.to_string(), serde_json::json!(model_name));
                 // The native `response.created` carries the FULL Response skeleton, not just its
                 // identity: an official SDK constructs a `Response` object from this event and reads
                 // `usage`/`output`/`error` unconditionally. At stream start there is no output yet
@@ -671,10 +671,10 @@ impl ProtocolWriter for ResponsesWriter {
                 // pinned spec, so it is a zeroed usage object here (the opening event's own count
                 // when the source stream carried one, e.g. an Anthropic `message_start`), never
                 // `null`; a strict decoder rejects `usage: null` against `ResponseUsage`.
-                resp_obj.insert("output".to_string(), serde_json::json!([]));
-                resp_obj.insert("error".to_string(), serde_json::Value::Null);
+                resp_obj.insert(keys::OUTPUT.to_string(), serde_json::json!([]));
+                resp_obj.insert(keys::ERROR_WORD.to_string(), serde_json::Value::Null);
                 resp_obj.insert(
-                    "usage".to_string(),
+                    keys::USAGE.to_string(),
                     usage
                         .as_ref()
                         .map(build_responses_usage)
@@ -686,7 +686,7 @@ impl ProtocolWriter for ResponsesWriter {
                 fill_required_response_members(&mut resp_obj, self.carried_request_echo().as_ref());
                 vec![event(
                     EVT_RESPONSE_CREATED,
-                    serde_json::json!({ "response": resp_obj }),
+                    serde_json::json!({ (keys::RESPONSE): resp_obj }),
                 )]
             }
 
@@ -722,45 +722,45 @@ impl ProtocolWriter for ResponsesWriter {
                         self.mark_refusal(*index);
                     }
                     let part = if *refusal {
-                        serde_json::json!({ "type": "refusal", "refusal": "" })
+                        serde_json::json!({ (keys::TYPE): keys::REFUSAL, (keys::REFUSAL): "" })
                     } else {
                         serde_json::json!({
-                            "type": CONTENT_TYPE_OUTPUT_TEXT,
-                            "text": "",
-                            "annotations": [],
-                            "logprobs": []
+                            (keys::TYPE): CONTENT_TYPE_OUTPUT_TEXT,
+                            (keys::TEXT): "",
+                            (keys::ANNOTATIONS): [],
+                            (keys::LOGPROBS): []
                         })
                     };
                     vec![
                         event(
                             EVT_OUTPUT_ITEM_ADDED,
                             serde_json::json!({
-                                "output_index": index,
-                                "item_id": item_id,
-                                "item": {
-                                    "type": ITEM_TYPE_MESSAGE,
-                                    "id": item_id,
-                                    "role": "assistant",
-                                    "status": STATUS_IN_PROGRESS,
-                                    "content": []
+                                (OUTPUT_INDEX): index,
+                                (ITEM_ID): item_id,
+                                (ITEM): {
+                                    (keys::TYPE): ITEM_TYPE_MESSAGE,
+                                    (keys::ID): item_id,
+                                    (keys::ROLE): keys::ASSISTANT,
+                                    (keys::STATUS): STATUS_IN_PROGRESS,
+                                    (keys::CONTENT): []
                                 }
                             }),
                         ),
                         event(
                             EVT_CONTENT_PART_ADDED,
                             serde_json::json!({
-                                "output_index": index,
-                                "item_id": item_id,
+                                (OUTPUT_INDEX): index,
+                                (ITEM_ID): item_id,
                                 // The single text content part of the message item; the deltas and
                                 // the closing `output_text.done`/`content_part.done` all carry the
                                 // SAME `content_index: 0`.
-                                "content_index": 0,
+                                (CONTENT_INDEX): 0,
                                 // A native `content_part.added` opens an EMPTY `output_text` part —
                                 // the text arrives via the deltas and is assembled onto the part at
                                 // `content_part.done`. Shape matches the closing part exactly
                                 // (`type`/`text`/`annotations`/`logprobs` — the spec requires all
                                 // four on an `output_text` part, so the empty part carries `[]`).
-                                "part": part
+                                (PART): part
                             }),
                         ),
                     ]
@@ -791,8 +791,8 @@ impl ProtocolWriter for ResponsesWriter {
                     vec![event(
                         EVT_OUTPUT_ITEM_ADDED,
                         serde_json::json!({
-                            "output_index": index,
-                            "item_id": item_id,
+                            (OUTPUT_INDEX): index,
+                            (ITEM_ID): item_id,
                             // `arguments` is a REQUIRED member of the published `FunctionToolCall`
                             // item (`required: ["type", "call_id", "name", "arguments"]`), so the
                             // item carried on `output_item.added` must already have it: real OpenAI
@@ -802,12 +802,12 @@ impl ProtocolWriter for ResponsesWriter {
                             // it made the opening item fail the item schema, and left an SDK that
                             // seeds its accumulator from the added item concatenating deltas onto
                             // `undefined`.
-                            "item": {
-                                "type": ITEM_TYPE_FUNCTION_CALL,
-                                "id": item_id,
-                                "call_id": id,
-                                "name": name,
-                                "arguments": ""
+                            (ITEM): {
+                                (keys::TYPE): ITEM_TYPE_FUNCTION_CALL,
+                                (keys::ID): item_id,
+                                (CALL_ID): id,
+                                (keys::NAME): name,
+                                (keys::ARGUMENTS): ""
                             }
                         }),
                     )]
@@ -837,22 +837,22 @@ impl ProtocolWriter for ResponsesWriter {
                             event(
                                 EVT_OUTPUT_ITEM_ADDED,
                                 serde_json::json!({
-                                    "output_index": index,
-                                    "item_id": item_id,
-                                    "item": {
-                                        "type": ITEM_TYPE_REASONING,
-                                        "id": item_id,
-                                        "summary": []
+                                    (OUTPUT_INDEX): index,
+                                    (ITEM_ID): item_id,
+                                    (ITEM): {
+                                        (keys::TYPE): ITEM_TYPE_REASONING,
+                                        (keys::ID): item_id,
+                                        (SUMMARY): []
                                     }
                                 }),
                             ),
                             event(
                                 EVT_REASONING_SUMMARY_PART_ADDED,
                                 serde_json::json!({
-                                    "output_index": index,
-                                    "item_id": item_id,
-                                    "summary_index": 0,
-                                    "part": { "type": "summary_text", "text": "" }
+                                    (OUTPUT_INDEX): index,
+                                    (ITEM_ID): item_id,
+                                    (SUMMARY_INDEX): 0,
+                                    (PART): { (keys::TYPE): SUMMARY_TEXT, (keys::TEXT): "" }
                                 }),
                             ),
                         ]
@@ -860,13 +860,13 @@ impl ProtocolWriter for ResponsesWriter {
                         vec![event(
                             EVT_OUTPUT_ITEM_ADDED,
                             serde_json::json!({
-                                "output_index": index,
-                                "item_id": item_id,
-                                "item": {
-                                    "type": ITEM_TYPE_REASONING,
-                                    "id": item_id,
-                                    "summary": [],
-                                    "content": []
+                                (OUTPUT_INDEX): index,
+                                (ITEM_ID): item_id,
+                                (ITEM): {
+                                    (keys::TYPE): ITEM_TYPE_REASONING,
+                                    (keys::ID): item_id,
+                                    (SUMMARY): [],
+                                    (keys::CONTENT): []
                                 }
                             }),
                         )]
@@ -884,10 +884,10 @@ impl ProtocolWriter for ResponsesWriter {
                     vec![event(
                         EVT_REFUSAL_DELTA,
                         serde_json::json!({
-                            "output_index": index,
-                            "item_id": self.item_id_for(ITEM_ID_PREFIX_MSG, *index),
-                            "content_index": 0,
-                            "delta": text
+                            (OUTPUT_INDEX): index,
+                            (ITEM_ID): self.item_id_for(ITEM_ID_PREFIX_MSG, *index),
+                            (CONTENT_INDEX): 0,
+                            (keys::DELTA): text
                         }),
                     )]
                 }
@@ -908,11 +908,11 @@ impl ProtocolWriter for ResponsesWriter {
                     vec![event(
                         EVT_OUTPUT_TEXT_DELTA,
                         serde_json::json!({
-                            "output_index": index,
-                            "item_id": self.item_id_for(ITEM_ID_PREFIX_MSG, *index),
-                            "content_index": 0,
-                            "delta": text,
-                            "logprobs": []
+                            (OUTPUT_INDEX): index,
+                            (ITEM_ID): self.item_id_for(ITEM_ID_PREFIX_MSG, *index),
+                            (CONTENT_INDEX): 0,
+                            (keys::DELTA): text,
+                            (keys::LOGPROBS): []
                         }),
                     )]
                 }
@@ -924,9 +924,9 @@ impl ProtocolWriter for ResponsesWriter {
                     vec![event(
                         EVT_FUNCTION_CALL_ARGS_DELTA,
                         serde_json::json!({
-                            "output_index": index,
-                            "item_id": self.item_id_for(ITEM_ID_PREFIX_FC, *index),
-                            "delta": json_str
+                            (OUTPUT_INDEX): index,
+                            (ITEM_ID): self.item_id_for(ITEM_ID_PREFIX_FC, *index),
+                            (keys::DELTA): json_str
                         }),
                     )]
                 }
@@ -939,18 +939,18 @@ impl ProtocolWriter for ResponsesWriter {
                     // part of the item.
                     self.append_reasoning(*index, text);
                     let (event, part_key) = if self.is_summary_reasoning(*index) {
-                        (EVT_REASONING_SUMMARY_TEXT_DELTA, "summary_index")
+                        (EVT_REASONING_SUMMARY_TEXT_DELTA, SUMMARY_INDEX)
                     } else {
-                        (EVT_REASONING_TEXT_DELTA, "content_index")
+                        (EVT_REASONING_TEXT_DELTA, CONTENT_INDEX)
                     };
                     vec![(
                         event.to_string(),
                         serde_json::json!({
-                            "type": event,
-                            "output_index": index,
-                            "item_id": self.item_id_for(ITEM_ID_PREFIX_RS, *index),
+                            (keys::TYPE): event,
+                            (OUTPUT_INDEX): index,
+                            (ITEM_ID): self.item_id_for(ITEM_ID_PREFIX_RS, *index),
                             part_key: 0,
-                            "delta": text
+                            (keys::DELTA): text
                         }),
                     )]
                 }
@@ -1027,8 +1027,8 @@ impl ProtocolWriter for ResponsesWriter {
                     let summary = self.take_summary_reasoning(*index);
                     // IR-17: the same `summary[]` / `content[]` placement the buffered item uses.
                     let mut item_obj = serde_json::Map::new();
-                    item_obj.insert("type".to_string(), serde_json::json!(ITEM_TYPE_REASONING));
-                    item_obj.insert("id".to_string(), serde_json::json!(item_id));
+                    item_obj.insert(keys::TYPE.to_string(), serde_json::json!(ITEM_TYPE_REASONING));
+                    item_obj.insert(keys::ID.to_string(), serde_json::json!(item_id));
                     super::slots::insert_reasoning_text(
                         &mut item_obj,
                         &text,
@@ -1039,7 +1039,7 @@ impl ProtocolWriter for ResponsesWriter {
                     // same member, on the same item shape, `write_response` emits.
                     if let Some(sig) = self.take_reasoning_signature(*index) {
                         if let Some(obj) = item.as_object_mut() {
-                            obj.insert("encrypted_content".to_string(), serde_json::json!(sig));
+                            obj.insert(ENCRYPTED_CONTENT.to_string(), serde_json::json!(sig));
                         }
                     }
                     self.record_output_item(*index, item.clone());
@@ -1048,27 +1048,27 @@ impl ProtocolWriter for ResponsesWriter {
                             event(
                                 EVT_REASONING_SUMMARY_TEXT_DONE,
                                 serde_json::json!({
-                                    "output_index": index,
-                                    "item_id": item_id,
-                                    "summary_index": 0,
-                                    "text": text,
+                                    (OUTPUT_INDEX): index,
+                                    (ITEM_ID): item_id,
+                                    (SUMMARY_INDEX): 0,
+                                    (keys::TEXT): text,
                                 }),
                             ),
                             event(
                                 EVT_REASONING_SUMMARY_PART_DONE,
                                 serde_json::json!({
-                                    "output_index": index,
-                                    "item_id": item_id,
-                                    "summary_index": 0,
-                                    "part": { "type": "summary_text", "text": text },
+                                    (OUTPUT_INDEX): index,
+                                    (ITEM_ID): item_id,
+                                    (SUMMARY_INDEX): 0,
+                                    (PART): { (keys::TYPE): SUMMARY_TEXT, (keys::TEXT): text },
                                 }),
                             ),
                             event(
                                 EVT_OUTPUT_ITEM_DONE,
                                 serde_json::json!({
-                                    "output_index": index,
-                                    "item_id": item_id,
-                                    "item": item,
+                                    (OUTPUT_INDEX): index,
+                                    (ITEM_ID): item_id,
+                                    (ITEM): item,
                                 }),
                             ),
                         ]
@@ -1077,18 +1077,18 @@ impl ProtocolWriter for ResponsesWriter {
                             event(
                                 EVT_REASONING_TEXT_DONE,
                                 serde_json::json!({
-                                    "output_index": index,
-                                    "item_id": item_id,
-                                    "content_index": 0,
-                                    "text": text,
+                                    (OUTPUT_INDEX): index,
+                                    (ITEM_ID): item_id,
+                                    (CONTENT_INDEX): 0,
+                                    (keys::TEXT): text,
                                 }),
                             ),
                             event(
                                 EVT_OUTPUT_ITEM_DONE,
                                 serde_json::json!({
-                                    "output_index": index,
-                                    "item_id": item_id,
-                                    "item": item,
+                                    (OUTPUT_INDEX): index,
+                                    (ITEM_ID): item_id,
+                                    (ITEM): item,
                                 }),
                             ),
                         ]
@@ -1106,11 +1106,11 @@ impl ProtocolWriter for ResponsesWriter {
                     let item_id = self.item_id_for(ITEM_ID_PREFIX_FC, *index);
                     let accum = self.take_tool_accum(*index).unwrap_or_default();
                     let item = serde_json::json!({
-                        "type": ITEM_TYPE_FUNCTION_CALL,
-                        "id": item_id,
-                        "call_id": accum.call_id,
-                        "name": accum.name,
-                        "arguments": accum.arguments,
+                        (keys::TYPE): ITEM_TYPE_FUNCTION_CALL,
+                        (keys::ID): item_id,
+                        (CALL_ID): accum.call_id,
+                        (keys::NAME): accum.name,
+                        (keys::ARGUMENTS): accum.arguments,
                     });
                     // Record the finalized function-call item so the terminal `response.completed`/
                     // `response.incomplete` event emits the fully assembled `output[]` array (the
@@ -1119,9 +1119,9 @@ impl ProtocolWriter for ResponsesWriter {
                     vec![event(
                         EVT_OUTPUT_ITEM_DONE,
                         serde_json::json!({
-                            "output_index": index,
-                            "item_id": item_id,
-                            "item": item,
+                            (OUTPUT_INDEX): index,
+                            (ITEM_ID): item_id,
+                            (ITEM): item,
                         }),
                     )]
                 } else if self.is_refusal(*index) && self.take_text_open(*index) {
@@ -1133,40 +1133,40 @@ impl ProtocolWriter for ResponsesWriter {
                     let text = self.take_text_accum(*index);
                     let _ = self.take_citation_accum(*index);
                     let _ = self.take_logprob_accum(*index);
-                    let part = serde_json::json!({ "type": "refusal", "refusal": text });
+                    let part = serde_json::json!({ (keys::TYPE): keys::REFUSAL, (keys::REFUSAL): text });
                     let item = serde_json::json!({
-                        "type": ITEM_TYPE_MESSAGE,
-                        "id": item_id,
-                        "role": "assistant",
-                        "status": STATUS_COMPLETED,
-                        "content": [part.clone()]
+                        (keys::TYPE): ITEM_TYPE_MESSAGE,
+                        (keys::ID): item_id,
+                        (keys::ROLE): keys::ASSISTANT,
+                        (keys::STATUS): STATUS_COMPLETED,
+                        (keys::CONTENT): [part.clone()]
                     });
                     self.record_output_item(*index, item.clone());
                     vec![
                         event(
                             EVT_REFUSAL_DONE,
                             serde_json::json!({
-                                "output_index": index,
-                                "item_id": item_id,
-                                "content_index": 0,
-                                "refusal": text,
+                                (OUTPUT_INDEX): index,
+                                (ITEM_ID): item_id,
+                                (CONTENT_INDEX): 0,
+                                (keys::REFUSAL): text,
                             }),
                         ),
                         event(
                             EVT_CONTENT_PART_DONE,
                             serde_json::json!({
-                                "output_index": index,
-                                "item_id": item_id,
-                                "content_index": 0,
-                                "part": part,
+                                (OUTPUT_INDEX): index,
+                                (ITEM_ID): item_id,
+                                (CONTENT_INDEX): 0,
+                                (PART): part,
                             }),
                         ),
                         event(
                             EVT_OUTPUT_ITEM_DONE,
                             serde_json::json!({
-                                "output_index": index,
-                                "item_id": item_id,
-                                "item": item,
+                                (OUTPUT_INDEX): index,
+                                (ITEM_ID): item_id,
+                                (ITEM): item,
                             }),
                         ),
                     ]
@@ -1196,16 +1196,16 @@ impl ProtocolWriter for ResponsesWriter {
                     let part_logprobs = write_responses_part_logprobs(&logprobs);
                     let event_logprobs = write_responses_event_logprobs(&logprobs);
                     let item = serde_json::json!({
-                        "type": ITEM_TYPE_MESSAGE,
-                        "id": item_id,
-                        "role": "assistant",
-                        "status": STATUS_COMPLETED,
-                        "content": [
+                        (keys::TYPE): ITEM_TYPE_MESSAGE,
+                        (keys::ID): item_id,
+                        (keys::ROLE): keys::ASSISTANT,
+                        (keys::STATUS): STATUS_COMPLETED,
+                        (keys::CONTENT): [
                             {
-                                "type": CONTENT_TYPE_OUTPUT_TEXT,
-                                "text": text,
-                                "annotations": annotations,
-                                "logprobs": part_logprobs,
+                                (keys::TYPE): CONTENT_TYPE_OUTPUT_TEXT,
+                                (keys::TEXT): text,
+                                (keys::ANNOTATIONS): annotations,
+                                (keys::LOGPROBS): part_logprobs,
                             }
                         ]
                     });
@@ -1216,35 +1216,35 @@ impl ProtocolWriter for ResponsesWriter {
                         event(
                             EVT_OUTPUT_TEXT_DONE,
                             serde_json::json!({
-                                "output_index": index,
-                                "item_id": item_id,
-                                "content_index": 0,
-                                "text": text,
-                                "logprobs": event_logprobs,
+                                (OUTPUT_INDEX): index,
+                                (ITEM_ID): item_id,
+                                (CONTENT_INDEX): 0,
+                                (keys::TEXT): text,
+                                (keys::LOGPROBS): event_logprobs,
                             }),
                         ),
                         event(
                             EVT_CONTENT_PART_DONE,
                             serde_json::json!({
-                                "output_index": index,
-                                "item_id": item_id,
-                                "content_index": 0,
+                                (OUTPUT_INDEX): index,
+                                (ITEM_ID): item_id,
+                                (CONTENT_INDEX): 0,
                                 // The finalized `output_text` part: SAME shape as the message item's
                                 // single content part (assembled text + annotations + logprobs).
-                                "part": {
-                                    "type": CONTENT_TYPE_OUTPUT_TEXT,
-                                    "text": text,
-                                    "annotations": annotations,
-                                    "logprobs": part_logprobs,
+                                (PART): {
+                                    (keys::TYPE): CONTENT_TYPE_OUTPUT_TEXT,
+                                    (keys::TEXT): text,
+                                    (keys::ANNOTATIONS): annotations,
+                                    (keys::LOGPROBS): part_logprobs,
                                 }
                             }),
                         ),
                         event(
                             EVT_OUTPUT_ITEM_DONE,
                             serde_json::json!({
-                                "output_index": index,
-                                "item_id": item_id,
-                                "item": item,
+                                (OUTPUT_INDEX): index,
+                                (ITEM_ID): item_id,
+                                (ITEM): item,
                             }),
                         ),
                     ]
@@ -1305,33 +1305,33 @@ impl ProtocolWriter for ResponsesWriter {
                 let response_id = self
                     .carried_response_id()
                     .unwrap_or_else(synthesize_response_id);
-                resp_obj.insert("id".to_string(), serde_json::json!(response_id));
-                resp_obj.insert("object".to_string(), serde_json::json!(OBJ_RESPONSE));
+                resp_obj.insert(keys::ID.to_string(), serde_json::json!(response_id));
+                resp_obj.insert(keys::OBJECT.to_string(), serde_json::json!(OBJ_RESPONSE));
                 // Replay the `created_at` captured on this stream's opening `MessageStart` so the
                 // terminal event carries the SAME timestamp as `response.created`. The IR
                 // `MessageDelta` carries no identity, so stamping a fresh reading here would emit
                 // a later value than the opening event — a detectable proxy tell. Fall back to the
                 // caller's stamped reading only if the cell was never populated.
                 resp_obj.insert(
-                    "created_at".to_string(),
+                    keys::CREATED_AT.to_string(),
                     serde_json::json!(self.carried_created_at()),
                 );
-                resp_obj.insert("status".to_string(), serde_json::json!(status));
+                resp_obj.insert(keys::STATUS.to_string(), serde_json::json!(status));
                 // Replay the `model` captured on this stream's opening `MessageStart` so the
                 // terminal event's inner `response` carries the SAME required non-nullable `model`
                 // as `response.created`. The IR `MessageDelta` carries no model, and omitting it
                 // fails a strict SDK decoder and is a distinguishability tell; `carried_model`
                 // falls back to DEFAULT_MODEL only if the cell was never populated.
-                resp_obj.insert("model".to_string(), serde_json::json!(self.carried_model()));
+                resp_obj.insert(keys::MODEL.to_string(), serde_json::json!(self.carried_model()));
 
                 if status == STATUS_INCOMPLETE {
                     let reason = stop_reason
                         .map(write_responses_incomplete_reason)
                         .unwrap_or(INCOMPLETE_REASON_OTHER);
                     let mut incomplete_details = serde_json::Map::new();
-                    incomplete_details.insert("reason".to_string(), serde_json::json!(reason));
+                    incomplete_details.insert(keys::REASON.to_string(), serde_json::json!(reason));
                     resp_obj.insert(
-                        "incomplete_details".to_string(),
+                        INCOMPLETE_DETAILS.to_string(),
                         serde_json::Value::Object(incomplete_details),
                     );
                 }
@@ -1340,7 +1340,7 @@ impl ProtocolWriter for ResponsesWriter {
                 // event's inner `response.usage` must carry the SAME complete shape as the non-stream
                 // body — `total_tokens` plus the required `input_tokens_details`/`output_tokens_details`
                 // objects — so the shared builder produces it (as 0 where nothing to report).
-                resp_obj.insert("usage".to_string(), build_responses_usage(usage));
+                resp_obj.insert(keys::USAGE.to_string(), build_responses_usage(usage));
                 // The native terminal `response.completed`/`response.incomplete` event carries the
                 // FULLY assembled inner `response` object: the official Python/Node SDK reads
                 // `event.response.output` to finalize the assembled `Response`, and `output` is a
@@ -1354,17 +1354,17 @@ impl ProtocolWriter for ResponsesWriter {
                 // likewise REQUIRED and `null` on a non-failed terminal event (a genuine failure
                 // arrives via IrStreamEvent::Error → `response.failed`, never this arm).
                 resp_obj.insert(
-                    "output".to_string(),
+                    keys::OUTPUT.to_string(),
                     serde_json::Value::Array(self.drain_output_items()),
                 );
                 if generation_failed {
                     self.failed.store(true, Ordering::Relaxed);
                     resp_obj.insert(
-                        "error".to_string(),
-                        serde_json::json!({ "code": ERR_TYPE_SERVER_ERROR, "message": "error" }),
+                        keys::ERROR_WORD.to_string(),
+                        serde_json::json!({ (keys::CODE): ERR_TYPE_SERVER_ERROR, (keys::MESSAGE): keys::ERROR_WORD }),
                     );
                 } else {
-                    resp_obj.insert("error".to_string(), serde_json::Value::Null);
+                    resp_obj.insert(keys::ERROR_WORD.to_string(), serde_json::Value::Null);
                 }
                 // RSP-17: the tier that served the response, as `write_response` emits it.
                 if let Some(tier) = usage.detail.service_tier.as_deref().and_then(|t| {
@@ -1373,7 +1373,7 @@ impl ProtocolWriter for ResponsesWriter {
                         t,
                     )
                 }) {
-                    resp_obj.insert("service_tier".to_string(), serde_json::json!(tier));
+                    resp_obj.insert(keys::SERVICE_TIER.to_string(), serde_json::json!(tier));
                 }
                 // Spec-required request-echo members plus `incomplete_details: null` on a completed
                 // response (the incomplete arm above already set the real object, which is kept).
@@ -1399,7 +1399,7 @@ impl ProtocolWriter for ResponsesWriter {
                 };
                 vec![(
                     event_name.to_string(),
-                    serde_json::json!({ "type": event_type, "response": resp_obj }),
+                    serde_json::json!({ (keys::TYPE): event_type, (keys::RESPONSE): resp_obj }),
                 )]
             }
 
@@ -1425,7 +1425,7 @@ impl ProtocolWriter for ResponsesWriter {
                 let message = err
                     .provider_signal
                     .clone()
-                    .unwrap_or_else(|| "error".to_string());
+                    .unwrap_or_else(|| keys::ERROR_WORD.to_string());
                 // `code` MUST be a valid Responses enum, never the free-form human `provider_signal`
                 // (a cross-protocol / transport-abort path carries a sentence like "The response
                 // stream was interrupted." there). A recognized code round-trips; otherwise it is
@@ -1439,27 +1439,27 @@ impl ProtocolWriter for ResponsesWriter {
                     .carried_response_id()
                     .unwrap_or_else(synthesize_response_id);
                 let mut resp_obj = serde_json::Map::new();
-                resp_obj.insert("id".to_string(), serde_json::json!(response_id));
-                resp_obj.insert("object".to_string(), serde_json::json!(OBJ_RESPONSE));
+                resp_obj.insert(keys::ID.to_string(), serde_json::json!(response_id));
+                resp_obj.insert(keys::OBJECT.to_string(), serde_json::json!(OBJ_RESPONSE));
                 // Replay the captured `created_at` so `response.failed` carries the SAME timestamp
                 // as `response.created` (a native stream never changes it mid-flight); falls back
                 // to the current time only if the failure preceded any `MessageStart`.
                 resp_obj.insert(
-                    "created_at".to_string(),
+                    keys::CREATED_AT.to_string(),
                     serde_json::json!(self.carried_created_at()),
                 );
                 // Replay the captured `model` so `response.failed`'s inner `response` carries the
                 // SAME required non-nullable `model` as `response.created`; falls back to
                 // DEFAULT_MODEL only if the failure preceded any `MessageStart`.
-                resp_obj.insert("model".to_string(), serde_json::json!(self.carried_model()));
-                resp_obj.insert("status".to_string(), serde_json::json!(STATUS_FAILED));
+                resp_obj.insert(keys::MODEL.to_string(), serde_json::json!(self.carried_model()));
+                resp_obj.insert(keys::STATUS.to_string(), serde_json::json!(STATUS_FAILED));
                 // A native terminal event's inner `response` always carries `output` (REQUIRED by
                 // the SDK's typed `Response`); a failed response produced no assistant items, so
                 // emit a present-but-empty array — never omit it.
-                resp_obj.insert("output".to_string(), serde_json::json!([]));
+                resp_obj.insert(keys::OUTPUT.to_string(), serde_json::json!([]));
                 resp_obj.insert(
-                    "error".to_string(),
-                    serde_json::json!({ "code": code, "message": message }),
+                    keys::ERROR_WORD.to_string(),
+                    serde_json::json!({ (keys::CODE): code, (keys::MESSAGE): message }),
                 );
                 // The same spec-required members every Response object carries.
                 fill_required_response_members(&mut resp_obj, self.carried_request_echo().as_ref());
@@ -1467,7 +1467,7 @@ impl ProtocolWriter for ResponsesWriter {
                 self.failed.store(true, Ordering::Relaxed);
                 vec![event(
                     EVT_RESPONSE_FAILED,
-                    serde_json::json!({ "response": resp_obj }),
+                    serde_json::json!({ (keys::RESPONSE): resp_obj }),
                 )]
             }
         };
@@ -1537,11 +1537,11 @@ impl ProtocolWriter for ResponsesWriter {
                         continue;
                     }
                     output_arr.push(serde_json::json!({
-                        "type": ITEM_TYPE_MESSAGE,
-                        "id": synthesize_item_id(ITEM_ID_PREFIX_MSG),
-                        "role": "assistant",
-                        "status": STATUS_COMPLETED,
-                        "content": [{ "type": "refusal", "refusal": text }]
+                        (keys::TYPE): ITEM_TYPE_MESSAGE,
+                        (keys::ID): synthesize_item_id(ITEM_ID_PREFIX_MSG),
+                        (keys::ROLE): keys::ASSISTANT,
+                        (keys::STATUS): STATUS_COMPLETED,
+                        (keys::CONTENT): [{ (keys::TYPE): keys::REFUSAL, (keys::REFUSAL): text }]
                     }));
                 }
                 crate::codec::ir::IrBlock::Text {
@@ -1562,15 +1562,15 @@ impl ProtocolWriter for ResponsesWriter {
                     // position (mirroring the per-index message items the stream emits). The
                     // spec requires `logprobs` on every `output_text` part.
                     output_arr.push(serde_json::json!({
-                        "type": ITEM_TYPE_MESSAGE,
-                        "id": synthesize_item_id(ITEM_ID_PREFIX_MSG),
-                        "role": "assistant",
-                        "status": STATUS_COMPLETED,
-                        "content": [{
-                            "type": CONTENT_TYPE_OUTPUT_TEXT,
-                            "text": text,
-                            "annotations": annotations,
-                            "logprobs": logprobs
+                        (keys::TYPE): ITEM_TYPE_MESSAGE,
+                        (keys::ID): synthesize_item_id(ITEM_ID_PREFIX_MSG),
+                        (keys::ROLE): keys::ASSISTANT,
+                        (keys::STATUS): STATUS_COMPLETED,
+                        (keys::CONTENT): [{
+                            (keys::TYPE): CONTENT_TYPE_OUTPUT_TEXT,
+                            (keys::TEXT): text,
+                            (keys::ANNOTATIONS): annotations,
+                            (keys::LOGPROBS): logprobs
                         }]
                     }));
                 }
@@ -1580,15 +1580,15 @@ impl ProtocolWriter for ResponsesWriter {
                     // Verbatim for a raw `Value::String` (avoid double-encoding), same as the Chat writer.
                     let args_str = crate::codec::dialect::tool_arguments_to_string(input);
                     output_arr.push(serde_json::json!({
-                        "type": ITEM_TYPE_FUNCTION_CALL,
+                        (keys::TYPE): ITEM_TYPE_FUNCTION_CALL,
                         // Native function_call items carry an item-level opaque `id` (`fc_…`) DISTINCT
                         // from `call_id` — the streaming `output_item.done` emits it, so the non-stream
                         // body must too or a typed SDK reading `item.id` sees a missing field (a proxy
                         // tell). The IR has no per-item id, so synthesize one of the native shape.
-                        "id": synthesize_item_id(ITEM_ID_PREFIX_FC),
-                        "call_id": id,
-                        "name": name,
-                        "arguments": args_str
+                        (keys::ID): synthesize_item_id(ITEM_ID_PREFIX_FC),
+                        (CALL_ID): id,
+                        (keys::NAME): name,
+                        (keys::ARGUMENTS): args_str
                     }));
                 }
                 // REASONING: write an IR Thinking block back as a native Responses `reasoning`
@@ -1616,18 +1616,18 @@ impl ProtocolWriter for ResponsesWriter {
                         continue;
                     }
                     let mut item = serde_json::Map::new();
-                    item.insert("type".to_string(), serde_json::json!(ITEM_TYPE_REASONING));
+                    item.insert(keys::TYPE.to_string(), serde_json::json!(ITEM_TYPE_REASONING));
                     item.insert(
-                        "id".to_string(),
+                        keys::ID.to_string(),
                         serde_json::json!(synthesize_item_id(ITEM_ID_PREFIX_RS)),
                     );
-                    item.insert("summary".to_string(), serde_json::Value::Array(Vec::new()));
+                    item.insert(SUMMARY.to_string(), serde_json::Value::Array(Vec::new()));
                     item.insert(
-                        "content".to_string(),
-                        serde_json::json!([{ "type": CONTENT_TYPE_REASONING_TEXT, "text": text }]),
+                        keys::CONTENT.to_string(),
+                        serde_json::json!([{ (keys::TYPE): CONTENT_TYPE_REASONING_TEXT, (keys::TEXT): text }]),
                     );
                     if let Some(sig) = emit_sig {
-                        item.insert("encrypted_content".to_string(), serde_json::json!(sig));
+                        item.insert(ENCRYPTED_CONTENT.to_string(), serde_json::json!(sig));
                     }
                     output_arr.push(serde_json::Value::Object(item));
                 }
@@ -1658,26 +1658,26 @@ impl ProtocolWriter for ResponsesWriter {
         // `created_at` is the Responses field name (the official SDK's `Response.created_at`).
         let id = resp.id.clone().unwrap_or_else(synthesize_response_id);
         let created_at = resp.created.unwrap_or(self.stamped_created_at);
-        obj.insert("id".to_string(), serde_json::json!(id));
-        obj.insert("object".to_string(), serde_json::json!(OBJ_RESPONSE));
-        obj.insert("created_at".to_string(), serde_json::json!(created_at));
-        obj.insert("status".to_string(), serde_json::json!(status));
+        obj.insert(keys::ID.to_string(), serde_json::json!(id));
+        obj.insert(keys::OBJECT.to_string(), serde_json::json!(OBJ_RESPONSE));
+        obj.insert(keys::CREATED_AT.to_string(), serde_json::json!(created_at));
+        obj.insert(keys::STATUS.to_string(), serde_json::json!(status));
         // model that served the response (preserved across cross-protocol translation). The
         // official SDK types `Response.model` as a REQUIRED non-nullable string, so emit it
         // unconditionally with the DEFAULT_MODEL fallback when the IR carries none rather than
         // omitting the key — omission breaks strict decoders and is a distinguishability tell.
         obj.insert(
-            "model".to_string(),
+            keys::MODEL.to_string(),
             serde_json::json!(resp.model.as_deref().unwrap_or(DEFAULT_MODEL)),
         );
-        obj.insert("output".to_string(), serde_json::Value::Array(output_arr));
+        obj.insert(keys::OUTPUT.to_string(), serde_json::Value::Array(output_arr));
         // NOTE `output_text` is NOT emitted: it is an SDK-COMPUTED convenience property
         // (`Response.output_text` aggregates the `output[]` message text parts), not a field a native
         // `/v1/responses` HTTP body serializes. Emitting it would be an extra key real OpenAI never
         // sends — a distinguishability tell, the same class of leak the `cache_write_tokens` removal
         // fixed. Its DATA is carried losslessly by the assistant text in `output[]` above, from which
         // any SDK reconstructs `output_text`; see `responses_response_output_and_output_text_emitted`.
-        obj.insert("usage".to_string(), usage_value);
+        obj.insert(keys::USAGE.to_string(), usage_value);
         // RSP-17: the tier that SERVED the response (Anthropic `usage.service_tier`, or a Responses
         // backend's own), in the Responses vocabulary; omitted when the IR carries none or a tier
         // this vocabulary has no word for.
@@ -1687,7 +1687,7 @@ impl ProtocolWriter for ResponsesWriter {
                 t,
             )
         }) {
-            obj.insert("service_tier".to_string(), serde_json::json!(tier));
+            obj.insert(keys::SERVICE_TIER.to_string(), serde_json::json!(tier));
         }
         // The official SDK types `Response.error` as a REQUIRED nullable field present on EVERY
         // Response object: `null` on success/incomplete, a populated object on failure. The
@@ -1697,7 +1697,7 @@ impl ProtocolWriter for ResponsesWriter {
         // `/v1/responses` body always carries `error`). A genuine upstream failure is surfaced as
         // an error envelope via `write_error`, never through this success/incomplete body, so `null`
         // is correct here.
-        obj.insert("error".to_string(), serde_json::Value::Null);
+        obj.insert(keys::ERROR_WORD.to_string(), serde_json::Value::Null);
 
         if status == STATUS_INCOMPLETE {
             let reason = resp
@@ -1705,9 +1705,9 @@ impl ProtocolWriter for ResponsesWriter {
                 .map(write_responses_incomplete_reason)
                 .unwrap_or(INCOMPLETE_REASON_OTHER);
             let mut incomplete_details = serde_json::Map::new();
-            incomplete_details.insert("reason".to_string(), serde_json::json!(reason));
+            incomplete_details.insert(keys::REASON.to_string(), serde_json::json!(reason));
             obj.insert(
-                "incomplete_details".to_string(),
+                INCOMPLETE_DETAILS.to_string(),
                 serde_json::Value::Object(incomplete_details),
             );
         }
@@ -1774,10 +1774,10 @@ impl ProtocolWriter for ResponsesWriter {
         };
 
         serde_json::json!({
-            "error": {
-                "message": message,
-                "type": error_type,
-                "code": bearer_error_code(error_type),
+            (keys::ERROR_WORD): {
+                (keys::MESSAGE): message,
+                (keys::TYPE): error_type,
+                (keys::CODE): bearer_error_code(error_type),
                 "param": serde_json::Value::Null,
             }
         })
@@ -1804,7 +1804,7 @@ fn input_image_part(
 ) -> Option<serde_json::Value> {
     let mut part = input_image_source_part(source)?;
     if let (Some(detail), Some(obj)) = (detail, part.as_object_mut()) {
-        obj.insert("detail".to_string(), serde_json::json!(detail.as_str()));
+        obj.insert(keys::DETAIL.to_string(), serde_json::json!(detail.as_str()));
     }
     Some(part)
 }
@@ -1815,14 +1815,14 @@ fn input_image_source_part(source: &crate::codec::ir::IrImageSource) -> Option<s
     // one namespace — re-emits as the native `input_image.file_id` form (a data URI would corrupt
     // it).
     if let Some(id) = super::super::openai_annotations::openai_file_id(source) {
-        return Some(serde_json::json!({ "type": "input_image", "file_id": id }));
+        return Some(serde_json::json!({ (keys::TYPE): INPUT_IMAGE, (keys::FILE_ID): id }));
     }
     match source {
         crate::codec::ir::IrImageSource::Vendor { vendor, value } if *vendor == VENDOR_NAME => {
             value
-                .get("file_id")
+                .get(keys::FILE_ID)
                 .and_then(|i| i.as_str())
-                .map(|id| serde_json::json!({ "type": "input_image", "file_id": id }))
+                .map(|id| serde_json::json!({ (keys::TYPE): INPUT_IMAGE, (keys::FILE_ID): id }))
         }
         // A foreign vendor reference (a Bedrock s3Location) has no Responses analog — drop with a
         // warn rather than corrupt the block.
@@ -1835,7 +1835,7 @@ fn input_image_source_part(source: &crate::codec::ir::IrImageSource) -> Option<s
         }
         // A URL/base64 image reconstructs the original `image_url`.
         url_or_b64 => super::super::ir_encode::image_url_from_ir(url_or_b64)
-            .map(|image_url| serde_json::json!({ "type": "input_image", "image_url": image_url })),
+            .map(|image_url| serde_json::json!({ (keys::TYPE): INPUT_IMAGE, (keys::IMAGE_URL): image_url })),
     }
 }
 
@@ -1857,16 +1857,16 @@ fn input_file_part(
         return None;
     }
     let mut part = serde_json::Map::new();
-    part.insert("type".to_string(), serde_json::json!("input_file"));
+    part.insert(keys::TYPE.to_string(), serde_json::json!(INPUT_FILE));
     match source {
         crate::codec::ir::IrImageSource::Base64 { media_type, data } => {
             part.insert(
-                "file_data".to_string(),
+                keys::FILE_DATA.to_string(),
                 serde_json::json!(format!("data:{media_type};base64,{data}")),
             );
         }
         crate::codec::ir::IrImageSource::Url(url) => {
-            part.insert("file_url".to_string(), serde_json::json!(url));
+            part.insert(FILE_URL.to_string(), serde_json::json!(url));
         }
         // SHR-03: an OpenAI Files id (this dialect's own `input_file.file_id` or a Chat
         // `file.file_id` — one namespace) re-emits as `input_file.file_id`.
@@ -1874,13 +1874,13 @@ fn input_file_part(
             if super::super::openai_annotations::openai_file_id(source).is_some() =>
         {
             let id = super::super::openai_annotations::openai_file_id(source)?;
-            part.insert("file_id".to_string(), serde_json::json!(id));
+            part.insert(keys::FILE_ID.to_string(), serde_json::json!(id));
         }
         // This protocol's OWN uploads handle round-trips verbatim; a FOREIGN handle (a Bedrock
         // s3Location, an Anthropic Files-API id) is unresolvable here.
         crate::codec::ir::IrImageSource::Vendor { vendor, value } if *vendor == VENDOR_NAME => {
-            let id = value.get("file_id").and_then(|i| i.as_str())?;
-            part.insert("file_id".to_string(), serde_json::json!(id));
+            let id = value.get(keys::FILE_ID).and_then(|i| i.as_str())?;
+            part.insert(keys::FILE_ID.to_string(), serde_json::json!(id));
         }
         crate::codec::ir::IrImageSource::Vendor { vendor, .. } => {
             tracing::warn!(
@@ -1892,7 +1892,7 @@ fn input_file_part(
         }
     }
     if let Some(n) = name {
-        part.insert("filename".to_string(), serde_json::json!(n));
+        part.insert(keys::FILENAME.to_string(), serde_json::json!(n));
     }
     Some(serde_json::Value::Object(part))
 }
@@ -1935,7 +1935,7 @@ fn function_call_output_value(content: &[crate::codec::ir::IrBlock]) -> serde_js
             other => {
                 if let Some(text) = text_of(other) {
                     parts
-                        .push(serde_json::json!({ "type": CONTENT_TYPE_INPUT_TEXT, "text": text }));
+                        .push(serde_json::json!({ (keys::TYPE): CONTENT_TYPE_INPUT_TEXT, (keys::TEXT): text }));
                 }
             }
         }

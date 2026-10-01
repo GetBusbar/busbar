@@ -16,7 +16,7 @@ pub struct ResponsesRequestHandler;
 /// This protocol's OWN chat instance — delete this line (and the registry arm) and this
 /// protocol's chat 404s via the standard no-handler path; everything else keeps working.
 static CHAT: super::super::chat_handle::ChatOperation =
-    super::super::chat_handle::ChatOperation("responses");
+    super::super::chat_handle::ChatOperation(super::VENDOR_NAME);
 
 /// THE RESPONSES API'S ROW OF THE SUPPORT MATRIX — one verb; every other verb is the standard
 /// no-handler 404.
@@ -24,7 +24,7 @@ static CELLS: &[busbar_contract::codec::Cell] = &[(OpVerb::CHAT, &CHAT)];
 
 impl RequestHandler for ResponsesRequestHandler {
     fn protocol_name(&self) -> &'static str {
-        "responses"
+        super::VENDOR_NAME
     }
     fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
         busbar_contract::codec::cell_of(CELLS, op)
