@@ -64,12 +64,7 @@ static PATHS: &[(OpVerb, &str)] = &[
 ];
 
 impl RequestHandler for OpenAiRequestHandler {
-    fn protocol_name(&self) -> &'static str {
-        super::VENDOR_NAME
-    }
-    fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
-        busbar_contract::codec::cell_of(CELLS, op)
-    }
+    dialect_identity!(super::VENDOR_NAME);
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         // The fallback is unreachable in practice: a verb with no cell above never reaches egress
         // here. It keeps the pre-1.6.0 answer verbatim rather than inventing a new one.

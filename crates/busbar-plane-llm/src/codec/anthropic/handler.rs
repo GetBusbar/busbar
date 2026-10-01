@@ -6,7 +6,7 @@
 //! every other operation.
 
 use busbar_contract::codec::EgressCtx;
-use busbar_contract::codec::{OperationHandler, RequestHandler};
+use busbar_contract::codec::RequestHandler;
 use busbar_contract::operation::OpVerb;
 
 /// Endpoint paths — each appears on BOTH the egress side (`upstream_path`) and the ingress match
@@ -26,12 +26,7 @@ static CHAT: super::super::chat_handle::ChatOperation =
 static CELLS: &[busbar_contract::codec::Cell] = &[(OpVerb::CHAT, &CHAT)];
 
 impl RequestHandler for AnthropicRequestHandler {
-    fn protocol_name(&self) -> &'static str {
-        super::VENDOR_NAME
-    }
-    fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
-        busbar_contract::codec::cell_of(CELLS, op)
-    }
+    dialect_identity!(super::VENDOR_NAME);
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         match ctx.path_base {
             // Claude-on-Vertex: the model rides the URL via `:rawPredict` / `:streamRawPredict` (native

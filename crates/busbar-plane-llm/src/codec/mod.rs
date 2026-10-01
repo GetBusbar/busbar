@@ -90,6 +90,32 @@ macro_rules! leaf_op {
     };
 }
 
+/// A dialect's neutral codec facade as a STATIC, so its `DECL` hands out a `&'static dyn` borrow
+/// (pure memory, zero alloc per `dialect()` call) — the seam's perf contract.
+macro_rules! dialect_codec {
+    ($name:expr) => {{
+        static CODEC: $crate::codec::proto_codec::DialectRef =
+            $crate::codec::proto_codec::dialect_ref($name);
+        Some(&CODEC)
+    }};
+}
+
+/// The two `RequestHandler` answers every dialect gives alike: its protocol name, and the leaf
+/// cell for an operation from its `CELLS` table.
+macro_rules! dialect_identity {
+    ($name:expr) => {
+        fn protocol_name(&self) -> &'static str {
+            $name
+        }
+        fn operation_handler(
+            &self,
+            op: busbar_contract::operation::OpVerb,
+        ) -> Option<&dyn busbar_contract::codec::OperationHandler> {
+            busbar_contract::codec::cell_of(CELLS, op)
+        }
+    };
+}
+
 pub mod anthropic;
 pub mod bedrock;
 pub mod cohere;

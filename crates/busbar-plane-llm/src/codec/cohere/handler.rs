@@ -49,12 +49,7 @@ static PATHS: &[(OpVerb, &str)] = &[
 ];
 
 impl RequestHandler for CohereRequestHandler {
-    fn protocol_name(&self) -> &'static str {
-        VENDOR_NAME
-    }
-    fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
-        busbar_contract::codec::cell_of(CELLS, op)
-    }
+    dialect_identity!(VENDOR_NAME);
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         // Unreachable: `operation_handler` returns `None` for a verb absent from the table, so
         // egress path resolution is never reached for one. The fallback is the pre-1.6.0 answer.

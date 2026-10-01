@@ -101,12 +101,7 @@ fn residual_claims(path: &str) -> Option<busbar_contract::protocol::ClaimStrengt
 /// OPENAI'S DECLARATION. See `proto::registry` for what each field replaces.
 pub const DECL: ProtocolDecl = ProtocolDecl {
     name: VENDOR_NAME,
-    codec: {
-        // The dialect's neutral codec facade as a STATIC, so the decl hands out a `&'static dyn`
-        // borrow (pure memory, zero alloc per `dialect()` call) — the seam's perf contract.
-        static CODEC: super::proto_codec::DialectRef = super::proto_codec::dialect_ref(VENDOR_NAME);
-        Some(&CODEC)
-    },
+    codec: dialect_codec!(VENDOR_NAME),
     handler: Some(&handler::OpenAiRequestHandler),
     verbs: &[
         busbar_contract::operation::OpVerb::CHAT,

@@ -7,6 +7,21 @@ fn host_now() -> u64 {
     busbar_contract::codec::wall_clock_now().unwrap_or(0)
 }
 
+/// One streamed `chat.completion.chunk` frame carrying `delta` on its single choice, unfinished.
+fn delta_chunk(delta: serde_json::Value) -> Option<(String, serde_json::Value)> {
+    Some((
+        String::new(),
+        serde_json::json!({
+            (keys::OBJECT): OBJ_CHUNK,
+            (CHOICES): [{
+                (keys::INDEX): 0,
+                (keys::DELTA): delta,
+                (keys::FINISH_REASON): null
+            }]
+        }),
+    ))
+}
+
 impl ProtocolWriter for OpenAiWriter {
     fn probe_request(&self) -> serde_json::Value {
         // The ping IR is built by the plugin (ir_encode::ping_request); this dialect serializes it
@@ -663,15 +678,7 @@ impl ProtocolWriter for OpenAiWriter {
                             (keys::FUNCTION): { (keys::NAME): name, (keys::ARGUMENTS): "" }
                         }]
                     });
-                    let chunk_obj = serde_json::json!({
-                        (keys::OBJECT): OBJ_CHUNK,
-                        (CHOICES): [{
-                            (keys::INDEX): 0,
-                            (keys::DELTA): delta_obj,
-                            (keys::FINISH_REASON): null
-                        }]
-                    });
-                    Some(("".to_string(), chunk_obj))
+                    delta_chunk(delta_obj)
                 }
                 // OpenAI Chat has no streamed thinking/redacted-thinking/image start; a redacted block
                 // is dropped exactly like plaintext thinking (no encrypted-reasoning output shape).
@@ -686,15 +693,7 @@ impl ProtocolWriter for OpenAiWriter {
                     } else {
                         serde_json::json!({ (keys::CONTENT): text })
                     };
-                    let chunk_obj = serde_json::json!({
-                        (keys::OBJECT): OBJ_CHUNK,
-                        (CHOICES): [{
-                            (keys::INDEX): 0,
-                            (keys::DELTA): delta_obj,
-                            (keys::FINISH_REASON): null
-                        }]
-                    });
-                    Some(("".to_string(), chunk_obj))
+                    delta_chunk(delta_obj)
                 }
                 crate::codec::ir::IrDelta::InputJsonDelta(json) => {
                     // Mirror the CANONICAL raw index emitted by the matching BlockStart so argument
@@ -706,15 +705,7 @@ impl ProtocolWriter for OpenAiWriter {
                             (keys::FUNCTION): { (keys::ARGUMENTS): json }
                         }]
                     });
-                    let chunk_obj = serde_json::json!({
-                        (keys::OBJECT): OBJ_CHUNK,
-                        (CHOICES): [{
-                            (keys::INDEX): 0,
-                            (keys::DELTA): delta_obj,
-                            (keys::FINISH_REASON): null
-                        }]
-                    });
-                    Some(("".to_string(), chunk_obj))
+                    delta_chunk(delta_obj)
                 }
                 crate::codec::ir::IrDelta::ThinkingDelta(_) => {
                     // Lossy-by-necessity: OpenAI has no thinking stream equivalent.
@@ -744,17 +735,7 @@ impl ProtocolWriter for OpenAiWriter {
                     if annotations.is_empty() {
                         return None;
                     }
-                    Some((
-                        "".to_string(),
-                        serde_json::json!({
-                            (keys::OBJECT): OBJ_CHUNK,
-                            (CHOICES): [{
-                                (keys::INDEX): 0,
-                                (keys::DELTA): { (keys::ANNOTATIONS): annotations },
-                                (keys::FINISH_REASON): null
-                            }]
-                        }),
-                    ))
+                    delta_chunk(serde_json::json!({ (keys::ANNOTATIONS): annotations }))
                 }
                 crate::codec::ir::IrDelta::LogprobsDelta(lps) => {
                     // Streamed logprobs (e.g. a Gemini backend's per-chunk `logprobsResult`) in

@@ -5,7 +5,7 @@
 //! operations stay `None` = no-handler 404. Chat dispatches through the same registry as every op.
 
 use busbar_contract::codec::EgressCtx;
-use busbar_contract::codec::{OperationHandler, RequestHandler};
+use busbar_contract::codec::RequestHandler;
 use busbar_contract::operation::OpVerb;
 
 /// Endpoint paths — each appears on BOTH the egress side (`upstream_path`) and the ingress match
@@ -23,12 +23,7 @@ static CHAT: super::super::chat_handle::ChatOperation =
 static CELLS: &[busbar_contract::codec::Cell] = &[(OpVerb::CHAT, &CHAT)];
 
 impl RequestHandler for ResponsesRequestHandler {
-    fn protocol_name(&self) -> &'static str {
-        super::VENDOR_NAME
-    }
-    fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
-        busbar_contract::codec::cell_of(CELLS, op)
-    }
+    dialect_identity!(super::VENDOR_NAME);
     fn upstream_path(&self, _ctx: &EgressCtx) -> String {
         PATH_RESPONSES.into()
     }

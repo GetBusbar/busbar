@@ -659,52 +659,28 @@ impl ProtocolReader for GeminiReader {
             extra.insert(keys::MODEL.to_string(), model_val.clone());
         }
 
-        for (key, value) in obj.iter() {
-            if !crate::codec::carry::models(super::map::REQUEST, key) {
-                extra.insert(key.clone(), value.clone());
-            }
-        }
+        crate::codec::carry::keep_unmodelled(super::map::REQUEST, obj, &mut extra);
 
         let mut ir = crate::codec::ir::IrRequest {
             reasoning,
-            reasoning_budgets: None,
             logprobs,
             top_logprobs,
-            user: None,
-            parallel_tool_calls: None,
             system: system_blocks,
-            // Gemini's `systemInstruction` is its own top-level wire field, never folded out of
-            // `contents` — the 1.5.5 raw-array count and the IR-normalized count already agree.
-            system_turns_folded: 0,
-            system_folds: Vec::new(),
             messages,
             tools,
             max_tokens,
-            temperature: None,
-            top_p: None,
-            top_k: None,
-            stop: Vec::new(),
             tool_choice,
             stream,
-            frequency_penalty: None,
-            presence_penalty: None,
-            seed: None,
-            n: None,
             response_format,
             extra,
             // Gemini `labels` (IR-03); the raw copy also stays in `extra` for same-protocol
             // byte identity.
             metadata: read_gemini_labels(obj.get(FIELD_LABELS)),
-            service_tier: None,
-            store: None,
-            safety_identifier: None,
-            prompt_cache_key: None,
-            verbosity: None,
             allowed_tools,
             hosted_tools,
-            system_role: None,
             // `generationConfig.responseModalities` (IR-19); the raw copy rides `extra` too.
             output_modalities: read_gemini_response_modalities(obj.get(FIELD_GENERATION_CONFIG)),
+            ..Default::default()
         };
         crate::codec::carry::read_fields(super::map::REQUEST, obj, &mut ir);
         Ok(ir)

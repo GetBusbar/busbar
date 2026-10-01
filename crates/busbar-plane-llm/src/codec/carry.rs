@@ -649,6 +649,16 @@ fn warn_slot(slot: Slot, text: &str, value: bool, req: &IrRequest) {
     }
 }
 
+/// Keep in `extra` every top-level member of `obj` that `table` does not model (same-dialect
+/// fidelity for what the dialect has no row or structural code for).
+pub fn keep_unmodelled(table: Table, obj: &Map<String, Value>, extra: &mut Map<String, Value>) {
+    for (key, value) in obj {
+        if !models(table, key) {
+            extra.insert(key.clone(), value.clone());
+        }
+    }
+}
+
 /// Whether `key` is a top-level member `table` models (the reader keeps every other member in
 /// `extra`).
 pub fn models(table: Table, key: &str) -> bool {

@@ -89,12 +89,7 @@ pub fn is_converse_response(v: &Value) -> bool {
 }
 
 impl RequestHandler for BedrockRequestHandler {
-    fn protocol_name(&self) -> &'static str {
-        super::VENDOR_NAME
-    }
-    fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
-        busbar_contract::codec::cell_of(CELLS, op)
-    }
+    dialect_identity!(super::VENDOR_NAME);
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         // Chat uses the Converse API (stream-aware); everything else rides InvokeModel. The
         // discriminator is this protocol's OWN verb constant, compared against this protocol's OWN

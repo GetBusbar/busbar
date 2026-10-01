@@ -56,12 +56,7 @@ static ACTIONS: &[(OpVerb, &str)] = &[
 ];
 
 impl RequestHandler for GeminiRequestHandler {
-    fn protocol_name(&self) -> &'static str {
-        COUNT_LABEL
-    }
-    fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
-        busbar_contract::codec::cell_of(CELLS, op)
-    }
+    dialect_identity!(COUNT_LABEL);
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         let m = ctx.model;
         // The base segment before `/{model}:verb`. Native Gemini is `/v1beta/models`; a provider may

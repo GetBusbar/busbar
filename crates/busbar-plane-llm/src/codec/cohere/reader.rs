@@ -629,11 +629,7 @@ impl ProtocolReader for CohereReader {
         // read_request call (the per-request allocation/hashing was wasted work on the ingress hot
         // path — same fix the Gemini/Bedrock readers want). The set is immutable, so a OnceLock is
         // safe to share across threads.
-        for (key, value) in obj.iter() {
-            if !crate::codec::carry::models(super::map::REQUEST, key) {
-                extra.insert(key.clone(), value.clone());
-            }
-        }
+        crate::codec::carry::keep_unmodelled(super::map::REQUEST, obj, &mut extra);
 
         // The reasoning ASK: Cohere v2 `thinking: {type:"enabled", token_budget:N}` is a numeric
         // thinking-token budget, the IR's `Budget` (the Anthropic `budget_tokens` / Gemini
@@ -693,45 +689,19 @@ impl ProtocolReader for CohereReader {
 
         let mut ir = crate::codec::ir::IrRequest {
             reasoning,
-            reasoning_budgets: None,
             // Cohere v2 request `logprobs` (bool) promoted so the ask carries cross-protocol.
             logprobs,
-            top_logprobs: None,
-            user: None,
-            parallel_tool_calls: None,
             system: system_blocks,
             system_turns_folded,
             system_folds,
             messages,
             tools,
             max_tokens,
-            temperature: None,
-            top_p: None,
-            top_k: None,
-            stop: Vec::new(),
             tool_choice,
             stream,
-            frequency_penalty: None,
-            presence_penalty: None,
-            seed: None,
-            // `n` (candidate count) is intentionally omitted: the Cohere v2 `/v2/chat` API has NO
-            // `num_generations`/`n` parameter (it was a v1 Generate-API field, removed in v2 — the
-            // documented way to get N candidates is to call chat N times). So there is nothing native
-            // to read here, and the writer emits nothing — same as Anthropic/Bedrock/Responses. (An
-            // earlier ir.rs docstring wrongly claimed Cohere `num_generations` support; corrected.)
-            n: None,
             response_format,
             extra,
-            metadata: None,
-            service_tier: None,
-            store: None,
-            safety_identifier: None,
-            prompt_cache_key: None,
-            verbosity: None,
-            allowed_tools: None,
-            hosted_tools: Vec::new(),
-            system_role: None,
-            output_modalities: None,
+            ..Default::default()
         };
         crate::codec::carry::read_fields(super::map::REQUEST, obj, &mut ir);
         Ok(ir)

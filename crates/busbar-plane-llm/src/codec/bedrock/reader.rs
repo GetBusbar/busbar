@@ -194,11 +194,7 @@ impl ProtocolReader for BedrockReader {
         // `tools` array is still parsed into the structured IR below for cross-protocol egress; the raw
         // capture is what makes a Bedrock->Bedrock passthrough re-emit `toolChoice` faithfully.
         let mut extra = serde_json::Map::new();
-        for (key, value) in obj.iter() {
-            if !crate::codec::carry::models(super::map::REQUEST, key) {
-                extra.insert(key.clone(), value.clone());
-            }
-        }
+        crate::codec::carry::keep_unmodelled(super::map::REQUEST, obj, &mut extra);
 
         // Captures native `cachePoint` markers (with their ORIGINAL absolute array index) so the
         // writer can re-emit them at the same position on a same-protocol passthrough. See
@@ -740,23 +736,11 @@ impl ProtocolReader for BedrockReader {
 
         let mut ir = crate::codec::ir::IrRequest {
             reasoning,
-            reasoning_budgets: None,
-            logprobs: None,
-            top_logprobs: None,
-            user: None,
-            parallel_tool_calls: None,
             system: system_blocks,
-            // Bedrock's Converse `system` is its own top-level wire field, never folded out of
-            // `messages` — the 1.5.5 raw-array count and the IR-normalized count already agree.
-            system_turns_folded: 0,
-            system_folds: Vec::new(),
             messages,
             tools,
             max_tokens,
-            temperature: None,
-            top_p: None,
             top_k,
-            stop: Vec::new(),
             tool_choice,
             // Bedrock's native Converse request body has no `stream` field — streaming is selected
             // by the endpoint (converse vs converse-stream). The Bedrock ingress route therefore
@@ -768,26 +752,12 @@ impl ProtocolReader for BedrockReader {
             // (a native Bedrock egress reads the flag from the endpoint, not the body, so this is
             // a no-op for the same-protocol path).
             stream: obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false),
-            frequency_penalty: None,
-            presence_penalty: None,
-            seed: None,
-            n: None,
             response_format,
             // IR-03: `requestMetadata` crosses as the typed metadata (the raw object stays in
             // `extra` for the same-protocol re-emission).
             metadata: read_bedrock_request_metadata(obj),
             extra,
-            // BED-14 / IR-04: Converse `serviceTier.type`, a row of the mapping file read below;
-            // `reserved` has no IR tier and rides `extra` only.
-            service_tier: None,
-            store: None,
-            safety_identifier: None,
-            prompt_cache_key: None,
-            verbosity: None,
-            allowed_tools: None,
-            hosted_tools: Vec::new(),
-            system_role: None,
-            output_modalities: None,
+            ..Default::default()
         };
         crate::codec::carry::read_fields(super::map::REQUEST, obj, &mut ir);
         Ok(ir)

@@ -511,11 +511,7 @@ impl ProtocolReader for OpenAiReader {
         // translate seam (`proxy engine`).
         //
         // The modelled keys are the mapping file's top-level rows.
-        for (key, value) in obj.iter() {
-            if !crate::codec::carry::models(super::map::REQUEST, key) {
-                extra.insert(key.clone(), value.clone());
-            }
-        }
+        crate::codec::carry::keep_unmodelled(super::map::REQUEST, obj, &mut extra);
 
         // Stamp the source-key sentinel when the cap arrived as `max_completion_tokens` (and
         // only when it produced a usable value, so we never claim a phantom cap). Same-protocol only:
@@ -624,7 +620,6 @@ impl ProtocolReader for OpenAiReader {
 
         let mut ir = crate::codec::ir::IrRequest {
             reasoning,
-            reasoning_budgets: None,
             logprobs,
             top_logprobs,
             user,
@@ -635,25 +630,10 @@ impl ProtocolReader for OpenAiReader {
             messages,
             tools,
             max_tokens,
-            temperature: None,
-            top_p: None,
-            top_k: None,
-            stop: Vec::new(),
             tool_choice,
             stream,
-            frequency_penalty: None,
-            presence_penalty: None,
-            seed: None,
-            n: None,
             response_format,
             extra,
-            metadata: None,
-            service_tier: None,
-            store: None,
-            safety_identifier: None,
-            prompt_cache_key: None,
-            verbosity: None,
-            allowed_tools: None,
             hosted_tools: custom_tools,
             // IR-14: `developer` only when EVERY folded entry was one, `system` only when every one
             // was; mixed (or none) says nothing.
@@ -662,7 +642,7 @@ impl ProtocolReader for OpenAiReader {
                 (false, true) => Some(crate::codec::ir::IrSystemRole::Developer),
                 _ => None,
             },
-            output_modalities: None,
+            ..Default::default()
         };
         // The flat request fields (`map.gen.rs`), then the allowed-tools subset of `tool_choice`.
         crate::codec::carry::read_fields(super::map::REQUEST, obj, &mut ir);

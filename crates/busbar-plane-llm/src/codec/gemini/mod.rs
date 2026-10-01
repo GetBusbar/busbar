@@ -136,12 +136,7 @@ fn residual_claims(path: &str) -> Option<busbar_contract::protocol::ClaimStrengt
 /// shim key without naming one.
 pub const DECL: ProtocolDecl = ProtocolDecl {
     name: COUNT_LABEL,
-    codec: {
-        // The dialect's neutral codec facade as a STATIC, so the decl hands out a `&'static dyn`
-        // borrow (pure memory, zero alloc per `dialect()` call) — the seam's perf contract.
-        static CODEC: super::proto_codec::DialectRef = super::proto_codec::dialect_ref(COUNT_LABEL);
-        Some(&CODEC)
-    },
+    codec: dialect_codec!(COUNT_LABEL),
     handler: Some(&handler::GeminiRequestHandler),
     verbs: &[
         busbar_contract::operation::OpVerb::CHAT,

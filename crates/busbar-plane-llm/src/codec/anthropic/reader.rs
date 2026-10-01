@@ -378,11 +378,7 @@ impl ProtocolReader for AnthropicReader {
 
         // Collect unmodeled top-level keys into `extra`: the modelled keys are the mapping file's
         // top-level rows.
-        for (key, value) in obj.iter() {
-            if !crate::codec::carry::models(super::map::REQUEST, key) {
-                extra.insert(key.clone(), value.clone());
-            }
-        }
+        crate::codec::carry::keep_unmodelled(super::map::REQUEST, obj, &mut extra);
         // A PROMOTED thinking ask must not also ride extra (the writer re-emits it from the typed
         // field; a duplicate from extra would double-emit on a translated same-protocol hop).
         if reasoning_is_budget {
@@ -401,9 +397,6 @@ impl ProtocolReader for AnthropicReader {
 
         let mut ir = crate::codec::ir::IrRequest {
             reasoning,
-            reasoning_budgets: None,
-            logprobs: None,
-            top_logprobs: None,
             user,
             parallel_tool_calls,
             system: system_blocks,
@@ -412,29 +405,12 @@ impl ProtocolReader for AnthropicReader {
             messages,
             tools,
             max_tokens,
-            temperature: None,
-            top_p: None,
-            top_k: None,
-            stop: Vec::new(),
             tool_choice,
             stream,
-            frequency_penalty: None,
-            presence_penalty: None,
-            seed: None,
-            n: None,
             response_format,
             extra,
-            metadata: None,
-            // IR-04: a row of the mapping file (`auto` / `standard_only`), read below.
-            service_tier: None,
-            store: None,
-            safety_identifier: None,
-            prompt_cache_key: None,
-            verbosity: None,
-            allowed_tools: None,
             hosted_tools,
-            system_role: None,
-            output_modalities: None,
+            ..Default::default()
         };
         crate::codec::carry::read_fields(super::map::REQUEST, obj, &mut ir);
         Ok(ir)

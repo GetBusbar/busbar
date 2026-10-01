@@ -699,7 +699,6 @@ impl ProtocolReader for ResponsesReader {
 
         let mut ir = crate::codec::ir::IrRequest {
             reasoning,
-            reasoning_budgets: None,
             logprobs,
             top_logprobs,
             user,
@@ -710,30 +709,14 @@ impl ProtocolReader for ResponsesReader {
             messages,
             tools,
             max_tokens,
-            temperature: None,
-            top_p: None,
-            top_k: None,
-            stop: vec![],
             tool_choice,
             stream,
-            frequency_penalty: None,
-            presence_penalty: None,
-            seed: None,
-            n: None,
             response_format,
-            // IR-03..07: filled from the flat request fields (`map.gen.rs`) below.
-            metadata: None,
-            service_tier: None,
-            store: None,
-            safety_identifier: None,
-            prompt_cache_key: None,
-            verbosity: None,
             allowed_tools,
             hosted_tools,
             system_role: super::slots::system_role(saw_system, saw_developer, saw_instructions),
-            // IR-19: Responses has no output-modality ask.
-            output_modalities: None,
             extra,
+            ..Default::default()
         };
         crate::codec::carry::read_fields(super::map::REQUEST, obj, &mut ir);
         Ok(ir)
