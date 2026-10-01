@@ -159,7 +159,7 @@ impl RequestHandler for GeminiRequestHandler {
 struct GeminiTranscription;
 
 leaf_op! {
-    GeminiTranscription: "gemini",
+    GeminiTranscription: COUNT_LABEL,
     TranscriptionReqHandle = read_transcription_request,
     TranscriptionRespHandle = read_transcription_response;
 }
@@ -256,7 +256,7 @@ pub fn write_transcription_response(r: &crate::codec::ir::audio::TranscriptionRe
 struct GeminiSpeech;
 
 leaf_op! {
-    GeminiSpeech: "gemini",
+    GeminiSpeech: COUNT_LABEL,
     SpeechReqHandle = read_speech_request,
     SpeechRespHandle = read_speech_response;
 }
@@ -328,7 +328,7 @@ pub fn write_speech_response(r: &SpeechResp) -> WireBody {
 struct GeminiImage;
 
 leaf_op! {
-    GeminiImage: "gemini",
+    GeminiImage: COUNT_LABEL,
     ImageReqHandle = read_image_request,
     ImageRespHandle = read_image_response;
     // Buffer the same-protocol non-stream 2xx body so the default `extract_usage` can read the
@@ -416,7 +416,7 @@ pub fn write_image_response(r: &crate::codec::ir::image::ImageResp) -> WireBody 
 struct GeminiEmbeddings;
 
 leaf_op! {
-    GeminiEmbeddings: "gemini",
+    GeminiEmbeddings: COUNT_LABEL,
     EmbeddingsReqHandle = read_embeddings_request,
     EmbeddingsRespHandle = read_embeddings_response;
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
