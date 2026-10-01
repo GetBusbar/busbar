@@ -16,7 +16,10 @@
 //!   resumed op that is still not ready answers PENDING again). A wake for a stale generation is
 //!   dropped and counted. A non-zero `wake_at_ns` is a timer: the op is resumed then without a wake.
 //! * DRIVER TICKETS ([`Dispatcher::driver`]): persistent, owned by the instance, outside
-//!   `max_inflight`. A wake on one calls `drive`; a PENDING drive resumes like any op.
+//!   `max_inflight`. A wake on one calls `drive`; a PENDING drive resumes like any op. The one op
+//!   submitted on a driver ticket is `tick` ([`Dispatcher::tick`]): it holds no `max_inflight`
+//!   unit, a wake during it is owed to `drive` once it ends, and its PENDING answer ends it, since
+//!   what pended inside it goes on through `drive`.
 //! * DEADLINE CLASSES. Call, Stream and Connection: when `deadline_ns` passes with the op pending,
 //!   the host calls `cancel` (ticket-less: it may not pend) and answers the kind's timeout outcome;
 //!   a client drop does the same. WriteBehind is NEVER cancelled — not by its deadline, a client
@@ -37,7 +40,7 @@ use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::{DeadlineClass, InHead, OutHead, Outcome, FLAG_RESUME};
-use busbar_contract::abi::mechanism::lifecycle::{slot, CancelIn};
+use busbar_contract::abi::mechanism::lifecycle::{slot, CancelIn, TickIn, TickOut};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 
 use super::plugin::{is_lifecycle, Crossed, Instance, Plugin};
@@ -45,7 +48,9 @@ use super::services::{HostServices, Served, ServiceStore};
 use super::ticket::{
     decode, encode, recycled_generation, Completions, WakeRoute, MAX_INDEX, MAX_WORKERS,
 };
-use super::{cancel_frame, now_ns, watchdog, DriveFrame, Frame, InFrame, Kind, OutFrame};
+use super::{
+    cancel_frame, in_head, now_ns, out_head, watchdog, DriveFrame, Frame, InFrame, Kind, OutFrame,
+};
 
 /// The longest a crossing may take before the watchdog faults it, per class. A crossing never
 /// blocks by contract, so these bound a wedged plugin, not a slow request (that is the deadline).
@@ -629,11 +634,22 @@ impl Worker {
         }
     }
 
+    /// A wake on driver `idx`: `drive` next, or, when another op on it is scheduled first, owed
+    /// (latched) until that op ends ([`Worker::end`]), so no wake is lost behind a `tick`.
+    fn owe_drive(st: &mut WorkerState, idx: u32) {
+        match st.entries[idx as usize].next {
+            None | Some(Action::Drive) => Self::schedule(st, idx, Action::Drive),
+            Some(_) => st.entries[idx as usize].latched = true,
+        }
+    }
+
     /// Apply one message; `false` on Stop.
     fn apply(&self, st: &mut WorkerState, m: Msg, env: &Env) -> bool {
         match m {
             Msg::Submit { ticket, meta, job } => match self.entry(st, ticket) {
-                Some((idx, e)) if !e.client_dropped && e.driver.is_none() => {
+                Some((idx, e))
+                    if !e.client_dropped && (e.driver.is_none() || meta.slot == slot::TICK) =>
+                {
                     e.queue.push_back((meta, job));
                     if e.current.is_none() {
                         Self::schedule(st, idx, Action::Start);
@@ -653,7 +669,7 @@ impl Worker {
                 }
                 Some((idx, e)) => {
                     if e.driver.is_some() {
-                        Self::schedule(st, idx, Action::Drive);
+                        Self::owe_drive(st, idx);
                     } else if e.current.as_ref().is_some_and(|c| c.pending) {
                         Self::schedule(st, idx, Action::Resume);
                     } else {
@@ -735,10 +751,14 @@ impl Worker {
             }
         }
         drop(cur.meta);
+        let owed = e.driver.is_some() && std::mem::take(&mut e.latched);
         if !e.queue.is_empty() {
             Self::schedule(st, idx, Action::Start);
         } else if e.recycle_when_idle {
             self.recycle_now(st, idx, env);
+        }
+        if owed {
+            Self::owe_drive(st, idx);
         }
     }
 
@@ -973,7 +993,7 @@ impl Worker {
             return Some(st);
         };
         cur.job = Some(job);
-        if c.outcome == Outcome::Pending {
+        if c.outcome == Outcome::Pending && e.driver.is_none() {
             cur.pending = true;
             cur.wake_at_ns = c.wake_at_ns;
             if std::mem::take(&mut e.latched) {
@@ -1266,7 +1286,7 @@ impl Dispatcher {
         class: DeadlineClass,
         deadline_ns: u64,
     ) -> Reply<I, O> {
-        self.submit_with(plugin, ticket, s, frame, class, deadline_ns, None)
+        self.submit_with(plugin, ticket, s, frame, class, deadline_ns, None, false)
     }
 
     /// [`Dispatcher::submit`], with the owner of the memory `frame`'s pointers lend the plugin:
@@ -1283,7 +1303,51 @@ impl Dispatcher {
         deadline_ns: u64,
         lent: Lent,
     ) -> Reply<I, O> {
-        self.submit_with(plugin, ticket, s, frame, class, deadline_ns, Some(lent))
+        self.submit_with(
+            plugin,
+            ticket,
+            s,
+            frame,
+            class,
+            deadline_ns,
+            Some(lent),
+            false,
+        )
+    }
+
+    /// `tick` at `now_ns` on `driver`, the instance's driver ticket ([`Dispatcher::driver`]). The
+    /// head carries `driver`, so a service that pends inside `tick` registers on it and its wake
+    /// calls `drive`. Outside `max_inflight`, as every op on a driver ticket: it never holds a
+    /// slot. The caller owns the schedule (`TickOut::next_tick_ns`); this is one crossing of it.
+    pub fn tick<K: Kind>(
+        &self,
+        plugin: &Plugin<K>,
+        driver: Ticket,
+        now_ns: u64,
+    ) -> Reply<TickIn, TickOut> {
+        let frame = Frame::new(
+            TickIn {
+                head: in_head(),
+                now_ns,
+            },
+            TickOut {
+                head: out_head(),
+                next_tick_ns: 0,
+            },
+        );
+        let mut reply = self.submit_with(
+            plugin,
+            driver,
+            slot::TICK,
+            frame,
+            DeadlineClass::Call,
+            0,
+            None,
+            true,
+        );
+        // Dropping it cancels nothing: a client drop would end the instance's driver ticket.
+        reply.owner = None;
+        reply
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1296,6 +1360,7 @@ impl Dispatcher {
         class: DeadlineClass,
         deadline_ns: u64,
         lent: Option<Lent>,
+        driven: bool,
     ) -> Reply<I, O> {
         let inst = &plugin.inner;
         if ticket.is_none() {
@@ -1311,7 +1376,8 @@ impl Dispatcher {
         if lifecycle && !inst.enter_lifecycle() {
             return Reply::settled(Outcome::Refused, frame);
         }
-        let Some(units) = inst.acquire(s) else {
+        // An op on a driver ticket holds no `max_inflight` unit.
+        let Some(units) = (if driven { Some(0) } else { inst.acquire(s) }) else {
             // Over the cap, or `close` while other ops are in flight: REFUSED, never called.
             if lifecycle {
                 inst.leave_lifecycle();
