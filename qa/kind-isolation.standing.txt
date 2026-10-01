@@ -10,7 +10,8 @@ kind-isolation:deps	unlisted-dep-edge	legacy -> contract	1
 kind-isolation:deps	unlisted-dep-edge	legacy -> plane	2
 kind-isolation:deps	unlisted-dep-edge	plugin-tooling -> contract	1
 kind-isolation:deps	unlisted-transitional	crates/busbar-llm	1
-kind-isolation:matrix	instance-ratchet	busbar × auth	3
+kind-isolation:matrix	instance-ratchet	busbar × auth	13
+kind-isolation:matrix	instance-ratchet	busbar × secret	7
 kind-isolation:matrix	instance-ratchet	busbar-contract × secret	28
 kind-isolation:matrix	instance-ratchet	busbar-core-admin × auth	18
 kind-isolation:matrix	instance-ratchet	busbar-kernel × export	55
