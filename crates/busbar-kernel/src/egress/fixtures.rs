@@ -93,6 +93,9 @@ pub struct ConnRecord {
     /// Whether the TLS handshake completed. `false` marks a connection the client refused
     /// (wrong-name certificate, missing identity against an mTLS peer).
     pub handshake_ok: bool,
+    /// The protocol the handshake agreed (ALPN) — `None` when the client offered none the
+    /// fixture serves, which is also what a ClientHello with no ALPN extension reads as.
+    pub alpn: Option<Vec<u8>>,
     /// How many HTTP requests rode this one connection — the pooled-reuse observation.
     pub requests: usize,
     /// Every request HEAD this TLS connection carried, verbatim to the blank line — what a
@@ -238,6 +241,7 @@ fn serve_tls_conn(
         let mut rec = record.lock().expect("record");
         rec.sni = conn.server_name().map(str::to_string);
         rec.handshake_ok = handshake.is_ok();
+        rec.alpn = conn.alpn_protocol().map(<[u8]>::to_vec);
         rec.client_cert = conn
             .peer_certificates()
             .and_then(|certs| certs.first())
