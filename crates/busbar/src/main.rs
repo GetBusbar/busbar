@@ -873,6 +873,7 @@ async fn run(
             &cfg.allow_metadata_hosts,
             cfg.allow_all_metadata,
         ),
+        &root::connector::own_ports(&[cfg.listen.as_str(), cfg.admin_listen.as_str()]),
     );
     // The planes that state themselves through a door bind on the process's one dispatcher (built
     // full-size as `main()`'s first act), linked and dropped alike, each declaring its needs on the
