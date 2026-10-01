@@ -329,7 +329,8 @@ extern "C" {
 #define BB_PLANE_TAIL_FALLBACK UINT32_C(1) /* [`PlaneTail::flags`]: the one plane that is the fallback catch-all. */
 #define BB_PLANE_TAIL_PROBES UINT32_C(2) /* [`PlaneTail::flags`]: the plane answers health probes. A probe is a kernel-originated unit */
 #define BB_PLANE_CLAIM_OPEN UINT32_C(1) /* [`Claim::flags`]: the route takes no inbound credential; the kernel admits an arrival on it */
-#define BB_PLANE_CLAIM_EXACT UINT32_C(2) /* [`Claim::flags`]: the target matches exactly. Without it, the target is a prefix. */
+#define BB_PLANE_CLAIM_EXACT UINT32_C(2) /* [`Claim::flags`]: the target matches exactly. Without it (and without [`CLAIM_PATTERN`]), the */
+#define BB_PLANE_CLAIM_PATTERN UINT32_C(4) /* [`Claim::flags`]: the target is a path pattern. Each `/`-separated segment is a literal, or a */
 #define BB_PLANE_CLAIM_PROBE UINT32_C(0xffffffff) /* [`ArriveIn::claim`]: the arrival is a health probe, not a snapshot claim. Only a plane whose */
 #define BB_PLANE_INGRESS_REQUEST_RESPONSE UINT32_C(1) /* [`PlaneTail::ingress`]: a request expecting one reply. */
 #define BB_PLANE_INGRESS_RESPONSE_STREAM UINT32_C(2) /* [`PlaneTail::ingress`]: a request expecting a streamed reply. */
@@ -2351,6 +2352,7 @@ struct bb_plane_PlaneTail {
     size_t trust_keys_len;
     const bb_plane_RefusalStatus *refusal_statuses;
     size_t refusal_statuses_len;
+    bb_mech_AbiStr caller_credential_refusal;
 };
 
 /* One path the built plane answers on. One route — a verb, a target and whether the target is */
@@ -4452,7 +4454,7 @@ BB_ASSERT(offsetof(bb_plane_TrustKey, flags) == 20, "bb_plane_TrustKey.flags: of
 BB_ASSERT(offsetof(bb_plane_TrustKey, default_) == 24, "bb_plane_TrustKey.default_: offset");
 BB_ASSERT(offsetof(bb_plane_TrustKey, mechanisms) == 40, "bb_plane_TrustKey.mechanisms: offset");
 BB_ASSERT(offsetof(bb_plane_TrustKey, mechanisms_len) == 48, "bb_plane_TrustKey.mechanisms_len: offset");
-BB_ASSERT(sizeof(bb_plane_PlaneTail) == 344, "bb_plane_PlaneTail: size");
+BB_ASSERT(sizeof(bb_plane_PlaneTail) == 360, "bb_plane_PlaneTail: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneTail) == 8, "bb_plane_PlaneTail: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, head) == 0, "bb_plane_PlaneTail.head: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, flags) == 8, "bb_plane_PlaneTail.flags: offset");
@@ -4491,6 +4493,7 @@ BB_ASSERT(offsetof(bb_plane_PlaneTail, trust_keys) == 312, "bb_plane_PlaneTail.t
 BB_ASSERT(offsetof(bb_plane_PlaneTail, trust_keys_len) == 320, "bb_plane_PlaneTail.trust_keys_len: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, refusal_statuses) == 328, "bb_plane_PlaneTail.refusal_statuses: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, refusal_statuses_len) == 336, "bb_plane_PlaneTail.refusal_statuses_len: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneTail, caller_credential_refusal) == 344, "bb_plane_PlaneTail.caller_credential_refusal: offset");
 BB_ASSERT(sizeof(bb_plane_Claim) == 56, "bb_plane_Claim: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_Claim) == 8, "bb_plane_Claim: alignment");
 BB_ASSERT(offsetof(bb_plane_Claim, verb) == 0, "bb_plane_Claim.verb: offset");

@@ -793,7 +793,10 @@ fn a_pattern_claim_is_never_also_exact() {
     let pattern = claim("V", "/t/{id}", CLAIM_OPEN | CLAIM_PATTERN);
     assert_eq!(check_claims(&[pattern], 1), Ok(()));
     let both = claim("V", "/t/{id}", CLAIM_EXACT | CLAIM_PATTERN);
-    assert_eq!(check_claims(&[both], 1), f(Rule::Contradiction, "claim.flags"));
+    assert_eq!(
+        check_claims(&[both], 1),
+        f(Rule::Contradiction, "claim.flags")
+    );
     assert_eq!(
         claim_selector("/t/{id}", CLAIM_EXACT | CLAIM_PATTERN, kept).map(|_| ()),
         f(Rule::Contradiction, "claim.flags")

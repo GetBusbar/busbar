@@ -5,9 +5,7 @@
 //! section with the grammar's words.
 
 use super::*;
-use busbar_contract::abi::plane::check::{
-    check_admin_routes, check_claims, check_snapshot, check_tail, check_trust_keys,
-};
+use busbar_contract::abi::plane::check::{check_admin_routes, check_tail, check_trust_keys};
 use busbar_contract::plane::TrustRole;
 
 /// A fixture endpoint: the secure scheme and a reserved example host, spelled once for every test.
@@ -102,9 +100,10 @@ fn the_abi_trust_keys_are_the_grammars_trust_keys() {
 
 #[test]
 fn an_open_route_claims_open_and_a_templated_target_claims_a_pattern() {
-    let g = Generation::build(1, Some(&endpoint("gw", "")));
-    for (c, r) in g.claims.iter().zip(ROUTES) {
+    let spec = snapshot_spec(Some(&endpoint("gw", "")));
+    for (c, r) in spec.claims.iter().zip(ROUTES) {
         let templated = r.target.contains('{');
+        assert_eq!((c.verb.as_str(), c.target.as_str()), (r.verb, r.target));
         assert_eq!(c.flags & CLAIM_OPEN != 0, r.open, "{}", r.target);
         assert_eq!(c.flags & CLAIM_EXACT != 0, !templated, "{}", r.target);
         assert_eq!(c.flags & CLAIM_PATTERN != 0, templated, "{}", r.target);
@@ -112,14 +111,6 @@ fn an_open_route_claims_open_and_a_templated_target_claims_a_pattern() {
             busbar_contract::abi::plane::check::check_claim_target(r.target, c.flags),
             Ok(()),
             "{}",
-            r.target
-        );
-        let selector = busbar_contract::abi::plane::check::claim_selector(r.target, c.flags, |v| {
-            Box::leak(v.into_boxed_slice())
-        });
-        assert!(
-            selector.is_ok(),
-            "{} reads as a claim: {selector:?}",
             r.target
         );
     }
@@ -135,27 +126,27 @@ fn the_tail_states_the_sentence_that_refuses_a_forwarded_caller_credential() {
 
 #[test]
 fn an_admitted_generation_claims_every_route_and_states_its_audience() {
-    let g = Generation::build(7, Some(&endpoint("gw", "/base?x=1")));
-    assert_eq!(g.generation(), 7);
-    assert_eq!(check_snapshot(g.snapshot(), 7), Ok(()));
-    assert_eq!(g.claims.len(), ROUTES.len());
-    assert_eq!(check_claims(&g.claims), Ok(()));
-    assert_eq!(g.audience, endpoint("gw", "/a2a"));
+    let spec = snapshot_spec(Some(&endpoint("gw", "/base?x=1")));
+    assert_eq!(spec.claims.len(), ROUTES.len());
+    assert_eq!(spec.audience, Some(endpoint("gw", "/a2a")));
     assert_eq!(
-        g.resource_metadata,
-        endpoint("gw", "/.well-known/oauth-protected-resource/a2a")
+        spec.resource_metadata,
+        Some(endpoint("gw", "/.well-known/oauth-protected-resource/a2a"))
     );
-    assert_eq!(g.snapshot().admin_routes_len, ADMIN_ROUTES.len());
+    assert_eq!(spec.admin_routes.len(), ADMIN_ROUTES.len());
+    assert_eq!(
+        spec.openapi,
+        Some(openapi_fragment("").to_string().into_bytes())
+    );
 }
 
 #[test]
 fn a_generation_with_no_readable_public_base_claims_nothing() {
     for public in [None, Some("not a url")] {
-        let g = Generation::build(1, public);
-        assert_eq!(check_snapshot(g.snapshot(), 1), Ok(()));
-        assert!(g.claims.is_empty());
-        assert!(g.snapshot().audience.ptr.is_null());
-        assert!(g.snapshot().resource_metadata.ptr.is_null());
+        let spec = snapshot_spec(public);
+        assert!(spec.claims.is_empty());
+        assert_eq!((spec.audience, spec.resource_metadata), (None, None));
+        assert_eq!(spec.admin_routes.len(), ADMIN_ROUTES.len());
     }
 }
 

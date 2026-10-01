@@ -19,15 +19,15 @@
 //! engine that still serves A2A states the same facts in its own declaration and router, and a
 //! test on the engine's side pins the two equal, entry by entry, until the engine is gone.
 
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, BLOB_ABSENT, BLOB_JSON};
-use busbar_contract::abi::mechanism::door::KindTailHead;
+use busbar_contract::abi::mechanism::call::AbiStr;
+use busbar_contract::abi::mechanism::door::{KindTailHead, Section, SECTION_DECLARING};
 use busbar_contract::abi::plane::{
-    AdminRoute, BillableClass, Claim, PinMechanism, PlaneSnapshot, PlaneTail, Section, TrustKey,
-    CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
-    MECHANISM_ROOT, PIN_FINGERPRINT, SECTION_DECLARING, SHAPE_PIECEWISE, TRUST_PIN,
-    TRUST_RECOVERY_BACKOFF, TRUST_REVERIFY_TTL,
+    AdminRoute, BillableClass, PinMechanism, PlaneTail, TrustKey, CLAIM_EXACT, CLAIM_OPEN,
+    CLAIM_PATTERN, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, MECHANISM_ROOT,
+    PIN_FINGERPRINT, SHAPE_PIECEWISE, TRUST_PIN, TRUST_RECOVERY_BACKOFF, TRUST_REVERIFY_TTL,
 };
 use busbar_contract::abi::sdk::door::abi_str;
+use busbar_contract::abi::sdk::publish::{AdminRouteSpec, ClaimSpec, SnapshotSpec};
 
 use crate::a2a::config::{
     AgentsCfg, DEFAULT_REVERIFY_TTL, REFUSE_PASSTHROUGH_SECTION, SUBJECT_NOUN,
@@ -60,7 +60,8 @@ const NONE: AbiStr = AbiStr {
     len: 0,
 };
 
-const SECTIONS: &[Section] = &[Section {
+/// The plane's settings sections, as its Statement states them: `agents:` is the one it declares.
+pub const SECTIONS: &[Section] = &[Section {
     name: abi_str(crate::CONFIG_SECTION),
     flags: SECTION_DECLARING,
     _reserved: 0,
@@ -158,8 +159,6 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     signing_domain: abi_str(CARD_SIGNING_DOMAIN),
     signing_kid_prefix: abi_str(CARD_KID_PREFIX),
     cli_help: NONE,
-    sections: SECTIONS.as_ptr(),
-    sections_len: SECTIONS.len(),
     dialects: DIALECTS.as_ptr(),
     dialects_len: DIALECTS.len(),
     dialect_auth: std::ptr::null(),
@@ -176,14 +175,14 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     fee_units_len: FEE_UNITS.len(),
     record_kinds: RECORD_KINDS.as_ptr(),
     record_kinds_len: RECORD_KINDS.len(),
-    needs: std::ptr::null(),
-    needs_len: 0,
     egress_targets: std::ptr::null(),
     egress_targets_len: 0,
     record_chains: std::ptr::null(),
     record_chains_len: 0,
     trust_keys: TRUST_KEYS.as_ptr(),
     trust_keys_len: TRUST_KEYS.len(),
+    refusal_statuses: std::ptr::null(),
+    refusal_statuses_len: 0,
     caller_credential_refusal: abi_str(REFUSE_PASSTHROUGH_SECTION),
 };
 
@@ -319,85 +318,45 @@ pub fn read_settings(settings: &[u8]) -> Result<AgentsCfg, String> {
     serde_json::from_slice::<AgentsCfg>(settings).map_err(|e| e.to_string())
 }
 
-/// ONE GENERATION'S SNAPSHOT and the memory it points into, kept by the instance until that
-/// generation's `retire`.
+/// ONE GENERATION'S SNAPSHOT, owned, for the SDK to publish until that generation's `retire`.
 ///
 /// With a readable `public_url` the plane is admitted: it states its audience and its
 /// protected-resource metadata document, and it claims its routes. Without one it claims nothing,
 /// as the engine does today: a plane with no public base has no audience a token could name.
-pub struct Generation {
-    audience: String,
-    resource_metadata: String,
-    openapi: Vec<u8>,
-    claims: Vec<Claim>,
-    snapshot: PlaneSnapshot,
-}
-
-impl Generation {
-    /// The snapshot for `generation`, under the deployment's `public_url`.
-    pub fn build(generation: u64, public_url: Option<&str>) -> Box<Self> {
-        let admitted = public_url.and_then(|p| {
-            Some((
-                crate::a2a::public::absolute(p, crate::MOUNT_PATH)?,
-                crate::a2a::public::absolute(p, crate::METADATA_PATH)?,
-            ))
-        });
-        let (audience, resource_metadata, claims) = match admitted {
-            Some((a, m)) => (a, m, ROUTES.iter().map(claim).collect()),
-            None => (String::new(), String::new(), Vec::new()),
-        };
-        let openapi = openapi_fragment("").to_string().into_bytes();
-        let mut g = Box::new(Generation {
-            audience,
-            resource_metadata,
-            openapi,
-            claims,
-            snapshot: PlaneSnapshot {
-                size: std::mem::size_of::<PlaneSnapshot>() as u32,
-                _reserved: 0,
-                generation,
-                claims: std::ptr::null(),
-                claims_len: 0,
-                admin_routes: ADMIN_ROUTES.as_ptr(),
-                admin_routes_len: ADMIN_ROUTES.len(),
-                openapi: Blob {
-                    ptr: std::ptr::null(),
-                    len: 0,
-                    fmt: BLOB_ABSENT,
-                    flags: 0,
-                },
-                audience: NONE,
-                resource_metadata: NONE,
-            },
-        });
-        // The pointers are taken once the owning strings sit at their final, boxed address.
-        g.snapshot.claims = g.claims.as_ptr();
-        g.snapshot.claims_len = g.claims.len();
-        g.snapshot.openapi = Blob {
-            ptr: g.openapi.as_ptr(),
-            len: g.openapi.len(),
-            fmt: BLOB_JSON,
-            flags: 0,
-        };
-        g.snapshot.audience = text(&g.audience);
-        g.snapshot.resource_metadata = text(&g.resource_metadata);
-        g
-    }
-
-    /// The generation this snapshot is for.
-    pub fn generation(&self) -> u64 {
-        self.snapshot.generation
-    }
-
-    /// The snapshot, valid while this value lives.
-    pub fn snapshot(&self) -> &PlaneSnapshot {
-        &self.snapshot
+#[must_use]
+pub fn snapshot_spec(public_url: Option<&str>) -> SnapshotSpec {
+    let admitted = public_url.and_then(|p| {
+        Some((
+            crate::a2a::public::absolute(p, crate::MOUNT_PATH)?,
+            crate::a2a::public::absolute(p, crate::METADATA_PATH)?,
+        ))
+    });
+    let (audience, resource_metadata, claims) = match admitted {
+        Some((a, m)) => (Some(a), Some(m), ROUTES.iter().map(claim).collect()),
+        None => (None, None, Vec::new()),
+    };
+    SnapshotSpec {
+        claims,
+        admin_routes: ADMIN_ROUTES
+            .iter()
+            .zip(ADMIN_VERBS)
+            .map(|(r, (verb, target))| AdminRouteSpec::new(verb, target, r.flags))
+            .collect(),
+        openapi: Some(openapi_fragment("").to_string().into_bytes()),
+        audience,
+        resource_metadata,
     }
 }
 
 /// A route as the snapshot's claim: an open route takes no inbound credential; a target with a
 /// path variable is a pattern, one level per variable, and any other target matches exactly.
-fn claim(r: &Route) -> Claim {
+fn claim(r: &Route) -> ClaimSpec {
+    ClaimSpec::new(r.verb, r.target, r.carrier, claim_flags(r))
+}
+
+/// The claim flags a route states.
+#[must_use]
+pub fn claim_flags(r: &Route) -> u32 {
     let mut flags = if r.target.contains('{') {
         CLAIM_PATTERN
     } else {
@@ -406,24 +365,7 @@ fn claim(r: &Route) -> Claim {
     if r.open {
         flags |= CLAIM_OPEN;
     }
-    Claim {
-        verb: abi_str(r.verb),
-        target: abi_str(r.target),
-        carrier: abi_str(r.carrier),
-        flags,
-        _reserved: 0,
-    }
-}
-
-/// An owned string as an `AbiStr`, absent when empty.
-fn text(s: &str) -> AbiStr {
-    if s.is_empty() {
-        return NONE;
-    }
-    AbiStr {
-        ptr: s.as_ptr(),
-        len: s.len(),
-    }
+    flags
 }
 
 #[cfg(test)]

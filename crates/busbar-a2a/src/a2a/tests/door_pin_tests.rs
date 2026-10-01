@@ -6,7 +6,7 @@
 //! the two equal, entry by entry, so neither drifts.
 
 use super::*;
-use busbar_contract::abi::cold::endpoint::RouteAuth;
+use busbar_contract::abi::mechanism::route::RouteAuth;
 
 /// A fixture endpoint: the secure scheme and a reserved example host, spelled once.
 fn endpoint(host: &str, rest: &str) -> String {
