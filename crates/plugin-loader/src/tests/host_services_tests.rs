@@ -78,6 +78,11 @@ impl HostServices for Provider {
         Ran::Later
     }
 
+    /// Not served by the double: refused, as the loader refuses a slot with no service.
+    fn records_list(&self, _: &Caller, _: RecordsList, _: Later) -> Ran {
+        Ran::Now(Stored::refused(UNIMPLEMENTED))
+    }
+
     fn records_claim(&self, c: &Caller, kind: &str, _key: &[u8], ttl: u64, _l: Later) -> Ran {
         self.saw(c, "records.claim", kind.as_bytes());
         Ran::Now(Stored::ready(if ttl == 1 {
@@ -90,6 +95,11 @@ impl HostServices for Provider {
     fn sign(&self, c: &Caller, data: &[u8]) -> Stored {
         self.saw(c, "sign", data);
         Stored::ready(0)
+    }
+
+    /// Not served by the double: refused, as the loader refuses a slot with no service.
+    fn trust_sight(&self, _: &Caller, _: &str, _: &str, _: Later) -> Ran {
+        Ran::Now(Stored::refused(UNIMPLEMENTED))
     }
 
     fn trust_due(&self, c: &Caller) -> Stored {
