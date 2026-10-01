@@ -29,9 +29,9 @@ use busbar_contract::abi::plane::{
 use busbar_contract::caps::OpClassId;
 use busbar_kernel::plane_driver::{refusal_status, BufferCaps, DriverConfig, PlaneDriver};
 use busbar_plugin_loader::dispatch::{
-    in_head, kinds::plane::Plane, load_dropped, load_linked, now_ns as dispatch_now, out_head, rendering_of,
-    plane_calls::PlaneInstance, Bind, Diagnostic, DispatchConfig, Dispatcher, Dropped,
-    EnvelopeSink, Frame, LinkedRow, Metric, NoSink, Plugin, NO_BLOB,
+    in_head, kinds::plane::Plane, load_dropped, load_linked, now_ns as dispatch_now, out_head,
+    plane_calls::PlaneInstance, rendering_of, Bind, Diagnostic, DispatchConfig, Dispatcher,
+    Dropped, EnvelopeSink, Frame, LinkedRow, Metric, NoSink, Plugin, NO_BLOB,
 };
 
 /// The dispatcher's clock, the one a unit's deadline is on.
@@ -106,6 +106,8 @@ fn load_with(way: Way, dispatcher: &Dispatcher, sink: Arc<dyn EnvelopeSink>) -> 
                 secrets: std::ptr::null(),
                 secrets_len: 0,
                 generation: 1,
+                err_buf: std::ptr::null_mut(),
+                err_cap: 0,
             },
             public_url: busbar_contract::abi::mechanism::call::AbiStr {
                 ptr: std::ptr::null(),
@@ -116,6 +118,7 @@ fn load_with(way: Way, dispatcher: &Dispatcher, sink: Arc<dyn EnvelopeSink>) -> 
             open: OpenOut {
                 head: out_head(),
                 instance: std::ptr::null_mut(),
+                err_len: 0,
             },
             snapshot: std::ptr::null(),
         },

@@ -183,10 +183,13 @@ fn open_with(p: &Plugin<TestKind>, json: &'static [u8]) -> Outcome {
             secrets: std::ptr::null(),
             secrets_len: 0,
             generation: 1,
+            err_buf: std::ptr::null_mut(),
+            err_cap: 0,
         },
         OpenOut {
             head: out_head(),
             instance: std::ptr::null_mut(),
+            err_len: 0,
         },
     );
     p.call(slot::OPEN, &mut f).outcome

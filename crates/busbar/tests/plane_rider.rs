@@ -40,8 +40,8 @@ use busbar_contract::services::HostServices;
 use busbar_kernel::host_services::{KernelServices, SystemResolver};
 
 use busbar_plugin_loader::dispatch::{
-    in_head, kinds::plane::Plane, load_dropped, load_linked, out_head, rendering_of, Bind, DispatchConfig,
-    Dispatcher, Frame, LinkedRow, NoSink, Plugin, NO_BLOB,
+    in_head, kinds::plane::Plane, load_dropped, load_linked, out_head, rendering_of, Bind,
+    DispatchConfig, Dispatcher, Frame, LinkedRow, NoSink, Plugin, NO_BLOB,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +103,8 @@ fn opened(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
                 secrets: std::ptr::null(),
                 secrets_len: 0,
                 generation: 1,
+                err_buf: std::ptr::null_mut(),
+                err_cap: 0,
             },
             public_url: AbiStr {
                 ptr: std::ptr::null(),
@@ -113,6 +115,7 @@ fn opened(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
             open: OpenOut {
                 head: out_head(),
                 instance: std::ptr::null_mut(),
+                err_len: 0,
             },
             snapshot: std::ptr::null(),
         },

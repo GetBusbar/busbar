@@ -50,7 +50,6 @@ fn dropped_path(example: &str) -> Option<PathBuf> {
     crate::both_ways::example_cdylib(example)
 }
 
-
 /// The store witness's text through the store host ([`LoadedStore::open`]), LINKED and (when
 /// built) DROPPED; both must agree.
 fn store_text(settings: &[u8]) -> String {

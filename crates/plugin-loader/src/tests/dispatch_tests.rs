@@ -1969,7 +1969,7 @@ fn bind_states_the_caller_to_the_host_services() {
 fn two_instances_of_one_plugin_are_two_callers() {
     let first = linked(quiet());
     let second = load_linked::<TestKind>(
-        plug::busbar_plugin_door,
+        &row(),
         Bind {
             instance: Arc::from("the-second"),
             ..bind(quiet())
