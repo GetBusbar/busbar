@@ -75,7 +75,7 @@ struct Repo {
 }
 
 impl Default for Repo {
-    /// The fleet norm's settings: public, Apache-2.0, `dev` the default branch.
+    /// The fleet norm's settings: public, Apache-2.0, `main` the default branch.
     fn default() -> Repo {
         Repo {
             files: BTreeMap::new(),
@@ -85,7 +85,7 @@ impl Default for Repo {
             settings: Settings {
                 visibility: "public".into(),
                 license: "Apache-2.0".into(),
-                default_branch: "dev".into(),
+                default_branch: "main".into(),
             },
         }
     }
@@ -750,12 +750,12 @@ fn settings_outside_the_fleet_norm_are_red() {
     assert_eq!(f.len(), 1, "{f:#?}");
     let f = plant(&|r| r.settings.license = "none".into());
     one(&f, a, "license", "is `none`");
-    let f = plant(&|r| r.settings.default_branch = "main".into());
+    let f = plant(&|r| r.settings.default_branch = "dev".into());
     one(
         &f,
         a,
         "default branch",
-        "is `main`, the fleet norm is `dev`",
+        "is `dev`, the fleet norm is `main`",
     );
     assert_eq!(f.len(), 1, "{f:#?}");
     // Settings that cannot be read are a finding, not a pass.
