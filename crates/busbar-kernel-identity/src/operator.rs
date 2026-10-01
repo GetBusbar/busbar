@@ -74,6 +74,7 @@ pub const STAND_IN: OperatorWords = OperatorWords {
     provider: "test-operator-double",
     principal_id: "admin",
 };
+/// The words before any hand-in, in a shipped build: none (see the `stand-in` twin above).
 #[cfg(not(feature = "stand-in"))]
 pub const STAND_IN: OperatorWords = OperatorWords {
     provider: "",
