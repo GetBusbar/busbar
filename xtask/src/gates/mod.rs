@@ -257,13 +257,12 @@ pub const REPORT_ONLY: &[Posture] = &[
     },
     Posture {
         name: "structure-lint",
-        why: "RED ON FOUR NAMED ROWS, AND THEY ARE TRUE FINDINGS. be9c473f5 derived the plane set, \
+        why: "RED ON TWO NAMED ROWS (axis:purity, plane-dup:unledgered), AND THEY ARE TRUE FINDINGS. be9c473f5 derived the plane set, \
               the protocol crates and the tree-wide scope from the tree instead of from lists that \
               had gone stale, and the lint then saw what it had been blind to: \
               `plane-dup:unledgered` (24 plane-local reimplementations of a shared concern), \
-              `plane-dup:stale-ledger` (3 ledger rows that outlived their duplication), \
-              `axis:purity` (4 places the agnostic core asks an axis its identity) and \
-              `census:count` (3 shared words with a second spelling). DRAIN: Phase 4, when the \
+              `axis:purity` (4 places the agnostic core asks an axis its identity). \
+              (`plane-dup:stale-ledger` and `census:count` drained.) DRAIN: Phase 4, when the \
               plane owners dedupe or sign ledger rows; strike each name from \
               STRUCTURE_LINT_STANDING_REDS in the commit that turns its row green. (A fifth, \
               `choke-point:bypass` — tcp's hand-rolled door exports — drained when the SDK merged \
@@ -486,8 +485,6 @@ pub const STRUCTURE_LINT_STANDING_REDS: &[&str] = &[
     // row, prune the stale ledger rows, take the axis identity questions out of the agnostic core
     // and collapse each second spelling. Strike each line in the commit that turns its row green.
     "structure-lint:axis:purity",
-    "structure-lint:census:count",
-    "structure-lint:plane-dup:stale-ledger",
     "structure-lint:plane-dup:unledgered",
 ];
 

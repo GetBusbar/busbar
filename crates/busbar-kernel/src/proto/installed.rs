@@ -521,14 +521,17 @@ pub fn array_stream_shim_keys() -> &'static [&'static str] {
 /// The array-stream shim key the NAMED protocol declares, or `None` if it declares none or is not
 /// registered. The injection site reads it by name so it names no protocol submodule.
 pub fn array_stream_shim_key_for(protocol_name: &str) -> Option<&'static str> {
-    registry().decl(protocol_name).and_then(|d| d.array_stream_shim_key)
+    registry()
+        .decl(protocol_name)
+        .and_then(|d| d.array_stream_shim_key)
 }
 
 /// The vendor-plausible auth-failure wire MESSAGE for an ingress protocol, dispatched through
 /// `ProtocolDecl::auth_failure_message` so the per-vendor copy lives in the declaration, not here. An
 /// unknown protocol falls back to the default generic copy.
 pub fn vendor_auth_failure_message(proto: &str) -> &'static str {
-    registry().decl(proto)
+    registry()
+        .decl(proto)
         .map(|d| d.auth_failure_message)
         .unwrap_or("authentication failed")
 }
@@ -537,7 +540,10 @@ pub fn vendor_auth_failure_message(proto: &str) -> &'static str {
 /// lane-build path, or `None` for an unknown name or one that declares no wire codec (MCP/A2A are not
 /// lane protocols).
 pub fn lane_protocol_name(name: &str) -> Option<&'static str> {
-    registry().decl(name).filter(|d| d.codec.is_some()).map(|d| d.name)
+    registry()
+        .decl(name)
+        .filter(|d| d.codec.is_some())
+        .map(|d| d.name)
 }
 
 /// Collect `(HeaderName, HeaderValue)` pairs into an axum `HeaderMap`. A dependency-free neutral
