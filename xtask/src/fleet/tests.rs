@@ -308,6 +308,7 @@ fn the_render_is_a_pure_function_of_the_registry_and_the_templates() {
         paths,
         [
             ".busbar-ref",
+            ".github/dependabot.yml",
             ".github/workflows/ci.yml",
             ".github/workflows/consumer-verify.yml",
             ".github/workflows/release.yml",
