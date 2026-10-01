@@ -519,7 +519,7 @@ impl ProtocolWriter for CohereWriter {
         // temperature (clamped to [0.0, 1.0]), `p`, `k`, stop_sequences (capped at 5), the penalties
         // and seed: rows of the mapping file. Emitted before the `extra` overlay (the reader pulled
         // these keys out of extra, so there is no double-emit on a same-protocol passthrough).
-        crate::codec::carry::write(
+        crate::codec::carry::write_fields(
             super::map::REQUEST,
             req,
             crate::codec::carry::Egress::default(),

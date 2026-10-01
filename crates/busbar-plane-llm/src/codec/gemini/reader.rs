@@ -702,7 +702,7 @@ impl ProtocolReader for GeminiReader {
             // `generationConfig.responseModalities` (IR-19); the raw copy rides `extra` too.
             output_modalities: read_gemini_response_modalities(obj.get("generationConfig")),
         };
-        crate::codec::carry::read(super::map::REQUEST, obj, &mut ir);
+        crate::codec::carry::read_fields(super::map::REQUEST, obj, &mut ir);
         Ok(ir)
     }
 

@@ -5,27 +5,27 @@
 // DO NOT EDIT: edit the mapping file and re-run the compile; the `dialect-map` gate refuses
 // a table file that differs from a fresh compile.
 
-use crate::codec::carry::{Codec, Field, Handled, Slot, Table, row};
+use crate::codec::carry::{Field, Handled, Slot, Table, ValueCodec, row};
 
 /// Row group `generation_config`.
 pub(crate) const ROWS_GENERATION_CONFIG: &[Field] = &[
-    row(&["generationConfig", "temperature"], Slot::Temperature, Codec::Plain),
-    row(&["generationConfig", "topP"], Slot::TopP, Codec::Plain),
-    row(&["generationConfig", "topK"], Slot::TopK, Codec::Plain),
-    row(&["generationConfig", "stopSequences"], Slot::Stop, Codec::Plain).cap(5, "Gemini"),
-    row(&["generationConfig", "frequencyPenalty"], Slot::FrequencyPenalty, Codec::Plain),
-    row(&["generationConfig", "presencePenalty"], Slot::PresencePenalty, Codec::Plain),
-    row(&["generationConfig", "seed"], Slot::Seed, Codec::Plain),
-    row(&["generationConfig", "candidateCount"], Slot::N, Codec::Plain),
+    row(&["generationConfig", "temperature"], Slot::Temperature, ValueCodec::Plain),
+    row(&["generationConfig", "topP"], Slot::TopP, ValueCodec::Plain),
+    row(&["generationConfig", "topK"], Slot::TopK, ValueCodec::Plain),
+    row(&["generationConfig", "stopSequences"], Slot::Stop, ValueCodec::Plain).cap(5, "Gemini"),
+    row(&["generationConfig", "frequencyPenalty"], Slot::FrequencyPenalty, ValueCodec::Plain),
+    row(&["generationConfig", "presencePenalty"], Slot::PresencePenalty, ValueCodec::Plain),
+    row(&["generationConfig", "seed"], Slot::Seed, ValueCodec::Plain),
+    row(&["generationConfig", "candidateCount"], Slot::N, ValueCodec::Plain),
 ];
 
 /// Row group `structure`.
 pub(crate) const ROWS_STRUCTURE: &[Field] = &[
-    row(&["contents"], Slot::Structure, Codec::Prim("messages")),
-    row(&["tools"], Slot::Structure, Codec::Prim("tools")),
-    row(&["systemInstruction"], Slot::Structure, Codec::Prim("system")),
-    row(&["model"], Slot::Structure, Codec::Prim("model")),
-    row(&["__busbar_gemini_json_array"], Slot::Structure, Codec::Prim("json_array_shim")),
+    row(&["contents"], Slot::Structure, ValueCodec::Prim("messages")),
+    row(&["tools"], Slot::Structure, ValueCodec::Prim("tools")),
+    row(&["systemInstruction"], Slot::Structure, ValueCodec::Prim("system")),
+    row(&["model"], Slot::Structure, ValueCodec::Prim("model")),
+    row(&["__busbar_gemini_json_array"], Slot::Structure, ValueCodec::Prim("json_array_shim")),
 ];
 
 /// The request table, walked in order.

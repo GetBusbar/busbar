@@ -512,7 +512,7 @@ impl ProtocolWriter for AnthropicWriter {
         // file. Beside an emitted thinking ask Anthropic 400s on a modified sampling knob, so each is
         // omitted, observably (the think-ask wins). Emitted before the `extra` overlay (the reader
         // pulled these keys OUT of extra, so there is no double-emit on passthrough).
-        crate::codec::carry::write(
+        crate::codec::carry::write_fields(
             super::map::REQUEST,
             req,
             crate::codec::carry::Egress {

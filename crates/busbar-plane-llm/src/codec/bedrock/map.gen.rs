@@ -5,26 +5,26 @@
 // DO NOT EDIT: edit the mapping file and re-run the compile; the `dialect-map` gate refuses
 // a table file that differs from a fresh compile.
 
-use crate::codec::carry::{Codec, Cond, Dir, Field, Handled, Slot, Table, Word, row};
+use crate::codec::carry::{Cond, Dir, Field, Handled, Slot, Table, ValueCodec, Word, row};
 
 /// Row group `inference_config`.
 pub(crate) const ROWS_INFERENCE_CONFIG: &[Field] = &[
-    row(&["inferenceConfig", "temperature"], Slot::Temperature, Codec::Plain).clamp(0.0, 1.0, "clamping temperature to Bedrock's [0.0, 1.0] range; the requested value was out of range and would be rejected with a 400 ValidationException", false).drop_if(Cond::Thinking, "omitting temperature on Bedrock egress: not compatible with thinking", true),
-    row(&["inferenceConfig", "topP"], Slot::TopP, Codec::Plain).drop_if(Cond::Thinking, "omitting topP on Bedrock egress: not compatible with thinking", true),
-    row(&["inferenceConfig", "stopSequences"], Slot::Stop, Codec::Plain),
+    row(&["inferenceConfig", "temperature"], Slot::Temperature, ValueCodec::Plain).clamp(0.0, 1.0, "clamping temperature to Bedrock's [0.0, 1.0] range; the requested value was out of range and would be rejected with a 400 ValidationException", false).drop_if(Cond::Thinking, "omitting temperature on Bedrock egress: not compatible with thinking", true),
+    row(&["inferenceConfig", "topP"], Slot::TopP, ValueCodec::Plain).drop_if(Cond::Thinking, "omitting topP on Bedrock egress: not compatible with thinking", true),
+    row(&["inferenceConfig", "stopSequences"], Slot::Stop, ValueCodec::Plain),
 ];
 
 /// Row group `structure`.
 pub(crate) const ROWS_STRUCTURE: &[Field] = &[
-    row(&["messages"], Slot::Structure, Codec::Prim("messages")),
-    row(&["model"], Slot::Structure, Codec::Prim("model")),
-    row(&["stream"], Slot::Structure, Codec::Prim("stream")),
-    row(&["system"], Slot::Structure, Codec::Prim("system")),
+    row(&["messages"], Slot::Structure, ValueCodec::Prim("messages")),
+    row(&["model"], Slot::Structure, ValueCodec::Prim("model")),
+    row(&["stream"], Slot::Structure, ValueCodec::Prim("stream")),
+    row(&["system"], Slot::Structure, ValueCodec::Prim("system")),
 ];
 
 /// Row group `tier`.
 pub(crate) const ROWS_TIER: &[Field] = &[
-    row(&["serviceTier", "type"], Slot::ServiceTier, Codec::Words(WORDS_SERVICE_TIER)),
+    row(&["serviceTier", "type"], Slot::ServiceTier, ValueCodec::Words(WORDS_SERVICE_TIER)),
 ];
 
 /// The request table, walked in order.

@@ -507,7 +507,7 @@ impl ProtocolWriter for ResponsesWriter {
         // The flat request fields (`map.gen.rs`): IR-03..06 (the members Chat spells alike) and
         // IR-07 `text.verbosity`, overlaid on the `text` written above. A same-protocol request's
         // raw members in `extra` (overlaid below) win.
-        crate::codec::carry::write(
+        crate::codec::carry::write_fields(
             super::map::REQUEST,
             req,
             crate::codec::carry::Egress::default(),

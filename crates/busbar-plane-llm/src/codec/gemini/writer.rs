@@ -556,7 +556,7 @@ impl ProtocolWriter for GeminiWriter {
             "generationConfig".to_string(),
             serde_json::Value::Object(gen_config),
         );
-        crate::codec::carry::write(
+        crate::codec::carry::write_fields(
             super::map::REQUEST,
             req,
             crate::codec::carry::Egress::default(),

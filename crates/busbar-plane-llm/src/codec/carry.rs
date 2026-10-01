@@ -7,12 +7,12 @@
 //! Each dialect states its wire ↔ IR mapping as data in `crates/busbar-plane-llm/dialects/<d>.toml`;
 //! `cargo xtask dialect compile` emits it as the `const` tables of `codec/<d>/map.gen.rs` (the
 //! `dialect-map` gate refuses a committed table that differs from a fresh compile). A row is a
-//! [`Field`]: wire path, [`Slot`], [`Codec`]. This module is the only code that reads the tables:
+//! [`Field`]: wire path, [`Slot`], [`ValueCodec`]. This module is the only code that reads the tables:
 //!
-//! * [`read`] fills each slot from its wire path, then parks in `extra` every raw top-level member
+//! * [`read_fields`] fills each slot from its wire path, then parks in `extra` every raw top-level member
 //!   the slot does not reproduce byte-for-byte, so a same-dialect re-serialize keeps the caller's
 //!   exact member (`extra` is written last and is cleared on the cross-protocol seam);
-//! * [`write`] emits each carried slot at its wire path, overlaying a nested path onto the
+//! * [`write_fields`] emits each carried slot at its wire path, overlaying a nested path onto the
 //!   container already in the body;
 //! * [`keys`] names the top-level members a table models, for the reader's modelled-key list.
 //!
@@ -24,7 +24,7 @@ use serde_json::{Map, Value};
 use crate::codec::ir::{IrRequest, IrServiceTier, IrVerbosity};
 
 /// A flat IR request slot a field table can name. Each slot has ONE neutral JSON spelling (the
-/// slot's own number / flag / string, a string map, or the IR word); a row's [`Codec`] maps it to
+/// slot's own number / flag / string, a string map, or the IR word); a row's [`ValueCodec`] maps it to
 /// the dialect's spelling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Slot {
@@ -120,7 +120,7 @@ pub type Word = (&'static str, &'static str, Dir);
 
 /// How a row's slot value is spelled on the wire.
 #[derive(Clone, Copy)]
-pub enum Codec {
+pub enum ValueCodec {
     /// The slot's neutral spelling, unchanged.
     Plain,
     /// The slot's neutral word through a word table.
@@ -167,7 +167,7 @@ impl Hook {
 pub struct Field {
     pub path: &'static [&'static str],
     pub slot: Slot,
-    pub codec: Codec,
+    pub codec: ValueCodec,
     /// Same-dialect fidelity: a raw member the slot does not reproduce is parked in `extra`.
     pub park: bool,
     /// Clamp a number into a range before it is written.
@@ -207,7 +207,7 @@ pub struct DropIf {
 }
 
 /// A row with no modifiers.
-pub const fn row(path: &'static [&'static str], slot: Slot, codec: Codec) -> Field {
+pub const fn row(path: &'static [&'static str], slot: Slot, codec: ValueCodec) -> Field {
     Field {
         path,
         slot,
@@ -432,20 +432,20 @@ fn put(out: &mut Map<String, Value>, path: &[&str], v: Value) {
 
 /// THE READ WALK. Fill every slot `table` names from the wire body `obj`, then park in `extra` each
 /// raw top-level member the filled slots do not write back identically (same-dialect fidelity).
-pub fn read(table: Table, obj: &Map<String, Value>, ir: &mut IrRequest) {
+pub fn read_fields(table: Table, obj: &Map<String, Value>, ir: &mut IrRequest) {
     for f in rows(table) {
         let Some(raw) = at(obj, f.path) else {
             continue;
         };
         match f.codec {
-            Codec::Plain => f.slot.fill(ir, raw),
-            Codec::Words(words) => {
+            ValueCodec::Plain => f.slot.fill(ir, raw),
+            ValueCodec::Words(words) => {
                 if let Some(neutral) = raw.as_str().and_then(|w| word_in(words, w)) {
                     f.slot.fill(ir, &Value::from(neutral));
                 }
             }
-            Codec::Hook(hook) => hook.read(raw, ir),
-            Codec::Prim(_) => {}
+            ValueCodec::Hook(hook) => hook.read(raw, ir),
+            ValueCodec::Prim(_) => {}
         }
     }
     let mut written = Map::new();
@@ -468,14 +468,14 @@ pub fn read(table: Table, obj: &Map<String, Value>, ir: &mut IrRequest) {
 /// The wire value of `f` for `req` before any modifier.
 fn value_of(f: &Field, req: &IrRequest) -> Option<Value> {
     match f.codec {
-        Codec::Plain => f.slot.get(req),
-        Codec::Words(words) => f
+        ValueCodec::Plain => f.slot.get(req),
+        ValueCodec::Words(words) => f
             .slot
             .get(req)
             .and_then(|v| v.as_str().and_then(|n| word_out(words, n)))
             .map(Value::from),
-        Codec::Hook(hook) => hook.write(req),
-        Codec::Prim(_) => None,
+        ValueCodec::Hook(hook) => hook.write(req),
+        ValueCodec::Prim(_) => None,
     }
 }
 
@@ -516,7 +516,7 @@ pub fn clamp(v: f64, min: f64, max: f64) -> (f64, bool) {
 /// through the row's modifiers: a row whose drop condition holds is omitted with its warn, a clamp
 /// is applied (warned when it changed the value), a list is capped. A neutral word the row's table
 /// has no wire word for is not written.
-pub fn write(table: Table, req: &IrRequest, egress: Egress, out: &mut Map<String, Value>) {
+pub fn write_fields(table: Table, req: &IrRequest, egress: Egress, out: &mut Map<String, Value>) {
     for f in rows(table) {
         let Some(mut v) = value_of(f, req) else {
             continue;
@@ -578,7 +578,7 @@ pub fn dropped<'a>(
             _ => match rows(table).find(|f| f.slot == slot) {
                 None => true,
                 Some(f @ Field {
-                    codec: Codec::Words(_),
+                    codec: ValueCodec::Words(_),
                     ..
                 }) => value_of(f, req).is_none(),
                 Some(_) => false,

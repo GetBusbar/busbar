@@ -5,26 +5,26 @@
 // DO NOT EDIT: edit the mapping file and re-run the compile; the `dialect-map` gate refuses
 // a table file that differs from a fresh compile.
 
-use crate::codec::carry::{Codec, Field, Handled, Slot, Table, row};
+use crate::codec::carry::{Field, Handled, Slot, Table, ValueCodec, row};
 
 /// Row group `sampling`.
 pub(crate) const ROWS_SAMPLING: &[Field] = &[
-    row(&["temperature"], Slot::Temperature, Codec::Plain).clamp(0.0, 1.0, "clamping temperature to Cohere's [0.0, 1.0] range; the requested value was outside it (e.g. an OpenAI/Responses value up to 2.0) and would 400 — the forwarded value diverges from the caller's request", true),
-    row(&["p"], Slot::TopP, Codec::Plain),
-    row(&["k"], Slot::TopK, Codec::Plain),
-    row(&["stop_sequences"], Slot::Stop, Codec::Plain).cap(5, "Cohere"),
+    row(&["temperature"], Slot::Temperature, ValueCodec::Plain).clamp(0.0, 1.0, "clamping temperature to Cohere's [0.0, 1.0] range; the requested value was outside it (e.g. an OpenAI/Responses value up to 2.0) and would 400 — the forwarded value diverges from the caller's request", true),
+    row(&["p"], Slot::TopP, ValueCodec::Plain),
+    row(&["k"], Slot::TopK, ValueCodec::Plain),
+    row(&["stop_sequences"], Slot::Stop, ValueCodec::Plain).cap(5, "Cohere"),
 ];
 
 /// Row group `structure`.
 pub(crate) const ROWS_STRUCTURE: &[Field] = &[
-    row(&["model"], Slot::Structure, Codec::Prim("model")),
-    row(&["messages"], Slot::Structure, Codec::Prim("messages")),
-    row(&["tools"], Slot::Structure, Codec::Prim("tools")),
-    row(&["tool_choice"], Slot::Structure, Codec::Prim("tool_choice")),
-    row(&["max_tokens"], Slot::Structure, Codec::Prim("max_output")),
-    row(&["stream"], Slot::Structure, Codec::Prim("stream")),
-    row(&["response_format"], Slot::Structure, Codec::Prim("response_format")),
-    row(&["logprobs"], Slot::Structure, Codec::Prim("logprobs")),
+    row(&["model"], Slot::Structure, ValueCodec::Prim("model")),
+    row(&["messages"], Slot::Structure, ValueCodec::Prim("messages")),
+    row(&["tools"], Slot::Structure, ValueCodec::Prim("tools")),
+    row(&["tool_choice"], Slot::Structure, ValueCodec::Prim("tool_choice")),
+    row(&["max_tokens"], Slot::Structure, ValueCodec::Prim("max_output")),
+    row(&["stream"], Slot::Structure, ValueCodec::Prim("stream")),
+    row(&["response_format"], Slot::Structure, ValueCodec::Prim("response_format")),
+    row(&["logprobs"], Slot::Structure, ValueCodec::Prim("logprobs")),
 ];
 
 /// The request table, walked in order.

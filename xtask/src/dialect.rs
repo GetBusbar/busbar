@@ -3,7 +3,7 @@
 //! Each LLM dialect states its wire <> IR mapping by hand in
 //! `crates/busbar-plane-llm/dialects/<d>.toml`. This compiles every such file into the committed
 //! `crates/busbar-plane-llm/src/codec/<d>/map.gen.rs`: `const` tables of the plane's own mapping
-//! types (`codec::carry::{Field, Slot, Codec, Hook, Word, Dir}`), so nothing is parsed at run time.
+//! types (`codec::carry::{Field, Slot, ValueCodec, Hook, Word, Dir}`), so nothing is parsed at run time.
 //! The `dialect-map` gate ([`crate::gates::dialect_map`]) runs the same compile and refuses a
 //! committed file that differs from it.
 //!
@@ -194,22 +194,22 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
             };
             let codec = match (field(&f, "words"), field(&f, "hook")) {
                 (None, None) if prim.is_some() => {
-                    format!("Codec::Prim({})", lit(prim.as_deref().unwrap_or_default()))
+                    format!("ValueCodec::Prim({})", lit(prim.as_deref().unwrap_or_default()))
                 }
-                (None, None) => "Codec::Plain".to_string(),
+                (None, None) => "ValueCodec::Plain".to_string(),
                 (Some(w), None) => {
                     let (wd, wn) = qualified(&d.name, &toml_lite::string_value(w));
-                    format!("Codec::Words({})", const_ref(&d.name, &wd, "WORDS", &wn))
+                    format!("ValueCodec::Words({})", const_ref(&d.name, &wd, "WORDS", &wn))
                 }
                 (None, Some(h)) => {
                     uses.insert("Hook");
-                    format!("Codec::Hook(Hook::{})", camel(&toml_lite::string_value(h)))
+                    format!("ValueCodec::Hook(Hook::{})", camel(&toml_lite::string_value(h)))
                 }
                 (Some(_), Some(_)) => {
                     return Err(format!("{source}: [{path}] \"{key}\" names both words and a hook"))
                 }
             };
-            uses.insert("Codec");
+            uses.insert("ValueCodec");
             const KNOWN: &[&str] = &[
                 "ir",
                 "prim",

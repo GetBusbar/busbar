@@ -782,7 +782,7 @@ impl ProtocolReader for BedrockReader {
             system_role: None,
             output_modalities: None,
         };
-        crate::codec::carry::read(super::map::REQUEST, obj, &mut ir);
+        crate::codec::carry::read_fields(super::map::REQUEST, obj, &mut ir);
         Ok(ir)
     }
 

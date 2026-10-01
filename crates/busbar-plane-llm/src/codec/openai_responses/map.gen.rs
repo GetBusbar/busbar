@@ -5,25 +5,25 @@
 // DO NOT EDIT: edit the mapping file and re-run the compile; the `dialect-map` gate refuses
 // a table file that differs from a fresh compile.
 
-use crate::codec::carry::{Codec, Field, Handled, Slot, Table, row};
+use crate::codec::carry::{Field, Handled, Slot, Table, ValueCodec, row};
 
 /// Row group `responses`.
 pub(crate) const ROWS_RESPONSES: &[Field] = &[
-    row(&["text", "verbosity"], Slot::Verbosity, Codec::Plain).park(),
+    row(&["text", "verbosity"], Slot::Verbosity, ValueCodec::Plain).park(),
 ];
 
 /// Row group `responses_structure`.
 pub(crate) const ROWS_RESPONSES_STRUCTURE: &[Field] = &[
-    row(&["model"], Slot::Structure, Codec::Prim("model")),
-    row(&["instructions"], Slot::Structure, Codec::Prim("system")),
-    row(&["input"], Slot::Structure, Codec::Prim("messages")),
-    row(&["tools"], Slot::Structure, Codec::Prim("tools")),
-    row(&["max_output_tokens"], Slot::Structure, Codec::Prim("max_output")),
-    row(&["top_logprobs"], Slot::Structure, Codec::Prim("logprobs")),
-    row(&["stream"], Slot::Structure, Codec::Prim("stream")),
-    row(&["tool_choice"], Slot::Structure, Codec::Prim("tool_choice")),
-    row(&["parallel_tool_calls"], Slot::Structure, Codec::Prim("parallel_tool_calls")),
-    row(&["user"], Slot::Structure, Codec::Prim("user")),
+    row(&["model"], Slot::Structure, ValueCodec::Prim("model")),
+    row(&["instructions"], Slot::Structure, ValueCodec::Prim("system")),
+    row(&["input"], Slot::Structure, ValueCodec::Prim("messages")),
+    row(&["tools"], Slot::Structure, ValueCodec::Prim("tools")),
+    row(&["max_output_tokens"], Slot::Structure, ValueCodec::Prim("max_output")),
+    row(&["top_logprobs"], Slot::Structure, ValueCodec::Prim("logprobs")),
+    row(&["stream"], Slot::Structure, ValueCodec::Prim("stream")),
+    row(&["tool_choice"], Slot::Structure, ValueCodec::Prim("tool_choice")),
+    row(&["parallel_tool_calls"], Slot::Structure, ValueCodec::Prim("parallel_tool_calls")),
+    row(&["user"], Slot::Structure, ValueCodec::Prim("user")),
 ];
 
 /// The request table, walked in order.

@@ -15,17 +15,17 @@ const TIERS: &[Word] = &[
 ];
 
 const GROUP_A: &[Field] = &[
-    row(&["metadata"], Slot::Metadata, Codec::Plain).park(),
-    row(&["tier"], Slot::ServiceTier, Codec::Words(TIERS)).park(),
+    row(&["metadata"], Slot::Metadata, ValueCodec::Plain).park(),
+    row(&["tier"], Slot::ServiceTier, ValueCodec::Words(TIERS)).park(),
 ];
 const GROUP_B: &[Field] = &[
-    row(&["text", "verbosity"], Slot::Verbosity, Codec::Plain).park(),
-    row(&["user_id"], Slot::SafetyIdentifier, Codec::Plain).park(),
-    row(&["alt_user_id"], Slot::SafetyIdentifier, Codec::Plain).park(),
+    row(&["text", "verbosity"], Slot::Verbosity, ValueCodec::Plain).park(),
+    row(&["user_id"], Slot::SafetyIdentifier, ValueCodec::Plain).park(),
+    row(&["alt_user_id"], Slot::SafetyIdentifier, ValueCodec::Plain).park(),
     row(
         &["modes"],
         Slot::OutputModalities,
-        Codec::Hook(Hook::ChatModalities),
+        ValueCodec::Hook(Hook::ChatModalities),
     )
     .park(),
 ];
@@ -33,13 +33,13 @@ const TABLE: Table = &[GROUP_A, GROUP_B];
 
 fn read_obj(v: Value) -> IrRequest {
     let mut ir = IrRequest::default();
-    read(TABLE, v.as_object().expect("object"), &mut ir);
+    read_fields(TABLE, v.as_object().expect("object"), &mut ir);
     ir
 }
 
 fn written(ir: &IrRequest) -> Value {
     let mut out = Map::new();
-    write(TABLE, ir, Egress::default(), &mut out);
+    write_fields(TABLE, ir, Egress::default(), &mut out);
     Value::Object(out)
 }
 
@@ -112,7 +112,7 @@ fn a_nested_row_overlays_the_container_already_written() {
     };
     let mut out = Map::new();
     out.insert("text".to_string(), json!({"format": {"type": "text"}}));
-    write(TABLE, &ir, Egress::default(), &mut out);
+    write_fields(TABLE, &ir, Egress::default(), &mut out);
     assert_eq!(
         Value::Object(out),
         json!({"text": {"format": {"type": "text"}, "verbosity": "medium"}})
@@ -143,16 +143,16 @@ fn keys_are_the_single_key_paths() {
 }
 
 const SAMPLING: &[Field] = &[
-    row(&["temperature"], Slot::Temperature, Codec::Plain)
+    row(&["temperature"], Slot::Temperature, ValueCodec::Plain)
         .clamp(0.0, 1.0, "clamped", true)
         .drop_if(Cond::Thinking, "omitted", true),
-    row(&["stop"], Slot::Stop, Codec::Plain).cap(2, "Test"),
-    row(&["seed"], Slot::Seed, Codec::Plain),
+    row(&["stop"], Slot::Stop, ValueCodec::Plain).cap(2, "Test"),
+    row(&["seed"], Slot::Seed, ValueCodec::Plain),
 ];
 
 fn write_sampling(ir: &IrRequest, thinking: bool) -> Value {
     let mut out = Map::new();
-    write(&[SAMPLING], ir, Egress { thinking }, &mut out);
+    write_fields(&[SAMPLING], ir, Egress { thinking }, &mut out);
     Value::Object(out)
 }
 
@@ -182,7 +182,7 @@ fn modifiers_clamp_cap_and_drop_on_write() {
 #[test]
 fn stop_reads_a_string_or_an_array_and_unparked_rows_never_park() {
     let mut ir = IrRequest::default();
-    read(&[SAMPLING], json!({"stop": "END", "seed": 1.5}).as_object().unwrap(), &mut ir);
+    read_fields(&[SAMPLING], json!({"stop": "END", "seed": 1.5}).as_object().unwrap(), &mut ir);
     assert_eq!(ir.stop, vec!["END".to_string()]);
     assert_eq!(ir.seed, None);
     assert!(ir.extra.is_empty(), "rows without park leave extra alone");
@@ -191,9 +191,9 @@ fn stop_reads_a_string_or_an_array_and_unparked_rows_never_park() {
 #[test]
 fn drops_are_derived_from_missing_rows_in_the_control_order() {
     const ROWS: &[Field] = &[
-        row(&["tier"], Slot::ServiceTier, Codec::Words(TIERS)),
-        row(&["seed"], Slot::Seed, Codec::Plain),
-        row(&["model"], Slot::Structure, Codec::Prim("model")),
+        row(&["tier"], Slot::ServiceTier, ValueCodec::Words(TIERS)),
+        row(&["seed"], Slot::Seed, ValueCodec::Plain),
+        row(&["model"], Slot::Structure, ValueCodec::Prim("model")),
     ];
     const CONTROLS: &[(Slot, Handled)] = &[
         (Slot::TopK, Handled::Silent),

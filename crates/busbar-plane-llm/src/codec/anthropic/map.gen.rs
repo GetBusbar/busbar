@@ -5,30 +5,30 @@
 // DO NOT EDIT: edit the mapping file and re-run the compile; the `dialect-map` gate refuses
 // a table file that differs from a fresh compile.
 
-use crate::codec::carry::{Codec, Cond, Dir, Field, Handled, Slot, Table, Word, row};
+use crate::codec::carry::{Cond, Dir, Field, Handled, Slot, Table, ValueCodec, Word, row};
 
 /// Row group `sampling`.
 pub(crate) const ROWS_SAMPLING: &[Field] = &[
-    row(&["temperature"], Slot::Temperature, Codec::Plain).clamp(0.0, 1.0, "clamping temperature to Anthropic's [0.0, 1.0] range; the requested value was outside it (e.g. an OpenAI/Responses value up to 2.0) and would 422 — the forwarded value diverges from the caller's request", true).drop_if(Cond::Thinking, "omitting temperature on Anthropic egress: not compatible with thinking", true),
-    row(&["top_p"], Slot::TopP, Codec::Plain).drop_if(Cond::Thinking, "omitting top_p on Anthropic egress: not compatible with thinking", true),
-    row(&["top_k"], Slot::TopK, Codec::Plain).drop_if(Cond::Thinking, "omitting top_k on Anthropic egress: not compatible with thinking", true),
-    row(&["stop_sequences"], Slot::Stop, Codec::Plain),
+    row(&["temperature"], Slot::Temperature, ValueCodec::Plain).clamp(0.0, 1.0, "clamping temperature to Anthropic's [0.0, 1.0] range; the requested value was outside it (e.g. an OpenAI/Responses value up to 2.0) and would 422 — the forwarded value diverges from the caller's request", true).drop_if(Cond::Thinking, "omitting temperature on Anthropic egress: not compatible with thinking", true),
+    row(&["top_p"], Slot::TopP, ValueCodec::Plain).drop_if(Cond::Thinking, "omitting top_p on Anthropic egress: not compatible with thinking", true),
+    row(&["top_k"], Slot::TopK, ValueCodec::Plain).drop_if(Cond::Thinking, "omitting top_k on Anthropic egress: not compatible with thinking", true),
+    row(&["stop_sequences"], Slot::Stop, ValueCodec::Plain),
 ];
 
 /// Row group `structure`.
 pub(crate) const ROWS_STRUCTURE: &[Field] = &[
-    row(&["max_tokens"], Slot::Structure, Codec::Prim("max_output")),
-    row(&["messages"], Slot::Structure, Codec::Prim("messages")),
-    row(&["model"], Slot::Structure, Codec::Prim("model")),
-    row(&["stream"], Slot::Structure, Codec::Prim("stream")),
-    row(&["system"], Slot::Structure, Codec::Prim("system")),
-    row(&["tool_choice"], Slot::Structure, Codec::Prim("tool_choice")),
-    row(&["tools"], Slot::Structure, Codec::Prim("tools")),
+    row(&["max_tokens"], Slot::Structure, ValueCodec::Prim("max_output")),
+    row(&["messages"], Slot::Structure, ValueCodec::Prim("messages")),
+    row(&["model"], Slot::Structure, ValueCodec::Prim("model")),
+    row(&["stream"], Slot::Structure, ValueCodec::Prim("stream")),
+    row(&["system"], Slot::Structure, ValueCodec::Prim("system")),
+    row(&["tool_choice"], Slot::Structure, ValueCodec::Prim("tool_choice")),
+    row(&["tools"], Slot::Structure, ValueCodec::Prim("tools")),
 ];
 
 /// Row group `tier`.
 pub(crate) const ROWS_TIER: &[Field] = &[
-    row(&["service_tier"], Slot::ServiceTier, Codec::Words(WORDS_SERVICE_TIER)).park(),
+    row(&["service_tier"], Slot::ServiceTier, ValueCodec::Words(WORDS_SERVICE_TIER)).park(),
 ];
 
 /// The request table, walked in order.

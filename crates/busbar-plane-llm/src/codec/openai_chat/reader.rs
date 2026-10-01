@@ -665,7 +665,7 @@ impl ProtocolReader for OpenAiReader {
             output_modalities: None,
         };
         // The flat request fields (`map.gen.rs`), then the allowed-tools subset of `tool_choice`.
-        crate::codec::carry::read(super::map::REQUEST, obj, &mut ir);
+        crate::codec::carry::read_fields(super::map::REQUEST, obj, &mut ir);
         super::slots::read_tool_choice_slots(obj, &mut ir);
         Ok(ir)
     }

@@ -561,7 +561,7 @@ impl ProtocolWriter for OpenAiWriter {
 
         // The flat request fields (`map.gen.rs`). Written before `extra`, which wins on the same
         // dialect (the reader parks there only a raw member the slot cannot reproduce).
-        crate::codec::carry::write(
+        crate::codec::carry::write_fields(
             super::map::REQUEST,
             req,
             crate::codec::carry::Egress::default(),

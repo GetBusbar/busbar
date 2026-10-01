@@ -5,58 +5,58 @@
 // DO NOT EDIT: edit the mapping file and re-run the compile; the `dialect-map` gate refuses
 // a table file that differs from a fresh compile.
 
-use crate::codec::carry::{Codec, Dir, Field, Handled, Hook, Slot, Table, Word, row};
+use crate::codec::carry::{Dir, Field, Handled, Hook, Slot, Table, ValueCodec, Word, row};
 
 /// Row group `chat`.
 pub(crate) const ROWS_CHAT: &[Field] = &[
-    row(&["verbosity"], Slot::Verbosity, Codec::Plain).park(),
-    row(&["modalities"], Slot::OutputModalities, Codec::Hook(Hook::ChatModalities)).park(),
-    row(&["web_search_options"], Slot::WebSearch, Codec::Hook(Hook::ChatWebSearch)).park(),
+    row(&["verbosity"], Slot::Verbosity, ValueCodec::Plain).park(),
+    row(&["modalities"], Slot::OutputModalities, ValueCodec::Hook(Hook::ChatModalities)).park(),
+    row(&["web_search_options"], Slot::WebSearch, ValueCodec::Hook(Hook::ChatWebSearch)).park(),
 ];
 
 /// Row group `chat_sampling`.
 pub(crate) const ROWS_CHAT_SAMPLING: &[Field] = &[
-    row(&["stop"], Slot::Stop, Codec::Plain).cap(4, "OpenAI"),
-    row(&["n"], Slot::N, Codec::Plain),
+    row(&["stop"], Slot::Stop, ValueCodec::Plain).cap(4, "OpenAI"),
+    row(&["n"], Slot::N, ValueCodec::Plain),
 ];
 
 /// Row group `chat_structure`.
 pub(crate) const ROWS_CHAT_STRUCTURE: &[Field] = &[
-    row(&["model"], Slot::Structure, Codec::Prim("model")),
-    row(&["messages"], Slot::Structure, Codec::Prim("messages")),
-    row(&["tools"], Slot::Structure, Codec::Prim("tools")),
-    row(&["max_tokens"], Slot::Structure, Codec::Prim("max_output")),
-    row(&["max_completion_tokens"], Slot::Structure, Codec::Prim("max_output")),
-    row(&["stream"], Slot::Structure, Codec::Prim("stream")),
-    row(&["tool_choice"], Slot::Structure, Codec::Prim("tool_choice")),
-    row(&["response_format"], Slot::Structure, Codec::Prim("response_format")),
-    row(&["user"], Slot::Structure, Codec::Prim("user")),
-    row(&["parallel_tool_calls"], Slot::Structure, Codec::Prim("parallel_tool_calls")),
-    row(&["logprobs"], Slot::Structure, Codec::Prim("logprobs")),
-    row(&["top_logprobs"], Slot::Structure, Codec::Prim("logprobs")),
-    row(&["reasoning_effort"], Slot::Structure, Codec::Prim("reasoning")),
+    row(&["model"], Slot::Structure, ValueCodec::Prim("model")),
+    row(&["messages"], Slot::Structure, ValueCodec::Prim("messages")),
+    row(&["tools"], Slot::Structure, ValueCodec::Prim("tools")),
+    row(&["max_tokens"], Slot::Structure, ValueCodec::Prim("max_output")),
+    row(&["max_completion_tokens"], Slot::Structure, ValueCodec::Prim("max_output")),
+    row(&["stream"], Slot::Structure, ValueCodec::Prim("stream")),
+    row(&["tool_choice"], Slot::Structure, ValueCodec::Prim("tool_choice")),
+    row(&["response_format"], Slot::Structure, ValueCodec::Prim("response_format")),
+    row(&["user"], Slot::Structure, ValueCodec::Prim("user")),
+    row(&["parallel_tool_calls"], Slot::Structure, ValueCodec::Prim("parallel_tool_calls")),
+    row(&["logprobs"], Slot::Structure, ValueCodec::Prim("logprobs")),
+    row(&["top_logprobs"], Slot::Structure, ValueCodec::Prim("logprobs")),
+    row(&["reasoning_effort"], Slot::Structure, ValueCodec::Prim("reasoning")),
 ];
 
 /// Row group `openai_family`.
 pub(crate) const ROWS_OPENAI_FAMILY: &[Field] = &[
-    row(&["metadata"], Slot::Metadata, Codec::Plain).park(),
-    row(&["service_tier"], Slot::ServiceTier, Codec::Plain).park(),
-    row(&["store"], Slot::Store, Codec::Plain).park(),
-    row(&["safety_identifier"], Slot::SafetyIdentifier, Codec::Plain).park(),
-    row(&["prompt_cache_key"], Slot::PromptCacheKey, Codec::Plain).park(),
+    row(&["metadata"], Slot::Metadata, ValueCodec::Plain).park(),
+    row(&["service_tier"], Slot::ServiceTier, ValueCodec::Plain).park(),
+    row(&["store"], Slot::Store, ValueCodec::Plain).park(),
+    row(&["safety_identifier"], Slot::SafetyIdentifier, ValueCodec::Plain).park(),
+    row(&["prompt_cache_key"], Slot::PromptCacheKey, ValueCodec::Plain).park(),
 ];
 
 /// Row group `openai_penalties`.
 pub(crate) const ROWS_OPENAI_PENALTIES: &[Field] = &[
-    row(&["frequency_penalty"], Slot::FrequencyPenalty, Codec::Plain),
-    row(&["presence_penalty"], Slot::PresencePenalty, Codec::Plain),
-    row(&["seed"], Slot::Seed, Codec::Plain),
+    row(&["frequency_penalty"], Slot::FrequencyPenalty, ValueCodec::Plain),
+    row(&["presence_penalty"], Slot::PresencePenalty, ValueCodec::Plain),
+    row(&["seed"], Slot::Seed, ValueCodec::Plain),
 ];
 
 /// Row group `openai_sampling`.
 pub(crate) const ROWS_OPENAI_SAMPLING: &[Field] = &[
-    row(&["temperature"], Slot::Temperature, Codec::Plain),
-    row(&["top_p"], Slot::TopP, Codec::Plain),
+    row(&["temperature"], Slot::Temperature, ValueCodec::Plain),
+    row(&["top_p"], Slot::TopP, ValueCodec::Plain),
 ];
 
 /// The request table, walked in order.
