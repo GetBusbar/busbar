@@ -405,6 +405,11 @@ pub struct PlaneDeclaration {
     /// validator does not read them. At most one key per [`TrustRole`]. `&[]` for a plane whose
     /// registrations carry no trust root.
     pub trust_keys: &'static [TrustKeyDecl],
+    /// The plane's own sentence refusing the reserved `upstream_credentials: passthrough` section
+    /// default (the tail's `caller_credential_refusal`). The kernel emits it verbatim when a
+    /// section's default forwards the caller's credential, so the plane owns its words and the
+    /// kernel names only the reserved key. `None` for a plane on which forwarding it is legitimate.
+    pub caller_credential_refusal: Option<&'static str>,
 }
 
 /// Which trust-lifecycle fact a [`TrustKeyDecl`] holds.

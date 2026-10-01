@@ -104,6 +104,7 @@ const TAIL: &PlaneTail = &PlaneTail {
     trust_keys_len: 0,
     refusal_statuses: std::ptr::null(),
     refusal_statuses_len: 0,
+    caller_credential_refusal: NONE,
 };
 
 /// Every generation's claim.

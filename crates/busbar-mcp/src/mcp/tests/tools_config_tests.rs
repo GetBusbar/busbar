@@ -16,7 +16,7 @@ use busbar_kernel::plane::config::{plane_sections, validate_plane_section};
 fn parse(yaml: &str) -> Result<ToolsCfg, String> {
     let value: serde_yaml::Value = serde_yaml::from_str(yaml).map_err(|e| e.to_string())?;
     let section = super::super::PLANE_DECLARATION.config_section;
-    validate_plane_section(section, &value, super::TRUST_KEYS, &plane_sections())?;
+    validate_plane_section(section, &value, super::TRUST_KEYS, None, &plane_sections())?;
     serde_yaml::from_str::<ToolsCfg>(yaml).map_err(|e| e.to_string())
 }
 

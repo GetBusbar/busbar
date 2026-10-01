@@ -31,6 +31,14 @@ fn the_declaration_states_the_doors_nouns() {
         config::TRUST_KEYS.iter().map(|k| k.key).collect::<Vec<_>>()
     );
     assert_eq!(door::TAIL.trust_keys_len, d.trust_keys.len());
+    assert_eq!(
+        d.caller_credential_refusal,
+        Some(config::REFUSE_PASSTHROUGH_SECTION)
+    );
+    assert_eq!(
+        door::TAIL.caller_credential_refusal.len,
+        config::REFUSE_PASSTHROUGH_SECTION.len()
+    );
 }
 
 #[test]

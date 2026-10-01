@@ -188,6 +188,7 @@ fn a_plane_declaring_an_unlisted_first_party_family_is_refused_a_row() {
                 record_kinds: &[],
                 required_config_sections: &[],
                 trust_keys: &[],
+                caller_credential_refusal: None,
                 served_op_classes: &[],
             };
             let native: &'static [PlaneDecl] = Box::leak(Box::new([PlaneDecl::assemble(

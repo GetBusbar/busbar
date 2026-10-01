@@ -949,6 +949,7 @@ const A_SERVED_PLANE: busbar_contract::plane::PlaneDeclaration =
         record_kinds: &["note"],
         required_config_sections: &[],
         trust_keys: &[],
+        caller_credential_refusal: None,
         served_op_classes: &[],
     };
 

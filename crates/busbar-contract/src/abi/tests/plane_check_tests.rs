@@ -1298,6 +1298,26 @@ fn a_tail_counting_trust_keys_over_a_null_pointer_is_fault() {
 }
 
 #[test]
+fn a_tail_caller_credential_refusal_is_absent_or_a_sentence() {
+    assert_eq!(check_tail(&tail()), Ok(()));
+    let mut t = tail();
+    t.caller_credential_refusal = s("refused here");
+    assert_eq!(check_tail(&t), Ok(()));
+    let mut t = tail();
+    t.caller_credential_refusal = s("");
+    assert_eq!(
+        check_tail(&t),
+        f(Rule::Missing, "tail.caller_credential_refusal")
+    );
+    let mut t = tail();
+    t.caller_credential_refusal.len = 1;
+    assert_eq!(
+        check_tail(&t),
+        f(Rule::NullWithCount, "tail.caller_credential_refusal")
+    );
+}
+
+#[test]
 fn well_formed_trust_keys_pass() {
     let keys = [
         pin_key(),

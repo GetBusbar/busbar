@@ -139,6 +139,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         // `providers:` map, so this plane consumes `providers`.
         required_config_sections: &[Kind::Transport.root()],
         trust_keys: &[],
+        caller_credential_refusal: None,
     };
 
 /// The claims axis: the pure plane the boot seal registers, and the two exact-path claims it declares

@@ -47,6 +47,7 @@ fn known_bytes(a: AbiStr) -> &'static [u8] {
         "cert_spki",
         "mtls",
         "unpinned",
+        crate::a2a::config::REFUSE_PASSTHROUGH_SECTION,
     ]
     .into_iter()
     .find(|c| c.as_ptr() == a.ptr && c.len() == a.len)
@@ -97,6 +98,14 @@ fn the_abi_trust_keys_are_the_grammars_trust_keys() {
         assert_eq!(s(abi.token), decl.token);
         assert_eq!(abi.flags & MECHANISM_ROOT != 0, decl.root, "{}", decl.token);
     }
+}
+
+#[test]
+fn the_tail_states_the_sentence_that_refuses_a_forwarded_caller_credential() {
+    assert_eq!(
+        s(TAIL.caller_credential_refusal),
+        crate::a2a::config::REFUSE_PASSTHROUGH_SECTION
+    );
 }
 
 #[test]

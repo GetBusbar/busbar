@@ -119,6 +119,7 @@ pub const NEUTRAL_FALLBACK: crate::plane::registry::PlaneDecl = crate::plane::re
         record_kinds: &[],
         required_config_sections: &[],
         trust_keys: &[],
+        caller_credential_refusal: None,
         served_op_classes: &[],
     },
     wire_format_names: || &[],

@@ -170,6 +170,7 @@
 //! | (new) dialects, `dialect_auth`, `route_cost`, `cli_help` | tail |
 //! | (new) needs, consumed sections, egress targets | Statement `needs`, [`SECTION_CONSUMED`](crate::abi::mechanism::door::SECTION_CONSUMED); tail [`PlaneTail::egress_targets`] |
 //! | (new) kernel-owned trust keys | tail [`PlaneTail::trust_keys`] |
+//! | (new) the section-level caller-credential refusal | tail [`PlaneTail::caller_credential_refusal`] |
 //!
 //! KERNEL-OWNED TRUST KEYS. The trust lifecycle (pin, re-verification cadence, demotion) is the
 //! kernel's. A plane whose registrations carry those keys DECLARES them in its tail
@@ -975,6 +976,10 @@ pub struct PlaneTail {
     pub refusal_statuses: *const RefusalStatus,
     /// How many.
     pub refusal_statuses_len: usize,
+    /// The plane's own sentence refusing the reserved `upstream_credentials: passthrough` section
+    /// default, emitted by the kernel verbatim; NULL when forwarding the caller's credential is
+    /// legitimate on this plane.
+    pub caller_credential_refusal: AbiStr,
 }
 
 // ── the generation snapshot ──────────────────────────────────────────────────────────────────────

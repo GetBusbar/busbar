@@ -101,6 +101,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
         required_config_sections: &[],
         // The pin and the cadence are the kernel's to parse and judge; declared here by key.
         trust_keys: crate::a2a::config::TRUST_KEYS,
+        caller_credential_refusal: Some(config::REFUSE_PASSTHROUGH_SECTION),
         served_op_classes: &[],
     };
 

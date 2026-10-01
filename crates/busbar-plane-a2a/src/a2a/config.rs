@@ -128,7 +128,9 @@ pub const TRUST_KEYS: &[TrustKeyDecl] = &[
 pub const SUBJECT_NOUN: &str = "fronted agent";
 
 /// THE REFUSAL FOR `upstream_credentials: passthrough` ON THIS PLANE, written once so the per-entry
-/// and section-level paths cannot say different things about the same rule.
+/// and section-level paths cannot say different things about the same rule. The per-entry path is
+/// [`validate_agent`]'s; the section default is a kernel-reserved key, so the kernel emits this same
+/// sentence for it, read off the declaration's `caller_credential_refusal`.
 ///
 /// `passthrough` means "forward the CALLER's credential upstream". On the delegation plane that
 /// would hand a third-party vendor a working busbar credential belonging to somebody else — the
@@ -338,23 +340,16 @@ impl<'de> Deserialize<'de> for AgentsCfg {
         // THE SECTION SPLIT is `plane::config`'s — the reserved-key refusals, the two typed lifts
         // and the order they happen in are a property of a plane SECTION, not of this plane. What
         // stays here is what is genuinely this plane's: `validate_agent`, run through the same
-        // function the admin write path calls so the API rejects exactly what the file rejects, and
-        // the passthrough refusal below.
+        // function the admin write path calls so the API rejects exactly what the file rejects.
+        // The section's `upstream_credentials:` default is a reserved key, so the KERNEL refuses
+        // `passthrough` there, in this plane's own sentence (the declaration's
+        // `caller_credential_refusal`), before the section reaches this parse.
         let section = split_section::<D, AgentDefCfg>(
             deserializer,
             crate::CONFIG_SECTION,
             SUBJECT_NOUN,
             validate_agent,
         )?;
-
-        // THE SECTION DEFAULT IS REFUSED HERE and not in the shared split, because it is a rule
-        // about this plane's VALUES: `passthrough` is meaningless to an agent busbar fronts. It is
-        // checked at the section level as well as per entry because a section default applies to
-        // agents that never spell the key — precisely the set an entry-level check cannot see.
-        if section.upstream_credentials == Some(busbar_contract::config::UpstreamCreds::Passthrough)
-        {
-            return Err(serde::de::Error::custom(REFUSE_PASSTHROUGH_SECTION));
-        }
 
         Ok(AgentsCfg {
             all_agent_hooks: section.hooks,

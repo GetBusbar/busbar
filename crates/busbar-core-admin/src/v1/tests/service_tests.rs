@@ -3669,6 +3669,7 @@ mod plane_fees_on_admin_usage {
                     record_kinds: &[],
                     required_config_sections: &[],
                     trust_keys: &[],
+                    caller_credential_refusal: None,
                     served_op_classes: &[],
                 },
                 wire_format_names: || &[],

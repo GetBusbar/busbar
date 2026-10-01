@@ -700,7 +700,19 @@ pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
         t.refusal_statuses,
         t.refusal_statuses_len,
         "tail.refusal_statuses",
-    )
+    )?;
+    // Absent is NULL; present is a sentence, never an empty one.
+    if t.caller_credential_refusal.ptr.is_null() {
+        text(
+            t.caller_credential_refusal,
+            "tail.caller_credential_refusal",
+        )
+    } else {
+        named(
+            t.caller_credential_refusal,
+            "tail.caller_credential_refusal",
+        )
+    }
 }
 
 /// A plane's Statement sections: each named, known flags, and EXACTLY ONE is the declaring

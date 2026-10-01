@@ -28,7 +28,9 @@ use busbar_contract::abi::plane::{
 };
 use busbar_contract::abi::sdk::door::abi_str;
 
-use crate::a2a::config::{AgentsCfg, DEFAULT_REVERIFY_TTL, SUBJECT_NOUN};
+use crate::a2a::config::{
+    AgentsCfg, DEFAULT_REVERIFY_TTL, REFUSE_PASSTHROUGH_SECTION, SUBJECT_NOUN,
+};
 use crate::claims::{DOCUMENT_TRANSPORT, FRAMED_TRANSPORT};
 use crate::surface::{BINDING_DOCUMENT, BINDING_FRAMED, BINDING_TARGET};
 
@@ -181,6 +183,7 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     record_chains_len: 0,
     trust_keys: TRUST_KEYS.as_ptr(),
     trust_keys_len: TRUST_KEYS.len(),
+    caller_credential_refusal: abi_str(REFUSE_PASSTHROUGH_SECTION),
 };
 
 /// One path the plane answers on: the verb, the target, the transport claim it arrives over, and
