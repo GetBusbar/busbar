@@ -161,6 +161,7 @@ impl HighWaterMarks {
     }
 
     /// True when these marks are backed by a data-dir file (so they survive a restart).
+    #[cfg(test)]
     #[must_use]
     pub fn is_persistent(&self) -> bool {
         self.path.is_some()
