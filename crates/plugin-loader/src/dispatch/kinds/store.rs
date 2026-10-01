@@ -273,8 +273,8 @@ fn window_caps(a: &Answer) -> Result<(), Fault> {
     sc::check_window_caps(a.outcome, u(input.caps_len), text)
 }
 
-/// What a store states in its Statement tail ([`store::StoreTail`]), read once at bind: the
-/// instance's [`Kind::context`].
+/// What a store states in its Statement ([`store::StoreTail`] and the `MARK_EPHEMERAL` mark), read
+/// once at bind: the instance's [`Kind::context`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StoreFacts {
     /// What it holds is lost on restart.
@@ -308,7 +308,8 @@ fn store_facts(st: &Statement) -> Result<StoreFacts, String> {
         n => Err(format!("the store tail's {name} is {n}, not 0 or 1")),
     };
     Ok(StoreFacts {
-        ephemeral: flag(t.ephemeral, "ephemeral")?,
+        // One Statement: `ephemeral` is the Statement's mark, not a tail fact.
+        ephemeral: st.marks & busbar_contract::abi::mechanism::door::MARK_EPHEMERAL != 0,
         durable_plane: flag(t.durable_plane, "durable_plane")?,
         fork_refusal: flag(t.fork_refusal, "fork_refusal")?,
     })

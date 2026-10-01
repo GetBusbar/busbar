@@ -45,6 +45,8 @@ pub static CONN_SLOTS: ConnectorSlots = ConnectorSlots {
     close: Some(close),
     random: Some(random),
     identity: Some(identity),
+    read_reply: None,
+    write_request: None,
 };
 
 /// A mechanism ticket as the connection table's wake number ([`busbar_contract::conn::Ticket`]):
