@@ -63,7 +63,7 @@ mod common;
 
 use std::collections::BTreeSet;
 
-use common::coverage::{self, classify, Status, TIERS};
+use common::coverage::{self, classify, TIERS};
 
 /// Every id named in the status file is a wire-lock path or a named OFF-SPEC id, and every OFF-SPEC
 /// id is NOT in the locks and IS claimed in the status file.
@@ -97,124 +97,6 @@ fn every_status_line_names_a_real_field() {
          status line claims:\n{stale_offspec:#?}",
         coverage::OFFSPEC
     );
-}
-
-/// The source roots a `carried` instrument may live in.
-///
-/// The engine's thin bin, plus the extracted protocol crates: a dialect's instruments move out with
-/// its codec, and a claim carried by a moved test is still carried. The list is DATA
-/// (`tests/fixtures/evidence_roots.txt`): which plugin crates carry instruments is the tree's
-/// layout, not this source's vocabulary.
-///
-/// Every root must EXIST ([`every_evidence_root_exists`]): a root that is not there reads as
-/// "nothing to find" and never as a failure, which is how a stale path hides a shrinking search.
-fn evidence_roots() -> Vec<String> {
-    common::fixture_lines("evidence_roots.txt")
-}
-
-/// Every `.rs` under the evidence roots, classified once.
-fn evidence_files() -> Vec<Vec<common::Line>> {
-    let mut out = Vec::new();
-    let mut stack: Vec<std::path::PathBuf> = evidence_roots()
-        .iter()
-        .map(|r| coverage::repo_root().join(r))
-        .collect();
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                stack.push(p);
-            } else if p.extension().and_then(|x| x.to_str()) == Some("rs") {
-                if let Ok(t) = std::fs::read_to_string(&p) {
-                    out.push(common::classify(&t, common::is_test_path(&p)));
-                }
-            }
-        }
-    }
-    out
-}
-
-#[test]
-fn every_evidence_root_exists() {
-    let roots = evidence_roots();
-    let absent: Vec<&String> = roots
-        .iter()
-        .filter(|r| !coverage::repo_root().join(r).is_dir())
-        .collect();
-    assert!(
-        absent.is_empty(),
-        "evidence root(s) {absent:?} do not exist. A root that is not there is searched as empty \
-         and never fails, so the search shrinks in silence — fix or drop the path."
-    );
-}
-
-/// Every `carried` claim must name a test function that is REAL EVIDENCE: under
-/// [`evidence_roots`], (1) test code, (2) a test the harness runs, and (3) a body that asserts.
-#[test]
-fn every_carried_claim_names_a_real_test() {
-    let status = coverage::parse_status();
-    let mut wanted: BTreeSet<&str> = BTreeSet::new();
-    for s in status.values() {
-        if let Status::Carried { test } = s {
-            wanted.insert(test.as_str());
-        }
-    }
-    let files = evidence_files();
-    let ghosts: Vec<(&str, common::NotEvidence)> = wanted
-        .iter()
-        .filter_map(|t| {
-            common::test_fn_is_evidence(&files, t)
-                .err()
-                .map(|why| (*t, why))
-        })
-        .collect();
-    assert!(
-        ghosts.is_empty(),
-        "qa/field-coverage.status claims field(s) are `carried` by test(s) that are NOT EVIDENCE — \
-         absent, production code, not a test the harness runs, or a body that asserts nothing. A \
-         field whose instrument is imaginary is a field nothing would notice being dropped:\n\
-         {ghosts:#?}"
-    );
-}
-
-/// THE EVIDENCE CHECK FIRES on each thing it must refuse, and accepts the one shape it must accept.
-#[test]
-fn the_evidence_check_refuses_a_helper_a_comment_an_empty_test_and_production_code() {
-    use common::NotEvidence;
-    let file = |src: &str| vec![common::classify(src, false)];
-    let real = "#[cfg(test)]\nmod tests {\n    #[test]\n    fn named() {\n        assert_eq!(1, 1);\n    }\n}\n";
-    assert_eq!(common::test_fn_is_evidence(&file(real), "named"), Ok(()));
-    let two_hops = "#[cfg(test)]\nmod tests {\n    fn outer() {\n        inner();\n    }\n    fn inner() {\n        assert!(true);\n    }\n    #[test]\n    fn named() {\n        outer();\n    }\n}\n";
-    assert_eq!(
-        common::test_fn_is_evidence(&file(two_hops), "named"),
-        Ok(()),
-        "a test that asserts through same-file helpers two deep is a test that asserts"
-    );
-    for (src, want) in [
-        ("// fn named() { assert!(true) }\n", NotEvidence::Absent),
-        ("fn named() {\n    assert!(true);\n}\n", NotEvidence::Production),
-        (
-            "#[cfg(test)]\nmod tests {\n    fn named() {\n        assert!(true);\n    }\n}\n",
-            NotEvidence::NotATest,
-        ),
-        (
-            "#[cfg(test)]\nmod tests {\n    #[test]\n    fn named() {}\n}\n",
-            NotEvidence::AssertsNothing,
-        ),
-        (
-            "#[cfg(test)]\nmod tests {\n    #[test]\n    fn not_named() {\n        assert!(true);\n    }\n}\n",
-            NotEvidence::Absent,
-        ),
-    ] {
-        assert_eq!(
-            common::test_fn_is_evidence(&file(src), "named"),
-            Err(want),
-            "{src}"
-        );
-    }
 }
 
 /// THE PINNED UNCLASSIFIED-NEW LIST must EXACTLY equal the computed one, in both directions AND in
