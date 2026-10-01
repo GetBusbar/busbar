@@ -17,7 +17,8 @@
 //!
 //! Its `tick` asks for the next tick `/tick-every:<ms>` after the one it ran (`0`, the default, asks
 //! for none); after `/tick-read` its next `tick` ESTABLISHes its one need and READs it on the
-//! ticket `tick` was handed, and a `drive` reads that stream again on its driver ticket. `/ticks`
+//! ticket `tick` was handed (a READ that pends makes that `tick` answer PENDING), and a `drive`
+//! reads that stream again on its driver ticket. `/ticks`
 //! answers the tick counters, in [`Ticked`] order.
 
 #![allow(clippy::missing_safety_doc, unsafe_op_in_unsafe_fn)]
@@ -1047,9 +1048,7 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
         if i.now_ns < n(Ticked::Next).load(Ordering::SeqCst) {
             n(Ticked::Early).fetch_add(1, Ordering::SeqCst);
         }
-        if me.tick_read.swap(false, Ordering::SeqCst) {
-            establish_and_read(me, t);
-        }
+        let pended = me.tick_read.swap(false, Ordering::SeqCst) && establish_and_read(me, t);
         let every = me.tick_every_ms.load(Ordering::SeqCst);
         let next = if every == 0 {
             0
@@ -1058,7 +1057,14 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
         };
         n(Ticked::Next).store(next, Ordering::SeqCst);
         (*out.cast::<TickOut>()).next_tick_ns = next;
-        say(out, Outcome::Ready)
+        say(
+            out,
+            if pended {
+                Outcome::Pending
+            } else {
+                Outcome::Ready
+            },
+        )
     }
 }
 
@@ -1088,10 +1094,11 @@ unsafe fn conn_call<I>(
     Some(out)
 }
 
-/// ESTABLISH the one need, then READ it, on `ticket`; a PENDING read leaves its stream for `drive`.
-unsafe fn establish_and_read(me: &Inst, ticket: Ticket) {
+/// ESTABLISH the one need, then READ it, on `ticket`; a PENDING read leaves its stream for `drive`
+/// and answers `true`.
+unsafe fn establish_and_read(me: &Inst, ticket: Ticket) -> bool {
     let Some(slots) = me.conns.as_ref() else {
-        return;
+        return false;
     };
     let mut est = EstablishIn {
         head: std::mem::zeroed(),
@@ -1100,15 +1107,14 @@ unsafe fn establish_and_read(me: &Inst, ticket: Ticket) {
         target: s(b"far"),
     };
     let Some(o) = conn_call(me, slots.establish, &mut est, ticket, 1, service::ESTABLISH) else {
-        return;
+        return false;
     };
-    if o.outcome.outcome() != Outcome::Ready {
-        return;
+    if o.outcome.outcome() != Outcome::Ready || read(me, ticket, o.value).is_some() {
+        return false;
     }
-    if read(me, ticket, o.value).is_none() {
-        me.ticked[Ticked::ReadPended as usize].fetch_add(1, Ordering::SeqCst);
-        me.stream.store(o.value, Ordering::SeqCst);
-    }
+    me.ticked[Ticked::ReadPended as usize].fetch_add(1, Ordering::SeqCst);
+    me.stream.store(o.value, Ordering::SeqCst);
+    true
 }
 
 /// READ `stream` on `ticket`: the bytes, or `None` while it pends.

@@ -531,9 +531,11 @@ impl Conns for Far {
 
 /// A HOP INSIDE `tick` PENDS AND RESUMES THROUGH `drive` (ARCHITECT S7-TICK; spec :3314-3316):
 /// the plane ESTABLISHes its need (READY: the table holds the dial) and READs it inside `tick`; the
-/// read is PENDING on the instance's driver ticket, not refused for want of one; the table's wake
-/// on that ticket calls `drive`, whose read on the driver ticket gets the bytes. RED before K-TICK:
-/// no `tick` ran, so nothing pended.
+/// read is PENDING on the instance's driver ticket, not refused for want of one, and `tick` answers
+/// PENDING, which ends it (a driver ticket's op is never resumed: what pended goes on through
+/// `drive`); the table's wake on that ticket calls `drive`, whose read on the driver ticket gets the
+/// bytes. RED before K-TICK: no `tick` ran, so nothing pended; with a PENDING tick held open, the
+/// schedule never ends.
 #[tokio::test]
 async fn a_read_inside_tick_pends_on_the_driver_ticket_and_resumes_through_drive() {
     for way in ways() {
