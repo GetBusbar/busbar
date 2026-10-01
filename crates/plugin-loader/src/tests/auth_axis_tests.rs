@@ -16,7 +16,7 @@ fn empty() -> AuthRows {
         budgets: Budgets::default(),
         watchdog_period: Duration::from_millis(20),
     }));
-    AuthRows::new(Box::leak(Box::new(PluginRegistry::empty())), d)
+    AuthRows::new(Arc::new(PluginRegistry::empty()), d)
 }
 
 #[test]

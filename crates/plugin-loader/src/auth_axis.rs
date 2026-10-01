@@ -49,9 +49,11 @@ enum Door {
     Cold,
 }
 
-/// The auth rows of `registry`, opening instances on `dispatcher`.
+/// The auth rows of `registry`, opening instances on `dispatcher`. One per build: the kernel builds
+/// its registry per boot or apply and opens that build's auth instances over it, on the process's
+/// one dispatcher (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1).
 pub struct AuthRows {
-    registry: &'static PluginRegistry,
+    registry: Arc<PluginRegistry>,
     dispatcher: Arc<Dispatcher>,
 }
 
@@ -64,7 +66,7 @@ impl std::fmt::Debug for AuthRows {
 impl AuthRows {
     /// The axis over `registry`'s auth rows, on `dispatcher`.
     #[must_use]
-    pub fn new(registry: &'static PluginRegistry, dispatcher: Arc<Dispatcher>) -> Self {
+    pub fn new(registry: Arc<PluginRegistry>, dispatcher: Arc<Dispatcher>) -> Self {
         Self {
             registry,
             dispatcher,
@@ -73,7 +75,7 @@ impl AuthRows {
 
     /// The `kind: auth` row config names by `module`: the registry's name or manifest alias, else
     /// an alias the row's Statement states (its alias rewrites).
-    fn row(&self, module: &str) -> Option<&'static LoadablePlugin> {
+    fn row(&self, module: &str) -> Option<&LoadablePlugin> {
         self.registry
             .resolve(module)
             .filter(|p| p.manifest.kind == AUTH)
@@ -195,6 +197,31 @@ fn stated_aliases(row: &LoadablePlugin) -> Vec<String> {
         .and_then(|s| read(&s).ok())
         .map(|r| crate::boot::rewrites(&r, REWRITE_ALIAS).collect())
         .unwrap_or_default()
+}
+
+/// The contract's auth axis over one build's rows: what the kernel's identity chain opens auth
+/// instances through, naming neither this crate nor the root.
+impl busbar_contract::auth_calls::AuthAxis for AuthRows {
+    fn linked_names(&self) -> Vec<String> {
+        AuthRows::linked_names(self)
+    }
+
+    fn answers(&self, module: &str) -> bool {
+        AuthRows::answers(self, module)
+    }
+
+    fn linked(&self, module: &str) -> bool {
+        AuthRows::linked(self, module)
+    }
+
+    fn open(
+        &self,
+        module: &str,
+        label: &str,
+        settings: &serde_json::Value,
+    ) -> Result<Arc<dyn AuthCalls>, String> {
+        AuthRows::open(self, module, label, settings)
+    }
 }
 
 /// M6-COLD-DELETE: a not-yet-ported auth plugin on the cold lane, as [`AuthCalls`]. Its
