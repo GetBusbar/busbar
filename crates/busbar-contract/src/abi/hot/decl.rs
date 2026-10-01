@@ -472,7 +472,7 @@ pub mod stub {
         _raw_len: usize,
         _out_parsed: *mut MaybeUninit<OpaqueHandle>,
     ) -> RawStatus {
-        unimplemented!("PlaneDecl::config_validate — stub; wired in a later phase")
+        unimplemented!("PlaneDecl::config_validate — stub")
     }
     /// Stub: see module docs.
     pub extern "C-unwind" fn build(
