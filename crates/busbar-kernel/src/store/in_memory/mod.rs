@@ -647,25 +647,24 @@ impl HealthState {
 
     /// Worst-case remaining cooldown across the default cell and every per-pool cell for the lane.
     pub(crate) fn lane_max_cooldown_remaining(&self, lane: usize, now: u64) -> u64 {
-        let cells = read_recover(&self.pool_cells);
-        cells
-            .get(&lane)
-            .into_iter()
-            .flatten()
-            .map(|(_, c)| c.fsm.cooldown_until())
-            .fold(self.get_lane(lane).cell.cooldown_until(), u64::max)
+        self.lane_max(lane, FsmCell::cooldown_until)
             .saturating_sub(now)
     }
 
     /// Worst-case consecutive-failure streak across the default cell and every per-pool cell.
     pub(crate) fn lane_max_streak(&self, lane: usize) -> u32 {
+        self.lane_max(lane, FsmCell::streak)
+    }
+
+    /// The largest `read` across the default cell and every per-pool cell for the lane.
+    fn lane_max<T: Ord>(&self, lane: usize, read: impl Fn(&FsmCell) -> T) -> T {
         let cells = read_recover(&self.pool_cells);
         cells
             .get(&lane)
             .into_iter()
             .flatten()
-            .map(|(_, c)| c.fsm.streak())
-            .fold(self.get_lane(lane).cell.streak(), u32::max)
+            .map(|(_, c)| read(&c.fsm))
+            .fold(read(&self.get_lane(lane).cell), T::max)
     }
 
     /// Returns `true` iff this failure drove a Closed→Open trip on the (pool, lane) cell — threaded
