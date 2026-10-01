@@ -6,9 +6,10 @@ use super::*;
 // `meta.rs` and `claims.rs` (`BUSBAR-1.6.0.md` THE DESIGN, §2), so `use super::*` no longer carries them.
 use busbar_contract::transport::wire::{CloseReason, FrameMeta, TransportError};
 use busbar_contract::ConfigView;
-use busbar_contract::{ScratchBytes, Transport, TransportConfigView, TransportKeyHandle};
+use busbar_contract::{Transport, TransportConfigView, TransportKeyHandle};
 use futures::StreamExt;
 use std::sync::Arc as StdArc;
+use std::time::Duration;
 
 // The dial is refused before any socket (TODO #145): its own file, as the repo's tests live.
 mod dial_refused;
@@ -905,6 +906,12 @@ fn egress_refuses_a_chunked_body_declared_with_a_content_length() {
         done.body, b"abc",
         "the clean chunked body still decodes byte-exact"
     );
+}
+
+/// A writer that accepts every byte and then fails to flush: the exact shape a Unit 0 refusal must
+/// not be able to report as delivered. `write_all` succeeds, so only the flush leg can catch it.
+struct FlushFailsWriter {
+    written: Vec<u8>,
 }
 
 impl tokio::io::AsyncWrite for FlushFailsWriter {
