@@ -11,13 +11,10 @@ const PLANE: &str = "sp";
 
 /// A card with no model rates, no flat fee, and plane `sp` charging `fees.per_session: 40`.
 fn session_fee_cost() -> crate::cost::CostModel {
-    let fees = crate::config::PlaneFeesMap::from([(
-        PLANE.to_string(),
-        busbar_kernel_ledger::cost::PlaneFees {
-            per_request: 0,
-            per_session: 40,
-        },
-    )]);
+    let mut fees = crate::config::PlaneFeesMap::from([(PLANE.to_string(), Default::default())]);
+    if let Some(f) = fees.get_mut(PLANE) {
+        f.per_session = 40;
+    }
     crate::cost::CostModel::resolve_parts(None, 0, &std::collections::BTreeMap::new())
         .with_plane_fees(&fees)
 }
@@ -35,10 +32,11 @@ fn key() -> busbar_contract::records::VirtualKey {
 /// its own session fee on the budget book; the other open keeps its fee.
 #[test]
 fn a_refunded_open_gives_back_its_session_fee_on_the_budget_book() {
-    let gov = Arc::new(
-        crate::governance::GovState::new(Arc::new(crate::governance::MemoryStore::new()), None)
-            .expect("memory store constructs"),
-    );
+    // The key is registered: the usage read answers only for a key the store holds.
+    let store = Arc::new(crate::governance::MemoryStore::new());
+    busbar_contract::records::RecordStore::put_key(&*store, &key()).expect("key stored");
+    let gov =
+        Arc::new(crate::governance::GovState::new(store, None).expect("memory store constructs"));
     let app = crate::test_support::TestApp::new()
         .governance(Arc::clone(&gov))
         .cost(session_fee_cost())

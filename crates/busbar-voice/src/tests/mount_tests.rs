@@ -24,7 +24,7 @@ use crate::runtime::scope::rehydrate_sessions;
 use crate::runtime::{EchoToolExecutor, SessionHandle, VoiceRuntime};
 use crate::topology::telephony::{begin_telephony, g711_config};
 use busbar_contract::abi::cold::endpoint::{RouteAuth, RouteMethod};
-use busbar_contract::records::{PlaneRecord, PlaneSelector, RecordStoreResult};
+use busbar_contract::records::{PlaneRecord, PlaneSelector, RecordStoreError, RecordStoreResult};
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use busbar_kernel::plane::registry::{BuildCtx, CardIssuer, PlaneBootCtx, RestoredSummary};
 use busbar_kernel::plane::store::PlaneStore;
@@ -37,13 +37,28 @@ const PUBLIC_URL: &str = "https://gw.example.com";
 
 /// A minimal in-memory [`PlaneStore`] — the durable sink stand-in a boot rehydrate reads back. Only the
 /// row upsert + `All` list are backed; the rest are the neutral no-ops a session restore never reaches.
+/// A store built [`MemStore::down`] refuses every row upsert, so a session's durable open fails.
 #[derive(Default)]
-struct MemStore {
+pub(super) struct MemStore {
     rows: Mutex<Vec<PlaneRecord>>,
+    down: bool,
+}
+
+impl MemStore {
+    /// A store whose every row upsert fails.
+    pub(super) fn down() -> Self {
+        MemStore {
+            down: true,
+            ..MemStore::default()
+        }
+    }
 }
 
 impl PlaneStore for MemStore {
     fn upsert_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
+        if self.down {
+            return Err(RecordStoreError("store down".to_string()));
+        }
         let mut rows = self.rows.lock().unwrap();
         if let Some(existing) = rows.iter_mut().find(|r| r.id == record.id) {
             *existing = record.clone();
