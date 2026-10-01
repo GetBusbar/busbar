@@ -34,7 +34,7 @@ fn every_spelling_of_a_metadata_host_is_refused() {
             "fd00:0ec2:0000::0254%eth0",
         ),
         ("metadata.google.internal:80", "metadata.google.internal"),
-        ("METADATA.Google.Internal.", "METADATA.Google.Internal."),
+        ("METADATA.Google.Internal.", "METADATA.Google.Internal"),
         ("169.254.170.2:80", "169.254.170.2"),
         ("2852039170", "2852039170"),
         ("[::ffff:169.254.170.2]", "::ffff:169.254.170.2"),
@@ -76,4 +76,23 @@ fn a_neighbour_of_a_metadata_host_passes() {
     ] {
         assert_eq!(check(target), Ok(()), "{target}");
     }
+}
+
+/// RED: a URL-shaped target is judged on its HOST, not its scheme, and the one shared metadata list
+/// covers Azure's WireServer and the `metadata.internal` names the private list here never had. A
+/// target with no readable host is refused rather than waved through unjudged.
+#[test]
+fn a_url_target_and_every_shared_metadata_host_is_refused() {
+    for target in [
+        "https://169.254.169.254/",
+        "https://[fd00:ec2::254]/latest",
+        "https://metadata.google.internal./x",
+        "168.63.129.16:80",
+        "metadata.internal:80",
+        "instance-data.ec2.internal",
+        "",
+    ] {
+        assert!(check(target).is_err(), "{target:?}");
+    }
+    assert_eq!(check("https://api.example.com/v1"), Ok(()));
 }
