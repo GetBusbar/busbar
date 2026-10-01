@@ -8,14 +8,14 @@
 use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
 
-use busbar_contract::abi::mechanism::call::{AbiStr, InHead, Op, OutHead, Outcome};
+use busbar_contract::abi::mechanism::call::{AbiStr, Field, InHead, Op, OutHead, Outcome};
 use busbar_contract::abi::mechanism::door::Door;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::transport::check::{check_framer, check_tail};
 use busbar_contract::abi::transport::{
-    slot, AdoptIn, BeginIn, ConnOut, DialIn, EmitIn, EncodeIn, Field, FinishIn, FramePiece,
-    FramerOut, FramerSink, FramingIn, IngestIn, LocateIn, LocateOut, Ops, TransportTail,
-    PIECE_END_OF_FRAME, ROLE_FRAMER, SIDE_ACCEPT, YIELD_ENDED, YIELD_MORE,
+    slot, AdoptIn, BeginIn, ConnOut, DialIn, EmitIn, EncodeIn, FinishIn, FramePiece, FramerOut,
+    FramerSink, FramingIn, IngestIn, LocateIn, LocateOut, Ops, TransportTail, PIECE_END_OF_FRAME,
+    ROLE_FRAMER, SIDE_ACCEPT, YIELD_ENDED, YIELD_MORE,
 };
 
 fn z<T>() -> T {

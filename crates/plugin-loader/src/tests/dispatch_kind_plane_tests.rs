@@ -9,7 +9,7 @@ use std::mem::{size_of, zeroed};
 use std::ptr::{null, NonNull};
 
 use busbar_contract::abi::hook::SignalEntry;
-use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
+use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome, Span};
 use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut, GenIn, RefreshIn};
 use busbar_contract::abi::mechanism::KindCode;
@@ -17,8 +17,8 @@ use busbar_contract::abi::plane::check::Bounds;
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneOpenIn, PlaneOpenOut,
     PlaneRefreshOut, PlaneSnapshot, ProjectIn, ProjectOut, RecordWrite, RefusalIn, RefusalOut,
-    ServeIn, ServeOut, Span, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL, EMIT_DONE,
-    PRINCIPAL_REQUIRED, RECORD_PUT, SLOTS, UNITS_REPORTED,
+    ServeIn, ServeOut, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL, EMIT_DONE, PRINCIPAL_REQUIRED,
+    RECORD_PUT, SLOTS, UNITS_REPORTED,
 };
 
 use crate::dispatch::kinds::plane::Plane;

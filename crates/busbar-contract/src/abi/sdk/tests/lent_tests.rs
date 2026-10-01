@@ -7,9 +7,9 @@
 
 use std::ptr;
 
-use crate::abi::mechanism::call::{AbiStr, Blob, BLOB_ABSENT, BLOB_JSON};
+use crate::abi::mechanism::call::{AbiStr, Blob, Span, BLOB_ABSENT, BLOB_JSON};
 use crate::abi::mechanism::lifecycle::{OpenIn, ValidateIn};
-use crate::abi::plane::{OnPieceIn, Span, UnitCount, UNITS_REPORTED};
+use crate::abi::plane::{OnPieceIn, UnitCount, UNITS_REPORTED};
 
 use super::{HostBuf, Lent};
 

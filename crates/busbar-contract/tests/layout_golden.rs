@@ -27,8 +27,8 @@ use busbar_contract::abi::AbiPreamble;
 // THE ONE MEMORY ABI (M0 ABI-SPEC): aliased, so a name the hot lane also uses cannot collide.
 use busbar_contract::abi::mechanism::call::{
     AbiStr as MechStr, Blob as MechBlob, Diag as MechDiag, Envelope as MechEnvelope,
-    InHead as MechInHead, MetricEntry as MechMetricEntry, OutHead as MechOutHead,
-    RawOutcome as MechRawOutcome,
+    Field as MechField, InHead as MechInHead, MetricEntry as MechMetricEntry,
+    OutHead as MechOutHead, RawOutcome as MechRawOutcome, Span as MechSpan,
 };
 use busbar_contract::abi::mechanism::door::{
     Door as MechDoor, KindTailHead as MechKindTailHead, MetricFamily as MechMetricFamily,
@@ -78,8 +78,7 @@ use busbar_contract::abi::auth::{
     IdentityOut as AuthIdentityOut, LoginField as AuthLoginField, NamedValue as AuthNamedValue,
     OpenOutboundIn as AuthOpenOutboundIn, OpenOutboundOut as AuthOpenOutboundOut,
     OutboundReadyIn as AuthOutboundReadyIn, OutboundReadyOut as AuthOutboundReadyOut,
-    RequestFacts as AuthRequestFacts, Span as AuthSpan, StyleDecl as AuthStyleDecl,
-    VerifyIn as AuthVerifyIn,
+    RequestFacts as AuthRequestFacts, StyleDecl as AuthStyleDecl, VerifyIn as AuthVerifyIn,
 };
 // THE PLANE AND TRANSPORT KINDS and THE HOST CONNECTOR: aliased, so the hot lane's names cannot collide.
 use busbar_contract::abi::host::conn::connector as hconn;
@@ -930,6 +929,8 @@ fn compute_layout() -> String {
     record!(s, MechRawOutcome, []);
     record!(s, MechStr, [ptr, len]);
     record!(s, MechBlob, [ptr, len, fmt, flags]);
+    record!(s, MechSpan, [offset, len]);
+    record!(s, MechField, [name, value]);
     record!(
         s,
         MechInHead,
@@ -1251,7 +1252,6 @@ fn compute_layout() -> String {
             carriers_len
         ]
     );
-    record!(s, AuthSpan, [off, len]);
     record!(s, AuthNamedValue, [name, value]);
     record!(
         s,
@@ -1408,7 +1408,6 @@ fn compute_layout() -> String {
             settings_len
         ]
     );
-    record!(s, tkind::Field, [name, value]);
     record!(
         s,
         tkind::Destination,
@@ -1634,9 +1633,7 @@ fn compute_layout() -> String {
     record!(s, pkind::PlaneOpenIn, [open, public_url]);
     record!(s, pkind::PlaneOpenOut, [open, snapshot]);
     record!(s, pkind::PlaneRefreshOut, [head, snapshot]);
-    record!(s, pkind::Field, [name, value]);
     record!(s, pkind::UnitCount, [class, source, amount]);
-    record!(s, pkind::Span, [offset, len]);
     record!(s, pkind::OutField, [name, value]);
     record!(s, pkind::RecordWrite, [kind, op, key, value]);
     record!(

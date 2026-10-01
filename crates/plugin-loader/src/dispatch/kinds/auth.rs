@@ -28,10 +28,10 @@
 use busbar_contract::abi::auth::{
     self, check_begin_login, check_complete_login, check_fields, check_identify, slot,
     BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldSpan, FieldsIn, FieldsOut, IdentifyOut,
-    IdentityBuf, OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, Span,
-    VerifyIn, LOGIN_IDENTITY, VERDICT_IDENTITY,
+    IdentityBuf, OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, VerifyIn,
+    LOGIN_IDENTITY, VERDICT_IDENTITY,
 };
-use busbar_contract::abi::mechanism::call::Outcome;
+use busbar_contract::abi::mechanism::call::{Outcome, Span};
 use busbar_contract::abi::mechanism::check::{reported, Fault};
 use busbar_contract::abi::mechanism::KindCode;
 

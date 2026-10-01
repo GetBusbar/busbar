@@ -1373,7 +1373,7 @@ mod door {
     use std::sync::Arc;
 
     use busbar_contract::abi::hook::{SignalEntry, SIGNAL_TAG_U64};
-    use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, BLOB_OCTETS};
+    use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, Span, BLOB_OCTETS};
     use busbar_contract::abi::mechanism::door::Door;
     use busbar_contract::abi::mechanism::lifecycle::{
         slot as life, CancelIn, CancelOut, GenIn, OpenIn, OpenOut, RefreshIn, TickIn, TickOut,
@@ -1383,7 +1383,7 @@ mod door {
     use busbar_contract::abi::plane::{
         self, slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneDriveIn,
         PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, ProjectIn,
-        ProjectOut, RecordWrite, RefusalIn, RefusalOut, ServeIn, ServeOut, Span, UnitCount,
+        ProjectOut, RecordWrite, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
         CANCEL_ABORTED, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
         MARK_GATE_REJECTED, PIECE_LAST, REFUSAL_GATE, UNITS_REPORTED, VERDICT_OK,
     };

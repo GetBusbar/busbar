@@ -119,7 +119,7 @@
 
 pub mod check;
 
-use super::mechanism::call::{AbiStr, InHead, Op, OutHead};
+use super::mechanism::call::{AbiStr, Field, InHead, Op, OutHead};
 use super::mechanism::check::{contract, OpContract};
 use super::mechanism::door::KindTailHead;
 use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
@@ -472,16 +472,6 @@ pub struct TransportTail {
 }
 
 // ── shared shapes ────────────────────────────────────────────────────────────────────────────────
-
-/// One envelope field.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct Field {
-    /// The name.
-    pub name: AbiStr,
-    /// The value (any bytes).
-    pub value: AbiStr,
-}
 
 /// A carrier's destination, borrowed for the call.
 #[repr(C)]

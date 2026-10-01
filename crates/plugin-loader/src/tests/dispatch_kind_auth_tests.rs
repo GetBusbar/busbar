@@ -10,11 +10,11 @@ use std::ptr::NonNull;
 
 use busbar_contract::abi::auth::{
     slot, BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldSpan, FieldsIn, FieldsOut,
-    IdentifyOut, IdentityBuf, IdentityOut, OpenOutboundIn, OpenOutboundOut, RequestFacts, Span,
-    VerifyIn, BEGIN_AUTHORIZE, BEGIN_FORM, FIELD_SENSITIVE, LOGIN_IDENTITY, MODE_OWN, SPAN_ABSENT,
+    IdentifyOut, IdentityBuf, IdentityOut, OpenOutboundIn, OpenOutboundOut, RequestFacts, VerifyIn,
+    BEGIN_AUTHORIZE, BEGIN_FORM, FIELD_SENSITIVE, LOGIN_IDENTITY, MODE_OWN, SPAN_ABSENT,
     VERDICT_IDENTITY, VERDICT_PASS,
 };
-use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
+use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome, Span};
 use busbar_contract::abi::mechanism::check::{Fault, Rule};
 use busbar_contract::abi::mechanism::KindCode;
 
@@ -26,7 +26,7 @@ const NO_STR: AbiStr = AbiStr {
     len: 0,
 };
 const ABSENT: Span = Span {
-    off: SPAN_ABSENT,
+    offset: SPAN_ABSENT,
     len: 0,
 };
 const BUF_CAP: usize = 64;
@@ -118,7 +118,7 @@ fn identified(verdict: u32, groups_len: u32) -> IdentifyOut {
         needed_groups: 0,
         needed_bytes: 0,
         identity: IdentityOut {
-            subject: Span { off: 0, len: 5 },
+            subject: Span { offset: 0, len: 5 },
             key_id: ABSENT,
             key_name: ABSENT,
             user: ABSENT,
@@ -163,8 +163,11 @@ fn fields_out(fields_len: u32) -> FieldsOut {
 
 fn field(flags: u32) -> FieldSpan {
     FieldSpan {
-        name: Span { off: 0, len: 13 },
-        value: Span { off: 13, len: 20 },
+        name: Span { offset: 0, len: 13 },
+        value: Span {
+            offset: 13,
+            len: 20,
+        },
         flags,
         _reserved: 0,
     }
@@ -218,7 +221,7 @@ fn the_kind_names_its_code_timeout_and_ops() {
 #[test]
 fn verify_green_identity_with_groups() {
     let mut bytes = [0u8; BUF_CAP];
-    let mut groups = [Span { off: 5, len: 4 }, ABSENT];
+    let mut groups = [Span { offset: 5, len: 4 }, ABSENT];
     let input = verify_in(identity_buf(&mut bytes, groups.as_mut_ptr(), GROUPS_CAP));
     assert_eq!(
         check(
@@ -246,7 +249,10 @@ fn verify_red_a_span_past_the_buffer() {
     let mut groups = [ABSENT; 2];
     let input = verify_in(identity_buf(&mut bytes, groups.as_mut_ptr(), GROUPS_CAP));
     let mut out = identified(VERDICT_IDENTITY, 0);
-    out.identity.subject = Span { off: 60, len: 10 };
+    out.identity.subject = Span {
+        offset: 60,
+        len: 10,
+    };
     let f = check(slot::VERIFY, Outcome::Ready, &input, &out).unwrap_err();
     assert_eq!(f.rule, Rule::SpanOutOfBounds);
     assert_eq!(f.field, "verify.span_out_of_bounds");
@@ -299,7 +305,7 @@ fn verify_red_a_foreign_in() {
 #[test]
 fn complete_login_green_identity_with_groups() {
     let mut bytes = [0u8; BUF_CAP];
-    let mut groups = [Span { off: 5, len: 4 }, Span { off: 9, len: 0 }];
+    let mut groups = [Span { offset: 5, len: 4 }, Span { offset: 9, len: 0 }];
     let input = complete_login_in(identity_buf(&mut bytes, groups.as_mut_ptr(), GROUPS_CAP));
     let out = identified(LOGIN_IDENTITY, 2);
     assert_eq!(

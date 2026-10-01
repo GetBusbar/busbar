@@ -30,7 +30,7 @@ use std::ops::Deref;
 use std::ptr;
 use std::str::Utf8Error;
 
-use crate::abi::mechanism::call::{AbiStr, Blob};
+use crate::abi::mechanism::call::{AbiStr, Blob, Field, Span};
 
 /// A borrow of data the HOST lent the current call. Only the SDK makes one (the trampoline, from
 /// its copy of the host's `in`, and the accessors below, from what that `in` points to), so every
@@ -292,11 +292,11 @@ impl<'a, T: Copy> HostBuf<'a, T> {
 }
 
 impl HostBuf<'_, u8> {
-    /// Copy `bytes` into this ARENA and answer their [`Span`](crate::abi::plane::Span): the
+    /// Copy `bytes` into this ARENA and answer their [`Span`](Span): the
     /// offset they start at and their length.
-    pub fn span(&mut self, bytes: &[u8]) -> crate::abi::plane::Span {
+    pub fn span(&mut self, bytes: &[u8]) -> Span {
         let at = self.extend(bytes);
-        crate::abi::plane::Span {
+        Span {
             offset: u32::try_from(at).unwrap_or(u32::MAX),
             len: u32::try_from(bytes.len()).unwrap_or(u32::MAX),
         }
@@ -305,7 +305,7 @@ impl HostBuf<'_, u8> {
     /// The [`AbiStr`] naming `span` inside this ARENA, for a struct that points into it (a
     /// `project` view). It points at the host's memory; nothing here reads it.
     #[must_use]
-    pub fn str_at(&self, span: crate::abi::plane::Span) -> AbiStr {
+    pub fn str_at(&self, span: Span) -> AbiStr {
         AbiStr {
             ptr: self.ptr.wrapping_add(span.offset as usize).cast_const(),
             len: span.len as usize,
@@ -366,12 +366,12 @@ macro_rules! lend {
 
 use crate::abi::mechanism::lifecycle::{OpenIn, RefreshIn};
 use crate::abi::plane::{
-    ArriveIn, Field as PlaneField, OnPieceIn, OutField, PlaneDriveIn, ProjectIn, RecordWrite,
-    RefusalIn, ServeIn, UnitCount,
+    ArriveIn, OnPieceIn, OutField, PlaneDriveIn, ProjectIn, RecordWrite, RefusalIn, ServeIn,
+    UnitCount,
 };
 use crate::abi::transport::{
-    AcceptIn, AdoptIn, ArrivalIn, BeginIn, ConnFacts, EmitIn, EncodeIn, Field as WireField,
-    FramePiece, FramerSink, IngestIn, ListenIn, LocateIn, ReadIn, RefuseIn, WriteIn,
+    AcceptIn, AdoptIn, ArrivalIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FramePiece, FramerSink,
+    IngestIn, ListenIn, LocateIn, ReadIn, RefuseIn, WriteIn,
 };
 
 lend! {
@@ -380,7 +380,7 @@ lend! {
     RefreshIn { list(secrets, secrets_len) -> Blob; }
     // THE PLANE KIND (`abi::plane`): request-path results go into host buffers.
     ArriveIn {
-        list(fields, fields_len) -> PlaneField;
+        list(fields, fields_len) -> Field;
         buf(units_buf, units_cap) -> UnitCount;
     }
     OnPieceIn {
@@ -396,14 +396,14 @@ lend! {
         buf(arena_buf, arena_cap) -> u8;
     }
     ServeIn {
-        list(fields, fields_len) -> PlaneField;
+        list(fields, fields_len) -> Field;
         buf(reply_buf, reply_cap) -> u8;
         buf(fields_buf, fields_cap) -> OutField;
         buf(arena_buf, arena_cap) -> u8;
     }
     PlaneDriveIn { buf(sessions_buf, sessions_cap) -> u64; }
     ProjectIn {
-        list(fields, fields_len) -> PlaneField;
+        list(fields, fields_len) -> Field;
         buf(signals_buf, signals_cap) -> crate::abi::hook::SignalEntry;
         buf(arena_buf, arena_cap) -> u8;
     }
@@ -427,7 +427,7 @@ lend! {
     IngestIn { bytes(bytes, len); }
     EmitIn { bytes(bytes, len); }
     EncodeIn {
-        list(fields, fields_len) -> WireField;
+        list(fields, fields_len) -> Field;
         bytes(body, body_len);
     }
     RefuseIn { bytes(bytes, len); }

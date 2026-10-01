@@ -7,11 +7,11 @@
 
 use busbar_contract::abi::auth::{
     check_begin_login, check_complete_login, check_fields, check_identify, BeginLoginOut,
-    FieldSpan, FieldsOut, IdentifyOut, IdentityBuf, LoginField, Span, BEGIN_AUTHORIZE, BEGIN_FORM,
+    FieldSpan, FieldsOut, IdentifyOut, IdentityBuf, LoginField, BEGIN_AUTHORIZE, BEGIN_FORM,
     FIELDS_HARD_MAX, IDENTITY_GROUPS_HARD_MAX, LOGIN_IDENTITY, LOGIN_OUTAGE, SPAN_ABSENT,
     VERDICT_IDENTITY, VERDICT_REJECT,
 };
-use busbar_contract::abi::mechanism::call::Outcome;
+use busbar_contract::abi::mechanism::call::{Outcome, Span};
 use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
 
 const CAP: usize = 64;
@@ -25,11 +25,11 @@ fn zeroed<T>() -> T {
 }
 
 fn sp(off: u32, len: u32) -> Span {
-    Span { off, len }
+    Span { offset: off, len }
 }
 
 const ABSENT: Span = Span {
-    off: SPAN_ABSENT,
+    offset: SPAN_ABSENT,
     len: 0,
 };
 

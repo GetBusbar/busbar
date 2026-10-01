@@ -7,8 +7,8 @@
 //! `ready` fact the health prober reads. The plugin caches inside itself: bearer and api-key build
 //! at open, and minted tokens refresh ahead of expiry on `tick`.
 
-use super::inbound::{NamedValue, RequestFacts, Span};
-use crate::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead};
+use super::inbound::{NamedValue, RequestFacts};
+use crate::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Span};
 
 /// `open_outbound`'s `in`.
 #[repr(C)]

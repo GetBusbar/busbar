@@ -49,7 +49,7 @@ pub use check::{
 
 pub use inbound::{
     BeginLoginIn, BeginLoginOut, CompleteLoginIn, IdentifyOut, IdentityBuf, IdentityOut,
-    LoginField, NamedValue, RequestFacts, Span, VerifyIn,
+    LoginField, NamedValue, RequestFacts, VerifyIn,
 };
 pub use outbound::{
     FieldSpan, FieldsIn, FieldsOut, OpenOutboundIn, OpenOutboundOut, OutboundReadyIn,
@@ -275,8 +275,7 @@ pub const BEGIN_AUTHORIZE: u32 = 1;
 /// [`BeginLoginOut::shape`]: render [`BeginLoginOut::form`].
 pub const BEGIN_FORM: u32 = 2;
 
-/// [`Span::off`] of an absent value.
-pub const SPAN_ABSENT: u32 = u32::MAX;
+pub use super::mechanism::check::SPAN_ABSENT;
 
 /// [`IdentityOut::flags`]: [`IdentityOut::ttl_secs`] is set.
 pub const IDENTITY_HAS_TTL: u32 = 1;

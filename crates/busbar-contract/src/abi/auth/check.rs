@@ -6,13 +6,13 @@
 //! math and hold no state. The dispatcher calls them after every READY or FAILED answer, and
 //! any `Err` makes the answer FAULT. No host re-implements them.
 
-use super::inbound::{BeginLoginOut, IdentifyOut, IdentityBuf, Span};
+use super::inbound::{BeginLoginOut, IdentifyOut, IdentityBuf};
 use super::outbound::{FieldSpan, FieldsOut};
 use super::{
     BEGIN_AUTHORIZE, BEGIN_FORM, FIELD_SENSITIVE, IDENTITY_HAS_TTL, LOGIN_IDENTITY, LOGIN_OUTAGE,
     SPAN_ABSENT, VERDICT_IDENTITY, VERDICT_PASS,
 };
-use crate::abi::mechanism::call::{AbiStr, Outcome, BLOB_OCTETS};
+use crate::abi::mechanism::call::{AbiStr, Outcome, Span, BLOB_OCTETS};
 use crate::abi::mechanism::check::{fault, results, Dim, Fault, Rule, MAX_BYTES};
 
 /// The hard maximum of `needed_groups`: no identity asserts more groups than this.
@@ -75,14 +75,14 @@ const BEGIN_LOGIN: Arms = arms!("begin_login", "form");
 
 /// `off + len <= cap` in `u64`, or [`SPAN_ABSENT`] with `len == 0` when `optional`.
 fn span(s: Span, cap: u64, optional: bool, a: &Arms) -> Result<(), Fault> {
-    if s.off == SPAN_ABSENT {
+    if s.offset == SPAN_ABSENT {
         return match (s.len, optional) {
             (0, true) => Ok(()),
             (0, false) => Err(fault(Rule::Missing, a.missing)),
             _ => Err(fault(Rule::SpanNotAbsent, a.absent_with_len)),
         };
     }
-    if u64::from(s.off) + u64::from(s.len) > cap {
+    if u64::from(s.offset) + u64::from(s.len) > cap {
         return Err(fault(Rule::SpanOutOfBounds, a.span_out_of_bounds));
     }
     Ok(())
