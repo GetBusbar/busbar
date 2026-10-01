@@ -398,21 +398,87 @@ impl<J: JournalSink> BreakerUnit<J> {
         let default_cell = self.cell("", destination);
         let default_was_fresh = default_cell.hard_down(now, self.hard_down_cooldown_secs);
 
-        let pools: Vec<String> = self
-            .pools_by_destination
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&destination)
-            .cloned()
-            .unwrap_or_default();
-        for pool in pools {
-            if pool.is_empty() {
-                continue; // already tripped above
-            }
+        for pool in self.named_pools(destination) {
             let cell = self.cell(&pool, destination);
             let _ = cell.hard_down(now, self.hard_down_cooldown_secs);
         }
         default_was_fresh
+    }
+
+    /// The named pools (never the default `""`) that have a cell for `destination`.
+    fn named_pools(&self, destination: DestinationId) -> Vec<String> {
+        self.pools_by_destination
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&destination)
+            .map(|pools| pools.iter().filter(|p| !p.is_empty()).cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// THE HEALTH PROBER'S TRIGGER (1.5.5 `lane_needs_probe`): whether the breaker suppresses
+    /// `destination` in ANY cell — not Closed, or Closed inside a pending soft cooldown. Read-only:
+    /// a cell nothing has touched is Closed, and none is created.
+    pub fn suppressing(&self, destination: DestinationId, now: u64) -> bool {
+        let pools = self.named_pools(destination);
+        let cells = self.cells.read().unwrap_or_else(|e| e.into_inner());
+        std::iter::once("")
+            .chain(pools.iter().map(String::as_str))
+            .filter_map(|pool| cells.get(pool).and_then(|by| by.get(&destination)))
+            .any(|cell| suppressed(cell, now).is_some())
+    }
+
+    /// ONE HEALTH PROBE'S ANSWER, folded into EVERY cell of `destination` — the default cell and
+    /// each named pool's — because a probe tests the shared upstream, not one pool's route to it
+    /// (1.5.5 `health.rs` `probe_lane`):
+    ///
+    /// - `Success`: a suppressed cell recovers (closed, unless a peer armed a stricter cooldown
+    ///   after [`suppressed`] read it), then every cell's window takes the success.
+    /// - `Transient`: every cell records the failure under its own pool's configuration, `cfg_of`
+    ///   (a cell whose pool has none records nothing, as an organic observation does).
+    /// - `HardDown`: every cell is parked ([`Self::hard_down_all`]).
+    /// - `RecordNothing` (a client fault, a probe too large for the destination): nothing. The
+    ///   destination is healthy; the probe request was refused.
+    ///
+    /// No trip signal: the out-of-band prober counts no trips (1.5.5).
+    pub fn probed(
+        &self,
+        destination: DestinationId,
+        outcome: Outcome,
+        cfg_of: &dyn Fn(&str) -> Option<BreakerCfg>,
+        now: u64,
+        _token: &Pass<Route>,
+    ) {
+        let cells = || {
+            std::iter::once(String::new())
+                .chain(self.named_pools(destination))
+                .map(move |pool| (self.cell(&pool, destination), pool))
+        };
+        match outcome {
+            Outcome::RecordNothing => {}
+            Outcome::HardDown => {
+                let _ = self.hard_down_all(destination, now);
+            }
+            Outcome::Success => {
+                for (cell, _) in cells() {
+                    if let Some(observed) = suppressed(&cell, now) {
+                        let _ = cell.close_if_recoverable(now, observed);
+                    }
+                    let _ = cell.record_success(now);
+                }
+            }
+            Outcome::Transient { retry_after } => {
+                for (cell, pool) in cells() {
+                    if let Some(cfg) = cfg_of(&pool) {
+                        let _ = cell.record_failure(
+                            now,
+                            &cfg,
+                            retry_after,
+                            self.max_honored_retry_after_secs,
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Mutating admission attempt: wins-or-loses the single-flight probe, checking the destination's
@@ -487,6 +553,14 @@ impl<J: JournalSink> BreakerUnit<J> {
             .min();
         soonest.unwrap_or(AT_CAPACITY_RETRY_AFTER_SECS).max(1)
     }
+}
+
+/// Whether `cell` is suppressed at `now` (not Closed, or Closed inside a pending soft cooldown),
+/// and if so the cooldown it was read under. The cooldown is read FIRST, so a peer that arms a
+/// stricter one afterwards is seen by [`BreakerCell::close_if_recoverable`]'s re-check.
+fn suppressed(cell: &BreakerCell, now: u64) -> Option<u64> {
+    let cooldown = cell.cooldown_until();
+    (!matches!(cell.state(), CellState::Closed) || cooldown > now).then_some(cooldown)
 }
 
 impl<J: JournalSink> sealed::Sealed for BreakerUnit<J> {}

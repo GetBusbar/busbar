@@ -44,6 +44,8 @@ fn route_token() -> Pass<Route> {
     Pass::mint(&KernelSeal::acquire_for_kernel())
 }
 
+mod probe;
+
 // ── Ported: classification pipeline ─────────────────────────────────────────────────────────────
 
 #[test]

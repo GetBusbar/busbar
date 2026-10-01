@@ -173,9 +173,10 @@ fn advance_owned_deadline(slot: &AtomicU64, owned: u64, next: u64) -> u64 {
 }
 
 /// What the service probes: the composition root's per-generation object, held by `Weak` so a
-/// stale generation never pins its snapshot. The real one builds the probe unit (`arrive` with the
-/// probe claim, the ATTEMPT piece, the far end's send, the breaker's classification); the pure
-/// cadence above is proven against a test double.
+/// stale generation never pins its snapshot. The real one is
+/// [`crate::plane_driver::PlaneProbes`] (`arrive` with the probe claim, the ATTEMPT piece, the far
+/// end's send, the breaker's classification); the pure cadence above is proven against a test
+/// double.
 pub trait ProbeTarget: Send + Sync + 'static {
     /// Whether the breaker suppresses `member` in any cell (the `dead` mode's trigger).
     fn suppressing(&self, member: usize) -> bool;

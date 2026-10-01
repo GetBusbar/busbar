@@ -198,6 +198,8 @@ impl PollConns for Table {
 #[derive(Default)]
 struct Book {
     observed: Mutex<Vec<(DestinationId, Outcome)>>,
+    /// Every health probe's answer, as the far end told it; a success ends a cooldown.
+    probed: Mutex<Vec<(DestinationId, Outcome)>>,
     cooldown: Mutex<HashMap<DestinationId, u64>>,
     spent: AtomicU64,
     refunded: AtomicU64,
@@ -253,6 +255,15 @@ impl Breaker for Book {
     fn observe(&self, _: &str, d: DestinationId, o: Outcome, _: u64, _: &Pass<Route>) -> bool {
         self.observed.lock().unwrap().push((d, o));
         false
+    }
+    fn suppressing(&self, d: DestinationId, _: u64) -> bool {
+        self.cooldown.lock().unwrap().contains_key(&d)
+    }
+    fn probed(&self, d: DestinationId, o: Outcome, _: u64, _: &Pass<Route>) {
+        if o == Outcome::Success {
+            self.cooldown.lock().unwrap().remove(&d);
+        }
+        self.probed.lock().unwrap().push((d, o));
     }
     fn release_probe(&self, _: &str, _: DestinationId, _: u64, _: u64) {}
     fn spend_budget(&self, _: DestinationId) -> bool {
@@ -1027,3 +1038,7 @@ async fn a_context_length_refusal_excludes_only_admissible_smaller_windows() {
         "a larger window stays in the walk"
     );
 }
+
+#[allow(unsafe_code)]
+#[path = "probe_unit_tests.rs"]
+mod probe_unit;
