@@ -506,14 +506,6 @@ pub fn new_stream_translator(
         .and_then(|f| f(ingress, egress, is_sse))
 }
 
-/// RESOLVE A PROTOCOL BY NAME through the substrate registry singleton. A pure read of a
-/// `&'static ProtocolDecl`; allocates nothing. `busbar-core` keeps its own `decl_for` wrapper (which
-/// additionally seeds the core-test built-in hook under `#[cfg(test)]`); this is the plane-facing
-/// entry, behaviorally identical for any consumer that compiles `busbar-core` as a non-test dependency.
-pub fn decl_for(name: &str) -> Option<&'static ProtocolDecl> {
-    registry().decl(name)
-}
-
 /// The set of streaming `Content-Type` values across every declared protocol — a registry aggregate
 /// folded once at boot from `ProtocolDecl::streaming_content_type`.
 pub fn streaming_content_types() -> &'static [&'static str] {
@@ -529,14 +521,14 @@ pub fn array_stream_shim_keys() -> &'static [&'static str] {
 /// The array-stream shim key the NAMED protocol declares, or `None` if it declares none or is not
 /// registered. The injection site reads it by name so it names no protocol submodule.
 pub fn array_stream_shim_key_for(protocol_name: &str) -> Option<&'static str> {
-    decl_for(protocol_name).and_then(|d| d.array_stream_shim_key)
+    registry().decl(protocol_name).and_then(|d| d.array_stream_shim_key)
 }
 
 /// The vendor-plausible auth-failure wire MESSAGE for an ingress protocol, dispatched through
 /// `ProtocolDecl::auth_failure_message` so the per-vendor copy lives in the declaration, not here. An
 /// unknown protocol falls back to the default generic copy.
 pub fn vendor_auth_failure_message(proto: &str) -> &'static str {
-    decl_for(proto)
+    registry().decl(proto)
         .map(|d| d.auth_failure_message)
         .unwrap_or("authentication failed")
 }
@@ -545,7 +537,7 @@ pub fn vendor_auth_failure_message(proto: &str) -> &'static str {
 /// lane-build path, or `None` for an unknown name or one that declares no wire codec (MCP/A2A are not
 /// lane protocols).
 pub fn lane_protocol_name(name: &str) -> Option<&'static str> {
-    decl_for(name).filter(|d| d.codec.is_some()).map(|d| d.name)
+    registry().decl(name).filter(|d| d.codec.is_some()).map(|d| d.name)
 }
 
 /// Collect `(HeaderName, HeaderValue)` pairs into an axum `HeaderMap`. A dependency-free neutral

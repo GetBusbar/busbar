@@ -279,12 +279,6 @@ pub struct CostModel {
     generation: u64,
 }
 
-/// The next [`CostModel`] generation.
-fn next_generation() -> u64 {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-}
-
 impl CostModel {
     /// Resolve from config. Assumes `config_validate` has already passed (completeness, acyclic
     /// groups, valid limit shapes); this is a pure projection and is defensive, never panicking,
@@ -327,7 +321,7 @@ impl CostModel {
         let (groups, group_idx) = Self::project_groups(groups_cfg);
         Self {
             capped_bucket_ids: Self::capped_bucket_ids(&groups),
-            generation: next_generation(),
+            generation: crate::trust::validate::next_generation(),
             card,
             groups,
             group_idx,
@@ -345,7 +339,7 @@ impl CostModel {
         let (groups, group_idx) = Self::project_groups(groups_cfg);
         Self {
             capped_bucket_ids: Self::capped_bucket_ids(&groups),
-            generation: next_generation(),
+            generation: crate::trust::validate::next_generation(),
             card: self.card.clone(),
             groups,
             group_idx,
@@ -500,7 +494,7 @@ impl CostModel {
             groups: Vec::new(),
             group_idx: HashMap::new(),
             capped_bucket_ids: std::collections::HashSet::new(),
-            generation: next_generation(),
+            generation: crate::trust::validate::next_generation(),
         }
     }
 
@@ -534,7 +528,7 @@ impl CostModel {
         self.card = self
             .card
             .with_plane_fees(fees.iter().map(|(p, f)| (&**p, *f)));
-        self.generation = next_generation();
+        self.generation = crate::trust::validate::next_generation();
         self
     }
 

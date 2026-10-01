@@ -19,7 +19,7 @@ struct ServesNoTool;
 
 #[async_trait::async_trait]
 impl ToolExecutor for ServesNoTool {
-    fn serves(&self, _name: &str) -> bool {
+    fn executes_here(&self, _name: &str) -> bool {
         false
     }
     async fn execute(&self, _name: &str, _arguments: &[u8]) -> Vec<u8> {
