@@ -32,24 +32,24 @@
 //! SHORT ANSWERS: `arrive`, `on_piece`, `refusal`, `serve`, `project` and `drive` have the short
 //! path; a FAILED answer of one of them with any `*_needed` non-zero is short.
 
-use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::mechanism::call::{InHead, OutHead};
 use busbar_contract::abi::mechanism::call::Outcome;
+use busbar_contract::abi::mechanism::call::{InHead, OutHead};
 use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
 use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, CancelOut, DriveIn, OpenIn, RefreshIn,
 };
 use busbar_contract::abi::mechanism::ticket::Ticket;
-use busbar_contract::abi::plane::{
-    self, slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, PinMechanism, PlaneDriveIn,
-    PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
-    ProjectOut, RefusalIn, RefusalOut, RefusalStatus, ServeIn, ServeOut, TrustKey,
-};
+use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::{
     check_arrive, check_cancel, check_drive, check_on_piece, check_pin_mechanisms, check_project,
     check_refusal, check_refusal_statuses, check_sections, check_serve, check_snapshot, check_tail,
     check_trust_keys, Bounds, Caps, MAX_SESSIONS,
+};
+use busbar_contract::abi::plane::{
+    self, slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, PinMechanism, PlaneDriveIn,
+    PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
+    ProjectOut, RefusalIn, RefusalOut, RefusalStatus, ServeIn, ServeOut, TrustKey,
 };
 
 use crate::dispatch::{

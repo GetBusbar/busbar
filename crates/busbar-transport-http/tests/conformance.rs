@@ -16,23 +16,23 @@ use std::convert::Infallible;
 use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use busbar_contract::abi::mechanism::DOOR_SYMBOL;
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, Field, InHead, Op, OutHead, Outcome, BLOB_JSON,
 };
 use busbar_contract::abi::mechanism::door::Door;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
+use busbar_contract::abi::mechanism::DOOR_SYMBOL;
+use busbar_contract::abi::transport::check::{check_framer, check_framer_fields, check_head_slots};
 use busbar_contract::abi::transport::{
     slot, BeginIn, ConnFacts, EmitIn, EncodeIn, FramePiece, FramerOut, FramerSink, FramingIn,
     HeadSlots, IngestIn, Ops, PIECE_CONTINUED, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE,
     PIECE_STREAM_FAILED, SIDE_DIAL, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
-use busbar_contract::abi::transport::check::{check_framer, check_framer_fields, check_head_slots};
 use bytes::Bytes;
 use hyper::body::{Body, Frame, Incoming};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

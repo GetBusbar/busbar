@@ -141,7 +141,6 @@
 
 pub mod check;
 
-use crate::caps::ReasonCode;
 use super::hook::{RequestView, SignalEntry};
 use super::mechanism::call::{AbiStr, Blob, Field, InHead, Op, OutHead, Span};
 pub use super::mechanism::check::SPAN_ABSENT;
@@ -151,6 +150,7 @@ use super::mechanism::lifecycle::{
     slot as life, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, RefreshIn,
     ReleaseIn, TickIn, TickOut, ValidateIn, LIFECYCLE_SLOTS,
 };
+use crate::caps::ReasonCode;
 
 /// The plane kind's ABI version: new in 1.6.0 (v1.5.5 had no plane ABI), so it ships `1`.
 pub const ABI_VERSION: u32 = 1;

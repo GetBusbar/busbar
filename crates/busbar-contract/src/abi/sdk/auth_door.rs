@@ -302,7 +302,11 @@ impl<T: VerifyPlugin> SafeSlot for Cancel<T> {
     type In = CancelIn;
     type Out = CancelOut;
     type State = Held<T>;
-    fn call(_: Instance<'_, Held<T>>, _: Lent<'_, CancelIn>, mut out: Out<'_, CancelOut>) -> Outcome {
+    fn call(
+        _: Instance<'_, Held<T>>,
+        _: Lent<'_, CancelIn>,
+        mut out: Out<'_, CancelOut>,
+    ) -> Outcome {
         let out = out.raw();
         out.disposition = crate::abi::auth::CANCEL_ABANDONED;
         Outcome::Ready

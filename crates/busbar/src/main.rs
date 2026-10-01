@@ -662,10 +662,7 @@ fn open_boot_book(app: &busbar_kernel::state::App) -> root::durability::NodeBook
     }
 }
 
-async fn run(
-    data_workers: usize,
-    late_services: std::sync::Arc<root::serve::LateServices>,
-) {
+async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::LateServices>) {
     // THE PLUGIN OBSERVABILITY ENVELOPE, before any plugin loads (`root::observe`).
     root::observe::install();
     // Metrics are configured AFTER the config loads (below, via `metrics::configure`) because they
