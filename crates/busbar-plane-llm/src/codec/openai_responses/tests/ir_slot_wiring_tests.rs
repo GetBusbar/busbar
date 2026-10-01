@@ -529,7 +529,7 @@ fn shr03_chat_file_id_reaches_responses_input() {
 /// IR-03..06 placement: the five shared members moved from "always raw in `extra`" to parked
 /// mapping rows. The SAME-DIALECT write must still re-emit each caller's exact member — one the
 /// slot reproduces through the slot, one it cannot raw from `extra` — and an absent one stays
-/// absent.
+/// absent. (`store` is edge-validated as a bool, so only its well-typed form reaches here.)
 #[test]
 fn ir03_06_same_dialect_member_bytes_are_the_callers() {
     let body = serde_json::json!({
@@ -537,12 +537,13 @@ fn ir03_06_same_dialect_member_bytes_are_the_callers() {
         "input": "hi",
         "metadata": {"a": "1", "b": 2},
         "service_tier": "turbo",
-        "store": "yes",
+        "store": true,
         "safety_identifier": "sid",
         "prompt_cache_key": 9
     });
+    let writer = ResponsesWriter;
     let ir = ResponsesReader.read_request(&body).expect("read");
-    let out = ResponsesWriter.write_request(&ir);
+    let out = writer.write_request(&ir);
     for key in [
         "metadata",
         "service_tier",
@@ -553,6 +554,6 @@ fn ir03_06_same_dialect_member_bytes_are_the_callers() {
         assert_eq!(out.get(key), body.get(key), "{key}");
     }
     let plain = serde_json::json!({"model": "gpt-4.1", "input": "hi"});
-    let out = ResponsesWriter.write_request(&ResponsesReader.read_request(&plain).expect("read"));
+    let out = writer.write_request(&ResponsesReader.read_request(&plain).expect("read"));
     assert!(out.get("metadata").is_none() && out.get("store").is_none());
 }
