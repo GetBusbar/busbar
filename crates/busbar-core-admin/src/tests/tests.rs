@@ -255,27 +255,30 @@ async fn test_api_root_unmatched_paths_speak_the_admin_envelope() {
     handle.abort();
 }
 
-/// The admin fallback reads no body for a path nothing serves: an unmatched admin path whose body
-/// is past the inbound body limit is still the envelope `404`, never the body limit's `413` (the
-/// plane `serve` table answers it only once a published route names it; ARCHITECT C2c S5 Q1).
+/// The admin fallback reads no body for a path nothing serves: an unmatched admin path answers the
+/// envelope `404` as soon as its head arrives, without waiting for a body the caller has not sent
+/// (the plane `serve` table reads a body only for a published route it serves; ARCHITECT C2c S5 Q1).
 #[tokio::test]
 async fn an_unmatched_admin_path_reads_no_body() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     busbar_kernel::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
-    let (_, admin, _) = crate::build_split_routers_with_limits(app, 16, 0, false);
-    let (addr, handle, client) = spin_up(admin).await;
-    let r = client
-        .post(format!("http://{addr}/api/v1/admin/nonexistent"))
-        .header("x-admin-token", "admintok")
-        .body(vec![b'x'; 64])
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status().as_u16(), 404);
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "not_found", "{body}");
+    let router = crate::build_router(app);
+    let (addr, handle, _) = spin_up(router).await;
+    let mut conn = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let head = "POST /api/v1/admin/nonexistent HTTP/1.1\r\nhost: x\r\nx-admin-token: admintok\r\n\
+                content-length: 64\r\n\r\n";
+    conn.write_all(head.as_bytes()).await.unwrap();
+    let mut answer = [0u8; 12];
+    let read = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        conn.read_exact(&mut answer),
+    )
+    .await;
+    assert!(read.is_ok(), "the 404 answers before any body byte is sent");
+    assert_eq!(&answer, b"HTTP/1.1 404");
     handle.abort();
 }
 
