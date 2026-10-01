@@ -1,6 +1,6 @@
 use super::*;
-use busbar_contract::redacted::Redacted;
 use busbar_contract::records::{UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
+use busbar_contract::redacted::Redacted;
 use busbar_kernel_ledger::{
     cost::{
         plane_fee_lane, split_plane_lane, History, Money, MoneyError, MICROS_PER_CENT, PER_REQUEST,
@@ -43,8 +43,7 @@ fn signed_binding(spec: NewKeySpec, now: u64) -> RecordStoreResult<(VirtualKey, 
     // handle, so there is no id/hash prefix-collision hazard - but keep the `vk_` bucket
     // namespace so ledger/rate buckets stay consistent with the enforcement machinery.
     let mut raw = [0u8; 16];
-    getrandom::fill(&mut raw)
-        .map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
+    getrandom::fill(&mut raw).map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
     let id = format!("{VK_ID_PREFIX}{}", hex::encode(raw));
     let generation = generate_binding_generation().store()?;
     let binding = VirtualKey {
