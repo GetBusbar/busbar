@@ -3,9 +3,9 @@
 
 //! Reading Anthropic content blocks, messages and tool definitions into the IR.
 
-use crate::codec::keys;
 use super::*;
 use crate::codec::dialect::ir_parse_error;
+use crate::codec::keys;
 
 // Helper functions for IR mapping (used by read_request/write_request)
 pub(super) fn read_block(
@@ -79,7 +79,10 @@ pub(super) fn read_block(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let input = obj.get(keys::INPUT).cloned().unwrap_or(serde_json::Value::Null);
+            let input = obj
+                .get(keys::INPUT)
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             let cache_control = read_cache_control(obj.get(super::CACHE_CONTROL))?;
             Ok(crate::codec::ir::IrBlock::ToolUse {
                 id,
@@ -231,7 +234,10 @@ pub(super) fn read_block(
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .map(String::from);
-            let src_type = source.get(keys::TYPE).and_then(|v| v.as_str()).unwrap_or("");
+            let src_type = source
+                .get(keys::TYPE)
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let ir_source = match src_type {
                 keys::URL => crate::codec::ir::IrImageSource::Url(
                     source

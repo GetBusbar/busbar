@@ -4,8 +4,8 @@
 //! OpenAI protocol reader/writer implementation.
 
 use crate::codec::dialect::ir_parse_error;
-use crate::codec::keys;
 use crate::codec::ir::{IrStreamEvent, IrUsage};
+use crate::codec::keys;
 use busbar_contract::http::StatusCode;
 // The openai-family error helpers (`bearer_error_code`/`context_length_prose_scan`) now live
 // in the neutral substrate; name them there so this plugin reaches no `busbar-core` path for them.
@@ -496,7 +496,9 @@ fn read_openai_response_format(
                     .and_then(|j| j.get(keys::NAME))
                     .and_then(|n| n.as_str())
                     .map(String::from),
-                strict: js.and_then(|j| j.get(keys::STRICT)).and_then(|s| s.as_bool()),
+                strict: js
+                    .and_then(|j| j.get(keys::STRICT))
+                    .and_then(|s| s.as_bool()),
                 description: js
                     .and_then(|j| j.get(keys::DESCRIPTION))
                     .and_then(|d| d.as_str())
@@ -859,7 +861,10 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::
         }
         keys::IMAGE_URL => {
             let image_obj = obj.get(keys::IMAGE_URL).ok_or_else(ir_parse_error)?;
-            let url = image_obj.get(keys::URL).and_then(|v| v.as_str()).unwrap_or("");
+            let url = image_obj
+                .get(keys::URL)
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             // The IR `Image` contract (set by the Anthropic reader) is: `media_type` = a real MIME
             // type (e.g. "image/png") and `data` = the raw base64 payload. The Anthropic writer
             // renders that as a `{"type":"base64", "media_type":..., "data":...}` source. The prior
@@ -1344,11 +1349,11 @@ impl OpenAiStreamFraming {
                 // model when the lane supplied one).
                 if obj.contains_key(keys::ID) {
                     self.chunk_identity = Some(OpenAiChunkIdentity {
-                        id: obj.get(keys::ID).cloned().unwrap_or(serde_json::Value::Null),
-                        created: obj
-                            .get(CREATED)
+                        id: obj
+                            .get(keys::ID)
                             .cloned()
                             .unwrap_or(serde_json::Value::Null),
+                        created: obj.get(CREATED).cloned().unwrap_or(serde_json::Value::Null),
                         model: obj.get(keys::MODEL).cloned(),
                     });
                 }

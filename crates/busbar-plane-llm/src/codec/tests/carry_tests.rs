@@ -63,7 +63,11 @@ fn reads_every_row_into_its_slot() {
     assert_eq!(ir.verbosity, Some(IrVerbosity::Low));
     assert_eq!(ir.safety_identifier.as_deref(), Some("u-1"));
     assert_eq!(ir.output_modalities, Some(vec![IrModality::Text]));
-    assert!(ir.extra.is_empty(), "every member reproduces: {:?}", ir.extra);
+    assert!(
+        ir.extra.is_empty(),
+        "every member reproduces: {:?}",
+        ir.extra
+    );
 }
 
 #[test]
@@ -182,7 +186,11 @@ fn modifiers_clamp_cap_and_drop_on_write() {
 #[test]
 fn stop_reads_a_string_or_an_array_and_unparked_rows_never_park() {
     let mut ir = IrRequest::default();
-    read_fields(&[SAMPLING], json!({"stop": "END", "seed": 1.5}).as_object().unwrap(), &mut ir);
+    read_fields(
+        &[SAMPLING],
+        json!({"stop": "END", "seed": 1.5}).as_object().unwrap(),
+        &mut ir,
+    );
     assert_eq!(ir.stop, vec!["END".to_string()]);
     assert_eq!(ir.seed, None);
     assert!(ir.extra.is_empty(), "rows without park leave extra alone");
@@ -214,6 +222,10 @@ fn drops_are_derived_from_missing_rows_in_the_control_order() {
         service_tier: Some(IrServiceTier::Priority),
         ..Default::default()
     };
-    assert_eq!(dropped(&[ROWS], CONTROLS, &ir).count(), 0, "a word the table has");
+    assert_eq!(
+        dropped(&[ROWS], CONTROLS, &ir).count(),
+        0,
+        "a word the table has"
+    );
     assert!(models(&[ROWS], "model") && !models(&[ROWS], "other"));
 }

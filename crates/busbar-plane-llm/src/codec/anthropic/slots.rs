@@ -89,7 +89,10 @@ pub(super) fn write_hosted_tool(
             obj.insert(super::MAX_USES.to_string(), serde_json::json!(n));
         }
         if !allowed.is_empty() {
-            obj.insert(keys::ALLOWED_DOMAINS.to_string(), serde_json::json!(allowed));
+            obj.insert(
+                keys::ALLOWED_DOMAINS.to_string(),
+                serde_json::json!(allowed),
+            );
             if !blocked.is_empty() {
                 tracing::warn!(
                     "dropping hosted-tool blocked_domains on Anthropic egress: Anthropic accepts \
@@ -97,7 +100,10 @@ pub(super) fn write_hosted_tool(
                 );
             }
         } else if !blocked.is_empty() {
-            obj.insert(super::BLOCKED_DOMAINS.to_string(), serde_json::json!(blocked));
+            obj.insert(
+                super::BLOCKED_DOMAINS.to_string(),
+                serde_json::json!(blocked),
+            );
         }
     }
     let mut obj = serde_json::Map::new();
@@ -125,7 +131,10 @@ pub(super) fn write_hosted_tool(
             }
         }
         crate::codec::ir::IrHostedTool::WebFetch(wf) => {
-            obj.insert(keys::TYPE.to_string(), serde_json::json!(HOSTED_TOOL_WEB_FETCH));
+            obj.insert(
+                keys::TYPE.to_string(),
+                serde_json::json!(HOSTED_TOOL_WEB_FETCH),
+            );
             obj.insert(keys::NAME.to_string(), serde_json::json!("web_fetch"));
             put_limits(
                 &mut obj,

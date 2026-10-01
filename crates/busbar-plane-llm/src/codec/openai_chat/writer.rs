@@ -134,7 +134,9 @@ impl ProtocolWriter for OpenAiWriter {
                                 .push(serde_json::json!({ (keys::TYPE): keys::REFUSAL, (keys::REFUSAL): text }));
                         }
                         crate::codec::ir::IrBlock::Text { text, .. } => {
-                            content_arr.push(serde_json::json!({ (keys::TYPE): keys::TEXT, (keys::TEXT): text }));
+                            content_arr.push(
+                                serde_json::json!({ (keys::TYPE): keys::TEXT, (keys::TEXT): text }),
+                            );
                         }
                         crate::codec::ir::IrBlock::Image { source, detail, .. } => {
                             // A URL is emitted verbatim, a base64 image re-wrapped as a data URI. A
@@ -446,7 +448,10 @@ impl ProtocolWriter for OpenAiWriter {
         // ask is omitted (a lane that is not told to reason does not). An OpenAI-origin `"none"`
         // still rides `extra` verbatim.
         if req.reasoning == Some(crate::codec::ir::IrReasoningAsk::Off) && caps.reasoning_none {
-            out.insert(REASONING_EFFORT.to_string(), serde_json::json!(keys::NONE_WORD));
+            out.insert(
+                REASONING_EFFORT.to_string(),
+                serde_json::json!(keys::NONE_WORD),
+            );
         } else if req.reasoning == Some(crate::codec::ir::IrReasoningAsk::Off) {
             tracing::warn!(
                 "omitting reasoning OFF on OpenAI Chat egress: reasoning_effort \"none\" is not \
@@ -468,7 +473,10 @@ impl ProtocolWriter for OpenAiWriter {
         // Gemini request with `logprobs: N` but no `responseLogprobs`) — otherwise OpenAI 400s.
         if let Some(top_logprobs) = req.top_logprobs {
             out.insert(keys::LOGPROBS.to_string(), serde_json::json!(true));
-            out.insert(keys::TOP_LOGPROBS.to_string(), serde_json::json!(top_logprobs));
+            out.insert(
+                keys::TOP_LOGPROBS.to_string(),
+                serde_json::json!(top_logprobs),
+            );
         } else if let Some(logprobs) = req.logprobs {
             out.insert(keys::LOGPROBS.to_string(), serde_json::json!(logprobs));
         }
@@ -492,8 +500,7 @@ impl ProtocolWriter for OpenAiWriter {
         // that array verbatim in `extra`; emitting `tools` too would declare every function twice.
         // OAI-09: the typed custom tools, written after the function tools.
         let custom_tools = super::slots::write_custom_tools(req);
-        if (!req.tools.is_empty() || !custom_tools.is_empty())
-            && !req.extra.contains_key(FUNCTIONS)
+        if (!req.tools.is_empty() || !custom_tools.is_empty()) && !req.extra.contains_key(FUNCTIONS)
         {
             let mut tools_arr: Vec<serde_json::Value> = Vec::new();
             for tool in &req.tools {
@@ -537,7 +544,10 @@ impl ProtocolWriter for OpenAiWriter {
                 }
 
                 let mut tool_obj = serde_json::Map::new();
-                tool_obj.insert(keys::TYPE.to_string(), serde_json::json!(TOOL_TYPE_FUNCTION));
+                tool_obj.insert(
+                    keys::TYPE.to_string(),
+                    serde_json::json!(TOOL_TYPE_FUNCTION),
+                );
                 tool_obj.insert(
                     keys::FUNCTION.to_string(),
                     serde_json::Value::Object(function_obj),
@@ -1198,10 +1208,7 @@ impl ProtocolWriter for OpenAiWriter {
         if let Some(ref fp) = resp.system_fingerprint {
             obj.insert(SYSTEM_FINGERPRINT.to_string(), serde_json::json!(fp));
         }
-        obj.insert(
-            CHOICES.to_string(),
-            serde_json::Value::Array(choices_array),
-        );
+        obj.insert(CHOICES.to_string(), serde_json::Value::Array(choices_array));
 
         // Build usage, including the `total_tokens` an SDK expects (prompt + completion).
         // RECONSTRUCT the native WIRE shape from the normalized IR: the IR stores UNCACHED input,
@@ -1217,10 +1224,7 @@ impl ProtocolWriter for OpenAiWriter {
             .saturating_add(cache_read)
             .saturating_add(resp.usage.cache_creation_input_tokens.unwrap_or(0));
         let mut usage_map = serde_json::Map::new();
-        usage_map.insert(
-            PROMPT_TOKENS.to_string(),
-            serde_json::json!(prompt_tokens),
-        );
+        usage_map.insert(PROMPT_TOKENS.to_string(), serde_json::json!(prompt_tokens));
         usage_map.insert(
             COMPLETION_TOKENS.to_string(),
             serde_json::json!(resp.usage.output_tokens),
@@ -1235,7 +1239,10 @@ impl ProtocolWriter for OpenAiWriter {
         {
             let mut ptd = serde_json::Map::new();
             if resp.usage.cache_read_input_tokens.is_some() {
-                ptd.insert(keys::CACHED_TOKENS.to_string(), serde_json::json!(cache_read));
+                ptd.insert(
+                    keys::CACHED_TOKENS.to_string(),
+                    serde_json::json!(cache_read),
+                );
             }
             if let Some(a) = resp.usage.detail.input_audio_tokens {
                 ptd.insert(AUDIO_TOKENS.to_string(), serde_json::json!(a));
@@ -1260,16 +1267,10 @@ impl ProtocolWriter for OpenAiWriter {
                 ctd.insert(AUDIO_TOKENS.to_string(), serde_json::json!(a));
             }
             if let Some(t) = resp.usage.detail.accepted_prediction_tokens {
-                ctd.insert(
-                    ACCEPTED_PREDICTION_TOKENS.to_string(),
-                    serde_json::json!(t),
-                );
+                ctd.insert(ACCEPTED_PREDICTION_TOKENS.to_string(), serde_json::json!(t));
             }
             if let Some(t) = resp.usage.detail.rejected_prediction_tokens {
-                ctd.insert(
-                    REJECTED_PREDICTION_TOKENS.to_string(),
-                    serde_json::json!(t),
-                );
+                ctd.insert(REJECTED_PREDICTION_TOKENS.to_string(), serde_json::json!(t));
             }
             if !ctd.is_empty() {
                 usage_map.insert(
@@ -1278,7 +1279,10 @@ impl ProtocolWriter for OpenAiWriter {
                 );
             }
         }
-        obj.insert(keys::USAGE.to_string(), serde_json::Value::Object(usage_map));
+        obj.insert(
+            keys::USAGE.to_string(),
+            serde_json::Value::Object(usage_map),
+        );
         // The tier that served the request, in OpenAI's vocabulary (OAI-03). Omitted when the
         // source named none, or a tier OpenAI has no response value for.
         if let Some(tier) = resp

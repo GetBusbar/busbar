@@ -4,8 +4,8 @@
 //! Anthropic's native error envelope. (Its egress credential is not built here: the dialect
 //! DECLARES its scheme on `DECL` and the kernel presents the lane credential under it.)
 
-use crate::codec::keys;
 use super::*;
+use crate::codec::keys;
 
 impl AnthropicWriter {
     /// Build the native Anthropic error envelope for a resolved `error.type`.

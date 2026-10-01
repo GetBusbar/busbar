@@ -1,6 +1,6 @@
-use crate::codec::keys;
 use super::*;
 use crate::codec::dialect::ir_parse_error;
+use crate::codec::keys;
 
 impl ProtocolReader for AnthropicReader {
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
@@ -374,7 +374,10 @@ impl ProtocolReader for AnthropicReader {
             .and_then(|c| c.get(keys::FORMAT))
             .or(output_format_legacy)
             .and_then(read_anthropic_output_format);
-        let stream = obj.get(keys::STREAM).and_then(|v| v.as_bool()).unwrap_or(false);
+        let stream = obj
+            .get(keys::STREAM)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         // Collect unmodeled top-level keys into `extra`: the modelled keys are the mapping file's
         // top-level rows.
@@ -471,7 +474,10 @@ impl ProtocolReader for AnthropicReader {
                     keys::TEXT => IrBlockMeta::Text,
                     keys::THINKING => IrBlockMeta::Thinking { kind: None },
                     STOP_TOOL_USE => {
-                        let id = block.get(keys::ID).and_then(|i| i.as_str()).map(String::from)?;
+                        let id = block
+                            .get(keys::ID)
+                            .and_then(|i| i.as_str())
+                            .map(String::from)?;
                         let name = block
                             .get(keys::NAME)
                             .and_then(|n| n.as_str())
@@ -653,7 +659,8 @@ impl ProtocolReader for AnthropicReader {
         // produces the BlockStop). Mirrors the Bedrock streaming reader + the non-stream `read_block`.
         if event_type == EVT_CONTENT_BLOCK_START {
             if let Some(block) = data.get(super::CONTENT_BLOCK) {
-                if block.get(keys::TYPE).and_then(|t| t.as_str()) == Some(BLOCK_TYPE_REDACTED_THINKING)
+                if block.get(keys::TYPE).and_then(|t| t.as_str())
+                    == Some(BLOCK_TYPE_REDACTED_THINKING)
                 {
                     if let Some(index) = read_clamped_block_index(data) {
                         let bytes = block

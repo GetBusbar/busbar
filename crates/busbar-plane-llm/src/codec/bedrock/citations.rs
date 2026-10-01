@@ -135,7 +135,11 @@ pub(super) fn read_bedrock_citation(c: &serde_json::Value) -> crate::codec::ir::
     const OFFSET_LOCATIONS: [(&str, &str, &str); 4] = [
         (super::DOCUMENT_CHAR, "char_location", super::DOCUMENT_INDEX),
         ("documentPage", keys::PAGE_LOCATION, super::DOCUMENT_INDEX),
-        ("documentChunk", keys::CONTENT_BLOCK_LOCATION, super::DOCUMENT_INDEX),
+        (
+            "documentChunk",
+            keys::CONTENT_BLOCK_LOCATION,
+            super::DOCUMENT_INDEX,
+        ),
         (
             super::SEARCH_RESULT_LOCATION_CAMEL,
             keys::SEARCH_RESULT_LOCATION,

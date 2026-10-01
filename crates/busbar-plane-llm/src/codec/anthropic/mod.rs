@@ -36,8 +36,8 @@ mod citations;
 mod ids;
 mod slots;
 mod usage;
-use crate::codec::keys;
 use crate::codec::dialect::ir_parse_error;
+use crate::codec::keys;
 use blocks::*;
 use citations::*;
 use ids::*;
@@ -419,7 +419,10 @@ fn stash_unmodeled_blocks(
         return;
     };
     for (i, block_val) in content_arr.iter().enumerate() {
-        let block_type = block_val.get(keys::TYPE).and_then(|v| v.as_str()).unwrap_or("");
+        let block_type = block_val
+            .get(keys::TYPE)
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         // A `document` is MODELLED (`IrBlock::Media`) so it survives a cross-protocol hop, but Media
         // carries only source/name/cache_control — NOT Anthropic's `document.context` string or its
         // `document.citations` toggle. Those two have no neutral/cross-protocol slot, so to keep them
@@ -707,7 +710,8 @@ fn write_response_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value 
     if let Some(obj) = val.as_object_mut() {
         match obj.get(keys::TYPE).and_then(|t| t.as_str()) {
             Some(keys::TEXT) => {
-                obj.entry(keys::CITATIONS).or_insert(serde_json::Value::Null);
+                obj.entry(keys::CITATIONS)
+                    .or_insert(serde_json::Value::Null);
             }
             Some(STOP_TOOL_USE) => {
                 obj.entry(W_CALLER)
@@ -749,7 +753,9 @@ fn read_cache_control(
 /// Serialize the IR's `CacheControl` back to Anthropic's native `{"type":"ephemeral"}` object.
 fn write_cache_control(cc: &crate::codec::ir::CacheControl) -> serde_json::Value {
     match cc.kind {
-        crate::codec::ir::CacheKind::Ephemeral => serde_json::json!({(keys::TYPE): CACHE_KIND_EPHEMERAL}),
+        crate::codec::ir::CacheKind::Ephemeral => {
+            serde_json::json!({(keys::TYPE): CACHE_KIND_EPHEMERAL})
+        }
     }
 }
 
@@ -1121,14 +1127,17 @@ fn write_block(block: &crate::codec::ir::IrBlock) -> serde_json::Value {
                     // Anthropic source is filtered before `write_block`; the placeholder is defensive.
                     match inline_document_source(media_type, data) {
                         Some(src) => src,
-                        None => return serde_json::json!({ (keys::TYPE): keys::TEXT, (keys::TEXT): "" }),
+                        None => {
+                            return serde_json::json!({ (keys::TYPE): keys::TEXT, (keys::TEXT): "" })
+                        }
                     }
                 }
                 // This protocol's OWN opaque source (a Files-API `file_id` or a `content` document):
                 // re-emit verbatim. A FOREIGN vendor reference is filtered in `write_message`.
                 crate::codec::ir::IrImageSource::Vendor { value, .. } => value.clone(),
             };
-            let mut doc = serde_json::json!({ (keys::TYPE): BLOCK_TYPE_DOCUMENT, (keys::SOURCE): src });
+            let mut doc =
+                serde_json::json!({ (keys::TYPE): BLOCK_TYPE_DOCUMENT, (keys::SOURCE): src });
             if let Some(obj) = doc.as_object_mut() {
                 if let Some(n) = name {
                     obj.insert(keys::TITLE.to_string(), serde_json::json!(n));

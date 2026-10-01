@@ -3,8 +3,8 @@
 
 //! Anthropic `usage` objects: the usage table and the buffered / `message_delta` usage writers.
 
-use crate::codec::keys;
 use super::IrError;
+use crate::codec::keys;
 use crate::codec::usage_count::{read_usage, CountRead, CountSlot, UsageCount};
 
 /// ANTHROPIC'S USAGE COUNTS, AS DATA (#42). The four totals come first: a truncated-body recovery
@@ -149,7 +149,10 @@ pub(super) fn write_usage_object(usage: Option<&crate::codec::ir::IrUsage>) -> s
         keys::OUTPUT_TOKENS_DETAILS.to_string(),
         write_output_tokens_details(usage),
     );
-    usage_map.insert(super::SERVER_TOOL_USE.to_string(), write_server_tool_use(usage));
+    usage_map.insert(
+        super::SERVER_TOOL_USE.to_string(),
+        write_server_tool_use(usage),
+    );
     usage_map.insert(
         keys::SERVICE_TIER.to_string(),
         serde_json::json!(
@@ -211,7 +214,10 @@ pub(super) fn write_message_delta_usage(usage: &crate::codec::ir::IrUsage) -> se
         keys::OUTPUT_TOKENS_DETAILS.to_string(),
         write_output_tokens_details(usage),
     );
-    usage_map.insert(super::SERVER_TOOL_USE.to_string(), write_server_tool_use(usage));
+    usage_map.insert(
+        super::SERVER_TOOL_USE.to_string(),
+        write_server_tool_use(usage),
+    );
     let d = &usage.detail;
     if d.cache_creation_5m_input_tokens.is_some() || d.cache_creation_1h_input_tokens.is_some() {
         usage_map.insert(

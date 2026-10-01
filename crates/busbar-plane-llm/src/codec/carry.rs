@@ -577,10 +577,12 @@ pub fn dropped<'a>(
             Some(Handled::Silent | Handled::Code(_)) => false,
             _ => match rows(table).find(|f| f.slot == slot) {
                 None => true,
-                Some(f @ Field {
-                    codec: ValueCodec::Words(_),
-                    ..
-                }) => value_of(f, req).is_none(),
+                Some(
+                    f @ Field {
+                        codec: ValueCodec::Words(_),
+                        ..
+                    },
+                ) => value_of(f, req).is_none(),
                 Some(_) => false,
             },
         }
@@ -603,7 +605,10 @@ pub fn warn_drops(
         match (handled(controls, slot), drop_warn) {
             (Some(Handled::Warn(text, value)), _) => warn_slot(slot, text, value, req),
             (_, Some(drop_warn)) => crate::codec::dialect::warn_dropped([slot.name()], drop_warn),
-            (_, None) => tracing::warn!(control = slot.name(), "dropping a request control on egress: the dialect has no form for it"),
+            (_, None) => tracing::warn!(
+                control = slot.name(),
+                "dropping a request control on egress: the dialect has no form for it"
+            ),
         }
     }
 }
@@ -614,7 +619,12 @@ fn warn_slot(slot: Slot, text: &str, value: bool, req: &IrRequest) {
     match (slot, value) {
         (Slot::FrequencyPenalty, true) => {
             if let Some(frequency_penalty) = req.frequency_penalty {
-                tracing::warn!(parameter = "frequency_penalty", frequency_penalty, "{}", text);
+                tracing::warn!(
+                    parameter = "frequency_penalty",
+                    frequency_penalty,
+                    "{}",
+                    text
+                );
             }
         }
         (Slot::PresencePenalty, true) => {

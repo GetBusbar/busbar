@@ -3,8 +3,8 @@
 
 //! Anthropic citations: the location-type union read into and written from the neutral IrCitation.
 
-use crate::codec::keys;
 use super::*;
+use crate::codec::keys;
 
 /// Map one RAW Anthropic citation object → neutral [`crate::codec::ir::IrCitation`]. Fills the neutral
 /// fields it recognizes AND stashes the source object verbatim in `raw`, so the Anthropic writer can
@@ -13,7 +13,10 @@ use super::*;
 /// per variant (char/page/block index, or web-search `encrypted_index`); we read each into the shared
 /// neutral `start_index`/`end_index`/`encrypted_index` slots, keyed off the `type` tag.
 pub(super) fn read_citation(val: &serde_json::Value) -> crate::codec::ir::IrCitation {
-    let kind = val.get(keys::TYPE).and_then(|v| v.as_str()).map(str::to_string);
+    let kind = val
+        .get(keys::TYPE)
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
     let cited_text = val
         .get(super::CITED_TEXT)
         .and_then(|v| v.as_str())
@@ -147,7 +150,10 @@ pub(super) fn write_citation(c: &crate::codec::ir::IrCitation) -> serde_json::Va
                 obj.insert(keys::TITLE.to_string(), serde_json::json!(t));
             }
             if let Some(di) = c.document_index {
-                obj.insert(super::SEARCH_RESULT_INDEX.to_string(), serde_json::json!(di));
+                obj.insert(
+                    super::SEARCH_RESULT_INDEX.to_string(),
+                    serde_json::json!(di),
+                );
             }
             if let Some(s) = c.start_index {
                 obj.insert(super::START_BLOCK_INDEX.to_string(), serde_json::json!(s));

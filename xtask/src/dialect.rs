@@ -194,16 +194,25 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
             };
             let codec = match (field(&f, "words"), field(&f, "hook")) {
                 (None, None) if prim.is_some() => {
-                    format!("ValueCodec::Prim({})", lit(prim.as_deref().unwrap_or_default()))
+                    format!(
+                        "ValueCodec::Prim({})",
+                        lit(prim.as_deref().unwrap_or_default())
+                    )
                 }
                 (None, None) => "ValueCodec::Plain".to_string(),
                 (Some(w), None) => {
                     let (wd, wn) = qualified(&d.name, &toml_lite::string_value(w));
-                    format!("ValueCodec::Words({})", const_ref(&d.name, &wd, "WORDS", &wn))
+                    format!(
+                        "ValueCodec::Words({})",
+                        const_ref(&d.name, &wd, "WORDS", &wn)
+                    )
                 }
                 (None, Some(h)) => {
                     uses.insert("Hook");
-                    format!("ValueCodec::Hook(Hook::{})", camel(&toml_lite::string_value(h)))
+                    format!(
+                        "ValueCodec::Hook(Hook::{})",
+                        camel(&toml_lite::string_value(h))
+                    )
                 }
                 (Some(_), Some(_)) => {
                     return Err(format!(

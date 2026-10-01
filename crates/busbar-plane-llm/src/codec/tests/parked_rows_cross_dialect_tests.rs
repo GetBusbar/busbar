@@ -87,8 +87,16 @@ fn responses_parked_members_cross_as_their_slots_or_drop() {
     }
     // Bedrock: metadata as `requestMetadata`, the tier as `serviceTier.type`, the rest dropped.
     let out = cross("responses", "bedrock", &body);
-    assert_eq!(out.get("requestMetadata"), Some(&json!({"a": "1"})), "{out}");
-    assert_eq!(out.get("serviceTier"), Some(&json!({"type": "flex"})), "{out}");
+    assert_eq!(
+        out.get("requestMetadata"),
+        Some(&json!({"a": "1"})),
+        "{out}"
+    );
+    assert_eq!(
+        out.get("serviceTier"),
+        Some(&json!({"type": "flex"})),
+        "{out}"
+    );
     for k in MOVED {
         assert!(out.get(k).is_none(), "bedrock {k}: {out}");
     }
@@ -102,7 +110,11 @@ fn anthropic_parked_service_tier_crosses_as_its_slot_or_drops() {
                "messages": [{"role": "user", "content": "hi"}]})
     };
     for (tier, openai, bedrock) in [
-        ("standard_only", Some("default"), Some(json!({"type": "default"}))),
+        (
+            "standard_only",
+            Some("default"),
+            Some(json!({"type": "default"})),
+        ),
         ("auto", Some("auto"), None),
     ] {
         for egress in ["openai", "responses"] {

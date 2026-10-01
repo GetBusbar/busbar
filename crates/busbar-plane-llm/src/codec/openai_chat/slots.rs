@@ -19,10 +19,10 @@
 //! walker; `extra` is written last (it wins on the same dialect) and is cleared on the
 //! cross-protocol seam, where the typed slot is what crosses.
 
-use crate::codec::keys;
 use crate::codec::ir::{
     IrHostedTool, IrModality, IrRequest, IrToolChoice, IrUserLocation, IrVerbosity, IrWebSearch,
 };
+use crate::codec::keys;
 
 /// The `tool_choice.type` of a Chat allowed-tools subset.
 const TOOL_CHOICE_ALLOWED_TOOLS: &str = "allowed_tools";
@@ -209,7 +209,10 @@ pub(crate) fn write_web_search(req: &IrRequest) -> Option<serde_json::Value> {
 /// One web search as `web_search_options`. `max_uses` and the domain filters have no Chat member:
 /// they are dropped with a warn and the search itself is kept.
 fn web_search_options(search: &IrWebSearch) -> serde_json::Value {
-    if search.max_uses.is_some() || !search.allowed_domains.is_empty() || !search.blocked_domains.is_empty() {
+    if search.max_uses.is_some()
+        || !search.allowed_domains.is_empty()
+        || !search.blocked_domains.is_empty()
+    {
         tracing::warn!(
             "dropping web search max_uses / domain filters on OpenAI Chat egress: \
              `web_search_options` has no member for them; the search itself is kept"

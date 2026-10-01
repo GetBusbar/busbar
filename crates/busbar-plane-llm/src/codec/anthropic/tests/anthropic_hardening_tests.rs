@@ -2239,10 +2239,7 @@ fn read_request_routes_unmodeled_keys_to_extra() {
         ir.extra.contains_key("metadata"),
         "unmodeled `metadata` must flow into extra"
     );
-    assert_eq!(
-        ir.service_tier,
-        Some(crate::codec::ir::IrServiceTier::Auto)
-    );
+    assert_eq!(ir.service_tier, Some(crate::codec::ir::IrServiceTier::Auto));
     assert!(!ir.extra.contains_key("service_tier"));
     let mut unknown_tier = body.clone();
     unknown_tier["service_tier"] = serde_json::json!("turbo");

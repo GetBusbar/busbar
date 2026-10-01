@@ -1,5 +1,5 @@
-use crate::codec::keys;
 use super::*;
+use crate::codec::keys;
 
 impl ProtocolWriter for AnthropicWriter {
     fn probe_request(&self) -> serde_json::Value {
@@ -193,7 +193,10 @@ impl ProtocolWriter for AnthropicWriter {
         }
         if !system_blocks.is_empty() {
             let system_array: Vec<_> = system_blocks.into_iter().map(write_block).collect();
-            out.insert(keys::SYSTEM.to_string(), serde_json::Value::Array(system_array));
+            out.insert(
+                keys::SYSTEM.to_string(),
+                serde_json::Value::Array(system_array),
+            );
         }
         // Splice back any raw native blocks `read_request` parked because the IR cannot model them
         // (e.g. `document`) — an Anthropic-sourced IR that goes through this writer (not the
@@ -238,7 +241,10 @@ impl ProtocolWriter for AnthropicWriter {
             .chain(req.hosted_tools.iter().filter_map(write_hosted_tool))
             .collect();
         if !tools_array.is_empty() {
-            out.insert(keys::TOOLS.to_string(), serde_json::Value::Array(tools_array));
+            out.insert(
+                keys::TOOLS.to_string(),
+                serde_json::Value::Array(tools_array),
+            );
         }
         // Emit `tool_choice` in Anthropic's native object shape when present so a forced /
         // targeted directive translated from another protocol does not silently degrade to `auto`.
@@ -496,7 +502,10 @@ impl ProtocolWriter for AnthropicWriter {
             // was already written above (before the thinking decision), so downgrade a now-illegal
             // `any`/`tool` to `auto` here, preserving any `disable_parallel_tool_use`, with a warn —
             // same "think-ask wins, observably" rule applied to temperature/top_p/top_k below.
-            if let Some(tc) = out.get_mut(keys::TOOL_CHOICE).and_then(|v| v.as_object_mut()) {
+            if let Some(tc) = out
+                .get_mut(keys::TOOL_CHOICE)
+                .and_then(|v| v.as_object_mut())
+            {
                 let ty = tc.get(keys::TYPE).and_then(|t| t.as_str());
                 if ty == Some(keys::ANY) || ty == Some(keys::TOOL) {
                     tracing::warn!(
@@ -536,7 +545,10 @@ impl ProtocolWriter for AnthropicWriter {
         // before the `extra` overlay: if the request natively carried an Anthropic `metadata`
         // object it rides `extra` and overwrites this, so the verbatim original always wins.
         if let Some(user) = &req.user {
-            out.insert(keys::METADATA.to_string(), serde_json::json!({(super::USER_ID): user}));
+            out.insert(
+                keys::METADATA.to_string(),
+                serde_json::json!({(super::USER_ID): user}),
+            );
         }
         for (key, value) in &req.extra {
             // SKIP busbar's own positional-stash sentinel. It is CONSUMED above (spliced back into
@@ -595,7 +607,10 @@ impl ProtocolWriter for AnthropicWriter {
                 // wire shape and must stay byte-identical to it.
                 let model_str = model.as_deref().unwrap_or("");
                 msg_obj.insert(keys::MODEL.to_string(), serde_json::json!(model_str));
-                msg_obj.insert(keys::CONTENT.to_string(), serde_json::Value::Array(Vec::new()));
+                msg_obj.insert(
+                    keys::CONTENT.to_string(),
+                    serde_json::Value::Array(Vec::new()),
+                );
                 msg_obj.insert(super::STOP_REASON.to_string(), serde_json::Value::Null);
                 msg_obj.insert(keys::STOP_SEQUENCE.to_string(), serde_json::Value::Null);
                 // The published `Message` schema also requires `stop_details` (structured detail
@@ -617,7 +632,10 @@ impl ProtocolWriter for AnthropicWriter {
                 // event off the header, but native parity (and any consumer that dispatches on
                 // `data.type`) requires the field — emit it on every event body.
                 data_obj.insert(keys::TYPE.to_string(), serde_json::json!(EVT_MESSAGE_START));
-                data_obj.insert(keys::MESSAGE.to_string(), serde_json::Value::Object(msg_obj));
+                data_obj.insert(
+                    keys::MESSAGE.to_string(),
+                    serde_json::Value::Object(msg_obj),
+                );
                 Some((
                     EVT_MESSAGE_START.to_string(),
                     serde_json::Value::Object(data_obj),
@@ -867,7 +885,10 @@ impl ProtocolWriter for AnthropicWriter {
                 // reconciles per tier at `stream: true` as it does at `stream: false`.
                 let mut data_obj = serde_json::Map::new();
                 data_obj.insert(keys::TYPE.to_string(), serde_json::json!(EVT_MESSAGE_DELTA));
-                data_obj.insert(keys::DELTA.to_string(), serde_json::Value::Object(delta_obj));
+                data_obj.insert(
+                    keys::DELTA.to_string(),
+                    serde_json::Value::Object(delta_obj),
+                );
                 data_obj.insert(keys::USAGE.to_string(), write_message_delta_usage(usage));
                 Some((
                     EVT_MESSAGE_DELTA.to_string(),
@@ -917,8 +938,14 @@ impl ProtocolWriter for AnthropicWriter {
                 // documented shape) won't recognize the event as an error without it, and its
                 // absence is a proxy-signature tell vs a native stream.
                 data_obj.insert(keys::TYPE.to_string(), serde_json::json!(keys::ERROR_WORD));
-                data_obj.insert(keys::ERROR_WORD.to_string(), serde_json::Value::Object(error_obj));
-                Some((keys::ERROR_WORD.to_string(), serde_json::Value::Object(data_obj)))
+                data_obj.insert(
+                    keys::ERROR_WORD.to_string(),
+                    serde_json::Value::Object(error_obj),
+                );
+                Some((
+                    keys::ERROR_WORD.to_string(),
+                    serde_json::Value::Object(data_obj),
+                ))
             }
         }
     }
@@ -1043,7 +1070,10 @@ impl ProtocolWriter for AnthropicWriter {
 
         // usage: every member the published `Usage` schema requires, with the source's values
         // where it reported them and the spec's zero/null/default shape otherwise.
-        obj.insert(keys::USAGE.to_string(), write_usage_object(Some(&resp.usage)));
+        obj.insert(
+            keys::USAGE.to_string(),
+            write_usage_object(Some(&resp.usage)),
+        );
 
         serde_json::Value::Object(obj)
     }
