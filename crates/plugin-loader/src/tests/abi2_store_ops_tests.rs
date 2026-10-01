@@ -228,7 +228,9 @@ fn repeated_1_6_0_only_ops_on_an_abi_2_store_stay_silent() {
         for i in 0..25u64 {
             let id = format!("t-{i}");
             answer_unsupported();
-            errors += store.upsert_plane_record(record("task", &id).view()).is_err() as usize;
+            errors += store
+                .upsert_plane_record(record("task", &id).view())
+                .is_err() as usize;
             answer_unsupported();
             errors += store.get_plane_record("task", &id).is_err() as usize;
             answer_unsupported();

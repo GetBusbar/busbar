@@ -574,7 +574,11 @@ fn cell_key<'a>(
         DIM_REQUESTS => Dimension::Requests,
         DIM_CONCURRENCY => Dimension::Concurrency,
         DIM_CLASS => Dimension::Class(text_of(class_key)?),
-        d => return Err(Text::render(format_args!("dimension {d} is not a store dimension"))),
+        d => {
+            return Err(Text::render(format_args!(
+                "dimension {d} is not a store dimension"
+            )))
+        }
     };
     Ok(CellKey {
         bucket: text_of(bucket)?,

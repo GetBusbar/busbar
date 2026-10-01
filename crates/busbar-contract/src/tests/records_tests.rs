@@ -853,26 +853,32 @@ fn the_plane_record_verbs_default_to_accepting_and_keeping_nothing() {
 
     // The writes are ACCEPTED — a legacy backend must not fail a plane-record submission.
     assert!(s
-        .upsert_plane_record(PlaneRecord {
-            kind: "task".into(),
-            id: "t-1".into(),
-            parent: None,
-            seq: 0,
-            ts: 11,
-            disposition: PlaneDisposition::Active,
-            body: task_body,
-        }.view())
+        .upsert_plane_record(
+            PlaneRecord {
+                kind: "task".into(),
+                id: "t-1".into(),
+                parent: None,
+                seq: 0,
+                ts: 11,
+                disposition: PlaneDisposition::Active,
+                body: task_body,
+            }
+            .view()
+        )
         .is_ok());
     assert!(s
-        .append_plane_record(PlaneRecord {
-            kind: "task_event".into(),
-            id: "t-1".into(),
-            parent: Some("t-1".into()),
-            seq: 1,
-            ts: 10,
-            disposition: PlaneDisposition::Active,
-            body: event_body,
-        }.view())
+        .append_plane_record(
+            PlaneRecord {
+                kind: "task_event".into(),
+                id: "t-1".into(),
+                parent: Some("t-1".into()),
+                seq: 1,
+                ts: 10,
+                disposition: PlaneDisposition::Active,
+                body: event_body,
+            }
+            .view()
+        )
         .is_ok());
     // And nothing is kept. This is the assertion the durability layer is built on: the only honest
     // way to know a deployment is durable is to read back, and here the read-back is empty.

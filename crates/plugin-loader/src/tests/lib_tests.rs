@@ -1991,7 +1991,9 @@ fn no_plugin_failure_shape_can_launder_a_dropped_task_into_success() {
     for (status, body, what) in failures {
         FAKE_CALL_HANDLE.with(|c| c.set((*status, *body)));
         assert!(
-            store.upsert_plane_record(task_record(&task).view()).is_err(),
+            store
+                .upsert_plane_record(task_record(&task).view())
+                .is_err(),
             "`put_task` must FAIL on {what}: silently returning Ok is the exact defect these \
              variants were added to close"
         );

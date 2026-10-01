@@ -35,9 +35,9 @@ use busbar_contract::abi::sdk::store::{
 };
 use busbar_contract::abi::store::{
     slot, AppendPlaneRecordIn, GetPlaneRecordIn, HostBlobs, HostBuf, HostBytesOut, HostListOut,
-    HostRecords, HostSessions, KindIdIn, ListPlaneRecordsIn, OpId, Ops, PlaneRecordRow, RecordEntry,
-    RecordGetIn, RecordPutIn, RecordScanIn, SessionRow, SessionsForIn, TokenIn, UpsertPlaneRecordIn,
-    VerdictOut, DISPOSITION_ACTIVE, SELECT_ALL, SELECT_PARENT,
+    HostRecords, HostSessions, KindIdIn, ListPlaneRecordsIn, OpId, Ops, PlaneRecordRow,
+    RecordEntry, RecordGetIn, RecordPutIn, RecordScanIn, SessionRow, SessionsForIn, TokenIn,
+    UpsertPlaneRecordIn, VerdictOut, DISPOSITION_ACTIVE, SELECT_ALL, SELECT_PARENT,
 };
 use busbar_contract::kinds::{Head, RecordBytes};
 use busbar_contract::records::{
@@ -308,7 +308,12 @@ fn bytes_buf(buf: &mut [u8]) -> HostBuf {
 
 fn call<I, O>(op: Option<Op>, instance: *mut c_void, input: &I, out: &mut O) -> Outcome {
     let op = op.expect("the macro fills every slot");
-    op(instance, ptr::from_ref(input).cast(), ptr::from_mut(out).cast()).outcome()
+    op(
+        instance,
+        ptr::from_ref(input).cast(),
+        ptr::from_mut(out).cast(),
+    )
+    .outcome()
 }
 
 fn open() -> *mut c_void {
@@ -318,7 +323,10 @@ fn open() -> *mut c_void {
     input.settings = octets(b"{}");
     let mut out: OpenOut = zeroed();
     out.head = out_head::<OpenOut>();
-    assert_eq!(call(t.head.open, ptr::null_mut(), &input, &mut out), Outcome::Ready);
+    assert_eq!(
+        call(t.head.open, ptr::null_mut(), &input, &mut out),
+        Outcome::Ready
+    );
     assert!(!out.instance.is_null());
     out.instance
 }
@@ -701,14 +709,22 @@ fn the_store_doors_request_path_slots_allocate_nothing() {
         (Outcome::Ready, ""),
         (Outcome::Failed, DOWN_TEXT),
         (Outcome::Ready, ""),
-        (Outcome::Refused, "a record of 513 bytes is over the ceiling"),
+        (
+            Outcome::Refused,
+            "a record of 513 bytes is over the ceiling",
+        ),
         (Outcome::Ready, ""),
         (Outcome::Ready, ""),
         (Outcome::Ready, ""),
         (Outcome::Ready, ""),
     ];
     for (m, (outcome, error)) in got.iter().zip(want) {
-        assert_eq!((m.outcome, m.error.as_str()), (outcome, error), "{}", m.case);
+        assert_eq!(
+            (m.outcome, m.error.as_str()),
+            (outcome, error),
+            "{}",
+            m.case
+        );
     }
     // The rows landed where they say, in the host's buffers.
     assert_eq!(&body[..b"a value".len()], b"a value");

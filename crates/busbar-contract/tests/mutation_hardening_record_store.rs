@@ -302,15 +302,18 @@ fn plane_record_envelope_carries_an_arbitrary_opaque_body_through_upsert_default
     let s = Bare::default();
     // The default keeps nothing, but it must ACCEPT any body shape without inspecting it.
     let body = b"not json at all, on purpose".to_vec();
-    s.upsert_plane_record(PlaneRecord {
-        kind: "task".into(),
-        id: "t-9".into(),
-        parent: None,
-        seq: 0,
-        ts: 1,
-        disposition: PlaneDisposition::Active,
-        body,
-    }.view())
+    s.upsert_plane_record(
+        PlaneRecord {
+            kind: "task".into(),
+            id: "t-9".into(),
+            parent: None,
+            seq: 0,
+            ts: 1,
+            disposition: PlaneDisposition::Active,
+            body,
+        }
+        .view(),
+    )
     .unwrap();
     assert_eq!(s.get_plane_record("task", "t-9").unwrap(), None);
     assert!(s

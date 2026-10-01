@@ -400,14 +400,18 @@ fn fold(s: &dyn RecordStore) -> Fold {
         (
             PLANE_RECORD_OPS_FROM,
             seen(
-                s.upsert_plane_record(record("fold_row", "r1", None, 0, 100, false, "r1-v1").view()),
+                s.upsert_plane_record(
+                    record("fold_row", "r1", None, 0, 100, false, "r1-v1").view(),
+                ),
                 false,
             ),
         ),
         (
             "upsert_plane_record replaces",
             seen(
-                s.upsert_plane_record(record("fold_row", "r1", None, 0, 100, false, "r1-v2").view()),
+                s.upsert_plane_record(
+                    record("fold_row", "r1", None, 0, 100, false, "r1-v2").view(),
+                ),
                 false,
             ),
         ),

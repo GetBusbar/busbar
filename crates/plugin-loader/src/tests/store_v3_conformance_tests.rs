@@ -455,8 +455,12 @@ fn script(s: &LoadedStore) -> Vec<String> {
         ));
         t.push(line(
             "typed append",
-            StoreCalls::append_plane_record(s, op(13), plane("ev", "e", Some("t2"), 1, b"1").view())
-                .await,
+            StoreCalls::append_plane_record(
+                s,
+                op(13),
+                plane("ev", "e", Some("t2"), 1, b"1").view(),
+            )
+            .await,
         ));
         t.push(line(
             "typed list",

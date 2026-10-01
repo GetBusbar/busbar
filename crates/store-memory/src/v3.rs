@@ -28,7 +28,9 @@ use busbar_contract::abi::sdk::store::{
 };
 use busbar_contract::abi::store::{OpId, OP_ID_RETENTION_SECS};
 use busbar_contract::kinds::{Head, RecordBytes};
-use busbar_contract::records::{AuditRecord, MeteringDelta, PlaneRecordRef, RecordStore, UsageDelta};
+use busbar_contract::records::{
+    AuditRecord, MeteringDelta, PlaneRecordRef, RecordStore, UsageDelta,
+};
 
 use crate::MemoryStore;
 

@@ -137,7 +137,8 @@ pub trait StoreCalls: Send + Sync {
     fn get_plane_record<'a>(&'a self, kind: &'a str, id: &'a str)
         -> StoreCall<'a, Option<Vec<u8>>>;
     /// `append_plane_record`, deduped on `op`.
-    fn append_plane_record<'a>(&'a self, op: OpId, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()>;
+    fn append_plane_record<'a>(&'a self, op: OpId, record: PlaneRecordRef<'a>)
+        -> StoreCall<'a, ()>;
     /// `list_plane_records`: the bodies.
     fn list_plane_records<'a>(
         &'a self,
