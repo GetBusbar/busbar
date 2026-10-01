@@ -22,19 +22,23 @@
 //! 3. The unpriced-destination gate, which refuses with the invalid-request shape rather than a
 //!    quota shape, because an unpriced arbitrary name is a bad request and not an exhausted budget.
 //!
-//! ## The network guard is here, not in a transport
+//! ## The network guard, and what it covers today
 //!
 //! Where a unit may go is this unit's question, and the address a destination resolves to is part
-//! of it. A transport that resolved a name itself was a transport that had to remember to guard it,
-//! and every new carrier was a new place to forget. [`net::check_destination`] runs once, before
-//! any dial, for every carrier there will ever be: the metadata denylist over the configured base
-//! AND over the paths joined to it, then exactly one resolution, then a judgement of every answered
-//! address, then a pin. What a transport receives is an address that has already been looked at.
+//! of it. [`net::check_destination`] states the whole discipline once: the metadata denylist over
+//! the configured base AND over the paths joined to it, then exactly one resolution, then a
+//! judgement of every answered address, then a pin.
 //!
-//! It is reached through [`KindFacts::net_guard_passes`], which the dialled kinds' own rules ask
-//! before anything is sealed — so the guard is part of the answer this unit produces rather than a
-//! library beside it that a caller may or may not have called. A guard nothing on the sealed path
-//! reaches is a guard that is not running, however carefully it is written.
+//! It is NOT one guard pinned for every carrier. No production path calls
+//! [`net::check_destination`], and no production [`KindFacts`] answers
+//! [`KindFacts::net_guard_passes`]. The provider dial (`attempt.rs`) hands its destination straight
+//! to the carrier, whose client re-parses the authority and resolves the name itself, with no pin;
+//! what guards a provider URL is the configuration-time check ([`net::ssrf_blocked_host`], the
+//! 1.5.5 validators), exactly as 1.5.5 guarded it. The fetches that DO resolve-then-pin — the ones
+//! the host makes on an operator's or a caller's behalf — call [`net::resolve_and_pin`] or
+//! [`net::pin_answer`] directly, and the `dest.judge` host service asks [`net::check_structure`].
+//! A provider dial is not resolved-then-pinned before it connects, because that would refuse a
+//! name resolving to a private address where 1.5.5 accepted it.
 //!
 //! ## The exclusion rule
 //!

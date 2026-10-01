@@ -14,8 +14,9 @@
 //! that resolved a name itself was a transport that had to remember to guard it, and every new
 //! carrier was a new place to forget. The trust unit already decides where a unit may go — the
 //! allow-list, the per-kind rule, the lane — so the address a destination resolves to belongs
-//! beside those, checked once for every carrier that will ever exist. A transport receives a
-//! destination that has already been judged and an address that has already been pinned.
+//! beside those. Which dials reach this guard is stated in the trust unit's module header: the
+//! fetches the host makes on an operator's or a caller's behalf do, and the provider dial does not
+//! (it is guarded at configuration time, as 1.5.5 guarded it).
 //!
 //! ## RESOLVE THEN PIN, and why a name check is not a guard
 //!
