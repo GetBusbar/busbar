@@ -112,7 +112,7 @@ impl ProtocolReader for ResponsesReader {
             return Err(ir_parse_error());
         }
         if obj
-            .get(STORE)
+            .get(FIELD_STORE)
             .is_some_and(|v| !v.is_null() && !v.is_boolean())
         {
             return Err(ir_parse_error());
@@ -1786,7 +1786,7 @@ impl ProtocolReader for ResponsesReader {
                  and the request-side `previous_response_id` is carried on the request hop"
             );
         }
-        if obj.get(STORE).is_some_and(|v| !v.is_null()) {
+        if obj.get(FIELD_STORE).is_some_and(|v| !v.is_null()) {
             tracing::warn!(
                 "dropping response `store` echo on Responses ir parse: IrResponse models no \
                  request-echo slot; the request-side `store` flag is carried on the request hop"

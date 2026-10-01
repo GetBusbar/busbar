@@ -320,7 +320,7 @@ const PART: &str = "part";
 /// Wire word `previous_response_id`.
 const PREVIOUS_RESPONSE_ID: &str = "previous_response_id";
 /// Wire word `store`.
-const STORE: &str = "store";
+const FIELD_STORE: &str = "store";
 /// Wire word `summary`.
 const SUMMARY: &str = "summary";
 /// Wire word `summary_index`.
