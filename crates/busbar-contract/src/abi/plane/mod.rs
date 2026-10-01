@@ -60,7 +60,8 @@
 //! 1. A TRANSLATE-ABORT IS NEVER BILLED: a unit the plane aborted before the far end answered is
 //!    [`CANCEL_ABORTED`], and bills nothing.
 //! 2. ONLY FAR-END-REPORTED USAGE IS BILLED: of the cumulative units the last piece reported, only
-//!    those with [`UNITS_REPORTED`] count; [`UNITS_ESTIMATED`] never bills.
+//!    those whose source bills ([`units_bill`]: [`UNITS_REPORTED`], and [`UNITS_FLOOR`] for a
+//!    delivered reply whose usage could not be read) count; [`UNITS_ESTIMATED`] never bills.
 //! 3. A NON-STREAMED PARTIAL BILLS ZERO: [`CANCEL_OK_PARTIAL`] bills the reported units only when
 //!    the reply was streamed to the caller; a cut whole-body reply bills `0`.
 //! 4. THE BUDGET REFUND IS A SEPARATE ACT: whatever the disposition, the kernel releases the unit's
@@ -341,8 +342,20 @@ pub const SHAPE_PIECEWISE: u32 = 1;
 
 /// [`UnitCount::source`]: the plane's own estimate; never billed.
 pub const UNITS_ESTIMATED: u32 = 0;
-/// [`UnitCount::source`]: the far end reported it; the only billable source.
+/// [`UnitCount::source`]: the far end reported it; it bills.
 pub const UNITS_REPORTED: u32 = 1;
+/// [`UnitCount::source`]: the plane's floor for a delivered reply whose far-end usage could not be
+/// read (the usage floor, Q24/Q28: 1.5.5's truncated-tail estimate bills, never 0). It bills like
+/// [`UNITS_REPORTED`]; the plane decides when it applies, the kernel adds no floor of its own.
+pub const UNITS_FLOOR: u32 = 2;
+
+/// THE ONE BILLING RULE ON A COUNT'S SOURCE: [`UNITS_REPORTED`] and [`UNITS_FLOOR`] bill;
+/// [`UNITS_ESTIMATED`] (and any other value) never does. Every kernel site that ledgers, meters or
+/// reads a fee unit from a plane's counts asks this, never a source compare of its own.
+#[must_use]
+pub const fn units_bill(source: u32) -> bool {
+    matches!(source, UNITS_REPORTED | UNITS_FLOOR)
+}
 
 /// [`ArriveOut::principal_need`]: no principal.
 pub const PRINCIPAL_NONE: u32 = 0;
@@ -1143,7 +1156,7 @@ pub struct OutField {
 pub struct UnitCount {
     /// Index into [`PlaneTail::billable_classes`].
     pub class: u32,
-    /// [`UNITS_ESTIMATED`] | [`UNITS_REPORTED`].
+    /// [`UNITS_ESTIMATED`] | [`UNITS_REPORTED`] | [`UNITS_FLOOR`].
     pub source: u32,
     /// The cumulative count.
     pub amount: u64,

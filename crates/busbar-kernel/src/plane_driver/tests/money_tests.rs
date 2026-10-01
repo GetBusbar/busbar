@@ -11,7 +11,9 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use busbar_contract::abi::plane::{UnitCount, CANCEL_OK_PARTIAL, UNITS_ESTIMATED, UNITS_REPORTED};
+use busbar_contract::abi::plane::{
+    UnitCount, CANCEL_OK_PARTIAL, UNITS_ESTIMATED, UNITS_FLOOR, UNITS_REPORTED,
+};
 use busbar_contract::caps::{OriginKind, ReasonCode};
 use busbar_contract::records::VirtualKey;
 use busbar_contract::UnitKey;
@@ -608,4 +610,54 @@ fn a_cancelled_undelivered_unit_is_refunded_once_and_an_abandoned_one_never() {
         5,
         "a caller that went away keeps the fee charged"
     );
+}
+
+fn floor(class: u32, amount: u64) -> UnitCount {
+    UnitCount {
+        class,
+        source: UNITS_FLOOR,
+        amount,
+    }
+}
+
+/// THE USAGE FLOOR (Q24/Q28): a delivered reply whose far-end usage could not be read bills the
+/// plane's floor, never 0, exactly as a reported count does. RED: a filter that bills only
+/// `UNITS_REPORTED` drops the floor and the unit ledgers 0.
+#[test]
+fn a_floor_count_bills_like_a_reported_one() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    let _ = r.money.checkpoint(&ctx(1), &[floor(INPUT, 51)]);
+    r.money.settle_end(UnitKey::new(1), 200);
+    assert_eq!(usage(&r).0, 51, "the floor bills, once");
+}
+
+/// A cancelled stream bills its floor counts as it bills its reported ones (the four cancel rules
+/// still decide WHETHER anything bills); an estimate beside them never bills.
+#[test]
+fn a_cancel_bill_carries_the_floor_counts_and_never_an_estimate() {
+    let facts = crate::plane_driver::cancel::Facts {
+        far_end_answered: true,
+        streamed: true,
+        units: vec![
+            floor(INPUT, 40),
+            UnitCount {
+                class: FEE_UNIT,
+                source: UNITS_ESTIMATED,
+                amount: 9,
+            },
+        ],
+    };
+    let bill = CancelBill::new(ReasonCode::ClientGone, Some(CANCEL_OK_PARTIAL), &facts);
+    assert_eq!(bill.billed, vec![(INPUT, 40)]);
+}
+
+/// A plane whose fee unit arrives as a floor count of 1 keeps its fee, as a reported 1 does: the
+/// one billing rule ([`busbar_contract::abi::plane::units_bill`]) decides the fee unit too.
+#[test]
+fn a_fee_unit_floor_count_keeps_the_fee() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+    r.gov.try_admit(&r.cost, &r.key, "", NOW).expect("admitted");
+    let _ = r.money.checkpoint(&ctx(1), &[floor(FEE_UNIT, 1)]);
+    r.money.settle_end(UnitKey::new(1), 503);
+    assert_eq!(usage(&r).1, 5, "a floor fee unit keeps the fee");
 }

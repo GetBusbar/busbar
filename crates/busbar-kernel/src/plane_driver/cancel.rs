@@ -21,8 +21,8 @@
 use busbar_contract::abi::mechanism::call::Outcome as AbiOutcome;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    cancel_bills_reported_units, UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL,
-    UNITS_REPORTED,
+    cancel_bills_reported_units, units_bill, UnitCount, CANCEL_ABORTED, CANCEL_FAILED,
+    CANCEL_OK_PARTIAL,
 };
 use busbar_contract::caps::ReasonCode;
 use busbar_contract::plane_calls::PieceInFlight;
@@ -45,7 +45,7 @@ pub enum Checkpoint {
 /// units, cancel bills and abandoned ends here, and nothing else.
 pub trait MoneySeam: Send + Sync {
     /// Every READY answer's cumulative units, as the plane reported them (estimated and reported
-    /// alike; only [`UNITS_REPORTED`] ever bills). Feeds the budget check and the checkpoint
+    /// alike; only a source that [`units_bill`]s ever bills). Feeds the budget check and the checkpoint
     /// cadence.
     fn checkpoint(&self, ctx: &UnitCtx, units: &[UnitCount]) -> Checkpoint;
 
@@ -114,7 +114,7 @@ impl CancelBill {
         let billed = facts
             .units
             .iter()
-            .filter(|u| bills && u.source == UNITS_REPORTED)
+            .filter(|u| bills && units_bill(u.source))
             .map(|u| (u.class, u.amount))
             .collect();
         CancelBill {
