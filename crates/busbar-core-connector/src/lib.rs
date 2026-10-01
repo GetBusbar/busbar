@@ -433,6 +433,7 @@ impl Connector {
                         conn: Mutex::new(Some(a.conn)),
                         judging: Mutex::new(None),
                         rest: Mutex::new((None, Vec::new(), false)),
+                        reason: Mutex::new(None),
                     },
                 )?;
                 Ok((id, a.peer))
