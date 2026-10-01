@@ -41,6 +41,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::proxy::egress_unit::{
+    attempt::attempt_cap_ms,
     exhaustion::retry_after_secs,
     ports::{
         disposition, net, Breaker, Capacity, Clock, DestinationId, Dispatched, Disposition,
@@ -61,7 +62,7 @@ use busbar_contract::conn::{
     ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
 use busbar_contract::redacted::Redacted;
-use busbar_contract::transport::registry::status_ns;
+use busbar_contract::transport::registry::{facts, status_ns};
 use busbar_contract::transport::wire::{WireStatus, WireStatusClass};
 
 use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
@@ -84,16 +85,6 @@ pub struct MemberRoute {
     pub base_url: String,
     /// The auth binding the root opened at generation seal; `None` = no auth fields.
     pub auth: Option<AuthBinding>,
-}
-
-impl std::fmt::Debug for MemberRoute {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MemberRoute")
-            .field("need", &self.need)
-            .field("base_url", &self.base_url)
-            .field("auth", &self.auth.as_ref().map(|a| a.handle))
-            .finish()
-    }
 }
 
 /// A member's auth binding: the auth instance, the handle its `open_outbound` answered, and the
@@ -142,15 +133,6 @@ pub struct Egress {
     /// is dropped and the answer ends there, as 1.5.5's capped read did: an error envelope is far
     /// smaller, and one that overruns it can only be malformed or hostile.
     pub error_body_max: usize,
-}
-
-impl std::fmt::Debug for Egress {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Egress")
-            .field("caller", &self.caller)
-            .field("pools", &self.pools.keys().collect::<Vec<_>>())
-            .finish_non_exhaustive()
-    }
 }
 
 /// What one unit's walk is told at its start.
@@ -266,14 +248,6 @@ pub struct EgressFarEnd<'e> {
     walk: Mutex<Walk>,
 }
 
-impl std::fmt::Debug for EgressFarEnd<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EgressFarEnd")
-            .field("route", &self.route)
-            .finish_non_exhaustive()
-    }
-}
-
 fn exhausted(shed: &Shed) -> Pick {
     Pick::Exhausted {
         status: u32::from(shed.status),
@@ -351,12 +325,6 @@ fn fail_over() -> FarPiece {
         last: true,
         ..FarPiece::default()
     }
-}
-
-/// The per-attempt cap on time to the first answer, floored by what the walk has left: never more
-/// than the unit still has, never zero (`attempt::attempt_cap_ms`).
-fn attempt_cap_ms(ms: u64, remaining_ms: u64) -> u64 {
-    ms.min(remaining_ms.max(1))
 }
 
 impl EgressFarEnd<'_> {
@@ -804,8 +772,8 @@ impl EgressFarEnd<'_> {
         // The head the framer encodes: method, path, the auth fields, then the plane's fields. It
         // holds the auth values, so it wipes itself when the open has taken it.
         let mut head = Head(Vec::with_capacity(request.fields.len() + auth.len() + 2));
-        head.0.push(("method".into(), request.verb.clone()));
-        head.0.push(("path".into(), path.as_bytes().to_vec()));
+        head.0.push((facts::METHOD.into(), request.verb.clone()));
+        head.0.push((facts::PATH.into(), path.as_bytes().to_vec()));
         // The auth fields FIRST, then the plane's: 1.5.5's egress header order.
         head.0.extend(auth.iter().map(|f| {
             (
@@ -1011,10 +979,8 @@ impl EgressFarEnd<'_> {
                 head: Vec::new(),
             };
         }
-        let classified = e.breaker.classify(destination, status);
-        if e.breaker
-            .observe(&live.pool, destination, classified.outcome, now, token)
-        {
+        let (classified, tripped) = e.breaker.judge(&live.pool, destination, status, now, token);
+        if tripped {
             e.telemetry.breaker_trip(&pool, destination);
         }
         live.probe = None;
