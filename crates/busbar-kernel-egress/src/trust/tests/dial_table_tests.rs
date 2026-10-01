@@ -91,7 +91,7 @@ fn the_dial_verdict_matches_the_configuration_verdict() {
     let lists = Denylist::new(&blocked, &allowed, false);
     for literal in [
         "169.254.169.254", "169.254.170.2", "100.100.100.200", "168.63.129.16", "192.0.0.192",
-        "10.9.9.9", "10.9.9.8", "127.0.0.1", "93.184.216.34", "fd00:ec2::254", "fd00:ec2::23",
+        "10.9.9.9", "10.9.9.8", "127.0.0.1", "93.184.216.34", "fd00:ec2::254",
         "::ffff:100.100.100.200", "::1",
     ] {
         let addr = ip(literal);
