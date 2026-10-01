@@ -496,6 +496,7 @@ dependencies = [
  "futures",
  "hex",
  "http",
+ "hyper",
  "indexmap",
  "jsonschema",
  "memchr",

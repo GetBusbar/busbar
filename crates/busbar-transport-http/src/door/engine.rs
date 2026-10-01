@@ -3,51 +3,37 @@
 
 //! THE ENGINE: hyper's `client::conn` (HTTP/1.1 and HTTP/2) run as a sans-IO framer.
 //!
-//! One [`Framing`] is one connection. Its protocol machine is hyper's own, reading from and writing
-//! to an in-memory [`Pipe`] rather than a socket: `ingest` appends what the far side sent to the
-//! pipe's read half, and whatever hyper writes collects in its write half until the op hands it to
-//! the host as wire bytes. Nothing here blocks, spawns a thread, opens a socket or reads a clock:
+//! One [`Framing`] is one connection. Its protocol machine is hyper's own, driven over the host's
+//! bytes by the contract's sans-IO drive (`busbar_contract::hyper_io!`, expanded in `door`): an
+//! in-memory pipe instead of a socket, the framing's own task list as hyper's executor, and the
+//! host's clock as its timer. `ingest` appends what the far side sent to the pipe's read half, and
+//! whatever hyper writes collects in its write half until the op hands it to the host as wire
+//! bytes. Nothing here blocks, spawns a thread, opens a socket or reads a clock. A hyper `Pending`
+//! means "more bytes from the far side, or a deadline": the op answers what it has and returns.
+//! The earliest sleep still waiting becomes the op's `next_deadline_ns`.
 //!
-//! * THE EXECUTOR hyper's HTTP/2 client needs for its connection task is this framing's own task
-//!   list ([`Exec`]), polled inside the op that is running. No runtime, no global state.
-//! * THE TIMER hyper's keep-alive, adaptive window and the head wait run on is the host's clock
-//!   ([`SinkTimer`]): every op sets it from `FramerSink::now_monotonic_ns` before it drives, and the
-//!   earliest sleep still waiting becomes the op's `next_deadline_ns`.
-//! * A hyper `Pending` means "more bytes from the far side, or a deadline": the op answers what it
-//!   has and returns. The waker every future here sees only records that it was woken, so the op
-//!   drives again while something inside hyper still has work, and stops when nothing does.
-//!
-//! THE ONE REAL-CLOCK READ. `std::time::Instant` has no constructor but `now()`, and hyper's timer
-//! speaks `Instant`, so each framing reads the real clock ONCE, at `begin`, as the epoch its host
-//! times are laid on: instant(t) = epoch + (t - t_begin). Nothing ever advances from it; every later
-//! instant is host time. h2 reads the real clock itself for its reset-stream expiry (a bounded list
-//! of recently reset stream ids); that is inside the library and does not move this framing's clock.
+//! THE ONE REAL-CLOCK READ is the drive's (`HostIo::new`, at `begin`). h2 reads the real clock
+//! itself for its reset-stream expiry (a bounded list of recently reset stream ids). That happens
+//! inside the library and does not move this framing's clock.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::future::Future;
-use std::io;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Wake, Waker};
-use std::time::{Duration, Instant};
+use std::task::{Context, Poll};
+use std::time::Duration;
 
+pub(crate) use super::hyper_io::field_block;
+use super::hyper_io::{HeadWords, HostIo, Owed, Piece};
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::body::{Body, Incoming};
 use hyper::client::conn::{http1, http2};
-use hyper::rt::{Executor, ReadBufCursor, Sleep, Timer};
+use hyper::rt::{Executor, Sleep};
 
 use crate::raw::RawStartLine;
 use crate::{complete_message, request_target, retry_after_secs, EgressHead};
-
-/// The most bytes hyper may leave in the pipe's write half before its writes pend: the host has
-/// not drained them yet (the sink was full), and a connection does not get to buffer without end.
-const WRITE_HIGH_WATER: usize = 256 * 1024;
-
-/// The most drive rounds one op makes. A round repeats only when something inside hyper woke
-/// during it, so a settled connection stops after one; the bound is the backstop.
-const MAX_ROUNDS: usize = 64;
 
 /// Which HTTP a framing speaks, as connection security (or the operator's cleartext key) agreed it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,268 +61,6 @@ pub struct Posture {
     /// body path carried a body for as long as the far end sent one, and its buffered reads are
     /// the plane's.
     pub max_body_bytes: usize,
-}
-
-// ── the pipe ─────────────────────────────────────────────────────────────────────────────────────
-
-/// What the far side sent and hyper has not read, whether the far side has ended, and what hyper
-/// wrote and the host has not been handed.
-#[derive(Default)]
-pub struct Pipe {
-    rx: VecDeque<u8>,
-    eof: bool,
-    tx: Vec<u8>,
-}
-
-/// hyper's I/O: the framing's pipe.
-struct Shim(Arc<Mutex<Pipe>>);
-
-impl hyper::rt::Read for Shim {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-        mut buf: ReadBufCursor<'_>,
-    ) -> Poll<io::Result<()>> {
-        let mut p = self.0.lock().expect("pipe");
-        if p.rx.is_empty() {
-            // The far side's end reads as a zero-length read; otherwise wait for `ingest`.
-            return if p.eof {
-                Poll::Ready(Ok(()))
-            } else {
-                Poll::Pending
-            };
-        }
-        let (a, b) = p.rx.as_slices();
-        let src = if a.is_empty() { b } else { a };
-        let n = src.len().min(buf.remaining());
-        buf.put_slice(&src[..n]);
-        p.rx.drain(..n);
-        Poll::Ready(Ok(()))
-    }
-}
-
-impl hyper::rt::Write for Shim {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-        b: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        let mut p = self.0.lock().expect("pipe");
-        if p.tx.len() >= WRITE_HIGH_WATER {
-            return Poll::Pending;
-        }
-        p.tx.extend_from_slice(b);
-        Poll::Ready(Ok(b.len()))
-    }
-    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
-    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
-}
-
-// ── the executor ─────────────────────────────────────────────────────────────────────────────────
-
-type Task = Pin<Box<dyn Future<Output = ()> + Send>>;
-
-/// hyper's executor: this framing's task list, polled inside the op that is running.
-#[derive(Clone, Default)]
-struct Exec(Arc<Mutex<Vec<Task>>>);
-
-impl<F: Future<Output = ()> + Send + 'static> Executor<F> for Exec {
-    fn execute(&self, fut: F) {
-        self.0.lock().expect("exec").push(Box::pin(fut));
-    }
-}
-
-impl Exec {
-    fn run(&self, cx: &mut Context<'_>) {
-        let mut tasks = std::mem::take(&mut *self.0.lock().expect("exec"));
-        tasks.retain_mut(|t| t.as_mut().poll(cx).is_pending());
-        let mut q = self.0.lock().expect("exec");
-        // Tasks spawned during the pass run on the next round.
-        tasks.append(&mut q);
-        *q = tasks;
-    }
-}
-
-// ── the timer ────────────────────────────────────────────────────────────────────────────────────
-
-/// The host's clock as hyper sees it, and the sleeps waiting on it.
-struct Clock {
-    epoch: Instant,
-    epoch_ns: u64,
-    now_ns: u64,
-    next_id: u64,
-    sleeps: HashMap<u64, (Instant, Option<Waker>)>,
-}
-
-impl Clock {
-    fn at(&self, ns: u64) -> Instant {
-        self.epoch + Duration::from_nanos(ns.saturating_sub(self.epoch_ns))
-    }
-    fn ns_of(&self, i: Instant) -> u64 {
-        let d = i.saturating_duration_since(self.epoch);
-        self.epoch_ns
-            .saturating_add(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
-    }
-}
-
-/// hyper's timer, on the host's clock.
-#[derive(Clone)]
-struct SinkTimer(Arc<Mutex<Clock>>);
-
-struct SinkSleep {
-    clock: Arc<Mutex<Clock>>,
-    id: u64,
-}
-
-impl Future for SinkSleep {
-    type Output = ();
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        let mut c = self.clock.lock().expect("clock");
-        let now = c.at(c.now_ns);
-        let Some(entry) = c.sleeps.get_mut(&self.id) else {
-            return Poll::Ready(());
-        };
-        if entry.0 <= now {
-            Poll::Ready(())
-        } else {
-            entry.1 = Some(cx.waker().clone());
-            Poll::Pending
-        }
-    }
-}
-
-impl Drop for SinkSleep {
-    fn drop(&mut self) {
-        if let Ok(mut c) = self.clock.lock() {
-            c.sleeps.remove(&self.id);
-        }
-    }
-}
-
-impl Sleep for SinkSleep {}
-
-impl Timer for SinkTimer {
-    fn sleep(&self, d: Duration) -> Pin<Box<dyn Sleep>> {
-        self.sleep_until(self.now() + d)
-    }
-    fn sleep_until(&self, deadline: Instant) -> Pin<Box<dyn Sleep>> {
-        let mut c = self.0.lock().expect("clock");
-        let id = c.next_id;
-        c.next_id += 1;
-        c.sleeps.insert(id, (deadline, None));
-        Box::pin(SinkSleep {
-            clock: self.0.clone(),
-            id,
-        })
-    }
-    fn now(&self) -> Instant {
-        let c = self.0.lock().expect("clock");
-        c.at(c.now_ns)
-    }
-    fn reset(&self, sleep: &mut Pin<Box<dyn Sleep>>, new_deadline: Instant) {
-        if let Some(s) = sleep.as_mut().downcast_mut_pin::<SinkSleep>() {
-            if let Some(e) = self.0.lock().expect("clock").sleeps.get_mut(&s.id) {
-                e.0 = new_deadline;
-                return;
-            }
-        }
-        *sleep = self.sleep_until(new_deadline);
-    }
-}
-
-impl SinkTimer {
-    /// The instant a host time is.
-    fn at_ns(&self, ns: u64) -> Instant {
-        self.0.lock().expect("clock").at(ns)
-    }
-    /// Set the host's time and wake every sleep it passed.
-    fn set(&self, now_ns: u64) {
-        let due: Vec<Waker> = {
-            let mut c = self.0.lock().expect("clock");
-            c.now_ns = c.now_ns.max(now_ns);
-            let now = c.at(c.now_ns);
-            c.sleeps
-                .values_mut()
-                .filter(|(d, _)| *d <= now)
-                .filter_map(|(_, w)| w.take())
-                .collect()
-        };
-        due.into_iter().for_each(Waker::wake);
-    }
-    /// The earliest sleep still waiting, as host time.
-    fn next_deadline(&self) -> Option<u64> {
-        let c = self.0.lock().expect("clock");
-        let now = c.at(c.now_ns);
-        c.sleeps
-            .values()
-            .map(|(d, _)| *d)
-            .filter(|d| *d > now)
-            .min()
-            .map(|d| c.ns_of(d))
-    }
-}
-
-// ── the waker ────────────────────────────────────────────────────────────────────────────────────
-
-/// Every waker hyper sees: it records that something woke, and the op drives again.
-#[derive(Default)]
-struct Woken(AtomicBool);
-
-impl Wake for Woken {
-    fn wake(self: Arc<Self>) {
-        self.0.store(true, Ordering::Release);
-    }
-    fn wake_by_ref(self: &Arc<Self>) {
-        self.0.store(true, Ordering::Release);
-    }
-}
-
-// ── one framing ──────────────────────────────────────────────────────────────────────────────────
-
-/// A frame piece waiting for the host's sink.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Piece {
-    /// The stream.
-    pub stream: u64,
-    /// The frame bytes (empty: the stream's response is complete).
-    pub bytes: Bytes,
-    /// The response status, on the head frame.
-    pub status: Option<u16>,
-    /// The wait the far side asked for, on the head frame.
-    pub retry_after_secs: Option<u64>,
-    /// The stream failed; `bytes` are the reason, and this is its last piece.
-    pub failed: bool,
-    /// `bytes` are a field block: the head.
-    pub fields: bool,
-    /// A full sink split this field block mid-line: `bytes` open by continuing a line.
-    pub continued: bool,
-    /// On an HTTP/1 head: the far end's reason phrase, exactly as sent, for the stream's head slots.
-    pub reason: Option<Bytes>,
-}
-
-impl Piece {
-    fn failure(stream: u64, why: &Failure) -> Self {
-        Self {
-            failed: true,
-            ..Self::data(stream, Bytes::from(why.0.clone()))
-        }
-    }
-    fn data(stream: u64, bytes: Bytes) -> Self {
-        Self {
-            stream,
-            bytes,
-            status: None,
-            retry_after_secs: None,
-            failed: false,
-            fields: false,
-            continued: false,
-            reason: None,
-        }
-    }
 }
 
 enum Sender {
@@ -370,11 +94,7 @@ pub struct Failure(pub String);
 
 /// One connection's HTTP machine.
 pub struct Framing {
-    pipe: Arc<Mutex<Pipe>>,
-    exec: Exec,
-    timer: SinkTimer,
-    woken: Arc<Woken>,
-    waker: Waker,
+    io: HostIo,
     handshake: Option<BoxFut<hyper::Result<Sender>>>,
     sender: Option<Sender>,
     conn_err: Arc<Mutex<Option<String>>>,
@@ -386,8 +106,6 @@ pub struct Framing {
     out: VecDeque<Piece>,
     failed: Option<Failure>,
     now_unix_ns: u64,
-    /// Bytes this framing has handed to the host, for the tests' ping count.
-    pub wire_out: Arc<AtomicU64>,
 }
 
 impl Framing {
@@ -400,20 +118,13 @@ impl Framing {
         let dial: http::Uri = dial
             .parse()
             .map_err(|_| Failure(format!("not a target: {dial}")))?;
-        let pipe = Arc::new(Mutex::new(Pipe::default()));
-        let exec = Exec::default();
         // The one real-clock read: this framing's epoch (module docs).
-        let timer = SinkTimer(Arc::new(Mutex::new(Clock {
-            epoch: Instant::now(),
-            epoch_ns: now_ns,
-            now_ns,
-            next_id: 0,
-            sleeps: HashMap::new(),
-        })));
+        let io = HostIo::new(now_ns);
+        let (exec, timer) = (io.exec(), io.timer());
         let conn_err = Arc::new(Mutex::new(None));
         let conn_done = Arc::new(AtomicBool::new(false));
         let (ex, err, done) = (exec.clone(), conn_err.clone(), conn_done.clone());
-        let shim = Shim(pipe.clone());
+        let shim = io.stream();
         let handshake: BoxFut<hyper::Result<Sender>> = match proto {
             Proto::H2 => {
                 let mut b = http2::Builder::new(exec.clone());
@@ -445,13 +156,8 @@ impl Framing {
                 Ok(Sender::H1(s))
             }),
         };
-        let woken = Arc::new(Woken::default());
         Ok(Self {
-            pipe,
-            exec,
-            timer,
-            waker: Waker::from(woken.clone()),
-            woken,
+            io,
             handshake: Some(handshake),
             sender: None,
             conn_err,
@@ -463,15 +169,12 @@ impl Framing {
             out: VecDeque::new(),
             failed: None,
             now_unix_ns: 0,
-            wire_out: Arc::new(AtomicU64::new(0)),
         })
     }
 
     /// The far side sent `bytes` (`end` = and then ended).
     pub fn ingest(&mut self, bytes: &[u8], end: bool) {
-        let mut p = self.pipe.lock().expect("pipe");
-        p.rx.extend(bytes);
-        p.eof |= end;
+        self.io.ingest(bytes, end);
     }
 
     /// Bytes for `stream`: part of one HTTP/1.1 request message, rendered by `encode`.
@@ -511,7 +214,7 @@ impl Framing {
                     slot.1 = Stage::Done;
                 }
                 self.exchanges.retain(|(_, s)| !matches!(s, Stage::Done));
-                self.out.push_back(Piece::failure(stream, &f));
+                self.out.push_back(Piece::failure(stream, &f.0));
                 Ok(())
             }
             Err(f) => Err(f),
@@ -562,7 +265,7 @@ impl Framing {
             .body(Full::new(Bytes::from(raw.body)))
             .map_err(|e| Failure(format!("request: {e}")))?;
         client_posture(&mut req, self.proto);
-        let wait = self.timer.sleep_until(self.timer.at_ns(*deadline));
+        let wait = self.io.timer().sleep_until_ns(*deadline);
         self.exchanges[idx].1 = Stage::Queued(req, wait);
         Ok(())
     }
@@ -570,23 +273,15 @@ impl Framing {
     /// Drive the connection at host time (`now_ns` monotonic, `now_unix_ns` wall) until nothing
     /// inside it has more to do.
     pub fn drive(&mut self, now_ns: u64, now_unix_ns: u64) {
-        self.timer.set(now_ns);
+        self.io.set_time(now_ns);
         self.now_unix_ns = now_unix_ns;
         if self.failed.is_some() {
             return;
         }
-        let waker = self.waker.clone();
-        let mut cx = Context::from_waker(&waker);
-        for _ in 0..MAX_ROUNDS {
-            self.woken.0.store(false, Ordering::Release);
-            self.exec.run(&mut cx);
-            if let Err(f) = self.step(&mut cx) {
-                self.failed = Some(f);
-                return;
-            }
-            if !self.woken.0.load(Ordering::Acquire) {
-                break;
-            }
+        let io = self.io.clone();
+        if let Err(f) = io.rounds(|cx| self.step(cx)) {
+            self.failed = Some(f);
+            return;
         }
         let err = self.conn_err.lock().expect("err").clone();
         if let Some(e) = err {
@@ -616,7 +311,7 @@ impl Framing {
                     return Err(f.0);
                 }
                 *stage = Stage::Done;
-                self.out.push_back(Piece::failure(*id, &f.0));
+                self.out.push_back(Piece::failure(*id, &f.0 .0));
             }
         }
         self.exchanges.retain(|(_, s)| !matches!(s, Stage::Done));
@@ -628,37 +323,23 @@ impl Framing {
     pub fn failure(&self) -> Option<&Failure> {
         self.failed.as_ref()
     }
+}
 
-    /// Whether the connection has ended.
-    #[must_use]
-    pub fn ended(&self) -> bool {
-        self.conn_done.load(Ordering::Acquire)
+impl Owed for Framing {
+    fn take_wire(&mut self, cap: usize) -> Vec<u8> {
+        self.io.take_wire(cap)
     }
-
-    /// The earliest host time this framing must be called at.
-    #[must_use]
-    pub fn next_deadline(&self) -> Option<u64> {
-        self.timer.next_deadline()
+    fn wire_pending(&self) -> bool {
+        self.io.wire_pending()
     }
-
-    /// Take up to `cap` wire bytes owed to the far side.
-    pub fn take_wire(&mut self, cap: usize) -> Vec<u8> {
-        let mut p = self.pipe.lock().expect("pipe");
-        let n = p.tx.len().min(cap);
-        let out: Vec<u8> = p.tx.drain(..n).collect();
-        self.wire_out.fetch_add(out.len() as u64, Ordering::Relaxed);
-        out
-    }
-
-    /// Whether wire bytes are still owed after a take.
-    #[must_use]
-    pub fn wire_pending(&self) -> bool {
-        !self.pipe.lock().expect("pipe").tx.is_empty()
-    }
-
-    /// The frame pieces waiting for the host.
-    pub fn pieces(&mut self) -> &mut VecDeque<Piece> {
+    fn pieces(&mut self) -> &mut VecDeque<Piece> {
         &mut self.out
+    }
+    fn next_deadline(&self) -> Option<u64> {
+        self.io.next_deadline()
+    }
+    fn ended(&self) -> bool {
+        self.conn_done.load(Ordering::Acquire)
     }
 }
 
@@ -794,14 +475,10 @@ fn advance(
 /// even when no field is left in it, so it always comes before the body.
 fn head_piece(stream: u64, r: &http::Response<Incoming>, now_unix_secs: u64) -> Piece {
     Piece {
-        stream,
-        bytes: Bytes::from(field_block(r.headers())),
         status: Some(r.status().as_u16()),
         retry_after_secs: retry_after_secs(r.headers(), now_unix_secs),
-        failed: false,
-        fields: true,
-        continued: false,
-        reason: reason_phrase(r),
+        head: reason_phrase(r).map(HeadWords::reason),
+        ..Piece::fields(stream, Bytes::from(field_block(r.headers(), &[])))
     }
 }
 
@@ -819,29 +496,6 @@ fn reason_phrase(r: &http::Response<Incoming>) -> Option<Bytes> {
             |p| Bytes::copy_from_slice(p.as_bytes()),
         );
     (!phrase.is_empty()).then_some(phrase)
-}
-
-/// `headers` as the field block: `name: value\r\n` per value, in the map's order (1.5.5's: names
-/// as they first arrived, a repeated name's values each on its own line after it), hop-by-hop
-/// fields and those `connection` names dropped, and `content-length` too: the pieces carry the body
-/// hyper already unframed.
-pub(crate) fn field_block(headers: &http::HeaderMap) -> Vec<u8> {
-    use busbar_contract::abi::transport::fields::{hop_by_hop, LINE_END, SEPARATOR};
-    let nominated = headers.get_all(http::header::CONNECTION);
-    let mut block = Vec::new();
-    for (name, value) in headers {
-        let name = name.as_str();
-        if name == "content-length"
-            || hop_by_hop(name, nominated.iter().map(http::HeaderValue::as_bytes))
-        {
-            continue;
-        }
-        block.extend_from_slice(name.as_bytes());
-        block.extend_from_slice(SEPARATOR);
-        block.extend_from_slice(value.as_bytes());
-        block.extend_from_slice(LINE_END);
-    }
-    block
 }
 
 #[cfg(test)]

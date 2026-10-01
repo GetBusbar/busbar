@@ -83,10 +83,10 @@ fn the_field_block_keeps_order_and_duplicates_and_drops_hop_by_hop() {
         );
     }
     assert_eq!(
-        String::from_utf8(engine::field_block(&h)).unwrap(),
+        String::from_utf8(engine::field_block(&h, &[])).unwrap(),
         "x-b: 1\r\nx-b: 2\r\nx-a: v: w\r\nx-session-id: s1\r\n"
     );
-    assert!(engine::field_block(&http::HeaderMap::new()).is_empty());
+    assert!(engine::field_block(&http::HeaderMap::new(), &[]).is_empty());
 }
 
 /// A field block is cut only at a line's start or inside a value, never inside a name: the host

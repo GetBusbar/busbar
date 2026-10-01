@@ -40,6 +40,9 @@ pub mod authz;
 // nowhere else (the unsafe policy above).
 #[allow(unsafe_code, missing_docs, missing_debug_implementations)]
 pub mod abi;
+// THE SANS-IO `hyper` DRIVE framers expand (`hyper_io!(<buffer>)`): a macro only, so the contract
+// depends on neither `hyper` nor a buffer crate (ARCHITECT ruling 2026-09-30 (c)).
+mod sdk_hyper;
 // THE SUBSTRATE-VALUES SHAPES (DECISIONS #83: contract = shapes; #83a, SD-1): `billing`, `codec`,
 // `ir`, `protocol` (and `diagnostic`, below) are module-path-only moves out of `busbar-substrate-values`, which re-exports
 // every item under its historical path until the split retires it (and the two upstream signal shapes
