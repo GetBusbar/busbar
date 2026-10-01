@@ -373,6 +373,34 @@ abi = ["crates/busbar-contract"]
 # [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"] 55182 -> 55337 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
 
+# ── THE TEST ANCHORS OF RESOLVE-PIN'S FAILOVER-AFTER-REFUSAL TEST (ARCHITECT 2026-10-01; busbar-llm rows
+#    expire at LLM-ENGINE-DELETE)
+
+[gate.ceiling_raises."rules.ports-only-tests.max_per_crate.busbar-llm"]
+file    = "qa/construction.toml"
+from    = 990
+to      = 995
+because = "Test anchors for the failover-after-refusal test the ARCHITECT asked for (RESOLVE-PIN; ARCHITECT 2026-10-01, approved as test-only re-pins at the measured figures). Expires at LLM-ENGINE-DELETE: busbar-llm goes, and these lines with it. The five lines: crates/busbar-llm/src/engine/tests/dial_refusal_failover_tests.rs:19 (busbar_kernel::egress::engine::{with_scoped_dial, DialTable}), :20 (egress::fixtures::RebindingResolver), :21 (net_guard::DialDenylist), :22 (store::now), :64 (test_support::BuiltAppSeam). Measured by cargo xtask gate construction: 990 on url-seam-final 9f2563a05, 995 at the tip."
+
+[gate.ceiling_raises."cell[crate=busbar-llm,kind=transport].count"]
+file    = "qa/kind-isolation.toml"
+from    = 546
+to      = 548
+because = "Test anchors for the failover-after-refusal test the ARCHITECT asked for (RESOLVE-PIN; ARCHITECT 2026-10-01, approved as test-only re-pins at the measured figures). Expires at LLM-ENGINE-DELETE: busbar-llm goes, and these lines with it. The two hits: crates/busbar-llm/src/engine/tests/dial_refusal_failover_tests.rs:117 and :123 (MockResponse::Sse, the mock upstreams the refused primary and the next lane serve). Measured by cargo xtask gate kind-isolation --report: 546 on url-seam-final 9f2563a05, 548 at the tip."
+
+# 990 -> 995, test anchors (RESOLVE-PIN): crates/busbar-llm/src/engine/tests/dial_refusal_failover_tests.rs
+# :19 :20 :21 :22 :64 (with_scoped_dial/DialTable, RebindingResolver, DialDenylist, store::now,
+# BuiltAppSeam). Expires at LLM-ENGINE-DELETE (busbar-llm goes).
+
+# ── THE KERNEL CEILING, RE-ARMED BY TRAIN BIG (E12 lowers, URL-SEAM + RESOLVE-PIN, H2; R-KERNEL; OWNER GRANT
+#    2026-09-29 (3)) — one declaration over predev for the stacked train
+
+[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
+file    = "qa/construction.toml"
+from    = 53148
+to      = 54254
+because = "OWNER GRANT 2026-09-29 (3) / ARCHITECT GRANT 3, kernel line-limit at the measured value, itemised per lane over predev 53148: E12 (SWEEP-KERNEL + LLM-CLEAN, lower-only) measured 52945 (-203); URL-SEAM -17 and RESOLVE-PIN +66 (the pooled client's dial judge; ARCHITECT approved) = +49; H2 host services +1260 (ARCHITECT approved 2026-10-01). 53148 - 203 + 49 + 1260 = 54254."
+
 # ── THE KERNEL CEILING, RE-ARMED BY T13b (WIRE-STORE C1 + CONNECTOR-19 + T13B-FIX) — EXPIRED AND STRUCK
 #
 # Declared `rules.loc-ceilings.kernel_ceiling` 52101 -> 52136 (OWNER GRANT 2026-09-29 (3)). Its commit
@@ -487,6 +515,12 @@ because = "OWNER GRANT 2026-09-29 (3), ARCHITECT approval: line-limit re-arm at 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY WIRE-STORE C1 + CONNECTOR-19 (the store SDK door; the
 #    framer over the host socket and the blank in/out) — measured at the tip
 
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+file    = "qa/construction.toml"
+from    = 25682
+to      = 26157
+because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception at the measure, itemised per lane over predev 25682: E12 (SWEEP-L2 -186 kinds.rs traits, SWEEP-L3 -57) measured 25439 (-243); URL-SEAM busbar_contract::net +489; H2 Caller, caller-scoped host services, merge_list, entitlement and random.fill wrappers +229. 25682 - 243 + 489 + 229 = 26157."
+
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
 
@@ -504,6 +538,12 @@ because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan a
 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 24189 -> 24237 (STEP-20) — EXPIRED AND STRUCK: its commit reached the base;
 # struck by the K1 plane driver re-arm above, which declares the next figure.
+
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+file    = "qa/construction.toml"
+from    = 25682
+to      = 26157
+because = "ARCHITECT GRANT 3 (OWNER GRANT 2026-09-29 (3)), the standing contract-pair exception at the measure, itemised per lane over predev 25682: E12 (SWEEP-L2 -186 kinds.rs traits, SWEEP-L3 -57) measured 25439 (-243); URL-SEAM busbar_contract::net +489; H2 Caller, caller-scoped host services, merge_list, entitlement and random.fill wrappers +229. 25682 - 243 + 489 + 229 = 26157."
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 25543 -> 25712 — EXPIRED AND STRUCK: its commit reached the base,
 # and the ceiling was then lowered below it on METER-FIX's loc basis, so the declaration no longer describes a raise.
@@ -818,7 +858,8 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 25636 -> 25683 with its pair (K1 over T13b: the plane driver's +47 on 25636).
 # LOWERED 25682 -> 25496 with its pair (SWEEP-L2: the unimplemented kinds.rs traits and their shapes deleted, -186), at the measurement. Downward only.
 # LOWERED 25496 -> 25439 with its pair (SWEEP-L3: InboundTrust, transport/config_handle.rs and observer_installed leave production, -57), at the measurement. Downward only.
-contract_caps = 25439
+# RE-ARMED 25439 -> 26157 with its pair (URL-SEAM +489, H2 +229), declared above.
+contract_caps = 26157
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -903,7 +944,7 @@ counts can trend to zero at their own pace."""
 # item 376 (Q11/Q32, owner-signed 2026-09-24): same needle repair as ports-only above, pinned at
 # TODAY's measurement on the committed tree (HEAD b091b4e83). Downward only from here.
 [rules.ports-only-tests.max_per_crate]
-busbar-llm = 990
+busbar-llm = 995
 busbar-mcp = 185
 busbar-a2a = 98
 busbar-voice = 43
@@ -1418,7 +1459,8 @@ kernel_crate = "busbar-kernel"
 # 52135 -> 52025; K1's kernel files untouched by it), the measurement. Downward only.
 # ── LOWERED 53038 -> 52945 at the train's measurement (SWEEP-KERNEL -110 with LLM-CLEAN's kernel forwarder
 # sweep -93 on top of K1-DEDUP's 53148; cargo xtask gate construction on lander8-e2). Downward only.
-kernel_ceiling = 52945
+# ── RE-ARMED 52945 -> 54254 for URL-SEAM + RESOLVE-PIN (+49) and H2 (+1260), declared above.
+kernel_ceiling = 54254
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -1528,7 +1570,8 @@ contract_crate = "busbar-contract"
 # literal copies, measured).
 # LOWERED 25682 -> 25496 with its pair (SWEEP-L2: the unimplemented kinds.rs traits and their shapes deleted, -186), at the measurement. Downward only.
 # LOWERED 25496 -> 25439 with its pair (SWEEP-L3: InboundTrust, transport/config_handle.rs and observer_installed leave production, -57), at the measurement. Downward only.
-caps_contract_ceiling = 25439
+# RE-ARMED 25439 -> 26157 with its pair (URL-SEAM +489, H2 +229).
+caps_contract_ceiling = 26157
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
@@ -1864,9 +1907,9 @@ max_hits = 0
 # call this rule's cleanup gets to make unilaterally.
 known_sites = [
   "crates/busbar-kernel/src/appbuild.rs:240",
-  "crates/busbar-kernel/src/appbuild.rs:685",
-  "crates/busbar-kernel/src/appbuild.rs:759",
-  "crates/busbar-kernel/src/appbuild.rs:872",
+  "crates/busbar-kernel/src/appbuild.rs:702",
+  "crates/busbar-kernel/src/appbuild.rs:776",
+  "crates/busbar-kernel/src/appbuild.rs:889",
   "crates/busbar-kernel/src/config/migrate.rs:333",
   "crates/busbar-kernel/src/config/migrate.rs:1505",
   "crates/busbar-kernel/src/config/migrate.rs:1850",
