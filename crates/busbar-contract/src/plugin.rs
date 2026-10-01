@@ -309,6 +309,19 @@ pub trait KernelSeal: sealed::KernelSealed {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TestKernelSeal;
 
+/// Is `v` a well-formed semver core (`MAJOR.MINOR.PATCH`, each a decimal integer, with an optional
+/// `-pre`/`+meta` suffix)? A plugin version and an anti-downgrade floor are both judged by it: the
+/// strict three-component core is what the anti-downgrade ordering depends on.
+#[must_use]
+pub fn valid_semver(v: &str) -> bool {
+    let core = v.split(['-', '+']).next().unwrap_or("");
+    let parts: Vec<&str> = core.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
 #[cfg(test)]
 #[path = "tests/kind_verb_tests.rs"]
 mod kind_verb_tests;

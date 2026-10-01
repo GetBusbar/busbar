@@ -65,8 +65,7 @@ mod plugin {
         }
     }
 
-    const CARRIERS: &[AbiStr] = &[abi_str("x-alt")];
-    const TAIL: &AuthTail = &verify_tail(FACT_CACHEABLE, CARRIERS);
+    const TAIL: &AuthTail = &verify_tail(FACT_CACHEABLE);
     const FAMILIES: &[MetricFamily] = &[MetricFamily {
         name: abi_str(crate::abi::auth::METRIC_CACHE_FLUSHED),
         help: abi_str("inbound cache entries dropped by refresh"),
@@ -174,10 +173,13 @@ fn open(settings: &[u8]) -> (Outcome, OpenOut) {
         secrets: secret.as_ptr(),
         secrets_len: 1,
         generation: 1,
+        err_buf: ptr::null_mut(),
+        err_cap: 0,
     };
     let mut out = OpenOut {
         head: out_head(size_of::<OpenOut>()),
         instance: ptr::null_mut(),
+        err_len: 0,
     };
     let o = cross(ops().head.open, ptr::null_mut(), &input, &mut out);
     (o, out)
@@ -360,6 +362,5 @@ fn the_ops_it_does_not_serve_are_refused_and_the_tail_states_inbound_only() {
     // SAFETY: as above.
     let tail = unsafe { &*st.kind_tail.cast::<AuthTail>() };
     assert_eq!(tail.caps, crate::abi::auth::CAP_INBOUND);
-    assert_eq!(tail.carriers_len, 1);
     assert_eq!(tail.facts, FACT_CACHEABLE);
 }

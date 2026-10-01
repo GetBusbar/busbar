@@ -1191,9 +1191,13 @@ mod tests {
     /// `.toml` files, the real walk this fixture truncates FROM). The sample set moves down with
     /// it, one for one — it was never a ratchet on the roster, only a range of healthy sizes this
     /// rule must not redden on.
+    ///
+    /// RE-MEASURED after KERNEL-AUTH-ZERO (Q2): `crates/busbar-kernel/data/operator_credential.toml`
+    /// left the kernel for the root legacy table, so the real walk holds 33 `.toml` files, and the
+    /// sample set moves down with it, one for one (still clear of the floor of 30).
     #[test]
     fn the_crates_walk_floor_admits_the_fold_end_state_and_rejects_a_collapse() {
-        for n in [34, 33, 32] {
+        for n in [33, 32, 31] {
             let row = rule_discovery(&crates_walk_holding(n));
             assert_eq!(
                 row.status,

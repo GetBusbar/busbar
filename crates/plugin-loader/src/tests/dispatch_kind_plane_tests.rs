@@ -675,8 +675,15 @@ fn red_a_tail_trust_key_that_breaks_its_element_rule_does_not_bind() {
         t.dispatch_shape = SHAPE_WHOLE;
         t.trust_keys = keys.as_ptr();
         t.trust_keys_len = keys.len();
+        let sections = [busbar_contract::abi::mechanism::door::Section {
+            name: abi("door"),
+            flags: busbar_contract::abi::mechanism::door::SECTION_DECLARING,
+            _reserved: 0,
+        }];
         let mut st: Statement = z();
         st.kind_tail = std::ptr::from_ref(&t).cast();
+        st.sections = sections.as_ptr();
+        st.sections_len = sections.len();
         Plane::context(&st).map(|_| ())
     }
     let good = [PinMechanism {
@@ -739,8 +746,19 @@ fn red_a_tail_whose_refusal_statuses_break_a_rule_does_not_bind() {
         tail.refusal_statuses = rows.as_ptr();
         tail.refusal_statuses_len = rows.len();
         let tail: &'static PlaneTail = Box::leak(Box::new(tail));
+        let sections: &'static [busbar_contract::abi::mechanism::door::Section] =
+            Box::leak(Box::new([busbar_contract::abi::mechanism::door::Section {
+                name: busbar_contract::abi::mechanism::call::AbiStr {
+                    ptr: b"door".as_ptr(),
+                    len: 4,
+                },
+                flags: busbar_contract::abi::mechanism::door::SECTION_DECLARING,
+                _reserved: 0,
+            }]));
         let mut st: Statement = z();
         st.kind_tail = &tail.head;
+        st.sections = sections.as_ptr();
+        st.sections_len = sections.len();
         Plane::context(&st)
     };
     let facts = bind(rows(400)).expect("a valid row binds");

@@ -11,10 +11,16 @@
 //
 // Written to be `include!`d: the root mounts it as `root::doors`, and the build's generated table of
 // linked transports (`$OUT_DIR/linked_transports.rs`, which the integration tests include) mounts it
-// under its own name. So it names nothing of the root's own, only crates the root links.
+// under its own name. So it names nothing of the root's own, only crates the root links and
+// `super::loader` (the root's one loader module, or the one-line re-export each other mount gives).
 
 use std::sync::{Arc, OnceLock};
 
+use super::loader::dispatch::{
+    kinds::transport::{Transport as TransportKind, TransportFacts},
+    load_linked, Bind, DispatchConfig, Dispatcher, Frame, InFrame, LinkedRow, NoSink, OutFrame,
+    Plugin,
+};
 use busbar_contract::abi::mechanism::call::{Blob, BLOB_ABSENT};
 use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
@@ -24,15 +30,20 @@ use busbar_core_connector::{
     framer::{Call, Crossed, DoorFacts, FramerDoor},
     wire::HostWire,
 };
-use busbar_plugin_loader::dispatch::{
-    kinds::transport::{Transport as TransportKind, TransportFacts},
-    load_linked, Bind, DispatchConfig, Dispatcher, Frame, InFrame, NoSink, OutFrame, Plugin,
-};
 
-/// The one dispatcher every transport door is adopted by: its watchdog watches every crossing.
+/// The dispatcher every transport door is adopted by (its watchdog watches every crossing).
+static ONE: OnceLock<Arc<Dispatcher>> = OnceLock::new();
+
+/// Hand the doors the process's one dispatcher (`root::dispatch`), before any door binds; the first
+/// install stands. A mount of this file with no composition root (a test, the conformance
+/// subject) builds its own on first use.
+pub fn install_dispatcher(d: Arc<Dispatcher>) {
+    let _ = ONE.set(d);
+}
+
+/// The dispatcher every transport door is adopted by.
 pub fn dispatcher() -> &'static Dispatcher {
-    static ONE: OnceLock<Dispatcher> = OnceLock::new();
-    ONE.get_or_init(|| Dispatcher::new(DispatchConfig::default()))
+    ONE.get_or_init(|| Arc::new(Dispatcher::new(DispatchConfig::default())))
 }
 
 /// What a transport door is bound to. The instance label is the transport lane's own; every door
@@ -44,6 +55,7 @@ pub fn bind() -> Bind {
         max_inflight_cap: 1024,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher().adopter(),
+        conns: None,
     }
 }
 
@@ -272,7 +284,8 @@ pub fn build(
     _lower: Option<Arc<dyn busbar_contract::Transport>>,
     _settings: &busbar_contract::transport::TransportSettings,
 ) -> Arc<dyn busbar_contract::Transport> {
-    load_linked::<TransportKind>(door, row_bind(row))
+    LinkedRow::of(door)
+        .and_then(|linked| load_linked::<TransportKind>(&linked, row_bind(row)))
         .map_err(|e| e.to_string())
         .and_then(host_wire)
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))

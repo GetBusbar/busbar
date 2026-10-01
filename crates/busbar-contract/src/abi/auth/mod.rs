@@ -167,7 +167,8 @@ pub const CAP_OUTBOUND: u32 = 4;
 pub const FACT_CACHEABLE: u32 = 1;
 /// [`AuthTail::facts`]: `verify` reads the request's body hash ([`RequestFacts::body_hash`]).
 pub const FACT_INBOUND_NEEDS_BODY_HASH: u32 = 2;
-/// [`AuthTail::facts`]: `verify` reads EVERY request header, not only [`AuthTail::carriers`]; the
+/// [`AuthTail::facts`]: `verify` reads EVERY request header, not only its carriers (the Statement's
+/// [`MARK_WORD_CARRIER`](crate::abi::mechanism::door::MARK_WORD_CARRIER) word marks); the
 /// kernel passes them all in [`VerifyIn::carrier`]. An inbound signature check needs it: the set of
 /// signed headers varies per request.
 pub const FACT_INBOUND_ALL_HEADERS: u32 = 4;
@@ -222,15 +223,6 @@ pub struct AuthTail {
     pub styles: *const StyleDecl,
     /// How many.
     pub styles_len: usize,
-    /// Other names the plugin answers to in config.
-    pub aliases: *const AbiStr,
-    /// How many.
-    pub aliases_len: usize,
-    /// The inbound carrier field names `verify` reads as a credential. The kernel passes exactly
-    /// these to `verify` and strips them from what a plane sees.
-    pub carriers: *const AbiStr,
-    /// How many.
-    pub carriers_len: usize,
 }
 
 /// [`CancelOut::disposition`](super::mechanism::lifecycle::CancelOut) for an auth op: abandoned,

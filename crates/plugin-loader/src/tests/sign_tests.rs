@@ -29,6 +29,7 @@ fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
         schema_derived: false,
         host: None,
         declares: Default::default(),
+        statement: None,
     }
 }
 
@@ -1257,4 +1258,114 @@ fn the_declared_contract_abi_range_is_signed_and_absent_by_default() {
         canonical_manifest_bytes(&widened),
         "the range is covered by the signature"
     );
+}
+
+/// THE STATEMENT A MANIFEST CARRIES is signed: a tampered rendering fails the signature, a
+/// rendering that is not one whole Statement is a structural refusal, and a manifest with none keeps
+/// the canonical bytes (and so the signature) it had before the field existed.
+#[test]
+fn red_the_stated_statement_is_signed_and_must_be_one_whole_rendering() {
+    use busbar_contract::abi::mechanism::rendering::render;
+    use busbar_contract::abi::sdk::door::statement;
+    let st = statement("busbar-store-x", "1.5.0", 4);
+    // SAFETY: the SDK's Statement names only `'static` strings and no list.
+    let rendering = unsafe { render(&st) }.unwrap();
+    let key = test_key(11);
+    let mut m = manifest("busbar-store-x", "x", "busbar");
+    m.statement = Some(hex::encode(&rendering));
+    let signed = sign(&key, m, b"lib");
+    assert!(signature_ok(&signed, b"lib", &key.verifying_key()).is_ok());
+    assert_eq!(signed.stated_rendering().unwrap(), Some(rendering.clone()));
+    assert_eq!(signed.stated().unwrap().unwrap().name, "busbar-store-x");
+    assert!(validate_identity(&signed, HOST_IDENTITY).is_ok());
+
+    let mut tampered = signed.clone();
+    let mut other = rendering.clone();
+    let last = other.len() - 1;
+    other[last] ^= 1;
+    tampered.statement = Some(hex::encode(&other));
+    assert!(
+        signature_ok(&tampered, b"lib", &key.verifying_key()).is_err(),
+        "a statement changed after signing fails verification"
+    );
+
+    for bad in ["zz", "ABCD", "00"] {
+        let mut m = signed.clone();
+        m.statement = Some(bad.into());
+        assert!(
+            validate_identity(&m, HOST_IDENTITY).is_err(),
+            "{bad} is not a whole rendering"
+        );
+    }
+
+    let none = manifest("busbar-store-x", "x", "busbar");
+    let canonical = String::from_utf8(canonical_manifest_bytes(&none)).unwrap();
+    assert!(
+        !canonical.contains("statement"),
+        "an absent statement is not in the signed bytes: {canonical}"
+    );
+}
+
+/// `TrustPolicy::from_config` (the resolution the kernel's `PluginsCfg::to_policy` did, moved out of
+/// the kernel): its refusals keep their bytes, and the per-name floors — `min_versions` and the
+/// rollback pins in `first_party_floors` — are carried exactly, with no automatic floor armed.
+#[test]
+fn from_config_keeps_its_refusal_bytes_and_carries_every_floor_exactly() {
+    let none = BTreeMap::new();
+    let input = |publishers| TrustInput {
+        publishers,
+        allow_unsigned: false,
+        allow_third_party: false,
+        min_versions: &none,
+        first_party_floors: &none,
+        binary_version: "1.6.0",
+    };
+    assert_eq!(
+        TrustPolicy::from_config(input(&[("busbar", "00")]))
+            .map(drop)
+            .unwrap_err(),
+        "plugins.trust.publishers['busbar']: the publisher name 'busbar' is reserved for busbar's \
+         embedded release key and cannot be configured"
+    );
+    assert_eq!(
+        TrustPolicy::from_config(input(&[("acme", "zz")]))
+            .map(drop)
+            .unwrap_err(),
+        "plugins.trust.publishers['acme']: public key not valid hex: Invalid character 'z' at \
+         position 0"
+    );
+    assert_eq!(
+        TrustPolicy::from_config(input(&[("acme", "00")]))
+            .map(drop)
+            .unwrap_err(),
+        "plugins.trust.publishers['acme']: public key must be 32 bytes, got 1"
+    );
+    // RED for rollback: a pinned first-party floor and a min_versions floor are carried as given.
+    let mut floors = BTreeMap::new();
+    floors.insert("busbar-store-kv-plugin".to_string(), "0.9.0".to_string());
+    let mut mins = BTreeMap::new();
+    mins.insert("acme-hook".to_string(), "2.1.0".to_string());
+    let key = hex::encode(test_key(3).verifying_key().to_bytes());
+    let p = TrustPolicy::from_config(TrustInput {
+        publishers: &[("acme", key.as_str())],
+        allow_unsigned: true,
+        allow_third_party: true,
+        min_versions: &mins,
+        first_party_floors: &floors,
+        binary_version: "1.6.0",
+    })
+    .unwrap();
+    assert_eq!(p.first_party_floors, floors);
+    assert_eq!(p.min_versions, mins);
+    assert!(
+        p.first_party_high_water.is_empty(),
+        "the registry build arms the automatic floor"
+    );
+    assert_eq!(p.binary_version, "1.6.0");
+    assert!(p.allow_unsigned && p.allow_third_party);
+    assert_eq!(
+        p.publishers.get("acme").map(|k| k.to_bytes()),
+        Some(test_key(3).verifying_key().to_bytes())
+    );
+    assert_eq!(p.first_party_key, embedded_release_pubkey());
 }

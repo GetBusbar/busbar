@@ -28,7 +28,7 @@
 use std::sync::Arc;
 
 use axum::response::{IntoResponse, Response};
-use busbar_contract::abi::cold::endpoint::{RouteAuth, RouteMethod};
+use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
 use busbar_kernel::core_routes::CoreRouter;
 use busbar_kernel::state::AppHandle;
 

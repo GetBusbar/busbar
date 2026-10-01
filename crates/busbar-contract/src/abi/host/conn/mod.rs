@@ -129,7 +129,50 @@ pub struct WireOpenDesc {
     pub body_len: usize,
     /// Milliseconds the open may take; `0` = the host's default.
     pub timeout_ms: u64,
+    /// [`OpenDesc::method`], appended: a descriptor whose `size` ends before it states none.
+    pub method: DeclStr,
+    /// [`OpenDesc::head_target`], appended: a descriptor whose `size` ends before it states none.
+    pub head_target: DeclStr,
 }
+
+/// A [`WireOpenDesc`] as a descriptor without the appended head words states it: read from a
+/// plugin whose `size` ends at [`OPEN_DESC_HEADLESS`], never past it.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Headless {
+    size: u32,
+    _reserved: u32,
+    target: DeclStr,
+    fields: *const WireField,
+    fields_len: usize,
+    body: *const u8,
+    body_len: usize,
+    timeout_ms: u64,
+}
+
+impl Headless {
+    const fn into_wire(self) -> WireOpenDesc {
+        WireOpenDesc {
+            size: self.size,
+            _reserved: self._reserved,
+            target: self.target,
+            fields: self.fields,
+            fields_len: self.fields_len,
+            body: self.body,
+            body_len: self.body_len,
+            timeout_ms: self.timeout_ms,
+            method: DeclStr::NONE,
+            head_target: DeclStr::NONE,
+        }
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<Headless>() == OPEN_DESC_HEADLESS);
+
+/// How much of a [`WireOpenDesc`] a sized descriptor must state: everything before the appended
+/// head words ([`WireOpenDesc::method`], [`WireOpenDesc::head_target`]), which a shorter one
+/// states as none.
+pub const OPEN_DESC_HEADLESS: usize = core::mem::offset_of!(WireOpenDesc, method);
 
 /// [`Piece`], written by the host into the caller's slot.
 #[repr(C)]
@@ -157,6 +200,8 @@ pub struct WirePiece {
     pub ns: DeclStr,
     /// How long the far side asked to be left alone, in seconds.
     pub retry_after_secs: u64,
+    /// [`Piece::reason`]: a range of the caller's buffer (`len == 0` = none).
+    pub reason: crate::abi::transport::FrameSpan,
 }
 
 /// [`WirePiece::flags`]: the status number is present.
@@ -346,10 +391,15 @@ extern "C-unwind" fn host_open(
         // as it attests.
         unsafe {
             let size = core::ptr::read_unaligned(core::ptr::addr_of!((*desc).size)) as usize;
-            if size < core::mem::size_of::<WireOpenDesc>() {
+            if size < OPEN_DESC_HEADLESS {
                 return Err(ConnError::Fault);
             }
-            let d = core::ptr::read_unaligned(desc);
+            // The head words are read only where the descriptor's size states them.
+            let d = if size >= core::mem::size_of::<WireOpenDesc>() {
+                core::ptr::read_unaligned(desc)
+            } else {
+                core::ptr::read_unaligned(desc.cast::<Headless>()).into_wire()
+            };
             if d.fields.is_null() && d.fields_len != 0 {
                 return Err(ConnError::Fault);
             }
@@ -368,6 +418,8 @@ extern "C-unwind" fn host_open(
                     fields: &fields,
                     body: bytes(d.body, d.body_len)?,
                     timeout_ms: d.timeout_ms,
+                    method: bytes(d.method.ptr, d.method.len)?,
+                    head_target: bytes(d.head_target.ptr, d.head_target.len)?,
                 },
             )?;
             set(out_conn, conn.0)
@@ -413,7 +465,12 @@ extern "C-unwind" fn host_read(
             unsafe { std::slice::from_raw_parts_mut(buf, cap) }
         };
         let piece = host.conns.read(host.instance, ConnId(conn), ticket, into)?;
-        if piece.len > cap {
+        if piece.len > cap
+            || piece
+                .reason
+                .as_ref()
+                .is_some_and(|r| r.start > r.end || r.end > cap)
+        {
             return Err(ConnError::Fault);
         }
         // The numbering is held until the connection closes, so the plugin's borrow outlives the
@@ -447,6 +504,12 @@ extern "C-unwind" fn host_read(
                     _reserved: 0,
                     ns,
                     retry_after_secs: piece.retry_after_secs.unwrap_or(0),
+                    reason: piece.reason.as_ref().map_or_else(Default::default, |r| {
+                        crate::abi::transport::FrameSpan {
+                            offset: r.start as u64,
+                            len: (r.end - r.start) as u64,
+                        }
+                    }),
                 },
             )
         }
@@ -586,6 +649,14 @@ impl HostConns {
             body: desc.body.as_ptr(),
             body_len: desc.body.len(),
             timeout_ms: desc.timeout_ms,
+            method: DeclStr {
+                ptr: desc.method.as_ptr(),
+                len: desc.method.len(),
+            },
+            head_target: DeclStr {
+                ptr: desc.head_target.as_ptr(),
+                len: desc.head_target.len(),
+            },
         };
         let mut conn = 0_u64;
         f(self.ctx, need.0, &wire, &mut conn).result()?;
@@ -645,6 +716,17 @@ impl HostConns {
             status_code: (p.flags & PIECE_HAS_CODE != 0).then_some(p.code),
             status_namespace: ns,
             retry_after_secs: (p.flags & PIECE_HAS_RETRY_AFTER != 0).then_some(p.retry_after_secs),
+            reason: match p.reason.len {
+                0 => None,
+                n => {
+                    let at = usize::try_from(p.reason.offset).map_err(|_| ConnError::Fault)?;
+                    let end = at
+                        .checked_add(usize::try_from(n).map_err(|_| ConnError::Fault)?)
+                        .filter(|e| *e <= buf.len())
+                        .ok_or(ConnError::Fault)?;
+                    Some(at..end)
+                }
+            },
         })
     }
 

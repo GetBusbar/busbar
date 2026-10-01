@@ -29,9 +29,10 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::cold::endpoint::{RouteAuth, RouteMethod};
+use crate::root::loader::{DynPlane, ServedPlane};
 use busbar_contract::abi::hot;
 use busbar_contract::abi::hot::StatusClass;
+use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
 use busbar_contract::ids::OpClassId;
 use busbar_contract::plane::{MetricFamily, ServedOpClass};
 use busbar_kernel::ingress::arrival::{BodyIngressEntry, PathIngressEntry};
@@ -40,7 +41,7 @@ use busbar_kernel::plane::registry::{BillableClass, BuildCtx, PlaneDeclaration, 
 use busbar_kernel::plane::PlaneAdmission;
 use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneResponse, PlaneRouteSpec};
-use crate::root::loader::{DynPlane, ServedPlane};
+use busbar_kernel::preflight::{LinkedAuth, LinkedHook, LinkedStore, RegistryIn, RootInstall};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
 /// run once the deployment's secret resolver exists.
@@ -65,6 +66,10 @@ pub struct Linked {
     /// (`busbar_contract::abi::hot::PlaneDecl`) instead of Rust hooks — admitted and adapted exactly as the
     /// same plane dropped into `plugins/` is (see [`register_planes`]).
     pub hot_planes: &'static [&'static hot::PlaneDecl],
+    /// The plane axis, door lane: each linked plane's door (`busbar_plugin_door`), bound through the
+    /// one load on the process's dispatcher exactly as the same plane dropped into `plugins/` is
+    /// (see [`load_door_planes`]).
+    pub plane_doors: &'static [busbar_contract::abi::mechanism::door::DoorFn],
     /// Protocol declarations, appended to the installed protocol set in this order.
     pub protocols: &'static [&'static [&'static busbar_kernel::proto::ProtocolDecl]],
     /// URL-model arrivals, by protocol name.
@@ -90,11 +95,11 @@ pub struct Linked {
     /// The export axis: each linked export sink's statement and boundary (see [`LinkedExport`]).
     pub exports: &'static [LinkedExport],
     /// The store axis: each linked in-process store's `(name, ephemeral, default, open)`.
-    pub stores: &'static [busbar_kernel::preflight::LinkedStore],
+    pub stores: &'static [LinkedStore],
     /// The hook axis: each linked ranking row's `(name, aliases, open)`.
-    pub hooks: &'static [busbar_kernel::preflight::LinkedHook],
+    pub hooks: &'static [LinkedHook],
     /// The auth axis: each linked `kind: auth` plugin's `(registry key, SDK boundary)`.
-    pub auths: &'static [busbar_kernel::preflight::LinkedAuth],
+    pub auths: &'static [LinkedAuth],
     /// The kernel-loop axes (#28): the declaration key of each plane `gauntlet_install::install()`
     /// flips onto the unified loop's ONE-SHOT runner, and of each it flips onto the SESSION runner.
     pub gauntlet_one_shot: &'static [&'static str],
@@ -222,10 +227,9 @@ pub fn linked_exports(
             schema_derived: false,
             host: None,
             declares,
+            statement: None,
         };
-        Ok(crate::root::loader::LinkedPlugin::boundary(
-            manifest, entry,
-        ))
+        Ok(crate::root::loader::LinkedPlugin::boundary(manifest, entry))
     };
     exports.iter().map(row).collect()
 }
@@ -294,10 +298,13 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
 /// default refuse the boot (exit 2) before anything resolves a store.
 pub fn register_stores(linked: &Linked) {
     match default_store(linked.stores) {
-        Ok(default) => {
-            let rows = (linked.stores, linked.hooks, default.unwrap_or_default());
-            busbar_kernel::preflight::install_linked_rows(rows)
-        }
+        Ok(default) => busbar_kernel::preflight::install_linked_rows(RootInstall {
+            stores: linked.stores,
+            hooks: linked.hooks,
+            default_store_module: default.unwrap_or_default(),
+            registry_build: Some(crate::root::boot::registry),
+            plugins_fetch: Some(crate::root::boot::plugins_fetch),
+        }),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
             std::process::exit(2);
@@ -309,9 +316,7 @@ pub fn register_stores(linked: &Linked) {
 /// store a deployment that configures no `store.module` runs on. The root holds no store name: it
 /// asks each row what it claims. No claim is `None`; two claims are refused, naming both rows —
 /// ambiguity is never resolved by picking a winner.
-pub fn default_store(
-    stores: &[busbar_kernel::preflight::LinkedStore],
-) -> Result<Option<&'static str>, String> {
+pub fn default_store(stores: &[LinkedStore]) -> Result<Option<&'static str>, String> {
     let mut claims = stores.iter().filter(|s| s.2).map(|s| s.0);
     let first = claims.next();
     match (first, claims.next()) {
@@ -759,15 +764,13 @@ async fn hot_answer_blocking(ctx: PlaneReqCtx) -> PlaneResponse {
     if let Some(Emitted::Head(status, headers)) = rx.recv().await {
         return live_response(status, &headers, rx);
     }
-    let reply = run
-        .await
-        .unwrap_or_else(|_| crate::root::loader::HotReply {
-            class: StatusClass::Fault,
-            status: None,
-            headers: Vec::new(),
-            body: Vec::new(),
-            streamed: false,
-        });
+    let reply = run.await.unwrap_or_else(|_| crate::root::loader::HotReply {
+        class: StatusClass::Fault,
+        status: None,
+        headers: Vec::new(),
+        body: Vec::new(),
+        streamed: false,
+    });
     buffered_response(reply)
 }
 
@@ -889,7 +892,7 @@ pub fn dropped_planes(
     let Ok(registry) = crate::root::loader::scan_and_validate(dir, policy) else {
         return Ok(Vec::new());
     };
-    registry.open_planes()
+    registry.open_planes(&[]).map(|set| set.hot)
 }
 
 /// THE PLUGINS DROPPED INTO THE CONFIGURED `plugins.dir`, scanned ONCE before any axis is installed —
@@ -945,24 +948,99 @@ fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
         serde_yaml::from_value::<busbar_kernel::config::PluginsCfg>(doc.get("plugins")?.clone())
             .ok()
             .filter(|p| p.enabled)?;
-    let mut policy = plugins.to_policy().ok()?;
+    let l = &plugins.logs;
+    let words = (l.dir.as_deref(), l.level.as_deref(), &l.levels);
+    if let Ok(logs) = crate::root::loader::dispatch::PluginLogConfig::from_words(
+        words.0,
+        words.1,
+        words.2,
+        l.rotate_mb,
+        l.keep,
+    ) {
+        let _ = LOGS.set(logs);
+    }
+    plugins.warn_invalid_floors();
     let data_dir = busbar_kernel::preflight::fleet_data_dir();
-    policy.first_party_high_water = crate::root::loader::HighWaterMarks::load(data_dir.as_deref())
-        .0
-        .marks();
-    crate::root::loader::scan_and_validate(std::path::Path::new(&plugins.dir), &policy).ok()
+    let build = RegistryIn {
+        linked: Vec::new(),
+        plugins: Some(&plugins),
+        data_dir: data_dir.as_deref(),
+    };
+    crate::root::boot::registry(build, &mut |_| {}).ok()
 }
 
-/// THE PLANES DROPPED INTO `dropped` (see [`dropped_from_config`]): every `kind: plane` plugin it
-/// admitted, loaded over the HOT-tier ABI — a trusted plane that will not LOAD refuses the boot,
+/// THE PLANES DROPPED INTO `dropped` (see [`dropped_from_config`]) AND THE LINKED PLANE DOORS: every
+/// plane that states itself through a door is discovered here and bound by [`load_door_planes`] once
+/// the process's dispatcher is built; every HOT-lane plane (M6-HOT-PLANE) is opened here and
+/// returned for the plane axis. A trusted plane that will not state itself or LOAD refuses the boot,
 /// as a linked plane's would.
-pub fn dropped_planes_of(dropped: Option<&crate::root::loader::PluginRegistry>) -> Vec<DynPlane> {
-    dropped
-        .map_or(Ok(Vec::new()), |registry| registry.open_planes())
-        .unwrap_or_else(|refusal| {
-            eprintln!("busbar: {refusal}");
-            std::process::exit(2);
-        })
+pub fn dropped_planes_of(
+    linked: &Linked,
+    dropped: Option<&crate::root::loader::PluginRegistry>,
+) -> Vec<DynPlane> {
+    let set = match dropped {
+        Some(registry) => registry.open_planes(linked.plane_doors),
+        None => crate::root::loader::PluginRegistry::empty().open_planes(linked.plane_doors),
+    };
+    let set = set.unwrap_or_else(|refusal| {
+        eprintln!("busbar: {refusal}");
+        std::process::exit(2);
+    });
+    let _ = DOOR_CANDIDATES.set(set.doors);
+    set.hot
+}
+
+/// The door planes [`dropped_planes_of`] discovered, waiting for the dispatcher.
+static DOOR_CANDIDATES: std::sync::OnceLock<Vec<crate::root::loader::boot::Candidate>> =
+    std::sync::OnceLock::new();
+
+/// The door planes [`load_door_planes`] bound, held for the process.
+static DOOR_PLANES: std::sync::OnceLock<Vec<(String, DoorPlane)>> = std::sync::OnceLock::new();
+
+/// A plane bound through its door.
+pub type DoorPlane =
+    crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::plane::Plane>;
+
+/// THE DOOR PLANES' ONE LOAD, run once the process's dispatcher is built
+/// ([`crate::root::dispatch::boot`]): every plane [`dropped_planes_of`] discovered, linked and
+/// dropped alike, bound through the loader's one load on that dispatcher, each to its own log sink
+/// under the configured `plugins.logs`, each declaring its needs on the process's one connection
+/// table (`root::connector::the()`). A plane that will not bind refuses the boot (exit 2).
+pub fn load_door_planes() {
+    let doors = DOOR_CANDIDATES.get().map_or(&[][..], Vec::as_slice);
+    // The process's ONE connection table: a plane that declares a need is declared on it.
+    let conns: std::sync::Arc<dyn busbar_contract::conn::DeclaredConns> =
+        crate::root::connector::the().clone();
+    let bound = crate::root::loader::boot::load_planes(
+        doors,
+        plugin_logs(),
+        std::sync::Arc::new(crate::root::loader::dispatch::NoSink),
+        crate::root::dispatch::dispatcher().adopter(),
+        u32::MAX,
+        Some(conns),
+    )
+    .unwrap_or_else(|refusal| {
+        eprintln!("busbar: {refusal}");
+        std::process::exit(2);
+    });
+    let _ = DOOR_PLANES.set(bound);
+}
+
+/// The configured `plugins.logs` ([`scan_configured`] reads it), or its defaults.
+static LOGS: std::sync::OnceLock<crate::root::loader::dispatch::PluginLogConfig> =
+    std::sync::OnceLock::new();
+
+fn plugin_logs() -> &'static crate::root::loader::dispatch::PluginLogConfig {
+    LOGS.get_or_init(|| {
+        let none = Default::default();
+        crate::root::loader::dispatch::PluginLogConfig::from_words(None, None, &none, None, None)
+            .expect("the plugins.logs defaults resolve")
+    })
+}
+
+/// Every plane bound through its door, by instance name (empty until [`load_door_planes`] runs).
+pub fn door_planes() -> &'static [(String, DoorPlane)] {
+    DOOR_PLANES.get().map_or(&[], Vec::as_slice)
 }
 
 /// THE TRANSPORTS DROPPED INTO THE CONFIGURED `plugins.dir` (the registry [`dropped_from_config`]

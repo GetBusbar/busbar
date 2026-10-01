@@ -23,28 +23,24 @@ use super::reason_of;
 use super::{
     AdminRoute, ArriveOut, BillableClass, Claim, DialectAuth, OnPieceOut, OutField, PinMechanism,
     PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite, RefusalOut,
-    RefusalStatus, RouteCost, Section, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED,
-    CANCEL_OK_PARTIAL, CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED,
-    CLAIM_EXACT, CLAIM_OPEN, EMIT_DONE, EMIT_TO_FAR_END, INGRESS_ACCEPT_LOOP,
-    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
-    INGRESS_SUBSCRIPTION, MARK_GATE_REJECTED, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT,
-    PRINCIPAL_OPTIONAL, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_PUBLIC, SECTION_CONSUMED,
-    SECTION_DECLARING, SECTION_REQUIRED, SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_PROBES,
+    RefusalStatus, RouteCost, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL,
+    CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN,
+    EMIT_DONE, EMIT_TO_FAR_END, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION,
+    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MARK_GATE_REJECTED,
+    MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL, RECORD_PUT,
+    REFUSAL_ANY_DIALECT, ROUTE_PUBLIC, SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_PROBES,
     TRUST_PIN, TRUST_RECOVERY_BACKOFF, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
     SIGNAL_TAG_BOOL, SIGNAL_TAG_STR, SIGNAL_TAG_U64,
 };
-use crate::abi::host::conn::connector::{
-    Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND, EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED,
-    KEEP_RESPONSE_HEADERS_MAX, NEVER_KEPT,
-};
 use crate::abi::mechanism::call::{AbiStr, Outcome};
 use crate::abi::mechanism::check::{
     bits, code, fault, first, index, listed, range, result, results, span, text, weight, Dim,
     Filled, MAX_BYTES,
 };
+use crate::abi::mechanism::door::{Section, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED};
 
 /// The most unit counts one answer may carry.
 pub const MAX_UNITS: u64 = 64;
@@ -657,7 +653,6 @@ pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
     ] {
         text(s, field)?;
     }
-    listed(t.sections, t.sections_len, "tail.sections")?;
     listed(t.dialects, t.dialects_len, "tail.dialects")?;
     listed(t.dialect_auth, t.dialect_auth_len, "tail.dialect_auth")?;
     listed(t.scope_kinds, t.scope_kinds_len, "tail.scope_kinds")?;
@@ -670,7 +665,6 @@ pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
     listed(t.route_cost, t.route_cost_len, "tail.route_cost")?;
     listed(t.fee_units, t.fee_units_len, "tail.fee_units")?;
     listed(t.record_kinds, t.record_kinds_len, "tail.record_kinds")?;
-    listed(t.needs, t.needs_len, "tail.needs")?;
     listed(
         t.egress_targets,
         t.egress_targets_len,
@@ -685,7 +679,8 @@ pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
     )
 }
 
-/// The tail's sections: each named, known flags, and EXACTLY ONE is the declaring section.
+/// A plane's Statement sections: each named, known flags, and EXACTLY ONE is the declaring
+/// section (the plane's verb).
 ///
 /// # Errors
 ///
@@ -767,69 +762,6 @@ pub fn check_fee_units(fee_units: &[AbiStr], classes: &[BillableClass]) -> Resul
         });
         if !listed {
             return Err(fault(Rule::Contradiction, FIELD));
-        }
-    }
-    Ok(())
-}
-
-/// The needs: a known direction and a transport claim; strings and details never counted with a
-/// NULL pointer.
-///
-/// # Errors
-///
-/// The rule a need breaks.
-pub fn check_needs(needs: &[Need]) -> Result<(), Fault> {
-    for n in needs {
-        code(
-            u64::from(n.direction),
-            u64::from(DIRECTION_INBOUND),
-            u64::from(DIRECTION_OUTBOUND),
-            "need.direction",
-        )?;
-        code(
-            u64::from(n.egress_class),
-            u64::from(EGRESS_DEFAULT),
-            u64::from(EGRESS_LOOPBACK_ALLOWED),
-            "need.egress_class",
-        )?;
-        named(n.transport, "need.transport")?;
-        text(n.auth, "need.auth")?;
-        text(n.target_from, "need.target_from")?;
-        text(n.trust_from, "need.trust_from")?;
-        listed(n.details.ptr, n.details.len, "need.details")?;
-        keep_response_headers(n)?;
-    }
-    Ok(())
-}
-
-/// A need's kept response head fields: a bounded list of lower-case tokens, none hop-by-hop or
-/// credential-bearing ([`NEVER_KEPT`]: [`Rule::Foreign`], a field that is not the plugin's to read).
-fn keep_response_headers(n: &Need) -> Result<(), Fault> {
-    const FIELD: &str = "need.keep_response_headers";
-    listed(n.keep_response_headers, n.keep_response_headers_len, FIELD)?;
-    if n.keep_response_headers_len > KEEP_RESPONSE_HEADERS_MAX {
-        return Err(fault(Rule::OverMax, FIELD));
-    }
-    if n.keep_response_headers_len == 0 {
-        return Ok(());
-    }
-    // SAFETY: a non-NULL list of `keep_response_headers_len` strings the plugin's door states as
-    // `'static` data (checked non-NULL above), bounded by `KEEP_RESPONSE_HEADERS_MAX`.
-    let names = unsafe {
-        core::slice::from_raw_parts(n.keep_response_headers, n.keep_response_headers_len)
-    };
-    for s in names {
-        named(*s, FIELD)?;
-        // SAFETY: `named` checked the string non-NULL with its length; the plugin's static bytes.
-        let name = unsafe { core::slice::from_raw_parts(s.ptr, s.len) };
-        let token = name
-            .iter()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-' || *b == b'_');
-        if !token {
-            return Err(fault(Rule::UnknownCode, FIELD));
-        }
-        if NEVER_KEPT.iter().any(|k| k.as_bytes() == name) {
-            return Err(fault(Rule::Foreign, FIELD));
         }
     }
     Ok(())

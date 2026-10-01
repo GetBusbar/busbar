@@ -7,9 +7,8 @@
 
 use super::*;
 use axum::Router;
-use busbar_contract::abi::cold::endpoint::{
-    EndpointRequest, EndpointResponse, Route, RouteAuth, RouteMethod,
-};
+use busbar_contract::abi::cold::endpoint::{EndpointRequest, EndpointResponse};
+use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
 use std::sync::Arc;
 
 /// A fake plugin dispatcher that echoes its label + the request line, so a test can prove WHICH plugin

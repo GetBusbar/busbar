@@ -113,7 +113,7 @@ pub const RESERVE_NO_CAP: u32 = 4;
 /// the cap `window_caps` last set for it; one reserve is one all-or-nothing chain draw even across
 /// cells in different windows ("window caps" correction). ATOMIC: if ANY cell would grant 0, the
 /// store applies NOTHING and answers FAILED with a [`ReserveOut::reason`] and `grants_len == 0`. A node-local
-/// store (Statement tail `ephemeral`) holds one constant epoch and never answers
+/// store (Statement mark `MARK_EPHEMERAL`) holds one constant epoch and never answers
 /// [`RESERVE_STALE_EPOCH`] (store_adapter.rs module doc, "Slices"). Deduped on `op_id`.
 ///
 /// GRANT SIZE, PINNED TO 1.5.5 (STORE v3 MONEY RULINGS S5). 1.5.5 never granted PART of a draw:

@@ -27,7 +27,7 @@ use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::transport::check::{
     check_accept, check_arrival, check_cancel, check_claims, check_composes_over, check_framer,
-    check_io, check_listen, check_locate, check_tail,
+    check_framer_fields, check_head_slots, check_io, check_listen, check_locate, check_tail,
 };
 use busbar_contract::abi::transport::{
     self, slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn,
@@ -37,9 +37,9 @@ use busbar_contract::abi::transport::{
 
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
 
-/// WHAT A TRANSPORT'S TAIL STATES, read once at bind and checked by the kind's own `check_tail`,
-/// `check_claims` and `check_composes_over`: its role, every scheme it answers for (the first is
-/// its own) and the claims it composes over. The host's registry view reads it through
+/// WHAT A TRANSPORT STATES, read once at bind and checked by the kind's own `check_tail`,
+/// `check_claims`, `check_claim_rows` and `check_composes_over`: its role, every scheme it answers
+/// for (the Statement's `claims`, the first its own) and the claims it composes over. The host's registry view reads it through
 /// [`crate::dispatch::Plugin::context`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransportFacts {
@@ -85,8 +85,20 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     let broke = |f: Fault| format!("the transport tail breaks {:?} at {}", f.rule, f.field);
     check_tail(&tail).map_err(broke)?;
     // SAFETY: `check_tail` refused a NULL list with a count; both lists are `'static` plugin data.
-    let claims: &[Claim] = unsafe { std::slice::from_raw_parts(tail.claims, tail.claims_len) };
-    check_claims(claims).map_err(broke)?;
+    let rows: &[Claim] =
+        unsafe { std::slice::from_raw_parts(tail.claim_rows, tail.claim_rows_len) };
+    check_claims(rows).map_err(broke)?;
+    // The scheme NAMES are the Statement's alone (signed, and byte-compared at admit); the tail has
+    // one row per name.
+    busbar_contract::abi::transport::check::check_claim_rows(st.claims_len, &tail)
+        .map_err(broke)?;
+    let names: &[AbiStr] = if st.claims_len == 0 {
+        &[]
+    } else {
+        // SAFETY: the loader's Statement check refused a NULL `claims` with a count; the list is
+        // `'static` plugin data.
+        unsafe { std::slice::from_raw_parts(st.claims, st.claims_len) }
+    };
     let under: &[AbiStr] = if tail.composes_over_len == 0 {
         &[]
     } else {
@@ -96,9 +108,9 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     check_composes_over(under).map_err(broke)?;
     Ok(TransportFacts {
         role: tail.role,
-        claims: claims
+        claims: names
             .iter()
-            .map(|c| owned(c.key, "claim"))
+            .map(|c| owned(*c, "claim"))
             .collect::<Result<_, _>>()?,
         composes_over: under
             .iter()
@@ -264,5 +276,34 @@ fn framer(a: &Answer, sink: FramerSink) -> Result<(), Fault> {
         sink.wire_cap as u64,
         sink.frame_cap as u64,
         pieces_cap,
-    )
+    )?;
+    // Only a field block's bytes are read here; payload never is.
+    if pieces
+        .iter()
+        .any(|p| p.flags & transport::PIECE_FIELDS != 0)
+    {
+        // SAFETY: `sink.frame` is the host's own buffer of `frame_cap` bytes; `check_framer` held
+        // `frame_len` within it.
+        let frame = unsafe {
+            reported(
+                sink.frame.cast_const(),
+                o.yielded.frame_len,
+                sink.frame_cap as u64,
+                "framer.frame_len",
+            )
+        }?;
+        check_framer_fields(pieces, frame)?;
+    }
+    let heads_cap = sink.heads_cap as u64;
+    // SAFETY: `sink.heads` is the host's own buffer of `heads_cap` `HeadSlots`s (NULL with a
+    // capacity of `0` on a host that takes none).
+    let heads = unsafe {
+        reported(
+            sink.heads.cast_const(),
+            u64::from(o.yielded.heads_len),
+            heads_cap,
+            "framer.heads_len",
+        )
+    }?;
+    check_head_slots(o, heads, heads_cap)
 }

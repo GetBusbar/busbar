@@ -328,6 +328,7 @@ fn test_manifest(name: &str, alias: &str, publisher: &str, version: &str) -> Man
         schema_derived: false,
         host: None,
         declares: Default::default(),
+        statement: None,
     }
 }
 
@@ -4150,7 +4151,8 @@ mod plane_fees_on_admin_usage {
 #[test]
 fn the_store_catalog_heads_with_the_linked_store_rows() {
     let svc = svc_with(tmp_plugins_dir("linked-head"), unsigned_ok_posture());
-    let (stores, _, default) = busbar_kernel::preflight::root_rows();
+    let rows = busbar_kernel::preflight::root_rows();
+    let (stores, default) = (rows.stores, rows.default_store_module);
     let linked: Vec<&str> = stores.iter().map(|s| s.0).collect();
     assert!(
         linked.contains(&default),
@@ -4166,4 +4168,32 @@ fn the_store_catalog_heads_with_the_linked_store_rows() {
         .map(|n| (*n, "store", "compiled-in", None))
         .collect();
     assert_eq!(head, want);
+}
+
+/// EVERY ADMIN MOMENT THE TRUST POLICY RESOLVES WARNS AS BOOT DOES: the catalog, reload, upload and
+/// rollback all resolve through the one `trust_policy` (none resolves it any other way), and it
+/// warns about a malformed anti-downgrade floor before resolving.
+#[test]
+fn every_admin_trust_resolution_warns_about_a_malformed_floor() {
+    use busbar_kernel::diagnostics::CONFIG_ANTIDOWNGRADE_FLOOR_INVALID;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let src = include_str!("../service_operations.rs");
+    assert_eq!(
+        src.matches("trust_policy(&self.app.plugins_cfg").count(),
+        4,
+        "catalog, reload, upload and rollback resolve through trust_policy"
+    );
+    assert_eq!(src.matches("TrustPolicy::from_config(").count(), 1);
+    let mut cfg = busbar_kernel::config::PluginsCfg::default();
+    cfg.min_versions.insert("p".into(), "v2".into());
+    let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        super::operations::trust_policy(&cfg, "1.6.0").expect("the policy resolves");
+    });
+    assert!(
+        cap.contains(&CONFIG_ANTIDOWNGRADE_FLOOR_INVALID.banner().to_string()),
+        "{:?}",
+        cap.messages()
+    );
 }

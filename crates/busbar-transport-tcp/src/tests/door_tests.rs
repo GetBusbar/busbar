@@ -62,7 +62,7 @@ struct Host {
     pieces: Vec<FramePiece>,
     /// Everything the framer answered: wire bytes, and frame bytes with their pieces' flags.
     wire_log: Vec<u8>,
-    frames: Vec<(Vec<u8>, u8)>,
+    frames: Vec<(Vec<u8>, u16)>,
     flags: u32,
 }
 
@@ -108,6 +108,8 @@ impl Host {
             pieces_cap: self.pieces.len(),
             now_monotonic_ns: 1,
             now_unix_ns: 1,
+            heads: std::ptr::null_mut(),
+            heads_cap: 0,
         }
     }
 

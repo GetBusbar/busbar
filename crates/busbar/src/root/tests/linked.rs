@@ -23,11 +23,11 @@
 //! one function, the equality tests below go red for the same reason that arm is unequal.
 
 use super::*;
+use crate::root::loader::sign::{DiagnosticDecl, SigningKey, TrustPolicy};
+use crate::root::loader::PluginRegistry;
 use crate::root::test_plugins;
 use busbar_kernel::plane::registry::{merged_boot_plane_decls, BuildCtx};
 use busbar_plugin_example_plane::PLANE_DECL as LINKED_DECL;
-use crate::root::loader::sign::{DiagnosticDecl, SigningKey, TrustPolicy};
-use crate::root::loader::PluginRegistry;
 
 /// The linked example plane, as the build table carries it.
 pub(super) static LINKED_HOT: [&hot::PlaneDecl; 1] = [&LINKED_DECL];
@@ -40,6 +40,7 @@ pub(super) fn linked(
     Linked {
         planes,
         hot_planes,
+        plane_doors: &[],
         protocols: &[],
         path_ingress: &[],
         body_ingress: &[],
@@ -228,7 +229,7 @@ fn dropped_again() -> Vec<DynPlane> {
 }
 
 /// The `PlaneDeclaration` a decl STATES — every field, mapped here from what the loader's admission
-/// read off the decl (`link_plane`; `busbar-plugin-loader`'s `plane_conformance_tests` hold that read
+/// read off the decl (`link_plane`; the loader's own `plane_conformance_tests` hold that read
 /// to the raw `#[repr(C)]` static, field for field) — with no adapter in between. The yardstick the
 /// installed row is held to: an adapter that dropped or defaulted any one field disagrees with it.
 fn stated(d: &'static hot::PlaneDecl) -> PlaneDeclaration {
@@ -1031,8 +1032,8 @@ fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does
 #[cfg(linked_egress)]
 #[test]
 fn the_egress_carrier_refuses_what_the_host_policy_refuses() {
-    use busbar_contract::abi::cold::export::{HostResult, HttpRequest};
     use crate::root::loader::EgressCarrier as _;
+    use busbar_contract::abi::cold::export::{HostResult, HttpRequest};
     for url in [
         "http://collector.example/v1",
         "https://127.0.0.1:9/v1",
@@ -1072,8 +1073,8 @@ fn the_egress_carrier_refuses_what_the_host_policy_refuses() {
 #[cfg(linked_egress)]
 #[tokio::test(flavor = "multi_thread")]
 async fn the_collector_policy_carries_octets_to_a_loopback_collector_and_nothing_else() {
-    use busbar_contract::abi::cold::export::{HostResult, HttpRequest};
     use crate::root::loader::{EgressCarrier as _, EgressPolicy};
+    use busbar_contract::abi::cold::export::{HostResult, HttpRequest};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

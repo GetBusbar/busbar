@@ -18,20 +18,22 @@ use std::path::Path;
 use std::ptr::addr_of;
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Op};
+use busbar_contract::abi::mechanism::check::check_statement;
 use busbar_contract::abi::mechanism::door::{
     Door, DoorFn, KindTailHead, MetricFamily, Statement, FAMILY_HISTOGRAM,
 };
 use busbar_contract::abi::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
+use busbar_contract::abi::mechanism::rendering::{render, RENDERING_MAGIC};
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, DOOR_SYMBOL, MECHANISM_VERSION};
+use busbar_contract::abi::transport::check::check_claim_rows;
+use busbar_contract::abi::transport::TransportTail;
 use libloading::Library;
 
 use super::plugin::{Bind, Plugin};
 use super::{host_slots, host_table_size, Kind, FIRST_SLOT};
 
-/// What a dropped plugin's signed manifest states about its door, checked before `dlopen`.
-///
-/// M3-secret: the signed `sign::Manifest` gains `mechanism_version`/`kind`/`kind_abi`, and these
-/// facts are then read from it rather than handed in.
+/// What a dropped plugin's signed manifest states about its door, checked before `dlopen`: the head
+/// of the manifest's Statement rendering ([`ManifestFacts::read`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ManifestFacts {
     /// The mechanism version the plugin was built against.
@@ -40,6 +42,102 @@ pub struct ManifestFacts {
     pub kind: KindCode,
     /// Its kind's ABI version.
     pub kind_abi: u32,
+}
+
+impl ManifestFacts {
+    /// The facts at the head of a Statement rendering
+    /// ([`rendering`](busbar_contract::abi::mechanism::rendering)): its magic, then the mechanism
+    /// version, the kind and the kind's ABI version.
+    ///
+    /// # Errors
+    ///
+    /// [`LoadError::Rendering`] for a rendering too short or without the magic, or naming no kind.
+    pub fn read(rendering: &[u8]) -> Result<Self, LoadError> {
+        let magic = RENDERING_MAGIC.len();
+        if rendering.len() < magic + 12 || &rendering[..magic] != RENDERING_MAGIC {
+            return Err(LoadError::Rendering(
+                "it does not start with a Statement rendering's head".into(),
+            ));
+        }
+        let word = |at: usize| {
+            u32::from_le_bytes([
+                rendering[at],
+                rendering[at + 1],
+                rendering[at + 2],
+                rendering[at + 3],
+            ])
+        };
+        let kind = word(magic + 4);
+        Ok(Self {
+            mechanism_version: word(magic),
+            kind: KindCode::from_raw(kind)
+                .ok_or_else(|| LoadError::Rendering(format!("it names kind {kind}")))?,
+            kind_abi: word(magic + 8),
+        })
+    }
+}
+
+/// A COMPILED-IN ROW (the design's One row: `LinkedRow{statement, door}`): the Statement rendering
+/// the row states and its door. Linked and dropped-in rows cross the same boundary: at load the
+/// door's own Statement is rendered and must equal [`LinkedRow::statement`] byte for byte, as a
+/// dropped plugin's must equal its signed manifest's.
+#[derive(Debug, Clone)]
+pub struct LinkedRow {
+    /// The Statement rendering the row states.
+    pub statement: Vec<u8>,
+    /// The door.
+    pub door: DoorFn,
+}
+
+impl LinkedRow {
+    /// The row a compiled-in door states: its Statement, rendered once, without opening the plugin
+    /// (no `validate` or `open` runs; the door function only answers its `'static` data).
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`rendering_of`] refuses.
+    pub fn of(door: DoorFn) -> Result<Self, LoadError> {
+        Ok(Self {
+            statement: rendering_of(door)?,
+            door,
+        })
+    }
+}
+
+/// THE RENDERING a door's Statement makes, for any kind: the door's head checks (magic, mechanism,
+/// size, a known kind at this host's ABI version for it) and the Statement's, then
+/// [`render`]. The pack tool signs it into a dropped plugin's manifest; [`LinkedRow::of`] states it
+/// for a compiled-in one.
+///
+/// # Errors
+///
+/// The refusal the door or its Statement earns.
+pub fn rendering_of(door_fn: DoorFn) -> Result<Vec<u8>, LoadError> {
+    let (door, _) = read_door(door_fn(), None)?;
+    let st = statement(&door)?;
+    // SAFETY: `statement` ran `check_statement`: every list is its stated count of `'static`
+    // entries.
+    unsafe { render(&st) }.map_err(|e| LoadError::Rendering(format!("{} is too long", e.0)))
+}
+
+/// THE PACK-TIME RENDERING: `path`'s door, if the library exports one, rendered
+/// ([`rendering_of`]) for the pack tool to sign into the manifest. `None` for a library with no
+/// door (a pre-1.6.0 artifact keeps today's handling). Runs on the publisher's machine, never in the
+/// engine's boot: the engine reads the signed rendering and opens the library only at admit.
+///
+/// # Errors
+///
+/// [`LoadError::Open`] when the library does not load; the door's or Statement's refusal.
+pub fn rendering_of_library(path: &Path) -> Result<Option<Vec<u8>>, LoadError> {
+    let lib = crate::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
+    // SAFETY: `DOOR_SYMBOL` is typed `DoorFn` by the mechanism; `lib` outlives every use of it.
+    let door = match unsafe { lib.get::<DoorFn>(DOOR_SYMBOL).map(|s| *s) } {
+        Ok(door) => door,
+        Err(_) => return Ok(None),
+    };
+    let rendering = rendering_of(door);
+    drop(Lib(Some(lib), None));
+    rendering.map(Some)
 }
 
 /// Why a plugin was refused. Every refusal names the value it saw and the host's.
@@ -140,6 +238,10 @@ pub enum LoadError {
     BadStatement(String),
     /// The Statement's `kind_tail` is malformed.
     KindTail(String),
+    /// A Statement rendering (a manifest's or a row's) is malformed.
+    Rendering(String),
+    /// The door's Statement is not the one the manifest (or the compiled-in row) states.
+    StatementMismatch,
 }
 
 impl fmt::Display for LoadError {
@@ -192,6 +294,10 @@ impl fmt::Display for LoadError {
             }
             Self::BadStatement(e) => write!(f, "the Statement is malformed: {e}"),
             Self::KindTail(e) => write!(f, "the Statement's kind tail is malformed: {e}"),
+            Self::Rendering(e) => write!(f, "the stated Statement rendering is malformed: {e}"),
+            Self::StatementMismatch => f.write_str(
+                "the plugin's Statement is not the one its manifest states — repack the plugin",
+            ),
         }
     }
 }
@@ -206,12 +312,17 @@ pub(crate) struct Validated {
 }
 
 /// The loaded library, unloaded on the loader's worker when the last instance handle drops.
-pub(crate) struct Lib(Option<Library>);
+pub(crate) struct Lib(Option<Library>, Option<crate::stage::Staged>);
 
 impl Drop for Lib {
     fn drop(&mut self) {
+        let staged = self.1.take();
         if let Some(lib) = self.0.take() {
-            reap(Box::new(move || crate::dlclose_on_worker(lib)));
+            // The staged backing (a verified-bytes load) is released only after the unload.
+            reap(Box::new(move || {
+                crate::dlclose_on_worker(lib);
+                drop(staged);
+            }));
         }
     }
 }
@@ -298,14 +409,50 @@ pub(crate) static UNLOADS: std::sync::atomic::AtomicU64 = std::sync::atomic::Ato
 #[cfg(test)]
 pub(crate) static HUNG_WARNED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// THE DROPPED-IN DOOR: `path`'s manifest facts, then `dlopen`, then [`DOOR_SYMBOL`], then
-/// [`validate`]. A mechanism version the host does not speak is refused before the library is
-/// opened.
+/// THE DROPPED-IN DOOR: `path`'s signed manifest rendering `stated` — its head facts, checked before
+/// `dlopen` — then `dlopen`, then [`DOOR_SYMBOL`], then [`validate`], then the door's own Statement
+/// rendered and compared with `stated` byte for byte. A mechanism version the host does not speak is
+/// refused before the library is opened.
 pub fn load_dropped<K: Kind>(
     path: &Path,
-    facts: &ManifestFacts,
+    stated: &[u8],
     bind: Bind,
 ) -> Result<Plugin<K>, LoadError> {
+    check_facts::<K>(stated)?;
+    let lib = crate::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
+    bind_library::<K>(Lib(Some(lib), None), stated, bind)
+}
+
+/// [`load_dropped`] over a dropped plugin's VERIFIED library bytes (the bytes its signed manifest's
+/// `sha256` names): staged by the loader's one staging path and opened from exactly those bytes.
+/// `display` labels a refusal.
+pub fn load_dropped_bytes<K: Kind>(
+    bytes: &[u8],
+    display: &str,
+    stated: &[u8],
+    bind: Bind,
+) -> Result<Plugin<K>, LoadError> {
+    check_facts::<K>(stated)?;
+    let (lib, staged) =
+        crate::stage::load_library_from_bytes(bytes, display).map_err(LoadError::Open)?;
+    bind_library::<K>(Lib(Some(lib), Some(staged)), stated, bind)
+}
+
+/// The door of an opened library, admitted against `stated`.
+fn bind_library<K: Kind>(lib: Lib, stated: &[u8], bind: Bind) -> Result<Plugin<K>, LoadError> {
+    let door = {
+        let l = lib.0.as_ref().expect("an opened library");
+        // SAFETY: `DOOR_SYMBOL` is typed `DoorFn` by the mechanism; the symbol is copied out as a
+        // plain fn pointer, kept valid by `Lib` for as long as any handle to the instance lives.
+        unsafe { l.get::<DoorFn>(DOOR_SYMBOL).map(|s| *s) }
+    };
+    let door = door.map_err(|e| LoadError::NoDoor(e.to_string()))?;
+    Plugin::bind(admitted::<K>(door, stated)?, Some(lib), bind)
+}
+
+/// The stated rendering's head facts against the host's, before anything is opened.
+fn check_facts<K: Kind>(stated: &[u8]) -> Result<(), LoadError> {
+    let facts = ManifestFacts::read(stated)?;
     if facts.mechanism_version != MECHANISM_VERSION {
         return Err(LoadError::ManifestMechanism {
             stated: facts.mechanism_version,
@@ -324,13 +471,7 @@ pub fn load_dropped<K: Kind>(
             host: K::CODE.abi_version(),
         });
     }
-    let lib = crate::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
-    // SAFETY: `DOOR_SYMBOL` is typed `DoorFn` by the mechanism; the symbol is copied out as a plain
-    // fn pointer, kept valid by `Lib` for as long as any handle to the instance lives.
-    let door = unsafe { lib.get::<DoorFn>(DOOR_SYMBOL).map(|s| *s) };
-    let lib = Lib(Some(lib));
-    let door = door.map_err(|e| LoadError::NoDoor(e.to_string()))?;
-    Plugin::bind(validate::<K>(door)?, Some(lib), bind)
+    Ok(())
 }
 
 /// What a staged library turned out to be.
@@ -342,11 +483,13 @@ pub(crate) enum Staging<K: Kind> {
 }
 
 /// THE DROPPED-IN DOOR OF A STAGED LIBRARY: `lib` (already `dlopen`ed from its signed tarball's
-/// verified bytes, `staged` its backing) through [`DOOR_SYMBOL`] and the same [`validate`]. The
-/// backing is held for the process once the plugin binds: a plugin's image stays resident.
+/// verified bytes, `staged` its backing) through [`DOOR_SYMBOL`] and the same [`validate`], its
+/// door's Statement compared with the `stated` rendering its signed manifest carries — a door whose
+/// manifest states none is refused. The backing lives as long as the instance, image first.
 pub(crate) fn load_staged<K: Kind>(
     lib: Library,
     staged: crate::stage::Staged,
+    stated: Option<&[u8]>,
     bind: Bind,
 ) -> Result<Staging<K>, LoadError> {
     // SAFETY: `DOOR_SYMBOL` is typed `DoorFn` by the mechanism; the symbol is copied out as a plain
@@ -355,17 +498,31 @@ pub(crate) fn load_staged<K: Kind>(
     let Ok(door) = door else {
         return Ok(Staging::NotADoor(lib, staged));
     };
-    let plugin = Plugin::bind(validate::<K>(door)?, Some(Lib(Some(lib))), bind)?;
-    static HELD: std::sync::Mutex<Vec<crate::stage::Staged>> = std::sync::Mutex::new(Vec::new());
-    HELD.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(staged);
-    Ok(Staging::Door(plugin))
+    let stated = stated.ok_or(LoadError::StatementMismatch)?;
+    let lib = Lib(Some(lib), Some(staged));
+    Ok(Staging::Door(Plugin::bind(
+        admitted::<K>(door, stated)?,
+        Some(lib),
+        bind,
+    )?))
 }
 
-/// THE LINKED DOOR: a compiled-in row's [`DoorFn`], through the same [`validate`].
-pub fn load_linked<K: Kind>(door: DoorFn, bind: Bind) -> Result<Plugin<K>, LoadError> {
-    Plugin::bind(validate::<K>(door)?, None, bind)
+/// THE LINKED DOOR: a compiled-in row's [`DoorFn`], through the same [`validate`] and the same
+/// comparison of the door's Statement with the one the row states.
+pub fn load_linked<K: Kind>(row: &LinkedRow, bind: Bind) -> Result<Plugin<K>, LoadError> {
+    Plugin::bind(admitted::<K>(row.door, &row.statement)?, None, bind)
+}
+
+/// [`validate`], then the door's Statement rendered and compared with the `stated` rendering.
+fn admitted<K: Kind>(door: DoorFn, stated: &[u8]) -> Result<Validated, LoadError> {
+    let v = validate::<K>(door)?;
+    // SAFETY: `validate` ran `check_statement` on this Statement.
+    let own = unsafe { render(&v.statement) }
+        .map_err(|e| LoadError::Rendering(format!("{} is too long", e.0)))?;
+    if own != stated {
+        return Err(LoadError::StatementMismatch);
+    }
+    Ok(v)
 }
 
 /// The door checks, in the order the mechanism states them. Shared by both origins.
@@ -373,8 +530,10 @@ pub(crate) fn validate<K: Kind>(door_fn: DoorFn) -> Result<Validated, LoadError>
     validate_door::<K>(door_fn())
 }
 
-/// [`validate`] on the pointer a door function answered.
-pub(crate) fn validate_door<K: Kind>(p: *const Door) -> Result<Validated, LoadError> {
+/// The door's head checks, in the mechanism's order: not NULL, the magic, the mechanism version, a
+/// size that covers the host's, a kind the host has, the kind `want` asks for (any, for `None`), and
+/// that kind's ABI version.
+fn read_door(p: *const Door, want: Option<KindCode>) -> Result<(Door, KindCode), LoadError> {
     if p.is_null() {
         return Err(LoadError::NullDoor);
     }
@@ -405,11 +564,8 @@ pub(crate) fn validate_door<K: Kind>(p: *const Door) -> Result<Validated, LoadEr
     // SAFETY: as above; the door covers the host's size.
     let door = unsafe { p.read_unaligned() };
     let kind = KindCode::from_raw(door.kind).ok_or(LoadError::UnknownKind(door.kind))?;
-    if kind != K::CODE {
-        return Err(LoadError::WrongKind {
-            door: kind,
-            want: K::CODE,
-        });
+    if let Some(want) = want.filter(|w| *w != kind) {
+        return Err(LoadError::WrongKind { door: kind, want });
     }
     if door.kind_abi != kind.abi_version() {
         return Err(LoadError::KindAbi {
@@ -418,6 +574,12 @@ pub(crate) fn validate_door<K: Kind>(p: *const Door) -> Result<Validated, LoadEr
             host: kind.abi_version(),
         });
     }
+    Ok((door, kind))
+}
+
+/// [`validate`] on the pointer a door function answered.
+pub(crate) fn validate_door<K: Kind>(p: *const Door) -> Result<Validated, LoadError> {
+    let (door, kind) = read_door(p, Some(K::CODE))?;
     let slots = table::<K>(door.ops)?;
     let statement = statement(&door)?;
     Ok(Validated {
@@ -512,17 +674,48 @@ fn statement(door: &Door) -> Result<Statement, LoadError> {
             return Err(LoadError::BadStatement(format!("family {i} has no name")));
         }
     }
-    if !st.kind_tail.is_null() {
-        // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`.
-        let tail = unsafe { st.kind_tail.read_unaligned() };
-        if (tail.size as usize) < size_of::<KindTailHead>() {
-            return Err(LoadError::KindTail(format!(
-                "its head states {} bytes, less than the head itself",
-                tail.size
-            )));
-        }
-    }
+    // SAFETY: a door's Statement is `'static` plugin data; `check_statement` refuses a NULL list
+    // with a count before it reads the list.
+    unsafe { check_statement(&st) }
+        .map_err(|f| LoadError::BadStatement(format!("{} breaks {:?}", f.field, f.rule)))?;
+    kind_tail(&st)?;
     Ok(st)
+}
+
+/// A Statement's kind tail, at admit: its head states at least itself, and a transport's tail is a
+/// whole [`TransportTail`] with exactly one claim row per scheme the Statement names (the names
+/// are the Statement's alone).
+pub(crate) fn kind_tail(st: &Statement) -> Result<(), LoadError> {
+    if st.kind_tail.is_null() {
+        // A transport that names claims has a row per name, so it has a tail.
+        if st.kind == KindCode::Transport as u32 && st.claims_len != 0 {
+            return Err(LoadError::KindTail(
+                "a transport names claims but states no tail for their rows".into(),
+            ));
+        }
+        return Ok(());
+    }
+    // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`.
+    let tail = unsafe { st.kind_tail.read_unaligned() };
+    if (tail.size as usize) < size_of::<KindTailHead>() {
+        return Err(LoadError::KindTail(format!(
+            "its head states {} bytes, less than the head itself",
+            tail.size
+        )));
+    }
+    if st.kind != KindCode::Transport as u32 {
+        return Ok(());
+    }
+    if (tail.size as usize) < size_of::<TransportTail>() {
+        return Err(LoadError::KindTail(format!(
+            "a transport tail states {} bytes, less than its claim rows",
+            tail.size
+        )));
+    }
+    // SAFETY: a transport's kind tail is a `'static` `TransportTail` of the size it states.
+    let t = unsafe { st.kind_tail.cast::<TransportTail>().read_unaligned() };
+    check_claim_rows(st.claims_len, &t)
+        .map_err(|f| LoadError::KindTail(format!("{} breaks {:?}", f.field, f.rule)))
 }
 
 fn str_is_bad(s: AbiStr) -> bool {

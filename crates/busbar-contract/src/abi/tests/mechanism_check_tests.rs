@@ -184,3 +184,245 @@ fn a_string_counted_with_a_null_pointer_is_fault() {
         Err(fault(Rule::NullWithCount, "t"))
     );
 }
+
+// ── THE STATEMENT'S LISTS (the design's One Statement: marks, rewrites, sections, needs) ──────
+
+use crate::abi::host::conn::connector::{Need, DIRECTION_INBOUND};
+use crate::abi::mechanism::call::Blob;
+use crate::abi::mechanism::door::{
+    MarkWord, Rewrite, Section, MARK_BLOCKS, MARK_CATALOG, MARK_EPHEMERAL, MARK_ONE_INSTANCE,
+    MARK_WORD_CARRIER, MARK_WORD_HOOK, REWRITE_ALIAS, REWRITE_KEY, REWRITE_SUGAR, SECTION_CONSUMED,
+    SECTION_DECLARING,
+};
+use crate::abi::sdk::door::{abi_str, statement};
+
+const NONE: AbiStr = AbiStr {
+    ptr: core::ptr::null(),
+    len: 0,
+};
+
+fn word(class: u32, w: &'static str) -> MarkWord {
+    MarkWord {
+        class,
+        _reserved: 0,
+        word: abi_str(w),
+    }
+}
+
+fn rewrite(class: u32, from: &'static str, to: AbiStr) -> Rewrite {
+    Rewrite {
+        class,
+        _reserved: 0,
+        from: abi_str(from),
+        to,
+    }
+}
+
+fn section(name: &'static str, flags: u32) -> Section {
+    Section {
+        name: abi_str(name),
+        flags,
+        _reserved: 0,
+    }
+}
+
+#[test]
+fn the_flag_marks_are_single_distinct_bits_and_an_unknown_bit_is_fault() {
+    let m = [MARK_ONE_INSTANCE, MARK_EPHEMERAL, MARK_CATALOG, MARK_BLOCKS];
+    let mut seen = 0u64;
+    for b in m {
+        assert_eq!(b.count_ones(), 1);
+        assert_eq!(seen & b, 0);
+        seen |= b;
+    }
+    assert_eq!(seen, MARKS_KNOWN);
+    assert_eq!(check_marks(MARKS_KNOWN, &[]), Ok(()));
+    assert_eq!(
+        check_marks(1 << 4, &[]),
+        Err(fault(Rule::UnknownCode, "statement.marks"))
+    );
+}
+
+#[test]
+fn a_word_mark_has_a_known_class_and_a_word() {
+    let ok = [
+        word(MARK_WORD_HOOK, "cheapest"),
+        word(MARK_WORD_CARRIER, "x-api-key"),
+    ];
+    assert_eq!(check_marks(0, &ok), Ok(()));
+    assert_eq!(
+        check_marks(0, &[word(3, "w")]),
+        Err(fault(Rule::UnknownCode, "mark_word.class"))
+    );
+    assert_eq!(
+        check_marks(0, &[word(0, "w")]),
+        Err(fault(Rule::UnknownCode, "mark_word.class"))
+    );
+    let mut empty = word(MARK_WORD_HOOK, "w");
+    empty.word = NONE;
+    assert_eq!(
+        check_marks(0, &[empty]),
+        Err(fault(Rule::Missing, "mark_word.word"))
+    );
+}
+
+#[test]
+fn a_rewrite_moves_a_key_to_a_path_and_an_alias_or_sugar_names_nothing_else() {
+    let ok = [
+        rewrite(REWRITE_ALIAS, "tokens", NONE),
+        rewrite(REWRITE_SUGAR, "sugar", NONE),
+        rewrite(REWRITE_KEY, "key_ref", abi_str("key.ref")),
+    ];
+    assert_eq!(check_rewrites(&ok), Ok(()));
+    assert_eq!(
+        check_rewrites(&[rewrite(4, "x", NONE)]),
+        Err(fault(Rule::UnknownCode, "rewrite.class"))
+    );
+    assert_eq!(
+        check_rewrites(&[rewrite(REWRITE_ALIAS, "", NONE)]),
+        Err(fault(Rule::Missing, "rewrite.from"))
+    );
+    assert_eq!(
+        check_rewrites(&[rewrite(REWRITE_KEY, "key_ref", NONE)]),
+        Err(fault(Rule::Missing, "rewrite.to"))
+    );
+    assert_eq!(
+        check_rewrites(&[rewrite(REWRITE_ALIAS, "tokens", abi_str("x"))]),
+        Err(fault(Rule::Contradiction, "rewrite.to"))
+    );
+}
+
+#[test]
+fn a_statement_has_at_most_one_declaring_section() {
+    assert_eq!(check_statement_sections(&[]), Ok(()));
+    assert_eq!(
+        check_statement_sections(&[
+            section("tools", SECTION_DECLARING),
+            section("providers", SECTION_CONSUMED)
+        ]),
+        Ok(())
+    );
+    assert_eq!(
+        check_statement_sections(&[
+            section("a", SECTION_DECLARING),
+            section("b", SECTION_DECLARING)
+        ]),
+        Err(fault(Rule::NotExactlyOne, "section.flags"))
+    );
+    assert_eq!(
+        check_statement_sections(&[section("a", 8)]),
+        Err(fault(Rule::UnknownCode, "section.flags"))
+    );
+    assert_eq!(
+        check_statement_sections(&[section("", SECTION_CONSUMED)]),
+        Err(fault(Rule::Missing, "section.name"))
+    );
+}
+
+const WORDS: &[MarkWord] = &[MarkWord {
+    class: MARK_WORD_HOOK,
+    _reserved: 0,
+    word: AbiStr {
+        ptr: b"usage".as_ptr(),
+        len: 5,
+    },
+}];
+
+const NEEDS: &[Need] = &[Need {
+    direction: DIRECTION_INBOUND,
+    egress_class: 0,
+    transport: AbiStr {
+        ptr: b"https".as_ptr(),
+        len: 5,
+    },
+    auth: NONE,
+    target_from: NONE,
+    trust_from: NONE,
+    details: Blob {
+        ptr: core::ptr::null(),
+        len: 0,
+        fmt: 0,
+        flags: 0,
+    },
+    keep_response_headers: core::ptr::null(),
+    keep_response_headers_len: 0,
+    timeout_ms: 0,
+}];
+
+#[test]
+fn the_sdk_statement_states_no_marks_rewrites_sections_needs_paths_or_answers() {
+    let st = statement("p", "1.0.0", 1);
+    assert_eq!(st.marks, 0);
+    assert!(st.mark_words.is_null() && st.mark_words_len == 0);
+    assert!(st.rewrites.is_null() && st.rewrites_len == 0);
+    assert!(st.sections.is_null() && st.sections_len == 0);
+    assert!(st.needs.is_null() && st.needs_len == 0);
+    assert_eq!(st.target_from.len, 0);
+    assert_eq!(st.trust_from.len, 0);
+    assert!(st.answers.is_null() && st.answers_len == 0);
+    assert!(st.claims.is_null() && st.claims_len == 0);
+    // SAFETY: every list is NULL with a zero count.
+    assert_eq!(unsafe { check_statement(&st) }, Ok(()));
+}
+
+/// CLAIMS ARE A TRANSPORT'S FACT: a Statement of any other kind that states URL schemes is refused
+/// at admit, so no store, plane or other kind can state a scheme Discover might read. RED: a plane
+/// Statement claiming `https` is refused; the same claim on a transport Statement passes.
+#[test]
+fn a_statement_of_another_kind_stating_claims_is_refused() {
+    const CLAIMS: &[AbiStr] = &[abi_str("https")];
+    let mut st = statement("p", "1.0.0", 1);
+    st.claims = CLAIMS.as_ptr();
+    st.claims_len = CLAIMS.len();
+    st.kind = crate::abi::mechanism::KindCode::Plane as u32;
+    // SAFETY: the claims list is a `'static` array of its stated count.
+    assert_eq!(
+        unsafe { check_statement(&st) },
+        Err(fault(Rule::Contradiction, "statement.claims"))
+    );
+    st.kind = crate::abi::mechanism::KindCode::Transport as u32;
+    // SAFETY: as above.
+    assert_eq!(unsafe { check_statement(&st) }, Ok(()));
+}
+
+#[test]
+fn a_statement_list_is_checked_whole_and_a_null_list_with_a_count_is_fault() {
+    let mut st = statement("p", "1.0.0", 1);
+    st.mark_words = WORDS.as_ptr();
+    st.mark_words_len = WORDS.len();
+    st.needs = NEEDS.as_ptr();
+    st.needs_len = NEEDS.len();
+    // SAFETY: the lists are `'static` arrays of their stated counts.
+    assert_eq!(unsafe { check_statement(&st) }, Ok(()));
+    for (field, set) in [
+        (
+            "statement.mark_words",
+            (|s: &mut Statement| s.mark_words = core::ptr::null()) as fn(&mut Statement),
+        ),
+        ("statement.rewrites", |s| s.rewrites_len = 1),
+        ("statement.sections", |s| s.sections_len = 1),
+        ("statement.needs", |s| s.needs = core::ptr::null()),
+        ("statement.answers", |s| s.answers_len = 1),
+        ("statement.claims", |s| {
+            s.kind = crate::abi::mechanism::KindCode::Transport as u32;
+            s.claims_len = 1;
+        }),
+        ("statement.target_from", |s| s.target_from.len = 1),
+    ] {
+        let mut bad = st;
+        set(&mut bad);
+        // SAFETY: a NULL list is refused before it is read; the others are as above.
+        assert_eq!(
+            unsafe { check_statement(&bad) },
+            Err(fault(Rule::NullWithCount, field)),
+            "{field}"
+        );
+    }
+    let mut bad = st;
+    bad.marks = 1 << 9;
+    // SAFETY: as above.
+    assert_eq!(
+        unsafe { check_statement(&bad) },
+        Err(fault(Rule::UnknownCode, "statement.marks"))
+    );
+}

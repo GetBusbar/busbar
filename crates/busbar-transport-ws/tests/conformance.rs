@@ -107,6 +107,7 @@ fn dropped_in() -> &'static DynTransport {
             schema_derived: false,
             host: None,
             declares: Default::default(),
+            statement: None,
         };
         let signed = sign(&release(), manifest, &lib);
         let tarball =

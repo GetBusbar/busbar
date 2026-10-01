@@ -19,6 +19,7 @@
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
+use crate::abi::mechanism::rendering::ReadNeed;
 use crate::ids::StreamId;
 use crate::transport::wire::WireStatusClass;
 use crate::transport::ConnFacts;
@@ -50,6 +51,13 @@ pub struct OpenDesc<'a> {
     pub body: &'a [u8],
     /// Milliseconds the open may take; `0` = the host's default.
     pub timeout_ms: u64,
+    /// The opening message's method, a head word (`RequestPiece::method`); empty = none. A framer
+    /// whose wire has head words takes it as the request's own, byte for byte; one without ignores
+    /// it.
+    pub method: &'a [u8],
+    /// The opening message's target, a head word (`RequestPiece::target`: the path and query, or
+    /// what the framer's protocol names a target); empty = none.
+    pub head_target: &'a [u8],
 }
 
 /// What a piece a connection delivered carries.
@@ -57,7 +65,11 @@ pub struct OpenDesc<'a> {
 pub enum PieceKind {
     /// Payload bytes.
     Body,
-    /// A head: the far end's fields (a response head, trailers), rendered as bytes.
+    /// A head: the far end's fields, as the field block
+    /// ([`crate::abi::transport::fields`]) renders them, hop-by-hop fields dropped. The far end's
+    /// HEAD is ONE fields frame, the answer's FIRST, carrying the status; it comes even when empty
+    /// (a `len` of `0`), so it always precedes the first [`PieceKind::Body`]. A fields frame after
+    /// the body is the far end's trailers.
     Fields,
     /// A hook's answer.
     HookReply,
@@ -86,6 +98,10 @@ pub struct Piece {
     pub status_namespace: Option<String>,
     /// How long the far side asked to be left alone, in seconds.
     pub retry_after_secs: Option<u64>,
+    /// On the far end's HEAD (a [`PieceKind::Fields`] that ends its frame): where in the caller's
+    /// buffer its reason phrase is, exactly as sent, right after the field block's bytes. `None`
+    /// where the wire has none (HTTP/2) or the caller's buffer could not also hold it.
+    pub reason: Option<core::ops::Range<usize>>,
 }
 
 /// Why a connection operation did not answer with what was asked. The refusals carry the text an
@@ -112,9 +128,11 @@ pub enum ConnError {
     Unarmed,
 }
 
-impl std::fmt::Display for ConnError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
+impl ConnError {
+    /// The refusal's text, as an operator reads it.
+    #[must_use]
+    pub const fn text(self) -> &'static str {
+        match self {
             Self::Pending => "nothing is ready on the connection yet",
             Self::Timeout => "the connection's deadline passed",
             Self::Closed => "the connection is closed",
@@ -123,7 +141,13 @@ impl std::fmt::Display for ConnError {
             Self::Refused => "the connection was refused",
             Self::Fault => "the host failed the connection call",
             Self::Unarmed => "this plugin was handed no connection table",
-        })
+        }
+    }
+}
+
+impl std::fmt::Display for ConnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.text())
     }
 }
 
@@ -205,6 +229,44 @@ pub trait Conns: Send + Sync {
     ///
     /// [`ConnError::NotOwner`], [`ConnError::Closed`].
     fn close(&self, caller: InstanceId, conn: ConnId) -> Result<(), ConnError>;
+}
+
+/// THE HOST'S CONNECTION TABLE, as the host declares an instance's needs on it (host-side: never
+/// lowered to a plugin). The loader declares every need an instance's signed Statement states: a
+/// need whose target the plugin names at bind, a need whose `target_from` names a config path at
+/// every `open` and `refresh`, with the target that path resolved to in the instance's settings.
+/// The host's need-admission service reads the answers back.
+pub trait DeclaredConns: Conns {
+    /// Record that `owner` declared `need` (its index in the instance's Statement), as the Statement
+    /// states it: the whole need — direction, transport, auth, egress class, target and trust
+    /// sources, details. `target` is what the need's `target_from` resolved to in the instance's
+    /// settings (`None`: it resolved to nothing, or the need has no `target_from`); a need declared
+    /// with a target dials that target only. Declaring the same need again replaces its record. The
+    /// answer is kept: [`DeclaredConns::declared`] reads it back.
+    ///
+    /// # Errors
+    ///
+    /// [`ConnError::Refused`] when the host will not carry the need as declared, and for a need
+    /// whose `target_from` resolved to nothing.
+    fn declare(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        spec: &ReadNeed,
+        target: Option<&str>,
+    ) -> Result<(), ConnError>;
+
+    /// What [`DeclaredConns::declare`] answered for `owner`'s `need`; `None` = never declared.
+    fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>>;
+
+    /// Whether `owner`'s `need` is carried over a FRAMED transport (a framer composed over a
+    /// carrier, http's kind): its request goes out as one opening message, head words, fields and
+    /// body, so the host opens it when the request is whole. A raw byte stream, or a need never
+    /// declared, is not.
+    fn framed(&self, owner: InstanceId, need: NeedId) -> bool {
+        let _ = (owner, need);
+        false
+    }
 }
 
 /// THE HOST-SIDE READER'S CONNECTION TABLE: [`Conns`] plus a read that wakes a [`Waker`] instead of

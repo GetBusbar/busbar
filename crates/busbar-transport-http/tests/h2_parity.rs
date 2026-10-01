@@ -150,6 +150,8 @@ fn capture_door(port: u16, h2: bool) -> Vec<u8> {
         pieces_cap: 8,
         now_monotonic_ns: 5_000_000_000,
         now_unix_ns: 1_790_000_000_000_000_000,
+        heads: std::ptr::null_mut(),
+        heads_cap: 0,
     };
     let mut out = Vec::new();
     let mut facts: ConnFacts = z();

@@ -895,9 +895,10 @@ pub unsafe fn hook_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
 /// Re-export the export wire types so a plugin author names `busbar_contract::abi::sdk::ExportStream` (etc.)
 /// without a direct `busbar-plugin` dependency, mirroring the hook/auth re-export path.
 pub use crate::abi::cold::export::{
-    CheckPhase, ExportField, ExportRequest, ExportResponse, ExportStream, HostOp, HostResult,
-    HttpRequest, HttpResponse, MetricFamily, MetricSample, Rotation, RotationFault,
+    ExportRequest, ExportResponse, HostOp, HostResult, HttpRequest, HttpResponse, MetricFamily,
+    MetricSample, Rotation, RotationFault,
 };
+pub use crate::abi::export::{CheckPhase, ExportField, ExportStream};
 
 /// What a sink answers a delivery (or a resume) with when it has the host act for it (export ABI
 /// minor 4): finished, or these [`HostOp`]s first — the host performs them and calls
@@ -941,9 +942,8 @@ pub use crate::abi::cold::observe::{
 /// Re-export the endpoint wire types (plugin route registration + dispatch) so an export/hook
 /// author names `busbar_contract::abi::sdk::Route` / `EndpointRequest` (etc.) without a direct
 /// `busbar-plugin` dependency.
-pub use crate::abi::cold::endpoint::{
-    EndpointRequest, EndpointResponse, Route, RouteAuth, RouteMethod,
-};
+pub use crate::abi::cold::endpoint::{EndpointRequest, EndpointResponse};
+pub use crate::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
 
 /// The sync contract a `kind: export` plugin author implements. [`streams`](ExportHandler::streams)
 /// declares which observability streams THIS instance carries (asked once at load); `deliver` hands

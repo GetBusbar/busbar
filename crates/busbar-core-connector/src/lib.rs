@@ -51,9 +51,14 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
+use busbar_contract::abi::host::conn::connector::{
+    DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB,
+};
+use busbar_contract::abi::host::service::DEST_PLAINTEXT;
+use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::conn::{
-    ConnError, ConnId, ConnSlab, Conns, InstanceId, NeedId, OpenDesc, Piece, PieceKind, PollConns,
-    Ticket, NO_TICKET,
+    ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, Piece,
+    PieceKind, PollConns, Ticket, NO_TICKET,
 };
 use busbar_contract::ids::StreamId;
 use busbar_contract::transport::wire::WireStatusClass;
@@ -123,6 +128,19 @@ impl DialJudge for LiteralsOnly {
     }
 }
 
+/// THE SCHEME RULE OF A NEED'S EGRESS CLASS (`abi::host::conn::connector`, `EGRESS_*`), held
+/// against the address the judge pinned: open-web dials over connection security only;
+/// loopback-allowed over connection security, or in plaintext to loopback only; every other
+/// class takes the scheme its target names (operator-infrastructure's plaintext and private
+/// targets included). Which addresses a class admits at all is the kernel judge's, per class.
+fn class_admits(egress_class: u32, secure: bool, addr: SocketAddr) -> bool {
+    match egress_class {
+        EGRESS_OPEN_WEB => secure,
+        EGRESS_LOOPBACK_ALLOWED => secure || addr.ip().is_loopback(),
+        _ => true,
+    }
+}
+
 /// What the connector holds for one declared need.
 #[derive(Debug, Clone)]
 struct DeclaredNeed {
@@ -139,6 +157,8 @@ type Answer = Arc<Mutex<(Option<Result<SocketAddr, Verdict>>, Option<Waker>)>>;
 /// read or wait that found it unanswered.
 struct Judging {
     planned: Option<Planned>,
+    /// The need's egress class, whose scheme rule the pinned address is held to.
+    egress_class: u32,
     /// Writes the caller made before the dial, in order.
     early: Vec<(Vec<u8>, bool)>,
     answer: Answer,
@@ -151,6 +171,8 @@ struct Held {
     judging: Mutex<Option<Judging>>,
     /// The piece a short caller buffer left, and whether the end was answered.
     rest: Mutex<(Option<Piece>, Vec<u8>, bool)>,
+    /// The far end's reason phrase, held until its head's last piece is read.
+    reason: Mutex<Option<Vec<u8>>>,
 }
 
 impl std::fmt::Debug for Held {
@@ -159,12 +181,18 @@ impl std::fmt::Debug for Held {
     }
 }
 
+/// A need as an instance declared it, whole, and the answer its declaration got.
+type Declared = (ReadNeed, Result<(), ConnError>);
+
 /// THE CONNECTOR: the host side of the connection table.
 pub struct Connector {
     slab: ConnSlab<Held>,
     /// The transport each declared need names, the egress class its dials are judged under, and
     /// the target its config names (`target_from`), when it names one.
     over: Mutex<HashMap<(InstanceId, NeedId), DeclaredNeed>>,
+    /// Every need an instance declared through [`DeclaredConns::declare`], whole, and the answer
+    /// it got.
+    declared: Mutex<HashMap<(InstanceId, NeedId), Declared>>,
     transports: RwLock<Transports>,
     tls: Option<Arc<rustls::ClientConfig>>,
     wake: WakeTicket,
@@ -182,6 +210,7 @@ impl Default for Connector {
         Self {
             slab: ConnSlab::default(),
             over: Mutex::new(HashMap::new()),
+            declared: Mutex::new(HashMap::new()),
             transports: RwLock::new(Transports::default()),
             tls: None,
             wake: Arc::new(|_| {}),
@@ -247,6 +276,13 @@ impl Connector {
             judge,
             ..Self::default()
         }
+    }
+
+    /// The need `owner` declared as `need`, whole, as [`DeclaredConns::declare`] received it.
+    #[must_use]
+    pub fn declared_spec(&self, owner: InstanceId, need: NeedId) -> Option<ReadNeed> {
+        let declared = self.declared.lock().expect("declared needs");
+        declared.get(&(owner, need)).map(|(spec, _)| spec.clone())
     }
 
     /// Record that `owner` declared `need` — the only needs it may open. A need declared without a
@@ -327,6 +363,12 @@ impl Connector {
             }
         };
         let addr = got.map_err(|_| ConnError::Refused)?;
+        let secure = j.planned.as_ref().is_some_and(Planned::secure);
+        if !class_admits(j.egress_class, secure, addr) {
+            // The refusal stays the connection's answer.
+            j.answer.lock().expect("judgement").0 = Some(Err(DEST_PLAINTEXT));
+            return Err(ConnError::Refused);
+        }
         let planned = j.planned.take().ok_or(ConnError::Refused)?;
         let early = std::mem::take(&mut j.early);
         *judging = None;
@@ -375,21 +417,34 @@ impl Connector {
                             status_code: None,
                             status_namespace: None,
                             retry_after_secs: None,
+                            reason: None,
                         });
                     }
-                    Poll::Ready(Ok(Some(got))) => (
-                        Piece {
-                            kind: PieceKind::Body,
-                            stream: StreamId(got.stream),
-                            len: 0,
-                            end: got.end_of_frame,
-                            status: class(got.status_class),
-                            status_code: got.status_code,
-                            status_namespace: None,
-                            retry_after_secs: got.retry_after_secs,
-                        },
-                        got.bytes,
-                    ),
+                    // The far end's head (and its trailers) arrive as the framer's field block:
+                    // a Fields piece, the head ahead of the first Body piece.
+                    Poll::Ready(Ok(Some(got))) => {
+                        if got.reason.is_some() {
+                            held.reason.lock().expect("reason").clone_from(&got.reason);
+                        }
+                        (
+                            Piece {
+                                kind: if got.fields {
+                                    PieceKind::Fields
+                                } else {
+                                    PieceKind::Body
+                                },
+                                stream: StreamId(got.stream),
+                                len: 0,
+                                end: got.end_of_frame,
+                                status: class(got.status_class),
+                                status_code: got.status_code,
+                                status_namespace: None,
+                                retry_after_secs: got.retry_after_secs,
+                                reason: None,
+                            },
+                            got.bytes,
+                        )
+                    }
                 }
             }
         };
@@ -403,6 +458,15 @@ impl Connector {
             out.end = false;
             rest.0 = Some(piece);
             rest.1 = bytes[n..].to_vec();
+        } else if out.kind == PieceKind::Fields && out.end {
+            // The head's last piece: its reason phrase follows the field block in the caller's
+            // buffer, where the buffer holds it too.
+            if let Some(reason) = held.reason.lock().expect("reason").take() {
+                if let Some(to) = buf.get_mut(n..n + reason.len()) {
+                    to.copy_from_slice(&reason);
+                    out.reason = Some(n..n + reason.len());
+                }
+            }
         }
         Ok(out)
     }
@@ -418,6 +482,63 @@ impl Connector {
     }
 }
 
+impl DeclaredConns for Connector {
+    fn declare(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        spec: &ReadNeed,
+        target: Option<&str>,
+    ) -> Result<(), ConnError> {
+        // An outbound need is carried over the transport its claim names, its dials judged in its
+        // own egress class, and pinned to the target its config names when it names one (a
+        // `target_from` that resolved to nothing is refused, and any earlier pin is dropped); an
+        // inbound need is recorded (the listener binds it).
+        let outbound = spec.direction == DIRECTION_OUTBOUND;
+        let unresolved = !spec.target_from.is_empty() && target.is_none();
+        let answer = if outbound && (spec.transport.is_empty() || unresolved) {
+            self.over.lock().expect("needs").remove(&(owner, need));
+            Err(ConnError::Refused)
+        } else {
+            match (outbound, target) {
+                (true, Some(t)) => {
+                    self.declare_need_to(owner, need, &spec.transport, spec.egress_class, t);
+                }
+                (true, None) => self.declare_need(owner, need, &spec.transport, spec.egress_class),
+                (false, _) => self.slab.declare(owner, need),
+            }
+            Ok(())
+        };
+        self.declared
+            .lock()
+            .expect("declared needs")
+            .insert((owner, need), (spec.clone(), answer));
+        answer
+    }
+
+    fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>> {
+        let declared = self.declared.lock().expect("declared needs");
+        declared.get(&(owner, need)).map(|(_, answer)| *answer)
+    }
+
+    /// A need is framed when the entry serving its transport composes over another claim (a framer
+    /// above a carrier, http's kind); an entry directly over the host's socket is a raw stream.
+    fn framed(&self, owner: InstanceId, need: NeedId) -> bool {
+        let Some(scheme) = self
+            .over
+            .lock()
+            .expect("needs")
+            .get(&(owner, need))
+            .map(|d| d.transport.clone())
+        else {
+            return false;
+        };
+        let view = self.transports.read().expect("transports");
+        view.serving(&scheme)
+            .is_some_and(|served| !served.entry.door.facts().composes_over.is_empty())
+    }
+}
+
 impl Conns for Connector {
     fn open(
         &self,
@@ -426,7 +547,6 @@ impl Conns for Connector {
         desc: &OpenDesc<'_>,
     ) -> Result<ConnId, ConnError> {
         self.slab.check_need(caller, need)?;
-        endpoint::check(desc.target).map_err(|_| ConnError::Refused)?;
         let DeclaredNeed {
             transport: scheme,
             egress_class,
@@ -438,13 +558,20 @@ impl Conns for Connector {
             .get(&(caller, need))
             .cloned()
             .ok_or(NO_TRANSPORT_YET)?;
+        // No target named: the need's own, its config's (`EstablishIn.target` absent = the need's
+        // `target_from`).
+        let target = match (desc.target, declared_target.as_deref()) {
+            ("", Some(declared)) => declared,
+            (named, _) => named,
+        };
+        endpoint::check(target).map_err(|_| ConnError::Refused)?;
         let (door, alpn) = {
             let view = self.transports.read().expect("transports");
             let served = view.serving(&scheme).ok_or(NO_TRANSPORT_YET)?;
             (Arc::clone(&served.entry.door), served.entry.alpn.clone())
         };
         let dial = Dial {
-            target: desc.target.to_owned(),
+            target: target.to_owned(),
             tls: self.tls.clone(),
             alpn,
             open_timeout: if desc.timeout_ms == 0 {
@@ -459,6 +586,7 @@ impl Conns for Connector {
                     .collect(),
                 desc.body.to_vec(),
             )),
+            head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
         };
         let planned = Planned::locate(Arc::clone(&door), dial).map_err(|f| map(&f))?;
         // THE DECLARED TARGET (1.5.5's per-module target guarantee, on every need): a need whose
@@ -471,6 +599,12 @@ impl Conns for Connector {
             {
                 return Err(ConnError::Refused);
             }
+        }
+        // SCHEME BY EGRESS CLASS: open-web is secure-only, decided by the target before any
+        // judgement; loopback-allowed's plaintext-to-loopback rule is held against the pinned
+        // address below.
+        if egress_class == EGRESS_OPEN_WEB && !planned.secure() {
+            return Err(ConnError::Refused);
         }
         let answer: Answer = Arc::new(Mutex::new((None, None)));
         let later = Arc::clone(&answer);
@@ -488,6 +622,9 @@ impl Conns for Connector {
         let (conn, judging) = match judged {
             // Decided at once: a refusal answers the open, as 1.5.5 answered it.
             Some(Err(_)) => return Err(ConnError::Refused),
+            Some(Ok(addr)) if !class_admits(egress_class, planned.secure(), addr) => {
+                return Err(ConnError::Refused)
+            }
             Some(Ok(addr)) => (Some(planned.dial_at(addr).map_err(|f| map(&f))?), None),
             // The name resolves off this thread: the open is in flight, and an address refusal
             // answers the read or wait that finds it.
@@ -495,6 +632,7 @@ impl Conns for Connector {
                 None,
                 Some(Judging {
                     planned: Some(planned),
+                    egress_class,
                     early: Vec::new(),
                     answer,
                 }),
@@ -507,6 +645,7 @@ impl Conns for Connector {
                 conn: Mutex::new(conn),
                 judging: Mutex::new(judging),
                 rest: Mutex::new((None, Vec::new(), false)),
+                reason: Mutex::new(None),
             },
         )
     }

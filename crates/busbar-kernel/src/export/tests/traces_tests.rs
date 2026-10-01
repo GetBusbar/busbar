@@ -7,7 +7,7 @@
 //! `export_plugin_dropped_in_serves` test.
 
 use super::*;
-use busbar_contract::abi::cold::export::{ExportField, ExportStream};
+use busbar_contract::abi::export::{ExportField, ExportStream};
 use tracing_subscriber::layer::SubscriberExt as _;
 
 static SEEN: std::sync::Mutex<Vec<Vec<(ExportField, Value)>>> = std::sync::Mutex::new(Vec::new());

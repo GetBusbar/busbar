@@ -468,11 +468,6 @@ count = "2723"
 
 [[cell]]
 crate = "busbar-a2a"
-kind = "plugin-tooling"
-count = "6"
-
-[[cell]]
-crate = "busbar-a2a"
 kind = "store"
 count = "9"
 

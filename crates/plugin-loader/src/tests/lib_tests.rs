@@ -1415,7 +1415,7 @@ fn transport_error_classification() {
 /// cdylib is a hard failure ([`super::both_ways::cdylib`] asserts it), never a silent skip.
 #[test]
 fn load_and_exercise_export_plugin() {
-    use busbar_contract::abi::cold::export::ExportStream;
+    use busbar_contract::abi::export::ExportStream;
     let Some(path) = super::both_ways::cdylib(super::both_ways::fixture("export").0) else {
         eprintln!("skip: the export sink cdylib is not built");
         return;

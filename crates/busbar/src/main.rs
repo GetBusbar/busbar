@@ -116,16 +116,25 @@ const MAX_WORKER_THREADS: usize = 128;
 /// Resolve a worker-thread-count env var, warning on an EXPLICITLY-SET but invalid value rather than
 /// silently ignoring it — an unset var is not warned (the normal default path). Module-level (not
 /// nested in `main()`) so it's unit-testable; see `tests/tests.rs`.
+#[cfg(test)]
 fn worker_threads_from_env(name: &str) -> Option<usize> {
+    let mut warnings = Vec::new();
+    let n = worker_threads_from_env_noting(name, &mut warnings);
+    warnings.iter().for_each(|w| eprintln!("{w}"));
+    n
+}
+
+/// [`worker_threads_from_env`], its warning noted rather than printed.
+fn worker_threads_from_env_noting(name: &str, warnings: &mut Vec<String>) -> Option<usize> {
     match std::env::var(name) {
         Ok(v) => match v.trim().parse::<usize>() {
             Ok(n) if n >= 1 => Some(n),
             _ => {
-                eprintln!(
+                warnings.push(format!(
                     "[warn] {code}: {name}={v:?} is not a positive integer; ignoring it and using \
                      the default worker-thread count",
                     code = diagnostics::WORKER_THREADS_INVALID.banner()
-                );
+                ));
                 None
             }
         },
@@ -138,26 +147,70 @@ fn worker_threads_from_env(name: &str) -> Option<usize> {
 /// full error reporting, happens later in `run()`). A missing/unparseable config yields `None` — the
 /// caller falls through to the standard worker-thread default, and `run()` surfaces the real error.
 /// Lenient env interpolation so an unset `${VAR}` elsewhere in the file does not abort this probe.
+#[cfg(test)]
 fn worker_threads_from_config() -> Option<usize> {
+    let mut warnings = Vec::new();
+    let n = worker_threads_from_config_noting(&mut warnings);
+    warnings.iter().for_each(|w| eprintln!("{w}"));
+    n
+}
+
+/// [`worker_threads_from_config`], its warning noted rather than printed.
+fn worker_threads_from_config_noting(warnings: &mut Vec<String>) -> Option<usize> {
     let config_path = root::cli::resolve_config_path(root::cli::config_path_flag().as_deref());
     let raw = std::fs::read_to_string(&config_path).ok()?;
     let mut unset = Vec::new();
     let interpolated =
         config::interpolate_env_with(&raw, config::EnvSubst::Lenient, &mut unset).ok()?;
-    let deploy: config::DeployCfg = config::deploy_from_yaml_str(&interpolated).ok()?;
-    match validate_worker_threads_config(deploy.advanced.worker_threads) {
+    // Only `advanced.worker_threads` is read: this runs as `main()`'s first act (the dispatcher is
+    // sized by it), before any plane is registered, so it must not parse the plane-owned sections.
+    let doc: serde_yaml::Value = serde_yaml::from_str(&interpolated).ok()?;
+    let worker_threads = match doc.get("advanced").and_then(|a| a.get("worker_threads")) {
+        None | Some(serde_yaml::Value::Null) => None,
+        Some(v) => Some(usize::try_from(v.as_u64()?).ok()?),
+    };
+    match validate_worker_threads_config(worker_threads) {
         Ok(v) => v,
         Err(msg) => {
             // Consistency with `worker_threads_from_env`, which WARNS on an invalid value rather than
             // silently dropping it. Pre-tracing (`main()` runs this before the subscriber is built), so
             // it goes to STDERR like the other boot diagnostics.
-            eprintln!(
+            warnings.push(format!(
                 "[warn] {}: {msg}",
                 diagnostics::WORKER_THREADS_INVALID.banner()
-            );
+            ));
             None
         }
     }
+}
+
+/// THE DATA-PLANE WORKER COUNT, resolved once and purely: the deprecated `BUSBAR_WORKER_THREADS`
+/// (deprecation-warned when it parses) wins when set; else `advanced.worker_threads` in config.yaml
+/// (a best-effort early parse); else `TOKIO_WORKER_THREADS`; else one per effective core; capped at
+/// [`MAX_WORKER_THREADS`]. The warnings come back in the order they arise, for the caller to print
+/// where boot always printed them. `main()` resolves it first, so the process's one dispatcher is
+/// built full-size before any plugin binds.
+fn resolve_worker_threads() -> (usize, Vec<String>) {
+    let mut warnings = Vec::new();
+    let n = worker_threads_from_env_noting("BUSBAR_WORKER_THREADS", &mut warnings)
+        .inspect(|_| {
+            warnings.push(
+                "[warn] BUSBAR_WORKER_THREADS is DEPRECATED; set `advanced.worker_threads` in \
+                 config.yaml instead (it is honored for now)."
+                    .to_string(),
+            )
+        })
+        .or_else(|| worker_threads_from_config_noting(&mut warnings))
+        .or_else(|| worker_threads_from_env_noting("TOKIO_WORKER_THREADS", &mut warnings))
+        .unwrap_or_else(|| {
+            // Fall back to 1 (not 2) when core detection fails, matching v1.3.0's `#[tokio::main]`
+            // behavior exactly. Only reachable on an exotic host where `available_parallelism` errors.
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+        })
+        .min(MAX_WORKER_THREADS);
+    (n, warnings)
 }
 
 /// Validate a config-supplied `advanced.worker_threads`. `Some(0)` is invalid — a Tokio runtime needs
@@ -219,7 +272,7 @@ fn register_planes() {
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.
     let dropped = root::linked::dropped_from_config(&LINKED);
-    root::linked::register_planes(&LINKED, root::linked::dropped_planes_of(dropped));
+    root::linked::register_planes(&LINKED, root::linked::dropped_planes_of(&LINKED, dropped));
     root::linked::register_exports(dropped);
 
     // THE AUTHORIZATION-SERVER PLANE'S SEAM, registered UNCONDITIONALLY (no feature flag — see the
@@ -257,7 +310,19 @@ fn register_ws_arrivals() {
     root::linked::register_ws_arrivals(&LINKED);
 }
 
+/// The data-plane worker count and its warnings, resolved once at the top of `main()`.
+static WORKERS: std::sync::LazyLock<(usize, Vec<String>)> =
+    std::sync::LazyLock::new(resolve_worker_threads);
+
 fn main() {
+    // THE PROCESS'S ONE DISPATCHER, first: full-size (one plugin worker per data worker) before any
+    // plugin of any kind binds — the planes and transports registered just below included — and
+    // handed to the transport doors (`root::doors`), which bind on it.
+    // It serves the kernel's host services through `LateServices`, installed once the config is
+    // composed (`root::serve::compose`, in `run()`).
+    let late_services = root::serve::LateServices::new();
+    let dispatcher = root::dispatch::boot(WORKERS.0, late_services.clone());
+    root::doors::install_dispatcher(dispatcher);
     // PROTOCOL REGISTRATION FIRST — before the CLI flags, because `--validate` reads the protocol
     // set. This is the composition root's whole knowledge of the protocol crates: one line per
     // linked dialect, handed to the registry seam before anything reads it. A dialect absent from
@@ -386,30 +451,13 @@ fn main() {
     // set, so an existing pin is honored across the upgrade; else config.yaml; else the standard
     // `TOKIO_WORKER_THREADS`; else one-per-core. The config read is a best-effort early parse (the
     // real load + error reporting happens in `run()` after the runtime is up).
-    let worker_threads = worker_threads_from_env("BUSBAR_WORKER_THREADS")
-        .inspect(|_| {
-            eprintln!(
-                "[warn] BUSBAR_WORKER_THREADS is DEPRECATED; set `advanced.worker_threads` in \
-                 config.yaml instead (it is honored for now)."
-            )
-        })
-        .or_else(worker_threads_from_config)
-        .or_else(|| worker_threads_from_env("TOKIO_WORKER_THREADS"))
-        .unwrap_or_else(|| {
-            // Fall back to 1 (not 2) when core detection fails, matching v1.3.0's `#[tokio::main]`
-            // behavior exactly. Only reachable on an exotic host where `available_parallelism` errors.
-            std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(1)
-        })
-        // A SANE CEILING. Nothing else in the process bounds concurrent admin requests (the admin
-        // router deliberately carries no `GlobalConcurrencyLimitLayer` — see `build_split_routers_
-        // with_limits`), so worker-thread count is the actual, if informal, upper bound a few
-        // capacity arguments elsewhere lean on. An unclamped `available_parallelism()` on very large
-        // hardware, or an operator fat-fingering `advanced.worker_threads`, would otherwise leave that
-        // bound unenforced. 128 is far above any realistic core count this process is deployed on and
-        // far above what those capacity arguments need.
-        .min(MAX_WORKER_THREADS);
+    // Resolved at the top of `main()` ([`resolve_worker_threads`]) so the process's one dispatcher
+    // was built full-size before any plugin bound; its warnings print here, where they always did.
+    let (worker_threads, warnings) = &*WORKERS;
+    for w in warnings {
+        eprintln!("{w}");
+    }
+    let worker_threads = *worker_threads;
     // RUNTIME TOPOLOGY (1.6.0). ONE design at every core count: the data plane runs on N pinned
     // single-threaded (`current_thread`) runtimes — one SO_REUSEPORT listener each, N = the
     // `worker_threads` resolution above (config knob else env else effective cores, cgroup-quota-
@@ -433,7 +481,7 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio control runtime")
-            .block_on(run(worker_threads));
+            .block_on(run(worker_threads, late_services));
     }
     #[cfg(not(unix))]
     {
@@ -442,7 +490,7 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio runtime")
-            .block_on(run(worker_threads));
+            .block_on(run(worker_threads, late_services));
     }
 }
 
@@ -614,11 +662,7 @@ fn open_boot_book(app: &busbar_kernel::state::App) -> root::durability::NodeBook
     }
 }
 
-async fn run(data_workers: usize) {
-    // THE PROCESS'S ONE DISPATCHER, before any plugin loads: every kind's plugins are opened on
-    // it (`root::dispatch`).
-    let late_services = root::serve::LateServices::new();
-    let _dispatcher = root::dispatch::boot(data_workers, late_services.clone());
+async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::LateServices>) {
     // THE PLUGIN OBSERVABILITY ENVELOPE, before any plugin loads (`root::observe`).
     root::observe::install();
     // Metrics are configured AFTER the config loads (below, via `metrics::configure`) because they
@@ -711,7 +755,7 @@ async fn run(data_workers: usize) {
     // BOOT-TIME dead-pid sweep: remove any orphaned plugin staging directory a CRASHED prior busbar
     // left behind (a clean shutdown removes its own; a dead pid's files are unlocked). Runs even
     // when plugins are disabled — the orphan may predate a config change.
-    let swept = crate::root::loader::sweep_dead_staging();
+    let swept = root::loader::sweep_dead_staging();
     if swept > 0 {
         eprintln!(
             "[info] removed {swept} orphaned plugin staging dir(s) left by a crashed prior run"
@@ -826,7 +870,12 @@ async fn run(data_workers: usize) {
             &cfg.allow_metadata_hosts,
             cfg.allow_all_metadata,
         ),
+        &root::connector::own_ports(&[cfg.listen.as_str(), cfg.admin_listen.as_str()]),
     );
+    // The planes that state themselves through a door bind on the process's one dispatcher (built
+    // full-size as `main()`'s first act), linked and dropped alike, each declaring its needs on the
+    // one connector just built.
+    root::linked::load_door_planes();
     let door = boot.dropped_door();
     // THE ROOT UNITS' CONFIGURATION STEP, in the same slot: the card repricer is installed BEFORE the
     // first app build below, so the boot's own rate resolution is the history's OPENING ENTRY and

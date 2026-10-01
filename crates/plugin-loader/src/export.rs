@@ -14,10 +14,12 @@
 use crate::sign::EgressPolicy;
 use crate::RawPlugin;
 use busbar_contract::abi::cold::{
-    endpoint::{EndpointRequest, EndpointResponse, Route},
-    export::{ExportRequest, ExportResponse, ExportStream},
+    endpoint::{EndpointRequest, EndpointResponse},
+    export::{ExportRequest, ExportResponse},
     kind as abi_kind,
 };
+use busbar_contract::abi::export::ExportStream;
+use busbar_contract::abi::mechanism::route::Route;
 
 /// A telemetry export sink loaded from a dynamic library over the kind-neutral ABI. Wraps a
 /// [`RawPlugin`] whose kind was bound to `export` at load; the streams it carries are queried once at
@@ -159,7 +161,7 @@ impl DynExport {
     /// reports, verbatim. A sink built before the op has nothing to report.
     pub fn check(
         &self,
-        phase: busbar_contract::abi::cold::export::CheckPhase,
+        phase: busbar_contract::abi::export::CheckPhase,
         instances: &[(String, serde_json::Value)],
     ) -> Result<Vec<String>, String> {
         let req = ExportRequest::Check {
@@ -382,7 +384,7 @@ impl crate::PluginRegistry {
     pub fn check_export(
         &self,
         module: &str,
-        phase: busbar_contract::abi::cold::export::CheckPhase,
+        phase: busbar_contract::abi::export::CheckPhase,
         instances: &[(String, serde_json::Value)],
     ) -> Option<Vec<String>> {
         let p = self

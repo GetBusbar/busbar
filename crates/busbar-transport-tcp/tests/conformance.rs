@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::call::{Blob, Outcome, BLOB_ABSENT};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
-use busbar_contract::abi::mechanism::{KindCode, MECHANISM_VERSION};
 use busbar_contract::abi::transport::{
     slot, BeginIn, EmitIn, FramePiece, FramerOut, FramerSink, IngestIn, PIECE_END_OF_FRAME,
     SIDE_DIAL, YIELD_ENDED,
@@ -19,7 +18,7 @@ use busbar_contract::abi::transport::{
 use busbar_plugin_loader::dispatch::kinds::transport::Transport;
 use busbar_plugin_loader::dispatch::{
     in_head, load_dropped, load_linked, out_head, Bind, DispatchConfig, Dispatcher, Frame,
-    ManifestFacts, NoSink, Plugin,
+    LinkedRow, NoSink, Plugin,
 };
 
 fn z<T>() -> T {
@@ -49,6 +48,7 @@ fn bind(d: &Dispatcher) -> Bind {
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),
         dispatcher: d.adopter(),
+        conns: None,
     }
 }
 
@@ -68,7 +68,7 @@ fn open(p: &Plugin<Transport>) {
 }
 
 /// What one script saw: the wire bytes, the frame bytes with their pieces' flags, the last flags.
-type Script = (Vec<u8>, Vec<(Vec<u8>, u8)>, u32);
+type Script = (Vec<u8>, Vec<(Vec<u8>, u16)>, u32);
 
 /// One scripted exchange through the dispatcher: begin, emit, ingest (tight sink), ingest the end.
 /// What comes back: the wire bytes, the frame bytes with their pieces' flags, the last flags.
@@ -85,6 +85,8 @@ fn script(p: &Plugin<Transport>) -> Script {
         pieces_cap: pieces.len(),
         now_monotonic_ns: 1,
         now_unix_ns: 1,
+        heads: std::ptr::null_mut(),
+        heads_cap: 0,
     };
     let sink = || base;
     let mut i: BeginIn = z();
@@ -150,15 +152,16 @@ fn script(p: &Plugin<Transport>) -> Script {
 #[test]
 fn the_linked_and_the_dropped_in_door_are_one_framer() {
     let d = Dispatcher::new(DispatchConfig::default());
-    let linked: Plugin<Transport> =
-        load_linked(busbar_transport_tcp::linked::door, bind(&d)).expect("the linked door loads");
-    let facts = ManifestFacts {
-        mechanism_version: MECHANISM_VERSION,
-        kind: KindCode::Transport,
-        kind_abi: KindCode::Transport.abi_version(),
-    };
+    let linked: Plugin<Transport> = load_linked(
+        &LinkedRow::of(busbar_transport_tcp::linked::door).expect("the door states itself"),
+        bind(&d),
+    )
+    .expect("the linked door loads");
+    let stated = LinkedRow::of(busbar_transport_tcp::linked::door)
+        .expect("the door states itself")
+        .statement;
     let dropped: Plugin<Transport> =
-        load_dropped(&cdylib(), &facts, bind(&d)).expect("the dropped-in door loads");
+        load_dropped(&cdylib(), &stated, bind(&d)).expect("the dropped-in door loads");
     assert_eq!(linked.name(), "tcp");
     assert_eq!(dropped.name(), linked.name());
     open(&linked);

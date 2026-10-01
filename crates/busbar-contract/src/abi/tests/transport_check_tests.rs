@@ -250,6 +250,159 @@ fn a_stream_end_or_failure_without_end_of_frame_is_fault() {
     );
 }
 
+/// A head is a FIELDS frame, framed even when empty (an empty fields piece is an empty head, not
+/// the stream's end); a field block is never a failure's reason.
+#[test]
+fn a_fields_piece_is_a_head_never_a_failure() {
+    let mut o: FramerOut = z();
+    o.yielded.frame_len = 4;
+    o.yielded.pieces_len = 1;
+    let mut head = piece(0, 4);
+    head.flags = PIECE_FIELDS | PIECE_END_OF_FRAME | PIECE_HAS_CODE;
+    assert_eq!(check_framer(Ready, &o, &[head], 8, 8, 8), Ok(()));
+    let mut empty = piece(4, 0);
+    empty.flags = PIECE_FIELDS | PIECE_END_OF_FRAME;
+    assert_eq!(check_framer(Ready, &o, &[empty], 8, 8, 8), Ok(()));
+    head.flags = PIECE_FIELDS | PIECE_STREAM_FAILED | PIECE_END_OF_FRAME;
+    assert_eq!(
+        check_framer(Ready, &o, &[head], 8, 8, 8),
+        f(Rule::Contradiction, "framer.piece.fields_failed")
+    );
+}
+
+/// The field block reads back line by line, in order, a repeated name on its own lines; a
+/// malformed tail ends the reading.
+#[test]
+fn a_field_block_reads_back_in_order() {
+    let block = b"x-b: 1\r\nx-b: 2\r\nx-a: v: w\r\nbroken";
+    let got: Vec<_> = fields::lines(block).collect();
+    assert_eq!(
+        got,
+        [
+            (&b"x-b"[..], &b"1"[..]),
+            (&b"x-b"[..], &b"2"[..]),
+            (&b"x-a"[..], &b"v: w"[..])
+        ]
+    );
+    assert_eq!(fields::lines(b"").count(), 0);
+}
+
+/// Hop-by-hop: the fixed list, and every field a `connection` field names, without case.
+#[test]
+fn hop_by_hop_is_the_list_and_what_connection_names() {
+    let none: [&[u8]; 0] = [];
+    for name in fields::HOP_BY_HOP {
+        assert!(fields::hop_by_hop(name, none));
+    }
+    assert!(!fields::hop_by_hop("x-request-id", none));
+    let nominated: [&[u8]; 1] = [b"keep-alive, X-Hop"];
+    assert!(fields::hop_by_hop("x-hop", nominated));
+    assert!(!fields::hop_by_hop("x-request-id", nominated));
+}
+
+/// RED: a pseudo-field never enters a field block, wherever its line starts: at a piece that starts
+/// a line, after a CR LF, or after a CR LF split across pieces. A piece that continues a line may
+/// start with `:` (a value's own byte).
+#[test]
+fn a_pseudo_field_in_a_field_block_is_fault() {
+    let frame = b":path: /\r\nx: 1\r\n:authority: a\r\n\n:m";
+    let at = |offset: u64, len: u64, flags: u16| {
+        let mut p = piece(offset, len);
+        p.flags = PIECE_FIELDS | flags;
+        p
+    };
+    let pseudo = f(Rule::Foreign, "framer.piece.pseudo_field");
+    assert_eq!(check_framer_fields(&[at(0, 10, 0)], frame), pseudo);
+    assert_eq!(check_framer_fields(&[at(10, 18, 0)], frame), pseudo);
+    assert_eq!(
+        check_framer_fields(&[at(31, 3, PIECE_CONTINUED)], frame),
+        pseudo
+    );
+    // `x: 1\r\n` alone, and a continued piece that opens with a value's `:`.
+    assert_eq!(check_framer_fields(&[at(10, 6, 0)], frame), Ok(()));
+    assert_eq!(
+        check_framer_fields(&[at(5, 5, PIECE_CONTINUED)], frame),
+        Ok(())
+    );
+    // Payload is never read as fields.
+    assert_eq!(check_framer_fields(&[piece(0, 10)], frame), Ok(()));
+}
+
+/// PIECE_CONTINUED belongs to a field block only.
+#[test]
+fn a_continued_piece_outside_a_field_block_is_fault() {
+    let mut o: FramerOut = z();
+    o.yielded.frame_len = 4;
+    o.yielded.pieces_len = 1;
+    let mut p = piece(0, 4);
+    p.flags = PIECE_CONTINUED | PIECE_END_OF_FRAME;
+    assert_eq!(
+        check_framer(Ready, &o, &[p], 8, 8, 8),
+        f(Rule::Contradiction, "framer.piece.continued_not_fields")
+    );
+    p.flags |= PIECE_FIELDS;
+    assert_eq!(check_framer(Ready, &o, &[p], 8, 8, 8), Ok(()));
+}
+
+/// A stream's head slots: within the capacity, one per stream, every slot inside the frame bytes
+/// written; a method and a target together (an accepted head) or both absent (a dialled answer's
+/// reason alone).
+#[test]
+fn head_slots_lie_in_the_frame_and_pair_method_with_target() {
+    let mut o: FramerOut = z();
+    o.yielded.frame_len = 14;
+    o.yielded.heads_len = 1;
+    let span = |offset, len| FrameSpan { offset, len };
+    let accepted = HeadSlots {
+        stream: 1,
+        method: span(0, 3),
+        target: span(3, 9),
+        ..HeadSlots::default()
+    };
+    let dialled = HeadSlots {
+        stream: 1,
+        reason: span(12, 2),
+        ..HeadSlots::default()
+    };
+    assert_eq!(check_head_slots(&o, &[accepted], 4), Ok(()));
+    assert_eq!(check_head_slots(&o, &[dialled], 4), Ok(()));
+    assert_eq!(
+        check_head_slots(&o, &[accepted], 0),
+        f(Rule::OverCap, "framer.heads_len")
+    );
+    let mut bad = accepted;
+    bad.target = span(3, 12);
+    assert_eq!(
+        check_head_slots(&o, &[bad], 4),
+        f(Rule::SpanOutOfBounds, "framer.head.target")
+    );
+    bad = dialled;
+    bad.reason = span(12, 3);
+    assert_eq!(
+        check_head_slots(&o, &[bad], 4),
+        f(Rule::SpanOutOfBounds, "framer.head.reason")
+    );
+    for (method, target) in [
+        (FrameSpan::default(), span(3, 9)),
+        (span(0, 3), FrameSpan::default()),
+    ] {
+        bad = HeadSlots {
+            method,
+            target,
+            ..accepted
+        };
+        assert_eq!(
+            check_head_slots(&o, &[bad], 4),
+            f(Rule::Contradiction, "framer.head.method_without_target")
+        );
+    }
+    o.yielded.heads_len = 2;
+    assert_eq!(
+        check_head_slots(&o, &[accepted, dialled], 4),
+        f(Rule::Contradiction, "framer.head.stream_twice")
+    );
+}
+
 #[test]
 fn a_piece_outside_the_frame_or_with_unknown_codes_is_fault() {
     let mut o: FramerOut = z();
@@ -265,7 +418,7 @@ fn a_piece_outside_the_frame_or_with_unknown_codes_is_fault() {
         f(Rule::SpanOutOfBounds, "framer.piece.bytes")
     );
     let mut bad = piece(0, 1);
-    bad.flags = 16;
+    bad.flags = 1 << 8;
     assert_eq!(
         check_framer(Ready, &o, &[bad], 8, 8, 8),
         f(Rule::UnknownCode, "framer.piece.flags")
@@ -310,8 +463,8 @@ fn tail() -> TransportTail {
     let mut t: TransportTail = z();
     t.role = ROLE_CARRIER;
     // Never dereferenced: `check_tail` judges counts against pointers, not the pointees.
-    t.claims = NonNull::dangling().as_ptr();
-    t.claims_len = 1;
+    t.claim_rows = NonNull::dangling().as_ptr();
+    t.claim_rows_len = 1;
     t
 }
 
@@ -352,8 +505,8 @@ fn every_tail_list_counted_with_a_null_pointer_is_fault() {
     t.composes_over_len = 1;
     assert_eq!(check_tail(&t), f(Rule::NullWithCount, "tail.composes_over"));
     let mut t = tail();
-    t.claims = null();
-    assert_eq!(check_tail(&t), f(Rule::NullWithCount, "tail.claims"));
+    t.claim_rows = null();
+    assert_eq!(check_tail(&t), f(Rule::NullWithCount, "tail.claim_rows"));
     let mut t = tail();
     t.upgrades_to_len = 1;
     assert_eq!(check_tail(&t), f(Rule::NullWithCount, "tail.upgrades_to"));
@@ -371,11 +524,11 @@ fn every_tail_list_counted_with_a_null_pointer_is_fault() {
 #[test]
 fn a_tail_without_claims_or_with_unknown_codes_is_fault() {
     let mut t = tail();
-    t.claims_len = 0;
-    assert_eq!(check_tail(&t), f(Rule::Missing, "tail.claims"));
+    t.claim_rows_len = 0;
+    assert_eq!(check_tail(&t), f(Rule::Missing, "tail.claim_rows"));
     let mut t = tail();
-    t.claims_len = MAX_CLAIMS as usize + 1;
-    assert_eq!(check_tail(&t), f(Rule::OverMax, "tail.claims"));
+    t.claim_rows_len = MAX_CLAIMS as usize + 1;
+    assert_eq!(check_tail(&t), f(Rule::OverMax, "tail.claim_rows"));
     let mut t = tail();
     t.facts = 4;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.facts"));
@@ -385,18 +538,29 @@ fn a_tail_without_claims_or_with_unknown_codes_is_fault() {
 }
 
 fn claim() -> Claim {
-    let mut c: Claim = z();
-    c.key = AbiStr {
-        ptr: b"k".as_ptr(),
-        len: 1,
-    };
-    c
+    z()
+}
+
+/// THE ONE SOURCE OF CLAIM NAMES: a transport's tail carries exactly one row per scheme its
+/// Statement names (row `i` describes `claims[i]`), and a row carries no name of its own. RED: a
+/// tail with a row the Statement does not name, or a name with no row, is refused.
+#[test]
+fn a_tail_has_exactly_one_row_per_claim_the_statement_names() {
+    let t = tail();
+    assert_eq!(check_claim_rows(1, &t), Ok(()));
+    assert_eq!(
+        check_claim_rows(2, &t),
+        f(Rule::Contradiction, "tail.claim_rows")
+    );
+    assert_eq!(
+        check_claim_rows(0, &t),
+        f(Rule::Contradiction, "tail.claim_rows")
+    );
 }
 
 #[test]
 fn every_claim_element_is_checked() {
     assert_eq!(check_claims(&[claim()]), Ok(()));
-    assert_eq!(check_claims(&[z()]), f(Rule::Missing, "claim.key"));
     let mut c = claim();
     c.facts_len = 1;
     assert_eq!(check_claims(&[c]), f(Rule::NullWithCount, "claim.facts"));

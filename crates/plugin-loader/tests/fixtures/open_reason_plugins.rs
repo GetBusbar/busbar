@@ -93,14 +93,30 @@ pub mod store {
             record_get(&self, schema: &str, key: &[u8]) -> Result<Option<RecordBytes>, String>;
             record_scan(&self, schema: &str, prefix: &[u8], limit: u32)
                 -> Result<Vec<(Vec<u8>, RecordBytes)>, String>;
-            reserve(&self, op: OpId, epoch: u64, cells: &[Cell<'_>])
-                -> Result<Vec<Grant>, ReserveRefused>;
-            slice_release(&self, op: OpId, epoch: u64, items: &[(u64, u64)])
-                -> OpResult<Vec<u64>>;
             add_usage_batch(&self, op: OpId, cells: &[(&str, u64, UsageDelta)]) -> OpResult<()>;
             add_metering_batch(&self, op: OpId, deltas: &[MeteringDelta]) -> OpResult<()>;
             append_audit_batch(&self, op: OpId, entries: &[AuditRecord]) -> OpResult<()>;
             window_caps(&self, op: OpId, caps: &[Cap<'_>]) -> Result<(), CapsRefused>;
+        }
+        fn reserve<'c>(
+            &self,
+            op: OpId,
+            epoch: u64,
+            cells: impl Iterator<Item = Cell<'c>> + Clone,
+            grants: &mut impl Extend<Grant>,
+        ) -> Result<(), ReserveRefused> {
+            let _ = (op, epoch, cells, grants);
+            unreachable!("the open-reason store never opens")
+        }
+        fn slice_release(
+            &self,
+            op: OpId,
+            epoch: u64,
+            items: impl Iterator<Item = (u64, u64)> + Clone,
+            released: &mut impl Extend<u64>,
+        ) -> OpResult<()> {
+            let _ = (op, epoch, items, released);
+            unreachable!("the open-reason store never opens")
         }
     }
 

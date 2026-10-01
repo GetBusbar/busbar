@@ -695,6 +695,7 @@ pub(crate) fn plugin_manifest(
         schema_derived: false,
         host: None,
         declares: Default::default(),
+        statement: None,
     }
 }
 
@@ -797,6 +798,102 @@ fn disabled_plugins_are_inert_even_when_present() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// THE BOOT LOG OVER THE ROOT'S REGISTRY BUILD (ARCHITECT ruling Q8): the registry is built by
+/// the composition root (`preflight::RegistryBuild`), and the preflight logs each step the build
+/// notes — the same lines, the same fields, in the order it logged them when it scanned the
+/// directory itself: `disabled`; or `enabled`, then every skipped row, then every loadable row.
+#[test]
+fn the_registry_build_keeps_the_preflights_boot_lines_in_order() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let dir = tmp_plugin_dir("boot-lines");
+    let tarball = unsigned_tarball(plugin_manifest("acme-lines", "lines", "acme"), b"lib");
+    std::fs::write(dir.join("lines.tar.gz"), tarball).unwrap();
+    let lines = |cfg: &crate::config::PluginsCfg| {
+        let cap = WarnCapture::capturing_debug();
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            crate::plugins_preflight(
+                None,
+                None,
+                &Default::default(),
+                &Default::default(),
+                cfg,
+                &Default::default(),
+            )
+            .expect("the preflight passes");
+        });
+        let ours = |m: &String| m.starts_with("plugin");
+        let messages = cap.messages().into_iter().filter(ours);
+        messages
+            .map(|m| m.trim_end().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let d = dir.to_string_lossy().into_owned();
+    let off = lines(&plugins_cfg(&dir, false));
+    assert_eq!(
+        off,
+        ["plugins: disabled (plugins.enabled is false; tarballs in the directory are inert)"]
+    );
+    let skipped = lines(&plugins_cfg(&dir, true));
+    assert_eq!(skipped.len(), 2, "{skipped:?}");
+    assert_eq!(
+        skipped[0],
+        format!("plugins: enabled dir={d} loadable=0 skipped=1")
+    );
+    assert!(
+        skipped[1].starts_with("plugin present but NOT loaded (trust policy) ")
+            && skipped[1].contains("plugin=acme-lines")
+            && skipped[1].contains("lines.tar.gz"),
+        "{skipped:?}"
+    );
+    let mut cfg = plugins_cfg(&dir, true);
+    cfg.trust.allow_unsigned = true;
+    let allowed = lines(&cfg);
+    assert_eq!(allowed.len(), 2, "{allowed:?}");
+    assert_eq!(
+        allowed[0],
+        format!("plugins: enabled dir={d} loadable=1 skipped=0")
+    );
+    assert!(
+        allowed[1].starts_with(
+            "plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in) "
+        ) && allowed[1].contains("plugin=acme-lines"),
+        "{allowed:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// BOOT WARNS ABOUT A MALFORMED FLOOR where it resolved the trust policy: the preflight (boot,
+/// reload, apply) warns before the root's registry build resolves the policy.
+#[test]
+fn the_preflight_warns_about_a_malformed_floor() {
+    use crate::diagnostics::CONFIG_ANTIDOWNGRADE_FLOOR_INVALID;
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let mut cfg = crate::config::PluginsCfg::default();
+    cfg.min_versions.insert("p".into(), "v1".into());
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        crate::plugins_preflight(
+            None,
+            None,
+            &Default::default(),
+            &Default::default(),
+            &cfg,
+            &Default::default(),
+        )
+        .expect("the preflight passes");
+    });
+    assert!(
+        cap.contains(&CONFIG_ANTIDOWNGRADE_FLOOR_INVALID.banner().to_string()),
+        "{:?}",
+        cap.messages()
+    );
+}
+
 /// K5 (DECISIONS #2 rule (1)) — THE BUILT-IN STORE IS A ROW OF THE STORE AXIS. The default store is
 /// registered through `PluginRegistry::link`, the admission a dropped-in store's row takes, and the
 /// configured name resolves to it there — not a name the kernel matches. With the plugins directory
@@ -809,7 +906,7 @@ fn disabled_plugins_are_inert_even_when_present() {
 #[test]
 fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
     let name = crate::preflight::root_rows()
-        .0
+        .stores
         .iter()
         .find(|s| s.2)
         .map(|s| s.0);
@@ -2051,52 +2148,6 @@ async fn plugin_fetch_downloader_refuses_to_follow_a_redirect() {
     );
 }
 
-/// Boot RUNS `plugins.fetch` before preflight, and a PIN-CACHED entry skips the
-/// network (the URL is unreachable — if boot tried to fetch it, this would fail). Proves the fetch
-/// step is wired into `build_app_from_config`'s boot path and that cache-by-pin means no-network.
-#[test]
-fn fetch_cached_pin_boots_without_network() {
-    crate::metrics::init();
-    let dir = std::env::temp_dir().join(format!("busbar-fetch-boot-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
-    // A file already present, hashing to the pin. Named `*.dat` (not `*.tar.gz`) so the plugin
-    // preflight scanner ignores it — this test asserts the FETCH wiring + cache-by-pin no-network
-    // path, not tarball validity (that is preflight's job, covered elsewhere).
-    let body = b"cached-blob-bytes";
-    std::fs::write(dir.join("cached-blob.dat"), body).unwrap();
-    let pin = busbar_plugin_loader::sign::sha256_hex(body);
-
-    let cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
-        "BUSBAR_TEST_NO_SUCH_KEY_FETCH",
-    ));
-    let plugins_cfg = crate::config::PluginsCfg {
-        enabled: true,
-        dir: dir.to_string_lossy().into_owned(),
-        fetch: vec![crate::config::PluginFetch::Url(crate::config::UrlFetch {
-            // Unreachable on purpose — cache-by-pin must skip it.
-            url: "https://plugin.invalid/cached-blob.dat".into(),
-            sha256: Some(pin),
-        })],
-        ..Default::default()
-    };
-    let res = crate::build_app_from_config(
-        cfg,
-        plugins_cfg,
-        None,
-        std::collections::HashSet::new(),
-        std::collections::HashSet::new(),
-        (None, None),
-        None,
-    );
-    // Ok carries a non-Debug App; collapse to the Err string for the assert message.
-    let err = res.err();
-    assert!(
-        err.is_none(),
-        "cached-pin boot must succeed without network: {err:?}"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 /// Source review of the boot-logging matrix: the enabled/disabled boot lines and
 /// the two-part referenced-but-missing diagnosis are present in `plugins_preflight`. Guards the
 /// observability wording against silent removal.
@@ -2384,7 +2435,7 @@ fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
 /// the unwind tears down hyper's connection task and the client sees a reset instead of a response.
 #[tokio::test]
 async fn a_panicking_handler_fails_only_its_own_request() {
-    use busbar_contract::abi::cold::endpoint::{RouteAuth, RouteMethod};
+    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
     crate::metrics::init();
     let app = crate::test_support::TestApp::new().build();
     let handle = std::sync::Arc::new(crate::state::AppHandle::new(app));

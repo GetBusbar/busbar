@@ -18,7 +18,7 @@
 
 use std::sync::OnceLock;
 
-use busbar_contract::conn::ConnError;
+use busbar_contract::conn::{ConnError, PieceKind};
 use busbar_plugin_loader::sign::{sign, Manifest, SigningKey, TrustPolicy};
 
 /// What the dial answers today. The one edit that flips this witness once instances are handed their table.
@@ -79,6 +79,7 @@ fn dropped_in() -> &'static dyn busbar_contract::secret::SecretModule {
                 schema_derived: false,
                 host: None,
                 declares: Default::default(),
+                statement: None,
             };
             let signed = sign(&release(), manifest, &lib);
             let tarball = busbar_plugin_loader::tarball::package(&signed, "libneed.so", &lib)
@@ -222,18 +223,14 @@ fn open_door(
     path: &std::path::Path,
 ) -> Option<std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>> {
     use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
-    use busbar_contract::abi::mechanism::{KindCode, MECHANISM_VERSION};
     use busbar_contract::abi::sdk::door::{blank_in, blank_out};
     use busbar_plugin_loader::dispatch::kinds::transport::{Transport, TransportFacts};
     use busbar_plugin_loader::dispatch::{
-        load_dropped, Bind, DispatchConfig, Dispatcher, Frame, ManifestFacts, NoSink,
+        load_dropped, rendering_of_library, Bind, DispatchConfig, Dispatcher, Frame, NoSink,
     };
     static ONE: OnceLock<Dispatcher> = OnceLock::new();
-    let facts = ManifestFacts {
-        mechanism_version: MECHANISM_VERSION,
-        kind: KindCode::Transport,
-        kind_abi: KindCode::Transport.abi_version(),
-    };
+    // The library's own Statement rendering, as its signed manifest would state it.
+    let rendering = rendering_of_library(path).ok()??;
     let bind = Bind {
         instance: std::sync::Arc::from("the-instance"),
         max_inflight_cap: 64,
@@ -241,8 +238,9 @@ fn open_door(
         dispatcher: ONE
             .get_or_init(|| Dispatcher::new(DispatchConfig::default()))
             .adopter(),
+        conns: None,
     };
-    let plugin = load_dropped::<Transport>(path, &facts, bind).ok()?;
+    let plugin = load_dropped::<Transport>(path, &rendering, bind).ok()?;
     let stated = plugin.context::<TransportFacts>().cloned()?;
     let mut f = Frame::new(blank_in::<OpenIn>(), blank_out::<OpenOut>());
     assert_eq!(
@@ -268,35 +266,23 @@ fn open_door(
 #[test]
 fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
     use busbar_core_connector::compose::{Connection, Dial};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let door = dropped_door("http_door");
+    let door = composing_door();
+    let scheme = door.facts().claims[0];
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
     rt.block_on(async {
-        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = l.local_addr().unwrap().port();
-        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel::<String>();
-        tokio::spawn(async move {
-            let (mut s, _) = l.accept().await.unwrap();
-            let mut req = Vec::new();
-            let mut buf = [0_u8; 1024];
-            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
-                let n = s.read(&mut buf).await.unwrap();
-                assert!(n > 0, "the request head arrives");
-                req.extend_from_slice(&buf[..n]);
-            }
-            let _ = seen_tx.send(String::from_utf8_lossy(&req).into_owned());
-            s.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello")
-                .await
-                .unwrap();
-        });
+        let (far, seen_rx) = serve_once(respond(
+            scheme,
+            "{V} 200 OK\r\ncontent-length: 5\r\n\r\nhello",
+        ))
+        .await;
         let mut c = Connection::dial(
             door,
             Dial {
-                target: format!("http://127.0.0.1:{port}/v1/probe"),
+                target: format!("{scheme}://{far}/v1/probe"),
                 tls: None,
                 alpn: Vec::new(),
                 open_timeout: std::time::Duration::from_secs(5),
@@ -307,6 +293,7 @@ fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
                     ],
                     Vec::new(),
                 )),
+                head_words: Default::default(),
             },
         )
         .expect("the connector dials through the http door");
@@ -320,14 +307,15 @@ fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
             .expect("the server answers")
             .expect("no failure");
             let Some(p) = p else { break };
-            let last = p.end_of_frame && p.bytes.is_empty();
+            // The stream's end: its empty closing piece (an empty head is a fields piece).
+            let last = !p.fields && p.end_of_frame && p.bytes.is_empty();
             pieces.push(p);
             if last {
                 break;
             }
         }
         let seen = seen_rx.await.unwrap();
-        assert!(seen.starts_with("GET /v1/probe HTTP/1.1\r\n"), "{seen}");
+        assert!(seen.starts_with("GET /v1/probe "), "{seen}");
         let head = pieces.first().expect("a head piece");
         assert_eq!(head.status_code, Some(200));
         let body: Vec<u8> = pieces[1..].iter().flat_map(|p| p.bytes.clone()).collect();
@@ -379,6 +367,7 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
                 alpn: Vec::new(),
                 open_timeout: std::time::Duration::from_secs(5),
                 opening: Some((Vec::new(), b"opening;".to_vec())),
+                head_words: Default::default(),
             },
         )
         .expect("the connector dials through the door");
@@ -404,5 +393,299 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
         assert_eq!(&got[..8], b"opening;");
         assert_eq!(&got[8..], &payload[..]);
         c.close();
+    });
+}
+
+/// Every piece one need's exchange answers through the connection table, from a server that
+/// writes `response`, up to the empty piece that ends the stream: `(kind, status, bytes)`.
+fn pieces_through_the_table(response: &'static str) -> Vec<(PieceKind, Option<u32>, Vec<u8>)> {
+    head_through_the_table(response).0
+}
+
+type Pieces = Vec<(PieceKind, Option<u32>, Vec<u8>)>;
+
+/// [`pieces_through_the_table`], and the head's reason phrase as the table handed it.
+fn head_through_the_table(response: &'static str) -> (Pieces, Option<Vec<u8>>) {
+    use busbar_contract::conn::{Conns, InstanceId, NeedId, OpenDesc};
+    use busbar_core_connector::registry::{Entry, Transports};
+    use busbar_core_connector::{Connector, Judged};
+
+    let door = composing_door();
+    let scheme = door.facts().claims[0];
+    let response = respond(scheme, response);
+    // An IP literal is its own address: the judge the test needs, and no more.
+    let judge = |dest: &str, _: u32, _: Judged| {
+        Some(dest.parse::<std::net::SocketAddr>().map_err(|_| 1_u64))
+    };
+    let c = Connector::serving(
+        // The door composes over the socket-framing door, so the view serves both.
+        Transports::new(vec![
+            Entry {
+                door,
+                alpn: Vec::new(),
+            },
+            Entry {
+                door: socket_framer_door().expect("a socket-framing door is built beside the test"),
+                alpn: Vec::new(),
+            },
+        ])
+        .unwrap(),
+        std::sync::Arc::new(judge),
+        None,
+        std::sync::Arc::new(|_| {}),
+    );
+    let owner = InstanceId(1);
+    c.declare_over(owner, NeedId(0), scheme);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let (far, _) = serve_once(response).await;
+        let target = format!("{scheme}://{far}/v1/probe");
+        let fields: [(&str, &[u8]); 2] = [("method", b"GET"), ("path", b"/v1/probe")];
+        let desc = OpenDesc {
+            target: &target,
+            fields: &fields,
+            ..OpenDesc::default()
+        };
+        let id = c.open(owner, NeedId(0), &desc).expect("opens");
+        let mut got = Vec::new();
+        let mut reason = None;
+        let mut buf = [0_u8; 4096];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            assert!(std::time::Instant::now() < deadline, "the server answers");
+            match c.read(owner, id, 7, &mut buf) {
+                Err(ConnError::Pending) => tokio::task::yield_now().await,
+                Err(e) => panic!("the exchange failed: {e}"),
+                Ok(p) => {
+                    // The stream's end: its empty closing piece (an empty head is a Fields piece).
+                    let done = p.kind == PieceKind::Completion
+                        || (p.kind == PieceKind::Body && p.end && p.len == 0);
+                    if let Some(r) = p.reason.clone() {
+                        reason = Some(buf[r].to_vec());
+                    }
+                    got.push((p.kind, p.status_code, buf[..p.len].to_vec()));
+                    if done {
+                        break;
+                    }
+                }
+            }
+        }
+        c.close(owner, id).unwrap();
+        (got, reason)
+    })
+}
+
+/// RED: THE CONNECTOR YIELDS THE FAR END'S HEAD. A response with head fields reads, through the
+/// connection table, as ONE Fields piece carrying the status — the field block, lower-case names in
+/// the far end's order, a repeated field on its own lines, hop-by-hop fields (and what `connection`
+/// names) and `content-length` dropped — and then the Body.
+#[test]
+fn a_response_with_head_fields_yields_fields_then_body() {
+    let got = pieces_through_the_table(
+        "{V} 200 OK\r\nX-B: 1\r\nConnection: keep-alive, x-hop\r\nX-Session-Id: s1\r\n\
+          Keep-Alive: timeout=5\r\nx-b: 2\r\nX-Hop: secret\r\ncontent-length: 5\r\n\r\nhello",
+    );
+    let (kind, status, head) = &got[0];
+    assert_eq!((*kind, *status), (PieceKind::Fields, Some(200)), "{got:?}");
+    assert_eq!(
+        String::from_utf8_lossy(head),
+        "x-b: 1\r\nx-b: 2\r\nx-session-id: s1\r\n"
+    );
+    let body: Vec<u8> = got[1..]
+        .iter()
+        .inspect(|(k, _, _)| assert_eq!(*k, PieceKind::Body, "{got:?}"))
+        .flat_map(|(_, _, b)| b.clone())
+        .collect();
+    assert_eq!(body, b"hello");
+}
+
+/// RED: AN EMPTY HEAD STILL COMES FIRST. A head with no field left after the hop-by-hop drop reads
+/// as ONE EMPTY Fields piece, carrying the status, before anything else: the head is always the
+/// answer's first piece, and the only Fields piece (a trailer section is dropped, as 1.5.5's
+/// client dropped it).
+#[test]
+fn an_empty_head_yields_one_empty_fields_piece() {
+    let got = pieces_through_the_table("{V} 204 No Content\r\nConnection: close\r\n\r\n");
+    assert_eq!(
+        got[0],
+        (PieceKind::Fields, Some(204), Vec::new()),
+        "{got:?}"
+    );
+    assert_eq!(
+        got.iter()
+            .filter(|(k, _, _)| *k == PieceKind::Fields)
+            .count(),
+        1,
+        "{got:?}"
+    );
+}
+
+/// RED: the reply's head crosses whole: its fields as the field block and its reason phrase exactly
+/// as sent, as a range of the caller's buffer right after the block.
+#[test]
+fn the_reply_head_carries_its_reason_phrase_exactly_as_sent() {
+    let (got, reason) =
+        head_through_the_table("{V} 200 Fine By Me\r\nx-a: 1\r\ncontent-length: 2\r\n\r\nok");
+    assert_eq!(
+        got[0],
+        (PieceKind::Fields, Some(200), b"x-a: 1\r\n".to_vec())
+    );
+    assert_eq!(reason.as_deref(), Some(&b"Fine By Me"[..]));
+    let (_, reason) = head_through_the_table("{V} 204 No Content\r\n\r\n");
+    assert_eq!(reason.as_deref(), Some(&b"No Content"[..]));
+}
+
+/// RED: a request's head words reach the framer byte for byte and ARE its request line; a framer
+/// whose wire has no head words renders exactly what it did without them.
+#[test]
+fn the_head_words_reach_the_framer_byte_for_byte() {
+    use busbar_core_connector::framer::{encode, encode_head};
+    let door = composing_door();
+    let wire = encode_head(
+        door.as_ref(),
+        b"PATCH",
+        b"/v1/x?y=%20z",
+        &[("x-a", b"1")],
+        b"",
+    )
+    .expect("renders");
+    let text = String::from_utf8_lossy(&wire).into_owned();
+    assert!(text.starts_with("PATCH /v1/x?y=%20z "), "{text}");
+    assert!(
+        text.split("\r\n")
+            .next()
+            .is_some_and(|line| line.split(' ').count() == 3),
+        "{text}"
+    );
+    let plain = socket_framer_door().expect("a socket-framing door is built beside the test");
+    assert_eq!(
+        encode_head(plain.as_ref(), b"PATCH", b"/x", &[], b"body").ok(),
+        encode(plain.as_ref(), &[], b"body").ok()
+    );
+}
+
+/// The dropped-in door that composes over the socket framer: the request/response framer the head
+/// tests drive, by its example's name (the one place this file names it).
+fn composing_door() -> std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> {
+    dropped_door("http_door")
+}
+
+/// A response template with its version written as the door's own scheme, upper-cased (`{V}`), so
+/// the test names no wire.
+fn respond(scheme: &str, template: &str) -> Vec<u8> {
+    template
+        .replace("{V}", &format!("{}/1.1", scheme.to_ascii_uppercase()))
+        .into_bytes()
+}
+
+/// A loopback far end that reads one request head and answers `response`: its address, and the
+/// request head it read.
+async fn serve_once(
+    response: Vec<u8>,
+) -> (std::net::SocketAddr, tokio::sync::oneshot::Receiver<String>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let far = l.local_addr().unwrap();
+    let (seen_tx, seen_rx) = tokio::sync::oneshot::channel::<String>();
+    tokio::spawn(async move {
+        let (mut s, _) = l.accept().await.unwrap();
+        let mut req = Vec::new();
+        let mut buf = [0_u8; 1024];
+        while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = s.read(&mut buf).await.unwrap();
+            assert!(n > 0, "the request head arrives");
+            req.extend_from_slice(&buf[..n]);
+        }
+        let _ = seen_tx.send(String::from_utf8_lossy(&req).into_owned());
+        s.write_all(&response).await.unwrap();
+    });
+    (far, seen_rx)
+}
+
+/// RED: A FRAMED REQUEST'S HEAD WORDS GO OUT THROUGH THE CONNECTION TABLE. An open whose
+/// descriptor states head words sends them as the opening message's own request line, byte for
+/// byte; an open that names no target dials the need's declared one. The table reports the
+/// composing door's need framed and the socket framer's raw.
+#[test]
+fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
+    use busbar_contract::conn::{Conns, DeclaredConns, InstanceId, NeedId, OpenDesc};
+    use busbar_core_connector::registry::{Entry, Transports};
+    use busbar_core_connector::{Connector, Judged};
+
+    let door = composing_door();
+    let scheme = door.facts().claims[0];
+    let plain = socket_framer_door().expect("a socket-framing door is built beside the test");
+    let raw = plain.facts().claims[0];
+    let judge = |dest: &str, _: u32, _: Judged| {
+        Some(dest.parse::<std::net::SocketAddr>().map_err(|_| 1_u64))
+    };
+    let c = Connector::serving(
+        Transports::new(vec![
+            Entry {
+                door,
+                alpn: Vec::new(),
+            },
+            Entry {
+                door: plain,
+                alpn: Vec::new(),
+            },
+        ])
+        .unwrap(),
+        std::sync::Arc::new(judge),
+        None,
+        std::sync::Arc::new(|_| {}),
+    );
+    let owner = InstanceId(1);
+    c.declare_over(owner, NeedId(1), raw);
+    assert!(
+        !c.framed(owner, NeedId(1)),
+        "the socket framer is a raw stream"
+    );
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let (far, mut seen) =
+            serve_once(respond(scheme, "{V} 200 OK\r\ncontent-length: 0\r\n\r\n")).await;
+        let declared = format!("{scheme}://{far}");
+        c.declare_need_to(owner, NeedId(0), scheme, 0, &declared);
+        assert!(c.framed(owner, NeedId(0)), "the composing door is framed");
+        let fields: [(&str, &[u8]); 1] = [("x-a", b"1")];
+        let desc = OpenDesc {
+            fields: &fields,
+            method: b"PATCH",
+            head_target: b"/v1/x?y=1",
+            ..OpenDesc::default()
+        };
+        let id = c
+            .open(owner, NeedId(0), &desc)
+            .expect("opens at the declared target");
+        let mut buf = [0_u8; 1024];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let request = loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the far end reads the request"
+            );
+            // Reading drives the connection: its opening message goes out.
+            match c.read(owner, id, 7, &mut buf) {
+                Err(ConnError::Pending) | Ok(_) => {}
+                Err(e) => panic!("the exchange failed: {e}"),
+            }
+            if let Ok(request) = seen.try_recv() {
+                break request;
+            }
+            tokio::task::yield_now().await;
+        };
+        assert!(request.starts_with("PATCH /v1/x?y=1 "), "{request}");
+        assert!(
+            request.to_ascii_lowercase().contains("\r\nx-a: 1\r\n"),
+            "{request}"
+        );
+        c.close(owner, id).unwrap();
     });
 }

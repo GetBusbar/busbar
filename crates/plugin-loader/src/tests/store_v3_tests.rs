@@ -18,7 +18,7 @@ use busbar_contract::store_calls::{StoreCalls, StoreFailure};
 
 use super::LoadedStore;
 use crate::dispatch::kinds::store::{Store, StoreFacts};
-use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, NoSink};
+use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink};
 
 fn dispatcher() -> Arc<Dispatcher> {
     Arc::new(Dispatcher::new(DispatchConfig::default()))
@@ -26,13 +26,16 @@ fn dispatcher() -> Arc<Dispatcher> {
 
 fn open() -> LoadedStore {
     let d = dispatcher();
+    let row = LinkedRow::of(crate::both_ways::store_fixture::door)
+        .expect("the memory store states its Statement");
     let plugin = load_linked::<Store>(
-        crate::both_ways::store_fixture::door,
+        &row,
         Bind {
             instance: Arc::from("the-instance"),
             max_inflight_cap: 1024,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
+            conns: None,
         },
     )
     .expect("the memory store's door loads");
@@ -452,4 +455,19 @@ fn the_ledger_ops_and_sessions_cross_the_typed_surface() {
         s.session_remove(1).await.expect("remove");
         assert_eq!(s.sessions_for("alice").await.expect("list").len(), 1);
     });
+}
+
+/// One Statement: the memory store's `ephemeral` is the Statement mark `MARK_EPHEMERAL`, carried
+/// by the rendering the row states; the store tail it states is the tail without it.
+#[test]
+fn the_ephemeral_store_states_mark_ephemeral_on_its_statement_not_its_tail() {
+    use busbar_contract::abi::mechanism::door::MARK_EPHEMERAL;
+    use busbar_contract::abi::mechanism::rendering::read;
+    use busbar_contract::abi::store::StoreTail;
+
+    let row = LinkedRow::of(crate::both_ways::store_fixture::door)
+        .expect("the memory store states its Statement");
+    let st = read(&row.statement).expect("the rendering reads back");
+    assert_eq!(st.marks & MARK_EPHEMERAL, MARK_EPHEMERAL);
+    assert_eq!(st.kind_tail_size as usize, std::mem::size_of::<StoreTail>());
 }

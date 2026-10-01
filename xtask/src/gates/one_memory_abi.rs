@@ -240,6 +240,35 @@ impl Gate for OneMemoryAbiGate {
             &[ROW_EXPORTED],
             door_only,
         ));
+        // A COUNTED ROW holds its key to its count: two cold references against `count = 1` are
+        // RED, against `count = 2` green.
+        let counted = |max: usize| {
+            let mut ov = plant(
+                file,
+                "use busbar_contract::abi::cold::A;\nuse busbar_contract::abi::cold::B;\n",
+            );
+            let mut ledger = cx.read(SPEC.ledger).unwrap_or_default();
+            ledger.push_str(&format!(
+                "\n[[finding]]\nrule = \"{ROW_COLD}\"\nfile = \"{file}\"\nitem = \"abi::cold\"\ncount = {max}\n"
+            ));
+            ov.set(SPEC.ledger, ledger);
+            ov
+        };
+        report.push(crate::gates::prove_rows_red(
+            cx,
+            self,
+            "a counted row's key over its count is RED",
+            &[ROW_COLD],
+            counted(1),
+            &[file, "over its counted row"],
+        ));
+        report.push(crate::gates::prove_rows_green(
+            cx,
+            self,
+            "a counted row's key at its count is green",
+            &[ROW_COLD],
+            counted(2),
+        ));
         report
     }
 }

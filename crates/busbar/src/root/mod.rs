@@ -70,6 +70,7 @@
 
 pub mod adapters;
 pub mod auth_bindings;
+pub mod boot;
 pub mod cli;
 pub mod connector;
 pub mod dispatch;

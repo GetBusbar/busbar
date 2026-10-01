@@ -86,6 +86,7 @@ const DIAG_CAP: &[Diag] = &[Diag {
 }];
 
 /// The Statement tail of a store `B` (`abi::store::StoreTail`), for [`store_door!`](crate::store_door).
+/// `B::TAIL.ephemeral` is not a tail fact: [`marks`] states it.
 #[must_use]
 pub const fn tail<B: StoreSlots>() -> StoreTail {
     StoreTail {
@@ -93,10 +94,21 @@ pub const fn tail<B: StoreSlots>() -> StoreTail {
             size: std::mem::size_of::<StoreTail>() as u32,
             _reserved: 0,
         },
-        ephemeral: B::TAIL.ephemeral as u8,
         durable_plane: B::TAIL.durable_plane as u8,
         fork_refusal: B::TAIL.fork_refusal as u8,
-        _reserved: [0; 5],
+        _reserved: [0; 6],
+    }
+}
+
+/// The Statement marks of a store `B`, for [`store_door!`](crate::store_door): an ephemeral store
+/// states [`MARK_EPHEMERAL`](crate::abi::mechanism::door::MARK_EPHEMERAL) (One Statement: the fact
+/// lives on the Statement, not in the store tail).
+#[must_use]
+pub const fn marks<B: StoreSlots>() -> u64 {
+    if B::TAIL.ephemeral {
+        crate::abi::mechanism::door::MARK_EPHEMERAL
+    } else {
+        0
     }
 }
 
@@ -1268,7 +1280,8 @@ slot!(
 /// THE STORE DOOR MACRO: `store_door!(MyStore, "my-store", "1.0.0", 64);` in a store's logic crate
 /// expands to its `pub extern "C" fn door()` over the store v3 table, every slot a
 /// [`Safe`](crate::abi::sdk::Safe) slot over `MyStore: StoreSlots`. The Statement names the
-/// store, declares [`DIAG_IDS`] and carries the store's tail ([`tail`]).
+/// store, declares [`DIAG_IDS`], carries the store's tail ([`tail`]) and states its marks
+/// ([`marks`]).
 #[macro_export]
 macro_rules! store_door {
     ($store:ty, $name:expr, $version:expr, $max_inflight:expr $(,)?) => {
@@ -1283,6 +1296,7 @@ macro_rules! store_door {
                 diag_ids_len: 2,
                 kind_tail: ::core::ptr::from_ref(&__BUSBAR_STORE_TAIL)
                     .cast::<$crate::abi::mechanism::door::KindTailHead>(),
+                marks: $crate::abi::sdk::store::door::marks::<$store>(),
                 ..$crate::abi::sdk::door::statement($name, $version, $max_inflight)
             },
             lifecycle: {

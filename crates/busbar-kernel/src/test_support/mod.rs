@@ -2341,10 +2341,78 @@ fn fixture_manifest(
         settings_schema: None,
         schema_derived: false,
         host: None,
-        declares: Default::default(),
+        ..Default::default()
     }
 }
 
 #[cfg(test)]
 #[path = "tests/eventstream_frame_tests.rs"]
 mod eventstream_frame_tests;
+
+/// A test build's `plugins.fetch` (it has no composition root): each target downloaded through the
+/// kernel's guarded `download` and written into `dir`. No cache and no pin check: the root's fetch
+/// owns those, and its tests prove them.
+pub fn fetch_stand_in(
+    dir: &std::path::Path,
+    targets: &[crate::config::FetchTarget],
+    _fatal_on_miss: bool,
+    download: &dyn Fn(&str) -> Result<Vec<u8>, String>,
+) -> Result<Vec<crate::preflight::Fetched>, Vec<String>> {
+    let mut errors = Vec::new();
+    let mut done = Vec::new();
+    for t in targets {
+        match download(&t.url)
+            .and_then(|b| std::fs::write(dir.join(&t.filename), b).map_err(|e| e.to_string()))
+        {
+            Ok(()) => done.push(crate::preflight::Fetched::Fetched {
+                filename: t.filename.clone(),
+            }),
+            Err(e) => errors.push(format!("download failed: {e}")),
+        }
+    }
+    if errors.is_empty() {
+        Ok(done)
+    } else {
+        Err(errors)
+    }
+}
+
+/// A test build's trust resolution (it has no composition root): the `plugins:` block through the
+/// loader's `TrustPolicy::from_config`, exactly as the root resolves it.
+pub fn trust_policy(
+    cfg: &crate::config::PluginsCfg,
+) -> Result<busbar_plugin_loader::sign::TrustPolicy, String> {
+    use busbar_plugin_loader::sign::{TrustInput, TrustPolicy};
+    TrustPolicy::from_config(TrustInput {
+        publishers: &cfg.publisher_keys(),
+        allow_unsigned: cfg.trust.allow_unsigned,
+        allow_third_party: cfg.trust.allow_third_party,
+        min_versions: &cfg.min_versions,
+        first_party_floors: &cfg.first_party_floors,
+        binary_version: env!("CARGO_PKG_VERSION"),
+    })
+}
+
+/// A test build's registry build (it has no composition root): the root's composition over the
+/// loader's one build.
+pub fn registry_stand_in(
+    i: crate::preflight::RegistryIn<'_>,
+    note: &mut dyn FnMut(busbar_plugin_loader::boot::Note<'_>),
+) -> Result<busbar_plugin_loader::PluginRegistry, String> {
+    use busbar_plugin_loader::boot::{registry, Build, Scan};
+    let scan = match i.plugins {
+        None => None,
+        Some(p) => Some(Scan {
+            policy: trust_policy(p).map_err(|e| format!("plugins.trust is invalid: {e}"))?,
+            data_dir: i.data_dir,
+            dir: p.enabled.then_some(std::path::Path::new(&p.dir)),
+        }),
+    };
+    registry(
+        Build {
+            linked: i.linked,
+            scan,
+        },
+        note,
+    )
+}

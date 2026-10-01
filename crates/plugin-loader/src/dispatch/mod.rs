@@ -27,6 +27,7 @@
 
 pub mod answer;
 pub mod auth_outbound;
+pub mod conn_services;
 pub mod kinds;
 pub mod load;
 pub mod log_file;
@@ -55,7 +56,10 @@ use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
 
 pub use answer::{Answer, Context};
-pub use load::{load_dropped, load_linked, LoadError, ManifestFacts};
+pub use load::{
+    load_dropped, load_dropped_bytes, load_linked, rendering_of, rendering_of_library, LinkedRow,
+    LoadError, ManifestFacts,
+};
 pub use log_file::{LogLevel, PluginLogConfig, PluginLogSink};
 pub use plugin::{
     Bind, Called, Diagnostic, Dropped, EnvelopeSink, Metric, NoSink, Plugin, Recall, MAX_LOG_BYTES,

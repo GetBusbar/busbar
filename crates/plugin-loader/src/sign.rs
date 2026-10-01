@@ -107,7 +107,7 @@ pub fn embedded_release_pubkey() -> Option<VerifyingKey> {
 ///
 /// `deny_unknown_fields`: a manifest with fields this binary does not understand FAILS structural
 /// validation (fail-closed) rather than silently dropping content the signature may cover.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     /// Canonical plugin name, e.g. `busbar-store-valkey-plugin`. Lowercase `[a-z0-9-]+`.
@@ -194,6 +194,57 @@ pub struct Manifest {
     /// their signatures — are unchanged.
     #[serde(default, skip_serializing_if = "Declares::is_empty")]
     pub declares: Declares,
+    /// THE STATEMENT, as its canonical rendering in lowercase hex
+    /// ([`rendering`](busbar_contract::abi::mechanism::rendering)): rendered from the plugin's door
+    /// by the pack tool and SIGNED with everything else, so every reader that must not open the
+    /// plugin (`--validate`, `--list-plugins`) reads the plugin's facts from here, and the loader
+    /// compares it with the door's own Statement byte for byte when it admits the plugin. Absent
+    /// for a library with no door (a pre-1.6.0 artifact), and skipped when absent, so every
+    /// manifest packed before it keeps its canonical bytes and its signature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statement: Option<String>,
+}
+
+impl Manifest {
+    /// The Statement rendering this manifest states ([`Manifest::statement`], hex-decoded); `None`
+    /// when it states none.
+    ///
+    /// # Errors
+    ///
+    /// A `statement` that is not lowercase hex.
+    pub fn stated_rendering(&self) -> Result<Option<Vec<u8>>, String> {
+        self.statement
+            .as_deref()
+            .map(|h| {
+                if h.bytes().any(|b| b.is_ascii_uppercase()) {
+                    return Err("manifest statement is not lowercase hex".to_string());
+                }
+                hex::decode(h).map_err(|e| format!("manifest statement is not hex: {e}"))
+            })
+            .transpose()
+    }
+
+    /// The facts this manifest's Statement rendering carries, read back without opening the plugin
+    /// ([`rendering::read`](busbar_contract::abi::mechanism::rendering::read)); `None` when it
+    /// states none.
+    ///
+    /// # Errors
+    ///
+    /// A `statement` that is not lowercase hex, or not one whole Statement rendering.
+    pub fn stated(
+        &self,
+    ) -> Result<Option<busbar_contract::abi::mechanism::rendering::Read>, String> {
+        self.stated_rendering()?
+            .map(|b| {
+                busbar_contract::abi::mechanism::rendering::read(&b).map_err(|e| {
+                    format!(
+                        "manifest statement is not a Statement rendering: byte {} is not {}",
+                        e.at, e.what
+                    )
+                })
+            })
+            .transpose()
+    }
 }
 
 /// The declaration shapes a manifest's `declares` section carries, named here so a packer or a
@@ -399,6 +450,59 @@ pub struct TrustPolicy {
     /// anything else is a hard reject no opt-in flag can relax. Applies to first- and third-party
     /// alike (first-party has no automatic floor).
     pub min_versions: BTreeMap<String, String>,
+}
+
+/// A `plugins:` block's trust facts, as plain data: what [`TrustPolicy::from_config`] resolves.
+#[derive(Debug, Clone, Copy)]
+pub struct TrustInput<'a> {
+    /// The configured third-party publishers, `(name, hex ed25519 public key)`.
+    pub publishers: &'a [(&'a str, &'a str)],
+    /// `plugins.trust.allow_unsigned`.
+    pub allow_unsigned: bool,
+    /// `plugins.trust.allow_third_party`.
+    pub allow_third_party: bool,
+    /// `plugins.min_versions`: per-name anti-downgrade floors, first- and third-party alike.
+    pub min_versions: &'a BTreeMap<String, String>,
+    /// The runtime per-name first-party floor overrides (explicit rollback pins).
+    pub first_party_floors: &'a BTreeMap<String, String>,
+    /// Carried for diagnostics only; NOT a floor.
+    pub binary_version: &'a str,
+}
+
+impl TrustPolicy {
+    /// Resolve a `plugins:` block's trust facts: the EMBEDDED first-party release key, the binary's
+    /// version (diagnostics only), the configured third-party publishers, opt-ins and per-name
+    /// floors. The AUTOMATIC first-party floor (the per-name high-water marks) is NOT resolved
+    /// here: it is an observed fact the registry build arms ([`crate::boot::registry`]).
+    ///
+    /// # Errors
+    ///
+    /// A publisher named for busbar's embedded key, or a malformed publisher key (a skipped trust
+    /// anchor could wrongly reject a good plugin).
+    pub fn from_config(i: TrustInput<'_>) -> Result<Self, String> {
+        let mut publishers = BTreeMap::new();
+        for &(name, public_key) in i.publishers {
+            if name == FIRST_PARTY_PUBLISHER {
+                return Err(format!(
+                    "plugins.trust.publishers['{name}']: the publisher name '{FIRST_PARTY_PUBLISHER}' \
+                     is reserved for busbar's embedded release key and cannot be configured"
+                ));
+            }
+            let key = public_key_from_hex(public_key)
+                .map_err(|e| format!("plugins.trust.publishers['{name}']: {e}"))?;
+            publishers.insert(name.to_string(), key);
+        }
+        Ok(TrustPolicy {
+            first_party_key: embedded_release_pubkey(),
+            binary_version: i.binary_version.to_string(),
+            first_party_floors: i.first_party_floors.clone(),
+            first_party_high_water: BTreeMap::new(),
+            publishers,
+            allow_unsigned: i.allow_unsigned,
+            allow_third_party: i.allow_third_party,
+            min_versions: i.min_versions.clone(),
+        })
+    }
 }
 
 /// The verdict for one plugin artifact that MAY proceed to load.
@@ -674,16 +778,10 @@ pub fn valid_name(s: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-/// Is `v` a well-formed semver core (`MAJOR.MINOR.PATCH`, each a decimal integer, with an optional
-/// `-pre`/`+meta` suffix)? The strict three-component core is what the anti-downgrade ordering
-/// depends on, so it is validated structurally rather than best-effort parsed.
+/// Is `v` a well-formed semver core? The contract's one judge
+/// ([`busbar_contract::plugin::valid_semver`]).
 pub fn valid_semver(v: &str) -> bool {
-    let core = v.split(['-', '+']).next().unwrap_or("");
-    let parts: Vec<&str> = core.split('.').collect();
-    parts.len() == 3
-        && parts
-            .iter()
-            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    busbar_contract::plugin::valid_semver(v)
 }
 
 /// PHASE 1 - STRUCTURAL validation of a manifest + its library bytes, INDEPENDENT of trust: a
@@ -746,6 +844,8 @@ pub fn validate_identity(m: &Manifest, host_identity: &str) -> Result<(), String
     if m.publisher.trim().is_empty() {
         return Err("manifest publisher is empty".to_string());
     }
+    // A stated Statement must be one whole rendering: every no-dlopen reader relies on it.
+    m.stated()?;
     // HOST identity gate: an ABSENT `host` means `busbar` (backward compatible with every manifest
     // packed before this field existed). An EXPLICIT `host` that is not the caller's own identity
     // is a hard structural reject — not a silent ignore — because a sibling product (busbar-ui)

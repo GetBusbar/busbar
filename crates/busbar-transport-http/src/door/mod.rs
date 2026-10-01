@@ -19,10 +19,13 @@
 //! * `ingest` takes what the far end sent; `timer` is the host's clock reaching a deadline the
 //!   framer asked for. Each answers the wire bytes owed and the frame pieces completed.
 //!
-//! A response arrives as frames on its stream: the HEAD frame (an HTTP/1.1 status line and the
-//! fields, carrying the status code, its class and any `Retry-After`), one frame per body chunk,
-//! and then an EMPTY frame that says the response is whole. A trailer section is not handed up:
-//! 1.5.5's client read a response through reqwest, which yields data only.
+//! A response arrives as frames on its stream: the HEAD frame (one field block, flagged
+//! `PIECE_FIELDS` and carrying the status code, its class and any `Retry-After`; framed even when
+//! no field is left in it), one frame per body chunk, and then an EMPTY frame that says the
+//! response is whole. The field block is `busbar_contract::abi::transport::fields`' rendering:
+//! lower-case names, hyper's (1.5.5's) order, a repeated field on its own lines, hop-by-hop fields
+//! dropped here. A trailer section is not handed up: 1.5.5's client read a response through
+//! reqwest, which yields data only.
 //!
 //! `locate` also answers this framer's protocol offer for a secured connection (ALPN, most
 //! preferred first): `h2, http/1.1`, or `http/1.1` alone under the http1-only key, exactly as
@@ -42,6 +45,7 @@
 //! so `begin` for [`SIDE_ACCEPT`] is refused, and so are `refuse`, `detach`, `adopt` and every
 //! carrier op.
 
+pub mod dest_head;
 pub mod engine;
 
 use std::collections::HashMap;
@@ -61,12 +65,13 @@ use busbar_contract::abi::sdk::transport::form_codes;
 use busbar_contract::abi::sdk::{self as sdk, HostBuf, Lent, Out, Safe, SafeSlot};
 use busbar_contract::abi::transport::{
     AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn, ConnOut, DialIn,
-    EmitIn, EncodeIn, FinishIn, FramePiece, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
-    ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, SettingDecl, ShutIn,
-    StatusRow, TransportTail, WriteIn, CANCEL_NOTHING_MOVED, FRAMING_STREAM, PIECE_END_OF_FRAME,
-    PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, ROLE_FRAMER, SETTING_COUNT,
-    SETTING_FLAG, SIDE_DIAL, STATUS_AT_FIRST_FRAME, STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT,
-    STATUS_OTHER, STATUS_SUCCESS, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    EmitIn, EncodeIn, FinishIn, FramePiece, FrameSpan, FramerOut, FramerSink, FramingIn, HeadSlots,
+    IngestIn, IoOut, ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, SettingDecl,
+    ShutIn, StatusRow, TransportTail, WriteIn, CANCEL_NOTHING_MOVED, FRAMING_STREAM,
+    PIECE_CONTINUED, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER,
+    PIECE_STREAM_FAILED, ROLE_FRAMER, SETTING_COUNT, SETTING_FLAG, SIDE_DIAL,
+    STATUS_AT_FIRST_FRAME, STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT, STATUS_OTHER, STATUS_SUCCESS,
+    YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 use busbar_contract::transport::registry::{
     facts as tfacts, status_ns, DEFAULT_REQUEST_BODY_MAX_BYTES, DEFAULT_REQUEST_TIMEOUT_SECS,
@@ -105,8 +110,13 @@ const fn bytes_str(b: &'static [u8]) -> AbiStr {
     }
 }
 
+/// The schemes `http` claims, by name: the Statement's `claims`, the one place they are stated.
+const CLAIM_NAMES: &[AbiStr] = &[abi_str(
+    <crate::HttpTransport as busbar_contract::TransportMeta>::KEY,
+)];
+
+/// Each claimed scheme's row, by index into [`CLAIM_NAMES`].
 const CLAIMS: &[Claim] = &[Claim {
-    key: abi_str(<crate::HttpTransport as busbar_contract::TransportMeta>::KEY),
     selector_forms: bytes_str(&SELECTOR_CODES),
     egress_selector_forms: abi_str(""),
     facts: FACTS.as_ptr(),
@@ -188,8 +198,8 @@ const TAIL: TransportTail = TransportTail {
     handshake_max_steps: 0,
     composes_over: COMPOSES_OVER.as_ptr(),
     composes_over_len: COMPOSES_OVER.len(),
-    claims: CLAIMS.as_ptr(),
-    claims_len: CLAIMS.len(),
+    claim_rows: CLAIMS.as_ptr(),
+    claim_rows_len: CLAIMS.len(),
     upgrades_to: std::ptr::null(),
     upgrades_to_len: 0,
     handoff_from: NONE,
@@ -205,6 +215,8 @@ const TAIL: TransportTail = TransportTail {
 /// The door's Statement: the `http` framer.
 pub const STATEMENT: Statement = Statement {
     kind_tail: (&TAIL as *const TransportTail).cast::<KindTailHead>(),
+    claims: CLAIM_NAMES.as_ptr(),
+    claims_len: CLAIM_NAMES.len(),
     ..statement("http", env!("CARGO_PKG_VERSION"), 64)
 };
 
@@ -588,7 +600,36 @@ impl SafeSlot for Encode {
         mut o: Out<'_, FramerOut>,
     ) -> Outcome {
         let fields = i.fields();
-        let mut pairs = Vec::with_capacity(fields.len());
+        let mut pairs = Vec::with_capacity(fields.len() + 2);
+        // The head words, where the host states them, ARE the request line: they lead, so they win
+        // over any same-named envelope field.
+        let method = i.field(|x| &x.method).bytes();
+        let word = i.field(|x| &x.target).bytes();
+        let envelope_path = fields.iter().find_map(|f| {
+            let name = f.field(|x| &x.name).bytes();
+            name.eq_ignore_ascii_case(b"path")
+                .then(|| f.field(|x| &x.value).bytes())
+        });
+        // The target goes out as 1.5.5's client wrote it: percent-encoded, never refused for a
+        // space (`dest_head::encode_target`).
+        let target = match (word, envelope_path) {
+            (w, _) if !w.is_empty() => Some(w),
+            (_, p) => p,
+        }
+        .map(dest_head::encode_target)
+        .transpose();
+        let Ok(target) = target else {
+            return failed(
+                &mut o,
+                "encode: a request target holds CR, LF or NUL".into(),
+            );
+        };
+        if !method.is_empty() {
+            pairs.push(("method", method));
+        }
+        if let Some(target) = target.as_deref() {
+            pairs.push(("path", target));
+        }
         for f in fields.iter() {
             let Ok(name) = f.field(|x| &x.name).as_str() else {
                 o.error("encode: a field name is not text");
@@ -665,12 +706,48 @@ fn fill(f: &mut Framing, sink: Lent<'_, FramerSink>, o: &mut Out<'_, FramerOut>)
         (sink.frame(), sink.pieces());
     let mut frame_len = 0_usize;
     let mut n = 0_usize;
+    let mut head_slots: HostBuf<'_, HeadSlots> = sink.heads();
+    let mut heads = 0_usize;
     while n < pieces.cap() {
         let Some(piece) = f.pieces().front_mut() else {
             break;
         };
+        // A head's reason phrase rides its stream's head slots, in the answer that carries the
+        // head's first piece, its bytes in the frame ahead of the piece's. A host that takes no
+        // slots (or a frame too small ever to hold the phrase) is not handed one.
+        if let Some(reason) = piece.reason.clone() {
+            if head_slots.cap() == 0 || reason.len() > frame.cap() {
+                piece.reason = None;
+            } else if heads == head_slots.cap() || reason.len() > frame.cap() - frame_len {
+                break;
+            } else {
+                // The phrase fits the frame's room and `heads < heads_cap`.
+                frame.extend(&reason);
+                head_slots.push(HeadSlots {
+                    stream: piece.stream,
+                    reason: FrameSpan {
+                        offset: frame_len as u64,
+                        len: reason.len() as u64,
+                    },
+                    ..HeadSlots::default()
+                });
+                frame_len += reason.len();
+                heads += 1;
+                piece.reason = None;
+            }
+        }
         let room = frame.cap() - frame_len;
-        let take = piece.bytes.len().min(room);
+        // A field block is cut only where the host takes a continuation: at a line's start or
+        // inside a value. A name longer than the whole frame is cut anyway (the host refuses it by
+        // name) rather than never moving.
+        let take = if piece.fields {
+            match field_cut(&piece.bytes, room, piece.continued) {
+                0 if frame_len == 0 => piece.bytes.len().min(room),
+                cut => cut,
+            }
+        } else {
+            piece.bytes.len().min(room)
+        };
         if take == 0 && !piece.bytes.is_empty() {
             break;
         }
@@ -680,19 +757,25 @@ fn fill(f: &mut Framing, sink: Lent<'_, FramerSink>, o: &mut Out<'_, FramerOut>)
         if piece.failed && whole {
             flags |= PIECE_STREAM_FAILED;
         }
+        if piece.fields {
+            flags |= PIECE_FIELDS;
+            if piece.continued {
+                flags |= PIECE_CONTINUED;
+            }
+        }
         let mut fp = FramePiece {
             stream: piece.stream,
             offset: frame_len as u64,
             len: take as u64,
-            status_code: 0,
+            code: 0,
             status_class: 0,
             flags: 0,
-            _reserved: [0; 2],
+            _reserved: 0,
             retry_after_secs: 0,
         };
         if let Some(code) = piece.status {
             flags |= PIECE_HAS_CODE;
-            fp.status_code = u32::from(code);
+            fp.code = u32::from(code);
             fp.status_class = class_of(code);
         }
         if let Some(secs) = piece.retry_after_secs {
@@ -708,12 +791,15 @@ fn fill(f: &mut Framing, sink: Lent<'_, FramerSink>, o: &mut Out<'_, FramerOut>)
         if whole {
             f.pieces().pop_front();
         } else {
+            // The rest opens mid-line unless what was taken ended one.
+            piece.continued = !piece.bytes[..take].ends_with(b"\n");
             let rest = piece.bytes.slice(take..);
             piece.bytes = rest;
         }
     }
     y.frame_len = frame_len as u64;
     y.pieces_len = n as u32;
+    y.heads_len = heads as u32;
     let more = f.wire_pending() || !f.pieces().is_empty();
     let mut flags = 0;
     if more {
@@ -728,6 +814,30 @@ fn fill(f: &mut Framing, sink: Lent<'_, FramerSink>, o: &mut Out<'_, FramerOut>)
     }
     y.flags = flags;
     o.set(|x| &x.yielded, y);
+}
+
+/// How much of a field block's `bytes` a sink with `room` may take: all of it when it fits, else the
+/// furthest cut at a line's start or inside a value, so a continued piece always extends a value (the
+/// host refuses any other continuation). `in_value`: the bytes open inside a value. `0`: no cut fits.
+fn field_cut(bytes: &[u8], room: usize, in_value: bool) -> usize {
+    if bytes.len() <= room {
+        return bytes.len();
+    }
+    // 0 = a line's start, 1 = a name, 2 = a value.
+    let mut at = if in_value { 2 } else { 0 };
+    let mut best = 0;
+    for (i, &b) in bytes[..room].iter().enumerate() {
+        at = match (at, b) {
+            (0 | 1, b':') => 2,
+            (0 | 1, _) => 1,
+            (_, b'\n') => 0,
+            _ => 2,
+        };
+        if at != 1 {
+            best = i + 1;
+        }
+    }
+    best
 }
 
 fn class_of(code: u16) -> u8 {

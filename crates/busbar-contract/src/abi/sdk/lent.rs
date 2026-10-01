@@ -458,7 +458,7 @@ use crate::abi::plane::{
 };
 use crate::abi::transport::{
     AcceptIn, AdoptIn, ArrivalIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FramePiece, FramerSink,
-    IngestIn, ListenIn, LocateIn, ReadIn, RefuseIn, WriteIn,
+    HeadSlots, IngestIn, ListenIn, LocateIn, ReadIn, RefuseIn, WriteIn,
 };
 
 lend! {
@@ -511,6 +511,7 @@ lend! {
         buf(wire, wire_cap) -> u8;
         buf(frame, frame_cap) -> u8;
         buf(pieces, pieces_cap) -> FramePiece;
+        buf(heads, heads_cap) -> HeadSlots;
     }
     ListenIn { buf(addr_buf, addr_cap) -> u8; }
     AcceptIn { buf(peer_buf, peer_cap) -> u8; }

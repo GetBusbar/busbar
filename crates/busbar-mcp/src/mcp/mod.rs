@@ -685,7 +685,7 @@ pub(crate) fn mcp_hydrate(
 pub(crate) fn mcp_routes(
     slot: &dyn std::any::Any,
 ) -> Vec<busbar_kernel::plane_routes::PlaneRouteSpec> {
-    use busbar_contract::abi::cold::endpoint::{RouteAuth, RouteMethod};
+    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
     use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
     let resource = slot
         .downcast_ref::<McpResource>()
@@ -741,7 +741,7 @@ pub(crate) fn mcp_admin_routes(
     _slot: &dyn std::any::Any,
 ) -> Vec<busbar_kernel::admin_verbs::AdminRouteSpec> {
     use crate::mcp::admin_view::McpServers;
-    use busbar_contract::abi::cold::endpoint::RouteMethod;
+    use busbar_contract::abi::mechanism::route::RouteMethod;
     use busbar_kernel::admin_verbs::{
         connect_reply, AdminReplyFuture, AdminReqCtx, AdminRouteSpec, AdminScope, AdminVerbKind,
     };

@@ -53,6 +53,17 @@
 //! A failed stream fails alone: its siblings on the connection carry on. [`YIELD_ENDED`] ends the
 //! CONNECTION, never one stream.
 //!
+//! FIELDS BY PIECE. A frame whose pieces carry [`PIECE_FIELDS`] is a FIELD BLOCK, never payload: the
+//! far end's HEAD (a response's head fields, a call's initial metadata) is ONE such frame, the
+//! stream's FIRST, carrying the status where the wire reports one there; it is framed even when no
+//! field is left in it (an EMPTY fields piece, with [`PIECE_END_OF_FRAME`], is an empty head, never
+//! the stream's end), so the head always precedes the first payload piece and a later fields frame
+//! is the far end's fields after its body (trailers). The block's bytes are [`fields`]' rendering;
+//! hop-by-hop fields never enter it: the framer drops them. A pseudo-field (`:method`, `:path`,
+//! `:authority`, `:status`) never does either: on an ACCEPTED stream the request's method, target
+//! and authority are typed [`HeadSlots`], a dialled answer's reason phrase too, and the answer's
+//! number is the piece's own `code`.
+//!
 //! EVERY REQUEST-PATH RESULT IS IN A HOST BUFFER (memory class (i)): a carrier's addresses and read
 //! bytes, a framer's wire bytes, frame bytes and pieces. The short-buffer rule is stated once,
 //! on [`OutHead`](crate::abi::mechanism::call::OutHead); this kind's cases:
@@ -73,12 +84,12 @@
 //! | `TransportDecl` / slot table | here |
 //! |---|---|
 //! | `abi`, `size`, `version` | the door's magic, mechanism version, `kind_abi` and [`crate::abi::mechanism::door::KindTailHead::size`] |
-//! | `key` | [`TransportTail::claims`]`[0].key` (the entry's own claim) |
+//! | `key` | the Statement's `claims[0]` (the entry's own claim; the Statement holds every claimed scheme's name) |
 //! | `composes_over` | [`TransportTail::composes_over`]; [`TransportTail::role`] states the role outright |
 //! | `selector_forms`, `egress_selector_forms`, `transport_facts`, `status_namespace`, `session`, `session_bound`, `unit0_trigger`, `status_at` | per claim, [`Claim`] |
 //! | `handoff_*`, `upgrades_to`, `handshake_frame_kind`, `handshake_max_steps` | [`TransportTail`] |
 //! | `framing`, `decodes_payload` | [`TransportTail::framing`], [`FACT_DECODES_PAYLOAD`] |
-//! | `claims` | [`TransportTail::claims`] |
+//! | `claims` | the Statement's `claims` (the names) and [`TransportTail::claim_rows`] (each name's row, by index) |
 //! | `init` + `WireSettings` + `WireWaker` | lifecycle `open` (settings blob, host tables with `wake`); the settings a transport reads are declared in [`TransportTail::settings`] |
 //! | `CarrierSlots` (8) | kind ops `0..=7` |
 //! | `FramerSlots` (10) | kind ops `8..=17`; `FramerOut`'s callbacks become [`FramerSink`] host buffers |
@@ -350,14 +361,23 @@ pub const DEST_AUTHORITY: u32 = 0;
 pub const DEST_PROGRAM: u32 = 1;
 
 /// [`FramePiece::flags`]: the piece completes its frame.
-pub const PIECE_END_OF_FRAME: u8 = 1;
-/// [`FramePiece::flags`]: `status_code` is present.
-pub const PIECE_HAS_CODE: u8 = 2;
+pub const PIECE_END_OF_FRAME: u16 = 1;
+/// [`FramePiece::flags`]: `code` is present.
+pub const PIECE_HAS_CODE: u16 = 2;
 /// [`FramePiece::flags`]: `retry_after_secs` is present.
-pub const PIECE_HAS_RETRY_AFTER: u8 = 4;
+pub const PIECE_HAS_RETRY_AFTER: u16 = 4;
 /// [`FramePiece::flags`]: the stream FAILED; the piece's bytes are the reason. Always with
 /// [`PIECE_END_OF_FRAME`]: it is the stream's last piece.
-pub const PIECE_STREAM_FAILED: u8 = 8;
+pub const PIECE_STREAM_FAILED: u16 = 8;
+
+/// [`FramePiece::flags`]: the piece's bytes are a FIELD BLOCK (the far end's head or its trailers),
+/// never payload. Never with [`PIECE_STREAM_FAILED`].
+pub const PIECE_FIELDS: u16 = 16;
+
+/// [`FramePiece::flags`], with [`PIECE_FIELDS`]: the piece's first byte CONTINUES a line an earlier
+/// piece of the block began (a sink too small for the block split it mid-line). A fields piece
+/// without it starts a line.
+pub const PIECE_CONTINUED: u16 = 32;
 
 /// [`FramerYield::flags`]: no frame follows on this connection.
 pub const YIELD_ENDED: u32 = 1;
@@ -368,13 +388,12 @@ pub const YIELD_HAS_DEADLINE: u32 = 4;
 
 // ── the Statement tail ───────────────────────────────────────────────────────────────────────────
 
-/// One claim: a scheme the entry answers for, with its per-scheme facts. The first claim is the
-/// entry's own. Two entries claiming one scheme refuse boot.
+/// One claim's ROW: the per-scheme facts of the scheme the Statement's `claims` names at the same
+/// index (the name itself is stated only there). The first claim is the entry's own. Two entries
+/// claiming one scheme refuse boot.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Claim {
-    /// The scheme.
-    pub key: AbiStr,
     /// Its selector forms, one code byte each (the transport vocabulary's numbering).
     pub selector_forms: AbiStr,
     /// Its outbound selector forms, one code byte each.
@@ -402,7 +421,7 @@ pub struct Claim {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct StatusRow {
-    /// Index into [`TransportTail::claims`].
+    /// Index into [`TransportTail::claim_rows`] (and so into the Statement's `claims`).
     pub claim: u32,
     /// The lowest code, inclusive.
     pub lo: u32,
@@ -446,10 +465,11 @@ pub struct TransportTail {
     pub composes_over: *const AbiStr,
     /// How many.
     pub composes_over_len: usize,
-    /// Every scheme the entry answers for.
-    pub claims: *const Claim,
-    /// How many (at least one).
-    pub claims_len: usize,
+    /// Each claimed scheme's row: row `i` describes the Statement's `claims[i]`, the ONE place the
+    /// scheme names are stated (signed, and byte-compared at admit).
+    pub claim_rows: *const Claim,
+    /// How many (at least one; exactly the Statement's `claims_len`).
+    pub claim_rows_len: usize,
     /// The claims a connection may upgrade to.
     pub upgrades_to: *const AbiStr,
     /// How many.
@@ -531,19 +551,19 @@ pub struct FramePiece {
     /// How many bytes.
     pub len: u64,
     /// The exact status number, in the claim's numbering.
-    pub status_code: u32,
+    pub code: u32,
     /// `STATUS_*`.
     pub status_class: u8,
-    /// `PIECE_*` bits.
-    pub flags: u8,
     /// Alignment padding.
-    pub _reserved: [u8; 2],
+    pub _reserved: u8,
+    /// `PIECE_*` bits (a `u16`: room past the first eight).
+    pub flags: u16,
     /// How long the far side asked to be left alone, in seconds.
     pub retry_after_secs: u64,
 }
 
-/// A byte range of a host buffer a piece's bytes were written into; `len == 0` = absent. (The same
-/// shape HEAD-FIELDS gives the framer's head slots, a range of [`FramerSink::frame`].)
+/// A byte range of a host buffer a piece's bytes were written into; `len == 0` = absent. A
+/// [`HeadSlots`] slot is one of these, a range of [`FramerSink::frame`] a framer wrote.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FrameSpan {
@@ -552,6 +572,11 @@ pub struct FrameSpan {
     /// How many bytes.
     pub len: u64,
 }
+
+// The piece's size and its flags' place are fixed: a framer built against another layout is refused
+// at compile time, never read wrong at run time.
+const _: () = assert!(core::mem::size_of::<FramePiece>() == 40);
+const _: () = assert!(core::mem::offset_of!(FramePiece, flags) == 30);
 
 /// The HOST buffers every framer op writes into, and the host's clock at the call.
 #[repr(C)]
@@ -573,6 +598,37 @@ pub struct FramerSink {
     pub now_monotonic_ns: u64,
     /// The host's wall clock, nanoseconds since the Unix epoch.
     pub now_unix_ns: u64,
+    /// Each stream's head typed slots ([`HeadSlots`]).
+    pub heads: *mut HeadSlots,
+    /// Its capacity, in heads.
+    pub heads_cap: usize,
+}
+
+/// A STREAM'S HEAD TYPED SLOTS: what a head says that is never a field. A framer yields at most
+/// ONE per stream, in the same answer as that stream's first [`PIECE_FIELDS`] frame (the ordinary
+/// fields; a pseudo-field such as `:path` never enters a field block, and hop-by-hop fields, `te`
+/// among them, are dropped). Each slot's bytes are in [`FramerSink::frame`].
+///
+/// * An ACCEPTED stream ([`SIDE_ACCEPT`]) fills `method`, `target` and, where the caller named one,
+///   `authority`: the kernel fills the plane's `ArriveIn::method` and target from these slots, never
+///   by reading bytes.
+/// * A DIALLED stream ([`SIDE_DIAL`]) fills `reason` only: the far end's reason phrase exactly as
+///   it was sent (HTTP/1), where the wire has one; a wire without one (HTTP/2) yields no slots.
+///
+/// The answer's number is never a slot: it is the head piece's [`FramePiece::code`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HeadSlots {
+    /// The stream.
+    pub stream: u64,
+    /// The method (`GET`, `POST`, ...); with `target`, or both absent.
+    pub method: FrameSpan,
+    /// The target: the path and query the caller asked for; with `method`, or both absent.
+    pub target: FrameSpan,
+    /// The authority the caller named; absent when it named none.
+    pub authority: FrameSpan,
+    /// The far end's reason phrase, exactly as sent; absent when it sent none.
+    pub reason: FrameSpan,
 }
 
 /// What a framer op wrote into its [`FramerSink`].
@@ -589,6 +645,10 @@ pub struct FramerYield {
     pub flags: u32,
     /// With [`YIELD_HAS_DEADLINE`]: the monotonic instant to call [`slot::TIMER`] at.
     pub next_deadline_ns: u64,
+    /// Head slots written to `heads`.
+    pub heads_len: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }
 
 // ── carrier ins and outs ─────────────────────────────────────────────────────────────────────────
@@ -904,6 +964,11 @@ pub struct EncodeIn {
     pub body_len: usize,
     /// The sink.
     pub sink: FramerSink,
+    /// The request's method, a head word (the same name as the head slots'); absent = none. A
+    /// framer whose wire has no head words ignores it.
+    pub method: AbiStr,
+    /// The request's target (path and query), a head word; absent = none.
+    pub target: AbiStr,
 }
 
 /// `refuse`'s `in`.

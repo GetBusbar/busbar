@@ -135,10 +135,11 @@ pub enum CapsRefused {
     Failed(String),
 }
 
-/// What a store states in its Statement tail (`abi::store::StoreTail`).
+/// What a store states about itself: `ephemeral` as the Statement mark `MARK_EPHEMERAL`, the rest
+/// in its Statement tail (`abi::store::StoreTail`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tail {
-    /// What it holds is lost on restart.
+    /// What it holds is lost on restart (the Statement mark `MARK_EPHEMERAL`).
     pub ephemeral: bool,
     /// It holds plane records durably.
     pub durable_plane: bool,

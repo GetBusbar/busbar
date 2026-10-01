@@ -51,39 +51,108 @@ type HookOpen = fn(&str) -> Option<busbar_plugin_loader::registry::RankingPolicy
 /// the aliases, `open` handed the spelling a reference used.
 pub type LinkedHook = (&'static str, &'static [&'static str], HookOpen);
 pub use busbar_kernel_identity::operator::LinkedAuth;
-use busbar_plugin_loader::{dispatch::PluginLogConfig, LinkedPlugin};
-/// The root's linked entries: its `stores`, its `hooks`, and the name of the default governance
-/// store it resolved from the store rows' own claims (empty when no linked row claims it).
-pub type RootRows = (&'static [LinkedStore], &'static [LinkedHook], &'static str);
+use busbar_plugin_loader::{boot, dispatch::PluginLogConfig, LinkedPlugin, PluginRegistry};
+/// THE ROOT'S REGISTRY BUILD (ARCHITECT ruling Q8: the composition root builds the plugin registry;
+/// the kernel receives it): the linked rows alone, or the directory scan with the linked rows ahead
+/// of it, each step noted so the preflight's log lines keep their order.
+pub type RegistryBuild =
+    fn(RegistryIn<'_>, &mut dyn FnMut(boot::Note<'_>)) -> Result<PluginRegistry, String>;
+
+/// What the root's registry build reads: the build's linked rows and, unless only those are
+/// wanted, the `plugins:` block (its trust, its directory, whether it is on) and the fleet data dir
+/// the first-party floor persists under.
+pub struct RegistryIn<'a> {
+    /// The rows this build links, registered ahead of the directory's.
+    pub linked: Vec<LinkedPlugin>,
+    /// The `plugins:` block, or `None` for the linked rows alone.
+    pub plugins: Option<&'a config::PluginsCfg>,
+    /// [`fleet_data_dir`].
+    pub data_dir: Option<&'a std::path::Path>,
+}
+/// One `plugins.fetch` entry's outcome, as the root's fetch reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Fetched {
+    /// The pinned file was already present and hashed to the pin: no network.
+    Cached {
+        /// The file inside `plugins.dir`.
+        filename: String,
+    },
+    /// Downloaded, verified against its pin (if any), and written.
+    Fetched {
+        /// The file inside `plugins.dir`.
+        filename: String,
+    },
+    /// A reload's miss or mismatch: the node keeps serving what it has.
+    Warned {
+        /// The entry's URL.
+        url: String,
+        /// Why.
+        error: String,
+    },
+}
+
+/// THE ROOT'S PLUGINS FETCH: every `plugins.fetch` target into `dir`, through the kernel's
+/// SSRF-guarded `download` (the root never downloads by any other path); `fatal_on_miss` at boot,
+/// a [`Fetched::Warned`] per problem on reload. Errors are every problem at boot.
+pub type PluginsFetch = fn(
+    &std::path::Path,
+    &[config::FetchTarget],
+    bool,
+    &dyn Fn(&str) -> Result<Vec<u8>, String>,
+) -> Result<Vec<Fetched>, Vec<String>>;
+
+/// WHAT THE COMPOSITION ROOT INSTALLS into the kernel, by name: its linked entries, the default
+/// store it resolved and its registry build — and, as each kind's axis lands, that kind's
+/// `<kind>_axis` field (ARCHITECT ruling Q8: the kernel receives contract `<Kind>Axis` seams from
+/// the root, never the loader). A field is added by name; nothing is positional. Nothing
+/// installed ([`Default`]): no linked rows, no default store, and a build and a fetch that refuse,
+/// naming the missing root.
+#[derive(Clone, Copy, Default)]
+pub struct RootInstall {
+    /// The build's linked in-process stores.
+    pub stores: &'static [LinkedStore],
+    /// The build's linked ranking hooks.
+    pub hooks: &'static [LinkedHook],
+    /// The governance store a deployment that configures none runs on: the linked store row that
+    /// declares itself the default (empty when no row claims it).
+    pub default_store_module: &'static str,
+    /// The root's registry build.
+    pub registry_build: Option<RegistryBuild>,
+    /// The root's `plugins.fetch`.
+    pub plugins_fetch: Option<PluginsFetch>,
+}
 
 /// A test build has no root: its store and ranking fixtures stand in for the root's entries, the
 /// stand-in store (which claims the default) as the default.
 #[cfg(any(test, feature = "test-support"))]
-const STAND_IN: RootRows = (
-    &[fixture_store::linked::STORE],
-    &[
+const STAND_IN: RootInstall = RootInstall {
+    stores: &[fixture_store::linked::STORE],
+    hooks: &[
         #[cfg(feature = "hooks-ranking")]
         fixture_hook::linked::HOOK,
     ],
-    fixture_store::linked::STORE.0,
-);
+    default_store_module: fixture_store::linked::STORE.0,
+    registry_build: Some(crate::test_support::registry_stand_in),
+    plugins_fetch: Some(crate::test_support::fetch_stand_in),
+};
 
 /// The composition root's linked store and hook entries (the build's in-process stores and, when
-/// compiled in, its ranking hooks) and its resolved default store, installed once before the first
-/// resolution.
-static ROOT_ROWS: std::sync::OnceLock<RootRows> = std::sync::OnceLock::new();
+/// compiled in, its ranking hooks), its resolved default store and its registry build, installed
+/// once before the first resolution.
+static ROOT_ROWS: std::sync::OnceLock<RootInstall> = std::sync::OnceLock::new();
 
-/// THE ROOT'S DOOR onto the cold-kind axis: its linked tables' `stores` and `hooks` entries and the
-/// default store the root resolved from the stores' claims (the first install stands). The kernel
-/// names none of the plugins it registers, and no default store (#2 rule (1), #40).
-pub fn install_linked_rows(rows: RootRows) {
+/// THE ROOT'S DOOR onto the cold-kind axis: its linked tables' `stores` and `hooks` entries, the
+/// default store the root resolved from the stores' claims and the root's registry build (the first
+/// install stands). The kernel names none of the plugins it registers, and no default store (#2
+/// rule (1), #40).
+pub fn install_linked_rows(rows: RootInstall) {
     let _ = ROOT_ROWS.set(rows);
 }
 
 /// The installed root rows (a test build stands its fixtures in). `.2` is the governance store a
 /// deployment that configures none runs on: the linked row that declares itself the default. Admin's
 /// store catalog lists `.0`, the stores this build links.
-pub fn root_rows() -> RootRows {
+pub fn root_rows() -> RootInstall {
     #[cfg(any(test, feature = "test-support"))]
     let _ = ROOT_ROWS.set(STAND_IN);
     ROOT_ROWS.get().copied().unwrap_or_default()
@@ -102,7 +171,7 @@ pub use busbar_kernel_identity::operator::{
 /// fixture entries in. Registered through `PluginRegistry::link`, the admission a dropped-in row
 /// takes (DECISIONS #2 rule (1)).
 fn linked_rows() -> Vec<LinkedPlugin> {
-    let (stores, hooks, _) = root_rows();
+    let RootInstall { stores, hooks, .. } = root_rows();
     let store = |s: &LinkedStore| LinkedPlugin::store(s.0, s.3, s.1);
     let hook = |&(name, aliases, open): &LinkedHook| LinkedPlugin::ranking(name, aliases, open);
     let own = [
@@ -183,8 +252,10 @@ fn require_plugin(
 }
 
 /// A registry holding only the [`linked_rows`] — what a build with the plugins directory off has.
+/// No directory is read and no root is needed: the kernel's own built-in secret modules resolve in
+/// any build.
 pub(crate) fn linked() -> Result<busbar_plugin_loader::PluginRegistry, String> {
-    busbar_plugin_loader::PluginRegistry::empty().link(linked_rows())
+    PluginRegistry::empty().link(linked_rows())
 }
 
 /// Build a complete `App` from a RESOLVED config — the ONE construction path shared by boot
@@ -205,7 +276,7 @@ pub(crate) fn linked() -> Result<busbar_plugin_loader::PluginRegistry, String> {
 /// 2. POLICY: `plugins.trust` resolves (embedded first-party key + third-party publishers + the
 ///    explicit opt-ins + anti-downgrade floors); a malformed key is an error.
 /// 3. SCAN: when enabled, every tarball in `plugins.dir` runs the three-phase pipeline
-///    (structural -> trust -> conflict) via [`busbar_plugin_loader::scan_and_validate`]. ANY
+///    (structural -> trust -> conflict) in the root's registry build ([`RegistryBuild`]). ANY
 ///    invalid tarball/manifest or ANY name/alias conflict aborts with every problem named; an
 ///    untrusted plugin is SKIPPED (warn-logged, never `dlopen`ed).
 /// 4. RESOLUTION: the configured `store.module` (alias OR canonical name, resolved against the
@@ -346,94 +417,30 @@ pub fn plugins_preflight(
         ));
     }
 
-    // 2. Policy resolution (embedded first-party key + configured third-party trust), then the
-    //    AUTOMATIC first-party anti-downgrade floor: the per-name high-water marks. `to_policy`
-    //    leaves the floor empty on purpose — it is an observed fact, not a config value — so this is
-    //    the one seam that arms it, and it is the seam every automatic path (boot / config reload /
-    //    config apply / admin plugin reload) runs through.
-    let mut policy = plugins_cfg
-        .to_policy()
-        .map_err(|e| format!("plugins.trust is invalid: {e}"))?;
+    // 2. Policy resolution (embedded first-party key + configured third-party trust) is the root's
+    //    registry build's, which then arms the AUTOMATIC first-party anti-downgrade floor from the
+    //    per-name high-water marks — an observed fact, not a config value. Every automatic path
+    //    (boot / config reload / config apply / admin plugin reload) runs through this one build,
+    //    and a malformed floor is warned about here first.
+    plugins_cfg.warn_invalid_floors();
     let data_dir = fleet_data_dir();
-    let (mut high_water, hw_note) = busbar_plugin_loader::HighWaterMarks::load(data_dir.as_deref());
-    if let Some(note) = hw_note {
-        diag_warn!(
-            PLUGIN_FIRSTPARTY_FLOOR_UNREADABLE,
-            detail = %note,
-            "the persisted first-party anti-downgrade floor could not be used"
-        );
-    }
-    policy.first_party_high_water = high_water.marks();
-
-    // Disabled and nothing referenced: the registry is empty and NOTHING in the directory is even
-    // read (drop-is-inert).
+    // 3. Disabled: the registry is the linked rows and NOTHING in the directory is even read
+    //    (drop-is-inert). Enabled: the three-phase scan over the plugins directory, fail-closed on
+    //    invalid/conflict, the linked rows registered ahead of the directory's through the same
+    //    admission; then the floor RISES to what the scan proved loadable (only a VERIFIED
+    //    first-party verdict counts, and the mark only ever rises). A failure to persist is NOT
+    //    fatal: the in-memory marks still floor this process.
+    let build = RegistryIn {
+        linked: linked_rows(),
+        plugins: Some(plugins_cfg),
+        data_dir: data_dir.as_deref(),
+    };
+    let registry_build = root_rows()
+        .registry_build
+        .ok_or("no composition root installed the plugin registry build")?;
+    let registry = registry_build(build, &mut |n| log_build(n, &plugins_cfg.dir))?;
     if !plugins_cfg.enabled {
-        tracing::info!(
-            "plugins: disabled (plugins.enabled is false; tarballs in the directory are inert)"
-        );
-        return linked();
-    }
-
-    // 3. Three-phase scan over the plugins directory. Fail-closed on invalid/conflict. The linked
-    //    rows register ahead of the directory's, through the same admission.
-    let dir = std::path::Path::new(&plugins_cfg.dir);
-    let registry = busbar_plugin_loader::scan_and_validate(dir, &policy)
-        .map_err(|errs| format!("plugin validation failed:\n  - {}", errs.join("\n  - ")))?
-        .link(linked_rows())?;
-    tracing::info!(
-        dir = %plugins_cfg.dir,
-        loadable = registry.loadable().len(),
-        skipped = registry.skipped().len(),
-        "plugins: enabled"
-    );
-    for s in registry.skipped() {
-        diag_warn!(
-            PLUGIN_SKIPPED_TRUST_POLICY,
-            plugin = %s.manifest.name,
-            file = %s.file,
-            reason = %s.reason,
-            "plugin present but NOT loaded (trust policy)"
-        );
-    }
-    for p in registry.loadable() {
-        match &p.verdict {
-            busbar_plugin_loader::sign::Verdict::Trusted {
-                publisher,
-                first_party,
-            } => tracing::info!(
-                plugin = %p.manifest.name,
-                alias = %p.manifest.alias,
-                kind = %p.manifest.kind,
-                version = %p.manifest.version,
-                publisher = %publisher,
-                first_party,
-                "plugin validated"
-            ),
-            busbar_plugin_loader::sign::Verdict::Allowed { reason, .. } => diag_warn!(
-                PLUGIN_LOADED_UNVERIFIED,
-                plugin = %p.manifest.name,
-                alias = %p.manifest.alias,
-                kind = %p.manifest.kind,
-                reason = %reason,
-                "plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in)"
-            ),
-        }
-    }
-
-    // 3b. RAISE the first-party anti-downgrade floor to what this scan proved loadable. Only a
-    //     VERIFIED first-party verdict counts (a third-party or opted-in-untrusted artifact must
-    //     never set the floor the first-party lane is judged against), and the mark only ever rises.
-    //     A failure to persist is NOT fatal: the in-memory marks still floor this process, and a
-    //     node that cannot write its data dir has a louder problem than this one.
-    if high_water.record_registry(&registry) {
-        if let Err(e) = high_water.persist() {
-            diag_warn!(
-                PLUGIN_FIRSTPARTY_FLOOR_UNWRITABLE,
-                error = %e,
-                "could not persist the first-party anti-downgrade floor; it still applies to this \
-                 process but will not survive a restart"
-            );
-        }
+        return Ok(registry);
     }
 
     // 4. The configured store must resolve to a loadable store plugin.
@@ -545,6 +552,67 @@ pub fn plugins_preflight(
         .map_err(|e| format!("plugin route registration conflict: {e}"))?;
 
     Ok(registry)
+}
+
+/// The preflight's log line for each step of the root's registry build, in the build's order.
+fn log_build(n: boot::Note<'_>, dir: &str) {
+    match n {
+        boot::Note::FloorUnreadable(note) => diag_warn!(
+            PLUGIN_FIRSTPARTY_FLOOR_UNREADABLE,
+            detail = %note,
+            "the persisted first-party anti-downgrade floor could not be used"
+        ),
+        boot::Note::Off => tracing::info!(
+            "plugins: disabled (plugins.enabled is false; tarballs in the directory are inert)"
+        ),
+        boot::Note::Scanned(registry) => {
+            tracing::info!(
+                dir = %dir,
+                loadable = registry.loadable().len(),
+                skipped = registry.skipped().len(),
+                "plugins: enabled"
+            );
+            for s in registry.skipped() {
+                diag_warn!(
+                    PLUGIN_SKIPPED_TRUST_POLICY,
+                    plugin = %s.manifest.name,
+                    file = %s.file,
+                    reason = %s.reason,
+                    "plugin present but NOT loaded (trust policy)"
+                );
+            }
+            for p in registry.loadable() {
+                match &p.verdict {
+                    busbar_plugin_loader::sign::Verdict::Trusted {
+                        publisher,
+                        first_party,
+                    } => tracing::info!(
+                        plugin = %p.manifest.name,
+                        alias = %p.manifest.alias,
+                        kind = %p.manifest.kind,
+                        version = %p.manifest.version,
+                        publisher = %publisher,
+                        first_party,
+                        "plugin validated"
+                    ),
+                    busbar_plugin_loader::sign::Verdict::Allowed { reason, .. } => diag_warn!(
+                        PLUGIN_LOADED_UNVERIFIED,
+                        plugin = %p.manifest.name,
+                        alias = %p.manifest.alias,
+                        kind = %p.manifest.kind,
+                        reason = %reason,
+                        "plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in)"
+                    ),
+                }
+            }
+        }
+        boot::Note::FloorUnwritable(e) => diag_warn!(
+            PLUGIN_FIRSTPARTY_FLOOR_UNWRITABLE,
+            error = %e,
+            "could not persist the first-party anti-downgrade floor; it still applies to this \
+             process but will not survive a restart"
+        ),
+    }
 }
 
 /// Resolve the operator ADMIN credential — the operator-credential entry's `token:` secret ref —
@@ -989,15 +1057,13 @@ pub(crate) fn build_secret_resolver(
     )))
 }
 
-/// The `plugins.fetch` download closure the engine hands to `busbar_plugin_loader::fetch_plugins`.
+/// The `plugins.fetch` download closure the engine hands to the root's fetch ([`PluginsFetch`]).
 /// Enforces the SAME cloud-metadata SSRF denylist provider URLs face (fetch is off-box, key-adjacent
 /// I/O) and requires https for a public host, then performs the GET. The GET runs on a DEDICATED
 /// std::thread with its own current-thread runtime, so it is safe whether the caller sits on a tokio
 /// worker (boot) or a `spawn_blocking` thread (reload) — a nested `block_on` on a runtime thread would
 /// otherwise panic. The loader owns cache/verify/atomic-write; this owns network + SSRF.
-pub(crate) fn plugin_fetch_downloader(
-    blocked: &[String],
-) -> impl Fn(&str) -> Result<Vec<u8>, String> {
+pub fn plugin_fetch_downloader(blocked: &[String]) -> impl Fn(&str) -> Result<Vec<u8>, String> {
     plugin_fetch_downloader_with_cap(blocked, config::DEFAULT_PLUGIN_FETCH_MAX_BYTES)
 }
 

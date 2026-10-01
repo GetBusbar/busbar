@@ -389,7 +389,10 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
             "/// The root's transport doors, mounted for this file's door rows.\n\
              #[allow(dead_code)]\n\
              #[path = {:?}]\n\
-             mod __busbar_doors;\n",
+             mod __busbar_doors;\n\
+             /// The loader, as the doors reach it (`super::loader`, the root's one naming module).\n\
+             #[allow(unused_imports)]\n\
+             mod loader {{\n    pub use busbar_plugin_loader::*;\n}}\n",
             doors.display().to_string()
         ));
     }

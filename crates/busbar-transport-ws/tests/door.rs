@@ -99,6 +99,8 @@ impl Host {
             pieces_cap: self.caps.2,
             now_monotonic_ns: 3_000_000_000,
             now_unix_ns: 1_790_000_000_000_000_000,
+            heads: std::ptr::null_mut(),
+            heads_cap: 0,
         }
     }
 

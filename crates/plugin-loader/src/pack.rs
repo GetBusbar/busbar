@@ -570,9 +570,33 @@ fn pack(args: &[String]) -> ExitCode {
                 .map(|path| read_declares(path))
                 .transpose()?
                 .unwrap_or_default(),
+            statement: None,
         };
         let lib_bytes =
             std::fs::read(&lib_path).map_err(|e| format!("cannot read --lib '{lib_path}': {e}"))?;
+        // THE STATEMENT: rendered from the library's own door and signed with the rest, so a
+        // reader that must not open the plugin reads its facts from the manifest, and the loader
+        // compares the door with it at admit. A library with no door states none. A library this
+        // host cannot open (another target's build) states none either, loudly: the engine refuses
+        // a door-carrying plugin whose manifest states no Statement, so nothing unchecked loads.
+        let statement = match busbar_plugin_loader::dispatch::rendering_of_library(
+            std::path::Path::new(&lib_path),
+        ) {
+            Ok(r) => r.map(hex::encode),
+            Err(busbar_plugin_loader::dispatch::LoadError::Open(e)) => {
+                eprintln!(
+                    "warning: --lib '{lib_path}' does not load on this host ({e}); the manifest \
+                     states no Statement, and busbar refuses such a 1.6.0 plugin at admit: pack \
+                     it on a host of its target"
+                );
+                None
+            }
+            Err(e) => return Err(format!("--lib '{lib_path}': {e}")),
+        };
+        let manifest = Manifest {
+            statement,
+            ..manifest
+        };
 
         // Sign with $BUSBAR_SIGN_KEY, or package unsigned only under the explicit dev flag.
         let manifest = match std::env::var(SIGN_KEY_ENV) {

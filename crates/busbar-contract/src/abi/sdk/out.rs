@@ -196,12 +196,13 @@ unsafe impl<T: Scalar, const N: usize> Scalar for [T; N] {}
 // SAFETY (all below): fixed-layout ABI structs of integers only.
 unsafe impl Scalar for crate::abi::mechanism::call::RawOutcome {}
 unsafe impl Scalar for crate::abi::mechanism::ticket::Ticket {}
-unsafe impl Scalar for crate::abi::plane::Span {}
+unsafe impl Scalar for crate::abi::mechanism::call::Span {}
 unsafe impl Scalar for crate::abi::plane::UnitCount {}
 unsafe impl Scalar for crate::abi::plane::RecordWrite {}
 unsafe impl Scalar for crate::abi::plane::OutField {}
 unsafe impl Scalar for crate::abi::transport::FramePiece {}
 unsafe impl Scalar for crate::abi::transport::FramerYield {}
+unsafe impl Scalar for crate::abi::transport::HeadSlots {}
 unsafe impl Scalar for crate::abi::store::CellGrant {}
 
 /// A slot's `out`, as a safe body is handed it: read anything, set scalars, and hand pointers to
@@ -524,7 +525,7 @@ impl<'a, T: AbiOut> Out<'a, T> {
         &mut self,
         pick: impl FnOnce(&T) -> &AbiStr,
         buf: &HostBuf<'_, u8>,
-        span: crate::abi::plane::Span,
+        span: crate::abi::mechanism::call::Span,
     ) {
         let s = buf.str_at(span);
         self.put(pick, s);

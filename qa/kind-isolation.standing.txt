@@ -19,7 +19,15 @@ kind-isolation:matrix	instance-ratchet	busbar-plugin-loader × secret	6
 kind-isolation:matrix	measurement-disagreement	busbar-kernel × plane	3
 kind-isolation:matrix	measurement-disagreement	busbar-kernel × transport	5
 kind-isolation:matrix	measurement-disagreement	busbar-plane-llm × transport	5
-kind-isolation:matrix	ratchet	busbar × cleanliness	207
+# Q77-PENDING (a) (ARCHITECT pre-ruling 2026-10-01, KI-SHIP-SCOPE: the root composes the cleanliness
+# tier; ARCHITECTURE_ALLOWED root -> cleanliness): the composition root builds the process's ONE
+# Connector (BUSBAR-1.6.0.md THE DESIGN, Connections: "The chain is kernel -> busbar-core-connector ->
+# transport plugins"; ARCHITECT ruling 2026-09-30, one Connector in the root). busbar × cleanliness and
+# root -> cleanliness 207 -> 211, the lines that name the connector crate it composes:
+# crates/busbar/src/root/connector.rs:17, :18, :19 (its framer, registry and Connector imports), :93
+# (the doc of its dial-class rules), :111 (DEFAULT_CLASS), :119 (tls::client::build_client_config).
+# EXPIRES: never as a class (the root composing cleanliness is granted); the figure only goes down.
+kind-isolation:matrix	ratchet	busbar × cleanliness	211
 kind-isolation:matrix	ratchet	busbar × hooks	13
 kind-isolation:matrix	ratchet	busbar × kernel	1295
 kind-isolation:matrix	ratchet	busbar × store	7
@@ -34,7 +42,7 @@ kind-isolation:matrix	ratchet	busbar-llm × contract	523
 kind-isolation:matrix	ratchet	busbar-llm × plane	784
 kind-isolation:matrix	ratchet	busbar-mcp × cleanliness	5
 kind-isolation:matrix	ratchet	busbar-mcp × legacy	8
-kind-isolation:matrix	ratchet	busbar-mcp × plugin-tooling	10
+kind-isolation:matrix	ratchet	busbar-mcp × plugin-tooling	8
 kind-isolation:matrix	ratchet	busbar-plane-llm × plane	600
 kind-isolation:matrix	ratchet	busbar-plane-llm × transport	599
 kind-isolation:matrix	ratchet	busbar-plane-mcp × legacy	11
@@ -45,7 +53,14 @@ kind-isolation:matrix	ratchet	busbar-voice × contract	122
 kind-isolation:matrix	ratchet	busbar-voice × plane	872
 kind-isolation:matrix	unlisted-cell	busbar × legacy	89
 kind-isolation:matrix	unlisted-cell	busbar-a2a × cleanliness	4
-kind-isolation:matrix	unlisted-cell	busbar-a2a × contract	347
+# Q77-PENDING (a) (ARCHITECT ruling 2026-10-01): R2 re-spelling: ABI route shapes named from their one
+# home, busbar_contract::abi (BUSBAR-1.6.0.md §11: every ABI shape lives in ONE place,
+# busbar-contract/src/abi/). The loader re-exports nothing (R2, 9a391817c), so lines that named the
+# route types as busbar_plugin_loader::{RouteAuth, RouteMethod} name them at
+# busbar_contract::abi::mechanism::route. Offset in the same commit by the plugin-tooling cells they
+# left. EXPIRES when FOLD-MCP and FOLD-A2A delete the legacy crates (step 36b P1).
+# busbar-a2a × contract 345 -> 348: a2a/receive.rs:3785, a2a/rest.rs:620, a2a/tests/ingress_tests.rs:13.
+kind-isolation:matrix	unlisted-cell	busbar-a2a × contract	350
 kind-isolation:matrix	unlisted-cell	busbar-a2a × kernel	33
 kind-isolation:matrix	unlisted-cell	busbar-contract × cleanliness	1
 kind-isolation:matrix	unlisted-cell	busbar-contract × kernel	1
@@ -75,7 +90,9 @@ kind-isolation:matrix	unlisted-cell	busbar-kernel-ledger × cleanliness	4
 kind-isolation:matrix	unlisted-cell	busbar-kernel-ledger × plane	14
 kind-isolation:matrix	unlisted-cell	busbar-llm × kernel	16
 kind-isolation:matrix	unlisted-cell	busbar-llm × legacy	10
-kind-isolation:matrix	unlisted-cell	busbar-mcp × contract	308
+# Q77-PENDING (a), as busbar-a2a × contract above. busbar-mcp × contract 308 -> 310: mcp/mod.rs:688,
+# mcp/tests/roots_changed_tests.rs:154. EXPIRES with FOLD-MCP (step 36b P1).
+kind-isolation:matrix	unlisted-cell	busbar-mcp × contract	310
 kind-isolation:matrix	unlisted-cell	busbar-mcp × kernel	25
 kind-isolation:matrix	unlisted-cell	busbar-oauth2 × kernel	5
 kind-isolation:matrix	unlisted-cell	busbar-oauth2 × legacy	2
@@ -107,7 +124,8 @@ kind-isolation:matrix	unlisted-edge	kernel -> legacy	181
 kind-isolation:matrix	unlisted-edge	kernel -> plugin-tooling	213
 kind-isolation:matrix	unlisted-edge	kernel -> store	31
 kind-isolation:matrix	unlisted-edge	legacy -> cleanliness	9
-kind-isolation:matrix	unlisted-edge	root -> cleanliness	207
+# Q77-PENDING (a), as busbar × cleanliness above (the same six lines).
+kind-isolation:matrix	unlisted-edge	root -> cleanliness	211
 kind-isolation:matrix	unlisted-instance	busbar × export	8
 kind-isolation:matrix	vendor-name	busbar crates/busbar/benches/hook_path.rs	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/src/root/units_admin/tests/units_admin.rs	1

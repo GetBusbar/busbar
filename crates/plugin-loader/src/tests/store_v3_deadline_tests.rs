@@ -24,7 +24,7 @@ use busbar_contract::records::{RecordStore, UsageDelta};
 use busbar_contract::store_calls::StoreCalls;
 
 use crate::dispatch::kinds::store::Store;
-use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, NoSink};
+use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink};
 use crate::store_v3::LoadedStore;
 
 /// `add_usage_batch`: PENDING, and no wake ever comes.
@@ -140,13 +140,15 @@ mod hung {
 
 fn open() -> (LoadedStore, Arc<Dispatcher>) {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let row = LinkedRow::of(hung::door).expect("the hung door states its Statement");
     let p = load_linked::<Store>(
-        hung::door,
+        &row,
         Bind {
             instance: Arc::from("the-instance"),
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
+            conns: None,
         },
     )
     .expect("the hung door loads");

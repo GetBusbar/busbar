@@ -31,13 +31,14 @@ use crate::abi::auth::{
 };
 use crate::abi::mechanism::call::{AbiStr, Blob, InHead, MetricEntry, OutHead, Outcome, Span};
 use crate::abi::mechanism::call::{BLOB_ABSENT, METRIC_ADD};
-use crate::abi::mechanism::door::{KindTailHead, Statement};
+use crate::abi::mechanism::door::{KindTailHead, MarkWord, Statement, MARK_WORD_CARRIER};
 use crate::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn, TickOut,
     ValidateIn,
 };
 use crate::abi::sdk::door::{AbiIn, AbiOut};
 use crate::abi::sdk::lent::{HostBuf, Lent};
+use crate::abi::sdk::out::Out;
 use crate::abi::sdk::safe::{Instance, SafeSlot};
 pub use crate::auth_calls::VerifiedIdentity;
 
@@ -193,7 +194,7 @@ macro_rules! ready_slot {
             type In = $in;
             type Out = $out;
             type State = Held<T>;
-            fn call(_: Instance<'_, Held<T>>, _: Lent<'_, $in>, _: &mut $out) -> Outcome {
+            fn call(_: Instance<'_, Held<T>>, _: Lent<'_, $in>, _: Out<'_, $out>) -> Outcome {
                 Outcome::Ready
             }
         }
@@ -223,8 +224,9 @@ impl<T: VerifyPlugin> SafeSlot for Open<T> {
     fn call(
         instance: Instance<'_, Held<T>>,
         input: Lent<'_, OpenIn>,
-        out: &mut OpenOut,
+        mut out: Out<'_, OpenOut>,
     ) -> Outcome {
+        let out = out.raw();
         let settings = input.field(|i| &i.settings).bytes();
         match T::open(settings, &secrets(input.secrets())) {
             Ok(plugin) => {
@@ -255,8 +257,9 @@ impl<T: VerifyPlugin> SafeSlot for Refresh<T> {
     fn call(
         instance: Instance<'_, Held<T>>,
         input: Lent<'_, RefreshIn>,
-        out: &mut OutHead,
+        mut out: Out<'_, OutHead>,
     ) -> Outcome {
+        let out = out.raw();
         let Some(h) = instance.get() else {
             return Outcome::Fault;
         };
@@ -287,7 +290,7 @@ impl<T: VerifyPlugin> SafeSlot for Drive<T> {
     type In = DriveIn;
     type Out = OutHead;
     type State = Held<T>;
-    fn call(_: Instance<'_, Held<T>>, _: Lent<'_, DriveIn>, _: &mut OutHead) -> Outcome {
+    fn call(_: Instance<'_, Held<T>>, _: Lent<'_, DriveIn>, _: Out<'_, OutHead>) -> Outcome {
         Outcome::Refused
     }
 }
@@ -299,7 +302,12 @@ impl<T: VerifyPlugin> SafeSlot for Cancel<T> {
     type In = CancelIn;
     type Out = CancelOut;
     type State = Held<T>;
-    fn call(_: Instance<'_, Held<T>>, _: Lent<'_, CancelIn>, out: &mut CancelOut) -> Outcome {
+    fn call(
+        _: Instance<'_, Held<T>>,
+        _: Lent<'_, CancelIn>,
+        mut out: Out<'_, CancelOut>,
+    ) -> Outcome {
+        let out = out.raw();
         out.disposition = crate::abi::auth::CANCEL_ABANDONED;
         Outcome::Ready
     }
@@ -315,8 +323,9 @@ impl<T: VerifyPlugin> SafeSlot for Verify<T> {
     fn call(
         instance: Instance<'_, Held<T>>,
         input: Lent<'_, VerifyIn>,
-        out: &mut IdentifyOut,
+        mut out: Out<'_, IdentifyOut>,
     ) -> Outcome {
+        let out = out.raw();
         let Some(h) = instance.get() else {
             return Outcome::Fault;
         };
@@ -405,7 +414,7 @@ impl<T: VerifyPlugin, I: AbiIn, O: AbiOut> SafeSlot for NotServed<T, I, O> {
     type In = I;
     type Out = O;
     type State = Held<T>;
-    fn call(_: Instance<'_, Held<T>>, _: Lent<'_, I>, _: &mut O) -> Outcome {
+    fn call(_: Instance<'_, Held<T>>, _: Lent<'_, I>, _: Out<'_, O>) -> Outcome {
         Outcome::Refused
     }
 }
@@ -450,9 +459,10 @@ macro_rules! auth_verify_door {
     };
 }
 
-/// An [`AuthTail`] for a verify-only plugin reading `carriers`, with `facts` (`FACT_*`).
+/// An [`AuthTail`] for a verify-only plugin, with `facts` (`FACT_*`). The carriers it reads are its
+/// Statement's [`carrier`] word marks, not a tail fact (the One Statement).
 #[must_use]
-pub const fn verify_tail(facts: u32, carriers: &'static [AbiStr]) -> AuthTail {
+pub const fn verify_tail(facts: u32) -> AuthTail {
     AuthTail {
         head: KindTailHead {
             size: std::mem::size_of::<AuthTail>() as u32,
@@ -464,10 +474,17 @@ pub const fn verify_tail(facts: u32, carriers: &'static [AbiStr]) -> AuthTail {
         _reserved: 0,
         styles: ptr::null(),
         styles_len: 0,
-        aliases: ptr::null(),
-        aliases_len: 0,
-        carriers: carriers.as_ptr(),
-        carriers_len: carriers.len(),
+    }
+}
+
+/// One inbound carrier `verify` reads (a field line's name), as the Statement states it: a
+/// [`MARK_WORD_CARRIER`] word mark in [`Statement::mark_words`].
+#[must_use]
+pub const fn carrier(name: &'static str) -> MarkWord {
+    MarkWord {
+        class: MARK_WORD_CARRIER,
+        _reserved: 0,
+        word: crate::abi::sdk::door::abi_str(name),
     }
 }
 
