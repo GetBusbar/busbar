@@ -81,7 +81,7 @@ fn serving(wakes: Arc<AtomicU64>) -> Connector {
     .unwrap();
     Connector::serving(
         view,
-        Arc::new(crate::LiteralsOnly),
+        crate::support::loopback_literals(),
         None,
         Arc::new(move |_| {
             wakes.fetch_add(1, Ordering::SeqCst);
@@ -260,14 +260,19 @@ mod name_dial;
 
 // ── EGRESS: the declared target; metadata and link-local are refused on every need ──
 
-/// A connector serving the byte-exact door, admitting literals (loopback and private included).
+/// A connector serving the byte-exact door, admitting literals (its loopback far ends allowlisted).
 fn literal_connector() -> Connector {
     let view = Transports::new(vec![Entry {
         door: Arc::new(TestDoor::identity("bytes")),
         alpn: Vec::new(),
     }])
     .unwrap();
-    Connector::serving(view, Arc::new(crate::LiteralsOnly), None, Arc::new(|_| {}))
+    Connector::serving(
+        view,
+        crate::support::loopback_literals(),
+        None,
+        Arc::new(|_| {}),
+    )
 }
 
 /// RED: a need whose config names its target (`target_from`) dials that target and no other: an
@@ -512,7 +517,7 @@ fn scheme_connector() -> Connector {
     let tls = crate::tls::client::build_client_config(&Default::default()).expect("the config");
     Connector::serving(
         view,
-        Arc::new(crate::LiteralsOnly),
+        crate::support::loopback_literals(),
         Some(Arc::new(tls)),
         Arc::new(|_| {}),
     )

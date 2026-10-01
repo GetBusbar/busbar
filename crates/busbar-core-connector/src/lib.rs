@@ -13,6 +13,8 @@
 //!   need nobody declared are refused.
 //! * [`endpoint`] is the pure check an open's target passes before any dial: a cloud metadata host,
 //!   in any spelling, is refused by name.
+//! * [`guard`] is THE DESTINATION GUARD, the one check deciding which addresses any outbound
+//!   connection may be dialled at (private refused unless allowlisted, metadata always).
 //! * [`tls`] is connection security — core-only, never a plugin, never crossing the ABI.
 //! * [`dtls`] is its datagram sibling — the DTLS engine a WebRTC association runs on (the RFC 7983
 //!   demux, the ICE-gated bind, the SRTP exporter), on ring like [`tls`].
@@ -41,6 +43,7 @@ pub mod compose;
 pub mod dtls;
 pub mod endpoint;
 pub mod framer;
+pub mod guard;
 pub mod io;
 pub mod listen;
 pub mod process;
@@ -125,21 +128,30 @@ where
     }
 }
 
-/// The judge a connector built with none holds: an IP literal is its own address and a name is
-/// refused, because nothing here resolves one.
-struct LiteralsOnly;
+/// The judge a connector built with none holds: an IP literal is its own address, judged by the
+/// guard it holds (the strict default for [`Connector::new`]), and a name is refused, because
+/// nothing here resolves one.
+pub(crate) struct LiteralsOnly(pub(crate) guard::Guard);
 
 impl DialJudge for LiteralsOnly {
-    fn judge_dial(&self, dest: &str, _: u32, _: Judged) -> Option<Result<SocketAddr, Verdict>> {
-        Some(socket::address_of(dest).ok_or(busbar_contract::abi::host::service::DEST_UNRESOLVABLE))
+    fn judge_dial(&self, dest: &str, class: u32, _: Judged) -> Option<Result<SocketAddr, Verdict>> {
+        let Some(at) = socket::address_of(dest) else {
+            return Some(Err(busbar_contract::abi::host::service::DEST_UNRESOLVABLE));
+        };
+        Some(
+            self.0
+                .judge_answer(&at.ip().to_string(), &[at.ip()], class)
+                .map(|()| at)
+                .map_err(|r| r.verdict),
+        )
     }
 }
 
 /// THE SCHEME RULE OF A NEED'S EGRESS CLASS (`abi::host::conn::connector`, `EGRESS_*`), held
 /// against the address the judge pinned: open-web dials over connection security only;
 /// loopback-allowed over connection security, or in plaintext to loopback only; every other
-/// class takes the scheme its target names (operator-infrastructure's plaintext and private
-/// targets included). Which addresses a class admits at all is the kernel judge's, per class.
+/// class takes the scheme its target names (operator-infrastructure's plaintext included). Which
+/// addresses may be dialled at all is the destination guard's ([`guard`]), the same in every class.
 /// THE LANDING RULE rides with it: a dial stated `within` an address set (`EstablishIn::within`)
 /// lands only on an address in it, so a name that resolves elsewhere since the plugin judged it
 /// is refused at the connect, before any byte is written; an empty set states no pin.
@@ -232,7 +244,7 @@ impl Default for Connector {
             transports: RwLock::new(Transports::default()),
             tls: None,
             wake: Arc::new(|_| {}),
-            judge: Arc::new(LiteralsOnly),
+            judge: Arc::new(LiteralsOnly(guard::Guard::default())),
             listeners: Mutex::new(HashMap::new()),
         }
     }
