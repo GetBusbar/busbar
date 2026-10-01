@@ -19,6 +19,10 @@
 //!   retryable and attempts remain. [`Deliveries::next_tick_ns`] is the lifecycle tick's
 //!   `next_tick_ns`: nothing waits on a slot or a thread between attempts.
 //!
+//! Before each dial, [`Deliveries::rebound`] keeps predev's anti-rebinding rule: the destination's
+//! fresh addresses must overlap those an earlier delivery to it reached ([`Deliveries::reached`]),
+//! a bounded set in plane memory.
+//!
 //! The caller's webhook credential ([`DeliveryAuth`]) is held here, never persisted and never
 //! printed, and joins the request only after the judge has passed. busbar's own callback token
 //! ([`Tokens`]) is a capability for one task, minted from the kernel's random bytes, checked in
@@ -49,8 +53,21 @@ pub const QUEUE_CAPACITY: usize = 64;
 /// no callback of its own with that backend).
 pub const MAX_TOKENS: usize = 4096;
 
-/// The random bytes behind one callback token.
+/// The random bytes behind one callback token: written as 64 lower-case hex digits after
+/// `<task-id>.`, the wire shape of predev's `<task-id>.<hex HMAC-SHA256>`.
 pub const TOKEN_BYTES: usize = 32;
+
+/// The scheme busbar's callback token rides on: registered as the config's
+/// `authentication.scheme` (its `credentials` = the token), presented back as
+/// `Authorization: Bearer <token>`.
+pub const TOKEN_SCHEME: &str = "Bearer";
+
+/// The most destinations whose reached addresses one instance holds; past it, the oldest-keyed one
+/// is dropped, and its next delivery is judged as a first one (never unjudged).
+pub const MAX_DESTINATIONS: usize = 4096;
+
+/// The most reached addresses held for one destination.
+pub const MAX_REACHED: usize = 16;
 
 /// The field every delivery carries, and its value.
 pub const CONTENT_TYPE: (&str, &str) = ("content-type", "application/json");
@@ -117,6 +134,9 @@ pub enum Attempted {
     Delivered,
     /// The destination judge refused (its `DEST_*` verdict); nothing went out.
     Judged(u64),
+    /// The destination now resolves only to addresses no earlier delivery reached (a rebinding);
+    /// nothing went out.
+    Moved,
     /// The connection or the exchange failed.
     Transport,
     /// The receiver answered this non-2xx status.
@@ -140,7 +160,7 @@ impl Attempted {
         match self {
             Self::Transport | Self::Status(429) => true,
             Self::Status(s) => matches!(s, 500..=599),
-            Self::Delivered | Self::Judged(_) => false,
+            Self::Delivered | Self::Judged(_) | Self::Moved => false,
         }
     }
 
@@ -150,7 +170,7 @@ impl Attempted {
     pub const fn record_kind(self) -> &'static str {
         match self {
             Self::Delivered => vocab::EV_PUSH_DELIVERED,
-            Self::Judged(_) => vocab::EV_PUSH_REFUSED,
+            Self::Judged(_) | Self::Moved => vocab::EV_PUSH_REFUSED,
             Self::Transport | Self::Status(_) => vocab::EV_PUSH_FAILED,
         }
     }
@@ -205,6 +225,7 @@ struct Book {
     queues: BTreeMap<String, VecDeque<Waiting>>,
     dropped: u64,
     auths: BTreeMap<String, DeliveryAuth>,
+    reached: BTreeMap<String, Vec<String>>,
 }
 
 /// What [`Deliveries::settle`] did with the head of a task's queue.
@@ -330,6 +351,34 @@ impl Deliveries {
         })
     }
 
+    /// predev's anti-rebinding rule, before a dial: `fresh` (the addresses the destination `url`
+    /// resolves to now, each already judged) must share at least one address with those an earlier
+    /// delivery to `url` reached. `None` = nothing reached before (a first delivery, a restart, or a
+    /// dropped entry): the judge alone decides. `Some(Attempted::Moved)` = refused, nothing goes out.
+    #[must_use]
+    pub fn rebound(&self, url: &str, fresh: &[String]) -> Option<Attempted> {
+        self.with(|b| {
+            let before = b.reached.get(url)?;
+            (!fresh.iter().any(|a| before.contains(a))).then_some(Attempted::Moved)
+        })
+    }
+
+    /// Record the addresses a delivery to `url` reached (after its request went out), replacing the
+    /// earlier set, so the next delivery must overlap them. Bounded by [`MAX_REACHED`] per
+    /// destination and [`MAX_DESTINATIONS`] in all.
+    pub fn reached(&self, url: &str, addrs: &[String]) {
+        if addrs.is_empty() {
+            return;
+        }
+        self.with(|b| {
+            if !b.reached.contains_key(url) && b.reached.len() >= MAX_DESTINATIONS {
+                b.reached.pop_first();
+            }
+            let kept = addrs.iter().take(MAX_REACHED).cloned().collect();
+            b.reached.insert(url.to_string(), kept);
+        });
+    }
+
     /// Hold the credential `task_id`'s receiver wants presented; `None` drops the one held (a
     /// replaced config that names none has withdrawn it).
     pub fn remember_auth(&self, task_id: &str, auth: Option<DeliveryAuth>) {
@@ -423,6 +472,17 @@ impl Tokens {
         let (task_id, secret) = presented.rsplit_once('.')?;
         let held = self.by_task.get(&task_id.to_string())?;
         busbar_contract::constant_time_eq(&held, secret).then(|| task_id.to_string())
+    }
+
+    /// The task an `Authorization` value (`Bearer <token>`, the scheme case-insensitive) names,
+    /// or `None` for a missing, foreign-scheme or refused token ([`Tokens::task_of`]).
+    #[must_use]
+    pub fn task_of_authorization(&self, authorization: &str) -> Option<String> {
+        let (scheme, token) = authorization.split_once(' ')?;
+        if !scheme.eq_ignore_ascii_case(TOKEN_SCHEME) {
+            return None;
+        }
+        self.task_of(token.trim())
     }
 
     /// Drop `task_id`'s token (its task reached a terminal state).

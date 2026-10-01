@@ -316,3 +316,103 @@ fn the_statement_declares_one_outbound_open_web_need_whose_target_the_plane_name
         "no auth style, no configured target: the plane names each dial's target"
     );
 }
+
+/// predev's token: `<task-id>.` then `hex::encode` of an HMAC-SHA256, 64 lower-case hex digits.
+fn predev_shaped(token: &str, task_id: &str) -> bool {
+    token
+        .strip_prefix(task_id)
+        .and_then(|t| t.strip_prefix('.'))
+        .is_some_and(|mac| {
+            mac.len() == 64
+                && mac
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+}
+
+#[test]
+fn a_callback_token_has_predevs_wire_shape_and_rides_its_bearer_scheme() {
+    let tokens = Tokens::new();
+    // predev's own HMAC token for task `t-1` (hex of a 32-byte MAC) is the shape the check holds.
+    let predev = "t-1.5d41402abc4b2a76b9719d911017c5925d41402abc4b2a76b9719d911017c592";
+    assert!(predev_shaped(predev, "t-1"));
+    for (task, random) in [("t-1", [0u8; TOKEN_BYTES]), ("a.b", [0xffu8; TOKEN_BYTES])] {
+        let token = tokens.mint(task, &random).expect("minted");
+        assert!(predev_shaped(&token, task), "{token}");
+    }
+    assert_eq!(TOKEN_SCHEME, "Bearer");
+    let token = tokens.mint("t-2", &[0xabu8; TOKEN_BYTES]).expect("minted");
+    for presented in [format!("Bearer {token}"), format!("bearer  {token} ")] {
+        assert_eq!(
+            tokens.task_of_authorization(&presented).as_deref(),
+            Some("t-2"),
+            "{presented}"
+        );
+    }
+    for presented in [format!("Basic {token}"), token.clone(), String::new()] {
+        assert_eq!(
+            tokens.task_of_authorization(&presented),
+            None,
+            "{presented}"
+        );
+    }
+}
+
+#[test]
+fn a_destination_that_moved_off_every_address_it_reached_is_refused() {
+    let d = Deliveries::new();
+    let url = "https://hook.example/cb";
+    let addrs = |a: &[&str]| -> Vec<String> { a.iter().map(|s| (*s).to_string()).collect() };
+    assert_eq!(
+        d.rebound(url, &addrs(&["203.0.113.7"])),
+        None,
+        "first: the judge alone"
+    );
+    d.reached(url, &addrs(&["203.0.113.7", "203.0.113.8"]));
+    assert_eq!(
+        d.rebound(url, &addrs(&["203.0.113.8", "198.51.100.1"])),
+        None
+    );
+    assert_eq!(
+        d.rebound(url, &addrs(&["198.51.100.1"])),
+        Some(Attempted::Moved)
+    );
+    assert_eq!(d.rebound(url, &[]), Some(Attempted::Moved));
+    assert_eq!(
+        d.rebound("https://other.example/cb", &addrs(&["198.51.100.1"])),
+        None,
+        "per destination"
+    );
+    // The set follows the last delivery.
+    d.reached(url, &addrs(&["198.51.100.1"]));
+    assert_eq!(
+        d.rebound(url, &addrs(&["203.0.113.7"])),
+        Some(Attempted::Moved)
+    );
+    let moved = Attempted::Moved;
+    assert!(!moved.retryable());
+    assert_eq!(moved.record_kind(), vocab::EV_PUSH_REFUSED);
+}
+
+#[test]
+fn reached_addresses_are_bounded() {
+    let d = Deliveries::new();
+    let many: Vec<String> = (0..=MAX_REACHED)
+        .map(|i| format!("203.0.113.{i}"))
+        .collect();
+    d.reached("https://a.example/", &many);
+    let last = many[MAX_REACHED].clone();
+    assert_eq!(
+        d.rebound("https://a.example/", &[last]),
+        Some(Attempted::Moved),
+        "only the first MAX_REACHED are kept"
+    );
+    for i in 0..MAX_DESTINATIONS {
+        d.reached(&format!("https://d{i}.example/"), &many[..1]);
+    }
+    let held = (0..MAX_DESTINATIONS)
+        .filter(|i| d.rebound(&format!("https://d{i}.example/"), &[]).is_some())
+        .count()
+        + usize::from(d.rebound("https://a.example/", &[]).is_some());
+    assert_eq!(held, MAX_DESTINATIONS);
+}
