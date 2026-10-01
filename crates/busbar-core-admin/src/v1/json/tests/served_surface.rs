@@ -643,3 +643,39 @@ async fn served_openapi_lists_only_the_configured_planes() {
         "a node that did not configure `agents:` must not describe the agents operations"
     );
 }
+
+/// A NAMED-MAP SECTION ANSWERS ITS OWN WRONG METHOD, ITS UNKNOWN NAME AND ITS MALFORMED BODY.
+///
+/// The five section routes share one router loop and one section value per mount; this pins what
+/// each of the shapes answers (`405`, `404`, `400`, `200`) so a change to how the section reaches
+/// the handlers shows as a status change here.
+#[tokio::test]
+async fn named_map_section_routes_answer_wrong_method_unknown_name_and_bad_body() {
+    busbar_kernel::metrics::init();
+    const TOKEN: &str = "served-surface-token";
+    let app = crate::new_test_app().governance(gov(TOKEN)).build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let ask = |method: reqwest::Method, path: &str, body: &'static str| {
+        let req = client
+            .request(method, format!("http://{addr}{path}"))
+            .header("x-admin-token", TOKEN)
+            .header("content-type", "application/json")
+            .body(body);
+        async move { req.send().await.unwrap().status().as_u16() }
+    };
+    let root = abs("/export");
+    let item = abs("/export/served-surface-probe");
+    let settings = abs("/export/served-surface-probe/settings");
+    assert_eq!(ask(reqwest::Method::GET, &root, "").await, 200, "list");
+    assert_eq!(ask(reqwest::Method::POST, &root, "").await, 405, "wrong method on the root");
+    assert_eq!(ask(reqwest::Method::POST, &item, "").await, 405, "wrong method on one name");
+    assert_eq!(ask(reqwest::Method::PUT, &settings, "").await, 405, "wrong method on settings");
+    assert_eq!(ask(reqwest::Method::GET, &item, "").await, 404, "unknown name");
+    assert_eq!(ask(reqwest::Method::PUT, &item, "{").await, 400, "malformed definition body");
+    assert_eq!(ask(reqwest::Method::PATCH, &settings, "{").await, 400, "malformed settings body");
+    handle.abort();
+}

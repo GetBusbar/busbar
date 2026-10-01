@@ -47,7 +47,7 @@ use crate::verb::{
     KernelVerb, VerbScope, AUDIT_VERBS, LEDGER_VERBS, LEGACY_VERBS, NEW_VERBS, READ_ONLY_NEW_VERBS,
 };
 use busbar_contract::caps::{AdminVerb, Grant, SecretOnce, UnitKey};
-use busbar_contract::verb_store::{Store, StoreError};
+use busbar_contract::verb_store::Store;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
@@ -518,8 +518,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         &self.store
     }
 
-    /// The gate the three disaster-recovery verbs run through before they reach the store, and the
-    /// store call itself.
+    /// The gate the three disaster-recovery verbs run through before they reach the store.
     ///
     /// Identical to what [`Verbs::execute`] runs for any other new verb — scope, rate class, then
     /// the operator ceremony and dual control — because these three are new verbs; the only thing
@@ -528,8 +527,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
     /// posture the caller did not resolve is REFUSED rather than unwrapped, for the same reason it
     /// is in `execute`: a miswired caller must not turn the gate protecting a chain break into a
     /// downed process.
-    #[allow(clippy::too_many_arguments)]
-    fn run_recovery_verb(
+    fn admit_recovery_verb(
         &self,
         verb: KernelVerb,
         actor: &str,
@@ -537,18 +535,16 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         now: u64,
         posture: Option<PostureCtx>,
         approval: ApprovalState,
-        effect: impl FnOnce(&S) -> Result<(), StoreError>,
     ) -> Result<(), Refusal> {
         self.admit(verb, actor, granted, now)?;
         let Some(ctx) = posture else {
             return Err(Refusal::new(RefusalStep::Verify, ReasonCode::Validation));
         };
-        crate::posture::check_new_verb_admission(verb, ctx, approval)?;
-        effect(&self.store).map_err(store_error_into_refusal)
+        crate::posture::check_new_verb_admission(verb, ctx, approval)
     }
 
     /// `chain_break` — deliberately break the journal chain. Admitted through
-    /// [`Verbs::run_recovery_verb`] and only then handed to the store.
+    /// [`Verbs::admit_recovery_verb`] and only then handed to the store.
     pub fn chain_break(
         &self,
         admin: &Grant<AdminVerb>,
@@ -558,19 +554,21 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         posture: Option<PostureCtx>,
         approval: ApprovalState,
     ) -> Result<(), Refusal> {
-        self.run_recovery_verb(
+        self.admit_recovery_verb(
             KernelVerb::ChainBreak,
             actor,
             granted,
             now,
             posture,
             approval,
-            |store| store.chain_break(admin),
-        )
+        )?;
+        self.store
+            .chain_break(admin)
+            .map_err(store_error_into_refusal)
     }
 
     /// `store_restore` — restore the store from a named backup. Admitted through
-    /// [`Verbs::run_recovery_verb`] and only then handed to the store.
+    /// [`Verbs::admit_recovery_verb`] and only then handed to the store.
     #[allow(clippy::too_many_arguments)]
     pub fn store_restore(
         &self,
@@ -582,19 +580,21 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         approval: ApprovalState,
         backup_ref: &str,
     ) -> Result<(), Refusal> {
-        self.run_recovery_verb(
+        self.admit_recovery_verb(
             KernelVerb::StoreRestore,
             actor,
             granted,
             now,
             posture,
             approval,
-            |store| store.store_restore(admin, backup_ref),
-        )
+        )?;
+        self.store
+            .store_restore(admin, backup_ref)
+            .map_err(store_error_into_refusal)
     }
 
     /// `reseal_epoch_floor` — reseal the epoch floor after a chain break or restore. Admitted
-    /// through [`Verbs::run_recovery_verb`] and only then handed to the store.
+    /// through [`Verbs::admit_recovery_verb`] and only then handed to the store.
     pub fn reseal_epoch_floor(
         &self,
         admin: &Grant<AdminVerb>,
@@ -604,15 +604,17 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         posture: Option<PostureCtx>,
         approval: ApprovalState,
     ) -> Result<(), Refusal> {
-        self.run_recovery_verb(
+        self.admit_recovery_verb(
             KernelVerb::ResealEpochFloor,
             actor,
             granted,
             now,
             posture,
             approval,
-            |store| store.reseal_epoch_floor(admin),
-        )
+        )?;
+        self.store
+            .reseal_epoch_floor(admin)
+            .map_err(store_error_into_refusal)
     }
 }
 
