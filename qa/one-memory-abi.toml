@@ -141,11 +141,6 @@ item = "extern 'C-unwind'"
 
 [[finding]]
 rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-a2a/src/a2a/mod.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
 file = "crates/busbar-contract/src/abi/sdk/boundary.rs"
 item = "abi::cold"
 
@@ -176,80 +171,12 @@ item = "abi::cold"
 
 [[finding]]
 rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-kernel/src/admin_verbs.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-kernel/src/config/migrate_export.rs"
-item = "abi::cold"
-
-# Transitional: the kernel names cold-lane types the loader re-export used to hide; the same coupling, spelled at its home.
-# 1 site (RouteAuth, RouteMethod). Expires when the route types move to abi/mechanism/route.rs.
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-kernel/src/core_routes.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-kernel/src/ingress/duplex_ws.rs"
-item = "abi::cold"
-
-# Transitional: the kernel names cold-lane types the loader re-export used to hide; the same coupling, spelled at its home.
-# 1 site (ExportStream). Expires when ExportStream unifies on abi::export::ExportStream.
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-kernel/src/ingress/mod.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
 file = "crates/busbar-kernel/src/observe.rs"
 item = "abi::cold"
 
 [[finding]]
 rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-kernel/src/plane_routes.rs"
-item = "abi::cold"
-
-# Transitional: the kernel names cold-lane types the loader re-export used to hide; the same coupling, spelled at its home.
-# 1 site. Route, RouteAuth, RouteMethod expire when the route types move to abi/mechanism/route.rs; EndpointRequest, EndpointResponse (cold JSON call shapes) expire when the cold lane is deleted.
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-kernel/src/plugin_routes.rs"
-item = "abi::cold"
-
-# Transitional: the kernel names cold-lane types the loader re-export used to hide; the same coupling, spelled at its home.
-# 4 sites (RouteAuth, RouteMethod). Expire when the route types move to abi/mechanism/route.rs.
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-kernel/src/router.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
 file = "crates/busbar-kernel/src/test_support/engine_kit_plus/core_impl.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-kernel/src/test_support/engine_kit_plus/mod.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-llm/src/openai_responses_webhook.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-mcp/src/mcp/mod.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-voice/src/mount.rs"
 item = "abi::cold"
 
 [[finding]]
@@ -396,3 +323,43 @@ item = "spawn_blocking"
 rule = "one-memory-abi:spawn-blocking"
 file = "crates/plugin-loader/src/host.rs"
 item = "spawn_blocking"
+
+# ── Q77-PENDING (a): THE R2 RE-SPELLINGS OF THE COLD LANE'S CALL SHAPES — EXPIRES AT M6-COLD-DELETE ──
+# ARCHITECT ruling 2026-10-01 on one-memory-abi:cold-lane (fallback approved as Q77-PENDING class
+# (a), a cited spec-forced move): R2 (the loader re-exports no contract type, 9a391817c) deleted
+# the loader shims that spelled these references, so the same live cold-lane call shapes
+# (EndpointRequest/EndpointResponse, HostResult/HttpRequest/HttpResponse, ColdEntry; spec R2-A:
+# linked COLD rows dispatch through the ColdEntry boundary) are now named at abi::cold. The
+# vocabulary the memory ABI speaks left abi/cold first (abi::export, abi::mechanism::route), so
+# what remains is the cold lane's own plumbing. Each row is COUNTED (lines carrying the item) and
+# lower-only: a new reference fails. All of it is deleted at M6-COLD-DELETE (the M6 checklist:
+# "delete abi/cold and abi/hot"). Test files are not scanned by this gate (src/** outside /tests/
+# only), so the block has no test rows.
+
+[[finding]]
+rule = "one-memory-abi:cold-lane"
+file = "crates/busbar/src/root/linked.rs"
+item = "abi::cold"
+count = 16
+expires = "M6-COLD-DELETE"
+
+[[finding]]
+rule = "one-memory-abi:cold-lane"
+file = "crates/busbar-kernel/src/export/plugin.rs"
+item = "abi::cold"
+count = 1
+expires = "M6-COLD-DELETE"
+
+[[finding]]
+rule = "one-memory-abi:cold-lane"
+file = "crates/busbar-kernel/src/export/scrape.rs"
+item = "abi::cold"
+count = 1
+expires = "M6-COLD-DELETE"
+
+[[finding]]
+rule = "one-memory-abi:cold-lane"
+file = "crates/busbar-kernel/src/plugin_routes.rs"
+item = "abi::cold"
+count = 1
+expires = "M6-COLD-DELETE"
