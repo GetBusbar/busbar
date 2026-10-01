@@ -22,6 +22,7 @@ usage:
   cargo xtask gate changelog [--require-version=V] [--require-dated-top]
   cargo xtask gate changelog-register [--require-version=V]
   cargo xtask gate hot-path-perf|hot-path-alloc [--execute]
+  cargo xtask abi-header [--write]   (the generated C header; the same gate as `gate abi-header`)
   cargo xtask gate --list
   cargo xtask gate --all [--format=tsv]
   cargo xtask gate <name> --parity -- <legacy argv...>
@@ -88,6 +89,9 @@ pub fn main(args: &[String]) -> i32 {
             }
         },
         Some("gate") => gate(&args[1..]),
+        // The generated C header: `cargo xtask abi-header [--write]` is `gate abi-header`, spelled
+        // as the one command a change under `abi/` ends with.
+        Some("abi-header") => gate(args),
         Some("selftest") => selftest_cmd(&args[1..]),
         // The pre-registry spelling, kept byte-identical: `cargo xtask denylist` prints exactly
         // what it always printed, so nothing that reads its output has to move on the same day the
@@ -431,6 +435,7 @@ fn gate(args: &[String]) -> i32 {
             // hand-edited — see `qa_gate_dispatch::DECLARED`'s doc comment. `--write` regenerates it
             // from whatever `qa-gate.yml` this branch carries, exactly like `design-bindings` and
             // `construction` regenerate their own derived artifacts from what this branch measures.
+            "abi-header" => crate::gates::abi_header::write(&cx),
             "qa-gate-dispatch" => {
                 crate::gates::qa_gate_dispatch::QaGateDispatchGate::new().write_declared(&cx)
             }

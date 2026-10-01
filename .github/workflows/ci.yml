@@ -596,6 +596,16 @@ jobs:
         run: cargo xtask gate abi-freeze --selftest
       - name: ABI freeze (abi/hot and abi/cold do not grow)
         run: cargo xtask gate abi-freeze
+      # THE GENERATED C HEADER (BUSBAR-1.6.0.md section 11.5, decision 84). `abi-header` re-renders
+      # crates/busbar-contract/include/busbar_plugin.h from the abi/ sources and the layout golden and
+      # is red, naming the first differing line, if the committed file differs; `cargo xtask abi-header
+      # --write` regenerates it. The header must also compile as plain C11, with its layout asserts.
+      - name: ABI header self-test
+        run: cargo xtask gate abi-header --selftest
+      - name: ABI header (the committed C header has not drifted)
+        run: cargo xtask gate abi-header
+      - name: ABI header compiles as C11
+        run: cc -std=c11 -Wall -Werror -fsyntax-only -x c crates/busbar-contract/include/busbar_plugin.h
       # THE GATE SET ITSELF, checked against this file. Every step above runs ONE gate; nothing
       # asked whether the set of steps still covers the set of registered gates. That question lives
       # in `full-gate --selftest` — the registry-vs-ci.yml set equality, both directions, plus the

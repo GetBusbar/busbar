@@ -19,6 +19,7 @@
 //!    the gate, the failure seven of the shell self-tests had, is not something a selftest CAN do.
 
 pub mod abi_freeze;
+pub mod abi_header;
 pub mod abi_location;
 pub mod blocking_ffi;
 pub mod c1_literals;
@@ -2800,6 +2801,14 @@ pub static REGISTRY: &[Registration] = &[
         build: || Box::new(one_memory_abi::OneMemoryAbiGate),
         summary: "plugins speak the memory ABI only: one exported symbol, no COLD/JSON lane, no \
                   blocking thread in the loader, extern \"C\" slots (report-only ledger)",
+    },
+    Registration {
+        name: "abi-header",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(abi_header::AbiHeaderGate),
+        summary: "the committed C header (busbar-contract/include/busbar_plugin.h) is exactly what \
+                  the abi/ sources render; `cargo xtask abi-header --write` regenerates it",
     },
     Registration {
         name: "abi-freeze",
