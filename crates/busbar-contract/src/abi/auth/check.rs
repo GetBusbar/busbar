@@ -10,7 +10,8 @@ use super::inbound::{BeginLoginOut, IdentifyOut, IdentityBuf};
 use super::outbound::{FieldSpan, FieldsOut};
 use super::{
     BEGIN_AUTHORIZE, BEGIN_FORM, FIELD_SENSITIVE, IDENTITY_HAS_TTL, LOGIN_IDENTITY, LOGIN_OUTAGE,
-    SPAN_ABSENT, VERDICT_IDENTITY, VERDICT_PASS,
+    SPAN_ABSENT, STYLE_CALLER_CREDENTIAL, STYLE_NEEDS_BODY_HASH, STYLE_NEEDS_HEADERS,
+    VERDICT_IDENTITY, VERDICT_PASS,
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome, Span, BLOB_OCTETS};
 use crate::abi::mechanism::check::{fault, results, Dim, Fault, Rule, MAX_BYTES};
@@ -258,6 +259,17 @@ pub fn check_fields(
         span(f.name, cap, false, a)?;
         span(f.value, cap, false, a)
     })
+}
+
+/// One [`super::StyleDecl::flags`]: only [`STYLE_NEEDS_BODY_HASH`] | [`STYLE_NEEDS_HEADERS`] |
+/// [`STYLE_CALLER_CREDENTIAL`] bits, nothing else. Run by the loader when it reads a plugin's
+/// declared styles, so a plugin build with a stray or future flag bit refuses the load rather than
+/// have the kernel silently ignore it.
+pub fn check_style_decl(flags: u32) -> Result<(), Fault> {
+    if flags & !(STYLE_NEEDS_BODY_HASH | STYLE_NEEDS_HEADERS | STYLE_CALLER_CREDENTIAL) != 0 {
+        return Err(fault(Rule::UnknownCode, "style.unknown_flags"));
+    }
+    Ok(())
 }
 
 /// A plugin-owned string: a non-zero length never rides a NULL pointer.

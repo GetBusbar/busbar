@@ -49,8 +49,8 @@ mod inbound;
 mod outbound;
 
 pub use check::{
-    check_begin_login, check_complete_login, check_fields, check_identify, FIELDS_HARD_MAX,
-    IDENTITY_GROUPS_HARD_MAX,
+    check_begin_login, check_complete_login, check_fields, check_identify, check_style_decl,
+    FIELDS_HARD_MAX, IDENTITY_GROUPS_HARD_MAX,
 };
 
 pub use inbound::{
@@ -190,6 +190,14 @@ pub const LOGIN_KIND_CREDENTIAL: u32 = 2;
 pub const STYLE_NEEDS_BODY_HASH: u32 = 1;
 /// [`StyleDecl::flags`]: `fields` needs [`FieldsIn::headers`], the exact envelope, for this style.
 pub const STYLE_NEEDS_HEADERS: u32 = 2;
+/// [`StyleDecl::flags`]: this style serves [`MODE_PASSTHROUGH`] as well as [`MODE_OWN`] — the
+/// per-request call may present the CALLER's verified credential, not only the plugin's own bound
+/// one (ARCHITECT ruling 2026-09-29: caller-credential is not a mechanism, it is a credential
+/// source a mechanism applies; a mechanism plugin declares this flag on a style instead of a
+/// second plugin declaring a `caller-credential` style). The kernel maps a provider's
+/// `caller-credential {as: X}` / `upstream_credentials: passthrough` config to style `X` in
+/// [`MODE_PASSTHROUGH`] (KERNEL<>PLUGINS step 21 seam; not built here).
+pub const STYLE_CALLER_CREDENTIAL: u32 = 4;
 
 /// One outbound style a plugin serves: an open string the provider's `auth:` resolves against.
 #[repr(C)]
@@ -197,7 +205,7 @@ pub const STYLE_NEEDS_HEADERS: u32 = 2;
 pub struct StyleDecl {
     /// The style name.
     pub name: AbiStr,
-    /// [`STYLE_NEEDS_BODY_HASH`] | [`STYLE_NEEDS_HEADERS`].
+    /// [`STYLE_NEEDS_BODY_HASH`] | [`STYLE_NEEDS_HEADERS`] | [`STYLE_CALLER_CREDENTIAL`].
     pub flags: u32,
     /// Alignment padding.
     pub _reserved: u32,
@@ -264,8 +272,10 @@ pub const MODE_OWN: u32 = 1;
 /// [`FieldsIn::mode`]: pass the caller's verified credential ([`FieldsIn::caller_credential`]).
 pub const MODE_PASSTHROUGH: u32 = 2;
 
-/// [`FieldSpan::flags`]: the value is credential material. An h2 encoder sends it never-indexed,
-/// as 1.5.5 did; like the whole field buffer it is never logged and is zeroised after encode.
+/// [`FieldSpan::flags`]: when SET, an h2 encoder sends the field never-indexed. 1.5.5 sent its
+/// credential headers indexable, so the 1.5.5 styles do NOT set it (ARCHITECT ruling 2026-09-28:
+/// the 1.5.5 bytes win); marking them is a behaviour change taken only with the owner. Set or not,
+/// the whole field buffer is never logged and is zeroised after encode.
 pub const FIELD_SENSITIVE: u32 = 1;
 
 /// [`LoginField::kind`]: plain text.
