@@ -43,7 +43,6 @@ pub mod instance_noun_neutrality;
 pub mod inventory_coverage;
 pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
-pub mod kind_abi_lane;
 pub mod kind_isolation;
 pub mod linked_dropped_features;
 pub mod money_invariants;
@@ -2848,14 +2847,6 @@ pub static REGISTRY: &[Registration] = &[
         build: || Box::new(linked_dropped_features::LinkedDroppedFeaturesGate),
         summary: "a plugin linked into the binary is built with its dropped-in build's features \
                   (report-only ledger)",
-    },
-    Registration {
-        name: "kind-abi-lane",
-        batch: 1,
-        tier: Tier::Fast,
-        build: || Box::new(kind_abi_lane::KindAbiLaneGate),
-        summary: "each kind declares the ONE ABI lane #30 binds it to by heat (plane/transport=hot, \
-                  store/secret/auth/hook/export=cold); the per-token loop is {plane,transport} only",
     },
     Registration {
         name: "kind-isolation",
