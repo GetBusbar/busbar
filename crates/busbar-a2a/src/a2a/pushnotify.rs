@@ -140,11 +140,11 @@ pub(crate) fn is_internal_addr(ip: &IpAddr) -> bool {
 /// Split a URL into `(scheme, host)`, the host read by the one shared URL reader.
 ///
 /// Deliberately STRICT: it accepts `scheme://host[:port][/path…]` and refuses anything it cannot
-/// read confidently. The authority is read by [`busbar_contract::net::parse_url`] (WHATWG rules
-/// for `https`), so it ends at `/`, `?`, `#` or `\` and the host is percent-decoded with its
-/// trailing root dot dropped — exactly what the HTTP client will dial. The copy this replaces ended
-/// the authority at `/`, `?` and `#` only, so `https://127.0.0.1\x/` read as a NAME that no range
-/// check could refuse while the client dialled loopback.
+/// read confidently. The authority is read by the shared `parse_url` (WHATWG rules for `https`),
+/// so it ends at `/`, `?`, `#` or `\` and the host is percent-decoded with its trailing root dot
+/// dropped — exactly what the HTTP client will dial. The copy this replaces ended the authority at
+/// `/`, `?` and `#` only, so `https://127.0.0.1\x/` read as a NAME that no range check could
+/// refuse while the client dialled loopback.
 fn split_url(url: &str) -> Result<(String, String), PushNotifyError> {
     let malformed = || PushNotifyError::Malformed(url.to_string());
     let (scheme, _) = url.split_once("://").ok_or_else(malformed)?;
