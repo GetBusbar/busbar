@@ -3,6 +3,6 @@
 anthropic = 0
 bedrock = 0
 cohere = 0
-gemini = 388
+gemini = 4
 openai_chat = 0
 openai_responses = 0

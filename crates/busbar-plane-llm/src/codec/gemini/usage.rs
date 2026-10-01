@@ -54,18 +54,18 @@ pub(super) const USAGE: &[UsageCount] = &[
         CountSlot::InputAudio,
         CountRead::ListFirst {
             list: &["promptTokensDetails"],
-            key: "modality",
-            value: "AUDIO",
-            count: "tokenCount",
+            key: FIELD_MODALITY,
+            value: GEMINI_AUDIO,
+            count: FIELD_TOKEN_COUNT,
         },
     ),
     (
         CountSlot::OutputAudio,
         CountRead::ListFirst {
             list: &["candidatesTokensDetails"],
-            key: "modality",
-            value: "AUDIO",
-            count: "tokenCount",
+            key: FIELD_MODALITY,
+            value: GEMINI_AUDIO,
+            count: FIELD_TOKEN_COUNT,
         },
     ),
 ];

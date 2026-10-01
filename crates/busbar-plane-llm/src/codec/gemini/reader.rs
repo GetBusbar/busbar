@@ -1,5 +1,6 @@
 use super::*;
 use crate::codec::dialect::ir_parse_error;
+use crate::codec::keys;
 
 impl ProtocolReader for GeminiReader {
     /// The FIRST `finishReason` is the first candidate's — the one `read_response` reads its stop
@@ -35,7 +36,7 @@ impl ProtocolReader for GeminiReader {
         let json = crate::codec::json::parse::<serde_json::Value>(body).ok();
         let error_obj = json
             .as_ref()
-            .and_then(|j| j.get("error"))
+            .and_then(|j| j.get(keys::ERROR_WORD))
             .and_then(|e| e.as_object());
 
         // The real Gemini REST API returns `error.code` as a JSON INTEGER (the HTTP status, per
@@ -45,7 +46,7 @@ impl ProtocolReader for GeminiReader {
         // the integer first and stringify it; tolerate a string-typed `code` (some proxies emit one)
         // as a secondary path; fall back to `status` only when `code` is absent entirely.
         let provider_code = error_obj
-            .and_then(|e_obj| e_obj.get("code"))
+            .and_then(|e_obj| e_obj.get(keys::CODE))
             .and_then(|c| {
                 c.as_u64()
                     .map(|n| n.to_string())
@@ -53,13 +54,13 @@ impl ProtocolReader for GeminiReader {
             })
             .or_else(|| {
                 error_obj
-                    .and_then(|e_obj| e_obj.get("status"))
+                    .and_then(|e_obj| e_obj.get(keys::STATUS))
                     .and_then(|s| s.as_str())
                     .map(String::from)
             });
 
         let structured_type = error_obj
-            .and_then(|e_obj| e_obj.get("status"))
+            .and_then(|e_obj| e_obj.get(keys::STATUS))
             .and_then(|t| t.as_str())
             .map(String::from);
 
@@ -91,12 +92,12 @@ impl ProtocolReader for GeminiReader {
             if st == 400 || st == 413 {
                 let lower = String::from_utf8_lossy(body).to_lowercase();
                 if lower.contains("input is longer than the maximum number of tokens")
-                    || (lower.contains("maximum-tokens") && lower.contains("requested"))
+                    || (lower.contains(keys::MAXIMUM_TOKENS) && lower.contains(keys::REQUESTED))
                     || (lower.contains("token count")
                         && (lower.contains("exceeds") || lower.contains("exceed"))
                         && lower.contains("maximum"))
                     || (lower.contains("exceeds the maximum")
-                        && (lower.contains("token") || lower.contains("context")))
+                        && (lower.contains(keys::TOKEN) || lower.contains("context")))
                 {
                     Some(busbar_contract::protocol::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
                 } else {
@@ -145,11 +146,11 @@ impl ProtocolReader for GeminiReader {
             // else with one request. The reason is an ErrorInfo field; reading it there is both what
             // the comment above already claimed and the whole of the fix.
             let has_api_key_invalid_reason = error_obj
-                .and_then(|e_obj| e_obj.get("details"))
+                .and_then(|e_obj| e_obj.get(FIELD_DETAILS))
                 .and_then(serde_json::Value::as_array)
                 .is_some_and(|details| {
                     details.iter().any(|d| {
-                        d.get("reason")
+                        d.get(keys::REASON)
                             .and_then(serde_json::Value::as_str)
                             .is_some_and(|r| {
                                 r.eq_ignore_ascii_case(GEMINI_ERROR_REASON_API_KEY_INVALID)
@@ -185,7 +186,7 @@ impl ProtocolReader for GeminiReader {
                     | Some(GRPC_UNAUTHENTICATED)
             );
             if has_api_key_invalid_reason || (status_is_auth_shaped && api_key_message) {
-                (401u16, Some("auth".to_string()))
+                (401u16, Some(keys::AUTH_WORD.to_string()))
             } else {
                 (status.as_u16(), provider_code)
             }
@@ -206,7 +207,7 @@ impl ProtocolReader for GeminiReader {
 
         // context-length-exceeded via message pattern
         if lower.contains("input is longer than the maximum number of tokens")
-            || (lower.contains("maximum-tokens") && lower.contains("requested"))
+            || (lower.contains(keys::MAXIMUM_TOKENS) && lower.contains(keys::REQUESTED))
         {
             return CanonicalSignal {
                 class: StatusClass::ContextLength,
@@ -230,7 +231,7 @@ impl ProtocolReader for GeminiReader {
         if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
             return CanonicalSignal {
                 class: StatusClass::Auth,
-                provider_signal: Some("auth".to_string()),
+                provider_signal: Some(keys::AUTH_WORD.to_string()),
                 retry_after: None,
             };
         }
@@ -278,10 +279,10 @@ impl ProtocolReader for GeminiReader {
         let mut call_ledger = GeminiCallLedger::default();
 
         // Handle systemInstruction (Gemini uses this for system content)
-        if let Some(sys_instr) = obj.get("systemInstruction") {
-            if let Some(parts_arr) = sys_instr.get("parts").and_then(|p| p.as_array()) {
+        if let Some(sys_instr) = obj.get(FIELD_SYSTEM_INSTRUCTION) {
+            if let Some(parts_arr) = sys_instr.get(FIELD_PARTS).and_then(|p| p.as_array()) {
                 for part in parts_arr {
-                    if let Some(text_val) = part.get("text").and_then(|t| t.as_str()) {
+                    if let Some(text_val) = part.get(keys::TEXT).and_then(|t| t.as_str()) {
                         system_blocks.push(crate::codec::ir::IrBlock::Text {
                             text: text_val.to_string(),
                             cache_control: None,
@@ -295,7 +296,7 @@ impl ProtocolReader for GeminiReader {
 
         // Handle contents array (messages)
         let mut messages: Vec<crate::codec::ir::IrMessage> = Vec::new();
-        if let Some(contents_val) = obj.get("contents") {
+        if let Some(contents_val) = obj.get(FIELD_CONTENTS) {
             // EDGE-VALIDATE the top-level `contents` TYPE: a PRESENT-but-wrong-typed `contents`
             // (string/number/object where the array is required) is a genuine structural violation.
             // Reject with a 400 rather than silently coercing to an empty conversation (matching the
@@ -303,15 +304,15 @@ impl ProtocolReader for GeminiReader {
             let contents_arr = contents_val.as_array().ok_or_else(ir_parse_error)?;
             for (turn, content_val) in contents_arr.iter().enumerate() {
                 let role_str = content_val
-                    .get("role")
+                    .get(keys::ROLE)
                     .and_then(|r| r.as_str())
                     .unwrap_or("");
                 let role = match role_str {
                     // Gemini's Content.role is optional; an absent/empty role is an
                     // implicit user turn per the GenerateContentRequest schema and the
                     // official SDK. Match the streaming reader's leniency.
-                    "user" | "" => crate::codec::ir::IrRole::User,
-                    "model" => crate::codec::ir::IrRole::Assistant,
+                    keys::USER | "" => crate::codec::ir::IrRole::User,
+                    keys::MODEL => crate::codec::ir::IrRole::Assistant,
                     _ => return Err(ir_parse_error()),
                 };
 
@@ -320,7 +321,7 @@ impl ProtocolReader for GeminiReader {
                 // PRESENT-but-wrong-typed `parts` (string/number/object) is a genuine TYPE violation
                 // the lenient projection below would silently drop into an empty turn — reject with a
                 // 400 instead. An ABSENT `parts` stays lenient.
-                let parts_val = content_val.get("parts");
+                let parts_val = content_val.get(FIELD_PARTS);
                 if let Some(pv) = parts_val {
                     if !pv.is_array() {
                         return Err(ir_parse_error());
@@ -332,14 +333,14 @@ impl ProtocolReader for GeminiReader {
                         // opaque `thoughtSignature`; read it as IrBlock::Thinking (not plain Text) so
                         // a prior-turn reasoning block in the request survives with its signature.
                         // Checked first because a thought part also carries a `text` field.
-                        if part.get("thought").and_then(|t| t.as_bool()) == Some(true) {
+                        if part.get(FIELD_THOUGHT).and_then(|t| t.as_bool()) == Some(true) {
                             let text = part
-                                .get("text")
+                                .get(keys::TEXT)
                                 .and_then(|t| t.as_str())
                                 .unwrap_or("")
                                 .to_string();
                             let signature = part
-                                .get("thoughtSignature")
+                                .get(FIELD_THOUGHT_SIGNATURE)
                                 .and_then(|s| s.as_str())
                                 // The signature is accepted verbatim; no scrub is needed. `redacted`
                                 // is hardcoded `false` below, so a Gemini client can never forge a
@@ -368,7 +369,8 @@ impl ProtocolReader for GeminiReader {
                             });
                         }
                         // Text part
-                        else if let Some(text_val) = part.get("text").and_then(|t| t.as_str()) {
+                        else if let Some(text_val) = part.get(keys::TEXT).and_then(|t| t.as_str())
+                        {
                             msg_content.push(crate::codec::ir::IrBlock::Text {
                                 text: text_val.to_string(),
                                 cache_control: None,
@@ -379,14 +381,14 @@ impl ProtocolReader for GeminiReader {
                         // FunctionCall (ToolUse)
                         else if let Some(func_call) = part.get(FIELD_FUNCTION_CALL) {
                             let name = func_call
-                                .get("name")
+                                .get(keys::NAME)
                                 .and_then(|n| n.as_str())
                                 .unwrap_or("")
                                 .to_string();
                             // Zero-arg functionCall → empty JSON OBJECT, not `null` (the tool-call
                             // input is an argument map; a no-arg call is `{}`). Keeps the request
                             // reader consistent with the response readers' args handling.
-                            let args = empty_object_if_absent(func_call.get("args"));
+                            let args = empty_object_if_absent(func_call.get(FIELD_ARGS));
                             // The call's native `id` when Gemini (or the client echoing it) carries
                             // one (GEM-08); otherwise a stable, non-empty synthesized one keyed by
                             // (index, name). No turn salt needed: `tool_call_index` is global across
@@ -406,7 +408,7 @@ impl ProtocolReader for GeminiReader {
                             // it (even though that path never actually reaches this reader — it's a
                             // raw passthrough — capturing it is harmless and future-proof).
                             let thought_signature = part
-                                .get("thoughtSignature")
+                                .get(FIELD_THOUGHT_SIGNATURE)
                                 .and_then(|s| s.as_str())
                                 .filter(|s| !s.is_empty())
                                 .map(String::from);
@@ -419,14 +421,14 @@ impl ProtocolReader for GeminiReader {
                             });
                         }
                         // FunctionResponse (ToolResult)
-                        else if let Some(func_resp) = part.get("functionResponse") {
+                        else if let Some(func_resp) = part.get(FIELD_FUNCTION_RESPONSE) {
                             let name = func_resp
-                                .get("name")
+                                .get(keys::NAME)
                                 .and_then(|n| n.as_str())
                                 .unwrap_or("")
                                 .to_string();
                             let response_val = func_resp
-                                .get("response")
+                                .get(keys::RESPONSE)
                                 .cloned()
                                 .unwrap_or(serde_json::Value::Null);
                             // Convert response to string representation for content
@@ -443,8 +445,8 @@ impl ProtocolReader for GeminiReader {
                             // for a failure (GEM-05): an `error` key with no `output` beside it is
                             // the failed tool call every other dialect flags `is_error`.
                             let is_error = response_val.as_object().is_some_and(|o| {
-                                o.get("error").is_some_and(|e| !e.is_null())
-                                    && !o.contains_key("output")
+                                o.get(keys::ERROR_WORD).is_some_and(|e| !e.is_null())
+                                    && !o.contains_key(keys::OUTPUT)
                             });
                             let mut content = vec![crate::codec::ir::IrBlock::Text {
                                 text: response_text,
@@ -454,7 +456,9 @@ impl ProtocolReader for GeminiReader {
                             }];
                             // A multimodal result's attachments ride in `functionResponse.parts`
                             // (GEM-07) — carried into the result's content beside the JSON.
-                            if let Some(parts) = func_resp.get("parts").and_then(|p| p.as_array()) {
+                            if let Some(parts) =
+                                func_resp.get(FIELD_PARTS).and_then(|p| p.as_array())
+                            {
                                 content.extend(parts.iter().filter_map(read_gemini_media_part));
                             }
                             msg_content.push(crate::codec::ir::IrBlock::ToolResult {
@@ -477,13 +481,13 @@ impl ProtocolReader for GeminiReader {
                         // silently or corrupting them into a text part. Same-protocol Gemini→Gemini
                         // relay is byte-verbatim and never reaches this reader, so nothing is lost
                         // there. Kept AFTER the content arms above so a normal part is unaffected.
-                        else if part.get("executableCode").is_some() {
+                        else if part.get(FIELD_EXECUTABLE_CODE).is_some() {
                             tracing::warn!(
                                 "dropping gemini executableCode part on cross-protocol ingress: the \
                                  code-interpreter tool's model-authored code has no cross-protocol \
                                  analog and is NOT carried (same-protocol relay preserves it verbatim)"
                             );
-                        } else if part.get("codeExecutionResult").is_some() {
+                        } else if part.get(FIELD_CODE_EXECUTION_RESULT).is_some() {
                             tracing::warn!(
                                 "dropping gemini codeExecutionResult part on cross-protocol ingress: \
                                  the code-interpreter tool's execution output has no cross-protocol \
@@ -503,21 +507,21 @@ impl ProtocolReader for GeminiReader {
         // Handle tools array (functionDeclarations)
         let mut tools: Vec<crate::codec::ir::IrTool> = Vec::new();
         let mut hosted_tools: Vec<crate::codec::ir::IrHostedTool> = Vec::new();
-        if let Some(tools_arr) = obj.get("tools").and_then(|t| t.as_array()) {
+        if let Some(tools_arr) = obj.get(keys::TOOLS).and_then(|t| t.as_array()) {
             for tool_val in tools_arr {
                 // Gemini has functionDeclarations inside tools
                 if let Some(func_decls) = tool_val
-                    .get("functionDeclarations")
+                    .get(FIELD_FUNCTION_DECLARATIONS)
                     .and_then(|f| f.as_array())
                 {
                     for func_decl in func_decls {
                         let name = func_decl
-                            .get("name")
+                            .get(keys::NAME)
                             .and_then(|n| n.as_str())
                             .unwrap_or("")
                             .to_string();
                         let description = func_decl
-                            .get("description")
+                            .get(keys::DESCRIPTION)
                             .and_then(|d| d.as_str().map(String::from));
                         // Two schema slots: `parametersJsonSchema` (JSON Schema, read as-is —
                         // it used to be ignored, leaving a foreign target an empty schema, GEM-03)
@@ -527,7 +531,7 @@ impl ProtocolReader for GeminiReader {
                             .cloned()
                             .or_else(|| {
                                 func_decl
-                                    .get("parameters")
+                                    .get(keys::PARAMETERS)
                                     .map(gemini_openapi_schema_to_json_schema)
                             })
                             .unwrap_or(serde_json::Value::Null);
@@ -557,8 +561,8 @@ impl ProtocolReader for GeminiReader {
         // instead — the request then carries no `maxOutputTokens` and the backend applies its default,
         // which is strictly safer than forwarding a silently-mangled cap.
         let max_tokens = obj
-            .get("generationConfig")
-            .and_then(|gc| gc.get("maxOutputTokens"))
+            .get(FIELD_GENERATION_CONFIG)
+            .and_then(|gc| gc.get(FIELD_MAX_OUTPUT_TOKENS))
             .and_then(|v| v.as_i64())
             .filter(|&v| v > 0)
             .and_then(|v| u32::try_from(v).ok());
@@ -573,17 +577,17 @@ impl ProtocolReader for GeminiReader {
         // `response_format`, etc.); the raw sub-fields ALSO survive same-protocol via the preserved
         // `generationConfig` in `extra`, so Gemini→Gemini stays byte-identical regardless. `None`
         // when neither sub-field is present so a plain request gains no spurious response_format.
-        let response_format = read_gemini_response_format(obj.get("generationConfig"));
+        let response_format = read_gemini_response_format(obj.get(FIELD_GENERATION_CONFIG));
         // Logprobs ask, promoted like seed/penalties above: Gemini spells the boolean
         // `generationConfig.responseLogprobs` and the top-count `generationConfig.logprobs`
         // (0-20). Carried first-class so an OpenAI backend receives `logprobs`/`top_logprobs`.
         let logprobs = obj
-            .get("generationConfig")
-            .and_then(|gc| gc.get("responseLogprobs"))
+            .get(FIELD_GENERATION_CONFIG)
+            .and_then(|gc| gc.get(FIELD_RESPONSE_LOGPROBS))
             .and_then(|v| v.as_bool());
         let top_logprobs = obj
-            .get("generationConfig")
-            .and_then(|gc| gc.get("logprobs"))
+            .get(FIELD_GENERATION_CONFIG)
+            .and_then(|gc| gc.get(keys::LOGPROBS))
             .and_then(|v| v.as_u64())
             .and_then(|v| u32::try_from(v).ok());
         // The thinking ASK: `generationConfig.thinkingConfig.thinkingBudget` (a token count; -1 =
@@ -592,9 +596,9 @@ impl ProtocolReader for GeminiReader {
         // same-protocol via the preserved generationConfig in extra; the writer overlays a fresh
         // thinkingConfig from the typed field on cross-protocol egress.
         let thinking_config = obj
-            .get("generationConfig")
-            .and_then(|gc| gc.get("thinkingConfig"));
-        let reasoning = match thinking_config.and_then(|tc| tc.get("thinkingBudget")) {
+            .get(FIELD_GENERATION_CONFIG)
+            .and_then(|gc| gc.get(FIELD_THINKING_CONFIG));
+        let reasoning = match thinking_config.and_then(|tc| tc.get(FIELD_THINKING_BUDGET)) {
             Some(budget) => budget.as_i64().and_then(|n| match n {
                 -1 => Some(crate::codec::ir::IrReasoningAsk::Dynamic),
                 // 0 = thinking explicitly switched off (IR-09): a foreign reasoning-by-default
@@ -618,9 +622,9 @@ impl ProtocolReader for GeminiReader {
         // degrading to `auto`. The raw `toolConfig` is ALSO preserved in `extra` (it is not in
         // `modeled_keys`, like `generationConfig`), so a same-protocol Gemini→Gemini passthrough stays
         // byte-identical; the writer overlays a fresh `functionCallingConfig` from this typed field.
-        let tool_choice = read_gemini_tool_choice(obj.get("toolConfig"));
+        let tool_choice = read_gemini_tool_choice(obj.get(keys::TOOL_CONFIG));
         // The function-name SUBSET the directive restricts to (IR-10).
-        let allowed_tools = read_gemini_allowed_tools(obj.get("toolConfig"));
+        let allowed_tools = read_gemini_allowed_tools(obj.get(keys::TOOL_CONFIG));
 
         // Collect unmodeled top-level keys into extra (excluding modeled ones). `model` is in the
         // set so the loop below does NOT re-insert it: it is preserved in `extra` exactly once via
@@ -651,8 +655,8 @@ impl ProtocolReader for GeminiReader {
 
         // model is modeled but we preserve it in extra for round-trip identity. Done once here;
         // the loop skips it because `model` is in `modeled_keys`.
-        if let Some(model_val) = obj.get("model") {
-            extra.insert("model".to_string(), model_val.clone());
+        if let Some(model_val) = obj.get(keys::MODEL) {
+            extra.insert(keys::MODEL.to_string(), model_val.clone());
         }
 
         for (key, value) in obj.iter() {
@@ -690,7 +694,7 @@ impl ProtocolReader for GeminiReader {
             extra,
             // Gemini `labels` (IR-03); the raw copy also stays in `extra` for same-protocol
             // byte identity.
-            metadata: read_gemini_labels(obj.get("labels")),
+            metadata: read_gemini_labels(obj.get(FIELD_LABELS)),
             service_tier: None,
             store: None,
             safety_identifier: None,
@@ -700,7 +704,7 @@ impl ProtocolReader for GeminiReader {
             hosted_tools,
             system_role: None,
             // `generationConfig.responseModalities` (IR-19); the raw copy rides `extra` too.
-            output_modalities: read_gemini_response_modalities(obj.get("generationConfig")),
+            output_modalities: read_gemini_response_modalities(obj.get(FIELD_GENERATION_CONFIG)),
         };
         crate::codec::carry::read_fields(super::map::REQUEST, obj, &mut ir);
         Ok(ir)
@@ -732,12 +736,12 @@ impl ProtocolReader for GeminiReader {
         // to a canonical `StatusClass` and push a single `IrStreamEvent::Error` so the downstream
         // writer terminates the stream with a native error frame. This is handled BEFORE the
         // MessageStart/candidates block so an error-only chunk never emits a stray MessageStart.
-        if let Some(error_obj) = data.get("error").and_then(|e| e.as_object()) {
-            let status_str = error_obj.get("status").and_then(|s| s.as_str());
-            let code = error_obj.get("code").and_then(|c| c.as_u64());
+        if let Some(error_obj) = data.get(keys::ERROR_WORD).and_then(|e| e.as_object()) {
+            let status_str = error_obj.get(keys::STATUS).and_then(|s| s.as_str());
+            let code = error_obj.get(keys::CODE).and_then(|c| c.as_u64());
             let class = gemini_error_status_class(status_str, code);
             let message = error_obj
-                .get("message")
+                .get(keys::MESSAGE)
                 .and_then(|m| m.as_str())
                 .map(String::from)
                 .or_else(|| status_str.map(String::from));
@@ -771,7 +775,7 @@ impl ProtocolReader for GeminiReader {
                         .map(String::from);
                     let model = data
                         .get(FIELD_MODEL_VERSION)
-                        .or_else(|| data.get("model"))
+                        .or_else(|| data.get(keys::MODEL))
                         .and_then(|m| m.as_str())
                         .map(String::from);
                     out.push(IrStreamEvent::MessageStart {
@@ -830,7 +834,7 @@ impl ProtocolReader for GeminiReader {
                 .map(String::from);
             let model = data
                 .get(FIELD_MODEL_VERSION)
-                .or_else(|| data.get("model"))
+                .or_else(|| data.get(keys::MODEL))
                 .and_then(|m| m.as_str())
                 .map(String::from);
             out.push(IrStreamEvent::MessageStart {
@@ -842,7 +846,7 @@ impl ProtocolReader for GeminiReader {
             });
         }
 
-        let candidates = data.get("candidates").and_then(|c| c.as_array());
+        let candidates = data.get(FIELD_CANDIDATES).and_then(|c| c.as_array());
 
         // A client can legally request candidateCount>1. This reader collapses to candidates[0],
         // which is all a CROSS-PROTOCOL (IR-rebuilt) hop can carry — the rest are dropped there. A
@@ -872,11 +876,14 @@ impl ProtocolReader for GeminiReader {
         // and non-streaming paths agree and guarantees exactly one terminal sequence per stream.
         if let Some(candidate) = candidates.and_then(|cands| cands.first()) {
             // 2. Process content parts (text + functionCall)
-            if let Some(content) = candidate.get("content") {
-                let role_val = content.get("role").and_then(|r| r.as_str()).unwrap_or("");
+            if let Some(content) = candidate.get(keys::CONTENT) {
+                let role_val = content
+                    .get(keys::ROLE)
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("");
 
-                if role_val == "model" || role_val.is_empty() {
-                    if let Some(parts_arr) = content.get("parts").and_then(|p| p.as_array()) {
+                if role_val == keys::MODEL || role_val.is_empty() {
+                    if let Some(parts_arr) = content.get(FIELD_PARTS).and_then(|p| p.as_array()) {
                         // A text block, when one opens this stream, owns IR index 0; tool blocks
                         // then take indices 1..n. A tool-only stream reserves nothing for text and
                         // starts its tools at index 0 (see the tool branch below). The next tool
@@ -892,8 +899,8 @@ impl ProtocolReader for GeminiReader {
                             // the harness's reasoning-STREAM rows). Same gate as the OpenAI reader:
                             // once the answer phase has begun, index 0 is taken and a stray late
                             // thought part is dropped rather than corrupting block pairing.
-                            if part.get("thought").and_then(|t| t.as_bool()) == Some(true) {
-                                if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                            if part.get(FIELD_THOUGHT).and_then(|t| t.as_bool()) == Some(true) {
+                                if let Some(text) = part.get(keys::TEXT).and_then(|t| t.as_str()) {
                                     if !text.is_empty()
                                         && !state.text_block_open
                                         && state.open_tools.is_empty()
@@ -918,8 +925,9 @@ impl ProtocolReader for GeminiReader {
                                                 text.to_string(),
                                             ),
                                         });
-                                        if let Some(sig) =
-                                            part.get("thoughtSignature").and_then(|v| v.as_str())
+                                        if let Some(sig) = part
+                                            .get(FIELD_THOUGHT_SIGNATURE)
+                                            .and_then(|v| v.as_str())
                                         {
                                             out.push(IrStreamEvent::BlockDelta {
                                                 index: 0,
@@ -939,7 +947,7 @@ impl ProtocolReader for GeminiReader {
                             // arrives before the first text part takes the first free slot and
                             // text takes the next, so blocks never collide on an index regardless
                             // of Gemini's part ordering; the index is then stable for the stream.
-                            if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                            if let Some(text) = part.get(keys::TEXT).and_then(|t| t.as_str()) {
                                 if !text.is_empty() {
                                     // A text block CLOSED earlier (by a functionCall) keeps its index
                                     // for a late citation (GEM-20); new text after it is a NEW block.
@@ -982,7 +990,7 @@ impl ProtocolReader for GeminiReader {
                             // FunctionCall (ToolUse) - Gemini sends whole args, not streamed
                             if let Some(func_call) = part.get(FIELD_FUNCTION_CALL) {
                                 let name_val = func_call
-                                    .get("name")
+                                    .get(keys::NAME)
                                     .and_then(|n| n.as_str())
                                     .unwrap_or("")
                                     .to_string();
@@ -1058,7 +1066,7 @@ impl ProtocolReader for GeminiReader {
                                     // Anthropic/OpenAI egress — an invalid tool-call input shape a strict
                                     // SDK rejects (it expects an object). `empty_object_if_absent` keeps
                                     // an explicitly-present `args` (even an explicit `null`) verbatim.
-                                    let args = empty_object_if_absent(func_call.get("args"));
+                                    let args = empty_object_if_absent(func_call.get(FIELD_ARGS));
 
                                     // Gemini streams carry no tool-call id; synthesize a stable,
                                     // non-empty one keyed by (tool-position, name) so the
@@ -1198,7 +1206,7 @@ impl ProtocolReader for GeminiReader {
             // Same anchoring rule as the citations arm above: the delta attaches to the active text
             // block's index (opening it if no text part has arrived yet) so an OpenAI-dialect
             // stream can re-emit them as `choices[].logprobs.content[]`.
-            let stream_logprobs = read_gemini_logprobs(candidate.get("logprobsResult"));
+            let stream_logprobs = read_gemini_logprobs(candidate.get(FIELD_LOGPROBS_RESULT));
             if !stream_logprobs.is_empty() {
                 // Claim the text block's index from the monotone counter (see `claim_ir_index`),
                 // exactly like the text-part arm — otherwise a citation/logprobs delta arriving
@@ -1340,7 +1348,7 @@ impl ProtocolReader for GeminiReader {
                 let usage = read_gemini_usage(body)?;
                 let model = obj
                     .get(FIELD_MODEL_VERSION)
-                    .or_else(|| obj.get("model"))
+                    .or_else(|| obj.get(keys::MODEL))
                     .and_then(|m| m.as_str())
                     .map(String::from);
                 let id = obj
@@ -1366,7 +1374,7 @@ impl ProtocolReader for GeminiReader {
         }
 
         // Parse candidates array - must have at least one
-        let candidates_val = obj.get("candidates").ok_or_else(ir_parse_error)?;
+        let candidates_val = obj.get(FIELD_CANDIDATES).ok_or_else(ir_parse_error)?;
         let candidates = candidates_val.as_array().ok_or_else(ir_parse_error)?;
 
         if candidates.is_empty() {
@@ -1406,8 +1414,8 @@ impl ProtocolReader for GeminiReader {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         if let Some(parts_arr) = candidate
-            .get("content")
-            .and_then(|c| c.get("parts"))
+            .get(keys::CONTENT)
+            .and_then(|c| c.get(FIELD_PARTS))
             .and_then(|p| p.as_array())
         {
             for part in parts_arr {
@@ -1419,14 +1427,14 @@ impl ProtocolReader for GeminiReader {
                 // (Anthropic `thinking` / OpenAI reasoning) and the signature round-trips on
                 // same-protocol Gemini→Gemini. Checked BEFORE the plain-text arm because a thought
                 // part also has a `text` field.
-                if part.get("thought").and_then(|t| t.as_bool()) == Some(true) {
+                if part.get(FIELD_THOUGHT).and_then(|t| t.as_bool()) == Some(true) {
                     let text = part
-                        .get("text")
+                        .get(keys::TEXT)
                         .and_then(|t| t.as_str())
                         .unwrap_or("")
                         .to_string();
                     let signature = part
-                        .get("thoughtSignature")
+                        .get(FIELD_THOUGHT_SIGNATURE)
                         .and_then(|s| s.as_str())
                         .map(String::from);
                     // A Gemini thought part is a SUMMARY of the model's reasoning (IR-17), and its
@@ -1447,7 +1455,7 @@ impl ProtocolReader for GeminiReader {
                     });
                 }
                 // Text part → IrBlock::Text
-                else if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                else if let Some(text) = part.get(keys::TEXT).and_then(|t| t.as_str()) {
                     if !text.is_empty() {
                         content.push(crate::codec::ir::IrBlock::Text {
                             text: text.to_string(),
@@ -1463,13 +1471,13 @@ impl ProtocolReader for GeminiReader {
                 // cross-protocol Anthropic/OpenAI egress requires a non-empty id for correlation.
                 if let Some(func_call) = part.get(FIELD_FUNCTION_CALL) {
                     let name_val = func_call
-                        .get("name")
+                        .get(keys::NAME)
                         .and_then(|n| n.as_str())
                         .unwrap_or("")
                         .to_string();
                     // Zero-arg functionCall → empty JSON OBJECT, not `null` (see the streaming
                     // reader's note): the tool-call input is an argument map, so a no-arg call is `{}`.
-                    let args = empty_object_if_absent(func_call.get("args"));
+                    let args = empty_object_if_absent(func_call.get(FIELD_ARGS));
 
                     // The native `id` when the model sent one (GEM-08), else synthesized.
                     let id = gemini_call_id(func_call)
@@ -1483,7 +1491,7 @@ impl ProtocolReader for GeminiReader {
                     // echoed back verbatim on the function call's next-turn replay; capture it so a
                     // same-protocol Gemini→Gemini history round-trips it faithfully.
                     let thought_signature = part
-                        .get("thoughtSignature")
+                        .get(FIELD_THOUGHT_SIGNATURE)
                         .and_then(|s| s.as_str())
                         .filter(|s| !s.is_empty())
                         .map(String::from);
@@ -1508,14 +1516,14 @@ impl ProtocolReader for GeminiReader {
                 // emitted by Gemini's code-interpreter tool). No cross-protocol dialect has a native
                 // slot, so drop WITH a warn on cross-protocol egress rather than corrupting them into
                 // text. Same-protocol Gemini→Gemini relay is byte-verbatim and never reaches here.
-                if part.get("executableCode").is_some() {
+                if part.get(FIELD_EXECUTABLE_CODE).is_some() {
                     tracing::warn!(
                         "dropping gemini executableCode part on cross-protocol egress: the \
                          code-interpreter tool's model-authored code has no cross-protocol analog \
                          and is NOT carried (same-protocol relay preserves it verbatim)"
                     );
                 }
-                if part.get("codeExecutionResult").is_some() {
+                if part.get(FIELD_CODE_EXECUTION_RESULT).is_some() {
                     tracing::warn!(
                         "dropping gemini codeExecutionResult part on cross-protocol egress: the \
                          code-interpreter tool's execution output has no cross-protocol analog and \
@@ -1572,7 +1580,7 @@ impl ProtocolReader for GeminiReader {
         // Gemini reports the serving model as `modelVersion` (fall back to `model`).
         let model = obj
             .get(FIELD_MODEL_VERSION)
-            .or_else(|| obj.get("model"))
+            .or_else(|| obj.get(keys::MODEL))
             .and_then(|m| m.as_str())
             .map(String::from);
 
@@ -1593,7 +1601,7 @@ impl ProtocolReader for GeminiReader {
 
         // Per-token logprobs from the candidate's `logprobsResult`, carried neutrally so an
         // OpenAI-dialect caller receives them as `choices[].logprobs.content[]`.
-        let logprobs = read_gemini_logprobs(candidate.get("logprobsResult"));
+        let logprobs = read_gemini_logprobs(candidate.get(FIELD_LOGPROBS_RESULT));
 
         Ok(crate::codec::ir::IrResponse {
             logprobs,

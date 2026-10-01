@@ -1,6 +1,7 @@
 //! The Gemini JSON-array stream framer (`:streamGenerateContent` without `?alt=sse`).
 
 use super::*;
+use crate::codec::keys;
 
 /// Re-frame a Gemini SSE response stream as the JSON-ARRAY streaming format a native
 /// `:streamGenerateContent` request WITHOUT `?alt=sse` expects: a leading `[`, the per-chunk
@@ -193,7 +194,7 @@ impl GeminiJsonArrayFramer {
         }
         self.finished = true;
         let err = serde_json::json!({
-            "error": { "code": code, "message": message, "status": status }
+            (keys::ERROR_WORD): { (keys::CODE): code, (keys::MESSAGE): message, (keys::STATUS): status }
         });
         let mut out: Vec<u8> = Vec::new();
         if self.started {

@@ -3,10 +3,22 @@
 
 //! Gemini `RequestHandler` + cells. Embeddings via `models/{id}:embedContent`.
 
+use super::{
+    COUNT_LABEL, FIELD_ASPECT_RATIO, FIELD_AUDIO_DURATION_SECONDS, FIELD_BYTES_BASE64_ENCODED,
+    FIELD_CANDIDATES, FIELD_CANDIDATES_TOKEN_COUNT, FIELD_CONTENTS, FIELD_FINISH_REASON,
+    FIELD_GENERATE_CONTENT, FIELD_GENERATION_CONFIG, FIELD_GUIDANCE_SCALE, FIELD_INLINE_DATA,
+    FIELD_INLINE_DATA_SNAKE, FIELD_MIME_TYPE, FIELD_MIME_TYPE_SNAKE, FIELD_NEGATIVE_PROMPT,
+    FIELD_OUTPUT_DIMENSIONALITY, FIELD_PARTS, FIELD_PERSON_GENERATION, FIELD_PREBUILT_VOICE_CONFIG,
+    FIELD_PREDICTIONS, FIELD_PROMPT_TOKEN_COUNT, FIELD_RESPONSE_MODALITIES, FIELD_SAMPLE_COUNT,
+    FIELD_SAMPLE_IMAGE_SIZE, FIELD_STREAM_GENERATE_CONTENT, FIELD_TOTAL_TOKEN_COUNT,
+    FIELD_USAGE_METADATA, FIELD_VALUES, FIELD_VOICE_CONFIG, FIELD_VOICE_NAME, GEMINI_AUDIO,
+    GEMINI_FINISH_STOP,
+};
 use crate::codec::ir::audio::{SpeechResp, TranscriptionResp};
 use crate::codec::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
+use crate::codec::keys;
 use busbar_contract::codec::{CodecError, IngressReject, OperationHandler, RequestHandler};
 use busbar_contract::codec::{EgressCtx, WireBody};
 use busbar_contract::media::{base64_encode, MediaBlob, MediaPayload};
@@ -19,7 +31,7 @@ pub struct GeminiRequestHandler;
 /// This protocol's OWN chat instance — delete this line (and the registry arm) and this
 /// protocol's chat 404s via the standard no-handler path; everything else keeps working.
 static CHAT: super::super::chat_handle::ChatOperation =
-    super::super::chat_handle::ChatOperation("gemini");
+    super::super::chat_handle::ChatOperation(COUNT_LABEL);
 static EMB: GeminiEmbeddings = GeminiEmbeddings;
 static IMG: GeminiImage = GeminiImage;
 static TRANSCRIPTION: GeminiTranscription = GeminiTranscription;
@@ -45,7 +57,7 @@ static ACTIONS: &[(OpVerb, &str)] = &[
 
 impl RequestHandler for GeminiRequestHandler {
     fn protocol_name(&self) -> &'static str {
-        "gemini"
+        COUNT_LABEL
     }
     fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
         busbar_contract::codec::cell_of(CELLS, op)
@@ -64,9 +76,9 @@ impl RequestHandler for GeminiRequestHandler {
         // the pre-1.6.0 answer, verbatim. `stream` is already false for those, because a shape that
         // cannot stream never sets it (`OpDispatch::wants_stream`'s shape floor).
         let action = if ctx.stream {
-            "streamGenerateContent"
+            FIELD_STREAM_GENERATE_CONTENT
         } else {
-            "generateContent"
+            FIELD_GENERATE_CONTENT
         };
         format!("{base}/{m}:{action}")
     }
@@ -96,16 +108,16 @@ impl RequestHandler for GeminiRequestHandler {
         // instead of scanning per-pattern first.
         let hit = (0..body.len()).any(|i| {
             let rest = &body[i..];
-            rest.starts_with(b"responseModalities")
-                || rest.starts_with(b"inline_data")
-                || rest.starts_with(b"inlineData")
+            rest.starts_with(FIELD_RESPONSE_MODALITIES.as_bytes())
+                || rest.starts_with(FIELD_INLINE_DATA_SNAKE.as_bytes())
+                || rest.starts_with(FIELD_INLINE_DATA.as_bytes())
         });
         if hit {
             if let Ok(v) = serde_json::from_slice::<Value>(body) {
                 let audio_out = v
                     .pointer("/generationConfig/responseModalities")
                     .and_then(Value::as_array)
-                    .is_some_and(|m| m.iter().any(|x| x.as_str() == Some("AUDIO")));
+                    .is_some_and(|m| m.iter().any(|x| x.as_str() == Some(GEMINI_AUDIO)));
                 if audio_out {
                     return Some(OpVerb::SPEECH);
                 }
@@ -114,9 +126,12 @@ impl RequestHandler for GeminiRequestHandler {
                     .and_then(Value::as_array)
                     .is_some_and(|parts| {
                         parts.iter().any(|p| {
-                            p.get("inline_data")
-                                .or_else(|| p.get("inlineData"))
-                                .and_then(|d| d.get("mime_type").or_else(|| d.get("mimeType")))
+                            p.get(FIELD_INLINE_DATA_SNAKE)
+                                .or_else(|| p.get(FIELD_INLINE_DATA))
+                                .and_then(|d| {
+                                    d.get(FIELD_MIME_TYPE_SNAKE)
+                                        .or_else(|| d.get(FIELD_MIME_TYPE))
+                                })
                                 .and_then(Value::as_str)
                                 .is_some_and(|m| m.starts_with("audio/"))
                         })
@@ -174,7 +189,7 @@ pub fn write_transcription_request(r: &crate::codec::ir::audio::TranscriptionReq
     } else {
         TRANSCRIBE_INSTRUCTION
     };
-    let mut parts = vec![json!({ "text": instruction })];
+    let mut parts = vec![json!({ (keys::TEXT): instruction })];
     // Carry the caller's transcription `prompt` as its OWN text part. The IR projects `prompt` to a
     // forwarded ContentItem::Text (it is screened as sent upstream), but the old writer emitted only
     // the fixed instruction and dropped the caller's text — the screening gate said "forwarded" while
@@ -182,15 +197,18 @@ pub fn write_transcription_request(r: &crate::codec::ir::audio::TranscriptionReq
     // recoverable on read (the reader skips the known instruction literals).
     if let Some(prompt) = &r.prompt {
         if !prompt.is_empty() {
-            parts.push(json!({ "text": prompt }));
+            parts.push(json!({ (keys::TEXT): prompt }));
         }
     }
-    parts.push(json!({ "inline_data": { "mime_type": mime, "data": data } }));
-    let mut body = json!({ "contents": [{ "role": "user", "parts": parts }] });
+    parts.push(
+        json!({ (FIELD_INLINE_DATA_SNAKE): { (FIELD_MIME_TYPE_SNAKE): mime, (keys::DATA): data } }),
+    );
+    let mut body =
+        json!({ (FIELD_CONTENTS): [{ (keys::ROLE): keys::USER, (FIELD_PARTS): parts }] });
     // Carry `temperature` — Gemini exposes it natively via generationConfig; dropping it silently
     // changed sampling behavior on a cross-protocol transcription hop.
     if let Some(t) = r.temperature {
-        body["generationConfig"] = json!({ "temperature": t });
+        body[FIELD_GENERATION_CONFIG] = json!({ "temperature": t });
     }
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
@@ -200,17 +218,17 @@ pub fn write_transcription_request(r: &crate::codec::ir::audio::TranscriptionReq
 /// option-a). Byte-identical to the pre-cutover inline write.
 pub fn write_transcription_response(r: &crate::codec::ir::audio::TranscriptionResp) -> WireBody {
     let mut body = json!({
-        "candidates": [{
-            "content": { "parts": [{ "text": r.text }], "role": "model" },
-            "finishReason": "STOP",
+        (FIELD_CANDIDATES): [{
+            (keys::CONTENT): { (FIELD_PARTS): [{ (keys::TEXT): r.text }], (keys::ROLE): keys::MODEL },
+            (FIELD_FINISH_REASON): GEMINI_FINISH_STOP,
         }],
     });
     match &r.usage {
         Some(busbar_contract::billing::Billing::Tokens(t)) => {
-            body["usageMetadata"] = json!({
-                "promptTokenCount": t.input,
-                "candidatesTokenCount": t.output,
-                "totalTokenCount": t.input.saturating_add(t.output),
+            body[FIELD_USAGE_METADATA] = json!({
+                (FIELD_PROMPT_TOKEN_COUNT): t.input,
+                (FIELD_CANDIDATES_TOKEN_COUNT): t.output,
+                (FIELD_TOTAL_TOKEN_COUNT): t.input.saturating_add(t.output),
             });
         }
         // whisper-1 bills audio DURATION (produced by the OpenAI transcription reader). Gemini's
@@ -222,7 +240,7 @@ pub fn write_transcription_response(r: &crate::codec::ir::audio::TranscriptionRe
             // The one render boundary — byte-identical to what this wrote before the quantity
             // became exact (see `billing::duration_seconds_to_wire`).
             let seconds = busbar_contract::billing::duration_seconds_to_wire(*seconds);
-            body["usageMetadata"] = json!({ "audioDurationSeconds": seconds });
+            body[FIELD_USAGE_METADATA] = json!({ (FIELD_AUDIO_DURATION_SECONDS): seconds });
         }
         _ => {}
     }
@@ -251,15 +269,15 @@ pub fn write_speech_request(r: &crate::codec::ir::audio::SpeechReq) -> Bytes {
     // `voiceConfig`. The old writer never read `SpeechReq::speakers`, so a two-speaker request was
     // silently collapsed to one voice on a same-/cross-protocol hop.
     let speech_config = if r.speakers.is_empty() {
-        json!({ "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": r.voice } } })
+        json!({ (FIELD_VOICE_CONFIG): { (FIELD_PREBUILT_VOICE_CONFIG): { (FIELD_VOICE_NAME): r.voice } } })
     } else {
         let configs: Vec<Value> = r
             .speakers
             .iter()
             .map(|(speaker, voice)| {
                 json!({
-                    "speaker": speaker,
-                    "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": voice } },
+                    (keys::SPEAKER): speaker,
+                    (FIELD_VOICE_CONFIG): { (FIELD_PREBUILT_VOICE_CONFIG): { (FIELD_VOICE_NAME): voice } },
                 })
             })
             .collect();
@@ -274,8 +292,8 @@ pub fn write_speech_request(r: &crate::codec::ir::audio::SpeechReq) -> Bytes {
         _ => r.input.clone(),
     };
     let body = json!({
-        "contents": [{ "role": "user", "parts": [{ "text": text }]}],
-        "generationConfig": { "responseModalities": ["AUDIO"], "speechConfig": speech_config },
+        (FIELD_CONTENTS): [{ (keys::ROLE): keys::USER, (FIELD_PARTS): [{ (keys::TEXT): text }]}],
+        (FIELD_GENERATION_CONFIG): { (FIELD_RESPONSE_MODALITIES): [GEMINI_AUDIO], "speechConfig": speech_config },
     });
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
@@ -291,12 +309,12 @@ pub fn write_speech_response(r: &SpeechResp) -> WireBody {
             };
             (d, blob.mime_type.clone())
         }
-        None => (String::new(), "audio/mpeg".into()),
+        None => (String::new(), keys::AUDIO_MPEG.into()),
     };
     let body = json!({
-        "candidates": [{
-            "content": { "parts": [{ "inlineData": { "mimeType": mime, "data": data } }], "role": "model" },
-            "finishReason": "STOP",
+        (FIELD_CANDIDATES): [{
+            (keys::CONTENT): { (FIELD_PARTS): [{ (FIELD_INLINE_DATA): { (FIELD_MIME_TYPE): mime, (keys::DATA): data } }], (keys::ROLE): keys::MODEL },
+            (FIELD_FINISH_REASON): GEMINI_FINISH_STOP,
         }],
     });
     WireBody::json(SlabBytes::from(
@@ -326,33 +344,33 @@ leaf_op! {
 /// IR → Imagen `:predict` request wire (the body of [`GeminiImage::write_request`], moved behind the
 /// `(image, gemini)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
 pub fn write_image_request(r: &crate::codec::ir::image::ImageReq) -> Bytes {
-    let mut params = json!({ "sampleCount": r.n.unwrap_or(1) });
+    let mut params = json!({ (FIELD_SAMPLE_COUNT): r.n.unwrap_or(1) });
     // Carry the Imagen generation controls the reader captures; dropping them fell back to
     // Imagen's defaults (1:1 aspect, default person-generation policy) instead of the request.
     if let Some(a) = &r.aspect_ratio {
-        params["aspectRatio"] = json!(a);
+        params[FIELD_ASPECT_RATIO] = json!(a);
     }
     if let Some(p) = &r.person_generation {
-        params["personGeneration"] = json!(p);
+        params[FIELD_PERSON_GENERATION] = json!(p);
     }
     // Carry the Imagen sampling/guidance controls the reader captures, in Imagen's native parameter
     // names. Dropping them lost the negative prompt, determinism seed, guidance strength, and size
     // tier on a cross-protocol image hop (e.g. bedrock->gemini), silently falling back to defaults.
     if let Some(neg) = &r.negative_prompt {
-        params["negativePrompt"] = json!(neg);
+        params[FIELD_NEGATIVE_PROMPT] = json!(neg);
     }
     if let Some(seed) = r.seed {
-        params["seed"] = json!(seed);
+        params[keys::SEED] = json!(seed);
     }
     if let Some(g) = r.guidance_scale {
-        params["guidanceScale"] = json!(g);
+        params[FIELD_GUIDANCE_SCALE] = json!(g);
     }
     if let Some(tier) = &r.image_size_tier {
-        params["sampleImageSize"] = json!(tier);
+        params[FIELD_SAMPLE_IMAGE_SIZE] = json!(tier);
     }
     let body = json!({
         "instances": [{ "prompt": r.prompt.clone().unwrap_or_default() }],
-        "parameters": params,
+        (keys::PARAMETERS): params,
     });
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
@@ -366,22 +384,22 @@ pub fn write_image_response(r: &crate::codec::ir::image::ImageResp) -> WireBody 
         .map(|img| {
             let mut p = json!({});
             if let Some(b64) = &img.b64 {
-                p["bytesBase64Encoded"] = json!(b64);
+                p[FIELD_BYTES_BASE64_ENCODED] = json!(b64);
             }
-            p["mimeType"] = json!(img.mime_type.clone().unwrap_or_else(|| "image/png".into()));
+            p[FIELD_MIME_TYPE] = json!(img.mime_type.clone().unwrap_or_else(|| "image/png".into()));
             p
         })
         .collect();
-    let mut body = json!({ "predictions": predictions });
+    let mut body = json!({ (FIELD_PREDICTIONS): predictions });
     // Re-emit the token usage the response reader parses (`read_image_response` captures
     // `usageMetadata` for token-metered gemini image models). The old writer dropped it, so a
     // token-metered gemini->gemini image response lost its usage in the client-facing body —
     // asymmetric with the OpenAI image writer. Emitted only when the IR carries usage.
     if let Some(u) = &r.usage {
-        body["usageMetadata"] = json!({
-            "promptTokenCount": u.input,
-            "candidatesTokenCount": u.output,
-            "totalTokenCount": u.input.saturating_add(u.output),
+        body[FIELD_USAGE_METADATA] = json!({
+            (FIELD_PROMPT_TOKEN_COUNT): u.input,
+            (FIELD_CANDIDATES_TOKEN_COUNT): u.output,
+            (FIELD_TOTAL_TOKEN_COUNT): u.input.saturating_add(u.output),
         });
     }
     WireBody::json(SlabBytes::from(
@@ -439,15 +457,15 @@ pub fn write_embeddings_request(r: &EmbeddingsReq) -> Bytes {
     // Carry the retrieval/shape controls the reader captures — Gemini `:embedContent` supports
     // them natively. Dropping `outputDimensionality` returned full-width vectors instead of the
     // requested size (a wrong-length response); `taskType`/`title` steer retrieval quality.
-    let mut body = json!({ "content": { "parts": [{ "text": text }] } });
+    let mut body = json!({ (keys::CONTENT): { (FIELD_PARTS): [{ (keys::TEXT): text }] } });
     if let Some(d) = r.dimensions {
-        body["outputDimensionality"] = json!(d);
+        body[FIELD_OUTPUT_DIMENSIONALITY] = json!(d);
     }
     if let Some(t) = &r.task_type {
-        body["taskType"] = json!(t);
+        body[keys::TASK_TYPE] = json!(t);
     }
     if let Some(t) = &r.title {
-        body["title"] = json!(t);
+        body[keys::TITLE] = json!(t);
     }
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
@@ -465,7 +483,8 @@ pub fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
         })
         .unwrap_or_default();
     WireBody::json(SlabBytes::from(
-        serde_json::to_vec(&json!({ "embedding": { "values": values } })).unwrap_or_default(),
+        serde_json::to_vec(&json!({ (keys::EMBEDDING): { (FIELD_VALUES): values } }))
+            .unwrap_or_default(),
     ))
 }
 
@@ -487,13 +506,15 @@ pub fn read_transcription_request(
     let mut target_language = None;
     if let Some(parts) = wire.pointer("/contents/0/parts").and_then(Value::as_array) {
         for p in parts {
-            let inline = p.get("inline_data").or_else(|| p.get("inlineData"));
+            let inline = p
+                .get(FIELD_INLINE_DATA_SNAKE)
+                .or_else(|| p.get(FIELD_INLINE_DATA));
             if let Some(d) = inline {
                 // Validate the client-supplied base64 at this trust boundary: a malformed
                 // payload must 400 here, not silently become an empty audio body downstream
                 // (the egress writer decodes it and any `unwrap_or_default` would truncate).
                 let data = d
-                    .get("data")
+                    .get(keys::DATA)
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string();
@@ -505,14 +526,14 @@ pub fn read_transcription_request(
                 audio = Some(MediaBlob {
                     payload: MediaPayload::B64(data),
                     mime_type: d
-                        .get("mime_type")
-                        .or_else(|| d.get("mimeType"))
+                        .get(FIELD_MIME_TYPE_SNAKE)
+                        .or_else(|| d.get(FIELD_MIME_TYPE))
                         .and_then(Value::as_str)
                         .unwrap_or("application/octet-stream")
                         .to_string(),
                     pcm: None,
                 });
-            } else if let Some(t) = p.get("text").and_then(Value::as_str) {
+            } else if let Some(t) = p.get(keys::TEXT).and_then(Value::as_str) {
                 // Skip the writer's synthetic directive texts; only a caller-supplied prompt part is
                 // the real `prompt`. The last such text wins (a request carries at most one).
                 if t == TRANSLATE_INSTRUCTION {
@@ -560,13 +581,13 @@ pub fn read_transcription_response(
         .map(|parts| {
             parts
                 .iter()
-                .filter_map(|p| p.get("text").and_then(Value::as_str))
+                .filter_map(|p| p.get(keys::TEXT).and_then(Value::as_str))
                 .collect::<Vec<_>>()
                 .join("")
         })
         .unwrap_or_default();
     let usage = v
-        .get("usageMetadata")
+        .get(FIELD_USAGE_METADATA)
         .map(
             |u| -> Result<busbar_contract::billing::Billing, CodecError> {
                 // The transcription writer emits `audioDurationSeconds` (not a token count) when the
@@ -578,7 +599,7 @@ pub fn read_transcription_response(
                 // through an `f64` (#81): a quantity that transits a double has already lost the
                 // exactness no later conversion can give back. `u.get(..)` would hand back a `Value`
                 // whose number is already a double, so the read goes to the ORIGINAL BYTES by pointer.
-                if u.get("audioDurationSeconds").is_some() {
+                if u.get(FIELD_AUDIO_DURATION_SECONDS).is_some() {
                     let seconds = busbar_contract::Count::read_at(
                         wire,
                         "/usageMetadata/audioDurationSeconds",
@@ -595,10 +616,13 @@ pub fn read_transcription_response(
                 // wrong with nothing to show for it.
                 Ok(busbar_contract::billing::Billing::Tokens(
                     busbar_contract::billing::TokenUsage {
-                        input: crate::codec::usage_count::billed_count(u, "promptTokenCount")
+                        input: crate::codec::usage_count::billed_count(u, FIELD_PROMPT_TOKEN_COUNT)
                             .map_err(|e| CodecError::Malformed(e.to_string()))?,
-                        output: crate::codec::usage_count::billed_count(u, "candidatesTokenCount")
-                            .map_err(|e| CodecError::Malformed(e.to_string()))?,
+                        output: crate::codec::usage_count::billed_count(
+                            u,
+                            FIELD_CANDIDATES_TOKEN_COUNT,
+                        )
+                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
                         ..Default::default()
                     },
                 ))
@@ -627,7 +651,7 @@ pub fn read_speech_request(
         .map(|parts| {
             parts
                 .iter()
-                .filter_map(|p| p.get("text").and_then(Value::as_str))
+                .filter_map(|p| p.get(keys::TEXT).and_then(Value::as_str))
                 .collect::<Vec<_>>()
                 .join("")
         })
@@ -650,7 +674,7 @@ pub fn read_speech_request(
         .map(|arr| {
             arr.iter()
                 .filter_map(|c| {
-                    let speaker = c.get("speaker").and_then(Value::as_str)?;
+                    let speaker = c.get(keys::SPEAKER).and_then(Value::as_str)?;
                     let voice_name = c
                         .pointer("/voiceConfig/prebuiltVoiceConfig/voiceName")
                         .and_then(Value::as_str)
@@ -731,7 +755,7 @@ pub fn read_speech_response(
     Ok(SpeechResp {
         audio: Some(MediaBlob {
             payload: MediaPayload::Bytes(SlabBytes::from(wire)),
-            mime_type: "audio/mpeg".into(),
+            mime_type: keys::AUDIO_MPEG.into(),
             pcm: None,
         }),
         // TTS carries no usage object in its audio body; without a marker `billing()` returned
@@ -752,36 +776,36 @@ pub fn read_image_request(
 ) -> Result<crate::codec::ir::image::ImageReq, IngressReject> {
     let wire: Value =
         serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
-    let params = wire.get("parameters").cloned().unwrap_or_default();
+    let params = wire.get(keys::PARAMETERS).cloned().unwrap_or_default();
     Ok(crate::codec::ir::image::ImageReq {
         prompt: wire
             .pointer("/instances/0/prompt")
             .and_then(Value::as_str)
             .map(str::to_string),
         n: params
-            .get("sampleCount")
+            .get(FIELD_SAMPLE_COUNT)
             .and_then(Value::as_u64)
             .and_then(|n| u32::try_from(n).ok()),
         aspect_ratio: params
-            .get("aspectRatio")
+            .get(FIELD_ASPECT_RATIO)
             .and_then(Value::as_str)
             .map(str::to_string),
         person_generation: params
-            .get("personGeneration")
+            .get(FIELD_PERSON_GENERATION)
             .and_then(Value::as_str)
             .map(str::to_string),
         // Imagen sampling/guidance controls — carried through so egress re-emits them.
         negative_prompt: params
-            .get("negativePrompt")
+            .get(FIELD_NEGATIVE_PROMPT)
             .and_then(Value::as_str)
             .map(str::to_string),
-        seed: params.get("seed").and_then(Value::as_u64),
+        seed: params.get(keys::SEED).and_then(Value::as_u64),
         guidance_scale: params
-            .get("guidanceScale")
+            .get(FIELD_GUIDANCE_SCALE)
             .and_then(Value::as_f64)
             .map(|f| f as f32),
         image_size_tier: params
-            .get("sampleImageSize")
+            .get(FIELD_SAMPLE_IMAGE_SIZE)
             .and_then(Value::as_str)
             .map(str::to_string),
         ..Default::default()
@@ -795,17 +819,17 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::codec::ir::image::Image
     let v: Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
     let images: Vec<busbar_contract::media::ImageOutput> = v
-        .get("predictions")
+        .get(FIELD_PREDICTIONS)
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
                 .map(|p| busbar_contract::media::ImageOutput {
                     b64: p
-                        .get("bytesBase64Encoded")
+                        .get(FIELD_BYTES_BASE64_ENCODED)
                         .and_then(Value::as_str)
                         .map(str::to_string),
                     mime_type: p
-                        .get("mimeType")
+                        .get(FIELD_MIME_TYPE)
                         .and_then(Value::as_str)
                         .map(str::to_string),
                     ..Default::default()
@@ -819,16 +843,19 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::codec::ir::image::Image
     // Parse the token object when present so `billing()` yields `Billing::Tokens` (same field mapping
     // as the Gemini transcription/embeddings usage readers).
     let usage = v
-        .get("usageMetadata")
+        .get(FIELD_USAGE_METADATA)
         .map(
             |u| -> Result<busbar_contract::billing::TokenUsage, CodecError> {
                 // BILLED COUNTS: absent is zero, UNREADABLE IS A REFUSAL (#81/#42) — see
                 // `usage_count::billed_count`.
                 Ok(busbar_contract::billing::TokenUsage {
-                    input: crate::codec::usage_count::billed_count(u, "promptTokenCount")
+                    input: crate::codec::usage_count::billed_count(u, FIELD_PROMPT_TOKEN_COUNT)
                         .map_err(|e| CodecError::Malformed(e.to_string()))?,
-                    output: crate::codec::usage_count::billed_count(u, "candidatesTokenCount")
-                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
+                    output: crate::codec::usage_count::billed_count(
+                        u,
+                        FIELD_CANDIDATES_TOKEN_COUNT,
+                    )
+                    .map_err(|e| CodecError::Malformed(e.to_string()))?,
                     ..Default::default()
                 })
             },
@@ -871,7 +898,7 @@ pub fn read_embeddings_request(
         .map(|parts| {
             parts
                 .iter()
-                .filter_map(|p| p.get("text").and_then(Value::as_str))
+                .filter_map(|p| p.get(keys::TEXT).and_then(Value::as_str))
                 .collect::<Vec<_>>()
                 .join("")
         })
@@ -884,15 +911,15 @@ pub fn read_embeddings_request(
     Ok(crate::codec::ir::embeddings::EmbeddingsReq {
         input: EmbInput::Text(vec![text]),
         task_type: wire
-            .get("taskType")
+            .get(keys::TASK_TYPE)
             .and_then(Value::as_str)
             .map(str::to_string),
         title: wire
-            .get("title")
+            .get(keys::TITLE)
             .and_then(Value::as_str)
             .map(str::to_string),
         dimensions: wire
-            .get("outputDimensionality")
+            .get(FIELD_OUTPUT_DIMENSIONALITY)
             .and_then(Value::as_u64)
             .and_then(|d| u32::try_from(d).ok()),
         encoding_formats: vec![EncFmt::Float],
@@ -910,8 +937,8 @@ pub fn read_embeddings_response(
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
     let mut item = EmbeddingItem::default();
     if let Some(f) = v
-        .get("embedding")
-        .and_then(|e| e.get("values"))
+        .get(keys::EMBEDDING)
+        .and_then(|e| e.get(FIELD_VALUES))
         .and_then(Value::as_array)
     {
         item.vectors.insert(
@@ -925,13 +952,15 @@ pub fn read_embeddings_response(
     }
     // BILLED COUNT (item 133): absent or `null` is no usage (unchanged); a present-but-UNREADABLE
     // count REFUSES rather than reading as "no usage reported".
-    let usage =
-        crate::codec::usage_count::billed_count_opt(v.get("usageMetadata"), "promptTokenCount")
-            .map_err(|e| CodecError::Malformed(e.to_string()))?
-            .map(|n| busbar_contract::billing::TokenUsage {
-                input: n,
-                ..Default::default()
-            });
+    let usage = crate::codec::usage_count::billed_count_opt(
+        v.get(FIELD_USAGE_METADATA),
+        FIELD_PROMPT_TOKEN_COUNT,
+    )
+    .map_err(|e| CodecError::Malformed(e.to_string()))?
+    .map(|n| busbar_contract::billing::TokenUsage {
+        input: n,
+        ..Default::default()
+    });
     Ok(EmbeddingsResp {
         embeddings: vec![item],
         usage,

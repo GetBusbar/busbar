@@ -5,6 +5,7 @@
 
 use crate::codec::dialect::*;
 use crate::codec::ir::IrStreamEvent;
+use crate::codec::keys;
 use crate::codec::usage_count::read_count_u64;
 use busbar_contract::http::StatusCode;
 use busbar_contract::protocol::*;
@@ -48,7 +49,7 @@ use usage::*;
 /// resolution, exactly as the registry's field doc requires. Mirrors
 /// `super::anthropic::protocol`.
 pub fn protocol() -> Protocol {
-    Protocol::new("gemini", GeminiReader, GeminiWriter)
+    Protocol::new(COUNT_LABEL, GeminiReader, GeminiWriter)
 }
 
 /// The [`ProtocolDecl::models_list_envelope`] builder: Gemini's `GET /v1(beta)/models` shape. Each
@@ -59,9 +60,9 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
         .iter()
         .map(|id| {
             serde_json::json!({
-                "name": format!("models/{id}"),
+                (keys::NAME): format!("models/{id}"),
                 "displayName": id,
-                "supportedGenerationMethods": ["generateContent", "streamGenerateContent"]
+                "supportedGenerationMethods": [FIELD_GENERATE_CONTENT, FIELD_STREAM_GENERATE_CONTENT]
             })
         })
         .collect();
@@ -78,7 +79,7 @@ fn claims(
     path: &str,
 ) -> Option<busbar_contract::protocol::ClaimStrength> {
     use busbar_contract::protocol::ClaimStrength;
-    if h.contains_key("x-goog-api-key") {
+    if h.contains_key(FIELD_X_GOOG_API_KEY) {
         return Some(ClaimStrength(3));
     }
     if path.contains(":generateContent")
@@ -134,11 +135,11 @@ fn residual_claims(path: &str) -> Option<busbar_contract::protocol::ClaimStrengt
 /// key is a DECLARATION rather than a literal in the agnostic strip: `proxy` removes every declared
 /// shim key without naming one.
 pub const DECL: ProtocolDecl = ProtocolDecl {
-    name: "gemini",
+    name: COUNT_LABEL,
     codec: {
         // The dialect's neutral codec facade as a STATIC, so the decl hands out a `&'static dyn`
         // borrow (pure memory, zero alloc per `dialect()` call) — the seam's perf contract.
-        static CODEC: super::proto_codec::DialectRef = super::proto_codec::dialect_ref("gemini");
+        static CODEC: super::proto_codec::DialectRef = super::proto_codec::dialect_ref(COUNT_LABEL);
         Some(&CODEC)
     },
     handler: Some(&handler::GeminiRequestHandler),
@@ -162,7 +163,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // through this plane.
     egress_auth_headers: None,
     egress_auth_lane_constant: false,
-    egress_scheme: Some(EgressScheme::header("x-goog-api-key")),
+    egress_scheme: Some(EgressScheme::header(FIELD_X_GOOG_API_KEY)),
     // THE MODEL IS IN THE URL (`/v1beta/models/{model}:generateContent`): this dialect registers its
     // arrival (`busbar_kernel::ingress::gemini_arrival`) through `busbar_llm::PATH_INGRESS`, which the
     // composition root hands to the core side-table. `has_model_in_url: true` below is what the boot
@@ -202,7 +203,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     vendor_response_metadata: Some(vendor_response_metadata),
     // The Gemini SDK sends `x-goog-api-key`; its presence disambiguates the shared list-models
     // surface as Gemini (the `/v1beta` path is handled by the detection fold, not this header set).
-    list_models_fingerprint_headers: &["x-goog-api-key"],
+    list_models_fingerprint_headers: &[FIELD_X_GOOG_API_KEY],
     static_headers: &[],
 };
 
@@ -214,7 +215,7 @@ fn vendor_response_metadata(body: &serde_json::Value) -> Vec<&'static str> {
     ["safetyRatings"]
         .into_iter()
         .filter(|k| {
-            body.get("candidates")
+            body.get(FIELD_CANDIDATES)
                 .and_then(|c| c.as_array())
                 .is_some_and(|cands| cands.iter().any(|c| c.get(k).is_some()))
         })
@@ -459,6 +460,142 @@ const GRPC_UNAVAILABLE: &str = "UNAVAILABLE";
 const GRPC_UNAUTHENTICATED: &str = "UNAUTHENTICATED";
 /// google.rpc.Code name for a permission / billing failure.
 const GRPC_PERMISSION_DENIED: &str = "PERMISSION_DENIED";
+
+// ── WIRE WORDS this dialect speaks more than once: one spelling each ──
+/// The wire word `allowedFunctionNames`.
+const FIELD_ALLOWED_FUNCTION_NAMES: &str = "allowedFunctionNames";
+/// The wire word `args`.
+const FIELD_ARGS: &str = "args";
+/// The wire word `aspectRatio`.
+const FIELD_ASPECT_RATIO: &str = "aspectRatio";
+/// The wire word `audioDurationSeconds`.
+const FIELD_AUDIO_DURATION_SECONDS: &str = "audioDurationSeconds";
+/// The wire word `bytesBase64Encoded`.
+const FIELD_BYTES_BASE64_ENCODED: &str = "bytesBase64Encoded";
+/// The wire word `candidates`.
+const FIELD_CANDIDATES: &str = "candidates";
+/// The wire word `chosenCandidates`.
+const FIELD_CHOSEN_CANDIDATES: &str = "chosenCandidates";
+/// The wire word `citationMetadata`.
+const FIELD_CITATION_METADATA: &str = "citationMetadata";
+/// The wire word `citationSources`.
+const FIELD_CITATION_SOURCES: &str = "citationSources";
+/// The wire word `codeExecutionResult`.
+const FIELD_CODE_EXECUTION_RESULT: &str = "codeExecutionResult";
+/// The wire word `contents`.
+const FIELD_CONTENTS: &str = "contents";
+/// The wire word `details`.
+const FIELD_DETAILS: &str = "details";
+/// The wire word `endIndex`.
+const FIELD_END_INDEX: &str = "endIndex";
+/// The wire word `executableCode`.
+const FIELD_EXECUTABLE_CODE: &str = "executableCode";
+/// The wire word `fileData`.
+const FIELD_FILE_DATA: &str = "fileData";
+/// The wire word `fileUri`.
+const FIELD_FILE_URI: &str = "fileUri";
+/// The wire word `functionCallingConfig`.
+const FIELD_FUNCTION_CALLING_CONFIG: &str = "functionCallingConfig";
+/// The wire word `functionDeclarations`.
+const FIELD_FUNCTION_DECLARATIONS: &str = "functionDeclarations";
+/// The wire word `functionResponse`.
+const FIELD_FUNCTION_RESPONSE: &str = "functionResponse";
+/// The wire word `generateContent`.
+const FIELD_GENERATE_CONTENT: &str = "generateContent";
+/// The wire word `generationConfig`.
+const FIELD_GENERATION_CONFIG: &str = "generationConfig";
+/// The wire word `guidanceScale`.
+const FIELD_GUIDANCE_SCALE: &str = "guidanceScale";
+/// The wire word `inline_data`.
+const FIELD_INLINE_DATA_SNAKE: &str = "inline_data";
+/// The wire word `inlineData`.
+const FIELD_INLINE_DATA: &str = "inlineData";
+/// The wire word `labels`.
+const FIELD_LABELS: &str = "labels";
+/// The wire word `logprobsResult`.
+const FIELD_LOGPROBS_RESULT: &str = "logprobsResult";
+/// The wire word `logProbability`.
+const FIELD_LOG_PROBABILITY: &str = "logProbability";
+/// The wire word `maxOutputTokens`.
+const FIELD_MAX_OUTPUT_TOKENS: &str = "maxOutputTokens";
+/// The wire word `mime_type`.
+const FIELD_MIME_TYPE_SNAKE: &str = "mime_type";
+/// The wire word `mimeType`.
+const FIELD_MIME_TYPE: &str = "mimeType";
+/// The wire word `modality`.
+const FIELD_MODALITY: &str = "modality";
+/// The wire word `negativePrompt`.
+const FIELD_NEGATIVE_PROMPT: &str = "negativePrompt";
+/// The wire word `null`.
+const FIELD_NULL: &str = "null";
+/// The wire word `nullable`.
+const FIELD_NULLABLE: &str = "nullable";
+/// The wire word `outputDimensionality`.
+const FIELD_OUTPUT_DIMENSIONALITY: &str = "outputDimensionality";
+/// The wire word `parts`.
+const FIELD_PARTS: &str = "parts";
+/// The wire word `personGeneration`.
+const FIELD_PERSON_GENERATION: &str = "personGeneration";
+/// The wire word `prebuiltVoiceConfig`.
+const FIELD_PREBUILT_VOICE_CONFIG: &str = "prebuiltVoiceConfig";
+/// The wire word `predictions`.
+const FIELD_PREDICTIONS: &str = "predictions";
+/// The wire word `responseLogprobs`.
+const FIELD_RESPONSE_LOGPROBS: &str = "responseLogprobs";
+/// The wire word `responseModalities`.
+const FIELD_RESPONSE_MODALITIES: &str = "responseModalities";
+/// The wire word `responseSchema`.
+const FIELD_RESPONSE_SCHEMA: &str = "responseSchema";
+/// The wire word `retrievedContext`.
+const FIELD_RETRIEVED_CONTEXT: &str = "retrievedContext";
+/// The wire word `sampleCount`.
+const FIELD_SAMPLE_COUNT: &str = "sampleCount";
+/// The wire word `sampleImageSize`.
+const FIELD_SAMPLE_IMAGE_SIZE: &str = "sampleImageSize";
+/// The wire word `startIndex`.
+const FIELD_START_INDEX: &str = "startIndex";
+/// The wire word `streamGenerateContent`.
+const FIELD_STREAM_GENERATE_CONTENT: &str = "streamGenerateContent";
+/// The wire word `systemInstruction`.
+const FIELD_SYSTEM_INSTRUCTION: &str = "systemInstruction";
+/// The wire word `thinkingBudget`.
+const FIELD_THINKING_BUDGET: &str = "thinkingBudget";
+/// The wire word `thinkingConfig`.
+const FIELD_THINKING_CONFIG: &str = "thinkingConfig";
+/// The wire word `thought`.
+const FIELD_THOUGHT: &str = "thought";
+/// The wire word `thoughtSignature`.
+const FIELD_THOUGHT_SIGNATURE: &str = "thoughtSignature";
+/// The wire word `tokenCount`.
+const FIELD_TOKEN_COUNT: &str = "tokenCount";
+/// The wire word `topCandidates`.
+const FIELD_TOP_CANDIDATES: &str = "topCandidates";
+/// The wire word `uri`.
+const FIELD_URI: &str = "uri";
+/// The wire word `values`.
+const FIELD_VALUES: &str = "values";
+/// The wire word `voiceConfig`.
+const FIELD_VOICE_CONFIG: &str = "voiceConfig";
+/// The wire word `voiceName`.
+const FIELD_VOICE_NAME: &str = "voiceName";
+/// The wire word `x-goog-api-key`.
+const FIELD_X_GOOG_API_KEY: &str = "x-goog-api-key";
+/// The wire word `ABORTED`.
+const GEMINI_ABORTED: &str = "ABORTED";
+/// The wire word `ANY`.
+const GEMINI_ANY: &str = "ANY";
+/// The wire word `AUDIO`.
+const GEMINI_AUDIO: &str = "AUDIO";
+/// The wire word `AUTO`.
+const GEMINI_AUTO: &str = "AUTO";
+/// The wire word `BLOCKLIST`.
+const GEMINI_BLOCKLIST: &str = "BLOCKLIST";
+/// The wire word `CANCELLED`.
+const GEMINI_CANCELLED: &str = "CANCELLED";
+/// The wire word `IMAGE_SAFETY`.
+const GEMINI_IMAGE_SAFETY: &str = "IMAGE_SAFETY";
+/// The wire word `UNKNOWN`.
+const GEMINI_UNKNOWN: &str = "UNKNOWN";
 /// google.rpc.Code name for an internal server error.
 const GRPC_INTERNAL: &str = "INTERNAL";
 /// google.rpc.Code name for a deadline / timeout failure.
@@ -608,7 +745,7 @@ fn synth_tool_call_id(call_index: usize, function_name: &str, turn_salt: &str) -
 /// client echoing one) populates them, the response is paired with its call by that id. `None` when
 /// absent or empty, so the caller falls back to its synthesized id.
 fn gemini_call_id(obj: &serde_json::Value) -> Option<&str> {
-    obj.get("id")
+    obj.get(keys::ID)
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
 }
@@ -686,52 +823,54 @@ impl GeminiCallLedger {
 /// the historical behaviour: an unqualified URL reads as an image, the shape every dialect's
 /// `image_url` can carry.
 fn read_gemini_media_part(part: &serde_json::Value) -> Option<crate::codec::ir::IrBlock> {
-    if let Some(inline_data) = part.get("inlineData") {
+    if let Some(inline_data) = part.get(FIELD_INLINE_DATA) {
         let mime_type = inline_data
-            .get("mimeType")
+            .get(FIELD_MIME_TYPE)
             .and_then(|m| m.as_str())
             .unwrap_or("")
             .to_string();
         let data = inline_data
-            .get("data")
+            .get(keys::DATA)
             .and_then(|d| d.as_str())
             .unwrap_or("")
             .to_string();
-        return Some(if mime_type.to_ascii_lowercase().starts_with("image/") {
-            crate::codec::ir::IrBlock::Image {
-                source: crate::codec::ir::IrImageSource::Base64 {
-                    media_type: mime_type,
-                    data,
-                },
-                cache_control: None,
-                detail: None,
-            }
-        } else {
-            crate::codec::ir::IrBlock::Media {
-                kind: crate::codec::ir::IrMediaKind::from_media_type(&mime_type),
-                source: crate::codec::ir::IrImageSource::Base64 {
-                    media_type: mime_type,
-                    data,
-                },
-                name: None,
-                cache_control: None,
-                citations: None,
-                context: None,
-            }
-        });
+        return Some(
+            if mime_type.to_ascii_lowercase().starts_with(keys::IMAGE_) {
+                crate::codec::ir::IrBlock::Image {
+                    source: crate::codec::ir::IrImageSource::Base64 {
+                        media_type: mime_type,
+                        data,
+                    },
+                    cache_control: None,
+                    detail: None,
+                }
+            } else {
+                crate::codec::ir::IrBlock::Media {
+                    kind: crate::codec::ir::IrMediaKind::from_media_type(&mime_type),
+                    source: crate::codec::ir::IrImageSource::Base64 {
+                        media_type: mime_type,
+                        data,
+                    },
+                    name: None,
+                    cache_control: None,
+                    citations: None,
+                    context: None,
+                }
+            },
+        );
     }
-    if let Some(file_data) = part.get("fileData") {
+    if let Some(file_data) = part.get(FIELD_FILE_DATA) {
         let uri = file_data
-            .get("fileUri")
+            .get(FIELD_FILE_URI)
             .and_then(|u| u.as_str())
             .unwrap_or("")
             .to_string();
         let mime = file_data
-            .get("mimeType")
+            .get(FIELD_MIME_TYPE)
             .and_then(|m| m.as_str())
             .unwrap_or("");
         return Some(
-            if mime.is_empty() || mime.to_ascii_lowercase().starts_with("image/") {
+            if mime.is_empty() || mime.to_ascii_lowercase().starts_with(keys::IMAGE_) {
                 crate::codec::ir::IrBlock::Image {
                     source: crate::codec::ir::IrImageSource::Url(uri),
                     cache_control: None,
@@ -771,10 +910,10 @@ fn write_gemini_media_part(block: &crate::codec::ir::IrBlock) -> Option<serde_js
     };
     match source {
         crate::codec::ir::IrImageSource::Url(uri) => Some(serde_json::json!({
-            "fileData": { "fileUri": uri, "mimeType": url_mime }
+            (FIELD_FILE_DATA): { (FIELD_FILE_URI): uri, (FIELD_MIME_TYPE): url_mime }
         })),
         crate::codec::ir::IrImageSource::Base64 { media_type, data } => Some(serde_json::json!({
-            "inlineData": { "mimeType": media_type, "data": data }
+            (FIELD_INLINE_DATA): { (FIELD_MIME_TYPE): media_type, (keys::DATA): data }
         })),
         crate::codec::ir::IrImageSource::Vendor { .. } => None,
     }
@@ -791,7 +930,7 @@ fn write_gemini_media_part(block: &crate::codec::ir::IrBlock) -> Option<serde_js
 fn gemini_mime_for_kind(kind: crate::codec::ir::IrMediaKind) -> &'static str {
     match kind {
         crate::codec::ir::IrMediaKind::Document => "application/pdf",
-        crate::codec::ir::IrMediaKind::Audio => "audio/mpeg",
+        crate::codec::ir::IrMediaKind::Audio => keys::AUDIO_MPEG,
         crate::codec::ir::IrMediaKind::Video => "video/mp4",
     }
 }
@@ -849,7 +988,7 @@ fn gemini_openapi_schema_to_json_schema(schema: &serde_json::Value) -> serde_jso
         let mut out = serde_json::Map::new();
         for (k, val) in obj {
             let mapped = match k.as_str() {
-                "type" => match val.as_str() {
+                keys::TYPE => match val.as_str() {
                     Some(t) => match t {
                         "STRING" | "NUMBER" | "INTEGER" | "BOOLEAN" | "ARRAY" | "OBJECT"
                         | "NULL" => serde_json::json!(t.to_ascii_lowercase()),
@@ -857,7 +996,7 @@ fn gemini_openapi_schema_to_json_schema(schema: &serde_json::Value) -> serde_jso
                     },
                     None => val.clone(),
                 },
-                "properties" | "$defs" | "definitions" => match val.as_object() {
+                keys::PROPERTIES | "$defs" | keys::DEFINITIONS => match val.as_object() {
                     Some(m) => serde_json::Value::Object(
                         m.iter()
                             .map(|(pk, pv)| (pk.clone(), walk(pv, depth + 1)))
@@ -865,7 +1004,7 @@ fn gemini_openapi_schema_to_json_schema(schema: &serde_json::Value) -> serde_jso
                     ),
                     None => val.clone(),
                 },
-                "items" | "additionalProperties" => walk(val, depth + 1),
+                "items" | keys::ADDITIONAL_PROPERTIES => walk(val, depth + 1),
                 "anyOf" | "oneOf" | "allOf" | "prefixItems" => match val.as_array() {
                     Some(a) => {
                         serde_json::Value::Array(a.iter().map(|s| walk(s, depth + 1)).collect())
@@ -878,16 +1017,20 @@ fn gemini_openapi_schema_to_json_schema(schema: &serde_json::Value) -> serde_jso
         }
         // `nullable: true` → a `"null"` member in `type`; `nullable: false` is the default and
         // simply goes. A `nullable` with no string `type` beside it is left alone (nothing to widen).
-        if let Some(nullable) = out.get("nullable").and_then(|n| n.as_bool()) {
-            match out.get("type").and_then(|t| t.as_str()).map(str::to_string) {
+        if let Some(nullable) = out.get(FIELD_NULLABLE).and_then(|n| n.as_bool()) {
+            match out
+                .get(keys::TYPE)
+                .and_then(|t| t.as_str())
+                .map(str::to_string)
+            {
                 Some(t) => {
-                    out.remove("nullable");
-                    if nullable && t != "null" {
-                        out.insert("type".to_string(), serde_json::json!([t, "null"]));
+                    out.remove(FIELD_NULLABLE);
+                    if nullable && t != FIELD_NULL {
+                        out.insert(keys::TYPE.to_string(), serde_json::json!([t, FIELD_NULL]));
                     }
                 }
                 None if !nullable => {
-                    out.remove("nullable");
+                    out.remove(FIELD_NULLABLE);
                 }
                 None => {}
             }
@@ -974,33 +1117,33 @@ fn gemini_rfc3339_to_epoch(s: &str) -> Option<u64> {
 /// synthesizes them from UTF-8).
 fn read_gemini_logprobs(v: Option<&serde_json::Value>) -> Vec<crate::codec::ir::IrTokenLogprob> {
     let chosen = match v
-        .and_then(|lr| lr.get("chosenCandidates"))
+        .and_then(|lr| lr.get(FIELD_CHOSEN_CANDIDATES))
         .and_then(|c| c.as_array())
     {
         Some(c) => c,
         None => return Vec::new(),
     };
     let tops = v
-        .and_then(|lr| lr.get("topCandidates"))
+        .and_then(|lr| lr.get(FIELD_TOP_CANDIDATES))
         .and_then(|c| c.as_array());
     chosen
         .iter()
         .enumerate()
         .filter_map(|(i, c)| {
             Some(crate::codec::ir::IrTokenLogprob {
-                token: c.get("token")?.as_str()?.to_string(),
-                logprob: c.get("logProbability")?.as_f64()?,
+                token: c.get(keys::TOKEN)?.as_str()?.to_string(),
+                logprob: c.get(FIELD_LOG_PROBABILITY)?.as_f64()?,
                 bytes: None,
                 top: tops
                     .and_then(|t| t.get(i))
-                    .and_then(|t| t.get("candidates"))
+                    .and_then(|t| t.get(FIELD_CANDIDATES))
                     .and_then(|c| c.as_array())
                     .map(|arr| {
                         arr.iter()
                             .filter_map(|t| {
                                 Some(crate::codec::ir::IrTopLogprob {
-                                    token: t.get("token")?.as_str()?.to_string(),
-                                    logprob: t.get("logProbability")?.as_f64()?,
+                                    token: t.get(keys::TOKEN)?.as_str()?.to_string(),
+                                    logprob: t.get(FIELD_LOG_PROBABILITY)?.as_f64()?,
                                     bytes: None,
                                 })
                             })
@@ -1018,23 +1161,23 @@ fn read_gemini_logprobs(v: Option<&serde_json::Value>) -> Vec<crate::codec::ir::
 fn write_gemini_logprobs_result(lps: &[crate::codec::ir::IrTokenLogprob]) -> serde_json::Value {
     let chosen: Vec<serde_json::Value> = lps
         .iter()
-        .map(|lp| serde_json::json!({"token": lp.token, "logProbability": lp.logprob}))
+        .map(|lp| serde_json::json!({(keys::TOKEN): lp.token, (FIELD_LOG_PROBABILITY): lp.logprob}))
         .collect();
-    let mut obj = serde_json::json!({ "chosenCandidates": chosen });
+    let mut obj = serde_json::json!({ (FIELD_CHOSEN_CANDIDATES): chosen });
     if lps.iter().any(|lp| !lp.top.is_empty()) {
         let tops: Vec<serde_json::Value> = lps
             .iter()
             .map(|lp| {
                 serde_json::json!({
-                    "candidates": lp
+                    (FIELD_CANDIDATES): lp
                         .top
                         .iter()
-                        .map(|t| serde_json::json!({"token": t.token, "logProbability": t.logprob}))
+                        .map(|t| serde_json::json!({(keys::TOKEN): t.token, (FIELD_LOG_PROBABILITY): t.logprob}))
                         .collect::<Vec<serde_json::Value>>()
                 })
             })
             .collect();
-        obj["topCandidates"] = serde_json::json!(tops);
+        obj[FIELD_TOP_CANDIDATES] = serde_json::json!(tops);
     }
     obj
 }
@@ -1050,19 +1193,21 @@ fn write_gemini_logprobs_result(lps: &[crate::codec::ir::IrTokenLogprob]) -> ser
 fn read_gemini_tool_choice(
     tool_config: Option<&serde_json::Value>,
 ) -> Option<crate::codec::ir::IrToolChoice> {
-    let fcc = tool_config?.get("functionCallingConfig")?;
-    let mode = fcc.get("mode").and_then(|m| m.as_str())?;
+    let fcc = tool_config?.get(FIELD_FUNCTION_CALLING_CONFIG)?;
+    let mode = fcc.get(keys::MODE).and_then(|m| m.as_str())?;
     match mode.to_uppercase().as_str() {
-        "AUTO" => Some(crate::codec::ir::IrToolChoice::Auto),
-        "NONE" => Some(crate::codec::ir::IrToolChoice::None),
-        "ANY" => {
+        GEMINI_AUTO => Some(crate::codec::ir::IrToolChoice::Auto),
+        keys::NONE_UPPER => Some(crate::codec::ir::IrToolChoice::None),
+        GEMINI_ANY => {
             // `allowedFunctionNames` is a LIST in Gemini, but the IR's `Tool` variant models a
             // SINGLE targeted tool. A single name maps cleanly to `Tool{name}`. With N>1 names,
             // fabricating `Tool{name: first}` would INVENT a stricter constraint (force exactly one
             // specific tool) the request never made; the directive is `Required` (call SOME tool)
             // and the subset itself rides the IR's `allowed_tools` slot (IR-10,
             // `read_gemini_allowed_tools`).
-            let names = fcc.get("allowedFunctionNames").and_then(|a| a.as_array());
+            let names = fcc
+                .get(FIELD_ALLOWED_FUNCTION_NAMES)
+                .and_then(|a| a.as_array());
             match names {
                 Some(arr) if arr.len() > 1 => Some(crate::codec::ir::IrToolChoice::Required),
                 _ => match names.and_then(|a| a.first()).and_then(|n| n.as_str()) {
@@ -1080,11 +1225,11 @@ fn read_gemini_tool_choice(
 /// Emit the IR `tool_choice` union as a Gemini `functionCallingConfig` object.
 fn write_gemini_tool_choice(tc: &crate::codec::ir::IrToolChoice) -> serde_json::Value {
     match tc {
-        crate::codec::ir::IrToolChoice::Auto => serde_json::json!({"mode": "AUTO"}),
-        crate::codec::ir::IrToolChoice::None => serde_json::json!({"mode": "NONE"}),
-        crate::codec::ir::IrToolChoice::Required => serde_json::json!({"mode": "ANY"}),
+        crate::codec::ir::IrToolChoice::Auto => serde_json::json!({(keys::MODE): GEMINI_AUTO}),
+        crate::codec::ir::IrToolChoice::None => serde_json::json!({(keys::MODE): keys::NONE_UPPER}),
+        crate::codec::ir::IrToolChoice::Required => serde_json::json!({(keys::MODE): GEMINI_ANY}),
         crate::codec::ir::IrToolChoice::Tool { name } => {
-            serde_json::json!({"mode": "ANY", "allowedFunctionNames": [name]})
+            serde_json::json!({(keys::MODE): GEMINI_ANY, (FIELD_ALLOWED_FUNCTION_NAMES): [name]})
         }
     }
 }
@@ -1127,7 +1272,7 @@ fn coerce_tool_args(input: &serde_json::Value) -> serde_json::Value {
     } else if candidate.is_null() {
         serde_json::json!({})
     } else {
-        serde_json::json!({ "args": candidate })
+        serde_json::json!({ (FIELD_ARGS): candidate })
     }
 }
 
@@ -1145,7 +1290,7 @@ fn coerce_tool_args(input: &serde_json::Value) -> serde_json::Value {
 /// existing prompt-block / terminal arms. A genuinely empty array with NO block reason still falls
 /// through to the existing handling below those arms (unchanged).
 fn candidates_absent(data: &serde_json::Value) -> bool {
-    match data.get("candidates").and_then(|c| c.as_array()) {
+    match data.get(FIELD_CANDIDATES).and_then(|c| c.as_array()) {
         Some(arr) => arr.is_empty(),
         None => true,
     }
@@ -1188,9 +1333,9 @@ fn map_gemini_finish_reason(finish_reason: &str) -> crate::codec::ir::IrStopReas
         GEMINI_FINISH_MAX_TOKENS => S::MaxTokens,
         GEMINI_FINISH_SAFETY
         | GEMINI_FINISH_RECITATION
-        | "IMAGE_SAFETY"
+        | GEMINI_IMAGE_SAFETY
         | "SPII"
-        | "BLOCKLIST"
+        | GEMINI_BLOCKLIST
         | GEMINI_FINISH_PROHIBITED_CONTENT
         // The image-generation content-policy stops (IR audit GEM-15): the same policy refusal
         // as their text siblings above, applied to an image the model was generating.
@@ -1215,11 +1360,11 @@ fn prompt_block_stop_reason(block_reason: &str) -> crate::codec::ir::IrStopReaso
         // RECITATION maps to Safety at the candidate level (and per GEMINI_FINISH_RECITATION's own
         // doc); classify a prompt-level RECITATION block the same way, not Other.
         GEMINI_FINISH_SAFETY
-        | "BLOCKLIST"
+        | GEMINI_BLOCKLIST
         | GEMINI_FINISH_PROHIBITED_CONTENT
         | GEMINI_FINISH_RECITATION
         // A prompt blocked for its IMAGE content is the same policy block (IR audit GEM-15).
-        | "IMAGE_SAFETY" => S::Safety,
+        | GEMINI_IMAGE_SAFETY => S::Safety,
         _ => S::Other,
     }
 }
@@ -1285,9 +1430,9 @@ fn gemini_error_status_class(status: Option<&str>, code: Option<u64>) -> StatusC
             | "OUT_OF_RANGE"
             | GRPC_NOT_FOUND
             | "ALREADY_EXISTS"
-            | "ABORTED"
-            | "CANCELLED" => return StatusClass::ClientError,
-            GRPC_INTERNAL | "UNKNOWN" | "DATA_LOSS" | GRPC_UNIMPLEMENTED => {
+            | GEMINI_ABORTED
+            | GEMINI_CANCELLED => return StatusClass::ClientError,
+            GRPC_INTERNAL | GEMINI_UNKNOWN | "DATA_LOSS" | GRPC_UNIMPLEMENTED => {
                 return StatusClass::ServerError
             }
             // An UPPER_SNAKE status string outside the modeled google.rpc.Code set: fall through to
