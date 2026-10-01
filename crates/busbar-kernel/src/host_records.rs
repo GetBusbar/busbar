@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use busbar_contract::ids::RecordSchemaId;
-use busbar_contract::kinds::{RecordBytes, Store, StoreError};
+use busbar_contract::kinds::{RecordBytes, StoreError};
 
 /// The store kind's typed records.
 pub trait RecordRows: Send + Sync {
@@ -65,34 +65,6 @@ pub trait RecordRows: Send + Sync {
         prefix: &[u8],
         limit: u32,
     ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError>;
-}
-
-impl<T: Store> RecordRows for T {
-    fn record_put(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-        value: &RecordBytes,
-    ) -> Result<(), StoreError> {
-        Store::record_put(self, schema, key, value)
-    }
-
-    fn record_get(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-    ) -> Result<Option<RecordBytes>, StoreError> {
-        Store::record_get(self, schema, key)
-    }
-
-    fn record_scan(
-        &self,
-        schema: RecordSchemaId,
-        prefix: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError> {
-        Store::record_scan(self, schema, prefix, limit)
-    }
 }
 
 /// The store key of `key` for the instance labelled `instance`: the label's length (two bytes, big

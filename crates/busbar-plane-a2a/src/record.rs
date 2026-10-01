@@ -154,7 +154,7 @@ impl TaskEventRow {
     }
 
     /// The list selector that reads one task's `task_event` chain back, oldest-first.
-    pub fn parent_selector(task_id: &str) -> PlaneSelector {
+    pub fn parent_selector(task_id: &str) -> PlaneSelector<'_> {
         PlaneSelector::Parent(task_id.into())
     }
 

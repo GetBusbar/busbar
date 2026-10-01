@@ -21,7 +21,7 @@ use busbar_contract::ids::{
 };
 use busbar_contract::kinds::{
     Ack, Challenge, ChallengeState, ContentFacts, CredentialLocator, Head, PlaneFacts, SecretRef,
-    Store, StoreError,
+    StoreError,
 };
 use busbar_contract::plane::{
     Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
@@ -47,7 +47,6 @@ const _TRANSPORT: Option<&dyn Transport> = None;
 // The two transport roles (TRANSPORT-STACK): a transport plugin is one or the other.
 const _CARRIER: Option<&dyn Carrier> = None;
 const _FRAMER: Option<&dyn Framer> = None;
-const _STORE: Option<&dyn Store> = None;
 const _PLUGIN: Option<&dyn Plugin> = None;
 const _PLANE_ALLOC: Option<&dyn PlaneAlloc> = None;
 const _CONFIG: Option<&dyn ConfigView> = None;

@@ -59,7 +59,7 @@ impl McpCallRecord {
     // The plane owns only the READ-BACK of what the engine wrote.
 
     /// The list selector that reads one principal's `call` chain back, oldest-first.
-    pub fn parent_selector(principal: &str) -> PlaneSelector {
+    pub fn parent_selector(principal: &str) -> PlaneSelector<'_> {
         PlaneSelector::Parent(principal.into())
     }
 
