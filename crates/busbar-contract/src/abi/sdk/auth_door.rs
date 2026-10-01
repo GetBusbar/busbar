@@ -8,8 +8,9 @@
 //! lifecycle, `verify`, and every other auth op answering REFUSED (the plugin states only
 //! [`CAP_INBOUND`](crate::abi::auth::CAP_INBOUND)). The plugin crate holds no `unsafe`.
 //!
-//! * `open` builds the plugin from its settings blob and secrets ([`VerifyPlugin::open`]); `close`
-//!   answering READY drops it (the SDK owns the state).
+//! * The lifecycle is the SDK's shared one (`abi::sdk::life`), over [`Verifier`], the kind's
+//!   [`Life`]: `open` builds the plugin from its settings blob and secrets
+//!   ([`VerifyPlugin::open`]); `close` answering READY drops it (the SDK owns the state).
 //! * `verify` hands [`VerifyPlugin::verify`] a [`VerifyView`] and writes its [`Verdict`]: an
 //!   identity goes into the host's [`IdentityBuf`](crate::abi::auth::IdentityBuf). One that does not
 //!   fit is the short answer (FAILED, every `needed_*` at its full size); the host re-calls once and
@@ -21,7 +22,6 @@
 //! This kit answers every verdict READY: a plugin whose `verify` waits on I/O (a key-set fetch, a
 //! directory read) writes its own slots over [`crate::plugin_door!`].
 
-use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::ptr;
 
@@ -29,15 +29,11 @@ use crate::abi::auth::{
     AuthTail, IdentifyOut, IdentityBuf, VerifyIn, IDENTITY_HAS_TTL, SPAN_ABSENT, VERDICT_IDENTITY,
     VERDICT_PASS, VERDICT_REJECT,
 };
-use crate::abi::mechanism::call::{AbiStr, Blob, InHead, MetricEntry, OutHead, Outcome, Span};
-use crate::abi::mechanism::call::{BLOB_ABSENT, METRIC_ADD};
-use crate::abi::mechanism::door::{KindTailHead, MarkWord, Statement, MARK_WORD_CARRIER};
-use crate::abi::mechanism::lifecycle::{
-    CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn, TickOut,
-    ValidateIn,
-};
+use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, Span, BLOB_ABSENT};
+use crate::abi::mechanism::door::{KindTailHead, Statement};
 use crate::abi::sdk::door::{AbiIn, AbiOut};
 use crate::abi::sdk::lent::{HostBuf, Lent};
+use crate::abi::sdk::life::{Counted, Held, Life, Refreshed, Refusal};
 use crate::abi::sdk::out::Out;
 use crate::abi::sdk::safe::{Instance, SafeSlot};
 pub use crate::auth_calls::VerifiedIdentity;
@@ -146,170 +142,55 @@ pub trait VerifyPlugin: Send + Sync + Sized + 'static {
     }
 }
 
-/// The metric entry a `refresh` reports, held by the instance: its address stays put until the
-/// host has copied the reply (lifecycle ops never overlap on one instance, and the host copies a
-/// ticketless reply before its next call).
-struct FlushedEntry(UnsafeCell<MetricEntry>);
+/// THE AUTH KIND'S [`Life`] over a [`VerifyPlugin`] `T`: the instance state the shared lifecycle
+/// slots (`abi::sdk::life`) serve, a [`Held`] of it. Each per-kind value is stated here:
+///
+/// * `validate` answers READY: the settings are judged by `open`;
+/// * `open` and `refresh` are [`VerifyPlugin::open`] and [`VerifyPlugin::refresh`]; the entries
+///   `refresh` dropped are reported under [`VerifyPlugin::CACHE_FAMILY`], when the plugin states
+///   it;
+/// * `drive` answers REFUSED (the plugin holds no driver ticket), and `cancel` answers
+///   [`CANCEL_ABANDONED`](crate::abi::auth::CANCEL_ABANDONED): `verify` never pends, so nothing is
+///   in flight;
+/// * `retire` and `tick` hold nothing: nothing is generation data, and no tick is asked for.
+pub struct Verifier<T>(T);
 
-// SAFETY: written only inside `refresh`, which never overlaps another lifecycle op on the instance
-// and is the only op that touches it; read only by the host between that write and the next.
-unsafe impl Send for FlushedEntry {}
-// SAFETY: as above.
-unsafe impl Sync for FlushedEntry {}
-
-/// The instance state the SDK holds for a [`VerifyPlugin`] `T`.
-pub struct Held<T> {
-    plugin: T,
-    flushed: FlushedEntry,
-}
-
-impl<T> std::fmt::Debug for Held<T> {
+impl<T> std::fmt::Debug for Verifier<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Held").finish_non_exhaustive()
+        f.debug_struct("Verifier").finish_non_exhaustive()
     }
 }
 
-fn no_metric() -> MetricEntry {
-    MetricEntry {
-        family_idx: 0,
-        kind: METRIC_ADD,
-        _reserved: [0; 3],
-        value: 0.0,
-        label_vals: ptr::null(),
-        label_vals_len: 0,
+impl<T> Verifier<T> {
+    /// The plugin.
+    #[must_use]
+    pub const fn plugin(&self) -> &T {
+        &self.0
     }
 }
 
-fn secrets<'a>(list: crate::abi::sdk::lent::LentList<'a, Blob>) -> Vec<&'a [u8]> {
-    list.iter().map(Lent::<Blob>::bytes).collect()
-}
+impl<T: VerifyPlugin> Life for Verifier<T> {
+    const CANCEL: u32 = crate::abi::auth::CANCEL_ABANDONED;
+    const DRIVE: Outcome = Outcome::Refused;
 
-/// A lifecycle slot answering READY with nothing to do.
-macro_rules! ready_slot {
-    ($(#[$doc:meta] $name:ident: $in:ty => $out:ty;)*) => {$(
-        #[$doc]
-        #[derive(Debug)]
-        pub struct $name<T>(PhantomData<T>);
-        impl<T: VerifyPlugin> SafeSlot for $name<T> {
-            type In = $in;
-            type Out = $out;
-            type State = Held<T>;
-            fn call(_: Instance<'_, Held<T>>, _: Lent<'_, $in>, _: Out<'_, $out>) -> Outcome {
-                Outcome::Ready
-            }
-        }
-    )*};
-}
-
-ready_slot! {
-    /// `validate`: the settings are judged by `open`.
-    Validate: ValidateIn => OutHead;
-    /// `retire`: nothing is generation data.
-    Retire: GenIn => OutHead;
-    /// `tick`: never asked for (`next_tick_ns` stays `0`).
-    Tick: TickIn => TickOut;
-    /// `release`: no lease is ever handed out.
-    Release: ReleaseIn => OutHead;
-    /// `close`: READY; the SDK drops the state.
-    Close: InHead => OutHead;
-}
-
-/// `open`: [`VerifyPlugin::open`].
-#[derive(Debug)]
-pub struct Open<T>(PhantomData<T>);
-impl<T: VerifyPlugin> SafeSlot for Open<T> {
-    type In = OpenIn;
-    type Out = OpenOut;
-    type State = Held<T>;
-    fn call(
-        instance: Instance<'_, Held<T>>,
-        input: Lent<'_, OpenIn>,
-        mut out: Out<'_, OpenOut>,
-    ) -> Outcome {
-        let out = out.raw();
-        let settings = input.field(|i| &i.settings).bytes();
-        match T::open(settings, &secrets(input.secrets())) {
-            Ok(plugin) => {
-                instance.open(Held {
-                    plugin,
-                    flushed: FlushedEntry(UnsafeCell::new(no_metric())),
-                });
-                Outcome::Ready
-            }
-            Err(e) => {
-                out.head.error = AbiStr {
-                    ptr: e.as_ptr(),
-                    len: e.len(),
-                };
-                Outcome::Failed
-            }
-        }
+    fn validate(_: &[u8]) -> Result<(), Refusal> {
+        Ok(())
     }
-}
 
-/// `refresh`: [`VerifyPlugin::refresh`], its count reported under the cache family.
-#[derive(Debug)]
-pub struct Refresh<T>(PhantomData<T>);
-impl<T: VerifyPlugin> SafeSlot for Refresh<T> {
-    type In = RefreshIn;
-    type Out = OutHead;
-    type State = Held<T>;
-    fn call(
-        instance: Instance<'_, Held<T>>,
-        input: Lent<'_, RefreshIn>,
-        mut out: Out<'_, OutHead>,
-    ) -> Outcome {
-        let out = out.raw();
-        let Some(h) = instance.get() else {
-            return Outcome::Fault;
-        };
-        let settings = input.field(|i| &i.settings).bytes();
-        let dropped = h.plugin.refresh(settings, &secrets(input.secrets()));
-        if let Some(family) = T::CACHE_FAMILY {
-            let entry = h.flushed.0.get();
-            // SAFETY: `FlushedEntry`: no other op touches the entry while `refresh` runs, and the
-            // host copied the previous reply before this call began.
-            unsafe {
-                *entry = MetricEntry {
-                    family_idx: family,
-                    value: dropped as f64,
-                    ..no_metric()
-                };
-            }
-            out.envelope.metrics = entry.cast_const();
-            out.envelope.metrics_len = 1;
-        }
-        Outcome::Ready
+    fn open(settings: &[u8], secrets: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+        T::open(settings, secrets)
+            .map(Verifier)
+            .map_err(Refusal::failed)
     }
-}
 
-/// `drive`: the plugin holds no driver ticket.
-#[derive(Debug)]
-pub struct Drive<T>(PhantomData<T>);
-impl<T: VerifyPlugin> SafeSlot for Drive<T> {
-    type In = DriveIn;
-    type Out = OutHead;
-    type State = Held<T>;
-    fn call(_: Instance<'_, Held<T>>, _: Lent<'_, DriveIn>, _: Out<'_, OutHead>) -> Outcome {
-        Outcome::Refused
-    }
-}
-
-/// `cancel`: `verify` never pends, so nothing is in flight; the call is abandoned.
-#[derive(Debug)]
-pub struct Cancel<T>(PhantomData<T>);
-impl<T: VerifyPlugin> SafeSlot for Cancel<T> {
-    type In = CancelIn;
-    type Out = CancelOut;
-    type State = Held<T>;
-    fn call(
-        _: Instance<'_, Held<T>>,
-        _: Lent<'_, CancelIn>,
-        mut out: Out<'_, CancelOut>,
-    ) -> Outcome {
-        let out = out.raw();
-        out.disposition = crate::abi::auth::CANCEL_ABANDONED;
-        Outcome::Ready
+    fn refresh(&self, settings: &[u8], secrets: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+        let dropped = self.0.refresh(settings, secrets);
+        Ok(Refreshed {
+            counted: T::CACHE_FAMILY.map(|family| Counted {
+                family,
+                value: dropped as f64,
+            }),
+        })
     }
 }
 
@@ -319,36 +200,41 @@ pub struct Verify<T>(PhantomData<T>);
 impl<T: VerifyPlugin> SafeSlot for Verify<T> {
     type In = VerifyIn;
     type Out = IdentifyOut;
-    type State = Held<T>;
+    type State = Held<Verifier<T>>;
     fn call(
-        instance: Instance<'_, Held<T>>,
+        instance: Instance<'_, Held<Verifier<T>>>,
         input: Lent<'_, VerifyIn>,
         mut out: Out<'_, IdentifyOut>,
     ) -> Outcome {
-        let out = out.raw();
         let Some(h) = instance.get() else {
             return Outcome::Fault;
         };
-        match h.plugin.verify(&VerifyView { input }) {
+        match h.life().plugin().verify(&VerifyView { input }) {
             Verdict::Reject => {
-                out.verdict = VERDICT_REJECT;
+                out.set(|o| &o.verdict, VERDICT_REJECT);
                 Outcome::Ready
             }
             Verdict::Pass => {
-                out.verdict = VERDICT_PASS;
+                out.set(|o| &o.verdict, VERDICT_PASS);
                 Outcome::Ready
             }
-            Verdict::Identity(id) => write_identity(&id, input.field(|i| &i.out_buf), out),
+            Verdict::Identity(id) => {
+                write_identity(&id, input.field(|i| &i.out_buf), out, VERDICT_IDENTITY)
+            }
         }
     }
 }
 
-/// Write `id` into the host's identity buffer and answer READY, or answer the short FAILED (every
-/// `needed_*` at its full size) when it does not fit.
-fn write_identity(
+/// Write `id` into the host's identity buffer under `verdict` (`VERDICT_IDENTITY` for `verify`,
+/// `LOGIN_IDENTITY` for `complete_login`) and answer READY; or, when it does not fit, answer the
+/// SHORT FAILED: every `needed_*` at its full size and nothing written into the host's buffers
+/// (the host re-calls once with buffers that large). THE ONE COPY: the verify door and a login
+/// door both write an identity through it.
+pub fn write_identity(
     id: &VerifiedIdentity,
     buf: Lent<'_, IdentityBuf>,
-    out: &mut IdentifyOut,
+    mut out: Out<'_, IdentifyOut>,
+    verdict: u32,
 ) -> Outcome {
     let mut bytes: HostBuf<'_, u8> = buf.buf();
     let mut groups: HostBuf<'_, Span> = buf.groups();
@@ -366,8 +252,11 @@ fn write_identity(
         + id.groups.iter().map(String::len).sum::<usize>();
     let need_groups = id.groups.len();
     if need_bytes > bytes.cap() || need_groups > groups.cap() {
-        out.needed_bytes = need_bytes as u64;
-        out.needed_groups = u32::try_from(need_groups).unwrap_or(u32::MAX);
+        out.set(|o| &o.needed_bytes, need_bytes as u64);
+        out.set(
+            |o| &o.needed_groups,
+            u32::try_from(need_groups).unwrap_or(u32::MAX),
+        );
         return Outcome::Failed;
     }
     let mut span = |t: Option<&str>| -> Span {
@@ -390,22 +279,36 @@ fn write_identity(
         let s = span(Some(g));
         groups.push(s);
     }
-    let o = &mut out.identity;
-    (o.subject, o.key_id, o.key_name) = (subject, key_id, key_name);
-    (o.user, o.provider, o.name) = (user, provider, name);
-    o.claims = Span {
-        offset: SPAN_ABSENT,
-        len: 0,
-    };
-    o.claims_fmt = BLOB_ABSENT;
-    o.groups_len = u32::try_from(groups.written()).unwrap_or(u32::MAX);
-    (o.flags, o.ttl_secs) = match id.ttl_secs {
+    out.set(|o| &o.identity.subject, subject);
+    out.set(|o| &o.identity.key_id, key_id);
+    out.set(|o| &o.identity.key_name, key_name);
+    out.set(|o| &o.identity.user, user);
+    out.set(|o| &o.identity.provider, provider);
+    out.set(|o| &o.identity.name, name);
+    out.set(
+        |o| &o.identity.claims,
+        Span {
+            offset: SPAN_ABSENT,
+            len: 0,
+        },
+    );
+    out.set(|o| &o.identity.claims_fmt, BLOB_ABSENT);
+    out.set(
+        |o| &o.identity.groups_len,
+        u32::try_from(groups.written()).unwrap_or(u32::MAX),
+    );
+    let (flags, ttl_secs) = match id.ttl_secs {
         Some(t) => (IDENTITY_HAS_TTL, t),
         None => (0, 0),
     };
-    o.replay_key = replay_key;
-    o.replay_ttl_secs = id.replay.as_ref().map_or(0, |r| r.ttl_secs);
-    out.verdict = VERDICT_IDENTITY;
+    out.set(|o| &o.identity.flags, flags);
+    out.set(|o| &o.identity.ttl_secs, ttl_secs);
+    out.set(|o| &o.identity.replay_key, replay_key);
+    out.set(
+        |o| &o.identity.replay_ttl_secs,
+        id.replay.as_ref().map_or(0, |r| r.ttl_secs),
+    );
+    out.set(|o| &o.verdict, verdict);
     Outcome::Ready
 }
 
@@ -416,8 +319,8 @@ pub struct NotServed<T, I, O>(PhantomData<(T, I, O)>);
 impl<T: VerifyPlugin, I: AbiIn, O: AbiOut> SafeSlot for NotServed<T, I, O> {
     type In = I;
     type Out = O;
-    type State = Held<T>;
-    fn call(_: Instance<'_, Held<T>>, _: Lent<'_, I>, _: Out<'_, O>) -> Outcome {
+    type State = Held<Verifier<T>>;
+    fn call(_: Instance<'_, Held<Verifier<T>>>, _: Lent<'_, I>, _: Out<'_, O>) -> Outcome {
         Outcome::Refused
     }
 }
@@ -434,17 +337,7 @@ macro_rules! auth_verify_door {
         $crate::plugin_door! {
             ops: $crate::abi::auth::Ops,
             statement: $statement,
-            lifecycle: {
-                validate: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_door::Validate<$plugin>>,
-                open: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_door::Open<$plugin>>,
-                refresh: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_door::Refresh<$plugin>>,
-                retire: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_door::Retire<$plugin>>,
-                tick: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_door::Tick<$plugin>>,
-                drive: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_door::Drive<$plugin>>,
-                cancel: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_door::Cancel<$plugin>>,
-                release: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_door::Release<$plugin>>,
-                close: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_door::Close<$plugin>>,
-            },
+            lifecycle: life($crate::abi::sdk::auth_door::Verifier<$plugin>),
             kind_ops: {
                 verify: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_door::Verify<$plugin>>,
                 begin_login: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_door::NotServed<
@@ -462,10 +355,9 @@ macro_rules! auth_verify_door {
     };
 }
 
-/// An [`AuthTail`] for a verify-only plugin, with `facts` (`FACT_*`). The carriers it reads are its
-/// Statement's [`carrier`] word marks, not a tail fact (the One Statement).
+/// An [`AuthTail`] for a verify-only plugin reading `carriers`, with `facts` (`FACT_*`).
 #[must_use]
-pub const fn verify_tail(facts: u32) -> AuthTail {
+pub const fn verify_tail(facts: u32, carriers: &'static [AbiStr]) -> AuthTail {
     AuthTail {
         head: KindTailHead {
             size: std::mem::size_of::<AuthTail>() as u32,
@@ -477,17 +369,10 @@ pub const fn verify_tail(facts: u32) -> AuthTail {
         _reserved: 0,
         styles: ptr::null(),
         styles_len: 0,
-    }
-}
-
-/// One inbound carrier `verify` reads (a field line's name), as the Statement states it: a
-/// [`MARK_WORD_CARRIER`] word mark in [`Statement::mark_words`].
-#[must_use]
-pub const fn carrier(name: &'static str) -> MarkWord {
-    MarkWord {
-        class: MARK_WORD_CARRIER,
-        _reserved: 0,
-        word: crate::abi::sdk::door::abi_str(name),
+        aliases: ptr::null(),
+        aliases_len: 0,
+        carriers: carriers.as_ptr(),
+        carriers_len: carriers.len(),
     }
 }
 

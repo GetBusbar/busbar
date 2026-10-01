@@ -323,7 +323,13 @@ fn script(p: &Plugin<Auth>) -> Vec<String> {
     t.push(l);
     t.push(fields(p, query, MODE_OWN, z(), (256, 4)));
     t.push(fields(p, named, MODE_OWN, z(), (256, 4)));
-    t.push(fields(p, query, MODE_PASSTHROUGH, secret("caller-tok"), (256, 4)));
+    t.push(fields(
+        p,
+        query,
+        MODE_PASSTHROUGH,
+        secret("caller-tok"),
+        (256, 4),
+    ));
 
     for h in [bearer, api_key, goog, keyless] {
         t.push(ready(p, h));

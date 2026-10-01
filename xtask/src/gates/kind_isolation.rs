@@ -598,11 +598,13 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // 2026-09-25 "K5d residue"). `plane`, `store` and `transport` were granted as the first crate
     // of each landed; `export` (the built-in sinks, #3 / item 141) and `hooks` (the ranking hooks
     // K5d moved onto the root's linked tables) were left out, so the root doing its job was scored
-    // `not-allowed` and the K5d edge `new-forbidden-edge`. `auth` and `secret` are absent because
-    // the root links no crate of either kind; a grant with no edge under it is a sentence about a
-    // tree that does not exist. `the_root_is_granted_every_plugin_kind_it_links` measures the
+    // `not-allowed` and the K5d edge `new-forbidden-edge`. `auth` is granted for the root's rows on
+    // the auth axis (ARCHITECT INTEGRATION U17, 2026-09-30). `secret` is absent because the root
+    // links no crate of that kind; a grant with no edge under it is a sentence about a tree that
+    // does not exist. `the_root_is_granted_every_plugin_kind_it_links` measures the
     // root's shipped edges and refuses a plugin kind the root links without a grant here. The
     // grant is the ROOT's: a non-root crate reaching a plugin crate is still refused (selftest).
+    ("root", "auth"),
     ("root", "cleanliness"),
     ("root", "contract"),
     ("root", "export"),

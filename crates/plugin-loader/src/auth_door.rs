@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! ONE OPENED AUTH INSTANCE ON THE ONE DISPATCHER (WIRE-AUTH; THE DESIGN §6, §11.6, §11.11 R3/R8):
+//! ONE OPENED AUTH INSTANCE ON THE ONE DISPATCHER (THE DESIGN: the auth kind, the one dispatcher):
 //! [`AuthInstance`] calls a `kind: auth` plugin through its v3 table (`abi::auth`) and nothing else,
 //! and implements the contract's [`AuthCalls`], so the kernel's identity chain names neither this
 //! crate nor the plugin's.

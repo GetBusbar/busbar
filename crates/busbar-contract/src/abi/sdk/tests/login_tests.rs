@@ -20,7 +20,11 @@ fn b64(b: &[u8]) -> String {
 
 /// A token-endpoint body carrying an id_token whose payload is `claims`.
 fn body_with(claims: &str) -> Vec<u8> {
-    let jwt = format!("{}.{}.sig", b64(br#"{"alg":"RS256"}"#), b64(claims.as_bytes()));
+    let jwt = format!(
+        "{}.{}.sig",
+        b64(br#"{"alg":"RS256"}"#),
+        b64(claims.as_bytes())
+    );
     format!(r#"{{"access_token":"a","id_token":"{jwt}"}}"#).into_bytes()
 }
 
@@ -77,16 +81,31 @@ fn an_id_token_with_nothing_expected_fails_closed() {
 fn an_unreadable_payload_fails() {
     for jwt in ["only-one-segment", "a.!!!.c", "a.e30=.c", "a.A.c"] {
         let body = format!(r#"{{"id_token":"{jwt}"}}"#).into_bytes();
-        assert_eq!(check_hop_nonce(&body, Some("n")), Err(SecurityCheckFailed), "{jwt}");
+        assert_eq!(
+            check_hop_nonce(&body, Some("n")),
+            Err(SecurityCheckFailed),
+            "{jwt}"
+        );
     }
 }
 
 #[test]
 fn base64url_is_strict_and_unpadded() {
     assert_eq!(b64url_decode("e30").as_deref(), Some(b"{}".as_slice()));
-    assert_eq!(b64url_decode(&b64(b"\xfb\xff")).as_deref(), Some(b"\xfb\xff".as_slice()));
+    assert_eq!(
+        b64url_decode(&b64(b"\xfb\xff")).as_deref(),
+        Some(b"\xfb\xff".as_slice())
+    );
     assert_eq!(b64url_decode("e30="), None, "padding is refused");
-    assert_eq!(b64url_decode("e3+/"), None, "the standard alphabet is refused");
-    assert_eq!(b64url_decode("e31"), None, "non-zero trailing bits are refused");
+    assert_eq!(
+        b64url_decode("e3+/"),
+        None,
+        "the standard alphabet is refused"
+    );
+    assert_eq!(
+        b64url_decode("e31"),
+        None,
+        "non-zero trailing bits are refused"
+    );
     assert_eq!(b64url_decode("A"), None, "a length of 1 mod 4 is refused");
 }

@@ -178,7 +178,7 @@ impl AuthRows {
 }
 
 /// The most cold `verify`s in flight across the process: past it a verify is
-/// [`Verified::Overloaded`] (R8), never queued behind a wedged plugin.
+/// [`Verified::Overloaded`], never queued behind a wedged plugin.
 const COLD_MAX_INFLIGHT: u32 = 64;
 
 /// Cold verifies in flight.
