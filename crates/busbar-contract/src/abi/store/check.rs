@@ -232,6 +232,8 @@ pub fn check_window_caps(
 }
 
 /// A short FAILED's `needed_*`: within the hard maxima, and `0` or above the capacity given.
+/// NOT `mechanism::check::result`: a store FAILED writes nothing even when not short, which the
+/// shared rule allows, and that stricter rule guards `reserve`/`slice_release` (ARCHITECT 2026-09-30).
 fn short(needed: u64, cap: u64, hard: u64) -> Result<(), Fault> {
     if needed > hard {
         return Err(NEEDED_TOO_LARGE);
