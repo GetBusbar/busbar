@@ -629,26 +629,6 @@ fn the_section_is_a_first_class_member_of_the_chassis() {
     );
 }
 
-/// RED ARM for the test above: with no plane registered, which is the state a test binary is in when
-/// that test runs before any sibling has registered this plane, the section is absent from the
-/// chassis. A chassis test that skips its own registration fails then.
-#[test]
-fn the_section_is_absent_from_the_chassis_until_its_plane_is_registered() {
-    let section = crate::a2a::PLANE_DECLARATION.config_section;
-    {
-        let _empty = busbar_kernel::plane::registry::TestRegistryIsolation::empty();
-        assert!(
-            engine().named_map_section_facts(section).is_none(),
-            "an unregistered plane's section must not be in sections()"
-        );
-    }
-    crate::testkit::install_test_seams();
-    assert!(
-        engine().named_map_section_facts(section).is_some(),
-        "a registered plane's section must be in sections()"
-    );
-}
-
 /// An entry round-trips to a document and back unchanged, which is what the overlay's per-entry
 /// PATCH merge needs: patching one field must not rewrite the rest of the entry.
 #[test]

@@ -702,7 +702,13 @@ async fn a_task_in_the_registry(
     crate::taskstore::TASKS.set_sink(busbar_kernel::plane::store::PlaneStoreView::narrow(
         ledger.clone(),
     ));
-    let task = task_with_callback(task_id, state);
+    // STAMPED AT THE PRESENT. `TASKS` runs the production retention sweep on every submit, and the
+    // other batteries sharing it submit at the real host clock. A row stamped at the fixture's 1970
+    // seconds is "idle past the abandon ceiling" to any such sweep, which then moves it to `canceled`
+    // and chains a `task.terminal` between the submission and the delivery this test reads back.
+    let mut task = task_with_callback(task_id, state);
+    task.created_at = crate::host_now();
+    task.updated_at = task.created_at;
     crate::taskstore::TASKS
         .submit(&task.to_row(), "req-1")
         .expect("the task is admitted");
@@ -825,8 +831,51 @@ struct ScriptedTransport {
     posts: AtomicUsize,
     /// Task state (from the body) of each POST, in arrival order.
     arrivals: Mutex<Vec<String>>,
-    /// Extra time the FIRST POST takes, to model a slow webhook.
-    first_post_delay: Duration,
+    /// The FIRST POST waits at this gate until the test opens it (a slow webhook); `None` passes.
+    first_post: Option<Arc<Gate>>,
+}
+
+/// A gate the first POST waits at until the test opens it. It is how a test puts a delivery IN FLIGHT
+/// and keeps it there for exactly as long as it needs, with no clock in it.
+struct Gate {
+    shut: Mutex<bool>,
+    opened: std::sync::Condvar,
+    /// A POST has reached the gate: the worker has taken its first notification off the queue.
+    reached: std::sync::atomic::AtomicBool,
+}
+
+impl Gate {
+    fn shut() -> Arc<Self> {
+        Arc::new(Self {
+            shut: Mutex::new(true),
+            opened: std::sync::Condvar::new(),
+            reached: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+    fn wait_open(&self) {
+        self.reached.store(true, Ordering::SeqCst);
+        let mut shut = self.shut.lock().unwrap_or_else(|e| e.into_inner());
+        while *shut {
+            shut = self.opened.wait(shut).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+    fn reached(&self) -> bool {
+        self.reached.load(Ordering::SeqCst)
+    }
+    fn open(&self) {
+        *self.shut.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        self.opened.notify_all();
+    }
+}
+
+/// Opens a [`Gate`] when dropped, so a test that fails while the gate is shut cannot strand the
+/// delivery worker at it (and the runtime's shutdown behind the worker).
+struct OpensOnDrop<'a>(&'a Gate);
+
+impl Drop for OpensOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.open();
+    }
 }
 
 impl RelayTransport for ScriptedTransport {
@@ -839,8 +888,8 @@ impl RelayTransport for ScriptedTransport {
         body: &[u8],
     ) -> Result<HttpResponse, String> {
         let n = self.posts.fetch_add(1, Ordering::SeqCst);
-        if n == 0 {
-            std::thread::sleep(self.first_post_delay);
+        if let (0, Some(gate)) = (n, &self.first_post) {
+            gate.wait_open();
         }
         self.arrivals
             .lock()
@@ -889,7 +938,7 @@ fn scripted(answers: &[IpAddr], script: Vec<Result<u16, String>>) -> Arc<Scripte
             script,
             posts: AtomicUsize::new(0),
             arrivals: Mutex::new(Vec::new()),
-            first_post_delay: Duration::ZERO,
+            first_post: None,
         },
     })
 }
@@ -1039,7 +1088,7 @@ async fn the_guard_is_re_run_on_the_retry() {
             script: vec![Ok(503)],
             posts: AtomicUsize::new(0),
             arrivals: Mutex::new(Vec::new()),
-            first_post_delay: Duration::ZERO,
+            first_post: None,
         },
     ));
     pushdeliver::enqueue(
@@ -1068,15 +1117,19 @@ async fn a_slow_webhook_does_not_stall_the_pump_and_arrives_in_order() {
     crate::testkit::install_test_seams();
     let id = "t-queue-order";
     register(id);
+    // The webhook holds the first POST until every state is queued: the pump's enqueues run while a
+    // delivery is IN FLIGHT, which is the case this test is about.
+    let gate = Gate::shut();
     let seam = Arc::new(ScriptedSeam {
         resolver: FixedResolver(vec![AT_REGISTRATION]),
         transport: ScriptedTransport {
             script: vec![Ok(200)],
             posts: AtomicUsize::new(0),
             arrivals: Mutex::new(Vec::new()),
-            first_post_delay: Duration::from_millis(600),
+            first_post: Some(Arc::clone(&gate)),
         },
     });
+    let opens = OpensOnDrop(&gate);
     let states = [
         TaskState::Working,
         TaskState::InputRequired,
@@ -1095,6 +1148,7 @@ async fn a_slow_webhook_does_not_stall_the_pump_and_arrives_in_order() {
         "enqueue waited on the webhook: {:?}",
         start.elapsed()
     );
+    drop(opens);
     assert!(
         until(Duration::from_secs(5), || seam
             .transport
@@ -1123,15 +1177,17 @@ async fn the_queue_holds_64_and_drops_the_oldest() {
     crate::testkit::install_test_seams();
     let id = "t-queue-bound";
     register(id);
+    let gate = Gate::shut();
     let seam = Arc::new(ScriptedSeam {
         resolver: FixedResolver(vec![AT_REGISTRATION]),
         transport: ScriptedTransport {
             script: vec![Ok(200)],
             posts: AtomicUsize::new(0),
             arrivals: Mutex::new(Vec::new()),
-            first_post_delay: Duration::from_millis(800),
+            first_post: Some(Arc::clone(&gate)),
         },
     });
+    let opens = OpensOnDrop(&gate);
     let h = host();
     for n in 0..80 {
         let state = if n == 79 {
@@ -1144,8 +1200,22 @@ async fn the_queue_holds_64_and_drops_the_oldest() {
             Arc::clone(&seam) as Arc<dyn RelaySeam>,
             task_with_callback(id, state),
         );
+        // THE FIRST NOTIFICATION IS IN FLIGHT BEFORE THE REST ARRIVE, and that is waited for, not
+        // assumed: the worker is a spawned task, and on a loaded runtime it may not have run by the
+        // time the other 79 are queued. Then all 80 wait, 16 are dropped, and 64 posts go out.
+        if n == 0 {
+            assert!(
+                until(Duration::from_secs(10), || gate.reached()).await,
+                "the worker never took the first notification"
+            );
+        }
     }
-    assert!(pushdeliver::queue_depth_for_test(id) <= 64);
+    assert_eq!(
+        pushdeliver::queue_depth_for_test(id),
+        64,
+        "the queue holds exactly its capacity"
+    );
+    drop(opens);
     // 1 in flight (already popped) + 64 waiting = 65 posts; the 15 oldest of the 79 were dropped.
     assert!(
         until(Duration::from_secs(10), || seam
