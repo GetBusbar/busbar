@@ -70,10 +70,9 @@ pub mod tls;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::egress::fixtures::with_scoped_dial;
-pub use crate::net_guard::DialTable;
 pub use deadline::ConnectDeadline;
 pub use observe::{peer_key_pin, KeyPinObserve, ObservedIo, PeerKeyPin};
-pub use resolve::{process_dial_table, EgressResolver, ResolveNames};
+pub use resolve::{EgressResolver, ResolveNames};
 pub use tls::{ClientIdentity, Trust};
 
 /// The connector stack, bottom-up: TCP through the pin-aware resolver (+ boot-detected CONNECT
@@ -103,15 +102,16 @@ pub struct EngineSpec {
     pub pool_idle_timeout_secs: u64,
     pub http1_only: bool,
     pub h2_prior_knowledge: bool,
-    /// Destination pinning. `None` = the pooled posture (destinations are operator config,
-    /// judged at apply and again at every dial by `dial`). `Some` makes DNS structural: the
-    /// resolver becomes the pin itself ([`EgressResolver::Pinned`]) and `dns` and `dial` below are
-    /// never consulted.
+    /// Destination pinning. `None` = the pooled posture (destinations are operator config, judged
+    /// at every dial by the destination guard, `judge`). `Some` makes DNS structural: the resolver
+    /// becomes the pin itself ([`EgressResolver::Pinned`]) and `dns` and `judge` below are never
+    /// consulted.
     pub pin: Option<PinnedDest>,
     /// DNS when unpinned.
     pub dns: Dns,
-    /// The table every address `dns` answers with is judged by when unpinned ([`DialTable`]).
-    pub dial: DialTable,
+    /// The destination guard every address `dns` answers with is judged by when unpinned: `None`
+    /// = the process's installed one (`host_services::installed_dest_judge`), read at each dial.
+    pub judge: Option<Arc<dyn crate::host_services::DestJudge>>,
     /// Peer-certificate observation for SPKI pinning ([`observe`]). Off on the pooled posture (no
     /// walk, no hash per connect); on for every pinned posture.
     pub observe_key_pin: bool,
@@ -168,7 +168,7 @@ pub enum Dns {
 }
 
 impl EngineSpec {
-    /// THE POOLED-WEBPKI EGRESS POSTURE (system trust + judged system DNS + boot-env tunnel + pooled reuse): webpki trust, system DNS judged by the process dial table, no pin, no observation, no
+    /// THE POOLED-WEBPKI EGRESS POSTURE (system trust + judged system DNS + boot-env tunnel + pooled reuse): webpki trust, system DNS judged by the destination guard, no pin, no observation, no
     /// client identity, boot-env proxy tunnel, h2 keep-alive 30s/10s + adaptive window, TCP
     /// keepalive 60s — the values the parity ledger above documents, parameterized only by the
     /// four inputs the plane's `ClientSettingsInput` snapshots (plus the per-shard idle division the
@@ -179,7 +179,7 @@ impl EngineSpec {
         http1_only: bool,
         h2_prior_knowledge: bool,
     ) -> Self {
-        let (dial, names) = resolve::pooled_dial();
+        let (judge, names) = resolve::pooled_dial();
         EngineSpec {
             idle_per_host,
             pool_idle_timeout_secs,
@@ -187,7 +187,7 @@ impl EngineSpec {
             h2_prior_knowledge,
             pin: None,
             dns: names.map_or(Dns::System, Dns::Custom),
-            dial,
+            judge,
             observe_key_pin: false,
             trust: Trust::Webpki,
             identity: None,
@@ -221,7 +221,7 @@ impl EngineSpec {
             h2_prior_knowledge: false,
             pin: Some(PinnedDest { host, addr }),
             dns: Dns::System,
-            dial: process_dial_table(),
+            judge: None,
             observe_key_pin: true,
             trust: Trust::WebpkiPlus(extra_roots),
             identity,
@@ -289,7 +289,7 @@ const OFFER_H2_H1: &[&[u8]] = &[b"h2", b"http/1.1"];
 pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     // THE RESOLVER IS THE PIN (see `resolve`): a pinned spec installs the one-name table and the
     // `dns` posture is structurally unreachable — not "unused", absent from the connector. An
-    // unpinned spec judges every answer through its dial table before the connector sees it.
+    // unpinned spec judges every answer through the destination guard before the connector sees it.
     let resolver = match (&spec.pin, &spec.dns) {
         (Some(pin), _) => EgressResolver::Pinned {
             host: Arc::clone(&pin.host),
@@ -300,7 +300,7 @@ pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
                 Dns::System => EgressResolver::system(),
                 Dns::Custom(names) => EgressResolver::Custom(Arc::clone(names)),
             }),
-            table: spec.dial.clone(),
+            judge: spec.judge.clone(),
         },
     };
     let mut http = hyper_util::client::legacy::connect::HttpConnector::new_with_resolver(resolver);

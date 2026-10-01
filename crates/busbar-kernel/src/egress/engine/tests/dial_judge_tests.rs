@@ -2,15 +2,16 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE DIAL JUDGE on the pooled posture: a name is resolved once per new connection, every address
-//! it answered with is judged by the dial table before any socket opens, and the connection that
-//! does open keeps the name for SNI, the certificate check and `Host`.
+//! it answered with is judged by the destination guard (OWNER ruling DESTINATION GUARD; here its
+//! test double, `fixtures::PrivateRefusing`) before any socket opens, and the connection that does
+//! open keeps the name for SNI, the certificate check and `Host`.
 //!
 //! The rows: a rebinding answer (an admitted address first, a metadata address on the next fresh
 //! dial) is refused at the second dial with no connect attempted; a mixed answer is refused whole;
-//! a loopback answer still dials, because private and loopback upstreams are admitted exactly as the
-//! configuration-time check admits them; a refusal is a connect-class failure with no timeout in its
-//! chain; and a judged TLS dial presents the configured name as SNI and `Host`, byte-identical to
-//! the head the pinned posture sends.
+//! a loopback answer is refused unless the allowlist names it, and allowlisted it dials and pools;
+//! a refusal is a connect-class failure with no timeout in its chain; and a judged TLS dial
+//! presents the configured name as SNI and `Host`, byte-identical to the head the pinned posture
+//! sends.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -18,19 +19,20 @@ use std::sync::Arc;
 use super::resolve::ResolveNames;
 use super::*;
 use crate::egress::fixtures::{
-    ca_and_leaf, certs_from_pem, spawn_http, spawn_tls, CannedResponse, ClientAuth,
-    RebindingResolver, TlsServerSpec,
+    ca_and_leaf, certs_from_pem, private_refusing, spawn_http, spawn_tls, CannedResponse,
+    ClientAuth, RebindingResolver, TlsServerSpec,
 };
-use crate::net_guard::{AddressRefusal, DialDenylist};
+use crate::host_services::{DestJudge, DestRefusal};
+use busbar_contract::abi::host::service::{DEST_INTERNAL, DEST_METADATA};
 
 /// The AWS/GCP instance-metadata address: what a rebinding name answers with on its second lookup.
 const IMDS: IpAddr = IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254));
 
-/// A pooled client whose names resolve through `names` and are judged by a table of its own.
-fn judged_client(names: Arc<dyn ResolveNames>, lists: DialDenylist) -> EngineClient {
+/// A pooled client whose names resolve through `names` and are judged by `judge`.
+fn judged_client(names: Arc<dyn ResolveNames>, judge: Arc<dyn DestJudge>) -> EngineClient {
     let spec = EngineSpec {
         dns: Dns::Custom(names),
-        dial: DialTable::new(lists),
+        judge: Some(judge),
         ..EngineSpec::pooled_webpki(4, 300, false, false)
     };
     build_client(&spec).expect("the pooled posture builds")
@@ -44,11 +46,11 @@ fn get(url: &str) -> http::Request<http_body_util::Full<Bytes>> {
     )
 }
 
-/// The refusal the dial table raised, found in an error's source chain.
-fn dial_refusal<'a>(err: &'a (dyn std::error::Error + 'static)) -> Option<&'a AddressRefusal> {
+/// The refusal the destination guard raised, found in an error's source chain.
+fn dial_refusal<'a>(err: &'a (dyn std::error::Error + 'static)) -> Option<&'a DestRefusal> {
     let mut cur = Some(err);
     while let Some(e) = cur {
-        if let Some(refused) = e.downcast_ref::<AddressRefusal>() {
+        if let Some(refused) = e.downcast_ref::<DestRefusal>() {
             return Some(refused);
         }
         cur = e.source();
@@ -84,7 +86,7 @@ async fn a_rebinding_answer_is_refused_at_the_next_dial() {
     ));
     let client = judged_client(
         Arc::clone(&rebinding) as Arc<dyn ResolveNames>,
-        DialDenylist::default(),
+        private_refusing(&["127.0.0.1"]),
     );
     let url = format!("http://rebind.test:{}/v1/x", fixture.addr.port());
 
@@ -99,14 +101,9 @@ async fn a_rebinding_answer_is_refused_at_the_next_dial() {
         .await
         .expect_err("the rebound answer must be refused");
     assert!(err.is_connect(), "a refused dial is connect class: {err:?}");
-    let refused = dial_refusal(&err).expect("the dial table's refusal is in the chain");
-    assert_eq!(
-        *refused,
-        AddressRefusal::CloudMetadataAddress {
-            host: "rebind.test".to_string(),
-            addr: IMDS,
-        }
-    );
+    let refused = dial_refusal(&err).expect("the guard's refusal is in the chain");
+    assert_eq!(refused.verdict, DEST_METADATA);
+    assert!(refused.reason.contains("rebind.test"), "{refused}");
     assert_eq!(rebinding.calls(), 2, "one resolution per fresh dial");
     assert_eq!(
         fixture.records().len(),
@@ -122,7 +119,7 @@ async fn a_mixed_answer_is_refused_whole() {
     let fixture = spawn_http(CannedResponse::ok("never served"), 4);
     let client = judged_client(
         Arc::new(Answers(vec![fixture.addr, SocketAddr::new(IMDS, 0)])),
-        DialDenylist::default(),
+        private_refusing(&["127.0.0.1"]),
     );
     let err = client
         .request(get(&format!(
@@ -138,16 +135,33 @@ async fn a_mixed_answer_is_refused_whole() {
     assert!(fixture.records().is_empty(), "no connection was opened");
 }
 
-/// PRIVATE AND LOOPBACK STILL DIAL: the table refuses what the configuration-time check refuses
-/// and nothing more, so a name answering loopback is served, and its connection is pooled and
+/// RED (the destination guard): a name answering loopback is refused at the dial unless the
+/// allowlist names it; no socket opens.
+#[tokio::test]
+async fn a_loopback_answer_is_refused_unless_allowlisted() {
+    let fixture = spawn_http(CannedResponse::ok("never served"), 4);
+    let client = judged_client(Arc::new(Answers(vec![fixture.addr])), private_refusing(&[]));
+    let err = client
+        .request(get(&format!(
+            "http://local-model.test:{}/v1/x",
+            fixture.addr.port()
+        )))
+        .await
+        .expect_err("a loopback answer is refused by default");
+    assert!(err.is_connect(), "{err:?}");
+    assert_eq!(dial_refusal(&err).map(|r| r.verdict), Some(DEST_INTERNAL));
+    assert!(fixture.records().is_empty(), "no connection was opened");
+}
+
+/// GREEN: allowlisted, a name answering loopback is served, and its connection is pooled and
 /// reused like any other.
 #[tokio::test]
-async fn a_loopback_answer_dials_and_pools() {
+async fn an_allowlisted_loopback_answer_dials_and_pools() {
     let fixture = spawn_http(CannedResponse::ok("local model"), 4);
     let counting = Arc::new(RebindingResolver::counting(fixture.addr));
     let client = judged_client(
         Arc::clone(&counting) as Arc<dyn ResolveNames>,
-        DialDenylist::default(),
+        private_refusing(&["local-model.test"]),
     );
     let url = format!("http://local-model.test:{}/v1/x", fixture.addr.port());
     for _ in 0..2 {
@@ -164,48 +178,13 @@ async fn a_loopback_answer_dials_and_pools() {
     assert_eq!(fixture.records()[0].requests, 2);
 }
 
-/// An operator-blocked address is refused for a name, and the table published over a client is
-/// read by its next dial: the client's table is the one a configuration commit replaces.
-#[tokio::test]
-async fn a_published_table_is_read_by_the_next_dial() {
-    let fixture = spawn_http(CannedResponse::ok("served until blocked"), 1);
-    let table = DialTable::new(DialDenylist::default());
-    let spec = EngineSpec {
-        dns: Dns::Custom(Arc::new(Answers(vec![fixture.addr]))),
-        dial: table.clone(),
-        ..EngineSpec::pooled_webpki(4, 300, false, false)
-    };
-    let client = build_client(&spec).expect("builds");
-    let url = format!("http://blocked.test:{}/v1/x", fixture.addr.port());
-    let resp = client.request(get(&url)).await.expect("admitted");
-    assert_eq!(resp.status(), 200);
-    drop(resp);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    table.publish(DialDenylist::new(
-        &["127.0.0.1".to_string()],
-        &[],
-        false,
-        std::iter::empty(),
-    ));
-    let err = client
-        .request(get(&url))
-        .await
-        .expect_err("the operator-blocked address is refused");
-    assert!(
-        dial_refusal(&err).is_some(),
-        "refused by the table: {err:?}"
-    );
-    assert_eq!(fixture.records().len(), 1);
-}
-
 /// THE CLASS A PLANE READS: a refused dial is a connect failure with no timeout anywhere in its
 /// chain, so a plane classifies it as a refused connection (`connect`), never as a timeout.
 #[tokio::test]
 async fn a_refusal_is_connect_class_with_no_timeout_in_its_chain() {
     let client = judged_client(
         Arc::new(Answers(vec![SocketAddr::new(IMDS, 0)])),
-        DialDenylist::default(),
+        private_refusing(&[]),
     );
     let err = client
         .request(get("http://imds.test:80/latest"))
@@ -249,7 +228,7 @@ async fn a_judged_tls_dial_keeps_the_name_for_sni_and_host() {
 
     let judged = EngineSpec {
         dns: Dns::Custom(Arc::new(Answers(vec![fixture.addr]))),
-        dial: DialTable::new(DialDenylist::default()),
+        judge: Some(private_refusing(&["provider.test"])),
         trust: Trust::WebpkiPlus(certs_from_pem(&material.ca_pem)),
         ..EngineSpec::pooled_webpki(4, 300, false, false)
     };
