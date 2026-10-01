@@ -593,6 +593,21 @@ const GRPC_DEADLINE_EXCEEDED: &str = "DEADLINE_EXCEEDED";
 const GRPC_NOT_FOUND: &str = "NOT_FOUND";
 /// google.rpc.Code name for an unimplemented / not-supported operation.
 const GRPC_UNIMPLEMENTED: &str = "UNIMPLEMENTED";
+/// The google.rpc.Code names and the HTTP status each pairs with on the Generative Language API, one
+/// row per pair: the error writer maps a status to its name and a name back to its status from
+/// this one table.
+const STATUS_HTTP: &[(&str, u16)] = &[
+    (GRPC_INVALID_ARGUMENT, 400),
+    (GRPC_UNAUTHENTICATED, 401),
+    (GRPC_PERMISSION_DENIED, 403),
+    (GRPC_NOT_FOUND, 404),
+    (GRPC_RESOURCE_EXHAUSTED, 429),
+    (GRPC_INTERNAL, 500),
+    (GRPC_UNIMPLEMENTED, 501),
+    (GRPC_UNAVAILABLE, 503),
+    (GRPC_DEADLINE_EXCEEDED, 504),
+];
+
 /// Busbar/Anthropic internal error kind for an overloaded upstream (maps to GRPC_UNAVAILABLE).
 const ERR_TYPE_OVERLOADED: &str = busbar_contract::protocol::ERR_TYPE_OVERLOADED;
 

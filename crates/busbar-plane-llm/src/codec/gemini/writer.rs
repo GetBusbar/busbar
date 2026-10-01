@@ -751,18 +751,12 @@ impl ProtocolWriter for GeminiWriter {
     fn write_error(&self, status: u16, kind: &str, message: &str) -> serde_json::Value {
         // google.rpc.Code name for an HTTP status (the canonical Generative Language API mapping).
         fn status_name_for_http(status: u16) -> &'static str {
+            if let Some((name, _)) = STATUS_HTTP.iter().find(|(_, code)| *code == status) {
+                return *name;
+            }
             match status {
-                400 => GRPC_INVALID_ARGUMENT,
-                401 => GRPC_UNAUTHENTICATED,
-                403 => GRPC_PERMISSION_DENIED,
-                404 => GRPC_NOT_FOUND,
                 409 => GEMINI_ABORTED,
-                429 => GRPC_RESOURCE_EXHAUSTED,
                 499 => GEMINI_CANCELLED,
-                500 => GRPC_INTERNAL,
-                501 => GRPC_UNIMPLEMENTED,
-                503 => GRPC_UNAVAILABLE,
-                504 => GRPC_DEADLINE_EXCEEDED,
                 s if (400..500).contains(&s) => GRPC_INVALID_ARGUMENT,
                 s if (500..600).contains(&s) => GRPC_INTERNAL,
                 _ => GEMINI_UNKNOWN,
@@ -808,20 +802,12 @@ impl ProtocolWriter for GeminiWriter {
         // `status_name_for_http`. Used to detect a code/status DISAGREEMENT: the real Generative
         // Language API never emits, e.g., `code:503` with `status:INTERNAL` (INTERNAL pairs with
         // 500; UNAVAILABLE pairs with 503). Exhaustive over the names `status_name_for_kind` can
-        // return (no `_ =>` collapse) so a new kind→name arm forces a conscious choice here.
+        // return (it reads the same `STATUS_HTTP` table) so a new kind→name arm needs its row there.
         fn http_for_status_name(name: &str) -> Option<u16> {
-            match name {
-                GRPC_INVALID_ARGUMENT => Some(400),
-                GRPC_UNAUTHENTICATED => Some(401),
-                GRPC_PERMISSION_DENIED => Some(403),
-                GRPC_NOT_FOUND => Some(404),
-                GRPC_RESOURCE_EXHAUSTED => Some(429),
-                GRPC_UNAVAILABLE => Some(503),
-                GRPC_DEADLINE_EXCEEDED => Some(504),
-                GRPC_INTERNAL => Some(500),
-                GRPC_UNIMPLEMENTED => Some(501),
-                _ => None,
-            }
+            STATUS_HTTP
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, code)| *code)
         }
 
         // Prefer the `kind`-derived google.rpc.Code name ONLY when it is internally CONSISTENT with
