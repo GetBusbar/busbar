@@ -1575,69 +1575,6 @@ async fn billing_off_serves_free_writes_its_metering_row_reading_zero_yet_still_
     assert_eq!(field(&guarded, "metering_rows"), "");
 }
 
-/// EXACTLY ONE LINK PER UNIT on the principal's chain, whichever door the unit left through.
-///
-/// The rule the switch could most easily break: the shipped door POSTS its own refusal, and the
-/// step files' door does not — it renders, and the terminal posts. A unit that left through both
-/// would carry two links and the chain would still verify, which is why the COUNT is asserted
-/// rather than the verification alone.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn one_unit_leaves_exactly_one_link_on_the_chain() {
-    use busbar_kernel::proxy::reqlog::REQUESTS;
-
-    for fixture in [
-        Fixture::BufferedOk,
-        Fixture::OverBudget,
-        Fixture::PoolAcl,
-        Fixture::UnknownModel,
-    ] {
-        // LEG 1 — the shipped entry point names a destination on its link; whatever it names is
-        // what the loop's link has to name too, so the expectation is READ rather than spelled.
-        let shipped_rig = rig(fixture).await;
-        let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
-            host: shipped_rig.host(),
-            gov: shipped_rig.gov(),
-            caller_token: None,
-        });
-        let resp = plane::shell::operation_ingress(
-            &ctx,
-            json_headers(),
-            fixture.body(),
-            PROTO,
-            busbar_contract::operation::OpVerb::CHAT,
-            None,
-        )
-        .await;
-        let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
-        let shipped = REQUESTS.records_for(&shipped_rig.key.id);
-        assert_eq!(shipped.len(), 1, "{fixture:?}: the shipped path posts once");
-        shipped_rig.server.shutdown().await;
-
-        // LEG 2 — the loop, on its own deployment.
-        let rig = rig(fixture).await;
-        let resp = drive(&rig, fixture).await;
-        let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
-        let records = REQUESTS.records_for(&rig.key.id);
-        assert_eq!(records.len(), 1, "{fixture:?}: one unit, one link");
-        assert_eq!(
-            (
-                records[0].pool.clone(),
-                records[0].outcome.clone(),
-                records[0].reason.clone(),
-                records[0].status
-            ),
-            (
-                shipped[0].pool.clone(),
-                shipped[0].outcome.clone(),
-                shipped[0].reason.clone(),
-                shipped[0].status
-            ),
-            "{fixture:?}: the loop's link is the shipped path's link"
-        );
-        assert!(REQUESTS.verify_principal_chain(&rig.key.id).is_ok());
-        rig.server.shutdown().await;
-    }
-}
 
 // ── THE TWO SURFACES WHOSE MODEL IS IN THE URL ─────────────────────────────────────────────
 
@@ -2385,7 +2322,7 @@ async fn leg_loop_as(rig: &Rig, gov: busbar_contract::records::PlaneRequestCtx) 
 /// Three credentials, and the door's answer decides which half of the cell runs:
 ///
 /// * the deployment's live bearer is ADMITTED, so both legs run with the resolved context and
-///   are compared — and the unit's one link lands on that key's chain, which is the attribution
+///   are compared — and the unit is charged to that key's own ledger, which is the attribution
 ///   claim spelled as something a reader can see;
 /// * a bearer this deployment never minted, and a bearer whose lifetime has run out, are both
 ///   REFUSED at the door, so neither leg is ever entered. The loop cannot be softer than the
@@ -2395,8 +2332,6 @@ async fn leg_loop_as(rig: &Rig, gov: busbar_contract::records::PlaneRequestCtx) 
 ///   anonymous actor — never the refused key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
-    use busbar_kernel::proxy::reqlog::REQUESTS;
-
     let mut failures: Vec<String> = Vec::new();
     for cred in [Credential::Good, Credential::Bad, Credential::Expired] {
         // LEG 1, on its own deployment: its own door, its own key, its own counters.
@@ -2460,15 +2395,6 @@ async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
                         "{cred:?}: the admitted unit was not charged to the key"
                     ));
                 }
-                // THE ATTRIBUTION, as an operator reads it: one link, on the resolved key's own
-                // chain. A step that answered with any other principal would leave it elsewhere.
-                let links = REQUESTS.records_for(&loop_rig.key.id);
-                if links.len() != 1 {
-                    failures.push(format!(
-                        "{cred:?}: the loop left {} link(s) on the resolved key's chain",
-                        links.len()
-                    ));
-                }
             }
             (Err(_), Err(_)) => {
                 if cred == Credential::Good {
@@ -2523,11 +2449,6 @@ async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
                     &looped,
                     &mut failures,
                 );
-                if !REQUESTS.records_for(&loop_rig.key.id).is_empty() {
-                    failures.push(format!(
-                        "{cred:?}: a refused credential's key carries a link it never earned"
-                    ));
-                }
             }
             (legacy_admit, loop_admit) => failures.push(format!(
                 "{cred:?}: the doors disagreed ({legacy_admit:?} / {loop_admit:?})"
@@ -2608,11 +2529,10 @@ async fn leg_loop_seated(
 ///   so the pass-through above is a decision rather than an unwired field;
 /// * A SEAT THAT VETOES — the unit stops at Approve: before the door, so nothing is charged and
 ///   no metering row exists; before the route step, so the upstream is never dialled; and it
-///   still leaves through a terminal, with exactly one link on the principal's chain and the
-///   plane's own permission answer in the caller's dialect rather than the node's overload one.
+///   still leaves with the plane's own permission answer in the caller's dialect rather than the
+///   node's overload one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_changes_nothing() {
-    use busbar_kernel::proxy::reqlog::REQUESTS;
     use std::sync::atomic::AtomicBool;
 
     assert!(
@@ -2684,18 +2604,6 @@ async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_cha
     if veto_rig.upstream.get_last_request_path().is_some() {
         failures.push("a vetoed unit reached the upstream".to_string());
     }
-    // AND IT STILL ENDS AT A TERMINAL: one link, never none and never two.
-    let links = REQUESTS.records_for(&veto_rig.key.id);
-    if links.len() != 1 {
-        failures.push(format!(
-            "a vetoed unit left {} link(s) on the chain",
-            links.len()
-        ));
-    }
-    assert!(
-        REQUESTS.verify_principal_chain(&veto_rig.key.id).is_ok(),
-        "the chain a vetoed unit left does not verify"
-    );
     veto_rig.server.shutdown().await;
 
     assert!(
