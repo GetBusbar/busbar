@@ -96,3 +96,23 @@ fn a_url_target_and_every_shared_metadata_host_is_refused() {
     }
     assert_eq!(check("https://api.example.com/v1"), Ok(()));
 }
+
+/// RED: IPv6 link-local, fe80::/10, is refused in every spelling, as predev's private list refused
+/// it (PB-100); the addresses just outside the /10 pass.
+#[test]
+fn ipv6_link_local_is_refused_in_every_spelling() {
+    for (target, host) in [
+        ("fe80::1", "fe80::1"),
+        ("[fe80::1]", "fe80::1"),
+        ("[fe80::1]:443", "fe80::1"),
+        ("[FE80::a9fe:a9fe]:80", "FE80::a9fe:a9fe"),
+        ("[fe80::1%eth0]:80", "fe80::1%eth0"),
+        ("[febf:ffff::1]", "febf:ffff::1"),
+        ("https://[fe80::1]/latest", "fe80::1"),
+    ] {
+        refused(target, host);
+    }
+    for target in ["[fe7f:ffff::1]:80", "[fec0::1]:80", "[fd00::1]:80"] {
+        assert_eq!(check(target), Ok(()), "{target}");
+    }
+}

@@ -4,7 +4,9 @@
 //! THE ENDPOINT CHECK — a pure function over an open's target, run before any dial.
 //!
 //! An owner-answered, accepted difference from 1.5.5: the connector refuses a cloud METADATA host
-//! by name, and the whole IPv4 link-local range they live in. A plugin that could reach
+//! by name, and the whole IPv4 link-local range they live in, and (ARCHITECT, PB-100: metadata and
+//! link-local are refused on every need, whatever its egress class) IPv6 link-local, fe80::/10.
+//! A plugin that could reach
 //! `169.254.169.254` could read the host's cloud credentials, so no need, no configuration and no
 //! plugin opens one.
 //!
