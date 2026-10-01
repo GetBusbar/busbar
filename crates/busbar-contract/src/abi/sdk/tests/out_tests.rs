@@ -171,10 +171,18 @@ fn the_instance_keeps_a_bounded_ring_of_texts_each_readable_while_held() {
         let mut o: CancelOut = zeroed();
         let _ = Out::kept(&mut o, &kept, &reporting).fail(Refusal::failed(format!("n{i}")));
     }
-    assert_eq!(read(first.head.error), b"first", "held until the ring wraps");
+    assert_eq!(
+        read(first.head.error),
+        b"first",
+        "held until the ring wraps"
+    );
     let mut o: CancelOut = zeroed();
     let _ = Out::kept(&mut o, &kept, &reporting).fail(Refusal::failed(String::from("wrap")));
-    assert_eq!(kept.held().0, KEPT_RING, "the ring never grows past its bound");
+    assert_eq!(
+        kept.held().0,
+        KEPT_RING,
+        "the ring never grows past its bound"
+    );
 }
 
 #[test]
@@ -206,7 +214,10 @@ fn an_instance_less_failure_writes_the_hosts_lent_buffer_and_else_a_fixed_text()
     // No buffer lent: the fixed text, and nothing reported.
     let mut n: OpenOut = zeroed();
     let mut out = Out::lent(&mut n, None);
-    assert_eq!(out.fail(Refusal::failed(String::from("lost"))), Outcome::Failed);
+    assert_eq!(
+        out.fail(Refusal::failed(String::from("lost"))),
+        Outcome::Failed
+    );
     assert!(!out.metric(0, crate::abi::mechanism::call::METRIC_ADD, 1.0));
     assert!(!out.diag(0, 0, "lost"));
     assert_eq!(read(n.head.error), NO_REASON_BUFFER.as_bytes());

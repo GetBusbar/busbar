@@ -82,7 +82,8 @@ pub const KEPT_RING: usize = 4096;
 
 /// A failure's owned text with no instance to keep it and no reason buffer lent by the host: the
 /// only case the SDK answers a fixed text for.
-pub const NO_REASON_BUFFER: &str = "the plugin's reason was not kept: the host lent no reason buffer";
+pub const NO_REASON_BUFFER: &str =
+    "the plugin's reason was not kept: the host lent no reason buffer";
 
 /// THE ENVELOPE ONE SAFE CALL REPORTS (#85): the metrics and declared diagnostics its body added
 /// with [`Out::metric`] and [`Out::diag`], with the texts the diagnostics point into.

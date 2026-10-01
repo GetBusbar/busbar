@@ -20,8 +20,8 @@ use std::sync::Arc;
 use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut, ValidateIn};
-use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::mechanism::{KindCode, MECHANISM_VERSION};
+use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 
 use super::open_reason_plugins as witness;
 use super::OPEN_REASON_CAP;
@@ -86,7 +86,11 @@ fn a_store_whose_open_fails_reads_as_1_5_5_did() {
 /// capacity (even) in the middle of a char, so the cut falls one byte short of it.
 #[test]
 fn an_over_long_reason_is_cut_on_a_char_boundary() {
-    assert_eq!(OPEN_REASON_CAP % 2, 0, "the witness assumes an even capacity");
+    assert_eq!(
+        OPEN_REASON_CAP % 2,
+        0,
+        "the witness assumes an even capacity"
+    );
     let long = format!("a{}", "é".repeat(OPEN_REASON_CAP));
     let kept = format!("a{}", "é".repeat((OPEN_REASON_CAP - 2) / 2));
     assert_eq!(kept.len(), OPEN_REASON_CAP - 1);

@@ -453,12 +453,26 @@ fn red_two_instances_interleaved_on_one_thread_never_see_each_others_answers() {
     let (oa, a) = probe(alpha);
     let (ob, b) = probe(bravo);
     let (oa2, a2) = probe(alpha);
-    assert_eq!((oa, ob, oa2), (Outcome::Failed, Outcome::Failed, Outcome::Failed));
+    assert_eq!(
+        (oa, ob, oa2),
+        (Outcome::Failed, Outcome::Failed, Outcome::Failed)
+    );
     // The envelopes first: reading them is sound whatever holds them.
-    assert_eq!(metrics(&a), vec![(11, 11.0)], "alpha's envelope names alpha's metric");
-    assert_eq!(metrics(&b), vec![(17, 17.0)], "bravo's envelope names bravo's metric");
+    assert_eq!(
+        metrics(&a),
+        vec![(11, 11.0)],
+        "alpha's envelope names alpha's metric"
+    );
+    assert_eq!(
+        metrics(&b),
+        vec![(17, 17.0)],
+        "bravo's envelope names bravo's metric"
+    );
     assert_eq!(metrics(&a2), vec![(11, 11.0)]);
-    assert_ne!(a.head.envelope.metrics, b.head.envelope.metrics, "one envelope each");
+    assert_ne!(
+        a.head.envelope.metrics, b.head.envelope.metrics,
+        "one envelope each"
+    );
     // Then the texts: each held by its own instance.
     assert_eq!(
         text(a.head.error),
@@ -469,7 +483,10 @@ fn red_two_instances_interleaved_on_one_thread_never_see_each_others_answers() {
         "probe:bravo-bravo failed, in words its own instance keeps"
     );
     assert_eq!(text(a2.head.error), text(a.head.error));
-    assert_ne!(a.head.error.ptr, a2.head.error.ptr, "each answer keeps its own text");
+    assert_ne!(
+        a.head.error.ptr, a2.head.error.ptr,
+        "each answer keeps its own text"
+    );
     // Closing one instance leaves the other's answers readable.
     assert_eq!(close(alpha), Outcome::Ready);
     assert_eq!(metrics(&b), vec![(17, 17.0)]);
@@ -520,7 +537,11 @@ fn an_instance_less_owned_text_rides_the_hosts_lent_buffer_and_only_else_a_fixed
     let (o, out) = validate_lent(b"worded:no port", Some(&mut vbuf[..]));
     assert_eq!(o, Outcome::Failed);
     assert_eq!(text(out.error), "echo: invalid settings: no port");
-    assert_eq!(out.error.ptr, vbuf.as_ptr(), "named inside the host's buffer");
+    assert_eq!(
+        out.error.ptr,
+        vbuf.as_ptr(),
+        "named inside the host's buffer"
+    );
     assert_eq!(&vbuf[..out.error.len], b"echo: invalid settings: no port");
 
     let mut obuf = [0_u8; 64];
