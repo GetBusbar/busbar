@@ -878,9 +878,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // listening and outbound egress both take it from `root::connector::the()`.
     let _connector = root::connector::boot(
         LINKED_TRANSPORT_DOORS,
-        &cfg.blocked_metadata_hosts,
-        &cfg.allow_metadata_hosts,
-        cfg.allow_all_metadata,
+        root::connector::dest_judge(&cfg),
         &[cfg.listen.as_str(), cfg.admin_listen.as_str()],
     );
     // The planes that state themselves through a door bind on the process's one dispatcher (built

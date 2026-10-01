@@ -1,33 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ONE DIAL JUDGE: the kernel's judge behind `DialJudge`, one rule set per egress class, the
-//! node's own ports held off a loopback-allowed need.
+//! THE ONE DIAL JUDGE: the deployment's one guard behind `DialJudge` and the kernel's `DestJudge`,
+//! the same addresses in every egress class, each class's scheme rule, the node's own ports held
+//! off a loopback-allowed need.
+
+use std::time::Duration;
 
 use super::*;
 
-// ── U2: THE KERNEL JUDGE BEHIND `DialJudge`, ONE RULE SET PER EGRESS CLASS ──
+use busbar_contract::abi::host::conn::connector::{
+    EGRESS_DEFAULT, EGRESS_OPERATOR_INFRASTRUCTURE, EGRESS_PROVIDER,
+};
+use busbar_contract::abi::host::service::DEST_METADATA;
 
-use busbar_contract::abi::host::service::{DEST_INTERNAL, DEST_METADATA};
+use crate::guard::Resolved;
 
 /// The node's own data port, as `own_ports` would read it off `listen`.
 const OWN: u16 = 18_080;
-
-/// The process's judge over the deployment's rules: `blocked` an operator addition, `allowed` a
-/// carve-out.
-fn process_judge(blocked: &[&str], allowed: &[&str]) -> Arc<dyn DialJudge> {
-    let owned = |l: &[&str]| l.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-    judge(
-        Arc::new(services(&owned(blocked), &owned(allowed), false)),
-        &[OWN],
-    )
-}
-
-/// Judge `dest` under `class`, answering at once (a literal, or a refusal the name decides).
-fn now(j: &Arc<dyn DialJudge>, dest: &str, class: u32) -> Result<SocketAddr, Verdict> {
-    j.judge_dial(dest, class, Box::new(|_| panic!("a literal never pends")))
-        .expect("answered at once")
-}
 
 const CLASSES: [u32; 5] = [
     EGRESS_DEFAULT,
@@ -37,12 +27,69 @@ const CLASSES: [u32; 5] = [
     EGRESS_LOOPBACK_ALLOWED,
 ];
 
-/// RED: every egress class a need may declare has its rules in the one judge: a public address is
-/// judged and pinned under each, never refused as naming no usable host (the kernel's answer
-/// for a class it holds no rules for).
+/// A resolver answering from a fixed table, off the caller's thread.
+struct Table(Vec<(&'static str, IpAddr)>);
+
+impl Resolve for Table {
+    fn resolve(&self, host: &str, done: Resolved) {
+        let answer: Vec<IpAddr> = self
+            .0
+            .iter()
+            .filter(|(n, _)| *n == host)
+            .map(|(_, a)| *a)
+            .collect();
+        std::thread::spawn(move || {
+            done(if answer.is_empty() {
+                Err("NXDOMAIN".into())
+            } else {
+                Ok(answer)
+            });
+        });
+    }
+}
+
+/// The deployment's judge over `allow` (block on), resolving `names`.
+fn guard_judge(allow: &[&str], names: Vec<(&'static str, IpAddr)>) -> Arc<GuardJudge> {
+    let d = Destinations {
+        allow: allow.iter().map(|s| (*s).to_owned()).collect(),
+        ..Destinations::default()
+    };
+    Arc::new(GuardJudge::new(
+        Guard::from_config(&d).expect("valid"),
+        Arc::new(Table(names)),
+    ))
+}
+
+fn process_judge(allow: &[&str], names: Vec<(&'static str, IpAddr)>) -> Arc<dyn DialJudge> {
+    judge(guard_judge(allow, names), &[OWN])
+}
+
+/// Judge `dest` under `class`, answering at once (a literal, or a refusal the name decides).
+fn now(j: &Arc<dyn DialJudge>, dest: &str, class: u32) -> Result<SocketAddr, Verdict> {
+    j.judge_dial(dest, class, Box::new(|_| panic!("a literal never pends")))
+        .expect("answered at once")
+}
+
+/// Judge a name that must resolve: `None` at once, the pin or the refusal later.
+fn pended(j: &Arc<dyn DialJudge>, dest: &str, class: u32) -> Result<SocketAddr, Verdict> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let at_once = j.judge_dial(
+        dest,
+        class,
+        Box::new(move |v| {
+            let _ = tx.send(v);
+        }),
+    );
+    assert_eq!(at_once, None, "a name resolves off the caller's thread");
+    rx.recv_timeout(Duration::from_secs(10))
+        .expect("the judgement answered")
+}
+
+/// Every egress class a need may declare is judged by the one guard: a public address is judged
+/// and pinned under each.
 #[test]
-fn every_egress_class_is_judged_under_its_own_rules() {
-    let j = process_judge(&[], &[]);
+fn every_egress_class_is_judged_by_the_one_guard() {
+    let j = process_judge(&[], vec![]);
     for class in CLASSES {
         assert_eq!(
             now(&j, "93.184.216.34:443", class),
@@ -52,44 +99,65 @@ fn every_egress_class_is_judged_under_its_own_rules() {
     }
 }
 
-/// RED: the default class and `provider` refuse a host the operator blocked; an operator's
-/// carve-out holds for them (1.5.5's provider posture), and private targets dial.
+/// RED: under the default, every class refuses a private and a loopback address (the ruling as
+/// written, owner Q7 open: operator infrastructure included); the allowlist admits them in every
+/// class.
 #[test]
-fn provider_and_default_keep_the_deployments_metadata_rules() {
-    let j = process_judge(&["imds.corp.example"], &[]);
-    for class in [EGRESS_DEFAULT, EGRESS_PROVIDER] {
-        assert_eq!(now(&j, "imds.corp.example:80", class), Err(DEST_METADATA));
-        assert!(now(&j, "10.0.0.5:8000", class).is_ok(), "class {class}");
+fn a_private_address_is_refused_in_every_class_unless_allowlisted() {
+    let strict = process_judge(&[], vec![]);
+    let allowed = process_judge(&["10.0.0.0/8", "127.0.0.1"], vec![]);
+    for class in CLASSES {
+        assert_eq!(
+            now(&strict, "10.0.0.5:5432", class),
+            Err(DEST_INTERNAL),
+            "{class}"
+        );
+        assert_eq!(
+            now(&strict, "127.0.0.1:6379", class),
+            Err(DEST_INTERNAL),
+            "{class}"
+        );
+        assert_eq!(
+            now(&strict, "localhost:443", class),
+            Err(DEST_INTERNAL),
+            "{class}"
+        );
+        assert!(now(&allowed, "10.0.0.5:5432", class).is_ok(), "{class}");
+        assert!(now(&allowed, "127.0.0.1:6379", class).is_ok(), "{class}");
     }
+    assert_eq!(
+        now(&allowed, "169.254.169.254:80", EGRESS_PROVIDER),
+        Err(DEST_METADATA)
+    );
 }
 
-/// RED: operator-infrastructure dials private and loopback targets, and refuses the cloud
-/// metadata address even where the deployment carved it out for the provider class.
+/// RED: a name resolving to loopback is refused after its one resolution, before any socket; the
+/// same name is pinned once the allowlist names it.
 #[test]
-fn operator_infrastructure_refuses_metadata_whatever_the_carve_outs() {
-    let j = process_judge(&[], &["169.254.169.254"]);
-    let c = EGRESS_OPERATOR_INFRASTRUCTURE;
-    assert!(now(&j, "10.0.0.5:5432", c).is_ok());
-    assert!(now(&j, "127.0.0.1:6379", c).is_ok());
-    assert_eq!(now(&j, "169.254.169.254:80", c), Err(DEST_METADATA));
+fn a_name_resolving_to_loopback_is_refused_until_allowlisted() {
+    let names = || vec![("db.internal", IpAddr::from([127, 0, 0, 1]))];
+    let strict = process_judge(&[], names());
+    assert_eq!(
+        pended(&strict, "db.internal:5432", EGRESS_OPERATOR_INFRASTRUCTURE),
+        Err(DEST_INTERNAL)
+    );
+    let allowed = process_judge(&["db.internal"], names());
+    assert_eq!(
+        pended(&allowed, "db.internal:5432", EGRESS_OPERATOR_INFRASTRUCTURE),
+        Ok("127.0.0.1:5432".parse().unwrap())
+    );
+    assert_eq!(
+        pended(&strict, "nowhere.test:1", EGRESS_PROVIDER),
+        Err(DEST_UNRESOLVABLE)
+    );
 }
 
-/// RED: open-web judges public destinations only: a private address, a loopback one and the
-/// loopback name are refused as internal, before any resolution.
-#[test]
-fn open_web_refuses_private_and_loopback_destinations() {
-    let j = process_judge(&[], &[]);
-    let c = EGRESS_OPEN_WEB;
-    assert_eq!(now(&j, "10.0.0.5:443", c), Err(DEST_INTERNAL));
-    assert_eq!(now(&j, "127.0.0.1:443", c), Err(DEST_INTERNAL));
-    assert_eq!(now(&j, "localhost:443", c), Err(DEST_INTERNAL));
-}
-
-/// RED: loopback-allowed dials loopback, but never the node's own ports, answered at once for a
-/// literal and after resolution for a name.
+/// Loopback-allowed (its loopback allowlisted) dials loopback, but never the node's own ports,
+/// answered at once for a literal and after resolution for a name.
 #[test]
 fn loopback_allowed_refuses_the_nodes_own_ports() {
-    let j = process_judge(&[], &[]);
+    let names = vec![("localhost", IpAddr::from([127, 0, 0, 1]))];
+    let j = process_judge(&["127.0.0.1", "::1", "localhost"], names);
     let c = EGRESS_LOOPBACK_ALLOWED;
     assert!(now(&j, "127.0.0.1:4318", c).is_ok());
     assert_eq!(now(&j, &format!("127.0.0.1:{OWN}"), c), Err(DEST_INTERNAL));
@@ -107,30 +175,39 @@ fn loopback_allowed_refuses_the_nodes_own_ports() {
     );
 }
 
-/// Judge a name that must resolve: `None` at once, the pin or the refusal later.
-fn pended(j: &Arc<dyn DialJudge>, dest: &str, class: u32) -> Result<SocketAddr, Verdict> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let at_once = j.judge_dial(
-        dest,
-        class,
-        Box::new(move |v| {
-            let _ = tx.send(v);
-        }),
-    );
-    assert_eq!(at_once, None, "a name resolves off the caller's thread");
-    rx.recv_timeout(std::time::Duration::from_secs(10))
-        .expect("the judgement answered")
-}
-
-/// RED: a hostname is resolved and pinned by the kernel's judge, inside the judgement, and the
-/// connector is handed the pinned address (no path regresses from "hostname refused" to
-/// "hostname dialled" without a judgement).
+/// `dest.judge`'s arms through the same judge: a URL's scheme by class (open-web secure only,
+/// loopback-allowed plaintext to loopback only), a foreign scheme and userinfo refused, an answer
+/// the kernel's own client resolved judged with the guard's sentence.
 #[test]
-fn a_hostname_is_resolved_and_pinned_by_the_kernel_judge() {
-    let j = process_judge(&[], &[]);
-    let at = pended(&j, "localhost:5432", EGRESS_OPERATOR_INFRASTRUCTURE).expect("pinned");
-    assert!(at.ip().is_loopback());
-    assert_eq!(at.port(), 5432);
+fn the_kernel_asks_the_same_judge() {
+    let j = guard_judge(&["127.0.0.1", "10.1.2.3"], vec![]);
+    assert_eq!(
+        j.judge_name("http://93.184.216.34/x", EGRESS_OPEN_WEB),
+        Err(DEST_PLAINTEXT)
+    );
+    assert_eq!(
+        j.judge_name("http://93.184.216.34/x", EGRESS_DEFAULT),
+        Ok(())
+    );
+    assert_eq!(
+        j.judge_name("http://10.1.2.3/x", EGRESS_LOOPBACK_ALLOWED),
+        Err(DEST_PLAINTEXT)
+    );
+    assert_eq!(
+        j.judge_name("http://127.0.0.1:9/x", EGRESS_LOOPBACK_ALLOWED),
+        Ok(())
+    );
+    assert_eq!(j.judge_name("ftp://93.184.216.34/", 0), Err(DEST_SCHEME));
+    assert_eq!(
+        j.judge_name("https://u:p@93.184.216.34/", 0),
+        Err(DEST_NO_HOST)
+    );
+    assert_eq!(j.judge_name("https://10.0.0.5/", 0), Err(DEST_INTERNAL));
+    let r = j
+        .judge_answer("api.test", &["10.9.9.9".parse().unwrap()], EGRESS_PROVIDER)
+        .unwrap_err();
+    assert_eq!(r.verdict, DEST_INTERNAL);
+    assert!(r.reason.contains("advanced.allow_destinations"), "{r}");
 }
 
 #[test]

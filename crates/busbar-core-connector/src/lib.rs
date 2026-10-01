@@ -27,8 +27,8 @@
 //!   composes each accepted connection the same way, begun on the accept side; [`registry`] is the
 //!   view of which entry serves which scheme; [`wire`] presents a framer entry over host sockets to
 //!   the kernel's transport seam.
-//! * [`process`] builds the process's one connector for the root: the kernel's destination rules,
-//!   one set per egress class, behind the one dial judge, and the default outbound trust.
+//! * [`process`] builds the process's one connector for the root: the deployment's one destination
+//!   guard behind the one dial judge, and the default outbound trust.
 //!
 //! No `unsafe` is written here outside the tests' framer entry, which writes a host sink through its
 //! raw pointers as a plugin does.
@@ -112,8 +112,8 @@ pub trait DialJudge: Send + Sync {
     ) -> Option<Result<SocketAddr, Verdict>>;
 }
 
-/// Any function of the judge's shape is a judge: [`process::judge`] joins the kernel's one judge
-/// (`KernelServices::judge_dial`) here, so the connection table itself names no kernel type.
+/// Any function of the judge's shape is a judge: [`process::judge`] joins the deployment's one
+/// destination guard here, so the connection table itself names no kernel type.
 impl<F> DialJudge for F
 where
     F: Fn(&str, u32, Judged) -> Option<Result<SocketAddr, Verdict>> + Send + Sync,

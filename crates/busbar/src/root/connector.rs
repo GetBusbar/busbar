@@ -9,15 +9,19 @@
 //!
 //! Its framer entries are every linked memory-ABI transport door, opened on the process's one
 //! dispatcher; the connector builds the rest (`busbar_core_connector::process`): its dial judge is
-//! the kernel's one destination judge, so every name a need dials is resolved and pinned inside the
-//! kernel at 1.5.5's refusal timing. The root hands it the deployment's values only.
+//! the deployment's one destination guard ([`dest_judge`]), so every name a need dials is resolved,
+//! judged and pinned by that guard at 1.5.5's refusal timing. The root hands it the deployment's
+//! values only.
 
 use std::sync::{Arc, OnceLock};
 
 use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_core_connector::framer::FramerDoor;
+use busbar_core_connector::process::GuardJudge;
 use busbar_core_connector::registry::Entry;
 use busbar_core_connector::{process, Connector};
+use busbar_kernel::config::RootCfg;
+use busbar_kernel::host_services::DestJudge;
 
 use crate::root::loader::dispatch::{
     kinds::transport::Transport as TransportKind, load_linked, LinkedRow,
@@ -68,22 +72,28 @@ pub fn entries(doors: &[(&str, DoorFn)]) -> Result<Vec<Entry>, String> {
         .collect()
 }
 
-/// THE BOOT PATH'S STEP: build the one Connector over every linked transport door, judged under
-/// the deployment's metadata rules (`blocked`, `allowed`, `allow_all`) with the node's own ports
-/// read off its `listens`, and install it. A connector that cannot be built refuses the boot, as an
-/// unsealed composition does.
+/// THE DEPLOYMENT'S ONE DESTINATION GUARD (OWNER ruling DESTINATION GUARD), built once from
+/// `cfg`'s `advanced` keys and the 1.5.5 keys that still load. An allowlist entry the guard
+/// cannot read refuses the boot, naming it.
+pub fn dest_judge(cfg: &RootCfg) -> Arc<GuardJudge> {
+    process::dest_judge(&cfg.destinations()).unwrap_or_else(|refusal| {
+        eprintln!("busbar: config errors:\n  - {refusal}");
+        std::process::exit(2);
+    })
+}
+
+/// THE BOOT PATH'S STEP: build the one Connector over every linked transport door, its dials
+/// judged by `dest` (the deployment's one guard) with the node's own ports read off its
+/// `listens`, and install it. A connector that cannot be built refuses the boot, as an unsealed
+/// composition does.
 pub fn boot(
     doors: &[(&str, DoorFn)],
-    blocked: &[String],
-    allowed: &[String],
-    allow_all: bool,
+    dest: Arc<dyn DestJudge>,
     listens: &[&str],
 ) -> &'static Arc<Connector> {
     let built = process::build(
         || entries(doors),
-        blocked,
-        allowed,
-        allow_all,
+        dest,
         &process::own_ports(listens),
         // No plugin reads a connection through a ticket yet; the kind that first does
         // (inbound listening) routes its wakes through the dispatcher here.
