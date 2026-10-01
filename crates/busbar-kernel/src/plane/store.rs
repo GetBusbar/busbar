@@ -58,7 +58,7 @@ pub const KIND_CALL: &str = "call";
 /// log's durable journal seam persists its hash-chained records under.
 pub const KIND_AUDIT: &str = "audit";
 /// That same plane's demotion record kind.
-pub(crate) const KIND_DEMOTION: &str = "demotion";
+pub const KIND_DEMOTION: &str = "demotion";
 /// The spent-approval ledger kind (a single-use token).
 pub(crate) const KIND_ASK: &str = "ask";
 
