@@ -4,7 +4,7 @@
 //! Cross-protocol response-stream translation — the concrete `StreamTranslate` + its factory,
 //! RELOCATED from busbar-core (G6 A4b). It names the concrete stream IR (`IrStreamEvent`/`IrUsage`/
 //! `StreamDecodeState`/…), so it lives in the plugin; busbar-core keeps only the neutral
-//! `StreamTranslator` byte-in/byte-out seam (`proto::stream_translator`) and reaches this factory
+//! `StreamTranslator` byte-in/byte-out seam (`busbar_kernel::proto`) and reaches this factory
 //! through an installed fn-ptr in production, or directly via the `#[path]` net in its test build.
 //! Addresses core by its crate name; the concrete IR is `crate::codec::ir::*` (this crate's own).
 

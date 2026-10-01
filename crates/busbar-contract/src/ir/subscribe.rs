@@ -97,3 +97,7 @@ impl crate::ir::facts::IrFacts for SubscribeReq {
         }]
     }
 }
+
+#[cfg(test)]
+#[path = "tests/subscribe_tests.rs"]
+mod subscribe_tests;

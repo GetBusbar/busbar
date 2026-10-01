@@ -19,6 +19,7 @@ use busbar_contract::upstream::StatusClass;
 #[allow(unused_imports)]
 // used standalone; redundant with the `busbar_contract::protocol::*` glob when netted into core
 use super::proto_codec::*;
+use busbar_contract::ir::egress_prep::LaneCaps;
 // See the anthropic dialect for the rationale: an explicit import of the codec surface so it binds to
 // THIS crate's own `proto_codec` rather than the `busbar_contract::protocol::*` glob.
 #[allow(unused_imports)]

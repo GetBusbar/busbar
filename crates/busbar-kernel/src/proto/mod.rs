@@ -168,11 +168,8 @@ pub fn residual_default_dialect() -> Option<&'static str> {
 // so it names no protocol submodule: delete a protocol and the marker is simply never injected.
 // RELOCATED DOWN to `busbar_kernel::proto`; re-exported here at its historical path.
 
-/// The NEUTRAL streaming-translator seam (`StreamTranslator` trait + the fn-ptr factory) — STAYS in
-/// core (names zero concrete stream IR). See `stream_translator.rs`.
-pub(crate) mod stream_translator;
-pub use stream_translator::install_stream_translator_factory;
-pub use stream_translator::new_stream_translator;
+// The NEUTRAL streaming-translator seam (`StreamTranslator` trait, `install_stream_translator_factory`
+// and the `new_stream_translator` construction seam) lives in `installed.rs`, exported below.
 // The neutral `StreamTranslator` trait RELOCATED DOWN to `busbar_kernel::proto`; re-exported here
 // at its historical `busbar_kernel::proto::StreamTranslator` path so core's forward path is unchanged.
 
@@ -212,8 +209,6 @@ pub use stream_translator::new_stream_translator;
 // `busbar-substrate`, so core's test binary reads the plugin crates' declaration tables directly
 // (dev-dependency) and the dialect suites moved into those plugin crates. Production core drives
 // every dialect through the registry's `ProtocolDecl` vtable and names none of them.
-/// Wire-dialect detection: `protocol_id(path, headers)` sniffs which protocol a request speaks.
-pub(crate) mod detect;
 /// THE REGISTRY: `ProtocolDecl`, the built-in declaration table, and the by-name lookup that
 /// replaced `protocol_for`'s match.
 pub mod registry;

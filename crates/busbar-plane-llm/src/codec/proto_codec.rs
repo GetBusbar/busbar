@@ -17,7 +17,7 @@ use busbar_contract::http::StatusCode;
 // A dialect fact this crate looks up by name is read off the plane's OWN declaration table
 // (`crate::codec::decl_of`, Law 5); the declaration shape itself is the contract's.
 /// A lane's request-shape capabilities, handed to [`ProtocolWriter::write_request_for_lane`].
-pub use busbar_contract::ir::egress_prep::{LaneCaps, MaxOutputKey};
+use busbar_contract::ir::egress_prep::LaneCaps;
 use busbar_contract::protocol::{ArrayStreamFramer, DialectCodec, IrError};
 
 // The six dialect NAMES, plane-local (no longer the host's `proto::PROTO_*` — that was a backwards

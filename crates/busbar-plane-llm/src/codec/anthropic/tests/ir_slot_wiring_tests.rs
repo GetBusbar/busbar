@@ -18,7 +18,7 @@ fn read(body: &Value) -> crate::codec::ir::IrRequest {
 /// seam, so only the TYPED slots reach the writer — the path a foreign ingress takes.
 fn egress(
     mut req: crate::codec::ir::IrRequest,
-    caps: &super::super::proto_codec::LaneCaps,
+    caps: &busbar_contract::ir::egress_prep::LaneCaps,
 ) -> Value {
     super::super::chat_handle::chat_prepare_for_egress(
         &mut req,
@@ -41,8 +41,8 @@ fn egress(
         .write_request_for_lane(&req, "claude-x", caps)
 }
 
-fn newest_lane() -> super::super::proto_codec::LaneCaps {
-    super::super::proto_codec::LaneCaps {
+fn newest_lane() -> busbar_contract::ir::egress_prep::LaneCaps {
+    busbar_contract::ir::egress_prep::LaneCaps {
         anthropic_adaptive_thinking: true,
         native_structured_output: true,
         ..Default::default()

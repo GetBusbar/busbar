@@ -41,21 +41,21 @@ const UPSTREAMS: &[Upstream] = &[
         host: "anthropic.invalid",
         dialect: "anthropic",
         model: LANE_MODEL,
-        caps: busbar_plane_llm::LaneCaps::NONE,
+        caps: busbar_contract::ir::egress_prep::LaneCaps::NONE,
     },
     Upstream {
         lane: LaneId::new("lane-openai"),
         host: "openai.invalid",
         dialect: "openai",
         model: LANE_MODEL,
-        caps: busbar_plane_llm::LaneCaps::NONE,
+        caps: busbar_contract::ir::egress_prep::LaneCaps::NONE,
     },
     Upstream {
         lane: LaneId::new("lane-gemini"),
         host: "gemini.invalid",
         dialect: "gemini",
         model: LANE_MODEL,
-        caps: busbar_plane_llm::LaneCaps::NONE,
+        caps: busbar_contract::ir::egress_prep::LaneCaps::NONE,
     },
     Upstream {
         lane: LaneId::new("lane-bedrock"),
@@ -65,21 +65,21 @@ const UPSTREAMS: &[Upstream] = &[
         // Claude's `thinking` only to a model that names Claude (BED-06) — which is what the frozen
         // Bedrock goldens record. Bedrock carries the model in the URL, so no body byte names it.
         model: BEDROCK_LANE_MODEL,
-        caps: busbar_plane_llm::LaneCaps::NONE,
+        caps: busbar_contract::ir::egress_prep::LaneCaps::NONE,
     },
     Upstream {
         lane: LaneId::new("lane-responses"),
         host: "responses.invalid",
         dialect: "responses",
         model: LANE_MODEL,
-        caps: busbar_plane_llm::LaneCaps::NONE,
+        caps: busbar_contract::ir::egress_prep::LaneCaps::NONE,
     },
     Upstream {
         lane: LaneId::new("lane-cohere"),
         host: "cohere.invalid",
         dialect: "cohere",
         model: LANE_MODEL,
-        caps: busbar_plane_llm::LaneCaps::NONE,
+        caps: busbar_contract::ir::egress_prep::LaneCaps::NONE,
     },
 ];
 

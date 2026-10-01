@@ -53,6 +53,7 @@ use busbar_contract::upstream::StatusClass;
 #[allow(unused_imports)]
 // used standalone; redundant with the `busbar_contract::protocol::*` glob when netted into core
 use super::proto_codec::*;
+use busbar_contract::ir::egress_prep::LaneCaps;
 // The wire-codec surface, named EXPLICITLY so it resolves to THIS crate's own `proto_codec` and not to
 // the `busbar_contract::protocol::*` glob above — which, in a `test-support` build of busbar-core (this
 // crate's dev-dependency), re-exports a SECOND copy of these same source items through core's `#[path]`

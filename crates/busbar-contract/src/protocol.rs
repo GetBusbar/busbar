@@ -671,7 +671,7 @@ pub struct ProtocolDecl {
 
     /// THE ROUTER detection predicate — how (and how tightly) this protocol claims an inbound
     /// `(headers, path)`. `None` for a protocol identified by its explicit mount rather than a wire
-    /// fingerprint. The generic fold in `busbar_kernel::proto::detect` folds this over every
+    /// fingerprint. The generic fold in `busbar_kernel::proto::registry::detect_protocol` folds this over every
     /// registered protocol in registration order and keeps the tightest [`ClaimStrength`], which is
     /// exactly what the old `busbar-core`-resident `protocol_id` if-ladder computed by hand. Each
     /// dialect states only ITS OWN rungs here, so the router names no dialect.

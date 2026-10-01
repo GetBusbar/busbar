@@ -26,7 +26,7 @@ const UPSTREAMS: &[Upstream] = &[Upstream {
     host: "bedrock.invalid",
     dialect: "bedrock",
     model: "claude",
-    caps: busbar_plane_llm::LaneCaps::NONE,
+    caps: busbar_contract::ir::egress_prep::LaneCaps::NONE,
 }];
 
 /// The lane the answers below arrive on.

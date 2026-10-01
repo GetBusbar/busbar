@@ -68,14 +68,14 @@ impl ProtocolWriter for ResponsesWriter {
     }
 
     fn write_request(&self, req: &crate::codec::ir::IrRequest) -> serde_json::Value {
-        self.write_request_for_lane(req, "", &crate::codec::proto_codec::LaneCaps::default())
+        self.write_request_for_lane(req, "", &busbar_contract::ir::egress_prep::LaneCaps::default())
     }
 
     fn write_request_for_lane(
         &self,
         req: &crate::codec::ir::IrRequest,
         _model: &str,
-        caps: &crate::codec::proto_codec::LaneCaps,
+        caps: &busbar_contract::ir::egress_prep::LaneCaps,
     ) -> serde_json::Value {
         let mut out = serde_json::Map::new();
         let mut input_arr: Vec<serde_json::Value> = Vec::new();
