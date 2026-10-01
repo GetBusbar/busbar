@@ -1468,7 +1468,9 @@ impl NodeEndPost {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, OpenUnits> {
-        self.open.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Unit `key`'s facts, at its admission.
