@@ -9,7 +9,7 @@
 //! client that never speaks is dropped at the configured handshake bound
 //! (`limits.tls_handshake_timeout_secs`), never answered.
 #![cfg(unix)]
-// The fixture boots a REAL server with an LLM provider (`GET /v1/models` answers from it), so the
+// The fixture boots a REAL server with a provider row (`GET /v1/models` answers from it), so the
 // proof needs the body-ingress axis linked, as thread_per_core_serves.rs gates.
 #![cfg(linked_axis_body_ingress)]
 
