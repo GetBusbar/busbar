@@ -11,10 +11,13 @@
 //! * The lifecycle is the SDK's shared one (`abi::sdk::life`), over [`Verifier`], the kind's
 //!   [`Life`]: `open` builds the plugin from its settings blob and secrets
 //!   ([`VerifyPlugin::open`]); `close` answering READY drops it (the SDK owns the state).
-//! * `verify` hands [`VerifyPlugin::verify`] a [`VerifyView`] and writes its [`Verdict`]: an
-//!   identity goes into the host's [`IdentityBuf`](crate::abi::auth::IdentityBuf). One that does not
-//!   fit is the short answer (FAILED, every `needed_*` at its full size); the host re-calls once and
-//!   the plugin judges again. A plugin whose verdict is not deterministic remembers it per ticket.
+//! * `verify` hands [`VerifyPlugin::verify`] a [`VerifyView`] of the request at one auth point and
+//!   writes its [`Answer`]: the [`Verdict`] (an identity goes into the host's
+//!   [`IdentityBuf`](crate::abi::auth::IdentityBuf)), the [`Decision`] and the credential lines to
+//!   strip ([`Strip`], named whatever the verdict; THE DESIGN, "Auth points and guest lists").
+//!   One that does not fit is the short answer (FAILED, every `needed_*` at its full size); the
+//!   host re-calls once and the plugin judges again. A plugin whose verdict is not deterministic
+//!   remembers it per ticket.
 //! * `refresh` calls [`VerifyPlugin::refresh`] and reports the inbound cache entries it dropped
 //!   under [`METRIC_CACHE_FLUSHED`](crate::abi::auth::METRIC_CACHE_FLUSHED), when the plugin states
 //!   that family ([`VerifyPlugin::CACHE_FAMILY`]).
@@ -26,8 +29,9 @@ use std::marker::PhantomData;
 use std::ptr;
 
 use crate::abi::auth::{
-    AuthTail, IdentifyOut, IdentityBuf, VerifyIn, IDENTITY_HAS_TTL, SPAN_ABSENT, VERDICT_IDENTITY,
-    VERDICT_PASS, VERDICT_REJECT,
+    AuthPoint, AuthPoints, AuthTail, IdentifyOut, IdentityBuf, StripName, VerifyIn,
+    DECISION_CONTINUE, DECISION_STOP, IDENTITY_HAS_TTL, SPAN_ABSENT, STRIP_FIELD, STRIP_QUERY,
+    VERDICT_IDENTITY, VERDICT_PASS, VERDICT_REJECT,
 };
 use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, Span, BLOB_ABSENT};
 use crate::abi::mechanism::door::{KindTailHead, Statement};
@@ -36,7 +40,7 @@ use crate::abi::sdk::lent::{HostBuf, Lent};
 use crate::abi::sdk::life::{Counted, Held, Life, Refreshed, Refusal};
 use crate::abi::sdk::out::Out;
 use crate::abi::sdk::safe::{Instance, SafeSlot};
-pub use crate::auth_calls::VerifiedIdentity;
+pub use crate::auth_calls::{Decision, Strip, StripPlace, VerifiedIdentity};
 
 /// One `verify`'s request, as a safe plugin reads it; lent for the call.
 #[derive(Debug, Clone, Copy)]
@@ -52,11 +56,51 @@ impl<'a> VerifyView<'a> {
         (c.fmt != BLOB_ABSENT && !c.ptr.is_null()).then(|| c.bytes())
     }
 
-    /// The carrier field `name` (ASCII case-insensitive), as presented; `None` = absent.
+    /// The point this call is made at; `None` for a value outside the vocabulary.
     #[must_use]
-    pub fn carrier(&self, name: &str) -> Option<&'a [u8]> {
+    pub fn point(&self) -> Option<AuthPoint> {
+        AuthPoint::from_bit(self.input.point)
+    }
+
+    /// The connection the request arrived on.
+    #[must_use]
+    pub fn conn(&self) -> u64 {
+        self.input.conn
+    }
+
+    /// The unit the kernel minted for the request; `0` at [`AuthPoint::Peer`].
+    #[must_use]
+    pub fn unit(&self) -> u64 {
+        self.input.unit
+    }
+
+    /// The peer facts; `None` = the host lent none (every point but [`AuthPoint::Peer`]).
+    #[must_use]
+    pub fn peer(&self) -> Option<&'a [u8]> {
+        let b = self.input.field(|i| &i.peer);
+        (b.fmt != BLOB_ABSENT).then(|| b.bytes())
+    }
+
+    /// The whole body; `None` = the host lent none (every point but [`AuthPoint::HeadBody`]).
+    #[must_use]
+    pub fn body(&self) -> Option<&'a [u8]> {
+        let b = self.input.field(|i| &i.body);
+        (b.fmt != BLOB_ABSENT).then(|| b.bytes())
+    }
+
+    /// The field lines lent, in order: (name, value).
+    pub fn lines(&self) -> impl Iterator<Item = (&'a [u8], &'a [u8])> + 'a {
         self.input
-            .carrier()
+            .lines()
+            .iter()
+            .map(|l| (l.field(|c| &c.name).bytes(), l.field(|c| &c.value).bytes()))
+    }
+
+    /// The field line `name` (ASCII case-insensitive), as presented; `None` = absent.
+    #[must_use]
+    pub fn line(&self, name: &str) -> Option<&'a [u8]> {
+        self.input
+            .lines()
             .iter()
             .find(|c| {
                 c.field(|c| &c.name)
@@ -98,15 +142,14 @@ impl<'a> VerifyView<'a> {
     pub fn timestamp(&self) -> u64 {
         self.input.request.timestamp
     }
-
-    /// SHA-256 of the body, when the tail states the plugin reads it.
-    #[must_use]
-    pub fn body_hash(&self) -> Option<[u8; 32]> {
-        (self.input.request.body_hash_present == 1).then_some(self.input.request.body_hash)
-    }
 }
 
 /// A plugin's verdict on one credential.
+///
+/// `large_enum_variant`: `Identity` carries the whole identity by value; the verdict is built once
+/// per call and consumed at once, never held in a collection, so a box would only add an
+/// allocation per verify.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     /// Identified.
@@ -115,6 +158,34 @@ pub enum Verdict {
     Reject,
     /// Not this plugin's credential.
     Pass,
+}
+
+/// A plugin's whole answer at one point: the verdict (the kernel's), the decision and the lines to
+/// strip (the transport's).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Answer {
+    /// The verdict.
+    pub verdict: Verdict,
+    /// The credential lines and query keys to strip, named whatever the verdict.
+    pub strips: Vec<Strip>,
+    /// Continue or stop.
+    pub decision: Decision,
+}
+
+impl From<Verdict> for Answer {
+    /// The verdict with no strips and its default decision: [`Decision::Continue`] for an
+    /// identity or a pass, [`Decision::Stop`] for a reject.
+    fn from(verdict: Verdict) -> Self {
+        let decision = match verdict {
+            Verdict::Identity(_) | Verdict::Pass => Decision::Continue,
+            Verdict::Reject => Decision::Stop,
+        };
+        Self {
+            verdict,
+            strips: Vec::new(),
+            decision,
+        }
+    }
 }
 
 /// AN AUTH PLUGIN THAT VERIFIES ON THE SPOT, in safe Rust.
@@ -131,8 +202,9 @@ pub trait VerifyPlugin: Send + Sync + Sized + 'static {
     /// The settings are not this plugin's.
     fn open(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, &'static str>;
 
-    /// Judge one credential.
-    fn verify(&self, request: &VerifyView<'_>) -> Verdict;
+    /// Judge the request at one point: the verdict, the decision and the lines to strip (a bare
+    /// [`Verdict`] converts, with no strips and its default decision).
+    fn verify(&self, request: &VerifyView<'_>) -> Answer;
 
     /// A reload (the admin cache flush is one with unchanged settings): drop the inbound cache and
     /// answer how many entries it held.
@@ -204,24 +276,28 @@ impl<T: VerifyPlugin> SafeSlot for Verify<T> {
     fn call(
         instance: Instance<'_, Held<Verifier<T>>>,
         input: Lent<'_, VerifyIn>,
-        mut out: Out<'_, IdentifyOut>,
+        out: Out<'_, IdentifyOut>,
     ) -> Outcome {
         let Some(h) = instance.get() else {
             return Outcome::Fault;
         };
-        match h.life().plugin().verify(&VerifyView { input }) {
-            Verdict::Reject => {
-                out.set(|o| &o.verdict, VERDICT_REJECT);
-                Outcome::Ready
-            }
-            Verdict::Pass => {
-                out.set(|o| &o.verdict, VERDICT_PASS);
-                Outcome::Ready
-            }
-            Verdict::Identity(id) => {
-                write_identity(&id, input.field(|i| &i.out_buf), out, VERDICT_IDENTITY)
-            }
-        }
+        let answer = h.life().plugin().verify(&VerifyView { input });
+        let (id, verdict) = match &answer.verdict {
+            Verdict::Identity(id) => (Some(id), VERDICT_IDENTITY),
+            Verdict::Reject => (None, VERDICT_REJECT),
+            Verdict::Pass => (None, VERDICT_PASS),
+        };
+        let decision = match answer.decision {
+            Decision::Continue => DECISION_CONTINUE,
+            Decision::Stop => DECISION_STOP,
+        };
+        write(
+            id,
+            Some((answer.strips.as_slice(), input.strip(), decision)),
+            input.field(|i| &i.out_buf),
+            out,
+            verdict,
+        )
     }
 }
 
@@ -233,29 +309,55 @@ impl<T: VerifyPlugin> SafeSlot for Verify<T> {
 pub fn write_identity(
     id: &VerifiedIdentity,
     buf: Lent<'_, IdentityBuf>,
+    out: Out<'_, IdentifyOut>,
+    verdict: u32,
+) -> Outcome {
+    write(Some(id), None, buf, out, verdict)
+}
+
+/// Write the identity `id` (if any) and, for `verify`, the strip names into the host's strip array
+/// and the decision, under `verdict`; or the SHORT FAILED when any of them does not fit.
+fn write(
+    id: Option<&VerifiedIdentity>,
+    strip: Option<(&[Strip], HostBuf<'_, StripName>, u32)>,
+    buf: Lent<'_, IdentityBuf>,
     mut out: Out<'_, IdentifyOut>,
     verdict: u32,
 ) -> Outcome {
     let mut bytes: HostBuf<'_, u8> = buf.buf();
     let mut groups: HostBuf<'_, Span> = buf.groups();
+    let (strips, mut strip_buf, decision) = match strip {
+        Some((strips, host, decision)) => (strips, Some(host), decision),
+        None => (&[][..], None, 0),
+    };
     // The FULL sizes first: a short answer writes nothing into the host's buffers.
-    let texts = [
-        Some(id.subject.as_str()),
-        id.key_id.as_deref(),
-        id.key_name.as_deref(),
-        id.user.as_deref(),
-        id.provider.as_deref(),
-        id.name.as_deref(),
-        id.replay.as_ref().map(|r| r.key.as_str()),
-    ];
+    let texts = id.map_or([None; 8], |id| {
+        [
+            Some(id.subject.as_str()),
+            id.key_id.as_deref(),
+            id.key_name.as_deref(),
+            id.user.as_deref(),
+            id.provider.as_deref(),
+            id.name.as_deref(),
+            id.replay.as_ref().map(|r| r.key.as_str()),
+            id.credential.as_ref().map(|c| c.expose_secret().as_str()),
+        ]
+    });
+    let id_groups: &[String] = id.map_or(&[][..], |id| id.groups.as_slice());
     let need_bytes = texts.iter().flatten().map(|t| t.len()).sum::<usize>()
-        + id.groups.iter().map(String::len).sum::<usize>();
-    let need_groups = id.groups.len();
-    if need_bytes > bytes.cap() || need_groups > groups.cap() {
+        + id_groups.iter().map(String::len).sum::<usize>()
+        + strips.iter().map(|s| s.name.len()).sum::<usize>();
+    let need_groups = id_groups.len();
+    let strip_cap = strip_buf.as_ref().map_or(0, |h| h.cap());
+    if need_bytes > bytes.cap() || need_groups > groups.cap() || strips.len() > strip_cap {
         out.set(|o| &o.needed_bytes, need_bytes as u64);
         out.set(
             |o| &o.needed_groups,
             u32::try_from(need_groups).unwrap_or(u32::MAX),
+        );
+        out.set(
+            |o| &o.needed_strip,
+            u32::try_from(strips.len()).unwrap_or(u32::MAX),
         );
         return Outcome::Failed;
     }
@@ -274,7 +376,30 @@ pub fn write_identity(
             }
         }
     };
-    let [subject, key_id, key_name, user, provider, name, replay_key] = texts.map(&mut span);
+    if let Some(host) = strip_buf.as_mut() {
+        for s in strips {
+            let name = span(Some(&*s.name));
+            host.push(StripName {
+                name,
+                place: match s.place {
+                    StripPlace::Field => STRIP_FIELD,
+                    StripPlace::Query => STRIP_QUERY,
+                },
+                _reserved: 0,
+            });
+        }
+        out.set(
+            |o| &o.strip_len,
+            u32::try_from(host.written()).unwrap_or(u32::MAX),
+        );
+        out.set(|o| &o.decision, decision);
+    }
+    let Some(id) = id else {
+        out.set(|o| &o.verdict, verdict);
+        return Outcome::Ready;
+    };
+    let [subject, key_id, key_name, user, provider, name, replay_key, credential] =
+        texts.map(&mut span);
     for g in &id.groups {
         let s = span(Some(g));
         groups.push(s);
@@ -308,6 +433,7 @@ pub fn write_identity(
         |o| &o.identity.replay_ttl_secs,
         id.replay.as_ref().map_or(0, |r| r.ttl_secs),
     );
+    out.set(|o| &o.identity.credential, credential);
     out.set(|o| &o.verdict, verdict);
     Outcome::Ready
 }
@@ -355,9 +481,10 @@ macro_rules! auth_verify_door {
     };
 }
 
-/// An [`AuthTail`] for a verify-only plugin reading `carriers`, with `facts` (`FACT_*`).
+/// An [`AuthTail`] for a verify-only plugin reading `carriers`, with `facts` (`FACT_*`), called at
+/// the inbound `points` (a valid, non-empty set: the loader refuses any other).
 #[must_use]
-pub const fn verify_tail(facts: u32, carriers: &'static [AbiStr]) -> AuthTail {
+pub const fn verify_tail(facts: u32, points: AuthPoints, carriers: &'static [AbiStr]) -> AuthTail {
     AuthTail {
         head: KindTailHead {
             size: std::mem::size_of::<AuthTail>() as u32,
@@ -366,7 +493,7 @@ pub const fn verify_tail(facts: u32, carriers: &'static [AbiStr]) -> AuthTail {
         caps: crate::abi::auth::CAP_INBOUND,
         facts,
         login_kind: crate::abi::auth::LOGIN_KIND_NONE,
-        _reserved: 0,
+        inbound_points: points.bits(),
         styles: ptr::null(),
         styles_len: 0,
         aliases: ptr::null(),

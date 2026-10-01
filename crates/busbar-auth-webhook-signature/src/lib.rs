@@ -21,8 +21,11 @@
 //! It runs on the SDK's safe layer ([`busbar_contract::auth_verify_door!`]): the crate holds no
 //! `unsafe`. Its settings are one JSON document ([`Settings`]); its one secret, the shared signing
 //! secret, arrives through the secret kind as the Statement's `signing-secret` reference and is
-//! never logged or echoed. No request body crosses the auth ABI's `verify`, so a request whose
-//! signature covers its body is refused (fail-closed).
+//! never logged or echoed. Its inbound point is `HeadBody` (THE DESIGN, "Auth points and guest
+//! lists"): the host lends the whole body, bounded by the size gate, so a signature over the body is
+//! checked over the bytes received; a request the host lent no body is refused (fail-closed).
+//! Whatever its verdict, it names its signature header lines for the transport to strip, so the
+//! plane never sees them.
 //!
 //! THE VERDICTS:
 //! * none of the variant's headers present — PASS: not this plugin's credential. A claim whose only
@@ -43,11 +46,11 @@
 
 pub mod signature;
 
-use busbar_contract::abi::auth::AuthTail;
+use busbar_contract::abi::auth::{AuthPoints, AuthTail};
 use busbar_contract::abi::mechanism::call::AbiStr;
 use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::sdk::auth_door::{
-    verify_tail, with_tail, Verdict, VerifiedIdentity, VerifyPlugin, VerifyView,
+    verify_tail, with_tail, Answer, Strip, Verdict, VerifiedIdentity, VerifyPlugin, VerifyView,
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::auth_calls::Replay;
@@ -355,21 +358,33 @@ impl VerifyPlugin for WebhookSignature {
         WebhookSignature::new(settings, secrets)
     }
 
-    fn verify(&self, request: &VerifyView<'_>) -> Verdict {
-        let headers = |name: &str| request.carrier(name);
-        self.judge(&Request {
+    fn verify(&self, request: &VerifyView<'_>) -> Answer {
+        let headers = |name: &str| request.line(name);
+        let verdict = self.judge(&Request {
             method: request.method(),
             path: request.path(),
             query: request.query(),
-            // The auth ABI's `verify` lends no body.
-            body: None,
+            // Lent at `HeadBody` only; none lent is a body the signature cannot be checked over.
+            body: request.body(),
             now: request.timestamp(),
             headers: &headers,
-        })
+        });
+        Answer {
+            strips: SIGNATURE_LINES.iter().map(|n| Strip::field(*n)).collect(),
+            ..verdict.into()
+        }
     }
 }
 
-/// The carriers `verify` reads, which the kernel strips from what a plane sees.
+/// The signature header lines, named for the transport to strip whatever the verdict.
+const SIGNATURE_LINES: [&str; 4] = [
+    TWILIO_SIGNATURE_HEADER,
+    WEBHOOK_ID_HEADER,
+    WEBHOOK_TIMESTAMP_HEADER,
+    WEBHOOK_SIGNATURE_HEADER,
+];
+
+/// The carriers `verify` reads.
 const CARRIERS: &[AbiStr] = &[
     abi_str(TWILIO_SIGNATURE_HEADER),
     abi_str(WEBHOOK_ID_HEADER),
@@ -378,8 +393,8 @@ const CARRIERS: &[AbiStr] = &[
 ];
 
 /// Verify-only and NOT cacheable: a signature is a verdict about one request, not a reusable
-/// credential.
-const TAIL: &AuthTail = &verify_tail(0, CARRIERS);
+/// credential. Called at `HeadBody`: the signatures cover the body.
+const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD_BODY, CARRIERS);
 
 const SECRET_REFS: &[AbiStr] = &[abi_str(SECRET_REF)];
 

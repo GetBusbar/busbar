@@ -12,17 +12,31 @@
 //! ONE CALL PER REQUEST PER CHAIN POSITION, and no verdict cache in the kernel: each auth plugin
 //! caches inside itself, and drops that cache on `refresh` ([`AuthCalls::refresh`]).
 
+use std::borrow::Cow;
 use std::future::Future;
 
 use crate::redacted::Redacted;
 use std::sync::Arc;
 
+use crate::abi::auth::AuthPoint;
 use crate::auth::{BeginLogin, CompleteLogin, LoginKind, LoginOutcome};
+use crate::redacted::Redacted;
 
-/// One inbound request's facts, as the kernel hands them to `verify`. Owned: the answer is
-/// awaited, so nothing here borrows the request.
-#[derive(Default)]
+/// One inbound request at one AUTH POINT, as the host hands it to `verify` (THE DESIGN, "Auth
+/// points and guest lists"). Owned: the answer is awaited, so nothing here borrows the request.
 pub struct VerifyRequest {
+    /// The point the call is made at.
+    pub point: AuthPoint,
+    /// The connection the request arrived on.
+    pub conn: u64,
+    /// The unit the kernel minted for the request; `0` at [`AuthPoint::Peer`].
+    pub unit: u64,
+    /// The neutral field lines, as presented (name, value). A value may be a credential: secret.
+    pub lines: Vec<(String, Redacted<Vec<u8>>)>,
+    /// The peer facts; `Some` only at [`AuthPoint::Peer`].
+    pub peer: Option<Vec<u8>>,
+    /// The whole body; `Some` only at [`AuthPoint::HeadBody`], bounded by the size gate.
+    pub body: Option<Vec<u8>>,
     /// The method.
     pub method: String,
     /// The authority (host\[:port\]).
@@ -33,13 +47,32 @@ pub struct VerifyRequest {
     pub query: Option<String>,
     /// Wall-clock seconds since the Unix epoch, read once for this call.
     pub timestamp: u64,
-    /// SHA-256 of the body, when the plugin's tail states it reads it.
-    pub body_hash: Option<[u8; 32]>,
+}
+
+impl Default for VerifyRequest {
+    /// A request at [`AuthPoint::Head`] with nothing in it.
+    fn default() -> Self {
+        Self {
+            point: AuthPoint::Head,
+            conn: 0,
+            unit: 0,
+            lines: Vec::new(),
+            peer: None,
+            body: None,
+            method: String::new(),
+            authority: String::new(),
+            path: String::new(),
+            query: None,
+            timestamp: 0,
+        }
+    }
 }
 
 impl std::fmt::Debug for VerifyRequest {
+    // Never a line value or the body: they carry the credential and the payload.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VerifyRequest")
+            .field("point", &self.point)
             .field("method", &self.method)
             .finish_non_exhaustive()
     }
@@ -68,6 +101,10 @@ pub struct VerifiedIdentity {
     /// verifying instance, the plugin's name and this key after this identity; `None` (or an empty
     /// key) = no claim. Never reaches a plane. Boxed: most identities carry none.
     pub replay: Option<Box<Replay>>,
+    /// The credential the identity was verified from, for the kernel to hold on the unit for the
+    /// `caller-credential` style (THE DESIGN, "Auth points and guest lists", step 4). SECRET:
+    /// the kernel's only, never the transport's; `None` = the plugin named none.
+    pub credential: Option<Redacted<String>>,
 }
 
 /// A replay claim an identity asks the kernel to make.
@@ -80,6 +117,11 @@ pub struct Replay {
 }
 
 /// One `verify`'s answer, as the kernel's chain reads it.
+///
+/// `large_enum_variant`: `Identity` carries the whole identity by value; the answer is built once
+/// per call and consumed by the chain at once, never held in a collection, so a box would only add
+/// an allocation per verify.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verified {
     /// Identified.
@@ -96,11 +138,88 @@ pub enum Verified {
     Overloaded,
 }
 
+/// What the transport does with the request after a point call (THE DESIGN, "Auth points and
+/// guest lists", step 3): the only verdict-derived thing it receives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    /// Go on: the next point, or hand the request in.
+    Continue,
+    /// Stop the request.
+    Stop,
+}
+
+/// Where a credential name sits in the request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StripPlace {
+    /// A field line, matched ASCII case-insensitively.
+    Field,
+    /// A query key, matched case-sensitively.
+    Query,
+}
+
+/// One credential line or query key an auth names for the transport to strip: a NAME, never a
+/// value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Strip {
+    /// The name.
+    pub name: Cow<'static, str>,
+    /// Where it sits.
+    pub place: StripPlace,
+}
+
+impl Strip {
+    /// The field line `name`.
+    #[must_use]
+    pub fn field(name: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            name: name.into(),
+            place: StripPlace::Field,
+        }
+    }
+
+    /// The query key `name`.
+    #[must_use]
+    pub fn query(name: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            name: name.into(),
+            place: StripPlace::Query,
+        }
+    }
+}
+
+/// One `verify`'s whole answer as the host reads it: the verdict (the kernel's), the decision and
+/// the lines to strip (the transport's).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifyAnswer {
+    /// The verdict, with the identity and its credential: the kernel's only.
+    pub verified: Verified,
+    /// Continue or stop.
+    pub decision: Decision,
+    /// The credential lines and query keys the auth named, whatever its verdict.
+    pub strips: Vec<Strip>,
+}
+
+impl From<Verified> for VerifyAnswer {
+    /// The verdict with no strips and its default decision: continue on an identity or a pass,
+    /// stop otherwise (a reject, a failure, an overloaded verifier).
+    fn from(verified: Verified) -> Self {
+        let decision = match verified {
+            Verified::Identity(_) | Verified::Pass => Decision::Continue,
+            Verified::Reject | Verified::Failed | Verified::Overloaded => Decision::Stop,
+        };
+        Self {
+            verified,
+            decision,
+            strips: Vec::new(),
+        }
+    }
+}
+
 /// One `verify` in flight. Dropping it before it answered is a client drop.
-pub trait Verifying: Future<Output = Verified> + Send + Unpin {
+pub trait Verifying: Future<Output = VerifyAnswer> + Send + Unpin {
     /// The answer, if it has arrived; never waits. A SYNC caller polls this once and fails closed
     /// on `None` rather than block a thread.
-    fn settled(&mut self) -> Option<Verified>;
+    fn settled(&mut self) -> Option<VerifyAnswer>;
 }
 
 /// One `complete_login` as the kernel hands it: the callback's `state` and the login's `nonce` (the
@@ -162,11 +281,12 @@ pub trait AuthCalls: Send + Sync {
     /// dispatcher's watchdog (THE DESIGN, section 12: a crossing that cannot wait needs no ticket). A
     /// plugin whose `verify` must wait on I/O answers REFUSED there (`abi::auth`), and this answers
     /// `None`: the caller then [`AuthCalls::verify`]s, awaiting it. A short answer is re-called once.
-    fn verify_now(&self, request: &VerifyRequest) -> Option<Verified>;
+    fn verify_now(&self, request: &VerifyRequest) -> Option<VerifyAnswer>;
 
     /// Submit `verify`; it crosses on a dispatcher worker and its answer is a future, so no thread
     /// is parked. A short answer is re-called once with the buffers it named; a second is
-    /// [`Verified::Failed`].
+    /// [`Verified::Failed`]. The instance's `max_inflight` full is [`Verified::Overloaded`], never
+    /// queued: the host answers the request 503 (THE DESIGN's accepted differences).
     fn verify(&self, request: VerifyRequest) -> Box<dyn Verifying>;
 
     /// `refresh` with a NEW generation and unchanged settings: the admin cache flush. The plugin

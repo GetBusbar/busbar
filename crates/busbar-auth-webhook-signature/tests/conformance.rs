@@ -17,8 +17,9 @@ use std::sync::{Arc, Mutex};
 
 use busbar_auth_webhook_signature::signature::twilio_sign;
 use busbar_contract::abi::auth::{
-    slot, IdentifyOut, IdentityBuf, NamedValue, RequestFacts, Span, VerifyIn, SPAN_ABSENT,
-    VERDICT_IDENTITY, VERDICT_PASS, VERDICT_REJECT,
+    slot, IdentifyOut, IdentityBuf, NamedValue, RequestFacts, Span, StripName, VerifyIn,
+    DECISION_CONTINUE, DECISION_STOP, POINT_HEAD_BODY, SPAN_ABSENT, STRIP_FIELD, VERDICT_IDENTITY,
+    VERDICT_PASS, VERDICT_REJECT,
 };
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
@@ -126,8 +127,8 @@ fn open(p: &Plugin<Auth>, settings: &str, secret: &str) -> Outcome {
     p.call(life::OPEN, &mut o).outcome
 }
 
-/// One `verify`: `outcome verdict subject`, as the loader judged it. `VerifyIn` carries no body, so
-/// `body` never reaches the plugin: a body-signed request is refused.
+/// One `verify` at `HeadBody`: `outcome verdict subject`, as the loader judged it. The host lends
+/// `body` (none = no body lent, which a body-signed request is refused for).
 #[allow(clippy::too_many_arguments)]
 fn verify_req(
     p: &Plugin<Auth>,
@@ -138,9 +139,31 @@ fn verify_req(
     now: u64,
     headers: &[(&str, &str)],
 ) -> String {
+    verify_answer(p, method, path, query, body, now, headers).0
+}
+
+/// [`verify_req`]'s line, and the decision and the strip names (lower-case) the answer carried.
+#[allow(clippy::too_many_arguments)]
+fn verify_answer(
+    p: &Plugin<Auth>,
+    method: &str,
+    path: &str,
+    query: Option<&str>,
+    body: Option<&[u8]>,
+    now: u64,
+    headers: &[(&str, &str)],
+) -> (String, u32, Vec<String>) {
     let mut buf = vec![0u8; 256];
     let mut groups = vec![Span { off: 0, len: 0 }; 4];
-    let carrier: Vec<NamedValue> = headers
+    let mut strips = vec![
+        StripName {
+            name: Span { off: 0, len: 0 },
+            place: 0,
+            _reserved: 0,
+        };
+        8
+    ];
+    let lines: Vec<NamedValue> = headers
         .iter()
         .map(|(n, v)| NamedValue {
             name: s(n),
@@ -151,8 +174,12 @@ fn verify_req(
     f.input.head = in_head();
     f.out.head = out_head();
     f.input.credential = z();
-    f.input.carrier = carrier.as_ptr();
-    f.input.carrier_len = carrier.len();
+    f.input.lines = lines.as_ptr();
+    f.input.lines_len = lines.len();
+    f.input.point = POINT_HEAD_BODY;
+    f.input.body = body.map_or(z(), |b| blob(b, BLOB_OCTETS, 0));
+    f.input.strip = strips.as_mut_ptr();
+    f.input.strip_cap = strips.len() as u32;
     f.input.request = RequestFacts {
         method: s(method),
         authority: s("edge.example.com"),
@@ -165,9 +192,7 @@ fn verify_req(
             s,
         ),
         timestamp: now,
-        ..z()
     };
-    let _ = body;
     f.input.out_buf = IdentityBuf {
         buf: buf.as_mut_ptr(),
         buf_cap: buf.len(),
@@ -205,9 +230,27 @@ fn verify_req(
     } else {
         String::new()
     };
-    format!("{:?} {verdict} {subject}{replay}", c.outcome)
-        .trim_end()
-        .to_string()
+    let named = if c.outcome == Outcome::Ready {
+        strips[..f.out.strip_len as usize]
+            .iter()
+            .map(|n| {
+                assert_eq!(n.place, STRIP_FIELD, "a signature header is a field line");
+                String::from_utf8_lossy(
+                    &buf[n.name.off as usize..(n.name.off + n.name.len) as usize],
+                )
+                .to_ascii_lowercase()
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    (
+        format!("{:?} {verdict} {subject}{replay}", c.outcome)
+            .trim_end()
+            .to_string(),
+        f.out.decision,
+        named,
+    )
 }
 
 /// A Twilio Media Streams upgrade (a GET) with `signature` in `X-Twilio-Signature`, or none.
@@ -280,7 +323,7 @@ const EXPECTED: &[&str] = &[
     "replayed-path Ready reject",
     "replayed-query Ready reject",
     "replayed-no-query Ready reject",
-    "signed-post Ready reject",
+    "signed-post Ready identity webhook-signature:twilio",
     "signed-post-tampered Ready reject",
     "signed-post-no-body Ready reject",
 ];
@@ -331,7 +374,8 @@ fn standard_script(p: &Plugin<Auth>) -> Vec<String> {
 
 const STANDARD_EXPECTED: &[&str] = &[
     "open Ready",
-    "valid Ready reject",
+    "valid Ready identity webhook-signature:standard-webhooks \
+     replay=standard-webhooks/msg_p5jXN8AQM9LWM0D4loKWxJek/301s",
     "bad-signature Ready reject",
     "stale Ready reject",
     "missing-headers Ready pass",
@@ -379,4 +423,34 @@ fn red_open_without_a_signing_secret_or_with_foreign_settings_fails() {
         ),
         Outcome::Failed
     );
+}
+
+/// THE STRIPS AND THE DECISION (THE DESIGN, "Auth points and guest lists", step 3): whatever the
+/// verdict, the plugin names its four signature header lines for the transport to strip, so the
+/// plane never sees them; an identity or a pass continues, a reject stops.
+#[test]
+fn every_verdict_names_the_signature_lines_and_a_decision() {
+    let d = Dispatcher::new(DispatchConfig::default());
+    let folds = Arc::new(Folds::default());
+    let p = linked(&folds, &d);
+    assert_eq!(open(&p, SETTINGS, TOKEN), Outcome::Ready);
+    let valid = twilio_sign(TOKEN.as_bytes(), SIGNED_URL.as_bytes(), &[]);
+    let names = [
+        "x-twilio-signature",
+        "webhook-id",
+        "webhook-timestamp",
+        "webhook-signature",
+    ];
+    for (sig, verdict, decision) in [
+        (Some(valid.as_str()), "identity", DECISION_CONTINUE),
+        (Some("%%%"), "reject", DECISION_STOP),
+        (None, "pass", DECISION_CONTINUE),
+    ] {
+        let headers: Vec<(&str, &str)> =
+            sig.map(|v| ("X-Twilio-Signature", v)).into_iter().collect();
+        let (line, got, stripped) = verify_answer(&p, "GET", PATH, Some(QUERY), None, 0, &headers);
+        assert!(line.starts_with(&format!("Ready {verdict}")), "{line}");
+        assert_eq!(got, decision, "{line}");
+        assert_eq!(stripped, names, "{line}");
+    }
 }

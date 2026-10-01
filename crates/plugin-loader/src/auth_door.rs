@@ -9,8 +9,9 @@
 //! * `verify` ON THE SPOT ([`AuthCalls::verify_now`]): one ticket-less crossing on the caller's
 //!   thread, watchdog-bounded. A plugin that must wait answers REFUSED there, and the caller submits.
 //! * `verify` SUBMITTED ([`AuthCalls::verify`]): on a request ticket of the dispatcher, awaited
-//!   through the reply's waker, so no thread is parked. The memory the `in` lends (the credential,
-//!   the carriers, the request facts, the identity buffer) travels with the op
+//!   through the reply's waker, so no thread is parked. The memory the `in` lends (the field lines,
+//!   the peer facts, the body, the request facts, the identity buffer and the strip array) travels
+//!   with the op
 //!   ([`Dispatcher::submit_lent`]) and outlives a caller that stops waiting. The instance's
 //!   `max_inflight` full is [`Verified::Overloaded`] (R8: the host answers 503).
 //! * A SHORT answer is re-called ONCE with the buffers it named; a second is [`Verified::Failed`].
@@ -19,7 +20,10 @@
 //!   [`METRIC_CACHE_FLUSHED`](busbar_contract::abi::auth::METRIC_CACHE_FLUSHED) family, which this
 //!   answers.
 //!
-//! The credential and every carrier value are secret: their bytes are zeroed when the op's lent
+//! Every answer is a [`VerifyAnswer`]: the verdict (with the identity and its credential, a
+//! secret), the decision and the lines to strip (THE DESIGN, "Auth points and guest lists").
+//!
+//! The credential and every line value are secret: their bytes are zeroed when the op's lent
 //! memory is dropped, and nothing here prints them.
 
 use std::future::Future;
@@ -30,9 +34,9 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use busbar_contract::abi::auth::{
-    slot, IdentifyOut, IdentityBuf, IdentityOut, NamedValue, RequestFacts, Span, VerifyIn,
-    IDENTITY_BUF_BYTES, IDENTITY_GROUPS, IDENTITY_HAS_TTL, SPAN_ABSENT, VERDICT_IDENTITY,
-    VERDICT_REJECT,
+    slot, IdentifyOut, IdentityBuf, IdentityOut, NamedValue, RequestFacts, Span, StripName,
+    VerifyIn, DECISION_CONTINUE, FIELDS_HARD_MAX, FIELDS_MAX, IDENTITY_BUF_BYTES, IDENTITY_GROUPS,
+    IDENTITY_HAS_TTL, SPAN_ABSENT, STRIP_QUERY, VERDICT_IDENTITY, VERDICT_REJECT,
 };
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
@@ -42,7 +46,8 @@ use busbar_contract::abi::mechanism::lifecycle::{
 };
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::auth_calls::{
-    AuthCalls, Verified, VerifiedIdentity, VerifyRequest, Verifying,
+    AuthCalls, Decision, Strip, StripPlace, Verified, VerifiedIdentity, VerifyAnswer,
+    VerifyRequest, Verifying,
 };
 
 use crate::dispatch::kinds::auth::{Auth, AuthFacts};
@@ -89,7 +94,7 @@ fn blob(b: &[u8], fmt: u32, flags: u32) -> Blob {
     }
 }
 
-/// A fresh `verify` `out`: no verdict, no identity.
+/// A fresh `verify` `out`: no verdict, no identity, no decision, no strip.
 fn identify_out() -> IdentifyOut {
     let absent = Span {
         off: SPAN_ABSENT,
@@ -115,7 +120,12 @@ fn identify_out() -> IdentifyOut {
             _reserved: 0,
             replay_key: absent,
             replay_ttl_secs: 0,
+            credential: absent,
         },
+        decision: 0,
+        strip_len: 0,
+        needed_strip: 0,
+        _reserved: 0,
     }
 }
 
@@ -133,19 +143,26 @@ fn zero(bytes: &mut [u8]) {
     std::hint::black_box(bytes);
 }
 
-/// THE MEMORY ONE `verify` LENDS: the owned request, the carrier list pointing into it, and the
-/// identity buffers the plugin writes. Built once, then only read (by the plugin through the `in`,
+/// THE MEMORY ONE `verify` LENDS: the owned request, the line list pointing into it, and the
+/// identity buffers and strip array the plugin writes. Built once, then only read (by the plugin through the `in`,
 /// and by the host after the op completed), so it is shared behind an `Arc` with the dispatcher.
 struct Held {
     credential: Vec<u8>,
-    carriers: Vec<(String, Vec<u8>)>,
+    lines: Vec<(String, Vec<u8>)>,
     named: Vec<NamedValue>,
+    point: u32,
+    conn: u64,
+    unit: u64,
+    peer: Option<Vec<u8>>,
+    body: Option<Vec<u8>>,
     method: String,
     authority: String,
     path: String,
     query: Option<String>,
     timestamp: u64,
-    body_hash: Option<[u8; 32]>,
+    /// The strip names: an allocation of `strip_cap` entries the plugin writes through `in`.
+    strip: *mut StripName,
+    strip_cap: u32,
     /// The identity bytes: an allocation of `buf_cap` bytes the plugin writes through `in`.
     buf: *mut u8,
     buf_cap: usize,
@@ -154,7 +171,7 @@ struct Held {
     groups_cap: u32,
 }
 
-// SAFETY: `named` and the two buffers point only into allocations `Held` owns and frees in `Drop`;
+// SAFETY: `named` and the three buffers point only into allocations `Held` owns and frees in `Drop`;
 // after construction nothing writes through them but the plugin crossing under the dispatcher,
 // which never runs concurrently with the host's read (the host reads only after the op completed).
 unsafe impl Send for Held {}
@@ -162,7 +179,7 @@ unsafe impl Send for Held {}
 unsafe impl Sync for Held {}
 
 impl Held {
-    fn new(req: &VerifyRequest, buf_cap: usize, groups_cap: u32) -> Arc<Self> {
+    fn new(req: &VerifyRequest, buf_cap: usize, groups_cap: u32, strip_cap: u32) -> Arc<Self> {
         let buf = Box::into_raw(vec![0u8; buf_cap].into_boxed_slice()).cast::<u8>();
         let empty = Span {
             off: SPAN_ABSENT,
@@ -170,24 +187,41 @@ impl Held {
         };
         let groups =
             Box::into_raw(vec![empty; groups_cap as usize].into_boxed_slice()).cast::<Span>();
+        let unnamed = StripName {
+            name: empty,
+            place: 0,
+            _reserved: 0,
+        };
+        let strip =
+            Box::into_raw(vec![unnamed; strip_cap as usize].into_boxed_slice()).cast::<StripName>();
         let mut held = Self {
-            // The host's request carries no credential and no carrier: none is lent.
+            // The host's request carries no credential of its own: none is lent.
             credential: Vec::new(),
-            carriers: Vec::new(),
+            lines: req
+                .lines
+                .iter()
+                .map(|(n, v)| (n.clone(), v.expose_secret().clone()))
+                .collect(),
             named: Vec::new(),
+            point: req.point.bit(),
+            conn: req.conn,
+            unit: req.unit,
+            peer: req.peer.clone(),
+            body: req.body.clone(),
             method: req.method.clone(),
             authority: req.authority.clone(),
             path: req.path.clone(),
             query: req.query.clone(),
             timestamp: req.timestamp,
-            body_hash: req.body_hash,
+            strip,
+            strip_cap,
             buf,
             buf_cap,
             groups,
             groups_cap,
         };
         held.named = held
-            .carriers
+            .lines
             .iter()
             .map(|(name, value)| NamedValue {
                 name: lend(name),
@@ -206,21 +240,18 @@ impl Held {
             } else {
                 crate::dispatch::NO_BLOB
             },
-            carrier: if self.named.is_empty() {
+            lines: if self.named.is_empty() {
                 std::ptr::null()
             } else {
                 self.named.as_ptr()
             },
-            carrier_len: self.named.len(),
+            lines_len: self.named.len(),
             request: RequestFacts {
                 method: lend(&self.method),
                 authority: lend(&self.authority),
                 canonical_path: lend(&self.path),
                 query: lend_opt(self.query.as_deref()),
                 timestamp: self.timestamp,
-                body_hash: self.body_hash.unwrap_or([0; 32]),
-                body_hash_present: u32::from(self.body_hash.is_some()),
-                _reserved: 0,
             },
             out_buf: IdentityBuf {
                 buf: self.buf,
@@ -229,7 +260,48 @@ impl Held {
                 groups_cap: self.groups_cap,
                 _reserved: 0,
             },
+            point: self.point,
+            _reserved: 0,
+            conn: self.conn,
+            unit: self.unit,
+            // Present (even when empty) exactly when the request carries one.
+            peer: self
+                .peer
+                .as_deref()
+                .map_or(crate::dispatch::NO_BLOB, |p| blob(p, BLOB_OCTETS, 0)),
+            body: self
+                .body
+                .as_deref()
+                .map_or(crate::dispatch::NO_BLOB, |b| blob(b, BLOB_OCTETS, 0)),
+            strip: self.strip,
+            strip_cap: self.strip_cap,
+            _reserved2: 0,
         }
+    }
+
+    /// The strip names a READY answer reported, as names and places.
+    fn strips(&self, out: &IdentifyOut) -> Vec<Strip> {
+        let n = out.strip_len.min(self.strip_cap) as usize;
+        if n == 0 {
+            return Vec::new();
+        }
+        // SAFETY: `strip` holds `strip_cap` initialized entries; `n` is bounded by it, and the op
+        // completed, so the plugin no longer writes the array.
+        let names = unsafe { std::slice::from_raw_parts(self.strip, n) };
+        names
+            .iter()
+            .filter_map(|s| {
+                let name = self.text(s.name)?;
+                Some(Strip {
+                    name: name.into(),
+                    place: if s.place == STRIP_QUERY {
+                        StripPlace::Query
+                    } else {
+                        StripPlace::Field
+                    },
+                })
+            })
+            .collect()
     }
 
     /// The text at `s` in the identity buffer; `None` when absent.
@@ -270,6 +342,12 @@ impl Held {
                         ttl_secs: o.replay_ttl_secs,
                     })
                 }),
+            // `len == 0` is absent.
+            credential: if o.credential.len == 0 {
+                None
+            } else {
+                self.text(o.credential).map(Into::into)
+            },
         }
     }
 }
@@ -277,11 +355,11 @@ impl Held {
 impl Drop for Held {
     fn drop(&mut self) {
         zero(&mut self.credential);
-        for (_, v) in &mut self.carriers {
+        for (_, v) in &mut self.lines {
             zero(v);
         }
-        // SAFETY: both allocations were made in `new` from boxed slices of exactly these lengths,
-        // and nothing reads them once the last `Arc` is dropped.
+        // SAFETY: the three allocations were made in `new` from boxed slices of exactly these
+        // lengths, and nothing reads them once the last `Arc` is dropped.
         unsafe {
             let buf = std::ptr::slice_from_raw_parts_mut(self.buf, self.buf_cap);
             zero(&mut *buf);
@@ -290,32 +368,50 @@ impl Drop for Held {
                 self.groups,
                 self.groups_cap as usize,
             )));
+            drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+                self.strip,
+                self.strip_cap as usize,
+            )));
         }
     }
 }
 
-/// An answer's verdict, read over `held`.
-fn verdict(outcome: Outcome, out: &IdentifyOut, held: &Held) -> Verified {
+/// An answer, read over `held`: the verdict (the kernel's), the decision and the strips (the
+/// transport's). The strips are named whatever the verdict; an answer that is not READY is
+/// [`Verified::Failed`] with the decision to stop.
+fn verdict(outcome: Outcome, out: &IdentifyOut, held: &Held) -> VerifyAnswer {
     if outcome != Outcome::Ready {
-        return Verified::Failed;
+        return Verified::Failed.into();
     }
-    match out.verdict {
+    let verified = match out.verdict {
         VERDICT_IDENTITY => Verified::Identity(held.identity(&out.identity)),
         VERDICT_REJECT => Verified::Reject,
         _ => Verified::Pass,
+    };
+    VerifyAnswer {
+        verified,
+        decision: if out.decision == DECISION_CONTINUE {
+            Decision::Continue
+        } else {
+            Decision::Stop
+        },
+        strips: held.strips(out),
     }
 }
 
-/// The bigger buffers a SHORT answer names; `None` when it asks past the host's limits.
-fn grown(out: &IdentifyOut, held: &Held) -> Option<(usize, u32)> {
+/// The bigger buffers a SHORT answer names (bytes, groups, strip names); `None` when it asks past
+/// the host's limits.
+fn grown(out: &IdentifyOut, held: &Held) -> Option<(usize, u32, u32)> {
     if out.needed_bytes > IDENTITY_BUF_MAX
         || out.needed_groups > busbar_contract::abi::auth::IDENTITY_GROUPS_HARD_MAX
+        || out.needed_strip > FIELDS_HARD_MAX
     {
         return None;
     }
     Some((
         (out.needed_bytes as usize).max(held.buf_cap),
         out.needed_groups.max(held.groups_cap),
+        out.needed_strip.max(held.strip_cap),
     ))
 }
 
@@ -567,20 +663,20 @@ impl AuthCalls for AuthInstance {
         self.facts.facts
     }
 
-    fn verify_now(&self, request: &VerifyRequest) -> Option<Verified> {
+    fn verify_now(&self, request: &VerifyRequest) -> Option<VerifyAnswer> {
         let presented = false;
         let plugin = &self.shared.plugin;
-        let held = Held::new(request, IDENTITY_BUF_BYTES, IDENTITY_GROUPS);
+        let held = Held::new(request, IDENTITY_BUF_BYTES, IDENTITY_GROUPS, FIELDS_MAX);
         let mut f = Frame::new(held.input(presented), identify_out());
         let called = plugin.call(slot::VERIFY, &mut f);
         match called.outcome {
             Outcome::Refused => None,
             Outcome::Failed if called.recall.is_some() => {
                 let token = called.recall?;
-                let Some((cap, groups)) = grown(&f.out, &held) else {
-                    return Some(Verified::Failed);
+                let Some((cap, groups, strips)) = grown(&f.out, &held) else {
+                    return Some(Verified::Failed.into());
                 };
-                let bigger = Held::new(request, cap, groups);
+                let bigger = Held::new(request, cap, groups, strips);
                 let mut g = Frame::new(bigger.input(presented), identify_out());
                 let again = plugin.recall(token, slot::VERIFY, &mut g);
                 Some(verdict(again.outcome, &g.out, &bigger))
@@ -593,13 +689,13 @@ impl AuthCalls for AuthInstance {
         let sh = &self.shared;
         let p = &sh.plugin;
         if p.max_inflight() != 0 && p.inflight() >= p.max_inflight() {
-            return Box::new(Settled(Some(Verified::Overloaded)));
+            return Box::new(Settled(Some(Verified::Overloaded.into())));
         }
         let Some(ticket) = sh.ticket() else {
-            return Box::new(Settled(Some(Verified::Overloaded)));
+            return Box::new(Settled(Some(Verified::Overloaded.into())));
         };
         let presented = false;
-        let held = Held::new(&request, IDENTITY_BUF_BYTES, IDENTITY_GROUPS);
+        let held = Held::new(&request, IDENTITY_BUF_BYTES, IDENTITY_GROUPS, FIELDS_MAX);
         let reply = sh.submit(ticket, &held, presented);
         Box::new(Submitted {
             shared: sh.clone(),
@@ -668,17 +764,17 @@ impl AuthCalls for AuthInstance {
 }
 
 /// A verify answered before it was submitted (overload).
-struct Settled(Option<Verified>);
+struct Settled(Option<VerifyAnswer>);
 
 impl Future for Settled {
-    type Output = Verified;
-    fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Verified> {
-        Poll::Ready(self.0.take().unwrap_or(Verified::Failed))
+    type Output = VerifyAnswer;
+    fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<VerifyAnswer> {
+        Poll::Ready(self.0.take().unwrap_or_else(|| Verified::Failed.into()))
     }
 }
 
 impl Verifying for Settled {
-    fn settled(&mut self) -> Option<Verified> {
+    fn settled(&mut self) -> Option<VerifyAnswer> {
         self.0.take()
     }
 }
@@ -692,36 +788,36 @@ struct Submitted {
     held: Arc<Held>,
     reply: Option<Reply<VerifyIn, IdentifyOut>>,
     recalled: bool,
-    answer: Option<Verified>,
+    answer: Option<VerifyAnswer>,
 }
 
 impl Submitted {
     /// Take a completed op: its verdict, or `None` after re-submitting a short answer.
-    fn complete(&mut self, done: Done<VerifyIn, IdentifyOut>) -> Option<Verified> {
+    fn complete(&mut self, done: Done<VerifyIn, IdentifyOut>) -> Option<VerifyAnswer> {
         let out = done.frame.as_ref().map(|f| f.out);
         if done.short && !self.recalled {
             self.recalled = true;
             let grow = out.as_ref().and_then(|o| grown(o, &self.held));
-            if let Some((cap, groups)) = grow {
-                self.held = Held::new(&self.request, cap, groups);
+            if let Some((cap, groups, strips)) = grow {
+                self.held = Held::new(&self.request, cap, groups, strips);
                 self.reply = Some(self.shared.submit(self.ticket, &self.held, self.presented));
                 return None;
             }
-            return Some(Verified::Failed);
+            return Some(Verified::Failed.into());
         }
         Some(match out {
             Some(o) => verdict(done.outcome, &o, &self.held),
-            None => Verified::Failed,
+            None => Verified::Failed.into(),
         })
     }
 
-    fn step(&mut self, cx: &mut Context<'_>) -> Poll<Verified> {
+    fn step(&mut self, cx: &mut Context<'_>) -> Poll<VerifyAnswer> {
         loop {
             if let Some(v) = &self.answer {
                 return Poll::Ready(v.clone());
             }
             let Some(reply) = self.reply.as_mut() else {
-                return Poll::Ready(Verified::Failed);
+                return Poll::Ready(Verified::Failed.into());
             };
             let done = match Pin::new(reply).poll(cx) {
                 Poll::Ready(d) => d,
@@ -736,14 +832,14 @@ impl Submitted {
 }
 
 impl Future for Submitted {
-    type Output = Verified;
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Verified> {
+    type Output = VerifyAnswer;
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<VerifyAnswer> {
         self.step(cx)
     }
 }
 
 impl Verifying for Submitted {
-    fn settled(&mut self) -> Option<Verified> {
+    fn settled(&mut self) -> Option<VerifyAnswer> {
         let mut cx = Context::from_waker(Waker::noop());
         match self.step(&mut cx) {
             Poll::Ready(v) => Some(v),
