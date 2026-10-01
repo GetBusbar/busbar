@@ -48,9 +48,10 @@ pub mod signature;
 
 use busbar_contract::abi::auth::{AuthPoints, AuthTail};
 use busbar_contract::abi::mechanism::call::AbiStr;
-use busbar_contract::abi::mechanism::door::Statement;
+use busbar_contract::abi::mechanism::door::{MarkWord, Statement};
 use busbar_contract::abi::sdk::auth_door::{
-    verify_tail, with_tail, Answer, Strip, Verdict, VerifiedIdentity, VerifyPlugin, VerifyView,
+    carrier, verify_tail, with_tail, Answer, Strip, Verdict, VerifiedIdentity, VerifyPlugin,
+    VerifyView,
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::auth_calls::Replay;
@@ -384,25 +385,27 @@ const SIGNATURE_LINES: [&str; 4] = [
     WEBHOOK_SIGNATURE_HEADER,
 ];
 
-/// The carriers `verify` reads.
-const CARRIERS: &[AbiStr] = &[
-    abi_str(TWILIO_SIGNATURE_HEADER),
-    abi_str(WEBHOOK_ID_HEADER),
-    abi_str(WEBHOOK_TIMESTAMP_HEADER),
-    abi_str(WEBHOOK_SIGNATURE_HEADER),
+/// The carriers `verify` reads: the Statement's carrier word marks.
+const CARRIERS: &[MarkWord] = &[
+    carrier(TWILIO_SIGNATURE_HEADER),
+    carrier(WEBHOOK_ID_HEADER),
+    carrier(WEBHOOK_TIMESTAMP_HEADER),
+    carrier(WEBHOOK_SIGNATURE_HEADER),
 ];
 
 /// Verify-only and NOT cacheable: a signature is a verdict about one request, not a reusable
 /// credential. Called at `HeadBody`: the signatures cover the body.
-const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD_BODY, CARRIERS);
+const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD_BODY);
 
 const SECRET_REFS: &[AbiStr] = &[abi_str(SECRET_REF)];
 
-/// THE STATEMENT: the plugin's name, version, one secret reference and its auth tail.
+/// THE STATEMENT: the plugin's name, version, one secret reference, its carriers and its auth tail.
 pub const STATEMENT: Statement = with_tail(
     Statement {
         secret_refs: SECRET_REFS.as_ptr(),
         secret_refs_len: SECRET_REFS.len(),
+        mark_words: CARRIERS.as_ptr(),
+        mark_words_len: CARRIERS.len(),
         ..statement(
             "busbar-auth-webhook-signature",
             env!("CARGO_PKG_VERSION"),

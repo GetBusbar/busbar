@@ -23,7 +23,8 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 use busbar_contract::abi::auth::FACT_CACHEABLE;
-use busbar_contract::abi::mechanism::{KindCode, MECHANISM_VERSION};
+use busbar_contract::abi::mechanism::door::REWRITE_ALIAS;
+use busbar_contract::abi::mechanism::rendering::read;
 use busbar_contract::auth::{AuthModule, AuthVerdict};
 use busbar_contract::auth_calls::{
     AuthCalls, Verified, VerifiedIdentity, VerifyAnswer, VerifyRequest, Verifying,
@@ -31,9 +32,7 @@ use busbar_contract::auth_calls::{
 
 use crate::auth_door::{AuthInstance, AuthSink};
 use crate::dispatch::kinds::auth::Auth;
-use crate::dispatch::{
-    load_dropped_bytes, load_linked, Bind, Dispatcher, LoadError, ManifestFacts, Plugin,
-};
+use crate::dispatch::{load_dropped_bytes, load_linked, Bind, Dispatcher, LinkedRow, Plugin};
 use crate::registry::LoadablePlugin;
 use crate::PluginRegistry;
 
@@ -73,39 +72,46 @@ impl AuthRows {
         }
     }
 
+    /// The `kind: auth` row config names by `module`: the registry's name or manifest alias, else
+    /// an alias the row's Statement states (its alias rewrites).
     fn row(&self, module: &str) -> Option<&'static LoadablePlugin> {
         self.registry
             .resolve(module)
             .filter(|p| p.manifest.kind == AUTH)
+            .or_else(|| {
+                let rows = self
+                    .registry
+                    .linked()
+                    .iter()
+                    .chain(self.registry.loadable());
+                rows.filter(|p| p.manifest.kind == AUTH)
+                    .find(|p| stated_aliases(p).iter().any(|a| a == module))
+            })
     }
 
-    /// Load `row`'s door, bound to the dispatcher.
-    fn load(&self, row: &LoadablePlugin) -> Result<Door, String> {
+    /// Load `row`'s door for the instance `label`, bound to the dispatcher and admitted against
+    /// the Statement the row states (a linked door's own rendering, a dropped plugin's signed one).
+    fn load(&self, row: &LoadablePlugin, label: &str) -> Result<Door, String> {
         let name = &row.manifest.name;
+        let refused = |e: String| format!("auth plugin '{name}': {e}");
         let sink = AuthSink::new(name);
         let bind = Bind {
+            instance: Arc::from(label),
             max_inflight_cap: MAX_INFLIGHT_CAP,
             sink: sink.bind(),
             dispatcher: self.dispatcher.adopter(),
+            conns: None,
         };
         let loaded = match row.door() {
-            Some(door) => load_linked::<Auth>(door, bind),
+            Some(door) => LinkedRow::of(door).and_then(|r| load_linked::<Auth>(&r, bind)),
             None if row.image_is_cold_linked() => return Ok(Door::Cold),
-            None => {
-                let facts = ManifestFacts {
-                    mechanism_version: MECHANISM_VERSION,
-                    kind: KindCode::Auth,
-                    kind_abi: KindCode::Auth.abi_version(),
-                };
-                match load_dropped_bytes::<Auth>(&row.lib_bytes, name, &facts, bind) {
-                    // M6-COLD-DELETE: a dropped-in cold auth plugin states the same number and no
-                    // door.
-                    Err(LoadError::NoDoor(_)) => return Ok(Door::Cold),
-                    other => other,
-                }
-            }
+            None => match row.manifest.stated_rendering().map_err(refused)? {
+                // M6-COLD-DELETE: a dropped-in cold auth plugin states no Statement.
+                None => return Ok(Door::Cold),
+                Some(stated) => load_dropped_bytes::<Auth>(&row.lib_bytes, name, &stated, bind),
+            },
         };
-        let plugin = loaded.map_err(|e| format!("auth plugin '{name}': {e}"))?;
+        let plugin = loaded.map_err(|e| refused(e.to_string()))?;
         Ok(Door::Memory(plugin, sink))
     }
 
@@ -132,7 +138,8 @@ impl AuthRows {
         self.registry
             .linked()
             .iter()
-            .any(|p| p.manifest.kind == AUTH && p.manifest.alias == module)
+            .filter(|p| p.manifest.kind == AUTH)
+            .any(|p| p.manifest.alias == module || stated_aliases(p).iter().any(|a| a == module))
     }
 
     /// OPEN one instance of `module` over `settings` under the host's instance `label`.
@@ -148,7 +155,7 @@ impl AuthRows {
         let row = self
             .row(module)
             .ok_or_else(|| format!("no `kind: auth` plugin answers to '{module}'"))?;
-        match self.load(row)? {
+        match self.load(row, label)? {
             Door::Memory(plugin, sink) => {
                 let (settings, secrets) = crate::auth_door::split_secrets(&plugin, settings);
                 let text = settings.to_string();
@@ -175,6 +182,20 @@ impl AuthRows {
             }
         }
     }
+}
+
+/// The aliases `row`'s Statement states (its [`REWRITE_ALIAS`] rewrites; the design's One
+/// Statement): a linked door's own rendering, a dropped plugin's signed one. A cold row states none.
+/// A rendering that does not read back names nothing here; the load refuses it.
+fn stated_aliases(row: &LoadablePlugin) -> Vec<String> {
+    let stated = match row.door() {
+        Some(door) => LinkedRow::of(door).ok().map(|r| r.statement),
+        None => row.manifest.stated_rendering().ok().flatten(),
+    };
+    stated
+        .and_then(|s| read(&s).ok())
+        .map(|r| crate::boot::rewrites(&r, REWRITE_ALIAS).collect())
+        .unwrap_or_default()
 }
 
 /// The most cold `verify`s in flight across the process: past it a verify is

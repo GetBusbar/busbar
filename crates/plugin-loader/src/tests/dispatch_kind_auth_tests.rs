@@ -692,10 +692,6 @@ fn a_tail_whose_login_kind_disagrees_with_its_login_capability_refuses() {
             },
             styles: std::ptr::null(),
             styles_len: 0,
-            aliases: std::ptr::null(),
-            aliases_len: 0,
-            carriers: std::ptr::null(),
-            carriers_len: 0,
         }));
         let st = busbar_contract::abi::mechanism::door::Statement {
             kind_tail: std::ptr::from_ref(tail).cast(),
@@ -753,10 +749,6 @@ fn a_tail_with_a_broken_point_set_refuses() {
             inbound_points,
             styles: styles.as_ptr(),
             styles_len: styles.len(),
-            aliases: std::ptr::null(),
-            aliases_len: 0,
-            carriers: std::ptr::null(),
-            carriers_len: 0,
         }));
         let st = busbar_contract::abi::mechanism::door::Statement {
             kind_tail: std::ptr::from_ref(tail).cast(),
@@ -811,5 +803,59 @@ fn a_tail_with_a_broken_point_set_refuses() {
     assert!(
         bind(CAP_OUTBOUND, 0, style(1, POINT_HEAD)).is_err(),
         "the retired body-hash flag"
+    );
+}
+
+/// THE CARRIERS ARE STATEMENT MARKS (the design's One Statement: an auth plugin's inbound carriers
+/// are its Statement's `MARK_WORD_CARRIER` word marks, never a tail fact): the kind reads them off
+/// the Statement at bind, lower-case and in order, and skips every other word class. More than the
+/// host's bound refuses the load.
+#[test]
+fn the_carriers_are_the_statements_carrier_marks() {
+    use busbar_contract::abi::auth::{AuthTail, CAP_INBOUND, LOGIN_KIND_NONE, POINT_HEAD};
+    use busbar_contract::abi::mechanism::door::{KindTailHead, MarkWord, MARK_WORD_HOOK};
+    use busbar_contract::abi::sdk::auth_door::carrier;
+    use busbar_contract::abi::sdk::door::{abi_str, statement};
+    const TAIL: AuthTail = AuthTail {
+        head: KindTailHead {
+            size: size_of::<AuthTail>() as u32,
+            _reserved: 0,
+        },
+        caps: CAP_INBOUND,
+        facts: 0,
+        login_kind: LOGIN_KIND_NONE,
+        inbound_points: POINT_HEAD,
+        styles: std::ptr::null(),
+        styles_len: 0,
+    };
+    let tail: &'static AuthTail = Box::leak(Box::new(TAIL));
+    let carriers = |words: &'static [MarkWord]| {
+        let st = busbar_contract::abi::mechanism::door::Statement {
+            kind_tail: std::ptr::from_ref(tail).cast(),
+            mark_words: words.as_ptr(),
+            mark_words_len: words.len(),
+            ..statement("t", "1", 0)
+        };
+        <Auth as Kind>::context(&st).map(|c| {
+            c.and_then(|c| c.downcast::<crate::dispatch::kinds::auth::AuthFacts>().ok())
+                .map(|f| f.carriers)
+        })
+    };
+    let hook = MarkWord {
+        class: MARK_WORD_HOOK,
+        _reserved: 0,
+        word: abi_str("not-a-carrier"),
+    };
+    let words: &'static [MarkWord] =
+        Box::leak(Box::new([carrier("X-Signature"), hook, carrier("x-id")]));
+    assert_eq!(
+        carriers(words),
+        Ok(Some(vec!["x-signature".to_string(), "x-id".to_string()]))
+    );
+    assert_eq!(carriers(&[]), Ok(Some(Vec::new())));
+    let many: &'static [MarkWord] = Box::leak(vec![carrier("x-many"); 65].into_boxed_slice());
+    assert!(
+        carriers(many).is_err(),
+        "more carriers than the host's bound"
     );
 }

@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use busbar_contract::abi::auth::{AuthPoint, AuthPoints, AuthTail, METRIC_CACHE_FLUSHED};
 use busbar_contract::abi::mechanism::call::AbiStr;
-use busbar_contract::abi::mechanism::door::{MetricFamily, Statement, FAMILY_COUNTER};
+use busbar_contract::abi::mechanism::door::{MarkWord, MetricFamily, Statement, FAMILY_COUNTER};
 use busbar_contract::abi::sdk::auth_door::{
-    verify_tail, with_tail, Answer, Strip, Verdict, VerifyPlugin, VerifyView,
+    carrier, verify_tail, with_tail, Answer, Strip, Verdict, VerifyPlugin, VerifyView,
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::auth_calls::{
@@ -95,8 +95,8 @@ impl VerifyPlugin for Judge {
 mod judge {
     use super::*;
 
-    const CARRIERS: &[AbiStr] = &[abi_str("X-Alt")];
-    const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD, CARRIERS);
+    const CARRIERS: &[MarkWord] = &[carrier("X-Alt")];
+    const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD);
     const FAMILIES: &[MetricFamily] = &[MetricFamily {
         name: abi_str(METRIC_CACHE_FLUSHED),
         help: abi_str("inbound cache entries dropped by refresh"),
@@ -116,6 +116,8 @@ mod judge {
             Statement {
                 families: FAMILIES.as_ptr(),
                 families_len: FAMILIES.len(),
+                mark_words: CARRIERS.as_ptr(),
+                mark_words_len: CARRIERS.len(),
                 ..statement("judge", "1.0.0", 8)
             },
             TAIL
@@ -264,16 +266,19 @@ fn a_refused_setting_names_the_module_and_the_plugins_words() {
 #[test]
 fn two_instances_of_one_plugin_are_two_callers() {
     use crate::auth_door::{AuthInstance, AuthSink};
-    use crate::dispatch::{load_linked, Bind};
+    use crate::dispatch::{load_linked, Bind, LinkedRow};
     let d = dispatcher();
     let open = |label: &str| {
         let sink = AuthSink::new("judge");
         let bind = Bind {
+            instance: Arc::from(label),
             max_inflight_cap: 8,
             sink: sink.bind(),
             dispatcher: d.adopter(),
+            conns: None,
         };
-        let p = load_linked::<crate::dispatch::kinds::auth::Auth>(judge::door, bind).unwrap();
+        let row = LinkedRow::of(judge::door).unwrap();
+        let p = load_linked::<crate::dispatch::kinds::auth::Auth>(&row, bind).unwrap();
         AuthInstance::open(p, sink, d.clone(), label, b"\"ok\"", Vec::new()).unwrap()
     };
     let (a, b) = (open("admin-a"), open("admin-b"));
@@ -335,15 +340,18 @@ fn the_body_reaches_the_plugin_at_head_body_only() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_verify_past_max_inflight_is_overloaded_and_never_queued() {
     use crate::auth_door::{AuthInstance, AuthSink};
-    use crate::dispatch::{load_linked, Bind};
+    use crate::dispatch::{load_linked, Bind, LinkedRow};
     let d = dispatcher();
     let sink = AuthSink::new("judge");
     let bind = Bind {
+        instance: Arc::from("judge-1"),
         max_inflight_cap: 1,
         sink: sink.bind(),
         dispatcher: d.adopter(),
+        conns: None,
     };
-    let p = load_linked::<crate::dispatch::kinds::auth::Auth>(judge::door, bind).unwrap();
+    let row = LinkedRow::of(judge::door).unwrap();
+    let p = load_linked::<crate::dispatch::kinds::auth::Auth>(&row, bind).unwrap();
     let a = AuthInstance::open(p, sink, d.clone(), "judge-1", b"\"ok\"", Vec::new()).unwrap();
     assert_eq!(a.plugin().max_inflight(), 1);
     let slow = a.verify(request(Some("slow"), None));
@@ -388,7 +396,7 @@ impl VerifyPlugin for Keyed {
 mod keyed {
     use super::*;
 
-    const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD, &[]);
+    const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD);
     const SECRET_REFS: &[AbiStr] = &[abi_str("token")];
 
     busbar_contract::auth_verify_door!(
@@ -419,4 +427,54 @@ fn a_statement_secret_ref_is_handed_to_open_as_a_secret_not_a_setting() {
         .err()
         .expect("refused");
     assert!(err.contains("no service credential"), "{err}");
+}
+
+/// A linked auth plugin whose Statement states one alias rewrite.
+mod aliased {
+    use super::*;
+    use busbar_contract::abi::mechanism::door::{Rewrite, REWRITE_ALIAS};
+
+    const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD);
+    const SECRET_REFS: &[AbiStr] = &[abi_str("token")];
+    const REWRITES: &[Rewrite] = &[Rewrite {
+        class: REWRITE_ALIAS,
+        _reserved: 0,
+        from: abi_str("keyed-too"),
+        to: AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+    }];
+
+    busbar_contract::auth_verify_door!(
+        Keyed,
+        with_tail(
+            Statement {
+                secret_refs: SECRET_REFS.as_ptr(),
+                secret_refs_len: SECRET_REFS.len(),
+                rewrites: REWRITES.as_ptr(),
+                rewrites_len: REWRITES.len(),
+                ..statement("aliased", "1.0.0", 8)
+            },
+            TAIL
+        )
+    );
+}
+
+/// THE ALIAS IS A STATEMENT REWRITE (the design's One Statement: an auth provider's alias is its
+/// Statement's `REWRITE_ALIAS` rewrite, never a tail fact): the auth rows answer, link and open a
+/// row by the alias its Statement states, beside its own name; a word no row states stays refused.
+#[test]
+fn an_auth_row_answers_to_its_statements_alias_rewrite() {
+    let registry = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::auth_door("aliased", aliased::door)])
+        .unwrap();
+    let rows = AuthRows::new(Box::leak(Box::new(registry)), dispatcher());
+    assert!(rows.answers("aliased"));
+    assert!(rows.answers("keyed-too"), "the Statement's alias answers");
+    assert!(rows.linked("keyed-too"), "and names a linked row");
+    assert!(!rows.answers("keyed-three"));
+    let settings = serde_json::json!({ "token": "s3cret" });
+    rows.open("keyed-too", "by-alias", &settings)
+        .expect("the row opens by its Statement's alias");
 }

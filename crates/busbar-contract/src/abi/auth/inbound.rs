@@ -124,8 +124,8 @@ pub struct VerifyIn {
     pub head: InHead,
     /// The candidate credential (secret); absent = none presented.
     pub credential: Blob,
-    /// The request's neutral field lines, as presented: the lines the tail's carriers name, or
-    /// every line when the tail states [`super::FACT_INBOUND_ALL_HEADERS`]. At
+    /// The request's neutral field lines, as presented: the lines the Statement's carrier word
+    /// marks name, or every line when the tail states [`super::FACT_INBOUND_ALL_HEADERS`]. At
     /// [`super::POINT_PEER`] there are none.
     pub lines: *const NamedValue,
     /// How many.

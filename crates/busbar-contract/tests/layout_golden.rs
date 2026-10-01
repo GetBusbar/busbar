@@ -1276,7 +1276,15 @@ fn compute_layout() -> String {
     record!(
         s,
         AuthTail,
-        [head, caps, facts, login_kind, inbound_points, styles, styles_len]
+        [
+            head,
+            caps,
+            facts,
+            login_kind,
+            inbound_points,
+            styles,
+            styles_len
+        ]
     );
     record!(s, AuthNamedValue, [name, value]);
     record!(

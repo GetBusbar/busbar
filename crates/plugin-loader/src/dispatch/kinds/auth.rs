@@ -35,7 +35,7 @@ use busbar_contract::abi::auth::{
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, Span};
 use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
-use busbar_contract::abi::mechanism::door::Statement;
+use busbar_contract::abi::mechanism::door::{Statement, MARK_WORD_CARRIER};
 use busbar_contract::abi::mechanism::KindCode;
 
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
@@ -44,14 +44,14 @@ use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
 #[derive(Debug, Clone, Copy)]
 pub struct Auth;
 
-/// The most carrier names an auth tail may state.
+/// The most carrier word marks an auth Statement may state.
 const MAX_CARRIERS: usize = 64;
 /// The most outbound styles an auth tail may state.
 const MAX_STYLES: usize = 64;
 
 /// What an auth instance's Statement states, copied out once at bind and read back through
 /// [`crate::dispatch::Plugin::context`]: its capabilities, its facts, the inbound carrier fields
-/// `verify` reads (lower-case, in the tail's order), and the index of its
+/// `verify` reads (its Statement's carrier word marks, lower-case, in order), and the index of its
 /// [`METRIC_CACHE_FLUSHED`](busbar_contract::abi::auth::METRIC_CACHE_FLUSHED) counter family, when
 /// it declares one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -80,7 +80,31 @@ fn owned(s: AbiStr) -> Option<String> {
     crate::dispatch::plugin::str_bytes(s).map(|b| String::from_utf8_lossy(b).into_owned())
 }
 
-/// Read the auth tail and the cache-flush family out of `st`.
+/// The inbound carriers `st` states: its
+/// [`MARK_WORD_CARRIER`](busbar_contract::abi::mechanism::door::MARK_WORD_CARRIER) word marks,
+/// lower-case, in the Statement's order (the design's One Statement: a carrier is a Statement mark,
+/// never a tail fact). At most [`MAX_CARRIERS`].
+fn carriers(st: &Statement) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for i in 0..st.mark_words_len {
+        // SAFETY: the loader's Statement check refused a NULL `mark_words` with a count; it holds
+        // `mark_words_len` `'static` word marks.
+        let w = unsafe { st.mark_words.add(i).read_unaligned() };
+        if w.class != MARK_WORD_CARRIER {
+            continue;
+        }
+        if out.len() == MAX_CARRIERS {
+            return Err(format!(
+                "the auth Statement states more than {MAX_CARRIERS} carriers"
+            ));
+        }
+        let word = owned(w.word).ok_or("an auth carrier name is over-long")?;
+        out.push(word.to_ascii_lowercase());
+    }
+    Ok(out)
+}
+
+/// Read the auth tail, the carriers and the cache-flush family out of `st`.
 fn facts(st: &Statement) -> Result<AuthFacts, String> {
     let p = st.kind_tail;
     if p.is_null() {
@@ -96,16 +120,7 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
     }
     // SAFETY: as above.
     let t = unsafe { p.cast::<auth::AuthTail>().read_unaligned() };
-    if t.carriers_len > MAX_CARRIERS || (t.carriers.is_null() && t.carriers_len != 0) {
-        return Err(format!("the auth tail states {} carriers", t.carriers_len));
-    }
-    let carriers = (0..t.carriers_len)
-        // SAFETY: `carriers` holds `carriers_len` `'static` strings (checked non-NULL above).
-        .map(|i| {
-            owned(unsafe { t.carriers.add(i).read_unaligned() }).map(|c| c.to_ascii_lowercase())
-        })
-        .collect::<Option<Vec<_>>>()
-        .ok_or("an auth carrier name is over-long")?;
+    let carriers = carriers(st)?;
     // The login classification agrees with the login capability, and is one the host knows.
     let logs_in = t.caps & auth::CAP_LOGIN != 0;
     let kind_known = matches!(
