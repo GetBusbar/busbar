@@ -16,8 +16,14 @@ use crate::codec::usage_count::{read_usage, CountRead, CountSlot, UsageCount};
 pub(super) const USAGE: &[UsageCount] = &[
     (CountSlot::Input, CountRead::Zero(&["input_tokens"])),
     (CountSlot::Output, CountRead::Zero(&["output_tokens"])),
-    (CountSlot::CacheWrite, CountRead::Opt(&["cache_creation_input_tokens"])),
-    (CountSlot::CacheRead, CountRead::Opt(&["cache_read_input_tokens"])),
+    (
+        CountSlot::CacheWrite,
+        CountRead::Opt(&["cache_creation_input_tokens"]),
+    ),
+    (
+        CountSlot::CacheRead,
+        CountRead::Opt(&["cache_read_input_tokens"]),
+    ),
     (
         CountSlot::CacheWrite5m,
         CountRead::Opt(&["cache_creation", "ephemeral_5m_input_tokens"]),

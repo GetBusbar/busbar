@@ -1516,8 +1516,14 @@ fn stop_reason_reverse(canonical: crate::codec::ir::IrStopReason) -> &'static st
 const USAGE: &[UsageCount] = &[
     (CountSlot::Input, CountRead::Zero(&["inputTokens"])),
     (CountSlot::Output, CountRead::Zero(&["outputTokens"])),
-    (CountSlot::CacheWrite, CountRead::Opt(&["cacheWriteInputTokens"])),
-    (CountSlot::CacheRead, CountRead::Opt(&["cacheReadInputTokens"])),
+    (
+        CountSlot::CacheWrite,
+        CountRead::Opt(&["cacheWriteInputTokens"]),
+    ),
+    (
+        CountSlot::CacheRead,
+        CountRead::Opt(&["cacheReadInputTokens"]),
+    ),
     (
         CountSlot::CacheWrite5m,
         CountRead::ListSum {
@@ -1551,7 +1557,6 @@ fn read_bedrock_usage(
 /// The `CacheTTL` enum's two values, as the Bedrock service model spells them.
 const CACHE_TTL_5M: &str = "5m";
 const CACHE_TTL_1H: &str = "1h";
-
 
 /// Write the IR's per-TTL cache-write split back onto a Bedrock Converse `usage` object, the inverse
 /// of the `cacheDetails` rows in [`USAGE`]. Emits the entries in the order the service model documents (1h before

@@ -1,5 +1,5 @@
-use crate::codec::dialect::ir_parse_error;
 use super::*;
+use crate::codec::dialect::ir_parse_error;
 
 impl ProtocolReader for ResponsesReader {
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {

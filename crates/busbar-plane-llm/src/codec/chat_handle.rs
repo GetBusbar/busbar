@@ -365,7 +365,10 @@ pub fn chat_usage(r: &IrResponse) -> Option<Billing> {
 
 /// The chat REQUEST handle: the request, plus the egress lane's declared capabilities, which the
 /// seam hands over in the [`EgressPrep`] (`prepare_for_egress`) and the egress write hands to the writer.
-pub struct ChatReqHandle(pub IrRequest, pub busbar_contract::ir::egress_prep::LaneCaps);
+pub struct ChatReqHandle(
+    pub IrRequest,
+    pub busbar_contract::ir::egress_prep::LaneCaps,
+);
 /// The chat RESPONSE handle.
 pub struct ChatRespHandle(pub IrResponse);
 

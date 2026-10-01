@@ -1,5 +1,5 @@
-use crate::codec::dialect::ir_parse_error;
 use super::*;
+use crate::codec::dialect::ir_parse_error;
 
 impl ProtocolReader for AnthropicReader {
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
@@ -751,9 +751,7 @@ impl ProtocolReader for AnthropicReader {
         let role_str = obj.get("role").and_then(|r| r.as_str()).unwrap_or("");
         let role = match role_str {
             "assistant" => crate::codec::ir::IrRole::Assistant,
-            _ => {
-                return Err(ir_parse_error())
-            }
+            _ => return Err(ir_parse_error()),
         };
 
         // Parse content blocks

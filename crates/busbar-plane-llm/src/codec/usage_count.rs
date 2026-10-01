@@ -303,7 +303,10 @@ pub fn read_usage(
         match read {
             CountRead::Zero(path) => {
                 let (up, field) = parent(usage, path);
-                *s = Some(up.map_or(Ok(0), |u| billed_count(u, field)).map_err(refuse)?);
+                *s = Some(
+                    up.map_or(Ok(0), |u| billed_count(u, field))
+                        .map_err(refuse)?,
+                );
             }
             CountRead::Opt(path) => *s = opt(usage, path).map_err(refuse)?,
             CountRead::Lenient(path) => *s = at(usage, path).and_then(read_count_u64),
@@ -315,9 +318,18 @@ pub fn read_usage(
                 let n = opt(usage, path).map_err(refuse)?.unwrap_or(0);
                 *s = Some(s.unwrap_or(0).saturating_add(n));
             }
-            CountRead::ListSum { list, key, value, count } => {
+            CountRead::ListSum {
+                list,
+                key,
+                value,
+                count,
+            } => {
                 let mut sum: Option<u64> = None;
-                for entry in at(usage, list).and_then(|l| l.as_array()).into_iter().flatten() {
+                for entry in at(usage, list)
+                    .and_then(|l| l.as_array())
+                    .into_iter()
+                    .flatten()
+                {
                     if entry.get(key).and_then(|k| k.as_str()) != Some(value) {
                         continue;
                     }
@@ -327,7 +339,12 @@ pub fn read_usage(
                 }
                 *s = sum;
             }
-            CountRead::ListFirst { list, key, value, count } => {
+            CountRead::ListFirst {
+                list,
+                key,
+                value,
+                count,
+            } => {
                 *s = at(usage, list)
                     .and_then(|l| l.as_array())
                     .and_then(|l| {

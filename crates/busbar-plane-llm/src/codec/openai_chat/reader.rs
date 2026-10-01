@@ -1,5 +1,5 @@
-use crate::codec::dialect::ir_parse_error;
 use super::*;
+use crate::codec::dialect::ir_parse_error;
 
 impl ProtocolReader for OpenAiReader {
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
@@ -195,9 +195,7 @@ impl ProtocolReader for OpenAiReader {
                     // The legacy function-result turn (`{"role":"function","name","content"}`) is a
                     // tool result correlated by name (OAI-07); it is read as one below.
                     "tool" | "function" => crate::codec::ir::IrRole::Tool,
-                    _ => {
-                        return Err(ir_parse_error())
-                    }
+                    _ => return Err(ir_parse_error()),
                 };
 
                 // Promote EVERY system-role message to the top-level system field, regardless of

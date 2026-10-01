@@ -1,5 +1,5 @@
-use crate::codec::dialect::ir_parse_error;
 use super::*;
+use crate::codec::dialect::ir_parse_error;
 
 impl ProtocolReader for GeminiReader {
     /// The FIRST `finishReason` is the first candidate's — the one `read_response` reads its stop
@@ -312,9 +312,7 @@ impl ProtocolReader for GeminiReader {
                     // official SDK. Match the streaming reader's leniency.
                     "user" | "" => crate::codec::ir::IrRole::User,
                     "model" => crate::codec::ir::IrRole::Assistant,
-                    _ => {
-                        return Err(ir_parse_error())
-                    }
+                    _ => return Err(ir_parse_error()),
                 };
 
                 let mut msg_content = Vec::new();

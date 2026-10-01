@@ -1,5 +1,5 @@
-use crate::codec::dialect::ir_parse_error;
 use super::*;
+use crate::codec::dialect::ir_parse_error;
 use crate::codec::usage_count::{CountRead, CountSlot, UsageCount};
 
 impl ProtocolReader for CohereReader {
@@ -169,9 +169,7 @@ impl ProtocolReader for CohereReader {
                     "user" => crate::codec::ir::IrRole::User,
                     "assistant" => crate::codec::ir::IrRole::Assistant,
                     "tool" => crate::codec::ir::IrRole::Tool,
-                    _ => {
-                        return Err(ir_parse_error())
-                    }
+                    _ => return Err(ir_parse_error()),
                 };
 
                 // EDGE-VALIDATE the per-message `content` TYPE (all roles). Cohere `content` is
@@ -1461,9 +1459,15 @@ impl ProtocolReader for CohereReader {
 /// the cache read); `billed_units` is the provider-metered bucket — its token counts, its
 /// `search_units` and its `classifications` — carried as attribution beside the totals.
 const USAGE: &[UsageCount] = &[
-    (CountSlot::Input, CountRead::Zero(&["tokens", "input_tokens"])),
+    (
+        CountSlot::Input,
+        CountRead::Zero(&["tokens", "input_tokens"]),
+    ),
     (CountSlot::Input, CountRead::Less(&["cached_tokens"])),
-    (CountSlot::Output, CountRead::Zero(&["tokens", "output_tokens"])),
+    (
+        CountSlot::Output,
+        CountRead::Zero(&["tokens", "output_tokens"]),
+    ),
     (CountSlot::CacheRead, CountRead::Opt(&["cached_tokens"])),
     (
         CountSlot::SearchUnits,

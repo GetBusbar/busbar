@@ -159,7 +159,10 @@ impl ProtocolWriter for AnthropicWriter {
             dropped.push("response_format");
         }
         use crate::codec::dialect::{carried, FREQUENCY_PENALTY, N, PRESENCE_PENALTY, SEED};
-        dropped.extend(carried(req, &[FREQUENCY_PENALTY, PRESENCE_PENALTY, SEED, N]));
+        dropped.extend(carried(
+            req,
+            &[FREQUENCY_PENALTY, PRESENCE_PENALTY, SEED, N],
+        ));
         dropped.extend(carried(req, ANTHROPIC_UNREPRESENTABLE));
         dropped
     }

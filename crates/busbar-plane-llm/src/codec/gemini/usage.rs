@@ -1,7 +1,7 @@
 //! Gemini `usageMetadata` → [`crate::codec::ir::IrUsage`].
 
-use crate::codec::usage_count::{read_usage, CountRead, CountSlot, UsageCount};
 use super::*;
+use crate::codec::usage_count::{read_usage, CountRead, CountSlot, UsageCount};
 
 /// GEMINI'S USAGE COUNTS, AS DATA (#42). Cache tokens: `cachedContentTokenCount` is a slice INSIDE
 /// `promptTokenCount`, so it is subtracted (saturating) there and carried as the IR's
@@ -18,7 +18,10 @@ use super::*;
 /// response and a truncated-body recovery all read this one table, so a truncated or streamed turn
 /// counts the same as a complete one.
 pub(super) const USAGE: &[UsageCount] = &[
-    (CountSlot::Input, CountRead::Zero(&[FIELD_PROMPT_TOKEN_COUNT])),
+    (
+        CountSlot::Input,
+        CountRead::Zero(&[FIELD_PROMPT_TOKEN_COUNT]),
+    ),
     (
         CountSlot::Input,
         CountRead::Less(&[FIELD_CACHED_CONTENT_TOKEN_COUNT]),
@@ -27,13 +30,22 @@ pub(super) const USAGE: &[UsageCount] = &[
         CountSlot::Input,
         CountRead::More(&[FIELD_TOOL_USE_PROMPT_TOKEN_COUNT]),
     ),
-    (CountSlot::Output, CountRead::Zero(&[FIELD_CANDIDATES_TOKEN_COUNT])),
-    (CountSlot::Output, CountRead::More(&[FIELD_THOUGHTS_TOKEN_COUNT])),
+    (
+        CountSlot::Output,
+        CountRead::Zero(&[FIELD_CANDIDATES_TOKEN_COUNT]),
+    ),
+    (
+        CountSlot::Output,
+        CountRead::More(&[FIELD_THOUGHTS_TOKEN_COUNT]),
+    ),
     (
         CountSlot::CacheRead,
         CountRead::Opt(&[FIELD_CACHED_CONTENT_TOKEN_COUNT]),
     ),
-    (CountSlot::Reasoning, CountRead::Opt(&[FIELD_THOUGHTS_TOKEN_COUNT])),
+    (
+        CountSlot::Reasoning,
+        CountRead::Opt(&[FIELD_THOUGHTS_TOKEN_COUNT]),
+    ),
     (
         CountSlot::ToolUsePrompt,
         CountRead::Opt(&[FIELD_TOOL_USE_PROMPT_TOKEN_COUNT]),

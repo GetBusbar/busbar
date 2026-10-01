@@ -1,5 +1,5 @@
-use crate::codec::dialect::ir_parse_error;
 use super::*;
+use crate::codec::dialect::ir_parse_error;
 
 impl ProtocolReader for BedrockReader {
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
@@ -281,9 +281,7 @@ impl ProtocolReader for BedrockReader {
                 let role = match role_str {
                     "user" => crate::codec::ir::IrRole::User,
                     "assistant" => crate::codec::ir::IrRole::Assistant,
-                    _ => {
-                        return Err(ir_parse_error())
-                    }
+                    _ => return Err(ir_parse_error()),
                 };
 
                 let mut msg_content: Vec<crate::codec::ir::IrBlock> = Vec::new();

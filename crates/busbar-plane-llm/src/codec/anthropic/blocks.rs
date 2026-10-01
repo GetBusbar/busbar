@@ -3,8 +3,8 @@
 
 //! Reading Anthropic content blocks, messages and tool definitions into the IR.
 
-use crate::codec::dialect::ir_parse_error;
 use super::*;
+use crate::codec::dialect::ir_parse_error;
 
 // Helper functions for IR mapping (used by read_request/write_request)
 pub(super) fn read_block(
@@ -432,9 +432,7 @@ pub(super) fn read_message(
         "user" => crate::codec::ir::IrRole::User,
         "assistant" => crate::codec::ir::IrRole::Assistant,
         "system" => crate::codec::ir::IrRole::System,
-        _ => {
-            return Err(ir_parse_error())
-        }
+        _ => return Err(ir_parse_error()),
     };
 
     let content_val = obj.get("content").unwrap_or(&serde_json::Value::Null);
