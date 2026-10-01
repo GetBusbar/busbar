@@ -31,7 +31,7 @@ use crate::abi::auth::{
 };
 use crate::abi::mechanism::call::{AbiStr, Blob, InHead, MetricEntry, OutHead, Outcome, Span};
 use crate::abi::mechanism::call::{BLOB_ABSENT, METRIC_ADD};
-use crate::abi::mechanism::door::{KindTailHead, Statement};
+use crate::abi::mechanism::door::{KindTailHead, MarkWord, Statement, MARK_WORD_CARRIER};
 use crate::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn, TickOut,
     ValidateIn,
@@ -450,9 +450,10 @@ macro_rules! auth_verify_door {
     };
 }
 
-/// An [`AuthTail`] for a verify-only plugin reading `carriers`, with `facts` (`FACT_*`).
+/// An [`AuthTail`] for a verify-only plugin, with `facts` (`FACT_*`). The carriers it reads are its
+/// Statement's [`carrier`] word marks, not a tail fact (the One Statement).
 #[must_use]
-pub const fn verify_tail(facts: u32, carriers: &'static [AbiStr]) -> AuthTail {
+pub const fn verify_tail(facts: u32) -> AuthTail {
     AuthTail {
         head: KindTailHead {
             size: std::mem::size_of::<AuthTail>() as u32,
@@ -464,10 +465,17 @@ pub const fn verify_tail(facts: u32, carriers: &'static [AbiStr]) -> AuthTail {
         _reserved: 0,
         styles: ptr::null(),
         styles_len: 0,
-        aliases: ptr::null(),
-        aliases_len: 0,
-        carriers: carriers.as_ptr(),
-        carriers_len: carriers.len(),
+    }
+}
+
+/// One inbound carrier `verify` reads (a field line's name), as the Statement states it: a
+/// [`MARK_WORD_CARRIER`] word mark in [`Statement::mark_words`].
+#[must_use]
+pub const fn carrier(name: &'static str) -> MarkWord {
+    MarkWord {
+        class: MARK_WORD_CARRIER,
+        _reserved: 0,
+        word: crate::abi::sdk::door::abi_str(name),
     }
 }
 

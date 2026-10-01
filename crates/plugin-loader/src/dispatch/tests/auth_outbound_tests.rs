@@ -158,10 +158,6 @@ mod plugin {
         _reserved: 0,
         styles: STYLES.as_ptr(),
         styles_len: STYLES.len(),
-        aliases: std::ptr::null(),
-        aliases_len: 0,
-        carriers: std::ptr::null(),
-        carriers_len: 0,
     };
 
     use busbar_contract::abi::sdk::auth_door as a;
