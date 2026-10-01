@@ -7,16 +7,18 @@
 //! left by: the destination guard's refusal, the admission door's refusal, or the caller's
 //! post-admission finish. A path that ended a unit twice would still return the right bytes, so the
 //! bytes are not the proof; the count is. `busbar_requests_total` is that count: one increment per
-//! terminal, labelled with the bounded pool. Each test uses a pool name nothing else in this binary
-//! uses (the recorder is process-global) and asserts the exact delta.
+//! terminal. The recorder is process-global, so each test speaks an `ingress_protocol` label nothing
+//! else in this binary uses and asserts the exact delta on it. The pool label cannot carry that
+//! isolation: a refusal labels its pool through `pool_label`, which bounds any pool the fallback
+//! plane's view does not name to the shared `unresolved` label, and the neutral test plane has no
+//! view.
 
 use super::*;
 use crate::test_support::{metric_sum, LaneSpec, TestApp};
 use axum::response::IntoResponse;
 use busbar_contract::records::{PlaneRequestCtx, ScopeRef, VirtualKey};
 
-/// A deployment whose only pool is `pool`, so `pool_label` keeps the name and the metric delta is
-/// this test's alone.
+/// A deployment whose only pool is `pool`.
 fn deployment(pool: &str) -> Arc<App> {
     crate::test_support::register_neutral_test_plane();
     crate::metrics::init();
@@ -39,9 +41,13 @@ fn caller(pools: &[&str]) -> PlaneRequestCtx {
     }
 }
 
-/// How many terminals `pool` has been through so far.
-fn terminals(pool: &str) -> u64 {
-    metric_sum(crate::metrics::REQUESTS_TOTAL, &[("pool", pool)]).round() as u64
+/// How many terminals units spoken in `proto` have been through so far.
+fn terminals(proto: &str) -> u64 {
+    metric_sum(
+        crate::metrics::REQUESTS_TOTAL,
+        &[("ingress_protocol", proto)],
+    )
+    .round() as u64
 }
 
 /// The destination guard's refusal IS the unit's terminal: it ends the unit once, and the caller
@@ -50,8 +56,8 @@ fn terminals(pool: &str) -> u64 {
 fn a_destination_refusal_ends_the_unit_exactly_once() {
     let pool = "ingress-terminal-acl-pool";
     let app = deployment(pool);
-    let proto = crate::proto::known_protocols()[0];
-    let before = terminals(pool);
+    let proto = "ingress-terminal-acl-proto";
+    let before = terminals(proto);
     let refused = governance_guard(
         &app,
         &caller(&["some-other-pool"]),
@@ -64,7 +70,7 @@ fn a_destination_refusal_ends_the_unit_exactly_once() {
     .expect("a key without a grant on the pool is turned away");
     assert_eq!(refused.status(), StatusCode::FORBIDDEN);
     assert_eq!(
-        terminals(pool) - before,
+        terminals(proto) - before,
         1,
         "one refused unit, one terminal: never none, never two"
     );
@@ -76,13 +82,13 @@ fn a_destination_refusal_ends_the_unit_exactly_once() {
 fn an_admitted_unit_ends_once_at_its_finish_and_never_at_the_door() {
     let pool = "ingress-terminal-admitted-pool";
     let app = deployment(pool);
-    let proto = crate::proto::known_protocols()[0];
+    let proto = "ingress-terminal-admitted-proto";
     let gov = caller(&[pool]);
-    let before = terminals(pool);
+    let before = terminals(proto);
     let (grant, downgraded) = governance_guard(&app, &gov, proto, pool, Instant::now(), 0)
         .expect("the key holds a grant on the pool");
     assert_eq!(
-        terminals(pool),
+        terminals(proto),
         before,
         "the door admitted the unit, so it must not have ended it"
     );
@@ -97,7 +103,7 @@ fn an_admitted_unit_ends_once_at_its_finish_and_never_at_the_door() {
         grant.is_some(),
     );
     assert_eq!(
-        terminals(pool) - before,
+        terminals(proto) - before,
         1,
         "one admitted unit, one terminal"
     );
@@ -108,9 +114,9 @@ fn an_admitted_unit_ends_once_at_its_finish_and_never_at_the_door() {
 fn each_finish_door_is_one_terminal() {
     let pool = "ingress-terminal-doors-pool";
     let app = deployment(pool);
-    let proto = crate::proto::known_protocols()[0];
+    let proto = "ingress-terminal-doors-proto";
     let gov = caller(&[pool]);
-    let before = terminals(pool);
+    let before = terminals(proto);
     let _ = finish_rejected(
         &app,
         &gov,
@@ -120,7 +126,7 @@ fn each_finish_door_is_one_terminal() {
         0,
         StatusCode::BAD_REQUEST.into_response(),
     );
-    assert_eq!(terminals(pool) - before, 1, "the not-charged door");
+    assert_eq!(terminals(proto) - before, 1, "the not-charged door");
     let _ = finish_admitted(
         &app,
         &gov,
@@ -131,5 +137,5 @@ fn each_finish_door_is_one_terminal() {
         StatusCode::OK.into_response(),
         false,
     );
-    assert_eq!(terminals(pool) - before, 2, "the charged door");
+    assert_eq!(terminals(proto) - before, 2, "the charged door");
 }
