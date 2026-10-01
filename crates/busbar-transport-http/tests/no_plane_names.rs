@@ -48,9 +48,8 @@
 //!
 //! Neither list is spelled in THIS file. The instance-noun-neutrality gate this crate is subject to
 //! cannot tell "the word that is the subject of a purity scan" from "the word naming a plane this
-//! code depends on", so the vocabulary lives in `tests/fixtures/plane_vocabulary.txt` — the same
-//! data file `grpc_no_plane_names.rs` reads, a plain data file the gate never walks (it scans `.rs`
-//! under `crates/` only). `load_vocab` below reads it at test time; the words, the matching rules and
+//! code depends on", so the vocabulary lives in `tests/fixtures/plane_vocabulary.txt`, a plain data
+//! file the gate never walks (it scans `.rs` under `crates/` only). `load_vocab` below reads it at test time; the words, the matching rules and
 //! the assertions are unchanged by moving them.
 
 use std::collections::HashMap;

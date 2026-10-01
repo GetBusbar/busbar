@@ -135,14 +135,13 @@ const FAM_DECISION: &[&str] = &["busbar-plane-decisions"];
 // ── TRANSPORTS (each concrete transport is its own crate, except the HTTP dialects) ────────────
 // `sse` (an HTTP response body) was FOLDED INTO `busbar-transport-http`: the crate that may name
 // each instance is the one that holds it now. `grpc` is its own door, `busbar-transport-grpc`
-// (OWNER 2026-09-29); `busbar-transport-http` stays in its family while it still holds the legacy
-// in-process gRPC transport, and the commit that deletes that code drops it.
+// (OWNER 2026-09-29), and the one crate that may name it.
 const FAM_HTTP: &[&str] = &["busbar-transport-http"];
 const FAM_WS: &[&str] = &["busbar-transport-ws"];
 const FAM_STDIO: &[&str] = &["busbar-transport-stdio"];
 const FAM_TCP: &[&str] = &["busbar-transport-tcp"];
 const FAM_SSE: &[&str] = &["busbar-transport-http"];
-const FAM_GRPC: &[&str] = &["busbar-transport-grpc", "busbar-transport-http"];
+const FAM_GRPC: &[&str] = &["busbar-transport-grpc"];
 
 // ── STORES (no backend crate exists in this tree — any reference is premature coupling) ────────
 const FAM_NONE: &[&str] = &[];

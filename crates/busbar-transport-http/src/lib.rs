@@ -62,11 +62,6 @@ mod transport;
 
 pub mod mount;
 
-// THE FOLD: gRPC is HTTP/2 framing, a dialect of this wire, so its
-// transport is a module of this crate rather than a crate beside it. It still registers as its own
-// transport under its own key (`grpc`), so the registry and boot matching see what they saw before.
-pub mod grpc;
-
 // THE SAME FOLD for SSE, which IS an HTTP response body: `sse` is composed over this crate's own
 // `HttpTransport` and registers as its own transport under its own key (`sse`), unchanged.
 pub mod sse;
@@ -132,29 +127,6 @@ pub mod linked {
         ) -> Arc<dyn Transport> {
             let lower = lower.unwrap_or_else(|| Arc::new(HttpTransport::new(*settings)));
             Arc::new(SseTransport::over(lower))
-        }
-    }
-
-    /// The `grpc` row: HTTP/2 framing, composed over the `http` the root built below it.
-    pub mod grpc {
-        use super::{Arc, Transport, TransportMeta, TransportSettings};
-        use crate::grpc::GrpcTransport;
-
-        /// The `grpc` row's registry key.
-        pub const KEY: &str = <GrpcTransport as TransportMeta>::KEY;
-        /// The layers `grpc` declares it can be built over.
-        pub const COMPOSES_OVER: &[&str] = <GrpcTransport as TransportMeta>::COMPOSES_OVER;
-        /// Whether this wire carries sessions.
-        pub const SESSION: bool = <GrpcTransport as TransportMeta>::SESSION;
-
-        /// Built over `lower` — never over nothing, which yields a transport that refuses every
-        /// connection; with no lower layer the boot check has already refused the composition.
-        #[must_use]
-        pub fn build(
-            lower: Option<Arc<dyn Transport>>,
-            _: &TransportSettings,
-        ) -> Arc<dyn Transport> {
-            Arc::new(lower.map_or_else(GrpcTransport::new, GrpcTransport::over))
         }
     }
 }
