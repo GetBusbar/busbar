@@ -21,6 +21,8 @@
 //! * `on_piece` drives a unit's unary hop ([`crate::relay::Relay`]): the request each ATTEMPT
 //!   sends the agent the kernel picked, the caller's body relayed verbatim, and the caller's
 //!   answer from the far end's, written into the host's buffers across `more` re-calls;
+//! * `on_piece` answers the verbs the plane answers itself over the task store's host records
+//!   ([`crate::task_door`]);
 //! * `tick` wants no tick, `drive` has no session with unsolicited output, `cancel` finds nothing
 //!   in flight, and `release`/`close` hold nothing the SDK does not already drop.
 
@@ -36,6 +38,7 @@ use busbar_contract::abi::plane::{
     FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_REQUIRED, REFUSAL_ARRIVE,
     UNITS_REPORTED,
 };
+use busbar_contract::abi::sdk::conn::Host;
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::abi::sdk::publish::{Generations, Keyed};
@@ -69,7 +72,8 @@ pub const STATEMENT: Statement = Statement {
 pub const MAX_UNITS: usize = 4096;
 
 /// One unit the instance keeps, from its arrival: what the arrival was, the agent the caller
-/// addressed by name (if it did), and the section of the generation it arrived under.
+/// addressed by name (if it did), the section of the generation it arrived under, and what its
+/// pieces carry from one to the next ([`crate::task_door::Pass`]).
 #[derive(Debug)]
 pub struct Unit {
     /// The arrival, decided.
@@ -81,6 +85,8 @@ pub struct Unit {
     /// The unit's unary hop and what it still owes the host; `None` for a unit `on_piece` does not
     /// serve yet.
     pub hop: Option<Hop>,
+    /// The host services its pieces have made so far, and the piece in flight.
+    pub pass: crate::task_door::Pass,
 }
 
 /// One unit's unary hop, and the answer it is part way through writing.
@@ -151,12 +157,14 @@ impl Outbox {
     }
 }
 
-/// One instance: the public base URL `open` was given, every live generation's snapshot and
-/// section, and the units in flight.
+/// One instance: the public base URL `open` was given, the host tables, every live generation's
+/// snapshot and section, the units in flight, and the second the task store was last swept.
 pub struct A2aDoor {
     public_url: Option<String>,
+    pub(crate) host: Option<Host>,
     generations: Generations<PlaneSnapshot, AgentsCfg>,
-    units: Keyed<u64, Unit>,
+    pub(crate) units: Keyed<u64, Unit>,
+    pub(crate) swept: Keyed<(), u64>,
 }
 
 /// The settings blob read as the `agents:` section, or the refusal in the grammar's words.
@@ -249,8 +257,10 @@ slot!(
         let generation = input.get().open.generation;
         let plane = A2aDoor {
             public_url: public_url(input.field(|i| &i.public_url).bytes()),
+            host: input.field(|i| &i.open).host().map(|h| Host::of(h.get())),
             generations: Generations::new(),
             units: Keyed::new(),
+            swept: Keyed::new(),
         };
         let spec = door::snapshot_spec(plane.public_url.as_deref());
         out.publish_with(|o| &o.snapshot, &plane.generations, generation, &spec, cfg);
@@ -370,6 +380,7 @@ slot!(
             agent,
             section: plane.generations.current(),
             hop,
+            pass: crate::task_door::Pass::default(),
         };
         keep(&plane.units, MAX_UNITS, given.unit, unit);
         Outcome::Ready
@@ -512,13 +523,19 @@ fn piece(
 }
 
 slot!(
-    /// `on_piece`: the unit's unary hop, one piece at a time ([`crate::relay`]); a unit whose
-    /// arrival names no hop the door serves is REFUSED. A finished unit is forgotten.
+    /// `on_piece`: the unit's unary hop, one piece at a time ([`crate::relay`]); otherwise a verb
+    /// the plane answers itself, over the task store ([`crate::task_door`]); a unit that is
+    /// neither is REFUSED. A finished hop's unit is forgotten.
     OnPiece, OnPieceIn, OnPieceOut, |instance, input, mut out| {
         let Some(plane) = instance.get() else {
             return Outcome::Failed;
         };
         let unit = input.get().unit;
+        let relayed = plane.units.with(&unit, |u| u.is_some_and(|u| u.hop.is_some()));
+        if !relayed {
+            return crate::task_door::on_piece(plane, &instance, input, out)
+                .unwrap_or(Outcome::Refused);
+        }
         let (outcome, done) = plane.units.with(&unit, |u| match u {
             Some(u) => piece(u, input, &mut out),
             None => (Outcome::Refused, false),
