@@ -132,6 +132,19 @@ impl LoadablePlugin {
         )
     }
 
+    /// M6-COLD-DELETE: whether this row is a LINKED cold boundary (`BUSBAR_COLD_ENTRY`).
+    pub fn image_is_cold_linked(&self) -> bool {
+        matches!(self.entry, Some(LinkedEntry::Boundary(_)))
+    }
+
+    /// A compiled-in memory-ABI row's door; `None` for any other row.
+    pub fn door(&self) -> Option<busbar_contract::abi::mechanism::door::DoorFn> {
+        match self.entry {
+            Some(LinkedEntry::Door(door)) => Some(door),
+            _ => None,
+        }
+    }
+
     /// What the one load runs over: the linked boundary, or the verified bytes.
     pub fn image(&self) -> crate::Image<'_> {
         match self.entry {
@@ -203,6 +216,10 @@ pub enum LinkedEntry {
         open: fn(&str) -> Option<RankingPolicy>,
         aliases: &'static [&'static str],
     },
+    /// A compiled-in plugin on its kind's memory ABI: the logic crate's `plugin_door!` door function,
+    /// the same door a dropped-in build exports as `busbar_plugin_door` (THE DESIGN §11.4). Loaded
+    /// through [`crate::dispatch::load_linked`].
+    Door(busbar_contract::abi::mechanism::door::DoorFn),
 }
 
 impl LinkedPlugin {
@@ -211,6 +228,16 @@ impl LinkedPlugin {
         LinkedPlugin {
             manifest,
             entry: LinkedEntry::Boundary(entry),
+            ephemeral: false,
+        }
+    }
+
+    /// A linked MEMORY-ABI plugin: `manifest` and its door (THE DESIGN §11.4: the same door the
+    /// dropped-in build exports).
+    pub fn door(manifest: Manifest, door: busbar_contract::abi::mechanism::door::DoorFn) -> Self {
+        LinkedPlugin {
+            manifest,
+            entry: LinkedEntry::Door(door),
             ephemeral: false,
         }
     }
@@ -247,6 +274,16 @@ impl LinkedPlugin {
             busbar_contract::abi::cold::AUTH_ABI_VERSION,
         );
         Self::built_in(name, kind, abi, LinkedEntry::Boundary(entry), false)
+    }
+
+    /// A linked AUTH plugin named `name` (its own alias) on the auth kind's MEMORY ABI: the logic
+    /// crate's `plugin_door!` door, the same door its dropped-in build exports.
+    pub fn auth_door(name: &str, door: busbar_contract::abi::mechanism::door::DoorFn) -> Self {
+        let (kind, abi) = (
+            busbar_contract::abi::cold::kind::AUTH,
+            busbar_contract::abi::auth::ABI_VERSION,
+        );
+        Self::built_in(name, kind, abi, LinkedEntry::Door(door), false)
     }
 
     /// The built-in RANKING row named `name`, at this binary's hook payload schema, answering to
@@ -557,7 +594,30 @@ impl PluginRegistry {
         cfg_json: &str,
     ) -> Result<Box<dyn busbar_contract::auth::AuthModule>, String> {
         let p = self.resolve_kind(name_or_alias, "auth", "serve as an auth module")?;
+        if p.door().is_some() {
+            return Err(format!(
+                "auth plugin '{name_or_alias}' is on the memory ABI: it opens through the auth \
+                 axis, not the cold lane"
+            ));
+        }
         crate::auth::load_auth_image(p.image(), cfg_json, &p.manifest.name, &p.manifest.kind)
+    }
+
+    /// M6-COLD-DELETE: open an AUTH row that is on the COLD lane as the contract's `AuthCalls`
+    /// ([`crate::auth_axis::ColdAuth`]), over `settings` (a JSON string's own text, else the
+    /// document, as the cold lane took its config). A memory-ABI row is opened by the composition
+    /// root's auth axis, never here: a door needs the process's dispatcher.
+    pub fn open_auth_calls(
+        &self,
+        name_or_alias: &str,
+        settings: &serde_json::Value,
+    ) -> Result<std::sync::Arc<dyn busbar_contract::auth_calls::AuthCalls>, String> {
+        let text = match settings {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        let module = self.open_auth(name_or_alias, &text)?;
+        Ok(std::sync::Arc::new(crate::auth_axis::ColdAuth::new(module)))
     }
 
     /// Open an AUTH plugin as the unified [`busbar_contract::auth::AuthPlugin`] handle (verify + LOGIN) —

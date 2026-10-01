@@ -54,6 +54,15 @@ mod plugin {
                     ..VerifiedIdentity::default()
                 }),
                 Some(b"bad") => Verdict::Reject,
+                // Asks the kernel to admit this identity once per key.
+                Some(b"once") => Verdict::Identity(VerifiedIdentity {
+                    subject: "hook".into(),
+                    replay: Some(Box::new(crate::auth_calls::Replay {
+                        key: "msg_1".into(),
+                        ttl_secs: 90,
+                    })),
+                    ..VerifiedIdentity::default()
+                }),
                 _ => Verdict::Pass,
             }
         }
@@ -292,6 +301,38 @@ fn every_verdict_crosses_the_table_and_passes_the_kinds_check() {
         assert_eq!((o, out.verdict), (Outcome::Ready, verdict));
         check_identify(o, &out, &input.out_buf, host.reported(&out)).expect("check");
     }
+}
+
+/// THE REPLAY KEY: an identity that asks to be admitted once per key writes the key into the host's
+/// buffer (a span the kind's check bounds) and its TTL; one that does not leaves the span ABSENT.
+#[test]
+fn a_replay_key_crosses_as_a_bounded_span_with_its_ttl() {
+    let (_, opened) = open(b"\"ok\"");
+    let mut host = Host::new(64, 4);
+    let (o, out, input) = verify(opened.instance, Some(b"once"), None, &mut host);
+    assert_eq!((o, out.verdict), (Outcome::Ready, VERDICT_IDENTITY));
+    check_identify(o, &out, &input.out_buf, host.reported(&out)).expect("check");
+    assert_eq!(host.text(out.identity.replay_key).as_deref(), Some("msg_1"));
+    assert_eq!(out.identity.replay_ttl_secs, 90);
+    let (o, out, input) = verify(opened.instance, Some(b"good"), None, &mut host);
+    check_identify(o, &out, &input.out_buf, host.reported(&out)).expect("check");
+    assert_eq!(
+        host.text(out.identity.replay_key),
+        None,
+        "no replay asked, span absent"
+    );
+    assert_eq!(out.identity.replay_ttl_secs, 0);
+    // RED: a replay span past the host's buffer is the kind's FAULT, never read.
+    let (o, mut out, input) = verify(opened.instance, Some(b"once"), None, &mut host);
+    out.identity.replay_key = Span { off: 60, len: 10 };
+    assert!(check_identify(o, &out, &input.out_buf, host.reported(&out)).is_err());
+    // RED: a replay TTL with no replay key is refused (the key is Missing), never half-read.
+    let (o, mut out, input) = verify(opened.instance, Some(b"good"), None, &mut host);
+    out.identity.replay_ttl_secs = 30;
+    assert_eq!(
+        check_identify(o, &out, &input.out_buf, host.reported(&out)),
+        Err(crate::abi::auth::Fault::Missing)
+    );
 }
 
 #[test]

@@ -1301,8 +1301,20 @@ fn compute_layout() -> String {
         s,
         AuthIdentityOut,
         [
-            subject, key_id, key_name, user, provider, name, claims, claims_fmt, flags, ttl_secs,
-            groups_len, _reserved
+            subject,
+            key_id,
+            key_name,
+            user,
+            provider,
+            name,
+            claims,
+            claims_fmt,
+            flags,
+            ttl_secs,
+            groups_len,
+            _reserved,
+            replay_key,
+            replay_ttl_secs
         ]
     );
     record!(

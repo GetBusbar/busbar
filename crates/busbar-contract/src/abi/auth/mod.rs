@@ -120,7 +120,7 @@ pub struct Ops {
     /// Judge an inbound credential. REQUEST-PATH; may pend (a key-set fetch or a directory read
     /// over the plugin's need); [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass).
     /// In [`VerifyIn`] (fixed 272 B, plus the credential and carrier bytes), out [`IdentifyOut`]
-    /// (fixed 192 B; results in the host's [`IdentityBuf`], [`IDENTITY_BUF_BYTES`] and
+    /// (fixed 208 B; results in the host's [`IdentityBuf`], [`IDENTITY_BUF_BYTES`] and
     /// [`IDENTITY_GROUPS`] to start). The verdict is [`VERDICT_IDENTITY`], [`VERDICT_REJECT`] or
     /// [`VERDICT_PASS`]. OVERLOAD: when the instance's `max_inflight` is full, the host does not
     /// queue the call and answers the request 503 (an accepted difference from 1.5.5). The plugin
@@ -132,7 +132,7 @@ pub struct Ops {
     pub begin_login: Option<Op>,
     /// Finish a login: the token exchange runs over the plugin's own need to its need-declared
     /// targets. OFF-PATH; may pend; `Call`. In [`CompleteLoginIn`] (fixed 216 B), out
-    /// [`IdentifyOut`] (fixed 192 B; host [`IdentityBuf`]). The verdict is [`LOGIN_IDENTITY`],
+    /// [`IdentifyOut`] (fixed 208 B; host [`IdentityBuf`]). The verdict is [`LOGIN_IDENTITY`],
     /// [`LOGIN_BAD_CREDENTIAL`] or [`LOGIN_OUTAGE`].
     pub complete_login: Option<Op>,
     /// Bind one outbound style to its credential and answer a handle. OFF-PATH, at generation
