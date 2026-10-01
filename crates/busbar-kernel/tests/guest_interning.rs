@@ -6,9 +6,9 @@
 //! moves the table while it is counted.
 
 use busbar_contract::abi::transport::route::{
-    intern, interned_counts, FIELD_VALUE_PREFIX, METHOD_ANY, PATH_EXACT, PATH_PATTERN,
+    FIELD_VALUE_PREFIX, METHOD_ANY, PATH_EXACT, PATH_PATTERN,
 };
-use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
+use busbar_kernel::guest::{interned_counts, Claimant, GuestList, Line, LineAuth, Route};
 
 fn lines() -> Vec<Line> {
     let line = |who: &str, form: u32, path: &str, fields: Vec<(u32, String, Vec<u8>)>| Line {
@@ -36,13 +36,9 @@ fn lines() -> Vec<Line> {
     ]
 }
 
-/// RED without the dedup: the same string interns to the same pointer, and a second build of the
-/// same list grows the table by zero.
+/// RED without the kernel's one interner: a second build of the same list grows its table by zero.
 #[test]
 fn a_second_build_of_the_same_guest_list_interns_nothing_new() {
-    let (a, b) = (intern("/intern/ptr"), intern("/intern/ptr"));
-    assert!(std::ptr::eq(a, b), "one string, one copy");
-
     GuestList::seal(lines()).unwrap();
     let after_first = interned_counts();
     GuestList::seal(lines()).unwrap();

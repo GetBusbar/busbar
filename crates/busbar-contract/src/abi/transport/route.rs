@@ -12,10 +12,9 @@
 //! refused otherwise at check); a [`FIELD_VALUE_PREFIX`] value is compared case-sensitively.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Mutex, OnceLock};
 
 use crate::abi::mechanism::call::AbiStr;
-use crate::grammar::{one_level_under, pattern_matches, PathSeg};
+use crate::grammar::{one_level_under, segs_match, PathSeg, SegRef};
 
 /// `GET`.
 pub const METHOD_GET: u32 = 1;
@@ -141,87 +140,79 @@ pub fn method_bit(method: &str) -> u32 {
     }
 }
 
-/// A `PATH_PATTERN` spelling as segments; `None` when it breaks the syntax (a `{` segment that is
-/// not whole, an empty name, or a `{*name}` that is not last).
+/// A `PATH_PATTERN` spelling as segments borrowed from it; `None` when it breaks the syntax (a `{`
+/// segment that is not whole, an empty name, or a `{*name}` that is not last).
 #[must_use]
-pub fn pattern_segments(pattern: &str) -> Option<Vec<PathSeg>> {
+pub fn pattern_segments(pattern: &str) -> Option<Vec<SegRef<'_>>> {
     let segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
     let mut out = Vec::with_capacity(segs.len());
     for (i, s) in segs.iter().enumerate() {
         let seg = match s.strip_prefix('{').and_then(|r| r.strip_suffix('}')) {
             Some(name) => match name.strip_prefix('*') {
-                Some(rest) if !rest.is_empty() && i + 1 == segs.len() => PathSeg::Tail,
+                Some(rest) if !rest.is_empty() && i + 1 == segs.len() => SegRef::Tail,
                 Some(_) => return None,
-                None if !name.is_empty() && !name.contains(['{', '}']) => PathSeg::Var,
+                None if !name.is_empty() && !name.contains(['{', '}']) => SegRef::Var,
                 None => return None,
             },
             None if s.contains(['{', '}']) => return None,
-            // The literal outlives the call as the pattern does; the matcher copies nothing.
-            None => PathSeg::Lit(intern(s)),
+            None => SegRef::Lit(s),
         };
         out.push(seg);
     }
     Some(out)
 }
 
-type Strings = Mutex<HashSet<&'static str>>;
-type Patterns = Mutex<HashMap<&'static str, &'static [PathSeg]>>;
-
-fn strings() -> &'static Strings {
-    static T: OnceLock<Strings> = OnceLock::new();
-    T.get_or_init(|| Mutex::new(HashSet::new()))
+/// AN INTERNER OF ROUTE LITERALS, owned by its holder. The grammar's selectors hold `'static`
+/// spellings, so a route the kernel orders by CG-62 needs them; each distinct string is copied once
+/// for the life of the process and asking this interner again returns the same pointer. It is a
+/// plain value: the contract holds no instance (no static), the caller passes its own in, and a
+/// holder that keeps one across reloads adds nothing for routes it has seen.
+#[derive(Debug, Default)]
+pub struct Interner {
+    strings: HashSet<&'static str>,
+    patterns: HashMap<&'static str, &'static [PathSeg]>,
 }
 
-fn patterns() -> &'static Patterns {
-    static T: OnceLock<Patterns> = OnceLock::new();
-    T.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// The one interner of route literals. The grammar's selectors hold `'static` spellings, so a route
-/// checked at boot or at a reload needs one; each distinct string is copied once, for the life of
-/// the process, and asking again returns the same pointer. The table is bounded by the distinct
-/// strings ever seen, so a reload with the same routes adds nothing.
-#[must_use]
-pub fn intern(s: &str) -> &'static str {
-    let mut seen = strings()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(s) = seen.get(s) {
-        return s;
+impl Interner {
+    /// `s` as a `'static` spelling, one copy per distinct string in this interner.
+    #[must_use]
+    pub fn intern(&mut self, s: &str) -> &'static str {
+        if let Some(s) = self.strings.get(s).copied() {
+            return s;
+        }
+        let s: &'static str = Box::leak(s.to_owned().into_boxed_str());
+        self.strings.insert(s);
+        s
     }
-    let s: &'static str = Box::leak(s.to_owned().into_boxed_str());
-    seen.insert(s);
-    s
-}
 
-/// A `PATH_PATTERN` as the grammar's `'static` segments, parsed and kept once per distinct pattern
-/// (the same table discipline as [`intern`]); `None` when it breaks the syntax.
-#[must_use]
-pub fn intern_pattern(pattern: &str) -> Option<&'static [PathSeg]> {
-    let key = intern(pattern);
-    let mut seen = patterns()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(segs) = seen.get(key) {
-        return Some(segs);
+    /// A `PATH_PATTERN` as the grammar's `'static` segments, parsed and kept once per distinct
+    /// pattern; `None` when it breaks the syntax.
+    #[must_use]
+    pub fn intern_pattern(&mut self, pattern: &str) -> Option<&'static [PathSeg]> {
+        let seen = self.strings.get(pattern).copied();
+        if let Some(segs) = seen.and_then(|k| self.patterns.get(k).copied()) {
+            return Some(segs);
+        }
+        let spelled = pattern_segments(pattern)?;
+        let key = self.intern(pattern);
+        let mut segs = Vec::with_capacity(spelled.len());
+        for s in spelled {
+            segs.push(match s {
+                SegRef::Lit(l) => PathSeg::Lit(self.intern(l)),
+                SegRef::Var => PathSeg::Var,
+                SegRef::Tail => PathSeg::Tail,
+            });
+        }
+        let segs: &'static [PathSeg] = Vec::leak(segs);
+        self.patterns.insert(key, segs);
+        Some(segs)
     }
-    let segs: &'static [PathSeg] = Vec::leak(pattern_segments(key)?);
-    seen.insert(key, segs);
-    Some(segs)
-}
 
-/// How many distinct strings and patterns the interner holds (strings, patterns).
-#[must_use]
-pub fn interned_counts() -> (usize, usize) {
-    let s = strings()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .len();
-    let p = patterns()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .len();
-    (s, p)
+    /// How many distinct strings and patterns this interner holds (strings, patterns).
+    #[must_use]
+    pub fn counts(&self) -> (usize, usize) {
+        (self.strings.len(), self.patterns.len())
+    }
 }
 
 /// Whether `path` matches a route's path in `form`, the one spelling of every form. A pattern that
@@ -230,7 +221,7 @@ pub fn interned_counts() -> (usize, usize) {
 pub fn path_matches(form: u32, route_path: &str, path: &str) -> bool {
     match form {
         PATH_EXACT => path == route_path,
-        PATH_PATTERN => pattern_segments(route_path).is_some_and(|p| pattern_matches(&p, path)),
+        PATH_PATTERN => pattern_segments(route_path).is_some_and(|p| segs_match(p, path)),
         PATH_PREFIX => one_level_under(route_path, path),
         PATH_SUFFIX => path.ends_with(route_path),
         PATH_CONTAINS => path.contains(route_path),

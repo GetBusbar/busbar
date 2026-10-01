@@ -26,6 +26,30 @@ pub enum PathSeg {
     Tail,
 }
 
+/// One segment of a path pattern as the matcher reads it: a literal borrowed for the call, so a
+/// pattern spelled in a request-time string is matched without making it `'static`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SegRef<'a> {
+    /// A literal segment, matched exactly.
+    Lit(&'a str),
+    /// One segment of any value.
+    Var,
+    /// Every remaining segment.
+    Tail,
+}
+
+impl PathSeg {
+    /// This segment as the matcher reads it.
+    #[must_use]
+    pub const fn seg_ref(&self) -> SegRef<'static> {
+        match *self {
+            PathSeg::Lit(l) => SegRef::Lit(l),
+            PathSeg::Var => SegRef::Var,
+            PathSeg::Tail => SegRef::Tail,
+        }
+    }
+}
+
 /// How a transport recognises that arriving bytes are for one particular claim.
 ///
 /// The forms are exactly the ones the transports in the design need, and no more. Adding a form is
@@ -528,19 +552,25 @@ fn segments(path: &str) -> impl Iterator<Item = &str> {
 /// the one the boot proved could not exist.
 #[must_use]
 pub fn pattern_matches(pattern: &[PathSeg], path: &str) -> bool {
+    segs_match(pattern.iter().map(PathSeg::seg_ref), path)
+}
+
+/// [`pattern_matches`] over borrowed segments: the one body both read.
+#[must_use]
+pub fn segs_match<'a>(pattern: impl IntoIterator<Item = SegRef<'a>>, path: &str) -> bool {
     let mut segs = segments(path);
     for seg in pattern {
         match seg {
-            PathSeg::Tail => {
+            SegRef::Tail => {
                 // A tail is the last segment of a pattern and swallows whatever remains,
                 // including nothing.
                 return true;
             }
-            PathSeg::Lit(lit) => match segs.next() {
-                Some(s) if s == *lit => {}
+            SegRef::Lit(lit) => match segs.next() {
+                Some(s) if s == lit => {}
                 _ => return false,
             },
-            PathSeg::Var => {
+            SegRef::Var => {
                 if segs.next().is_none() {
                     return false;
                 }

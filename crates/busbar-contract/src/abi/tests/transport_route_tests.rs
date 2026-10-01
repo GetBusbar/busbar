@@ -137,16 +137,33 @@ fn a_view_matches_its_path_and_fields_and_admits_only_its_methods() {
     );
 }
 
-/// RED without the dedup: one string is one copy, and a pattern is parsed once.
+/// RED without the dedup: one string is one copy, and a pattern is parsed once, per interner.
 #[test]
 fn the_interner_returns_one_copy_per_distinct_string() {
-    let (a, b) = (intern("/a/literal"), intern("/a/literal"));
+    let mut i = Interner::default();
+    let (a, b) = (i.intern("/a/literal"), i.intern("/a/literal"));
     assert!(std::ptr::eq(a, b));
-    assert!(!std::ptr::eq(a, intern("/another")));
+    assert!(!std::ptr::eq(a, i.intern("/another")));
     let (p, q) = (
-        intern_pattern("/m/{x}/{*rest}").unwrap(),
-        intern_pattern("/m/{x}/{*rest}").unwrap(),
+        i.intern_pattern("/m/{x}/{*rest}").unwrap(),
+        i.intern_pattern("/m/{x}/{*rest}").unwrap(),
     );
     assert!(std::ptr::eq(p, q));
-    assert!(intern_pattern("/m/{*rest}/x").is_none());
+    assert!(i.intern_pattern("/m/{*rest}/x").is_none());
+    assert_eq!(
+        i.counts(),
+        (4, 1),
+        "two strings, the valid pattern and its one literal; a broken pattern interns nothing"
+    );
+}
+
+/// The contract holds no interner of its own: a second interner starts empty, and a pattern is
+/// matched from its spelling without interning anything.
+#[test]
+fn an_interner_is_a_plain_value_its_holder_owns() {
+    let mut first = Interner::default();
+    let _ = first.intern("/held");
+    assert_eq!(Interner::default().counts(), (0, 0));
+    assert!(path_matches(PATH_PATTERN, "/m/{x}/{*rest}", "/m/1/a/b"));
+    assert!(!path_matches(PATH_PATTERN, "/m/{x}", "/m/1/a"));
 }

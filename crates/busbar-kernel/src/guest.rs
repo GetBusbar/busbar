@@ -16,11 +16,30 @@
 //! miss on the first such line (405, never no-route). Otherwise there is no line (the listener's
 //! 1.5.5 no-route answer).
 
+use std::sync::{Mutex, MutexGuard, OnceLock};
+
 use busbar_contract::abi::transport::route::{
-    intern, intern_pattern, RouteView, FIELD_VALUE_PREFIX, PATH_CONTAINS, PATH_EXACT, PATH_PATTERN,
-    PATH_PREFIX, PATH_SUFFIX,
+    Interner, RouteView, FIELD_VALUE_PREFIX, PATH_CONTAINS, PATH_EXACT, PATH_PATTERN, PATH_PREFIX,
+    PATH_SUFFIX,
 };
 use busbar_contract::grammar::Selector;
+
+/// THE KERNEL'S ROUTE-LITERAL INTERNER: one per process, held here because the contract holds no
+/// state. Every guest list the kernel seals, at boot and at each reload, interns through it, so a
+/// reload with the routes it has seen adds nothing.
+fn literals() -> MutexGuard<'static, Interner> {
+    static LITERALS: OnceLock<Mutex<Interner>> = OnceLock::new();
+    LITERALS
+        .get_or_init(|| Mutex::new(Interner::default()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// How many distinct route strings and patterns the kernel's interner holds (strings, patterns).
+#[must_use]
+pub fn interned_counts() -> (usize, usize) {
+    literals().counts()
+}
 
 /// Who a line is for.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -67,10 +86,11 @@ impl Route {
 
     /// The path as the grammar's selector, which CG-62 scores and overlaps.
     fn selector(&self) -> Option<Selector> {
-        let p = intern(&self.path);
+        let mut literals = literals();
+        let p = literals.intern(&self.path);
         Some(match self.path_form {
             PATH_EXACT => Selector::ExactPath(p),
-            PATH_PATTERN => Selector::PathPattern(intern_pattern(p)?),
+            PATH_PATTERN => Selector::PathPattern(literals.intern_pattern(p)?),
             PATH_PREFIX => Selector::PrefixOneLevel(p),
             PATH_SUFFIX => Selector::PathSuffix(p),
             PATH_CONTAINS => Selector::PathContains(p),
@@ -80,12 +100,13 @@ impl Route {
 
     /// The field predicates as the grammar's header selectors.
     fn predicate_selectors(&self) -> Vec<Selector> {
+        let mut literals = literals();
         self.fields
             .iter()
             .map(|(op, n, v)| {
-                let n = intern(n);
+                let n = literals.intern(n);
                 if *op == FIELD_VALUE_PREFIX {
-                    Selector::HeaderPrefix(n, intern(&String::from_utf8_lossy(v)))
+                    Selector::HeaderPrefix(n, literals.intern(&String::from_utf8_lossy(v)))
                 } else {
                     Selector::HeaderPresent(n)
                 }
