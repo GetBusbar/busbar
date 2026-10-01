@@ -46,10 +46,8 @@ busbar-mcp	tokio (net)
 busbar-mcp	tokio-rustls
 busbar-mcp	tokio::net
 busbar-transport-http	hyper-util
-busbar-transport-http	rustls
 busbar-transport-http	socket2
 busbar-transport-http	tokio (net)
-busbar-transport-http	tokio-rustls
 busbar-transport-http	tokio::net
 busbar-transport-ws	socket2
 busbar-voice	hyper-util
