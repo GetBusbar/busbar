@@ -5,6 +5,7 @@ updates:
   # Rust crate dependencies (Cargo.toml / Cargo.lock).
   - package-ecosystem: "cargo"
     directory: "/"
+    target-branch: "dev"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
@@ -15,6 +16,7 @@ updates:
   # A compromised action is itself a supply-chain vector, so these are tracked too.
   - package-ecosystem: "github-actions"
     directory: "/"
+    target-branch: "dev"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
