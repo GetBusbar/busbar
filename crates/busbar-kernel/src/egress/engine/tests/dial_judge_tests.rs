@@ -45,7 +45,7 @@ fn get(url: &str) -> http::Request<http_body_util::Full<Bytes>> {
 }
 
 /// The refusal the dial table raised, found in an error's source chain.
-fn dial_refusal(err: &(dyn std::error::Error + 'static)) -> Option<&AddressRefusal> {
+fn dial_refusal<'a>(err: &'a (dyn std::error::Error + 'static)) -> Option<&'a AddressRefusal> {
     let mut cur = Some(err);
     while let Some(e) = cur {
         if let Some(refused) = e.downcast_ref::<AddressRefusal>() {

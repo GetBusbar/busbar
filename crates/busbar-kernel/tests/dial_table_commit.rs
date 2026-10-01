@@ -19,16 +19,29 @@ use std::sync::Arc;
 use busbar_kernel::egress::engine::{build_client, egress_request, Dns, EngineSpec, ResolveNames};
 use busbar_kernel::egress::fixtures::{spawn_http, CannedResponse, RebindingResolver};
 
-fn build(port: u16) -> busbar_kernel::InstalledLimits {
-    let mut cfg = busbar_kernel::test_support::cfg_with_provider_api_key(
+/// The fixture configuration, carrying the one provider it builds.
+fn fixture_cfg() -> busbar_kernel::config::RootCfg {
+    busbar_kernel::test_support::cfg_with_provider_api_key(
         busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_DIAL_TABLE_COMMIT"),
-    );
+    )
+}
+
+/// A fresh copy of the fixture's provider (the provider type is not `Clone`).
+fn fixture_provider() -> busbar_kernel::config::ProviderCfg {
+    fixture_cfg()
+        .providers
+        .into_values()
+        .next()
+        .expect("a provider")
+}
+
+fn build(port: u16) -> busbar_kernel::InstalledLimits {
+    let mut cfg = fixture_cfg();
     cfg.blocked_metadata_hosts = vec!["127.0.0.1".to_string()];
-    let template = cfg.providers.values().next().expect("a provider").clone();
-    let mut carved = template.clone();
+    let mut carved = fixture_provider();
     carved.base_url = format!("http://carved.localhost:{port}");
     carved.allow_metadata_hosts = vec!["127.0.0.1".to_string()];
-    let mut plain = template;
+    let mut plain = fixture_provider();
     plain.base_url = format!("http://plain.localhost:{port}");
     cfg.providers.insert("carved".to_string(), carved);
     cfg.providers.insert("plain".to_string(), plain);

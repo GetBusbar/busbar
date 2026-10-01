@@ -16,7 +16,7 @@
 use crate::engine::attempt::EgressSendError;
 use crate::engine::{forward_with_pool, WeightedLane};
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-use busbar_kernel::egress::engine::{with_scoped_dial, DialTable, ResolveNames};
+use busbar_kernel::egress::engine::{with_scoped_dial, DialTable};
 use busbar_kernel::egress::fixtures::RebindingResolver;
 use busbar_kernel::net_guard::DialDenylist;
 use busbar_kernel::store::now;
@@ -212,5 +212,19 @@ async fn an_all_refused_pool_answers_as_an_all_down_pool() {
     let refused_body = axum::body::to_bytes(refused.into_body(), usize::MAX)
         .await
         .expect("refused body");
-    assert_eq!(refused_body, base_body, "the all-down body, byte for byte");
+    // Byte for byte but the per-request id, which every answer mints afresh.
+    assert_eq!(
+        without_request_id(&refused_body),
+        without_request_id(&base_body),
+        "the all-down body"
+    );
+}
+
+/// An error body with its freshly minted `request_id` blanked, every other byte kept.
+fn without_request_id(body: &[u8]) -> serde_json::Value {
+    let mut v: serde_json::Value = serde_json::from_slice(body).expect("a JSON error body");
+    if let Some(id) = v.get_mut("request_id") {
+        *id = serde_json::Value::Null;
+    }
+    v
 }
