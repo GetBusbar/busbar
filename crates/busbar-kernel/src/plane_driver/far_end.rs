@@ -48,6 +48,7 @@ use crate::proxy::egress_unit::{
     },
     race,
     select::{pick_among, PickInput},
+    walk::exclude_smaller_windows,
     Member, OnExhausted, Pool, RequestCtx, Shed, WeightedFloor,
 };
 use busbar_contract::abi::auth::{STYLE_NEEDS_BODY_HASH, STYLE_NEEDS_HEADERS};
@@ -1045,17 +1046,11 @@ impl EgressFarEnd<'_> {
             .upstream_failure(&pool, destination, classified.label);
         e.telemetry.failover(&pool, classified.label);
         if matches!(classified.disposition, Disposition::ContextLength) {
-            // Every member whose window is at or below the one that refused would refuse too.
-            if let (Some(limit), Some(pool)) = (live.member.context_max, e.pools.get(&live.pool)) {
-                let smaller: Vec<DestinationId> = pool
-                    .members
-                    .iter()
-                    .filter(|m| m.context_max.is_some_and(|l| l <= limit))
-                    .map(|m| m.destination)
-                    .collect();
-                for d in smaller {
-                    w.ctx.exclude(d);
-                }
+            // Every ADMISSIBLE member whose window is at or below the one that refused would refuse
+            // too: the walk's own exclusion.
+            if let Some(pool) = e.pools.get(&live.pool) {
+                let failed = live.member.clone();
+                exclude_smaller_windows(&pool.admissible_members(), &failed, &mut w.ctx);
             }
         }
         self.settle(&mut w);

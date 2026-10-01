@@ -218,6 +218,11 @@ impl Breaker for Book {
             .unwrap_or(500);
         let (disposition, outcome, label) = match code {
             401 | 403 => (Disposition::HardDown, Outcome::HardDown, "hard_down"),
+            413 => (
+                Disposition::ContextLength,
+                Outcome::RecordNothing,
+                "context_length",
+            ),
             408 | 429 | 500..=599 => (
                 Disposition::TransientUpstream,
                 Outcome::Transient {
@@ -931,4 +936,43 @@ async fn a_relayed_failures_body_is_capped_and_a_success_is_not() {
         .flat_map(|p| p.bytes.clone())
         .collect();
     assert_eq!(body, b"0123456789", "a success is never capped");
+}
+
+/// A context-length refusal excludes the pool's ADMISSIBLE members whose window is no larger, the
+/// walk's own exclusion: a member the pool's blocklist keeps out is never part of it, and a larger
+/// window stays in the walk.
+#[tokio::test]
+async fn a_context_length_refusal_excludes_only_admissible_smaller_windows() {
+    let mut r = rig(
+        &[
+            ("a.test", Script::Answer(413, None, vec![b"too long"])),
+            ("b.test", Script::Answer(200, None, vec![b"ok"])),
+            ("c.test", Script::Answer(200, None, vec![b"ok"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    let pool = r.egress.pools.get_mut(POOL).expect("the pool");
+    for (member, window) in pool.members.iter_mut().zip([8_000, 4_000, 16_000]) {
+        member.context_max = Some(window);
+    }
+    pool.failover.exclusions = vec!["m1".into()];
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(
+        matches!(far.member(&t, 1).await, Pick::Member { ref name, .. } if name == "m0"),
+        "the heaviest admissible member first"
+    );
+    assert!(far.send(&t, request()).await);
+    assert!(far.next(&t).await.expect("a piece").fail_over);
+    let w = far.lock();
+    assert!(w.ctx.is_excluded(DestinationId::new(1)), "the member that refused");
+    assert!(
+        !w.ctx.is_excluded(DestinationId::new(2)),
+        "a blocklisted member is not the exclusion's to record"
+    );
+    assert!(
+        !w.ctx.is_excluded(DestinationId::new(3)),
+        "a larger window stays in the walk"
+    );
 }
