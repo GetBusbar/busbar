@@ -136,6 +136,11 @@ pub use seal::{Cadence, ChainSecret, CHECKPOINT_TICK_SECS};
 #[cfg(any(test, feature = "root-admin"))]
 pub use seal::{keyset_of, KeySetVerifier};
 
+/// The fixed audit chain's seams on the book: sealing a unit's one record, the cache rebuilt at boot,
+/// a window read back off the journal, and the walk `GET /admin/verify` reports. A private child
+/// module, as `replay` is; its methods are `Durability`'s own.
+mod audit;
+
 /// The money-book seam: the settling descriptor ([`Settling`], [`PostingStamp`]), what a settlement
 /// left ([`Settled`]), the [`MoneyBook`] trait an exit arm settles through and its one pass-through
 /// impl ([`SharedBook`]). Split out for `structure-lint`; a private child module, as `replay` is, its
@@ -298,118 +303,6 @@ impl Durability {
         wall: u64,
     ) -> Result<Option<JournalAck>, DurabilityLost> {
         self.journal.record_quarantines(token, at, wall)
-    }
-
-    /// REBUILD THE AUDIT CACHE FROM THE CHAIN and continue the audit chain from its tail: every
-    /// `audit.v4` record is read back, the newest [`AUDIT_RING`] are kept, and the next record this
-    /// boot seals links to the last one a predecessor sealed. A record that will not read back is a
-    /// finding, never silently skipped.
-    fn resume_audit(&mut self, records: &[JournalRecord]) {
-        let mut sealed = Vec::new();
-        for record in records {
-            match decode_audit(record) {
-                Ok(Some(audit)) => sealed.push(audit),
-                Ok(None) => {}
-                Err(why) => self.audit_findings.push(format!(
-                    "node {} record {}: {why}",
-                    record.node, record.node_seq
-                )),
-            }
-        }
-        if let Some(last) = sealed.last() {
-            self.record = AuditChain::resume(last.hash.clone(), last.seq.saturating_add(1));
-        }
-        let keep = sealed.len().saturating_sub(AUDIT_RING);
-        self.audit_records = sealed.split_off(keep);
-    }
-
-    /// SEAL A UNIT'S ONE FIXED AUDIT RECORD and put it on the journal, where the unit's one line is
-    /// written.
-    ///
-    /// `pass` is the audit pass the unit's own audit step was lent, handed back with its facts
-    /// (`Units::audited`): a unit that never passed its audit step has none, so it has no record,
-    /// and a pass seals once. The record is sealed under this boot's [`Durability::incarnation`] —
-    /// a unit key restarts with the process, the incarnation does not — and journalled whole
-    /// (`audit.v4`), so the journal can answer for it after the in-memory cache has let it go.
-    ///
-    /// # Errors
-    ///
-    /// The journal could not make the record durable. Without a data directory that means the store
-    /// refused the batch; with one it means a write or a sync failed. The record is sealed on the
-    /// chain and kept in the cache either way.
-    pub fn seal_unit(
-        &mut self,
-        mut inputs: busbar_kernel_audit::AuditInputs,
-        pass: busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
-        token: &Grant<DurableWrite>,
-    ) -> Result<AuditRecord, DurabilityLost> {
-        use busbar_kernel_audit::Audit;
-        inputs.what.incarnation = self.incarnation;
-        let record = self.record.seal(inputs, &pass);
-        let entry = Entry::new(RecordClass::Transaction, audit_body(&record))
-            .at(record.wall, record.mono)
-            .under(record.controls.lease_epoch, record.controls.policy_epoch);
-        let appended = self.journal.append(token, StepName::Audit, &[entry]);
-        self.audit_records.push(record.clone());
-        if self.audit_records.len() > AUDIT_RING {
-            let over = self.audit_records.len() - AUDIT_RING;
-            self.audit_records.drain(..over);
-        }
-        appended.map(|_| record)
-    }
-
-    /// The sealed audit records at positions `from` through `to`, oldest first, at most
-    /// [`AUDIT_RING`] of them. From the cache when it covers `from`; otherwise read back off the
-    /// journal, which keeps every record — so a window older than the cache is never answered as
-    /// empty.
-    #[must_use]
-    pub fn audit_window(&self, from: u64, to: u64) -> Vec<AuditRecord> {
-        let covered = self.audit_records.first().is_some_and(|r| r.seq <= from);
-        let pick = |r: &&AuditRecord| r.seq >= from && r.seq <= to;
-        if covered || self.audit_records.is_empty() && !self.on_disk() {
-            return self
-                .audit_records
-                .iter()
-                .filter(pick)
-                .take(AUDIT_RING)
-                .cloned()
-                .collect();
-        }
-        let Ok(Ok(records)) = self.journal.replay() else {
-            return Vec::new();
-        };
-        records
-            .iter()
-            .filter_map(|r| decode_audit(r).ok().flatten())
-            .filter(|r| r.seq >= from && r.seq <= to)
-            .take(AUDIT_RING)
-            .collect()
-    }
-
-    /// WHAT A WALK OF THE RETAINED AUDIT CHAIN FINDS, as `GET /admin/verify` reports it: a record
-    /// whose digest, link or position does not hold, a signature that does not verify under the
-    /// key it names. (What the boot could not read back is a restart finding.) Empty is the only
-    /// good answer.
-    #[must_use]
-    pub fn retained_audit_findings(&self) -> Vec<String> {
-        let mut findings = Vec::new();
-        if let Err(broken) = AuditChain::verify_window(&self.audit_records) {
-            findings.push(format!("{broken:?}"));
-        }
-        let keys = keyset_of(&self.record);
-        for record in &self.audit_records {
-            let Some(key_id) = record.key_id.as_deref() else {
-                continue;
-            };
-            let verified = keys
-                .get(key_id)
-                .ok_or(busbar_kernel_audit::KeyError::Unsigned)
-                .and_then(|key| AuditChain::verify_signature(record, key));
-            if let Err(e) = verified {
-                findings.push(format!("record {} signed by {key_id}: {e:?}", record.seq));
-            }
-        }
-        findings
     }
 
     /// Put a settlement on the journal.
@@ -1991,6 +1884,14 @@ fn read_key(body: &mut BodyReader<'_>) -> Option<TotalsKey> {
 #[must_use]
 pub fn audit_body(record: &AuditRecord) -> Vec<u8> {
     busbar_kernel_audit::journal_body(record)
+}
+
+/// The journal entry a sealed audit record goes on the chain as: its whole body, stamped with its
+/// own two clocks and the epochs it ran under.
+fn audit_entry(record: &AuditRecord) -> Entry {
+    Entry::new(RecordClass::Transaction, audit_body(record))
+        .at(record.wall, record.mono)
+        .under(record.controls.lease_epoch, record.controls.policy_epoch)
 }
 
 /// Read one journal record back as the sealed audit record it keeps, if it keeps one. A usage
