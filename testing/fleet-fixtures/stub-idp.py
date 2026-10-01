@@ -20,7 +20,11 @@ RS256 signing is done by shelling out to `openssl` (present on every GitHub-host
 macOS), so the fixture needs no Python crypto package — it stays dependency-free and self-contained,
 which is the rule for fleet fixtures. The keypair is generated once at startup into a temp dir.
 
-Usage: stub-idp.py <port> <self-base-url> <issuer> <audience> <sub> <group-claim-name> <group-value>
+The server speaks HTTPS: the auth-oidc plugin fetches discovery and the JWKS https-only. It presents a
+throwaway self-signed certificate for 127.0.0.1, written to <cert-out> as PEM for the plugin's
+`ca_cert_pem` setting.
+
+Usage: stub-idp.py <port> <self-base-url> <issuer> <audience> <sub> <group-claim-name> <group-value> <cert-out>
 """
 import base64
 import http.server
@@ -30,6 +34,7 @@ import sys
 import tempfile
 import time
 import os
+import ssl
 
 PORT = int(sys.argv[1])
 SELF = sys.argv[2].rstrip("/")
@@ -38,6 +43,7 @@ AUDIENCE = sys.argv[4]
 SUB = sys.argv[5]
 GROUP_CLAIM = sys.argv[6]
 GROUP_VALUE = sys.argv[7]
+CERT_OUT = sys.argv[8]
 
 TMP = tempfile.mkdtemp(prefix="stub-idp-")
 PRIV = os.path.join(TMP, "priv.pem")
@@ -56,6 +62,16 @@ def gen_key():
             ["openssl", "genrsa", "-out", path, "2048"],
             check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+
+
+def gen_cert():
+    key = os.path.join(TMP, "tls.key")
+    subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", CERT_OUT,
+         "-days", "2", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"],
+        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    return key
 
 
 def public_numbers():
@@ -146,4 +162,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     gen_key()
-    http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    tls_key = gen_cert()
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(CERT_OUT, tls_key)
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    server.socket = ctx.wrap_socket(server.socket, server_side=True)
+    server.serve_forever()
