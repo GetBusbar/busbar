@@ -312,7 +312,6 @@ fn plane(section: &'static str, record_kinds: &'static [&'static str]) -> PlaneD
         record_kinds,
         required_config_sections: &[],
         trust_keys: &[],
-        caller_credential_refusal: None,
         served_op_classes: &[],
     }
 }
