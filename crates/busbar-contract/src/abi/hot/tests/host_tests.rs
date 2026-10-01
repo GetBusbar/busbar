@@ -14,8 +14,7 @@ fn empty_vtable_grants_nothing() {
     assert!(vt.journal_register.is_none());
     assert!(vt.journal_append_scoped.is_none());
     assert!(vt.journal_verify_scoped.is_none());
-    assert!(vt.cost_reserve.is_none());
-    assert!(vt.cost_settle.is_none());
+    assert!(vt.counter_add.is_none());
     assert!(vt.entropy_fill.is_none());
     assert!(vt.translate_cap.is_none());
     assert_eq!(crate::abi::check_preamble(&vt.abi), Ok(()));
@@ -74,8 +73,6 @@ fn stub_vtable_populates_every_slot() {
         guard_url,
         identity_admit,
         gate_decide,
-        cost_reserve,
-        cost_settle,
         counter_add,
         entropy_fill,
         wall_clock,
@@ -126,8 +123,6 @@ fn stub_vtable_populates_every_slot() {
         ("guard_url", guard_url.is_some()),
         ("identity_admit", identity_admit.is_some()),
         ("gate_decide", gate_decide.is_some()),
-        ("cost_reserve", cost_reserve.is_some()),
-        ("cost_settle", cost_settle.is_some()),
         ("counter_add", counter_add.is_some()),
         ("entropy_fill", entropy_fill.is_some()),
         ("wall_clock", wall_clock.is_some()),
@@ -139,16 +134,6 @@ fn stub_vtable_populates_every_slot() {
 
     let vt = &PlaneHostVtable::STUB;
     assert_eq!(vt.size as usize, core::mem::size_of::<PlaneHostVtable>());
-}
-
-/// The minor-19 METERING-LEASE seam: the two stub slots are real, well-typed `extern "C-unwind"`
-/// fn-pointers that panic when invoked (the type-level proof the surface compiles). We drive
-/// `cost_reserve` with an over-estimate/fee/cap and a null out-param — it must reach the `unimplemented!`.
-#[test]
-#[should_panic(expected = "cost_reserve")]
-fn stub_cost_reserve_is_unimplemented() {
-    let vt = &PlaneHostVtable::STUB;
-    (vt.cost_reserve.unwrap())(HostCtx::NULL, 1_000, 0, 10_000, true, core::ptr::null_mut());
 }
 
 #[test]
@@ -232,9 +217,9 @@ fn a_bad_vtable_preamble_is_refused_before_size() {
 #[test]
 fn a_shorter_vtable_hides_its_trailing_slots() {
     let vt = PlaneHostVtable::STUB;
-    // A peer that predates the minor-19 metering-lease slots: it attests everything up to (but not
-    // including) `cost_reserve`.
-    let short = core::mem::offset_of!(PlaneHostVtable, cost_reserve) as u32;
+    // A peer that predates the minor-25 metric-family slot: it attests everything up to (but not
+    // including) `counter_add`.
+    let short = core::mem::offset_of!(PlaneHostVtable, counter_add) as u32;
     let p = &vt as *const PlaneHostVtable;
 
     // A leading slot every version has ever had is still granted.
@@ -242,18 +227,18 @@ fn a_shorter_vtable_hides_its_trailing_slots() {
         host_slot!(p, short, govern_admit).is_some(),
         "a slot the peer's size covers is read"
     );
-    // The two trailing slots the peer never wrote read as ABSENT — no fn-pointer is produced.
+    // The trailing slots the peer never wrote read as ABSENT — no fn-pointer is produced.
     assert!(
-        host_slot!(p, short, cost_reserve).is_none(),
+        host_slot!(p, short, counter_add).is_none(),
         "a slot past the peer's attested size must read as absent"
     );
     assert!(
-        host_slot!(p, short, cost_settle).is_none(),
+        host_slot!(p, short, entropy_fill).is_none(),
         "a slot past the peer's attested size must read as absent"
     );
     // At the honoured full size the same slots ARE granted — the guard hides only what it must.
     let full = core::mem::size_of::<PlaneHostVtable>() as u32;
-    assert!(host_slot!(p, full, cost_settle).is_some());
+    assert!(host_slot!(p, full, counter_add).is_some());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────

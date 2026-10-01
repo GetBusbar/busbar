@@ -164,7 +164,6 @@ fn compute_layout() -> String {
             component,
             _reserved,
             amount,
-            unit_cost_micros,
             admission,
             key_id_ptr,
             key_id_len,
@@ -627,8 +626,6 @@ fn compute_layout() -> String {
             guard_url,
             identity_admit,
             gate_decide,
-            cost_reserve,
-            cost_settle,
             counter_add,
             // The host services (minor 30).
             entropy_fill,

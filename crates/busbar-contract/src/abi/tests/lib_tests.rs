@@ -116,7 +116,6 @@ fn usage_units_pack_decode_round_trips() {
     let guard = Usage::with_units(
         UsageComponent::Queries,
         1,
-        0,
         AdmissionId(7),
         key,
         model,
@@ -138,7 +137,6 @@ fn usage_units_tail_hidden_from_a_pre_minor_20_sender() {
     let guard = Usage::with_units(
         UsageComponent::Queries,
         1,
-        0,
         AdmissionId(1),
         b"k",
         b"m",
@@ -146,10 +144,10 @@ fn usage_units_tail_hidden_from_a_pre_minor_20_sender() {
         &packed,
     );
 
-    // Simulate an older peer that advertised only the minor-5 size (pre-units __size = 80): the
-    // sized-struct guard must hide `units_ptr`/`units_len`, so the host bills via the legacy scalar.
+    // Simulate an older peer that advertised only the minor-5 size (everything before `units_ptr`):
+    // the sized-struct guard must hide `units_ptr`/`units_len`, so the host ledgers `amount` alone.
     let mut old = *guard;
-    old.size = 80;
+    old.size = core::mem::offset_of!(Usage, units_ptr) as u32;
     assert_eq!(read_sized_field!(&old, old.size, Usage, units_ptr), None);
     assert!(
         unsafe { decode_usage_units(&old) }.is_empty(),

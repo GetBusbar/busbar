@@ -744,7 +744,6 @@ fn meter_request(
     let usage = busbar_contract::abi::hot::Usage::with_attribution(
         busbar_contract::abi::hot::UsageComponent::Queries,
         0,
-        0,
         busbar_contract::abi::hot::AdmissionId::NONE,
         billed_key_id.as_bytes(),
         resource.as_bytes(),

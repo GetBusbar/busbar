@@ -20,16 +20,10 @@
 
 use super::HostState;
 use crate::governance::{AdmitGrant, LimitBlocked};
-use crate::plane::cost::{CostAmount, CostBreakdown, CostComponent};
 use busbar_contract::abi::hot::{
     AuthQuery, AuthResolved, Decision, Facts, MeterOutcome, Usage, UsageComponent, POD_VERSION,
 };
 use busbar_contract::abi::read_sized_field;
-
-/// Nanodollars per micro-currency unit — the projection from a [`Usage`]'s `unit_cost_micros` money
-/// scalar into the engine's nanodollar ledger unit ([`CostAmount`]). Mirrors `cost::NANOS_PER_MICRO`
-/// (a private const there); duplicated as a local so this module takes no new pub surface on `cost`.
-const NANOS_PER_MICRO: u128 = 1_000;
 
 /// Default bounded lifetime stamped onto a resolved credential reference until the real
 /// credential-store lookup (Phase 2) supplies the mint's true expiry.
@@ -178,11 +172,11 @@ fn virtual_key(id: String, group: Option<String>) -> busbar_contract::records::V
 // meter_charge — the money-scalar settlement + the write-behind metering time-series.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// Charge a borrowed [`Usage`] through the real metering path. Computes the neutral money scalar
-/// (`amount × unit_cost_micros`, projected to nanodollars) and validates it through the real
-/// [`CostBreakdown`] "parts add up" invariant, then accrues the usage into the write-behind metering
-/// time-series. A malformed breakdown REFUSES the charge (fail-closed). Called from inside the slot's
-/// `catch_unwind`; a panic maps to `Rejected`.
+/// Charge a borrowed [`Usage`] through the real metering path: accrue its COUNTS into the write-behind
+/// metering time-series. A plane names counts, never a price (#43/#71; the plane-side
+/// `unit_cost_micros` price was retired by KERNEL<>PLUGINS step 16, item 577), so nothing is priced
+/// here. A component byte this build does not name REFUSES the charge (fail-closed). Called from
+/// inside the slot's `catch_unwind`; a panic maps to `Rejected`.
 pub(super) fn charge(state: &HostState, usage: &Usage) -> MeterOutcome {
     // The plane FILLS this struct, so `component` is a plane-chosen byte. Decode it through the
     // checked carrier BEFORE anything dispatches on it: a byte this build does not name has no
@@ -191,20 +185,6 @@ pub(super) fn charge(state: &HostState, usage: &Usage) -> MeterOutcome {
     let Some(component) = usage.component.component() else {
         return MeterOutcome::Rejected;
     };
-    // The neutral money scalar this usage settles, in nanodollars (the engine's ledger unit).
-    let micros = u128::from(usage.amount).saturating_mul(u128::from(usage.unit_cost_micros));
-    let amount = CostAmount(micros.saturating_mul(NANOS_PER_MICRO));
-    // Validate through the real `CostBreakdown`: a single opaque-component line (breakdowns are
-    // sparse, so a zero charge carries no component). A breakdown that cannot be constructed — the
-    // parts do not add up — refuses the charge rather than ledgering an untrustworthy split.
-    let components = if amount == CostAmount::ZERO {
-        Vec::new()
-    } else {
-        vec![CostComponent::top(component_label(component), amount)]
-    };
-    if CostBreakdown::new(amount, components).is_err() {
-        return MeterOutcome::Rejected;
-    }
     // Accrue into the real write-behind metering time-series when governance is enabled, against the
     // minted caller's key and the tail's `(model, provider)` — the EXACT row the in-process meter
     // records (proven by `charge_over_usage_matches_record_metering`).
@@ -284,16 +264,6 @@ fn token_usage_for(component: UsageComponent, amount: u64) -> Option<crate::bill
             ..Default::default()
         }),
         UsageComponent::Bytes | UsageComponent::Frames | UsageComponent::Queries => None,
-    }
-}
-
-/// The opaque, protocol-blind label for a usage component's cost line (never interpreted by core).
-fn component_label(component: UsageComponent) -> &'static str {
-    match component {
-        UsageComponent::Tokens => "tokens",
-        UsageComponent::Bytes => "bytes",
-        UsageComponent::Frames => "frames",
-        UsageComponent::Queries => "queries",
     }
 }
 

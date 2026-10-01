@@ -27,9 +27,6 @@
 //!   rest forwarding into the capability modules), zero stubs remaining.
 
 pub mod breaker;
-// The host side of the metering-lease seam (minor-19): the real `cost_reserve`/`cost_settle` shims
-// backed by a host-owned `CostHold` lease registry. The vtable's two cost slots forward into it.
-pub mod cost_host;
 mod creds;
 pub mod dispatch;
 pub mod egress;
@@ -644,10 +641,7 @@ impl busbar_kernel::plane_host::LanePoolHost for EngineHostImpl {
 }
 
 // THE KERNEL'S OWN PRICING (#43): `MeteringHost` is NOT a supertrait of `EngineHost`, so no plane-side
-// host implements it and no plane names it. The lease legs take the trait's defaults — the host-owned
-// `CostHold` registry in [`cost_host`], the SAME registry the FFI `cost_reserve`/`cost_settle` slots fill,
-// so a statically-linked plane's session and a dlopen plane's lease are one ledger. Only the pricing is
-// this host's: its bound snapshot's rate card.
+// host implements it and no plane names it. The pricing is this host's: its bound snapshot's rate card.
 impl busbar_kernel::plane_host::MeteringHost for EngineHostImpl {
     fn price_usage(&self, model: &str, usage: &busbar_contract::billing::Usage) -> Option<u128> {
         // Price against the BOUND snapshot's resolved `CostModel` — the SAME rate card + arithmetic the
@@ -2583,78 +2577,14 @@ pub trait LanePoolHost: Send + Sync {
     fn plane_pool_members(&self, plane_key: &str, member: &str) -> Option<(String, Vec<String>)>;
 }
 
-/// An OPAQUE handle to ONE open host-owned reserve-then-settle cost lease, minted by
-/// [`MeteringHost::cost_reserve`] and handed back to [`MeteringHost::cost_settle`] /
-/// [`cost_settled`](MeteringHost::cost_settled) / [`cost_close`](MeteringHost::cost_close). The
-/// reserve/settled/cap money state lives HOST-side behind this id; only the `u64` handle crosses the
-/// seam. Substrate-native (not the frozen hot-ABI POD) so the neutral seam stays independent of the
-/// C-ABI, though the two are structurally the same `u64` handle.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct CostLeaseId(pub u64);
-
-impl CostLeaseId {
-    /// The reserved sentinel a REFUSED reserve reads as — never a live lease (ids are minted `≥ 1`).
-    pub const NONE: CostLeaseId = CostLeaseId(0);
-}
-
-/// The post-settle state [`MeteringHost::cost_settle`] reads back — the neutral twin of the hot-ABI
-/// `CostSettleOut.exhausted` flag. A live carrier reads `exhausted` after each settle and HARD-CLOSES
-/// the instant it is set (`settled ≥ cap`), the one thing post-hoc metering structurally cannot do.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SettleOutcome {
-    /// Whether the caller's budget is now DRY (`settled ≥ cap`) — the carrier must hard-close.
-    pub exhausted: bool,
-}
-
-/// THE KERNEL'S PRICING SIDE of a live carrier — the reserve-then-settle cost lease and the rate card
-/// that prices each increment. KERNEL-INTERNAL (#43: "a plane plugin NEVER sees its rate card or
+/// THE KERNEL'S PRICING SIDE of a live carrier — the rate card that prices each increment. KERNEL-INTERNAL (#43: "a plane plugin NEVER sees its rate card or
 /// fees"): it is NOT a supertrait of [`EngineHost`], so no plane-side host implements it and no plane
 /// names it. A plane meters a live carrier through the kernel's count-only
-/// [`SessionAccount`](session_meter::SessionAccount), which prices nothing (Q21b); what drives this
-/// trait is the hot-ABI cost slots.
-///
-/// The lease legs DEFAULT to the kernel's own host-owned `CostHold` registry ([`cost_host`]) — the SAME
-/// registry the hot-ABI `cost_reserve`/`cost_settle` slots fill, so every lease is one ledger. An
-/// implementor supplies the pricing. Money-denominated end to end in `u128` nanodollars (1e-9 USD);
-/// this is a plain Rust trait, not the frozen hot FFI, so it carries `u128` without narrowing.
+/// [`SessionAccount`](session_meter::SessionAccount), which prices nothing (Q21b). (The hot-ABI
+/// reserve-then-settle lease slots that once drove this trait were retired by KERNEL<>PLUGINS step 16:
+/// a plane never hands the kernel a price, #43/#71.) Money-denominated end to end in `u128`
+/// nanodollars; a plain Rust trait, not the frozen hot FFI.
 pub trait MeteringHost: Send + Sync {
-    /// OPEN a reserve-then-settle cost lease over ALREADY-PRICED nanodollars and return its opaque
-    /// [`CostLeaseId`]. `estimate_nanos` is the coarse over-estimate debited up front, `fee_nanos` the
-    /// once-per-lease flat session fee (`0` = none), and `cap_nanos` the TRUE budget ceiling exhaustion
-    /// is judged against: `None` leaves the lease UNCAPPED (never exhausts); `Some(0)` is a REFUSE-ALL
-    /// cap, DENIED at the door — the method returns `None` and the session must fail closed (never
-    /// open). Any other `Some(cap)` opens a live lease.
-    fn cost_reserve(
-        &self,
-        estimate_nanos: u128,
-        fee_nanos: u128,
-        cap_nanos: Option<u128>,
-    ) -> Option<CostLeaseId> {
-        cost_host::reserve_lease(estimate_nanos, fee_nanos, cap_nanos).map(CostLeaseId)
-    }
-
-    /// ACCRUE one EXACT already-priced increment (`exact_nanos`) against the open lease `lease` and read
-    /// back the post-settle [`SettleOutcome`]. The lease STAYS open after a settle — a live carrier keeps
-    /// settling increments until it hard-closes. `None` iff `lease` names no open lease (unknown /
-    /// already-closed / the [`CostLeaseId::NONE`] sentinel); on `None` the caller fails CLOSED and
-    /// hard-closes the carrier, exactly as it would on `exhausted`.
-    fn cost_settle(&self, lease: CostLeaseId, exact_nanos: u128) -> Option<SettleOutcome> {
-        cost_host::settle_lease(lease.0, exact_nanos).map(|exhausted| SettleOutcome { exhausted })
-    }
-
-    /// The total nanodollars SETTLED so far against `lease` — the audit tap. `None` for an unknown /
-    /// already-closed lease.
-    fn cost_settled(&self, lease: CostLeaseId) -> Option<u128> {
-        cost_host::settled_of(lease.0)
-    }
-
-    /// CLOSE and forget the lease `lease`, returning its finalize()'d ledgered total (the exact settled
-    /// sum — never the coarse reserve). `None` for an unknown / already-closed lease. Idempotent: a
-    /// second close reads `None`. Bounds the registry so a finished carrier's lease does not leak.
-    fn cost_close(&self, lease: CostLeaseId) -> Option<u128> {
-        cost_host::close_lease(lease.0)
-    }
-
     /// PRICE a turn's neutral [`billing::Usage`](crate::billing::Usage) counts for `model` into
     /// nanodollars via the deployment's rate card — the SAME `CostModel` arithmetic the LLM
     /// enforcement/derive path uses (a new ENTRY POINT over the same function).

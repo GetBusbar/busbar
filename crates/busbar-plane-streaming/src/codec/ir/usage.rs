@@ -5,16 +5,16 @@
 //!
 //! `response.done.usage` (audio vs text are SEPARATE token classes, audio dominates) and
 //! `rate_limits.updated` are EXTRACTED, never client-translated. This is the metering/audit tap that
-//! the plane folds into a `CostBreakdown` (whose labeled components core never interprets) feeding
-//! `cost_settle` + `journal_append_scoped`. The same move the LLM reader makes with `IrUsage`.
+//! the plane folds into counts per class (whose labels core never interprets) for the kernel's
+//! metering + `journal_append_scoped`. The same move the LLM reader makes with `IrUsage`.
 
 /// THE NEUTRAL USAGE CARRIER — token classes the plane extracts from a duplex turn. Folded into a
 /// `CostBreakdown` whose top-level components sum to `total` (the one invariant core enforces), with
 /// audio/text as labeled opaque components core never interprets.
 ///
 /// A plain token-class tally, folded (5→4 reserved keys, see [`Self::to_billing_usage`]) onto the
-/// neutral [`busbar_contract::billing::Usage`] the host prices via the D2 lease's `price_usage`
-/// (`runtime::metering::MeteringPort::price_usage`) and settled through `cost_settle`.
+/// neutral [`busbar_contract::billing::Usage`] the kernel prices at read
+/// (`runtime::metering::MeteringPort::price_usage`); the plane never prices it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IrDuplexUsage {
     /// Audio input tokens consumed this turn.

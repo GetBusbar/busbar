@@ -22,7 +22,7 @@
 //!
 //! * the POSITIVE drive asserts exact per-slot call counts (`assert_eq!(…, 1)`, not `> 0`);
 //! * the EMPTY-host drive asserts the plane REFUSES when the table grants nothing;
-//! * the PER-SLOT drive withdraws exactly one of the six granted slots at a time and asserts the
+//! * the PER-SLOT drive withdraws exactly one of the four granted slots at a time and asserts the
 //!   plane refuses each time, naming the withdrawn slot — which is what proves it calls each one.
 //!
 //! This lane retires with the old loader; the door lane's crossing into the kernel's own host
@@ -96,11 +96,7 @@ fn vocab(ptr: *const u8, len: usize) -> String {
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 mod test_host {
     use busbar_contract::abi::hot::host::{HostCtx, PlaneHostVtable};
-    use busbar_contract::abi::hot::pod::{
-        CostLeaseId, CostSettleOut, Decision, Facts, FramingDesc, MeterOutcome, Seq, StatusClass,
-        Usage, POD_VERSION,
-    };
-    use core::mem::MaybeUninit;
+    use busbar_contract::abi::hot::pod::{Decision, Facts, FramingDesc, MeterOutcome, Seq, Usage};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Mutex, MutexGuard};
 
@@ -109,7 +105,7 @@ mod test_host {
     /// disable every later one.
     static SERIALIZE: Mutex<()> = Mutex::new(());
 
-    /// Per-slot call counts. `dispatch` is REQUIRED to move all six; `start` moves `CLOCK_NOW` once
+    /// Per-slot call counts. `dispatch` is REQUIRED to move all four; `start` moves `CLOCK_NOW` once
     /// more.
     pub static CLOCK_NOW: AtomicU64 = AtomicU64::new(0);
     /// See [`CLOCK_NOW`].
@@ -117,47 +113,26 @@ mod test_host {
     /// See [`CLOCK_NOW`].
     pub static METER_CHARGE: AtomicU64 = AtomicU64::new(0);
     /// See [`CLOCK_NOW`].
-    pub static COST_RESERVE: AtomicU64 = AtomicU64::new(0);
-    /// See [`CLOCK_NOW`].
-    pub static COST_SETTLE: AtomicU64 = AtomicU64::new(0);
-    /// See [`CLOCK_NOW`].
     pub static JOURNAL_APPEND: AtomicU64 = AtomicU64::new(0);
 
-    /// THE MONEY BYTES, READ OFF THE WIRE. What the plane actually wrote into the `Usage` /
-    /// `cost_reserve` / `cost_settle` arguments, captured verbatim so a test can assert the
-    /// PRICING-BLIND posture (DECISIONS #43/#71/#77(3)) rather than take the plane's word for it.
+    /// THE MONEY BYTES, READ OFF THE WIRE. What the plane actually wrote into the `Usage`, captured
+    /// verbatim so a test can assert the PRICING-BLIND posture (DECISIONS #43/#71/#77(3)) rather
+    /// than take the plane's word for it. The `Usage` carries no price field at all (item 577).
     pub static LAST_AMOUNT: AtomicU64 = AtomicU64::new(u64::MAX);
-    /// See [`LAST_AMOUNT`]. MUST be `0` — a plane that priced would put a rate here.
-    pub static LAST_UNIT_COST_MICROS: AtomicU64 = AtomicU64::new(u64::MAX);
-    /// See [`LAST_AMOUNT`]. The sum of every nanodollar field the plane handed the lease slots
-    /// (reserve + flat fee + cap + settle). MUST be `0`.
-    pub static LAST_MONEY_NANOS: AtomicU64 = AtomicU64::new(u64::MAX);
 
     /// Take the serialization lock and zero every counter. Returns the guard — hold it for the test.
     pub fn reset() -> MutexGuard<'static, ()> {
         let g = SERIALIZE.lock().unwrap_or_else(|p| p.into_inner());
-        for c in [
-            &CLOCK_NOW,
-            &GOVERN_ADMIT,
-            &METER_CHARGE,
-            &COST_RESERVE,
-            &COST_SETTLE,
-            &JOURNAL_APPEND,
-        ] {
+        for c in [&CLOCK_NOW, &GOVERN_ADMIT, &METER_CHARGE, &JOURNAL_APPEND] {
             c.store(0, Ordering::SeqCst);
         }
-        for c in [&LAST_AMOUNT, &LAST_UNIT_COST_MICROS, &LAST_MONEY_NANOS] {
-            c.store(u64::MAX, Ordering::SeqCst);
-        }
+        LAST_AMOUNT.store(u64::MAX, Ordering::SeqCst);
         g
     }
 
     /// A Unix-nanosecond reading a plane can tell apart from the slot's fail-closed `0`. Fixed rather
     /// than sampled so the shim adds no ambient clock of its own.
     pub const CLOCK_READING: u64 = 1_700_000_000_000_000_000;
-    /// The lease id this host mints. Non-zero, so it is never the reserved `CostLeaseId::NONE`.
-    pub const LEASE: u64 = 7;
-
     extern "C-unwind" fn clock_now(_host: HostCtx) -> u64 {
         CLOCK_NOW.fetch_add(1, Ordering::SeqCst);
         CLOCK_READING
@@ -179,55 +154,7 @@ mod test_host {
         // SAFETY: a non-null `usage` is a live, initialized `Usage` for the call (ABI discipline).
         let u = unsafe { &*usage };
         LAST_AMOUNT.store(u.amount, Ordering::SeqCst);
-        LAST_UNIT_COST_MICROS.store(u.unit_cost_micros, Ordering::SeqCst);
         MeterOutcome::Charged
-    }
-
-    extern "C-unwind" fn cost_reserve(
-        _host: HostCtx,
-        reserve_nanos: u64,
-        flat_fee_nanos: u64,
-        cap_nanos: u64,
-        _cap_present: bool,
-        out: *mut MaybeUninit<CostLeaseId>,
-    ) -> StatusClass {
-        COST_RESERVE.fetch_add(1, Ordering::SeqCst);
-        let seen = reserve_nanos
-            .saturating_add(flat_fee_nanos)
-            .saturating_add(cap_nanos);
-        LAST_MONEY_NANOS.store(seen, Ordering::SeqCst);
-        // SAFETY: `out` is a writable, aligned `MaybeUninit<CostLeaseId>` for the call (or null,
-        // tolerated); published ONLY on the Ok path (init-only-on-Ok).
-        unsafe { busbar_contract::abi::write_out(out, CostLeaseId(LEASE)) };
-        StatusClass::Ok
-    }
-
-    extern "C-unwind" fn cost_settle(
-        _host: HostCtx,
-        lease: CostLeaseId,
-        settle_nanos: u64,
-        _breakdown_ptr: *const u8,
-        _breakdown_len: usize,
-        out: *mut MaybeUninit<CostSettleOut>,
-    ) -> StatusClass {
-        COST_SETTLE.fetch_add(1, Ordering::SeqCst);
-        if lease.0 != LEASE {
-            return StatusClass::Refused; // an unknown lease fails closed, as the real host does
-        }
-        LAST_MONEY_NANOS.fetch_add(settle_nanos, Ordering::SeqCst);
-        // SAFETY: as `cost_reserve` above.
-        unsafe {
-            busbar_contract::abi::write_out(
-                out,
-                CostSettleOut {
-                    size: core::mem::size_of::<CostSettleOut>() as u32,
-                    version: POD_VERSION,
-                    exhausted: 0,
-                    _reserved: 0,
-                },
-            )
-        };
-        StatusClass::Ok
     }
 
     extern "C-unwind" fn journal_append(
@@ -244,16 +171,14 @@ mod test_host {
         Seq(n + 1)
     }
 
-    /// The instrumented host: `EMPTY` (every capability withheld) plus exactly the six slots the
+    /// The instrumented host: `EMPTY` (every capability withheld) plus exactly the four slots the
     /// example plane requires. Granting only what is needed is the point — a plane that called a
-    /// seventh would hit a `None` and refuse, which is the behaviour, not a bug.
+    /// fifth would hit a `None` and refuse, which is the behaviour, not a bug.
     pub fn vtable() -> PlaneHostVtable {
         PlaneHostVtable {
             clock_now: Some(clock_now),
             govern_admit: Some(govern_admit),
             meter_charge: Some(meter_charge),
-            cost_reserve: Some(cost_reserve),
-            cost_settle: Some(cost_settle),
             journal_append: Some(journal_append),
             ..PlaneHostVtable::EMPTY
         }
@@ -262,15 +187,13 @@ mod test_host {
     /// One granted slot's name, paired with a withdrawer that nulls exactly that slot.
     pub type Withdrawal = (&'static str, fn(&mut PlaneHostVtable));
 
-    /// The six slot names this host grants, paired with a withdrawer that nulls exactly that one.
+    /// The four slot names this host grants, paired with a withdrawer that nulls exactly that one.
     /// Drives the per-slot negative control: the plane must REFUSE when any single one is absent,
     /// which is what proves it CALLS each of them rather than merely holding the table.
-    pub const WITHDRAWABLE: [Withdrawal; 6] = [
+    pub const WITHDRAWABLE: [Withdrawal; 4] = [
         ("clock_now", |vt| vt.clock_now = None),
         ("govern_admit", |vt| vt.govern_admit = None),
         ("meter_charge", |vt| vt.meter_charge = None),
-        ("cost_reserve", |vt| vt.cost_reserve = None),
-        ("cost_settle", |vt| vt.cost_settle = None),
         ("journal_append", |vt| vt.journal_append = None),
     ];
 }
@@ -429,7 +352,7 @@ fn compiled_in_declaration() -> crate::HotDeclaration {
 /// THE CROSS-ABI RIDER PROOF, loader half. The dropped-in plane is a LIVE plane AND a REAL RIDER:
 /// `config_validate` → `build` → `hydrate` → `start` → `dispatch` all cross the ABI, and the plane
 /// calls back through the host table it was handed — `clock_now` at `start`, then
-/// `clock_now`/`govern_admit`/`meter_charge`/`cost_reserve`/`cost_settle` at `dispatch`.
+/// `clock_now`/`govern_admit`/`meter_charge`/`journal_append` at `dispatch`.
 ///
 /// The counts are asserted EXACTLY (`== 1`, `== 2`), not loosely: an exact count is the only assertion
 /// a plane that stopped crossing, or one that started crossing twice, cannot both satisfy.
@@ -469,8 +392,6 @@ fn dropped_in_example_plane_rides_the_host_vtable_end_to_end() {
     for (name, counter) in [
         ("govern_admit", &test_host::GOVERN_ADMIT),
         ("meter_charge", &test_host::METER_CHARGE),
-        ("cost_reserve", &test_host::COST_RESERVE),
-        ("cost_settle", &test_host::COST_SETTLE),
         ("journal_append", &test_host::JOURNAL_APPEND),
     ] {
         assert_eq!(
@@ -483,13 +404,11 @@ fn dropped_in_example_plane_rides_the_host_vtable_end_to_end() {
 
 /// THE MONEY BYTES, READ OFF THE WIRE. The plane is PRICING-BLIND (DECISIONS #43/#71): what crosses
 /// the seam is a RAW COUNT and nothing else. This reads what the plane actually wrote into the
-/// `Usage` and into the two lease slots, rather than believing the plane's documentation about it.
+/// `Usage`, rather than believing the plane's documentation about it.
 ///
 /// * `amount` == the inbound byte count it was handed — a count, in the unit it declared.
-/// * `unit_cost_micros` == 0 — the plane carries no rate, so it can compute no price (#77(3): a price
-///   is NEVER stored, and a plane could not store one it never had).
-/// * every nanodollar field of `cost_reserve`/`cost_settle` == 0 — the lease LIFECYCLE is the plane's
-///   obligation; the AMOUNT is the host's. A non-zero here would be a plane that had priced.
+/// * there is no price to read: the `Usage` has no price field (KERNEL<>PLUGINS step 16, item 577),
+///   and the host table offers no slot that takes a figure.
 #[test]
 fn dropped_in_example_plane_reports_a_raw_count_and_never_a_price() {
     let Some(lib) = plane_example_cdylib() else {
@@ -511,17 +430,6 @@ fn dropped_in_example_plane_reports_a_raw_count_and_never_a_price() {
         test_host::LAST_AMOUNT.load(Ordering::SeqCst),
         11,
         "the plane must report the RAW COUNT it was handed"
-    );
-    assert_eq!(
-        test_host::LAST_UNIT_COST_MICROS.load(Ordering::SeqCst),
-        0,
-        "a pricing-blind plane carries no rate: `unit_cost_micros` must be 0"
-    );
-    assert_eq!(
-        test_host::LAST_MONEY_NANOS.load(Ordering::SeqCst),
-        0,
-        "every nanodollar the plane handed the lease slots must be 0 — a plane that priced is a \
-         plane that violated #43/#71"
     );
 }
 
@@ -564,7 +472,7 @@ fn dropped_in_example_plane_refuses_when_the_host_grants_nothing() {
 }
 
 /// THE NEGATIVE CONTROL, PER SLOT — the sharpest form of the same question. Withdraw EXACTLY ONE of
-/// the six granted slots and drive again: the plane must refuse, every time, for every slot. A slot
+/// the four granted slots and drive again: the plane must refuse, every time, for every slot. A slot
 /// whose withdrawal changes nothing is a slot the plane never called, and this is the assertion that
 /// says so by name.
 #[test]
@@ -764,7 +672,7 @@ fn write_plane_tarball(dir: &std::path::Path, file: &str, m: &Manifest, lib: &[u
 
 /// Drive an opened `DynPlane` end to end (config_validate → build → hydrate → start → dispatch) over
 /// the instrumented `test_host`, asserting every hop returns `Ok` AND that the plane crossed each of
-/// the six granted host slots.
+/// the four granted host slots.
 ///
 /// The counter assertions are what make this a proof about the SEAM rather than about the loader. A
 /// `DynPlane` the registry produced that returned `Ok` without ever calling back would be a plane the
@@ -792,13 +700,9 @@ fn drive_opened_plane(plane: &crate::DynPlane) {
     assert_eq!(test_host::CLOCK_NOW.load(Ordering::SeqCst), 2);
     assert_eq!(test_host::GOVERN_ADMIT.load(Ordering::SeqCst), 1);
     assert_eq!(test_host::METER_CHARGE.load(Ordering::SeqCst), 1);
-    assert_eq!(test_host::COST_RESERVE.load(Ordering::SeqCst), 1);
-    assert_eq!(test_host::COST_SETTLE.load(Ordering::SeqCst), 1);
     assert_eq!(test_host::JOURNAL_APPEND.load(Ordering::SeqCst), 1);
-    // The money bytes, on the registry path too: a raw count, and not one priced nanodollar.
+    // The money bytes, on the registry path too: a raw count.
     assert_eq!(test_host::LAST_AMOUNT.load(Ordering::SeqCst), 4);
-    assert_eq!(test_host::LAST_UNIT_COST_MICROS.load(Ordering::SeqCst), 0);
-    assert_eq!(test_host::LAST_MONEY_NANOS.load(Ordering::SeqCst), 0);
 }
 
 /// THE GREEN PROOF for W1.d: package the REAL example-plane cdylib into a SIGNED FIRST-PARTY tarball,
@@ -1172,7 +1076,7 @@ mod hot_door_latency {
     //! 1 µs). Per request, for the example plane LINKED and DROPPED IN:
     //!
     //! * `plane` — the plane's own `dispatch` over a work item built once (head, reply channel, the
-    //!   dispatch's handles current): the plane's work and its six host calls, nothing of the door;
+    //!   dispatch's handles current): the plane's work and its four host calls, nothing of the door;
     //! * `door` — [`ServedPlane::answer`], the whole door: the work item, the reply channel, the emit
     //!   sink, the current-dispatch handles and the reply read back. `door - plane` is the #30 crossing;
     //! * `inline` / `hop` — the door driven from a tokio worker, inline on the worker or through
@@ -1189,7 +1093,7 @@ mod hot_door_latency {
     use busbar_contract::abi::hot::{EmitHandle, EmitKind, InboundHandle, WorkItem};
     use std::time::Instant;
 
-    /// The conformance suite's host: `EMPTY` plus the six slots the example plane calls, each answering
+    /// The conformance suite's host: `EMPTY` plus the four slots the example plane calls, each answering
     /// at once (a counter bump), so what is timed is the door and the plane, not a host.
     fn instant_host() -> &'static PlaneHostVtable {
         Box::leak(Box::new(super::test_host::vtable()))

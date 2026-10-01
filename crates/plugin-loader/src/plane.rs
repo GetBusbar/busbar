@@ -16,10 +16,10 @@
 //! # What this consumes, and what it does not
 //!
 //! This is the loader half of the hot lane. The host half is `busbar_kernel::plane_host`'s
-//! `build_plane_host_vtable()` (44 of 44 slots over live core primitives), and the two are CROSSED:
+//! `build_plane_host_vtable()` (42 of 42 slots over live core primitives), and the two are CROSSED:
 //! `busbar-plugin-example-plane` is a real cdylib that, once built through [`DynPlane`], calls core's
 //! own host slots back from the plugin side — `clock_now`, `govern_admit`, `meter_charge`,
-//! `cost_reserve`, `cost_settle` — and REFUSES its work item if any of them is absent or answers
+//! `journal_append` — and REFUSES its work item if any of them is absent or answers
 //! fail-closed. That crossing is asserted, per slot and by exact call count, in
 //! `src/tests/plane_conformance_tests.rs` (against an instrumented table). This lane retires with the
 //! old loader; the door lane's crossing into the kernel's own host services is proven by the
