@@ -1787,7 +1787,7 @@ ceiling = 61
 # The ceiling is today's measurement, not the abolished 500: a ratchet, so the first line that
 # grows this file is the line that has to justify itself. Re-pinned DOWN 193 -> 192 on 2026-09-24:
 # item 130 took the sweep's named-grant line out (the take now mints its grant in the argument).
-label = "tick: session tick, node tick and the drain sweep"
+label = "tick: node tick and the drain sweep"
 patterns = ["tick.rs"]
 ceiling = 191
 
