@@ -101,12 +101,12 @@ busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
 # THE OPERATOR CREDENTIAL'S TEST REGISTRY ROW (`test-operator-auth` above): the admin e2e tests
 # authenticate through the auth plugin the composition root links for it, from its own repo, at the
 # SAME pinned rev plugin-loader's both-ways proof drives. Dev-only: the library names no auth plugin.
-busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "47cb5047e4c9a73341c613c09a056b4a4bb8eb99" }
+busbar-auth-admin-tokens-plugin = { workspace = true }
 busbar-store-memory = { path = "../store-memory" }
 # The export axis the named-map tests resolve `module: prometheus` against: the scrape sink LINKED
 # into the test binary, as the composition root links it into the shipped one — from its own repo, at
 # the SAME pinned rev the composition root links.
-busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "ae383d230e9a8e6af4c2d10f31e476845fe6e46d" }
+busbar-export-prometheus = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "test-util"] }
 axum = { workspace = true, features = ["http1"] }
 reqwest = { workspace = true, features = ["json"] }

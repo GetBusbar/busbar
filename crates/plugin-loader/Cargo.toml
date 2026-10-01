@@ -133,10 +133,10 @@ busbar-plugin-example-plane = { path = "../plane-example" }
 # dropped-in door. DECISIONS #11 says compiled-in ≡ dropped-in; `export_conformance_tests` is what makes
 # that checkable for the thing #11 was silently false about — what a plugin OBSERVES. Their
 # busbar-contract resolves to this tree through the workspace `[patch]` table.
-busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "795eadb866e5f9a98bc854b9697ae42a28a51e92" }
+busbar-export-file-plugin = { workspace = true }
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "5e0170432aa2dc7640c8b6f6e89c9d38edad1df0" }
-busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "ae383d230e9a8e6af4c2d10f31e476845fe6e46d" }
-busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "02f463307f9820faedda131467dcfaa83b25df78" }
+busbar-export-prometheus-plugin = { workspace = true }
+busbar-export-otlp-plugin = { workspace = true }
 # The `kind: store` BOTH-WAYS proof is a REAL store (owner FIXTURES ruling: "store: store-memory +
 # store-*"; R-FIX1: every real plugin gets its dropped-in door): the build's default RAM store. Its
 # `rlib` gives the test the COMPILED-IN store (its `pub fn open`, its `linked::STORE` row and its
@@ -159,7 +159,7 @@ busbar-store-memory = { path = "../store-memory", features = ["cold-dropped-in"]
 # `export_login_plugin!` emits) and its `BUSBAR_COLD_ENTRY` (the linked door); its `cdylib` (built
 # under `deps/`, hashed) is the dropped-in door. `auth_conformance_tests` requires the two to be one
 # plugin. Its busbar-contract resolves to this tree through the workspace `[patch]` table.
-busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "9ff64ff4d74bdd4d043ed7200d8771389810d19b" }
+busbar-auth-oidc-plugin = { workspace = true }
 # The `kind: auth` VERIFY-VERDICT both-ways proof (the `auth-verify` row below), over a second REAL
 # auth plugin: the shipped operator admin-auth module (ARCHITECT 2026-09-27: it is a REAL auth
 # plugin — door + both-ways conformance, the AUTH kind proof). The row above proves the
@@ -170,7 +170,7 @@ busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc
 # registration), and this proof needs both halves of it.
 # From its own repo at the rev busbar-kernel pins: the repo's plugin crate, which turns the module's
 # `dropped-in` door on and re-exports it whole; its cdylib is built under `deps/`, hashed.
-busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "47cb5047e4c9a73341c613c09a056b4a4bb8eb99" }
+busbar-auth-admin-tokens-plugin = { workspace = true }
 # The libraries the plugin-logging witness logs through from inside a call (`log_witness_plugin`).
 h2 = { workspace = true }
 log = { workspace = true }
