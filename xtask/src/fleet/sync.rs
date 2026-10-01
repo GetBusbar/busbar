@@ -106,6 +106,13 @@ pub fn sync(
     Ok(if failed { 1 } else { 0 })
 }
 
+/// The release branches (`fleet.branches`) the repo lacks. Sync reports them and never creates one:
+/// a branch cut from `dev` would be an unreviewed release.
+pub fn missing_release_branches(fleet: &Fleet, existing: &[String]) -> Vec<String> {
+    let _ = (fleet, existing);
+    Vec::new()
+}
+
 fn join(v: &[String]) -> String {
     if v.is_empty() {
         "-".to_string()

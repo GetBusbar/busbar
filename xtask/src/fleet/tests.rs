@@ -14,6 +14,7 @@ use super::render::{
     apply_readme, apply_region, fill, readme_headings, readme_skeleton, region_of, render,
     restructure, rust_version_of, Mode, Templates,
 };
+use super::sync::missing_release_branches;
 use crate::ctx::Ctx;
 
 const PIN: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -1110,4 +1111,33 @@ fn main_and_qa_are_held_to_the_org_ruleset_and_dev_to_the_classic_protection() {
     let mut fake = conforming(&fleet, &t);
     fake.unreadable_rules.push(a.into());
     one(&run(&fleet, &t, &fake), a, "ruleset main", "could not read");
+}
+
+#[test]
+fn sync_reports_a_missing_release_branch_and_never_touches_main_or_qa() {
+    let fleet = fixture();
+    let have = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        missing_release_branches(&fleet, &have(&["dev"])),
+        have(&["qa", "main"])
+    );
+    assert_eq!(
+        missing_release_branches(&fleet, &have(&["dev", "qa", "main", "fix/x"])),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        missing_release_branches(&fleet, &have(&["dev", "main"])),
+        have(&["qa"])
+    );
+    // The ARCHITECT seeds main and qa as orphans in an owner-approved window; sync holds no code
+    // path that creates a ref or applies classic protection to a release branch.
+    let src = include_str!("sync.rs");
+    for forbidden in [
+        "\"POST\"",
+        "git/refs\"",
+        "branches/{b}/protection",
+        "HEAD:refs/heads/{b}",
+    ] {
+        assert!(!src.contains(forbidden), "sync.rs holds {forbidden}");
+    }
 }
