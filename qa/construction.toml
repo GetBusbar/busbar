@@ -1542,7 +1542,9 @@ kernel_crate = "busbar-kernel"
 #    the plane serve driver (plane_driver/serve.rs) +320 over predev 8fc5e67e2's 55440; repaid at the a2a flip (C2c S8).
 # ── RE-ARMED 55760 -> 55789 by CONVERGER cg-60 (ARCHITECT 2026-10-01: approved deltas over what predev measures; replaces K-SERVE's absolute 55760):
 #    predev 335d02828 measures 55440; DEST-PIN +29 (cg-58, under its approved +28 ruling plus the ceiling) + K-SERVE +320 (C2c S5) = 55789.
-kernel_ceiling = 55789
+# ── RE-ARMED 55789 -> 55817 for SDK-SVC (R-KERNEL, ARCHITECT S7-TICK 2026-10-01 ruling A; within the declared 55817):
+#    the late attach of the pool, signer and demotion record (host_services.rs set-once slots), +28 kernel lines over predev.
+kernel_ceiling = 55817
 # ── RE-ARMED 54254 -> 54272 for the P1 core unit (BOOT-CHAIN +22, KERNEL-AUTH-ZERO -3; composed -1), declared above.
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
