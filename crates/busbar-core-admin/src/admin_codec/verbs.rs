@@ -414,7 +414,9 @@ pub fn resolve(method: &str, path: &str) -> Option<ResolvedVerb> {
 /// 66, the 9 and the 5 as three runs rather than as one undifferentiated list.
 #[must_use]
 pub fn table() -> Vec<ResolvedVerb> {
-    all_verbs().iter().map(ResolvedVerb::of).collect()
+    let mut rows = Vec::with_capacity(VERB_COUNT);
+    rows.extend(all_verbs().iter().map(ResolvedVerb::of));
+    rows
 }
 
 #[cfg(test)]
