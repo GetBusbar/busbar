@@ -19,7 +19,15 @@ kind-isolation:matrix	instance-ratchet	busbar-plugin-loader × secret	6
 kind-isolation:matrix	measurement-disagreement	busbar-kernel × plane	3
 kind-isolation:matrix	measurement-disagreement	busbar-kernel × transport	5
 kind-isolation:matrix	measurement-disagreement	busbar-plane-llm × transport	5
-kind-isolation:matrix	ratchet	busbar × cleanliness	207
+# Q77-PENDING (a) (ARCHITECT pre-ruling 2026-10-01, KI-SHIP-SCOPE: the root composes the cleanliness
+# tier; ARCHITECTURE_ALLOWED root -> cleanliness): the composition root builds the process's ONE
+# Connector (BUSBAR-1.6.0.md THE DESIGN, Connections: "The chain is kernel -> busbar-core-connector ->
+# transport plugins"; ARCHITECT ruling 2026-09-30, one Connector in the root). busbar × cleanliness and
+# root -> cleanliness 207 -> 211, the lines that name the connector crate it composes:
+# crates/busbar/src/root/connector.rs:17, :18, :19 (its framer, registry and Connector imports), :93
+# (the doc of its dial-class rules), :111 (DEFAULT_CLASS), :119 (tls::client::build_client_config).
+# EXPIRES: never as a class (the root composing cleanliness is granted); the figure only goes down.
+kind-isolation:matrix	ratchet	busbar × cleanliness	211
 kind-isolation:matrix	ratchet	busbar × hooks	13
 kind-isolation:matrix	ratchet	busbar × kernel	1295
 kind-isolation:matrix	ratchet	busbar × store	7
@@ -116,7 +124,8 @@ kind-isolation:matrix	unlisted-edge	kernel -> legacy	181
 kind-isolation:matrix	unlisted-edge	kernel -> plugin-tooling	213
 kind-isolation:matrix	unlisted-edge	kernel -> store	31
 kind-isolation:matrix	unlisted-edge	legacy -> cleanliness	9
-kind-isolation:matrix	unlisted-edge	root -> cleanliness	207
+# Q77-PENDING (a), as busbar × cleanliness above (the same six lines).
+kind-isolation:matrix	unlisted-edge	root -> cleanliness	211
 kind-isolation:matrix	unlisted-instance	busbar × export	8
 kind-isolation:matrix	vendor-name	busbar crates/busbar/benches/hook_path.rs	1
 kind-isolation:matrix	vendor-name	busbar crates/busbar/src/root/units_admin/tests/units_admin.rs	1
