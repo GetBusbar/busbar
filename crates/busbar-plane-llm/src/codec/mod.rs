@@ -61,7 +61,7 @@ pub mod leaf_handles;
 /// Only the dialect label and the two reads differ per cell; anything else a cell says (a usage
 /// tap, an egress content type) follows the `;` verbatim.
 macro_rules! leaf_op {
-    ($op:ident: $dialect:literal, $req:ident = $read_req:ident, $resp:ident = $read_resp:ident; $($extra:tt)*) => {
+    ($op:ident: $dialect:expr, $req:ident = $read_req:ident, $resp:ident = $read_resp:ident; $($extra:tt)*) => {
         impl busbar_contract::codec::OperationHandler for $op {
             fn extract_error(
                 &self,

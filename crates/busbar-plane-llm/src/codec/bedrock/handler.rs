@@ -153,7 +153,7 @@ impl RequestHandler for BedrockRequestHandler {
 struct BedrockImage;
 
 leaf_op! {
-    BedrockImage: "bedrock",
+    BedrockImage: super::VENDOR_NAME,
     ImageReqHandle = read_image_request,
     ImageRespHandle = read_image_response;
     // Buffer the same-protocol non-stream 2xx body so the default `extract_usage` runs the op's own
@@ -217,7 +217,7 @@ pub fn write_image_response(r: &crate::codec::ir::image::ImageResp) -> WireBody 
 struct BedrockEmbeddings;
 
 leaf_op! {
-    BedrockEmbeddings: "bedrock",
+    BedrockEmbeddings: super::VENDOR_NAME,
     EmbeddingsReqHandle = read_embeddings_request,
     EmbeddingsRespHandle = read_embeddings_response;
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
@@ -296,7 +296,7 @@ pub fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
 struct BedrockRerank;
 
 leaf_op! {
-    BedrockRerank: "bedrock",
+    BedrockRerank: super::VENDOR_NAME,
     RerankReqHandle = read_rerank_request,
     RerankRespHandle = read_rerank_response;
 }

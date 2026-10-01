@@ -118,7 +118,7 @@ fn cohere_encoding_format(s: &str) -> EncFmt {
 struct CohereEmbeddings;
 
 leaf_op! {
-    CohereEmbeddings: "cohere",
+    CohereEmbeddings: super::VENDOR_NAME,
     EmbeddingsReqHandle = read_embeddings_request,
     EmbeddingsRespHandle = read_embeddings_response;
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
@@ -247,7 +247,7 @@ fn rerank_documents(v: Option<&Value>) -> Vec<String> {
 }
 
 leaf_op! {
-    CohereRerank: "cohere",
+    CohereRerank: super::VENDOR_NAME,
     RerankReqHandle = read_rerank_request,
     RerankRespHandle = read_rerank_response;
     // Search-unit metered: buffer the same-protocol non-stream 2xx body so the tap reads the

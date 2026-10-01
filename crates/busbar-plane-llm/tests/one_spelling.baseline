@@ -1,8 +1,8 @@
 # tests/one_spelling.rs: per dialect, the occurrences beyond the first of every word-shaped string
 # literal in its production source. LOWER-ONLY: the one-spelling pass drives each to 0.
 anthropic = 0
-bedrock = 3
-cohere = 2
+bedrock = 0
+cohere = 0
 gemini = 388
 openai_chat = 0
 openai_responses = 0
