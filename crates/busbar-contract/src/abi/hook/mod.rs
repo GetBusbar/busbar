@@ -5,8 +5,8 @@
 //! mechanism, every shape in `abi/`). M0 landed the skeleton; this is M3-SHAPES
 //! (`abi-v2-perkind.md` B.4): `decide`, `transform`, `notify`, `configure`, `status`, `describe`
 //! and `serve`, the fixed views, the Statement tail and the `CancelOut` disposition vocabulary.
-//! NOTHING dispatches through this yet (M3-wire, after M1) — this crate defines the shapes and
-//! their compile-time layout only. 1.5.5 behaviour stays byte-identical (a 1.6.0 FUNCTIONAL FIXED
+//! The one dispatcher calls this table (`busbar-plugin-loader`, `dispatch::kinds::hook`); the
+//! layout golden pins its layout. 1.5.5 behaviour stays byte-identical (a 1.6.0 FUNCTIONAL FIXED
 //! POINT); this transcribes the OLD `busbar-contract::hooks`/`busbar-kernel::hooks::wire` shapes
 //! (`RoutingRequest`, `Candidate`, `PromptProjection`, `CallerIdentity`, `SignalBag`,
 //! `RoutingDecision`, `TransformOutcome`, `HookStageProjection`, `HookContext`,

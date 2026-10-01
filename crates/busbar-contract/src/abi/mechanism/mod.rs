@@ -33,8 +33,8 @@
 //! [`door::MetricFamily`] and [`call::AbiStr`] are fixed by [`MECHANISM_VERSION`]; arrays of them
 //! carry no stride, so growing one is a mechanism bump.
 //!
-//! This module states the shapes and their numbers. Nothing dispatches through them yet, and no
-//! existing path is rewired to them.
+//! This module states the shapes and their numbers; the one dispatcher
+//! (`busbar-plugin-loader`'s `dispatch`) calls every kind through them.
 
 pub mod call;
 pub mod check;

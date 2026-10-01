@@ -4,7 +4,8 @@
 //! THE EXPORT KIND'S ABI: its version and its table (the design's locked plugin ABI: one
 //! mechanism, every shape in `abi/`). M0 landed the skeleton; this is M3-SHAPES
 //! (`abi-v2-perkind.md` B.5): `deliver`, `scrape`, `status`, `check` and `serve`, and the frozen
-//! [`ExportStream`] tail. NOTHING dispatches through this yet (M3-wire, after M1).
+//! [`ExportStream`] tail. The one dispatcher calls this table (`busbar-plugin-loader`,
+//! `dispatch::kinds::export`).
 //!
 //! **ARCHITECT REVIEW RULING (fresh-Opus M3-SHAPES review, 2026-09-28), folded in on top of the
 //! first landing:**

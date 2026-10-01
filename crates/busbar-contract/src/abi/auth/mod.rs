@@ -32,7 +32,7 @@
 //! A slot for a capability the tail does not declare is never called. The plugin still fills it
 //! (a NULL slot refuses the load) and answers `REFUSED`.
 //!
-//! NOTHING dispatches through these shapes yet (M3-wire).
+//! The one dispatcher calls this table (`busbar-plugin-loader`, `dispatch::kinds::auth`).
 
 use super::mechanism::call::{AbiStr, Op};
 use super::mechanism::door::KindTailHead;

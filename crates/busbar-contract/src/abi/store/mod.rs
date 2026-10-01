@@ -6,7 +6,7 @@
 //! mechanism, one place for every ABI shape; the signed per-kind design B.1 "store (v3)"; the
 //! ARCHITECT rulings in `m3-inputs.md` "store v3 money slots" and "window caps").
 //!
-//! This is the M3 SPEC: shapes and numbers only. Nothing dispatches through them yet (M3-wire).
+//! The one dispatcher calls this table (`busbar-plugin-loader`, `dispatch::kinds::store`).
 //!
 //! # The table
 //!

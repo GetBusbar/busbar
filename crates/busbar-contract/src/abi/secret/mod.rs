@@ -4,8 +4,8 @@
 //! THE SECRET KIND'S ABI: its version and its table (the design's locked plugin ABI: one
 //! mechanism, every shape in `abi/`). M0 landed the skeleton (the shared lifecycle head only);
 //! this is M3-SHAPES (`abi-v2-perkind.md` B.2): the kind's one own operation, `resolve`, and its
-//! data shapes. NOTHING dispatches through this yet (M3-wire, after M1) — this crate defines the
-//! shapes and their compile-time layout only.
+//! data shapes. The one dispatcher calls this table (`busbar-plugin-loader`,
+//! `dispatch::kinds::secret`); the layout golden pins its layout.
 //!
 //! B.2, transcribed:
 //! - `resolve(settings blob)` returns a [`BLOB_SECRET`](super::mechanism::call::BLOB_SECRET)
