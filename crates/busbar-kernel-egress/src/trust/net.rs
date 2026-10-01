@@ -281,6 +281,10 @@ impl std::fmt::Display for AddressRefusal {
     }
 }
 
+/// A refusal is an error a caller can carry in a cause chain: the egress client's dial judge hands
+/// one to its connector, which reports the dial as a connect failure caused by it.
+impl std::error::Error for AddressRefusal {}
+
 /// A DESTINATION THAT PASSED THE CHECK, carrying the exact address the connection must be made to.
 ///
 /// The type cannot be constructed outside this module, so a dispatch path cannot connect to

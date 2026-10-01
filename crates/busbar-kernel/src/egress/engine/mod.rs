@@ -70,7 +70,7 @@ pub mod tls;
 
 pub use deadline::ConnectDeadline;
 pub use observe::{peer_key_pin, KeyPinObserve, ObservedIo, PeerKeyPin};
-pub use resolve::{DialRefused, DialTable, EgressResolver, ResolveNames};
+pub use resolve::{DialTable, EgressResolver, ResolveNames};
 #[cfg(any(test, feature = "test-support"))]
 pub use resolve::with_scoped_dial;
 pub use tls::{ClientIdentity, Trust};

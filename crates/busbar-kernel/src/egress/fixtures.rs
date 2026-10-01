@@ -519,12 +519,20 @@ impl RebindingResolver {
     pub fn calls(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
     }
+
+    /// The next scripted answer, counted: the honest address first, the hostile one after.
+    fn answer(&self) -> SocketAddr {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            self.first
+        } else {
+            self.then
+        }
+    }
 }
 
 impl reqwest::dns::Resolve for RebindingResolver {
     fn resolve(&self, _name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        let n = self.calls.fetch_add(1, Ordering::SeqCst);
-        let addr = if n == 0 { self.first } else { self.then };
+        let addr = self.answer();
         Box::pin(std::future::ready(Ok(
             Box::new(std::iter::once(addr)) as Box<dyn Iterator<Item = SocketAddr> + Send>
         )))
@@ -540,9 +548,7 @@ impl crate::egress::engine::ResolveNames for RebindingResolver {
         'static,
         Result<Vec<SocketAddr>, Box<dyn std::error::Error + Send + Sync>>,
     > {
-        let n = self.calls.fetch_add(1, Ordering::SeqCst);
-        let addr = if n == 0 { self.first } else { self.then };
-        Box::pin(std::future::ready(Ok(vec![addr])))
+        Box::pin(std::future::ready(Ok(vec![self.answer()])))
     }
 }
 

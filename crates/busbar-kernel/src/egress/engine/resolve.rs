@@ -62,13 +62,15 @@ impl DialTable {
         self.0.store(Arc::new(lists));
     }
 
-    /// Judge one resolution's answer, refusing it whole.
+    /// Judge one resolution's answer, refusing it whole. The refusal ([`AddressRefusal`]) is the
+    /// resolver's error, so `HttpConnector` reports the dial as a connect failure caused by it: not
+    /// a timeout, so a plane fails it over as it does a refused connection.
     fn judge(&self, host: &str, addrs: Vec<SocketAddr>) -> Result<ResolvedAddrs, BoxError> {
         let ips: Vec<IpAddr> = addrs.iter().map(SocketAddr::ip).collect();
         self.0
             .load()
             .judge(host, &ips)
-            .map_err(|refusal| Box::new(DialRefused(refusal)) as BoxError)?;
+            .map_err(|refusal| Box::new(refusal) as BoxError)?;
         Ok(ResolvedAddrs::Listed(addrs.into_iter()))
     }
 }
@@ -108,20 +110,6 @@ pub fn with_scoped_dial<R>(
     SCOPED_DIAL.with(|s| *s.borrow_mut() = prior);
     built
 }
-
-/// A dial the table refused: the name answered with an address the metadata denylist refuses.
-/// `HttpConnector` reports it as a connect failure, which is how a plane classifies it: not a
-/// timeout, so it fails over as a refused connection does.
-#[derive(Debug)]
-pub struct DialRefused(pub AddressRefusal);
-
-impl std::fmt::Display for DialRefused {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "dial refused: {}", self.0)
-    }
-}
-
-impl std::error::Error for DialRefused {}
 
 /// A caller-supplied name resolver — the test seam (a counting resolver is how "the engine
 /// performed zero lookups of its own" becomes an assertion). Production postures use

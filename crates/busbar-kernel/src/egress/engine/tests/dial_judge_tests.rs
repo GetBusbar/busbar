@@ -21,7 +21,7 @@ use crate::egress::fixtures::{
     ca_and_leaf, certs_from_pem, spawn_http, spawn_tls, CannedResponse, ClientAuth,
     RebindingResolver, TlsServerSpec,
 };
-use crate::net_guard::DialDenylist;
+use crate::net_guard::{AddressRefusal, DialDenylist};
 
 /// The AWS/GCP instance-metadata address: what a rebinding name answers with on its second lookup.
 const IMDS: IpAddr = IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254));
@@ -45,10 +45,10 @@ fn get(url: &str) -> http::Request<http_body_util::Full<Bytes>> {
 }
 
 /// The refusal the dial table raised, found in an error's source chain.
-fn dial_refusal(err: &(dyn std::error::Error + 'static)) -> Option<&DialRefused> {
+fn dial_refusal(err: &(dyn std::error::Error + 'static)) -> Option<&AddressRefusal> {
     let mut cur = Some(err);
     while let Some(e) = cur {
-        if let Some(refused) = e.downcast_ref::<DialRefused>() {
+        if let Some(refused) = e.downcast_ref::<AddressRefusal>() {
             return Some(refused);
         }
         cur = e.source();
@@ -101,8 +101,8 @@ async fn a_rebinding_answer_is_refused_at_the_next_dial() {
     assert!(err.is_connect(), "a refused dial is connect class: {err:?}");
     let refused = dial_refusal(&err).expect("the dial table's refusal is in the chain");
     assert_eq!(
-        refused.0,
-        crate::net_guard::AddressRefusal::CloudMetadataAddress {
+        *refused,
+        AddressRefusal::CloudMetadataAddress {
             host: "rebind.test".to_string(),
             addr: IMDS,
         }
