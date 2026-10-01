@@ -18,12 +18,12 @@
   "accepted": [
     {
       "id": "D-1 diagnostic codes",
-      "cells": "^(auth\\.lifecycle|boot\\.refusal|boot\\.warning|cli|config\\.migrate|cooldown|documented|hazard|neutrality|plugins\\.load|plugins\\.store-persist|teller)\\|",
-      "expected_cells": 481,
+      "cells": "^(auth\\.lifecycle|boot\\.refusal|boot\\.warning|cli|config\\.migrate|cooldown|documented|hazard|neutrality|plugins\\.load|plugins\\.store-persist|teller|boot\\.deprecated-env|egress\\.image-detail)\\|",
+      "expected_cells": 490,
       "kind": "improvement",
       "changelog": "Every error and warning line carries a diagnostic code.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "rationale": "SCOPE (added 2026-09-06, shadow-oracle round-5): this entry carried no `cells`, so it defaulted to `.` and ran over all 2299 cells -- and a fired transform used to hand the cell's whole raw class list to the accepted column, so any cell where this rewrite happened to fire could have a `status` forgiven by it. The lines it rewrites live in a process's stderr or its stdout, which only the exec- and script-driven cells have; the scope is those families and nothing else. ORIGINAL RATIONALE: 1.6.0 prefixes every [error]/[warn]/warning: stderr line with a diagnostic code (BUSBAR-NNNN:) and every boot log line with diag=BUSBAR-NNNN; the text after the code is byte-identical to 1.5.5. SCOPE COUNT 461 -> 462 (2026-09-07): the new boot.refusal|BOOT-152b|boot cell — the boot-mode twin of BOOT-152, which records the provider-credential refusal that replaced the 1.5.5 degrade (register entry F-016) — is an exec-driven boot cell, so it falls inside this family scope like every other one. The transform's REACH is unchanged; one more cell exists for it to reach. SCOPE COUNT 462 -> 480 (2026-09-24, owner ruling Q53): the 18 config.migrate cells for the configs v1.5.3, v1.5.4 and v1.5.5 shipped (TODO item 48) joined the corpus with their 1.5.5 golden reference; they are exec-driven cells of a family this scope already names, so they fall inside it like the 138 config.migrate cells before them. The regex, the transform and its REACH are unchanged; eighteen more cells exist for it to reach. SCOPE COUNT 480 -> 481 (owner ruling 2026-09-28): BOOT-MCP-01 (the fixed /mcp mount refusing any other path at boot) is new 1.6.0 surface with no 1.5.5 golden; an exec-driven boot cell of a family this scope already names, counted in exactly as BOOT-152b was (461 -> 462). The regex, the transform and its REACH are unchanged.",
+      "rationale": "SCOPE (added 2026-09-06, shadow-oracle round-5): this entry carried no `cells`, so it defaulted to `.` and ran over all 2299 cells -- and a fired transform used to hand the cell's whole raw class list to the accepted column, so any cell where this rewrite happened to fire could have a `status` forgiven by it. The lines it rewrites live in a process's stderr or its stdout, which only the exec- and script-driven cells have; the scope is those families and nothing else. ORIGINAL RATIONALE: 1.6.0 prefixes every [error]/[warn]/warning: stderr line with a diagnostic code (BUSBAR-NNNN:) and every boot log line with diag=BUSBAR-NNNN; the text after the code is byte-identical to 1.5.5. SCOPE COUNT 461 -> 462 (2026-09-07): the new boot.refusal|BOOT-152b|boot cell — the boot-mode twin of BOOT-152, which records the provider-credential refusal that replaced the 1.5.5 degrade (register entry F-016) — is an exec-driven boot cell, so it falls inside this family scope like every other one. The transform's REACH is unchanged; one more cell exists for it to reach. SCOPE COUNT 462 -> 480 (2026-09-24, owner ruling Q53): the 18 config.migrate cells for the configs v1.5.3, v1.5.4 and v1.5.5 shipped (TODO item 48) joined the corpus with their 1.5.5 golden reference; they are exec-driven cells of a family this scope already names, so they fall inside it like the 138 config.migrate cells before them. The regex, the transform and its REACH are unchanged; eighteen more cells exist for it to reach. SCOPE COUNT 480 -> 481 (owner ruling 2026-09-28): BOOT-MCP-01 (the fixed /mcp mount refusing any other path at boot) is new 1.6.0 surface with no 1.5.5 golden; an exec-driven boot cell of a family this scope already names, counted in exactly as BOOT-152b was (461 -> 462). The regex, the transform and its REACH are unchanged. WIDENED 2026-10-02 (owner R2, ORACLE batch, escalate.q 04:20Z): the five boot.deprecated-env cells (582) and the four egress.image-detail cells (585) recorded from the published 1.5.5 join the scope; each differs from 1.5.5 only by the `diag=BUSBAR-NNNN` suffix on a boot log line (the DEPRECATED text and every override's behaviour are 1.5.5's). Scope count 481 -> 490.",
       "transform": {
         "candidate": [
           [
@@ -48,6 +48,11 @@
           "who": "owner (Matthew Jackson)",
           "when": "2026-09-30",
           "ruling": "DEV-GREEN re-signoff, group 3 (Admin/config/CLI), all 45 re-signed as they stand"
+        },
+        "widened": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-02",
+          "ruling": "2026-10-02T04:20Z RULING R1/R2 (OWNER): SIGNED; R2 widens D-1 (diag= codes; 582, 585)"
         }
       },
       "expires": {
@@ -687,13 +692,13 @@
       "kind": "improvement",
       "changelog": "A chat completion's `logprobs` object carries `refusal`.",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
-      "cells": "^llm\\|openai\\|(anthropic|bedrock|cohere|gemini|responses)\\|request\\|ok$|^route\\.failover\\|(fo\\|primary-(429|5xx|down)|fo\\|second-request-after-trip|lb\\|up)$",
-      "expected_cells": 10,
+      "cells": "^llm\\|openai\\|(anthropic|bedrock|cohere|gemini|responses)\\|request\\|ok$|^route\\.failover\\|(fo\\|primary-(429|5xx|down)|fo\\|second-request-after-trip|lb\\|up)$|^(money\\.reserved-tier\\|absent\\|anthropic-cache|usage\\.gemini\\|(cached-content\\|subtractive|tool-use\\|total-billed|tool-use\\|total-not-a-sum))$",
+      "expected_cells": 14,
       "classes": [
         "body",
         "headers"
       ],
-      "rationale": "choices[].logprobs and message.refusal are required by the published chat schema; null when the backend carried none.",
+      "rationale": "choices[].logprobs and message.refusal are required by the published chat schema; null when the backend carried none. WIDENED 2026-10-02 (owner R1, ORACLE batch, escalate.q 04:20Z): four owner-review cells recorded from the published 1.5.5 join the scope -- money.reserved-tier|absent|anthropic-cache (X-235), usage.gemini|cached-content|subtractive (605b), usage.gemini|tool-use|total-billed and total-not-a-sum (576). On each the candidate's openai-chat answer adds exactly choices[0].logprobs:null and choices[0].message.refusal:null, the two members the published schema requires; usage and spend are unchanged on the first two (the 576 cells' usage and spend move under R5, not here). Scope count 10 -> 14.",
       "premise": {
         "all": [
           {
@@ -716,6 +721,11 @@
           "who": "owner (Matthew Jackson)",
           "when": "2026-09-30",
           "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
+        },
+        "widened": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-02",
+          "ruling": "2026-10-02T04:20Z RULING R1/R2 (OWNER): SIGNED; R1 widens S-5 (logprobs:null, refusal:null; X-235)"
         }
       },
       "expires": {
@@ -1965,6 +1975,224 @@
         ]
       },
       "rationale": "1.5.5 dispatched the operator-credential arm on the admin_auth PROVIDER NAME while every other rule keyed the MODULE, so two misconfigurations served nothing: `ops: {module: admin-tokens}` was skipped at build and logged ADMIN_MODULE_UNRESOLVED then 401 on every admin request; `admin-tokens: {module: <other>}` opened <other> but always ran the operator arm (no token digest, so Pass). 1.6.0 resolves the operator credential through the auth axis by module (AUTH-ROW), so the first authenticates the operator token and the second consults its own module under its own max_admin_scope. RE-CHECKED 2026-09-28: the behaviour this entry forgives was NOT yet live — the chain was still dispatched on the provider name (the operator arm ran only for a provider NAMED like the operator credential, and the full-by-reserved-id grant was keyed on that name), so both misconfigurations still served as in 1.5.5. It is live now: the admin chain's operator credential answers for exactly the providers whose module is the operator credential's (busbar_kernel_identity::operator::Operator), and the ceiling exemption and the reserved-id grant follow it. Pinned RED-then-GREEN by the composition root's linked-auth tests a_renamed_provider_backed_by_the_operator_module_is_the_operator_credential (built from configuration: the operator token earns full scope on both carriers, a wrong one gets 1.5.5's 401) and a_provider_named_like_the_operator_but_backed_by_another_module_is_that_module (403 from the configured module, and the operator token confers nothing through it); both fail on the parent. No corpus cell exercises either configuration (expected_cells 0, the ids reserved for the cells that will); the premise pins that the default operator credential is linked and still answers and refuses as 1.5.5 did."
+    },
+    {
+      "id": "581 busbar is invisible to upstreams except what it governs",
+      "kind": "additive",
+      "changelog": "busbar is invisible to upstreams. On a same-dialect route every client header and body field passes through unchanged, except the fields busbar governs: credential headers (each dialect declares its own, e.g. Authorization, x-api-key, api-key, x-goog-api-key), replaced by busbar's upstream credential; tenant selectors (e.g. OpenAI-Organization, OpenAI-Project), set from busbar's config and never from the caller; the model, which is mapped; hook rewrites; and the HTTP hop-by-hop headers plus Host and Content-Length, re-derived for the upstream connection. On a translated route busbar translates what maps and drops the rest. There are no feature allowlists; beta and version headers are ordinary fields. 1.5.5 forwarded no client header.",
+      "by": "owner (Matthew Jackson), 2026-10-02 HARD RULE \"BUSBAR IS INVISIBLE TO UPSTREAMS\" (escalate.q 03:40Z, refined 04:00Z)",
+      "cells": "^egress\\.headers\\|forwarded\\|(anthropic|openai)-beta$",
+      "expected_cells": 2,
+      "classes": [
+        "body"
+      ],
+      "rationale": "Same-dialect routes forward every client header and body field; 1.5.5 forwarded no client header. The two cells send an anthropic-beta / openai-beta header on a same-dialect route: 1.5.5's upstream request carries neither, the candidate's carries `anthropic-beta: prompt-caching-2024-07-31` / `openai-beta: assistants=v2` and nothing else differs. The translated route (egress.headers|forwarded|anthropic-beta-cross) is identical to 1.5.5 and is NOT in scope: it carries no beta header on either build. The cells for the invisible-upstream rule's other fields (INVISIBLE-UPSTREAM card) join `cells` when recorded. Premise: the same-dialect upstream really carries the header, the translated one does not.",
+      "premise": {
+        "all": [
+          {
+            "cell": "egress.headers|forwarded|anthropic-beta",
+            "body_contains": "[\"anthropic-beta\",\"prompt-caching-2024-07-31\"]"
+          },
+          {
+            "cell": "egress.headers|forwarded|openai-beta",
+            "body_contains": "[\"openai-beta\",\"assistants=v2\"]"
+          },
+          {
+            "not": {
+              "cell": "egress.headers|forwarded|anthropic-beta-cross",
+              "body_contains": "anthropic-beta"
+            }
+          }
+        ]
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-02",
+        "ruling": "2026-10-02 owner HARD RULE \"INVISIBLE, EXCEPT WHAT BUSBAR GOVERNS\" (escalate.q:108-109); R4 signed"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "576 a Gemini turn bills Google's totalTokenCount (tool-use prompt tokens count as input)",
+      "kind": "improvement",
+      "changelog": "1.6.0 Improvements: a Gemini turn that used a server-side tool bills the tool-use tokens Google charges for.",
+      "by": "owner (Matthew Jackson), Q91 answered 2026-09-27 option A; ARCHITECT ruling 2026-10-02T04:00Z (escalate.q:110)",
+      "cells": "^usage\\.gemini\\|tool-use\\|(total-billed|total-not-a-sum)$",
+      "expected_cells": 2,
+      "classes": [
+        "body"
+      ],
+      "rationale": "Q91 (owner, 2026-09-27, option A): \"A Gemini turn bills Google's totalTokenCount: toolUsePromptTokenCount counts as input.\" 1.5.5 read toolUsePromptTokenCount as a slice of the prompt and left it out of the bill. On usage.gemini|tool-use|total-billed (promptTokenCount 18, toolUsePromptTokenCount 32, candidates 7, Google total 57) the candidate answers prompt_tokens 50 / total_tokens 57 and bills tokens_input 50, spend 64000000 where 1.5.5 answered 18 / 25 and 32000000. usage.gemini|tool-use|total-not-a-sum (Google total 64, which is NOT the sum 57) must bill Google's 64; predev bills 57, a defect routed to PROTO-FIXES, so this entry's premise on that cell is false (WITHHELD, the cell stays DIVERGING) until the fix lands. NOTE: written as a NEW entry: the ruling named \"the existing signed entry (accepted-differences.json:1083)\" but that line is S-8 and no register entry mentioned Gemini tool-use or Q91.",
+      "premise": {
+        "all": [
+          {
+            "cell": "usage.gemini|tool-use|total-billed",
+            "pointer": "/steps/1/body/json/total/tokens_input",
+            "equals": 50
+          },
+          {
+            "cell": "usage.gemini|tool-use|total-not-a-sum",
+            "pointer": "/steps/0/body/json/usage/total_tokens",
+            "equals": 64
+          }
+        ]
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-27",
+        "ruling": "Q91 owner answer 2026-09-27 option A; ARCHITECT ruling escalate.q:110 (2026-10-02T04:00Z); R5 signed"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "HOOK-Q1 a failing transform under on_error: reject answers 503",
+      "kind": "breaking",
+      "changelog": "A hook with `on_error: reject` whose transform fails answers 503 (fail closed, as the docs always said); 1.5.5 passed the request through.",
+      "by": "owner (Matthew Jackson), 2026-10-02 RULING HOOK Q1 (escalate.q:104, 03:10Z)",
+      "cells": "^hooks\\|on-error-reject\\|transform-failed$",
+      "expected_cells": 0,
+      "classes": [
+        "status",
+        "body"
+      ],
+      "rationale": "Fixes a fail-open: 1.5.5 passed the request through when a hook's transform failed under on_error: reject; the docs always said it fails closed. CELL OWED: no corpus cell exercises a failing transform under on_error: reject (every hooks|* cell uses on_error: nothing), so `cells` names the owed cell id and expected_cells is 0, the way AUTH-ROW's owed cells are written; the entry forgives nothing until hooks|on-error-reject|transform-failed is recorded (1.5.5 passes the request through) and expected_cells becomes 1. The premise probes the existing hooks|hooked-pool|ok cell, the one real hook-serving cell.",
+      "premise": {
+        "cell": "hooks|hooked-pool|ok",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-02",
+        "ruling": "2026-10-02 RULING HOOK Q1 (OWNER): SIGN, escalate.q:104; R6 signed"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "HOOK-Q2 a prompt hook sees tool-call arguments and tool results",
+      "kind": "additive",
+      "changelog": "A `prompt: ro|rw` hook sees tool-call arguments and tool results (the prompt projection walks ToolUse input and ToolResult content); 1.5.5 showed only text blocks.",
+      "by": "owner (Matthew Jackson), 2026-10-02 RULING HOOK Q2 (escalate.q:105, 03:10Z)",
+      "cells": "^hooks\\|hooked-pool\\|tool-turn$",
+      "expected_cells": 0,
+      "classes": [
+        "body"
+      ],
+      "rationale": "A hook holding a prompt: ro or prompt: rw grant is shown the tool-call arguments and tool results of a turn (the prompt projection walks ToolUse input and ToolResult content); 1.5.5 projected text blocks only. Already named in CHANGELOG.md and docs/hooks.md. CELL OWED: hooks|hooked-pool|* carry no tool blocks, so `cells` names the owed hooked-pool tool-turn cell and expected_cells is 0, the way AUTH-ROW's owed cells are written; the entry forgives nothing until that cell is recorded. The premise probes the existing hooks|hooked-pool|ok cell.",
+      "premise": {
+        "cell": "hooks|hooked-pool|ok",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-02",
+        "ruling": "2026-10-02 RULING HOOK Q2 (OWNER): SIGN, escalate.q:105; R7 signed"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "ABI-o1 published 1.5.5 JSON-contract plugins no longer load",
+      "kind": "breaking",
+      "changelog": "1.6.0 Breaking: a published 1.5.5 JSON-contract plugin no longer loads; boot refuses it with a message naming the rebuild against the 1.6.0 SDK (see the SDK migration note).",
+      "by": "owner (Matthew Jackson), spec section 11.8 (owner-locked \"No legacy loading\") + ARCHITECT ruling 2026-10-02T04:00Z (escalate.q:111)",
+      "cells": "^plugins\\.abi\\|json-contract\\|store-sqlite$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "rationale": "Spec 11.8, owner-locked: no legacy loading, 1.5.5 JSON plugins do not load. The cell boots the published 1.5.5 store-sqlite plugin, mints a key, serves a chat and reads usage through it: 1.5.5 serves it. The candidate must refuse at boot. RED on predev today BY DESIGN (registry.rs supported_abi's 1.5.5 floors are interim and go at the P2 switch-over; predev still loads and serves the plugin, so the premise below is false and the entry forgives nothing); it turns green there. Pairs with ABI-o2 (CHANGELOG line) and ABI-o3 (SDK migration note).",
+      "premise": {
+        "all": [
+          {
+            "not": {
+              "cell": "plugins.abi|json-contract|store-sqlite",
+              "pointer": "/exit",
+              "equals": null
+            }
+          },
+          {
+            "not": {
+              "cell": "plugins.abi|json-contract|store-sqlite",
+              "pointer": "/exit",
+              "equals": 0
+            }
+          },
+          {
+            "cell": "plugins.abi|json-contract|store-sqlite",
+            "body_contains": "rebuild"
+          }
+        ]
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-01",
+        "ruling": "spec section 11.8 owner-locked \"No legacy loading\"; ARCHITECT ruling escalate.q:111; R8 signed (2026-10-01T23:45Z)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "ORPH-Q3a Bedrock usage carries cacheDetails",
+      "kind": "additive",
+      "changelog": "A Bedrock response served from an Anthropic upstream carries `usage.cacheDetails`, the per-TTL split of the cache-write tokens (additive: billed counts are unchanged).",
+      "by": "owner (Matthew Jackson), 2026-10-01T23:44Z ORPH-Q3a = A; STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z)",
+      "cells": "^llm\\.cache-details\\|bedrock\\|anthropic-cache-split$",
+      "expected_cells": 0,
+      "classes": [
+        "body"
+      ],
+      "rationale": "The Bedrock codec writes usage.cacheDetails ([{inputTokens, ttl}], codec/bedrock/mod.rs write_cache_details) when an Anthropic upstream reports the 5m/1h cache-write split: Bedrock's published ConverseResponse usage member. Absent in every 1.5.5 response; additive for a Bedrock client behind an Anthropic upstream (the extra member), billed counts unchanged (to_token_usage ignores the split). Cites Q57 (a drop is a defect) and the owner's LLM DIALECT FIDELITY rule (a mapped field added to reach the dialect's published shape is pre-approved). Fixture: crates/busbar-plane-llm/src/codec/tests/proto/golden/resp_a2b_plain.json (5cfe127d9). No oracle cell sends the Anthropic cache split to a Bedrock door: the cell is OWED, `cells` names it and expected_cells is 0, the way AUTH-ROW's owed cells are written. The premise probes the existing Bedrock-door llm cell.",
+      "premise": {
+        "cell": "llm|bedrock|anthropic|request|ok",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-01",
+        "ruling": "ORPH-Q3a = A (owner 2026-10-01T23:44Z, escalate.q); Q57; LLM DIALECT FIDELITY (escalate.q:114)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "ORPH-Q3b buffered OpenAI chat citations are nested url_citation annotations",
+      "kind": "improvement",
+      "changelog": "A buffered OpenAI chat response carries its citations as nested `url_citation` annotations, the shape the published Chat Completions schema defines.",
+      "by": "owner (Matthew Jackson), STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); ORPH-Q3b = A",
+      "cells": "^llm\\.citations\\|openai\\|(cohere|gemini)-buffered$",
+      "expected_cells": 0,
+      "classes": [
+        "body"
+      ],
+      "rationale": "Buffered OpenAI-chat annotations move from the flat shape to the nested url_citation shape the published Chat Completions schema defines (182085b89); S-9 covers Responses backends only. A corrected shape that brings the dialect's output to its real published protocol: pre-approved by the owner's LLM DIALECT FIDELITY rule, no per-item sign-off. Fixtures: crates/busbar-plane-llm/src/codec/tests/proto/golden/resp_c2o_citations.json and resp_g2o_grounding.json. No oracle cell exercises a citation on these pairs: the cells are OWED, `cells` names them and expected_cells is 0, the way AUTH-ROW's owed cells are written. The premise probes the existing openai-door llm cell.",
+      "premise": {
+        "cell": "llm|openai|cohere|request|ok",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-01",
+        "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-01T23:45Z, escalate.q:114); ORPH-Q3b = A"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
     }
   ]
 }
