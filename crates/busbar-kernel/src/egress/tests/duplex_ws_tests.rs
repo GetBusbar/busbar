@@ -458,6 +458,23 @@ fn a_bracketed_ipv6_authority_splits_into_host_and_port() {
     assert_eq!(port, 8443);
 }
 
+/// The authority ends at `?`, `#` or `\` as well as `/`, so the host the guard pins is the host the
+/// handshake names. RED on the `/`-only split, which read `wss://example.com?x=1` as the host
+/// `example.com?x=1`.
+#[test]
+fn a_ws_authority_ends_where_the_handshake_ends_it() {
+    for (url, want_host, want_port) in [
+        ("wss://example.com?x=1", "example.com", 443),
+        ("ws://127.0.0.1\\x/", "127.0.0.1", 80),
+        ("wss://example.com:8443#f", "example.com", 8443),
+    ] {
+        let (_secure, host, port, request_url) =
+            super::split_ws_url(url).unwrap_or_else(|e| panic!("{url}: {e}"));
+        assert_eq!((host.as_str(), port), (want_host, want_port), "{url}");
+        assert_eq!(request_url, url, "the handshake keeps the URL as written");
+    }
+}
+
 /// `Transport::WebSocket` IS ARMED: a real caller selects it, resolves the axis to
 /// [`UpstreamWireKind::Duplex`] through `upstream_wire()`, and drives the guarded dialer that arm names
 /// — the wire resolves to a LIVE socket, not an `unreachable!()`.

@@ -87,6 +87,32 @@ fn dest_judge_refuses_what_the_name_decides_at_once() {
     assert_eq!(r.asked.load(Ordering::SeqCst), 0);
 }
 
+/// Every loopback and private SPELLING is refused without resolving, for a class without private
+/// addressing: `?`, `#` and `\` end the authority, a trailing root dot and a percent-encoded name are
+/// read the way the dialling stack reads them. RED on the reader that ended the authority only at
+/// `/`, which judged each of these an unresolved name and allowed it.
+#[test]
+fn dest_judge_refuses_every_loopback_spelling_without_resolving() {
+    let r = Arc::new(HandResolver::default());
+    let s = services(Arc::clone(&r));
+    for dest in [
+        "https://127.0.0.1?x",
+        "https://localhost#a",
+        "https://127.0.0.1./",
+        "https://%6c%6fcalhost/",
+        "https://10.0.0.5\\x/",
+    ] {
+        let (_, later) = recorder();
+        let got = verdict_now(s.dest_judge(dest, 0, false, Some(later)));
+        assert_eq!(
+            (got.outcome, got.value),
+            (Stored::ready(0).outcome, svc::DEST_INTERNAL),
+            "{dest}"
+        );
+    }
+    assert_eq!(r.asked.load(Ordering::SeqCst), 0);
+}
+
 /// Asked to resolve, a name pends and the address judgement decides the answer; not asked, the
 /// name's own judgement is the verdict and nothing resolves.
 #[test]

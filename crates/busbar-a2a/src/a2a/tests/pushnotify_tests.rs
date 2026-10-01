@@ -217,6 +217,34 @@ fn a_url_with_userinfo_is_refused_rather_than_normalised() {
     );
 }
 
+/// A `\`, a trailing root dot or a percent-escape cannot hide an internal literal: the host is read
+/// the way the HTTP client reads it. RED on the copied parser, which ended the authority at `/`, `?`
+/// and `#` only and read each of these as a NAME the resolver was then trusted to answer for.
+#[test]
+fn a_backslash_a_trailing_dot_or_an_escape_cannot_hide_an_internal_literal() {
+    for url in [
+        "https://127.0.0.1\\x/",
+        "https://127.0.0.1./cb",
+        "https://%31%32%37.0.0.1/cb",
+    ] {
+        assert!(
+            matches!(
+                structural_refusal(url),
+                Some(PushNotifyError::InternalAddress(_))
+            ),
+            "`{url}` must be refused on its address"
+        );
+        assert!(
+            validate(url, &[PUBLIC()]).is_err(),
+            "`{url}` must not be accepted"
+        );
+    }
+    assert_eq!(
+        host_of("https://Caller.Example./cb").as_deref(),
+        Ok("caller.example")
+    );
+}
+
 /// Malformed input is refused, never guessed at. The guard's job is to agree with what the HTTP
 /// client will do, and the safe way to disagree is to refuse.
 #[test]

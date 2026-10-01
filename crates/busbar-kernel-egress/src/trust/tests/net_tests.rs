@@ -1481,3 +1481,52 @@ fn a_padded_authority_does_not_slip_past_the_operator_denylist() {
         );
     }
 }
+
+/// The authority ends where the dialling stack ends it — at `/`, `?`, `#` or `\` — and the host is
+/// read by the one shared reader (percent-decoded, trailing root dot dropped). RED on the reader
+/// that ended the authority only at `/`: it read `https://127.0.0.1?x` as the host `127.0.0.1?x`.
+#[test]
+fn split_url_ends_the_authority_where_the_dialler_does() {
+    for (url, host, port, path) in [
+        ("https://127.0.0.1?x", "127.0.0.1", 443, "/?x"),
+        ("https://localhost#a", "localhost", 443, "/#a"),
+        ("https://127.0.0.1./", "127.0.0.1", 443, "/"),
+        ("https://%6c%6fcalhost/", "localhost", 443, "/"),
+        ("https://10.0.0.5\\x/", "10.0.0.5", 443, "/x/"),
+        ("http://host.example?q=1", "host.example", 80, "/?q=1"),
+        ("https://host.example:8443#f", "host.example", 8443, "/#f"),
+    ] {
+        let (_, h, p, pa) = split_url(url).unwrap_or_else(|e| panic!("{url}: {e}"));
+        assert_eq!((h.as_str(), p, pa.as_str()), (host, port, path), "{url}");
+    }
+    // A userinfo is still refused, wherever a `\` moves the boundary.
+    assert!(matches!(
+        split_url("https://svc@10.0.0.5\\x/"),
+        Err(AddressRefusal::NoHost(_))
+    ));
+}
+
+/// The structural half of the check — what `dest.judge` answers without resolving — refuses every
+/// loopback and private spelling for a class without `allow_private`. RED on the `/`-only reader,
+/// which read each of these as an unresolved NAME and allowed it.
+#[test]
+fn the_structural_check_refuses_every_loopback_spelling() {
+    for dest in [
+        "https://127.0.0.1?x",
+        "https://localhost#a",
+        "https://127.0.0.1./",
+        "https://%6c%6fcalhost/",
+        "https://10.0.0.5\\x/",
+    ] {
+        let got = check_structure(dest, &[], GuardPolicy::default(), &Denylist::default());
+        assert!(
+            matches!(
+                got,
+                Err(NetworkRefusal::Guard(
+                    AddressRefusal::InternalAddress { .. } | AddressRefusal::LoopbackName(_)
+                ))
+            ),
+            "{dest}: {got:?}"
+        );
+    }
+}

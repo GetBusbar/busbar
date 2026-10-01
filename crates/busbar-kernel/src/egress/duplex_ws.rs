@@ -84,48 +84,28 @@ impl From<AddressRefusal> for DialError {
     }
 }
 
-/// `wss://host[:port]/path` (or `ws://…`) split into `(secure, host, port, request-url)`. Hand-written
-/// because what is wanted is a STRICT recogniser over an operator-supplied string, not a permissive
-/// parser; the request-url handed to the handshake keeps the original `ws(s)` scheme so the `Host` /
+/// `wss://host[:port]/path` (or `ws://…`) split into `(secure, host, port, request-url)`. A strict
+/// recogniser over the scheme, with the authority read by the one shared URL reader
+/// ([`net_guard::parse_url`], WHATWG rules) — so it ends at `/`, `?`, `#` or `\` exactly where the
+/// handshake's own parser ends it, and the host the guard pins is the host the handshake names. The
+/// request-url handed to the handshake keeps the original `ws(s)` scheme so the `Host` /
 /// `Sec-WebSocket-*` headers are exactly what the upstream expects.
 fn split_ws_url(url: &str) -> Result<(bool, String, u16, String), DialError> {
-    let (secure, rest) = if let Some(r) = url.strip_prefix("wss://") {
-        (true, r)
-    } else if let Some(r) = url.strip_prefix("ws://") {
-        (false, r)
+    let secure = if url.starts_with("wss://") {
+        true
+    } else if url.starts_with("ws://") {
+        false
     } else {
         return Err(DialError::Url(url.to_string()));
     };
-    let (authority, _path) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, "/"),
-    };
+    let parts = net_guard::parse_url(url).map_err(|_| DialError::Url(url.to_string()))?;
     // No userinfo in an egress target: an `@` is an unusable authority, exactly as the HTTP guard
     // treats it.
-    if authority.is_empty() || authority.contains('@') {
+    if parts.userinfo {
         return Err(DialError::Url(url.to_string()));
     }
-    let (host, port) = match authority.rsplit_once(':') {
-        // An IPv6 literal carries colons; only a trailing `:port` after a `]` (or on a bare host that
-        // carries no colon of its own) is a port. A colon inside `[...]` is part of the address, which
-        // is what the `]` tests read: a left side ENDING in `]` is a bracketed literal followed by a
-        // real port, and a right side CONTAINING one is the tail of the literal itself, not a port.
-        Some((h, p)) if (h.ends_with(']') || !h.contains(':')) && !p.contains(']') => {
-            let port: u16 = p.parse().map_err(|_| DialError::Url(url.to_string()))?;
-            (h.to_string(), port)
-        }
-        _ => (authority.to_string(), if secure { 443 } else { 80 }),
-    };
-    // Unbracket an IPv6 literal so the host reads the same to the guard and to rustls' SNI.
-    let host = host
-        .strip_prefix('[')
-        .and_then(|h| h.strip_suffix(']'))
-        .map(str::to_string)
-        .unwrap_or(host);
-    if host.is_empty() {
-        return Err(DialError::Url(url.to_string()));
-    }
-    Ok((secure, host, port, url.to_string()))
+    let port = parts.port.unwrap_or(if secure { 443 } else { 80 });
+    Ok((secure, parts.host, port, url.to_string()))
 }
 
 /// The rustls client config for the dial: webpki roots + the explicitly-named `ring` provider, the

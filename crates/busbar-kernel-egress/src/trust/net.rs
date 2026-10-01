@@ -55,315 +55,19 @@
 //! depend on which caller is asking. They are pure (no I/O, no globals), so each is unit-testable in
 //! isolation; the guard above them takes its ONE resolution through a [`Resolver`] seam for the same
 //! reason, and because a unit that opened a socket would not be a unit.
+//!
+//! They live in `busbar_contract::net`, the one URL and host reader, and are re-exported here
+//! unchanged: a plugin that links only the contract reads a host exactly as this guard does.
 
-use std::borrow::Cow;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 
-/// Well-known cloud-metadata / internal DNS names that resolve, at connect time, to the IMDS family
-/// even though they are not IP literals. Blocked case-insensitively by [`dns_name_is_internal`].
-///
-/// The `localhost` family is deliberately NOT here: it is a SEPARATE arm in
-/// [`dns_name_is_internal`], because [`ssrf_blocked_host`] allows `localhost` (a legitimate
-/// loopback upstream) while other fetch guards block it. Keeping the two
-/// lists apart is what lets one guard opt out of the localhost arm without also opting out of the
-/// metadata one.
-///
-/// This is the ONLY metadata-name list. [`ssrf_blocked_host`] once kept a second, longer copy
-/// declared inside its own body; the two drifted, and a name the config guard blocked was one the
-/// resolved-name guard had never heard of. A private list inside a function is a list nothing else
-/// can read, which is the mechanism of the drift rather than an accident of it.
-pub const METADATA_HOSTS: &[&str] = &[
-    "metadata.google.internal",
-    "metadata.internal",
-    "metadata.tencentyun.com",
-    "metadata.platformequinix.com",
-    "instance-data",
-    "instance-data.ec2.internal",
-];
-
-/// TRUE for an IPv4 literal no busbar guard may connect to: loopback, link-local (which is where the
-/// `169.254.169.254` IMDS endpoint lives), RFC1918 private, RFC6598 CGNAT, unspecified, broadcast,
-/// and the two cloud-metadata endpoints that sit on PUBLIC / IETF-reserved addresses outside every
-/// one of those ranges (Azure WireServer, and OCI IMDS via the `192.0.0.0/24` it sits inside),
-/// which the range predicates would otherwise miss entirely.
-///
-/// This is the predicate the internal-host check was written around, hoisted here so every other
-/// fetch path reuses it rather than growing a fourth copy. Duplicated SECURITY
-/// logic is the one place a documented divergence does not neutralize drift: a contributor
-/// hardening one guard against a new range would silently miss the others.
-pub fn ipv4_is_internal(v4: &Ipv4Addr) -> bool {
-    const AZURE_WIRESERVER: Ipv4Addr = Ipv4Addr::new(168, 63, 129, 16);
-    let o = v4.octets();
-    v4.is_loopback()
-        || v4.is_link_local()
-        || v4.is_private()
-        || is_cgnat_shared_v4(v4)
-        || v4.is_unspecified()
-        || v4.is_broadcast()
-        || *v4 == AZURE_WIRESERVER
-        // MULTICAST and DOCUMENTATION were unified in from a duplicate copy of this predicate. One
-        // copy had them and this one did not, so the path using this copy was the weaker of the two
-        // without anyone deciding that. Neither is
-        // a plausible destination for an upstream a caller nominates, and `224.0.0.1` reaches every
-        // host on the local segment.
-        || v4.is_multicast()
-        || v4.is_documentation()
-        // ── THE THREE ROWS BELOW WERE UNIFIED IN FROM A DUPLICATE PRIVATE COPY when that copy was
-        //    torn out. The tear-out is only safe if this predicate already covers everything the
-        //    copy covered, and it did not: a path that stopped using its own table and started
-        //    using this one would have SILENTLY WIDENED what it accepts. That is the drift this
-        //    module exists to prevent, arriving in the shape of a cleanup.
-        //
-        // 0.0.0.0/8 "this network" (RFC 1122 section 3.2.1.3). `is_unspecified()` is ONLY `0.0.0.0`, so
-        // `0.1.2.3` was reachable through every guard that used this predicate — and several
-        // stacks route the whole block to the local host.
-        || o[0] == 0
-        // 192.0.0.0/24 IETF protocol assignments. OCI's IMDS at `192.0.0.192` sits INSIDE this /24,
-        // so the /24 subsumes the old single-address constant rather than sitting beside it.
-        || (o[0] == 192 && o[1] == 0 && o[2] == 0)
-        // 198.18.0.0/15 benchmarking (RFC 2544). Not a legitimate destination, and routed inside
-        // some fabrics.
-        || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
-}
-
-/// TRUE for an IPv6 literal no busbar guard may connect to.
-///
-/// The ORDER is load-bearing and is the reason this is one function rather than three call sites.
-/// `::1` must be caught by `is_loopback()` FIRST: under `to_ipv4()` it canonicalizes to `0.0.0.1`,
-/// which is not a v4 loopback, so an embedded-v4 arm placed first would let it through. Then the
-/// embedded-v4 arm runs BEFORE the v6 range masks, because `[::ffff:127.0.0.1]` and
-/// `[::169.254.169.254]` match no v6 mask at all yet a connecting stack still routes them to the
-/// embedded v4 target. The embedded-v4 arm calls [`embedded_ipv4`], not the narrower `to_ipv4()`,
-/// directly: `to_ipv4()` is already the superset over `to_ipv4_mapped()` that also covers the
-/// IPv4-COMPATIBLE form, and `embedded_ipv4` extends it once more to the NAT64/RFC 6052
-/// `64:ff9b::/96` embedding that `to_ipv4()` does not recognise at all — see [`embedded_ipv4`].
-pub fn ipv6_is_internal(v6: &Ipv6Addr) -> bool {
-    if v6.is_loopback() {
-        return true;
-    }
-    // `embedded_ipv4` (not the narrower `to_ipv4()`) so a NAT64/RFC 6052 `64:ff9b::/96` synthesized
-    // address is judged by the IPv4 target it actually reaches, not left to fall through to the
-    // v6 range checks below, none of which cover that prefix.
-    if let Some(v4) = embedded_ipv4(v6) {
-        return ipv4_is_internal(&v4);
-    }
-    v6.is_unspecified() || v6.is_multicast() || is_unique_local_v6(v6) || is_link_local_v6(v6)
-}
-
-/// TRUE for a resolved address that is a CLOUD-METADATA endpoint.
-///
-/// Separate from [`ip_is_internal`] because the two have different POLICIES, not different data: an
-/// internal address may be reached when an operator sets `allow_private`, and a metadata endpoint
-/// may never be reached at all. Folding them together would make `allow_private` a switch that
-/// hands out cloud credentials.
-///
-/// The v4 question is a RANGE question, not a list of literals. Clouds put IMDS anywhere inside
-/// `169.254.0.0/16` — AWS on `169.254.169.254` and `169.254.170.2`, Tencent on `169.254.0.23`, the
-/// v6-era ECS endpoint on `169.254.170.3` — and nothing legitimate runs on link-local at all, so
-/// the whole range is metadata. Only the endpoints that sit OUTSIDE link-local need naming, and
-/// they are named. Enumerating link-local literals instead would leave every unlisted one to the
-/// internal-range arm, which `allow_private` switches off: the operator flag that says "our
-/// upstream is on the internal network" would then pin and dial an unlisted IMDS. This is the same
-/// predicate the config-side metadata check applies, deliberately.
-///
-/// The v6 arm unwraps with [`embedded_ipv4`], not `to_ipv4()`/`to_ipv4_mapped()` directly, for the
-/// reason [`ipv6_is_internal`] gives: `to_ipv4()` is already the superset that also covers the
-/// IPv4-COMPATIBLE form, so `[::169.254.169.254]` is caught — a guard that only unwrapped the
-/// MAPPED form let exactly that literal through, matching no v6 range and unwrapping to nothing.
-/// `embedded_ipv4` goes one step further and also recognises the NAT64/RFC 6052 `64:ff9b::/96`
-/// embedding that `to_ipv4()` itself does not: a DNS64 resolver answering `64:ff9b::a9fe:a9fe` is
-/// the IMDS target `169.254.169.254` re-encoded, and matches none of `to_ipv4()`'s forms either.
-pub fn ip_is_cloud_metadata(addr: &IpAddr) -> bool {
-    /// The metadata endpoints OUTSIDE link-local: Alibaba Cloud ECS (inside the otherwise-allowed
-    /// CGNAT /10), Azure WireServer, and Oracle Cloud's globally-routable-shaped IMDS.
-    const NON_LINK_LOCAL_V4: &[Ipv4Addr] = &[
-        Ipv4Addr::new(100, 100, 100, 200),
-        Ipv4Addr::new(168, 63, 129, 16),
-        Ipv4Addr::new(192, 0, 0, 192),
-    ];
-    fn is_metadata_v4(v4: &Ipv4Addr) -> bool {
-        v4.is_link_local() || NON_LINK_LOCAL_V4.contains(v4)
-    }
-    match addr {
-        IpAddr::V4(v4) => is_metadata_v4(v4),
-        IpAddr::V6(v6) => {
-            // `embedded_ipv4`, not `to_ipv4()`: a DNS64 resolver answering with the NAT64/RFC 6052
-            // `64:ff9b::/96` synthesis of an IMDS literal (e.g. `64:ff9b::a9fe:a9fe` for
-            // `169.254.169.254`) reaches the metadata endpoint exactly as surely as the mapped or
-            // compatible forms do, and matches neither.
-            if let Some(v4) = embedded_ipv4(v6) {
-                return is_metadata_v4(&v4);
-            }
-            // IMDSv6.
-            v6.segments() == [0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x254]
-        }
-    }
-}
-
-/// TRUE for any resolved address a busbar guard must refuse to connect to.
-///
-/// This is the predicate a RESOLVE-THEN-PIN guard applies to what the resolver actually answered,
-/// which is the only form of the check that survives a DNS rebind: a name is not an address, and
-/// the address is what a socket connects to.
-pub fn ip_is_internal(addr: &IpAddr) -> bool {
-    match addr {
-        IpAddr::V4(v4) => ipv4_is_internal(v4),
-        IpAddr::V6(v6) => ipv6_is_internal(v6),
-    }
-}
-
-/// TRUE for a DNS NAME that is internal by definition rather than by resolution: the cloud-metadata
-/// names in [`METADATA_HOSTS`], and the `localhost` family RFC 6761 reserves to loopback.
-///
-/// A trailing FQDN-root dot is stripped first. `getaddrinfo` resolves `localhost.` and
-/// `metadata.google.internal.` to the same targets as the bare spelling, but the trailing dot makes
-/// an exact compare miss by one byte — which is a bypass, not a curiosity.
-pub fn dns_name_is_internal(host: &str) -> bool {
-    let host = host.strip_suffix('.').unwrap_or(host);
-    if METADATA_HOSTS.iter().any(|m| host.eq_ignore_ascii_case(m)) {
-        return true;
-    }
-    host.eq_ignore_ascii_case("localhost")
-        || host
-            .rsplit_once('.')
-            .is_some_and(|(_, tld)| tld.eq_ignore_ascii_case("localhost"))
-}
-
-/// IPv6 unique-local range `fc00::/7` (the first 7 bits are `1111110`). No stable std predicate
-/// exists for this range on the pinned toolchain, so the leading bits are checked directly.
-pub fn is_unique_local_v6(addr: &Ipv6Addr) -> bool {
-    (addr.segments()[0] & 0xfe00) == 0xfc00
-}
-
-/// IPv6 link-local range `fe80::/10` (the first 10 bits are `1111111010`). No stable std predicate
-/// exists for this range on the pinned toolchain, so the leading bits are checked directly.
-pub fn is_link_local_v6(addr: &Ipv6Addr) -> bool {
-    (addr.segments()[0] & 0xffc0) == 0xfe80
-}
-
-/// RFC 6598 Shared Address Space `100.64.0.0/10` (a.k.a. CGNAT). NOT covered by
-/// `Ipv4Addr::is_private()`, yet routable inside AWS/GCP VPCs and many Kubernetes clusters where it
-/// fronts internal services — so it is an SSRF target the private/link-local checks miss. The /10
-/// is the addresses whose first octet is `100` and whose top two bits of the second octet are `01`.
-pub fn is_cgnat_shared_v4(v4: &Ipv4Addr) -> bool {
-    let o = v4.octets();
-    o[0] == 100 && (o[1] & 0xC0) == 64
-}
-
-/// Unwrap an embedded IPv4 target from an IPv6 literal or resolved answer, covering EVERY form a
-/// connecting stack still routes to an IPv4 destination.
-///
-/// `Ipv6Addr::to_ipv4()` only recognises the IPv4-MAPPED (`::ffff:a.b.c.d`) and IPv4-COMPATIBLE
-/// (`::a.b.c.d`) forms. It does NOT recognise NAT64 / RFC 6052 `64:ff9b::/96` — the well-known
-/// prefix a DNS64 resolver uses to synthesize an AAAA answer for an IPv4-only name on a
-/// NAT64/DNS64 network (common on IPv6-only cellular and enterprise egress). A hostile or
-/// rebinding resolver behind DNS64 answers a AAAA query for its name with `64:ff9b::a9fe:a9fe` —
-/// the IMDS target `169.254.169.254` re-encoded — and that address matches NONE of `to_ipv4()`,
-/// NONE of the unique-local/link-local/multicast v6 range checks, and so a guard that unwraps only
-/// `to_ipv4()` judges it as an ordinary public v6 address and connects. This is the SAME class of
-/// bug the mapped-vs-compatible unwrap already guards against in [`ipv6_is_internal`] and
-/// [`ip_is_cloud_metadata`]; NAT64 is a third embedding, not a different problem.
-///
-/// Called BEFORE any IMDS / link-local / private judgement is made, exactly like `to_ipv4()` is,
-/// so the embedded address is what gets judged rather than the (harmless-looking) v6 wrapper.
-pub fn embedded_ipv4(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
-    if let Some(v4) = v6.to_ipv4() {
-        return Some(v4);
-    }
-    // `64:ff9b::/96` (well-known, RFC 6052 Section 2.1) AND any `/96`-length instantiation of
-    // `64:ff9b:1::/48` (local-use, RFC 8215 Section 2) embed IPv4 identically: PL=96 has no
-    // reserved `u` byte (RFC 6052 Section 2.2), so the low 32 bits (the last two u16 segments) are
-    // the embedded IPv4 address, byte for byte, in both forms.
-    //
-    // The two forms differ in how much of the leading 96 bits is FIXED, not just in `seg[2]`:
-    //   - well-known (`seg[2] == NAT64_WELL_KNOWN`): RFC 6052 pins the ENTIRE 96-bit prefix to
-    //     `64:ff9b::`, so `seg[3]`/`seg[4]`/`seg[5]` must also be zero.
-    //   - local-use (`seg[2] == NAT64_LOCAL_USE`): RFC 8215 pins only the top 48 bits
-    //     (`64:ff9b:1::/48`) and leaves an operator free to choose ANY value for the rest of a
-    //     /96-length Network-Specific Prefix under it — RFC 8215 Section 6's own checksum-neutral
-    //     worked example, `64:ff9b:1:fffe::/96`, has a non-zero `seg[3]`. Requiring
-    //     `seg[3..6] == 0` here too would recognise only the single degenerate all-zero /96 and
-    //     miss every other /96 an operator (including the RFC's own example) might actually run —
-    //     the same hostile-DNS64-on-a-local-use-network bypass this prefix was added to guard
-    //     against, reopened for any non-zero-padded instantiation. `64:ff9b:1::/48` is reserved
-    //     entirely for this translation and is never legitimately globally routable (RFC 8215
-    //     Section 3), so accepting the whole block here cannot mis-flag real public v6 traffic.
-    //
-    // A local-use prefix of another length (/32, /40, /48, /56, /64) scatters the octets around a
-    // `u` byte at a different bit position and is deliberately NOT unwrapped here: this function
-    // only recognises /96-length translation, well-known or local-use.
-    const NAT64_WELL_KNOWN: u16 = 0; // RFC 6052 `64:ff9b::/96`
-    const NAT64_LOCAL_USE: u16 = 1; // RFC 8215 `64:ff9b:1::/48`, /96 instantiation
-    let seg = v6.segments();
-    if seg[0] == 0x0064 && seg[1] == 0xff9b {
-        let embeds_v4 = match seg[2] {
-            NAT64_WELL_KNOWN => seg[3] == 0 && seg[4] == 0 && seg[5] == 0,
-            NAT64_LOCAL_USE => true,
-            _ => false,
-        };
-        if embeds_v4 {
-            let [a, b] = seg[6].to_be_bytes();
-            let [c, d] = seg[7].to_be_bytes();
-            return Some(Ipv4Addr::new(a, b, c, d));
-        }
-    }
-    None
-}
-
-/// True when `host` is an alternate (non-dotted-quad) IPv4 encoding that `IpAddr::from_str` rejects
-/// but the OS resolver (glibc `getaddrinfo`, used by reqwest's default resolver) still maps to an
-/// IPv4 address: a bare decimal integer (`2130706433` = 127.0.0.1), a `0x`/`0X` hex literal
-/// (`0x7f000001`), a leading-zero octal literal (`017700000001`), or a dotted form with FEWER than
-/// four octets (`127.1`, `10.0.1`). On a raw, un-normalized host string these bypass the canonical
-/// IP-literal checks while still resolving to loopback / link-local / private targets at connect
-/// time, so they must be treated as blocked. A canonical four-octet dotted-quad is NOT matched here
-/// (it is handled by the `parse::<IpAddr>()` path); a normal DNS hostname is not matched either.
-pub fn is_alternate_ipv4_encoding(host: &str) -> bool {
-    if host.is_empty() {
-        return false;
-    }
-
-    // Whole-host `0x...` / `0X...` hex literal (e.g. `0x7f000001`). Only when there is no `.`; a
-    // dotted per-octet hex form (`0x7f.0.0.1`) is handled by the dotted branch below.
-    if !host.contains('.') {
-        if let Some(hex) = host.strip_prefix("0x").or_else(|| host.strip_prefix("0X")) {
-            return !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit());
-        }
-    }
-
-    // Dotted form: split on '.'. A canonical dotted-quad has exactly 4 parts and parses via
-    // `IpAddr` — leave it to that path. Fewer than 4 numeric parts (e.g. `127.1`, `10.0.1`) is an
-    // alternate short form getaddrinfo expands; flag it. Any part using a `0x` hex or leading-zero
-    // octal encoding is also an alternate form.
-    if host.contains('.') {
-        let parts: Vec<&str> = host.split('.').collect();
-        // Every part must be a numeric encoding (decimal, hex, or octal) for this to be an IP-ish
-        // host at all; if any part has a non-numeric character it's a DNS name → not our concern.
-        let all_numeric = parts.iter().all(|p| {
-            if let Some(hex) = p.strip_prefix("0x").or_else(|| p.strip_prefix("0X")) {
-                !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit())
-            } else {
-                !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())
-            }
-        });
-        if !all_numeric {
-            return false;
-        }
-        // Short dotted form (fewer than 4 parts) is an alternate encoding getaddrinfo expands.
-        if parts.len() < 4 {
-            return true;
-        }
-        // Four numeric parts: alternate iff any part is hex (`0x`) or leading-zero octal.
-        return parts.iter().any(|p| {
-            p.starts_with("0x")
-                || p.starts_with("0X")
-                || (p.len() > 1 && p.starts_with('0') && p.bytes().all(|b| b.is_ascii_digit()))
-        });
-    }
-
-    // No '.', not `0x`: a bare all-digits host is a decimal integer IP encoding (e.g. `2130706433`).
-    host.bytes().all(|b| b.is_ascii_digit())
-}
+// THE PURE PRIMITIVES, re-exported from the one reader in `busbar_contract::net`: the metadata list,
+// the v4/v6 range predicates, the alternate IPv4 spellings, the WHATWG host extraction and the
+// per-scheme URL reader. They moved there so a plugin that links only the contract judges a host
+// exactly as this guard does (BUSBAR-1.6.0.md, the engine-folds paragraph: a shared reader is "a
+// pure, stateless helper in `busbar-contract` outside `abi/`"); what stays here is the guard
+// itself — the policy, the denylist, and resolve-then-pin.
+pub use busbar_contract::net::*;
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //   THE GUARD: one resolve-then-pin, one address judgement, one redirect policy, one body cap.
@@ -635,62 +339,42 @@ pub trait Resolver {
 
 /// Split an `http(s)://host[:port][/path]` URL into `(https, host, port, path)`.
 ///
-/// Hand-written because what is wanted is a STRICT RECOGNISER. A permissive parser's job is to find
-/// a reading that works, and "find a reading that works" is the opposite of what a security check
-/// wants from an attacker-influenced string. The host comes back UNBRACKETED, so an IPv6 literal
-/// reads the same here as it does to [`judge_host_name`] and to `IpAddr::from_str`.
+/// A STRICT RECOGNISER over the scheme — exactly `https://` or `http://`, anything else is a
+/// [`AddressRefusal::Scheme`] — with the host read by the one shared reader
+/// ([`parse_url`], WHATWG rules). The authority therefore ends where the dialling stack ends it: at
+/// `/`, `?`, `#` or `\`. A reader that ended it only at `/` read `https://127.0.0.1?x` as the host
+/// `127.0.0.1?x` — no address, no loopback name, so no refusal — while the stack dialled
+/// `127.0.0.1`; `https://localhost#a`, `https://127.0.0.1./`, `https://%6c%6fcalhost/` and
+/// `https://10.0.0.5\x/` were the same bypass in other spellings. The host comes back UNBRACKETED,
+/// percent-decoded and without a trailing root dot, so it reads the same here as it does to
+/// [`judge_host_name`] and to `IpAddr::from_str`. The path always opens with `/` (`https://h?q`
+/// gives `/?q`).
 ///
 /// A caller that must also FOLLOW a relative `Location` needs a real URL type to join against and
 /// parses with one; it still brings the host it parsed back through [`judge_host_name`]. That is the
 /// one part of the recognition that is legitimately per-caller, and it is why this is a public
 /// helper rather than the only door in.
 pub fn split_url(url: &str) -> Result<(bool, String, u16, String), AddressRefusal> {
-    let (https, rest) = if let Some(r) = url.strip_prefix("https://") {
-        (true, r)
-    } else if let Some(r) = url.strip_prefix("http://") {
-        (false, r)
+    let https = if url.starts_with("https://") {
+        true
+    } else if url.starts_with("http://") {
+        false
     } else {
         return Err(AddressRefusal::Scheme {
             url: redact_userinfo(url),
             scheme: scheme_of(url),
         });
     };
-    let (authority, path) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, "/"),
-    };
+    let no_host = || AddressRefusal::NoHost(redact_userinfo(url));
+    let parts = parse_url(url).map_err(|_| no_host())?;
     // Userinfo is refused rather than stripped. `https://evil.test@good.example/` reads as
     // `good.example` to a parser and as `evil.test` to a human skimming a config diff, and a value
     // whose two readings differ has no place on a fetch path.
-    if authority.contains('@') || authority.is_empty() {
-        return Err(AddressRefusal::NoHost(redact_userinfo(url)));
+    if parts.userinfo {
+        return Err(no_host());
     }
-    let (host, port) = if let Some(inner) = authority.strip_prefix('[') {
-        // Bracketed IPv6 literal.
-        let (h, tail) = inner
-            .split_once(']')
-            .ok_or_else(|| AddressRefusal::NoHost(redact_userinfo(url)))?;
-        let port = match tail.strip_prefix(':') {
-            Some(p) => p
-                .parse::<u16>()
-                .map_err(|_| AddressRefusal::NoHost(redact_userinfo(url)))?,
-            None => default_port(https),
-        };
-        (h.to_string(), port)
-    } else {
-        match authority.rsplit_once(':') {
-            Some((h, p)) => (
-                h.to_string(),
-                p.parse::<u16>()
-                    .map_err(|_| AddressRefusal::NoHost(redact_userinfo(url)))?,
-            ),
-            None => (authority.to_string(), default_port(https)),
-        }
-    };
-    if host.is_empty() {
-        return Err(AddressRefusal::NoHost(redact_userinfo(url)));
-    }
-    Ok((https, host, port, path.to_string()))
+    let port = parts.port.unwrap_or_else(|| default_port(https));
+    Ok((https, parts.host, port, parts.path))
 }
 
 /// The URL as a refusal may repeat it: everything an authority put before its last `@` replaced by a
@@ -908,257 +592,6 @@ pub fn refuse_oversized_body(
     Ok(())
 }
 
-// ── The config-side siblings of the IP predicates above: pure string/address work over a URL a
-//    deployment wrote down, rather than over an address a resolver answered with. They travel with
-//    the predicates for the same reason the predicates were hoisted in the first place — a
-//    contributor hardening one obfuscation form must not be able to miss the other copy, because
-//    there is no other copy.
-
-/// Whether a URL claims the given scheme, case-insensitively.
-pub fn scheme_is(url: &str, scheme: &str) -> bool {
-    url.split_once("://")
-        .is_some_and(|(s, _)| s.eq_ignore_ascii_case(scheme))
-}
-
-/// Strip an `http`/`https` scheme case-insensitively, returning the authority+path remainder.
-fn strip_scheme(url: &str) -> Option<&str> {
-    let (scheme, rest) = url.split_once("://")?;
-    (scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http")).then_some(rest)
-}
-
-/// Return `Some(host)` if the given `https://` URL points at an SSRF-sensitive target (loopback,
-/// link-local, RFC-1918 private, unique-local IPv6, or a known cloud metadata hostname), else
-/// `None`. The host is extracted by string slicing (no URL crate): strip the scheme, take up to the
-/// first `/`, `?`, or `#`, drop any `user@` prefix, then separate an IPv6 `[...]` literal or an
-/// `host:port` from its port. IP literals are parsed with `IpAddr` and checked against the blocked
-/// ranges; non-IP hostnames are matched case-insensitively against the metadata hostname list.
-/// Percent-decode a host string (`%XX` → byte), mirroring the RFC 3986 decoding the `url` crate
-/// applies to host components at request time. Invalid escapes (`%` not followed by two hex digits)
-/// are left verbatim so a malformed host stays malformed (it will still fail every IP/hostname check
-/// and be allowed, but it can never be SMUGGLED PAST a check by hiding a blocked literal behind an
-/// escape). Only ASCII results are surfaced as decoded bytes; non-UTF-8 decoded output falls back to
-/// the original so we never fabricate a misleading host. No new dependency — a small manual scan.
-///
-/// A host carrying no `%` at all decodes to itself, and is handed back borrowed: the overwhelmingly
-/// common host is an ordinary name, and a guard on the request path should not build a copy of it to
-/// discover it had nothing to decode.
-fn percent_decode_host(host: &str) -> Cow<'_, str> {
-    if !host.contains('%') {
-        return Cow::Borrowed(host);
-    }
-    let bytes = host.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hi = (bytes[i + 1] as char).to_digit(16);
-            let lo = (bytes[i + 2] as char).to_digit(16);
-            if let (Some(hi), Some(lo)) = (hi, lo) {
-                out.push((hi * 16 + lo) as u8);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    match String::from_utf8(out) {
-        Ok(s) => Cow::Owned(s),
-        // Decoded bytes are not valid UTF-8: keep the original literal rather than a lossy host.
-        Err(_) => Cow::Borrowed(host),
-    }
-}
-
-/// The WHATWG basic URL parser's very first step, BOTH halves of it, in the parser's own order.
-///
-/// The first half is the leading/trailing trim: before anything else, the parser removes any
-/// LEADING and TRAILING C0 control characters (U+0000..=U+001F) and SPACE (U+0020) from the input.
-/// The second half deletes every ASCII tab / LF / CR from ANYWHERE inside what is left. Doing only
-/// the second half — which is what this copy did when it was extracted from the live sibling
-/// (`busbar-substrate::net_guard`) — leaves a whole family of spellings that this guard reads
-/// differently from the stack that will dial them. A destination of `"https://10.99.99.99 "` (one
-/// trailing space, exactly what an unquoted YAML scalar or a console copy-paste leaves behind) is
-/// read as the host `10.99.99.99 `, which parses as no `IpAddr`, expands to no alternate encoding
-/// and matches no `HostSet` entry — so an operator's `blocked_metadata_hosts` entry silently does
-/// not fire, and the connecting stack trims the space and dials the blocked host. The leading side
-/// is worse still, because the padding hides the SCHEME rather than the host:
-/// `" http://169.254.169.254/"` splits on `://` into the scheme `" http"`, which matches neither
-/// `http` nor `https`, so `strip_scheme` returns `None` and the URL is waved through without any
-/// host ever being examined. This matters most where the operator's credentials are POSTed to the
-/// configured URL verbatim — a metadata host the guard failed to
-/// recognize is a metadata host that receives those credentials.
-///
-/// Both halves are borrowing where there is nothing to do: an ordinary configured URL carries no
-/// padding and none of the three deleted bytes, and that case should cost a scan and no allocation.
-fn strip_whatwg_removed(s: &str) -> Cow<'_, str> {
-    // The trim FIRST, byte-for-byte the sibling's predicate, so the two copies cannot read a
-    // different host from the same string.
-    let s = s.trim_matches(|c: char| c <= '\u{1f}' || c == ' ');
-    if s.contains(['\t', '\n', '\r']) {
-        Cow::Owned(s.replace(['\t', '\n', '\r'], ""))
-    } else {
-        Cow::Borrowed(s)
-    }
-}
-
-/// The host a connecting stack would read out of `url`, after every normalization it performs.
-///
-/// This is the whole obfuscation defense in one place: the tab/LF/CR strip the WHATWG parser does
-/// first, the backslash fold that moves the authority boundary, the userinfo drop, the IPv6
-/// bracket, the percent-decode, and the trailing FQDN-root dot. A guard that read a different host
-/// than the socket connects to is not a guard.
-pub fn extract_normalized_host(url: &str) -> Option<String> {
-    // Run BOTH halves of the WHATWG first step — the leading/trailing C0-and-space trim and then the
-    // interior tab/LF/CR deletion — FIRST, before any other normalization, in the parser's own
-    // order. See `strip_whatwg_removed` for why the trim is load-bearing and what dropping it costs.
-    //
-    // The second half strips ALL ASCII tab (0x09), LF (0x0A), and CR (0x0D) characters from anywhere
-    // in the string, before scheme/authority parsing even begins. reqwest's `url` crate implements
-    // both halves, and this removal in particular is not merely a leading/trailing trim: a tab
-    // EMBEDDED mid-host is deleted too. Without mirroring it, a
-    // `base_url` like `"https://169.254.169\t.254/"` (a tab is a legal byte inside a YAML
-    // double-quoted scalar) is seen by this guard as the non-IP, non-metadata-matching host
-    // `169.254.169\t.254` (passes every check) while the actual connecting stack deletes the tab and
-    // connects to `169.254.169.254` — the real IMDS address. Doing this before the backslash→`/`
-    // fold matters too: a stripped tab could otherwise sit between characters that only become a
-    // delimiter after this removal (WHATWG strips tab/newline before it looks for `\`/`/` at all).
-    let url = strip_whatwg_removed(url);
-    let url = url.as_ref();
-    // Strip the scheme (case-insensitively — see `scheme_is`). The host extraction is
-    // scheme-agnostic; accept either prefix so an `http://` upstream is still metadata-checked.
-    let rest = strip_scheme(url)?;
-    normalize_authority(rest)
-}
-
-/// The same host extraction over an authority that names no scheme at all.
-///
-/// A destination may be spelled as a URL or as a bare `host:port`, and which one a lane's
-/// configuration used is not a security question — the scheme and address checks already judge both
-/// alike. Anything carrying a `://` is left to [`extract_normalized_host`], so a scheme this guard
-/// does not speak still extracts no host here rather than having its scheme read as a hostname.
-pub fn extract_normalized_authority_host(authority: &str) -> Option<String> {
-    let authority = strip_whatwg_removed(authority);
-    if authority.contains("://") {
-        return None;
-    }
-    normalize_authority(&authority)
-}
-
-/// Everything the extraction does once the scheme is out of the way, shared by both spellings so
-/// neither can drift into reading a different host than the other.
-fn normalize_authority(rest: &str) -> Option<String> {
-    // Normalize backslashes to forward slashes BEFORE splitting the authority. `https` is a WHATWG
-    // "special" scheme, so reqwest's `url` crate converts every `\` to `/` while parsing — meaning a
-    // `base_url` like `https://10.0.0.1\x.allowed.com` is parsed by reqwest with authority `10.0.0.1`
-    // (the `\` terminates the authority exactly as `/` would) and then CONNECTS to `10.0.0.1` /
-    // `169.254.169.254`, even though a hand-parser that split only on `['/', '?', '#']` would see the
-    // whole `10.0.0.1\x.allowed.com` as the host — an SSRF credential-relay bypass. Mirroring
-    // reqwest's `\`→`/` rewrite here makes the guard see the SAME authority boundary the connecting
-    // stack will, closing the bypass.
-    // Borrowed when there is no backslash to fold, which is every well-formed URL: the fold exists
-    // for the hostile spelling, and paying for it on every dial would be paying for the rare case.
-    let rest: Cow<'_, str> = if rest.contains('\\') {
-        Cow::Owned(rest.replace('\\', "/"))
-    } else {
-        Cow::Borrowed(rest)
-    };
-    // Authority is everything before the first path/query/fragment delimiter.
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest.as_ref());
-    // Drop any "userinfo@" prefix.
-    let host_port = authority.rsplit('@').next().unwrap_or(authority);
-
-    // Separate host from port, handling bracketed IPv6 literals (`[::1]:443`).
-    let host: &str = if let Some(after_bracket) = host_port.strip_prefix('[') {
-        // `[<ipv6>]` optionally followed by `:port`.
-        match after_bracket.split_once(']') {
-            Some((inner, _)) => inner,
-            None => after_bracket, // malformed; treat the remainder as the host
-        }
-    } else {
-        // `host` or `host:port` — split on the last colon only when the left side has no colon
-        // (a bare IPv6 without brackets would contain multiple colons; rsplit_once on a single
-        // `:` host:port is the common case).
-        match host_port.rsplit_once(':') {
-            // If the left part still contains a colon it's a bare IPv6 literal; keep the whole.
-            Some((left, _)) if !left.contains(':') => left,
-            _ => host_port,
-        }
-    };
-
-    if host.is_empty() {
-        return None;
-    }
-
-    // Percent-decode the host BEFORE returning. The guard operates on the literal config string, but
-    // the `url` crate reqwest uses percent-decodes host components per RFC 3986 at request time — so
-    // a `base_url` like `https://169%2E254%2E169%2E254/` would pass every check (not a parseable
-    // `IpAddr`, and the `%` defeats `is_alternate_ipv4_encoding`) yet resolve to the IMDS target
-    // downstream. Decoding here makes the safety property independent of URL-library details.
-    let host_decoded = percent_decode_host(host);
-    let host_decoded = host_decoded.as_ref();
-
-    // Normalize a single trailing FQDN-root dot. glibc getaddrinfo treats a trailing dot as a rooted
-    // FQDN and still resolves the literal it precedes — so `169.254.169.254.` connects to exactly the
-    // IMDS target the bare form does. Without stripping, an IP-literal+dot does NOT parse as
-    // `IpAddr`, defeating every range check.
-    let host = host_decoded.strip_suffix('.').unwrap_or(host_decoded);
-
-    Some(host.to_string())
-}
-
-/// True when `host` (already normalized by [`extract_normalized_host`]) is a private, loopback, or
-/// link-local target — the legitimate private destinations (`localhost`,
-/// `127.0.0.1`, RFC-1918, or a Tailscale CGNAT address). Used to KEY THE SCHEME RULE:
-/// plaintext `http://` is permitted to these (a loopback or private-network peer rarely terminates
-/// TLS and there is no
-/// off-box wiretap), while a PUBLIC host must use `https://` (cleartext would leak the credential on
-/// the wire). This is NOT the SSRF decision — under the metadata-denylist model these hosts are
-/// ALLOWED as upstreams; this predicate only governs whether plaintext is acceptable for the hop.
-pub fn host_is_private_or_loopback(host: &str) -> bool {
-    use std::net::IpAddr;
-
-    let host_lc = host.to_ascii_lowercase();
-    // `localhost` and the `*.localhost` TLD (RFC 6761) resolve to loopback.
-    if host_lc == "localhost"
-        || host_lc
-            .rsplit_once('.')
-            .is_some_and(|(_, tld)| tld == "localhost")
-    {
-        return true;
-    }
-    // Obfuscated IPv4 encodings that resolve to an internal address (decimal int, hex, octal, short
-    // dotted) — treat as private so they at least don't get the public-host plaintext rejection on a
-    // technicality. (They are an unusual way to spell a local model, but a connecting stack maps them
-    // to an IPv4 target all the same.)
-    if is_alternate_ipv4_encoding(host) {
-        return true;
-    }
-    match host.parse::<IpAddr>() {
-        Ok(IpAddr::V4(v4)) => {
-            v4.is_loopback()        // 127.0.0.0/8
-                || v4.is_private()  // 10/8, 172.16/12, 192.168/16
-                || v4.is_link_local() // 169.254.0.0/16
-                || v4.is_unspecified() // 0.0.0.0
-                || is_cgnat_shared_v4(&v4) // 100.64.0.0/10 (RFC 6598 CGNAT, Tailscale)
-        }
-        Ok(IpAddr::V6(v6)) => {
-            let embedded = embedded_ipv4(&v6);
-            v6.is_loopback()        // ::1
-                || v6.is_unspecified() // ::
-                || is_unique_local_v6(&v6) // fc00::/7
-                || is_link_local_v6(&v6)   // fe80::/10
-                || embedded.is_some_and(|m| {
-                    m.is_loopback()
-                        || m.is_private()
-                        || m.is_link_local()
-                        || m.is_unspecified()
-                        || is_cgnat_shared_v4(&m)
-                })
-        }
-        Err(_) => false,
-    }
-}
-
 /// An operator's allow or block list, canonicalized once instead of once per dial.
 ///
 /// The entries an operator writes are strings, and judging a host against them means trimming each
@@ -1243,100 +676,6 @@ impl HostSet {
             Err(_) => false,
         }
     }
-}
-
-/// Expand an alternate (non-dotted-quad) IPv4 encoding to its canonical [`std::net::Ipv4Addr`], the
-/// way glibc getaddrinfo (reqwest's default resolver) would. Returns `None` for a canonical
-/// dotted-quad (handled by `IpAddr::parse`), a DNS name, or an out-of-range value. Used by the SSRF
-/// guard to re-check an obfuscated literal (e.g. decimal `2852039166` → `169.254.169.254`) against
-/// the metadata denylist rather than blocking ALL obfuscated forms indiscriminately.
-///
-/// Handles: a whole-host `0x`/`0X` hex or bare decimal/octal integer (interpreted as a 32-bit
-/// address); and the inet_aton "parts" forms — 1, 2, 3, or 4 dotted components where the LAST part
-/// absorbs the remaining low bytes (`a` = 32-bit; `a.b` = a<<24 | b(24-bit); `a.b.c` = a<<24 |
-/// b<<16 | c(16-bit); `a.b.c.d` = the usual quad). Each component may itself be decimal, `0x` hex, or
-/// leading-zero octal.
-pub fn expand_alternate_ipv4(host: &str) -> Option<std::net::Ipv4Addr> {
-    if host.is_empty() {
-        return None;
-    }
-
-    // Parse a single inet_aton component: `0x..`/`0X..` hex, leading-zero octal, or decimal.
-    fn parse_component(p: &str) -> Option<u64> {
-        if p.is_empty() {
-            return None;
-        }
-        if let Some(hex) = p.strip_prefix("0x").or_else(|| p.strip_prefix("0X")) {
-            if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return None;
-            }
-            u64::from_str_radix(hex, 16).ok()
-        } else if p.len() > 1 && p.starts_with('0') {
-            // Leading-zero octal (e.g. `0177`). All digits must be 0-7.
-            if !p.bytes().all(|b| (b'0'..=b'7').contains(&b)) {
-                return None;
-            }
-            u64::from_str_radix(p, 8).ok()
-        } else {
-            if !p.bytes().all(|b| b.is_ascii_digit()) {
-                return None;
-            }
-            p.parse::<u64>().ok()
-        }
-    }
-
-    let parts: Vec<&str> = host.split('.').collect();
-    let vals: Vec<u64> = parts
-        .iter()
-        .map(|p| parse_component(p))
-        .collect::<Option<Vec<u64>>>()?;
-
-    // A canonical dotted-quad (4 parts, each a plain 0..=255 decimal with no hex/octal prefix) is
-    // left to `IpAddr::parse`. A component is "alternate" if it is out of u8 range OR uses a hex/octal
-    // prefix; the quad is canonical iff NO component is alternate.
-    let is_alternate_octet = |p: &&str, v: &u64| {
-        *v > 255
-            || p.starts_with("0x")
-            || p.starts_with("0X")
-            || (p.len() > 1 && p.starts_with('0'))
-    };
-    let is_canonical_quad = parts.len() == 4
-        && !parts
-            .iter()
-            .zip(&vals)
-            .any(|(p, v)| is_alternate_octet(p, v));
-    if is_canonical_quad {
-        return None;
-    }
-
-    let addr: u32 = match vals.as_slice() {
-        // `a` — the whole 32-bit address.
-        [a] => u32::try_from(*a).ok()?,
-        // `a.b` — a is the top octet, b the low 24 bits.
-        [a, b] => {
-            if *a > 0xff || *b > 0x00ff_ffff {
-                return None;
-            }
-            ((*a as u32) << 24) | (*b as u32)
-        }
-        // `a.b.c` — a, b top two octets, c the low 16 bits.
-        [a, b, c] => {
-            if *a > 0xff || *b > 0xff || *c > 0x0000_ffff {
-                return None;
-            }
-            ((*a as u32) << 24) | ((*b as u32) << 16) | (*c as u32)
-        }
-        // `a.b.c.d` — the usual quad (reached only for the alternate-encoding case, e.g. per-octet
-        // hex/octal, since a canonical quad returned above).
-        [a, b, c, d] => {
-            if *a > 0xff || *b > 0xff || *c > 0xff || *d > 0xff {
-                return None;
-            }
-            ((*a as u32) << 24) | ((*b as u32) << 16) | ((*c as u32) << 8) | (*d as u32)
-        }
-        _ => return None,
-    };
-    Some(std::net::Ipv4Addr::from(addr))
 }
 
 /// Return `Some(host)` if the given URL targets a CLOUD-METADATA endpoint that must be blocked, else

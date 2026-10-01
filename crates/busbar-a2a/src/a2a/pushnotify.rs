@@ -137,50 +137,36 @@ pub(crate) fn is_internal_addr(ip: &IpAddr) -> bool {
     busbar_kernel::net_guard::ip_is_internal(ip)
 }
 
-/// Split a URL into `(scheme, host)` without pulling in a URL parser.
+/// Split a URL into `(scheme, host)`, the host read by the one shared URL reader.
 ///
-/// Deliberately STRICT and small: it accepts `scheme://host[:port][/path…]` and refuses anything it
-/// cannot read confidently. A permissive parser here is a liability — the whole job is to agree with
-/// what the HTTP client will do, and the safe way to disagree is to REFUSE, not to guess.
+/// Deliberately STRICT: it accepts `scheme://host[:port][/path…]` and refuses anything it cannot
+/// read confidently. The authority is read by [`busbar_contract::net::parse_url`] (WHATWG rules
+/// for `https`), so it ends at `/`, `?`, `#` or `\` and the host is percent-decoded with its
+/// trailing root dot dropped — exactly what the HTTP client will dial. The copy this replaces ended
+/// the authority at `/`, `?` and `#` only, so `https://127.0.0.1\x/` read as a NAME that no range
+/// check could refuse while the client dialled loopback.
 fn split_url(url: &str) -> Result<(String, String), PushNotifyError> {
-    let (scheme, rest) = url
-        .split_once("://")
-        .ok_or_else(|| PushNotifyError::Malformed(url.to_string()))?;
+    let malformed = || PushNotifyError::Malformed(url.to_string());
+    let (scheme, _) = url.split_once("://").ok_or_else(malformed)?;
     if scheme.is_empty()
         || !scheme
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'+')
     {
-        return Err(PushNotifyError::Malformed(url.to_string()));
+        return Err(malformed());
     }
-    let authority = rest
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default()
-        .to_string();
+    let parts = busbar_contract::net::parse_url(url).map_err(|refusal| match refusal {
+        busbar_contract::net::UrlRefusal::NoHost => PushNotifyError::NoHost,
+        _ => malformed(),
+    })?;
     // USERINFO IS REFUSED, not stripped. `https://metadata.internal@example.com/` is read one way by
     // a human skimming a config and another way by a parser, and that ambiguity is the entire point
     // of the trick. Refusing costs a legitimate operator nothing: a webhook does not carry
     // credentials in its authority.
-    if authority.contains('@') {
-        return Err(PushNotifyError::Malformed(url.to_string()));
+    if parts.userinfo {
+        return Err(malformed());
     }
-    let host = if let Some(bracketed) = authority.strip_prefix('[') {
-        // Bracketed IPv6 literal.
-        match bracketed.split_once(']') {
-            Some((h, _port)) => h.to_string(),
-            None => return Err(PushNotifyError::Malformed(url.to_string())),
-        }
-    } else {
-        authority
-            .rsplit_once(':')
-            .map(|(h, _)| h.to_string())
-            .unwrap_or(authority)
-    };
-    if host.is_empty() {
-        return Err(PushNotifyError::NoHost);
-    }
-    Ok((scheme.to_ascii_lowercase(), host.to_ascii_lowercase()))
+    Ok((parts.scheme, parts.host.to_ascii_lowercase()))
 }
 
 /// THE HOST a callback URL names, read by the SAME strict parser [`validate`] uses.

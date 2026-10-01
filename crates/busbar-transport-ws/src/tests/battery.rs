@@ -1054,6 +1054,25 @@ fn a_bracketed_ipv6_authority_parses_with_and_without_a_port() {
     );
 }
 
+/// The authority ends at `?`, `#` or `\` as well as `/`, where the handshake's own parser ends it.
+/// RED on the `/`-only split, which read `ws://host?x=1` as the host `host?x=1`.
+#[test]
+fn a_ws_authority_ends_at_a_query_a_fragment_or_a_backslash() {
+    assert_eq!(
+        crate::transport::split_ws_url("ws://host?x=1").unwrap(),
+        (false, "host".to_string(), 80, "/?x=1".to_string())
+    );
+    assert_eq!(
+        crate::transport::split_ws_url("wss://127.0.0.1\\x/").unwrap(),
+        (true, "127.0.0.1".to_string(), 443, "/x/".to_string())
+    );
+    assert_eq!(
+        crate::transport::split_ws_url("wss://host:9443#f").unwrap(),
+        (true, "host".to_string(), 9443, "/#f".to_string())
+    );
+    assert!(crate::transport::split_ws_url("wss://u@host/").is_err());
+}
+
 /// A courtesy Close frame must not be able to outlive the process. `close` hands the send to a
 /// detached task and keeps no handle to cancel it, so a peer whose receive window is full would
 /// pin the writer lock — and the socket — forever. The budget is what makes the task terminate.
