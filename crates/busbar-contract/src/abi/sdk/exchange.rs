@@ -18,7 +18,9 @@ use crate::abi::host::conn::connector::{
     ReplyPiece, RequestPiece, REPLY_ACK, REPLY_BODY, REPLY_END, REPLY_HEAD, REQUEST_BODY,
     REQUEST_END, REQUEST_HEAD,
 };
-use crate::abi::sdk::conn::{Answer, ConnFailure, Connector};
+use crate::abi::mechanism::ticket::Ticket;
+use crate::abi::sdk::conn::{Answer, ConnFailure, Connector, Host};
+use crate::abi::sdk::safe::Instance;
 use crate::abi::transport::{fields, FrameSpan};
 
 /// How much one read of a reply asks for.
@@ -341,6 +343,87 @@ pub fn send_and_ack(
         code: state.code,
         reason: state.reply.reason.take().unwrap_or_default(),
     }))
+}
+
+/// What an op parks its exchange on: its instance, whatever the instance state's type.
+trait Parks {
+    fn ticket(&self) -> Ticket;
+    fn park(&self, exchange: Exchange);
+    fn resume(&self) -> Option<Box<Exchange>>;
+}
+
+impl<T: Send + Sync + 'static> Parks for Instance<'_, T> {
+    fn ticket(&self) -> Ticket {
+        Instance::ticket(self)
+    }
+    fn park(&self, exchange: Exchange) {
+        Instance::park(self, exchange);
+    }
+    fn resume(&self) -> Option<Box<Exchange>> {
+        Instance::resume(self)
+    }
+}
+
+/// ONE OP'S EXCHANGE ON ITS TICKET (THE DESIGN, the plugin ABI: every call is Ready or
+/// Pending(wake); the replay rule of `abi::sdk::conn`), for a kind SDK whose author answers
+/// [`Poll`]: [`Op::exchange`] resumes the exchange the op's last PENDING entry parked, or starts
+/// the one its `request` builds, and parks it again while it pends. The op then answers PENDING
+/// and is re-entered from the top when its wake fires. One exchange per op.
+pub struct Op<'a> {
+    on: &'a dyn Parks,
+    host: Option<&'a Host>,
+}
+
+impl std::fmt::Debug for Op<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Op")
+            .field("ticket", &self.on.ticket())
+            .field("armed", &self.host.is_some())
+            .finish()
+    }
+}
+
+impl<'a> Op<'a> {
+    /// The op `instance` runs, over the host tables `open` handed it (`None`: every exchange
+    /// answers [`ConnFailure::Unarmed`]).
+    #[must_use]
+    pub fn new<'b: 'a, T: Send + Sync + 'static>(
+        instance: &'a Instance<'b, T>,
+        host: Option<&'a Host>,
+    ) -> Self {
+        Self { on: instance, host }
+    }
+
+    /// [`exchange`] over the declared framed need `need` to `target`: `request` is built only on
+    /// the op's first entry (its refusal answers at once, nothing sent). PENDING until it
+    /// completes.
+    pub fn exchange(
+        &self,
+        need: u32,
+        target: Option<&str>,
+        request: impl FnOnce() -> Result<Request, ConnFailure>,
+    ) -> Answer<ExchangeResponse> {
+        let Some(host) = self.host else {
+            return Poll::Ready(Err(ConnFailure::Unarmed));
+        };
+        let mut state = match self.on.resume() {
+            Some(parked) => *parked,
+            None => match request().and_then(Exchange::request) {
+                Ok(s) => s,
+                Err(e) => return Poll::Ready(Err(e)),
+            },
+        };
+        let answer = exchange(
+            &mut host.connector(self.on.ticket()),
+            &mut state,
+            need,
+            target,
+        );
+        if answer.is_pending() {
+            self.on.park(state);
+        }
+        answer
+    }
 }
 
 #[cfg(test)]

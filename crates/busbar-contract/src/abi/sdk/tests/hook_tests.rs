@@ -9,9 +9,19 @@ use super::*;
 use crate::abi::hook::slot;
 use crate::abi::hook::validate::{check_decide, check_transform};
 use crate::abi::host::hook::{DecideFrame, DecideView, NotifyFrame};
-use crate::abi::mechanism::lifecycle::slot::{CLOSE, OPEN, VALIDATE};
+use std::ffi::c_void;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use crate::abi::host::conn::connector::{service, ConnectorSlots, SERVICES};
+use crate::abi::host::service::{ServiceHead, ServiceOut};
+use crate::abi::mechanism::call::{Blob, RawOutcome, FLAG_RESUME};
+use crate::abi::mechanism::lifecycle::slot::{CANCEL, CLOSE, OPEN, VALIDATE};
+use crate::abi::mechanism::lifecycle::{CancelIn, CancelOut, OpenIn, OpenOut, ValidateIn};
+use crate::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
+use crate::abi::sdk::conn::ConnFailure;
 use crate::abi::sdk::door::Entry;
-use crate::abi::sdk::Safe;
+use crate::abi::sdk::exchange::Request;
+use crate::abi::sdk::{life, Safe};
 use crate::hooks::BudgetBucketState as K;
 use crate::signal::Signal;
 use serde_json::json;
@@ -430,14 +440,17 @@ fn a_buffer_too_small_is_the_one_short_answer_with_nothing_written() {
 struct Reverse(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
 
 impl Hook for Reverse {
-    fn decide(&self, view: &Decoded<'_>) -> Verdict {
-        Verdict::Prefer(view.candidates.iter().rev().map(|c| c.idx).collect())
+    fn decide(&self, view: &Decoded<'_>, _: &Op<'_>) -> Poll<Verdict> {
+        Poll::Ready(Verdict::Prefer(
+            view.candidates.iter().rev().map(|c| c.idx).collect(),
+        ))
     }
-    fn notify(&self, tap: &DecodedTap<'_>) {
+    fn notify(&self, tap: &DecodedTap<'_>, _: &Op<'_>) -> Poll<()> {
         self.0
             .lock()
             .unwrap()
             .push(tap.projection_json().to_string());
+        Poll::Ready(())
     }
 }
 
@@ -453,19 +466,30 @@ impl HookOpen for OpenReverse {
     }
 }
 
-fn opened() -> *mut std::ffi::c_void {
-    let input: OpenIn = zeroed();
+/// An instance of `P`'s hook, opened through the generic lifecycle over `input`.
+fn opened_with<P: HookOpen>(input: &OpenIn) -> *mut std::ffi::c_void {
     let mut out: OpenOut = zeroed();
     assert_eq!(
-        call::<Open<OpenReverse>>(std::ptr::null_mut(), OPEN, &input, &mut out),
+        call::<life::Open<HookLife<P>>>(std::ptr::null_mut(), OPEN, input, &mut out),
         Outcome::Ready
     );
     out.instance
 }
 
-fn closed(p: *mut std::ffi::c_void) {
+fn opened() -> *mut std::ffi::c_void {
+    opened_with::<OpenReverse>(&zeroed())
+}
+
+fn closed<P: HookOpen>(p: *mut std::ffi::c_void) {
     let mut out: OutHead = zeroed();
-    let _ = call::<Close>(p, CLOSE, &zeroed(), &mut out);
+    let _ = call::<life::Close<HookLife<P>>>(p, CLOSE, &zeroed(), &mut out);
+}
+
+/// The text a FAILED answer's head names, while its instance keeps it.
+fn error_text(head: &OutHead) -> String {
+    // SAFETY: the answering instance (or a `'static` text) holds it for the scope.
+    let bytes = unsafe { std::slice::from_raw_parts(head.error.ptr, head.error.len) };
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 /// A typed [`Hook`] reads the host's view as owned values through the slot, and answers into the
@@ -476,13 +500,13 @@ fn the_decide_slot_hands_a_typed_hook_the_decoded_view() {
     let frame = frame_with(caps(4, 64));
     let mut out: DecideOut = zeroed();
     assert_eq!(
-        call::<Decide>(p, slot::DECIDE, &frame.input(), &mut out),
+        call::<Decide<OpenReverse>>(p, slot::DECIDE, &frame.input(), &mut out),
         Outcome::Ready
     );
     let mut want: Vec<usize> = frame.view().candidate_idx().to_vec();
     want.reverse();
     assert_eq!(frame.order(out.order_written), want);
-    closed(p);
+    closed::<OpenReverse>(p);
 }
 
 /// RED: a host view whose prompt lists do not hold (a present prompt claiming messages behind a
@@ -498,12 +522,12 @@ fn red_a_broken_host_view_is_a_fault_not_a_read() {
     bad.prompt.message_count = 3;
     let mut d: DecideOut = zeroed();
     assert_eq!(
-        call::<Decide>(p, slot::DECIDE, &bad, &mut d),
+        call::<Decide<OpenReverse>>(p, slot::DECIDE, &bad, &mut d),
         Outcome::Fault
     );
     let mut t: TransformOut = zeroed();
     assert_eq!(
-        call::<Transform>(p, slot::TRANSFORM, &bad, &mut t),
+        call::<Transform<OpenReverse>>(p, slot::TRANSFORM, &bad, &mut t),
         Outcome::Fault
     );
 
@@ -513,24 +537,24 @@ fn red_a_broken_host_view_is_a_fault_not_a_read() {
     bad_tap.signals_len = 2;
     let mut o: OutHead = zeroed();
     assert_eq!(
-        call::<Notify>(p, slot::NOTIFY, &bad_tap, &mut o),
+        call::<Notify<OpenReverse>>(p, slot::NOTIFY, &bad_tap, &mut o),
         Outcome::Fault
     );
     // The well-formed tap reaches the hook, as its 1.5.5 JSON.
     let before = SEEN.get().unwrap().lock().unwrap().len();
     assert_eq!(
-        call::<Notify>(p, slot::NOTIFY, &tap.input(), &mut o),
+        call::<Notify<OpenReverse>>(p, slot::NOTIFY, &tap.input(), &mut o),
         Outcome::Ready
     );
     let seen = SEEN.get().unwrap().lock().unwrap();
     assert_eq!(seen.len(), before + 1);
     assert!(seen[before].contains("\"op\":\"notify\""));
     drop(seen);
-    closed(p);
+    closed::<OpenReverse>(p);
 }
 
 /// An instance-less failure (`validate` over settings that are not an object) answers FAILED with
-/// its text readable by the host after the crossing returned, and nothing leaked to hold it.
+/// its text readable by the host after the crossing returned.
 #[test]
 fn a_validate_failure_states_its_text() {
     let raw = b"[1]";
@@ -543,12 +567,15 @@ fn a_validate_failure_states_its_text() {
     };
     let mut out: OutHead = zeroed();
     assert_eq!(
-        call::<Validate<OpenReverse>>(std::ptr::null_mut(), VALIDATE, &input, &mut out),
+        call::<life::Validate<HookLife<OpenReverse>>>(
+            std::ptr::null_mut(),
+            VALIDATE,
+            &input,
+            &mut out
+        ),
         Outcome::Failed
     );
-    // SAFETY: the text is held for this thread until its next instance-less error.
-    let text = unsafe { std::slice::from_raw_parts(out.error.ptr, out.error.len) };
-    assert_eq!(text, b"settings: must be a JSON object");
+    assert_eq!(error_text(&out), "settings: must be a JSON object");
 }
 
 /// RED (ARCHITECT ruling 2026-09-29, the hooks law: memory ABI, body zero-copy): a typed hook's
@@ -562,7 +589,7 @@ fn red_the_prompt_body_a_hook_sees_is_the_hosts_own_bytes() {
     }
     struct Peek;
     impl Hook for Peek {
-        fn decide(&self, view: &Decoded<'_>) -> Verdict {
+        fn decide(&self, view: &Decoded<'_>, _: &Op<'_>) -> Poll<Verdict> {
             let p = view.prompt.as_ref().expect("granted");
             let body = p.body.expect("a body");
             let text = match &p.messages[0].1 {
@@ -570,7 +597,7 @@ fn red_the_prompt_body_a_hook_sees_is_the_hosts_own_bytes() {
                 Cow::Owned(_) => 0,
             };
             SAW.with(|s| s.set((body.as_ptr() as usize, body.len(), text)));
-            Verdict::Abstain
+            Poll::Ready(Verdict::Abstain)
         }
     }
     struct OpenPeek;
@@ -599,14 +626,10 @@ fn red_the_prompt_body_a_hook_sees_is_the_hosts_own_bytes() {
         flags: 0,
     };
     let host_text = input.prompt.messages;
-    let mut open_out: OpenOut = zeroed();
-    assert_eq!(
-        call::<Open<OpenPeek>>(std::ptr::null_mut(), OPEN, &zeroed(), &mut open_out),
-        Outcome::Ready
-    );
+    let p = opened_with::<OpenPeek>(&zeroed());
     let mut out: DecideOut = zeroed();
     assert_eq!(
-        call::<Decide>(open_out.instance, slot::DECIDE, &input, &mut out),
+        call::<Decide<OpenPeek>>(p, slot::DECIDE, &input, &mut out),
         Outcome::Ready
     );
     let (ptr, len, text) = SAW.with(std::cell::Cell::get);
@@ -615,34 +638,171 @@ fn red_the_prompt_body_a_hook_sees_is_the_hosts_own_bytes() {
     // SAFETY: the frame's message list, alive for the scope.
     let host_text_ptr = unsafe { (*host_text).text.ptr } as usize;
     assert_eq!(text, host_text_ptr, "the message text was copied");
-    closed(open_out.instance);
+    closed::<OpenPeek>(p);
 }
 
-/// A failure's text is held by the instance in a bounded ring: each text stays readable while the
-/// ring holds it, and the ring never grows past its bound.
-#[test]
-fn the_error_ring_is_bounded_and_keeps_each_text_readable() {
-    let state = HookState {
-        hook: RwLock::new(Arc::from(OpenReverse::open("{}").expect("opens"))),
-        leases: Mutex::new(HashMap::new()),
-        next_lease: AtomicU64::new(0),
-        texts: Mutex::new(VecDeque::new()),
+// ── pending on the far end (THE DESIGN, the plugin ABI: Ready|Pending(wake)) ─────────────────────
+
+/// How often the scripted connector's ESTABLISH was entered.
+static ESTABLISHED: AtomicU32 = AtomicU32::new(0);
+/// What the scripted far end answers once the established stream completes.
+const DOWN: &str = "the far end is down";
+
+/// A scripted connector ESTABLISH: every even entry pends (the host finishes it off the op); the
+/// re-issue of the same handle answers the stored result, FAILED with [`DOWN`].
+extern "C" fn establish_pends(
+    _: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    // SAFETY: every service `in` leads with a `ServiceHead`; `out` is the SDK's, live for the call.
+    let (head, out) = unsafe { (*input.cast::<ServiceHead>(), &mut *out) };
+    assert_eq!((head.op, head.handle.seq), (service::ESTABLISH, 0));
+    let o = if ESTABLISHED.fetch_add(1, Ordering::SeqCst) % 2 == 0 {
+        Outcome::Pending
+    } else {
+        out.error = AbiStr {
+            ptr: DOWN.as_ptr(),
+            len: DOWN.len(),
+        };
+        Outcome::Failed
     };
-    let mut a: OutHead = zeroed();
-    assert_eq!(state.fail(&mut a, "first".into()), Outcome::Failed);
-    let mut b: OutHead = zeroed();
-    assert_eq!(state.fail(&mut b, "second failure".into()), Outcome::Failed);
-    // SAFETY: both texts are held by the ring, which has not wrapped.
-    let (first, second) = unsafe {
-        (
-            std::slice::from_raw_parts(a.error.ptr, a.error.len),
-            std::slice::from_raw_parts(b.error.ptr, b.error.len),
-        )
-    };
-    assert_eq!(first, b"first");
-    assert_eq!(second, b"second failure");
-    for _ in 0..ERROR_RING + 10 {
-        state.fail(&mut b, "again".into());
+    out.outcome = RawOutcome::of(o);
+    RawOutcome::of(o)
+}
+
+static PENDING_SLOTS: ConnectorSlots = ConnectorSlots {
+    size: std::mem::size_of::<ConnectorSlots>() as u32,
+    slots: SERVICES,
+    establish: Some(establish_pends),
+    reject_endpoint: None,
+    side_stream: None,
+    read: None,
+    write: None,
+    upgrade_secure: None,
+    facts: None,
+    checkout: None,
+    checkin: None,
+    close: None,
+    random: None,
+    identity: None,
+    read_reply: None,
+    write_request: None,
+};
+
+/// A hook that asks the far end on every `decide`: its one exchange's answer is its verdict.
+struct Forward;
+impl Hook for Forward {
+    fn decide(&self, _: &Decoded<'_>, op: &Op<'_>) -> Poll<Verdict> {
+        op.exchange(0, Some("http://far.example"), || {
+            Ok(Request {
+                method: b"POST".to_vec(),
+                target: b"/".to_vec(),
+                ..Request::default()
+            })
+        })
+        .map(|r| match r {
+            Ok(reply) => Verdict::Prefer(vec![usize::from(reply.status)]),
+            Err(e) => Verdict::Failed(e.to_string()),
+        })
     }
-    assert_eq!(state.texts.lock().unwrap().len(), ERROR_RING);
+}
+struct OpenForward;
+impl HookOpen for OpenForward {
+    fn open(_: &str) -> Result<Box<dyn Hook>, String> {
+        Ok(Box::new(Forward))
+    }
+}
+
+const TICKET: Ticket = Ticket {
+    slot: 5,
+    generation: 1,
+};
+
+/// RED (ARCHITECT ruling 2026-10-02, the ORPHANS seam): a hook waiting on its exchange answers
+/// PENDING, writing nothing; the host's RESUME re-enters it and the exchange resumes on its
+/// parked state (the same handle re-issued, the stored result read); a fresh entry on the ticket
+/// starts over, and a ticket-less call cannot pend at all.
+#[test]
+fn red_a_hook_waiting_on_its_exchange_pends_and_resumes_on_the_wake() {
+    let tables = HostTables {
+        size: std::mem::size_of::<HostTables>() as u32,
+        _reserved: 0,
+        ctx: HostCtx {
+            ptr: std::ptr::null_mut(),
+        },
+        wake: None,
+        conns: &PENDING_SLOTS,
+        services: std::ptr::null(),
+    };
+    let mut open: OpenIn = zeroed();
+    open.host = &tables;
+    let p = opened_with::<OpenForward>(&open);
+    let frame = frame_with(caps(4, 64));
+    let mut input = frame.input();
+    input.head.ticket = TICKET;
+
+    let mut out: DecideOut = zeroed();
+    assert_eq!(
+        call::<Decide<OpenForward>>(p, slot::DECIDE, &input, &mut out),
+        Outcome::Pending
+    );
+    assert_eq!(
+        (out.verbs, out.order_written),
+        (0, 0),
+        "PENDING writes nothing"
+    );
+    assert_eq!(ESTABLISHED.load(Ordering::SeqCst), 1);
+
+    input.head.flags = FLAG_RESUME;
+    let mut out: DecideOut = zeroed();
+    assert_eq!(
+        call::<Decide<OpenForward>>(p, slot::DECIDE, &input, &mut out),
+        Outcome::Failed
+    );
+    assert_eq!(error_text(&out.head), DOWN);
+    assert_eq!(ESTABLISHED.load(Ordering::SeqCst), 2);
+
+    // A ticket-less `decide` is answered at once: its exchange cannot pend.
+    let mut none = frame.input();
+    none.head.ticket = Ticket::NONE;
+    let mut out: DecideOut = zeroed();
+    assert_eq!(
+        call::<Decide<OpenForward>>(p, slot::DECIDE, &none, &mut out),
+        Outcome::Failed
+    );
+    assert_eq!(error_text(&out.head), ConnFailure::NoTicket.to_string());
+
+    // A fresh entry pends again, and a cancel of it aborts the op.
+    input.head.flags = 0;
+    let mut out: DecideOut = zeroed();
+    assert_eq!(
+        call::<Decide<OpenForward>>(p, slot::DECIDE, &input, &mut out),
+        Outcome::Pending
+    );
+    let mut c: CancelIn = zeroed();
+    c.ticket = TICKET;
+    let mut co: CancelOut = zeroed();
+    assert_eq!(
+        call::<life::Cancel<HookLife<OpenForward>>>(p, CANCEL, &c, &mut co),
+        Outcome::Ready
+    );
+    assert_eq!(co.disposition, cancel::ABORTED);
+    closed::<OpenForward>(p);
+}
+
+/// A hook handed no connector answers its exchange unarmed, at once.
+#[test]
+fn a_hook_with_no_connector_answers_unarmed() {
+    let p = opened_with::<OpenForward>(&zeroed());
+    let frame = frame_with(caps(4, 64));
+    let mut input = frame.input();
+    input.head.ticket = TICKET;
+    let mut out: DecideOut = zeroed();
+    assert_eq!(
+        call::<Decide<OpenForward>>(p, slot::DECIDE, &input, &mut out),
+        Outcome::Failed
+    );
+    assert_eq!(error_text(&out.head), ConnFailure::Unarmed.to_string());
+    closed::<OpenForward>(p);
 }

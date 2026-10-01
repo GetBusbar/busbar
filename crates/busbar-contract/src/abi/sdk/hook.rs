@@ -18,17 +18,20 @@
 //!   parse is FAILED). The host keeps the rest of 1.5.5's normalizing: the status clamp, the
 //!   message sanitiser and cap, dropping an `idx` the candidates do not hold, the rewrite parse.
 //!
-//! Built ON the SDK's safe layer (SDK-SAFE, ARCHITECT ruling 366): every slot is a
-//! [`SafeSlot`] over [`Instance<HookState>`], every read goes through [`Lent`], every host buffer is
-//! a [`HostBuf`](crate::abi::sdk::HostBuf). This module adds only the hook kind's own pieces.
+//! Built ON the SDK's safe layer (SDK-SAFE, ARCHITECT ruling 366) and its generic lifecycle
+//! (`abi::sdk::life`): every op is a [`SafeSlot`] over `Held<HookLife<P>>`, every read goes through
+//! [`Lent`], every host buffer is a [`HostBuf`](crate::abi::sdk::HostBuf). This module adds only
+//! the hook kind's own pieces.
 //!
-//! No slot ever answers PENDING, so every answer is complete when the crossing returns.
+//! A hook that waits on the far end answers [`Poll::Pending`] from `decide`, `transform` or
+//! `notify` while its one exchange ([`Op::exchange`]) pends: the op answers PENDING and the host
+//! re-enters it on the wake, exactly as every other kind's ops (THE DESIGN, the plugin ABI: every
+//! call is Ready or Pending(wake)).
 
 use std::borrow::Cow;
-use std::collections::{HashMap, VecDeque};
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, PoisonError, RwLock};
+use std::task::Poll;
 
 use crate::abi::hook::validate::{check_notify_in, check_prompt_view};
 use crate::abi::hook::{
@@ -43,15 +46,11 @@ use crate::abi::hook::{
     VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE,
     VIEW_HAS_BUDGET_REMAINING, VIEW_HAS_PROMPT, VIEW_HAS_USER,
 };
-use crate::abi::mechanism::call::{
-    AbiStr, Blob, InHead, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON, MAX_TEXT,
-};
+use crate::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON};
 use crate::abi::mechanism::door::{KindTailHead, Statement};
-use crate::abi::mechanism::lifecycle::{
-    CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn, TickOut,
-    ValidateIn,
-};
-use crate::abi::sdk::{HookHandler, Instance, Lent, LentList, SafeSlot};
+use crate::abi::sdk::exchange::Op;
+use crate::abi::sdk::life::{Held, Life, Refreshed, Refusal};
+use crate::abi::sdk::{HookHandler, Instance, Lent, LentList, Out, SafeSlot};
 use crate::hook_wire::{HookStageProjection, OP_DECIDE, OP_NOTIFY, OP_TRANSFORM};
 use crate::hooks::{
     BudgetBucketState, CallerIdentity, Candidate, PromptProjection, RoutingContext, RoutingRequest,
@@ -713,20 +712,25 @@ pub fn lower_transform_reply(reply: Result<serde_json::Value, String>) -> Rewrit
 /// prompt body zero-copy), so a plugin never touches a host pointer and stays
 /// `forbid(unsafe_code)`.
 /// Every op has a default: the safe "no opinion" / "unsupported" answer.
+///
+/// `decide`, `transform` and `notify` are handed their [`Op`]: a hook that asks the far end makes
+/// its one [`Op::exchange`] and answers [`Poll::Pending`] while it pends; the host re-enters the op
+/// on the wake and the method runs again from the top (the exchange resumes where it parked).
 pub trait Hook: Send + Sync {
     /// `decide`. Default: abstain.
-    fn decide(&self, view: &Decoded<'_>) -> Verdict {
-        let _ = view;
-        Verdict::Abstain
+    fn decide(&self, view: &Decoded<'_>, op: &Op<'_>) -> Poll<Verdict> {
+        let _ = (view, op);
+        Poll::Ready(Verdict::Abstain)
     }
     /// `transform`. Default: abstain.
-    fn transform(&self, view: &Decoded<'_>) -> RewriteVerdict {
-        let _ = view;
-        RewriteVerdict::Abstain
+    fn transform(&self, view: &Decoded<'_>, op: &Op<'_>) -> Poll<RewriteVerdict> {
+        let _ = (view, op);
+        Poll::Ready(RewriteVerdict::Abstain)
     }
     /// `notify`. Default: nothing.
-    fn notify(&self, tap: &DecodedTap<'_>) {
-        let _ = tap;
+    fn notify(&self, tap: &DecodedTap<'_>, op: &Op<'_>) -> Poll<()> {
+        let _ = (tap, op);
+        Poll::Ready(())
     }
     /// `configure`: `true` acknowledges the version. Default: acknowledge.
     fn configure(
@@ -752,14 +756,19 @@ pub trait Hook: Send + Sync {
 pub struct JsonHook(pub Box<dyn HookHandler>);
 
 impl Hook for JsonHook {
-    fn decide(&self, view: &Decoded<'_>) -> Verdict {
-        lower_decide_reply(self.0.decide_result(&view.projection_json(OP_DECIDE)))
+    fn decide(&self, view: &Decoded<'_>, _: &Op<'_>) -> Poll<Verdict> {
+        Poll::Ready(lower_decide_reply(
+            self.0.decide_result(&view.projection_json(OP_DECIDE)),
+        ))
     }
-    fn transform(&self, view: &Decoded<'_>) -> RewriteVerdict {
-        lower_transform_reply(self.0.transform_result(&view.projection_json(OP_TRANSFORM)))
+    fn transform(&self, view: &Decoded<'_>, _: &Op<'_>) -> Poll<RewriteVerdict> {
+        Poll::Ready(lower_transform_reply(
+            self.0.transform_result(&view.projection_json(OP_TRANSFORM)),
+        ))
     }
-    fn notify(&self, tap: &DecodedTap<'_>) {
+    fn notify(&self, tap: &DecodedTap<'_>, _: &Op<'_>) -> Poll<()> {
         self.0.notify(&tap.projection_json());
+        Poll::Ready(())
     }
     fn configure(
         &self,
@@ -833,203 +842,90 @@ pub const fn statement_with_tail(base: Statement, tail: &'static Tail) -> Statem
 
 // ── the slots ────────────────────────────────────────────────────────────────────────────────────
 //
-// Every slot is a [`SafeSlot`] (SDK-SAFE): the instance is the SDK's [`Instance<HookState>`], boxed
-// at `open` and dropped at `close` by the safe layer; the `in` is [`Lent`]. What is left here is the
-// hook kind's own: the typed hook behind a lock, the status/describe blobs held under a lease, and
-// the instance's error texts (a bounded ring, as the store door keeps its own).
+// The lifecycle is the SDK's generic one (`abi::sdk::life`): the instance is `Held<HookLife<P>>`,
+// whose leases hold the status/describe blobs and whose `Out::fail` keeps each failure text. What
+// is left here is the hook kind's own: the typed hook behind a lock, and its ops, each a
+// [`SafeSlot`] over that state.
 
-/// One open hook instance's state.
-pub struct HookState {
+/// One open hook instance: the hook its settings opened, swapped whole on `refresh`.
+pub struct HookLife<P> {
     hook: RwLock<Arc<dyn Hook>>,
-    leases: Mutex<HashMap<u64, Vec<u8>>>,
-    next_lease: AtomicU64,
-    /// The last [`ERROR_RING`] failure texts, oldest dropped first; the host copies one as the
-    /// crossing returns.
-    texts: Mutex<VecDeque<Box<str>>>,
+    open: PhantomData<fn() -> P>,
 }
 
-/// How many failure texts an instance keeps alive at once.
-const ERROR_RING: usize = 4096;
-
-impl std::fmt::Debug for HookState {
+impl<P> std::fmt::Debug for HookLife<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HookState").finish_non_exhaustive()
+        f.debug_struct("HookLife").finish_non_exhaustive()
     }
 }
 
-impl HookState {
+impl<P> HookLife<P> {
     fn hook(&self) -> Arc<dyn Hook> {
-        self.hook.read().unwrap_or_else(|e| e.into_inner()).clone()
-    }
-
-    /// Hold `bytes` under a fresh lease until `release`; the blob naming them.
-    fn lease(&self, head: &mut OutHead, bytes: Vec<u8>) -> Blob {
-        if bytes.is_empty() {
-            return NO_BLOB;
-        }
-        let id = self.next_lease.fetch_add(1, Ordering::Relaxed) + 1;
-        let blob = Blob {
-            ptr: bytes.as_ptr(),
-            len: bytes.len(),
-            fmt: BLOB_JSON,
-            flags: 0,
-        };
-        self.leases
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id, bytes);
-        head.lease = id;
-        blob
-    }
-
-    /// Point `head.error` at `text`, kept in the ring until [`ERROR_RING`] later failures have
-    /// pushed it out: the host copies it as the crossing returns.
-    fn fail(&self, head: &mut OutHead, text: String) -> Outcome {
-        let mut end = text.len().min(MAX_TEXT);
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        let kept: Box<str> = text[..end].into();
-        head.error = AbiStr {
-            ptr: kept.as_ptr(),
-            len: kept.len(),
-        };
-        let mut ring = self.texts.lock().unwrap_or_else(|e| e.into_inner());
-        if ring.len() == ERROR_RING {
-            ring.pop_front();
-        }
-        ring.push_back(kept);
-        Outcome::Failed
+        self.hook
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 
-const NO_BLOB: Blob = Blob {
-    ptr: std::ptr::null(),
-    len: 0,
-    fmt: BLOB_ABSENT,
-    flags: 0,
-};
-
-/// The settings blob as text; `"{}"` when absent.
-fn settings_text(b: Lent<'_, Blob>) -> String {
-    let bytes = b.bytes();
+/// The settings as text; `"{}"` when absent.
+fn settings_text(bytes: &[u8]) -> Cow<'_, str> {
     if bytes.is_empty() {
-        return "{}".to_string();
+        return Cow::Borrowed("{}");
     }
-    String::from_utf8_lossy(bytes).into_owned()
+    String::from_utf8_lossy(bytes)
 }
 
-/// An instance-less `open` that failed: the reason stays with the plugin, as the store door's does.
-const OPEN_FAILED: &str = "hook: the settings cannot open an instance";
-
-/// Point `head.error` at a fixed text: an instance-less failure (`validate`, a failed `open`) has
-/// no instance to hold a dynamic one, so its reason is one of these, as the store door's is bare.
-fn fixed_error(head: &mut OutHead, text: &'static str) -> Outcome {
-    head.error = AbiStr {
-        ptr: text.as_ptr(),
-        len: text.len(),
-    };
-    Outcome::Failed
+/// [`HookOpen::open`] over `settings`; its refusal is the plugin's own words.
+fn opened<P: HookOpen>(settings: &[u8]) -> Result<Arc<dyn Hook>, Refusal> {
+    P::open(&settings_text(settings))
+        .map(Arc::<dyn Hook>::from)
+        .map_err(Refusal::failed)
 }
 
-/// A hook slot: `$in`/`$out`, over [`HookState`].
-macro_rules! hook_slot {
-    ($(#[$m:meta])* $name:ident $(<$p:ident: $b:path>)?, $in:ty, $out:ty,
-     |$i:ident, $input:ident, $o:ident| $body:expr) => {
+impl<P: HookOpen> Life for HookLife<P> {
+    /// A hook op pends only on its exchange; a cancel aborts it (the SDK drops what it parked).
+    const CANCEL: u32 = cancel::ABORTED;
+
+    fn open(settings: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+        Ok(Self {
+            hook: RwLock::new(opened::<P>(settings)?),
+            open: PhantomData,
+        })
+    }
+
+    /// Re-open the hook over the new settings; the old one serves until the swap.
+    fn refresh(&self, settings: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+        let hook = opened::<P>(settings)?;
+        *self.hook.write().unwrap_or_else(PoisonError::into_inner) = hook;
+        Ok(Refreshed::default())
+    }
+}
+
+/// A hook op: `$in`/`$out` over `Held<HookLife<P>>`, its body handed the held state.
+macro_rules! hook_op {
+    ($(#[$m:meta])* $name:ident, $in:ty, $out:ty,
+     |$held:ident, $i:ident, $input:ident, $o:ident| $body:expr) => {
         $(#[$m])*
         #[derive(Debug)]
-        pub struct $name$(<$p>(PhantomData<$p>))?;
-        impl$(<$p: $b>)? SafeSlot for $name$(<$p>)? {
+        pub struct $name<P>(PhantomData<P>);
+        impl<P: HookOpen> SafeSlot for $name<P> {
             type In = $in;
             type Out = $out;
-            type State = HookState;
-            fn call($i: Instance<'_, HookState>, $input: Lent<'_, $in>, $o: &mut $out) -> Outcome {
+            type State = Held<HookLife<P>>;
+            fn call(
+                $i: Instance<'_, Held<HookLife<P>>>,
+                $input: Lent<'_, $in>,
+                #[allow(unused_mut)] mut $o: Out<'_, $out>,
+            ) -> Outcome {
+                let Some($held) = $i.get() else {
+                    return Outcome::Fault;
+                };
                 $body
             }
         }
     };
 }
-
-hook_slot!(
-    /// `validate`: the settings are a JSON object.
-    Validate<P: HookOpen>, ValidateIn, OutHead, |_i, input, out| {
-        let _ = PhantomData::<P>;
-        match serde_json::from_str::<serde_json::Value>(&settings_text(input.field(|i| &i.settings))) {
-            Ok(serde_json::Value::Object(_)) => Outcome::Ready,
-            _ => fixed_error(out, "settings: must be a JSON object"),
-        }
-    }
-);
-
-hook_slot!(
-    /// `open`: [`HookOpen::open`] over the settings.
-    Open<P: HookOpen>, OpenIn, OpenOut, |i, input, out| {
-        match P::open(&settings_text(input.field(|i| &i.settings))) {
-            Ok(hook) => {
-                i.open(HookState {
-                    hook: RwLock::new(Arc::from(hook)),
-                    leases: Mutex::new(HashMap::new()),
-                    next_lease: AtomicU64::new(0),
-                    texts: Mutex::new(VecDeque::new()),
-                });
-                Outcome::Ready
-            }
-            Err(_) => fixed_error(&mut out.head, OPEN_FAILED),
-        }
-    }
-);
-
-hook_slot!(
-    /// `refresh`: re-open the hook over the new settings; the old one serves until the swap.
-    Refresh<P: HookOpen>, RefreshIn, OutHead, |i, input, out| {
-        let Some(st) = i.get() else {
-            return Outcome::Fault;
-        };
-        match P::open(&settings_text(input.field(|i| &i.settings))) {
-            Ok(hook) => {
-                *st.hook.write().unwrap_or_else(|e| e.into_inner()) = Arc::from(hook);
-                Outcome::Ready
-            }
-            Err(e) => st.fail(out, e),
-        }
-    }
-);
-
-hook_slot!(
-    /// `retire`: nothing held per generation.
-    Retire, GenIn, OutHead, |_i, _input, _out| Outcome::Ready
-);
-hook_slot!(
-    /// `tick`: no timers (`next_tick_ns` stays 0).
-    Tick, TickIn, TickOut, |_i, _input, _out| Outcome::Ready
-);
-hook_slot!(
-    /// `drive`: no driver work.
-    Drive, DriveIn, OutHead, |_i, _input, _out| Outcome::Ready
-);
-hook_slot!(
-    /// `cancel`: no op of this SDK ever pends, so there is nothing to abort.
-    Cancel, CancelIn, CancelOut, |_i, _input, out| {
-        out.disposition = cancel::RACED_TO_COMPLETION;
-        Outcome::Ready
-    }
-);
-hook_slot!(
-    /// `release`: drop the blob a lease held.
-    Release, ReleaseIn, OutHead, |i, input, _out| {
-        if let Some(st) = i.get() {
-            st.leases
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&input.lease);
-        }
-        Outcome::Ready
-    }
-);
-hook_slot!(
-    /// `close`: the safe layer drops the state when this answers READY.
-    Close, InHead, OutHead, |_i, _input, _out| Outcome::Ready
-);
 
 /// The host's `decide`/`transform` `in` breaks the kind's own reading of it: a present prompt view
 /// whose lists do not hold ([`check_prompt_view`]). A host bug: the SDK answers FAULT rather than
@@ -1038,108 +934,97 @@ fn decide_in_breaks_a_rule(input: &DecideIn) -> bool {
     input.present & VIEW_HAS_PROMPT != 0 && check_prompt_view(&input.prompt).is_err()
 }
 
-hook_slot!(
-    /// `decide`.
-    Decide, DecideIn, DecideOut, |i, input, out| {
-        let Some(st) = i.get() else {
-            return Outcome::Fault;
-        };
+hook_op!(
+    /// `decide`: PENDING while the hook waits on its exchange, re-entered on the wake.
+    Decide, DecideIn, DecideOut, |held, i, input, out| {
         if decide_in_breaks_a_rule(&input) {
             return Outcome::Fault;
         }
-        let v = st.hook().decide(&Decoded::of(input));
-        let outcome = write_verdict(&v, input, out);
-        match v {
-            Verdict::Failed(m) if outcome == Outcome::Failed => st.fail(&mut out.head, m),
-            _ => outcome,
+        let op = Op::new(&i, held.host());
+        let Poll::Ready(v) = held.life().hook().decide(&Decoded::of(input), &op) else {
+            return Outcome::Pending;
+        };
+        match (write_verdict(&v, input, out.raw()), v) {
+            (Outcome::Failed, Verdict::Failed(m)) => out.fail(Refusal::failed(m)),
+            (outcome, _) => outcome,
         }
     }
 );
 
-hook_slot!(
-    /// `transform`.
-    Transform, DecideIn, TransformOut, |i, input, out| {
-        let Some(st) = i.get() else {
-            return Outcome::Fault;
-        };
+hook_op!(
+    /// `transform`: PENDING while the hook waits on its exchange, re-entered on the wake.
+    Transform, DecideIn, TransformOut, |held, i, input, out| {
         if decide_in_breaks_a_rule(&input) {
             return Outcome::Fault;
         }
-        let v = st.hook().transform(&Decoded::of(input));
-        let outcome = write_rewrite(&v, input, out);
-        match v {
-            RewriteVerdict::Failed(m) if outcome == Outcome::Failed => {
-                st.fail(&mut out.head, m)
-            }
-            _ => outcome,
+        let op = Op::new(&i, held.host());
+        let Poll::Ready(v) = held.life().hook().transform(&Decoded::of(input), &op) else {
+            return Outcome::Pending;
+        };
+        match (write_rewrite(&v, input, out.raw()), v) {
+            (Outcome::Failed, RewriteVerdict::Failed(m)) => out.fail(Refusal::failed(m)),
+            (outcome, _) => outcome,
         }
     }
 );
 
-hook_slot!(
-    /// `notify`.
-    Notify, NotifyIn, OutHead, |i, input, _out| {
-        let Some(st) = i.get() else {
-            return Outcome::Fault;
-        };
+hook_op!(
+    /// `notify`: PENDING while the hook waits on its exchange, re-entered on the wake.
+    Notify, NotifyIn, OutHead, |held, i, input, _out| {
         if check_notify_in(&input).is_err() {
             return Outcome::Fault;
         }
-        st.hook().notify(&DecodedTap::of(input));
-        Outcome::Ready
-    }
-);
-
-hook_slot!(
-    /// `configure`: a nack is FAILED (READY must ack the pushed version).
-    Configure, ConfigureIn, ConfigureOut, |i, input, out| {
-        let Some(st) = i.get() else {
-            return Outcome::Fault;
-        };
-        let settings = match serde_json::from_str(&settings_text(input.field(|i| &i.settings))) {
-            Ok(serde_json::Value::Object(m)) => m,
-            _ => return st.fail(&mut out.head, "settings: must be a JSON object".into()),
-        };
-        if st.hook().configure(&settings, input.version) {
-            out.acked_version = input.version;
-            Outcome::Ready
-        } else {
-            st.fail(
-                &mut out.head,
-                format!("hook did not acknowledge settings_version {}", input.version),
-            )
+        let op = Op::new(&i, held.host());
+        match held.life().hook().notify(&DecodedTap::of(input), &op) {
+            Poll::Ready(()) => Outcome::Ready,
+            Poll::Pending => Outcome::Pending,
         }
     }
 );
 
-hook_slot!(
+hook_op!(
+    /// `configure`: a nack is FAILED (READY must ack the pushed version).
+    Configure, ConfigureIn, ConfigureOut, |held, _i, input, out| {
+        let text = settings_text(input.field(|i| &i.settings).bytes());
+        let Ok(serde_json::Value::Object(settings)) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return out.fail(Refusal::failed("settings: must be a JSON object"));
+        };
+        if held.life().hook().configure(&settings, input.version) {
+            out.set(|o| &o.acked_version, input.version);
+            Outcome::Ready
+        } else {
+            out.fail(Refusal::failed(format!(
+                "hook did not acknowledge settings_version {}",
+                input.version
+            )))
+        }
+    }
+);
+
+hook_op!(
     /// `status`: the 1.5.5 envelope, held under a lease.
-    Status, InHead, StatusOut, |i, _input, out| {
-        let Some(st) = i.get() else {
-            return Outcome::Fault;
-        };
-        let bytes = serde_json::to_vec(&st.hook().status()).unwrap_or_default();
-        out.status = st.lease(&mut out.head, bytes);
+    Status, InHead, StatusOut, |held, _i, _input, out| {
+        let bytes = serde_json::to_vec(&held.life().hook().status()).unwrap_or_default();
+        let o = out.raw();
+        o.status = held.leases().blob(&mut o.head, bytes, BLOB_JSON);
         Outcome::Ready
     }
 );
 
-hook_slot!(
+hook_op!(
     /// `describe`: the 1.5.5 envelope, held under a lease.
-    Describe, InHead, DescribeOut, |i, _input, out| {
-        let Some(st) = i.get() else {
-            return Outcome::Fault;
-        };
-        let bytes = serde_json::to_vec(&st.hook().describe()).unwrap_or_default();
-        out.describe = st.lease(&mut out.head, bytes);
+    Describe, InHead, DescribeOut, |held, _i, _input, out| {
+        let bytes = serde_json::to_vec(&held.life().hook().describe()).unwrap_or_default();
+        let o = out.raw();
+        o.describe = held.leases().blob(&mut o.head, bytes, BLOB_JSON);
         Outcome::Ready
     }
 );
 
-hook_slot!(
+hook_op!(
     /// `serve`: this SDK declares no routes, so no request reaches it; answers 404.
-    Serve, ServeIn, ServeOut, |_i, _input, out| {
-        out.status_code = 404;
+    Serve, ServeIn, ServeOut, |_held, _i, _input, out| {
+        out.raw().status_code = 404;
         Outcome::Ready
     }
 );
@@ -1159,25 +1044,15 @@ macro_rules! hook_door {
         $crate::plugin_door! {
             ops: $crate::abi::hook::Ops,
             statement: $statement,
-            lifecycle: {
-                validate: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Validate<$open>>,
-                open: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Open<$open>>,
-                refresh: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Refresh<$open>>,
-                retire: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Retire>,
-                tick: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Tick>,
-                drive: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Drive>,
-                cancel: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Cancel>,
-                release: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Release>,
-                close: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Close>,
-            },
+            lifecycle: life($crate::abi::sdk::hook::HookLife<$open>),
             kind_ops: {
-                decide: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Decide>,
-                transform: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Transform>,
-                notify: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Notify>,
-                configure: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Configure>,
-                status: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Status>,
-                describe: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Describe>,
-                serve: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Serve>,
+                decide: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Decide<$open>>,
+                transform: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Transform<$open>>,
+                notify: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Notify<$open>>,
+                configure: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Configure<$open>>,
+                status: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Status<$open>>,
+                describe: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Describe<$open>>,
+                serve: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Serve<$open>>,
             },
         }
     };
