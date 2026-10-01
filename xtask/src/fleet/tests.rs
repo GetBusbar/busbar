@@ -1019,11 +1019,9 @@ fn contributing_describes_the_layout_the_repo_really_has() {
             .content
     };
     // A single-crate hook repo (its cdylib crate IS the repo) is not told it is a workspace.
-    for repo in ["busbar-hook-webrequest"] {
-        let c = contributing(repo);
-        assert!(c.contains("single crate at the repo root"), "{repo}: {c}");
-        assert!(!c.contains("two-crate"), "{repo}: {c}");
-    }
+    let hook = contributing("busbar-hook-webrequest");
+    assert!(hook.contains("single crate at the repo root"), "{hook}");
+    assert!(!hook.contains("two-crate"), "{hook}");
     let twin = contributing("busbar-store-sqlite");
     assert!(twin.contains("two-crate Cargo workspace"), "{twin}");
     assert!(twin.contains("`store-sqlite/`") && twin.contains("`store-sqlite-plugin/`"));
