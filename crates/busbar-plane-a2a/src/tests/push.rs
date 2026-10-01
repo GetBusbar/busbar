@@ -131,8 +131,15 @@ fn a_tasks_notifications_go_out_in_order_one_at_a_time() {
         .collect();
     assert_eq!(bodies, [b"first".as_slice()]);
     assert_eq!(due.len(), 2, "t2 does not wait on t1");
-    assert!(d.due(0).is_empty(), "an open attempt is not handed out twice");
-    assert_eq!(d.next_tick_ns(), 0, "no tick is wanted while every head is open");
+    assert!(
+        d.due(0).is_empty(),
+        "an open attempt is not handed out twice"
+    );
+    assert_eq!(
+        d.next_tick_ns(),
+        0,
+        "no tick is wanted while every head is open"
+    );
     // A retry holds the task's later notifications behind it.
     d.settle("t1", Attempted::Status(500), 0, 0);
     assert!(d.due(199 * MS).is_empty());
@@ -189,7 +196,11 @@ fn the_request_is_a_post_to_the_callbacks_path_with_the_credential_only_once_hel
         (b"authorization".to_vec(), b"Bearer s3cret".to_vec())
     );
     d.remember_auth("t1", None);
-    assert_eq!(d.request(&x).fields.len(), 1, "a withdrawn credential is not sent");
+    assert_eq!(
+        d.request(&x).fields.len(),
+        1,
+        "a withdrawn credential is not sent"
+    );
 }
 
 #[test]
@@ -204,7 +215,7 @@ fn a_terminal_tasks_last_delivery_forgets_its_credential() {
     assert!(last.terminal);
     d.enqueue(last.clone(), 0);
     assert_eq!(d.request(&last).fields[1].1, b"Basic");
-    d.due(0);
+    let _ = d.due(0);
     d.settle("t1", Attempted::Delivered, 0, 0);
     assert_eq!(d.request(&last).fields.len(), 1);
 }
@@ -222,8 +233,7 @@ fn the_credential_never_prints() {
 #[test]
 fn the_notification_is_the_task_nested_under_task_with_an_rfc3339_timestamp() {
     let t = task("t1", TaskState::Completed);
-    let body: serde_json::Value =
-        serde_json::from_slice(&notification_body(&t)).expect("JSON");
+    let body: serde_json::Value = serde_json::from_slice(&notification_body(&t)).expect("JSON");
     assert_eq!(
         body,
         serde_json::json!({"task": {"id": "t1", "contextId": "ctx", "kind": "task",
@@ -232,7 +242,11 @@ fn the_notification_is_the_task_nested_under_task_with_an_rfc3339_timestamp() {
     assert!(body.get("jsonrpc").is_none());
     let mut silent = t;
     silent.push_callback = None;
-    assert_eq!(Delivery::of(&silent), None, "no callback, nothing to deliver");
+    assert_eq!(
+        Delivery::of(&silent),
+        None,
+        "no callback, nothing to deliver"
+    );
 }
 
 #[test]
@@ -241,7 +255,10 @@ fn a_callback_token_names_its_one_task_and_nothing_else() {
     let random = [7u8; TOKEN_BYTES];
     let token = tokens.mint("task.a", &random).expect("minted");
     assert_eq!(tokens.task_of(&token).as_deref(), Some("task.a"));
-    assert_eq!(tokens.mint("task.a", &[9u8; TOKEN_BYTES]), Some(token.clone()));
+    assert_eq!(
+        tokens.mint("task.a", &[9u8; TOKEN_BYTES]),
+        Some(token.clone())
+    );
     let other = tokens.mint("task.b", &[8u8; TOKEN_BYTES]).expect("minted");
     let (_, b_secret) = other.rsplit_once('.').expect("a token");
     for forged in [
@@ -268,14 +285,17 @@ fn tokens_are_bounded() {
         assert!(tokens.mint(&i.to_string(), &random).is_some());
     }
     assert_eq!(tokens.mint("one-more", &random), None);
-    assert!(tokens.mint("0", &random).is_some(), "a held one is still answered");
+    assert!(
+        tokens.mint("0", &random).is_some(),
+        "a held one is still answered"
+    );
 }
 
 #[test]
 fn the_statement_declares_one_outbound_open_web_need_whose_target_the_plane_names() {
+    use crate::door::{NEEDS, NEED_OPEN_WEB};
     use busbar_contract::abi::host::conn::connector::{DIRECTION_OUTBOUND, EGRESS_OPEN_WEB};
     use busbar_contract::abi::mechanism::check::check_needs;
-    use crate::door::{NEEDS, NEED_OPEN_WEB};
     let st = &crate::plane_door::STATEMENT;
     assert!(!st.needs.is_null());
     assert_eq!((st.needs_len, NEEDS.len()), (1, 1));
