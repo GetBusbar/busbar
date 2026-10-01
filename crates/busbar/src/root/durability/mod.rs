@@ -804,10 +804,36 @@ impl Durability {
         counts: &UnitCounts,
         arrived_ms: u64,
     ) -> Result<Settled, DurabilityLost> {
+        self.settle_counted_refusing(at, posted, counts, arrived_ms, None)
+    }
+
+    /// [`Durability::settle_counted`] for a settlement whose counts the card REFUSED to price (#42):
+    /// the one line still closes the unit's hold and carries its counts, and the refusal rides it,
+    /// so every read of its balance and window refuses exactly as a refused counts row does
+    /// ([`Durability::settled_read`]). `None` is [`Durability::settle_counted`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Durability::settle`].
+    pub fn settle_counted_refusing(
+        &mut self,
+        at: &Settling<'_>,
+        posted: busbar_contract::caps::Posted,
+        counts: &UnitCounts,
+        arrived_ms: u64,
+        refusal: Option<String>,
+    ) -> Result<Settled, DurabilityLost> {
         let settlement = self
             .ledger
             .post_counted(at.key, at.window, posted, counts.fee_count);
-        self.journal_settlement_counted(at, settlement, self.incarnation, Some(counts), arrived_ms)
+        self.journal_settlement_refusing(
+            at,
+            settlement,
+            self.incarnation,
+            Some(counts),
+            arrived_ms,
+            refusal,
+        )
     }
 
     /// PUT A UNIT'S COUNTS ON THE CHAIN WITH NO FIGURE BEHIND THEM (#43: the write is unconditional).
@@ -931,6 +957,20 @@ impl Durability {
         counts: Option<&UnitCounts>,
         arrived_ms: u64,
     ) -> Result<Settled, DurabilityLost> {
+        self.journal_settlement_refusing(at, settlement, incarnation, counts, arrived_ms, None)
+    }
+
+    /// [`Durability::journal_settlement_counted`], with the pricing refusal the line carries, if
+    /// any; a refused line is kept among the refused rows, as a refused counts row is.
+    fn journal_settlement_refusing(
+        &mut self,
+        at: &Settling<'_>,
+        settlement: Settlement,
+        incarnation: u64,
+        counts: Option<&UnitCounts>,
+        arrived_ms: u64,
+        refusal: Option<String>,
+    ) -> Result<Settled, DurabilityLost> {
         let stamp = at.stamp;
         let principal = settlement.posted.principal().as_str().to_string();
         let posting = Posting {
@@ -948,9 +988,12 @@ impl Durability {
             arrived_ms: counts.map_or(0, |_| arrived_ms),
             flags: settlement.posted.flags(),
             counts: counts.cloned(),
-            refusal: None,
+            refusal,
             era: RecordEra::Counts,
         };
+        if posting.refusal.is_some() {
+            self.refused.push(posting.clone());
+        }
         // The overdraft's own record. It carries no counts and no figure: the settlement above
         // already carries the fact, and the carry is DERIVED from it, so repeating anything here
         // would double what a replay adds up. What this record holds that nothing else does is the
@@ -1141,6 +1184,21 @@ pub trait MoneyBook: Send + Sync {
         arrived_ms: u64,
     ) -> Result<Settled, DurabilityLost>;
 
+    /// [`MoneyBook::settle_counted`] carrying the card's pricing refusal, if any. See
+    /// [`Durability::settle_counted_refusing`].
+    ///
+    /// # Errors
+    ///
+    /// As [`MoneyBook::settle_posted`].
+    fn settle_counted_refusing(
+        &self,
+        at: &Settling<'_>,
+        posted: busbar_contract::caps::Posted,
+        counts: &UnitCounts,
+        arrived_ms: u64,
+        refusal: Option<String>,
+    ) -> Result<Settled, DurabilityLost>;
+
     /// The unit's raw counts with no figure behind them — priced to nothing, or REFUSED (#42/#43).
     /// See [`Durability::post_counts`].
     ///
@@ -1205,6 +1263,18 @@ impl MoneyBook for SharedBook {
     ) -> Result<Settled, DurabilityLost> {
         let mut durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
         durability.settle_counted(at, posted, counts, arrived_ms)
+    }
+
+    fn settle_counted_refusing(
+        &self,
+        at: &Settling<'_>,
+        posted: busbar_contract::caps::Posted,
+        counts: &UnitCounts,
+        arrived_ms: u64,
+        refusal: Option<String>,
+    ) -> Result<Settled, DurabilityLost> {
+        let mut durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
+        durability.settle_counted_refusing(at, posted, counts, arrived_ms, refusal)
     }
 
     fn post_counts(

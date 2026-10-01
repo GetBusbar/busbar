@@ -701,10 +701,6 @@ impl Node {
                 // The SAME pin the late arm prices against, so the posting and the figure that
                 // follows it name one snapshot. Re-pinning here would read a history a live apply
                 // may have appended to since the door, which is the hazard the pin exists for.
-                self.settle_end(&principal, arrived, history.as_ref(), ended);
-                // The unit reached its own end and its posting is on the book: the slot goes
-                // straight back. Anything that leaves this function before here leaves it MARKED.
-                occupied.reached_end = true;
                 // The loop ran; the answer is whatever the terminal posted. There is no unit that
                 // reaches an end without passing one of the two audit doors, so the fallback below
                 // is unreachable — and it is an answer rather than an unwrap, because a path that
@@ -714,46 +710,69 @@ impl Node {
                 let (answer, late) = finish();
                 let response =
                     answer.map_or_else(|| unavailable(proto), PlaneAnswer::into_response);
-                // THE LATE ARM. The settlement above carried what the terminal knew, and on a plane
-                // whose money is in a cell the response's own body fills when it DRAINS, that is the
-                // record a unit ran and ended and nothing else. So the body goes out wrapped, and
-                // the figure lands when it arrives.
-                self.attach_late_accrual(response, late, &principal, arrived, history)
+                let response =
+                    self.tail(ended, response, late, &principal, arrived, history.as_ref());
+                // The unit reached its own end and its posting is on the book or in the late arm's
+                // hands: the slot goes straight back. Anything that leaves this function before here
+                // leaves it MARKED.
+                occupied.reached_end = true;
+                response
             }
         }
     }
 
-    /// Wrap the answer's body so the figure that arrives after the terminal has somewhere to land.
+    /// THE UNIT'S TAIL: its ONE LINE (KERNEL<>PLUGINS step 14) and the answer it serves.
     ///
-    /// Nothing here changes a byte of what the client is given: the frames, their order, the trailers
-    /// and the size hint are the inner body's, forwarded. What the wrapper adds is a place to stand
-    /// at the one instant the unit's money becomes a fact.
-    ///
-    /// Two ways this hands the response straight back, and each is a case where there is nothing to
-    /// wait for. No book bound: the build carries no root ledger and there is nowhere for a posting
-    /// to go. No late reading on the response: nothing was ever going to fill one, so a wrapper would
-    /// only ever drop empty.
-    fn attach_late_accrual(
+    /// A unit whose figure arrives with its drained body has its line written by the late arm, which
+    /// carries the exit's posting there unwritten: the exit writes none for it, and the reservation
+    /// and the reported figure close on one record when the figure arrives. Every other unit's line
+    /// is the exit's posting, written here and now.
+    fn tail(
         &self,
+        ended: Ended,
         response: Response,
         late: Option<Late>,
         principal: &PrincipalId,
         arrived: Arrived,
-        history: Option<crate::root::kernel::PinnedHistory>,
+        history: Option<&crate::root::kernel::PinnedHistory>,
     ) -> Response {
-        let Some(book) = self.book.get() else {
-            return response;
-        };
-        // No history pinned at admission is the third: a report nothing can price is a report
-        // nothing can post, and wrapping the body to discover that when it drains would be a wrapper
-        // that only ever drops empty.
-        let Some(history) = history else {
-            return response;
-        };
-        let Some(late) = late else {
-            return response;
-        };
-        let arm = LateAccrual {
+        match self.late_arm(late, principal, arrived, history) {
+            Some(arm) => {
+                // THE LATE ARM. On a plane whose money is in a cell the response's own body fills
+                // when it DRAINS, the terminal knew nothing of it. So the body goes out wrapped,
+                // and the unit's one line lands when the figure arrives.
+                let arm = arm.carrying(ended);
+                let (parts, body) = response.into_parts();
+                Response::from_parts(parts, axum::body::Body::new(LateBody::new(body, arm)))
+            }
+            None => {
+                self.settle_end(principal, arrived, history, ended);
+                response
+            }
+        }
+    }
+
+    /// The late arm for this unit's answer, if its line is to be written when the figure arrives.
+    ///
+    /// Nothing the arm does changes a byte of what the client is given: the wrapper forwards the
+    /// frames, their order, the trailers and the size hint. What it adds is a place to stand at the
+    /// one instant the unit's money becomes a fact.
+    ///
+    /// Three ways there is no arm, and each is a case where there is nothing to wait for: no book
+    /// bound (nowhere for a posting to go), no history pinned at admission (a report nothing can
+    /// price), and no late reading on the response (nothing was ever going to fill one). The exit
+    /// then writes the unit's one line itself.
+    fn late_arm(
+        &self,
+        late: Option<Late>,
+        principal: &PrincipalId,
+        arrived: Arrived,
+        history: Option<&crate::root::kernel::PinnedHistory>,
+    ) -> Option<LateAccrual> {
+        let book = self.book.get()?;
+        let history = history?.clone();
+        let late = late?;
+        Some(LateAccrual {
             book: Arc::clone(book),
             history,
             // MINTED FOR THIS ONE POSTING and dropped with it. A token is neither `Clone` nor `Copy`
@@ -772,9 +791,8 @@ impl Node {
             // are two postings OF one unit, and they order beside it rather than beside each other.
             arrived,
             late,
-        };
-        let (parts, body) = response.into_parts();
-        Response::from_parts(parts, axum::body::Body::new(LateBody::new(body, arm)))
+            exit: None,
+        })
     }
 }
 
@@ -1002,10 +1020,24 @@ struct LateAccrual {
     /// drained. It keeps what the reading needs alive — the plane's carry and the cell the body
     /// fills — for exactly as long as the body is, and names neither.
     late: Late,
+    /// THE EXIT'S POSTING, carried here unwritten (KERNEL<>PLUGINS step 14): the exit writes no line
+    /// for a unit with a late arm, so its reservation closes on the one line this arm writes. `None`
+    /// when the exit had no posting to hand over (the sweep got there first, or its record was lost
+    /// and the loss is already on the end it sealed).
+    exit: Option<busbar_contract::caps::Posted>,
 }
 
 impl LateAccrual {
-    /// Read the tap and post what it says. Runs at most once per unit — see [`LateBody`].
+    /// Carry the exit's posting to the one line this arm writes.
+    fn carrying(mut self, ended: Ended) -> Self {
+        self.exit = match ended {
+            Ended::Settled { end, .. } => end.into_posted().ok(),
+            _ => None,
+        };
+        self
+    }
+
+    /// Read the tap and write the unit's one line. Runs at most once per unit — see [`LateBody`].
     fn post(self) {
         let LateAccrual {
             book,
@@ -1016,12 +1048,26 @@ impl LateAccrual {
             principal,
             arrived,
             late,
+            exit,
         } = self;
+        let book = crate::root::durability::SharedBook::over(book);
         let Some(report) = late().map(Report::of) else {
+            // Nothing arrived after all: the one line is the exit's posting as it stood, written
+            // where the exit would have written it.
+            if let Some(exit) = exit {
+                let _settled = settle(
+                    &book,
+                    &principal,
+                    arrived,
+                    Some(&history),
+                    &durability_token,
+                    exit,
+                );
+            }
             return;
         };
         post_late(
-            &crate::root::durability::SharedBook::over(book),
+            &book,
             &LateTokens {
                 durability: &durability_token,
                 ledger: &ledger_token,
@@ -1031,6 +1077,7 @@ impl LateAccrual {
             &principal,
             arrived,
             &report,
+            exit,
         );
     }
 }
@@ -1059,13 +1106,16 @@ fn counts_of(report: &Report) -> crate::root::durability::UnitCounts {
     }
 }
 
-/// **THE LATE ARM'S POSTING**: what one drained report leaves on the second book. ALWAYS one row
-/// (#43: the write is unconditional; #71: the fact is the counts, and pricing is the read).
+/// **THE LATE ARM'S POSTING**: what one drained report leaves on the second book. ALWAYS ONE LINE
+/// PER UNIT (KERNEL<>PLUGINS step 14; #43: the write is unconditional; #71: the fact is the counts,
+/// and pricing is the read). `exit` is the exit's posting, carried here unwritten: the line closes
+/// the unit's reservation too.
 ///
 /// - PRICED above zero: the settlement moves the book, and its record carries the counts beside
 ///   the figure.
-/// - PRICED AT ZERO, or REFUSED: a counts row that moves no balance. A refusal (#42) leaves the
-///   money unpriced — no zero, no partial — and every read of the balance it sits on refuses.
+/// - PRICED AT ZERO, or REFUSED: the line moves no balance beyond closing the reservation. A
+///   refusal (#42) leaves the money unpriced — no zero, no partial — and every read of the balance
+///   it sits on refuses.
 fn post_late(
     book: &dyn crate::root::durability::MoneyBook,
     tokens: &LateTokens<'_>,
@@ -1073,6 +1123,7 @@ fn post_late(
     principal: &PrincipalId,
     arrived: Arrived,
     report: &Report,
+    exit: Option<busbar_contract::caps::Posted>,
 ) {
     let counts = counts_of(report);
     // THE PRICING, and it happens HERE rather than on the plane. The plane said what the unit
@@ -1113,18 +1164,28 @@ fn post_late(
                 "late accrual refused at settlement: the card cannot price these counts; \
                  the counts row is posted with no figure"
             );
-            let _row = book.post_counts(
-                &at,
-                principal,
-                &counts,
-                arrived.ms(),
-                Some(format!("{refusal:?}")),
-            );
+            let refusal = Some(format!("{refusal:?}"));
+            match exit {
+                Some(exit) => {
+                    let _line =
+                        book.settle_counted_refusing(&at, exit, &counts, arrived.ms(), refusal);
+                }
+                None => {
+                    let _row = book.post_counts(&at, principal, &counts, arrived.ms(), refusal);
+                }
+            }
             return;
         }
     };
     if amount == 0 {
-        let _row = book.post_counts(&at, principal, &counts, arrived.ms(), None);
+        match exit {
+            Some(exit) => {
+                let _line = book.settle_counted(&at, exit, &counts, arrived.ms());
+            }
+            None => {
+                let _row = book.post_counts(&at, principal, &counts, arrived.ms(), None);
+            }
+        }
         return;
     }
     let accrual = busbar_contract::caps::HoldAccrual::after_terminal(
@@ -1132,7 +1193,10 @@ fn post_late(
         amount,
         tokens.ledger,
     );
-    let posted = busbar_contract::caps::Posted::settle_late(accrual, tokens.ledger);
+    let posted = match exit {
+        Some(exit) => exit.with_late(accrual, tokens.ledger),
+        None => busbar_contract::caps::Posted::settle_late(accrual, tokens.ledger),
+    };
     // Through the money-book seam, as the terminal exit arm does — the same shared book, the same
     // posting, the lock taken and released behind the seam — with the counts on the record.
     let _settled = book.settle_counted(&at, posted, &counts, arrived.ms());

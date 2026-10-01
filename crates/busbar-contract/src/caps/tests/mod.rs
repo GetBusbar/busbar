@@ -491,6 +491,44 @@ fn a_recovered_hold_says_so_all_the_way_onto_the_posting() {
     assert!(posted.flags().contains(PostingFlags::RECOVERED));
 }
 
+/// KERNEL<>PLUGINS step 14: the exit's posting and the late figure close on ONE line. The late amount
+/// settles on top of the exit's; what passes the reservation is overdraft; the line is flagged late
+/// and loses the exit's "nothing reported" mark, because the figure on it was reported.
+#[test]
+fn a_late_figure_folds_into_the_exits_posting_as_one_line() {
+    let k = Kernel::new();
+    let admit = k.admit_token();
+    let floor = Usage::estimate(&k.usage_token(), Vec::new()).expect("fits");
+    let exit = Posted::settle(
+        Hold::open(&admit, who("acct-1"), 100),
+        0,
+        &floor,
+        &k.ledger_token(),
+    );
+    assert!(exit.flags().contains(PostingFlags::ESTIMATED));
+    let late = HoldAccrual::after_terminal(who("acct-1"), 130, &k.ledger_token());
+    let line = exit.with_late(late, &k.ledger_token());
+    assert_eq!(line.reserved(), 100);
+    assert_eq!(line.settled(), 130);
+    assert_eq!(line.overdraft(), 30, "only the part past the reservation");
+    assert!(line.flags().contains(PostingFlags::LATE_ACCRUAL));
+    assert!(line.flags().contains(PostingFlags::OVERDRAFT));
+    assert!(!line.flags().contains(PostingFlags::ESTIMATED));
+
+    let within = Posted::settle(
+        Hold::open(&admit, who("acct-1"), 100),
+        0,
+        &usage_of(&k, 0),
+        &k.ledger_token(),
+    )
+    .with_late(
+        HoldAccrual::after_terminal(who("acct-1"), 40, &k.ledger_token()),
+        &k.ledger_token(),
+    );
+    assert_eq!((within.settled(), within.overdraft()), (40, 0));
+    assert!(!within.flags().contains(PostingFlags::OVERDRAFT));
+}
+
 #[test]
 fn an_estimated_usage_report_flags_the_posting() {
     let k = Kernel::new();

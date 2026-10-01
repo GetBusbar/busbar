@@ -3619,6 +3619,7 @@ fn late_post(
         &PrincipalId::new(principal),
         at,
         report,
+        None,
     );
     node
 }
@@ -4144,7 +4145,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         arrived,
         history: Some(&history),
     };
-    let _ended = busbar_kernel::teller::run_unit_async(
+    let ended = busbar_kernel::teller::run_unit_async(
         &node.kernel,
         &driven,
         &ctx,
@@ -4160,15 +4161,14 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     )
     .await;
     node.inflight.remove(key_n);
-    // THE NODE'S OWN TAIL, as `answer_arriving_at` runs it: the terminal's bytes, wrapped by the
-    // late arm, drained the way a client drains them.
+    // THE NODE'S OWN TAIL, as `answer_arriving_at` runs it: the unit's one line and the terminal's
+    // bytes, wrapped by the late arm, drained the way a client drains them.
     let (answer, late) = finish();
     let response = answer
         .expect("the served unit posted its terminal")
         .into_response();
     assert_eq!(response.status(), StatusCode::OK, "the rerank was served");
-    let response =
-        node.attach_late_accrual(response, late, &principal, arrived, Some(history.clone()));
+    let response = node.tail(ended, response, late, &principal, arrived, Some(&history));
     let _body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("the served body drains");
@@ -4208,8 +4208,19 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         classes,
     };
 
-    // THE SECOND BOOK: the late arm's row.
+    // THE SECOND BOOK: the late arm's row, and it is the unit's ONLY line (KERNEL<>PLUGINS step
+    // 14): the exit wrote none, and the one line is a settlement carrying the counts.
     let rows = second_book_rows(&book);
+    assert_eq!(
+        rows.len(),
+        1,
+        "one line per unit: the exit writes none when the late arm writes it: {rows:?}"
+    );
+    assert_eq!(
+        rows[0].kind,
+        crate::root::durability::PostingKind::Settlement,
+        "the one line settles the unit's reservation: {rows:?}"
+    );
     assert_eq!(
         rows.first()
             .and_then(|row| row.counts.as_ref())
@@ -4428,4 +4439,43 @@ async fn the_linked_arrivals_hand_their_units_to_the_node_the_root_installs() {
         "the unit never reached the upstream, so no node drove its Route step"
     );
     rig.server.shutdown().await;
+}
+
+/// ONE LINE PER UNIT, WHEN THE LATE READING NEVER ARRIVES (KERNEL<>PLUGINS step 14).
+///
+/// The exit hands its posting to the late arm and writes none itself. A body that drains with no
+/// reading behind it (the tap never filled) must still leave the unit's line: the exit's own
+/// posting, written by the arm, closing the reservation. An arm that dropped it would leave the
+/// unit with no line at all.
+#[test]
+fn a_late_arm_with_no_reading_writes_the_exits_own_line() {
+    let history = rerank_history_on(RERANK_LANE, 3, Some(2_000_000));
+    let pinned = history.clone();
+    let book = crate::root::durability::node_book_over(Box::new(move || Some(pinned.clone())));
+    let kernel = Kernel::new();
+    let who = PrincipalId::new("acct:late-none");
+    let hold = busbar_contract::caps::Hold::open(&kernel.admit_token(), who.clone(), 0);
+    let usage = busbar_contract::caps::Usage::report(&kernel.usage_token(), Vec::new())
+        .expect("an empty report fits");
+    let exit = busbar_contract::caps::Posted::settle(hold, 0, &usage, &kernel.ledger_token());
+    let arm = LateAccrual {
+        book: Arc::clone(&book.durability),
+        history,
+        durability_token: kernel.durability_token(),
+        ledger_token: kernel.ledger_token(),
+        usage_token: kernel.usage_token(),
+        principal: who,
+        arrived: Arrived::at(EPOCH * 1_000, 3),
+        late: Box::new(|| None),
+        exit: Some(exit),
+    };
+    arm.post();
+    let rows = second_book_rows(&book);
+    assert_eq!(rows.len(), 1, "the unit keeps its one line: {rows:?}");
+    assert_eq!(
+        rows[0].kind,
+        crate::root::durability::PostingKind::Settlement,
+        "and it is the exit's settlement: {rows:?}"
+    );
+    assert_eq!(rows[0].settled, 0);
 }
