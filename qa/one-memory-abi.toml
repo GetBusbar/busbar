@@ -189,9 +189,23 @@ rule = "one-memory-abi:cold-lane"
 file = "crates/busbar-kernel/src/config/migrate_export.rs"
 item = "abi::cold"
 
+# TRANSITIONAL (ARCHITECT ruling 2026-09-30, option A; R2): the kernel names cold types the loader re-export used to hide (bf6510971); same coupling, re-spelled.
+# 1 site (:35 RouteAuth, RouteMethod). Expires when BOOT-CHAIN's vocabulary move lands (route types -> abi/mechanism/route.rs).
+[[finding]]
+rule = "one-memory-abi:cold-lane"
+file = "crates/busbar-kernel/src/core_routes.rs"
+item = "abi::cold"
+
 [[finding]]
 rule = "one-memory-abi:cold-lane"
 file = "crates/busbar-kernel/src/ingress/duplex_ws.rs"
+item = "abi::cold"
+
+# TRANSITIONAL (ARCHITECT ruling 2026-09-30, option A; R2): the kernel names cold types the loader re-export used to hide (bf6510971); same coupling, re-spelled.
+# 1 site (:624 ExportStream). Expires when BOOT-CHAIN's vocabulary move lands (ExportStream unifies on abi::export::ExportStream).
+[[finding]]
+rule = "one-memory-abi:cold-lane"
+file = "crates/busbar-kernel/src/ingress/mod.rs"
 item = "abi::cold"
 
 [[finding]]
@@ -202,6 +216,20 @@ item = "abi::cold"
 [[finding]]
 rule = "one-memory-abi:cold-lane"
 file = "crates/busbar-kernel/src/plane_routes.rs"
+item = "abi::cold"
+
+# TRANSITIONAL (ARCHITECT ruling 2026-09-30, option A; R2): the kernel names cold types the loader re-export used to hide (bf6510971); same coupling, re-spelled.
+# 1 site (:37). Route, RouteAuth, RouteMethod expire at BOOT-CHAIN's vocabulary move; EndpointRequest, EndpointResponse (cold JSON call shapes) expire at M6 COLD-DELETE.
+[[finding]]
+rule = "one-memory-abi:cold-lane"
+file = "crates/busbar-kernel/src/plugin_routes.rs"
+item = "abi::cold"
+
+# TRANSITIONAL (ARCHITECT ruling 2026-09-30, option A; R2): the kernel names cold types the loader re-export used to hide (bf6510971); same coupling, re-spelled.
+# 4 sites (:347 RouteAuth, RouteMethod; :605 RouteMethod; :1066-1067 RouteMethod::Get, RouteAuth::None). Expire when BOOT-CHAIN's vocabulary move lands.
+[[finding]]
+rule = "one-memory-abi:cold-lane"
+file = "crates/busbar-kernel/src/router.rs"
 item = "abi::cold"
 
 [[finding]]
