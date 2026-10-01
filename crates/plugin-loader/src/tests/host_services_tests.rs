@@ -318,6 +318,7 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         HOST_SLOTS.hook_call,
         HOST_SLOTS.random_fill,
         HOST_SLOTS.need_admit,
+        HOST_SLOTS.trust_verify,
     ];
     assert_eq!(slots.len(), SERVICES as usize);
     for (service, f) in (0..SERVICES).zip(slots) {
@@ -333,7 +334,12 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
             assert_eq!(error(&o), UNTICKETED, "service {service}");
         } else if !matches!(
             service,
-            op::CLOCK_NOW | op::SIGN | op::TRUST_DUE | op::ENTITLEMENT_CHECK | op::RANDOM_FILL
+            op::CLOCK_NOW
+                | op::SIGN
+                | op::TRUST_DUE
+                | op::ENTITLEMENT_CHECK
+                | op::RANDOM_FILL
+                | op::TRUST_VERIFY
         ) {
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), UNIMPLEMENTED, "service {service}");
