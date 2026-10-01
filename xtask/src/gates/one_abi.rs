@@ -234,7 +234,8 @@ pub fn verdict(cx: &Ctx, spec: &Spec, mut findings: Vec<Finding>, errors: Vec<St
         .iter()
         .filter_map(|(k, n)| {
             let have = per_key.get(k).copied().unwrap_or(0);
-            (have > 0 && have < *n).then(|| format!("{} {} {}: count {n}, tree {have}", k.0, k.1, k.2))
+            (have > 0 && have < *n)
+                .then(|| format!("{} {} {}: count {n}, tree {have}", k.0, k.1, k.2))
         })
         .collect();
     if !high.is_empty() {

@@ -1175,10 +1175,7 @@ fn a_sink_starts_and_checks_the_same_through_either_door() {
     sink.raw.call = unsupported_call;
     assert_eq!(sink.start(), Ok(None));
     assert_eq!(
-        sink.check(
-            busbar_contract::abi::export::CheckPhase::Instances,
-            &[]
-        ),
+        sink.check(busbar_contract::abi::export::CheckPhase::Instances, &[]),
         Ok(Vec::new())
     );
 }
