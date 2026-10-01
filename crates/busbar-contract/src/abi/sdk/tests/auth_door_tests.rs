@@ -9,12 +9,12 @@ use std::mem::size_of;
 use std::ptr;
 
 use crate::abi::auth::{
-    check_identify, slot, IdentifyOut, IdentityBuf, NamedValue, Ops, VerifyIn,
-    FACT_CACHEABLE, IDENTITY_HAS_TTL, SPAN_ABSENT, VERDICT_IDENTITY, VERDICT_PASS, VERDICT_REJECT,
+    check_identify, slot, IdentifyOut, IdentityBuf, NamedValue, Ops, VerifyIn, FACT_CACHEABLE,
+    IDENTITY_HAS_TTL, SPAN_ABSENT, VERDICT_IDENTITY, VERDICT_PASS, VERDICT_REJECT,
 };
 use crate::abi::mechanism::call::{
-    AbiStr, Blob, Envelope, InHead, Op, OutHead, Outcome, RawOutcome, Span, BLOB_ABSENT,
-    BLOB_JSON, BLOB_OCTETS, BLOB_SECRET, METRIC_ADD,
+    AbiStr, Blob, Envelope, InHead, Op, OutHead, Outcome, RawOutcome, Span, BLOB_ABSENT, BLOB_JSON,
+    BLOB_OCTETS, BLOB_SECRET, METRIC_ADD,
 };
 use crate::abi::mechanism::door::{Door, MetricFamily, FAMILY_COUNTER};
 use crate::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, RefreshIn};
@@ -218,7 +218,8 @@ impl Host {
 
     fn text(&self, s: Span) -> Option<String> {
         (s.offset != SPAN_ABSENT).then(|| {
-            String::from_utf8_lossy(&self.buf[s.offset as usize..(s.offset + s.len) as usize]).into()
+            String::from_utf8_lossy(&self.buf[s.offset as usize..(s.offset + s.len) as usize])
+                .into()
         })
     }
 }
