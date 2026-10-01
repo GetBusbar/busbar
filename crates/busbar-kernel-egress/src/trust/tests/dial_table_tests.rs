@@ -31,7 +31,7 @@ fn metadata_answers_are_refused_and_private_answers_pass() {
             "{bad}"
         );
     }
-    for good in ["127.0.0.1", "::1", "10.0.0.5", "192.168.1.9", "100.64.0.1", "93.184.216.34"] {
+    for good in ["127.0.0.1", "::1", "10.0.0.5", "192.168.1.9", "100.64.0.1", "93.184.216.34", "fe80::1"] {
         assert_eq!(table.judge("api.example.com", &[ip(good)]), Ok(()), "{good}");
     }
 }
@@ -92,7 +92,7 @@ fn the_dial_verdict_matches_the_configuration_verdict() {
     for literal in [
         "169.254.169.254", "169.254.170.2", "100.100.100.200", "168.63.129.16", "192.0.0.192",
         "10.9.9.9", "10.9.9.8", "127.0.0.1", "93.184.216.34", "fd00:ec2::254",
-        "::ffff:100.100.100.200", "::1",
+        "::ffff:100.100.100.200", "::1", "fe80::1",
     ] {
         let addr = ip(literal);
         let url = match addr {
@@ -105,4 +105,14 @@ fn the_dial_verdict_matches_the_configuration_verdict() {
             "{literal}"
         );
     }
+}
+
+/// IPv6 LINK-LOCAL AT DIAL TIME IS PREDEV'S OUTCOME: predev's pooled client dialled whatever a name
+/// resolved to, so an fe80:: answer was dialled, and configuration time admitted an fe80:: provider
+/// URL. Link-local is not cloud metadata ([`ip_is_cloud_metadata`] does not hold it), so the dial
+/// table admits it and the configuration-time check still admits it.
+#[test]
+fn an_ipv6_link_local_answer_is_dialled_as_predev_dialled_it() {
+    assert_eq!(DialDenylist::default().judge("lan.example", &[ip("fe80::1")]), Ok(()));
+    assert!(ssrf_blocked_host("https://[fe80::1]/v1", &[], false, &[]).is_none());
 }
