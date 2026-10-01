@@ -4,6 +4,7 @@
 //! Bedrock Converse protocol reader/writer implementation.
 
 use crate::codec::ir::IrStreamEvent;
+use crate::codec::keys;
 use busbar_contract::http::{HeaderName, HeaderValue, StatusCode};
 use busbar_contract::protocol::*;
 use busbar_contract::protocol::{
@@ -38,10 +39,102 @@ use self::citations::{
     read_bedrock_citation, read_bedrock_citations_content, write_bedrock_citation,
 };
 
+// One spelling per wire word (OWNER 2026-10-01): a word keyed in `crate::codec::keys` is spelled
+// there; the words below are this dialect's own, each defined once and used at every site.
+
+// Converse request/response member names (camelCase, as the wire spells them).
+const ADDITIONAL_MODEL_REQUEST_FIELDS: &str = "additionalModelRequestFields";
+const ADDITIONAL_MODEL_RESPONSE_FIELDS: &str = "additionalModelResponseFields";
+const CACHE_DETAILS: &str = "cacheDetails";
+const CACHE_POINT: &str = "cachePoint";
+const CACHE_READ_INPUT_TOKENS: &str = "cacheReadInputTokens";
+const CACHE_WRITE_INPUT_TOKENS: &str = "cacheWriteInputTokens";
+const CFG_SCALE: &str = "cfgScale";
+const CITATIONS_CONTENT: &str = "citationsContent";
+const CONTENT_BLOCK_INDEX: &str = "contentBlockIndex";
+const DOCUMENT_CHAR: &str = "documentChar";
+const DOCUMENT_INDEX: &str = "documentIndex";
+const DUNDER_TYPE: &str = "__type";
+const GUARD_CONTENT: &str = "guardContent";
+const IMAGE_GENERATION_CONFIG: &str = "imageGenerationConfig";
+const INFERENCE_CONFIG: &str = "inferenceConfig";
+const INPUT_SCHEMA_CAMEL: &str = "inputSchema";
+const INPUT_TEXT: &str = "inputText";
+const INPUT_TEXT_TOKEN_COUNT: &str = "inputTextTokenCount";
+const INPUT_TOKENS_CAMEL: &str = "inputTokens";
+const INTERNAL_SERVER_EXCEPTION: &str = "internalServerException";
+const JSON_SCHEMA_CAMEL: &str = "jsonSchema";
+const MAX_TOKENS_CAMEL: &str = "maxTokens";
+const MODEL_STREAM_ERROR_EXCEPTION: &str = "modelStreamErrorException";
+const NEGATIVE_TEXT: &str = "negativeText";
+const NUMBER_OF_IMAGES: &str = "numberOfImages";
+const OUTPUT_CONFIG_CAMEL: &str = "outputConfig";
+const OUTPUT_TOKENS_CAMEL: &str = "outputTokens";
+const REASONING_CONFIG: &str = "reasoningConfig";
+const REASONING_CONTENT: &str = "reasoningContent";
+const REASONING_TEXT: &str = "reasoningText";
+const REDACTED_CONTENT: &str = "redactedContent";
+const SEARCH_RESULT_INDEX: &str = "searchResultIndex";
+const SEARCH_RESULT_LOCATION_CAMEL: &str = "searchResultLocation";
+const SERVICE_UNAVAILABLE_EXCEPTION: &str = "serviceUnavailableException";
+const SOURCE_CONTENT: &str = "sourceContent";
+const STOP_REASON: &str = "stopReason";
+const TEXT_FORMAT: &str = "textFormat";
+const TEXT_TO_IMAGE_PARAMS: &str = "textToImageParams";
+const THROTTLING_EXCEPTION: &str = "throttlingException";
+const TOOL_CHOICE_CAMEL: &str = "toolChoice";
+const TOOL_RESULT: &str = "toolResult";
+const TOOL_SPEC: &str = "toolSpec";
+const TOOL_USE_CAMEL: &str = "toolUse";
+const TOOL_USE_ID: &str = "toolUseId";
+const TOP_K_CAMEL: &str = "topK";
+const TOTAL_TOKENS_CAMEL: &str = "totalTokens";
+const VALIDATION_EXCEPTION: &str = "validationException";
+
+// Media container / format tokens and their MIME spellings.
+const APPLICATION_MSWORD: &str = "application/msword";
+const APPLICATION_VND_MS_EXCEL: &str = "application/vnd.ms-excel";
+const APPLICATION_VND_OPENXMLFORMATS_OFFICEDOCUMENT_SPREADSHEETML_SHEET: &str =
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const APPLICATION_VND_OPENXMLFORMATS_OFFICEDOCUMENT_WORDPROCESSINGML_DOCUMENT: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const DOC: &str = "doc";
+const DOCX: &str = "docx";
+const FLV: &str = "flv";
+const GIF: &str = "gif";
+const MKV: &str = "mkv";
+const MOV: &str = "mov";
+const MP4: &str = "mp4";
+const MPEG: &str = "mpeg";
+const MPG: &str = "mpg";
+const PDF: &str = "pdf";
+const PNG: &str = "png";
+const THREE_GP: &str = "three_gp";
+const WEBM: &str = "webm";
+const WEBP: &str = "webp";
+const WMV: &str = "wmv";
+const XLS: &str = "xls";
+const XLSX: &str = "xlsx";
+
+// Other wire words.
+const B: &str = "b";
+const CONTENT_FILTERED: &str = "content_filtered";
+const HEIGHT: &str = "height";
+const IMAGES: &str = "images";
+const LOCATION: &str = "location";
+const NORMALIZE: &str = "normalize";
+const S3_LOCATION: &str = "s3Location";
+const STRUCTURE: &str = "structure";
+const TOP_K: &str = "top_k";
+const TRACE: &str = "trace";
+const TTL: &str = "ttl";
+const VIDEO: &str = "video";
+const WIDTH: &str = "width";
+
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
 /// resolution, exactly as the registry's field doc requires. Mirrors `super::anthropic::protocol`.
 pub fn protocol() -> Protocol {
-    Protocol::new("bedrock", BedrockReader, BedrockWriter)
+    Protocol::new(VENDOR_NAME, BedrockReader, BedrockWriter)
 }
 
 /// BEDROCK'S ROUTER DETECTION — its rungs of the old core `protocol_id` ladder: the AWS SigV4
@@ -85,7 +178,7 @@ fn residual_claims(path: &str) -> Option<busbar_contract::protocol::ClaimStrengt
 /// cross-protocol seam LOGS the drop — a guardrail assessment is an AWS account artifact no other
 /// protocol can carry. The top-level lookup is Bedrock's own shape and stays here, off core.
 fn vendor_response_metadata(body: &serde_json::Value) -> Vec<&'static str> {
-    ["trace"]
+    [TRACE]
         .into_iter()
         .filter(|k| body.get(k).is_some())
         .collect()
@@ -94,11 +187,11 @@ fn vendor_response_metadata(body: &serde_json::Value) -> Vec<&'static str> {
 /// BEDROCK'S DECLARATION. The only protocol declaring SigV4 ingress auth and a non-SSE streaming
 /// content type — the two facts core used to learn by allocating a reader and a writer to ask.
 pub const DECL: ProtocolDecl = ProtocolDecl {
-    name: "bedrock",
+    name: VENDOR_NAME,
     codec: {
         // The dialect's neutral codec facade as a STATIC, so the decl hands out a `&'static dyn`
         // borrow (pure memory, zero alloc per `dialect()` call) — the seam's perf contract.
-        static CODEC: super::proto_codec::DialectRef = super::proto_codec::dialect_ref("bedrock");
+        static CODEC: super::proto_codec::DialectRef = super::proto_codec::dialect_ref(VENDOR_NAME);
         Some(&CODEC)
     },
     handler: Some(&handler::BedrockRequestHandler),
@@ -124,7 +217,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_auth_headers: None,
     egress_auth_lane_constant: false,
     egress_scheme: Some(EgressScheme::SigV4 {
-        service: "bedrock",
+        service: VENDOR_NAME,
         region_of_host: declared_sigv4_region,
         default_region: "us-east-1",
         content_type: busbar_contract::protocol::APPLICATION_JSON,
@@ -150,7 +243,10 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // `test_egress_ua_versions_are_pinned_and_present` guards drift.
     egress_user_agent: "Boto3/1.35.0 md/Botocore#1.35.0",
     has_model_in_url: true,
-    auth_failure_status_and_kind: (busbar_contract::http::StatusCode::FORBIDDEN, "auth"),
+    auth_failure_status_and_kind: (
+        busbar_contract::http::StatusCode::FORBIDDEN,
+        keys::AUTH_WORD,
+    ),
     ingress_relays_amzn_headers: true,
     ingress_relayed_response_header_names: &[HDR_AMZN_REQUEST_ID, HDR_AMZN_ERROR_TYPE],
     auth_failure_message: "",
@@ -217,9 +313,11 @@ pub fn error_kind_to_bedrock_type(kind: &str) -> &'static str {
             EXC_VALIDATION
         }
         ERR_TYPE_RATE_LIMIT | "rate_limit" | "too_many_requests" | "throttling" => EXC_THROTTLING,
-        ERR_TYPE_AUTHENTICATION | ERR_TYPE_PERMISSION | "auth" | "forbidden" | "unauthorized" => {
-            "AccessDeniedException"
-        }
+        ERR_TYPE_AUTHENTICATION
+        | ERR_TYPE_PERMISSION
+        | keys::AUTH_WORD
+        | "forbidden"
+        | "unauthorized" => "AccessDeniedException",
         "not_found" | ERR_TYPE_NOT_FOUND | "model_not_found" => "ResourceNotFoundException",
         busbar_contract::protocol::KIND_TIMEOUT | "model_timeout" => "ModelTimeoutException",
         busbar_contract::protocol::KIND_OVERLOADED
@@ -453,9 +551,9 @@ const TOP_K_CAMEL_SENTINEL: &str = "__busbar_top_k_camel";
 fn read_bedrock_reasoning_block(
     reasoning: &serde_json::Value,
 ) -> Option<crate::codec::ir::IrBlock> {
-    if let Some(reasoning_text) = reasoning.get("reasoningText") {
+    if let Some(reasoning_text) = reasoning.get(REASONING_TEXT) {
         let text = reasoning_text
-            .get("text")
+            .get(keys::TEXT)
             .and_then(|t| t.as_str())
             .unwrap_or("")
             .to_string();
@@ -464,7 +562,7 @@ fn read_bedrock_reasoning_block(
         // is left for the caller to derive from the model id.
         let (signature, signature_origin) = crate::codec::ir::sig_envelope::read_carried_opt(
             reasoning_text
-                .get("signature")
+                .get(keys::SIGNATURE)
                 .and_then(|s| s.as_str().map(String::from)),
             None,
         );
@@ -477,7 +575,7 @@ fn read_bedrock_reasoning_block(
             signature_origin,
         });
     }
-    if let Some(redacted) = reasoning.get("redactedContent").and_then(|r| r.as_str()) {
+    if let Some(redacted) = reasoning.get(REDACTED_CONTENT).and_then(|r| r.as_str()) {
         return Some(crate::codec::ir::IrBlock::Thinking {
             text: redacted.to_string(),
             signature: None,
@@ -504,14 +602,14 @@ fn bedrock_reasoning_block(
     redacted: bool,
 ) -> serde_json::Value {
     if redacted {
-        return serde_json::json!({ "reasoningContent": { "redactedContent": text } });
+        return serde_json::json!({ (REASONING_CONTENT): { (REDACTED_CONTENT): text } });
     }
     let mut reasoning_text = serde_json::Map::new();
-    reasoning_text.insert("text".to_string(), serde_json::json!(text));
+    reasoning_text.insert(keys::TEXT.to_string(), serde_json::json!(text));
     if let Some(sig) = signature {
-        reasoning_text.insert("signature".to_string(), serde_json::json!(sig));
+        reasoning_text.insert(keys::SIGNATURE.to_string(), serde_json::json!(sig));
     }
-    serde_json::json!({ "reasoningContent": { "reasoningText": serde_json::Value::Object(reasoning_text) } })
+    serde_json::json!({ (REASONING_CONTENT): { (REASONING_TEXT): serde_json::Value::Object(reasoning_text) } })
 }
 
 /// Build a native Bedrock Converse `image` block body (`{ "format", "source": { … } }`) from a typed
@@ -531,19 +629,19 @@ fn bedrock_image_block(source: &crate::codec::ir::IrImageSource) -> Option<serde
     match source {
         // A Bedrock-produced vendor reference is an `s3Location` (stored as `{format, s3Location}`);
         // re-emit it faithfully. A vendor reference from ANOTHER protocol has no Bedrock projection.
-        crate::codec::ir::IrImageSource::Vendor { vendor, value } if *vendor == "bedrock" => {
+        crate::codec::ir::IrImageSource::Vendor { vendor, value } if *vendor == VENDOR_NAME => {
             let format_str = value
-                .get("format")
+                .get(keys::FORMAT)
                 .and_then(|f| f.as_str())
                 .filter(|s| !s.is_empty())
-                .unwrap_or("png");
+                .unwrap_or(PNG);
             let s3_location = value
-                .get("s3Location")
+                .get(S3_LOCATION)
                 .cloned()
                 .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
             Some(serde_json::json!({
-                "format": format_str,
-                "source": { "s3Location": s3_location }
+                (keys::FORMAT): format_str,
+                (keys::SOURCE): { (S3_LOCATION): s3_location }
             }))
         }
         // Bedrock Converse has no arbitrary-URL image source, and a foreign vendor reference (a
@@ -564,17 +662,17 @@ fn bedrock_image_block(source: &crate::codec::ir::IrImageSource) -> Option<serde
             // valid rather than emit a `format: ""` the SDK rejects.
             let format_str = match media_type.strip_prefix("image/").filter(|s| !s.is_empty()) {
                 Some(subtype) => match subtype.to_ascii_lowercase().as_str() {
-                    "jpeg" | "jpg" => "jpeg",
-                    "png" => "png",
-                    "gif" => "gif",
-                    "webp" => "webp",
+                    keys::JPEG | "jpg" => keys::JPEG,
+                    PNG => PNG,
+                    GIF => GIF,
+                    WEBP => WEBP,
                     _ => {
                         tracing::warn!(
                             media_type = %media_type,
                             "coercing unsupported image subtype to format=png: not a member of \
                              Bedrock Converse's ImageFormat union {{png, jpeg, gif, webp}}"
                         );
-                        "png"
+                        PNG
                     }
                 },
                 None => {
@@ -583,18 +681,18 @@ fn bedrock_image_block(source: &crate::codec::ir::IrImageSource) -> Option<serde
                         "coercing malformed image media_type to format=png: not a well-formed \
                          'image/<subtype>'"
                     );
-                    "png"
+                    PNG
                 }
             };
             Some(serde_json::json!({
-                "format": format_str,
-                "source": { "bytes": data }
+                (keys::FORMAT): format_str,
+                (keys::SOURCE): { (keys::BYTES): data }
             }))
         }
     }
 }
 
-/// The `vendor` tag on an [`crate::codec::ir::IrImageSource::Vendor`] this protocol produces — a Bedrock
+/// This dialect's name, spelled once: the `vendor` tag on an [`crate::codec::ir::IrImageSource::Vendor`] this protocol produces — a Bedrock
 /// `s3Location` document/video/image source, which names an S3 object in the CALLER's AWS account
 /// and is meaningless to any other backend.
 const VENDOR_NAME: &str = "bedrock";
@@ -609,14 +707,20 @@ fn bedrock_media_block(
     kind: crate::codec::ir::IrMediaKind,
     value: &serde_json::Value,
 ) -> crate::codec::ir::IrBlock {
-    let format = value.get("format").and_then(|v| v.as_str()).unwrap_or("");
+    let format = value
+        .get(keys::FORMAT)
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let name = value
-        .get("name")
+        .get(keys::NAME)
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(String::from);
-    let source = value.get("source");
-    let ir_source = match source.and_then(|s| s.get("bytes")).and_then(|b| b.as_str()) {
+    let source = value.get(keys::SOURCE);
+    let ir_source = match source
+        .and_then(|s| s.get(keys::BYTES))
+        .and_then(|b| b.as_str())
+    {
         Some(bytes) => crate::codec::ir::IrImageSource::Base64 {
             media_type: bedrock_media_type_for_format(kind, format),
             data: bytes.to_string(),
@@ -646,11 +750,11 @@ fn bedrock_media_block(
     let (citations, context) = if kind == crate::codec::ir::IrMediaKind::Document {
         (
             value
-                .get("citations")
-                .and_then(|c| c.get("enabled"))
+                .get(keys::CITATIONS)
+                .and_then(|c| c.get(keys::ENABLED))
                 .and_then(|e| e.as_bool()),
             value
-                .get("context")
+                .get(keys::CONTEXT)
                 .and_then(|c| c.as_str())
                 .map(String::from),
         )
@@ -672,14 +776,14 @@ fn bedrock_media_block(
 /// bytes/s3 source.
 fn bedrock_document_text(source: Option<&serde_json::Value>) -> Option<String> {
     let source = source?;
-    if let Some(t) = source.get("text").and_then(|t| t.as_str()) {
+    if let Some(t) = source.get(keys::TEXT).and_then(|t| t.as_str()) {
         return Some(t.to_string());
     }
     let parts: Vec<&str> = source
-        .get("content")?
+        .get(keys::CONTENT)?
         .as_array()?
         .iter()
-        .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+        .filter_map(|p| p.get(keys::TEXT).and_then(|t| t.as_str()))
         .collect();
     (!parts.is_empty()).then(|| parts.join("\n"))
 }
@@ -691,7 +795,7 @@ fn bedrock_text_media_type(format: &str) -> String {
     if m.starts_with("text/") {
         m
     } else {
-        "text/plain".to_string()
+        keys::TEXT_PLAIN.to_string()
     }
 }
 
@@ -706,16 +810,14 @@ fn bedrock_media_type_for_format(kind: crate::codec::ir::IrMediaKind, format: &s
         return m.to_string();
     }
     match token.as_str() {
-        "doc" => "application/msword".to_string(),
-        "docx" => {
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string()
-        }
-        "xls" => "application/vnd.ms-excel".to_string(),
-        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string(),
-        "mp4" | "mov" | "webm" | "flv" | "mpeg" | "mpg" | "wmv" | "mkv" => {
+        DOC => APPLICATION_MSWORD.to_string(),
+        DOCX => APPLICATION_VND_OPENXMLFORMATS_OFFICEDOCUMENT_WORDPROCESSINGML_DOCUMENT.to_string(),
+        XLS => APPLICATION_VND_MS_EXCEL.to_string(),
+        XLSX => APPLICATION_VND_OPENXMLFORMATS_OFFICEDOCUMENT_SPREADSHEETML_SHEET.to_string(),
+        MP4 | MOV | WEBM | FLV | MPEG | MPG | WMV | MKV => {
             format!("video/{format}")
         }
-        "three_gp" => "video/3gpp".to_string(),
+        THREE_GP => "video/3gpp".to_string(),
         _ => match kind {
             crate::codec::ir::IrMediaKind::Document => "application/octet-stream".to_string(),
             crate::codec::ir::IrMediaKind::Audio => "audio/mpeg".to_string(),
@@ -738,8 +840,10 @@ fn bedrock_media_content_block(
     context: Option<&str>,
 ) -> Option<serde_json::Value> {
     let (wire_key, format) = match kind {
-        crate::codec::ir::IrMediaKind::Document => ("document", bedrock_document_format(source)?),
-        crate::codec::ir::IrMediaKind::Video => ("video", bedrock_video_format(source)?),
+        crate::codec::ir::IrMediaKind::Document => {
+            (keys::DOCUMENT, bedrock_document_format(source)?)
+        }
+        crate::codec::ir::IrMediaKind::Video => (VIDEO, bedrock_video_format(source)?),
         crate::codec::ir::IrMediaKind::Audio => {
             tracing::warn!(
                 "dropping audio attachment on Bedrock egress: Converse has `document` and `video` \
@@ -751,7 +855,7 @@ fn bedrock_media_content_block(
     };
     let wire_source = match source {
         crate::codec::ir::IrImageSource::Base64 { data, .. } => {
-            serde_json::json!({ "bytes": data })
+            serde_json::json!({ (keys::BYTES): data })
         }
         crate::codec::ir::IrImageSource::Vendor { vendor, value } if *vendor == VENDOR_NAME => {
             value.clone()
@@ -767,29 +871,29 @@ fn bedrock_media_content_block(
         }
     };
     let mut block = serde_json::Map::new();
-    block.insert("format".to_string(), serde_json::json!(format));
+    block.insert(keys::FORMAT.to_string(), serde_json::json!(format));
     // Converse REQUIRES `name` on a document block. A cross-protocol attachment often has none
     // (Gemini `inlineData` carries no filename), so synthesize one rather than emit a block AWS
     // rejects for a missing required field.
     if kind == crate::codec::ir::IrMediaKind::Document {
         block.insert(
-            "name".to_string(),
+            keys::NAME.to_string(),
             serde_json::json!(name.unwrap_or("attachment")),
         );
     } else if let Some(n) = name {
-        block.insert("name".to_string(), serde_json::json!(n));
+        block.insert(keys::NAME.to_string(), serde_json::json!(n));
     }
-    block.insert("source".to_string(), wire_source);
+    block.insert(keys::SOURCE.to_string(), wire_source);
     // IR-12: the document's citation switch and context ride Converse's `DocumentBlock` natively.
     // A `VideoBlock` has no such members, so on a video they are dropped (with a warn when set).
     if kind == crate::codec::ir::IrMediaKind::Document {
         if let Some(c) = context {
-            block.insert("context".to_string(), serde_json::json!(c));
+            block.insert(keys::CONTEXT.to_string(), serde_json::json!(c));
         }
         if let Some(enabled) = citations {
             block.insert(
-                "citations".to_string(),
-                serde_json::json!({ "enabled": enabled }),
+                keys::CITATIONS.to_string(),
+                serde_json::json!({ (keys::ENABLED): enabled }),
             );
         }
     } else if citations.is_some() || context.is_some() {
@@ -808,18 +912,18 @@ fn bedrock_document_format(source: &crate::codec::ir::IrImageSource) -> Option<&
     // A vendor (s3Location) source carries no mime; Converse still requires a format, and `pdf` is
     // the overwhelmingly common document a caller puts in S3 for a model to read.
     let crate::codec::ir::IrImageSource::Base64 { media_type, .. } = source else {
-        return Some("pdf");
+        return Some(PDF);
     };
     let f = match media_type.to_ascii_lowercase().as_str() {
-        "application/pdf" => "pdf",
+        "application/pdf" => PDF,
         "text/csv" => "csv",
-        "text/plain" => "txt",
+        keys::TEXT_PLAIN => "txt",
         "text/markdown" | "text/x-markdown" => "md",
         "text/html" => "html",
-        "application/msword" => "doc",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => "docx",
-        "application/vnd.ms-excel" => "xls",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => "xlsx",
+        APPLICATION_MSWORD => DOC,
+        APPLICATION_VND_OPENXMLFORMATS_OFFICEDOCUMENT_WORDPROCESSINGML_DOCUMENT => DOCX,
+        APPLICATION_VND_MS_EXCEL => XLS,
+        APPLICATION_VND_OPENXMLFORMATS_OFFICEDOCUMENT_SPREADSHEETML_SHEET => XLSX,
         other => {
             tracing::warn!(
                 media_type = %other,
@@ -836,21 +940,21 @@ fn bedrock_document_format(source: &crate::codec::ir::IrImageSource) -> Option<&
 /// Mime type → a member of Converse's closed `VideoFormat` union, or `None` (drop with a warn).
 fn bedrock_video_format(source: &crate::codec::ir::IrImageSource) -> Option<&'static str> {
     let crate::codec::ir::IrImageSource::Base64 { media_type, .. } = source else {
-        return Some("mp4");
+        return Some(MP4);
     };
     let subtype = media_type
         .to_ascii_lowercase()
         .strip_prefix("video/")
         .map(String::from);
     let f = match subtype.as_deref() {
-        Some("mp4") => "mp4",
-        Some("quicktime") | Some("mov") => "mov",
-        Some("webm") => "webm",
-        Some("x-flv") | Some("flv") => "flv",
-        Some("mpeg") | Some("mpg") => "mpeg",
-        Some("x-ms-wmv") | Some("wmv") => "wmv",
-        Some("x-matroska") | Some("mkv") => "mkv",
-        Some("3gpp") => "three_gp",
+        Some(MP4) => MP4,
+        Some("quicktime") | Some(MOV) => MOV,
+        Some(WEBM) => WEBM,
+        Some("x-flv") | Some(FLV) => FLV,
+        Some(MPEG) | Some(MPG) => MPEG,
+        Some("x-ms-wmv") | Some(WMV) => WMV,
+        Some("x-matroska") | Some(MKV) => MKV,
+        Some("3gpp") => THREE_GP,
         _ => {
             tracing::warn!(
                 media_type = %media_type,
@@ -873,7 +977,7 @@ fn bedrock_video_format(source: &crate::codec::ir::IrImageSource) -> Option<&'st
 /// Bedrock expects (the breakpoint sits after the content it closes). Factored out so the one marker
 /// shape has a single definition and the cross-protocol write path is unit-testable.
 fn bedrock_cache_point() -> serde_json::Value {
-    serde_json::json!({ "cachePoint": { "type": "default" } })
+    serde_json::json!({ (CACHE_POINT): { (keys::TYPE): "default" } })
 }
 
 /// Read a native reasoning ASK off a Converse `additionalModelRequestFields` object (BED-06). Two
@@ -891,16 +995,17 @@ fn read_bedrock_reasoning_ask(
 ) -> Option<crate::codec::ir::IrReasoningAsk> {
     use crate::codec::ir::IrReasoningAsk as Ask;
     let amrf = amrf?;
-    let type_of = |v: &serde_json::Value| v.get("type").and_then(|t| t.as_str()).map(String::from);
+    let type_of =
+        |v: &serde_json::Value| v.get(keys::TYPE).and_then(|t| t.as_str()).map(String::from);
     let effort = amrf
-        .get("output_config")
-        .and_then(|c| c.get("effort"))
+        .get(keys::OUTPUT_CONFIG)
+        .and_then(|c| c.get(keys::EFFORT))
         .and_then(|e| e.as_str())
         .and_then(read_bedrock_claude_effort_word);
-    if let Some(thinking) = amrf.get("thinking") {
+    if let Some(thinking) = amrf.get(keys::THINKING) {
         return match type_of(thinking).as_deref() {
-            Some("enabled") => thinking
-                .get("budget_tokens")
+            Some(keys::ENABLED) => thinking
+                .get(keys::BUDGET_TOKENS)
                 .and_then(|v| v.as_u64())
                 .and_then(|v| u32::try_from(v).ok())
                 .map(Ask::Budget),
@@ -909,9 +1014,9 @@ fn read_bedrock_reasoning_ask(
             _ => None,
         };
     }
-    if let Some(rc) = amrf.get("reasoningConfig") {
+    if let Some(rc) = amrf.get(REASONING_CONFIG) {
         return match type_of(rc).as_deref() {
-            Some("enabled") => rc
+            Some(keys::ENABLED) => rc
                 .get("maxReasoningEffort")
                 .and_then(|e| e.as_str())
                 .and_then(crate::codec::ir::IrReasoningEffort::parse)
@@ -952,19 +1057,22 @@ fn bedrock_claude_effort_word(effort: crate::codec::ir::IrReasoningEffort) -> &'
 fn read_bedrock_response_format(
     body: &serde_json::Map<String, serde_json::Value>,
 ) -> Option<crate::codec::ir::IrResponseFormat> {
-    let tf = body.get("outputConfig")?.get("textFormat")?;
-    if tf.get("type").and_then(|t| t.as_str()) != Some("json_schema") {
+    let tf = body.get(OUTPUT_CONFIG_CAMEL)?.get(TEXT_FORMAT)?;
+    if tf.get(keys::TYPE).and_then(|t| t.as_str()) != Some(keys::JSON_SCHEMA) {
         return None;
     }
-    let js = tf.get("structure")?.get("jsonSchema")?;
-    let schema: serde_json::Value = serde_json::from_str(js.get("schema")?.as_str()?).ok()?;
+    let js = tf.get(STRUCTURE)?.get(JSON_SCHEMA_CAMEL)?;
+    let schema: serde_json::Value = serde_json::from_str(js.get(keys::SCHEMA)?.as_str()?).ok()?;
     Some(crate::codec::ir::IrResponseFormat {
         json: true,
         schema: Some(schema),
-        name: js.get("name").and_then(|n| n.as_str()).map(String::from),
+        name: js
+            .get(keys::NAME)
+            .and_then(|n| n.as_str())
+            .map(String::from),
         strict: None,
         description: js
-            .get("description")
+            .get(keys::DESCRIPTION)
             .and_then(|d| d.as_str())
             .map(String::from),
     })
@@ -979,16 +1087,19 @@ fn write_bedrock_text_format(rf: &crate::codec::ir::IrResponseFormat) -> Option<
     }
     let schema = rf.schema.as_ref()?;
     let mut js = serde_json::Map::new();
-    js.insert("schema".to_string(), serde_json::json!(schema.to_string()));
+    js.insert(
+        keys::SCHEMA.to_string(),
+        serde_json::json!(schema.to_string()),
+    );
     if let Some(n) = rf.name.as_deref().filter(|s| !s.is_empty()) {
-        js.insert("name".to_string(), serde_json::json!(n));
+        js.insert(keys::NAME.to_string(), serde_json::json!(n));
     }
     if let Some(d) = rf.description.as_deref().filter(|s| !s.is_empty()) {
-        js.insert("description".to_string(), serde_json::json!(d));
+        js.insert(keys::DESCRIPTION.to_string(), serde_json::json!(d));
     }
     Some(serde_json::json!({
-        "type": "json_schema",
-        "structure": { "jsonSchema": serde_json::Value::Object(js) }
+        (keys::TYPE): keys::JSON_SCHEMA,
+        (STRUCTURE): { (JSON_SCHEMA_CAMEL): serde_json::Value::Object(js) }
     }))
 }
 
@@ -1042,10 +1153,10 @@ fn splice_cache_points(arr: &mut Vec<serde_json::Value>, entries: &[serde_json::
     // Collect (index, block) pairs, then sort by index so ascending insertion preserves layout.
     let mut pending: Vec<(usize, serde_json::Value)> = Vec::new();
     for entry in entries {
-        let Some(idx) = entry.get("i").and_then(|v| v.as_u64()) else {
+        let Some(idx) = entry.get(keys::I).and_then(|v| v.as_u64()) else {
             continue;
         };
-        let Some(block) = entry.get("block") else {
+        let Some(block) = entry.get(keys::BLOCK) else {
             continue;
         };
         pending.push((idx as usize, block.clone()));
@@ -1142,7 +1253,7 @@ pub(crate) fn derive_sigv4_region(host: &str) -> Option<&str> {
     for (i, label) in labels.iter().enumerate() {
         if matches!(
             *label,
-            "bedrock-runtime" | "bedrock-runtime-fips" | "bedrock" | "bedrock-fips"
+            "bedrock-runtime" | "bedrock-runtime-fips" | VENDOR_NAME | "bedrock-fips"
         ) {
             if let Some(next) = labels.get(i + 1) {
                 if looks_like_region(next) {
@@ -1168,14 +1279,17 @@ pub(crate) fn derive_sigv4_region(host: &str) -> Option<&str> {
 /// content-less image is not injected as an empty-bytes block.
 fn read_bedrock_image_block(image: &serde_json::Value) -> Option<crate::codec::ir::IrBlock> {
     let format_str = image
-        .get("format")
+        .get(keys::FORMAT)
         .and_then(|f| f.as_str())
         .unwrap_or("")
         .to_string();
-    let source = image.get("source");
+    let source = image.get(keys::SOURCE);
 
     // Prefer inline base64 `bytes`.
-    if let Some(bytes) = source.and_then(|s| s.get("bytes")).and_then(|b| b.as_str()) {
+    if let Some(bytes) = source
+        .and_then(|s| s.get(keys::BYTES))
+        .and_then(|b| b.as_str())
+    {
         return Some(crate::codec::ir::IrBlock::Image {
             source: crate::codec::ir::IrImageSource::Base64 {
                 media_type: format!("image/{}", format_str),
@@ -1189,14 +1303,14 @@ fn read_bedrock_image_block(image: &serde_json::Value) -> Option<crate::codec::i
     // Otherwise, an `s3Location` source — a Bedrock-scoped reference the typed `S3` variant carries
     // as `{format, s3Location}` so the writer re-emits a faithful `source.s3Location` block on
     // same-protocol egress instead of dropping the image.
-    if let Some(s3_location) = source.and_then(|s| s.get("s3Location")) {
+    if let Some(s3_location) = source.and_then(|s| s.get(S3_LOCATION)) {
         if s3_location.is_object() {
             return Some(crate::codec::ir::IrBlock::Image {
                 source: crate::codec::ir::IrImageSource::Vendor {
-                    vendor: "bedrock",
+                    vendor: VENDOR_NAME,
                     value: serde_json::json!({
-                        "format": format_str,
-                        "s3Location": s3_location.clone(),
+                        (keys::FORMAT): format_str,
+                        (S3_LOCATION): s3_location.clone(),
                     }),
                 },
                 cache_control: None,
@@ -1214,8 +1328,8 @@ fn read_bedrock_image_block(image: &serde_json::Value) -> Option<crate::codec::i
 /// neither member.
 fn guard_content_block(guard: &serde_json::Value) -> Option<crate::codec::ir::IrBlock> {
     if let Some(t) = guard
-        .get("text")
-        .and_then(|t| t.get("text"))
+        .get(keys::TEXT)
+        .and_then(|t| t.get(keys::TEXT))
         .and_then(|t| t.as_str())
     {
         return Some(crate::codec::ir::IrBlock::Text {
@@ -1225,7 +1339,7 @@ fn guard_content_block(guard: &serde_json::Value) -> Option<crate::codec::ir::Ir
             refusal: false,
         });
     }
-    guard.get("image").and_then(read_bedrock_image_block)
+    guard.get(keys::IMAGE).and_then(read_bedrock_image_block)
 }
 
 /// The IR indices of the blocks the reader MODELLED out of a stashed wire block (the `b` member of a
@@ -1241,8 +1355,8 @@ fn stashed_ir_indices<'a>(
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|e| msg.is_none_or(|m| e.get("m").and_then(|v| v.as_u64()) == Some(m as u64)))
-        .filter_map(|e| e.get("b").and_then(|v| v.as_u64()))
+        .filter(|e| msg.is_none_or(|m| e.get(keys::M).and_then(|v| v.as_u64()) == Some(m as u64)))
+        .filter_map(|e| e.get(B).and_then(|v| v.as_u64()))
         .map(|b| b as usize)
         .collect()
 }
@@ -1257,17 +1371,17 @@ fn stashed_ir_indices<'a>(
 fn read_bedrock_tool_choice(
     tool_config: Option<&serde_json::Value>,
 ) -> Option<crate::codec::ir::IrToolChoice> {
-    let tc = tool_config?.get("toolChoice")?.as_object()?;
-    if tc.contains_key("auto") {
+    let tc = tool_config?.get(TOOL_CHOICE_CAMEL)?.as_object()?;
+    if tc.contains_key(keys::AUTO) {
         Some(crate::codec::ir::IrToolChoice::Auto)
-    } else if tc.contains_key("any") {
+    } else if tc.contains_key(keys::ANY) {
         Some(crate::codec::ir::IrToolChoice::Required)
-    } else if let Some(tool) = tc.get("tool") {
-        tool.get("name")
-            .and_then(|n| n.as_str())
-            .map(|name| crate::codec::ir::IrToolChoice::Tool {
+    } else if let Some(tool) = tc.get(keys::TOOL) {
+        tool.get(keys::NAME).and_then(|n| n.as_str()).map(|name| {
+            crate::codec::ir::IrToolChoice::Tool {
                 name: name.to_string(),
-            })
+            }
+        })
     } else {
         None
     }
@@ -1280,8 +1394,8 @@ fn read_bedrock_tool_choice(
 /// applies its own default) rather than emit an invalid shape.
 fn write_bedrock_tool_choice(tc: &crate::codec::ir::IrToolChoice) -> Option<serde_json::Value> {
     match tc {
-        crate::codec::ir::IrToolChoice::Auto => Some(serde_json::json!({"auto": {}})),
-        crate::codec::ir::IrToolChoice::Required => Some(serde_json::json!({"any": {}})),
+        crate::codec::ir::IrToolChoice::Auto => Some(serde_json::json!({(keys::AUTO): {}})),
+        crate::codec::ir::IrToolChoice::Required => Some(serde_json::json!({(keys::ANY): {}})),
         crate::codec::ir::IrToolChoice::Tool { name } => {
             // AWS documents `toolChoice.tool` (force this SPECIFIC tool) as Anthropic-Claude-only
             // on Converse — Titan/Llama/other model families reject it. The writer cannot gate on
@@ -1296,7 +1410,7 @@ fn write_bedrock_tool_choice(tc: &crate::codec::ir::IrToolChoice) -> Option<serd
                  not Claude will reject it; the writer has no way to know which model this request \
                  targets"
             );
-            Some(serde_json::json!({"tool": {"name": name}}))
+            Some(serde_json::json!({(keys::TOOL): {(keys::NAME): name}}))
         }
         crate::codec::ir::IrToolChoice::None => None,
     }
@@ -1306,12 +1420,12 @@ fn write_bedrock_tool_choice(tc: &crate::codec::ir::IrToolChoice) -> Option<serd
 fn stop_reason_map(ward: &str) -> crate::codec::ir::IrStopReason {
     use crate::codec::ir::IrStopReason as S;
     match ward {
-        "end_turn" => S::EndTurn,
-        "tool_use" => S::ToolUse,
-        "max_tokens" => S::MaxTokens,
-        "stop_sequence" => S::StopSequence,
+        keys::END_TURN => S::EndTurn,
+        keys::TOOL_USE => S::ToolUse,
+        keys::MAX_TOKENS => S::MaxTokens,
+        keys::STOP_SEQUENCE => S::StopSequence,
         // Both moderation outcomes fold to the canonical `Safety`.
-        "content_filtered" | "guardrail_intervened" => S::Safety,
+        CONTENT_FILTERED | "guardrail_intervened" => S::Safety,
         // BED-10: generation ended because the model's CONTEXT WINDOW filled — output was cut off by
         // a token limit, which is what `MaxTokens` means to every client dialect (a dedicated
         // context-window reason needs the IR-16 slot).
@@ -1449,17 +1563,17 @@ fn stop_reason_reverse_detailed(
 fn stop_reason_reverse(canonical: crate::codec::ir::IrStopReason) -> &'static str {
     use crate::codec::ir::IrStopReason as S;
     match canonical {
-        S::EndTurn => "end_turn",
-        S::ToolUse => "tool_use",
-        S::MaxTokens => "max_tokens",
-        S::StopSequence => "stop_sequence",
-        S::Safety => "content_filtered",
+        S::EndTurn => keys::END_TURN,
+        S::ToolUse => keys::TOOL_USE,
+        S::MaxTokens => keys::MAX_TOKENS,
+        S::StopSequence => keys::STOP_SEQUENCE,
+        S::Safety => CONTENT_FILTERED,
         // BED-09: a model REFUSAL is a content-policy stop; Converse's closed enum spells that
         // `content_filtered` (the refusal text itself still rides the content).
-        S::Refusal => "content_filtered",
+        S::Refusal => CONTENT_FILTERED,
         // error / pause_turn / other → end_turn rather than an off-spec value a strict Converse
         // client rejects.
-        S::Error | S::PauseTurn | S::Other => "end_turn",
+        S::Error | S::PauseTurn | S::Other => keys::END_TURN,
     }
 }
 
@@ -1472,44 +1586,41 @@ fn stop_reason_reverse(canonical: crate::codec::ir::IrStopReason) -> &'static st
 /// reaches no tier (the `cacheWriteInputTokens` total still carries it). The buffered response, the
 /// stream's `metadata` frame and a truncated-body recovery read this one table.
 const USAGE: &[UsageCount] = &[
-    (CountSlot::Input, CountRead::Zero(&["inputTokens"])),
-    (CountSlot::Output, CountRead::Zero(&["outputTokens"])),
+    (CountSlot::Input, CountRead::Zero(&[INPUT_TOKENS_CAMEL])),
+    (CountSlot::Output, CountRead::Zero(&[OUTPUT_TOKENS_CAMEL])),
     (
         CountSlot::CacheWrite,
-        CountRead::Opt(&["cacheWriteInputTokens"]),
+        CountRead::Opt(&[CACHE_WRITE_INPUT_TOKENS]),
     ),
     (
         CountSlot::CacheRead,
-        CountRead::Opt(&["cacheReadInputTokens"]),
+        CountRead::Opt(&[CACHE_READ_INPUT_TOKENS]),
     ),
     (
         CountSlot::CacheWrite5m,
         CountRead::ListSum {
-            list: &["cacheDetails"],
-            key: "ttl",
+            list: &[CACHE_DETAILS],
+            key: TTL,
             value: CACHE_TTL_5M,
-            count: "inputTokens",
+            count: INPUT_TOKENS_CAMEL,
         },
     ),
     (
         CountSlot::CacheWrite1h,
         CountRead::ListSum {
-            list: &["cacheDetails"],
-            key: "ttl",
+            list: &[CACHE_DETAILS],
+            key: TTL,
             value: CACHE_TTL_1H,
-            count: "inputTokens",
+            count: INPUT_TOKENS_CAMEL,
         },
     ),
 ];
-
-/// This dialect's label on a refused usage count.
-const COUNT_LABEL: &str = "bedrock";
 
 /// A Bedrock Converse `usage` object (`None` when absent) → the IR usage, through [`USAGE`].
 fn read_bedrock_usage(
     usage_obj: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
-    crate::codec::usage_count::read_usage(COUNT_LABEL, usage_obj, USAGE)
+    crate::codec::usage_count::read_usage(VENDOR_NAME, usage_obj, USAGE)
 }
 
 /// The `CacheTTL` enum's two values, as the Bedrock service model spells them.
@@ -1526,16 +1637,13 @@ fn write_cache_details(
 ) {
     let mut details = Vec::new();
     if let Some(v) = usage.detail.cache_creation_1h_input_tokens {
-        details.push(serde_json::json!({ "ttl": CACHE_TTL_1H, "inputTokens": v }));
+        details.push(serde_json::json!({ (TTL): CACHE_TTL_1H, (INPUT_TOKENS_CAMEL): v }));
     }
     if let Some(v) = usage.detail.cache_creation_5m_input_tokens {
-        details.push(serde_json::json!({ "ttl": CACHE_TTL_5M, "inputTokens": v }));
+        details.push(serde_json::json!({ (TTL): CACHE_TTL_5M, (INPUT_TOKENS_CAMEL): v }));
     }
     if !details.is_empty() {
-        usage_obj.insert(
-            "cacheDetails".to_string(),
-            serde_json::Value::Array(details),
-        );
+        usage_obj.insert(CACHE_DETAILS.to_string(), serde_json::Value::Array(details));
     }
 }
 
@@ -1551,10 +1659,10 @@ fn write_cache_usage(
     usage: &crate::codec::ir::IrUsage,
 ) {
     if let Some(ccit) = usage.cache_creation_input_tokens {
-        usage_obj.insert("cacheWriteInputTokens".to_string(), ccit.into());
+        usage_obj.insert(CACHE_WRITE_INPUT_TOKENS.to_string(), ccit.into());
     }
     if let Some(crit) = usage.cache_read_input_tokens {
-        usage_obj.insert("cacheReadInputTokens".to_string(), crit.into());
+        usage_obj.insert(CACHE_READ_INPUT_TOKENS.to_string(), crit.into());
     }
     // The per-TTL breakdown of the write total above: priced separately, so carried separately.
     write_cache_details(usage_obj, usage);
@@ -1576,7 +1684,7 @@ const MAX_CONTENT_BLOCK_INDEX: u64 = 1023;
 /// can never be forwarded into an IR block index. Shared by all three stream read sites so the
 /// clamp stays uniform.
 fn clamp_content_block_index(data: &serde_json::Value) -> usize {
-    data.get("contentBlockIndex")
+    data.get(CONTENT_BLOCK_INDEX)
         .and_then(|i| i.as_u64())
         .unwrap_or(0)
         .min(MAX_CONTENT_BLOCK_INDEX) as usize

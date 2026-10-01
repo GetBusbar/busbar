@@ -14,6 +14,7 @@
 /// Returns `None` when the citation projects to nothing at all (no title, no url, no quoted text, no
 /// resolvable location) — emitting `{}` would put a member-less union on the wire that a Bedrock SDK
 /// rejects, which is the one thing translation must never do. The caller warns on `None`.
+use crate::codec::keys;
 pub(super) fn write_bedrock_citation(
     c: &crate::codec::ir::IrCitation,
 ) -> Option<serde_json::Value> {
@@ -22,13 +23,13 @@ pub(super) fn write_bedrock_citation(
     let title = c.title.as_deref().filter(|s| !s.is_empty());
     let url = c.url.as_deref().filter(|s| !s.is_empty());
     if let Some(t) = title {
-        obj.insert("title".to_string(), serde_json::json!(t));
+        obj.insert(keys::TITLE.to_string(), serde_json::json!(t));
     }
 
     if let Some(quoted) = c.cited_text.as_deref().filter(|s| !s.is_empty()) {
         obj.insert(
-            "sourceContent".to_string(),
-            serde_json::json!([{ "text": quoted }]),
+            super::SOURCE_CONTENT.to_string(),
+            serde_json::json!([{ (keys::TEXT): quoted }]),
         );
     }
 
@@ -39,19 +40,21 @@ pub(super) fn write_bedrock_citation(
     // quoted text still cross).
     let char_offsets = !matches!(
         c.kind.as_deref(),
-        Some("page_location") | Some("content_block_location") | Some("search_result_location")
+        Some(keys::PAGE_LOCATION)
+            | Some(keys::CONTENT_BLOCK_LOCATION)
+            | Some(keys::SEARCH_RESULT_LOCATION)
     );
     let mut located = false;
     if char_offsets {
         if let (Some(start), Some(end)) = (c.start_index, c.end_index) {
             if start >= 0 && end >= start {
                 obj.insert(
-                    "location".to_string(),
+                    super::LOCATION.to_string(),
                     serde_json::json!({
-                        "documentChar": {
-                            "documentIndex": c.document_index.unwrap_or(0).max(0),
-                            "start": start,
-                            "end": end,
+                        (super::DOCUMENT_CHAR): {
+                            (super::DOCUMENT_INDEX): c.document_index.unwrap_or(0).max(0),
+                            (keys::START): start,
+                            (keys::END): end,
                         }
                     }),
                 );
@@ -64,17 +67,17 @@ pub(super) fn write_bedrock_citation(
     // `searchResultLocation` member carries (the search result's index and the block span in it).
     // Written only when the result index is actually known — defaulting it to 0 would point at the
     // wrong search result.
-    if !located && c.kind.as_deref() == Some("search_result_location") {
+    if !located && c.kind.as_deref() == Some(keys::SEARCH_RESULT_LOCATION) {
         if let (Some(idx), Some(start), Some(end)) = (c.document_index, c.start_index, c.end_index)
         {
             if idx >= 0 && start >= 0 && end >= start {
                 obj.insert(
-                    "location".to_string(),
+                    super::LOCATION.to_string(),
                     serde_json::json!({
-                        "searchResultLocation": {
-                            "searchResultIndex": idx,
-                            "start": start,
-                            "end": end,
+                        (super::SEARCH_RESULT_LOCATION_CAMEL): {
+                            (super::SEARCH_RESULT_INDEX): idx,
+                            (keys::START): start,
+                            (keys::END): end,
                         }
                     }),
                 );
@@ -97,13 +100,13 @@ pub(super) fn write_bedrock_citation(
         } else {
             // BED-14: `domain` beside the url when the IR carries it.
             let mut web = serde_json::Map::new();
-            web.insert("url".to_string(), serde_json::json!(u));
+            web.insert(keys::URL.to_string(), serde_json::json!(u));
             if let Some(d) = c.domain.as_deref().filter(|d| !d.is_empty()) {
-                web.insert("domain".to_string(), serde_json::json!(d));
+                web.insert(keys::DOMAIN.to_string(), serde_json::json!(d));
             }
             obj.insert(
-                "location".to_string(),
-                serde_json::json!({ "web": serde_json::Value::Object(web) }),
+                super::LOCATION.to_string(),
+                serde_json::json!({ (keys::WEB): serde_json::Value::Object(web) }),
             );
         }
     }
@@ -123,73 +126,76 @@ pub(super) fn write_bedrock_citation(
 /// member Converse defines lands in a neutral field, and a Bedrock-shaped `raw` would only invite a
 /// foreign writer's verbatim-passthrough check to misfire on it.
 pub(super) fn read_bedrock_citation(c: &serde_json::Value) -> crate::codec::ir::IrCitation {
-    let loc = c.get("location");
+    let loc = c.get(super::LOCATION);
     let member = |k: &str| loc.and_then(|l| l.get(k)).filter(|v| v.is_object());
     let int =
         |v: Option<&serde_json::Value>, k: &str| v.and_then(|o| o.get(k)).and_then(|n| n.as_i64());
     let (kind, document_index, start_index, end_index, url) =
-        if let Some(m) = member("documentChar") {
+        if let Some(m) = member(super::DOCUMENT_CHAR) {
             (
                 Some("char_location"),
-                int(Some(m), "documentIndex"),
-                int(Some(m), "start"),
-                int(Some(m), "end"),
+                int(Some(m), super::DOCUMENT_INDEX),
+                int(Some(m), keys::START),
+                int(Some(m), keys::END),
                 None,
             )
         } else if let Some(m) = member("documentPage") {
             (
-                Some("page_location"),
-                int(Some(m), "documentIndex"),
-                int(Some(m), "start"),
-                int(Some(m), "end"),
+                Some(keys::PAGE_LOCATION),
+                int(Some(m), super::DOCUMENT_INDEX),
+                int(Some(m), keys::START),
+                int(Some(m), keys::END),
                 None,
             )
         } else if let Some(m) = member("documentChunk") {
             (
-                Some("content_block_location"),
-                int(Some(m), "documentIndex"),
-                int(Some(m), "start"),
-                int(Some(m), "end"),
+                Some(keys::CONTENT_BLOCK_LOCATION),
+                int(Some(m), super::DOCUMENT_INDEX),
+                int(Some(m), keys::START),
+                int(Some(m), keys::END),
                 None,
             )
-        } else if let Some(m) = member("searchResultLocation") {
+        } else if let Some(m) = member(super::SEARCH_RESULT_LOCATION_CAMEL) {
             (
-                Some("search_result_location"),
-                int(Some(m), "searchResultIndex"),
-                int(Some(m), "start"),
-                int(Some(m), "end"),
+                Some(keys::SEARCH_RESULT_LOCATION),
+                int(Some(m), super::SEARCH_RESULT_INDEX),
+                int(Some(m), keys::START),
+                int(Some(m), keys::END),
                 None,
             )
-        } else if let Some(m) = member("web") {
+        } else if let Some(m) = member(keys::WEB) {
             (
                 Some("web_search_result_location"),
                 None,
                 None,
                 None,
-                m.get("url").and_then(|u| u.as_str()).map(String::from),
+                m.get(keys::URL).and_then(|u| u.as_str()).map(String::from),
             )
         } else {
             (None, None, None, None, None)
         };
     let quoted: Vec<&str> = c
-        .get("sourceContent")
+        .get(super::SOURCE_CONTENT)
         .and_then(|s| s.as_array())
         .map(|a| {
             a.iter()
-                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                .filter_map(|p| p.get(keys::TEXT).and_then(|t| t.as_str()))
                 .collect()
         })
         .unwrap_or_default();
     // BED-14: the `web` location's `domain` member rides IrCitation.domain.
-    let domain = member("web")
-        .and_then(|m| m.get("domain"))
+    let domain = member(keys::WEB)
+        .and_then(|m| m.get(keys::DOMAIN))
         .and_then(|d| d.as_str())
         .map(String::from);
     crate::codec::ir::IrCitation {
         domain,
         kind: kind.map(String::from),
         cited_text: (!quoted.is_empty()).then(|| quoted.concat()),
-        title: c.get("title").and_then(|t| t.as_str()).map(String::from),
+        title: c
+            .get(keys::TITLE)
+            .and_then(|t| t.as_str())
+            .map(String::from),
         url,
         document_index,
         start_index,
@@ -205,17 +211,17 @@ pub(super) fn read_bedrock_citation(c: &serde_json::Value) -> crate::codec::ir::
 /// reader with no arm for it deleted the answer itself, not only its sources.
 pub(super) fn read_bedrock_citations_content(v: &serde_json::Value) -> crate::codec::ir::IrBlock {
     let text: String = v
-        .get("content")
+        .get(keys::CONTENT)
         .and_then(|c| c.as_array())
         .map(|a| {
             a.iter()
-                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                .filter_map(|p| p.get(keys::TEXT).and_then(|t| t.as_str()))
                 .collect::<Vec<_>>()
                 .concat()
         })
         .unwrap_or_default();
     let citations = v
-        .get("citations")
+        .get(keys::CITATIONS)
         .and_then(|c| c.as_array())
         .map(|a| a.iter().map(read_bedrock_citation).collect())
         .unwrap_or_default();

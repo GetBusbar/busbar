@@ -1,4 +1,5 @@
 use super::*;
+use crate::codec::keys;
 
 /// AWS Converse `usage.totalTokens`: EVERY token the call consumed, cache tokens INCLUDED.
 ///
@@ -68,7 +69,10 @@ impl ProtocolWriter for BedrockWriter {
         messages: &[serde_json::Value],
         _tools: &[serde_json::Value],
     ) -> bool {
-        if !obj.get("messages").is_some_and(serde_json::Value::is_array) {
+        if !obj
+            .get(keys::MESSAGES)
+            .is_some_and(serde_json::Value::is_array)
+        {
             return false;
         }
         let Some(pairs) = crate::codec::dialect::rewrite_text_pairs(messages) else {
@@ -76,9 +80,9 @@ impl ProtocolWriter for BedrockWriter {
         };
         let framed: Vec<serde_json::Value> = pairs
             .into_iter()
-            .map(|(role, text)| serde_json::json!({ "role": role, "content": [{ "text": text }] }))
+            .map(|(role, text)| serde_json::json!({ (keys::ROLE): role, (keys::CONTENT): [{ (keys::TEXT): text }] }))
             .collect();
-        obj.insert("messages".to_string(), serde_json::Value::Array(framed));
+        obj.insert(keys::MESSAGES.to_string(), serde_json::Value::Array(framed));
         true
     }
 
@@ -99,7 +103,7 @@ impl ProtocolWriter for BedrockWriter {
         if req.response_format.as_ref().is_some_and(|rf| {
             !caps.native_structured_output || super::write_bedrock_text_format(rf).is_none()
         }) {
-            dropped.push("response_format");
+            dropped.push(keys::RESPONSE_FORMAT);
         }
         if matches!(req.tool_choice, Some(crate::codec::ir::IrToolChoice::None)) {
             dropped.push("tool_choice=none");
@@ -159,7 +163,7 @@ impl ProtocolWriter for BedrockWriter {
         match ev {
             IrStreamEvent::MessageStart { .. } => Some((
                 ET_MESSAGE_START.to_string(),
-                serde_json::json!({ "role": "assistant" }),
+                serde_json::json!({ (keys::ROLE): keys::ASSISTANT }),
             )),
 
             IrStreamEvent::BlockStart {
@@ -186,8 +190,8 @@ impl ProtocolWriter for BedrockWriter {
                     Some((
                         ET_CONTENT_BLOCK_START.to_string(),
                         serde_json::json!({
-                            "contentBlockIndex": index,
-                            "start": { "toolUse": { "toolUseId": id, "name": name } }
+                            (super::CONTENT_BLOCK_INDEX): index,
+                            (keys::START): { (super::TOOL_USE_CAMEL): { (super::TOOL_USE_ID): id, (keys::NAME): name } }
                         }),
                     ))
                 }
@@ -220,16 +224,16 @@ impl ProtocolWriter for BedrockWriter {
                 crate::codec::ir::IrDelta::TextDelta(text) => Some((
                     ET_CONTENT_BLOCK_DELTA.to_string(),
                     serde_json::json!({
-                        "contentBlockIndex": index,
-                        "delta": { "text": text }
+                        (super::CONTENT_BLOCK_INDEX): index,
+                        (keys::DELTA): { (keys::TEXT): text }
                     }),
                 )),
 
                 crate::codec::ir::IrDelta::InputJsonDelta(json_str) => Some((
                     ET_CONTENT_BLOCK_DELTA.to_string(),
                     serde_json::json!({
-                        "contentBlockIndex": index,
-                        "delta": { "toolUse": { "input": json_str } }
+                        (super::CONTENT_BLOCK_INDEX): index,
+                        (keys::DELTA): { (super::TOOL_USE_CAMEL): { (keys::INPUT): json_str } }
                     }),
                 )),
 
@@ -241,8 +245,8 @@ impl ProtocolWriter for BedrockWriter {
                 crate::codec::ir::IrDelta::ThinkingDelta(text) => Some((
                     ET_CONTENT_BLOCK_DELTA.to_string(),
                     serde_json::json!({
-                        "contentBlockIndex": index,
-                        "delta": { "reasoningContent": { "text": text } }
+                        (super::CONTENT_BLOCK_INDEX): index,
+                        (keys::DELTA): { (super::REASONING_CONTENT): { (keys::TEXT): text } }
                     }),
                 )),
 
@@ -250,8 +254,8 @@ impl ProtocolWriter for BedrockWriter {
                 crate::codec::ir::IrDelta::SignatureDelta(sig) => Some((
                     ET_CONTENT_BLOCK_DELTA.to_string(),
                     serde_json::json!({
-                        "contentBlockIndex": index,
-                        "delta": { "reasoningContent": { "signature": sig } }
+                        (super::CONTENT_BLOCK_INDEX): index,
+                        (keys::DELTA): { (super::REASONING_CONTENT): { (keys::SIGNATURE): sig } }
                     }),
                 )),
                 // A streamed redacted-reasoning delta re-emits the opaque bytes under `redactedContent`
@@ -262,8 +266,8 @@ impl ProtocolWriter for BedrockWriter {
                 crate::codec::ir::IrDelta::RedactedReasoningDelta(redacted) => Some((
                     ET_CONTENT_BLOCK_DELTA.to_string(),
                     serde_json::json!({
-                        "contentBlockIndex": index,
-                        "delta": { "reasoningContent": { "redactedContent": redacted } }
+                        (super::CONTENT_BLOCK_INDEX): index,
+                        (keys::DELTA): { (super::REASONING_CONTENT): { (super::REDACTED_CONTENT): redacted } }
                     }),
                 )),
                 // Streamed grounding citations. Bedrock ConverseStream's `ContentBlockDelta` union
@@ -285,8 +289,8 @@ impl ProtocolWriter for BedrockWriter {
                         Some(citation) => Some((
                             ET_CONTENT_BLOCK_DELTA.to_string(),
                             serde_json::json!({
-                                "contentBlockIndex": index,
-                                "delta": { "citation": citation }
+                                (super::CONTENT_BLOCK_INDEX): index,
+                                (keys::DELTA): { (keys::CITATION): citation }
                             }),
                         )),
                         // Every neutral field was empty, so there is no member to put in the union
@@ -311,7 +315,7 @@ impl ProtocolWriter for BedrockWriter {
                 if self.take_block_open(*index) {
                     Some((
                         ET_CONTENT_BLOCK_STOP.to_string(),
-                        serde_json::json!({ "contentBlockIndex": index }),
+                        serde_json::json!({ (super::CONTENT_BLOCK_INDEX): index }),
                     ))
                 } else {
                     None
@@ -346,22 +350,28 @@ impl ProtocolWriter for BedrockWriter {
                 Some(reason) => Some((
                     ET_MESSAGE_STOP.to_string(),
                     serde_json::json!({
-                        "stopReason": stop_reason_reverse_detailed(*reason, stop_detail.as_ref())
+                        (super::STOP_REASON): stop_reason_reverse_detailed(*reason, stop_detail.as_ref())
                     }),
                 )),
                 None => {
                     let mut usage_obj = serde_json::Map::new();
-                    usage_obj.insert("inputTokens".to_string(), usage.input_tokens.into());
-                    usage_obj.insert("outputTokens".to_string(), usage.output_tokens.into());
+                    usage_obj.insert(
+                        super::INPUT_TOKENS_CAMEL.to_string(),
+                        usage.input_tokens.into(),
+                    );
+                    usage_obj.insert(
+                        super::OUTPUT_TOKENS_CAMEL.to_string(),
+                        usage.output_tokens.into(),
+                    );
                     // Cache-inclusive and saturating — see `converse_total_tokens`.
                     usage_obj.insert(
-                        "totalTokens".to_string(),
+                        super::TOTAL_TOKENS_CAMEL.to_string(),
                         converse_total_tokens(usage).into(),
                     );
                     write_cache_usage(&mut usage_obj, usage);
                     Some((
                         ET_METADATA.to_string(),
-                        serde_json::json!({ "usage": usage_obj }),
+                        serde_json::json!({ (keys::USAGE): usage_obj }),
                     ))
                 }
             },
@@ -382,7 +392,7 @@ impl ProtocolWriter for BedrockWriter {
                 let (exception_name, message) = bedrock_stream_exception_for(err);
                 Some((
                     exception_name.to_string(),
-                    serde_json::json!({ "message": message }),
+                    serde_json::json!({ (keys::MESSAGE): message }),
                 ))
             }
         }
@@ -480,12 +490,12 @@ impl ProtocolWriter for BedrockWriter {
                                  is no populated member for the Converse `Citation` shape"
                             );
                         }
-                        content_arr.push(serde_json::json!({ "text": text }));
+                        content_arr.push(serde_json::json!({ (keys::TEXT): text }));
                     } else {
                         content_arr.push(serde_json::json!({
-                            "citationsContent": {
-                                "content": [{ "text": text }],
-                                "citations": cits
+                            (super::CITATIONS_CONTENT): {
+                                (keys::CONTENT): [{ (keys::TEXT): text }],
+                                (keys::CITATIONS): cits
                             }
                         }));
                     }
@@ -498,10 +508,10 @@ impl ProtocolWriter for BedrockWriter {
                     id, name, input, ..
                 } => {
                     content_arr.push(serde_json::json!({
-                        "toolUse": {
-                            "toolUseId": id,
-                            "name": name,
-                            "input": input
+                        (super::TOOL_USE_CAMEL): {
+                            (super::TOOL_USE_ID): id,
+                            (keys::NAME): name,
+                            (keys::INPUT): input
                         }
                     }));
                 }
@@ -513,7 +523,7 @@ impl ProtocolWriter for BedrockWriter {
                     // A source kind with no native Bedrock projection (URL / file_id) returns `None`
                     // and is omitted with a trace by the helper, never corrupting the block.
                     if let Some(image_block) = bedrock_image_block(source) {
-                        content_arr.push(serde_json::json!({ "image": image_block }));
+                        content_arr.push(serde_json::json!({ (keys::IMAGE): image_block }));
                     }
                 }
                 crate::codec::ir::IrBlock::Json(_) => {
@@ -549,7 +559,7 @@ impl ProtocolWriter for BedrockWriter {
         // otherwise emit `content: []`. Mirror the request-side guard with a minimal placeholder
         // text block so the body stays valid.
         if content_arr.is_empty() {
-            content_arr.push(serde_json::json!({ "text": "" }));
+            content_arr.push(serde_json::json!({ (keys::TEXT): "" }));
         }
 
         // IR-16 (BED-10): a context-window detail is Converse's own `model_context_window_exceeded`.
@@ -570,26 +580,32 @@ impl ProtocolWriter for BedrockWriter {
         // fields Bedrock emits) are reproduced exactly from the captured IR below, so a
         // same-protocol round-trip is byte-identical.
         let mut usage_obj = serde_json::Map::new();
-        usage_obj.insert("inputTokens".to_string(), resp.usage.input_tokens.into());
-        usage_obj.insert("outputTokens".to_string(), resp.usage.output_tokens.into());
+        usage_obj.insert(
+            super::INPUT_TOKENS_CAMEL.to_string(),
+            resp.usage.input_tokens.into(),
+        );
+        usage_obj.insert(
+            super::OUTPUT_TOKENS_CAMEL.to_string(),
+            resp.usage.output_tokens.into(),
+        );
         // Cache-inclusive and saturating, same as the streaming `metadata` frame — see
         // `converse_total_tokens`. This is what keeps the same-protocol round-trip promised just
         // above byte-identical when the upstream reported cache tokens.
         usage_obj.insert(
-            "totalTokens".to_string(),
+            super::TOTAL_TOKENS_CAMEL.to_string(),
             converse_total_tokens(&resp.usage).into(),
         );
         write_cache_usage(&mut usage_obj, &resp.usage);
 
         serde_json::json!({
-            "output": {
-                "message": {
-                    "role": "assistant",
-                    "content": content_arr
+            (keys::OUTPUT): {
+                (keys::MESSAGE): {
+                    (keys::ROLE): keys::ASSISTANT,
+                    (keys::CONTENT): content_arr
                 }
             },
-            "stopReason": reverse_reason,
-            "usage": usage_obj
+            (super::STOP_REASON): reverse_reason,
+            (keys::USAGE): usage_obj
         })
     }
 
@@ -603,8 +619,8 @@ impl ProtocolWriter for BedrockWriter {
     /// the `__type` is always a real Converse exception name. Served as `application/json`.
     fn write_error(&self, _status: u16, kind: &str, message: &str) -> serde_json::Value {
         serde_json::json!({
-            "__type": error_kind_to_bedrock_type(kind),
-            "message": message,
+            (super::DUNDER_TYPE): error_kind_to_bedrock_type(kind),
+            (keys::MESSAGE): message,
         })
     }
 
@@ -712,10 +728,10 @@ impl BedrockWriter {
             .get(CACHE_POINTS_SENTINEL)
             .and_then(|v| v.as_object());
         let system_cache_points = cache_points
-            .and_then(|cp| cp.get("system"))
+            .and_then(|cp| cp.get(keys::SYSTEM))
             .and_then(|v| v.as_array());
         let message_cache_points = cache_points
-            .and_then(|cp| cp.get("messages"))
+            .and_then(|cp| cp.get(keys::MESSAGES))
             .and_then(|v| v.as_array());
 
         // The captured native `guardContent` markers (see `GUARD_CONTENT_SENTINEL`); same stash
@@ -726,10 +742,10 @@ impl BedrockWriter {
             .get(GUARD_CONTENT_SENTINEL)
             .and_then(|v| v.as_object());
         let system_guard_content = guard_content
-            .and_then(|gc| gc.get("system"))
+            .and_then(|gc| gc.get(keys::SYSTEM))
             .and_then(|v| v.as_array());
         let message_guard_content = guard_content
-            .and_then(|gc| gc.get("messages"))
+            .and_then(|gc| gc.get(keys::MESSAGES))
             .and_then(|v| v.as_array());
 
         // The captured native top-level `document` / `video` markers (see `DOC_VIDEO_SENTINEL`);
@@ -741,7 +757,7 @@ impl BedrockWriter {
             .get(DOC_VIDEO_SENTINEL)
             .and_then(|v| v.as_object());
         let message_doc_video = doc_video
-            .and_then(|dv| dv.get("messages"))
+            .and_then(|dv| dv.get(keys::MESSAGES))
             .and_then(|v| v.as_array());
 
         // When the positional cachePoint stash is present (same-protocol Bedrock passthrough) it is
@@ -767,7 +783,7 @@ impl BedrockWriter {
                     ..
                 } = block
                 {
-                    text_arr.push(serde_json::json!({ "text": text }));
+                    text_arr.push(serde_json::json!({ (keys::TEXT): text }));
                     // Emit a Bedrock `cachePoint` AFTER the block that carries the IR
                     // `cache_control` boundary (the position Bedrock expects — the breakpoint closes
                     // the prefix before it). Suppressed when the positional stash owns placement.
@@ -788,7 +804,7 @@ impl BedrockWriter {
             splice_cache_points(&mut text_arr, &merged);
 
             if !text_arr.is_empty() {
-                out.insert("system".to_string(), serde_json::Value::Array(text_arr));
+                out.insert(keys::SYSTEM.to_string(), serde_json::Value::Array(text_arr));
             }
         }
 
@@ -800,12 +816,12 @@ impl BedrockWriter {
         let mut msgs_arr: Vec<serde_json::Value> = Vec::new();
         for (msg_idx, msg) in req.messages.iter().enumerate() {
             let role_str = match msg.role {
-                crate::codec::ir::IrRole::User => "user",
-                crate::codec::ir::IrRole::Assistant => "assistant",
+                crate::codec::ir::IrRole::User => keys::USER,
+                crate::codec::ir::IrRole::Assistant => keys::ASSISTANT,
                 // A Tool-role IR message carries `toolResult` blocks; Bedrock Converse has no
                 // freestanding "tool" role — a tool result is a `toolResult` content block inside a
                 // USER-turn message, so mapping Tool → "user" is the correct native wire shape.
-                crate::codec::ir::IrRole::Tool => "user",
+                crate::codec::ir::IrRole::Tool => keys::USER,
                 // System text is extracted by the caller into `req.system` (emitted as the top-level
                 // `system` array above), so a System-role MESSAGE should never reach the Bedrock
                 // wire. If one somehow escapes extraction, skip it rather than silently mislabeling
@@ -874,12 +890,12 @@ impl BedrockWriter {
                             .filter_map(super::write_bedrock_citation)
                             .collect();
                         if cits.is_empty() {
-                            content_arr.push(serde_json::json!({ "text": text }));
+                            content_arr.push(serde_json::json!({ (keys::TEXT): text }));
                         } else {
                             content_arr.push(serde_json::json!({
-                                "citationsContent": {
-                                    "content": [{ "text": text }],
-                                    "citations": cits
+                                (super::CITATIONS_CONTENT): {
+                                    (keys::CONTENT): [{ (keys::TEXT): text }],
+                                    (keys::CITATIONS): cits
                                 }
                             }));
                         }
@@ -887,7 +903,7 @@ impl BedrockWriter {
                     crate::codec::ir::IrBlock::ToolUse {
                         id, name, input, ..
                     } => {
-                        content_arr.push(serde_json::json!({"toolUse": {"toolUseId": id, "name": name, "input": input}}));
+                        content_arr.push(serde_json::json!({(super::TOOL_USE_CAMEL): {(super::TOOL_USE_ID): id, (keys::NAME): name, (keys::INPUT): input}}));
                     }
                     crate::codec::ir::IrBlock::ToolResult {
                         tool_use_id,
@@ -899,7 +915,7 @@ impl BedrockWriter {
                         for inner_block in content {
                             match inner_block {
                                 crate::codec::ir::IrBlock::Text { text, .. } => {
-                                    inner_content.push(serde_json::json!({ "text": text }));
+                                    inner_content.push(serde_json::json!({ (keys::TEXT): text }));
                                 }
                                 // Bedrock Converse natively supports structured tool-result content
                                 // via a `{"json": <value>}` block (the inverse of what `read_request`
@@ -909,12 +925,13 @@ impl BedrockWriter {
                                 crate::codec::ir::IrBlock::Json(value) => {
                                     // A structured-json tool-result block re-emits as a native
                                     // `{"json": <value>}` block, restoring same-protocol fidelity.
-                                    inner_content.push(serde_json::json!({ "json": value }));
+                                    inner_content.push(serde_json::json!({ (keys::JSON): value }));
                                 }
                                 crate::codec::ir::IrBlock::Image { source, .. } => {
                                     if let Some(image_block) = bedrock_image_block(source) {
-                                        inner_content
-                                            .push(serde_json::json!({ "image": image_block }));
+                                        inner_content.push(
+                                            serde_json::json!({ (keys::IMAGE): image_block }),
+                                        );
                                     }
                                 }
                                 crate::codec::ir::IrBlock::ToolUse {
@@ -924,7 +941,7 @@ impl BedrockWriter {
                                     // tool-result shape; carry it as a structured `json` block rather
                                     // than discarding the call identity.
                                     inner_content.push(serde_json::json!({
-                                        "json": { "toolUseId": id, "name": name, "input": input }
+                                        (keys::JSON): { (super::TOOL_USE_ID): id, (keys::NAME): name, (keys::INPUT): input }
                                     }));
                                 }
                                 crate::codec::ir::IrBlock::ToolResult {
@@ -936,7 +953,7 @@ impl BedrockWriter {
                                     // Bedrock shape; preserve its identity as a `json` block instead
                                     // of emitting a meaningless `"{}"` placeholder.
                                     inner_content.push(serde_json::json!({
-                                        "json": { "toolUseId": tool_use_id, "isError": is_error }
+                                        (keys::JSON): { (super::TOOL_USE_ID): tool_use_id, "isError": is_error }
                                     }));
                                 }
                                 // Thinking blocks have no representable Bedrock tool-result shape and
@@ -972,12 +989,16 @@ impl BedrockWriter {
                             }
                         }
 
-                        let status_str = if *is_error { "error" } else { "success" };
-                        content_arr.push(serde_json::json!({"toolResult": {"toolUseId": tool_use_id, "content": inner_content, "status": status_str}}));
+                        let status_str = if *is_error {
+                            keys::ERROR_WORD
+                        } else {
+                            "success"
+                        };
+                        content_arr.push(serde_json::json!({(super::TOOL_RESULT): {(super::TOOL_USE_ID): tool_use_id, (keys::CONTENT): inner_content, (keys::STATUS): status_str}}));
                     }
                     crate::codec::ir::IrBlock::Image { source, .. } => {
                         if let Some(image_block) = bedrock_image_block(source) {
-                            content_arr.push(serde_json::json!({ "image": image_block }));
+                            content_arr.push(serde_json::json!({ (keys::IMAGE): image_block }));
                         }
                     }
                     crate::codec::ir::IrBlock::Thinking {
@@ -1062,7 +1083,7 @@ impl BedrockWriter {
                 .chain(message_guard_content)
                 .chain(message_doc_video)
                 .flatten()
-                .filter(|e| e.get("m").and_then(|v| v.as_u64()) == Some(msg_idx as u64))
+                .filter(|e| e.get(keys::M).and_then(|v| v.as_u64()) == Some(msg_idx as u64))
                 .cloned()
                 .collect();
             if !for_this_msg.is_empty() {
@@ -1079,8 +1100,8 @@ impl BedrockWriter {
             // passthrough the input already alternates, so this never fires and byte-identity holds.
             if let Some(prev_content) = msgs_arr
                 .last_mut()
-                .filter(|last| last.get("role").and_then(|r| r.as_str()) == Some(role_str))
-                .and_then(|last| last.get_mut("content"))
+                .filter(|last| last.get(keys::ROLE).and_then(|r| r.as_str()) == Some(role_str))
+                .and_then(|last| last.get_mut(keys::CONTENT))
                 .and_then(|c| c.as_array_mut())
             {
                 // Merge: append this turn's blocks to the previous same-role message. An empty
@@ -1098,16 +1119,22 @@ impl BedrockWriter {
             // substituting a minimal placeholder text block so the turn survives the seam.
             // System-role messages never reach here (they `continue` during role mapping).
             if content_arr.is_empty() {
-                content_arr.push(serde_json::json!({ "text": "" }));
+                content_arr.push(serde_json::json!({ (keys::TEXT): "" }));
             }
             let mut msg_obj = serde_json::Map::new();
-            msg_obj.insert("role".to_string(), serde_json::json!(role_str));
-            msg_obj.insert("content".to_string(), serde_json::Value::Array(content_arr));
+            msg_obj.insert(keys::ROLE.to_string(), serde_json::json!(role_str));
+            msg_obj.insert(
+                keys::CONTENT.to_string(),
+                serde_json::Value::Array(content_arr),
+            );
             msgs_arr.push(serde_json::Value::Object(msg_obj));
         }
 
         if !msgs_arr.is_empty() {
-            out.insert("messages".to_string(), serde_json::Value::Array(msgs_arr));
+            out.insert(
+                keys::MESSAGES.to_string(),
+                serde_json::Value::Array(msgs_arr),
+            );
         }
 
         // Rebuild `inferenceConfig` by OVERLAYING the two typed fields (`maxTokens`/`temperature`)
@@ -1135,13 +1162,13 @@ impl BedrockWriter {
         //     `maxTokens` has no room for it.
         let native_reasoning_present = req
             .extra
-            .get("additionalModelRequestFields")
+            .get(super::ADDITIONAL_MODEL_REQUEST_FIELDS)
             .and_then(|v| v.as_object())
             .is_some_and(|a| {
-                a.contains_key("thinking")
-                    || a.contains_key("reasoningConfig")
-                    || a.get("output_config")
-                        .is_some_and(|c| c.get("effort").is_some())
+                a.contains_key(keys::THINKING)
+                    || a.contains_key(super::REASONING_CONFIG)
+                    || a.get(keys::OUTPUT_CONFIG)
+                        .is_some_and(|c| c.get(keys::EFFORT).is_some())
             });
         let mut thinking: Option<serde_json::Value> = None;
         let mut effort_word: Option<&'static str> = None;
@@ -1160,11 +1187,11 @@ impl BedrockWriter {
             Some(crate::codec::ir::IrReasoningAsk::Effort(effort))
                 if caps.anthropic_adaptive_thinking =>
             {
-                thinking = Some(serde_json::json!({ "type": super::THINKING_TYPE_ADAPTIVE }));
+                thinking = Some(serde_json::json!({ (keys::TYPE): super::THINKING_TYPE_ADAPTIVE }));
                 effort_word = Some(super::bedrock_claude_effort_word(effort));
             }
             Some(crate::codec::ir::IrReasoningAsk::Dynamic) if caps.anthropic_adaptive_thinking => {
-                thinking = Some(serde_json::json!({ "type": super::THINKING_TYPE_ADAPTIVE }));
+                thinking = Some(serde_json::json!({ (keys::TYPE): super::THINKING_TYPE_ADAPTIVE }));
             }
             Some(ask) => {
                 let table = req
@@ -1182,8 +1209,9 @@ impl BedrockWriter {
                             "thinking budget clamped to fit under maxTokens on Bedrock egress"
                         );
                     }
-                    thinking =
-                        Some(serde_json::json!({"type": "enabled", "budget_tokens": budget}));
+                    thinking = Some(
+                        serde_json::json!({(keys::TYPE): keys::ENABLED, (keys::BUDGET_TOKENS): budget}),
+                    );
                 } else {
                     tracing::warn!(
                         max_tokens = ?req.max_tokens,
@@ -1197,19 +1225,22 @@ impl BedrockWriter {
 
         let mut inference_config = req
             .extra
-            .get("inferenceConfig")
+            .get(super::INFERENCE_CONFIG)
             .and_then(|v| v.as_object())
             .cloned()
             .unwrap_or_default();
         if let Some(max_tokens) = req.max_tokens {
-            inference_config.insert("maxTokens".to_string(), serde_json::json!(max_tokens));
+            inference_config.insert(
+                super::MAX_TOKENS_CAMEL.to_string(),
+                serde_json::json!(max_tokens),
+            );
         }
         // `inferenceConfig.{temperature, topP, stopSequences}`: rows of the mapping file, overlaid
         // on the raw object (typed IR wins over the captured value, so a same-protocol round-trip
         // re-emits the identical value). Temperature is clamped to Converse's [0.0, 1.0]; beside an
         // emitted thinking ask temperature and topP are omitted, observably (the think-ask wins).
         out.insert(
-            "inferenceConfig".to_string(),
+            super::INFERENCE_CONFIG.to_string(),
             serde_json::Value::Object(inference_config),
         );
         crate::codec::carry::write_fields(
@@ -1221,11 +1252,11 @@ impl BedrockWriter {
             &mut out,
         );
         if out
-            .get("inferenceConfig")
+            .get(super::INFERENCE_CONFIG)
             .and_then(|v| v.as_object())
             .is_some_and(serde_json::Map::is_empty)
         {
-            out.remove("inferenceConfig");
+            out.remove(super::INFERENCE_CONFIG);
         }
 
         // response_format: Bedrock Converse has NO native top-level `response_format` /
@@ -1245,7 +1276,7 @@ impl BedrockWriter {
         // (schema-less JSON mode, plain text) are dropped, observably.
         let mut output_config = req
             .extra
-            .get("outputConfig")
+            .get(super::OUTPUT_CONFIG_CAMEL)
             .and_then(|v| v.as_object())
             .cloned()
             .unwrap_or_default();
@@ -1259,13 +1290,13 @@ impl BedrockWriter {
             match super::write_bedrock_text_format(rf) {
                 // A same-protocol body's own raw `textFormat` (what the typed field was read
                 // from) is already in place and wins.
-                _ if output_config.contains_key("textFormat") => {}
+                _ if output_config.contains_key(super::TEXT_FORMAT) => {}
                 Some(tf) if caps.native_structured_output => {
-                    output_config.entry("textFormat").or_insert(tf);
+                    output_config.entry(super::TEXT_FORMAT).or_insert(tf);
                 }
                 Some(_) => {
                     tracing::warn!(
-                        parameter = "response_format",
+                        parameter = keys::RESPONSE_FORMAT,
                         "dropping response_format on Bedrock egress: the lane does not declare \
                          native structured outputs (`native_structured_output`), and Converse \
                          rejects `outputConfig.textFormat` on a model without them"
@@ -1273,7 +1304,7 @@ impl BedrockWriter {
                 }
                 None => {
                     tracing::warn!(
-                        parameter = "response_format",
+                        parameter = keys::RESPONSE_FORMAT,
                         "dropping response_format on Bedrock egress: Converse's \
                          `outputConfig.textFormat` models only a JSON schema, and this directive \
                          carries none (schema-less JSON mode or plain text)"
@@ -1283,7 +1314,7 @@ impl BedrockWriter {
         }
         if !output_config.is_empty() {
             out.insert(
-                "outputConfig".to_string(),
+                super::OUTPUT_CONFIG_CAMEL.to_string(),
                 serde_json::Value::Object(output_config),
             );
         }
@@ -1302,7 +1333,7 @@ impl BedrockWriter {
         // with an empty `tools` array, so we never write a bare `{}`/`{tools:[]}` shape.
         let mut tool_config = req
             .extra
-            .get("toolConfig")
+            .get(keys::TOOL_CONFIG)
             .and_then(|v| v.as_object())
             .cloned()
             .unwrap_or_default();
@@ -1321,25 +1352,28 @@ impl BedrockWriter {
             let mut tools_arr: Vec<serde_json::Value> = Vec::new();
             for tool in sent_tools {
                 let mut tool_spec = serde_json::Map::new();
-                tool_spec.insert("name".to_string(), serde_json::json!(tool.name));
+                tool_spec.insert(keys::NAME.to_string(), serde_json::json!(tool.name));
 
                 if let Some(desc) = &tool.description {
-                    tool_spec.insert("description".to_string(), serde_json::json!(desc));
+                    tool_spec.insert(keys::DESCRIPTION.to_string(), serde_json::json!(desc));
                 }
                 // BED-08: Converse `toolSpec.strict` — the per-tool structured-output switch.
                 if let Some(strict) = tool.strict {
-                    tool_spec.insert("strict".to_string(), serde_json::json!(strict));
+                    tool_spec.insert(keys::STRICT.to_string(), serde_json::json!(strict));
                 }
 
                 let mut input_schema = serde_json::Map::new();
-                input_schema.insert("json".to_string(), tool.input_schema.clone());
+                input_schema.insert(keys::JSON.to_string(), tool.input_schema.clone());
                 tool_spec.insert(
-                    "inputSchema".to_string(),
+                    super::INPUT_SCHEMA_CAMEL.to_string(),
                     serde_json::Value::Object(input_schema),
                 );
 
                 let mut tool_obj = serde_json::Map::new();
-                tool_obj.insert("toolSpec".to_string(), serde_json::Value::Object(tool_spec));
+                tool_obj.insert(
+                    super::TOOL_SPEC.to_string(),
+                    serde_json::Value::Object(tool_spec),
+                );
                 tools_arr.push(serde_json::Value::Object(tool_obj));
 
                 // A tool-definition prompt-cache boundary is emitted as a `cachePoint` element in
@@ -1353,7 +1387,7 @@ impl BedrockWriter {
                 }
             }
 
-            tool_config.insert("tools".to_string(), serde_json::Value::Array(tools_arr));
+            tool_config.insert(keys::TOOLS.to_string(), serde_json::Value::Array(tools_arr));
         }
         // Emit `toolChoice` from the typed IR union. The reader promoted a native `toolChoice`
         // into `req.tool_choice`, but the RAW `toolConfig` cloned from `extra` (same-protocol Bedrock
@@ -1361,14 +1395,14 @@ impl BedrockWriter {
         // is the single source of truth and there is no stale duplicate. `IrToolChoice::None` has no
         // native Bedrock representation, so `write_bedrock_tool_choice` returns `None` and no
         // `toolChoice` is emitted in that case.
-        tool_config.remove("toolChoice");
+        tool_config.remove(super::TOOL_CHOICE_CAMEL);
         // `toolChoice` is only valid alongside a non-empty `tools` array: Bedrock Converse rejects a
         // `toolConfig` that carries a `toolChoice` with no tools (F3 — ValidationException). So emit
         // the typed tool-choice ONLY when tools are present (typed `req.tools` above, or a raw
         // `toolConfig.tools` preserved from same-protocol `extra`). A tool_choice that arrives with no
         // surviving tools (e.g. a cross-protocol request whose tools could not be projected) is
         // dropped with a warn rather than emitted into an invalid body.
-        if tool_config.contains_key("tools") {
+        if tool_config.contains_key(keys::TOOLS) {
             if let Some(tc) = &req.tool_choice {
                 match write_bedrock_tool_choice(tc) {
                     // Claude rejects a FORCED/TARGETED tool choice alongside thinking (only auto is
@@ -1386,11 +1420,13 @@ impl BedrockWriter {
                             "downgrading forced/targeted toolChoice to auto on Bedrock egress: not \
                              compatible with thinking"
                         );
-                        tool_config
-                            .insert("toolChoice".to_string(), serde_json::json!({"auto": {}}));
+                        tool_config.insert(
+                            super::TOOL_CHOICE_CAMEL.to_string(),
+                            serde_json::json!({(keys::AUTO): {}}),
+                        );
                     }
                     Some(v) => {
-                        tool_config.insert("toolChoice".to_string(), v);
+                        tool_config.insert(super::TOOL_CHOICE_CAMEL.to_string(), v);
                     }
                     // `IrToolChoice::None` ("do NOT call a tool") has no native Converse directive,
                     // so it degrades to omitting `toolChoice` (the backend applies its own default,
@@ -1412,9 +1448,9 @@ impl BedrockWriter {
         // Emit `toolConfig` only when it carries a `tools` array. AWS rejects a bare `{}`/`{tools:[]}`
         // and a `{toolChoice:…}` with no tools, so a config that ended up with neither typed nor raw
         // tools (only a now-dropped toolChoice) must not be emitted at all.
-        if tool_config.contains_key("tools") {
+        if tool_config.contains_key(keys::TOOLS) {
             out.insert(
-                "toolConfig".to_string(),
+                keys::TOOL_CONFIG.to_string(),
                 serde_json::Value::Object(tool_config),
             );
         }
@@ -1437,26 +1473,26 @@ impl BedrockWriter {
         // avoid a double-emit. The typed `top_k` WINS over any same-named raw entry.
         let mut additional_fields = req
             .extra
-            .get("additionalModelRequestFields")
+            .get(super::ADDITIONAL_MODEL_REQUEST_FIELDS)
             .and_then(|v| v.as_object())
             .cloned()
             .unwrap_or_default();
         if let Some(t) = thinking {
-            additional_fields.insert("thinking".to_string(), t);
+            additional_fields.insert(keys::THINKING.to_string(), t);
         } else if thinking_disabled {
             additional_fields.insert(
-                "thinking".to_string(),
-                serde_json::json!({ "type": super::THINKING_TYPE_DISABLED }),
+                keys::THINKING.to_string(),
+                serde_json::json!({ (keys::TYPE): super::THINKING_TYPE_DISABLED }),
             );
         }
         if let Some(word) = effort_word {
             // Claude's effort word rides `output_config` inside `additionalModelRequestFields`
             // (Converse's own `outputConfig` is a different, top-level member).
             let oc = additional_fields
-                .entry("output_config")
+                .entry(keys::OUTPUT_CONFIG)
                 .or_insert_with(|| serde_json::json!({}));
             if let Some(map) = oc.as_object_mut() {
-                map.insert("effort".to_string(), serde_json::json!(word));
+                map.insert(keys::EFFORT.to_string(), serde_json::json!(word));
             }
         }
         if let Some(top_k) = req.top_k.filter(|_| {
@@ -1470,15 +1506,15 @@ impl BedrockWriter {
             // snake_case `top_k`. The sentinel only survives on the same-protocol path (`extra` is
             // cleared cross-protocol), so cross-protocol egress always takes the `top_k` branch.
             let key = if req.extra.contains_key(TOP_K_CAMEL_SENTINEL) {
-                "topK"
+                super::TOP_K_CAMEL
             } else {
-                "top_k"
+                super::TOP_K
             };
             additional_fields.insert(key.to_string(), serde_json::json!(top_k));
         }
         if !additional_fields.is_empty() {
             out.insert(
-                "additionalModelRequestFields".to_string(),
+                super::ADDITIONAL_MODEL_REQUEST_FIELDS.to_string(),
                 serde_json::Value::Object(additional_fields),
             );
         }
@@ -1513,13 +1549,16 @@ impl BedrockWriter {
             // onto the raw object); re-inserting the raw copy here would clobber that overlay and drop
             // the typed `maxTokens`/`temperature` (inferenceConfig) or `tools` (toolConfig). Every
             // other unmodeled field passes through verbatim.
-            if key == "inferenceConfig" || key == "toolConfig" || key == "outputConfig" {
+            if key == super::INFERENCE_CONFIG
+                || key == keys::TOOL_CONFIG
+                || key == super::OUTPUT_CONFIG_CAMEL
+            {
                 continue;
             }
             // `additionalModelRequestFields` was already consumed above (typed `top_k` overlaid onto
             // the raw object); re-inserting the raw copy here would clobber that overlay and drop the
             // typed `top_k`. Skip it to avoid the double-emit (mirrors inferenceConfig/toolConfig).
-            if key == "additionalModelRequestFields" {
+            if key == super::ADDITIONAL_MODEL_REQUEST_FIELDS {
                 continue;
             }
             // The cachePoint stash is a busbar-internal sentinel, NOT a real Bedrock top-level

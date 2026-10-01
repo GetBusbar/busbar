@@ -6,6 +6,7 @@
 use crate::codec::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
+use crate::codec::keys;
 use busbar_contract::codec::{CodecError, IngressReject, OperationHandler, RequestHandler};
 use busbar_contract::codec::{EgressCtx, WireBody};
 use busbar_contract::operation::OpVerb;
@@ -17,7 +18,7 @@ pub struct BedrockRequestHandler;
 /// This protocol's OWN chat instance — delete this line (and the registry arm) and this
 /// protocol's chat 404s via the standard no-handler path; everything else keeps working.
 static CHAT: super::super::chat_handle::ChatOperation =
-    super::super::chat_handle::ChatOperation("bedrock");
+    super::super::chat_handle::ChatOperation(super::VENDOR_NAME);
 static EMB: BedrockEmbeddings = BedrockEmbeddings;
 static IMG: BedrockImage = BedrockImage;
 static RERANK: BedrockRerank = BedrockRerank;
@@ -52,16 +53,16 @@ pub fn same_protocol_usage(
     parsed: Option<&Value>,
 ) -> Option<busbar_contract::billing::TokenUsage> {
     let has = |k: &str| parsed.is_some_and(|v| v.get(k).is_some());
-    if has("output") || has("stopReason") {
-        CHAT.extract_usage("bedrock", body)
-    } else if has("images") {
-        IMG.extract_usage("bedrock", body)
-    } else if has("embedding") || has("inputTextTokenCount") {
-        EMB.extract_usage("bedrock", body)
-    } else if has("results") {
+    if has(keys::OUTPUT) || has(super::STOP_REASON) {
+        CHAT.extract_usage(super::VENDOR_NAME, body)
+    } else if has(super::IMAGES) {
+        IMG.extract_usage(super::VENDOR_NAME, body)
+    } else if has(keys::EMBEDDING) || has(super::INPUT_TEXT_TOKEN_COUNT) {
+        EMB.extract_usage(super::VENDOR_NAME, body)
+    } else if has(keys::RESULTS) {
         None
     } else {
-        CHAT.extract_usage("bedrock", body)
+        CHAT.extract_usage(super::VENDOR_NAME, body)
     }
 }
 
@@ -73,7 +74,7 @@ pub fn same_protocol_open_billing(
     body: &[u8],
     parsed: Option<&Value>,
 ) -> Option<busbar_contract::billing::Billing> {
-    if !parsed.is_some_and(|v| v.get("results").is_some()) {
+    if !parsed.is_some_and(|v| v.get(keys::RESULTS).is_some()) {
         return None;
     }
     read_rerank_response(body).ok().and_then(|r| r.billing())
@@ -84,12 +85,12 @@ pub fn same_protocol_open_billing(
 /// such member.
 pub fn is_converse_response(v: &Value) -> bool {
     v.as_object()
-        .is_some_and(|o| o.contains_key("output") || o.contains_key("stopReason"))
+        .is_some_and(|o| o.contains_key(keys::OUTPUT) || o.contains_key(super::STOP_REASON))
 }
 
 impl RequestHandler for BedrockRequestHandler {
     fn protocol_name(&self) -> &'static str {
-        "bedrock"
+        super::VENDOR_NAME
     }
     fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
         busbar_contract::codec::cell_of(CELLS, op)
@@ -169,8 +170,8 @@ leaf_op! {
 pub fn write_image_request(r: &crate::codec::ir::image::ImageReq) -> Bytes {
     let mut body = json!({
         "taskType": "TEXT_IMAGE",
-        "textToImageParams": { "text": r.prompt.clone().unwrap_or_default() },
-        "imageGenerationConfig": { "numberOfImages": r.n.unwrap_or(1) },
+        (super::TEXT_TO_IMAGE_PARAMS): { (keys::TEXT): r.prompt.clone().unwrap_or_default() },
+        (super::IMAGE_GENERATION_CONFIG): { (super::NUMBER_OF_IMAGES): r.n.unwrap_or(1) },
     });
     // Re-emit the generation controls `read_image_request` captures, in Titan's native shape, so
     // they survive egress instead of being dropped (round-trip loss). `negativeText` rides
@@ -178,24 +179,24 @@ pub fn write_image_request(r: &crate::codec::ir::image::ImageReq) -> Bytes {
     // TextToImageParams / ImageGenerationConfig layout). Emitted only when present so a request
     // that never carried them gains no fabricated field.
     if let Some(neg) = &r.negative_prompt {
-        body["textToImageParams"]["negativeText"] = json!(neg);
+        body[super::TEXT_TO_IMAGE_PARAMS][super::NEGATIVE_TEXT] = json!(neg);
     }
     if let Some(seed) = r.seed {
-        body["imageGenerationConfig"]["seed"] = json!(seed);
+        body[super::IMAGE_GENERATION_CONFIG][keys::SEED] = json!(seed);
     }
     if let Some(cfg) = r.guidance_scale {
-        body["imageGenerationConfig"]["cfgScale"] = json!(cfg);
+        body[super::IMAGE_GENERATION_CONFIG][super::CFG_SCALE] = json!(cfg);
     }
     // Titan's ImageGenerationConfig takes explicit `width`/`height` (from the IR's pixel geometry)
     // and a `quality` (standard|premium) — both Titan-native. The old writer dropped them, so an
     // openai->bedrock image request lost its size and quality tier. Only an explicit W×H is emitted
     // (Titan has no `auto`); `quality` is carried verbatim.
     if let Some(crate::codec::ir::image::ImageSize::Wh { width, height }) = r.size {
-        body["imageGenerationConfig"]["width"] = json!(width);
-        body["imageGenerationConfig"]["height"] = json!(height);
+        body[super::IMAGE_GENERATION_CONFIG][super::WIDTH] = json!(width);
+        body[super::IMAGE_GENERATION_CONFIG][super::HEIGHT] = json!(height);
     }
     if let Some(q) = &r.quality {
-        body["imageGenerationConfig"]["quality"] = json!(q);
+        body[super::IMAGE_GENERATION_CONFIG][keys::QUALITY] = json!(q);
     }
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
@@ -205,7 +206,7 @@ pub fn write_image_request(r: &crate::codec::ir::image::ImageReq) -> Bytes {
 pub fn write_image_response(r: &crate::codec::ir::image::ImageResp) -> WireBody {
     let images: Vec<&str> = r.images.iter().filter_map(|i| i.b64.as_deref()).collect();
     WireBody::json(SlabBytes::from(
-        serde_json::to_vec(&json!({ "images": images })).unwrap_or_default(),
+        serde_json::to_vec(&json!({ (super::IMAGES): images })).unwrap_or_default(),
     ))
 }
 
@@ -253,16 +254,16 @@ pub fn write_embeddings_request(r: &EmbeddingsReq) -> Bytes {
             String::new()
         }
     };
-    let mut body = json!({ "inputText": text });
+    let mut body = json!({ (super::INPUT_TEXT): text });
     if let Some(d) = r.dimensions {
-        body["dimensions"] = json!(d);
+        body[keys::DIMENSIONS] = json!(d);
     }
     // Titan v2 embeddings takes a top-level `normalize` boolean, which `read_embeddings_request`
     // captures — emit it when present so it survives egress instead of being dropped (round-trip
     // loss). Titan's own default is `true`, so omit the key when the request never set it rather
     // than fabricate a value.
     if let Some(n) = r.normalize {
-        body["normalize"] = json!(n);
+        body[super::NORMALIZE] = json!(n);
     }
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
@@ -278,9 +279,9 @@ pub fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
             _ => None,
         })
         .unwrap_or_default();
-    let mut body = json!({ "embedding": floats });
+    let mut body = json!({ (keys::EMBEDDING): floats });
     if let Some(u) = &r.usage {
-        body["inputTextTokenCount"] = json!(u.input);
+        body[super::INPUT_TEXT_TOKEN_COUNT] = json!(u.input);
     }
     WireBody::json(SlabBytes::from(
         serde_json::to_vec(&body).unwrap_or_default(),
@@ -304,17 +305,17 @@ leaf_op! {
 /// `(rerank, bedrock)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
 pub fn write_rerank_request(r: &crate::codec::ir::rerank::RerankReq) -> Bytes {
     let mut body = json!({
-        "query": r.query,
-        "documents": r.documents,
+        (keys::QUERY): r.query,
+        (keys::DOCUMENTS): r.documents,
         "api_version": 2,
     });
     if let Some(n) = r.top_n {
-        body["top_n"] = json!(n);
+        body[keys::TOP_N] = json!(n);
     }
     // Carry `return_documents` so a rerank hop into Bedrock echoes the ranked text (shared with the
     // Cohere rerank surface, whose response shape Bedrock mirrors).
     if let Some(rd) = r.return_documents {
-        body["return_documents"] = json!(rd);
+        body[keys::RETURN_DOCUMENTS] = json!(rd);
     }
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
@@ -329,14 +330,14 @@ pub fn write_rerank_response(r: &crate::codec::ir::rerank::RerankResp) -> WireBo
             let mut o = json!({"index": x.index, "relevance_score": x.relevance_score});
             // Echo the ranked document (Cohere/Bedrock `{text}` shape) when present.
             if let Some(doc) = &x.document {
-                o["document"] = json!({ "text": doc });
+                o[keys::DOCUMENT] = json!({ (keys::TEXT): doc });
             }
             o
         })
         .collect();
-    let mut body = json!({ "results": results });
+    let mut body = json!({ (keys::RESULTS): results });
     if let Some(id) = &r.id {
-        body["id"] = json!(id);
+        body[keys::ID] = json!(id);
     }
     WireBody::json(SlabBytes::from(
         serde_json::to_vec(&body).unwrap_or_default(),
@@ -360,33 +361,36 @@ pub fn read_image_request(
 ) -> Result<crate::codec::ir::image::ImageReq, IngressReject> {
     let wire: Value =
         serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
-    let params = wire.get("textToImageParams").cloned().unwrap_or_default();
+    let params = wire
+        .get(super::TEXT_TO_IMAGE_PARAMS)
+        .cloned()
+        .unwrap_or_default();
     let cfg = wire
-        .get("imageGenerationConfig")
+        .get(super::IMAGE_GENERATION_CONFIG)
         .cloned()
         .unwrap_or_default();
     Ok(crate::codec::ir::image::ImageReq {
         prompt: params
-            .get("text")
+            .get(keys::TEXT)
             .and_then(Value::as_str)
             .map(str::to_string),
         negative_prompt: params
-            .get("negativeText")
+            .get(super::NEGATIVE_TEXT)
             .and_then(Value::as_str)
             .map(str::to_string),
         n: cfg
-            .get("numberOfImages")
+            .get(super::NUMBER_OF_IMAGES)
             .and_then(Value::as_u64)
             .and_then(|n| u32::try_from(n).ok()),
-        seed: cfg.get("seed").and_then(Value::as_u64),
+        seed: cfg.get(keys::SEED).and_then(Value::as_u64),
         guidance_scale: cfg
-            .get("cfgScale")
+            .get(super::CFG_SCALE)
             .and_then(Value::as_f64)
             .map(|f| f as f32),
         // Titan-native pixel geometry + quality tier — carried so egress re-emits them.
         size: match (
-            cfg.get("width").and_then(Value::as_u64),
-            cfg.get("height").and_then(Value::as_u64),
+            cfg.get(super::WIDTH).and_then(Value::as_u64),
+            cfg.get(super::HEIGHT).and_then(Value::as_u64),
         ) {
             // Checked narrowing (mirrors the `u32::try_from(...).ok()` used for `numberOfImages`
             // above): an out-of-range width/height drops the geometry rather than silently WRAPPING
@@ -400,7 +404,7 @@ pub fn read_image_request(
             _ => None,
         },
         quality: cfg
-            .get("quality")
+            .get(keys::QUALITY)
             .and_then(Value::as_str)
             .map(str::to_string),
         ..Default::default()
@@ -414,7 +418,7 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::codec::ir::image::Image
     let v: Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
     let images: Vec<busbar_contract::media::ImageOutput> = v
-        .get("images")
+        .get(super::IMAGES)
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
@@ -451,7 +455,7 @@ pub fn read_embeddings_request(
 ) -> Result<crate::codec::ir::embeddings::EmbeddingsReq, IngressReject> {
     let wire: Value =
         serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
-    let Some(text) = wire.get("inputText").and_then(Value::as_str) else {
+    let Some(text) = wire.get(super::INPUT_TEXT).and_then(Value::as_str) else {
         return Err(IngressReject::BadRequest(
             "invoke embeddings requires `inputText`".into(),
         ));
@@ -459,10 +463,10 @@ pub fn read_embeddings_request(
     Ok(crate::codec::ir::embeddings::EmbeddingsReq {
         input: EmbInput::Text(vec![text.to_string()]),
         dimensions: wire
-            .get("dimensions")
+            .get(keys::DIMENSIONS)
             .and_then(Value::as_u64)
             .and_then(|d| u32::try_from(d).ok()),
-        normalize: wire.get("normalize").and_then(Value::as_bool),
+        normalize: wire.get(super::NORMALIZE).and_then(Value::as_bool),
         encoding_formats: vec![EncFmt::Float],
         ..Default::default()
     })
@@ -477,7 +481,7 @@ pub fn read_embeddings_response(
     let v: Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
     let mut item = EmbeddingItem::default();
-    if let Some(f) = v.get("embedding").and_then(Value::as_array) {
+    if let Some(f) = v.get(keys::EMBEDDING).and_then(Value::as_array) {
         item.vectors.insert(
             EncFmt::Float,
             VectorData::Float(
@@ -489,12 +493,13 @@ pub fn read_embeddings_response(
     }
     // BILLED COUNT (item 133): absent or `null` is no usage (unchanged); a present-but-UNREADABLE
     // count REFUSES rather than reading as "no usage reported".
-    let usage = crate::codec::usage_count::billed_count_opt(Some(&v), "inputTextTokenCount")
-        .map_err(|e| CodecError::Malformed(e.to_string()))?
-        .map(|n| busbar_contract::billing::TokenUsage {
-            input: n,
-            ..Default::default()
-        });
+    let usage =
+        crate::codec::usage_count::billed_count_opt(Some(&v), super::INPUT_TEXT_TOKEN_COUNT)
+            .map_err(|e| CodecError::Malformed(e.to_string()))?
+            .map(|n| busbar_contract::billing::TokenUsage {
+                input: n,
+                ..Default::default()
+            });
     Ok(EmbeddingsResp {
         embeddings: vec![item],
         usage,
@@ -512,11 +517,11 @@ pub fn read_rerank_request(
     let wire: Value =
         serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
     let query = wire
-        .get("query")
+        .get(keys::QUERY)
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let documents = super::super::cohere::handler::rerank_documents_pub(wire.get("documents"));
+    let documents = super::super::cohere::handler::rerank_documents_pub(wire.get(keys::DOCUMENTS));
     if query.is_empty() || documents.is_empty() {
         return Err(IngressReject::BadRequest(
             "rerank request requires `query` and `documents`".into(),
@@ -528,13 +533,13 @@ pub fn read_rerank_request(
         query,
         documents,
         top_n: wire
-            .get("top_n")
+            .get(keys::TOP_N)
             .and_then(Value::as_u64)
             .and_then(|n| u32::try_from(n).ok()),
         // Read `return_documents` (cohere.rerank-*/amazon.rerank-* honor it) so a bedrock->bedrock
         // rerank preserves the flag the writer re-emits — the reader formerly skipped it, an
         // asymmetry with Cohere's reader that silently dropped `return_documents:true`.
-        return_documents: wire.get("return_documents").and_then(Value::as_bool),
+        return_documents: wire.get(keys::RETURN_DOCUMENTS).and_then(Value::as_bool),
         ..Default::default()
     })
 }
@@ -548,8 +553,8 @@ pub fn read_rerank_response(
     let v: Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
     Ok(crate::codec::ir::rerank::RerankResp {
-        id: v.get("id").and_then(Value::as_str).map(str::to_string),
-        results: super::super::cohere::handler::read_rerank_results(v.get("results")),
+        id: v.get(keys::ID).and_then(Value::as_str).map(str::to_string),
+        results: super::super::cohere::handler::read_rerank_results(v.get(keys::RESULTS)),
         // A Bedrock-hosted Cohere rerank model answers in Cohere's shape; the search units it billed
         // (`meta.billed_units.search_units`) are read EXACTLY, as the Cohere reader reads them. A body
         // without them stays the flat marker — nothing is estimated.
