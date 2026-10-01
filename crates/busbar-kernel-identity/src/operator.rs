@@ -49,10 +49,36 @@ pub fn linked() -> &'static [LinkedAuth] {
     LINKED.get().map(|l| l.0).unwrap_or_default()
 }
 
-/// The operator credential's words, when a root (or a test binary) handed them in.
-pub fn words() -> Option<OperatorWords> {
-    LINKED.get().map(|l| l.1)
+/// The operator credential's provider key, as configuration spells it: the root's word once handed
+/// in; before any hand-in, the [`STAND_IN`]'s.
+pub fn provider() -> &'static str {
+    words().provider
 }
+
+/// The fixed principal id the operator credential identifies the operator as.
+pub fn principal_id() -> &'static str {
+    words().principal_id
+}
+
+/// The operator credential's words: the ones a root (or a test binary) handed in, else [`STAND_IN`].
+pub fn words() -> OperatorWords {
+    LINKED.get().map_or(STAND_IN, |l| l.1)
+}
+
+/// The words before any hand-in. A build no root handed words to links no operator credential: no
+/// words. A TEST build (`stand-in`) has no root and answers to a kind-neutral double instead
+/// (BUSBAR-1.6.0.md:175, "Kernel tests use kind-neutral doubles"); its principal is the id the
+/// operator auth plugin a test binary links identifies as.
+#[cfg(feature = "stand-in")]
+pub const STAND_IN: OperatorWords = OperatorWords {
+    provider: "test-operator-double",
+    principal_id: "admin",
+};
+#[cfg(not(feature = "stand-in"))]
+pub const STAND_IN: OperatorWords = OperatorWords {
+    provider: "",
+    principal_id: "",
+};
 
 /// The names of this build's linked auth rows, in registration order.
 pub fn linked_names() -> Vec<&'static str> {

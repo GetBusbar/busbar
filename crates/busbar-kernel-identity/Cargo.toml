@@ -43,6 +43,10 @@ tracing = { workspace = true }
 # A production `CredentialDigest` (1.5.5's hex SHA-256) for callers who would rather take the
 # `sha2`/`hex` dependency than supply their own. Off by default.
 sha256 = []
+# The operator credential's kind-neutral stand-in words (`operator::STAND_IN`) for a TEST build that
+# has no composition root to hand the root legacy table's words in. busbar-kernel's own tests and
+# its `test-support` feature turn it on; a shipped build never does.
+stand-in = []
 
 [dev-dependencies]
 # Test-only, and only exercised under `--features sha256`: the reference `sha256_hex` the

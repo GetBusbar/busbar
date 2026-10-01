@@ -2282,14 +2282,10 @@ impl Drop for EnvVarGuard {
 }
 
 /// THE OPERATOR DOUBLE: the kernel-neutral words a test build's operator credential answers to
-/// (BUSBAR-1.6.0.md:175, "Kernel tests use kind-neutral doubles"). The provider is a double; the
-/// principal is the id the operator auth plugin a test binary links identifies as, so the double's
-/// operator is that plugin's. The shipped words are the composition root's legacy table's, handed
-/// in with its linked auth rows; the kernel spells none of them.
-pub const OPERATOR_DOUBLE: OperatorWords = OperatorWords {
-    provider: "test-operator-double",
-    principal_id: "admin",
-};
+/// (BUSBAR-1.6.0.md:175, "Kernel tests use kind-neutral doubles"); kernel-identity's `stand-in`
+/// words, which `test-support` turns on. The shipped words are the composition root's legacy
+/// table's, handed in with its linked auth rows; the kernel spells none of them.
+pub use busbar_kernel_identity::operator::STAND_IN as OPERATOR_DOUBLE;
 
 /// TEST REGISTRY ROW — link the operator credential's auth row into this test binary's auth axis,
 /// as the composition root links it into the shipped one: `entry` is the SDK boundary
