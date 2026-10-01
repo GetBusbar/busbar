@@ -1485,3 +1485,170 @@ fn an_unscoped_sealed_adjust_reads_as_it_always_did() {
         ],
     );
 }
+
+// ── `admission: estimate` (the design's budget modes) ──
+//
+// Card: `m-cheap` input 1.0 utok, `m-dear` input 2.0 utok, so 100 000 expected input units are
+// 10 minor units on `m-cheap` and 20 on `m-dear`. Fee 10. Budget 25 per day on `frontier`.
+
+fn estimate_budget(admission: Option<crate::config::groups::AdmissionMode>) -> LimitCfg {
+    let mut l = pooled(LimitMetric::Budget, 25, LimitWindow::Day, "frontier");
+    l.admission = admission;
+    l
+}
+
+fn estimate_card(limits: Vec<LimitCfg>) -> CostModel {
+    model_with_card(
+        &[("team", group_cfg(None, true, limits))],
+        10,
+        &[("m-cheap", 1.0, 0.0), ("m-dear", 2.0, 0.0)],
+    )
+}
+
+fn expected_input(n: u64) -> BTreeMap<String, u64> {
+    BTreeMap::from([(busbar_contract::records::UNIT_INPUT.to_string(), n)])
+}
+
+/// ONE check at admit, at the HIGHEST price among the allowed destinations, inside the
+/// check-then-charge: the unit the estimate refuses charges NOTHING (no request slot, no fee).
+/// RED: drop the estimate from the budget test and the first admission below passes.
+#[test]
+fn an_estimate_budget_refuses_at_the_dearest_destination_and_charges_nothing() {
+    let g = gov();
+    let cm = estimate_card(vec![estimate_budget(Some(
+        crate::config::groups::AdmissionMode::Estimate,
+    ))]);
+    let k = key("vk_est", Some("team"));
+    let now = 1_700_000_000;
+    let want = expected_input(100_000);
+    // fee 10 + the dearest destination's 20 = 30 > 25: refused on the budget.
+    match g
+        .try_admit_estimated(&cm, &k, "frontier", now, &["m-cheap", "m-dear"], &want)
+        .unwrap_err()
+    {
+        LimitBlocked::Limit {
+            metric: "budget", ..
+        } => {}
+        other => panic!("the estimate refuses on the budget, got {other:?}"),
+    }
+    // Only the cheap destination allowed: fee 10 + 10 = 20 <= 25, admitted.
+    g.try_admit_estimated(&cm, &k, "frontier", now, &["m-cheap"], &want)
+        .expect("the cheap destination's estimate fits");
+    // The refusal charged nothing: one fee (10) is on the bucket, so one more estimate-free
+    // admission (20) fits and the next (30) does not.
+    g.try_admit(&cm, &k, "frontier", now)
+        .expect("the refused unit left no fee behind");
+    assert!(
+        g.try_admit(&cm, &k, "frontier", now).is_err(),
+        "three fees exceed 25"
+    );
+}
+
+/// An `exact` budget (the default, 1.5.5) never looks at the estimate.
+#[test]
+fn an_exact_budget_ignores_the_estimate() {
+    let g = gov();
+    let cm = estimate_card(vec![estimate_budget(None)]);
+    let k = key("vk_exact", Some("team"));
+    g.try_admit_estimated(
+        &cm,
+        &k,
+        "frontier",
+        1_700_000_000,
+        &["m-dear"],
+        &expected_input(10_000_000),
+    )
+    .expect("exact refuses only a budget already exhausted");
+}
+
+/// An estimate miss on a limit that declared `on_exhaust: downgrade` downgrades, exactly
+/// like an exhausted budget at admission.
+#[test]
+fn an_estimate_miss_downgrades_where_the_limit_declares_it() {
+    let g = gov();
+    let mut l = estimate_budget(Some(crate::config::groups::AdmissionMode::Estimate));
+    l.on_exhaust = Some(crate::config::groups::OnExhaust::Downgrade);
+    l.downgrade_to = Some(ScopeRef::pool("value"));
+    let cm = estimate_card(vec![l]);
+    let k = key("vk_est_dg", Some("team"));
+    match g
+        .try_admit_estimated(
+            &cm,
+            &k,
+            "frontier",
+            1_700_000_000,
+            &["m-dear"],
+            &expected_input(100_000),
+        )
+        .unwrap_err()
+    {
+        LimitBlocked::Limit {
+            metric: "budget",
+            downgrade_to: Some(to),
+            ..
+        } => assert_eq!(to, "value"),
+        other => panic!("an estimate miss downgrades, got {other:?}"),
+    }
+}
+
+/// #42 at the estimate: a destination the card cannot price fails closed on an estimate bucket,
+/// and a refusal is never downgraded.
+#[test]
+fn an_unpriceable_estimate_blocks_and_never_downgrades() {
+    let g = gov();
+    let mut l = estimate_budget(Some(crate::config::groups::AdmissionMode::Estimate));
+    l.on_exhaust = Some(crate::config::groups::OnExhaust::Downgrade);
+    l.downgrade_to = Some(ScopeRef::pool("value"));
+    let cm = estimate_card(vec![l]);
+    let k = key("vk_est_unpriced", Some("team"));
+    match g
+        .try_admit_estimated(
+            &cm,
+            &k,
+            "frontier",
+            1_700_000_000,
+            &["m-unknown"],
+            &expected_input(1),
+        )
+        .unwrap_err()
+    {
+        LimitBlocked::Limit {
+            metric: "budget",
+            downgrade_to: None,
+            ..
+        } => {}
+        other => panic!("an unpriceable estimate blocks without a downgrade, got {other:?}"),
+    }
+}
+
+/// The estimate never bills and is never held: after an admitted estimated unit the bucket's
+/// spend is the one fee, nothing more.
+#[test]
+fn the_estimate_is_never_billed_or_held() {
+    let g = gov();
+    let cm = estimate_card(vec![estimate_budget(Some(
+        crate::config::groups::AdmissionMode::Estimate,
+    ))]);
+    let k = key("vk_est_bill", Some("team"));
+    let now = 1_700_000_000;
+    g.try_admit_estimated(
+        &cm,
+        &k,
+        "frontier",
+        now,
+        &["m-cheap"],
+        &expected_input(100_000),
+    )
+    .expect("fits");
+    let spend: Vec<i64> = g
+        .budget_state(&cm, &k, now)
+        .into_iter()
+        .filter(|b| b.budget_group.is_some())
+        .map(|b| b.spend_micros_at_current_rate)
+        .collect();
+    assert_eq!(
+        spend,
+        vec![10 * busbar_kernel_ledger::cost::MICROS_PER_CENT],
+        "the fee alone, never the estimate"
+    );
+}

@@ -1715,6 +1715,48 @@ impl GovState {
         pool: &str,
         now: u64,
     ) -> Result<AdmitGrant, LimitBlocked> {
+        self.admit_checked(cost, key, pool, now, Some(0))
+    }
+
+    /// [`GovState::try_admit`] for a unit whose plane reported its EXPECTED units at decode
+    /// (the design's budget modes, `admission: estimate`):
+    ///
+    /// - ONE check at admit, inside the same check-then-charge: a budget bucket whose limit declared
+    ///   `admission: estimate` must also hold the estimate ([`CostModel::estimate_minor`] over
+    ///   `models`, the destinations verify allowed) on top of its spend and the one fee, BEFORE
+    ///   anything is charged — so a unit the estimate refuses charges nothing, no request slot and
+    ///   no fee, exactly like 1.5.5's budget refusal;
+    /// - no reservation is kept: the estimate is never stored, never held against a later
+    ///   admission and never billed; the route walk never looks at it;
+    /// - a miss is the budget block itself, so a limit that declared `on_exhaust: downgrade`
+    ///   downgrades, and the refusal renders exact's over-budget bytes;
+    /// - an `exact` bucket (the default) ignores the estimate: [`GovState::try_admit`] unchanged;
+    /// - an estimate the card cannot price (#42) blocks every estimate bucket, never downgraded.
+    ///
+    /// [`CostModel::estimate_minor`]: crate::cost::CostModel::estimate_minor
+    pub fn try_admit_estimated(
+        &self,
+        cost: &crate::cost::CostModel,
+        key: &VirtualKey,
+        pool: &str,
+        now: u64,
+        models: &[&str],
+        expected: &BTreeMap<String, u64>,
+    ) -> Result<AdmitGrant, LimitBlocked> {
+        self.admit_checked(cost, key, pool, now, cost.estimate_minor(models, expected))
+    }
+
+    /// The one check-then-charge behind [`GovState::try_admit`] and
+    /// [`GovState::try_admit_estimated`]; `estimate` is the minor-unit guess an `estimate` budget
+    /// bucket must also hold (`Some(0)` = none; `None` = unpriceable, fail closed).
+    fn admit_checked(
+        &self,
+        cost: &crate::cost::CostModel,
+        key: &VirtualKey,
+        pool: &str,
+        now: u64,
+        estimate: Option<i64>,
+    ) -> Result<AdmitGrant, LimitBlocked> {
         let (plane, pool) = split_plane_lane(pool);
         // FAIL-CLOSED: a key bound to a group this node's config does not know cannot be admitted
         // under the chain's caps, so it is not admitted at all.
@@ -1893,6 +1935,13 @@ impl GovState {
                 Ok(d) => (d, false),
                 Err(_) => (0, true),
             };
+            // `admission: estimate`: this bucket must also hold the unit's estimate; an
+            // estimate the card refused to price blocks it like a refused spend (never downgraded).
+            let (guess, refused) = match (bucket.budget_admission, estimate) {
+                (crate::config::groups::AdmissionMode::Exact, _) => (0, refused),
+                (crate::config::groups::AdmissionMode::Estimate, Some(e)) => (e, refused),
+                (crate::config::groups::AdmissionMode::Estimate, None) => (0, true),
+            };
             let blocked_metric = if bucket
                 .requests_cap
                 .is_some_and(|cap| requests.saturating_add(1) > cap)
@@ -1914,10 +1963,9 @@ impl GovState {
                 .is_some_and(|cap| t_cache_write >= cap)
             {
                 Some("tokens_cache_write")
-            } else if bucket
-                .budget_cap
-                .is_some_and(|cap| refused || derived >= cap || derived.saturating_add(fee) > cap)
-            {
+            } else if bucket.budget_cap.is_some_and(|cap| {
+                refused || derived >= cap || derived.saturating_add(fee).saturating_add(guess) > cap
+            }) {
                 Some("budget")
             } else {
                 None

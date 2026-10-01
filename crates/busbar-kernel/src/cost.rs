@@ -32,7 +32,7 @@ use busbar_contract::records::{
     ScopeRef, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };
 
-use crate::config::groups::LimitMetric;
+use crate::config::groups::{AdmissionMode, LimitMetric};
 
 /// The prefix namespacing GROUP bucket ids in the store, so a group named like a key id can never
 /// collide with a real key's bucket. Key buckets use the bare key id. A group's per-window buckets
@@ -173,6 +173,10 @@ pub struct GroupBucket {
     /// several budget limits merge into this bucket, the MOST RESTRICTIVE (minimum) cap's
     /// behavior governs - it is the one that actually blocks.
     pub downgrade_to: Option<ScopeRef>,
+    /// How the bucket's budget admits (the design's budget modes): `exact` (the default, 1.5.5)
+    /// or `estimate` when ANY budget limit merged into this bucket declared it (the
+    /// strictest wins, as [`AdmissionMode::governing`] reads it).
+    pub budget_admission: AdmissionMode,
 }
 
 /// One resolved group: its enabled flag, in-flight cap, per-window enforcement buckets, and parent
@@ -215,6 +219,8 @@ pub(crate) struct ChainBucket<'a> {
     pub scope: Option<&'a ScopeRef>,
     /// The budget limit's `downgrade_to` scope, when it declared `on_exhaust: downgrade`.
     pub downgrade_to: Option<&'a ScopeRef>,
+    /// The bucket's budget admission mode ([`GroupBucket::budget_admission`]).
+    pub budget_admission: AdmissionMode,
 }
 
 impl ChainBucket<'_> {
@@ -460,6 +466,9 @@ impl CostModel {
                                     if bucket.budget_cap.is_none_or(|c| amount < c) {
                                         bucket.downgrade_to = l.downgrade_to.clone();
                                     }
+                                    if l.admission == Some(AdmissionMode::Estimate) {
+                                        bucket.budget_admission = AdmissionMode::Estimate;
+                                    }
                                     bucket.budget_cap = Some(
                                         bucket.budget_cap.map_or(amount, |c: i64| c.min(amount)),
                                     );
@@ -599,6 +608,26 @@ impl CostModel {
         busbar_kernel_ledger::cost::nanos_of_exact(tally.exact().ok()?).ok()
     }
 
+    /// THE `admission: estimate` GUESS (the design's budget modes): the plane's expected units priced by the one money function at each of `models` (the
+    /// destinations verify allowed), the HIGHEST of them, in whole minor units rounded UP once.
+    /// A guess by design ("It's an estimate. It will never be right."), rounded conservatively because it only ever gates an admission; it is never stored and never bills
+    /// (a line carries only far-end-reported units). No model or no expected unit is `Some(0)`.
+    /// `None` when a model cannot price an expected class (#42): the caller fails closed.
+    pub fn estimate_minor(&self, models: &[&str], expected: &BTreeMap<String, u64>) -> Option<i64> {
+        if expected.values().all(|n| *n == 0) {
+            return Some(0);
+        }
+        let usage = busbar_contract::billing::Usage {
+            usage_units: expected.clone(),
+        };
+        let mut highest: u128 = 0;
+        for model in models {
+            highest = highest.max(self.price_usage_nanos(model, &usage)?);
+        }
+        let minor = highest.div_ceil(busbar_kernel_ledger::cost::NANOS_PER_CENT);
+        Some(i64::try_from(minor).unwrap_or(i64::MAX))
+    }
+
     /// Whether a request for `model` must be REJECTED because the rate card is present but has no
     /// entry (an arbitrary passthrough model string not in the configured rate card). Fail-closed and
     /// consistent with the completeness rule: you either price nothing or price everything.
@@ -712,6 +741,7 @@ impl CostModel {
                     budget_cap: b.budget_cap,
                     scope: b.scope.as_ref(),
                     downgrade_to: b.downgrade_to.as_ref(),
+                    budget_admission: b.budget_admission,
                 });
             }
             next = g.parent;
