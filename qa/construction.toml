@@ -808,7 +808,8 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 24237 -> 24284 with its pair (K1 plane driver: PlaneCalls, Lent and the plane unit key, +47).
 # RE-ARMED 24237 -> 25636 with its pair (WIRE-STORE C1 + CONNECTOR-19, +1399; T13b).
 # RE-ARMED 25636 -> 25683 with its pair (K1 over T13b: the plane driver's +47 on 25636).
-contract_caps = 25682
+# LOWERED 25682 -> 25496 with its pair (SWEEP-L2: the unimplemented kinds.rs traits and their shapes deleted, -186), at the measurement. Downward only.
+contract_caps = 25496
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1512,7 +1513,8 @@ contract_crate = "busbar-contract"
 # RE-ARMED 25636 -> 25683 with its pair (K1 over T13b: the plane driver's +47 on 25636).
 # LOWERED 25683 -> 25682 with its pair (K1-DEDUP: Blob::ABSENT and AbiStr::over replace three
 # literal copies, measured).
-caps_contract_ceiling = 25682
+# LOWERED 25682 -> 25496 with its pair (SWEEP-L2: the unimplemented kinds.rs traits and their shapes deleted, -186), at the measurement. Downward only.
+caps_contract_ceiling = 25496
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
