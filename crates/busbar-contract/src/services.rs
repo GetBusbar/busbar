@@ -116,6 +116,14 @@ pub trait HostServices: Send + Sync {
     fn records_secret(&self, kind: &str, id: &str, later: Later) -> Ran;
 }
 
+/// THE HOST-HELD CREDENTIAL READ `records.secret` serves: the secret of credential `id` of `kind`
+/// and whether it may authenticate now. An unknown id answers a fixed dummy secret, not live, at the
+/// same cost (the kernel's credential lookup holds that rule; an implementation only delegates).
+pub trait CredentialRead: Send + Sync {
+    /// The secret and its liveness.
+    fn read(&self, kind: &str, id: &str) -> (crate::redacted::Redacted<String>, bool);
+}
+
 /// A `records.list` request, as the host copied it out of the caller's `in`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordsList {
