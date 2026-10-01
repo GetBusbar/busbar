@@ -6,6 +6,7 @@
 mod arity_tests;
 mod counterparty_tests;
 mod destination_tests;
+mod dial_table_tests;
 mod guard_tests;
 mod net_tests;
 mod order_tests;

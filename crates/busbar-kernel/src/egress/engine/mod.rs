@@ -70,7 +70,9 @@ pub mod tls;
 
 pub use deadline::ConnectDeadline;
 pub use observe::{peer_key_pin, KeyPinObserve, ObservedIo, PeerKeyPin};
-pub use resolve::{EgressResolver, ResolveNames};
+pub use resolve::{DialRefused, DialTable, EgressResolver, ResolveNames};
+#[cfg(any(test, feature = "test-support"))]
+pub use resolve::with_scoped_dial;
 pub use tls::{ClientIdentity, Trust};
 
 /// The connector stack, bottom-up: TCP through the pin-aware resolver (+ boot-detected CONNECT
@@ -101,11 +103,14 @@ pub struct EngineSpec {
     pub http1_only: bool,
     pub h2_prior_knowledge: bool,
     /// Destination pinning. `None` = the pooled posture (destinations are operator config,
-    /// guarded at apply). `Some` makes DNS structural: the resolver becomes the pin itself
-    /// ([`EgressResolver::Pinned`]) and `dns` below is never consulted.
+    /// judged at apply and again at every dial by `dial`). `Some` makes DNS structural: the
+    /// resolver becomes the pin itself ([`EgressResolver::Pinned`]) and `dns` and `dial` below are
+    /// never consulted.
     pub pin: Option<PinnedDest>,
     /// DNS when unpinned.
     pub dns: Dns,
+    /// The table every address `dns` answers with is judged by when unpinned ([`DialTable`]).
+    pub dial: DialTable,
     /// Peer-certificate observation for SPKI pinning ([`observe`]). Off on the pooled posture (no
     /// walk, no hash per connect); on for every pinned posture.
     pub observe_key_pin: bool,
@@ -162,7 +167,7 @@ pub enum Dns {
 }
 
 impl EngineSpec {
-    /// THE POOLED-WEBPKI EGRESS POSTURE (system trust + system DNS + boot-env tunnel + pooled reuse): webpki trust, system DNS, no pin, no observation, no
+    /// THE POOLED-WEBPKI EGRESS POSTURE (system trust + judged system DNS + boot-env tunnel + pooled reuse): webpki trust, system DNS judged by the process dial table, no pin, no observation, no
     /// client identity, boot-env proxy tunnel, h2 keep-alive 30s/10s + adaptive window, TCP
     /// keepalive 60s — the values the parity ledger above documents, parameterized only by the
     /// four inputs the plane's `ClientSettingsInput` snapshots (plus the per-shard idle division the
@@ -173,13 +178,15 @@ impl EngineSpec {
         http1_only: bool,
         h2_prior_knowledge: bool,
     ) -> Self {
+        let (dial, names) = resolve::pooled_dial();
         EngineSpec {
             idle_per_host,
             pool_idle_timeout_secs,
             http1_only,
             h2_prior_knowledge,
             pin: None,
-            dns: Dns::System,
+            dns: names.map_or(Dns::System, Dns::Custom),
+            dial,
             observe_key_pin: false,
             trust: Trust::Webpki,
             identity: None,
@@ -213,6 +220,7 @@ impl EngineSpec {
             h2_prior_knowledge: false,
             pin: Some(PinnedDest { host, addr }),
             dns: Dns::System,
+            dial: DialTable::process(),
             observe_key_pin: true,
             trust: Trust::WebpkiPlus(extra_roots),
             identity,
@@ -275,14 +283,20 @@ pub(crate) fn dial_bound_for(pin: Option<&PinnedDest>) -> usize {
 /// `build_egress_client` shim stand over this without a panic path in practice.
 pub fn build_client(spec: &EngineSpec) -> Result<EngineClient, String> {
     // THE RESOLVER IS THE PIN (see `resolve`): a pinned spec installs the one-name table and the
-    // `dns` posture is structurally unreachable — not "unused", absent from the connector.
+    // `dns` posture is structurally unreachable — not "unused", absent from the connector. An
+    // unpinned spec judges every answer through its dial table before the connector sees it.
     let resolver = match (&spec.pin, &spec.dns) {
         (Some(pin), _) => EgressResolver::Pinned {
             host: Arc::clone(&pin.host),
             addr: pin.addr,
         },
-        (None, Dns::System) => EgressResolver::system(),
-        (None, Dns::Custom(names)) => EgressResolver::Custom(Arc::clone(names)),
+        (None, dns) => EgressResolver::Judged {
+            names: Box::new(match dns {
+                Dns::System => EgressResolver::system(),
+                Dns::Custom(names) => EgressResolver::Custom(Arc::clone(names)),
+            }),
+            table: spec.dial.clone(),
+        },
     };
     let mut http = hyper_util::client::legacy::connect::HttpConnector::new_with_resolver(resolver);
     // The mock/bench upstreams are plain http; TLS wraps only https targets (below).
@@ -565,6 +579,13 @@ mod pool_h2_tests;
 #[cfg(test)]
 #[path = "tests/resolver_tests.rs"]
 mod resolver_tests;
+
+/// The dial judge on the pooled posture: rebinding and mixed answers refused before any socket,
+/// loopback admitted and pooled, a published table read by the next dial, the refusal's connect
+/// class, and the name kept for SNI and `Host`.
+#[cfg(test)]
+#[path = "tests/dial_judge_tests.rs"]
+mod dial_judge_tests;
 
 /// The R1 extras-propagation spike (pooled reuse carries `PeerKeyPin` on every response), SNI
 /// preservation under the pin with its wrong-name refusing twin, the R2 URI-port-wins proof, and

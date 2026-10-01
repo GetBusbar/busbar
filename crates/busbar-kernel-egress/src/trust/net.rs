@@ -15,8 +15,9 @@
 //! carrier was a new place to forget. The trust unit already decides where a unit may go — the
 //! allow-list, the per-kind rule, the lane — so the address a destination resolves to belongs
 //! beside those. Which dials reach this guard is stated in the trust unit's module header: the
-//! fetches the host makes on an operator's or a caller's behalf do, and the provider dial does not
-//! (it is guarded at configuration time, as 1.5.5 guarded it).
+//! fetches the host makes on an operator's or a caller's behalf do, and the provider dial is
+//! judged by the same metadata denylist twice: once at configuration time, as 1.5.5 judged it, and
+//! again over every address its name resolves to when it is dialled ([`DialDenylist`]).
 //!
 //! ## RESOLVE THEN PIN, and why a name check is not a guard
 //!
@@ -689,15 +690,9 @@ impl HostSet {
 /// metadata DENYLIST and ALLOW EVERYTHING ELSE — loopback, RFC-1918, CGNAT, and public are all
 /// legitimate upstreams (a local loopback upstream "just works" with no flag).
 ///
-/// The hardcoded denylist:
-/// * link-local `169.254.0.0/16` — catches IMDS `169.254.169.254`, AWS ECS task-creds
-///   `169.254.170.2`, Tencent `169.254.0.23`, and any other link-local metadata in one range
-///   (nothing legitimate runs on link-local);
-/// * `100.100.100.200` (Alibaba Cloud ECS, inside the otherwise-allowed CGNAT /10);
-/// * `168.63.129.16` (Azure WireServer / platform);
-/// * `192.0.0.192` (Oracle Cloud / OCI IMDS — globally-routable-shaped, so it needs an explicit literal);
-/// * the EC2 IMDSv6 `fd00:ec2::254`;
-/// * the metadata hostnames in `METADATA_HOSTS`.
+/// The hardcoded denylist is the addresses [`ip_is_cloud_metadata`] holds (link-local
+/// `169.254.0.0/16`, Alibaba `100.100.100.200`, Azure `168.63.129.16`, OCI `192.0.0.192` and the
+/// EC2/ECS IPv6 endpoints) and the metadata hostnames in `METADATA_HOSTS`.
 ///
 /// All IP entries are matched through the SAME obfuscation defenses (IPv4-mapped/compatible IPv6,
 /// decimal-int / hex / octal encoding, percent-encoded dots, trailing-dot FQDN), not just IMDS.
@@ -740,8 +735,6 @@ fn judge_against_lists(
     allow_overrides: &HostSet,
     extra_blocked: &HostSet,
 ) -> Option<String> {
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-
     // A destination may be spelled as a URL or as a bare `host:port`, and the destination check
     // supports both. Judging only the first spelling meant the operator's denylist never fired for
     // the second — the extraction wanted a `://` and returned nothing without it.
@@ -772,46 +765,17 @@ fn judge_against_lists(
         return Some(host.to_string());
     }
 
-    // The hardcoded metadata IP literals.
-    // * link-local `169.254.0.0/16` (IMDS `169.254.169.254`, ECS `169.254.170.2`, Tencent
-    // `169.254.0.23`, …);
-    // * Alibaba `100.100.100.200`; Azure `168.63.129.16`; Oracle Cloud (OCI) `192.0.0.192`;
-    // EC2 IMDSv6 `fd00:ec2::254`.
-    let imds_v6 = Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x254);
-    let alibaba_v4 = Ipv4Addr::new(100, 100, 100, 200);
-    let azure_v4 = Ipv4Addr::new(168, 63, 129, 16);
-    // OCI's IMDS lives at the globally-routable-shaped `192.0.0.192` — NOT caught by link-local /
-    // private / CGNAT / unspecified, so it needs an explicit literal like Alibaba/Azure.
-    let oci_v4 = Ipv4Addr::new(192, 0, 0, 192);
-    // Predicate: is this PARSED v4 address a hardcoded metadata target? (link-local /16 + the
-    // non-link-local literals.)
-    let is_metadata_v4 = |v4: &Ipv4Addr| -> bool {
-        v4.is_link_local() || *v4 == alibaba_v4 || *v4 == azure_v4 || *v4 == oci_v4
-    };
-
-    // Alternate / non-canonical IPv4 encodings (decimal int `2852039166` = 169.254.169.254, hex,
-    // octal, short dotted) that `IpAddr::from_str` rejects but the OS resolver still maps to an IPv4
-    // target. Expand them to a canonical address and re-check against the metadata predicate, so an
-    // obfuscated metadata literal is caught while a non-metadata obfuscated form (e.g. a decimal
-    // loopback) is simply allowed (it is not a metadata target).
-    if let Some(expanded) = expand_alternate_ipv4(host) {
-        if is_metadata_v4(&expanded) {
-            return Some(host.to_string());
-        }
-    }
-
-    // Canonical IP-literal checks. A hostname that does not parse as an IP and is not in the lists
-    // above is ALLOWED — private/loopback/CGNAT/public upstreams are all legitimate.
-    let is_blocked = match host.parse::<IpAddr>() {
-        Ok(IpAddr::V4(v4)) => is_metadata_v4(&v4),
-        Ok(IpAddr::V6(v6)) => {
-            // An IPv6 literal embedding an IPv4 address reaches the same v4 target as the bare form,
-            // so apply the IDENTICAL metadata predicate to the embedded v4 (covers `[::ffff:a.b.c.d]`
-            // mapped AND `[::a.b.c.d]` compatible via `to_ipv4()`).
-            let embedded = embedded_ipv4(&v6);
-            v6 == imds_v6 || embedded.is_some_and(|m| is_metadata_v4(&m))
-        }
-        Err(_) => false,
+    // The metadata ADDRESSES are the one list [`ip_is_cloud_metadata`] holds (link-local
+    // `169.254.0.0/16`, Alibaba, Azure, OCI and the EC2/ECS IPv6 endpoints), asked of the literal
+    // and of an alternate IPv4 spelling the OS resolver would expand to one (decimal `2852039166`,
+    // hex, octal, short dotted). A non-metadata obfuscated form is not refused here; it is not a
+    // metadata target. A hostname that is not an IP and is not in the lists above is ALLOWED:
+    // private, loopback, CGNAT and public upstreams are all legitimate.
+    let is_blocked = match expand_alternate_ipv4(host) {
+        Some(expanded) => ip_is_cloud_metadata(&IpAddr::V4(expanded)),
+        None => host
+            .parse::<IpAddr>()
+            .is_ok_and(|addr| ip_is_cloud_metadata(&addr)),
     };
 
     is_blocked.then(|| host.to_string())
@@ -864,6 +828,92 @@ impl Denylist {
     pub fn allows_all(&self) -> bool {
         self.allow_all
     }
+
+    /// THE SAME RULE, ASKED OF AN ADDRESS A NAME RESOLVED TO. The configuration-time check reads the
+    /// host the operator wrote; a name is free to resolve somewhere else when it is dialled, so the
+    /// dial asks this of every address the name answered with. An address is refused when it is a
+    /// cloud-metadata address or an operator-blocked one, unless the name or the address is carved
+    /// out, or the guard is off. Private and loopback addresses pass, exactly as they pass at
+    /// configuration time.
+    #[must_use]
+    pub fn refuses_address(&self, host: &str, addr: IpAddr) -> bool {
+        if self.allow_all {
+            return false;
+        }
+        let literal = addr.to_string();
+        let listed = ip_is_cloud_metadata(&addr)
+            || self.blocked.matches(&literal)
+            || self.blocked.matches(host);
+        listed && !(self.allowed.matches(host) || self.allowed.matches(&literal))
+    }
+}
+
+/// THE DIAL TABLE: the [`Denylist`] each configured host is judged under when it is dialled.
+///
+/// The carve-outs are per provider, while the client that dials is shared by every provider of a
+/// plane. So the table is keyed by the HOST a provider's URLs name, each host holding the union of the
+/// carve-outs of every provider that names it, and every other host is judged under the
+/// deployment-wide lists alone. One table, built once per configuration; the judgement is
+/// [`Denylist::refuses_address`], the rule the configuration-time check states.
+#[derive(Debug, Default, Clone)]
+pub struct DialDenylist {
+    /// The deployment-wide lists, for a host no provider names.
+    default: Denylist,
+    /// Per-host lists, keyed lowercase without a trailing dot.
+    by_host: std::collections::HashMap<String, Denylist>,
+}
+
+impl DialDenylist {
+    /// Build the table. `blocked`, `allowed` and `allow_all` are the deployment-wide
+    /// `security.blocked_metadata_hosts`, `security.allow_metadata_hosts` and
+    /// `security.allow_all_metadata`; `per_host` pairs each host a provider's URLs name with that
+    /// provider's own `allow_metadata_hosts`.
+    #[must_use]
+    pub fn new<'a>(
+        blocked: &[String],
+        allowed: &[String],
+        allow_all: bool,
+        per_host: impl IntoIterator<Item = (String, &'a [String])>,
+    ) -> Self {
+        let mut carve_outs: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for (host, own) in per_host {
+            carve_outs
+                .entry(dial_key(&host))
+                .or_insert_with(|| allowed.to_vec())
+                .extend(own.iter().cloned());
+        }
+        DialDenylist {
+            default: Denylist::new(blocked, allowed, allow_all),
+            by_host: carve_outs
+                .into_iter()
+                .map(|(host, own)| (host, Denylist::new(blocked, &own, allow_all)))
+                .collect(),
+        }
+    }
+
+    /// Judge every address `host` answered with. A mixed answer is refused whole, for the reason
+    /// [`judge_addresses`] gives: checking only the good address checks whichever one the resolver
+    /// put first.
+    ///
+    /// # Errors
+    ///
+    /// The first answered address the host's lists refuse.
+    pub fn judge(&self, host: &str, addrs: &[IpAddr]) -> Result<(), AddressRefusal> {
+        let lists = self.by_host.get(&dial_key(host)).unwrap_or(&self.default);
+        match addrs.iter().find(|a| lists.refuses_address(host, **a)) {
+            Some(addr) => Err(AddressRefusal::CloudMetadataAddress {
+                host: host.to_string(),
+                addr: *addr,
+            }),
+            None => Ok(()),
+        }
+    }
+}
+
+/// A host as the dial table keys it: lowercase, without the FQDN-root dot.
+fn dial_key(host: &str) -> String {
+    host.trim_end_matches('.').to_ascii_lowercase()
 }
 
 /// Why the trust unit would not let a destination be dialled.

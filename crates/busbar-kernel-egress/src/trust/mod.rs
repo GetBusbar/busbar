@@ -31,14 +31,17 @@
 //!
 //! It is NOT one guard pinned for every carrier. No production path calls
 //! [`net::check_destination`], and no production [`KindFacts`] answers
-//! [`KindFacts::net_guard_passes`]. The provider dial (`attempt.rs`) hands its destination straight
-//! to the carrier, whose client re-parses the authority and resolves the name itself, with no pin;
-//! what guards a provider URL is the configuration-time check ([`net::ssrf_blocked_host`], the
-//! 1.5.5 validators), exactly as 1.5.5 guarded it. The fetches that DO resolve-then-pin — the ones
-//! the host makes on an operator's or a caller's behalf — call [`net::resolve_and_pin`] or
-//! [`net::pin_answer`] directly, and the `dest.judge` host service asks [`net::check_structure`].
-//! A provider dial is not resolved-then-pinned before it connects, because that would refuse a
-//! name resolving to a private address where 1.5.5 accepted it.
+//! [`KindFacts::net_guard_passes`]. A provider URL is checked when the configuration is applied
+//! ([`net::ssrf_blocked_host`], the 1.5.5 validators), and checked again when it is dialled: the
+//! pooled egress client resolves the name once per new connection, judges every address it answered
+//! with by the same rule ([`net::DialDenylist`], over [`net::Denylist::refuses_address`]), and
+//! connects only to an address that passed, keeping the name for TLS and the `Host` header. That
+//! rule refuses cloud-metadata and operator-blocked addresses and admits private and loopback ones,
+//! as the configuration-time check does, so a name that resolves to a private address still works
+//! and a name that later resolves to a metadata address is refused. The fetches the host makes on
+//! an operator's or a caller's behalf resolve-then-pin through [`net::resolve_and_pin`] or
+//! [`net::pin_answer`] under their own [`net::GuardPolicy`], and the `dest.judge` host service asks
+//! [`net::check_structure`].
 //!
 //! ## The exclusion rule
 //!
@@ -89,8 +92,8 @@ pub use lane::{
     survives_prewalk_filter, BreakerQuery, BreakerView, LaneCandidate, LaneTable, Unavailable,
 };
 pub use net::{
-    check_destination, check_destination_facts, AddressRefusal, Denylist, GuardPolicy,
-    NetworkRefusal, PinnedTarget, Resolver,
+    check_destination, check_destination_facts, AddressRefusal, Denylist, DialDenylist,
+    GuardPolicy, NetworkRefusal, PinnedTarget, Resolver,
 };
 pub use order::{
     pick, reconcile_order, sticky_position, OrderVerdict, OrderingHook, Pick, PickOutcome,

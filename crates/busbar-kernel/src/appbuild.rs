@@ -477,6 +477,9 @@ pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 pub struct InstalledLimits {
     guard: limits::InstallGuard,
     rates: ResolvedRates,
+    /// The lists this configuration's provider URLs are judged by when dialled, published at the
+    /// commit for the same reason the rates are: a rejected apply must not leave them in force.
+    dial: crate::net_guard::DialDenylist,
 }
 
 /// The rates one build resolved, held (owned) until the build's commit raises them.
@@ -493,8 +496,9 @@ impl InstalledLimits {
     /// raise the rate-apply seam with the rates this build resolved — the one moment the
     /// configuration they came from is the one in force.
     pub fn keep(self) {
-        let InstalledLimits { guard, rates } = self;
+        let InstalledLimits { guard, rates, dial } = self;
         guard.commit();
+        crate::egress::engine::DialTable::process().publish(dial);
         crate::rate_apply::rates_applied(&crate::rate_apply::RawRates {
             lanes: &rates.lanes,
             units: &rates.units,
@@ -675,6 +679,20 @@ pub fn build_app_from_config(
         present: cfg.rate_card.is_some(),
         plane_fees: cfg.plane_fees.clone(),
     };
+    // THE DIAL TABLE: the lists the validator judged each provider URL by, keyed by the host the
+    // URL names, so the egress client judges every address that host resolves to by the same rule
+    // when it dials. Published at the commit (`InstalledLimits::keep`), beside the rates.
+    let dial = crate::net_guard::DialDenylist::new(
+        &cfg.blocked_metadata_hosts,
+        &cfg.allow_metadata_hosts,
+        cfg.allow_all_metadata,
+        cfg.providers.values().flat_map(|p| {
+            std::iter::once(p.base_url.as_str())
+                .chain(p.token_url.as_deref())
+                .filter_map(crate::net_guard::extract_normalized_host)
+                .map(move |host| (host, p.allow_metadata_hosts.as_slice()))
+        }),
+    );
 
     let mut sorted_models: Vec<_> = cfg.models.into_iter().collect();
     sorted_models.sort_by(|a, b| a.0.cmp(&b.0));
@@ -2014,6 +2032,7 @@ pub fn build_app_from_config(
         InstalledLimits {
             guard: limits_guard,
             rates: resolved_rates,
+            dial,
         },
     ))
 }

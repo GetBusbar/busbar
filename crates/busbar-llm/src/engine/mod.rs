@@ -169,6 +169,9 @@ mod client_header_forwarding_tests;
 #[path = "tests/dialect_registry_facts_tests.rs"]
 mod dialect_registry_facts_tests;
 #[cfg(test)]
+#[path = "tests/dial_refusal_failover_tests.rs"]
+mod dial_refusal_failover_tests;
+#[cfg(test)]
 #[path = "tests/egress_differential_tests.rs"]
 mod egress_differential_tests;
 #[cfg(test)]

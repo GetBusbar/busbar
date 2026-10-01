@@ -95,6 +95,9 @@ pub struct ConnRecord {
     pub handshake_ok: bool,
     /// How many HTTP requests rode this one connection — the pooled-reuse observation.
     pub requests: usize,
+    /// Every request HEAD this TLS connection carried, verbatim to the blank line — what a
+    /// test reads the `Host` header off.
+    pub heads: Vec<String>,
 }
 
 type SharedRecords = Arc<Mutex<Vec<Arc<Mutex<ConnRecord>>>>>;
@@ -245,10 +248,14 @@ fn serve_tls_conn(
     }
     let mut tls = rustls::Stream::new(&mut conn, &mut stream);
     for _ in 0..max_requests {
-        if read_one_request(&mut tls).is_none() {
+        let Some(head) = read_one_request(&mut tls) else {
             break;
+        };
+        {
+            let mut rec = record.lock().expect("record");
+            rec.requests += 1;
+            rec.heads.push(head);
         }
-        record.lock().expect("record").requests += 1;
         if tls.write_all(response).and_then(|()| tls.flush()).is_err() {
             break;
         }
@@ -521,6 +528,21 @@ impl reqwest::dns::Resolve for RebindingResolver {
         Box::pin(std::future::ready(Ok(
             Box::new(std::iter::once(addr)) as Box<dyn Iterator<Item = SocketAddr> + Send>
         )))
+    }
+}
+
+/// The same scripted answers for the engine's resolver seam, so one double drives both stacks.
+impl crate::egress::engine::ResolveNames for RebindingResolver {
+    fn resolve(
+        &self,
+        _name: &str,
+    ) -> futures::future::BoxFuture<
+        'static,
+        Result<Vec<SocketAddr>, Box<dyn std::error::Error + Send + Sync>>,
+    > {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        let addr = if n == 0 { self.first } else { self.then };
+        Box::pin(std::future::ready(Ok(vec![addr])))
     }
 }
 
