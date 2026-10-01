@@ -9,14 +9,15 @@ use std::mem::size_of;
 use std::ptr;
 
 use crate::abi::auth::{
-    check_identify, slot, Fault, IdentifyOut, IdentityBuf, NamedValue, Ops, StripName,
-    VerifyIn, DECISION_CONTINUE, DECISION_STOP, FACT_CACHEABLE, IDENTITY_HAS_TTL, POINT_HEAD,
+    check_identify, slot, IdentifyOut, IdentityBuf, NamedValue, Ops, StripName, VerifyIn,
+    DECISION_CONTINUE, DECISION_STOP, FACT_CACHEABLE, IDENTITY_HAS_TTL, POINT_HEAD,
     POINT_HEAD_BODY, SPAN_ABSENT, STRIP_FIELD, VERDICT_IDENTITY, VERDICT_PASS, VERDICT_REJECT,
 };
 use crate::abi::mechanism::call::{
-    AbiStr, Blob, Envelope, InHead, Op, OutHead, Outcome, RawOutcome, Span, BLOB_ABSENT,
-    BLOB_JSON, BLOB_OCTETS, BLOB_SECRET, METRIC_ADD,
+    AbiStr, Blob, Envelope, InHead, Op, OutHead, Outcome, RawOutcome, Span, BLOB_ABSENT, BLOB_JSON,
+    BLOB_OCTETS, BLOB_SECRET, METRIC_ADD,
 };
+use crate::abi::mechanism::check::{fault, Fault, Rule};
 use crate::abi::mechanism::door::{Door, MetricFamily, FAMILY_COUNTER};
 use crate::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, RefreshIn};
 use crate::abi::mechanism::ticket::{HostCtx, Ticket};
@@ -232,7 +233,7 @@ impl Host {
     }
 
     fn with_strips(bytes: usize, groups: usize, strips: usize) -> Self {
-        let empty = Span { off: 0, len: 0 };
+        let empty = Span { offset: 0, len: 0 };
         Host {
             buf: vec![0; bytes],
             groups: vec![empty; groups],
@@ -279,7 +280,8 @@ impl Host {
 
     fn text(&self, s: Span) -> Option<String> {
         (s.offset != SPAN_ABSENT).then(|| {
-            String::from_utf8_lossy(&self.buf[s.offset as usize..(s.offset + s.len) as usize]).into()
+            String::from_utf8_lossy(&self.buf[s.offset as usize..(s.offset + s.len) as usize])
+                .into()
         })
     }
 }
@@ -403,14 +405,17 @@ fn a_replay_key_crosses_as_a_bounded_span_with_its_ttl() {
     assert_eq!(out.identity.replay_ttl_secs, 0);
     // RED: a replay span past the host's buffer is the kind's FAULT, never read.
     let (o, mut out, input) = verify(opened.instance, Some(b"once"), None, &mut host);
-    out.identity.replay_key = Span { off: 60, len: 10 };
+    out.identity.replay_key = Span {
+        offset: 60,
+        len: 10,
+    };
     assert!(check(o, &out, &input, &host).is_err());
     // RED: a replay TTL with no replay key is refused (the key is Missing), never half-read.
     let (o, mut out, input) = verify(opened.instance, Some(b"good"), None, &mut host);
     out.identity.replay_ttl_secs = 30;
     assert_eq!(
         check(o, &out, &input, &host),
-        Err(crate::abi::auth::Fault::Missing)
+        Err(fault(Rule::Missing, "verify.missing"))
     );
 }
 
@@ -541,36 +546,63 @@ fn a_broken_strip_decision_or_credential_is_the_kinds_fault() {
     let mut host = Host::new(64, 4);
     let (o, mut out, input) = verify(opened.instance, Some(b"good"), None, &mut host);
     out.decision = 0;
-    assert_eq!(check(o, &out, &input, &host), Err(Fault::Vocabulary));
+    assert_eq!(
+        check(o, &out, &input, &host),
+        Err(fault(Rule::UnknownCode, "verify.vocabulary"))
+    );
     out.decision = 3;
-    assert_eq!(check(o, &out, &input, &host), Err(Fault::Vocabulary));
+    assert_eq!(
+        check(o, &out, &input, &host),
+        Err(fault(Rule::UnknownCode, "verify.vocabulary"))
+    );
 
     let (o, out, mut input) = verify(opened.instance, Some(b"other"), None, &mut host);
     let mut forged = out;
-    forged.identity.credential = Span { off: 0, len: 4 };
-    assert_eq!(check(o, &forged, &input, &host), Err(Fault::Unexpected));
+    forged.identity.credential = Span { offset: 0, len: 4 };
+    assert_eq!(
+        check(o, &forged, &input, &host),
+        Err(fault(Rule::Contradiction, "verify.unexpected"))
+    );
     input.strip_cap = 0;
     assert_eq!(
         check_identify(o, &out, &input.out_buf, &[], 0, &[]),
-        Err(Fault::CountOverCap)
+        Err(fault(Rule::OverCap, "verify.count_over_cap"))
     );
 
     let (o, out, input) = verify(opened.instance, Some(b"bad"), None, &mut host);
     host.strips[0].place = 7;
-    assert_eq!(check(o, &out, &input, &host), Err(Fault::Vocabulary));
+    assert_eq!(
+        check(o, &out, &input, &host),
+        Err(fault(Rule::UnknownCode, "verify.vocabulary"))
+    );
     host.strips[0].place = STRIP_FIELD;
-    host.strips[0].name = Span { off: 60, len: 10 };
-    assert_eq!(check(o, &out, &input, &host), Err(Fault::SpanOutOfBounds));
     host.strips[0].name = Span {
-        off: SPAN_ABSENT,
+        offset: 60,
+        len: 10,
+    };
+    assert_eq!(
+        check(o, &out, &input, &host),
+        Err(fault(Rule::SpanOutOfBounds, "verify.span_out_of_bounds"))
+    );
+    host.strips[0].name = Span {
+        offset: SPAN_ABSENT,
         len: 0,
     };
-    assert_eq!(check(o, &out, &input, &host), Err(Fault::Missing));
+    assert_eq!(
+        check(o, &out, &input, &host),
+        Err(fault(Rule::Missing, "verify.missing"))
+    );
 
     let mut host = Host::new(64, 4);
     let (o, mut out, input) = verify(opened.instance, Some(b"good"), None, &mut host);
-    out.identity.credential = Span { off: 60, len: 10 };
-    assert_eq!(check(o, &out, &input, &host), Err(Fault::SpanOutOfBounds));
+    out.identity.credential = Span {
+        offset: 60,
+        len: 10,
+    };
+    assert_eq!(
+        check(o, &out, &input, &host),
+        Err(fault(Rule::SpanOutOfBounds, "verify.span_out_of_bounds"))
+    );
 }
 
 /// A strip array too small is the short answer: `needed_strip` at its full size, nothing written.
@@ -588,12 +620,18 @@ fn strips_that_do_not_fit_are_the_short_answer() {
     // RED: a needed_strip past the hard maximum is FAULT.
     let mut over = out;
     over.needed_strip = crate::abi::auth::FIELDS_HARD_MAX + 1;
-    assert_eq!(check(o, &over, &input, &host), Err(Fault::NeededTooLarge));
+    assert_eq!(
+        check(o, &over, &input, &host),
+        Err(fault(Rule::OverMax, "verify.strip"))
+    );
     // RED: a needed_strip on READY is FAULT.
     let mut host = Host::new(64, 4);
     let (o, mut out, input) = verify(opened.instance, Some(b"bad"), None, &mut host);
     out.needed_strip = 1;
-    assert_eq!(check(o, &out, &input, &host), Err(Fault::NeededOnReady));
+    assert_eq!(
+        check(o, &out, &input, &host),
+        Err(fault(Rule::NeededNotFailed, "verify.strip"))
+    );
 }
 
 /// THE VIEW AT A POINT: the plugin reads the point, the connection, the unit and, at `HeadBody`

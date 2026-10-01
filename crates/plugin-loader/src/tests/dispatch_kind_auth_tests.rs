@@ -336,7 +336,7 @@ fn verify_green_strips_with_any_verdict() {
     let mut bytes = [0u8; BUF_CAP];
     let mut groups = [ABSENT; 2];
     let mut strips = [StripName {
-        name: Span { off: 20, len: 5 },
+        name: Span { offset: 20, len: 5 },
         place: STRIP_FIELD,
         _reserved: 0,
     }];
@@ -373,7 +373,7 @@ fn verify_red_strips_and_decision() {
     assert_eq!((f.rule, f.field), (Rule::OverCap, "verify.strip"));
 
     let mut strips = [StripName {
-        name: Span { off: 20, len: 5 },
+        name: Span { offset: 20, len: 5 },
         place: 9,
         _reserved: 0,
     }];
@@ -398,7 +398,7 @@ fn verify_red_strips_and_decision() {
     assert_eq!((f.rule, f.field), (Rule::UnknownCode, "verify.vocabulary"));
     // A credential without an identity contradicts the verdict.
     let mut out = verified(VERDICT_PASS, 0);
-    out.identity.credential = Span { off: 0, len: 4 };
+    out.identity.credential = Span { offset: 0, len: 4 };
     let f = check(slot::VERIFY, Outcome::Ready, &input, &out).unwrap_err();
     assert_eq!(
         (f.rule, f.field),

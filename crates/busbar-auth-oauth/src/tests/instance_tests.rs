@@ -84,8 +84,8 @@ fn fields(o: &Oauth, handle: u64, ticket: Ticket) -> (Outcome, String, u64) {
     let outcome = Fields::call(inst, &i, &mut out);
     let written = (0..out.fields_len as usize)
         .map(|k| {
-            let at = |sp: busbar_contract::abi::auth::Span| {
-                String::from_utf8_lossy(&buf[sp.off as usize..(sp.off + sp.len) as usize])
+            let at = |sp: busbar_contract::abi::mechanism::call::Span| {
+                String::from_utf8_lossy(&buf[sp.offset as usize..(sp.offset + sp.len) as usize])
                     .into_owned()
             };
             format!("{}: {}", at(spans[k].name), at(spans[k].value))
@@ -95,8 +95,8 @@ fn fields(o: &Oauth, handle: u64, ticket: Ticket) -> (Outcome, String, u64) {
     (outcome, written, out.head.wake_at_ns)
 }
 
-fn auth_span() -> busbar_contract::abi::auth::Span {
-    busbar_contract::abi::auth::Span { off: 0, len: 0 }
+fn auth_span() -> busbar_contract::abi::mechanism::call::Span {
+    busbar_contract::abi::mechanism::call::Span { offset: 0, len: 0 }
 }
 
 fn capture(name: &str, w: &Scripted) {

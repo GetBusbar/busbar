@@ -12,8 +12,8 @@ use busbar_contract::abi::mechanism::call::{Blob, Outcome, BLOB_OCTETS};
 use busbar_contract::abi::sdk::door::Slot;
 use std::ffi::c_void;
 
-fn auth_span() -> busbar_contract::abi::auth::Span {
-    busbar_contract::abi::auth::Span { off: 0, len: 0 }
+fn auth_span() -> busbar_contract::abi::mechanism::call::Span {
+    busbar_contract::abi::mechanism::call::Span { offset: 0, len: 0 }
 }
 
 const SETTINGS: &str =

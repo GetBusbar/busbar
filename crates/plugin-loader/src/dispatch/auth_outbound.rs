@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 use busbar_contract::abi::auth::{
-    slot, FieldSpan, FieldsIn, FieldsOut, NamedValue, OpenOutboundIn, OpenOutboundOut,
+    slot, AuthPoint, FieldSpan, FieldsIn, FieldsOut, NamedValue, OpenOutboundIn, OpenOutboundOut,
     RequestFacts, FIELDS_BUF_BYTES, FIELDS_MAX, FIELD_SENSITIVE, MODE_OWN, MODE_PASSTHROUGH,
 };
 use busbar_contract::abi::mechanism::call::{
@@ -134,7 +134,6 @@ impl Lend {
     /// The `in` naming this memory under `handle`.
     fn input(&mut self, handle: u64) -> FieldsIn {
         let r = &self.request;
-        let (hash, present) = r.body_hash.map_or(([0; 32], 0), |h| (h, 1));
         FieldsIn {
             head: in_head(),
             handle,
@@ -143,16 +142,13 @@ impl Lend {
             } else {
                 MODE_OWN
             },
-            _reserved: 0,
+            point: r.point.bit(),
             request: RequestFacts {
                 method: abi_str(&r.method),
                 authority: abi_str(r.authority.as_bytes()),
                 canonical_path: abi_str(&r.path),
                 query: r.query.as_deref().map_or(ABSENT_STR, abi_str),
                 timestamp: r.timestamp,
-                body_hash: hash,
-                body_hash_present: present,
-                _reserved: 0,
             },
             caller_credential: r.caller_credential.as_ref().map_or(NO_BLOB, |c| {
                 blob(c.expose_secret(), BLOB_OCTETS, BLOB_SECRET)
@@ -161,13 +157,21 @@ impl Lend {
             field_buf_cap: self.field_buf.len(),
             fields: self.fields.as_mut_ptr(),
             fields_cap: u32::try_from(self.fields.len()).unwrap_or(u32::MAX),
-            _reserved2: 0,
+            _reserved: 0,
             headers: if self.named.is_empty() {
                 std::ptr::null()
             } else {
                 self.named.as_ptr()
             },
             headers_len: self.named.len(),
+            conn: r.conn,
+            unit: r.unit,
+            // The body is lent only at `HeadBody`, never at another point; a signing style hashes
+            // it itself.
+            body: match (r.point, r.body.as_deref()) {
+                (AuthPoint::HeadBody, Some(b)) => blob(b, BLOB_OCTETS, 0),
+                _ => NO_BLOB,
+            },
         }
     }
 
@@ -199,12 +203,15 @@ impl Lend {
 /// zeroised when its crossing's memory is dropped).
 fn copy(r: &FieldsRequest) -> FieldsRequest {
     FieldsRequest {
+        point: r.point,
+        conn: r.conn,
+        unit: r.unit,
+        body: r.body.clone(),
         method: r.method.clone(),
         authority: r.authority.clone(),
         path: r.path.clone(),
         query: r.query.clone(),
         timestamp: r.timestamp,
-        body_hash: r.body_hash,
         headers: r.headers.clone(),
         caller_credential: r.caller_credential.clone(),
     }

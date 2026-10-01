@@ -13,7 +13,8 @@
 
 use std::ffi::c_void;
 
-use busbar_contract::abi::auth::{FieldSpan, FieldsIn, FieldsOut, Span};
+use busbar_contract::abi::auth::{FieldSpan, FieldsIn, FieldsOut};
+use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, BLOB_ABSENT};
 
 /// Borrowed bytes of an [`AbiStr`] the host handed in for this call; `None` when absent.
@@ -103,7 +104,7 @@ pub(crate) fn write_fields(
 /// Copy `b` into the host's field buffer at `*at`, answering its span.
 fn put(input: &FieldsIn, at: &mut usize, b: &[u8]) -> Span {
     let span = Span {
-        off: *at as u32,
+        offset: *at as u32,
         len: b.len() as u32,
     };
     // SAFETY: `write_fields` checked the whole write fits `field_buf_cap`, and `field_buf` addresses

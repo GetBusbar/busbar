@@ -18,7 +18,6 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
@@ -36,8 +35,8 @@ use crate::dispatch::{load_dropped_bytes, load_linked, Bind, Dispatcher, LinkedR
 use crate::registry::LoadablePlugin;
 use crate::PluginRegistry;
 
-/// The auth kind's name in the registry.
-const AUTH: &str = busbar_contract::abi::cold::kind::AUTH;
+/// The auth kind's word in a registry row's manifest (`kind: auth`).
+const AUTH: &str = "auth";
 
 /// The host's clamp on an auth Statement's `max_inflight`.
 const MAX_INFLIGHT_CAP: u32 = 64;
@@ -198,16 +197,10 @@ fn stated_aliases(row: &LoadablePlugin) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The most cold `verify`s in flight across the process: past it a verify is
-/// [`Verified::Overloaded`], never queued behind a wedged plugin.
-const COLD_MAX_INFLIGHT: u32 = 64;
-
-/// Cold verifies in flight.
-static COLD_INFLIGHT: AtomicU32 = AtomicU32::new(0);
-
 /// M6-COLD-DELETE: a not-yet-ported auth plugin on the cold lane, as [`AuthCalls`]. Its
-/// `authenticate` is a blocking call over the cold ABI, so it is never made on the caller's thread
-/// ([`AuthCalls::verify_now`] answers `None`) and a submitted one runs on the runtime's blocking pool.
+/// `authenticate` is made on the caller's thread, as the kernel's chain has always made it, and
+/// answered on the spot; the loader lends it no blocking thread (one memory ABI: no
+/// `spawn_blocking` in the loader).
 pub struct ColdAuth {
     module: Arc<dyn AuthModule>,
     name: String,
@@ -268,31 +261,14 @@ impl AuthCalls for ColdAuth {
         self.facts
     }
 
-    fn verify_now(&self, _request: &VerifyRequest) -> Option<VerifyAnswer> {
-        None
+    fn verify_now(&self, request: &VerifyRequest) -> Option<VerifyAnswer> {
+        let credential = cold_credential(request);
+        // The cold lane names no strips: its verdict with its default decision.
+        Some(cold_verdict(self.module.authenticate(credential.as_deref())).into())
     }
 
     fn verify(&self, request: VerifyRequest) -> Box<dyn Verifying> {
-        let module = self.module.clone();
-        let credential = cold_credential(&request);
-        drop(request);
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            // No runtime to lend a blocking thread: the call is made here, as the cold lane
-            // always was.
-            return Box::new(ColdVerifying::Ready(Some(Box::new(cold_verdict(
-                module.authenticate(credential.as_deref()),
-            )))));
-        };
-        if COLD_INFLIGHT.fetch_add(1, Ordering::AcqRel) >= COLD_MAX_INFLIGHT {
-            COLD_INFLIGHT.fetch_sub(1, Ordering::AcqRel);
-            return Box::new(ColdVerifying::Ready(Some(Box::new(Verified::Overloaded))));
-        }
-        let handle = runtime.spawn_blocking(move || {
-            let v = cold_verdict(module.authenticate(credential.as_deref()));
-            COLD_INFLIGHT.fetch_sub(1, Ordering::AcqRel);
-            v
-        });
-        Box::new(ColdVerifying::Running(handle))
+        Box::new(ColdVerifying(self.verify_now(&request)))
     }
 
     fn refresh(&self) -> Result<u64, String> {
@@ -302,27 +278,13 @@ impl AuthCalls for ColdAuth {
     }
 }
 
-/// A cold verify: answered, or running on the blocking pool.
-///
-/// `Ready` boxes its `Verified` (216 B since the identity carries its credential): it is built only
-/// when no runtime lends a blocking thread or the in-flight cap sheds the call, so the per-request
-/// `Running` future stays small and the box is paid off the hot path.
-enum ColdVerifying {
-    Ready(Option<Box<Verified>>),
-    Running(tokio::task::JoinHandle<Verified>),
-}
+/// A cold verify, answered on the spot.
+struct ColdVerifying(Option<VerifyAnswer>);
 
 impl Future for ColdVerifying {
     type Output = VerifyAnswer;
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<VerifyAnswer> {
-        // The cold lane names no strips: its verdict with its default decision.
-        match &mut *self {
-            Self::Ready(v) => Poll::Ready(v.take().map_or(Verified::Failed, |b| *b).into()),
-            // A panicking plugin (a join error) fails closed.
-            Self::Running(h) => Pin::new(h)
-                .poll(cx)
-                .map(|r| r.unwrap_or(Verified::Failed).into()),
-        }
+    fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<VerifyAnswer> {
+        Poll::Ready(self.0.take().unwrap_or_else(|| Verified::Failed.into()))
     }
 }
 

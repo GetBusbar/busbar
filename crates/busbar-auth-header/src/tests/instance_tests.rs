@@ -12,8 +12,8 @@ use busbar_contract::abi::mechanism::call::{Blob, Outcome, BLOB_OCTETS};
 use busbar_contract::abi::sdk::door::Slot;
 use std::ffi::c_void;
 
-fn auth_span() -> busbar_contract::abi::auth::Span {
-    busbar_contract::abi::auth::Span { off: 0, len: 0 }
+fn auth_span() -> busbar_contract::abi::mechanism::call::Span {
+    busbar_contract::abi::mechanism::call::Span { offset: 0, len: 0 }
 }
 
 /// One `fields` call through the slot body, as the trampoline makes it.
@@ -50,8 +50,8 @@ fn fields(h: &Header, handle: u64, mode: u32, caller: &str) -> (Outcome, String)
     let outcome = Fields::call(inst, &i, &mut out);
     let written = (0..out.fields_len as usize)
         .map(|k| {
-            let at = |sp: busbar_contract::abi::auth::Span| {
-                String::from_utf8_lossy(&buf[sp.off as usize..(sp.off + sp.len) as usize])
+            let at = |sp: busbar_contract::abi::mechanism::call::Span| {
+                String::from_utf8_lossy(&buf[sp.offset as usize..(sp.offset + sp.len) as usize])
                     .into_owned()
             };
             format!("{}: {}", at(spans[k].name), at(spans[k].value))
