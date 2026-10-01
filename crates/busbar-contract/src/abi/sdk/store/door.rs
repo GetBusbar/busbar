@@ -24,7 +24,7 @@
 //! ERROR TEXT. A FAILED or REFUSED answer's `error` points at text the instance keeps in a
 //! bounded ring of the last [`TEXT_RING`] texts; the host copies it when the op returns.
 //!
-//! NO ALLOCATION ON THE REQUEST PATH (THE DESIGN §11, A.8 "Zero allocation on the READY path"):
+//! NO ALLOCATION ON THE REQUEST PATH (THE DESIGN, the memory ABI: "Zero allocation on the READY path"):
 //! the door's own work on a request-path slot touches no heap. Rows are written straight from
 //! the store's answer into the host's buffers; a refusal is a fixed text, or one rendered into a
 //! fixed buffer; a store's failure text is moved into the ring, never copied; and the ring is
