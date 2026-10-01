@@ -60,6 +60,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
+use axum::Extension;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch};
@@ -69,6 +70,7 @@ use super::{
     config_transaction, err_json, err_json_cond, if_match_version, respond, stale_if_match,
     with_config_etag, Outcome,
 };
+use crate::v1::named_def_views::{MODULE_KEY, SETTINGS_KEY};
 use busbar_kernel::admin::v1::contract::taxonomy::Cond;
 use busbar_kernel::admin::v1::contract::AdminError;
 use busbar_kernel::audit_ring as audit;
@@ -81,57 +83,48 @@ use busbar_kernel::state::{App, AppHandle};
 pub(crate) fn routes() -> Router<Arc<AppHandle>> {
     let mut router = Router::new();
     for section in NamedMapSection::sections() {
-        let s = section;
-        router = router
-            .route(
-                s.path_root().as_ref(),
-                get(move |state: State<Arc<AppHandle>>| list(state, s))
-                    .fallback(move |state: State<Arc<AppHandle>>| wrong_method(state, s)),
-            )
-            .route(
-                &format!("{}/{{name}}", s.path_root()),
-                get(move |state: State<Arc<AppHandle>>, path: Path<String>| {
-                    get_one(state, path, s)
-                })
-                .put(
-                    move |state: State<Arc<AppHandle>>,
-                          principal: axum::Extension<busbar_kernel::auth::AuthPrincipal>,
-                          path: Path<String>,
-                          headers: axum::http::HeaderMap,
-                          body: axum::body::Bytes| {
-                        put(state, principal, path, headers, body, s)
-                    },
+        // The section rides each request as an extension, so the handlers are the routed functions
+        // themselves rather than a closure per verb that curries the section in.
+        router = router.merge(
+            Router::new()
+                .route(
+                    section.path_root().as_ref(),
+                    get(list).fallback(wrong_method),
                 )
-                .delete(
-                    move |state: State<Arc<AppHandle>>,
-                          principal: axum::Extension<busbar_kernel::auth::AuthPrincipal>,
-                          path: Path<String>,
-                          headers: axum::http::HeaderMap| {
-                        delete(state, principal, path, headers, s)
-                    },
+                .route(
+                    &item_path(section),
+                    get(get_one)
+                        .put(put)
+                        .delete(delete)
+                        .fallback(wrong_method),
                 )
-                .fallback(move |state: State<Arc<AppHandle>>| wrong_method(state, s)),
-            )
-            .route(
-                &format!("{}/{{name}}/settings", s.path_root()),
-                patch(
-                    move |state: State<Arc<AppHandle>>,
-                          principal: axum::Extension<busbar_kernel::auth::AuthPrincipal>,
-                          path: Path<String>,
-                          headers: axum::http::HeaderMap,
-                          body: axum::body::Bytes| {
-                        patch_settings(state, principal, path, headers, body, s)
-                    },
+                .route(
+                    &settings_path(section),
+                    patch(patch_settings).fallback(wrong_method),
                 )
-                .fallback(move |state: State<Arc<AppHandle>>| wrong_method(state, s)),
-            );
+                .route_layer(Extension(section)),
+        );
     }
     router
 }
 
+/// The path of one definition in a section, `{name}` being the axum capture and the OpenAPI
+/// template alike.
+fn item_path(section: NamedMapSection) -> String {
+    format!("{}/{{name}}", section.path_root())
+}
+
+/// The path of one definition's opaque `settings:` bag.
+fn settings_path(section: NamedMapSection) -> String {
+    format!("{}/settings", item_path(section))
+}
+
 /// `GET /api/v1/admin/<section>` — every definition in the section (+ the config-plane `ETag`, so a
 /// caller chains straight into an `If-Match` mutation without a second read).
-async fn list(State(handle): State<Arc<AppHandle>>, section: NamedMapSection) -> Response {
+async fn list(
+    State(handle): State<Arc<AppHandle>>,
+    Extension(section): Extension<NamedMapSection>,
+) -> Response {
     if let Some(resp) = plane_gate(&handle, section) {
         return resp;
     }
@@ -149,7 +142,7 @@ async fn list(State(handle): State<Arc<AppHandle>>, section: NamedMapSection) ->
 async fn get_one(
     State(handle): State<Arc<AppHandle>>,
     Path(name): Path<String>,
-    section: NamedMapSection,
+    Extension(section): Extension<NamedMapSection>,
 ) -> Response {
     if let Some(resp) = plane_gate(&handle, section) {
         return resp;
@@ -166,7 +159,10 @@ async fn get_one(
 
 /// A method the path does not serve: the router's `405` — or, for an unconfigured plane's section, the
 /// `404` its unmounted path gives (Law 7), so the wrong method leaks no plane surface either.
-async fn wrong_method(State(handle): State<Arc<AppHandle>>, section: NamedMapSection) -> Response {
+async fn wrong_method(
+    State(handle): State<Arc<AppHandle>>,
+    Extension(section): Extension<NamedMapSection>,
+) -> Response {
     plane_gate(&handle, section).unwrap_or_else(|| err_json(&AdminError::MethodNotAllowed))
 }
 
@@ -215,11 +211,11 @@ impl Mutation {
 /// struct, so a typo is the same loud reject the file would give.
 async fn put(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
+    Extension(principal): Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(name): Path<String>,
     headers: axum::http::HeaderMap,
+    Extension(section): Extension<NamedMapSection>,
     body: axum::body::Bytes,
-    section: NamedMapSection,
 ) -> Response {
     if let Some(resp) = plane_gate(&handle, section) {
         return resp;
@@ -256,11 +252,11 @@ async fn put(
 /// config, so the rebuild-and-swap IS the acknowledgement.
 async fn patch_settings(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
+    Extension(principal): Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(name): Path<String>,
     headers: axum::http::HeaderMap,
+    Extension(section): Extension<NamedMapSection>,
     body: axum::body::Bytes,
-    section: NamedMapSection,
 ) -> Response {
     if let Some(resp) = plane_gate(&handle, section) {
         return resp;
@@ -304,10 +300,10 @@ pub(crate) struct NamedSettingsReq {
 /// would otherwise take the whole config down at the next resolve.
 async fn delete(
     State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
+    Extension(principal): Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(name): Path<String>,
     headers: axum::http::HeaderMap,
-    section: NamedMapSection,
+    Extension(section): Extension<NamedMapSection>,
 ) -> Response {
     if let Some(resp) = plane_gate(&handle, section) {
         return resp;
@@ -457,7 +453,7 @@ async fn apply(
                     match def.as_object_mut() {
                         Some(obj) => {
                             obj.insert(
-                                "settings".to_string(),
+                                SETTINGS_KEY.to_string(),
                                 serde_json::Value::Object(settings.clone()),
                             );
                         }
@@ -750,7 +746,7 @@ fn validate_definition(
     // defect this handler's `validate_def` call exists to prevent. The value is read ONCE, out here,
     // because the converse check below needs it too: a non-plugin section must not merely tolerate
     // a `module:`, it must refuse one.
-    let module = obj.get("module").and_then(|m| m.as_str()).unwrap_or("");
+    let module = obj.get(MODULE_KEY).and_then(|m| m.as_str()).unwrap_or("");
     if section.requires_module() && module.trim().is_empty() {
         return Err(AdminError::Validation(format!(
             "a {} must name its backing plugin via a non-empty `module:`",
@@ -768,7 +764,7 @@ fn validate_definition(
             section.key()
         )));
     }
-    if let Some(serde_json::Value::Object(settings)) = obj.get("settings") {
+    if let Some(serde_json::Value::Object(settings)) = obj.get(SETTINGS_KEY) {
         crate::v1::service::validate_hook_settings_size(settings)?;
     }
     Ok(())
@@ -834,10 +830,32 @@ fn check_trust_ceiling(
 #[cfg(feature = "openapi-schema")]
 pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
     use super::RESPONSES_KEY;
-    use serde_json::json;
+    use serde_json::{json, Map, Value};
+    /// One operation: its summary, the `name` path parameter when the path carries one, and its
+    /// single response (`status` described by `description`).
+    fn operation(
+        summary: String,
+        name_param: Option<&Value>,
+        status: &str,
+        description: impl Into<Value>,
+    ) -> Value {
+        let mut op = Map::new();
+        op.insert("summary".into(), summary.into());
+        if let Some(param) = name_param {
+            op.insert("parameters".into(), json!([param]));
+        }
+        op.insert(
+            RESPONSES_KEY.into(),
+            json!({ status: {"description": description.into()} }),
+        );
+        Value::Object(op)
+    }
     let name_param = json!({
         "name": "name", "in": "path", "required": true, "schema": {"type": "string"}
     });
+    let name_param = Some(&name_param);
+    /// The status every read and write answers with.
+    const OK: &str = "200";
     let mut out = Vec::new();
     for section in NamedMapSection::sections() {
         let key = section.key();
@@ -845,26 +863,24 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
         out.push((
             super::ap(section.path_root().as_ref()),
             json!({
-                "get": {
-                    "summary": format!(
+                "get": operation(
+                    format!(
                         "Every `{key}:` DEFINITION (the 1.5.3 named-definition map: name -> \
                          {{module, settings, ...}}, referenced by bare name). Secrets are never \
                          projected"
                     ),
-                    RESPONSES_KEY: {"200": {"description": "OK"}}
-                }
+                    None,
+                    OK,
+                    "OK",
+                )
             }),
         ));
         out.push((
-            super::ap(&format!("{}/{{name}}", section.path_root().as_ref())),
+            super::ap(&item_path(section)),
             json!({
-                "get": {
-                    "summary": format!("One `{key}:` definition"),
-                    "parameters": [name_param],
-                    RESPONSES_KEY: {"200": {"description": "OK"}}
-                },
-                "put": {
-                    "summary": format!(
+                "get": operation(format!("One `{key}:` definition"), name_param, OK, "OK"),
+                "put": operation(
+                    format!(
                         "Create or REPLACE one `{key}:` definition (upsert), persisted to the \
                          config overlay and live after an atomic rebuild-and-swap. A \
                          base-config-defined entry is 409 (edit config.yaml){}",
@@ -875,43 +891,43 @@ pub(crate) fn openapi_paths() -> Vec<(String, serde_json::Value)> {
                             ""
                         }
                     ),
-                    "parameters": [name_param],
-                    RESPONSES_KEY: {"200": {"description": format!(
+                    name_param,
+                    OK,
+                    format!(
                         "The stored {singular} definition. Additionally carries `reload_to_apply` \
                          (+ a `note`) when the mutation declared a plugin ROUTE this process cannot \
                          serve: each route path is registered on the HTTP router once, at process \
                          start, and an apply swaps only the config snapshot, so a path that did not \
                          exist at boot (e.g. `/metrics` for a first `prometheus` exporter) answers \
                          404 until the next RESTART. Both fields are omitted when nothing is pending"
-                    )}}
-                },
-                "delete": {
-                    "summary": format!(
+                    ),
+                ),
+                "delete": operation(
+                    format!(
                         "Remove one `{key}:` definition, refused while another config section \
                          still references it by bare name"
                     ),
-                    "parameters": [name_param],
-                    RESPONSES_KEY: {"204": {"description": "Removed"}}
-                }
+                    name_param,
+                    "204",
+                    "Removed",
+                )
             }),
         ));
         out.push((
-            super::ap(&format!(
-                "{}/{{name}}/settings",
-                section.path_root().as_ref()
-            )),
+            super::ap(&settings_path(section)),
             json!({
-                "patch": {
-                    "summary": format!(
+                "patch": operation(
+                    format!(
                         "Replace ONLY the opaque `settings:` bag of one `{key}:` definition; every \
                          other field is left byte-identical"
                     ),
-                    "parameters": [name_param],
-                    RESPONSES_KEY: {"200": {"description": format!(
+                    name_param,
+                    OK,
+                    format!(
                         "The updated {singular} definition (same `reload_to_apply` restart signal as \
                          the PUT, when the mutation declares a route the router lacks)"
-                    )}}
-                }
+                    ),
+                )
             }),
         ));
     }
