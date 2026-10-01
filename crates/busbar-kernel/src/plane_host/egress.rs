@@ -116,6 +116,11 @@ enum HeadMsg {
     },
 }
 
+/// Report a head-stage fault to the opener (a gone opener is not an error: nothing is waiting).
+fn send_fault(head_tx: &SyncSender<HeadMsg>, class: EgressFailClass, cause: String) {
+    let _ = head_tx.send(HeadMsg::Fault { class, cause });
+}
+
 /// One open governed HTTP egress the host owns end to end. The plane holds only its [`EgressId`].
 struct HttpEgress {
     /// The receiver end of the bounded chunk channel; `None` once closed. Behind a `Mutex` because
@@ -965,10 +970,7 @@ fn run_http_stream(
     let rt = match egress_runtime() {
         Ok(rt) => rt,
         Err(e) => {
-            let _ = head_tx.send(HeadMsg::Fault {
-                class: EgressFailClass::Fault,
-                cause: e,
-            });
+            send_fault(head_tx, EgressFailClass::Fault, e);
             return;
         }
     };
@@ -1032,10 +1034,7 @@ fn run_http_stream(
         ) {
             Ok(client) => client,
             Err(e) => {
-                let _ = head_tx.send(HeadMsg::Fault {
-                    class: EgressFailClass::Fault,
-                    cause: format!("egress client: {e}"),
-                });
+                send_fault(head_tx, EgressFailClass::Fault, format!("egress client: {e}"));
                 return;
             }
         };
@@ -1050,10 +1049,8 @@ fn run_http_stream(
             Err(e) => {
                 // Structurally unreachable (`split_url` already recognised this URL); classified
                 // as the builder-stage failure it would have been (`is_connect` false ⇒ Io).
-                let _ = head_tx.send(HeadMsg::Fault {
-                    class: EgressFailClass::Io,
-                    cause: format!("egress target does not parse as a URI: {e}"),
-                });
+                let cause = format!("egress target does not parse as a URI: {e}");
+                send_fault(head_tx, EgressFailClass::Io, cause);
                 return;
             }
         };
@@ -1070,10 +1067,8 @@ fn run_http_stream(
                     // reqwest recorded an invalid header as a builder error surfaced at send
                     // (`is_connect` false ⇒ the Io class); the engine refuses at the same class,
                     // naming the header.
-                    let _ = head_tx.send(HeadMsg::Fault {
-                        class: EgressFailClass::Io,
-                        cause: format!("egress request header {name:?} is not a valid header"),
-                    });
+                    let cause = format!("egress request header {name:?} is not a valid header");
+                    send_fault(head_tx, EgressFailClass::Io, cause);
                     return;
                 }
             }
@@ -1099,10 +1094,7 @@ fn run_http_stream(
                 } else {
                     EgressFailClass::Io
                 };
-                let _ = head_tx.send(HeadMsg::Fault {
-                    class,
-                    cause: hop.into_cause(),
-                });
+                send_fault(head_tx, class, hop.into_cause());
                 return;
             }
         };
