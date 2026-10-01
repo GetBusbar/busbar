@@ -157,7 +157,7 @@ impl Buffers {
     }
 }
 
-fn facts(hash: [u8; 32]) -> RequestFacts {
+fn facts() -> RequestFacts {
     RequestFacts {
         method: s("POST"),
         authority: s("runtime.signer.example"),
@@ -167,9 +167,6 @@ fn facts(hash: [u8; 32]) -> RequestFacts {
             len: 0,
         },
         timestamp: 1_440_938_160,
-        body_hash: hash,
-        body_hash_present: 1,
-        _reserved: 0,
     }
 }
 
@@ -180,7 +177,7 @@ fn fields(p: &Plugin<Auth>, handle: u64, mode: u32, caller: Blob, cap: (usize, u
     f.out.head = out_head();
     f.input.handle = handle;
     f.input.mode = mode;
-    f.input.request = facts([7; 32]);
+    f.input.request = facts();
     f.input.caller_credential = caller;
     (f.input.field_buf, f.input.field_buf_cap) = (b.buf.as_mut_ptr(), b.buf.len());
     (f.input.fields, f.input.fields_cap) = (b.spans.as_mut_ptr(), b.spans.len() as u32);

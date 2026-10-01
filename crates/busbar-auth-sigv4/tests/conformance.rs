@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use busbar_contract::abi::auth::{
     self, slot, FieldSpan, FieldsIn, FieldsOut, IdentifyOut, OpenOutboundIn, OpenOutboundOut,
     OutboundReadyIn, OutboundReadyOut, RequestFacts, VerifyIn, FIELD_SENSITIVE, MODE_OWN,
-    MODE_PASSTHROUGH,
+    MODE_PASSTHROUGH, POINT_HEAD_BODY,
 };
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, Op, Outcome, RawOutcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
@@ -157,7 +157,7 @@ impl Buffers {
     }
 }
 
-fn facts(hash: [u8; 32]) -> RequestFacts {
+fn facts() -> RequestFacts {
     RequestFacts {
         method: s("POST"),
         authority: s("runtime.signer.example"),
@@ -167,20 +167,31 @@ fn facts(hash: [u8; 32]) -> RequestFacts {
             len: 0,
         },
         timestamp: 1_440_938_160,
-        body_hash: hash,
-        body_hash_present: 1,
-        _reserved: 0,
     }
 }
 
 fn fields(p: &Plugin<Auth>, handle: u64, mode: u32, caller: Blob, cap: (usize, usize)) -> String {
+    fields_over(p, handle, mode, caller, cap, None)
+}
+
+/// One `fields` call at `HeadBody`, lending `body` (none lent = the empty body).
+fn fields_over(
+    p: &Plugin<Auth>,
+    handle: u64,
+    mode: u32,
+    caller: Blob,
+    cap: (usize, usize),
+    body: Option<&'static str>,
+) -> String {
     let mut b = Buffers::new(cap.0, cap.1);
     let mut f: Frame<FieldsIn, FieldsOut> = Frame::new(z(), z());
     f.input.head = in_head();
     f.out.head = out_head();
     f.input.handle = handle;
     f.input.mode = mode;
-    f.input.request = facts([7; 32]);
+    f.input.request = facts();
+    f.input.point = POINT_HEAD_BODY;
+    f.input.body = body.map_or(z(), |b| blob(b, BLOB_OCTETS, 0));
     f.input.caller_credential = caller;
     (f.input.field_buf, f.input.field_buf_cap) = (b.buf.as_mut_ptr(), b.buf.len());
     (f.input.fields, f.input.fields_cap) = (b.spans.as_mut_ptr(), b.spans.len() as u32);
@@ -280,6 +291,8 @@ fn script(p: &Plugin<Auth>) -> Vec<String> {
     ));
     t.push(fields(p, keyless, MODE_OWN, z(), (1024, 4)));
     t.push(fields(p, 999, MODE_OWN, z(), (1024, 4)));
+    // The body the host lends at `HeadBody` is what the payload hash covers.
+    t.push(fields_over(p, sigv4, MODE_OWN, z(), (1024, 4), Some("{}")));
 
     for h in [sigv4, keyless] {
         t.push(ready(p, h));
@@ -364,21 +377,26 @@ const EXPECTED: &[&str] = &[
     "fields Ready  authorization: AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/\
      svc/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;\
      x-amz-security-token, Signature=SIGNATURE [flags=0] ; x-amz-date: 20150830T123600Z [flags=0] ; \
-     x-amz-content-sha256: 0707070707070707070707070707070707070707070707070707070707070707 \
+     x-amz-content-sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 \
      [flags=0] ; x-amz-security-token: TOKEN [flags=0]",
     "fields Failed  short(needed_fields=4 needed_bytes=385) -> recall Ready authorization: \
      AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/svc/aws4_request, \
      SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token, \
      Signature=SIGNATURE [flags=0] ; x-amz-date: 20150830T123600Z [flags=0] ; \
-     x-amz-content-sha256: 0707070707070707070707070707070707070707070707070707070707070707 \
+     x-amz-content-sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 \
      [flags=0] ; x-amz-security-token: TOKEN [flags=0]",
     "fields Ready  authorization: AWS4-HMAC-SHA256 Credential=AKIDCALLER/20150830/us-east-1/svc/\
      aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date, \
      Signature=SIGNATURE [flags=0] ; x-amz-date: 20150830T123600Z [flags=0] ; \
-     x-amz-content-sha256: 0707070707070707070707070707070707070707070707070707070707070707 \
+     x-amz-content-sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 \
      [flags=0]",
     "fields Ready  ",
     "fields Refused ",
+    "fields Ready  authorization: AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/\
+     svc/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;\
+     x-amz-security-token, Signature=SIGNATURE [flags=0] ; x-amz-date: 20150830T123600Z [flags=0] ; \
+     x-amz-content-sha256: 44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a \
+     [flags=0] ; x-amz-security-token: TOKEN [flags=0]",
     "ready Ready 1",
     "ready Ready 1",
     "tick Ready next>1000=true",

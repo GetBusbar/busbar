@@ -2,8 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE OUTBOUND FAMILY (the design's outbound auth): `open_outbound` binds a style to its
-//! credential and answers a handle. `fields` is the one per-attempt call the kernel makes before
-//! encode. `outbound_ready` is the
+//! credential and answers a handle. `fields` is the call the binding's transport makes at the
+//! style's auth points, the head final, before encode (THE DESIGN, "Auth points and guest
+//! lists", step 5). `outbound_ready` is the
 //! `ready` fact the health prober reads. The plugin caches inside itself: bearer and api-key build
 //! at open, and minted tokens refresh ahead of expiry on `tick`.
 
@@ -81,10 +82,10 @@ pub struct FieldsIn {
     pub handle: u64,
     /// [`super::MODE_OWN`] | [`super::MODE_PASSTHROUGH`].
     pub mode: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-    /// The request's fixed facts. `body_hash` is filled only when the style declares
-    /// [`super::STYLE_NEEDS_BODY_HASH`].
+    /// The [`AuthPoint`](super::AuthPoint) this call is made at: exactly one of the style's
+    /// [`StyleDecl::points`](super::StyleDecl).
+    pub point: u32,
+    /// The request's fixed facts.
     pub request: RequestFacts,
     /// The caller's verified credential (secret), for [`super::MODE_PASSTHROUGH`]; else absent.
     pub caller_credential: Blob,
@@ -99,7 +100,7 @@ pub struct FieldsIn {
     /// Its capacity ([`super::FIELDS_MAX`]).
     pub fields_cap: u32,
     /// Alignment padding.
-    pub _reserved2: u32,
+    pub _reserved: u32,
     /// The EXACT header envelope the framer will send, in order, filled only when the style
     /// declares [`super::STYLE_NEEDS_HEADERS`] (NULL otherwise, so bearer and api-key pay nothing).
     /// A signing style SETS its own fields over it (never appends) and signs the result, so its
@@ -107,6 +108,13 @@ pub struct FieldsIn {
     pub headers: *const NamedValue,
     /// How many.
     pub headers_len: usize,
+    /// The connection the binding sends on, so a style needing several points correlates them.
+    pub conn: u64,
+    /// The unit the request belongs to.
+    pub unit: u64,
+    /// The whole request body; present only at [`super::POINT_HEAD_BODY`], else absent. A style
+    /// that signs the body hashes it itself.
+    pub body: Blob,
 }
 
 /// `fields`' `out`. READY with `fields_len == 0` = no auth header.

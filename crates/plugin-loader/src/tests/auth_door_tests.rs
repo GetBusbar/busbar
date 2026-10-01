@@ -2,29 +2,35 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! [`AuthInstance`] over a linked safe auth door (`auth_verify_door!`), opened through
-//! [`crate::auth_axis::AuthRows`] on a real dispatcher: every verdict on the spot and submitted, the
-//! short answer's one re-call, refresh's flushed count, a refused setting, and the instance label.
+//! [`crate::auth_axis::AuthRows`] on a real dispatcher: every verdict on the spot and submitted, with
+//! its decision and strips, the lent lines and body, the short answer's one re-call, the overloaded
+//! instance, refresh's flushed count, a refused setting, and the instance label.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use busbar_contract::abi::auth::{AuthTail, METRIC_CACHE_FLUSHED};
+use busbar_contract::abi::auth::{AuthPoint, AuthPoints, AuthTail, METRIC_CACHE_FLUSHED};
 use busbar_contract::abi::mechanism::call::AbiStr;
 use busbar_contract::abi::mechanism::door::{MetricFamily, Statement, FAMILY_COUNTER};
 use busbar_contract::abi::sdk::auth_door::{
-    verify_tail, with_tail, Verdict, VerifyPlugin, VerifyView,
+    verify_tail, with_tail, Answer, Strip, Verdict, VerifyPlugin, VerifyView,
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
-use busbar_contract::auth_calls::{AuthCalls, Verified, VerifiedIdentity, VerifyRequest};
+use busbar_contract::auth_calls::{
+    AuthCalls, Decision, Verified, VerifiedIdentity, VerifyAnswer, VerifyRequest,
+};
+use busbar_contract::Redacted;
 
 use crate::auth_axis::AuthRows;
 use crate::dispatch::{Budgets, DispatchConfig, Dispatcher};
 use crate::{LinkedPlugin, PluginRegistry};
 
-/// Identifies `good` (or the `x-alt` carrier `good`, or the query `good`), rejects `bad`, passes
-/// the rest; `wide` identifies with more groups than the host's default buffer holds. Settings must
-/// be `"ok"`.
+/// Identifies `good` (or the `x-alt` line `good`, or the query `good`), rejects `bad`, passes
+/// the rest; `wide` identifies with more groups than the host's default buffer holds; `slow` passes
+/// after holding its crossing for 200 ms; `body` identifies only at `HeadBody` on connection 3,
+/// unit 4, over the body `signed`. Every answer names the `x-alt` line to strip. Settings must be
+/// `"ok"`.
 pub(super) struct Judge;
 
 static FLUSHES: AtomicU64 = AtomicU64::new(0);
@@ -38,10 +44,10 @@ impl VerifyPlugin for Judge {
             .ok_or("settings: not this plugin's")
     }
 
-    fn verify(&self, r: &VerifyView<'_>) -> Verdict {
-        match r
+    fn verify(&self, r: &VerifyView<'_>) -> Answer {
+        let verdict = match r
             .credential()
-            .or_else(|| r.carrier("x-alt"))
+            .or_else(|| r.line("x-alt"))
             .or_else(|| r.query())
         {
             Some(b"good") => Verdict::Identity(VerifiedIdentity {
@@ -57,7 +63,26 @@ impl VerifyPlugin for Judge {
                 ..VerifiedIdentity::default()
             }),
             Some(b"bad") => Verdict::Reject,
+            Some(b"slow") => {
+                std::thread::sleep(Duration::from_millis(200));
+                Verdict::Pass
+            }
+            Some(b"body")
+                if r.point() == Some(AuthPoint::HeadBody)
+                    && (r.conn(), r.unit()) == (3, 4)
+                    && r.body() == Some(&b"signed"[..]) =>
+            {
+                Verdict::Identity(VerifiedIdentity {
+                    subject: "signed".into(),
+                    ..VerifiedIdentity::default()
+                })
+            }
+            Some(b"body") => Verdict::Reject,
             _ => Verdict::Pass,
+        };
+        Answer {
+            strips: vec![Strip::field("x-alt")],
+            ..verdict.into()
         }
     }
 
@@ -71,7 +96,7 @@ mod judge {
     use super::*;
 
     const CARRIERS: &[AbiStr] = &[abi_str("X-Alt")];
-    const TAIL: &AuthTail = &verify_tail(0, CARRIERS);
+    const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD, CARRIERS);
     const FAMILIES: &[MetricFamily] = &[MetricFamily {
         name: abi_str(METRIC_CACHE_FLUSHED),
         help: abi_str("inbound cache entries dropped by refresh"),
@@ -119,11 +144,14 @@ fn opened(label: &str) -> Arc<dyn AuthCalls> {
         .expect("the linked door opens")
 }
 
-/// The host's request carries no credential and no carrier, so the token the script presents
-/// (`credential`, else `alt`) reaches the judge as the query.
+/// The host's request carries no credential of its own: the script's `credential` reaches the
+/// judge as the query, and `alt` as the `X-Alt` field line.
 fn request(credential: Option<&str>, alt: Option<&str>) -> VerifyRequest {
     VerifyRequest {
-        query: credential.or(alt).map(str::to_string),
+        query: credential.map(str::to_string),
+        lines: alt
+            .map(|a| vec![("X-Alt".to_string(), Redacted::new(a.as_bytes().to_vec()))])
+            .unwrap_or_default(),
         method: "GET".into(),
         authority: "node.example".into(),
         path: "/admin/v1/keys".into(),
@@ -131,24 +159,32 @@ fn request(credential: Option<&str>, alt: Option<&str>) -> VerifyRequest {
     }
 }
 
-fn alice() -> Verified {
-    Verified::Identity(VerifiedIdentity {
+fn alice() -> VerifyAnswer {
+    answered(Verified::Identity(VerifiedIdentity {
         subject: "alice".into(),
         name: Some("Alice".into()),
         groups: vec!["ops".into()],
         ttl_secs: Some(60),
         ..VerifiedIdentity::default()
-    })
+    }))
 }
 
-/// The script: every verdict, on a credential and on the carrier.
-fn script() -> Vec<(VerifyRequest, Verified)> {
+/// `verified` as the host reads the judge's answer: its default decision, and the `x-alt` strip.
+fn answered(verified: Verified) -> VerifyAnswer {
+    VerifyAnswer {
+        strips: vec![Strip::field("x-alt")],
+        ..verified.into()
+    }
+}
+
+/// The script: every verdict, on the query and on the field line.
+fn script() -> Vec<(VerifyRequest, VerifyAnswer)> {
     vec![
         (request(Some("good"), None), alice()),
         (request(None, Some("good")), alice()),
-        (request(Some("bad"), None), Verified::Reject),
-        (request(Some("other"), None), Verified::Pass),
-        (request(None, None), Verified::Pass),
+        (request(Some("bad"), None), answered(Verified::Reject)),
+        (request(Some("other"), None), answered(Verified::Pass)),
+        (request(None, None), answered(Verified::Pass)),
     ]
 }
 
@@ -195,13 +231,13 @@ fn a_sync_caller_reads_a_submitted_answer_without_a_runtime() {
 async fn a_short_answer_is_recalled_once_with_the_buffers_it_named() {
     let a = opened("judge-a");
     let now = a.verify_now(&request(Some("wide"), None));
-    let Some(Verified::Identity(id)) = now else {
-        panic!("the re-called answer identifies: {now:?}");
+    let Some(Verified::Identity(id)) = now.map(|a| a.verified) else {
+        panic!("the re-called answer identifies");
     };
     assert_eq!(id.groups.len(), 300);
     assert_eq!(id.groups[299], "g299");
     let submitted = Box::into_pin(a.verify(request(Some("wide"), None))).await;
-    assert_eq!(submitted, Verified::Identity(id));
+    assert_eq!(submitted, answered(Verified::Identity(id)));
 }
 
 #[test]
@@ -245,7 +281,86 @@ fn two_instances_of_one_plugin_are_two_callers() {
     assert_eq!(a.verify_now(&request(Some("good"), None)), Some(alice()));
     assert_eq!(
         b.verify_now(&request(Some("bad"), None)),
-        Some(Verified::Reject)
+        Some(answered(Verified::Reject))
+    );
+}
+
+/// THE DECISION AND THE STRIPS reach the host whatever the verdict: CONTINUE for an identity or a
+/// pass, STOP for a reject, and the `x-alt` line named each time (THE DESIGN, "Auth points and
+/// guest lists", step 3).
+#[test]
+fn every_answer_carries_its_decision_and_strips() {
+    let a = opened("judge-a");
+    for (cred, decision) in [
+        ("good", Decision::Continue),
+        ("other", Decision::Continue),
+        ("bad", Decision::Stop),
+    ] {
+        let got = a.verify_now(&request(Some(cred), None)).expect("answered");
+        assert_eq!(got.decision, decision, "{cred}");
+        assert_eq!(got.strips, vec![Strip::field("x-alt")], "{cred}");
+    }
+}
+
+/// HEADBODY: the host lends the point, the connection, the unit and the body, so a mechanism that
+/// signs the body verifies it. RED: the same request at `Head` (no body), or over another body, is
+/// not identified.
+#[test]
+fn the_body_reaches_the_plugin_at_head_body_only() {
+    let a = opened("judge-a");
+    let at = |point: AuthPoint, body: Option<&[u8]>| VerifyRequest {
+        point,
+        conn: 3,
+        unit: 4,
+        body: body.map(<[u8]>::to_vec),
+        ..request(Some("body"), None)
+    };
+    let signed = a.verify_now(&at(AuthPoint::HeadBody, Some(b"signed")));
+    assert!(
+        matches!(signed.map(|s| s.verified), Some(Verified::Identity(ref id)) if id.subject == "signed")
+    );
+    for req in [
+        at(AuthPoint::Head, None),
+        at(AuthPoint::HeadBody, Some(b"forged")),
+    ] {
+        let got = a.verify_now(&req).expect("answered");
+        assert_eq!(got.verified, Verified::Reject, "{req:?}");
+    }
+}
+
+/// OVERLOAD (THE DESIGN's accepted differences): a `verify` past the instance's `max_inflight`
+/// is never queued and never crosses: it answers [`Verified::Overloaded`] at once, with the decision
+/// to stop and nothing to strip, and the host answers the request 503. RED: a second `verify` while
+/// the first holds the instance's one unit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_verify_past_max_inflight_is_overloaded_and_never_queued() {
+    use crate::auth_door::{AuthInstance, AuthSink};
+    use crate::dispatch::{load_linked, Bind};
+    let d = dispatcher();
+    let sink = AuthSink::new("judge");
+    let bind = Bind {
+        max_inflight_cap: 1,
+        sink: sink.bind(),
+        dispatcher: d.adopter(),
+    };
+    let p = load_linked::<crate::dispatch::kinds::auth::Auth>(judge::door, bind).unwrap();
+    let a = AuthInstance::open(p, sink, d.clone(), "judge-1", b"\"ok\"", Vec::new()).unwrap();
+    assert_eq!(a.plugin().max_inflight(), 1);
+    let slow = a.verify(request(Some("slow"), None));
+    let mut over = a.verify(request(Some("good"), None));
+    let answer = over.settled().expect("answered before any crossing");
+    assert_eq!(answer, VerifyAnswer::from(Verified::Overloaded));
+    assert_eq!(answer.decision, Decision::Stop);
+    assert!(answer.strips.is_empty());
+    // The first finishes; the unit is back, and the instance serves again.
+    assert_eq!(
+        Box::into_pin(slow).await.verified,
+        Verified::Pass,
+        "the held verify completes"
+    );
+    assert_eq!(
+        Box::into_pin(a.verify(request(Some("good"), None))).await,
+        alice()
     );
 }
 
@@ -265,15 +380,15 @@ impl VerifyPlugin for Keyed {
         Ok(Keyed)
     }
 
-    fn verify(&self, _: &VerifyView<'_>) -> Verdict {
-        Verdict::Pass
+    fn verify(&self, _: &VerifyView<'_>) -> Answer {
+        Verdict::Pass.into()
     }
 }
 
 mod keyed {
     use super::*;
 
-    const TAIL: &AuthTail = &verify_tail(0, &[]);
+    const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD, &[]);
     const SECRET_REFS: &[AbiStr] = &[abi_str("token")];
 
     busbar_contract::auth_verify_door!(

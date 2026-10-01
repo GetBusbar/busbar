@@ -39,7 +39,6 @@ fn fields(s: &SigV4, handle: u64, mode: u32, caller: &str) -> (Outcome, bool) {
         len: "/model/m/converse".len(),
     };
     i.request.timestamp = 1_440_938_160;
-    i.request.body_hash_present = 1;
     i.caller_credential = if caller.is_empty() {
         Blob {
             ptr: std::ptr::null(),

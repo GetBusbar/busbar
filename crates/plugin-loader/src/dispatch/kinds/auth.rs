@@ -3,7 +3,8 @@
 
 //! THE AUTH KIND: `abi/auth/`. Four kind ops are checked by their own validators:
 //!
-//! * `verify` by `check_identify`, over the host's `IdentityBuf` from `VerifyIn::out_buf`;
+//! * `verify` by `check_identify`, over the host's `IdentityBuf` from `VerifyIn::out_buf` and its
+//!   strip array from `VerifyIn::strip`;
 //! * `complete_login` by `check_complete_login`, over the host's `IdentityBuf` from
 //!   `CompleteLoginIn::out_buf`;
 //! * `fields` by `check_fields`, over the host's field buffer and array from `FieldsIn`;
@@ -26,10 +27,11 @@
 //! host calls `cancel` at expiry, and names no other outcome for an expired op.
 
 use busbar_contract::abi::auth::{
-    self, check_begin_login, check_complete_login, check_fields, check_identify, slot,
-    BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldSpan, FieldsIn, FieldsOut, IdentifyOut,
-    IdentityBuf, OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, VerifyIn,
-    LOGIN_IDENTITY, VERDICT_IDENTITY,
+    self, check_begin_login, check_complete_login, check_fields, check_identify,
+    check_inbound_points, check_style_decl, slot, AuthPoints, BeginLoginIn, BeginLoginOut,
+    CompleteLoginIn, FieldSpan, FieldsIn, FieldsOut, IdentifyOut, IdentityBuf, OpenOutboundIn,
+    OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, StripName, VerifyIn, LOGIN_IDENTITY,
+    VERDICT_IDENTITY,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, Span};
 use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
@@ -44,6 +46,8 @@ pub struct Auth;
 
 /// The most carrier names an auth tail may state.
 const MAX_CARRIERS: usize = 64;
+/// The most outbound styles an auth tail may state.
+const MAX_STYLES: usize = 64;
 
 /// What an auth instance's Statement states, copied out once at bind and read back through
 /// [`crate::dispatch::Plugin::context`]: its capabilities, its facts, the inbound carrier fields
@@ -66,6 +70,9 @@ pub struct AuthFacts {
     /// `abi::auth::LOGIN_KIND_*`: how the plugin's login starts; `LOGIN_KIND_NONE` exactly when it
     /// states no `CAP_LOGIN`.
     pub login_kind: u32,
+    /// The auth points `verify` is called at (THE DESIGN, "Auth points and guest lists"):
+    /// non-empty exactly when it states `CAP_INBOUND`.
+    pub inbound_points: AuthPoints,
 }
 
 /// A `'static` Statement string, copied; `None` when malformed.
@@ -111,6 +118,30 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
             t.login_kind
         ));
     }
+    // The inbound point set agrees with the inbound capability (THE DESIGN, "Auth points and
+    // guest lists"): a plugin that serves `verify` states the points it needs, and no other does.
+    let inbound_points = check_inbound_points(t.caps, t.inbound_points).map_err(|f| {
+        format!(
+            "the auth tail's inbound points {:#x} are refused: {f:?}",
+            t.inbound_points
+        )
+    })?;
+    // Every style states known flags and the points it needs; a stray bit refuses the load.
+    if t.styles_len > MAX_STYLES || (t.styles.is_null() && t.styles_len != 0) {
+        return Err(format!("the auth tail states {} styles", t.styles_len));
+    }
+    for i in 0..t.styles_len {
+        // SAFETY: `styles` holds `styles_len` `'static` declarations (checked non-NULL above).
+        let d = unsafe { t.styles.add(i).read_unaligned() };
+        check_style_decl(d.flags, d.points).map_err(|f| {
+            format!(
+                "auth style {} is refused: flags {:#x}, points {:#x}: {f:?}",
+                owned(d.name).unwrap_or_default(),
+                d.flags,
+                d.points
+            )
+        })?;
+    }
     let mut cache_family = None;
     for i in 0..st.families_len {
         // SAFETY: the loader's Statement check: `families` holds `families_len` `'static` entries.
@@ -132,6 +163,7 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
         cache_family,
         secret_refs,
         login_kind: t.login_kind,
+        inbound_points,
     })
 }
 
@@ -199,10 +231,27 @@ impl Kind for Auth {
     fn check(a: &Answer) -> Result<(), Fault> {
         match a.slot {
             slot::VERIFY => {
-                let buf = &a.input::<VerifyIn>()?.out_buf;
+                let input = a.input::<VerifyIn>()?;
+                let buf = &input.out_buf;
                 let out = a.out::<IdentifyOut>()?;
                 let groups = groups(a, out, buf, VERDICT_IDENTITY, "verify.groups")?;
-                check_identify(a.outcome, out, buf, groups)
+                // The strip names are read on every READY answer, whatever the verdict.
+                let strips: &[StripName] = if a.outcome == Outcome::Ready {
+                    // SAFETY: `input.strip` is the host's own array of `strip_cap` live
+                    // `StripName`s from the op's `in`; `reported` refuses a count above that cap
+                    // before it builds the slice.
+                    unsafe {
+                        reported(
+                            input.strip.cast_const(),
+                            u64::from(out.strip_len),
+                            u64::from(input.strip_cap),
+                            "verify.strip",
+                        )?
+                    }
+                } else {
+                    &[]
+                };
+                check_identify(a.outcome, out, buf, groups, input.strip_cap, strips)
             }
             slot::COMPLETE_LOGIN => {
                 let buf = &a.input::<CompleteLoginIn>()?.out_buf;
@@ -251,7 +300,7 @@ impl Kind for Auth {
         match a.slot {
             slot::VERIFY | slot::COMPLETE_LOGIN => a
                 .out::<IdentifyOut>()
-                .is_ok_and(|o| o.needed_bytes != 0 || o.needed_groups != 0),
+                .is_ok_and(|o| o.needed_bytes != 0 || o.needed_groups != 0 || o.needed_strip != 0),
             slot::FIELDS => a
                 .out::<FieldsOut>()
                 .is_ok_and(|o| o.needed_bytes != 0 || o.needed_fields != 0),

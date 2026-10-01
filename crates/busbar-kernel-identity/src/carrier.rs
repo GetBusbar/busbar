@@ -13,7 +13,6 @@
 //!   THROUGH to the next carrier rather than terminating the search. Signed requests authenticate
 //!   on their own path.
 
-
 /// The header the Anthropic SDK carries its key in.
 const X_API_KEY: &str = "x-api-key";
 /// The header the Gemini SDK carries its key in.

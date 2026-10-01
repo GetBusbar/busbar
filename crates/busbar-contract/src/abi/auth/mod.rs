@@ -47,20 +47,22 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 mod check;
 mod inbound;
 mod outbound;
+mod points;
 
 pub use check::{
-    check_begin_login, check_complete_login, check_fields, check_identify, check_style_decl,
-    FIELDS_HARD_MAX, IDENTITY_GROUPS_HARD_MAX,
+    check_begin_login, check_complete_login, check_fields, check_identify, check_inbound_points,
+    check_points, check_style_decl, FIELDS_HARD_MAX, IDENTITY_GROUPS_HARD_MAX,
 };
 
 pub use inbound::{
     BeginLoginIn, BeginLoginOut, CompleteLoginIn, IdentifyOut, IdentityBuf, IdentityOut,
-    LoginField, NamedValue, RequestFacts, VerifyIn,
+    LoginField, NamedValue, RequestFacts, StripName, VerifyIn,
 };
 pub use outbound::{
     FieldSpan, FieldsIn, FieldsOut, OpenOutboundIn, OpenOutboundOut, OutboundReadyIn,
     OutboundReadyOut,
 };
+pub use points::{AuthPoint, AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 
 /// The auth kind's ABI version: v1.5.5 shipped `2` (`AUTH_ABI_VERSION`), so 1.6.0 ships `3`.
 pub const ABI_VERSION: u32 = 3;
@@ -117,12 +119,17 @@ pub const SLOTS: u32 = LIFECYCLE_SLOTS + KIND_SLOTS;
 pub struct Ops {
     /// The lifecycle. `refresh` also drops the plugin's inbound cache (the admin flush).
     pub head: OpsHead,
-    /// Judge an inbound credential. REQUEST-PATH; may pend (a key-set fetch or a directory read
-    /// over the plugin's need); [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass).
-    /// In [`VerifyIn`] (fixed 272 B, plus the credential and carrier bytes), out [`IdentifyOut`]
-    /// (fixed 208 B; results in the host's [`IdentityBuf`], [`IDENTITY_BUF_BYTES`] and
-    /// [`IDENTITY_GROUPS`] to start). The verdict is [`VERDICT_IDENTITY`], [`VERDICT_REJECT`] or
-    /// [`VERDICT_PASS`]. OVERLOAD: when the instance's `max_inflight` is full, the host does not
+    /// Judge an inbound request at one AUTH POINT ([`VerifyIn::point`]; THE DESIGN, "Auth
+    /// points and guest lists": the inbound point call reuses this slot). REQUEST-PATH; may pend
+    /// (a key-set fetch or a directory read over the plugin's need);
+    /// [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass). In [`VerifyIn`] (fixed
+    /// 320 B, plus the line, peer and body bytes), out [`IdentifyOut`] (fixed 232 B; results in
+    /// the host's [`IdentityBuf`], [`IDENTITY_BUF_BYTES`] and [`IDENTITY_GROUPS`] to start, and its
+    /// strip array, [`FIELDS_MAX`] to start). The verdict is [`VERDICT_IDENTITY`],
+    /// [`VERDICT_REJECT`] or [`VERDICT_PASS`]; the decision is [`DECISION_CONTINUE`] or
+    /// [`DECISION_STOP`]; the credential lines to strip are named whatever the verdict. The
+    /// transport receives only the decision and the strips; the verdict, the identity and the
+    /// credential go to the kernel. OVERLOAD: when the instance's `max_inflight` is full, the host does not
     /// queue the call and answers the request 503 (an accepted difference from 1.5.5). The plugin
     /// never signals overload itself.
     pub verify: Option<Op>,
@@ -132,7 +139,7 @@ pub struct Ops {
     pub begin_login: Option<Op>,
     /// Finish a login: the token exchange runs over the plugin's own need to its need-declared
     /// targets. OFF-PATH; may pend; `Call`. In [`CompleteLoginIn`] (fixed 232 B), out
-    /// [`IdentifyOut`] (fixed 208 B; host [`IdentityBuf`]). The verdict is [`LOGIN_IDENTITY`],
+    /// [`IdentifyOut`] (fixed 232 B; host [`IdentityBuf`]). The verdict is [`LOGIN_IDENTITY`],
     /// [`LOGIN_BAD_CREDENTIAL`], [`LOGIN_OUTAGE`] or [`LOGIN_SECURITY_CHECK_FAILED`].
     pub complete_login: Option<Op>,
     /// Bind one outbound style to its credential and answer a handle. OFF-PATH, at generation
@@ -148,6 +155,9 @@ pub struct Ops {
     /// The per-attempt call the kernel makes before encode: the auth fields for this request.
     /// REQUEST-PATH; may pend only when the cached token has expired and its refresh failed
     /// (the design's expired-token rule, Q-EXPIRED), bounded by the attempt's deadline; `Call`.
+    /// Called at the style's AUTH POINTS ([`FieldsIn::point`]; THE DESIGN, "Auth points and
+    /// guest lists", step 5): the host REPLACES the plane's lines of the same name with the fields
+    /// answered and adds nothing to the head after them; REFUSED or FAILED stops the request.
     /// In [`FieldsIn`] (fixed 288 B), out [`FieldsOut`] (fixed 112 B; fields in the host's
     /// buffer, [`FIELDS_BUF_BYTES`] and [`FIELDS_MAX`] to start; one re-call when short). READY
     /// with zero fields = no auth header, so the upstream answers 401: 1.5.5's answer before the
@@ -165,11 +175,12 @@ pub const CAP_OUTBOUND: u32 = 4;
 /// [`AuthTail::facts`]: the plugin's verdicts may be cached. INFORMATIONAL (status, operators):
 /// the plugin caches them itself, and the kernel keeps no verdict cache.
 pub const FACT_CACHEABLE: u32 = 1;
-/// [`AuthTail::facts`]: `verify` reads the request's body hash ([`RequestFacts::body_hash`]).
+/// [`AuthTail::facts`]: `verify` reads the request body's hash. The body itself reaches `verify` as
+/// [`VerifyIn::body`] when the tail's points hold [`POINT_HEAD_BODY`].
 pub const FACT_INBOUND_NEEDS_BODY_HASH: u32 = 2;
 /// [`AuthTail::facts`]: `verify` reads EVERY request header, not only its carriers (the Statement's
 /// [`MARK_WORD_CARRIER`](crate::abi::mechanism::door::MARK_WORD_CARRIER) word marks); the
-/// kernel passes them all in [`VerifyIn::carrier`]. An inbound signature check needs it: the set of
+/// host passes them all in [`VerifyIn::lines`]. An inbound signature check needs it: the set of
 /// signed headers varies per request.
 pub const FACT_INBOUND_ALL_HEADERS: u32 = 4;
 
@@ -186,8 +197,6 @@ pub const LOGIN_KIND_REDIRECT: u32 = 1;
 /// [`AuthTail::login_kind`]: a credential form the core renders.
 pub const LOGIN_KIND_CREDENTIAL: u32 = 2;
 
-/// [`StyleDecl::flags`]: `fields` needs [`RequestFacts::body_hash`] for this style.
-pub const STYLE_NEEDS_BODY_HASH: u32 = 1;
 /// [`StyleDecl::flags`]: `fields` needs [`FieldsIn::headers`], the exact envelope, for this style.
 pub const STYLE_NEEDS_HEADERS: u32 = 2;
 /// [`StyleDecl::flags`]: this style serves [`MODE_PASSTHROUGH`] as well as [`MODE_OWN`] — the
@@ -205,10 +214,12 @@ pub const STYLE_CALLER_CREDENTIAL: u32 = 4;
 pub struct StyleDecl {
     /// The style name.
     pub name: AbiStr,
-    /// [`STYLE_NEEDS_BODY_HASH`] | [`STYLE_NEEDS_HEADERS`] | [`STYLE_CALLER_CREDENTIAL`].
+    /// [`STYLE_NEEDS_HEADERS`] | [`STYLE_CALLER_CREDENTIAL`].
     pub flags: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
+    /// The [`AuthPoints`] the style needs: a valid, non-empty set ([`check_style_decl`]). A style
+    /// that signs the body needs [`POINT_HEAD_BODY`] and reads [`FieldsIn::body`]; a style over
+    /// the head alone needs [`POINT_HEAD`].
+    pub points: u32,
 }
 
 /// THE AUTH STATEMENT TAIL: `Statement.kind_tail` of an auth plugin. Plain `'static` data.
@@ -225,8 +236,11 @@ pub struct AuthTail {
     /// classification the login chooser reads without calling `begin_login`. It is `NONE` exactly
     /// when [`CAP_LOGIN`] is absent; a tail where the two disagree refuses the load.
     pub login_kind: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
+    /// The [`AuthPoints`] `verify` needs inbound: with [`CAP_INBOUND`] a valid, non-empty set;
+    /// without it `0` ([`check_inbound_points`]; the loader refuses any other tail). A mechanism
+    /// that checks a signature over the body needs [`POINT_HEAD_BODY`] and reads
+    /// [`VerifyIn::body`].
+    pub inbound_points: u32,
     /// The outbound styles served ([`CAP_OUTBOUND`]).
     pub styles: *const StyleDecl,
     /// How many.
@@ -249,6 +263,18 @@ pub const VERDICT_REJECT: u32 = 2;
 /// [`IdentifyOut::verdict`] for `verify`: not this plugin's credential; try the next.
 pub const VERDICT_PASS: u32 = 3;
 
+/// [`IdentifyOut::decision`] for `verify`: the transport goes on with the request (the next
+/// point, or hands it in). The SDK's default for [`VERDICT_IDENTITY`] and [`VERDICT_PASS`].
+pub const DECISION_CONTINUE: u32 = 1;
+/// [`IdentifyOut::decision`] for `verify`: the transport stops the request. The SDK's default
+/// for [`VERDICT_REJECT`].
+pub const DECISION_STOP: u32 = 2;
+
+/// [`StripName::place`]: a field line of the request head, matched ASCII case-insensitively.
+pub const STRIP_FIELD: u32 = 1;
+/// [`StripName::place`]: a query key of the request target, matched case-sensitively.
+pub const STRIP_QUERY: u32 = 2;
+
 /// [`IdentifyOut::verdict`] for `complete_login`: identified.
 pub const LOGIN_IDENTITY: u32 = 1;
 /// [`IdentifyOut::verdict`] for `complete_login`: the directory or IdP answered, and the credential
@@ -269,7 +295,8 @@ pub const IDENTITY_BUF_BYTES: usize = 16 * 1024;
 pub const IDENTITY_GROUPS: u32 = 256;
 /// The field buffer the host hands `fields` to start: bytes.
 pub const FIELDS_BUF_BYTES: usize = 16 * 1024;
-/// The field buffer the host hands `fields` to start: fields.
+/// The field buffer the host hands `fields` to start: fields. Also the strip array the host
+/// hands `verify` to start ([`VerifyIn::strip_cap`]); [`FIELDS_HARD_MAX`] bounds both.
 pub const FIELDS_MAX: u32 = 16;
 
 /// [`FieldsIn::mode`]: the plugin's own bound credential.

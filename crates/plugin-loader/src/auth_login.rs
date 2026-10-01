@@ -296,7 +296,7 @@ impl CompleteHeld {
                 .map(|(n, v)| (n.clone(), v.expose_secret().as_bytes().to_vec()))
                 .collect(),
             named: Vec::new(),
-            id: Held::new(&VerifyRequest::default(), buf_cap, groups_cap),
+            id: Held::new(&VerifyRequest::default(), buf_cap, groups_cap, 0),
         };
         held.named = held
             .submitted
@@ -435,7 +435,7 @@ impl Complete {
             let out = done.frame.as_ref().map(|f| f.out);
             if done.short && !self.recalled {
                 self.recalled = true;
-                if let Some((cap, groups)) = out.as_ref().and_then(|o| grown(o, &self.held.id)) {
+                if let Some((cap, groups, _)) = out.as_ref().and_then(|o| grown(o, &self.held.id)) {
                     self.held = CompleteHeld::new(&self.request, cap, groups);
                     self.reply = Some(submit_complete(&self.shared, self.ticket, &self.held));
                     continue;

@@ -335,7 +335,10 @@ fn the_login_lists_lend_within_bounds_and_empty_when_null_or_zero() {
     assert!(lend(&b).scopes().is_empty(), "a zero length is empty");
     b.scopes = ptr::null();
     b.scopes_len = 2;
-    assert!(lend(&b).scopes().is_empty(), "a NULL list is empty whatever its length");
+    assert!(
+        lend(&b).scopes().is_empty(),
+        "a NULL list is empty whatever its length"
+    );
 
     let fields = [NamedValue {
         name: AbiStr {
@@ -362,5 +365,8 @@ fn the_login_lists_lend_within_bounds_and_empty_when_null_or_zero() {
     assert!(lend(&c).submitted().is_empty(), "a zero length is empty");
     c.submitted = ptr::null();
     c.submitted_len = 3;
-    assert!(lend(&c).submitted().is_empty(), "a NULL list is empty whatever its length");
+    assert!(
+        lend(&c).submitted().is_empty(),
+        "a NULL list is empty whatever its length"
+    );
 }

@@ -48,8 +48,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use busbar_contract::abi::auth::{
     AuthTail, BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldsIn, FieldsOut, IdentifyOut,
     OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, StyleDecl, VerifyIn,
-    CANCEL_ABANDONED, CAP_OUTBOUND, LOGIN_KIND_NONE, MODE_OWN, MODE_PASSTHROUGH,
-    STYLE_CALLER_CREDENTIAL, STYLE_NEEDS_BODY_HASH,
+    CANCEL_ABANDONED, CAP_OUTBOUND, LOGIN_KIND_NONE, MODE_OWN, MODE_PASSTHROUGH, POINT_HEAD_BODY,
+    STYLE_CALLER_CREDENTIAL,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Envelope, InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
@@ -69,12 +69,13 @@ use crate::signing::{SigV4Binding, SignFacts, SigningCredential};
 /// sensitive marking is a behaviour change not taken without the owner).
 const FIELD_FLAGS: u32 = 0;
 
-/// The one style this plugin serves: it signs the body, so it asks for the body hash, and it
-/// serves the caller's credential too.
+/// The one style this plugin serves: it signs the body, so it needs the `HeadBody` point (THE
+/// DESIGN, "Auth points and guest lists") and hashes the body itself; it serves the caller's
+/// credential too.
 const STYLE_DECLS: [StyleDecl; 1] = [StyleDecl {
     name: abi_str(style::SIGV4),
-    flags: STYLE_NEEDS_BODY_HASH | STYLE_CALLER_CREDENTIAL,
-    _reserved: 0,
+    flags: STYLE_CALLER_CREDENTIAL,
+    points: POINT_HEAD_BODY,
 }];
 
 /// THE AUTH STATEMENT TAIL: outbound only, no login, no inbound carriers.
@@ -86,7 +87,8 @@ const TAIL: &AuthTail = &AuthTail {
     caps: CAP_OUTBOUND,
     facts: 0,
     login_kind: LOGIN_KIND_NONE,
-    _reserved: 0,
+    // Outbound only: `verify` is never called, so no inbound point.
+    inbound_points: 0,
     styles: STYLE_DECLS.as_ptr(),
     styles_len: STYLE_DECLS.len(),
     aliases: ptr::null(),
@@ -380,11 +382,8 @@ impl Slot for OutboundReady {
     }
 }
 
-/// The SigV4 facts of a `fields` call; `None` when the kernel sent no body hash, host or path.
+/// The SigV4 facts of a `fields` call; `None` when the host sent no host or path.
 fn sign_facts<'a>(input: &'a FieldsIn, hash: &'a str) -> Option<SignFacts<'a>> {
-    if input.request.body_hash_present == 0 {
-        return None;
-    }
     Some(SignFacts {
         host: text(&input.request.authority)?,
         canonical_uri: text(&input.request.canonical_path)?,
@@ -409,7 +408,8 @@ impl Slot for Fields {
                 .collect();
             abi::write_fields(input, out, &f, FIELD_FLAGS)
         };
-        let hash = hex::encode(input.request.body_hash);
+        // The payload hash over the body the host lent at `HeadBody`; none lent is the empty body.
+        let hash = crate::sigv4::sha256_hex(blob(&input.body).unwrap_or_default());
         match input.mode {
             MODE_OWN => {
                 let Some(b) = s.binding(input.handle) else {

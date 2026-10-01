@@ -50,7 +50,7 @@ use std::ptr;
 use busbar_contract::abi::auth::{
     AuthTail, BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldsIn, FieldsOut, IdentifyOut,
     OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, StyleDecl, VerifyIn,
-    CANCEL_CONTINUES, CAP_OUTBOUND, LOGIN_KIND_NONE, MODE_OWN,
+    CANCEL_CONTINUES, CAP_OUTBOUND, LOGIN_KIND_NONE, MODE_OWN, POINT_HEAD,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Envelope, InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
@@ -81,7 +81,8 @@ const fn decl(name: &'static str) -> StyleDecl {
     StyleDecl {
         name: abi_str(name),
         flags: 0,
-        _reserved: 0,
+        // A bearer token reads nothing past the head.
+        points: POINT_HEAD,
     }
 }
 
@@ -94,7 +95,8 @@ const TAIL: &AuthTail = &AuthTail {
     caps: CAP_OUTBOUND,
     facts: 0,
     login_kind: LOGIN_KIND_NONE,
-    _reserved: 0,
+    // Outbound only: `verify` is never called, so no inbound point.
+    inbound_points: 0,
     styles: STYLE_DECLS.as_ptr(),
     styles_len: STYLE_DECLS.len(),
     aliases: ptr::null(),

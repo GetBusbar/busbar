@@ -26,7 +26,7 @@ use busbar_contract::abi::auth::FACT_CACHEABLE;
 use busbar_contract::abi::mechanism::{KindCode, MECHANISM_VERSION};
 use busbar_contract::auth::{AuthModule, AuthVerdict};
 use busbar_contract::auth_calls::{
-    AuthCalls, Verified, VerifiedIdentity, VerifyRequest, Verifying,
+    AuthCalls, Verified, VerifiedIdentity, VerifyAnswer, VerifyRequest, Verifying,
 };
 
 use crate::auth_door::{AuthInstance, AuthSink};
@@ -247,7 +247,7 @@ impl AuthCalls for ColdAuth {
         self.facts
     }
 
-    fn verify_now(&self, _request: &VerifyRequest) -> Option<Verified> {
+    fn verify_now(&self, _request: &VerifyRequest) -> Option<VerifyAnswer> {
         None
     }
 
@@ -258,13 +258,13 @@ impl AuthCalls for ColdAuth {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             // No runtime to lend a blocking thread: the call is made here, as the cold lane
             // always was.
-            return Box::new(ColdVerifying::Ready(Some(cold_verdict(
+            return Box::new(ColdVerifying::Ready(Some(Box::new(cold_verdict(
                 module.authenticate(credential.as_deref()),
-            ))));
+            )))));
         };
         if COLD_INFLIGHT.fetch_add(1, Ordering::AcqRel) >= COLD_MAX_INFLIGHT {
             COLD_INFLIGHT.fetch_sub(1, Ordering::AcqRel);
-            return Box::new(ColdVerifying::Ready(Some(Verified::Overloaded)));
+            return Box::new(ColdVerifying::Ready(Some(Box::new(Verified::Overloaded))));
         }
         let handle = runtime.spawn_blocking(move || {
             let v = cold_verdict(module.authenticate(credential.as_deref()));
@@ -282,24 +282,31 @@ impl AuthCalls for ColdAuth {
 }
 
 /// A cold verify: answered, or running on the blocking pool.
+///
+/// `Ready` boxes its `Verified` (216 B since the identity carries its credential): it is built only
+/// when no runtime lends a blocking thread or the in-flight cap sheds the call, so the per-request
+/// `Running` future stays small and the box is paid off the hot path.
 enum ColdVerifying {
-    Ready(Option<Verified>),
+    Ready(Option<Box<Verified>>),
     Running(tokio::task::JoinHandle<Verified>),
 }
 
 impl Future for ColdVerifying {
-    type Output = Verified;
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Verified> {
+    type Output = VerifyAnswer;
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<VerifyAnswer> {
+        // The cold lane names no strips: its verdict with its default decision.
         match &mut *self {
-            Self::Ready(v) => Poll::Ready(v.take().unwrap_or(Verified::Failed)),
+            Self::Ready(v) => Poll::Ready(v.take().map_or(Verified::Failed, |b| *b).into()),
             // A panicking plugin (a join error) fails closed.
-            Self::Running(h) => Pin::new(h).poll(cx).map(|r| r.unwrap_or(Verified::Failed)),
+            Self::Running(h) => Pin::new(h)
+                .poll(cx)
+                .map(|r| r.unwrap_or(Verified::Failed).into()),
         }
     }
 }
 
 impl Verifying for ColdVerifying {
-    fn settled(&mut self) -> Option<Verified> {
+    fn settled(&mut self) -> Option<VerifyAnswer> {
         let mut cx = Context::from_waker(Waker::noop());
         match Pin::new(self).poll(&mut cx) {
             Poll::Ready(v) => Some(v),
