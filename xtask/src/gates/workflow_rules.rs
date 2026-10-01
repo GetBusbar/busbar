@@ -91,10 +91,22 @@ pub fn top_level_block(text: &str, name: &str) -> String {
     out.join("\n")
 }
 
-/// `^\s*(?:-\s+)?uses:\s*(\S+)\s*(#.*)?$` — the action reference and its trailing tag comment.
+/// The action reference of a `uses:` line and its trailing tag comment, in either of YAML's two
+/// spellings of a step:
+///
+/// * block: `^\s*(?:-\s+)?uses:\s*(\S+)\s*(#.*)?$`;
+/// * flow: `- { uses: <ref>, with: { ... } } # <tag>` — a step written as ONE mapping on one line,
+///   the compact spelling a workflow that is only a bootstrap is written in. The comment is what
+///   follows the closing brace.
+///
+/// A rule that read only the block spelling could be switched off by reformatting the step, and a
+/// rule a formatting choice can switch off is not a rule.
 fn parse_uses(line: &str) -> Option<(String, Option<String>)> {
     let t = line.trim_start();
     let t = t.strip_prefix("- ").map(str::trim_start).unwrap_or(t);
+    if t.starts_with('{') {
+        return parse_uses_flow(t);
+    }
     let rest = t.strip_prefix("uses:")?;
     let rest = rest.trim_start();
     let (reference, tail) = match rest.find(char::is_whitespace) {
@@ -113,6 +125,35 @@ fn parse_uses(line: &str) -> Option<(String, Option<String>)> {
         return None;
     };
     Some((reference.to_string(), comment))
+}
+
+/// The flow-mapping half of [`parse_uses`]: `{ ..., uses: <ref>, ... } # <tag>`.
+fn parse_uses_flow(t: &str) -> Option<(String, Option<String>)> {
+    let mut from = 0usize;
+    let value = loop {
+        let at = from + t[from..].find("uses:")?;
+        from = at + "uses:".len();
+        let before = t[..at].trim_end();
+        if before.ends_with('{') || before.ends_with(',') {
+            let rest = t[from..].trim_start();
+            let end = rest
+                .find(|c: char| c.is_whitespace() || c == ',' || c == '}')
+                .unwrap_or(rest.len());
+            break &rest[..end];
+        }
+    };
+    if value.is_empty() {
+        return None;
+    }
+    let tail = t.rfind('}').map(|i| t[i + 1..].trim()).unwrap_or("");
+    let comment = if tail.starts_with('#') {
+        Some(tail.to_string())
+    } else if tail.is_empty() {
+        None
+    } else {
+        return None;
+    };
+    Some((value.to_string(), comment))
 }
 
 fn is_sha40(s: &str) -> bool {
@@ -814,7 +855,7 @@ fn mutations() -> Vec<Mutation> {
             // THE REGRESSION AS IT WOULD ACTUALLY ARRIVE: someone copies a snippet out of an
             // action's README, which is always written with the tag, and nothing anywhere notices.
             label: "R14 an action reverts from a sha to a force-movable tag",
-            file: "promote.yml",
+            file: "plugin-ci.yml",
             rule: "R14",
             apply: |t| retag_first_pin(t, false),
             creates: false,
@@ -823,6 +864,22 @@ fn mutations() -> Vec<Mutation> {
             // The quieter half. The sha stays a sha, so it still looks pinned; the tag comment
             // goes, so Dependabot stops bumping it and the pin rots in place.
             label: "R14 a pin loses the trailing tag comment Dependabot reads",
+            file: "plugin-ci.yml",
+            rule: "R14",
+            apply: |t| retag_first_pin(t, true),
+            creates: false,
+        },
+        Mutation {
+            // THE SAME TWO REGRESSIONS IN THE FLOW SPELLING the pipeline workflow itself is
+            // written in: a step as one `{ uses: ..., with: ... }` mapping.
+            label: "R14 a flow-style action reverts from a sha to a force-movable tag",
+            file: "promote.yml",
+            rule: "R14",
+            apply: |t| retag_first_pin(t, false),
+            creates: false,
+        },
+        Mutation {
+            label: "R14 a flow-style pin loses the trailing tag comment Dependabot reads",
             file: "promote.yml",
             rule: "R14",
             apply: |t| retag_first_pin(t, true),
@@ -835,7 +892,7 @@ fn mutations() -> Vec<Mutation> {
             apply: |t| {
                 replace_once(
                     t,
-                    "on:\n  pull_request:\n",
+                    "on: pull_request\n",
                     "on:\n  push:\n    tags:\n      - \"v*\"\n",
                 )
             },
@@ -850,7 +907,7 @@ fn mutations() -> Vec<Mutation> {
             apply: |t| {
                 replace_once(
                     t,
-                    "on:\n  pull_request:\n",
+                    "on: pull_request\n",
                     "on:\n  push:\n    tags: [\"v*\"]\n",
                 )
             },
@@ -900,7 +957,16 @@ fn retag_first_pin(t: &str, drop_comment_only: bool) -> String {
         }
         let comment = comment.unwrap_or_default();
         let tag = comment.trim_start_matches('#').trim();
-        let replacement = if drop_comment_only {
+        let replacement = if line.contains('{') {
+            // Flow spelling: the pin sits inside the mapping and the comment follows the brace.
+            if drop_comment_only {
+                line.rfind('}')
+                    .map(|i| line[..=i].to_string())
+                    .unwrap_or_else(|| line.to_string())
+            } else {
+                line.replace(&format!("@{at}"), &format!("@{tag}"))
+            }
+        } else if drop_comment_only {
             line.replace(&format!(" {comment}"), "")
         } else {
             line.replace(&format!("{repo}@{at} {comment}"), &format!("{repo}@{tag}"))

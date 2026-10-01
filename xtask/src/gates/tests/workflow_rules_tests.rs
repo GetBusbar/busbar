@@ -92,6 +92,26 @@ fn a_uses_line_yields_its_reference_and_its_trailing_tag_comment() {
 }
 
 #[test]
+fn a_flow_style_step_yields_its_reference_and_the_comment_after_its_brace() {
+    assert_eq!(
+        parse_uses("      - { uses: actions/checkout@abc, with: { ref: x } } # v4"),
+        Some(("actions/checkout@abc".into(), Some("# v4".into())))
+    );
+    assert_eq!(
+        parse_uses(
+            "      - { if: always(), uses: actions/upload-artifact@abc, with: { name: n } }"
+        ),
+        Some(("actions/upload-artifact@abc".into(), None))
+    );
+    // `uses:` that is not a key of the mapping (inside a string) is not an action reference.
+    assert_eq!(
+        parse_uses("      - { run: \"echo uses: nothing\", id: x }"),
+        None
+    );
+    assert_eq!(parse_uses("      - { id: pre, run: bash x.sh }"), None);
+}
+
+#[test]
 fn r14_reads_uses_out_of_a_composite_action_too_not_only_workflows() {
     // THE RED PLANT for the widened scope: `.github/actions` does not exist in the real tree,
     // so this plants one via overlay and proves R14 finds it anyway (`has_composite_actions`
