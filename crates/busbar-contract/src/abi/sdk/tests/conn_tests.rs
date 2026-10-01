@@ -22,12 +22,14 @@ extern "C" fn establish(_: HostCtx, i: *const c_void, o: *mut ServiceOut) -> Raw
     // SAFETY: an `EstablishIn`, leading with its `ServiceHead`.
     let input = unsafe { *i.cast::<EstablishIn>() };
     SEEN.lock().unwrap().push(input.head.handle.seq);
-    // SAFETY: the SDK's text, live for the call.
-    let within = unsafe { std::slice::from_raw_parts(input.within.ptr, input.within.len) };
-    WITHIN
-        .lock()
-        .unwrap()
-        .push(String::from_utf8_lossy(within).into_owned());
+    let within = if input.within.ptr.is_null() {
+        "<absent>".to_owned()
+    } else {
+        // SAFETY: the SDK's text, live for the call.
+        let b = unsafe { std::slice::from_raw_parts(input.within.ptr, input.within.len) };
+        String::from_utf8_lossy(b).into_owned()
+    };
+    WITHIN.lock().unwrap().push(within);
     // SAFETY: the SDK's `out`, live for the call.
     unsafe { (*o).value = 7 };
     RawOutcome::of(Outcome::Ready)
