@@ -32,6 +32,7 @@ usage:
   cargo xtask loc --selftest
   cargo xtask teller-steps [--root-legs] [--root-legs-gating]
   cargo xtask ledger {sync|status|next|record|fixed|move} | --check
+  cargo xtask audit-verify --range <range.json> --keys <keys.json> [--head <head.json>]
   cargo xtask conformance check --suite <id>|all|--musts [--sha <sha>] [--manifest <path>] [--format=tsv]
   cargo xtask conformance check --selftest
   cargo xtask dialect wire [--write | --diff] <dialect|all>
@@ -55,6 +56,7 @@ const LEGACY_LEDGER_ENV: &str = "LEDGER";
 /// here, beside the dispatch arms that prove it, so the reader and the dispatcher cannot drift.
 pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
     "ledger",
+    "audit-verify",
     "conformance",
     "loc",
     "fleet",
@@ -137,6 +139,9 @@ pub fn main(args: &[String]) -> i32 {
             Ok(cx) => crate::dialect::main(&cx, &args[1..]),
             Err(code) => code,
         },
+        // THE OUT-OF-PROCESS AUDIT-CHAIN VERIFIER (#82(c), TODO 597). Not a gate: it checks bodies a
+        // node published, by the published recipe pages alone, and reads no tree.
+        Some("audit-verify") => crate::audit_verify::main(&args[1..]),
         Some("ledger") => match open_ctx() {
             Ok(cx) => crate::audit_cmd::main(cx.root(), &args[1..]),
             Err(code) => code,
