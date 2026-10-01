@@ -12,6 +12,7 @@ use busbar_contract::abi::host::service::{
     check_clock_now, check_dest_judge, check_random_fill, ContentScanIn, EntitlementCheckIn,
     ItemSpan, RandomFillIn, DEST_INTERNAL, DEST_METADATA, DEST_RESOLVE,
 };
+use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::check::Filled;
 
 use super::*;
@@ -373,10 +374,11 @@ fn eight(runs: &AtomicUsize) -> impl FnOnce(Option<Completer>) -> Ran + '_ {
         Ran::Now(Stored {
             bytes: b"01234567".to_vec(),
             spans: vec![ItemSpan {
-                key_off: check::SPAN_ABSENT,
-                key_len: 0,
-                value_off: 0,
-                value_len: 8,
+                key: Span {
+                    offset: check::SPAN_ABSENT,
+                    len: 0,
+                },
+                value: Span { offset: 0, len: 8 },
             }],
             ..Stored::ready(1)
         })
@@ -402,10 +404,8 @@ fn nowhere() -> Weak<dyn WakeRoute> {
 }
 
 const SPAN: ItemSpan = ItemSpan {
-    key_off: 0,
-    key_len: 0,
-    value_off: 0,
-    value_len: 0,
+    key: Span { offset: 0, len: 0 },
+    value: Span { offset: 0, len: 0 },
 };
 
 /// The first short answer earns ONE re-call on the same handle; a second short answer on it
@@ -451,7 +451,7 @@ fn a_recall_reads_the_stored_result_without_running_again() {
         (Outcome::Ready, 1, 8, 1)
     );
     assert_eq!(&big, b"01234567");
-    assert_eq!(s2[0].value_len, 8);
+    assert_eq!(s2[0].value.len, 8);
     // SAFETY: as above.
     let again = unsafe { serve(&store, &nowhere(), &h, Some(&into), eight(&runs)) };
     assert_eq!(again, recall);

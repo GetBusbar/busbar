@@ -1854,7 +1854,7 @@ fn compute_layout() -> String {
             error
         ]
     );
-    record!(s, hsvc::ItemSpan, [key_off, key_len, value_off, value_len]);
+    record!(s, hsvc::ItemSpan, [key, value]);
     record!(s, hsvc::ServiceBufs, [buf, cap, spans, spans_cap]);
     record!(s, hsvc::ClockReading, [size, _reserved, wall_ns, mono_ns]);
     record!(s, hsvc::ClockNowIn, [head, reading]);

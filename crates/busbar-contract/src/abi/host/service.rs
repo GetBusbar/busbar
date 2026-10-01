@@ -31,7 +31,7 @@
 
 use std::os::raw::c_void;
 
-use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome};
+use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome, Span};
 use crate::abi::mechanism::check::{self, fault, Dim, Fault, Filled, Rule, MAX_BYTES};
 use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx};
 
@@ -75,19 +75,15 @@ pub struct ServiceOut {
     pub error: AbiStr,
 }
 
-/// One named range of a result's bytes: a key and a value, each `(offset, len)` into the bytes
+/// One named range of a result's bytes: a key and a value, each a [`Span`] into the bytes
 /// written, or absent (`offset` = [`check::SPAN_ABSENT`], `len` = `0`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ItemSpan {
-    /// The key's offset.
-    pub key_off: u32,
-    /// The key's length.
-    pub key_len: u32,
-    /// The value's offset.
-    pub value_off: u32,
-    /// The value's length.
-    pub value_len: u32,
+    /// The key.
+    pub key: Span,
+    /// The value.
+    pub value: Span,
 }
 
 /// The plugin's buffers a service writes its result into, preallocated at the sizes the plugin
@@ -726,8 +722,13 @@ fn answer(
                 )
             }?;
             for s in spans {
-                check::span(s.key_off, s.key_len, out.len, "service.out.span.key")?;
-                check::span(s.value_off, s.value_len, out.len, "service.out.span.value")?;
+                check::span(s.key.offset, s.key.len, out.len, "service.out.span.key")?;
+                check::span(
+                    s.value.offset,
+                    s.value.len,
+                    out.len,
+                    "service.out.span.value",
+                )?;
             }
         }
     }

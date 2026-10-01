@@ -217,10 +217,11 @@ fn a_service_with_no_buffer_that_wrote_bytes_is_fault() {
 fn a_span_outside_the_bytes_written_is_fault() {
     let (mut b, mut s) = ([0u8; 4], [ItemSpan::default_absent(); 1]);
     s[0] = ItemSpan {
-        key_off: SPAN_ABSENT,
-        key_len: 0,
-        value_off: 2,
-        value_len: 3,
+        key: Span {
+            offset: SPAN_ABSENT,
+            len: 0,
+        },
+        value: Span { offset: 2, len: 3 },
     };
     let i = get_in(TICKET, bufs(&mut b, &mut s));
     let mut o = out(Outcome::Ready);
@@ -236,7 +237,7 @@ fn a_span_outside_the_bytes_written_is_fault() {
 #[test]
 fn an_absent_span_with_a_length_is_fault() {
     let (mut b, mut s) = ([0u8; 4], [ItemSpan::default_absent(); 1]);
-    s[0].key_len = 1;
+    s[0].key.len = 1;
     let i = get_in(TICKET, bufs(&mut b, &mut s));
     let mut o = out(Outcome::Ready);
     o.value = FOUND;
@@ -251,8 +252,8 @@ fn an_absent_span_with_a_length_is_fault() {
 #[test]
 fn a_well_formed_found_record_is_legal() {
     let (mut b, mut s) = ([0u8; 4], [ItemSpan::default_absent(); 1]);
-    s[0].value_off = 0;
-    s[0].value_len = 4;
+    s[0].value.offset = 0;
+    s[0].value.len = 4;
     let i = get_in(TICKET, bufs(&mut b, &mut s));
     let mut o = out(Outcome::Ready);
     o.value = FOUND;
@@ -427,10 +428,14 @@ fn the_table_holds_one_slot_per_service() {
 impl ItemSpan {
     fn default_absent() -> Self {
         ItemSpan {
-            key_off: SPAN_ABSENT,
-            key_len: 0,
-            value_off: SPAN_ABSENT,
-            value_len: 0,
+            key: Span {
+                offset: SPAN_ABSENT,
+                len: 0,
+            },
+            value: Span {
+                offset: SPAN_ABSENT,
+                len: 0,
+            },
         }
     }
 }
