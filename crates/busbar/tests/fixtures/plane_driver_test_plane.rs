@@ -224,6 +224,7 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     trust_keys_len: 0,
     refusal_statuses: &STATUSES.0 as *const RefusalStatus,
     refusal_statuses_len: 3,
+    caller_credential_refusal: NO_STR,
 });
 
 static FAMILIES: Shared<[MetricFamily; 1]> = Shared([MetricFamily {
