@@ -72,6 +72,8 @@ pub mod kinds;
 // The media carriers (#83a SD-2b), re-expressed over `bounded::SlabBytes`.
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod media;
+// The one URL and host reader (the destination-guard audit): pure, outside `abi/`.
+pub mod net;
 #[allow(missing_docs)]
 pub mod operation;
 pub mod plane;

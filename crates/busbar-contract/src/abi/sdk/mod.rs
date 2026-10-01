@@ -36,6 +36,9 @@ use std::os::raw::c_void;
 
 pub mod boundary;
 pub use boundary::BoundaryOutcome;
+// THE URL AND HOST READER a plugin judges a destination with, the same one the host's guard reads
+// through (`crate::net`, a pure helper outside `abi/`).
+pub use crate::net;
 // THE PLUGIN SIDE OF THE TRANSPORT LOWERING: a carrier's or a framer's slots, generated from its trait
 // implementation (`export_carrier!` / `export_framer!`).
 pub mod transport;
