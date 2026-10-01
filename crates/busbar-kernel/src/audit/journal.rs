@@ -258,6 +258,24 @@ impl<R: ChainedRecord> Journal<R> {
     where
         R: JournalRecord,
     {
+        self.resume_from_store(R::KIND, scope, decode)
+    }
+
+    /// THE ONE RESUME of a NOT-cached scope, typed and neutral alike: before any eviction a miss is
+    /// a first-seen scope (fresh chain, no store read); after one, with a sink attached, it reads the
+    /// scope's `kind` tail back (each body turned into a record by `read`) and resumes from it.
+    ///
+    /// A break here is TAMPER EVIDENCE surfaced at RUNTIME: this scope was evicted from the LRU and
+    /// its persisted tail, read back to resume, no longer verifies. Resume from the tail regardless,
+    /// never re-based onto a fresh chain — the same judgement `restore_from_store` /
+    /// `restore_scoped` make — but RECORD the break rather than discard it, so it is never silently
+    /// dropped (an evict-then-resume can happen long after boot).
+    fn resume_from_store(
+        &self,
+        kind: &str,
+        scope: &str,
+        read: impl Fn(&[u8]) -> RecordStoreResult<R>,
+    ) -> Result<Chain<R>, JournalError> {
         if !self.overflowed.load(Ordering::Relaxed) {
             return Ok(Chain::new());
         }
@@ -265,21 +283,16 @@ impl<R: ChainedRecord> Journal<R> {
             return Ok(Chain::new());
         };
         let bodies = store
-            .list_plane_records(R::KIND, &PlaneSelector::Parent(scope.to_string()))
+            .list_plane_records(kind, &PlaneSelector::Parent(scope.to_string()))
             .map_err(JournalError::Store)?;
         if bodies.is_empty() {
             return Ok(Chain::new());
         }
         let records: Vec<R> = bodies
             .iter()
-            .map(|body| decode(body))
+            .map(|body| read(body))
             .collect::<RecordStoreResult<_>>()
             .map_err(JournalError::Store)?;
-        // A break here is TAMPER EVIDENCE surfaced at RUNTIME: this scope was evicted from the LRU and
-        // its persisted tail, read back to resume, no longer verifies. Resume from the tail regardless,
-        // never re-based onto a fresh chain — the same judgement `restore_from_store` makes — but RECORD
-        // the break rather than discard it, so it is never silently dropped. (The old comment's premise,
-        // "already reported at boot", is false for an evict-then-resume that happens after boot.)
         Ok(match Chain::from_persisted(&records) {
             Ok(chain) => chain,
             Err(brk) => {
@@ -375,14 +388,32 @@ impl<R: ChainedRecord> Journal<R> {
     where
         R: JournalRecord,
     {
+        self.append_with(
+            scope,
+            input,
+            || self.resume_missing(scope),
+            R::to_plane_record,
+        )
+    }
+
+    /// THE ONE APPEND, typed and neutral alike: chain `input` onto `scope`'s position (a cache miss
+    /// resolved by `resume`), write the record's `envelope` through when a sink is attached, and
+    /// advance the position only once that durable write has succeeded.
+    fn append_with(
+        &self,
+        scope: &str,
+        input: R::Input,
+        resume: impl FnOnce() -> Result<Chain<R>, JournalError>,
+        envelope: impl FnOnce(&R) -> RecordStoreResult<PlaneRecord>,
+    ) -> Result<R, JournalError> {
         let mut positions = self.positions();
         let mut candidate = match positions.get(scope) {
             Some(chain) => chain.clone(),
-            None => self.resume_missing(scope)?,
+            None => resume()?,
         };
         let record = candidate.append(scope, input);
         if let Some(store) = self.sink() {
-            let envelope = record.to_plane_record().map_err(JournalError::Store)?;
+            let envelope = envelope(&record).map_err(JournalError::Store)?;
             store
                 .append_plane_record(&envelope)
                 .map_err(JournalError::Store)?;
@@ -479,38 +510,7 @@ impl<R: NeutralRecord> Journal<R> {
         scope: &str,
         reframe: &Reframe<'_, R>,
     ) -> Result<Chain<R>, JournalError> {
-        if !self.overflowed.load(Ordering::Relaxed) {
-            return Ok(Chain::new());
-        }
-        let Some(store) = self.sink() else {
-            return Ok(Chain::new());
-        };
-        let bodies = store
-            .list_plane_records(kind, &PlaneSelector::Parent(scope.to_string()))
-            .map_err(JournalError::Store)?;
-        if bodies.is_empty() {
-            return Ok(Chain::new());
-        }
-        let records: Vec<R> = bodies
-            .iter()
-            .map(|body| reframe(scope, body))
-            .collect::<RecordStoreResult<_>>()
-            .map_err(JournalError::Store)?;
-        // A break here is TAMPER EVIDENCE surfaced at RUNTIME (the neutral-path twin of
-        // `resume_missing`): the evicted scope's persisted tail no longer verifies when read back.
-        // Resume from the tail regardless — never re-based onto a fresh chain, the same judgement
-        // `restore_scoped` makes — but RECORD the break rather than discard it, so it is never silently
-        // dropped.
-        Ok(match Chain::from_persisted(&records) {
-            Ok(chain) => chain,
-            Err(brk) => {
-                self.resume_breaks
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push(brk);
-                Chain::from_persisted_unverified(&records)
-            }
-        })
+        self.resume_from_store(kind, scope, |body| reframe(scope, body))
     }
 
     /// APPEND one neutral record: chain it to MINT the sequence and link (the SOLE chain authority),
@@ -524,20 +524,14 @@ impl<R: NeutralRecord> Journal<R> {
         input: R::Input,
         reframe: &Reframe<'_, R>,
     ) -> Result<R, JournalError> {
-        let mut positions = self.positions();
-        let mut candidate = match positions.get(scope) {
-            Some(chain) => chain.clone(),
-            None => self.resume_scoped(kind, scope, reframe)?,
-        };
-        let record = candidate.append(scope, input);
-        if let Some(store) = self.sink() {
+        let envelope = |record: &R| -> RecordStoreResult<PlaneRecord> {
             let body = NeutralBody {
                 seq: record.seq(),
                 prev_hash: record.prev_hash().to_string(),
                 hash: record.hash().to_string(),
                 content: record.content().to_vec(),
             };
-            let envelope = PlaneRecord {
+            Ok(PlaneRecord {
                 kind: kind.to_string(),
                 id: scope.to_string(),
                 parent: Some(scope.to_string()),
@@ -554,14 +548,15 @@ impl<R: NeutralRecord> Journal<R> {
                 // retention window was not merely wrong, it was absent.
                 ts: busbar_kernel::store::now(),
                 disposition: PlaneDisposition::Active,
-                body: encode(&body).map_err(JournalError::Store)?,
-            };
-            store
-                .append_plane_record(&envelope)
-                .map_err(JournalError::Store)?;
-        }
-        Self::commit_position(&mut positions, &self.overflowed, self.cap, scope, candidate);
-        Ok(record)
+                body: encode(&body)?,
+            })
+        };
+        self.append_with(
+            scope,
+            input,
+            || self.resume_scoped(kind, scope, reframe),
+            envelope,
+        )
     }
 
     /// BOOT REHYDRATE on the neutral path (the [`Journal::restore_from_store`] analogue): enumerate the
