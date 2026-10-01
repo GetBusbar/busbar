@@ -370,7 +370,7 @@ fn the_crossing_is_under_a_microsecond() {
 }
 
 fn zero_piece_out() -> OnPieceOut {
-    let span = busbar_contract::abi::plane::Span { offset: 0, len: 0 };
+    let span = busbar_contract::abi::mechanism::call::Span { offset: 0, len: 0 };
     OnPieceOut {
         head: out_head(),
         emitted: 0,
