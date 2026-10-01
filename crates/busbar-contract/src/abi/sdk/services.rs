@@ -158,7 +158,15 @@ impl Services {
         if check_random_fill_in(&input).is_err() {
             return Err(ServiceError::Declined(Outcome::Refused));
         }
-        match self.cross(op::RANDOM_FILL, |t| t.random_fill, &input, check_random_fill)?.0 {
+        match self
+            .cross(
+                op::RANDOM_FILL,
+                |t| t.random_fill,
+                &input,
+                check_random_fill,
+            )?
+            .0
+        {
             Outcome::Ready => Ok(()),
             other => Err(ServiceError::Declined(other)),
         }
@@ -199,7 +207,12 @@ impl Services {
             counterparty: text(counterparty),
             catalogue_hash: text(catalogue_hash),
         };
-        verdict(self.cross(op::TRUST_SIGHT, |t| t.trust_sight, &input, check_trust_sight))
+        verdict(self.cross(
+            op::TRUST_SIGHT,
+            |t| t.trust_sight,
+            &input,
+            check_trust_sight,
+        ))
     }
 
     /// `trust.due`: the counterparties the kernel's `tick` marked for re-verification, written
@@ -259,7 +272,11 @@ impl Services {
     ) -> Result<(Outcome, ServiceOut, Filled), ServiceError> {
         let slot = self.slot(service, pick)?;
         let mut out = blank_out();
-        let ret = slot(self.ctx, std::ptr::from_ref(input).cast::<c_void>(), &mut out);
+        let ret = slot(
+            self.ctx,
+            std::ptr::from_ref(input).cast::<c_void>(),
+            &mut out,
+        );
         let filled = check(input, ret, &out).map_err(|_| ServiceError::Broken)?;
         Ok((ret.outcome(), out, filled))
     }
@@ -297,9 +314,7 @@ const fn text(s: &str) -> AbiStr {
 }
 
 /// A verdict service's answer: Ready its `value`, PENDING held on the ticket, else declined.
-fn verdict(
-    crossed: Result<(Outcome, ServiceOut, Filled), ServiceError>,
-) -> Pend<u64> {
+fn verdict(crossed: Result<(Outcome, ServiceOut, Filled), ServiceError>) -> Pend<u64> {
     Poll::Ready(match crossed {
         Ok((Outcome::Ready, out, _)) => Ok(out.value),
         Ok((Outcome::Pending, ..)) => return Poll::Pending,
