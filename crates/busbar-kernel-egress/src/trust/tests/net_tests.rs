@@ -904,7 +904,9 @@ fn the_denylist_precedence_is_allow_all_then_allow_override_then_block() {
         assert!(
             matches!(
                 check_destination(&dest(link_local), &[], &NeverAsked, strict(), &lists),
-                Err(NetworkRefusal::Guard(AddressRefusal::InternalAddress { .. }))
+                Err(NetworkRefusal::Guard(
+                    AddressRefusal::InternalAddress { .. }
+                ))
             ),
             "allow_all leaves link-local as it was"
         );

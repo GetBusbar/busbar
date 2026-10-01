@@ -21,9 +21,9 @@ use busbar_kernel::egress::fixtures::{spawn_http, CannedResponse, RebindingResol
 
 /// The fixture configuration, carrying the one provider it builds.
 fn fixture_cfg() -> busbar_kernel::config::RootCfg {
-    busbar_kernel::test_support::cfg_with_provider_api_key(
-        busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_DIAL_TABLE_COMMIT"),
-    )
+    busbar_kernel::test_support::cfg_with_provider_api_key(busbar_kernel::config::SecretRef::env(
+        "BUSBAR_TEST_NO_SUCH_KEY_DIAL_TABLE_COMMIT",
+    ))
 }
 
 /// A fresh copy of the fixture's provider (the provider type is not `Clone`).
