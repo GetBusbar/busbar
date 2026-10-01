@@ -332,15 +332,20 @@ pub fn host_ip(host: &str) -> Option<IpAddr> {
 
 /// TRUE when a normalized host is a cloud-metadata endpoint by NAME ([`METADATA_HOSTS`], case-blind,
 /// one trailing dot ignored) or by ADDRESS in any literal spelling ([`host_ip`] then
-/// [`ip_is_cloud_metadata`]), or is an IPv6 link-local literal (fe80::/10). The IPv4 link-local
-/// range is already the metadata list's; its IPv6 twin is refused beside it here, on every need,
-/// whatever the egress class (ARCHITECT, PB-100). Nothing is resolved.
+/// [`ip_is_cloud_metadata`]). Nothing is resolved.
 pub fn host_is_cloud_metadata(host: &str) -> bool {
     let name = host.strip_suffix('.').unwrap_or(host);
     METADATA_HOSTS.iter().any(|m| name.eq_ignore_ascii_case(m))
-        || host_ip(name).is_some_and(|ip| {
-            ip_is_cloud_metadata(&ip) || matches!(ip, IpAddr::V6(v6) if is_link_local_v6(&v6))
-        })
+        || host_ip(name).is_some_and(|ip| ip_is_cloud_metadata(&ip))
+}
+
+/// TRUE when a normalized host is an IPv6 link-local literal (fe80::/10, [`is_link_local_v6`]) in
+/// any spelling [`host_ip`] reads, a zone included. Not a metadata fact: the IPv4 link-local range
+/// is in the metadata list because the metadata services live there, while this is the IPv6 twin a
+/// caller that refuses link-local on every need (the connector endpoint check, PB-100) asks beside
+/// [`host_is_cloud_metadata`]. Nothing is resolved.
+pub fn host_is_link_local_v6(host: &str) -> bool {
+    matches!(host_ip(host), Some(IpAddr::V6(v6)) if is_link_local_v6(&v6))
 }
 
 /// True when `host` (already normalized) is a private, loopback, link-local, unspecified or CGNAT

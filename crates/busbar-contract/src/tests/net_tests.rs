@@ -312,3 +312,16 @@ fn every_literal_spelling_names_its_address() {
         assert_eq!(host_ip(host), None, "{host}");
     }
 }
+
+/// IPv6 link-local is its own fact, not a metadata one: `host_is_link_local_v6` holds fe80::/10 in
+/// every spelling the reader takes, and `host_is_cloud_metadata` does not claim it.
+#[test]
+fn ipv6_link_local_is_its_own_predicate_not_a_metadata_one() {
+    for host in ["fe80::1", "FE80::a9fe:a9fe", "fe80::1%eth0", "febf:ffff::1"] {
+        assert!(host_is_link_local_v6(host), "{host}");
+        assert!(!host_is_cloud_metadata(host), "{host}");
+    }
+    for host in ["fe7f:ffff::1", "fec0::1", "fd00:ec2::254", "169.254.169.254", "example.com"] {
+        assert!(!host_is_link_local_v6(host), "{host}");
+    }
+}

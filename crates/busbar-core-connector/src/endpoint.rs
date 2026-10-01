@@ -21,7 +21,7 @@
 
 use core::fmt;
 
-use busbar_contract::net::{host_is_cloud_metadata, target_host};
+use busbar_contract::net::{host_is_cloud_metadata, host_is_link_local_v6, target_host};
 
 /// Why the endpoint check refused a target.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,7 +72,7 @@ pub fn check(target: &str) -> Result<(), EndpointRefusal> {
             target: target.to_owned(),
         });
     };
-    if host_is_cloud_metadata(&host) {
+    if host_is_cloud_metadata(&host) || host_is_link_local_v6(&host) {
         return Err(EndpointRefusal::MetadataHost { host });
     }
     Ok(())
