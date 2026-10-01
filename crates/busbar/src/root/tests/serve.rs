@@ -275,7 +275,8 @@ fn the_composed_kernel_services_are_kept_for_the_driver() {
     let late = LateServices::new();
     assert!(late.kernel().is_none(), "nothing before the compose");
     let composed = Arc::new(kernel(&[], false));
-    late.install_kernel(Arc::clone(&composed)).expect("the install");
+    late.install_kernel(Arc::clone(&composed))
+        .expect("the install");
     assert!(Arc::ptr_eq(&late.kernel().expect("kept"), &composed));
     assert!(late.is_installed());
     assert_eq!(
@@ -361,18 +362,43 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
     };
     let sight = |hash| {
         let (tx, rx) = std::sync::mpsc::channel();
-        match late.trust_sight(&caller, "peer", hash, Box::new(move |s| tx.send(s).unwrap())) {
+        match late.trust_sight(
+            &caller,
+            "peer",
+            hash,
+            Box::new(move |s| tx.send(s).unwrap()),
+        ) {
             Ran::Now(s) => (s.value, false),
-            Ran::Later => (rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap().value, true),
+            Ran::Later => (
+                rx.recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap()
+                    .value,
+                true,
+            ),
         }
     };
     assert_eq!(late.sign(&caller, b"data").outcome, Outcome::Refused);
     assert_eq!(sight("h1"), (svc::TRUST_NEW, false));
     assert_eq!(sight("h2"), (svc::TRUST_DRIFTED, false), "not written down");
     let demotions = Arc::new(DemotionRecord::default());
-    attach(&late, Some(Arc::new(Signs)), &demotions, &[&plane("owner", &[KIND_DEMOTION])]);
+    attach(
+        &late,
+        Some(Arc::new(Signs)),
+        &demotions,
+        &[&plane("owner", &[KIND_DEMOTION])],
+    );
     let signed = late.sign(&caller, b"data");
-    assert_eq!((signed.outcome, signed.bytes), (Outcome::Ready, b"k:kiddata".to_vec()));
-    assert_eq!(sight("h1"), (svc::TRUST_SAME, true), "the clearing is written first");
-    assert!(!k.attach_signer(Arc::new(Signs)), "a second attach is refused");
+    assert_eq!(
+        (signed.outcome, signed.bytes),
+        (Outcome::Ready, b"k:kiddata".to_vec())
+    );
+    assert_eq!(
+        sight("h1"),
+        (svc::TRUST_SAME, true),
+        "the clearing is written first"
+    );
+    assert!(
+        !k.attach_signer(Arc::new(Signs)),
+        "a second attach is refused"
+    );
 }

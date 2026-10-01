@@ -24,10 +24,12 @@ use busbar_contract::plane::{declares_record_kind, PlaneDeclaration};
 use busbar_contract::services::{Caller, HostServices, Later, Ran, Reading, RecordsList, Stored};
 use busbar_kernel::config::RootCfg;
 use busbar_kernel::host_records::QUEUE_CAP;
-use busbar_kernel::host_services::{BlockingPool, DestRules, KernelServices, SignKey, SystemResolver};
+use busbar_kernel::host_services::{
+    BlockingPool, DestRules, KernelServices, SignKey, SystemResolver,
+};
+use busbar_kernel::net_guard::{Denylist, GuardPolicy};
 use busbar_kernel::plane::store::KIND_DEMOTION;
 use busbar_kernel::plane::DemotionRecord;
-use busbar_kernel::net_guard::{Denylist, GuardPolicy};
 use busbar_kernel::plane_driver::{refusal_status, CallerEnd, HeadFields};
 use tokio::sync::{mpsc, oneshot};
 
