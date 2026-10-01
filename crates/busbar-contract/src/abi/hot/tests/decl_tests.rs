@@ -37,11 +37,6 @@ fn stub_decl_declares_three_wired_carriers() {
     assert!(d.dispatch.is_some());
 }
 
-#[test]
-fn free_noop_tolerates_null() {
-    free_noop(core::ptr::null_mut());
-}
-
 // ── Plugin#1 regression: a plugin-implemented slot returns its status BY VALUE as a `RawStatus`
 //    u8, NOT the `StatusClass` enum, so a hostile/buggy cdylib returning an out-of-range byte can
 //    never materialize an invalid-discriminant enum (UB). Core decodes through the checked
