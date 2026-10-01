@@ -270,3 +270,29 @@ fn tokens_are_bounded() {
     assert_eq!(tokens.mint("one-more", &random), None);
     assert!(tokens.mint("0", &random).is_some(), "a held one is still answered");
 }
+
+#[test]
+fn the_statement_declares_one_outbound_open_web_need_whose_target_the_plane_names() {
+    use busbar_contract::abi::host::conn::connector::{DIRECTION_OUTBOUND, EGRESS_OPEN_WEB};
+    use busbar_contract::abi::mechanism::check::check_needs;
+    use crate::door::{NEEDS, NEED_OPEN_WEB};
+    let st = &crate::plane_door::STATEMENT;
+    assert!(!st.needs.is_null());
+    assert_eq!((st.needs_len, NEEDS.len()), (1, 1));
+    assert!(check_needs(NEEDS).is_ok());
+    let need = NEEDS[NEED_OPEN_WEB as usize];
+    assert_eq!(
+        (need.direction, need.egress_class),
+        (DIRECTION_OUTBOUND, EGRESS_OPEN_WEB)
+    );
+    assert_eq!(
+        need.transport.len,
+        crate::claims::DOCUMENT_TRANSPORT.len(),
+        "the http claim"
+    );
+    assert_eq!(
+        (need.auth.len, need.target_from.len, need.trust_from.len),
+        (0, 0, 0),
+        "no auth style, no configured target: the plane names each dial's target"
+    );
+}

@@ -14,7 +14,7 @@
 //!   while no attempt on it is open, so a task's notifications reach the receiver in the order its
 //!   state changed.
 //! * Each attempt re-runs the destination judge, then dials the plane's outbound `open-web` need
-//!   with [`request`]; its end is [`Attempted`].
+//!   ([`crate::door::NEED_OPEN_WEB`]) with [`request`]; its end is [`Attempted`].
 //! * [`Deliveries::settle`] pops the head, or puts it back with its next time when the end is
 //!   retryable and attempts remain. [`Deliveries::next_tick_ns`] is the lifecycle tick's
 //!   `next_tick_ns`: nothing waits on a slot or a thread between attempts.

@@ -19,7 +19,8 @@
 //! engine that still serves A2A states the same facts in its own declaration and router, and a
 //! test on the engine's side pins the two equal, entry by entry, until the engine is gone.
 
-use busbar_contract::abi::mechanism::call::AbiStr;
+use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, EGRESS_OPEN_WEB};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, BLOB_ABSENT};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Section, SECTION_DECLARING};
 use busbar_contract::abi::plane::{
     AdminRoute, BillableClass, OpClass, PinMechanism, PlaneTail, TrustKey, CLAIM_EXACT, CLAIM_OPEN,
@@ -179,6 +180,31 @@ const TRUST_KEYS: &[TrustKey] = &[
         mechanisms_len: 0,
     },
 ];
+
+/// The index of [`NEEDS`]' one need: the plane's own outbound hops (a caller's push callback, an
+/// agent's card), each to the target the plane names at the dial.
+pub const NEED_OPEN_WEB: u32 = 0;
+
+/// THE PLANE'S CONNECTION NEEDS: one, outbound over http under the `open-web` class (public
+/// destinations over a secure connection only; metadata hosts refused before the dial), with no
+/// auth style and no configured target.
+pub const NEEDS: &[Need] = &[Need {
+    direction: DIRECTION_OUTBOUND,
+    egress_class: EGRESS_OPEN_WEB,
+    transport: abi_str(DOCUMENT_TRANSPORT),
+    auth: NONE,
+    target_from: NONE,
+    trust_from: NONE,
+    details: Blob {
+        ptr: std::ptr::null(),
+        len: 0,
+        fmt: BLOB_ABSENT,
+        flags: 0,
+    },
+    keep_response_headers: std::ptr::null(),
+    keep_response_headers_len: 0,
+    timeout_ms: 0,
+}];
 
 /// THE STATEMENT TAIL: the plane's static facts.
 pub const TAIL: &PlaneTail = &PlaneTail {
