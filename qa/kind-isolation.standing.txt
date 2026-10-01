@@ -45,7 +45,7 @@ kind-isolation:matrix	ratchet	busbar-voice × contract	122
 kind-isolation:matrix	ratchet	busbar-voice × plane	872
 kind-isolation:matrix	unlisted-cell	busbar × legacy	89
 kind-isolation:matrix	unlisted-cell	busbar-a2a × cleanliness	4
-kind-isolation:matrix	unlisted-cell	busbar-a2a × contract	345
+kind-isolation:matrix	unlisted-cell	busbar-a2a × contract	347
 kind-isolation:matrix	unlisted-cell	busbar-a2a × kernel	33
 kind-isolation:matrix	unlisted-cell	busbar-contract × cleanliness	1
 kind-isolation:matrix	unlisted-cell	busbar-contract × kernel	1
