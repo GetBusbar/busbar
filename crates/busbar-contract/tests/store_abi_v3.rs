@@ -9,14 +9,14 @@ use std::mem::{offset_of, size_of};
 
 use busbar_contract::abi::mechanism::call::{DeadlineClass, InHead};
 use busbar_contract::abi::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
-use busbar_contract::abi::store::{self, slot, OpId, Ops, Path, KIND_SLOTS, OPS, TABLE_SLOTS};
+use busbar_contract::abi::store::{self, slot, OpId, Ops, KIND_SLOTS, NAMES, OPS, TABLE_SLOTS};
 
 #[test]
 fn every_kind_slot_is_lifecycle_slots_plus_k_contiguous() {
     assert_eq!(OPS.len() as u32, KIND_SLOTS);
     assert_eq!(TABLE_SLOTS, LIFECYCLE_SLOTS + KIND_SLOTS);
     for (k, c) in OPS.iter().enumerate() {
-        assert_eq!(c.slot, LIFECYCLE_SLOTS + k as u32, "{}", c.name);
+        assert_eq!(c.slot, LIFECYCLE_SLOTS + k as u32, "{}", NAMES[k]);
     }
     // The table: the head, then one pointer per slot, the first right after the head.
     assert_eq!(offset_of!(Ops, put_key), size_of::<OpsHead>());
@@ -28,7 +28,7 @@ fn every_kind_slot_is_lifecycle_slots_plus_k_contiguous() {
         size_of::<Ops>(),
         size_of::<OpsHead>() + 8 * KIND_SLOTS as usize
     );
-    let mut names: Vec<&str> = OPS.iter().map(|c| c.name).collect();
+    let mut names = NAMES.to_vec();
     names.sort_unstable();
     names.dedup();
     assert_eq!(names.len(), OPS.len(), "slot names are unique");
@@ -63,7 +63,7 @@ fn the_design_names_every_slot() {
         "redeem_plane_token",
         "plane_token_live",
     ] {
-        assert!(OPS.iter().any(|c| c.name == name), "{name}");
+        assert!(NAMES.contains(&name), "{name}");
     }
     // The full 1.5.5 op set: 24 methods, first in the table.
     assert_eq!(slot::LIST_AUDIT_TAIL - slot::PUT_KEY + 1, 24);
@@ -71,18 +71,14 @@ fn the_design_names_every_slot() {
 
 #[test]
 fn every_slot_states_its_contract() {
-    for c in OPS {
-        assert!(
-            c.may_pend,
-            "{}: network stores pend on driver tickets",
-            c.name
-        );
-        assert!(c.in_size >= size_of::<InHead>(), "{}", c.name);
+    for (c, name) in OPS.iter().zip(NAMES) {
+        assert!(c.may_pend, "{name}: network stores pend on driver tickets");
+        assert!(c.max_in >= size_of::<InHead>(), "{name}");
     }
-    let of = |name: &str| OPS.iter().find(|c| c.name == name).copied().unwrap();
+    let of = |name: &str| OPS[NAMES.iter().position(|n| *n == name).unwrap()];
     // m3-inputs "store v3 money slots": reserve and slice_release are request path, Call.
     for name in ["reserve", "slice_release"] {
-        assert_eq!(of(name).path, Path::Request, "{name}");
+        assert!(of(name).request_path, "{name}");
         assert_eq!(of(name).deadline, DeadlineClass::Call, "{name}");
     }
     // B.1 "Writes": every additive or appending write is write_behind.
@@ -98,8 +94,8 @@ fn every_slot_states_its_contract() {
     ] {
         assert_eq!(of(name).deadline, DeadlineClass::WriteBehind, "{name}");
     }
-    assert_eq!(of("reserve").in_size, size_of::<store::ReserveIn>());
-    assert_eq!(of("reserve").out_size, size_of::<store::ReserveOut>());
+    assert_eq!(of("reserve").max_in, size_of::<store::ReserveIn>());
+    assert_eq!(of("reserve").max_out, size_of::<store::ReserveOut>());
 }
 
 #[test]

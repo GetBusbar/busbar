@@ -32,7 +32,7 @@ use busbar_contract::abi::auth::{
     VerifyIn, LOGIN_IDENTITY, VERDICT_IDENTITY,
 };
 use busbar_contract::abi::mechanism::call::Outcome;
-use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
+use busbar_contract::abi::mechanism::check::{reported, Fault};
 use busbar_contract::abi::mechanism::KindCode;
 
 use crate::dispatch::{lifecycle_name, Answer, InFrame, Kind, OutFrame};
@@ -54,54 +54,6 @@ unsafe impl OutFrame for BeginLoginOut {}
 unsafe impl OutFrame for OpenOutboundOut {}
 unsafe impl OutFrame for OutboundReadyOut {}
 unsafe impl OutFrame for FieldsOut {}
-
-/// The rule each auth [`auth::Fault`] breaks.
-const fn rule(f: auth::Fault) -> Rule {
-    match f {
-        auth::Fault::Vocabulary | auth::Fault::UnknownFlags => Rule::UnknownCode,
-        auth::Fault::NotExactlyOne => Rule::NotExactlyOne,
-        auth::Fault::NeededOnReady | auth::Fault::NeededNotFailed => Rule::NeededNotFailed,
-        auth::Fault::NeededTooLarge => Rule::OverMax,
-        auth::Fault::NeededWithinCap => Rule::WastedRecall,
-        auth::Fault::AbsentWithLen => Rule::SpanNotAbsent,
-        auth::Fault::SpanOutOfBounds => Rule::SpanOutOfBounds,
-        auth::Fault::CountOverCap => Rule::OverCap,
-        auth::Fault::CountMismatch => Rule::Contradiction,
-        auth::Fault::NullWithCount => Rule::NullWithCount,
-        auth::Fault::Missing => Rule::Missing,
-    }
-}
-
-/// `fn $name(auth::Fault) -> Fault`: the shared fault of op `$op`, its field `$op.<variant>`.
-macro_rules! op_fault {
-    ($name:ident, $op:literal) => {
-        /// The shared [`Fault`] for this op's [`auth::Fault`]: its [`rule`], and a field naming
-        /// the op and the variant.
-        const fn $name(f: auth::Fault) -> Fault {
-            let field = match f {
-                auth::Fault::Vocabulary => concat!($op, ".vocabulary"),
-                auth::Fault::NotExactlyOne => concat!($op, ".not_exactly_one"),
-                auth::Fault::NeededOnReady => concat!($op, ".needed_on_ready"),
-                auth::Fault::NeededNotFailed => concat!($op, ".needed_not_failed"),
-                auth::Fault::NeededTooLarge => concat!($op, ".needed_too_large"),
-                auth::Fault::NeededWithinCap => concat!($op, ".needed_within_cap"),
-                auth::Fault::AbsentWithLen => concat!($op, ".absent_with_len"),
-                auth::Fault::SpanOutOfBounds => concat!($op, ".span_out_of_bounds"),
-                auth::Fault::CountOverCap => concat!($op, ".count_over_cap"),
-                auth::Fault::CountMismatch => concat!($op, ".count_mismatch"),
-                auth::Fault::NullWithCount => concat!($op, ".null_with_count"),
-                auth::Fault::UnknownFlags => concat!($op, ".unknown_flags"),
-                auth::Fault::Missing => concat!($op, ".missing"),
-            };
-            fault(rule(f), field)
-        }
-    };
-}
-
-op_fault!(verify_fault, "verify");
-op_fault!(complete_login_fault, "complete_login");
-op_fault!(fields_fault, "fields");
-op_fault!(begin_login_fault, "begin_login");
 
 /// The group spans an identity answer reports: `out.identity.groups_len` of the host's
 /// `buf.groups`, the count checked against `buf.groups_cap` first. Empty unless the answer is a
@@ -152,13 +104,13 @@ impl Kind for Auth {
                 let buf = &a.input::<VerifyIn>()?.out_buf;
                 let out = a.out::<IdentifyOut>()?;
                 let groups = groups(a, out, buf, VERDICT_IDENTITY, "verify.groups")?;
-                check_identify(a.outcome, out, buf, groups).map_err(verify_fault)
+                check_identify(a.outcome, out, buf, groups)
             }
             slot::COMPLETE_LOGIN => {
                 let buf = &a.input::<CompleteLoginIn>()?.out_buf;
                 let out = a.out::<IdentifyOut>()?;
                 let groups = groups(a, out, buf, LOGIN_IDENTITY, "complete_login.groups")?;
-                check_complete_login(a.outcome, out, buf, groups).map_err(complete_login_fault)
+                check_complete_login(a.outcome, out, buf, groups)
             }
             slot::FIELDS => {
                 let input = a.input::<FieldsIn>()?;
@@ -185,11 +137,10 @@ impl Kind for Auth {
                     input.fields_cap,
                     fields,
                 )
-                .map_err(fields_fault)
             }
             slot::BEGIN_LOGIN => {
                 a.input::<BeginLoginIn>()?;
-                check_begin_login(a.outcome, a.out::<BeginLoginOut>()?).map_err(begin_login_fault)
+                check_begin_login(a.outcome, a.out::<BeginLoginOut>()?)
             }
             _ => Ok(()),
         }

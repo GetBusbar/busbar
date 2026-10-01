@@ -9,13 +9,17 @@
 //! [`OutHead`](super::call::OutHead); [`result`] and [`results`] enforce it, and [`within`] is the
 //! check for an op with no short path.
 
-use super::call::{AbiStr, DeadlineClass, Outcome};
+use super::call::{AbiStr, Blob, DeadlineClass, Outcome, RawOutcome};
 
 /// [`span`]: no bytes; the span's length is then `0`.
 pub const SPAN_ABSENT: u32 = u32::MAX;
 
 /// The largest byte count any answer may state (written or needed).
 pub const MAX_BYTES: u64 = u32::MAX as u64;
+
+/// The largest blob, or byte `needed`, one answer of the secret, hook or export kind may state
+/// (16 MiB).
+pub const HARD_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Which rule an answer broke.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -322,6 +326,47 @@ pub fn first<'a, T>(buf: &'a [T], n: u64, field: &'static str) -> Result<&'a [T]
         .ok()
         .and_then(|n| buf.get(..n))
         .ok_or(fault(Rule::OverCap, field))
+}
+
+/// A plugin-owned blob: a length above zero never comes with a NULL pointer, and never exceeds
+/// [`HARD_MAX_BYTES`]. `null` and `over` name the two arms.
+///
+/// # Errors
+///
+/// [`Rule::NullWithCount`], [`Rule::OverMax`].
+pub fn blob(b: &Blob, null: &'static str, over: &'static str) -> Result<(), Fault> {
+    if b.len > 0 && b.ptr.is_null() {
+        return Err(fault(Rule::NullWithCount, null));
+    }
+    if b.len as u64 > HARD_MAX_BYTES {
+        return Err(fault(Rule::OverMax, over));
+    }
+    Ok(())
+}
+
+/// The lease rule (memory class iv): on READY, a lease is required exactly when the answer
+/// carries material; other outcomes carry no lease rule. `missing` and `spurious` name the arms.
+///
+/// # Errors
+///
+/// [`Rule::Missing`], [`Rule::Contradiction`].
+pub fn lease(
+    outcome: RawOutcome,
+    lease: u64,
+    has_material: bool,
+    missing: &'static str,
+    spurious: &'static str,
+) -> Result<(), Fault> {
+    if outcome.0 != (Outcome::Ready as u8) {
+        return Ok(());
+    }
+    if has_material && lease == 0 {
+        return Err(fault(Rule::Missing, missing));
+    }
+    if !has_material && lease != 0 {
+        return Err(fault(Rule::Contradiction, spurious));
+    }
+    Ok(())
 }
 
 /// One op's contract: where it runs, whether it may pend, its largest `in`/`out`, its deadline

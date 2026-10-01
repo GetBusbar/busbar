@@ -5,7 +5,8 @@
 //! failing if its check is removed, and the GREEN answers per outcome.
 
 use super::*;
-use crate::abi::mechanism::call::{AbiStr, Envelope, RawOutcome};
+use crate::abi::mechanism::call::{AbiStr, Blob, Envelope, RawOutcome};
+use crate::abi::mechanism::check::HARD_MAX_BYTES;
 
 fn head(outcome: Outcome) -> OutHead {
     OutHead {
@@ -197,19 +198,7 @@ fn order_written_beyond_cap_faults() {
     out.order_written = 5;
     assert_eq!(
         check_decide(&out, 0, 0, 4),
-        red(Rule::OverCap, "decide.order_written")
-    );
-}
-
-/// RED: a successful `order` write also claiming `needed` is FAULT.
-#[test]
-fn order_written_and_needed_together_faults() {
-    let mut out = decide_out();
-    out.order_written = 2;
-    out.order_needed = 1;
-    assert_eq!(
-        check_decide(&out, 0, 0, 4),
-        red(Rule::WrittenOnShort, "decide.order_written_on_short")
+        red(Rule::OverCap, "decide.order")
     );
 }
 
@@ -220,7 +209,7 @@ fn order_needed_without_failed_faults() {
     out.order_needed = 4;
     assert_eq!(
         check_decide(&out, 0, 0, 4),
-        red(Rule::NeededNotFailed, "decide.order_needed")
+        red(Rule::NeededNotFailed, "decide.order")
     );
 }
 
@@ -233,7 +222,7 @@ fn order_needed_not_larger_than_cap_faults() {
     out.order_needed = 4;
     assert_eq!(
         check_decide(&out, 0, 0, 4),
-        red(Rule::WastedRecall, "decide.needed")
+        red(Rule::WastedRecall, "decide")
     );
 }
 
@@ -256,7 +245,7 @@ fn order_needed_past_hard_max_faults() {
     out.order_needed = (HARD_MAX_ORDER_SLOTS + 1) as usize;
     assert_eq!(
         check_decide(&out, 0, 0, 0),
-        red(Rule::OverMax, "decide.order_needed_max")
+        red(Rule::OverMax, "decide.order")
     );
 }
 
@@ -270,21 +259,6 @@ fn legitimate_reject_message_too_small_passes() {
     assert!(check_decide(&out, 32, 0, 0).is_ok());
 }
 
-/// RED: a successful `reject_message` write also claiming `needed` is FAULT.
-#[test]
-fn decide_reject_message_written_and_needed_together_faults() {
-    let mut out = decide_out();
-    out.reject_message_written = 2;
-    out.reject_message_needed = 1;
-    assert_eq!(
-        check_decide(&out, 4, 0, 0),
-        red(
-            Rule::WrittenOnShort,
-            "decide.reject_message_written_on_short"
-        )
-    );
-}
-
 /// RED: `reject_message_needed != 0` on a non-FAILED outcome is FAULT.
 #[test]
 fn decide_reject_message_needed_without_failed_faults() {
@@ -292,20 +266,7 @@ fn decide_reject_message_needed_without_failed_faults() {
     out.reject_message_needed = 4;
     assert_eq!(
         check_decide(&out, 4, 0, 0),
-        red(Rule::NeededNotFailed, "decide.reject_message_needed")
-    );
-}
-
-/// RED: `decide`'s `reject_message_needed` past `u32::MAX` is FAULT (checked before the
-/// kind's own, smaller, hard max).
-#[test]
-fn decide_reject_message_needed_past_u32_max_faults() {
-    let mut out = decide_out();
-    out.head.outcome = RawOutcome(Outcome::Failed as u8);
-    out.reject_message_needed = u32::MAX as usize + 1;
-    assert_eq!(
-        check_decide(&out, 0, 0, 0),
-        red(Rule::OverMax, "decide.reject_message_needed_u32")
+        red(Rule::NeededNotFailed, "decide.reject_message")
     );
 }
 
@@ -317,7 +278,7 @@ fn decide_reject_message_needed_past_hard_max_faults() {
     out.reject_message_needed = (HARD_MAX_BYTES + 1) as usize;
     assert_eq!(
         check_decide(&out, 0, 0, 0),
-        red(Rule::OverMax, "decide.reject_message_needed_max")
+        red(Rule::OverMax, "decide.reject_message")
     );
 }
 
@@ -329,7 +290,7 @@ fn decide_restrict_tags_written_beyond_cap_faults() {
     out.restrict_tags_written = 5;
     assert_eq!(
         check_decide(&out, 0, 4, 0),
-        red(Rule::OverCap, "decide.restrict_tags_written")
+        red(Rule::OverCap, "decide.restrict_tags")
     );
 }
 
@@ -342,7 +303,7 @@ fn decide_restrict_tags_needed_not_larger_than_cap_faults() {
     out.restrict_tags_needed = 4;
     assert_eq!(
         check_decide(&out, 0, 4, 0),
-        red(Rule::WastedRecall, "decide.needed")
+        red(Rule::WastedRecall, "decide")
     );
 }
 
@@ -353,7 +314,7 @@ fn transform_rewrite_written_beyond_cap_faults() {
     out.rewrite_written = 10;
     assert_eq!(
         check_transform(&out, 0, 4),
-        red(Rule::OverCap, "transform.rewrite_written")
+        red(Rule::OverCap, "transform.rewrite")
     );
 }
 
@@ -365,7 +326,7 @@ fn transform_reject_message_written_beyond_cap_faults() {
     out.reject_message_written = 5;
     assert_eq!(
         check_transform(&out, 4, 0),
-        red(Rule::OverCap, "transform.reject_message_written")
+        red(Rule::OverCap, "transform.reject_message")
     );
 }
 
@@ -621,7 +582,7 @@ fn transform_joint_both_dims_fit_faults() {
     out.rewrite_needed = 4;
     assert_eq!(
         check_transform(&out, 8, 8),
-        red(Rule::WastedRecall, "transform.needed")
+        red(Rule::WastedRecall, "transform")
     );
 }
 
@@ -644,19 +605,7 @@ fn transform_reject_message_needed_without_failed_faults() {
     out.reject_message_needed = 4;
     assert_eq!(
         check_transform(&out, 4, 0),
-        red(Rule::NeededNotFailed, "transform.reject_message_needed")
-    );
-}
-
-/// RED: `transform`'s `reject_message_needed` past `u32::MAX` is FAULT.
-#[test]
-fn transform_reject_message_needed_past_u32_max_faults() {
-    let mut out = transform_out();
-    out.head.outcome = RawOutcome(Outcome::Failed as u8);
-    out.reject_message_needed = u32::MAX as usize + 1;
-    assert_eq!(
-        check_transform(&out, 0, 0),
-        red(Rule::OverMax, "transform.reject_message_needed_u32")
+        red(Rule::NeededNotFailed, "transform.reject_message")
     );
 }
 
@@ -668,22 +617,7 @@ fn transform_reject_message_needed_past_hard_max_faults() {
     out.reject_message_needed = (HARD_MAX_BYTES + 1) as usize;
     assert_eq!(
         check_transform(&out, 0, 0),
-        red(Rule::OverMax, "transform.reject_message_needed_max")
-    );
-}
-
-/// RED: a successful `transform` `reject_message` write also claiming `needed` is FAULT.
-#[test]
-fn transform_reject_message_written_and_needed_faults() {
-    let mut out = transform_out();
-    out.reject_message_written = 2;
-    out.reject_message_needed = 1;
-    assert_eq!(
-        check_transform(&out, 4, 0),
-        red(
-            Rule::WrittenOnShort,
-            "transform.reject_message_written_on_short"
-        )
+        red(Rule::OverMax, "transform.reject_message")
     );
 }
 
@@ -694,19 +628,7 @@ fn transform_rewrite_needed_without_failed_faults() {
     out.rewrite_needed = 4;
     assert_eq!(
         check_transform(&out, 0, 4),
-        red(Rule::NeededNotFailed, "transform.rewrite_needed")
-    );
-}
-
-/// RED: `transform`'s `rewrite_needed` past `u32::MAX` is FAULT.
-#[test]
-fn transform_rewrite_needed_past_u32_max_faults() {
-    let mut out = transform_out();
-    out.head.outcome = RawOutcome(Outcome::Failed as u8);
-    out.rewrite_needed = u32::MAX as usize + 1;
-    assert_eq!(
-        check_transform(&out, 0, 0),
-        red(Rule::OverMax, "transform.rewrite_needed_u32")
+        red(Rule::NeededNotFailed, "transform.rewrite")
     );
 }
 
@@ -718,19 +640,7 @@ fn transform_rewrite_needed_past_hard_max_faults() {
     out.rewrite_needed = (HARD_MAX_BYTES + 1) as usize;
     assert_eq!(
         check_transform(&out, 0, 0),
-        red(Rule::OverMax, "transform.rewrite_needed_max")
-    );
-}
-
-/// RED: a successful `transform` `rewrite` write also claiming `needed` is FAULT.
-#[test]
-fn transform_rewrite_written_and_needed_faults() {
-    let mut out = transform_out();
-    out.rewrite_written = 2;
-    out.rewrite_needed = 1;
-    assert_eq!(
-        check_transform(&out, 0, 4),
-        red(Rule::WrittenOnShort, "transform.rewrite_written_on_short")
+        red(Rule::OverMax, "transform.rewrite")
     );
 }
 
@@ -741,19 +651,7 @@ fn decide_restrict_tags_needed_without_failed_faults() {
     out.restrict_tags_needed = 4;
     assert_eq!(
         check_decide(&out, 0, 4, 0),
-        red(Rule::NeededNotFailed, "decide.restrict_tags_needed")
-    );
-}
-
-/// RED: `decide`'s `restrict_tags_needed` past `u32::MAX` is FAULT.
-#[test]
-fn decide_restrict_tags_needed_past_u32_max_faults() {
-    let mut out = decide_out();
-    out.head.outcome = RawOutcome(Outcome::Failed as u8);
-    out.restrict_tags_needed = u32::MAX as usize + 1;
-    assert_eq!(
-        check_decide(&out, 0, 0, 0),
-        red(Rule::OverMax, "decide.restrict_tags_needed_u32")
+        red(Rule::NeededNotFailed, "decide.restrict_tags")
     );
 }
 
@@ -765,22 +663,7 @@ fn decide_restrict_tags_needed_past_hard_max_faults() {
     out.restrict_tags_needed = (HARD_MAX_BYTES + 1) as usize;
     assert_eq!(
         check_decide(&out, 0, 0, 0),
-        red(Rule::OverMax, "decide.restrict_tags_needed_max")
-    );
-}
-
-/// RED: a successful `decide` `restrict_tags` write also claiming `needed` is FAULT.
-#[test]
-fn decide_restrict_tags_written_and_needed_faults() {
-    let mut out = decide_out();
-    out.restrict_tags_written = 2;
-    out.restrict_tags_needed = 1;
-    assert_eq!(
-        check_decide(&out, 0, 4, 0),
-        red(
-            Rule::WrittenOnShort,
-            "decide.restrict_tags_written_on_short"
-        )
+        red(Rule::OverMax, "decide.restrict_tags")
     );
 }
 
@@ -791,7 +674,7 @@ fn decide_reject_message_written_beyond_cap_faults() {
     out.reject_message_written = 5;
     assert_eq!(
         check_decide(&out, 4, 0, 0),
-        red(Rule::OverCap, "decide.reject_message_written")
+        red(Rule::OverCap, "decide.reject_message")
     );
 }
 
@@ -822,7 +705,7 @@ fn decide_short_answer_writes_something_faults() {
     out.restrict_tags_written = 2;
     assert_eq!(
         check_decide(&out, 32, 4, 0),
-        red(Rule::WrittenOnShort, "decide.written")
+        red(Rule::WrittenOnShort, "decide")
     );
 }
 
@@ -836,7 +719,7 @@ fn transform_short_answer_writes_something_faults() {
     out.reject_message_written = 2;
     assert_eq!(
         check_transform(&out, 4, 32),
-        red(Rule::WrittenOnShort, "transform.written")
+        red(Rule::WrittenOnShort, "transform")
     );
 }
 

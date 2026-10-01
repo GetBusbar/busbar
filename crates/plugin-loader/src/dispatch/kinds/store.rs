@@ -31,7 +31,7 @@
 //! `append_audit_batch`, and every lifecycle slot but `cancel`.
 
 use busbar_contract::abi::mechanism::call::{AbiStr, OutHead, Outcome};
-use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
+use busbar_contract::abi::mechanism::check::{reported, Fault};
 use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut, LIFECYCLE_SLOTS};
 use busbar_contract::abi::mechanism::KindCode;
@@ -42,7 +42,7 @@ use busbar_contract::abi::store::{
     KeyWithCredentialIn, KindBeforeIn, KindIdIn, LeasedBlobOut, LeasedListOut, LeasedStrListOut,
     ListPlaneRecordsIn, OpBlobIn, OpBlobsIn, PutUsageIn, RecordGetIn, RecordPutIn, RecordScanIn,
     ReserveIn, ReserveOut, SessionPutIn, SessionsForIn, SliceReleaseIn, SliceReleaseOut, TokenIn,
-    U64In, UpsertPlaneRecordIn, VerdictOut, WindowCapsIn, WindowIn, KIND_SLOTS, OPS,
+    U64In, UpsertPlaneRecordIn, VerdictOut, WindowCapsIn, WindowIn, KIND_SLOTS, NAMES,
 };
 
 use crate::dispatch::validate::MAX_ERROR_LEN;
@@ -93,28 +93,6 @@ unsafe impl OutFrame for HeadsOut {}
 unsafe impl OutFrame for ReserveOut {}
 unsafe impl OutFrame for SliceReleaseOut {}
 
-/// Store's own fault as the shared [`Fault`]: one rule and one distinct field per variant.
-pub(crate) fn store_fault(f: sc::Fault) -> Fault {
-    match f {
-        sc::Fault::Vocabulary => fault(Rule::UnknownCode, "store.vocabulary"),
-        sc::Fault::NeededNotFailed => fault(Rule::NeededNotFailed, "store.needed_not_failed"),
-        sc::Fault::NeededTooLarge => fault(Rule::OverMax, "store.needed_too_large"),
-        sc::Fault::NeededWithinCap => fault(Rule::WastedRecall, "store.needed_within_cap"),
-        sc::Fault::WrittenOnFailed => fault(Rule::WrittenOnShort, "store.written_on_failed"),
-        sc::Fault::CountOverCap => fault(Rule::OverCap, "store.count_over_cap"),
-        sc::Fault::CountMismatch => fault(Rule::Contradiction, "store.count_mismatch"),
-        sc::Fault::NullWithCount => fault(Rule::NullWithCount, "store.null_with_count"),
-        sc::Fault::AbsentWithLen => fault(Rule::SpanNotAbsent, "store.absent_with_len"),
-        sc::Fault::SpanOutOfBounds => fault(Rule::SpanOutOfBounds, "store.span_out_of_bounds"),
-        sc::Fault::GrantOutOfRange => fault(Rule::Contradiction, "store.grant_out_of_range"),
-        sc::Fault::ReleaseOverUnspent => fault(Rule::Contradiction, "store.release_over_unspent"),
-        sc::Fault::FailedCellOutOfRange => {
-            fault(Rule::IndexOutOfRange, "store.failed_cell_out_of_range")
-        }
-        sc::Fault::Missing => fault(Rule::Missing, "store.missing"),
-    }
-}
-
 /// `n` as `u64` (a `usize` always fits).
 fn u(n: usize) -> u64 {
     n as u64
@@ -124,7 +102,7 @@ fn u(n: usize) -> u64 {
 fn reserve(a: &Answer) -> Result<(), Fault> {
     let input = a.input::<ReserveIn>()?;
     let out = a.out::<ReserveOut>()?;
-    sc::check_cells_len(u(input.cells_len)).map_err(store_fault)?;
+    sc::check_cells_len(u(input.cells_len))?;
     // SAFETY: `cells`/`cells_len` are the host's own input array, live for the answer.
     let cells = unsafe {
         reported(
@@ -144,7 +122,7 @@ fn reserve(a: &Answer) -> Result<(), Fault> {
             "reserve.grants",
         )
     }?;
-    sc::check_reserve(a.outcome, out, cells, u(input.grants_cap), grants).map_err(store_fault)
+    sc::check_reserve(a.outcome, out, cells, u(input.grants_cap), grants)
 }
 
 /// `slice_release`: the host's items, the amounts the plugin reported into the host's array.
@@ -171,7 +149,6 @@ fn slice_release(a: &Answer) -> Result<(), Fault> {
         )
     }?;
     sc::check_slice_release(a.outcome, out, items, u(input.released_cap), released)
-        .map_err(store_fault)
 }
 
 /// `list_plane_records`: blobs the plugin reported into the host's [`store::HostBlobs`].
@@ -188,7 +165,7 @@ fn list_plane_records(a: &Answer) -> Result<(), Fault> {
             "list_plane_records.items",
         )
     }?;
-    sc::check_list_plane_records(a.outcome, out, host, items).map_err(store_fault)
+    sc::check_list_plane_records(a.outcome, out, host, items)
 }
 
 /// `sessions_for`: rows the plugin reported into the host's [`store::HostSessions`].
@@ -205,7 +182,7 @@ fn sessions_for(a: &Answer) -> Result<(), Fault> {
             "sessions_for.rows",
         )
     }?;
-    sc::check_sessions_for(a.outcome, out, host, rows).map_err(store_fault)
+    sc::check_sessions_for(a.outcome, out, host, rows)
 }
 
 /// `record_scan`: entries the plugin reported into the host's [`store::HostRecords`].
@@ -223,7 +200,7 @@ fn record_scan(a: &Answer) -> Result<(), Fault> {
             "record_scan.entries",
         )
     }?;
-    sc::check_record_scan(a.outcome, out, host, entries, input.limit).map_err(store_fault)
+    sc::check_record_scan(a.outcome, out, host, entries, input.limit)
 }
 
 /// An off-path list of records under a lease. Only a READY answer holds a lease, so only it is
@@ -233,12 +210,12 @@ fn leased_list(a: &Answer, field: &'static str) -> Result<(), Fault> {
     // This gate guards the slice, not the check: `items` is plugin memory live only under a
     // READY answer's lease. Any other outcome is checked with no items.
     if a.outcome != Outcome::Ready {
-        return sc::check_leased_list(a.outcome, out, &[]).map_err(store_fault);
+        return sc::check_leased_list(a.outcome, out, &[]);
     }
     // SAFETY: on READY `items` is plugin memory held under `head.lease` until `release`; the
     // count is capped and a NULL pointer with a count refused before the slice is built.
     let items = unsafe { reported(out.items, u(out.items_len), LIST_ITEMS_HARD_MAX, field) }?;
-    sc::check_leased_list(a.outcome, out, items).map_err(store_fault)
+    sc::check_leased_list(a.outcome, out, items)
 }
 
 /// An off-path list of strings under a lease, as [`leased_list`].
@@ -246,11 +223,11 @@ fn leased_strs(a: &Answer, field: &'static str) -> Result<(), Fault> {
     let out = a.out::<LeasedStrListOut>()?;
     // Guards the slice only, as `leased_list`.
     if a.outcome != Outcome::Ready {
-        return sc::check_leased_strs(a.outcome, out, &[]).map_err(store_fault);
+        return sc::check_leased_strs(a.outcome, out, &[]);
     }
     // SAFETY: as `leased_list`.
     let items = unsafe { reported(out.items, u(out.items_len), LIST_ITEMS_HARD_MAX, field) }?;
-    sc::check_leased_strs(a.outcome, out, items).map_err(store_fault)
+    sc::check_leased_strs(a.outcome, out, items)
 }
 
 /// `heads`, a leased list of stream heads, as [`leased_list`].
@@ -258,7 +235,7 @@ fn heads(a: &Answer) -> Result<(), Fault> {
     let out = a.out::<HeadsOut>()?;
     // Guards the slice only, as `leased_list`.
     if a.outcome != Outcome::Ready {
-        return sc::check_heads(a.outcome, out, &[]).map_err(store_fault);
+        return sc::check_heads(a.outcome, out, &[]);
     }
     // SAFETY: as `leased_list`.
     let items = unsafe {
@@ -269,7 +246,7 @@ fn heads(a: &Answer) -> Result<(), Fault> {
             "heads.items",
         )
     }?;
-    sc::check_heads(a.outcome, out, items).map_err(store_fault)
+    sc::check_heads(a.outcome, out, items)
 }
 
 /// `window_caps`: how many caps the host pushed, and the error text the plugin stated, passed on
@@ -293,7 +270,7 @@ fn window_caps(a: &Answer) -> Result<(), Fault> {
             )
         }?)
     };
-    sc::check_window_caps(a.outcome, u(input.caps_len), text).map_err(store_fault)
+    sc::check_window_caps(a.outcome, u(input.caps_len), text)
 }
 
 /// What a store states in its Statement tail ([`store::StoreTail`]), read once at bind: the
@@ -348,7 +325,7 @@ impl Kind for Store {
 
     fn op_name(s: u32) -> &'static str {
         match s.checked_sub(LIFECYCLE_SLOTS) {
-            Some(k) if k < KIND_SLOTS => OPS[k as usize].name,
+            Some(k) if k < KIND_SLOTS => NAMES[k as usize],
             _ => lifecycle_name(s),
         }
     }
@@ -360,19 +337,18 @@ impl Kind for Store {
             slot::SLICE_RELEASE => slice_release(a),
             slot::RECORD_GET => {
                 let cap = u(a.input::<RecordGetIn>()?.value.cap);
-                sc::check_record_get(a.outcome, a.out::<HostBytesOut>()?, cap).map_err(store_fault)
+                sc::check_record_get(a.outcome, a.out::<HostBytesOut>()?, cap)
             }
             slot::GET_PLANE_RECORD => {
                 let cap = u(a.input::<GetPlaneRecordIn>()?.body.cap);
                 sc::check_get_plane_record(a.outcome, a.out::<HostBytesOut>()?, cap)
-                    .map_err(store_fault)
             }
             slot::LIST_PLANE_RECORDS => list_plane_records(a),
             slot::SESSIONS_FOR => sessions_for(a),
             slot::RECORD_SCAN => record_scan(a),
             // Off path, under a lease.
             slot::GET_KEY | slot::GET_USAGE | slot::LOOKUP_CREDENTIAL_SECRET => {
-                sc::check_leased_blob(a.outcome, a.out::<LeasedBlobOut>()?).map_err(store_fault)
+                sc::check_leased_blob(a.outcome, a.out::<LeasedBlobOut>()?)
             }
             slot::LIST_KEYS => leased_list(a, "list_keys.items"),
             slot::LIST_KEYS_SINCE => leased_list(a, "list_keys_since.items"),
@@ -386,19 +362,15 @@ impl Kind for Store {
             slot::HEADS => heads(a),
             // Verdicts, the cap push, the cancel disposition.
             slot::REDEEM_PLANE_TOKEN | slot::PLANE_TOKEN_LIVE => {
-                sc::check_verdict(a.outcome, a.out::<VerdictOut>()?).map_err(store_fault)
+                sc::check_verdict(a.outcome, a.out::<VerdictOut>()?)
             }
             slot::WINDOW_CAPS => window_caps(a),
-            life::CANCEL => sc::check_cancel(a.outcome, a.out::<CancelOut>()?).map_err(store_fault),
+            life::CANCEL => sc::check_cancel(a.outcome, a.out::<CancelOut>()?),
             // A purge's rows removed, the shipping ack's stream head.
             slot::PURGE_WINDOWS_BEFORE
             | slot::PURGE_METERING_BEFORE
-            | slot::PURGE_PLANE_RECORDS_BEFORE => {
-                sc::check_count(a.outcome, a.out::<CountOut>()?).map_err(store_fault)
-            }
-            slot::APPEND_BATCH => {
-                sc::check_append_batch(a.outcome, a.out::<HeadOut>()?).map_err(store_fault)
-            }
+            | slot::PURGE_PLANE_RECORDS_BEFORE => sc::check_count(a.outcome, a.out::<CountOut>()?),
+            slot::APPEND_BATCH => sc::check_append_batch(a.outcome, a.out::<HeadOut>()?),
             // Answered by the head only: the `out` is a bare `OutHead`, checked by the mechanism.
             slot::PUT_KEY
             | slot::DELETE_KEY

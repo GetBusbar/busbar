@@ -6,12 +6,13 @@
 //! asserts the named FAULT, so removing any one check turns its test red.
 
 use busbar_contract::abi::auth::{
-    check_begin_login, check_complete_login, check_fields, check_identify, BeginLoginOut, Fault,
+    check_begin_login, check_complete_login, check_fields, check_identify, BeginLoginOut,
     FieldSpan, FieldsOut, IdentifyOut, IdentityBuf, LoginField, Span, BEGIN_AUTHORIZE, BEGIN_FORM,
     FIELDS_HARD_MAX, IDENTITY_GROUPS_HARD_MAX, LOGIN_IDENTITY, LOGIN_OUTAGE, SPAN_ABSENT,
     VERDICT_IDENTITY, VERDICT_REJECT,
 };
 use busbar_contract::abi::mechanism::call::Outcome;
+use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
 
 const CAP: usize = 64;
 const GROUPS_CAP: u32 = 4;
@@ -58,6 +59,10 @@ fn identity() -> IdentifyOut {
     o
 }
 
+fn red(rule: Rule, field: &'static str) -> Result<(), Fault> {
+    Err(fault(rule, field))
+}
+
 fn ready_identity(o: &IdentifyOut, groups: &[Span]) -> Result<(), Fault> {
     check_identify(Outcome::Ready, o, &buf(), groups)
 }
@@ -82,19 +87,25 @@ fn the_baselines_are_accepted() {
 fn a_span_whose_end_overflows_u32_is_out_of_bounds() {
     let mut o = identity();
     o.identity.subject = sp(u32::MAX - 1, 2);
-    assert_eq!(ready_identity(&o, &[]), Err(Fault::SpanOutOfBounds));
+    assert_eq!(
+        ready_identity(&o, &[]),
+        red(Rule::SpanOutOfBounds, "verify.span_out_of_bounds")
+    );
 }
 
 #[test]
 fn a_span_one_past_the_capacity_is_out_of_bounds() {
     let mut o = identity();
     o.identity.name = sp(CAP as u32 - 3, 4);
-    assert_eq!(ready_identity(&o, &[]), Err(Fault::SpanOutOfBounds));
+    assert_eq!(
+        ready_identity(&o, &[]),
+        red(Rule::SpanOutOfBounds, "verify.span_out_of_bounds")
+    );
     let mut f = field();
     f.value = sp(CAP as u32 - 3, 4);
     assert_eq!(
         check_fields(Outcome::Ready, &fields_out(1), CAP, FIELDS_CAP, &[f]),
-        Err(Fault::SpanOutOfBounds)
+        red(Rule::SpanOutOfBounds, "fields.span_out_of_bounds")
     );
 }
 
@@ -102,14 +113,20 @@ fn a_span_one_past_the_capacity_is_out_of_bounds() {
 fn an_absent_span_with_a_length_is_fault() {
     let mut o = identity();
     o.identity.user = sp(SPAN_ABSENT, 3);
-    assert_eq!(ready_identity(&o, &[]), Err(Fault::AbsentWithLen));
+    assert_eq!(
+        ready_identity(&o, &[]),
+        red(Rule::SpanNotAbsent, "verify.absent_with_len")
+    );
 }
 
 #[test]
 fn an_identity_without_a_subject_is_fault() {
     let mut o = identity();
     o.identity.subject = ABSENT;
-    assert_eq!(ready_identity(&o, &[]), Err(Fault::Missing));
+    assert_eq!(
+        ready_identity(&o, &[]),
+        red(Rule::Missing, "verify.missing")
+    );
 }
 
 #[test]
@@ -117,7 +134,10 @@ fn groups_one_past_the_capacity_is_fault() {
     let mut o = identity();
     o.identity.groups_len = GROUPS_CAP + 1;
     let g = vec![sp(0, 1); GROUPS_CAP as usize + 1];
-    assert_eq!(ready_identity(&o, &g), Err(Fault::CountOverCap));
+    assert_eq!(
+        ready_identity(&o, &g),
+        red(Rule::OverCap, "verify.count_over_cap")
+    );
 }
 
 #[test]
@@ -131,7 +151,7 @@ fn fields_one_past_the_capacity_is_fault() {
             FIELDS_CAP,
             &f
         ),
-        Err(Fault::CountOverCap)
+        red(Rule::OverCap, "fields.count_over_cap")
     );
 }
 
@@ -139,15 +159,21 @@ fn fields_one_past_the_capacity_is_fault() {
 fn ready_with_needed_is_fault() {
     let mut o = identity();
     o.needed_groups = 1;
-    assert_eq!(ready_identity(&o, &[]), Err(Fault::NeededOnReady));
+    assert_eq!(
+        ready_identity(&o, &[]),
+        red(Rule::NeededNotFailed, "verify.groups")
+    );
     let mut o = identity();
     o.needed_bytes = 1;
-    assert_eq!(ready_identity(&o, &[]), Err(Fault::NeededOnReady));
+    assert_eq!(
+        ready_identity(&o, &[]),
+        red(Rule::NeededNotFailed, "verify.bytes")
+    );
     let mut f = fields_out(1);
     f.needed_bytes = 1;
     assert_eq!(
         check_fields(Outcome::Ready, &f, CAP, FIELDS_CAP, &[field()]),
-        Err(Fault::NeededOnReady)
+        red(Rule::NeededNotFailed, "fields.bytes")
     );
 }
 
@@ -157,19 +183,19 @@ fn needed_bytes_above_u32_max_or_counts_above_the_hard_max_are_fault() {
     o.needed_bytes = u64::from(u32::MAX) + 1;
     assert_eq!(
         check_identify(Outcome::Failed, &o, &buf(), &[]),
-        Err(Fault::NeededTooLarge)
+        red(Rule::OverMax, "verify.bytes")
     );
     let mut o: IdentifyOut = zeroed();
     o.needed_groups = IDENTITY_GROUPS_HARD_MAX + 1;
     assert_eq!(
         check_identify(Outcome::Failed, &o, &buf(), &[]),
-        Err(Fault::NeededTooLarge)
+        red(Rule::OverMax, "verify.groups")
     );
     let mut f: FieldsOut = zeroed();
     f.needed_fields = FIELDS_HARD_MAX + 1;
     assert_eq!(
         check_fields(Outcome::Failed, &f, CAP, FIELDS_CAP, &[]),
-        Err(Fault::NeededTooLarge)
+        red(Rule::OverMax, "fields.fields")
     );
 }
 
@@ -179,19 +205,19 @@ fn failed_with_a_need_the_capacity_covers_is_fault() {
     o.needed_bytes = CAP as u64;
     assert_eq!(
         check_identify(Outcome::Failed, &o, &buf(), &[]),
-        Err(Fault::NeededWithinCap)
+        red(Rule::WastedRecall, "verify")
     );
     let mut o: IdentifyOut = zeroed();
     o.needed_groups = GROUPS_CAP;
     assert_eq!(
         check_identify(Outcome::Failed, &o, &buf(), &[]),
-        Err(Fault::NeededWithinCap)
+        red(Rule::WastedRecall, "verify")
     );
     let mut f: FieldsOut = zeroed();
     f.needed_fields = 1;
     assert_eq!(
         check_fields(Outcome::Failed, &f, CAP, FIELDS_CAP, &[]),
-        Err(Fault::NeededWithinCap)
+        red(Rule::WastedRecall, "fields")
     );
     // A real short answer, and a real failure, are both accepted.
     let mut o: IdentifyOut = zeroed();
@@ -207,21 +233,30 @@ fn failed_with_a_need_the_capacity_covers_is_fault() {
 fn a_verdict_outside_the_vocabulary_is_fault() {
     let mut o = identity();
     o.verdict = 0;
-    assert_eq!(ready_identity(&o, &[]), Err(Fault::Vocabulary));
+    assert_eq!(
+        ready_identity(&o, &[]),
+        red(Rule::UnknownCode, "verify.vocabulary")
+    );
     o.verdict = 4;
-    assert_eq!(ready_identity(&o, &[]), Err(Fault::Vocabulary));
+    assert_eq!(
+        ready_identity(&o, &[]),
+        red(Rule::UnknownCode, "verify.vocabulary")
+    );
 }
 
 #[test]
 fn an_unknown_flag_bit_is_fault() {
     let mut o = identity();
     o.identity.flags = 2;
-    assert_eq!(ready_identity(&o, &[]), Err(Fault::UnknownFlags));
+    assert_eq!(
+        ready_identity(&o, &[]),
+        red(Rule::UnknownCode, "verify.unknown_flags")
+    );
     let mut f = field();
     f.flags = 2;
     assert_eq!(
         check_fields(Outcome::Ready, &fields_out(1), CAP, FIELDS_CAP, &[f]),
-        Err(Fault::UnknownFlags)
+        red(Rule::UnknownCode, "fields.unknown_flags")
     );
 }
 
@@ -233,7 +268,7 @@ fn a_form_count_with_a_null_form_is_fault() {
     o.form_len = 1;
     assert_eq!(
         check_begin_login(Outcome::Ready, &o),
-        Err(Fault::NullWithCount)
+        red(Rule::NullWithCount, "begin_login.null_with_count")
     );
 }
 
@@ -243,17 +278,17 @@ fn a_shape_with_no_bit_or_two_bits_is_fault() {
     o.shape = 0;
     assert_eq!(
         check_begin_login(Outcome::Ready, &o),
-        Err(Fault::NotExactlyOne)
+        red(Rule::NotExactlyOne, "begin_login.not_exactly_one")
     );
     o.shape = BEGIN_AUTHORIZE | BEGIN_FORM;
     assert_eq!(
         check_begin_login(Outcome::Ready, &o),
-        Err(Fault::NotExactlyOne)
+        red(Rule::NotExactlyOne, "begin_login.not_exactly_one")
     );
     o.shape = 4;
     assert_eq!(
         check_begin_login(Outcome::Ready, &o),
-        Err(Fault::Vocabulary)
+        red(Rule::UnknownCode, "begin_login.vocabulary")
     );
 }
 
@@ -261,7 +296,10 @@ fn a_shape_with_no_bit_or_two_bits_is_fault() {
 fn the_part_a_shape_names_must_be_present() {
     let mut o = authorize();
     o.authorize_url = zeroed();
-    assert_eq!(check_begin_login(Outcome::Ready, &o), Err(Fault::Missing));
+    assert_eq!(
+        check_begin_login(Outcome::Ready, &o),
+        red(Rule::Missing, "begin_login.missing")
+    );
     let form = [LoginField {
         name: zeroed(),
         label: zeroed(),
@@ -271,7 +309,10 @@ fn the_part_a_shape_names_must_be_present() {
     let mut o = authorize();
     o.shape = BEGIN_FORM;
     o.form = form.as_ptr();
-    assert_eq!(check_begin_login(Outcome::Ready, &o), Err(Fault::Missing));
+    assert_eq!(
+        check_begin_login(Outcome::Ready, &o),
+        red(Rule::Missing, "begin_login.missing")
+    );
     o.form_len = 1;
     assert_eq!(check_begin_login(Outcome::Ready, &o), Ok(()));
 }
@@ -282,7 +323,7 @@ fn a_url_length_with_a_null_pointer_is_fault() {
     o.authorize_url.ptr = std::ptr::null();
     assert_eq!(
         check_begin_login(Outcome::Ready, &o),
-        Err(Fault::NullWithCount)
+        red(Rule::NullWithCount, "begin_login.null_with_count")
     );
 }
 
@@ -315,19 +356,25 @@ fn authorize() -> BeginLoginOut {
 fn a_claims_format_outside_the_blob_vocabulary_is_fault() {
     let mut o = identity();
     o.identity.claims_fmt = 4;
-    assert_eq!(ready_identity(&o, &[]), Err(Fault::Vocabulary));
+    assert_eq!(
+        ready_identity(&o, &[]),
+        red(Rule::UnknownCode, "verify.vocabulary")
+    );
 }
 
 #[test]
 fn an_absent_group_span_is_fault() {
     let mut o = identity();
     o.identity.groups_len = 1;
-    assert_eq!(ready_identity(&o, &[ABSENT]), Err(Fault::Missing));
+    assert_eq!(
+        ready_identity(&o, &[ABSENT]),
+        red(Rule::Missing, "verify.missing")
+    );
     let mut f = field();
     f.name = ABSENT;
     assert_eq!(
         check_fields(Outcome::Ready, &fields_out(1), CAP, FIELDS_CAP, &[f]),
-        Err(Fault::Missing)
+        red(Rule::Missing, "fields.missing")
     );
 }
 
@@ -335,14 +382,17 @@ fn an_absent_group_span_is_fault() {
 fn a_count_that_disagrees_with_the_slice_is_fault() {
     let mut o = identity();
     o.identity.groups_len = 2;
-    assert_eq!(ready_identity(&o, &[sp(0, 1)]), Err(Fault::CountMismatch));
+    assert_eq!(
+        ready_identity(&o, &[sp(0, 1)]),
+        red(Rule::Contradiction, "verify.count_mismatch")
+    );
 }
 
 #[test]
 fn a_fields_count_that_disagrees_with_the_slice_is_fault() {
     assert_eq!(
         check_fields(Outcome::Ready, &fields_out(2), CAP, FIELDS_CAP, &[field()]),
-        Err(Fault::CountMismatch)
+        red(Rule::Contradiction, "fields.count_mismatch")
     );
 }
 
@@ -352,7 +402,7 @@ fn ready_fields_with_needed_fields_is_fault() {
     f.needed_fields = 1;
     assert_eq!(
         check_fields(Outcome::Ready, &f, CAP, FIELDS_CAP, &[field()]),
-        Err(Fault::NeededOnReady)
+        red(Rule::NeededNotFailed, "fields.fields")
     );
 }
 
@@ -364,7 +414,7 @@ fn refused_or_pending_identify_with_needed_is_fault() {
         o.needed_bytes = CAP as u64 + 1;
         assert_eq!(
             check_identify(outcome, &o, &buf(), &[]),
-            Err(Fault::NeededNotFailed)
+            red(Rule::NeededNotFailed, "verify.bytes")
         );
     }
 }
@@ -377,7 +427,7 @@ fn refused_or_pending_fields_with_needed_is_fault() {
         f.needed_fields = FIELDS_CAP + 1;
         assert_eq!(
             check_fields(outcome, &f, CAP, FIELDS_CAP, &[]),
-            Err(Fault::NeededNotFailed)
+            red(Rule::NeededNotFailed, "fields.fields")
         );
     }
 }
@@ -398,12 +448,12 @@ fn complete_login_checks_its_own_vocabulary() {
     o.verdict = LOGIN_OUTAGE + 1;
     assert_eq!(
         check_complete_login(Outcome::Ready, &o, &buf(), &[]),
-        Err(Fault::Vocabulary)
+        red(Rule::UnknownCode, "complete_login.vocabulary")
     );
     o.verdict = 0;
     assert_eq!(
         check_complete_login(Outcome::Ready, &o, &buf(), &[]),
-        Err(Fault::Vocabulary)
+        red(Rule::UnknownCode, "complete_login.vocabulary")
     );
 }
 
@@ -424,7 +474,7 @@ fn a_short_identify_reports_every_dimension_full_size() {
     o.needed_groups = GROUPS_CAP;
     assert_eq!(
         check_identify(Outcome::Failed, &o, &buf(), &[]),
-        Err(Fault::NeededWithinCap)
+        red(Rule::WastedRecall, "verify")
     );
 }
 
@@ -449,6 +499,6 @@ fn a_short_fields_reports_every_dimension_full_size() {
     f.needed_fields = 2;
     assert_eq!(
         check_fields(Outcome::Failed, &f, CAP, FIELDS_CAP, &[]),
-        Err(Fault::NeededWithinCap)
+        red(Rule::WastedRecall, "fields")
     );
 }

@@ -900,57 +900,49 @@ unsafe impl super::sdk::door::AbiOut for StatusOut {}
 unsafe impl super::sdk::door::AbiOut for DescribeOut {}
 unsafe impl super::sdk::door::AbiOut for ServeOut {}
 
-/// Each hook kind op's `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]' docs. A
-/// plugin wiring a slot to another op's structs does not compile:
-///
-/// ```compile_fail,E0271
-/// use busbar_contract::abi::hook::{ConfigureIn, ConfigureOut, DecideIn, DecideOut};
-/// use busbar_contract::abi::hook::{DescribeOut, NotifyIn, ServeIn, ServeOut, StatusOut, TransformOut};
-/// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
-/// use busbar_contract::abi::mechanism::lifecycle::*;
-/// use busbar_contract::abi::sdk::door::Slot;
-/// # use std::ffi::c_void;
-/// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
-/// #     struct $n;
-/// #     impl Slot for $n { type In = $i; type Out = $o;
-/// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
-/// # } }
-/// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
-/// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
-/// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
-/// # ready!(Decide, DecideIn, DecideOut); ready!(Transform, DecideIn, TransformOut);
-/// # ready!(Configure, ConfigureIn, ConfigureOut); ready!(Status, InHead, StatusOut);
-/// # ready!(Describe, InHead, DescribeOut); ready!(Serve, ServeIn, ServeOut);
-/// ready!(Notify, ConfigureIn, ConfigureOut); // `configure`'s structs on `notify`: refused
-/// busbar_contract::plugin_door! {
-///     ops: busbar_contract::abi::hook::Ops,
-///     statement: busbar_contract::abi::sdk::door::statement("wrong", "0", 1),
-///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
-///                  cancel: Cn, release: Rl, close: Cl },
-///     kind_ops: { decide: Decide, transform: Transform, notify: Notify, configure: Configure,
-///                 status: Status, describe: Describe, serve: Serve },
-/// }
-/// # fn main() { let _ = door(); }
-/// ```
-///
-/// With `Notify` reading [`NotifyIn`] and writing [`OutHead`] the same plugin compiles
-/// (`abi/sdk/tests/door_tests.rs`, `a_hook_plugin_wires_every_kind_op`).
-macro_rules! kind_slots {
-    ($($slot:ident => $in:ty, $out:ty;)*) => {$(
-        // SAFETY: the structs `Ops`' doc states for this slot.
-        unsafe impl super::sdk::door::KindSlot<{ slot::$slot }> for Ops {
-            type In = $in;
-            type Out = $out;
-        }
-    )*};
-}
-
-kind_slots! {
-    DECIDE => DecideIn, DecideOut;
-    TRANSFORM => DecideIn, TransformOut;
-    NOTIFY => NotifyIn, OutHead;
-    CONFIGURE => ConfigureIn, ConfigureOut;
-    STATUS => InHead, StatusOut;
-    DESCRIBE => InHead, DescribeOut;
-    SERVE => ServeIn, ServeOut;
-}
+super::sdk::door::slot_structs!(
+    /// Each hook kind op's `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]' docs. A
+    /// plugin wiring a slot to another op's structs does not compile:
+    ///
+    /// ```compile_fail,E0271
+    /// use busbar_contract::abi::hook::{ConfigureIn, ConfigureOut, DecideIn, DecideOut};
+    /// use busbar_contract::abi::hook::{DescribeOut, NotifyIn, ServeIn, ServeOut, StatusOut, TransformOut};
+    /// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
+    /// use busbar_contract::abi::mechanism::lifecycle::*;
+    /// use busbar_contract::abi::sdk::door::Slot;
+    /// # use std::ffi::c_void;
+    /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
+    /// #     struct $n;
+    /// #     impl Slot for $n { type In = $i; type Out = $o;
+    /// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+    /// # } }
+    /// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
+    /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
+    /// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
+    /// # ready!(Decide, DecideIn, DecideOut); ready!(Transform, DecideIn, TransformOut);
+    /// # ready!(Configure, ConfigureIn, ConfigureOut); ready!(Status, InHead, StatusOut);
+    /// # ready!(Describe, InHead, DescribeOut); ready!(Serve, ServeIn, ServeOut);
+    /// ready!(Notify, ConfigureIn, ConfigureOut); // `configure`'s structs on `notify`: refused
+    /// busbar_contract::plugin_door! {
+    ///     ops: busbar_contract::abi::hook::Ops,
+    ///     statement: busbar_contract::abi::sdk::door::statement("wrong", "0", 1),
+    ///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
+    ///                  cancel: Cn, release: Rl, close: Cl },
+    ///     kind_ops: { decide: Decide, transform: Transform, notify: Notify, configure: Configure,
+    ///                 status: Status, describe: Describe, serve: Serve },
+    /// }
+    /// # fn main() { let _ = door(); }
+    /// ```
+    ///
+    /// With `Notify` reading [`NotifyIn`] and writing [`OutHead`] the same plugin compiles
+    /// (`abi/sdk/tests/door_tests.rs`, `a_hook_plugin_wires_every_kind_op`).
+    Ops {
+        slot::DECIDE => DecideIn, DecideOut;
+        slot::TRANSFORM => DecideIn, TransformOut;
+        slot::NOTIFY => NotifyIn, OutHead;
+        slot::CONFIGURE => ConfigureIn, ConfigureOut;
+        slot::STATUS => InHead, StatusOut;
+        slot::DESCRIBE => InHead, DescribeOut;
+        slot::SERVE => ServeIn, ServeOut;
+    }
+);

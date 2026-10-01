@@ -14,22 +14,14 @@ pub use crate::abi::mechanism::check::{Fault, Rule};
 
 use super::{ResolveOut, ERROR_KIND_INTERNAL, ERROR_KIND_UNSET};
 use crate::abi::mechanism::call::Outcome;
-use crate::abi::mechanism::check::fault;
-
-/// The largest secret one answer may carry, in bytes (16 MiB).
-pub const HARD_MAX_BYTES: u64 = 16 * 1024 * 1024;
+use crate::abi::mechanism::check::{blob, fault, lease};
 
 /// Validates `resolve`'s `out`. Pure, `u64` math, no statics.
 ///
 /// # Errors
 /// The rule `out` breaks.
 pub fn check_resolve(out: &ResolveOut) -> Result<(), Fault> {
-    if out.secret.len > 0 && out.secret.ptr.is_null() {
-        return Err(fault(Rule::NullWithCount, "resolve.secret"));
-    }
-    if out.secret.len as u64 > HARD_MAX_BYTES {
-        return Err(fault(Rule::OverMax, "resolve.secret.len"));
-    }
+    blob(&out.secret, "resolve.secret", "resolve.secret.len")?;
     if out.error_kind as u64 > ERROR_KIND_INTERNAL as u64 {
         return Err(fault(Rule::UnknownCode, "resolve.error_kind"));
     }
@@ -47,14 +39,13 @@ pub fn check_resolve(out: &ResolveOut) -> Result<(), Fault> {
         return Err(fault(Rule::Missing, "resolve.error_kind_on_failed"));
     }
     // The lease (memory class iv) is required exactly when a READY answer carries material.
-    let has_material = out.secret.len > 0;
-    if ready && has_material && out.head.lease == 0 {
-        return Err(fault(Rule::Missing, "resolve.lease"));
-    }
-    if ready && !has_material && out.head.lease != 0 {
-        return Err(fault(Rule::Contradiction, "resolve.lease_without_material"));
-    }
-    Ok(())
+    lease(
+        out.head.outcome,
+        out.head.lease,
+        out.secret.len > 0,
+        "resolve.lease",
+        "resolve.lease_without_material",
+    )
 }
 
 #[cfg(test)]

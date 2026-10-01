@@ -115,7 +115,7 @@ fn decide_green_red_foreign() {
     fails(
         check(slot::DECIDE, &i, size_of::<DecideIn>(), &over),
         Rule::OverCap,
-        "decide.order_written",
+        "decide.order",
     );
     // Two verbs on READY.
     let mut two = o;
@@ -141,14 +141,14 @@ fn decide_caps_are_read_from_the_in() {
     fails(
         check(slot::DECIDE, &i, size_of::<DecideIn>(), &o),
         Rule::OverCap,
-        "decide.reject_message_written",
+        "decide.reject_message",
     );
     i.reject_message_cap = 8;
     i.restrict_tags_cap = 7;
     fails(
         check(slot::DECIDE, &i, size_of::<DecideIn>(), &o),
         Rule::OverCap,
-        "decide.restrict_tags_written",
+        "decide.restrict_tags",
     );
 }
 
@@ -171,7 +171,7 @@ fn decide_short_answer() {
     fails(
         check(slot::DECIDE, &i, size_of::<DecideIn>(), &fits),
         Rule::WastedRecall,
-        "decide.needed",
+        "decide",
     );
 
     // A FAILED answer naming nothing needed is not short.
@@ -209,7 +209,7 @@ fn transform_green_red_foreign() {
     fails(
         check(slot::TRANSFORM, &i, size_of::<DecideIn>(), &over),
         Rule::OverCap,
-        "transform.rewrite_written",
+        "transform.rewrite",
     );
     let mut none = o;
     none.verbs = 0;
@@ -244,7 +244,7 @@ fn transform_short_answer() {
     fails(
         check(slot::TRANSFORM, &i, size_of::<DecideIn>(), &wrote),
         Rule::WrittenOnShort,
-        "transform.written",
+        "transform",
     );
 
     let plain: TransformOut = output(Outcome::Failed);

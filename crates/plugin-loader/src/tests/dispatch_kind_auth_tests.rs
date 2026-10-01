@@ -390,7 +390,7 @@ fn fields_red_a_wasted_recall() {
     out.needed_bytes = BUF_CAP as u64;
     let f = check(slot::FIELDS, Outcome::Failed, &input, &out).unwrap_err();
     assert_eq!(f.rule, Rule::WastedRecall);
-    assert_eq!(f.field, "fields.needed_within_cap");
+    assert_eq!(f.field, "fields");
 }
 
 #[test]
