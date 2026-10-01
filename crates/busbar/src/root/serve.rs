@@ -24,7 +24,7 @@ use busbar_contract::services::{Caller, HostServices, Later, Ran, Reading, Recor
 use busbar_kernel::config::RootCfg;
 use busbar_kernel::host_services::{DestRules, KernelServices, SystemResolver};
 use busbar_kernel::net_guard::{Denylist, GuardPolicy};
-use busbar_kernel::plane_driver::{refusal_status, CallerEnd};
+use busbar_kernel::plane_driver::{refusal_status, CallerEnd, HeadFields};
 use tokio::sync::{mpsc, oneshot};
 
 /// The egress class `dest.judge` applies when a plugin names none: the deployment's own stance.
@@ -214,7 +214,7 @@ pub struct IngressCaller {
 }
 
 /// A reply head: the status number and the head fields.
-type Head = (u32, Vec<(Vec<u8>, Vec<u8>)>);
+type Head = (u32, HeadFields);
 
 /// The handler's end of an [`IngressCaller`]: the reply, once the unit states its head.
 #[derive(Debug)]
@@ -238,7 +238,7 @@ impl IngressCaller {
 }
 
 impl CallerEnd for IngressCaller {
-    fn head(&self, status: u32, fields: Vec<(Vec<u8>, Vec<u8>)>) {
+    fn head(&self, status: u32, fields: HeadFields) {
         let sender = self
             .head
             .lock()
