@@ -1498,7 +1498,9 @@ kernel_crate = "busbar-kernel"
 # reference is derived there) beside the forwarded seats, +6 over the summed ledger.
 # ── RE-ARMED 54919 -> 54949, AT THE MEASUREMENT (OWNER GRANT 2026-09-29 (3)): The restart verifies (the held amendment chain, the real checkpoint anchor, the resume breaks an append reports) and their findings on admin verify, +30.
 # ── SUMMED on the trunk (CONVERGER): kernel_ceiling 55799 + (54949 - 54919) = 55829; the measurement at the segment tip re-arms it.
-kernel_ceiling = 55829
+# ── LOWERED 54949 -> 54900, AT THE MEASUREMENT (OWNER GRANT 2026-09-29 (3)): The settlement writes what the plane reported and the kernel's own fee decider is deleted, -49.
+# ── SUMMED on the trunk (CONVERGER): kernel_ceiling 55829 + (54900 - 54949) = 55780; the measurement at the segment tip re-arms it.
+kernel_ceiling = 55780
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -1687,7 +1689,8 @@ patterns = ["teller.rs"]
 # ── LOWERED 604 -> 601, the measurement: TLS-RETIRE (2/3) deletes `Kernel::transport_key_token`.
 # ── RE-ARMED 599 -> 600 (OWNER GRANT 2026-09-29 (3)): the RENAME of caps::decision::Decision to
 # caps::seat_verdict::SeatVerdict re-wraps one line of teller.rs under rustfmt. Measured 599 before, 600 after, +1.
-ceiling = 600
+# ── LOWERED 600 -> 595, the measurement: the settlement writes what the plane reported and the kernel's fee decision leaves the Teller loop, -5.
+ceiling = 595
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
