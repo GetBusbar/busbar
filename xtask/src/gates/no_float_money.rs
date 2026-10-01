@@ -267,6 +267,9 @@ const BINARY_MONEY_FILES: &[&str] = &[
     // this list exists to catch, so BOTH stay named rather than the ban following only one half.
     "crates/busbar/src/root/durability/mod.rs",
     "crates/busbar/src/root/durability/replay.rs",
+    // The money-book seam (Settling, Settled, MoneyBook, SharedBook), split out of `mod.rs` for
+    // structure-lint: the settle path the exit arms take, so it stays in the scan.
+    "crates/busbar/src/root/durability/book.rs",
     "crates/busbar/src/root/ledger_identity.rs",
     "crates/busbar/src/root/migration.rs",
 ];
