@@ -148,7 +148,7 @@ pub struct IdentifyOut {
     pub head: OutHead,
     /// `verify`: [`super::VERDICT_IDENTITY`] | [`super::VERDICT_REJECT`] | [`super::VERDICT_PASS`].
     /// `complete_login`: [`super::LOGIN_IDENTITY`] | [`super::LOGIN_BAD_CREDENTIAL`] |
-    /// [`super::LOGIN_OUTAGE`]. `0` is FAULT.
+    /// [`super::LOGIN_OUTAGE`] | [`super::LOGIN_SECURITY_CHECK_FAILED`]. `0` is FAULT.
     pub verdict: u32,
     /// Short buffer: the group spans needed.
     pub needed_groups: u32,
@@ -234,4 +234,7 @@ pub struct CompleteLoginIn {
     pub submitted_len: usize,
     /// Where the identity goes.
     pub out_buf: IdentityBuf,
+    /// The nonce the login's `begin_login` was handed (the core's, carried in its login cookie),
+    /// so the plugin binds the IdP's identity token to it; absent = none. Appended.
+    pub nonce: AbiStr,
 }

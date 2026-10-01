@@ -46,7 +46,7 @@ use std::ptr;
 use busbar_contract::abi::auth::{
     AuthTail, BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldsIn, FieldsOut, IdentifyOut,
     OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, StyleDecl, VerifyIn,
-    CANCEL_ABANDONED, CAP_OUTBOUND, LOGIN_KIND_NONE, MODE_OWN, MODE_PASSTHROUGH,
+    CANCEL_ABANDONED, CAP_OUTBOUND, FIELD_QUERY, LOGIN_KIND_NONE, MODE_OWN, MODE_PASSTHROUGH,
     STYLE_CALLER_CREDENTIAL,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Envelope, InHead, OutHead, Outcome};
@@ -68,10 +68,11 @@ const FIELD_FLAGS: u32 = 0;
 
 /// The styles, as the tail declares them: every one of them also serves the caller's verified
 /// credential.
-const STYLE_DECLS: [StyleDecl; 3] = [
+const STYLE_DECLS: [StyleDecl; 4] = [
     decl(style::BEARER),
     decl(style::API_KEY),
     decl(style::X_GOOG_API_KEY),
+    decl(style::QUERY_KEY),
 ];
 
 const fn decl(name: &'static str) -> StyleDecl {
@@ -389,28 +390,32 @@ impl Slot for Fields {
         let Some(h) = inst(instance) else {
             return Outcome::Fault;
         };
-        let write = |fields: &[(String, String)], out: &mut FieldsOut| {
+        let write = |(fields, query): (Vec<(String, String)>, bool), out: &mut FieldsOut| {
             let f: Vec<(&str, &str)> = fields
                 .iter()
                 .map(|(n, v)| (n.as_str(), v.as_str()))
                 .collect();
-            abi::write_fields(input, out, &f, FIELD_FLAGS)
+            let flags = if query { FIELD_QUERY } else { FIELD_FLAGS };
+            abi::write_fields(input, out, &f, flags)
         };
         match input.mode {
             MODE_OWN => {
-                let Some(fields) = h.with_binding(input.handle, |b| b.own().to_vec()) else {
+                let Some(fields) = h.with_binding(input.handle, |b| (b.own().to_vec(), b.query()))
+                else {
                     return Outcome::Refused;
                 };
-                write(&fields, out)
+                write(fields, out)
             }
             MODE_PASSTHROUGH => {
                 let caller = blob(&input.caller_credential)
                     .and_then(|c| std::str::from_utf8(c).ok())
                     .unwrap_or("");
-                let Some(fields) = h.with_binding(input.handle, |b| b.passthrough(caller)) else {
+                let Some(fields) =
+                    h.with_binding(input.handle, |b| (b.passthrough(caller), b.query()))
+                else {
                     return Outcome::Refused;
                 };
-                write(&fields, out)
+                write(fields, out)
             }
             _ => Outcome::Refused,
         }

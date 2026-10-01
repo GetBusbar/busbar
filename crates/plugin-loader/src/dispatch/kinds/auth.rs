@@ -63,6 +63,9 @@ pub struct AuthFacts {
     /// The settings keys the Statement names as secret-refs (service credentials), in order: the
     /// host hands their resolved values to `open`/`refresh` as `secrets`, not in the settings.
     pub secret_refs: Vec<String>,
+    /// `abi::auth::LOGIN_KIND_*`: how the plugin's login starts; `LOGIN_KIND_NONE` exactly when it
+    /// states no `CAP_LOGIN`.
+    pub login_kind: u32,
 }
 
 /// A `'static` Statement string, copied; `None` when malformed.
@@ -96,6 +99,18 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
         })
         .collect::<Option<Vec<_>>>()
         .ok_or("an auth carrier name is over-long")?;
+    // The login classification agrees with the login capability, and is one the host knows.
+    let logs_in = t.caps & auth::CAP_LOGIN != 0;
+    let kind_known = matches!(
+        t.login_kind,
+        auth::LOGIN_KIND_NONE | auth::LOGIN_KIND_REDIRECT | auth::LOGIN_KIND_CREDENTIAL
+    );
+    if !kind_known || logs_in != (t.login_kind != auth::LOGIN_KIND_NONE) {
+        return Err(format!(
+            "the auth tail's login kind {} disagrees with its login capability",
+            t.login_kind
+        ));
+    }
     let mut cache_family = None;
     for i in 0..st.families_len {
         // SAFETY: the loader's Statement check: `families` holds `families_len` `'static` entries.
@@ -116,6 +131,7 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
         carriers,
         cache_family,
         secret_refs,
+        login_kind: t.login_kind,
     })
 }
 

@@ -17,6 +17,8 @@ use std::future::Future;
 use crate::redacted::Redacted;
 use std::sync::Arc;
 
+use crate::auth::{BeginLogin, CompleteLogin, LoginKind, LoginOutcome};
+
 /// One inbound request's facts, as the kernel hands them to `verify`. Owned: the answer is
 /// awaited, so nothing here borrows the request.
 #[derive(Default)]
@@ -62,9 +64,9 @@ pub struct VerifiedIdentity {
     pub groups: Vec<String>,
     /// The suggested cache TTL, seconds.
     pub ttl_secs: Option<u64>,
-    /// A key the kernel admits only once within its TTL, claimed in the record store as
-    /// `<plugin name>/<key>` after this identity; `None` (or an empty key) = no claim. Never reaches
-    /// a plane. Boxed: most identities carry none.
+    /// A key the kernel admits only once within its TTL, claimed in the record store under the
+    /// verifying instance, the plugin's name and this key after this identity; `None` (or an empty
+    /// key) = no claim. Never reaches a plane. Boxed: most identities carry none.
     pub replay: Option<Box<Replay>>,
 }
 
@@ -101,6 +103,53 @@ pub trait Verifying: Future<Output = Verified> + Send + Unpin {
     fn settled(&mut self) -> Option<Verified>;
 }
 
+/// One `complete_login` as the kernel hands it: the callback's `state` and the login's `nonce` (the
+/// core-minted values its login cookie carried, which the plugin binds the IdP's answer to), and the
+/// callback's code / PKCE verifier or the submitted credential form.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LoginCallback {
+    /// The callback's `state` (already checked against the login cookie by the kernel).
+    pub state: String,
+    /// The nonce `begin_login` was handed; `None` = none.
+    pub nonce: Option<String>,
+    /// The code, redirect URI and PKCE verifier (redirect flow) or the submitted fields (credential
+    /// flow). `token_response` is never set: the plugin makes its own token exchange.
+    pub login: CompleteLogin,
+}
+
+/// One `begin_login` or `complete_login` in flight. Dropping it before it answered abandons it.
+///
+/// `begin_login` answers [`LoginOutcome::Authorize`] or [`LoginOutcome::Prompt`];
+/// `complete_login` answers [`LoginOutcome::Identify`] (`LOGIN_IDENTITY`),
+/// [`LoginOutcome::Reject`] (`LOGIN_BAD_CREDENTIAL`) or [`LoginOutcome::Outage`] (`LOGIN_OUTAGE`).
+/// A call that answered no verdict (FAILED, FAULT, REFUSED, a timeout, a second short answer, or
+/// the instance at `max_inflight`) is [`LoginOutcome::Reject`], fail-closed, as 1.5.5 refused a
+/// login plugin that failed or could not be started.
+pub trait LoginCall: Future<Output = LoginOutcome> + Send + Unpin {
+    /// The answer, if it has arrived; never waits.
+    fn settled(&mut self) -> Option<LoginOutcome>;
+}
+
+/// A login step answered before anything crossed.
+#[derive(Debug)]
+pub struct LoginSettled(pub Option<LoginOutcome>);
+
+impl Future for LoginSettled {
+    type Output = LoginOutcome;
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<LoginOutcome> {
+        std::task::Poll::Ready(self.0.take().unwrap_or(LoginOutcome::Reject))
+    }
+}
+
+impl LoginCall for LoginSettled {
+    fn settled(&mut self) -> Option<LoginOutcome> {
+        Some(self.0.take().unwrap_or(LoginOutcome::Reject))
+    }
+}
+
 /// ONE AUTH INSTANCE'S CALLS, as the kernel's identity chain makes them.
 pub trait AuthCalls: Send + Sync {
     /// The name the plugin's Statement states.
@@ -127,6 +176,28 @@ pub trait AuthCalls: Send + Sync {
     /// # Errors
     /// The refresh did not answer READY.
     fn refresh(&self) -> Result<u64, String>;
+
+    /// How the plugin's login starts, as its tail states it (`abi::auth::LOGIN_KIND_*`); `None` =
+    /// it serves no login (`CAP_LOGIN` not stated). Read without calling `begin_login`.
+    fn login_kind(&self) -> Option<LoginKind> {
+        None
+    }
+
+    /// Submit `begin_login`: the IdP authorize URL ([`LoginOutcome::Authorize`]) or the credential
+    /// form ([`LoginOutcome::Prompt`]). Its answer is a future; no thread is parked.
+    fn begin_login(&self, request: BeginLogin) -> Box<dyn LoginCall> {
+        let _ = request;
+        Box::new(LoginSettled(Some(LoginOutcome::Reject)))
+    }
+
+    /// Submit `complete_login`: the plugin runs the token exchange over its own need, holding its
+    /// own client secret, and answers who ([`LoginOutcome::Identify`]), a declined credential
+    /// ([`LoginOutcome::Reject`]) or an unreachable IdP ([`LoginOutcome::Outage`]). A short answer
+    /// is re-called once.
+    fn complete_login(&self, request: LoginCallback) -> Box<dyn LoginCall> {
+        let _ = request;
+        Box::new(LoginSettled(Some(LoginOutcome::Reject)))
+    }
 }
 
 /// THE AUTH AXIS, as the composition root hands it to the kernel (the shape of the export kind's

@@ -14,6 +14,7 @@
 //! | `bearer` | `{families?, own?, passthrough?}` (default: `Bearer` whatever the credential) |
 //! | `api-key` | `{header?: "api-key", families?, own?, passthrough?}` |
 //! | `x-goog-api-key` | `{header?: "x-goog-api-key", families?, own?, passthrough?}` |
+//! | `query-key` | `{param?: "key"}` (the dialect's default parameter name) |
 //!
 //! `families` is a dialect's credential-family table, `[{prefix, header?, trim_start?}]` (a row
 //! without `header` presents as a bearer); `own` / `passthrough` are `{header?, trim_start?}`.
@@ -34,6 +35,12 @@ pub const BEARER: &str = "bearer";
 pub const API_KEY: &str = "api-key";
 /// The credential verbatim in `x-goog-api-key`.
 pub const X_GOOG_API_KEY: &str = "x-goog-api-key";
+/// The credential verbatim as a QUERY PARAMETER on the request target (`?key=<credential>` unless
+/// the settings name another `param`), never a header: its fields carry
+/// [`FIELD_QUERY`](busbar_contract::abi::auth::FIELD_QUERY).
+pub const QUERY_KEY: &str = "query-key";
+/// The query parameter [`QUERY_KEY`] presents under when the settings name none.
+pub const QUERY_KEY_DEFAULT_PARAM: &str = "key";
 
 /// One finding that refuses a binding.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,9 +79,15 @@ pub enum OpenNote {
 pub struct Binding {
     scheme: StaticScheme,
     own: Vec<(String, String)>,
+    query: bool,
 }
 
 impl Binding {
+    /// Whether this binding's fields are query parameters ([`QUERY_KEY`]), not headers.
+    pub fn query(&self) -> bool {
+        self.query
+    }
+
     /// The fields the binding's own credential presents (empty: no header) — [`Mode::Own`].
     pub fn own(&self) -> &[(String, String)] {
         &self.own
@@ -124,6 +137,13 @@ fn text(m: &Map<String, Value>, key: &str) -> Result<Option<String>, Refusal> {
 
 /// A style's scheme: its default presentation, overridden by the settings.
 fn static_scheme(style: &str, m: &Map<String, Value>) -> Result<StaticScheme, Refusal> {
+    if style == QUERY_KEY {
+        // One parameter, the credential verbatim; the header settings do not apply to it.
+        let param = text(m, "param")?;
+        return Ok(StaticScheme::uniform(Presentation::raw(
+            param.as_deref().unwrap_or(QUERY_KEY_DEFAULT_PARAM),
+        )));
+    }
     let default = match style {
         BEARER => Presentation::BEARER,
         API_KEY => Presentation::raw(text(m, "header")?.as_deref().unwrap_or(API_KEY)),
@@ -199,7 +219,11 @@ pub fn open_binding(
     if !credential_text.is_empty() && own.is_empty() {
         notes.push(unpresented(&scheme, credential_text, Mode::Own));
     }
-    Ok(Binding { scheme, own })
+    Ok(Binding {
+        scheme,
+        own,
+        query: style == QUERY_KEY,
+    })
 }
 
 #[cfg(test)]

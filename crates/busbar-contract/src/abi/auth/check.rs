@@ -9,9 +9,9 @@
 use super::inbound::{BeginLoginOut, IdentifyOut, IdentityBuf};
 use super::outbound::{FieldSpan, FieldsOut};
 use super::{
-    BEGIN_AUTHORIZE, BEGIN_FORM, FIELD_SENSITIVE, IDENTITY_HAS_TTL, LOGIN_IDENTITY, LOGIN_OUTAGE,
-    SPAN_ABSENT, STYLE_CALLER_CREDENTIAL, STYLE_NEEDS_BODY_HASH, STYLE_NEEDS_HEADERS,
-    VERDICT_IDENTITY, VERDICT_PASS,
+    BEGIN_AUTHORIZE, BEGIN_FORM, FIELD_QUERY, FIELD_SENSITIVE, IDENTITY_HAS_TTL, LOGIN_IDENTITY,
+    LOGIN_SECURITY_CHECK_FAILED, SPAN_ABSENT, STYLE_CALLER_CREDENTIAL, STYLE_NEEDS_BODY_HASH,
+    STYLE_NEEDS_HEADERS, VERDICT_IDENTITY, VERDICT_PASS,
 };
 use crate::abi::mechanism::call::{AbiStr, Outcome, Span, BLOB_OCTETS};
 use crate::abi::mechanism::check::{fault, results, Dim, Fault, Rule, MAX_BYTES};
@@ -141,7 +141,7 @@ pub fn check_identify(
 }
 
 /// `complete_login`'s answer: the same rules as [`check_identify`] (and the same host duty), over
-/// the login vocabulary [`LOGIN_IDENTITY`] ..= [`LOGIN_OUTAGE`].
+/// the login vocabulary [`LOGIN_IDENTITY`] ..= [`LOGIN_SECURITY_CHECK_FAILED`].
 pub fn check_complete_login(
     outcome: Outcome,
     out: &IdentifyOut,
@@ -153,7 +153,7 @@ pub fn check_complete_login(
         out,
         buf,
         groups,
-        (LOGIN_IDENTITY, LOGIN_OUTAGE),
+        (LOGIN_IDENTITY, LOGIN_SECURITY_CHECK_FAILED),
         LOGIN_IDENTITY,
         &COMPLETE_LOGIN,
     )
@@ -253,7 +253,7 @@ pub fn check_fields(
         return Err(fault(Rule::Contradiction, a.count_mismatch));
     }
     fields.iter().try_for_each(|f| {
-        if f.flags & !FIELD_SENSITIVE != 0 {
+        if f.flags & !(FIELD_SENSITIVE | FIELD_QUERY) != 0 {
             return Err(fault(Rule::UnknownCode, a.unknown_flags));
         }
         span(f.name, cap, false, a)?;
