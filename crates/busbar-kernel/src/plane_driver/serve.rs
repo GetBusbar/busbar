@@ -22,8 +22,9 @@
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use axum::body::{Body, Bytes};
-use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
-use axum::response::Response;
+use axum::extract::{FromRequest, Request};
+use axum::http::{HeaderName, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
 use busbar_contract::abi::host::conn::connector::NEVER_KEPT;
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
@@ -152,16 +153,11 @@ fn admin(routes: &[ServeRoute]) -> impl Iterator<Item = &ServeRoute> {
 
 /// THE ADMIN ROUTER'S FALLBACK: a request no kernel route matched, answered by the published
 /// instance whose admin route it names. `None` = no instance names the path (the router's `404`);
-/// a path an instance names under another verb answers the admin surface's `405`.
-pub async fn answer(
-    method: &Method,
-    uri: &Uri,
-    mut headers: HeaderMap,
-    consumed: Option<&ConsumedCredentials>,
-    principal: Option<AuthPrincipal>,
-    body: Bytes,
-) -> Option<Response> {
+/// a path an instance names under another verb answers the admin surface's `405`. The body is read
+/// only for a served route, under the inbound body limit, so an unmatched path answers as before.
+pub async fn answer(req: Request) -> Option<Response> {
     use crate::admin::v1::contract::{AdminError, ADMIN_PREFIX};
+    let uri = req.uri().clone();
     let path = uri.path().strip_prefix(ADMIN_PREFIX).unwrap_or(uri.path());
     let (table, index, name) = {
         let tables = TABLES.read().unwrap_or_else(PoisonError::into_inner);
@@ -174,7 +170,7 @@ pub async fn answer(
                     continue;
                 };
                 named = true;
-                if r.verb.eq_ignore_ascii_case(method.as_str()) {
+                if r.verb.eq_ignore_ascii_case(req.method().as_str()) {
                     found = Some((t.clone(), i, name.to_string()));
                     break 'tables;
                 }
@@ -190,7 +186,13 @@ pub async fn answer(
             None => return None,
         }
     };
-    ConsumedCredentials::strip_from(consumed, &mut headers);
+    let mut headers = req.headers().clone();
+    ConsumedCredentials::strip_from(req.extensions().get(), &mut headers);
+    let principal = req.extensions().get::<AuthPrincipal>().cloned();
+    let body = match Bytes::from_request(req, &()).await {
+        Ok(body) => body,
+        Err(refused) => return Some(refused.into_response()),
+    };
     let head: HeadFields = headers
         .iter()
         .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))

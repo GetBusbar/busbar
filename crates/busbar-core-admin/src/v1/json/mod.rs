@@ -301,17 +301,8 @@ fn mount_plane_admin_routes(mut router: Router<Arc<AppHandle>>) -> Router<Arc<Ap
 /// THE ADMIN SURFACE'S FALLBACK: a path no route above matched is a published plane instance's
 /// admin route, served by its `serve` op (`busbar_kernel::plane_driver::serve`, ARCHITECT C2c S5
 /// Q1), or the unmatched `404`. The auth middleware has already judged it like every admin path.
-async fn plane_serve_or_not_found(
-    method: axum::http::Method,
-    uri: axum::http::Uri,
-    consumed: Option<axum::Extension<busbar_kernel::auth::ConsumedCredentials>>,
-    principal: Option<axum::Extension<busbar_kernel::auth::AuthPrincipal>>,
-    headers: axum::http::HeaderMap,
-    body: axum::body::Bytes,
-) -> Response {
-    let consumed = consumed.as_ref().map(|axum::Extension(c)| c);
-    let principal = principal.map(|axum::Extension(p)| p);
-    busbar_kernel::plane_driver::serve::answer(&method, &uri, headers, consumed, principal, body)
+async fn plane_serve_or_not_found(req: axum::extract::Request) -> Response {
+    busbar_kernel::plane_driver::serve::answer(req)
         .await
         .unwrap_or_else(|| err_json(&AdminError::not_found("resource")))
 }

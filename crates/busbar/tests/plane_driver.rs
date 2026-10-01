@@ -480,36 +480,21 @@ fn serve_table(
 /// One admin request through the admin router's fallback: its status and body, or `None` when no
 /// published instance names the path (the router's own `404`).
 fn admin(method: &str, path: &str, body: &str) -> Option<(u16, String)> {
-    use axum::http::{HeaderMap, HeaderValue, Method, Uri};
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "authorization",
-        HeaderValue::from_static("Bearer operator-secret"),
-    );
-    headers.insert("cookie", HeaderValue::from_static("session=secret"));
-    headers.insert(
-        "proxy-authorization",
-        HeaderValue::from_static("Basic secret"),
-    );
-    headers.insert("x-trace", HeaderValue::from_static("t-1"));
-    let uri: Uri = format!("{}{path}", busbar_kernel::api::ADMIN_PREFIX)
-        .parse()
-        .expect("a path");
-    let method = Method::from_bytes(method.as_bytes()).expect("a verb");
+    let req = axum::http::Request::builder()
+        .method(method)
+        .uri(format!("{}{path}", busbar_kernel::api::ADMIN_PREFIX))
+        .header("authorization", "Bearer operator-secret")
+        .header("cookie", "session=secret")
+        .header("proxy-authorization", "Basic secret")
+        .header("x-trace", "t-1")
+        .body(axum::body::Body::from(body.to_string()))
+        .expect("a request");
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("a runtime");
     rt.block_on(async {
-        let resp = busbar_kernel::plane_driver::serve::answer(
-            &method,
-            &uri,
-            headers,
-            None,
-            None,
-            axum::body::Bytes::from(body.to_string()),
-        )
-        .await?;
+        let resp = busbar_kernel::plane_driver::serve::answer(req).await?;
         let status = resp.status().as_u16();
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await

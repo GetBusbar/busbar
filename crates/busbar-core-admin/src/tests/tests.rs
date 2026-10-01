@@ -255,6 +255,30 @@ async fn test_api_root_unmatched_paths_speak_the_admin_envelope() {
     handle.abort();
 }
 
+/// The admin fallback reads no body for a path nothing serves: an unmatched admin path whose body
+/// is past the inbound body limit is still the envelope `404`, never the body limit's `413` (the
+/// plane `serve` table answers it only once a published route names it; ARCHITECT C2c S5 Q1).
+#[tokio::test]
+async fn an_unmatched_admin_path_reads_no_body() {
+    busbar_kernel::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = crate::new_test_app().governance(gov).build();
+    let (_, admin, _) = crate::build_split_routers_with_limits(app, 16, 0, false);
+    let (addr, handle, client) = spin_up(admin).await;
+    let r = client
+        .post(format!("http://{addr}/api/v1/admin/nonexistent"))
+        .header("x-admin-token", "admintok")
+        .body(vec![b'x'; 64])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 404);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "not_found", "{body}");
+    handle.abort();
+}
+
 /// Governance-off semantics are UNAMBIGUOUS — collection reads answer the
 /// truthful empty page, single reads a truthful 404, and writes a 409 `conflict` with an
 /// actionable message (previously everything was 404, making `not_found` mean two things).
