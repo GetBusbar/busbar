@@ -506,7 +506,8 @@ fn n_slots_are_reported_dropped_and_not_written() {
 /// slot, an unknown one raw from `extra` — and an absent member stays absent.
 #[test]
 fn ir04_same_dialect_service_tier_bytes_are_the_callers() {
-    let writer = protocol_for("anthropic").unwrap().writer();
+    let protocol = protocol_for("anthropic").unwrap();
+    let writer = protocol.writer();
     for raw in [json!("auto"), json!("standard_only"), json!("turbo"), json!(7)] {
         let out = writer.write_request(&read(&with(base(), "service_tier", raw.clone())));
         assert_eq!(out.get("service_tier"), Some(&raw), "{raw}");

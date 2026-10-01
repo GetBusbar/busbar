@@ -143,10 +143,10 @@ pub(super) fn read_bedrock_citation(c: &serde_json::Value) -> crate::codec::ir::
         ),
     ];
     let offsets = OFFSET_LOCATIONS.iter().find_map(|(wire, kind, index)| {
-        member(*wire).map(|m| {
+        member(wire).map(|m| {
             (
                 Some(*kind),
-                int(Some(m), *index),
+                int(Some(m), index),
                 int(Some(m), keys::START),
                 int(Some(m), keys::END),
                 None,

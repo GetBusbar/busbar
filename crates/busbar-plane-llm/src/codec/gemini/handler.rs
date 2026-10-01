@@ -19,7 +19,7 @@ use crate::codec::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
 use crate::codec::keys;
-use busbar_contract::codec::{CodecError, IngressReject, OperationHandler, RequestHandler};
+use busbar_contract::codec::{CodecError, IngressReject, RequestHandler};
 use busbar_contract::codec::{EgressCtx, WireBody};
 use busbar_contract::media::{base64_encode, MediaBlob, MediaPayload};
 use busbar_contract::operation::OpVerb;

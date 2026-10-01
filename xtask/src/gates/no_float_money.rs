@@ -642,13 +642,13 @@ pub const ALLOWED_COUNT_READS: &[Allow] = &[
     },
     Allow {
         file: "crates/busbar-plane-llm/src/codec/openai_chat/handler.rs",
-        needle: "get(\"start\")",
+        needle: "get(keys::START)",
         class: AllowClass::NotACount,
         why: "a transcription timing offset — metadata echoed back, never metered",
     },
     Allow {
         file: "crates/busbar-plane-llm/src/codec/openai_chat/handler.rs",
-        needle: "get(\"end\")",
+        needle: "get(keys::END)",
         class: AllowClass::NotACount,
         why: "a transcription timing offset — metadata echoed back, never metered",
     },

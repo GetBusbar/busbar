@@ -8,7 +8,7 @@ use crate::codec::keys;
 use crate::codec::ir::moderation::{
     ModerationInput, ModerationReq, ModerationResp, ModerationResult,
 };
-use busbar_contract::codec::{CodecError, IngressReject, OperationHandler, RequestHandler};
+use busbar_contract::codec::{CodecError, IngressReject, RequestHandler};
 use busbar_contract::codec::{EgressCtx, WireBody};
 use busbar_contract::operation::OpVerb;
 use busbar_contract::SlabBytes;
