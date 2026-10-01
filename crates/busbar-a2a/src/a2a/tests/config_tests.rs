@@ -604,8 +604,13 @@ fn the_admin_write_path_and_the_file_share_one_grammar() {
 }
 
 /// The section is a real member of the named-map chassis, not a special case bolted beside it.
+///
+/// The chassis folds its sections from the process plane registry, so this test registers its own
+/// plane first, as the composition root does before any read. It does not count on a sibling test
+/// having registered it.
 #[test]
 fn the_section_is_a_first_class_member_of_the_chassis() {
+    crate::testkit::install_test_seams();
     let agents = engine()
         .named_map_section_facts(crate::a2a::PLANE_DECLARATION.config_section)
         .expect(
@@ -621,6 +626,26 @@ fn the_section_is_a_first_class_member_of_the_chassis() {
     assert!(
         !agents.has_trust_ceiling,
         "the trust ceiling is an identity-provider concern; an agent's trust is its pin"
+    );
+}
+
+/// RED ARM for the test above: with no plane registered, which is the state a test binary is in when
+/// that test runs before any sibling has registered this plane, the section is absent from the
+/// chassis. A chassis test that skips its own registration fails then.
+#[test]
+fn the_section_is_absent_from_the_chassis_until_its_plane_is_registered() {
+    let section = crate::a2a::PLANE_DECLARATION.config_section;
+    {
+        let _empty = busbar_kernel::plane::registry::TestRegistryIsolation::empty();
+        assert!(
+            engine().named_map_section_facts(section).is_none(),
+            "an unregistered plane's section must not be in sections()"
+        );
+    }
+    crate::testkit::install_test_seams();
+    assert!(
+        engine().named_map_section_facts(section).is_some(),
+        "a registered plane's section must be in sections()"
     );
 }
 
