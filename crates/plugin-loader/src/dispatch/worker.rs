@@ -701,6 +701,7 @@ impl Worker {
         let e = &mut st.entries[idx as usize];
         env.completions.forget(self.ticket(idx, e.generation));
         env.services.forget(self.ticket(idx, e.generation));
+        super::conn_services::forget(self.ticket(idx, e.generation));
         e.generation = recycled_generation(e.generation);
         e.live = false;
         e.latched = false;

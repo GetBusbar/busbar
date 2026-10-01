@@ -340,3 +340,428 @@ fn an_instance_without_a_need_is_handed_no_table_and_its_open_is_undeclared() {
         "every bind mints its own identity"
     );
 }
+
+// ── FRAMED REQUESTS, REPLIES AND THE REPLAY RULE ──
+
+use std::collections::VecDeque;
+
+use busbar_contract::abi::host::conn::connector::{
+    IoIn, ReplyIn, ReplyPiece, RequestIn, RequestPiece, REPLY_ACK, REPLY_BODY, REPLY_END,
+    REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD,
+};
+use busbar_contract::abi::host::service::ServiceFn;
+use busbar_contract::abi::transport::FrameSpan;
+use busbar_contract::conn::PieceKind;
+use busbar_contract::ids::StreamId;
+
+/// What one open carried: the need, target, head words, fields and body.
+type Opened = (NeedId, String, Vec<u8>, Vec<u8>, Vec<(String, Vec<u8>)>, Vec<u8>);
+
+/// A connection table whose needs are framed (or not), whose opens are recorded (or refused) and
+/// whose reads answer a script, one piece and its bytes per read.
+#[derive(Default)]
+struct Scripted {
+    slab: ConnSlab<()>,
+    framed: bool,
+    refuse: Option<ConnError>,
+    opened: Mutex<Vec<Opened>>,
+    writes: Mutex<Vec<Vec<u8>>>,
+    script: Mutex<VecDeque<(Piece, Vec<u8>)>>,
+}
+
+impl DeclaredConns for Scripted {
+    fn declare(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        _: &ReadNeed,
+        _: Option<&str>,
+    ) -> Result<(), ConnError> {
+        self.slab.declare(owner, need);
+        Ok(())
+    }
+    fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>> {
+        self.slab.check_need(owner, need).ok().map(Ok)
+    }
+    fn framed(&self, _: InstanceId, _: NeedId) -> bool {
+        self.framed
+    }
+}
+
+impl Conns for Scripted {
+    fn open(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+    ) -> Result<ConnId, ConnError> {
+        self.slab.check_need(caller, need)?;
+        self.opened.lock().unwrap().push((
+            need,
+            desc.target.to_owned(),
+            desc.method.to_vec(),
+            desc.head_target.to_vec(),
+            desc.fields
+                .iter()
+                .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
+                .collect(),
+            desc.body.to_vec(),
+        ));
+        if let Some(e) = self.refuse {
+            return Err(e);
+        }
+        self.slab.insert(caller, need, ())
+    }
+    fn write(&self, c: InstanceId, id: ConnId, b: &[u8], _: bool) -> Result<usize, ConnError> {
+        self.slab.get(c, id)?;
+        self.writes.lock().unwrap().push(b.to_vec());
+        Ok(b.len())
+    }
+    fn read(&self, c: InstanceId, id: ConnId, _: u64, buf: &mut [u8]) -> Result<Piece, ConnError> {
+        self.slab.get(c, id)?;
+        let (mut p, bytes) = self
+            .script
+            .lock()
+            .unwrap()
+            .pop_front()
+            .ok_or(ConnError::Pending)?;
+        buf[..bytes.len()].copy_from_slice(&bytes);
+        p.len = p.len.min(bytes.len());
+        Ok(p)
+    }
+    fn wait(&self, _: InstanceId, _: &[ConnId], _: u64) -> Result<usize, ConnError> {
+        Err(ConnError::Pending)
+    }
+    fn facts(&self, _: InstanceId, _: ConnId) -> Result<ConnFacts, ConnError> {
+        Err(ConnError::Closed)
+    }
+    fn close(&self, c: InstanceId, id: ConnId) -> Result<(), ConnError> {
+        self.slab.remove(c, id).map(|_| ())
+    }
+}
+
+/// A need the plugin names the target of: declared at bind.
+const NAMED: [Need; 1] = [Need {
+    direction: DIRECTION_OUTBOUND,
+    egress_class: 0,
+    transport: abi_str("sock"),
+    auth: NONE,
+    target_from: NONE,
+    trust_from: NONE,
+    details: NO_BLOB,
+    timeout_ms: 0,
+}];
+
+/// The ticket every op in these tests runs on.
+const T: Ticket = Ticket {
+    slot: 7,
+    generation: 3,
+};
+
+fn bound_over(table: &Arc<Scripted>) -> Plugin<TestKind> {
+    // SAFETY: the real door and its Statement are `'static`.
+    let real: Door = unsafe { *plug::busbar_plugin_door() };
+    let st: Statement = unsafe { *real.statement };
+    let st: &'static Statement = Box::leak(Box::new(Statement {
+        needs: NAMED.as_ptr(),
+        needs_len: NAMED.len(),
+        ..st
+    }));
+    let door: &'static Door = Box::leak(Box::new(Door {
+        statement: st,
+        ..real
+    }));
+    let v = validate_door::<TestKind>(door).expect("the door validates");
+    let conns: Arc<dyn DeclaredConns> = table.clone();
+    Plugin::bind(
+        v,
+        None,
+        Bind {
+            max_inflight_cap: 8,
+            sink: Arc::new(NoSink),
+            dispatcher: Adopter::unwatched(),
+            conns: Some(conns),
+        },
+    )
+    .expect("the instance binds")
+}
+
+fn head_of<I>(op: u32, seq: u32) -> ServiceHead {
+    ServiceHead {
+        size: std::mem::size_of::<I>() as u32,
+        op,
+        handle: CompletionHandle {
+            ticket: T,
+            seq,
+            _reserved: 0,
+        },
+    }
+}
+
+/// One crossing of `f` with `input`, under `p`'s context.
+fn call<I>(p: &Plugin<TestKind>, f: Option<ServiceFn>, input: &I) -> ServiceOut {
+    // SAFETY: an all-zero `ServiceOut` is a valid value the slot overwrites.
+    let mut out: ServiceOut = unsafe { std::mem::zeroed() };
+    let _: RawOutcome = f.expect("served")(p.inner.ctx(), std::ptr::from_ref(input).cast(), &mut out);
+    out
+}
+
+fn opened_stream(p: &Plugin<TestKind>, seq: u32) -> ServiceOut {
+    let i = EstablishIn {
+        head: head_of::<EstablishIn>(service::ESTABLISH, seq),
+        need: 0,
+        _reserved: 0,
+        target: abi_str("127.0.0.1:9"),
+    };
+    call(p, CONN_SLOTS.establish, &i)
+}
+
+fn request(p: &Plugin<TestKind>, seq: u32, stream: u64, piece: &RequestPiece, bytes: &[u8]) -> ServiceOut {
+    let i = RequestIn {
+        head: head_of::<RequestIn>(service::WRITE_REQUEST, seq),
+        stream,
+        buf: bytes.as_ptr(),
+        len: bytes.len(),
+        piece: std::ptr::from_ref(piece),
+    };
+    call(p, CONN_SLOTS.write_request, &i)
+}
+
+fn span(offset: usize, len: usize) -> FrameSpan {
+    FrameSpan {
+        offset: offset as u64,
+        len: len as u64,
+    }
+}
+
+/// `PATCH /v1/x` with one field, as `exchange()` lays its head out.
+const HEAD_BYTES: &[u8] = b"PATCH/v1/xa: 1\r\n";
+
+fn head_piece() -> RequestPiece {
+    RequestPiece {
+        kind: REQUEST_HEAD,
+        _reserved: 0,
+        method: span(0, 5),
+        target: span(5, 5),
+        fields: span(10, 6),
+        timeout_ms: 250,
+    }
+}
+
+fn kind_piece(kind: u32) -> RequestPiece {
+    RequestPiece {
+        kind,
+        ..RequestPiece::default()
+    }
+}
+
+fn read_reply(p: &Plugin<TestKind>, seq: u32, stream: u64, buf: &mut [u8]) -> (ServiceOut, ReplyPiece) {
+    let mut piece = ReplyPiece::default();
+    let i = ReplyIn {
+        head: head_of::<ReplyIn>(service::READ_REPLY, seq),
+        stream,
+        buf: buf.as_mut_ptr(),
+        len: buf.len(),
+        piece: std::ptr::from_mut(&mut piece),
+    };
+    let out = call(p, CONN_SLOTS.read_reply, &i);
+    (out, piece)
+}
+
+fn ready(o: &ServiceOut) -> bool {
+    o.outcome == RawOutcome::of(Outcome::Ready)
+}
+
+fn error_text(o: &ServiceOut) -> String {
+    if o.error.ptr.is_null() {
+        return String::new();
+    }
+    // SAFETY: the host's static text.
+    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(o.error.ptr, o.error.len) })
+        .into_owned()
+}
+
+fn piece(kind: PieceKind, code: Option<u32>, reason: Option<std::ops::Range<usize>>, len: usize) -> Piece {
+    Piece {
+        kind,
+        stream: StreamId(0),
+        len,
+        end: true,
+        status: None,
+        status_code: code,
+        status_namespace: None,
+        retry_after_secs: None,
+        reason,
+    }
+}
+
+/// RED: a framed need's ESTABLISH opens nothing (no request goes out before the plugin wrote
+/// one); WRITE_REQUEST's head, body and end then open it ONCE, the whole request its opening
+/// message: the head words, the field block's fields, the body and the timeout.
+#[test]
+fn a_framed_request_goes_out_whole_as_the_opening_message_with_its_head_words() {
+    let table = Arc::new(Scripted {
+        framed: true,
+        ..Scripted::default()
+    });
+    let p = bound_over(&table);
+    let est = opened_stream(&p, 0);
+    assert!(ready(&est));
+    assert!(table.opened.lock().unwrap().is_empty(), "nothing is sent at establish");
+    let stream = est.value;
+    let h = request(&p, 1, stream, &head_piece(), HEAD_BYTES);
+    assert!(ready(&h));
+    assert_eq!(h.len, HEAD_BYTES.len() as u64);
+    assert!(ready(&request(&p, 2, stream, &kind_piece(REQUEST_BODY), b"hi")));
+    assert!(ready(&request(&p, 3, stream, &kind_piece(REQUEST_BODY), b"!")));
+    assert!(table.opened.lock().unwrap().is_empty(), "nothing is sent before the end");
+    assert!(ready(&request(&p, 4, stream, &kind_piece(REQUEST_END), b"")));
+    assert_eq!(
+        table.opened.lock().unwrap().as_slice(),
+        &[(
+            NeedId(0),
+            "127.0.0.1:9".to_owned(),
+            b"PATCH".to_vec(),
+            b"/v1/x".to_vec(),
+            vec![("a".to_owned(), b"1".to_vec())],
+            b"hi!".to_vec()
+        )]
+    );
+}
+
+/// RED: a raw stream refuses WRITE_REQUEST (its bytes go through WRITE), and a framed request's
+/// body before its head is refused.
+#[test]
+fn write_request_is_refused_on_a_raw_stream_and_out_of_order() {
+    let raw = Arc::new(Scripted::default());
+    let p = bound_over(&raw);
+    let stream = opened_stream(&p, 0).value;
+    assert_eq!(raw.opened.lock().unwrap().len(), 1, "a raw stream opens at establish");
+    let o = request(&p, 1, stream, &head_piece(), HEAD_BYTES);
+    assert_eq!(o.outcome, RawOutcome::of(Outcome::Refused));
+    let framed = Arc::new(Scripted {
+        framed: true,
+        ..Scripted::default()
+    });
+    let q = bound_over(&framed);
+    let held = opened_stream(&q, 0).value;
+    let o = request(&q, 1, held, &kind_piece(REQUEST_BODY), b"x");
+    assert_eq!(o.outcome, RawOutcome::of(Outcome::Refused));
+}
+
+/// RED: the reply reads as its head (code, reason exactly as sent, field block), its body, and
+/// ONE terminal END; nothing reads after the end.
+#[test]
+fn a_reply_reads_its_head_its_body_and_one_terminal_end() {
+    let table = Arc::new(Scripted::default());
+    table.script.lock().unwrap().extend([
+        (
+            piece(PieceKind::Fields, Some(201), Some(6..16), 6),
+            b"x: y\r\nFine By Me".to_vec(),
+        ),
+        (piece(PieceKind::Body, None, None, 3), b"abc".to_vec()),
+        (piece(PieceKind::Completion, None, None, 0), Vec::new()),
+    ]);
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    let mut buf = [0_u8; 64];
+    let (o, h) = read_reply(&p, 1, stream, &mut buf);
+    assert!(ready(&o));
+    assert_eq!(
+        h,
+        ReplyPiece {
+            kind: REPLY_HEAD,
+            code: 201,
+            reason: span(6, 10),
+            fields: span(0, 6),
+        }
+    );
+    assert_eq!(&buf[6..16], b"Fine By Me");
+    let (o, b) = read_reply(&p, 2, stream, &mut buf);
+    assert_eq!((b.kind, o.len), (REPLY_BODY, 3));
+    assert_eq!(&buf[..3], b"abc");
+    let (o, e) = read_reply(&p, 3, stream, &mut buf);
+    assert!(ready(&o));
+    assert_eq!(e.kind, REPLY_END);
+    let (o, _) = read_reply(&p, 4, stream, &mut buf);
+    assert_eq!(o.outcome, RawOutcome::of(Outcome::Failed), "one terminal piece");
+}
+
+/// RED: a reply that had no head (a raw stream) ends in ONE ack.
+#[test]
+fn a_reply_without_a_head_ends_in_one_ack() {
+    let table = Arc::new(Scripted::default());
+    table.script.lock().unwrap().extend([
+        (piece(PieceKind::Body, None, None, 2), b"ok".to_vec()),
+        (piece(PieceKind::Completion, None, None, 0), Vec::new()),
+    ]);
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    let mut buf = [0_u8; 8];
+    assert_eq!(read_reply(&p, 1, stream, &mut buf).1.kind, REPLY_BODY);
+    let (o, ack) = read_reply(&p, 2, stream, &mut buf);
+    assert!(ready(&o));
+    assert_eq!(ack.kind, REPLY_ACK);
+}
+
+/// RED: a framed request whose open the egress class refused is handed over (its end answers),
+/// and its reply is the FAILED ACK: the refusal, with its text; the reply has ended.
+#[test]
+fn an_egress_refusal_is_a_failed_ack_with_its_text() {
+    let table = Arc::new(Scripted {
+        framed: true,
+        refuse: Some(ConnError::Refused),
+        ..Scripted::default()
+    });
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    assert!(ready(&request(&p, 1, stream, &head_piece(), HEAD_BYTES)));
+    assert!(ready(&request(&p, 2, stream, &kind_piece(REQUEST_END), b"")));
+    let mut buf = [0_u8; 8];
+    let (o, _) = read_reply(&p, 3, stream, &mut buf);
+    assert_eq!(o.outcome, RawOutcome::of(Outcome::Refused));
+    assert_eq!(error_text(&o), ConnError::Refused.text());
+    let (o, _) = read_reply(&p, 4, stream, &mut buf);
+    assert_eq!(o.outcome, RawOutcome::of(Outcome::Failed), "the reply has ended");
+}
+
+/// RED: the host never runs a service twice: a re-issued ESTABLISH handle answers the same
+/// stream without a second open, a re-issued WRITE_REQUEST head is not a second head, and a
+/// re-issued WRITE writes once.
+#[test]
+fn a_replayed_handle_never_runs_its_service_twice() {
+    let raw = Arc::new(Scripted::default());
+    let p = bound_over(&raw);
+    let first = opened_stream(&p, 0);
+    let again = opened_stream(&p, 0);
+    assert_eq!(again.value, first.value);
+    assert_eq!(raw.opened.lock().unwrap().len(), 1, "one open");
+    let w = IoIn {
+        head: head_of::<IoIn>(service::WRITE, 1),
+        stream: first.value,
+        buf: b"once".as_ptr().cast_mut(),
+        len: 4,
+    };
+    assert!(ready(&call(&p, CONN_SLOTS.write, &w)));
+    assert!(ready(&call(&p, CONN_SLOTS.write, &w)));
+    assert_eq!(raw.writes.lock().unwrap().len(), 1, "one write");
+
+    let framed = Arc::new(Scripted {
+        framed: true,
+        ..Scripted::default()
+    });
+    let q = bound_over(&framed);
+    let stream = opened_stream(&q, 0).value;
+    let h = request(&q, 1, stream, &head_piece(), HEAD_BYTES);
+    let replayed = request(&q, 1, stream, &head_piece(), HEAD_BYTES);
+    assert!(ready(&h));
+    assert!(ready(&replayed), "the replay answers the stored result, not a second head");
+    assert_eq!(replayed.len, h.len);
+    super::forget(T);
+    let fresh = request(&q, 1, stream, &head_piece(), HEAD_BYTES);
+    assert_eq!(
+        fresh.outcome,
+        RawOutcome::of(Outcome::Refused),
+        "a forgotten ticket's handle runs afresh"
+    );
+}

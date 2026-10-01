@@ -11,21 +11,42 @@
 //!   table wakes it), and never PENDING without one. A closed stream reads as its end (`len` 0).
 //! * `WRITE` offers bytes; `CLOSE` closes.
 //! * `RANDOM` fills the buffer from the OS; `IDENTITY` names the process.
+//! * `WRITE_REQUEST` sends a request on a FRAMED stream piece by piece (head, body, end): a framed
+//!   need's `ESTABLISH` answers a stream the host holds unopened, the head and body are held here,
+//!   and the end opens it with the whole request as its opening message, the head words included
+//!   (`OpenDesc::method`, `OpenDesc::head_target`), so the framer writes its own wire head. A raw
+//!   stream refuses it.
+//! * `READ_REPLY` reads the reply piece by piece with its descriptor (`ReplyPiece`, spec Part 4
+//!   Axis 3, "Every transport acks back to the sender"): the far end's head is `REPLY_HEAD` (its
+//!   code, its reason as sent, its field block, `abi::transport::fields`), its body `REPLY_BODY`,
+//!   and the end exactly ONE terminal piece, `REPLY_END` after a head or `REPLY_ACK` without one. A
+//!   refused or failed stream (the egress class's refusal among them) is a failed ack: the read
+//!   answers its refusal, with its text, and the reply has ended.
 //! * A slot this host does not offer is NULL: a plugin that needs it refuses to open.
+//!
+//! THE REPLAY RULE (`abi::sdk::conn`): the host never runs a service twice. A ticketed service's
+//! answer is kept under its completion handle, and a re-issued handle answers it again without a
+//! second run; the worker forgets a ticket's answers when it recycles the ticket ([`forget`]).
 
+use std::collections::HashMap;
 use std::mem::size_of;
 use std::os::raw::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use busbar_contract::abi::host::conn::connector::{
-    service, ConnectorSlots, EstablishIn, IdentityIn, IoIn, ProcessIdentity, RandomIn, StreamIn,
-    SERVICES,
+    service, ConnectorSlots, EstablishIn, IdentityIn, IoIn, ProcessIdentity, RandomIn, ReplyIn,
+    ReplyPiece, RequestIn, RequestPiece, StreamIn, REPLY_ACK, REPLY_BODY, REPLY_END, REPLY_HEAD,
+    REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES,
 };
 use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
-use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
-use busbar_contract::conn::{ConnError, ConnId, DeclaredConns, InstanceId, NeedId, OpenDesc};
+use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
+use busbar_contract::abi::transport::{fields, FrameSpan};
+use busbar_contract::conn::{
+    ConnError, ConnId, DeclaredConns, InstanceId, NeedId, OpenDesc, PieceKind,
+};
 
 use super::ticket::InstanceWake;
 
@@ -45,8 +66,8 @@ pub static CONN_SLOTS: ConnectorSlots = ConnectorSlots {
     close: Some(close),
     random: Some(random),
     identity: Some(identity),
-    read_reply: None,
-    write_request: None,
+    read_reply: Some(read_reply),
+    write_request: Some(write_request),
 };
 
 /// A mechanism ticket as the connection table's wake number ([`busbar_contract::conn::Ticket`]):
@@ -66,6 +87,7 @@ pub const fn ticket_of(n: u64) -> Ticket {
 }
 
 /// One slot's answer, before it is written into the caller's `out`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Answer {
     outcome: Outcome,
     value: u64,
@@ -137,7 +159,7 @@ fn slot(
             return Answer::with(Outcome::Fault, "");
         }
         match armed(ctx) {
-            Some((id, table)) => body(*id, table, head),
+            Some((id, table)) => kept(*id, head.handle, || body(*id, table, head)),
             None => Answer::of(ConnError::Unarmed),
         }
     }))
@@ -195,6 +217,25 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 return Answer::with(Outcome::Fault, "");
             };
             let target = String::from_utf8_lossy(target);
+            if table.framed(id, NeedId(i.need)) {
+                // A FRAMED need opens when its request is whole (`WRITE_REQUEST`'s end): its
+                // request is the connection's opening message.
+                let stream = held_id();
+                streams().insert(
+                    (id, stream),
+                    Stream {
+                        conn: Conn::Held {
+                            need: NeedId(i.need),
+                            target: target.into_owned(),
+                            head: None,
+                            body: Vec::new(),
+                        },
+                        headed: false,
+                        ended: false,
+                    },
+                );
+                return Answer::ready(stream, 0);
+            }
             let desc = OpenDesc {
                 target: &target,
                 ..OpenDesc::default()
@@ -222,7 +263,11 @@ extern "C" fn read(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> 
                 return Answer::with(Outcome::Fault, "");
             };
             let ticket = conn_ticket(head.handle.ticket);
-            match table.read(id, ConnId(i.stream), ticket, buf) {
+            let conn = match resolve(id, table, i.stream) {
+                Ok(c) => c,
+                Err(e) => return Answer::of(e),
+            };
+            match table.read(id, conn, ticket, buf) {
                 Ok(piece) => Answer::ready(0, piece.len as u64),
                 Err(ConnError::Closed) => Answer::ready(0, 0),
                 Err(ConnError::Pending) if head.handle.ticket.is_none() => Answer::with(
@@ -249,7 +294,11 @@ extern "C" fn write(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
             let Some(buf) = (unsafe { bytes(i.buf, i.len) }) else {
                 return Answer::with(Outcome::Fault, "");
             };
-            match table.write(id, ConnId(i.stream), buf, false) {
+            let conn = match resolve(id, table, i.stream) {
+                Ok(c) => c,
+                Err(e) => return Answer::of(e),
+            };
+            match table.write(id, conn, buf, false) {
                 Ok(n) => Answer::ready(0, n as u64),
                 Err(e) => Answer::of(e),
             }
@@ -267,12 +316,418 @@ extern "C" fn close(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
         |id, table, _| {
             // SAFETY: the head covered a `StreamIn`.
             let i = unsafe { input.cast::<StreamIn>().read_unaligned() };
-            match table.close(id, ConnId(i.stream)) {
+            let held = streams().remove(&(id, i.stream));
+            let conn = match held.map(|s| s.conn) {
+                // Never opened, or refused: nothing on the table to close.
+                Some(Conn::Held { .. } | Conn::Failed(_)) => return Answer::ready(0, 0),
+                Some(Conn::Open(c)) => c,
+                None if i.stream & HELD != 0 => return Answer::of(ConnError::Closed),
+                None => ConnId(i.stream),
+            };
+            match table.close(id, conn) {
                 Ok(()) => Answer::ready(0, 0),
                 Err(e) => Answer::of(e),
             }
         },
     )
+}
+
+// ── THE REPLAY RULE ─────────────────────────────────────────────────────────────────────────────
+
+/// Every ticketed service's answer, by instance and ticket, then by the handle's issue order.
+type Kept = HashMap<(InstanceId, Ticket), HashMap<u32, Answer>>;
+
+fn kept_answers() -> MutexGuard<'static, Kept> {
+    static KEPT: OnceLock<Mutex<Kept>> = OnceLock::new();
+    KEPT.get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// `run` once per completion handle: a handle that already answered (anything but PENDING)
+/// answers the same again, and `run` is not made a second time. A call on no ticket is never
+/// kept: it may not pend, and every call is its own.
+fn kept(id: InstanceId, h: CompletionHandle, run: impl FnOnce() -> Answer) -> Answer {
+    if h.ticket.is_none() {
+        return run();
+    }
+    if let Some(a) = kept_answers()
+        .get(&(id, h.ticket))
+        .and_then(|issued| issued.get(&h.seq))
+    {
+        return *a;
+    }
+    let a = run();
+    if a.outcome != Outcome::Pending {
+        kept_answers()
+            .entry((id, h.ticket))
+            .or_default()
+            .insert(h.seq, a);
+    }
+    a
+}
+
+/// Forget every answer kept under `ticket`: the worker recycled it.
+pub(crate) fn forget(ticket: Ticket) {
+    kept_answers().retain(|(_, t), _| *t != ticket);
+}
+
+/// Forget every answer kept under worker `worker`'s tickets: it was replaced.
+pub(crate) fn forget_worker(worker: u32) {
+    kept_answers().retain(|(_, t), _| super::ticket::decode(t.slot).0 != worker);
+}
+
+// ── FRAMED STREAMS AND REPLIES ───────────────────────────────────────────────────────────────────
+
+/// The bit a stream the host holds unopened carries (a connection table's ids never set it).
+const HELD: u64 = 1 << 63;
+
+/// The most a held request's body may reach before its write is refused.
+pub const REQUEST_HELD_MAX: usize = 16 * 1024 * 1024;
+
+/// A request's head, held until its end.
+#[derive(Debug, Clone)]
+struct Head {
+    method: Vec<u8>,
+    target: Vec<u8>,
+    fields: Vec<(String, Vec<u8>)>,
+    timeout_ms: u64,
+}
+
+/// Where a stream is.
+#[derive(Debug)]
+enum Conn {
+    /// A framed stream ESTABLISH answered before its request is whole: the need, the target named
+    /// at ESTABLISH (empty = the need's own), and the request so far.
+    Held {
+        need: NeedId,
+        target: String,
+        head: Option<Head>,
+        body: Vec<u8>,
+    },
+    /// Open on the connection table.
+    Open(ConnId),
+    /// Its open was refused or failed: the reply's failed ack.
+    Failed(ConnError),
+}
+
+/// What the host keeps for one stream an instance holds.
+#[derive(Debug)]
+struct Stream {
+    conn: Conn,
+    /// The reply's head was read.
+    headed: bool,
+    /// The reply's terminal piece was read.
+    ended: bool,
+}
+
+type Streams = HashMap<(InstanceId, u64), Stream>;
+
+fn streams() -> MutexGuard<'static, Streams> {
+    static STREAMS: OnceLock<Mutex<Streams>> = OnceLock::new();
+    STREAMS
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// A new held stream's id.
+fn held_id() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    HELD | NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// The connection `stream` names: a table id as it is, a held stream's once open. A held stream
+/// whose request was never written is opened as it was named, raw (a WRITE or READ on a framed
+/// stream).
+fn resolve(id: InstanceId, table: &Arc<dyn DeclaredConns>, stream: u64) -> Result<ConnId, ConnError> {
+    if stream & HELD == 0 {
+        return Ok(ConnId(stream));
+    }
+    let mut all = streams();
+    let s = all.get_mut(&(id, stream)).ok_or(ConnError::Closed)?;
+    match &s.conn {
+        Conn::Open(c) => Ok(*c),
+        Conn::Failed(e) => Err(*e),
+        Conn::Held { head: Some(_), .. } => Err(ConnError::Refused),
+        Conn::Held { need, target, .. } => {
+            let desc = OpenDesc {
+                target,
+                ..OpenDesc::default()
+            };
+            let opened = table.open(id, *need, &desc);
+            s.conn = opened.map_or_else(Conn::Failed, Conn::Open);
+            opened
+        }
+    }
+}
+
+/// A field block's fields, owned; a name that is not text, or a pseudo-field, refuses the block.
+fn field_lines(block: &[u8]) -> Result<Vec<(String, Vec<u8>)>, Answer> {
+    fields::lines(block)
+        .map(|(name, value)| {
+            if name.first() == Some(&b':') {
+                return Err(Answer::with(
+                    Outcome::Refused,
+                    "a request field is a pseudo-field; the framer names its own head",
+                ));
+            }
+            let name = std::str::from_utf8(name).map_err(|_| Answer::with(Outcome::Fault, ""))?;
+            Ok((name.to_owned(), value.to_vec()))
+        })
+        .collect()
+}
+
+/// The bytes `span` names in `bytes`, or `None` past their end.
+fn spanned(bytes: &[u8], span: FrameSpan) -> Option<&[u8]> {
+    let at = usize::try_from(span.offset).ok()?;
+    let len = usize::try_from(span.len).ok()?;
+    bytes.get(at..at.checked_add(len)?)
+}
+
+extern "C" fn write_request(
+    ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    slot(
+        ctx,
+        input,
+        out,
+        service::WRITE_REQUEST,
+        size_of::<RequestIn>(),
+        |id, table, _| {
+            // SAFETY: the head covered a `RequestIn`.
+            let i = unsafe { input.cast::<RequestIn>().read_unaligned() };
+            if i.piece.is_null() {
+                return Answer::with(Outcome::Fault, "");
+            }
+            // SAFETY: the caller's descriptor, checked non-NULL, live until the service completes.
+            let piece: RequestPiece = unsafe { i.piece.read_unaligned() };
+            // SAFETY: the caller's bytes, live until the service completes.
+            let Some(bytes) = (unsafe { bytes(i.buf.cast_mut(), i.len) }) else {
+                return Answer::with(Outcome::Fault, "");
+            };
+            let mut all = streams();
+            let Some(s) = all.get_mut(&(id, i.stream)) else {
+                return Answer::with(
+                    Outcome::Refused,
+                    "the stream is not a framed request being written; write its bytes",
+                );
+            };
+            let Conn::Held {
+                need,
+                target,
+                head,
+                body,
+            } = &mut s.conn
+            else {
+                return Answer::with(
+                    Outcome::Refused,
+                    "the stream is not a framed request being written; write its bytes",
+                );
+            };
+            match (piece.kind, head.is_some()) {
+                (REQUEST_HEAD, false) => {
+                    let (Some(method), Some(words), Some(block)) = (
+                        spanned(bytes, piece.method),
+                        spanned(bytes, piece.target),
+                        spanned(bytes, piece.fields),
+                    ) else {
+                        return Answer::with(Outcome::Fault, "");
+                    };
+                    let lines = match field_lines(block) {
+                        Ok(l) => l,
+                        Err(refused) => return refused,
+                    };
+                    *head = Some(Head {
+                        method: method.to_vec(),
+                        target: words.to_vec(),
+                        fields: lines,
+                        timeout_ms: piece.timeout_ms,
+                    });
+                    Answer::ready(0, bytes.len() as u64)
+                }
+                (REQUEST_BODY, true) => {
+                    if body.len() + bytes.len() > REQUEST_HELD_MAX {
+                        return Answer::with(
+                            Outcome::Refused,
+                            "the request body passed the host's bound",
+                        );
+                    }
+                    body.extend_from_slice(bytes);
+                    Answer::ready(0, bytes.len() as u64)
+                }
+                (REQUEST_END, true) => {
+                    let Some(h) = head.take() else {
+                        return Answer::with(Outcome::Fault, "");
+                    };
+                    let fields: Vec<(&str, &[u8])> = h
+                        .fields
+                        .iter()
+                        .map(|(n, v)| (n.as_str(), v.as_slice()))
+                        .collect();
+                    let desc = OpenDesc {
+                        target: target.as_str(),
+                        fields: &fields,
+                        body: body.as_slice(),
+                        timeout_ms: h.timeout_ms,
+                        method: &h.method,
+                        head_target: &h.target,
+                    };
+                    // The request is handed over whole; what became of it is the reply's to say.
+                    let opened = table.open(id, *need, &desc);
+                    s.conn = opened.map_or_else(Conn::Failed, Conn::Open);
+                    Answer::ready(0, 0)
+                }
+                (REQUEST_HEAD, true) => {
+                    Answer::with(Outcome::Refused, "the request's head was already written")
+                }
+                (REQUEST_BODY | REQUEST_END, false) => Answer::with(
+                    Outcome::Refused,
+                    "a request's head is written before its body and its end",
+                ),
+                _ => Answer::with(Outcome::Fault, ""),
+            }
+        },
+    )
+}
+
+extern "C" fn read_reply(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    slot(
+        ctx,
+        input,
+        out,
+        service::READ_REPLY,
+        size_of::<ReplyIn>(),
+        |id, table, head| {
+            // SAFETY: the head covered a `ReplyIn`.
+            let i = unsafe { input.cast::<ReplyIn>().read_unaligned() };
+            if i.piece.is_null() {
+                return Answer::with(Outcome::Fault, "");
+            }
+            // SAFETY: the caller's buffer, live until the service completes.
+            let Some(buf) = (unsafe { bytes(i.buf, i.len) }) else {
+                return Answer::with(Outcome::Fault, "");
+            };
+            let (piece, answer) = reply(id, table, head, i.stream, buf);
+            if let Some(p) = piece {
+                // SAFETY: the caller's descriptor slot, checked non-NULL.
+                unsafe { i.piece.write_unaligned(p) };
+            }
+            answer
+        },
+    )
+}
+
+/// The next piece of the reply on `stream`, read into `buf`: its descriptor (none for an answer
+/// without one) and the answer.
+fn reply(
+    id: InstanceId,
+    table: &Arc<dyn DeclaredConns>,
+    head: ServiceHead,
+    stream: u64,
+    buf: &mut [u8],
+) -> (Option<ReplyPiece>, Answer) {
+    {
+        let mut all = streams();
+        let s = all.entry((id, stream)).or_insert(Stream {
+            conn: Conn::Open(ConnId(stream)),
+            headed: false,
+            ended: false,
+        });
+        if s.ended {
+            return (None, Answer::of(ConnError::Closed));
+        }
+        match &s.conn {
+            Conn::Held { .. } => {
+                return (
+                    None,
+                    Answer::with(Outcome::Refused, "the request is not whole: write its end"),
+                )
+            }
+            Conn::Failed(e) => {
+                // THE FAILED ACK: the stream's refusal, with its text, and the reply has ended.
+                let e = *e;
+                s.ended = true;
+                return (None, Answer::of(e));
+            }
+            Conn::Open(_) => {}
+        }
+    }
+    let conn = match resolve(id, table, stream) {
+        Ok(c) => c,
+        Err(e) => return (None, Answer::of(e)),
+    };
+    let ticket = conn_ticket(head.handle.ticket);
+    loop {
+        let got = table.read(id, conn, ticket, buf);
+        let mut all = streams();
+        let Some(s) = all.get_mut(&(id, stream)) else {
+            return (None, Answer::of(ConnError::Closed));
+        };
+        let terminal = |s: &mut Stream| {
+            s.ended = true;
+            let kind = if s.headed { REPLY_END } else { REPLY_ACK };
+            (
+                Some(ReplyPiece {
+                    kind,
+                    ..ReplyPiece::default()
+                }),
+                Answer::ready(0, 0),
+            )
+        };
+        return match got {
+            Ok(p) => match p.kind {
+                PieceKind::Fields if s.headed && p.len > 0 => {
+                    // The far end's trailers: not handed up (1.5.5 dropped them); read on.
+                    drop(all);
+                    continue;
+                }
+                PieceKind::Fields => {
+                    s.headed = true;
+                    let reason = p.reason.clone().unwrap_or(p.len..p.len);
+                    (
+                        Some(ReplyPiece {
+                            kind: REPLY_HEAD,
+                            code: p.status_code.unwrap_or(0),
+                            reason: FrameSpan {
+                                offset: reason.start as u64,
+                                len: (reason.end - reason.start) as u64,
+                            },
+                            fields: FrameSpan {
+                                offset: 0,
+                                len: p.len as u64,
+                            },
+                        }),
+                        Answer::ready(0, reason.end.max(p.len) as u64),
+                    )
+                }
+                PieceKind::Body | PieceKind::HookReply => (
+                    Some(ReplyPiece {
+                        kind: REPLY_BODY,
+                        ..ReplyPiece::default()
+                    }),
+                    Answer::ready(0, p.len as u64),
+                ),
+                PieceKind::Completion => terminal(s),
+            },
+            Err(ConnError::Closed) => terminal(s),
+            Err(ConnError::Pending) if head.handle.ticket.is_none() => (
+                None,
+                Answer::with(
+                    Outcome::Refused,
+                    "a read that would pend is callable only inside a ticketed op",
+                ),
+            ),
+            Err(ConnError::Pending) => (None, Answer::of(ConnError::Pending)),
+            Err(e) => {
+                // A refusal or failure mid-reply is its failed ack.
+                s.ended = true;
+                (None, Answer::of(e))
+            }
+        };
+    }
 }
 
 extern "C" fn random(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
