@@ -130,50 +130,40 @@ pub(super) fn read_bedrock_citation(c: &serde_json::Value) -> crate::codec::ir::
     let member = |k: &str| loc.and_then(|l| l.get(k)).filter(|v| v.is_object());
     let int =
         |v: Option<&serde_json::Value>, k: &str| v.and_then(|o| o.get(k)).and_then(|n| n.as_i64());
+    // The offset locations, in precedence order: (wire member, IR kind, its index member), each
+    // `{<index>, start, end}`.
+    const OFFSET_LOCATIONS: [(&str, &str, &str); 4] = [
+        (super::DOCUMENT_CHAR, "char_location", super::DOCUMENT_INDEX),
+        ("documentPage", keys::PAGE_LOCATION, super::DOCUMENT_INDEX),
+        ("documentChunk", keys::CONTENT_BLOCK_LOCATION, super::DOCUMENT_INDEX),
+        (
+            super::SEARCH_RESULT_LOCATION_CAMEL,
+            keys::SEARCH_RESULT_LOCATION,
+            super::SEARCH_RESULT_INDEX,
+        ),
+    ];
+    let offsets = OFFSET_LOCATIONS.iter().find_map(|(wire, kind, index)| {
+        member(*wire).map(|m| {
+            (
+                Some(*kind),
+                int(Some(m), *index),
+                int(Some(m), keys::START),
+                int(Some(m), keys::END),
+                None,
+            )
+        })
+    });
     let (kind, document_index, start_index, end_index, url) =
-        if let Some(m) = member(super::DOCUMENT_CHAR) {
-            (
-                Some("char_location"),
-                int(Some(m), super::DOCUMENT_INDEX),
-                int(Some(m), keys::START),
-                int(Some(m), keys::END),
-                None,
-            )
-        } else if let Some(m) = member("documentPage") {
-            (
-                Some(keys::PAGE_LOCATION),
-                int(Some(m), super::DOCUMENT_INDEX),
-                int(Some(m), keys::START),
-                int(Some(m), keys::END),
-                None,
-            )
-        } else if let Some(m) = member("documentChunk") {
-            (
-                Some(keys::CONTENT_BLOCK_LOCATION),
-                int(Some(m), super::DOCUMENT_INDEX),
-                int(Some(m), keys::START),
-                int(Some(m), keys::END),
-                None,
-            )
-        } else if let Some(m) = member(super::SEARCH_RESULT_LOCATION_CAMEL) {
-            (
-                Some(keys::SEARCH_RESULT_LOCATION),
-                int(Some(m), super::SEARCH_RESULT_INDEX),
-                int(Some(m), keys::START),
-                int(Some(m), keys::END),
-                None,
-            )
-        } else if let Some(m) = member(keys::WEB) {
-            (
+        offsets.unwrap_or_else(|| match member(keys::WEB) {
+            Some(m) => (
                 Some("web_search_result_location"),
                 None,
                 None,
                 None,
                 m.get(keys::URL).and_then(|u| u.as_str()).map(String::from),
-            )
-        } else {
-            (None, None, None, None, None)
-        };
+            ),
+            None => (None, None, None, None, None),
+        });
     let quoted: Vec<&str> = c
         .get(super::SOURCE_CONTENT)
         .and_then(|s| s.as_array())

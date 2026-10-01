@@ -1,6 +1,18 @@
 use super::*;
 use crate::codec::keys;
 
+/// One streamed `GenerateContentResponse` frame carrying `part` as the model's only part.
+fn model_part_frame(part: serde_json::Value) -> (String, serde_json::Value) {
+    (
+        String::new(),
+        serde_json::json!({
+            (FIELD_CANDIDATES): [{
+                (keys::CONTENT): { (keys::ROLE): keys::MODEL, (FIELD_PARTS): [part] }
+            }]
+        }),
+    )
+}
+
 impl ProtocolWriter for GeminiWriter {
     /// The controls Gemini has no form for, derived from the mapping file; `write_request` drops
     /// each with a warn and the seam audits it from here.
@@ -975,17 +987,7 @@ impl ProtocolWriter for GeminiWriter {
                         }
                         st.text.push_str(text);
                     }
-                    Some((
-                        "".to_string(),
-                        serde_json::json!({
-                            (FIELD_CANDIDATES): [{
-                                (keys::CONTENT): {
-                                    (keys::ROLE): keys::MODEL,
-                                    (FIELD_PARTS): [{(keys::TEXT): text}]
-                                }
-                            }]
-                        }),
-                    ))
+                    Some(model_part_frame(serde_json::json!({(keys::TEXT): text})))
                 }
 
                 // InputJsonDelta → ACCUMULATE this fragment into the open tool block's arg buffer and
@@ -1046,16 +1048,8 @@ impl ProtocolWriter for GeminiWriter {
                 // the same per-chunk shape used for a `TextDelta`, just flagged `thought:true`. So we
                 // emit one chunk per fragment, mirroring the non-stream `{text, thought:true}` shape.
                 // Previously this returned None, silently dropping a cross-protocol reasoning stream.
-                crate::codec::ir::IrDelta::ThinkingDelta(thinking) => Some((
-                    "".to_string(),
-                    serde_json::json!({
-                        (FIELD_CANDIDATES): [{
-                            (keys::CONTENT): {
-                                (keys::ROLE): keys::MODEL,
-                                (FIELD_PARTS): [{(keys::TEXT): thinking, (FIELD_THOUGHT): true}]
-                            }
-                        }]
-                    }),
+                crate::codec::ir::IrDelta::ThinkingDelta(thinking) => Some(model_part_frame(
+                    serde_json::json!({(keys::TEXT): thinking, (FIELD_THOUGHT): true}),
                 )),
 
                 // SignatureDelta → a streamed thought part carrying the opaque resumable
@@ -1064,16 +1058,8 @@ impl ProtocolWriter for GeminiWriter {
                 // signature arrives as its own IR delta, so emit a minimal thought part bearing the
                 // signature (empty text, `thought:true`) — the closest faithful streamed form, since a
                 // bare signature has no accompanying incremental text. Previously dropped (None).
-                crate::codec::ir::IrDelta::SignatureDelta(sig) => Some((
-                    "".to_string(),
-                    serde_json::json!({
-                        (FIELD_CANDIDATES): [{
-                            (keys::CONTENT): {
-                                (keys::ROLE): keys::MODEL,
-                                (FIELD_PARTS): [{(keys::TEXT): "", (FIELD_THOUGHT): true, (FIELD_THOUGHT_SIGNATURE): sig}]
-                            }
-                        }]
-                    }),
+                crate::codec::ir::IrDelta::SignatureDelta(sig) => Some(model_part_frame(
+                    serde_json::json!({(keys::TEXT): "", (FIELD_THOUGHT): true, (FIELD_THOUGHT_SIGNATURE): sig}),
                 )),
                 // A streamed redacted-reasoning delta (opaque encrypted bytes) has no Gemini analog —
                 // drop it rather than emit a non-native part.
@@ -1081,16 +1067,7 @@ impl ProtocolWriter for GeminiWriter {
                 // IR-21: a generated image / audio part re-emits as the Gemini
                 // `inlineData` / `fileData` part the buffered writer uses.
                 crate::codec::ir::IrDelta::MediaDelta(block) => {
-                    super::write_gemini_media_part(block).map(|part| {
-                        (
-                            "".to_string(),
-                            serde_json::json!({
-                                (FIELD_CANDIDATES): [{
-                                    (keys::CONTENT): { (keys::ROLE): keys::MODEL, (FIELD_PARTS): [part] }
-                                }]
-                            }),
-                        )
-                    })
+                    super::write_gemini_media_part(block).map(model_part_frame)
                 }
 
                 // STREAMING citations → emit a candidate-level `citationMetadata.citationSources`
@@ -1200,17 +1177,7 @@ impl ProtocolWriter for GeminiWriter {
                         FIELD_FUNCTION_CALL.to_string(),
                         serde_json::Value::Object(fc_obj),
                     );
-                    (
-                        "".to_string(),
-                        serde_json::json!({
-                            (FIELD_CANDIDATES): [{
-                                (keys::CONTENT): {
-                                    (keys::ROLE): keys::MODEL,
-                                    (FIELD_PARTS): [serde_json::Value::Object(part_obj)]
-                                }
-                            }]
-                        }),
-                    )
+                    model_part_frame(serde_json::Value::Object(part_obj))
                 })
             }
 
