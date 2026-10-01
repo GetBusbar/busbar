@@ -32,7 +32,9 @@ use std::sync::Mutex;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use super::{Cap, CapsRefused, Cell, CellKey, Dimension, OpRefused, ReserveRefused, StoreSlots};
+use super::{
+    Cap, CapsRefused, Cell, CellKey, Dimension, Grant, OpRefused, ReserveRefused, StoreSlots,
+};
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Diag, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET, MAX_TEXT,
     SEVERITY_WARN,
@@ -42,7 +44,7 @@ use crate::abi::mechanism::lifecycle::{
     ValidateIn,
 };
 use crate::abi::sdk::door::abi_str;
-use crate::abi::sdk::{HostBuf, Instance, Lent, SafeSlot};
+use crate::abi::sdk::{HostBuf, Instance, Lent, LentList, SafeSlot};
 use crate::abi::store::{
     AddUsageBatchIn, AddUsageIn, AppendBatchIn, AppendPlaneRecordIn, BlobIn, CountOut,
     GetPlaneRecordIn, HeadOut, HeadsOut, HostBytesOut, HostListOut, IdIn, IdReasonIn,
@@ -532,6 +534,41 @@ fn record_bytes(bytes: &[u8]) -> Result<RecordBytes, String> {
         .map_err(|n| format!("a record of {n} bytes is over the ceiling"))
 }
 
+/// The host's grants array as `reserve`'s sink: each grant goes straight into the host's memory.
+struct GrantsInto<'a>(HostBuf<'a, crate::abi::store::CellGrant>);
+
+impl Extend<Grant> for GrantsInto<'_> {
+    fn extend<I: IntoIterator<Item = Grant>>(&mut self, grants: I) {
+        for g in grants {
+            self.0.push(crate::abi::store::CellGrant {
+                slice_id: g.slice_id,
+                granted: g.granted,
+                valid_until_ms: g.valid_until_ms,
+            });
+        }
+    }
+}
+
+/// The host's released array as `slice_release`'s sink, clamping each amount to its item's
+/// `unspent` as it goes in.
+struct ReleasedInto<'a> {
+    items: LentList<'a, crate::abi::store::ReleaseItem>,
+    buf: HostBuf<'a, u64>,
+}
+
+impl Extend<u64> for ReleasedInto<'_> {
+    fn extend<I: IntoIterator<Item = u64>>(&mut self, amounts: I) {
+        for b in amounts {
+            // Never more than the item's `unspent`, whatever the store said.
+            let b = self
+                .items
+                .get(self.buf.asked())
+                .map_or(b, |it| b.min(it.unspent));
+            self.buf.push(b);
+        }
+    }
+}
+
 // ── the lifecycle ────────────────────────────────────────────────────────────────────────────
 
 /// Declare one lifecycle or kind slot over `Served<B>`.
@@ -975,33 +1012,28 @@ slot!(
     Reserve(ReserveIn, ReserveOut) |s, i, o| {
         o.failed_cell = RESERVE_NO_FAILED_CELL;
         let cells_in = i.cells();
-        let mut grants_buf = i.grants();
+        let grants_buf = i.grants();
         if grants_buf.cap() < cells_in.len() {
             // M-SB before anything else, the replay lookup included (S1 addendum).
             o.needed_grants = cells_in.len() as u64;
             return Outcome::Failed;
         }
-        let mut cells = Vec::with_capacity(cells_in.len());
+        // Every cell decodes before the store is called; the store then reads them in place and
+        // its grants go straight into the host's array: nothing is allocated here.
         for c in cells_in.iter() {
-            match unit_cell(c) {
-                Ok(c) => cells.push(c),
-                Err(e) => return refused(s, o, &e),
+            if let Err(e) = unit_cell(c) {
+                return refused(s, o, &e);
             }
         }
-        match s.store.reserve(i.op_id, i.epoch, &cells) {
-            Ok(grants) if grants.len() == cells.len() => {
-                for g in &grants {
-                    grants_buf.push(crate::abi::store::CellGrant {
-                        slice_id: g.slice_id,
-                        granted: g.granted,
-                        valid_until_ms: g.valid_until_ms,
-                    });
-                }
-                o.grants_len = grants_buf.written();
+        let mut grants = GrantsInto(grants_buf);
+        let cells = cells_in.iter().filter_map(|c| unit_cell(c).ok()); // every one decodes
+        match s.store.reserve(i.op_id, i.epoch, cells, &mut grants) {
+            Ok(()) if grants.0.asked() == cells_in.len() => {
+                o.grants_len = grants.0.written();
                 o.reason = RESERVE_OK;
                 Outcome::Ready
             }
-            Ok(_) => Outcome::Fault, // committed under the op_id: never FAILED (`StoreSlots::reserve`)
+            Ok(()) => Outcome::Fault, // committed under the op_id: never FAILED (`StoreSlots::reserve`)
             Err(r) => {
                 let (reason, cell) = match r {
                     ReserveRefused::Exhausted { cell } => (RESERVE_EXHAUSTED, cell),
@@ -1021,22 +1053,20 @@ slot!(
     /// `slice_release` (slot 35): the capacity check first, then the clamped release.
     SliceRelease(SliceReleaseIn, SliceReleaseOut) |s, i, o| {
         let items_in = i.items();
-        let mut released_buf = i.released();
+        let released_buf = i.released();
         if released_buf.cap() < items_in.len() {
             o.needed_released = items_in.len() as u64;
             return Outcome::Failed;
         }
-        let items: Vec<(u64, u64)> = items_in.iter().map(|it| (it.slice_id, it.unspent)).collect();
-        match s.store.slice_release(i.op_id, i.epoch, &items) {
-            Ok(back) if back.len() == items.len() => {
-                // Never more than the item's `unspent`, whatever the store said.
-                for ((_, unspent), b) in items.iter().zip(&back) {
-                    released_buf.push((*b).min(*unspent));
-                }
-                o.released_len = released_buf.written();
+        // The items read in place, the amounts straight into the host's array: nothing allocated.
+        let mut released = ReleasedInto { items: items_in, buf: released_buf };
+        let items = items_in.iter().map(|it| (it.slice_id, it.unspent));
+        match s.store.slice_release(i.op_id, i.epoch, items, &mut released) {
+            Ok(()) if released.buf.asked() == items_in.len() => {
+                o.released_len = released.buf.written();
                 Outcome::Ready
             }
-            Ok(_) => Outcome::Fault, // committed: never FAILED (`StoreSlots::slice_release`)
+            Ok(()) => Outcome::Fault, // committed: never FAILED (`StoreSlots::slice_release`)
             Err(OpRefused::Conflict) => conflict(o),
             Err(OpRefused::Failed(t)) => failed(s, o, &t),
         }

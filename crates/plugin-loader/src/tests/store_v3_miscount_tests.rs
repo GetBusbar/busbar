@@ -112,20 +112,31 @@ impl StoreSlots for Miscounts {
     ) -> Result<Vec<(Vec<u8>, RecordBytes)>, String> {
         StoreSlots::record_scan(&self.0, schema, prefix, limit)
     }
-    fn reserve(
+    fn reserve<'c>(
         &self,
         op: OpId,
         epoch: u64,
-        cells: &[Cell<'_>],
-    ) -> Result<Vec<Grant>, ReserveRefused> {
-        let mut g = self.0.reserve(op, epoch, cells)?;
+        cells: impl Iterator<Item = Cell<'c>> + Clone,
+        grants: &mut impl Extend<Grant>,
+    ) -> Result<(), ReserveRefused> {
+        let mut g = Vec::new();
+        self.0.reserve(op, epoch, cells, &mut g)?;
         g.pop();
-        Ok(g)
+        grants.extend(g);
+        Ok(())
     }
-    fn slice_release(&self, op: OpId, epoch: u64, items: &[(u64, u64)]) -> OpResult<Vec<u64>> {
-        let mut r = self.0.slice_release(op, epoch, items)?;
+    fn slice_release(
+        &self,
+        op: OpId,
+        epoch: u64,
+        items: impl Iterator<Item = (u64, u64)> + Clone,
+        released: &mut impl Extend<u64>,
+    ) -> OpResult<()> {
+        let mut r = Vec::new();
+        self.0.slice_release(op, epoch, items, &mut r)?;
         r.pop();
-        Ok(r)
+        released.extend(r);
+        Ok(())
     }
     fn add_usage_batch(&self, op: OpId, cells: &[(&str, u64, UsageDelta)]) -> OpResult<()> {
         self.0.add_usage_batch(op, cells)

@@ -333,16 +333,21 @@ impl StoreSlots for MemoryStore {
         Ok(self.record_scan_at(schema, prefix, limit))
     }
 
-    fn reserve(
+    fn reserve<'c>(
         &self,
         op: OpId,
         epoch: u64,
-        cells: &[Cell<'_>],
-    ) -> Result<Vec<Grant>, ReserveRefused> {
+        cells: impl Iterator<Item = Cell<'c>> + Clone,
+        grants: &mut impl Extend<Grant>,
+    ) -> Result<(), ReserveRefused> {
+        let cells: Vec<Cell<'_>> = cells.collect();
         let body = format!("reserve:{epoch}:{cells:?}");
         let mut inner = self.v3.lock();
         match inner.seen(op, &body) {
-            Seen::Replay(Answer::Grants(g)) => return Ok(g),
+            Seen::Replay(Answer::Grants(g)) => {
+                grants.extend(g);
+                return Ok(());
+            }
             Seen::Replay(_) | Seen::Conflict => return Err(ReserveRefused::Conflict),
             Seen::New => {}
         }
@@ -363,7 +368,7 @@ impl StoreSlots for MemoryStore {
             *drawn.entry(slot.clone()).or_default() += c.amount;
             slots.push(slot);
         }
-        let mut grants = Vec::with_capacity(cells.len());
+        let mut granted = Vec::with_capacity(cells.len());
         for (c, slot) in cells.iter().zip(slots) {
             inner.next_slice += 1;
             let slice_id = inner.next_slice;
@@ -376,18 +381,26 @@ impl StoreSlots for MemoryStore {
                     left: c.amount,
                 },
             );
-            grants.push(Grant {
+            granted.push(Grant {
                 slice_id,
                 granted: c.amount,
                 // Nothing expires a slice that no other node can draw against.
                 valid_until_ms: u64::MAX,
             });
         }
-        inner.record(self.now(), op, body, Answer::Grants(grants.clone()));
-        Ok(grants)
+        grants.extend(granted.iter().copied());
+        inner.record(self.now(), op, body, Answer::Grants(granted));
+        Ok(())
     }
 
-    fn slice_release(&self, op: OpId, epoch: u64, items: &[(u64, u64)]) -> OpResult<Vec<u64>> {
+    fn slice_release(
+        &self,
+        op: OpId,
+        epoch: u64,
+        items: impl Iterator<Item = (u64, u64)> + Clone,
+        released: &mut impl Extend<u64>,
+    ) -> OpResult<()> {
+        let items: Vec<(u64, u64)> = items.collect();
         let body = format!("slice_release:{epoch}:{items:?}");
         let answer = self.deduped(op, body, |_, inner| {
             if let Some((id, _)) = items.iter().find(|(id, _)| !inner.slices.contains_key(id)) {
@@ -395,11 +408,11 @@ impl StoreSlots for MemoryStore {
                     "slice_release: slice {id} is not held"
                 )));
             }
-            let mut released = Vec::with_capacity(items.len());
-            for &(id, unspent) in items {
+            let mut back_all = Vec::with_capacity(items.len());
+            for &(id, unspent) in &items {
                 let Some(d) = inner.slices.get_mut(&id) else {
                     // An item naming a slice an EARLIER item of this call closed.
-                    released.push(0);
+                    back_all.push(0);
                     continue;
                 };
                 let back = unspent.min(d.left);
@@ -411,12 +424,15 @@ impl StoreSlots for MemoryStore {
                 if let Some(u) = inner.used.get_mut(&slot) {
                     *u = u.saturating_sub(back);
                 }
-                released.push(back);
+                back_all.push(back);
             }
-            Ok(Answer::Released(released))
+            Ok(Answer::Released(back_all))
         })?;
         match answer {
-            Answer::Released(r) => Ok(r),
+            Answer::Released(r) => {
+                released.extend(r);
+                Ok(())
+            }
             _ => Err(OpRefused::Conflict),
         }
     }

@@ -173,7 +173,7 @@ impl<'a, T> LentList<'a, T> {
     }
 
     /// Every value, lent.
-    pub fn iter(self) -> impl ExactSizeIterator<Item = Lent<'a, T>> + 'a {
+    pub fn iter(self) -> impl ExactSizeIterator<Item = Lent<'a, T>> + Clone + 'a {
         // SAFETY: as `get`.
         self.items.iter().map(|v| unsafe { Lent::new(v) })
     }
