@@ -4,8 +4,8 @@
 //! OpenAI Responses API protocol reader/writer implementation.
 
 use crate::codec::dialect::ir_parse_error;
-use crate::codec::keys;
 use crate::codec::ir::IrStreamEvent;
+use crate::codec::keys;
 use busbar_contract::http::StatusCode;
 // `bearer_error_code` and `CODE_INVALID_API_KEY` now live in the neutral substrate; read them there
 // so this plugin names no `busbar-core` implementation path for them.
@@ -646,7 +646,9 @@ fn write_responses_event_logprobs(lps: &[crate::codec::ir::IrTokenLogprob]) -> s
 fn read_responses_logprobs(v: Option<&serde_json::Value>) -> Vec<crate::codec::ir::IrTokenLogprob> {
     match v {
         Some(arr @ serde_json::Value::Array(entries)) if !entries.is_empty() => {
-            super::openai_chat::read_openai_logprobs(Some(&serde_json::json!({ (keys::CONTENT): arr })))
+            super::openai_chat::read_openai_logprobs(Some(
+                &serde_json::json!({ (keys::CONTENT): arr }),
+            ))
         }
         _ => Vec::new(),
     }

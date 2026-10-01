@@ -108,7 +108,10 @@ impl ProtocolWriter for ResponsesWriter {
                         (keys::CONTENT): instructions
                     }));
                 } else {
-                    out.insert(keys::INSTRUCTIONS.to_string(), serde_json::json!(instructions));
+                    out.insert(
+                        keys::INSTRUCTIONS.to_string(),
+                        serde_json::json!(instructions),
+                    );
                 }
             }
         }
@@ -311,8 +314,10 @@ impl ProtocolWriter for ResponsesWriter {
                     if !content_arr.is_empty() {
                         let mut msg_obj = serde_json::Map::new();
                         msg_obj.insert(keys::ROLE.to_string(), serde_json::json!(role_str));
-                        msg_obj
-                            .insert(keys::CONTENT.to_string(), serde_json::Value::Array(content_arr));
+                        msg_obj.insert(
+                            keys::CONTENT.to_string(),
+                            serde_json::Value::Array(content_arr),
+                        );
                         input_arr.push(serde_json::Value::Object(msg_obj));
                     }
                     // Then the flat tool items, in order, AFTER the message they belong to.
@@ -425,7 +430,10 @@ impl ProtocolWriter for ResponsesWriter {
                      stripped on the cross-protocol seam)"
                 );
             } else {
-                out.insert(keys::TOOL_CHOICE.to_string(), write_responses_tool_choice(tc));
+                out.insert(
+                    keys::TOOL_CHOICE.to_string(),
+                    write_responses_tool_choice(tc),
+                );
             }
         }
         // `parallel_tool_calls`: `/v1/responses` documents it the same way as
@@ -462,7 +470,10 @@ impl ProtocolWriter for ResponsesWriter {
         // reaches this surface. (There is no top-level `logprobs` boolean on `/v1/responses`; the
         // enabling flag is implicit in `top_logprobs`, and response-side logprobs ride `include`.)
         if let Some(top_logprobs) = req.top_logprobs {
-            out.insert(keys::TOP_LOGPROBS.to_string(), serde_json::json!(top_logprobs));
+            out.insert(
+                keys::TOP_LOGPROBS.to_string(),
+                serde_json::json!(top_logprobs),
+            );
         }
 
         // RSP-06: the end-user id rides the Responses `user` member, as it does on Chat.
@@ -653,7 +664,10 @@ impl ProtocolWriter for ResponsesWriter {
                 resp_obj.insert(keys::ID.to_string(), serde_json::json!(id));
                 resp_obj.insert(keys::OBJECT.to_string(), serde_json::json!(OBJ_RESPONSE));
                 resp_obj.insert(keys::CREATED_AT.to_string(), serde_json::json!(created_at));
-                resp_obj.insert(keys::STATUS.to_string(), serde_json::json!(STATUS_IN_PROGRESS));
+                resp_obj.insert(
+                    keys::STATUS.to_string(),
+                    serde_json::json!(STATUS_IN_PROGRESS),
+                );
                 // `Response.model` is a REQUIRED non-nullable string in the official SDK; emit it
                 // unconditionally with the DEFAULT_MODEL fallback when the IR carries none (a
                 // cross-protocol stream where `translate_event` strips the model to None) rather
@@ -1027,7 +1041,10 @@ impl ProtocolWriter for ResponsesWriter {
                     let summary = self.take_summary_reasoning(*index);
                     // IR-17: the same `summary[]` / `content[]` placement the buffered item uses.
                     let mut item_obj = serde_json::Map::new();
-                    item_obj.insert(keys::TYPE.to_string(), serde_json::json!(ITEM_TYPE_REASONING));
+                    item_obj.insert(
+                        keys::TYPE.to_string(),
+                        serde_json::json!(ITEM_TYPE_REASONING),
+                    );
                     item_obj.insert(keys::ID.to_string(), serde_json::json!(item_id));
                     super::slots::insert_reasoning_text(
                         &mut item_obj,
@@ -1133,7 +1150,8 @@ impl ProtocolWriter for ResponsesWriter {
                     let text = self.take_text_accum(*index);
                     let _ = self.take_citation_accum(*index);
                     let _ = self.take_logprob_accum(*index);
-                    let part = serde_json::json!({ (keys::TYPE): keys::REFUSAL, (keys::REFUSAL): text });
+                    let part =
+                        serde_json::json!({ (keys::TYPE): keys::REFUSAL, (keys::REFUSAL): text });
                     let item = serde_json::json!({
                         (keys::TYPE): ITEM_TYPE_MESSAGE,
                         (keys::ID): item_id,
@@ -1322,7 +1340,10 @@ impl ProtocolWriter for ResponsesWriter {
                 // as `response.created`. The IR `MessageDelta` carries no model, and omitting it
                 // fails a strict SDK decoder and is a distinguishability tell; `carried_model`
                 // falls back to DEFAULT_MODEL only if the cell was never populated.
-                resp_obj.insert(keys::MODEL.to_string(), serde_json::json!(self.carried_model()));
+                resp_obj.insert(
+                    keys::MODEL.to_string(),
+                    serde_json::json!(self.carried_model()),
+                );
 
                 if status == STATUS_INCOMPLETE {
                     let reason = stop_reason
@@ -1451,7 +1472,10 @@ impl ProtocolWriter for ResponsesWriter {
                 // Replay the captured `model` so `response.failed`'s inner `response` carries the
                 // SAME required non-nullable `model` as `response.created`; falls back to
                 // DEFAULT_MODEL only if the failure preceded any `MessageStart`.
-                resp_obj.insert(keys::MODEL.to_string(), serde_json::json!(self.carried_model()));
+                resp_obj.insert(
+                    keys::MODEL.to_string(),
+                    serde_json::json!(self.carried_model()),
+                );
                 resp_obj.insert(keys::STATUS.to_string(), serde_json::json!(STATUS_FAILED));
                 // A native terminal event's inner `response` always carries `output` (REQUIRED by
                 // the SDK's typed `Response`); a failed response produced no assistant items, so
@@ -1616,7 +1640,10 @@ impl ProtocolWriter for ResponsesWriter {
                         continue;
                     }
                     let mut item = serde_json::Map::new();
-                    item.insert(keys::TYPE.to_string(), serde_json::json!(ITEM_TYPE_REASONING));
+                    item.insert(
+                        keys::TYPE.to_string(),
+                        serde_json::json!(ITEM_TYPE_REASONING),
+                    );
                     item.insert(
                         keys::ID.to_string(),
                         serde_json::json!(synthesize_item_id(ITEM_ID_PREFIX_RS)),
@@ -1670,7 +1697,10 @@ impl ProtocolWriter for ResponsesWriter {
             keys::MODEL.to_string(),
             serde_json::json!(resp.model.as_deref().unwrap_or(DEFAULT_MODEL)),
         );
-        obj.insert(keys::OUTPUT.to_string(), serde_json::Value::Array(output_arr));
+        obj.insert(
+            keys::OUTPUT.to_string(),
+            serde_json::Value::Array(output_arr),
+        );
         // NOTE `output_text` is NOT emitted: it is an SDK-COMPUTED convenience property
         // (`Response.output_text` aggregates the `output[]` message text parts), not a field a native
         // `/v1/responses` HTTP body serializes. Emitting it would be an extra key real OpenAI never

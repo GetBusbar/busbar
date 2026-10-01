@@ -132,7 +132,12 @@ pub(super) fn write_allowed_tools(
 }
 
 /// The members a Responses `web_search` tool carries that the IR models.
-const WEB_SEARCH_KEYS: [&str; 4] = [keys::TYPE, FILTERS, keys::USER_LOCATION, keys::SEARCH_CONTEXT_SIZE];
+const WEB_SEARCH_KEYS: [&str; 4] = [
+    keys::TYPE,
+    FILTERS,
+    keys::USER_LOCATION,
+    keys::SEARCH_CONTEXT_SIZE,
+];
 
 /// IR-11. A Responses hosted tool the IR models NEUTRALLY: `web_search` / `web_search_preview` →
 /// `WebSearch`, `code_interpreter` on an auto container → `CodeExecution`. A tool is recognised

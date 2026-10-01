@@ -306,7 +306,8 @@ impl ProtocolReader for ResponsesReader {
                                     return Err(ir_parse_error());
                                 }
                             }
-                            let role_str = item.get(keys::ROLE).and_then(|r| r.as_str()).unwrap_or("");
+                            let role_str =
+                                item.get(keys::ROLE).and_then(|r| r.as_str()).unwrap_or("");
                             // `system`/`developer` turns carry the system prompt. They have no
                             // IrRole and must NOT become conversation messages — accumulate their
                             // text into `system_blocks` (which feeds `IrRequest.system` ->
@@ -585,7 +586,10 @@ impl ProtocolReader for ResponsesReader {
         // `temperature` / `top_p` are rows of the mapping file, read below. The Responses API has
         // NO `top_k` and no top-level stop-sequence param; `top_k`/`stop` stay None/empty.
         // The Responses API carries `stream` in the request body — read it (don't drop the intent).
-        let stream = obj.get(keys::STREAM).and_then(|v| v.as_bool()).unwrap_or(false);
+        let stream = obj
+            .get(keys::STREAM)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         // `tool_choice`: promote to the IR union so a forced/targeted directive survives the
         // cross-protocol seam instead of degrading to `auto`. "tool_choice" is added to the modeled
         // keys below so it does not also linger in `extra`.
@@ -781,17 +785,14 @@ impl ProtocolReader for ResponsesReader {
                     if item_obj.get(keys::TYPE).and_then(|t| t.as_str())
                         == Some(ITEM_TYPE_FUNCTION_CALL)
                     {
-                        let raw_call_id = item_obj
-                            .get(CALL_ID)
-                            .and_then(|c| c.as_str())
-                            .unwrap_or("");
+                        let raw_call_id =
+                            item_obj.get(CALL_ID).and_then(|c| c.as_str()).unwrap_or("");
                         let name = item_obj
                             .get(keys::NAME)
                             .and_then(|n| n.as_str())
                             .unwrap_or("")
                             .to_string();
-                        if let Some(output_index) =
-                            data.get(OUTPUT_INDEX).and_then(|i| i.as_u64())
+                        if let Some(output_index) = data.get(OUTPUT_INDEX).and_then(|i| i.as_u64())
                         {
                             // RSP-16: a BLANK `call_id` gets the SAME synthesized id the buffered
                             // `read_response` mints for this item. `output_index` is the item's
@@ -861,8 +862,7 @@ impl ProtocolReader for ResponsesReader {
                         // `output_item.done` this index receives). Same cardinality cap and
                         // already-open guard as the tool arm so a malformed stream cannot double-open
                         // or grow the set without bound.
-                        if let Some(output_index) =
-                            data.get(OUTPUT_INDEX).and_then(|i| i.as_u64())
+                        if let Some(output_index) = data.get(OUTPUT_INDEX).and_then(|i| i.as_u64())
                         {
                             let idx = (output_index as usize).min(MAX_OUTPUT_INDEX);
                             let already_open = state.open_tools.contains(&idx)
@@ -874,9 +874,7 @@ impl ProtocolReader for ResponsesReader {
                                     // IR-17: what the added item already says (usually unknown —
                                     // its arrays fill on the deltas that follow).
                                     block: crate::codec::ir::IrBlockMeta::Thinking {
-                                        kind: data
-                                            .get(ITEM)
-                                            .and_then(super::slots::reasoning_kind),
+                                        kind: data.get(ITEM).and_then(super::slots::reasoning_kind),
                                     },
                                     refusal: false,
                                 });
@@ -1113,7 +1111,8 @@ impl ProtocolReader for ResponsesReader {
                         if let Some(sig) = data
                             .get(ITEM)
                             .filter(|it| {
-                                it.get(keys::TYPE).and_then(|t| t.as_str()) == Some(ITEM_TYPE_REASONING)
+                                it.get(keys::TYPE).and_then(|t| t.as_str())
+                                    == Some(ITEM_TYPE_REASONING)
                             })
                             .and_then(read_reasoning_encrypted_content)
                         {
@@ -1281,7 +1280,9 @@ impl ProtocolReader for ResponsesReader {
                                 continue;
                             };
                             for block in content {
-                                if block.get(keys::TYPE).and_then(|t| t.as_str()) != Some(keys::REFUSAL) {
+                                if block.get(keys::TYPE).and_then(|t| t.as_str())
+                                    != Some(keys::REFUSAL)
+                                {
                                     continue;
                                 }
                                 let Some(text) = block
@@ -1529,7 +1530,9 @@ impl ProtocolReader for ResponsesReader {
 
                 match item_type {
                     ITEM_TYPE_MESSAGE => {
-                        if let Some(content_arr) = item.get(keys::CONTENT).and_then(|c| c.as_array()) {
+                        if let Some(content_arr) =
+                            item.get(keys::CONTENT).and_then(|c| c.as_array())
+                        {
                             for block_item in content_arr {
                                 let block_type = block_item
                                     .get(keys::TYPE)
@@ -1599,8 +1602,7 @@ impl ProtocolReader for ResponsesReader {
                         // an otherwise-good upstream body — SYNTHESIZE a deterministic `call_…` id when
                         // the backend supplied none, so the correlation key is never blank.
                         // (`unwrap_or("")` previously let an empty id reach egress.)
-                        let raw_call_id =
-                            item.get(CALL_ID).and_then(|c| c.as_str()).unwrap_or("");
+                        let raw_call_id = item.get(CALL_ID).and_then(|c| c.as_str()).unwrap_or("");
                         let call_id = if raw_call_id.is_empty() {
                             synth_response_tool_call_id(item_ordinal, &name)
                         } else {
@@ -1726,7 +1728,10 @@ impl ProtocolReader for ResponsesReader {
         // normalization; RSP-17's serving tier is the top-level `service_tier`.
         let usage = read_responses_usage(usage_val, Some(body))?;
 
-        let model = obj.get(keys::MODEL).and_then(|m| m.as_str()).map(String::from);
+        let model = obj
+            .get(keys::MODEL)
+            .and_then(|m| m.as_str())
+            .map(String::from);
 
         // Capture the upstream response's identity so a same-protocol (responses → responses)
         // passthrough preserves `id`/`created_at` exactly. The Responses API names its creation
