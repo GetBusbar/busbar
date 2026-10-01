@@ -309,20 +309,20 @@ fn script(s: &LoadedStore) -> Vec<String> {
     // plane records (the request-path slots through the bridge).
     t.push(line(
         "upsert t1",
-        b.upsert_plane_record(&plane("task", "t1", None, 0, b"{}")),
+        b.upsert_plane_record(plane("task", "t1", None, 0, b"{}").view()),
     ));
     t.push(line("get t1", b.get_plane_record("task", "t1")));
     t.push(line(
         "append e1",
-        b.append_plane_record(&plane("ev", "e", Some("t1"), 1, b"1")),
+        b.append_plane_record(plane("ev", "e", Some("t1"), 1, b"1").view()),
     ));
     t.push(line(
         "append e2",
-        b.append_plane_record(&plane("ev", "e", Some("t1"), 2, b"2")),
+        b.append_plane_record(plane("ev", "e", Some("t1"), 2, b"2").view()),
     ));
     t.push(line(
         "append e2 fork",
-        b.append_plane_record(&plane("ev", "e", Some("t1"), 2, b"x")),
+        b.append_plane_record(plane("ev", "e", Some("t1"), 2, b"x").view()),
     ));
     t.push(line(
         "list ev t1",
@@ -447,7 +447,7 @@ fn script(s: &LoadedStore) -> Vec<String> {
         t.push(line("record scan", s.record_scan("sch", b"a/", 5).await));
         t.push(line(
             "typed upsert",
-            StoreCalls::upsert_plane_record(s, &plane("task", "t2", None, 0, b"b")).await,
+            StoreCalls::upsert_plane_record(s, plane("task", "t2", None, 0, b"b").view()).await,
         ));
         t.push(line(
             "typed get",
@@ -455,7 +455,7 @@ fn script(s: &LoadedStore) -> Vec<String> {
         ));
         t.push(line(
             "typed append",
-            StoreCalls::append_plane_record(s, op(13), &plane("ev", "e", Some("t2"), 1, b"1"))
+            StoreCalls::append_plane_record(s, op(13), plane("ev", "e", Some("t2"), 1, b"1").view())
                 .await,
         ));
         t.push(line(

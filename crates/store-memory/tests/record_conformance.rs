@@ -219,7 +219,7 @@ fn the_record_verbs_do_not_disturb_the_published_kind_tagged_rows() {
 
     let store = MemoryStore::new();
     store
-        .upsert_plane_record(&PlaneRecord {
+        .upsert_plane_record(PlaneRecord {
             kind: "task".to_string(),
             id: "t-1".to_string(),
             parent: None,
@@ -227,7 +227,7 @@ fn the_record_verbs_do_not_disturb_the_published_kind_tagged_rows() {
             ts: 1,
             disposition: PlaneDisposition::Active,
             body: b"published".to_vec(),
-        })
+        }.view())
         .expect("the published upsert");
     store
         .record_put(TASKS, b"t-1", &body(b"record leg"))

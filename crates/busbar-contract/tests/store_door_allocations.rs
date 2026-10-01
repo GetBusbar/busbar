@@ -10,16 +10,16 @@
 //! door's own work (the trampoline, the slot body, the host buffers, the error text ring), not
 //! the backend's.
 //!
-//! The slots measured are the store table's request-path slots that are not money (`OPS`
-//! `request_path`, minus `reserve` and `slice_release`) and whose arguments the door can hand
-//! the store borrowed. `upsert_plane_record`, `append_plane_record` and `record_put` take an
-//! owned `PlaneRecord` / `RecordBytes` from the store traits, and `list_plane_records` under
-//! `SELECT_PARENT` an owned `PlaneSelector::Parent`: those copies are the traits', and only their
-//! refusals are measured here.
+//! The slots measured are every request-path slot of the store table that is not money (`OPS`
+//! `request_path`, minus `reserve` and `slice_release`). The store traits take borrowed views
+//! (`PlaneRecordRef`, the record's `&[u8]`, `PlaneSelector::Parent` over the host's string), so the
+//! door hands the store the host's ABI memory as it is (ARCHITECT R7 2026-10-01); a store that
+//! keeps a record copies it itself.
 //!
-//! RED: before the door went allocation-free, the list slots collected their runs into `Vec`s
-//! and every refusal or failure text was formatted and copied into a boxed ring entry, so every
-//! case below but the plain reads counted at least one allocation.
+//! RED: before the door went allocation-free, the list slots collected their runs into `Vec`s,
+//! every refusal or failure text was formatted and copied into a boxed ring entry, and the writes
+//! copied the host's row into an owned `PlaneRecord` / `RecordBytes` / `String`, so every case
+//! below but the plain reads counted at least one allocation.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -34,13 +34,14 @@ use busbar_contract::abi::sdk::store::{
     Cap, CapsRefused, Cell as UnitCell, Grant, OpResult, ReserveRefused, StoreSlots, Tail,
 };
 use busbar_contract::abi::store::{
-    slot, GetPlaneRecordIn, HostBlobs, HostBuf, HostBytesOut, HostListOut, HostRecords,
-    HostSessions, KindIdIn, ListPlaneRecordsIn, OpId, Ops, RecordEntry, RecordGetIn, RecordPutIn,
-    RecordScanIn, SessionRow, SessionsForIn, TokenIn, VerdictOut, SELECT_ALL,
+    slot, AppendPlaneRecordIn, GetPlaneRecordIn, HostBlobs, HostBuf, HostBytesOut, HostListOut,
+    HostRecords, HostSessions, KindIdIn, ListPlaneRecordsIn, OpId, Ops, PlaneRecordRow, RecordEntry,
+    RecordGetIn, RecordPutIn, RecordScanIn, SessionRow, SessionsForIn, TokenIn, UpsertPlaneRecordIn,
+    VerdictOut, DISPOSITION_ACTIVE, SELECT_ALL, SELECT_PARENT,
 };
 use busbar_contract::kinds::{Head, RecordBytes};
 use busbar_contract::records::{
-    AuditRecord, MeteringDelta, MeteringRow, PlaneRecord, PlaneSelector, RecordStore,
+    AuditRecord, MeteringDelta, MeteringRow, PlaneRecordRef, PlaneSelector, RecordStore,
     RecordStoreError, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
 };
 
@@ -153,6 +154,9 @@ impl RecordStore for Canned {
             }
         })
     }
+    fn upsert_plane_record(&self, _: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        Ok(())
+    }
     fn list_plane_records(&self, _: &str, _: &PlaneSelector) -> RecordStoreResult<Vec<Vec<u8>>> {
         unwitnessed(|| Ok(vec![b"one".to_vec(), b"two".to_vec(), b"three".to_vec()]))
     }
@@ -185,8 +189,8 @@ impl StoreSlots for Canned {
     fn append_audit_op(&self, _: OpId, _: &AuditRecord) -> OpResult<()> {
         unreachable!("not a request-path slot")
     }
-    fn append_plane_record_op(&self, _: OpId, _: &PlaneRecord) -> OpResult<()> {
-        unreachable!("measured by its refusal only")
+    fn append_plane_record_op(&self, _: OpId, _: PlaneRecordRef<'_>) -> OpResult<()> {
+        Ok(())
     }
     fn append_batch(&self, _: OpId, _: &str, _: &[RecordBytes]) -> OpResult<Head> {
         unreachable!("not a request-path slot")
@@ -203,8 +207,8 @@ impl StoreSlots for Canned {
     fn sessions_for(&self, _: &str) -> Result<Vec<(u64, String)>, String> {
         unwitnessed(|| Ok(vec![(7, "node-a".to_string()), (9, "node-b".to_string())]))
     }
-    fn record_put(&self, _: &str, _: &[u8], _: &RecordBytes) -> Result<(), String> {
-        unreachable!("measured by its refusal only")
+    fn record_put(&self, _: &str, _: &[u8], _: &[u8]) -> Result<(), String> {
+        Ok(())
     }
     fn record_get(&self, schema: &str, _: &[u8]) -> Result<Option<RecordBytes>, String> {
         unwitnessed(|| {
@@ -433,7 +437,7 @@ fn the_store_doors_request_path_slots_allocate_nothing() {
         kind: s(b"k"),
         selector,
         _reserved: 0,
-        parent: s(b""),
+        parent: s(b"p-1"),
         out: HostBlobs {
             items,
             items_cap,
@@ -446,6 +450,16 @@ fn the_store_doors_request_path_slots_allocate_nothing() {
         token: s(b"t"),
         expires_at: 10,
         now: 1,
+    };
+    let row = PlaneRecordRow {
+        kind: s(b"task"),
+        id: s(b"t-1"),
+        parent: s(b"p-1"),
+        seq: 1,
+        ts: 2,
+        disposition: DISPOSITION_ACTIVE,
+        _reserved: 0,
+        body: octets(b"a row"),
     };
     let (rows, rows_cap) = host(&mut sessions);
     let (ents, ents_cap) = host(&mut entries);
@@ -621,10 +635,54 @@ fn the_store_doors_request_path_slots_allocate_nothing() {
             head_out,
             |o| o.error,
         ),
+        measure(
+            "upsert_plane_record READY",
+            t.upsert_plane_record,
+            inst,
+            UpsertPlaneRecordIn {
+                head: in_head::<UpsertPlaneRecordIn>(slot::UPSERT_PLANE_RECORD),
+                record: row,
+            },
+            head_out,
+            |o| o.error,
+        ),
+        measure(
+            "append_plane_record READY",
+            t.append_plane_record,
+            inst,
+            AppendPlaneRecordIn {
+                head: in_head::<AppendPlaneRecordIn>(slot::APPEND_PLANE_RECORD),
+                op_id: OpId::from_parts(1, 2),
+                record: row,
+            },
+            head_out,
+            |o| o.error,
+        ),
+        measure(
+            "list_plane_records SELECT_PARENT READY",
+            t.list_plane_records,
+            inst,
+            list(SELECT_PARENT, items_cap),
+            list_out,
+            |o| o.head.error,
+        ),
+        measure(
+            "record_put READY",
+            t.record_put,
+            inst,
+            RecordPutIn {
+                head: in_head::<RecordPutIn>(slot::RECORD_PUT),
+                schema: s(b"sc"),
+                key: octets(b"key"),
+                value: octets(b"a value"),
+            },
+            head_out,
+            |o| o.error,
+        ),
     ];
 
     // The answers are the door's, unchanged: outcome and every error text byte for byte.
-    let want: [(Outcome, &str); 16] = [
+    let want: [(Outcome, &str); 20] = [
         (Outcome::Ready, ""),
         (Outcome::Failed, ""),
         (Outcome::Failed, DOWN_TEXT),
@@ -644,6 +702,10 @@ fn the_store_doors_request_path_slots_allocate_nothing() {
         (Outcome::Failed, DOWN_TEXT),
         (Outcome::Ready, ""),
         (Outcome::Refused, "a record of 513 bytes is over the ceiling"),
+        (Outcome::Ready, ""),
+        (Outcome::Ready, ""),
+        (Outcome::Ready, ""),
+        (Outcome::Ready, ""),
     ];
     for (m, (outcome, error)) in got.iter().zip(want) {
         assert_eq!((m.outcome, m.error.as_str()), (outcome, error), "{}", m.case);

@@ -333,15 +333,17 @@ impl busbar_contract::records::RecordStore for GenericPlaneStore {
     // ── The neutral kind-tagged verbs — the durable half this double actually keeps ─────────────
     fn append_plane_record(
         &self,
-        record: &busbar_contract::records::PlaneRecord,
+        record: busbar_contract::records::PlaneRecordRef<'_>,
     ) -> busbar_contract::records::RecordStoreResult<()> {
+        let record = &record.to_record();
         self.rows().push(record.clone());
         Ok(())
     }
     fn upsert_plane_record(
         &self,
-        record: &busbar_contract::records::PlaneRecord,
+        record: busbar_contract::records::PlaneRecordRef<'_>,
     ) -> busbar_contract::records::RecordStoreResult<()> {
+        let record = &record.to_record();
         self.rows().push(record.clone());
         Ok(())
     }
@@ -357,7 +359,7 @@ impl busbar_contract::records::RecordStore for GenericPlaneStore {
             .filter(|r| match selector {
                 busbar_contract::records::PlaneSelector::All => true,
                 busbar_contract::records::PlaneSelector::Parent(p) => {
-                    r.parent.as_deref() == Some(p.as_str())
+                    r.parent.as_deref() == Some(&**p)
                 }
             })
             .map(|r| r.body.clone())
@@ -545,7 +547,7 @@ fn journal_restore_surfaces_the_unreadable_row_count() {
         // A raw UNDECODABLE body under the SAME (kind, parent) — decodes as neither a neutral body nor
         // a legacy row. The registered kind is `durable_test_event` (see `register`).
         store
-            .append_plane_record(&busbar_contract::records::PlaneRecord {
+            .append_plane_record(busbar_contract::records::PlaneRecord {
                 kind: "durable_test_event".to_string(),
                 id: String::from_utf8_lossy(scope).to_string(),
                 parent: Some(String::from_utf8_lossy(scope).to_string()),
@@ -575,7 +577,7 @@ fn journal_restore_surfaces_the_unreadable_row_count() {
             rhdr.records, 1,
             "only the decodable row is a restored record"
         );
-        assert_eq!(rhdr.scopes, 1);
+        assert_eq!(rhdr.scopes, 1);.view()
     });
 }
 
@@ -779,7 +781,7 @@ extern "C-unwind" fn admin_reframe(
 fn put_frozen(store: &GenericPlaneStore, kind: &str, parent: &str, seq: u64, body: &[u8]) {
     use busbar_contract::records::{PlaneDisposition, PlaneRecord, RecordStore};
     store
-        .append_plane_record(&PlaneRecord {
+        .append_plane_record(PlaneRecord {
             kind: kind.to_string(),
             id: parent.to_string(),
             parent: Some(parent.to_string()),
@@ -787,7 +789,7 @@ fn put_frozen(store: &GenericPlaneStore, kind: &str, parent: &str, seq: u64, bod
             ts: 0,
             disposition: PlaneDisposition::Active,
             body: body.to_vec(),
-        })
+        }.view())
         .expect("frozen body persists");
 }
 

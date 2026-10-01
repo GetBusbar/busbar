@@ -14,7 +14,7 @@ use busbar_contract::abi::sdk::store::{
 use busbar_contract::abi::store::OpId;
 use busbar_contract::kinds::{Head, RecordBytes};
 use busbar_contract::records::{
-    AuditRecord, MeteringDelta, MeteringRow, PlaneRecord, RecordStore, RecordStoreResult,
+    AuditRecord, MeteringDelta, MeteringRow, PlaneRecordRef, RecordStore, RecordStoreResult,
     UsageDelta, UsageLedger, VirtualKey,
 };
 use busbar_contract::store_calls::{StoreCalls, StoreFailure};
@@ -80,7 +80,7 @@ impl StoreSlots for Miscounts {
     fn append_audit_op(&self, op: OpId, entry: &AuditRecord) -> OpResult<()> {
         self.0.append_audit_op(op, entry)
     }
-    fn append_plane_record_op(&self, op: OpId, record: &PlaneRecord) -> OpResult<()> {
+    fn append_plane_record_op(&self, op: OpId, record: PlaneRecordRef<'_>) -> OpResult<()> {
         self.0.append_plane_record_op(op, record)
     }
     fn append_batch(&self, op: OpId, stream: &str, records: &[RecordBytes]) -> OpResult<Head> {
@@ -98,7 +98,7 @@ impl StoreSlots for Miscounts {
     fn sessions_for(&self, principal: &str) -> Result<Vec<(u64, String)>, String> {
         self.0.sessions_for(principal)
     }
-    fn record_put(&self, schema: &str, key: &[u8], value: &RecordBytes) -> Result<(), String> {
+    fn record_put(&self, schema: &str, key: &[u8], value: &[u8]) -> Result<(), String> {
         StoreSlots::record_put(&self.0, schema, key, value)
     }
     fn record_get(&self, schema: &str, key: &[u8]) -> Result<Option<RecordBytes>, String> {

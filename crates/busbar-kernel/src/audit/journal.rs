@@ -283,7 +283,7 @@ impl<R: ChainedRecord> Journal<R> {
             return Ok(Chain::new());
         };
         let bodies = store
-            .list_plane_records(kind, &PlaneSelector::Parent(scope.to_string()))
+            .list_plane_records(kind, &PlaneSelector::Parent(scope.into()))
             .map_err(JournalError::Store)?;
         if bodies.is_empty() {
             return Ok(Chain::new());
@@ -320,7 +320,7 @@ impl<R: ChainedRecord> Journal<R> {
         let mut positions = self.positions();
         for scope in &scopes {
             let records: Vec<R> = store
-                .list_plane_records(R::KIND, &PlaneSelector::Parent(scope.clone()))?
+                .list_plane_records(R::KIND, &PlaneSelector::Parent(scope.as_str().into()))?
                 .iter()
                 .map(|body| decode(body))
                 .collect::<RecordStoreResult<_>>()?;
@@ -415,7 +415,7 @@ impl<R: ChainedRecord> Journal<R> {
         if let Some(store) = self.sink() {
             let envelope = envelope(&record).map_err(JournalError::Store)?;
             store
-                .append_plane_record(&envelope)
+                .append_plane_record(envelope.view())
                 .map_err(JournalError::Store)?;
         }
         Self::commit_position(&mut positions, &self.overflowed, self.cap, scope, candidate);
@@ -583,7 +583,7 @@ impl<R: NeutralRecord> Journal<R> {
             // evidence row is never invisible; `unreadable` still carries the count back for the
             // wrapper's aggregate. This is the one place this "reports, does not judge" journal
             // speaks in a coded word — mirroring a downstream task store's per-row skip report.
-            let raw = store.list_plane_records(kind, &PlaneSelector::Parent(scope.clone()))?;
+            let raw = store.list_plane_records(kind, &PlaneSelector::Parent(scope.as_str().into()))?;
             // Whether the store literally returned NOTHING for this scope, decided BEFORE decoding:
             // an enumerated-but-empty scope (a wholesale deletion of one scope's evidence) is a
             // different condition from a scope whose rows were all UNREADABLE, which is already
@@ -645,7 +645,7 @@ impl<R: NeutralRecord> Journal<R> {
         reframe: &Reframe<'_, R>,
     ) -> RecordStoreResult<Vec<R>> {
         store
-            .list_plane_records(kind, &PlaneSelector::Parent(scope.to_string()))?
+            .list_plane_records(kind, &PlaneSelector::Parent(scope.into()))?
             .iter()
             .map(|body| reframe(scope, body))
             .collect()

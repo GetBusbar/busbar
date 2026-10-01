@@ -271,17 +271,17 @@ fn the_real_store_plugin_keeps_its_records_across_a_restart_through_the_dropped_
             .open_store("proof-store", &cfg)
             .expect("the real store plugin opens as `store`");
         store
-            .upsert_plane_record(&plane_record("task", "t-1", None, 0, b"task one"))
+            .upsert_plane_record(plane_record("task", "t-1", None, 0, b"task one").view())
             .expect("upsert the task");
         for seq in 0..3 {
             store
-                .append_plane_record(&plane_record(
+                .append_plane_record(plane_record(
                     "call",
                     &format!("c-{seq}"),
                     Some("p-1"),
                     seq,
                     format!("call {seq}").as_bytes(),
-                ))
+                ).view())
                 .expect("append a call");
         }
     }
@@ -409,13 +409,13 @@ fn task_state_written_through_a_plugin_store_survives_a_restart() {
     {
         let store = load("task-durability-a");
         store
-            .upsert_plane_record(&task_record(&task))
+            .upsert_plane_record(task_record(&task).view())
             .expect("upsert task");
         store
-            .append_plane_record(&event_record(&event))
+            .append_plane_record(event_record(&event).view())
             .expect("append task_event");
         store
-            .append_plane_record(&call_record(&call))
+            .append_plane_record(call_record(&call).view())
             .expect("append call");
         // Dropping the box closes the plugin handle and unloads the library. Everything the plugin
         // held in memory goes with it.
@@ -489,13 +489,13 @@ fn append_chain(file: &std::path::Path, tag: &str, seqs: std::ops::Range<u64>) {
         .expect("the real store plugin opens");
     for seq in seqs {
         store
-            .append_plane_record(&plane_record(
+            .append_plane_record(plane_record(
                 "call",
                 &format!("c-{seq}"),
                 Some("p-1"),
                 seq,
                 seq.to_string().as_bytes(),
-            ))
+            ).view())
             .expect("append through this node");
     }
 }

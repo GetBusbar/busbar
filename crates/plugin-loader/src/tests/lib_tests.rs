@@ -1449,7 +1449,7 @@ fn load_and_exercise_export_plugin() {
 // discarded the task and returned `Ok(())`. Every store crate's own unit tests passed the whole
 // time, because they never cross the ABI.
 
-use busbar_contract::records::PlaneDisposition;
+use busbar_contract::records::{PlaneDisposition, PlaneRecord};
 
 // ── the loader test speaks LOCAL STAND-IN rows; the ABI speaks NEUTRAL kind-tagged plane records ──
 //
@@ -1673,7 +1673,7 @@ fn a_task_written_through_a_plugin_store_is_readable_back_through_it() {
     let store = load_store(&lib, "{}").expect("load the store proof over the ABI");
     let task = sample_task_row("task-rt", "working", 5_000);
     store
-        .upsert_plane_record(&task_record(&task))
+        .upsert_plane_record(task_record(&task).view())
         .expect("put_task");
     assert_eq!(
         n_get_task(store.as_ref(), "task-rt").expect("get_task"),
@@ -1920,7 +1920,7 @@ fn a_plugin_predating_the_task_variants_still_gets_the_pre_existing_defaults() {
 
     under_old_plugin_shapes(
         &store,
-        |s| s.upsert_plane_record(&task_record(&task)),
+        |s| s.upsert_plane_record(task_record(&task).view()),
         (),
         "upsert task",
     );
@@ -1934,7 +1934,7 @@ fn a_plugin_predating_the_task_variants_still_gets_the_pre_existing_defaults() {
     );
     under_old_plugin_shapes(
         &store,
-        |s| s.append_plane_record(&event_record(&event)),
+        |s| s.append_plane_record(event_record(&event).view()),
         (),
         "append_task_event",
     );
@@ -1946,7 +1946,7 @@ fn a_plugin_predating_the_task_variants_still_gets_the_pre_existing_defaults() {
     );
     under_old_plugin_shapes(
         &store,
-        |s| s.append_plane_record(&call_record(&call)),
+        |s| s.append_plane_record(call_record(&call).view()),
         (),
         "append_call",
     );
@@ -1991,7 +1991,7 @@ fn no_plugin_failure_shape_can_launder_a_dropped_task_into_success() {
     for (status, body, what) in failures {
         FAKE_CALL_HANDLE.with(|c| c.set((*status, *body)));
         assert!(
-            store.upsert_plane_record(&task_record(&task)).is_err(),
+            store.upsert_plane_record(task_record(&task).view()).is_err(),
             "`put_task` must FAIL on {what}: silently returning Ok is the exact defect these \
              variants were added to close"
         );
@@ -2004,7 +2004,7 @@ fn no_plugin_failure_shape_can_launder_a_dropped_task_into_success() {
         FAKE_CALL_HANDLE.with(|c| c.set((*status, *body)));
         assert!(
             store
-                .append_plane_record(&event_record(&event_free_probe()))
+                .append_plane_record(event_record(&event_free_probe()).view())
                 .is_err(),
             "`append_task_event` must FAIL on {what}"
         );

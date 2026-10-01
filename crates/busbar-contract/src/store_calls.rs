@@ -21,7 +21,7 @@ use std::pin::Pin;
 use crate::abi::sdk::store::{Cap, Cell, Grant, ReserveRefused};
 use crate::abi::store::OpId;
 use crate::kinds::{Head, RecordBytes};
-use crate::records::{AuditRecord, MeteringDelta, PlaneRecord, PlaneSelector, UsageDelta};
+use crate::records::{AuditRecord, MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
 
 /// One store call in flight.
 pub type StoreCall<'a, T> = Pin<Box<dyn Future<Output = Result<T, StoreFailure>> + Send + 'a>>;
@@ -132,17 +132,17 @@ pub trait StoreCalls: Send + Sync {
         limit: u32,
     ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>>;
     /// `upsert_plane_record`.
-    fn upsert_plane_record<'a>(&'a self, record: &'a PlaneRecord) -> StoreCall<'a, ()>;
+    fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()>;
     /// `get_plane_record`: the body.
     fn get_plane_record<'a>(&'a self, kind: &'a str, id: &'a str)
         -> StoreCall<'a, Option<Vec<u8>>>;
     /// `append_plane_record`, deduped on `op`.
-    fn append_plane_record<'a>(&'a self, op: OpId, record: &'a PlaneRecord) -> StoreCall<'a, ()>;
+    fn append_plane_record<'a>(&'a self, op: OpId, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()>;
     /// `list_plane_records`: the bodies.
     fn list_plane_records<'a>(
         &'a self,
         kind: &'a str,
-        selector: &'a PlaneSelector,
+        selector: &'a PlaneSelector<'a>,
     ) -> StoreCall<'a, Vec<Vec<u8>>>;
     /// `delete_plane_record`; absent is `Ok`.
     fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()>;

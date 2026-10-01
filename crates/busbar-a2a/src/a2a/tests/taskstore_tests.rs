@@ -127,8 +127,9 @@ impl busbar_contract::records::RecordStore for DurableTaskStore {
     // ── The neutral kind-tagged verbs, delegating to the named task methods above ────────────────
     fn upsert_plane_record(
         &self,
-        record: &busbar_contract::records::PlaneRecord,
+        record: busbar_contract::records::PlaneRecordRef<'_>,
     ) -> busbar_contract::records::RecordStoreResult<()> {
+        let record = &record.to_record();
         match record.kind.as_str() {
             crate::record::KIND_TASK => self.put_task(&TaskRow::from_body(&record.body)?),
             _ => Ok(()),
@@ -149,8 +150,9 @@ impl busbar_contract::records::RecordStore for DurableTaskStore {
     }
     fn append_plane_record(
         &self,
-        record: &busbar_contract::records::PlaneRecord,
+        record: busbar_contract::records::PlaneRecordRef<'_>,
     ) -> busbar_contract::records::RecordStoreResult<()> {
+        let record = &record.to_record();
         match record.kind.as_str() {
             crate::record::KIND_TASK_EVENT => self.append_event_body(record),
             _ => Ok(()),
@@ -948,8 +950,9 @@ fn a_failed_durable_write_leaves_the_working_set_agreeing_with_the_store() {
         }
         fn upsert_plane_record(
             &self,
-            record: &busbar_contract::records::PlaneRecord,
+            record: busbar_contract::records::PlaneRecordRef<'_>,
         ) -> busbar_contract::records::RecordStoreResult<()> {
+            let record = &record.to_record();
             self.put_task(&TaskRow::from_body(&record.body)?)
         }
     }

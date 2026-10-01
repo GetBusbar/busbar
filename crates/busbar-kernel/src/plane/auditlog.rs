@@ -485,7 +485,7 @@ impl PlaneAuditLog {
         let mut out = AuditRestored::default();
         for scope in &scopes {
             let bodies =
-                store.list_plane_records(KIND_AUDIT, &PlaneSelector::Parent(scope.clone()))?;
+                store.list_plane_records(KIND_AUDIT, &PlaneSelector::Parent(scope.as_str().into()))?;
             // Decode each stored body per-record BEFORE seeding the chain, so a single undecodable
             // row is COUNTED and SKIPPED rather than faulting the seam seed and `?`-aborting the
             // WHOLE restore — which would leave the host-side chain position UNSEEDED and fork the
@@ -811,7 +811,7 @@ pub(crate) fn migrate_legacy_table_to_plane_records(
     // nothing. Checking the admin scope's RECORDS (not merely the enumerated parents) means a prior
     // boot that seeded only an empty scope cannot block a real migration.
     let existing =
-        store.list_plane_records(KIND_AUDIT, &PlaneSelector::Parent(ADMIN_LOG.to_string()))?;
+        store.list_plane_records(KIND_AUDIT, &PlaneSelector::Parent(ADMIN_LOG.into()))?;
     if !existing.is_empty() {
         return Ok(0);
     }
@@ -831,7 +831,7 @@ pub(crate) fn migrate_legacy_table_to_plane_records(
         // The neutral envelope the seam persists: kind `audit`, id/parent the constant `admin` scope,
         // ordered by the record's own seq. seq/prev_hash/hash cross VERBATIM from the legacy record so
         // the migrated chain is byte-identical to what the seam would have written.
-        store.append_plane_record(&PlaneRecord {
+        store.append_plane_record(PlaneRecord {
             kind: KIND_AUDIT.to_string(),
             id: ADMIN_LOG.to_string(),
             parent: Some(ADMIN_LOG.to_string()),
@@ -839,7 +839,7 @@ pub(crate) fn migrate_legacy_table_to_plane_records(
             ts: r.ts,
             disposition: PlaneDisposition::Active,
             body,
-        })?;
+        }.view())?;
     }
     Ok(records.len())
 }

@@ -6,7 +6,9 @@
 //! forwards to the real backend.
 
 use super::super::store::{PlaneStore, PlaneStoreView};
-use busbar_contract::records::{PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreResult};
+use busbar_contract::records::{
+    PlaneDisposition, PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStoreResult,
+};
 use std::sync::Arc;
 
 /// A throwaway opaque body for the `demotion` kind — this seam names no plane record type, so the
@@ -27,11 +29,11 @@ struct DemoRow {
 // of the 1.6.0 store genericization, over the `PlaneRecord` envelope.
 #[allow(clippy::type_complexity)]
 fn plane_method_set_is_exactly_the_plane_methods() {
-    let _: fn(&dyn PlaneStore, &PlaneRecord) -> RecordStoreResult<()> =
+    let _: fn(&dyn PlaneStore, PlaneRecordRef<'_>) -> RecordStoreResult<()> =
         <dyn PlaneStore>::upsert_plane_record;
     let _: fn(&dyn PlaneStore, &str, &str) -> RecordStoreResult<Option<Vec<u8>>> =
         <dyn PlaneStore>::get_plane_record;
-    let _: fn(&dyn PlaneStore, &PlaneRecord) -> RecordStoreResult<()> =
+    let _: fn(&dyn PlaneStore, PlaneRecordRef<'_>) -> RecordStoreResult<()> =
         <dyn PlaneStore>::append_plane_record;
     let _: fn(&dyn PlaneStore, &str, &PlaneSelector) -> RecordStoreResult<Vec<Vec<u8>>> =
         <dyn PlaneStore>::list_plane_records;
@@ -151,7 +153,8 @@ impl busbar_contract::records::RecordStore for RecordingStore {
         Ok(Vec::new())
     }
     // The neutral plane verbs the forwarding test observes.
-    fn upsert_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
+    fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        let record = &record.to_record();
         if record.kind == crate::plane::store::KIND_DEMOTION {
             self.demotions
                 .lock()
@@ -209,7 +212,7 @@ fn plane_store_view_forwards_to_the_real_backend() {
         "a fresh backend holds no demotions"
     );
     store
-        .upsert_plane_record(&PlaneRecord {
+        .upsert_plane_record(PlaneRecord {
             kind: crate::plane::store::KIND_DEMOTION.to_string(),
             id: "srv-1".to_string(),
             parent: None,
@@ -222,7 +225,7 @@ fn plane_store_view_forwards_to_the_real_backend() {
                 recorded_at: 100,
             })
             .unwrap(),
-        })
+        }.view())
         .unwrap();
     let rows = list_demotions(&store);
     assert_eq!(rows.len(), 1, "the write forwarded to the inner backend");

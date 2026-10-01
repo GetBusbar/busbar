@@ -24,7 +24,7 @@ use busbar_contract::abi::cold::{
     STATUS_UNSUPPORTED, TRANSPORT_VERSION,
 };
 use busbar_contract::records::{
-    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecord,
+    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
     PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult, UsageDelta, UsageLedger,
     VirtualKey,
 };
@@ -1482,14 +1482,14 @@ impl RecordStore for DynStore {
     // is unrecoverable there, and `ts`/`disposition` are precisely what a retention sweep reads. The
     // read/purge/delete verbs send only what they route on; they reconstitute no envelope.
 
-    fn upsert_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
+    fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         self.call_with_legacy_default(
             StoreRequest::UpsertPlaneRecord {
-                kind: record.kind.clone(),
-                id: record.id.clone(),
+                kind: record.kind.to_string(),
+                id: record.id.to_string(),
                 ts: record.ts,
                 disposition: record.disposition,
-                body: record.body.clone(),
+                body: record.body.to_vec(),
             },
             |r| match r {
                 StoreResponse::Unit => Ok(()),
@@ -1513,16 +1513,16 @@ impl RecordStore for DynStore {
         )
     }
 
-    fn append_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
+    fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         self.call_with_legacy_default(
             StoreRequest::AppendPlaneRecord {
-                kind: record.kind.clone(),
-                id: record.id.clone(),
-                parent: record.parent.clone().unwrap_or_default(),
+                kind: record.kind.to_string(),
+                id: record.id.to_string(),
+                parent: record.parent.unwrap_or_default().to_string(),
                 seq: record.seq,
                 ts: record.ts,
                 disposition: record.disposition,
-                body: record.body.clone(),
+                body: record.body.to_vec(),
             },
             |r| match r {
                 StoreResponse::Unit => Ok(()),
@@ -1535,12 +1535,12 @@ impl RecordStore for DynStore {
     fn list_plane_records(
         &self,
         kind: &str,
-        selector: &PlaneSelector,
+        selector: &PlaneSelector<'_>,
     ) -> RecordStoreResult<Vec<Vec<u8>>> {
         self.call_with_legacy_default(
             StoreRequest::ListPlaneRecords {
                 kind: kind.to_string(),
-                selector: selector.clone(),
+                selector: selector.to_static(),
             },
             |r| match r {
                 StoreResponse::PlaneRecords(b) => Ok(b),

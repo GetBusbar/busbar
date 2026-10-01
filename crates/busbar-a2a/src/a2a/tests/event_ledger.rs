@@ -106,8 +106,9 @@ impl busbar_contract::records::RecordStore for EventLedger {
 
     fn upsert_plane_record(
         &self,
-        record: &busbar_contract::records::PlaneRecord,
+        record: busbar_contract::records::PlaneRecordRef<'_>,
     ) -> RecordStoreResult<()> {
+        let record = &record.to_record();
         if record.kind == KIND_TASK {
             self.tasks
                 .lock()
@@ -132,8 +133,9 @@ impl busbar_contract::records::RecordStore for EventLedger {
 
     fn append_plane_record(
         &self,
-        record: &busbar_contract::records::PlaneRecord,
+        record: busbar_contract::records::PlaneRecordRef<'_>,
     ) -> RecordStoreResult<()> {
+        let record = &record.to_record();
         if record.kind == KIND_TASK_EVENT {
             let task_id = record.parent.clone().unwrap_or_else(|| record.id.clone());
             self.events

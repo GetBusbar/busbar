@@ -143,7 +143,7 @@ fn every_1_6_0_only_store_op_on_an_abi_2_store_defaults_with_no_error_and_no_log
         // The 1.6.0-only verbs: the plugin predates every one of them.
         let rec = record("task", "t-1");
         answer_unsupported();
-        match store.upsert_plane_record(&rec) {
+        match store.upsert_plane_record(rec.view()) {
             Ok(()) => {}
             Err(e) => failures.push(format!("upsert_plane_record: {e:?}")),
         }
@@ -153,7 +153,7 @@ fn every_1_6_0_only_store_op_on_an_abi_2_store_defaults_with_no_error_and_no_log
             other => failures.push(format!("get_plane_record must default to None: {other:?}")),
         }
         answer_unsupported();
-        match store.append_plane_record(&record("event", "e-1")) {
+        match store.append_plane_record(record("event", "e-1").view()) {
             Ok(()) => {}
             Err(e) => failures.push(format!("append_plane_record: {e:?}")),
         }
@@ -228,7 +228,7 @@ fn repeated_1_6_0_only_ops_on_an_abi_2_store_stay_silent() {
         for i in 0..25u64 {
             let id = format!("t-{i}");
             answer_unsupported();
-            errors += store.upsert_plane_record(&record("task", &id)).is_err() as usize;
+            errors += store.upsert_plane_record(record("task", &id).view()).is_err() as usize;
             answer_unsupported();
             errors += store.get_plane_record("task", &id).is_err() as usize;
             answer_unsupported();

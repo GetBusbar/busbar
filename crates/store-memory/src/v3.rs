@@ -28,7 +28,7 @@ use busbar_contract::abi::sdk::store::{
 };
 use busbar_contract::abi::store::{OpId, OP_ID_RETENTION_SECS};
 use busbar_contract::kinds::{Head, RecordBytes};
-use busbar_contract::records::{AuditRecord, MeteringDelta, PlaneRecord, RecordStore, UsageDelta};
+use busbar_contract::records::{AuditRecord, MeteringDelta, PlaneRecordRef, RecordStore, UsageDelta};
 
 use crate::MemoryStore;
 
@@ -246,8 +246,8 @@ impl StoreSlots for MemoryStore {
         .map(drop)
     }
 
-    fn append_plane_record_op(&self, op: OpId, record: &PlaneRecord) -> OpResult<()> {
-        let body = format!("append_plane_record:{record:?}");
+    fn append_plane_record_op(&self, op: OpId, record: PlaneRecordRef<'_>) -> OpResult<()> {
+        let body = format!("append_plane_record:{:?}", record.to_record());
         self.deduped(op, body, |s, _| {
             s.append_plane_record(record).map_err(failed)?;
             Ok(Answer::Done)
@@ -315,8 +315,11 @@ impl StoreSlots for MemoryStore {
         Ok(rows)
     }
 
-    fn record_put(&self, schema: &str, key: &[u8], value: &RecordBytes) -> Result<(), String> {
-        self.record_put_at(schema, key, value);
+    fn record_put(&self, schema: &str, key: &[u8], value: &[u8]) -> Result<(), String> {
+        // The store keeps the record, so it copies it here (the door lends the host's bytes).
+        let value = RecordBytes::new(value.to_vec())
+            .map_err(|n| format!("a record of {n} bytes is over the ceiling"))?;
+        self.record_put_at(schema, key, &value);
         Ok(())
     }
 

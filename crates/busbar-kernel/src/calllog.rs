@@ -582,7 +582,7 @@ impl PlaneCallLog {
         let mut out = Restored::default();
         for principal in &principals {
             let raw =
-                store.list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.clone()))?;
+                store.list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.as_str().into()))?;
             out.principals += 1;
             let store_returned_nothing = raw.is_empty();
             // Decode each stored body per-record BEFORE seeding, so a single undecodable row is
@@ -813,7 +813,7 @@ impl PlaneCallLog {
         principal: &str,
     ) -> RecordStoreResult<Vec<CallRecorded>> {
         store
-            .list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.to_string()))?
+            .list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.into()))?
             .iter()
             .map(|body| call_record_from_body(principal, body))
             .collect()
@@ -838,7 +838,7 @@ impl PlaneCallLog {
         // break and the record count, neither of which the neutral seam header carries. Touches no
         // chain position, so it needs no host.
         let records: Vec<PlaneJournalRecord> = store
-            .list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.to_string()))?
+            .list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.into()))?
             .iter()
             .map(|b| reframe_call(principal, b))
             .collect::<RecordStoreResult<_>>()?;

@@ -393,7 +393,7 @@ async fn a_demotion_row_that_will_not_decode_still_holds_the_upstream_quarantine
     let store =
         busbar_kernel::plane::store::PlaneStoreView::narrow(engine().open_store_plugin(&cfg));
     store
-        .upsert_plane_record(&busbar_contract::records::PlaneRecord {
+        .upsert_plane_record(busbar_contract::records::PlaneRecord {
             kind: crate::record::KIND_DEMOTION.to_string(),
             id: "fs".to_string(),
             parent: None,
@@ -401,7 +401,7 @@ async fn a_demotion_row_that_will_not_decode_still_holds_the_upstream_quarantine
             ts: 0,
             disposition: busbar_contract::records::PlaneDisposition::Active,
             body: br#"{"server":"fs","this_row":"is not a demotion"}"#.to_vec(),
-        })
+        }.view())
         .expect("the corrupted row is written");
     drop(store);
 
@@ -444,7 +444,7 @@ async fn an_undecodable_demotion_row_is_counted_as_replayed_rather_than_dropped_
     let store =
         busbar_kernel::plane::store::PlaneStoreView::narrow(engine().open_store_plugin(&cfg));
     store
-        .upsert_plane_record(&busbar_contract::records::PlaneRecord {
+        .upsert_plane_record(busbar_contract::records::PlaneRecord {
             kind: crate::record::KIND_DEMOTION.to_string(),
             id: "fs".to_string(),
             parent: None,
@@ -452,7 +452,7 @@ async fn an_undecodable_demotion_row_is_counted_as_replayed_rather_than_dropped_
             ts: 0,
             disposition: busbar_contract::records::PlaneDisposition::Active,
             body: br#"{"server":"fs","this_row":"is not a demotion"}"#.to_vec(),
-        })
+        }.view())
         .expect("the corrupted row is written");
     drop(store);
 

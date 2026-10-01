@@ -672,8 +672,9 @@ impl RecordStore for RetainingStore {
     }
     fn upsert_plane_record(
         &self,
-        record: &crate::records::PlaneRecord,
+        record: crate::records::PlaneRecordRef<'_>,
     ) -> crate::records::RecordStoreResult<()> {
+        let record = &record.to_record();
         let mut rows = self.plane.lock().unwrap();
         rows.retain(|r| !(r.kind == record.kind && r.id == record.id));
         rows.push(record.clone());
@@ -692,8 +693,9 @@ impl RecordStore for RetainingStore {
     }
     fn append_plane_record(
         &self,
-        record: &crate::records::PlaneRecord,
+        record: crate::records::PlaneRecordRef<'_>,
     ) -> crate::records::RecordStoreResult<()> {
+        let record = &record.to_record();
         self.plane.lock().unwrap().push(record.clone());
         Ok(())
     }
@@ -708,7 +710,7 @@ impl RecordStore for RetainingStore {
             .filter(|r| r.kind == kind)
             .filter(|r| match selector {
                 crate::records::PlaneSelector::All => true,
-                crate::records::PlaneSelector::Parent(p) => r.parent.as_deref() == Some(p),
+                crate::records::PlaneSelector::Parent(p) => r.parent.as_deref() == Some(&**p),
             })
             .collect();
         hit.sort_by_key(|r| r.seq);
@@ -1317,8 +1319,9 @@ impl crate::records::RecordStore for RecordingStore {
     }
     fn upsert_plane_record(
         &self,
-        record: &crate::records::PlaneRecord,
+        record: crate::records::PlaneRecordRef<'_>,
     ) -> Result<(), RecordStoreError> {
+        let record = &record.to_record();
         self.written
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -1327,8 +1330,9 @@ impl crate::records::RecordStore for RecordingStore {
     }
     fn append_plane_record(
         &self,
-        record: &crate::records::PlaneRecord,
+        record: crate::records::PlaneRecordRef<'_>,
     ) -> Result<(), RecordStoreError> {
+        let record = &record.to_record();
         self.written
             .lock()
             .unwrap_or_else(|p| p.into_inner())

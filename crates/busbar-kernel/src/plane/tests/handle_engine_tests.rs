@@ -6,7 +6,9 @@
 //! monotonic-cursor no-op-vs-advance, the retention cap sweep, and the boot rehydrate's counts.
 
 use super::*;
-use busbar_contract::records::{PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreResult};
+use busbar_contract::records::{
+    PlaneDisposition, PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStoreResult,
+};
 use std::sync::{Arc, Mutex};
 
 /// A stand-in plane row: the engine holds it opaquely and never names it.
@@ -77,7 +79,8 @@ struct MemStore {
 }
 
 impl PlaneStore for MemStore {
-    fn upsert_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
+    fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        let record = &record.to_record();
         let mut rows = self.rows.lock().unwrap();
         if let Some(existing) = rows.iter_mut().find(|r| r.id == record.id) {
             *existing = record.clone();
@@ -95,7 +98,8 @@ impl PlaneStore for MemStore {
             .find(|r| r.id == id)
             .map(|r| r.body.clone()))
     }
-    fn append_plane_record(&self, record: &PlaneRecord) -> RecordStoreResult<()> {
+    fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
+        let record = &record.to_record();
         if self.append_fails.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(busbar_contract::records::RecordStoreError(
                 "the append did not land".into(),
@@ -123,7 +127,7 @@ impl PlaneStore for MemStore {
                     .lock()
                     .unwrap()
                     .iter()
-                    .filter(|r| r.parent.as_deref() == Some(p.as_str()))
+                    .filter(|r| r.parent.as_deref() == Some(&**p))
                     .cloned()
                     .collect();
                 evs.sort_by_key(|r| r.seq);
@@ -787,30 +791,30 @@ fn a_boot_rehydrate_counts_active_terminal_and_unreadable() {
     // Seed the store directly: one active, one terminal, one undecodable row.
     store
         .upsert_plane_record(
-            &DemoRow {
+            DemoRow {
                 id: "act".into(),
                 owner: "o".into(),
                 updated_at: 5,
                 terminal: false,
                 cursor: 0,
             }
-            .record(),
+            .record().view(),
         )
         .unwrap();
     store
         .upsert_plane_record(
-            &DemoRow {
+            DemoRow {
                 id: "done".into(),
                 owner: "o".into(),
                 updated_at: 5,
                 terminal: true,
                 cursor: 0,
             }
-            .record(),
+            .record().view(),
         )
         .unwrap();
     store
-        .upsert_plane_record(&PlaneRecord {
+        .upsert_plane_record(PlaneRecord {
             kind: "demo".into(),
             id: "junk".into(),
             parent: None,
@@ -818,7 +822,7 @@ fn a_boot_rehydrate_counts_active_terminal_and_unreadable() {
             ts: 5,
             disposition: PlaneDisposition::Active,
             body: b"not json".to_vec(),
-        })
+        }.view())
         .unwrap();
 
     let engine = DurableHandleEngine::new();

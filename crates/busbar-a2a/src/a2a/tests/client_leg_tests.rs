@@ -1232,8 +1232,9 @@ impl busbar_contract::records::RecordStore for ChainSink {
     // ── The neutral kind-tagged verbs, delegating to the named task-event methods above ──────────
     fn append_plane_record(
         &self,
-        record: &busbar_contract::records::PlaneRecord,
+        record: busbar_contract::records::PlaneRecordRef<'_>,
     ) -> busbar_contract::records::RecordStoreResult<()> {
+        let record = &record.to_record();
         match record.kind.as_str() {
             crate::record::KIND_TASK_EVENT => {
                 let task_id = record.parent.clone().unwrap_or_else(|| record.id.clone());

@@ -46,7 +46,7 @@ fn appended_call_rows_newer_than_the_cutoff_survive_a_purge_over_the_abi() {
             hash: format!("h{seq}"),
         };
         store
-            .append_plane_record(&call_record(&call))
+            .append_plane_record(call_record(&call).view())
             .expect("append call");
     }
 
@@ -84,10 +84,10 @@ fn a_terminal_task_is_purged_over_the_abi() {
     let done = sample_task_row("task-done", "completed", 100);
     let waiting = sample_task_row("task-waiting", "input-required", 100);
     store
-        .upsert_plane_record(&task_record(&done))
+        .upsert_plane_record(task_record(&done).view())
         .expect("upsert terminal task");
     store
-        .upsert_plane_record(&task_record(&waiting))
+        .upsert_plane_record(task_record(&waiting).view())
         .expect("upsert active task");
 
     let purged = store

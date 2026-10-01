@@ -889,7 +889,7 @@ fn plane_task(id: &str, disposition: PlaneDisposition) -> PlaneRecord {
 #[test]
 fn plane_token_live_is_true_while_active_and_unexpired_and_is_repeatable() {
     let s = MemoryStore::new();
-    s.upsert_plane_record(&plane_task("t1", PlaneDisposition::Active))
+    s.upsert_plane_record(plane_task("t1", PlaneDisposition::Active).view())
         .unwrap();
 
     // Present, Active, and now (100) is before expires_at (1000): live.
@@ -915,7 +915,7 @@ fn plane_token_live_is_false_for_unknown_terminal_and_expired() {
     // Unknown (kind, token): fail-closed.
     assert!(!s.plane_token_live("task", "missing", 1000, 100).unwrap());
     // Wrong kind for an existing token is also unknown.
-    s.upsert_plane_record(&plane_task("t1", PlaneDisposition::Active))
+    s.upsert_plane_record(plane_task("t1", PlaneDisposition::Active).view())
         .unwrap();
     assert!(!s.plane_token_live("other", "t1", 1000, 100).unwrap());
 
@@ -928,7 +928,7 @@ fn plane_token_live_is_false_for_unknown_terminal_and_expired() {
     assert!(!s.plane_token_live("task", "t1", 1000, 1001).unwrap());
 
     // Terminal disposition: the task has finished, so the token is dead even before its deadline.
-    s.upsert_plane_record(&plane_task("t1", PlaneDisposition::Terminal))
+    s.upsert_plane_record(plane_task("t1", PlaneDisposition::Terminal).view())
         .unwrap();
     assert!(
         !s.plane_token_live("task", "t1", 1000, 100).unwrap(),
@@ -960,24 +960,24 @@ fn plane_event(parent: &str, seq: u64, body: &[u8]) -> PlaneRecord {
 fn append_plane_record_refuses_a_second_writers_fork_at_an_occupied_seq() {
     let s = MemoryStore::new();
     let first = plane_event("t1", 1, b"first-writer");
-    s.append_plane_record(&first).unwrap();
+    s.append_plane_record(first.view()).unwrap();
 
     // Re-appending the IDENTICAL record — the write-through retry path — must stay Ok.
-    s.append_plane_record(&first)
+    s.append_plane_record(first.view())
         .expect("re-appending the IDENTICAL record is the retry path and must be Ok");
 
     // A DIFFERENT record at the SAME seq is a second writer forking the chain: refused, not
     // silently applied.
     let forked = plane_event("t1", 1, b"second-writer");
     assert!(
-        s.append_plane_record(&forked).is_err(),
+        s.append_plane_record(forked.view()).is_err(),
         "a DIFFERENT record on an already-occupied seq was accepted — the chain has forked and the \
          store said nothing"
     );
 
     // The first writer's record must still be intact: neither overwritten nor corrupted.
     let rows = s
-        .list_plane_records("task_event", &PlaneSelector::Parent("t1".to_string()))
+        .list_plane_records("task_event", &PlaneSelector::Parent("t1".into()))
         .unwrap();
     assert_eq!(
         rows,

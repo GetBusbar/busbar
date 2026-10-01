@@ -476,7 +476,7 @@ pub enum StoreRequest {
     /// ([`PlaneSelector::All`]) and `ListTaskEvents`/`ListMcpCalls` ([`PlaneSelector::Parent`]).
     ListPlaneRecords {
         kind: String,
-        selector: PlaneSelector,
+        selector: PlaneSelector<'static>,
     },
     /// LIST every parent with a record of `kind` — the neutral `ListMcpCallPrincipals`.
     ListPlaneRecordParents {

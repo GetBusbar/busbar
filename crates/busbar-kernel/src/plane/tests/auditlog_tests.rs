@@ -221,8 +221,9 @@ impl busbar_contract::records::RecordStore for DualDurableStore {
     // ── the neutral plane_records ──
     fn append_plane_record(
         &self,
-        record: &busbar_contract::records::PlaneRecord,
+        record: busbar_contract::records::PlaneRecordRef<'_>,
     ) -> busbar_contract::records::RecordStoreResult<()> {
+        let record = &record.to_record();
         self.plane
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -238,7 +239,7 @@ impl busbar_contract::records::RecordStore for DualDurableStore {
     ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
         let parent = match selector {
             busbar_contract::records::PlaneSelector::All => None,
-            busbar_contract::records::PlaneSelector::Parent(p) => Some(p.clone()),
+            busbar_contract::records::PlaneSelector::Parent(p) => Some(p.to_string()),
         };
         Ok(self
             .plane
@@ -294,7 +295,7 @@ fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
     let bodies = store
         .list_plane_records(
             KIND_AUDIT,
-            &busbar_contract::records::PlaneSelector::Parent(ADMIN_LOG.to_string()),
+            &busbar_contract::records::PlaneSelector::Parent(ADMIN_LOG.into()),
         )
         .unwrap();
     assert_eq!(
@@ -418,7 +419,7 @@ fn old_store_audit_only_in_legacy_table_boots_migrates_and_verifies() {
         store
             .list_plane_records(
                 KIND_AUDIT,
-                &busbar_contract::records::PlaneSelector::Parent(ADMIN_LOG.to_string())
+                &busbar_contract::records::PlaneSelector::Parent(ADMIN_LOG.into())
             )
             .unwrap()
             .is_empty(),
@@ -532,7 +533,7 @@ fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row(
     // A raw UNDECODABLE body appended under the SAME (audit, admin) parent: it decodes as neither the
     // neutral body the seam writes nor a legacy `AuditRecord` — a corrupt/tampered row.
     store
-        .append_plane_record(&busbar_contract::records::PlaneRecord {
+        .append_plane_record(busbar_contract::records::PlaneRecord {
             kind: KIND_AUDIT.to_string(),
             id: ADMIN_LOG.to_string(),
             parent: Some(ADMIN_LOG.to_string()),
@@ -540,7 +541,7 @@ fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row(
             ts: 0,
             disposition: busbar_contract::records::PlaneDisposition::Active,
             body: b"{ not an audit body".to_vec(),
-        })
+        }.view())
         .unwrap();
 
     // Process 2 (a "restart"): a FRESH log over the SAME store restores from plane_records under a
@@ -599,7 +600,7 @@ fn restore_does_not_fork_the_chain_when_one_row_is_undecodable() {
 
     // A raw UNDECODABLE body under the SAME (audit, admin) parent — a corrupt/tampered row.
     store
-        .append_plane_record(&busbar_contract::records::PlaneRecord {
+        .append_plane_record(busbar_contract::records::PlaneRecord {
             kind: KIND_AUDIT.to_string(),
             id: ADMIN_LOG.to_string(),
             parent: Some(ADMIN_LOG.to_string()),
@@ -607,7 +608,7 @@ fn restore_does_not_fork_the_chain_when_one_row_is_undecodable() {
             ts: 0,
             disposition: busbar_contract::records::PlaneDisposition::Active,
             body: b"{ not an audit body".to_vec(),
-        })
+        }.view())
         .unwrap();
 
     // Process 2 (a "restart"): a FRESH log over the SAME store restores. The undecodable sibling must
@@ -742,7 +743,7 @@ fn a_safe_suffix_record_restores_with_exact_fields_despite_embedded_pipes() {
     assert_eq!(seq, 1);
 
     let rows = store
-        .list_plane_records(KIND_AUDIT, &PlaneSelector::Parent(ADMIN_LOG.to_string()))
+        .list_plane_records(KIND_AUDIT, &PlaneSelector::Parent(ADMIN_LOG.into()))
         .expect("list the just-appended plane record");
     assert_eq!(rows.len(), 1);
     let entry = audit_entry_from_body(ADMIN_LOG, &rows[0]).expect("decode the safe-suffix body");

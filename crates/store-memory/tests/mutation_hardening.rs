@@ -69,7 +69,7 @@ fn plane_record_body_round_trips_byte_identical_for_every_edge_case() {
 
     for (id, body) in &cases {
         let record = plane_record("task", id, 0, body.clone());
-        s.upsert_plane_record(&record)
+        s.upsert_plane_record(record.view())
             .unwrap_or_else(|e| panic!("upsert {id} failed: {e}"));
         let got = s
             .get_plane_record("task", id)
@@ -104,12 +104,12 @@ fn plane_record_body_round_trips_byte_identical_through_the_append_and_list_path
     for (i, body) in bodies.iter().enumerate() {
         let mut r = plane_record("task_event", &format!("evt_{i}"), i as u64, body.clone());
         r.parent = Some(parent.to_string());
-        s.append_plane_record(&r)
+        s.append_plane_record(r.view())
             .unwrap_or_else(|e| panic!("append {i} failed: {e}"));
     }
 
     let got = s
-        .list_plane_records("task_event", &PlaneSelector::Parent(parent.to_string()))
+        .list_plane_records("task_event", &PlaneSelector::Parent(parent.into()))
         .expect("list the chain");
     assert_eq!(got.len(), bodies.len());
     for (i, (expected, actual)) in bodies.iter().zip(got.iter()).enumerate() {

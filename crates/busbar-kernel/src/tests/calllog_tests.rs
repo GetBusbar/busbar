@@ -35,7 +35,7 @@ use std::sync::Arc;
 /// body into the neutral [`CallRecorded`] the seam persists.
 trait CallStoreTestExt: RecordStore {
     fn append_call(&self, rec: &CallRecorded) -> RecordStoreResult<()> {
-        self.append_plane_record(&busbar_contract::records::PlaneRecord {
+        self.append_plane_record(busbar_contract::records::PlaneRecord {
             kind: KIND_CALL.to_string(),
             id: rec.principal.clone(),
             parent: Some(rec.principal.clone()),
@@ -43,10 +43,10 @@ trait CallStoreTestExt: RecordStore {
             ts: rec.ts,
             disposition: busbar_contract::records::PlaneDisposition::Active,
             body: call_record_to_journal_body(rec)?,
-        })
+        }.view())
     }
     fn list_calls(&self, principal: &str) -> RecordStoreResult<Vec<CallRecorded>> {
-        self.list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.to_string()))?
+        self.list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.into()))?
             .iter()
             .map(|b| call_record_from_body(principal, b))
             .collect()
@@ -199,8 +199,9 @@ impl RecordStore for DurableCallStore {
     // ── The neutral kind-tagged verbs — the durable half this double actually keeps ──────────────
     fn append_plane_record(
         &self,
-        record: &busbar_contract::records::PlaneRecord,
+        record: busbar_contract::records::PlaneRecordRef<'_>,
     ) -> busbar_contract::records::RecordStoreResult<()> {
+        let record = &record.to_record();
         match record.kind.as_str() {
             crate::plane::store::KIND_CALL => self.append_event_body(record),
             _ => Ok(()),

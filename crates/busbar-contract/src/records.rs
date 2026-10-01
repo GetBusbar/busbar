@@ -1038,14 +1038,81 @@ pub struct PlaneRecord {
     pub body: Vec<u8>,
 }
 
+impl PlaneRecord {
+    /// This record as the borrowed view a store write takes.
+    #[must_use]
+    pub fn view(&self) -> PlaneRecordRef<'_> {
+        PlaneRecordRef {
+            kind: &self.kind,
+            id: &self.id,
+            parent: self.parent.as_deref(),
+            seq: self.seq,
+            ts: self.ts,
+            disposition: self.disposition,
+            body: &self.body,
+        }
+    }
+}
+
+/// A [`PlaneRecord`] BORROWED: what [`RecordStore::upsert_plane_record`] and
+/// [`RecordStore::append_plane_record`] take, so the store door hands a store the host's ABI memory
+/// as it is, with no copy on the request path (ARCHITECT R7 2026-10-01). A store that keeps the
+/// record copies it itself ([`PlaneRecordRef::to_record`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlaneRecordRef<'a> {
+    /// See [`PlaneRecord::kind`].
+    pub kind: &'a str,
+    /// See [`PlaneRecord::id`].
+    pub id: &'a str,
+    /// See [`PlaneRecord::parent`].
+    pub parent: Option<&'a str>,
+    /// See [`PlaneRecord::seq`].
+    pub seq: u64,
+    /// See [`PlaneRecord::ts`].
+    pub ts: u64,
+    /// See [`PlaneRecord::disposition`].
+    pub disposition: PlaneDisposition,
+    /// See [`PlaneRecord::body`].
+    pub body: &'a [u8],
+}
+
+impl PlaneRecordRef<'_> {
+    /// The owned record, for a store that keeps it.
+    #[must_use]
+    pub fn to_record(&self) -> PlaneRecord {
+        PlaneRecord {
+            kind: self.kind.to_string(),
+            id: self.id.to_string(),
+            parent: self.parent.map(str::to_string),
+            seq: self.seq,
+            ts: self.ts,
+            disposition: self.disposition,
+            body: self.body.to_vec(),
+        }
+    }
+}
+
 /// How [`RecordStore::list_plane_records`] narrows a kind's records — the neutral form of "everything of
-/// this kind" vs "one parent's chain of this kind".
+/// this kind" vs "one parent's chain of this kind". The parent is borrowed where the caller holds it
+/// (the store door passes the host's ABI string straight through) and owned where it came off a
+/// wire.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum PlaneSelector {
+pub enum PlaneSelector<'a> {
     /// EVERY record of the kind, unfiltered.
     All,
     /// Only records whose [`PlaneRecord::parent`] equals this value, oldest-first by `seq`.
-    Parent(String),
+    Parent(std::borrow::Cow<'a, str>),
+}
+
+impl PlaneSelector<'_> {
+    /// This selector owning its parent, for a request that outlives the caller's borrow.
+    #[must_use]
+    pub fn to_static(&self) -> PlaneSelector<'static> {
+        match self {
+            Self::All => PlaneSelector::All,
+            Self::Parent(p) => PlaneSelector::Parent(std::borrow::Cow::Owned(p.to_string())),
+        }
+    }
 }
 
 /// The durable governance store — the `db` plugin contract. A backend (the built-in `SqliteStore`,
@@ -1397,12 +1464,12 @@ pub trait RecordStore: Send + Sync + 'static {
     // durable rows behaves exactly as the shipped RAM default does.
 
     /// UPSERT one plane record by `(record.kind, record.id)`, for any registered record kind.
-    /// Takes the full [`PlaneRecord`] so the typed sidecar (`ts`/`disposition`/…) is on the write
-    /// path where retention needs it.
+    /// Takes the whole record, borrowed ([`PlaneRecordRef`]), so the typed sidecar
+    /// (`ts`/`disposition`/…) is on the write path where retention needs it.
     ///
     /// DEFAULTED to `Ok(())` — accept and keep nothing. The return value is worthless as evidence
     /// of durability; the engine learns what its backend kept by reading it back.
-    fn upsert_plane_record(&self, _record: &PlaneRecord) -> RecordStoreResult<()> {
+    fn upsert_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         Ok(())
     }
 
@@ -1416,7 +1483,7 @@ pub trait RecordStore: Send + Sync + 'static {
     /// store persists the opaque body verbatim and never recomputes any digest inside it.
     ///
     /// DEFAULTED to `Ok(())`.
-    fn append_plane_record(&self, _record: &PlaneRecord) -> RecordStoreResult<()> {
+    fn append_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         Ok(())
     }
 
@@ -1426,7 +1493,7 @@ pub trait RecordStore: Send + Sync + 'static {
     fn list_plane_records(
         &self,
         _kind: &str,
-        _selector: &PlaneSelector,
+        _selector: &PlaneSelector<'_>,
     ) -> RecordStoreResult<Vec<Vec<u8>>> {
         Ok(Vec::new())
     }

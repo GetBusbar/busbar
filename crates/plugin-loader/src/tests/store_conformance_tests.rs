@@ -400,21 +400,21 @@ fn fold(s: &dyn RecordStore) -> Fold {
         (
             PLANE_RECORD_OPS_FROM,
             seen(
-                s.upsert_plane_record(&record("fold_row", "r1", None, 0, 100, false, "r1-v1")),
+                s.upsert_plane_record(record("fold_row", "r1", None, 0, 100, false, "r1-v1").view()),
                 false,
             ),
         ),
         (
             "upsert_plane_record replaces",
             seen(
-                s.upsert_plane_record(&record("fold_row", "r1", None, 0, 100, false, "r1-v2")),
+                s.upsert_plane_record(record("fold_row", "r1", None, 0, 100, false, "r1-v2").view()),
                 false,
             ),
         ),
         (
             "upsert_plane_record terminal",
             seen(
-                s.upsert_plane_record(&record("fold_row", "r2", None, 0, 100, true, "r2")),
+                s.upsert_plane_record(record("fold_row", "r2", None, 0, 100, true, "r2").view()),
                 false,
             ),
         ),
@@ -428,19 +428,19 @@ fn fold(s: &dyn RecordStore) -> Fold {
         ),
         (
             "append_plane_record 1",
-            seen(s.append_plane_record(&chain(1, 100, "l1")), false),
+            seen(s.append_plane_record(chain(1, 100, "l1").view()), false),
         ),
         (
             "append_plane_record 2",
-            seen(s.append_plane_record(&chain(2, 300, "l2")), false),
+            seen(s.append_plane_record(chain(2, 300, "l2").view()), false),
         ),
         (
             "append_plane_record 1 retried",
-            seen(s.append_plane_record(&chain(1, 100, "l1")), false),
+            seen(s.append_plane_record(chain(1, 100, "l1").view()), false),
         ),
         (
             "append_plane_record 1 forked",
-            seen(s.append_plane_record(&chain(1, 100, "lX")), false),
+            seen(s.append_plane_record(chain(1, 100, "lX").view()), false),
         ),
         (
             "list_plane_records all",
@@ -487,7 +487,7 @@ fn fold(s: &dyn RecordStore) -> Fold {
         (
             "upsert_plane_record capability",
             seen(
-                s.upsert_plane_record(&record("fold_cap", "t1", None, 0, 100, false, "cap")),
+                s.upsert_plane_record(record("fold_cap", "t1", None, 0, 100, false, "cap").view()),
                 false,
             ),
         ),

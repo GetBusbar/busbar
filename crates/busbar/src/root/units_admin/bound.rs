@@ -386,7 +386,7 @@ pub fn live_records(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneRecordSin
             .as_ref()
             .ok_or_else(|| "no record store is configured".to_string())?;
         busbar_kernel::plane::store::PlaneStoreView::narrow(gov.store())
-            .upsert_plane_record(record)
+            .upsert_plane_record(record.view())
             .map_err(|e| e.0)
     })
 }

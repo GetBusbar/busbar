@@ -68,7 +68,7 @@ use crate::abi::store::{
 use crate::bounded::MAX_RECORD_BYTES;
 use crate::kinds::RecordBytes;
 use crate::records::{
-    AuditRecord, CredentialSecret, MeteringDelta, PlaneDisposition, PlaneRecord, PlaneSelector,
+    AuditRecord, CredentialSecret, MeteringDelta, PlaneDisposition, PlaneRecordRef, PlaneSelector,
     UsageDelta, UsageLedger, VirtualKey,
 };
 
@@ -545,11 +545,12 @@ fn span_blob((ptr, len): (*const u8, usize)) -> Blob {
     }
 }
 
-fn plane_record(row: Lent<'_, PlaneRecordRow>) -> Result<PlaneRecord, Text> {
-    Ok(PlaneRecord {
-        kind: text_of(row.field(|r| &r.kind))?.to_string(),
-        id: text_of(row.field(|r| &r.id))?.to_string(),
-        parent: opt_text(row.field(|r| &r.parent))?.map(str::to_string),
+/// The host's row as the borrowed record a store write takes: nothing is copied.
+fn plane_record(row: Lent<'_, PlaneRecordRow>) -> Result<PlaneRecordRef<'_>, Text> {
+    Ok(PlaneRecordRef {
+        kind: text_of(row.field(|r| &r.kind))?,
+        id: text_of(row.field(|r| &r.id))?,
+        parent: opt_text(row.field(|r| &r.parent))?,
         seq: row.seq,
         ts: row.ts,
         disposition: if row.disposition == DISPOSITION_TERMINAL {
@@ -557,7 +558,7 @@ fn plane_record(row: Lent<'_, PlaneRecordRow>) -> Result<PlaneRecord, Text> {
         } else {
             PlaneDisposition::Active
         },
-        body: row.field(|r| &r.body).bytes().to_vec(),
+        body: row.field(|r| &r.body).bytes(),
     })
 }
 
@@ -613,13 +614,23 @@ fn window_cap(c: Lent<'_, WindowCap>) -> Result<Cap<'_>, Text> {
     })
 }
 
-/// A record taken as [`RecordBytes`]. One over the ceiling is refused before it is copied.
-fn record_bytes(bytes: &[u8]) -> Result<RecordBytes, Text> {
-    let over = |n: usize| Text::render(format_args!("a record of {n} bytes is over the ceiling"));
+/// The refusal of a record over the ceiling.
+fn over_ceiling(n: usize) -> Text {
+    Text::render(format_args!("a record of {n} bytes is over the ceiling"))
+}
+
+/// A record's bytes as the host lent them; one over the ceiling is refused.
+fn record_slice(bytes: &[u8]) -> Result<&[u8], Text> {
     if bytes.len() > MAX_RECORD_BYTES {
-        return Err(over(bytes.len()));
+        return Err(over_ceiling(bytes.len()));
     }
-    RecordBytes::new(bytes.to_vec()).map_err(over)
+    Ok(bytes)
+}
+
+/// A record taken as [`RecordBytes`] (an off-path journal append keeps it), refused over the
+/// ceiling before it is copied.
+fn record_bytes(bytes: &[u8]) -> Result<RecordBytes, Text> {
+    RecordBytes::new(record_slice(bytes)?.to_vec()).map_err(over_ceiling)
 }
 
 /// The host's grants array as `reserve`'s sink: each grant goes straight into the host's memory.
@@ -982,7 +993,7 @@ slot!(
     /// `upsert_plane_record` (slot 24).
     UpsertPlaneRecord(UpsertPlaneRecordIn, OutHead) |s, i, o| {
         match plane_record(i.field(|i| &i.record)) {
-            Ok(r) => done(s, o, s.store.upsert_plane_record(&r)),
+            Ok(r) => done(s, o, s.store.upsert_plane_record(r)),
             Err(e) => refused(s, o, e),
         }
     }
@@ -1002,7 +1013,7 @@ slot!(
     /// `append_plane_record` (slot 26), deduped on its `op_id`.
     AppendPlaneRecord(AppendPlaneRecordIn, OutHead) |s, i, o| {
         match plane_record(i.field(|i| &i.record)) {
-            Ok(r) => op_answer(s, o, s.store.append_plane_record_op(i.op_id, &r)),
+            Ok(r) => op_answer(s, o, s.store.append_plane_record_op(i.op_id, r)),
             Err(e) => refused(s, o, e),
         }
     }
@@ -1014,7 +1025,7 @@ slot!(
         let selector = match i.selector {
             SELECT_ALL => PlaneSelector::All,
             SELECT_PARENT => match text_of(i.field(|i| &i.parent)) {
-                Ok(p) => PlaneSelector::Parent(p.to_string()),
+                Ok(p) => PlaneSelector::Parent(p.into()),
                 Err(e) => return refused(s, o, e),
             },
             n => return refused(s, o, Text::render(format_args!("selector {n} is not a plane selector"))),
@@ -1244,8 +1255,8 @@ slot!(
     /// `record_put` (slot 40).
     RecordPut(RecordPutIn, OutHead) |s, i, o| {
         let schema = match text_of(i.field(|i| &i.schema)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        let value = match record_bytes(i.field(|i| &i.value).bytes()) { Ok(v) => v, Err(e) => return refused(s, o, e) };
-        match s.store.record_put(schema, i.field(|i| &i.key).bytes(), &value) {
+        let value = match record_slice(i.field(|i| &i.value).bytes()) { Ok(v) => v, Err(e) => return refused(s, o, e) };
+        match s.store.record_put(schema, i.field(|i| &i.key).bytes(), value) {
             Ok(()) => Outcome::Ready,
             Err(e) => failed(s, o, e),
         }
