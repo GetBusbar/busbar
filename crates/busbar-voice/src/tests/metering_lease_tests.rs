@@ -131,3 +131,99 @@ async fn each_opened_session_counts_one_session_and_a_refused_open_counts_none()
     open(&dry, &rt, "call-dry").await;
     assert_eq!(sessions(&dry), 0, "a refused open counts nothing");
 }
+
+/// A durable sink that refuses every write: the session's genesis row cannot land, so the durable
+/// open fails after the kernel's account has counted the session.
+struct DownStore;
+
+impl busbar_kernel::plane::store::PlaneStore for DownStore {
+    fn upsert_plane_record(
+        &self,
+        _record: &busbar_contract::records::PlaneRecord,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(busbar_contract::records::RecordStoreError(
+            "store down".to_string(),
+        ))
+    }
+    fn get_plane_record(
+        &self,
+        _kind: &str,
+        _id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn append_plane_record(
+        &self,
+        _record: &busbar_contract::records::PlaneRecord,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(busbar_contract::records::RecordStoreError(
+            "store down".to_string(),
+        ))
+    }
+    fn list_plane_records(
+        &self,
+        _kind: &str,
+        _selector: &busbar_contract::records::PlaneSelector,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
+        Ok(Vec::new())
+    }
+    fn list_plane_record_parents(
+        &self,
+        _kind: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+    fn purge_plane_records_before(
+        &self,
+        _kind: &str,
+        _before: u64,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        Ok(0)
+    }
+    fn delete_plane_record(
+        &self,
+        _kind: &str,
+        _id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Ok(())
+    }
+    fn redeem_plane_token(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        Ok(false)
+    }
+    fn plane_token_live(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        Ok(false)
+    }
+}
+
+/// Q17-6 (ARCHITECT ruling R4): a session whose durable open fails never opened, so it charges no
+/// `fees.per_session`. The kernel's account counted the session before the durable open; the failed
+/// open gives that count back. RED before the refund: the count stayed at 1.
+#[tokio::test]
+async fn a_failed_durable_open_gives_back_its_session_fee() {
+    let engine = Arc::new(DurableHandleEngine::new());
+    engine.set_sink(Arc::new(DownStore));
+    let rt = VoiceRuntime::new(engine, Arc::new(EchoToolExecutor));
+    let host = Arc::new(FixtureHost::new().governed().with_count_cap(1_000));
+    let status = open(&host, &rt, "call-down").await;
+    assert!(
+        status.is_server_error(),
+        "a durable open that cannot land is refused, got {status}"
+    );
+    assert_eq!(
+        host.ledger_usage(&key().id).map_or(0, |u| u.sessions),
+        0,
+        "a session that never opened charges no session fee"
+    );
+}

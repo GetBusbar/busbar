@@ -26,6 +26,7 @@
 use super::{EngineHost, MeterPin};
 use crate::billing::Usage;
 use busbar_contract::records::VirtualKey;
+use busbar_kernel_ledger::cost::{plane_fee_lane, split_plane_lane, PER_SESSION};
 use std::sync::Arc;
 
 /// What a reported turn means for the carrier. The plane never learns why a session must close.
@@ -48,6 +49,9 @@ pub struct SessionAccount {
     key: VirtualKey,
     pool: String,
     lane: String,
+    /// The clock reading the open's session count landed at: a refund of that count lands in the
+    /// same budget window.
+    opened_at: u64,
 }
 
 impl SessionAccount {
@@ -62,12 +66,14 @@ impl SessionAccount {
         let (Some(pin), Some(key)) = (host.meter_pin(), key) else {
             return Ok(None);
         };
+        let opened_at = host.clock_now_secs();
         let account = SessionAccount {
             host,
             pin,
             key: key.clone(),
             pool: pool.to_string(),
             lane,
+            opened_at,
         };
         if account.dry() {
             return Err(BudgetRefused);
@@ -81,17 +87,40 @@ impl SessionAccount {
     /// plane's `fees.per_session` prices it at read, and a plane with none reads 0. A lane no plane
     /// qualifies has no session fee to count.
     fn count_open(&self) {
-        use busbar_kernel_ledger::cost::{plane_fee_lane, split_plane_lane, PER_SESSION};
-        let (plane, _) = split_plane_lane(&self.lane);
-        if plane.is_empty() {
+        let Some(plane) = self.fee_plane() else {
             return;
-        }
+        };
         let one = Usage {
             usage_units: std::collections::BTreeMap::from([(PER_SESSION.to_string(), 1)]),
         };
-        let (lane, now) = (plane_fee_lane(plane), self.host.clock_now_secs());
+        let lane = plane_fee_lane(plane);
         self.host
-            .meter_ledger(&self.pin, &self.key, &self.pool, &lane, &one, now);
+            .meter_ledger(&self.pin, &self.key, &self.pool, &lane, &one, self.opened_at);
+    }
+
+    /// GIVE BACK THE OPEN'S SESSION COUNT (Q17-6, ARCHITECT ruling R4): a session whose open failed
+    /// after the account counted it never opened, and a unit that never opened charges nothing.
+    /// Consumes the account, so its count is given back at most once. The budget book only: the
+    /// metering row the count reached stays, as v1.5.5's fee refund left it.
+    pub fn refund_open(self) {
+        let Some(plane) = self.fee_plane() else {
+            return;
+        };
+        self.host.meter_refund_fee(
+            &self.pin,
+            &self.key,
+            &self.pool,
+            plane,
+            PER_SESSION,
+            self.opened_at,
+        );
+    }
+
+    /// The plane whose fee lane the session count lands on; `None` for a lane no plane qualifies,
+    /// which has no session fee to count.
+    fn fee_plane(&self) -> Option<&str> {
+        let (plane, _) = split_plane_lane(&self.lane);
+        (!plane.is_empty()).then_some(plane)
     }
 
     /// Ledger ONE turn's raw counts per class, unconditionally, then answer whether the carrier stays
@@ -125,3 +154,7 @@ impl SessionAccount {
                 .is_some_and(|h| h <= 0.0)
     }
 }
+
+#[cfg(test)]
+#[path = "tests/session_meter_tests.rs"]
+mod tests;
