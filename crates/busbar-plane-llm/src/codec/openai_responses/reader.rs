@@ -721,7 +721,7 @@ impl ProtocolReader for ResponsesReader {
             seed: None,
             n: None,
             response_format,
-            // IR-03..07: filled from the flat request fields (`fields.rs`) below.
+            // IR-03..07: filled from the flat request fields (`map.gen.rs`) below.
             metadata: None,
             service_tier: None,
             store: None,
@@ -735,7 +735,7 @@ impl ProtocolReader for ResponsesReader {
             output_modalities: None,
             extra,
         };
-        crate::codec::carry::read(super::fields::FIELDS, obj, &mut ir);
+        crate::codec::carry::read(super::map::REQUEST, obj, &mut ir);
         Ok(ir)
     }
 
@@ -1344,7 +1344,7 @@ impl ProtocolReader for ResponsesReader {
                             cache_read_input_tokens: None,
                             detail: crate::codec::ir::IrUsageDetail {
                                 service_tier: crate::codec::carry::read_word(
-                                    super::fields::SERVED_TIER,
+                                    crate::codec::openai_chat::map::WORDS_OPENAI_SERVED_TIER,
                                     response_obj.get("service_tier"),
                                 ),
                                 ..Default::default()

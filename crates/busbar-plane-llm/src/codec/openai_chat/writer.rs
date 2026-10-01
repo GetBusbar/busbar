@@ -596,9 +596,9 @@ impl ProtocolWriter for OpenAiWriter {
             }
         }
 
-        // The flat request fields (`fields.rs`). Written before `extra`, which wins on the same
+        // The flat request fields (`map.gen.rs`). Written before `extra`, which wins on the same
         // dialect (the reader parks there only a raw member the slot cannot reproduce).
-        crate::codec::carry::write(super::fields::FIELDS, req, &mut out);
+        crate::codec::carry::write(super::map::REQUEST, req, &mut out);
 
         // Add extra fields
         for (key, value) in &req.extra {
@@ -900,7 +900,7 @@ impl ProtocolWriter for OpenAiWriter {
                 }
                 // The serving tier rides the chunk's top level, as on a native stream (OAI-03).
                 if let Some(tier) = usage.detail.service_tier.as_deref().and_then(|t| {
-                    crate::codec::carry::word_out(super::fields::SERVED_TIER, t)
+                    crate::codec::carry::word_out(super::map::WORDS_SERVED_TIER, t)
                 }) {
                     if let Some(obj) = chunk_obj.as_object_mut() {
                         obj.insert("service_tier".to_string(), serde_json::json!(tier));
@@ -1331,7 +1331,7 @@ impl ProtocolWriter for OpenAiWriter {
         // The tier that served the request, in OpenAI's vocabulary (OAI-03). Omitted when the
         // source named none, or a tier OpenAI has no response value for.
         if let Some(tier) = resp.usage.detail.service_tier.as_deref().and_then(|t| {
-            crate::codec::carry::word_out(super::fields::SERVED_TIER, t)
+            crate::codec::carry::word_out(super::map::WORDS_SERVED_TIER, t)
         }) {
             obj.insert("service_tier".to_string(), serde_json::json!(tier));
         }

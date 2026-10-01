@@ -570,10 +570,10 @@ impl ProtocolWriter for ResponsesWriter {
             // The extra-forwarding loop below SKIPS `text` when `response_format` is Some (see its
             // guard), so the bare extra `text` cannot clobber this merged object back to format-less.
         }
-        // The flat request fields (`fields.rs`): IR-03..06 (the members Chat spells alike) and
+        // The flat request fields (`map.gen.rs`): IR-03..06 (the members Chat spells alike) and
         // IR-07 `text.verbosity`, overlaid on the `text` written above. A same-protocol request's
         // raw members in `extra` (overlaid below) win.
-        crate::codec::carry::write(super::fields::FIELDS, req, &mut out);
+        crate::codec::carry::write(super::map::REQUEST, req, &mut out);
 
         // `stream` is a modeled key (excluded from `extra`), so it must be emitted explicitly or it
         // is silently dropped — a `stream: true` request would otherwise be answered non-streaming,
@@ -1450,7 +1450,7 @@ impl ProtocolWriter for ResponsesWriter {
                 }
                 // RSP-17: the tier that served the response, as `write_response` emits it.
                 if let Some(tier) = usage.detail.service_tier.as_deref().and_then(|t| {
-                    crate::codec::carry::word_out(super::fields::SERVED_TIER, t)
+                    crate::codec::carry::word_out(crate::codec::openai_chat::map::WORDS_OPENAI_SERVED_TIER, t)
                 }) {
                     resp_obj.insert("service_tier".to_string(), serde_json::json!(tier));
                 }
@@ -1761,7 +1761,7 @@ impl ProtocolWriter for ResponsesWriter {
         // backend's own), in the Responses vocabulary; omitted when the IR carries none or a tier
         // this vocabulary has no word for.
         if let Some(tier) = resp.usage.detail.service_tier.as_deref().and_then(|t| {
-            crate::codec::carry::word_out(super::fields::SERVED_TIER, t)
+            crate::codec::carry::word_out(crate::codec::openai_chat::map::WORDS_OPENAI_SERVED_TIER, t)
         }) {
             obj.insert("service_tier".to_string(), serde_json::json!(tier));
         }

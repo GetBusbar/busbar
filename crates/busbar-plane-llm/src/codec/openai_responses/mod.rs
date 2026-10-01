@@ -33,7 +33,9 @@ use crate::codec::usage_count::{CountRead, CountSlot, UsageCount};
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-mod fields;
+#[rustfmt::skip]
+#[path = "map.gen.rs"]
+mod map;
 pub mod handler;
 mod reader;
 mod slots;
@@ -845,7 +847,7 @@ fn responses_error_code(err: &busbar_contract::protocol::IrError) -> String {
 /// `OnceLock` instead of being reconstructed on every `read_request` call — the rebuild was a
 /// pointless per-request allocation on the Responses ingress hot path.
 ///
-/// The flat request fields (`fields.rs`: `metadata`, `service_tier`, `store`, `safety_identifier`,
+/// The flat request fields (`map.gen.rs`: `metadata`, `service_tier`, `store`, `safety_identifier`,
 /// `prompt_cache_key`) join the set from their table; a raw member the typed slot cannot reproduce
 /// is parked in `extra` by the walker, so a same-protocol write still re-emits the caller's exact
 /// member.
@@ -868,7 +870,7 @@ fn responses_modeled_keys() -> &'static std::collections::HashSet<&'static str> 
             "user",
         ]
         .into_iter()
-        .chain(crate::codec::carry::keys(fields::FIELDS))
+        .chain(crate::codec::carry::keys(map::REQUEST))
         .collect()
     })
 }
@@ -1285,7 +1287,7 @@ fn read_responses_usage(
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
     let mut usage = crate::codec::usage_count::read_usage("openai_responses", usage, USAGE)?;
     usage.detail.service_tier = crate::codec::carry::read_word(
-        fields::SERVED_TIER,
+        crate::codec::openai_chat::map::WORDS_OPENAI_SERVED_TIER,
         response.and_then(|r| r.get("service_tier")),
     );
     Ok(usage)

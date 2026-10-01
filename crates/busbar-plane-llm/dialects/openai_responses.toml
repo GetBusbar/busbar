@@ -1,0 +1,11 @@
+# crates/busbar-plane-llm/dialects/openai_responses.toml: the HAND-WRITTEN wire <> IR mapping of
+# the OpenAI Responses dialect (stage 0: flat request fields). Format: see openai_chat.toml.
+# The served-tier words are openai_chat.toml's `openai_served_tier`.
+
+[dialect]
+wire = "responses"  # the wire lock: dialects/responses.wire.json (notation A paths)
+request = ["openai_chat.openai_family", "responses"]
+
+# `text.verbosity` (IR-07), beside the `text.format` the dialect writes from `response_format`.
+[rows.responses]
+"text.verbosity" = { ir = "verbosity" }

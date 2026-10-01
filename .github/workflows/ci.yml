@@ -441,6 +441,13 @@ jobs:
         run: cargo xtask gate no-tracked-ignored --selftest
       - name: No-tracked-ignored gate (no tracked path matches a .gitignore rule of this tree)
         run: cargo xtask gate no-tracked-ignored
+      # DIALECT-MAP: each LLM dialect's committed table file (codec/<d>/map.gen.rs) must equal its
+      # hand-written mapping file (crates/busbar-plane-llm/dialects/<d>.toml), compiled by
+      # `cargo xtask dialect compile`. Self-test FIRST: a hand edit and a stale compile are planted.
+      - name: Dialect-map self-test
+        run: cargo xtask gate dialect-map --selftest
+      - name: Dialect-map gate (committed dialect tables equal their mapping files, compiled)
+        run: cargo xtask gate dialect-map
       # DESIGN-DOCS ALLOWLIST (owner, 2026-09-27): docs/design holds BUSBAR-1.6.0.md, 1.6.0-TODO.md,
       # 1.6.0-QUESTIONS.md, 1.6.0-SLOT-LOG.md and 1.6.0-PARKED/, nothing else. A new
       # design topic is a section of the spec; generated data and evidence go under qa/. Self-test

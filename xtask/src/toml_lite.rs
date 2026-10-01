@@ -14,6 +14,9 @@ use std::path::Path;
 #[derive(Debug, Default, Clone)]
 pub struct Table {
     pub values: BTreeMap<String, Vec<String>>,
+    /// Every single-line `key = value` in FILE ORDER: the key unquoted, the value's raw text. For
+    /// a reader whose rows are ordered (the dialect mapping files), where `values` is a sorted map.
+    pub entries: Vec<(String, String)>,
 }
 
 impl Table {
@@ -195,12 +198,91 @@ pub fn parse_text(raw: &str) -> Document {
                     in_multiline_string = true;
                 }
             } else {
+                cur_table.entries.push((unquote(&key), value.to_string()));
                 cur_table.values.insert(key, vec![unquote(value)]);
             }
         }
     }
     commit_table(&mut doc, &cur_path, cur_is_array, cur_table);
     doc
+}
+
+/// Split `body` on every `sep` that is outside a double-quoted string and outside `[..]` / `{..}`.
+fn split_top(body: &str, sep: char) -> Vec<&str> {
+    let (mut out, mut depth, mut in_str, mut escaped, mut start) = (Vec::new(), 0i32, false, false, 0);
+    for (i, c) in body.char_indices() {
+        if in_str {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_str = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '[' | '{' => depth += 1,
+            ']' | '}' => depth -= 1,
+            _ if c == sep && depth == 0 => {
+                out.push(&body[start..i]);
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    out.push(&body[start..]);
+    out
+}
+
+/// An inline table `{ k = v, k2 = [a, b] }` as its `(key, raw value)` pairs in order (keys
+/// unquoted, values trimmed raw text); `None` when `raw` is not one.
+pub fn inline_table(raw: &str) -> Option<Vec<(String, String)>> {
+    let body = raw.trim().strip_prefix('{')?.strip_suffix('}')?;
+    split_top(body, ',')
+        .into_iter()
+        .filter(|item| !item.trim().is_empty())
+        .map(|item| {
+            let parts = split_top(item, '=');
+            let (key, value) = (parts.first()?, item.get(parts.first()?.len() + 1..)?);
+            Some((unquote(key), value.trim().to_string()))
+        })
+        .collect()
+}
+
+/// A raw scalar's text: a basic string unquoted with its `\"` and `\\` escapes undone; any other
+/// scalar (a number, a bool) as written.
+pub fn string_value(raw: &str) -> String {
+    let t = raw.trim();
+    match t.strip_prefix('"').and_then(|r| r.strip_suffix('"')) {
+        Some(inner) => {
+            let mut out = String::with_capacity(inner.len());
+            let mut chars = inner.chars();
+            while let Some(c) = chars.next() {
+                if c == '\\' {
+                    if let Some(n) = chars.next() {
+                        out.push(n);
+                    }
+                } else {
+                    out.push(c);
+                }
+            }
+            out
+        }
+        None => unquote(t),
+    }
+}
+
+/// A raw single-line array `[a, "b"]` as its items' scalar texts.
+pub fn array_items(raw: &str) -> Option<Vec<String>> {
+    let body = raw.trim().strip_prefix('[')?.strip_suffix(']')?;
+    Some(
+        split_top(body, ',')
+            .into_iter()
+            .filter(|i| !i.trim().is_empty())
+            .map(string_value)
+            .collect(),
+    )
 }
 
 #[cfg(test)]

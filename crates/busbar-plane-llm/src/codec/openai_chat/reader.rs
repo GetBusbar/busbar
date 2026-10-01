@@ -681,8 +681,8 @@ impl ProtocolReader for OpenAiReader {
             },
             output_modalities: None,
         };
-        // The flat request fields (`fields.rs`), then the allowed-tools subset of `tool_choice`.
-        crate::codec::carry::read(super::fields::FIELDS, obj, &mut ir);
+        // The flat request fields (`map.gen.rs`), then the allowed-tools subset of `tool_choice`.
+        crate::codec::carry::read(super::map::REQUEST, obj, &mut ir);
         super::slots::read_tool_choice_slots(obj, &mut ir);
         Ok(ir)
     }
@@ -1161,7 +1161,7 @@ impl ProtocolReader for OpenAiReader {
                 // A finish chunk without usage still names the serving tier (OAI-03).
                 detail: crate::codec::ir::IrUsageDetail {
                     service_tier: crate::codec::carry::read_word(
-                        super::fields::SERVED_TIER,
+                        super::map::WORDS_SERVED_TIER,
                         data.get("service_tier"),
                     ),
                     ..Default::default()

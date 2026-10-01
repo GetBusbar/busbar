@@ -5,7 +5,7 @@
 //! paths, the same-dialect fidelity park and the modelled keys.
 
 use super::*;
-use crate::codec::ir::{IrRequest, IrServiceTier, IrVerbosity};
+use crate::codec::ir::{IrModality, IrRequest, IrServiceTier, IrVerbosity};
 use serde_json::json;
 
 const TIERS: &[Word] = &[
@@ -14,23 +14,19 @@ const TIERS: &[Word] = &[
     ("auto", "priority", Dir::Write),
 ];
 
-fn hook_read(v: &Value, ir: &mut IrRequest) {
-    ir.store = v.as_str().map(|s| s == "yes");
-}
-
-fn hook_write(r: &IrRequest) -> Option<Value> {
-    r.store.map(|s| json!(if s { "yes" } else { "no" }))
-}
-
 const GROUP_A: &[Field] = &[
-    (&["metadata"], Slot::Metadata, Codec::Plain),
-    (&["tier"], Slot::ServiceTier, Codec::Words(TIERS)),
+    row(&["metadata"], Slot::Metadata, Codec::Plain),
+    row(&["tier"], Slot::ServiceTier, Codec::Words(TIERS)),
 ];
 const GROUP_B: &[Field] = &[
-    (&["text", "verbosity"], Slot::Verbosity, Codec::Plain),
-    (&["user_id"], Slot::SafetyIdentifier, Codec::Plain),
-    (&["alt_user_id"], Slot::SafetyIdentifier, Codec::Plain),
-    (&["keep"], Slot::Store, Codec::Hook(hook_read, hook_write)),
+    row(&["text", "verbosity"], Slot::Verbosity, Codec::Plain),
+    row(&["user_id"], Slot::SafetyIdentifier, Codec::Plain),
+    row(&["alt_user_id"], Slot::SafetyIdentifier, Codec::Plain),
+    row(
+        &["modes"],
+        Slot::OutputModalities,
+        Codec::Hook(Hook::ChatModalities),
+    ),
 ];
 const TABLE: Table = &[GROUP_A, GROUP_B];
 
@@ -53,7 +49,7 @@ fn reads_every_row_into_its_slot() {
         "tier": "standard_only",
         "text": {"verbosity": "low", "format": {"type": "text"}},
         "user_id": "u-1",
-        "keep": "yes",
+        "modes": ["text"],
     }));
     assert_eq!(
         ir.metadata,
@@ -65,7 +61,7 @@ fn reads_every_row_into_its_slot() {
     assert_eq!(ir.service_tier, Some(IrServiceTier::Default));
     assert_eq!(ir.verbosity, Some(IrVerbosity::Low));
     assert_eq!(ir.safety_identifier.as_deref(), Some("u-1"));
-    assert_eq!(ir.store, Some(true));
+    assert_eq!(ir.output_modalities, Some(vec![IrModality::Text]));
     assert!(ir.extra.is_empty(), "every member reproduces: {:?}", ir.extra);
 }
 
@@ -100,8 +96,11 @@ fn a_word_with_no_row_is_not_written_and_a_write_only_word_is_not_read() {
     assert_eq!(written(&ir), json!({}));
     assert_eq!(word_in(TIERS, "auto"), Some("auto"));
     assert_eq!(word_out(TIERS, "priority"), Some("auto"));
-    let only_write: &[Word] = &[("w", "n", Dir::Write)];
-    assert_eq!(word_in(only_write, "w"), None);
+    let one_way: &[Word] = &[("w", "n", Dir::Write), ("r", "m", Dir::Read)];
+    assert_eq!(word_in(one_way, "w"), None);
+    assert_eq!(word_out(one_way, "n"), Some("w"));
+    assert_eq!(word_in(one_way, "r"), Some("m"));
+    assert_eq!(word_out(one_way, "m"), None);
 }
 
 #[test]
@@ -139,5 +138,5 @@ fn a_member_the_slot_cannot_reproduce_is_parked_raw_in_extra() {
 #[test]
 fn keys_are_the_single_key_paths() {
     let k: Vec<&str> = keys(TABLE).collect();
-    assert_eq!(k, ["metadata", "tier", "user_id", "alt_user_id", "keep"]);
+    assert_eq!(k, ["metadata", "tier", "user_id", "alt_user_id", "modes"]);
 }

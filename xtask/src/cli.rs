@@ -40,6 +40,7 @@ usage:
   cargo xtask fleet render <repo> [--out <dir>]
   cargo xtask fleet check [--repo <repo>]...
   cargo xtask fleet sync [--repo <repo>]... [--workdir <dir>] [--dry-run]
+  cargo xtask dialect compile
   cargo xtask perf-ab [--base <busbar>] [--candidate <busbar>] [--conc 1,64,512] [--secs N] [--streams N] [--trend <file>]";
 
 /// The environment variable the legacy release-gate scripts write their ledger through.
@@ -133,6 +134,12 @@ pub fn main(args: &[String]) -> i32 {
             Err(code) => code,
         },
         Some("perf-ab-mock") => crate::perf_ab::mock_main(&args[1..]),
+        // THE DIALECT MAPPING COMPILER. Not a gate: it WRITES the table files; the gate that
+        // refuses their drift is `dialect-map`.
+        Some("dialect") => match open_ctx() {
+            Ok(cx) => crate::dialect::main(&cx, &args[1..]),
+            Err(code) => code,
+        },
         Some("ledger") => match open_ctx() {
             Ok(cx) => crate::audit_cmd::main(cx.root(), &args[1..]),
             Err(code) => code,

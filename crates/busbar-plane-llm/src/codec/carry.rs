@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE FLAT FIELD CARRY (TODO 36b, CARRY-TABLE): one walker for every dialect's flat request
-//! fields.
+//! THE DIALECT MAPPING WALKER (TODO 36b, stage 0 of the dialect file): one walker for every
+//! dialect's mapped request fields.
 //!
-//! A flat field is a wire member whose whole meaning is ONE typed IR slot: a number, a flag, a
-//! string, a string map, a word. Each dialect states its flat fields as data, a [`Table`] in its
-//! own `fields.rs` (wire path, [`Slot`], [`Codec`]), and this module is the only code that reads
-//! those tables:
+//! Each dialect states its wire ↔ IR mapping as data in `crates/busbar-plane-llm/dialects/<d>.toml`;
+//! `cargo xtask dialect compile` emits it as the `const` tables of `codec/<d>/map.gen.rs` (the
+//! `dialect-map` gate refuses a committed table that differs from a fresh compile). A row is a
+//! [`Field`]: wire path, [`Slot`], [`Codec`]. This module is the only code that reads the tables:
 //!
 //! * [`read`] fills each slot from its wire path, then parks in `extra` every raw top-level member
 //!   the slot does not reproduce byte-for-byte, so a same-dialect re-serialize keeps the caller's
@@ -16,9 +16,8 @@
 //!   container already in the body;
 //! * [`keys`] names the top-level members a table models, for the reader's modelled-key list.
 //!
-//! Structure (blocks, stream lifecycles, citations, thinking, tool choice) is not a flat field and
-//! stays code in the dialect. A field whose carry is irregular but still one member is a
-//! [`Codec::Hook`]: a named pair of dialect functions the walker calls in the row's place.
+//! A row whose carry is irregular names a [`Hook`] from the one registry below; the walker calls
+//! the hook's reader and writer in the row's place.
 
 use serde_json::{Map, Value};
 
@@ -52,14 +51,16 @@ pub enum Slot {
 pub enum Dir {
     /// Read and written.
     Both,
+    /// Read only: the wire word reads as the neutral one, which is written otherwise.
+    Read,
     /// Written only: the dialect sends this word for the neutral one, but reading the wire word
     /// does not yield it.
     Write,
 }
 
 /// One row of a word table: `(wire word, neutral word, direction)`. Reading takes the FIRST
-/// readable row whose wire word matches; writing takes the FIRST row whose neutral word matches. A
-/// neutral word with no row has no form on the wire.
+/// readable row whose wire word matches; writing takes the FIRST writable row whose neutral word
+/// matches. A neutral word with no row has no form on the wire.
 pub type Word = (&'static str, &'static str, Dir);
 
 /// How a row's slot value is spelled on the wire.
@@ -69,13 +70,51 @@ pub enum Codec {
     Plain,
     /// The slot's neutral word through a word table.
     Words(&'static [Word]),
-    /// Named irregular code: the dialect's reader (wire value → IR) and writer (IR → wire value,
-    /// `None` to omit the member).
-    Hook(fn(&Value, &mut IrRequest), fn(&IrRequest) -> Option<Value>),
+    /// Named irregular code from the [`Hook`] registry.
+    Hook(Hook),
 }
 
-/// One row: `(wire path, slot, codec)`. The path is the member's keys from the body's top level.
-pub type Field = (&'static [&'static str], Slot, Codec);
+/// THE HOOK REGISTRY: every named piece of irregular carry a mapping row may cite (`hook = "<name>"`
+/// in the dialect file names the variant in snake case). Each hook is a reader (wire value → IR)
+/// and a writer (IR → wire value, `None` to omit the member).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hook {
+    /// Chat `modalities`: `audio` output is written only beside the caller's own `audio` member.
+    ChatModalities,
+    /// Chat `web_search_options`: one hosted web search per request, its location nested.
+    ChatWebSearch,
+}
+
+impl Hook {
+    fn read(self, raw: &Value, ir: &mut IrRequest) {
+        use crate::codec::openai_chat::slots;
+        match self {
+            Hook::ChatModalities => slots::read_modalities(raw, ir),
+            Hook::ChatWebSearch => slots::read_web_search(raw, ir),
+        }
+    }
+
+    fn write(self, req: &IrRequest) -> Option<Value> {
+        use crate::codec::openai_chat::slots;
+        match self {
+            Hook::ChatModalities => slots::write_modalities(req),
+            Hook::ChatWebSearch => slots::write_web_search(req),
+        }
+    }
+}
+
+/// One mapping row. The path is the member's keys from the body's top level.
+#[derive(Clone, Copy)]
+pub struct Field {
+    pub path: &'static [&'static str],
+    pub slot: Slot,
+    pub codec: Codec,
+}
+
+/// A row with no modifiers.
+pub const fn row(path: &'static [&'static str], slot: Slot, codec: Codec) -> Field {
+    Field { path, slot, codec }
+}
 
 /// A dialect's field table: its row groups, walked in order (a group shared by two dialects is
 /// written once and named by both).
@@ -138,7 +177,7 @@ fn string_map(v: &Value) -> Option<Vec<(String, String)>> {
 pub fn word_in(words: &[Word], wire: &str) -> Option<&'static str> {
     words
         .iter()
-        .find(|(w, _, dir)| *w == wire && *dir == Dir::Both)
+        .find(|(w, _, dir)| *w == wire && *dir != Dir::Write)
         .map(|(_, neutral, _)| *neutral)
 }
 
@@ -151,7 +190,7 @@ pub fn read_word(words: &[Word], v: Option<&Value>) -> Option<String> {
 pub fn word_out(words: &[Word], neutral: &str) -> Option<&'static str> {
     words
         .iter()
-        .find(|(_, n, _)| *n == neutral)
+        .find(|(_, n, dir)| *n == neutral && *dir != Dir::Read)
         .map(|(wire, _, _)| *wire)
 }
 
@@ -185,18 +224,18 @@ fn put(out: &mut Map<String, Value>, path: &[&str], v: Value) {
 /// THE READ WALK. Fill every slot `table` names from the wire body `obj`, then park in `extra` each
 /// raw top-level member the filled slots do not write back identically (same-dialect fidelity).
 pub fn read(table: Table, obj: &Map<String, Value>, ir: &mut IrRequest) {
-    for (path, slot, codec) in rows(table) {
-        let Some(raw) = at(obj, path) else {
+    for f in rows(table) {
+        let Some(raw) = at(obj, f.path) else {
             continue;
         };
-        match codec {
-            Codec::Plain => slot.fill(ir, raw),
+        match f.codec {
+            Codec::Plain => f.slot.fill(ir, raw),
             Codec::Words(words) => {
                 if let Some(neutral) = raw.as_str().and_then(|w| word_in(words, w)) {
-                    slot.fill(ir, &Value::from(neutral));
+                    f.slot.fill(ir, &Value::from(neutral));
                 }
             }
-            Codec::Hook(read, _) => read(raw, ir),
+            Codec::Hook(hook) => hook.read(raw, ir),
         }
     }
     let mut written = Map::new();
@@ -213,17 +252,18 @@ pub fn read(table: Table, obj: &Map<String, Value>, ir: &mut IrRequest) {
 /// THE WRITE WALK. Emit every slot of `table` that `req` carries into `out` at its wire path. A
 /// neutral word the row's table has no wire word for is not written.
 pub fn write(table: Table, req: &IrRequest, out: &mut Map<String, Value>) {
-    for (path, slot, codec) in rows(table) {
-        let value = match codec {
-            Codec::Plain => slot.get(req),
-            Codec::Words(words) => slot
+    for f in rows(table) {
+        let value = match f.codec {
+            Codec::Plain => f.slot.get(req),
+            Codec::Words(words) => f
+                .slot
                 .get(req)
                 .and_then(|v| v.as_str().and_then(|n| word_out(words, n)))
                 .map(Value::from),
-            Codec::Hook(_, write) => write(req),
+            Codec::Hook(hook) => hook.write(req),
         };
         if let Some(v) = value {
-            put(out, path, v);
+            put(out, f.path, v);
         }
     }
 }
@@ -231,7 +271,7 @@ pub fn write(table: Table, req: &IrRequest, out: &mut Map<String, Value>) {
 /// The top-level members `table` models: every single-key path. (A nested row's container is the
 /// dialect's own structure, which may hold members no row names.)
 pub fn keys(table: Table) -> impl Iterator<Item = &'static str> {
-    rows(table).filter_map(|(path, _, _)| match path {
+    rows(table).filter_map(|f| match f.path {
         [key] => Some(*key),
         _ => None,
     })

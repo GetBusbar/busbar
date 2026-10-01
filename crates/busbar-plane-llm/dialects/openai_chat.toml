@@ -1,0 +1,42 @@
+# crates/busbar-plane-llm/dialects/openai_chat.toml: the HAND-WRITTEN wire <> IR mapping of the
+# OpenAI Chat Completions dialect (stage 0: flat request fields and word tables).
+# `cargo xtask dialect compile` emits it as src/codec/openai_chat/map.gen.rs; the `dialect-map`
+# gate refuses a committed map.gen.rs that differs from a fresh compile.
+#
+# A row is `"<wire path>" = { ir = "<slot>" [, words = "<table>"] [, hook = "<name>"] }`, in walk
+# order: the path in inventory notation, the slot and hook by their registry names
+# (codec::carry::{Slot, Hook}). A word table row is `"<ir word>" = { wire = "<word>" [, dir =
+# "read" | "write"] }`; `base` names a table whose rows come first.
+
+[dialect]
+wire = "openai"  # the wire lock: dialects/openai.wire.json (notation A paths)
+request = ["openai_family", "chat"]
+
+# The Q57 request members Chat and Responses spell alike (ir-slots-landed.md IR-03..06).
+[rows.openai_family]
+"metadata" = { ir = "metadata" }
+"service_tier" = { ir = "service_tier" }
+"store" = { ir = "store" }
+"safety_identifier" = { ir = "safety_identifier" }
+"prompt_cache_key" = { ir = "prompt_cache_key" }
+
+[rows.chat]
+"verbosity" = { ir = "verbosity" }
+"modalities" = { ir = "output_modalities", hook = "chat_modalities" }
+"web_search_options" = { ir = "web_search", hook = "chat_web_search" }
+
+# The response `service_tier` (the tier that SERVED the answer, OAI-03 / RSP-17) <> the IR
+# attribution word (the Anthropic vocabulary: `default` IS `standard`). The OpenAI-family words are
+# written as-is so a tier that arrived in that vocabulary is not lost.
+[words.openai_served_tier]
+"standard" = { wire = "default" }
+"default" = { wire = "default", dir = "write" }
+"priority" = { wire = "priority" }
+"flex" = { wire = "flex", dir = "write" }
+"scale" = { wire = "scale", dir = "write" }
+
+# Chat also READS `flex` / `scale`, carried in the IR tier vocabulary.
+[words.served_tier]
+base = "openai_served_tier"
+"flex" = { wire = "flex", dir = "read" }
+"scale" = { wire = "scale", dir = "read" }

@@ -3,8 +3,9 @@
 
 //! The irregular half of the Q57 typed IR request slots on the OpenAI Chat Completions wire
 //! (ir-slots-landed.md). The flat members (`metadata`, `service_tier`, `store`,
-//! `safety_identifier`, `prompt_cache_key`, `verbosity`) are rows in `fields.rs`, walked by
-//! `codec::carry`; what stays here is code no row can state, each case named:
+//! `safety_identifier`, `prompt_cache_key`, `verbosity`) are rows in `dialects/openai_chat.toml`,
+//! walked by `codec::carry`; what stays here is code no row can state, each case named (the
+//! first two are `codec::carry::Hook`s):
 //!
 //! | Chat member                | IR slot                      | Why it is code |
 //! |----------------------------|------------------------------|----------------|
@@ -119,7 +120,7 @@ pub(super) fn write_tool_choice(req: &IrRequest) -> Option<serde_json::Value> {
 }
 
 /// Hook (`modalities`, IR-19): every entry must be a known word, else the slot is left absent.
-pub(super) fn read_modalities(v: &serde_json::Value, ir: &mut IrRequest) {
+pub(crate) fn read_modalities(v: &serde_json::Value, ir: &mut IrRequest) {
     ir.output_modalities = v.as_array().and_then(|arr| {
         arr.iter()
             .map(|m| m.as_str().and_then(IrModality::parse))
@@ -132,7 +133,7 @@ pub(super) fn read_modalities(v: &serde_json::Value, ir: &mut IrRequest) {
 /// — so it is written only when the Chat caller's own `audio` member rides alongside (same
 /// dialect); cross-protocol it is dropped with a warn rather than sent as a request OpenAI rejects.
 /// `image` has no Chat output modality.
-pub(super) fn write_modalities(req: &IrRequest) -> Option<serde_json::Value> {
+pub(crate) fn write_modalities(req: &IrRequest) -> Option<serde_json::Value> {
     let has_audio_member = req.extra.contains_key("audio");
     let mut out: Vec<serde_json::Value> = Vec::new();
     for m in req.output_modalities.as_deref()? {
@@ -155,7 +156,7 @@ pub(super) fn write_modalities(req: &IrRequest) -> Option<serde_json::Value> {
 /// Hook (`web_search_options`, IR-11): Chat `web_search_options{search_context_size,
 /// user_location:{type:"approximate", approximate:{city, region, country, timezone}}}` → the
 /// neutral web search.
-pub(super) fn read_web_search(v: &serde_json::Value, ir: &mut IrRequest) {
+pub(crate) fn read_web_search(v: &serde_json::Value, ir: &mut IrRequest) {
     let Some(o) = v.as_object() else {
         return;
     };
@@ -186,7 +187,7 @@ pub(super) fn read_web_search(v: &serde_json::Value, ir: &mut IrRequest) {
 /// Hook (`web_search_options`, IR-11): the first hosted web search, in Chat's one member. A second
 /// search, and every hosted kind Chat has no built-in for, is dropped with a warn; a custom tool is
 /// a `tools[]` entry (`write_custom_tools`), not this member.
-pub(super) fn write_web_search(req: &IrRequest) -> Option<serde_json::Value> {
+pub(crate) fn write_web_search(req: &IrRequest) -> Option<serde_json::Value> {
     let mut written = None;
     for tool in &req.hosted_tools {
         match tool {

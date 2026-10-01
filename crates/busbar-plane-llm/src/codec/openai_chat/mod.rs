@@ -33,10 +33,12 @@ use busbar_contract::ir::egress_prep::{LaneCaps, MaxOutputKey};
 #[allow(unused_imports)]
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
 
-pub(crate) mod fields;
+#[rustfmt::skip]
+#[path = "map.gen.rs"]
+pub(crate) mod map;
 pub mod handler;
 mod reader;
-mod slots;
+pub(crate) mod slots;
 mod writer;
 
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
@@ -245,7 +247,7 @@ fn read_openai_usage(
     tier: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
     let mut usage = crate::codec::usage_count::read_usage("openai", usage, USAGE)?;
-    usage.detail.service_tier = crate::codec::carry::read_word(fields::SERVED_TIER, tier);
+    usage.detail.service_tier = crate::codec::carry::read_word(map::WORDS_SERVED_TIER, tier);
     Ok(usage)
 }
 
@@ -661,8 +663,8 @@ fn modeled_request_keys() -> &'static std::collections::HashSet<&'static str> {
             "reasoning_effort",
         ]
         .into_iter()
-        // The flat request fields (`fields.rs`).
-        .chain(crate::codec::carry::keys(fields::FIELDS))
+        // The flat request fields (`map.gen.rs`).
+        .chain(crate::codec::carry::keys(map::REQUEST))
         .collect()
     })
 }
