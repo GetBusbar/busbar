@@ -823,7 +823,7 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # RE-ARMED 24237 -> 24284 with its pair (K1 plane driver: PlaneCalls, Lent and the plane unit key, +47).
 # RE-ARMED 24237 -> 25636 with its pair (WIRE-STORE C1 + CONNECTOR-19, +1399; T13b).
 # RE-ARMED 25636 -> 25683 with its pair (K1 over T13b: the plane driver's +47 on 25636).
-contract_caps = 25683
+contract_caps = 25682
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1417,7 +1417,9 @@ kernel_crate = "busbar-kernel"
 # ── RE-ARMED 53189 -> 53391 over MW3 (+167) and T13b (+35) on predev, from 52136; declared above.
 # ── LOWERED 53391 -> 53380 by K1-FIX 5f77deb37 (the observer's installed grants seam leaves the kernel;
 # grants are handed in per call): 12 code lines removed, 1 added, -11. Downward only.
-kernel_ceiling = 53380
+# ── LOWERED 53380 -> 53148 by K1-DEDUP (plane driver frame helpers, seat forwarding and the CancelCause
+# mirror folded; metrics' four cached-handle copies share one path), measured on k1-dedup. Downward only.
+kernel_ceiling = 53148
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -1523,7 +1525,9 @@ contract_crate = "busbar-contract"
 # RE-ARMED 24237 -> 24284 with its pair (K1 plane driver: PlaneCalls, Lent and the plane unit key, +47).
 # RE-ARMED 24237 -> 25636 with its pair (WIRE-STORE C1 + CONNECTOR-19, +1399; T13b).
 # RE-ARMED 25636 -> 25683 with its pair (K1 over T13b: the plane driver's +47 on 25636).
-caps_contract_ceiling = 25683
+# LOWERED 25683 -> 25682 with its pair (K1-DEDUP: Blob::ABSENT and AbiStr::over replace three
+# literal copies, measured).
+caps_contract_ceiling = 25682
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
