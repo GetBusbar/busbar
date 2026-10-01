@@ -648,8 +648,7 @@ pub const PER_PLUGIN_PRICING_IS_UNREPRESENTABLE: () = ();
 /// (non-reserved) keyed count. Opaque `key → count` DATA the store never interprets. An
 /// all-empty row serializes to `{"model":…}` (the map is skipped when empty); a 1.5.x persisted row
 /// with the old scalar `tokens` field is read through plugin-loader's legacy adapter on a 1.5.x
-/// store, and upgraded on disk by the store plugin's own `migrate()` through the store SDK's one
-/// fold (`abi::sdk::store_migrate`).
+/// store, and upgraded on disk by the store plugin's own `migrate()`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct ModelTokens {
     pub model: String,
@@ -784,8 +783,7 @@ impl UsageLedger {
 // ── THE 1.5.x ROW FOLD IS NOT HERE, AND THE ENGINE HAS NONE (#33, ARCHITECT 2026-09-29) ─────────
 //
 // A 1.5.x usage row lives in the store plugin's own database; the engine never holds those bytes.
-// The frozen 1.5.x shapes and the one fold a store's own `migrate()` calls live in the store SDK:
-// `abi::sdk::store_migrate` (`fold_v1_ledger`). Until M6, a published 1.5.x store (payload schema
+// Each store plugin's own `migrate()` upgrades its own 1.5.x rows. Until M6, a published 1.5.x store (payload schema
 // below 4) is still read through plugin-loader's legacy adapter (`legacy_usage::ledger_from_legacy`).
 
 /// One model's signed unit delta inside a [`UsageDelta`] — the fleet-additive flush primitive's

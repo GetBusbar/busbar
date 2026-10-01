@@ -29,8 +29,6 @@ use busbar_contract::records::{
     AuditRecord, MeteringDelta, MeteringRow, ModelTokensDelta, RecordStore, UsageDelta,
     UsageLedger, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };
-// The one 1.5.x usage-row fold, the store SDK's (#33: every store plugin's migrate() calls it).
-use busbar_contract::abi::sdk::store_migrate::{fold_v1_ledger, UsageLedgerV1};
 // The build's store, named once: every subject below reaches it through this alias.
 use busbar_contract::slice::{bucket_all, CapDimension, Epoch, SliceId, SliceRequest, SliceStore};
 use busbar_plugin_loader::store_adapter::StoreAdapter;
@@ -626,23 +624,6 @@ fn metering_counters_add_and_saturate() {
 }
 
 // ── 1.5.5 records ──────────────────────────────────────────────────────────────────────────────
-
-/// A usage row exactly as 1.5.5 persisted it (`v1.5.5:crates/api/src/store.rs` `UsageLedger`, the
-/// four-tier `tokens` shape) reads back as the SAME counts. Record blobs are the
-/// unit-map shapes, not 1.5.5 serde bytes — so what must be identical is the money, not the bytes.
-#[test]
-fn a_1_5_5_usage_row_reads_the_same_counts() {
-    let v155 = r#"{"requests":9,"billable_requests":7,"models":[{"model":"m","tokens":{"input":11,"output":22,"cache_read":33,"cache_write":44}},{"model":"n","tokens":{"input":1,"output":0,"cache_read":0,"cache_write":0}}]}"#;
-    let row: UsageLedgerV1 = serde_json::from_str(v155).expect("a 1.5.5 row decodes");
-    let got = fold_v1_ledger(row);
-    assert_eq!((got.requests, got.billable_requests), (9, 7));
-    assert_eq!(
-        [UNIT_INPUT, UNIT_OUTPUT, UNIT_CACHE_READ, UNIT_CACHE_WRITE].map(|u| tier(&got, "m", u)),
-        [11, 22, 33, 44]
-    );
-    assert_eq!(tier(&got, "n", UNIT_INPUT), 1);
-    assert_eq!(got.models[1].usage_units.len(), 1, "zero tiers stay absent");
-}
 
 /// A metering row exactly as 1.5.5 persisted it decodes with the same counts, dated at the opening
 /// card (`priced_from_ms` 0) and with no open classes.
