@@ -23,25 +23,14 @@ impl ProtocolWriter for ResponsesWriter {
         // Mirrors the `write_request` drop-warns: the `/v1/responses` create API models `top_p` and
         // `top_logprobs` but NOT `top_k`, `stop`, `frequency_penalty`, `presence_penalty`, `seed`, or
         // `n`, so a cross-protocol request carrying any of them has that control dropped on egress.
-        let mut dropped = Vec::new();
-        if req.top_k.is_some() {
-            dropped.push("top_k");
-        }
-        if !req.stop.is_empty() {
-            dropped.push("stop");
-        }
-        if req.frequency_penalty.is_some() {
-            dropped.push("frequency_penalty");
-        }
-        if req.presence_penalty.is_some() {
-            dropped.push("presence_penalty");
-        }
-        if req.seed.is_some() {
-            dropped.push("seed");
-        }
-        if req.n.is_some() {
-            dropped.push("n");
-        }
+        use crate::codec::dialect::{
+            carried, FREQUENCY_PENALTY, N, OUTPUT_MODALITIES, PRESENCE_PENALTY, SEED, STOP, TOP_K,
+        };
+        let mut dropped: Vec<&'static str> = carried(
+            req,
+            &[TOP_K, STOP, FREQUENCY_PENALTY, PRESENCE_PENALTY, SEED, N],
+        )
+        .collect();
         // IR-11: a hosted kind with no Responses tool (URL fetch).
         for tool in &req.hosted_tools {
             if matches!(tool, crate::codec::ir::IrHostedTool::WebFetch(_)) {
@@ -49,11 +38,7 @@ impl ProtocolWriter for ResponsesWriter {
             }
         }
         // IR-19: Responses has no output-modality ask; a text-only ask loses nothing.
-        if req
-            .output_modalities
-            .as_ref()
-            .is_some_and(|m| m.iter().any(|m| *m != crate::codec::ir::IrModality::Text))
-        {
+        if (OUTPUT_MODALITIES.1)(req) {
             dropped.push("modalities");
         }
         dropped

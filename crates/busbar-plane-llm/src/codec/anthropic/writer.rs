@@ -158,19 +158,9 @@ impl ProtocolWriter for AnthropicWriter {
         {
             dropped.push("response_format");
         }
-        if req.frequency_penalty.is_some() {
-            dropped.push("frequency_penalty");
-        }
-        if req.presence_penalty.is_some() {
-            dropped.push("presence_penalty");
-        }
-        if req.seed.is_some() {
-            dropped.push("seed");
-        }
-        if req.n.is_some() {
-            dropped.push("n");
-        }
-        dropped.extend(anthropic_unrepresentable_slots(req));
+        use crate::codec::dialect::{carried, FREQUENCY_PENALTY, N, PRESENCE_PENALTY, SEED};
+        dropped.extend(carried(req, &[FREQUENCY_PENALTY, PRESENCE_PENALTY, SEED, N]));
+        dropped.extend(carried(req, ANTHROPIC_UNREPRESENTABLE));
         dropped
     }
 
@@ -634,7 +624,7 @@ impl ProtocolWriter for AnthropicWriter {
         }
         // The Q57 slots with no Anthropic form (store, safety_identifier, prompt_cache_key,
         // verbosity, the metadata map, non-text output modalities): dropped, observably.
-        for slot in anthropic_unrepresentable_slots(req) {
+        for slot in crate::codec::dialect::carried(req, ANTHROPIC_UNREPRESENTABLE) {
             if slot != "service_tier" {
                 tracing::warn!(
                     parameter = slot,

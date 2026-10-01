@@ -1,5 +1,16 @@
 use super::*;
 
+/// The Q57 request slots Cohere v2 `/chat` has no form for, in the order they are reported.
+const COHERE_UNREPRESENTABLE: &[crate::codec::dialect::Control] = &[
+    crate::codec::dialect::METADATA,
+    crate::codec::dialect::SERVICE_TIER,
+    crate::codec::dialect::STORE,
+    crate::codec::dialect::SAFETY_IDENTIFIER,
+    crate::codec::dialect::PROMPT_CACHE_KEY,
+    crate::codec::dialect::VERBOSITY,
+    crate::codec::dialect::OUTPUT_MODALITIES,
+];
+
 impl ProtocolWriter for CohereWriter {
     fn probe_request(&self) -> serde_json::Value {
         // The ping IR is built by the plugin (ir_encode::ping_request); this dialect serializes it
@@ -16,30 +27,9 @@ impl ProtocolWriter for CohereWriter {
     /// here, so the seam audits the degradation. `service_tier` included: Cohere's `priority` is an
     /// integer queue order, a different concept, so no tier is written.
     fn dropped_egress_controls(&self, req: &crate::codec::ir::IrRequest) -> Vec<&'static str> {
-        let mut dropped = Vec::new();
-        if req.metadata.is_some() {
-            dropped.push("metadata");
-        }
-        if req.service_tier.is_some() {
-            dropped.push("service_tier");
-        }
-        if req.store.is_some() {
-            dropped.push("store");
-        }
-        if req.safety_identifier.is_some() {
-            dropped.push("safety_identifier");
-        }
-        if req.prompt_cache_key.is_some() {
-            dropped.push("prompt_cache_key");
-        }
-        if req.verbosity.is_some() {
-            dropped.push("verbosity");
-        }
-        if cohere_drops_output_modalities(req) {
-            dropped.push("output_modalities");
-        }
-        dropped.extend(req.hosted_tools.iter().map(|h| h.kind_str()));
-        dropped
+        crate::codec::dialect::carried(req, COHERE_UNREPRESENTABLE)
+            .chain(req.hosted_tools.iter().map(|h| h.kind_str()))
+            .collect()
     }
 
     fn write_request(&self, req: &crate::codec::ir::IrRequest) -> serde_json::Value {
