@@ -1399,6 +1399,16 @@ cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the
 why     = "busbar names busbar-kernel: declared dev in the test graph (dev-dependencies), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
+[[dep]]
+from    = "busbar"
+to      = "busbar-kernel-audit"
+half    = "test"
+count   = "1"
+verdict = "allowed"
+cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes; ARCHITECT 2026-09-30 (MONEY-CHAIN): the audit crate's test-support feature is enabled by busbar's dev-dependency rather than forwarded through busbar-kernel."
+why     = "busbar names busbar-kernel-audit: declared dev in the test graph (dev-dependencies, features test-support), 1 declaration(s) at this commit, beside the shipped edge the root already declares. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: the same granted class as busbar -> busbar-kernel's test edge. It replaces the kernel's forwarding of the feature, which named a kernel package in busbar-kernel's own manifest (busbar-kernel x kernel)."
+
 # ------------------------------------------------------------------------------------------------
 # [[face]] — A CRATE THAT IMPLEMENTS ANOTHER KIND'S ENTRY FACE, AT ITS EXACT COUNT
 # ------------------------------------------------------------------------------------------------
