@@ -158,57 +158,137 @@ pub fn billed_count_opt(
     }
 }
 
-// ── USAGE COUNTS, AS A DIALECT READER REFUSES THEM (#42) ────────────────────────────────────────
+// ── THE USAGE TABLE WALK (#42) ───────────────────────────────────────────────────────────────
 
-/// Read one usage count off a usage object under [`billed_count`]'s contract: an absent usage
-/// object, an absent field or a JSON `null` is 0 (exactly as before), a readable count is the count
-/// (through the crate's one seam, [`read_count_u64`]), and a present-but-UNREADABLE count REFUSES.
-/// The lenient read this replaces defaulted an unreadable count to zero, so a stringified `"1500"`
-/// reached the kernel as no work at all.
-///
-/// The read itself IS [`billed_count`]; this only lifts its absent-usage-object case (zero) and
-/// maps its refusal onto the readers' error shape, so the contract, the bounded spelling and the
-/// refusal live in one place and cannot drift per dialect. `protocol` is the reader's label on the
-/// refusal's warn.
-///
-/// # Errors
-/// The field is present, is not `null`, and is not a count.
-pub fn read_count(
-    protocol: &'static str,
-    usage: Option<&serde_json::Value>,
-    field: &'static str,
-) -> Result<u64, busbar_contract::protocol::IrError> {
-    usage.map_or(Ok(0), |u| {
-        billed_count(u, field).map_err(refuse_unreadable_count(protocol))
-    })
+/// Where one usage count lands in the IR.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CountSlot {
+    /// `IrUsage::input_tokens` (uncached input).
+    Input,
+    /// `IrUsage::output_tokens`.
+    Output,
+    /// `IrUsage::cache_creation_input_tokens`.
+    CacheWrite,
+    /// `IrUsage::cache_read_input_tokens`.
+    CacheRead,
+    /// `IrUsageDetail::reasoning_tokens`.
+    Reasoning,
+    /// `IrUsageDetail::cache_creation_5m_input_tokens`.
+    CacheWrite5m,
+    /// `IrUsageDetail::cache_creation_1h_input_tokens`.
+    CacheWrite1h,
+    /// `IrUsageDetail::web_search_requests`.
+    WebSearchRequests,
+    /// `IrUsageDetail::search_units`.
+    SearchUnits,
+    /// `IrUsageDetail::billed_input_tokens`.
+    ProviderInput,
+    /// `IrUsageDetail::billed_output_tokens`.
+    ProviderOutput,
+    /// `IrUsageDetail::billed_classifications`.
+    Classifications,
+    /// `IrUsageDetail::tool_use_prompt_tokens`.
+    ToolUsePrompt,
+    /// `IrUsageDetail::input_audio_tokens`.
+    InputAudio,
+    /// `IrUsageDetail::output_audio_tokens`.
+    OutputAudio,
+    /// `IrUsageDetail::accepted_prediction_tokens`.
+    AcceptedPrediction,
+    /// `IrUsageDetail::rejected_prediction_tokens`.
+    RejectedPrediction,
 }
 
-/// [`read_count`] for a count whose ABSENCE the IR keeps distinct from zero (a cache tier, a
-/// search/classification unit): absent or `null` is `None`, readable is `Some`,
-/// unreadable REFUSES.
-///
-/// # Errors
-/// The field is present, is not `null`, and is not a count.
-pub fn read_count_opt(
-    protocol: &'static str,
-    usage: Option<&serde_json::Value>,
-    field: &'static str,
-) -> Result<Option<u64>, busbar_contract::protocol::IrError> {
-    match usage.and_then(|u| u.get(field)) {
-        None => Ok(None),
-        Some(v) if v.is_null() => Ok(None),
-        Some(_) => read_count(protocol, usage, field).map(Some),
+const SLOTS: usize = 17;
+
+/// How one count is read off the usage object and folded into its slot. A path names the member
+/// from the usage object down; every member before the last is a parent object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CountRead {
+    /// A required counter: absent or `null` is 0, unreadable REFUSES. Sets the slot.
+    Zero(&'static [&'static str]),
+    /// An optional counter: absent or `null` is `None` (never `Some(0)`), unreadable REFUSES.
+    /// Sets the slot.
+    Opt(&'static [&'static str]),
+    /// An attribution slice inside a total that is already read: unreadable is `None`, never a
+    /// refusal. Sets the slot.
+    Lenient(&'static [&'static str]),
+    /// A slice the provider counts INSIDE the slot's total (a cached prefix inside the prompt):
+    /// read as [`CountRead::Opt`] and SUBTRACTED (saturating) from the slot.
+    Less(&'static [&'static str]),
+    /// A term the provider reports BESIDE the slot's total (thinking beside the visible answer):
+    /// read as [`CountRead::Opt`] and ADDED (saturating) to the slot.
+    More(&'static [&'static str]),
+    /// The sum of `count` over every entry of the list at `list` whose `key` member is `value`;
+    /// `None` when no such entry reports one, unreadable REFUSES (a per-TTL cache list).
+    ListSum {
+        /// The path to the list.
+        list: &'static [&'static str],
+        /// The member that names an entry.
+        key: &'static str,
+        /// The name this slot takes.
+        value: &'static str,
+        /// The entry's count member.
+        count: &'static str,
+    },
+    /// `count` of the FIRST entry of the list at `list` whose `key` member is `value`, as an
+    /// attribution slice: unreadable is `None` (a per-modality list).
+    ListFirst {
+        /// The path to the list.
+        list: &'static [&'static str],
+        /// The member that names an entry.
+        key: &'static str,
+        /// The name this slot takes.
+        value: &'static str,
+        /// The entry's count member.
+        count: &'static str,
+    },
+}
+
+/// One row of a dialect's usage table.
+pub type UsageCount = (CountSlot, CountRead);
+
+/// The member at `path` under `usage` (`None` when any step is absent).
+fn at<'a>(usage: Option<&'a serde_json::Value>, path: &[&str]) -> Option<&'a serde_json::Value> {
+    path.iter().try_fold(usage?, |v, k| v.get(*k))
+}
+
+/// The parent object of the last member of `path`, and that member's name.
+fn parent<'a>(
+    usage: Option<&'a serde_json::Value>,
+    path: &'static [&'static str],
+) -> (Option<&'a serde_json::Value>, &'static str) {
+    match path.split_last() {
+        Some((last, up)) => (at(usage, up), last),
+        None => (None, ""),
     }
 }
 
-/// The refusal a present-but-unreadable usage count becomes, for a reader labelled `protocol` —
-/// the same `ir_parse` shape as every other response a reader cannot read, with the field and the
-/// BOUNDED spelling [`billed_count`] quoted (cut on a character boundary there, so a hostile
-/// multi-byte spelling cannot panic the cut). Readers `map_err` their other count reads through it.
-pub fn refuse_unreadable_count(
+/// One OPTIONAL counter: absent or `null` is `None`, a readable count is `Some`, unreadable is the
+/// [`UnreadableCount`] the walk refuses on.
+fn opt(
+    usage: Option<&serde_json::Value>,
+    path: &'static [&'static str],
+) -> Result<Option<u64>, UnreadableCount> {
+    let (up, field) = parent(usage, path);
+    billed_count_opt(up, field)
+}
+
+/// THE ONE USAGE READER. Walks a dialect's usage table over one wire usage object (`None` when the
+/// response carried none) and builds the IR usage it states. Each row is read under
+/// [`billed_count`]'s contract: absent is zero (or `None`), a readable count is the count, and a
+/// present-but-UNREADABLE count REFUSES with the one warn line below — the lenient read this
+/// replaces defaulted it to zero, so a stringified `"1500"` reached the kernel as no work at all.
+/// A dialect supplies only the table and its `protocol` label; it never reads a count itself.
+///
+/// # Errors
+/// A row's count is present, is not `null`, and is not a count.
+pub fn read_usage(
     protocol: &'static str,
-) -> impl Fn(UnreadableCount) -> busbar_contract::protocol::IrError {
-    move |unreadable| {
+    usage: Option<&serde_json::Value>,
+    table: &[UsageCount],
+) -> Result<crate::codec::ir::IrUsage, busbar_contract::protocol::IrError> {
+    let refuse = |unreadable: UnreadableCount| {
         tracing::warn!(
             protocol,
             field = unreadable.field,
@@ -216,7 +296,72 @@ pub fn refuse_unreadable_count(
             "usage count is present but unreadable; refusing rather than counting it as zero (#42)"
         );
         crate::codec::dialect::ir_parse_error()
+    };
+    let mut slots = [None::<u64>; SLOTS];
+    for &(slot, read) in table {
+        let s = &mut slots[slot as usize];
+        match read {
+            CountRead::Zero(path) => {
+                let (up, field) = parent(usage, path);
+                *s = Some(up.map_or(Ok(0), |u| billed_count(u, field)).map_err(refuse)?);
+            }
+            CountRead::Opt(path) => *s = opt(usage, path).map_err(refuse)?,
+            CountRead::Lenient(path) => *s = at(usage, path).and_then(read_count_u64),
+            CountRead::Less(path) => {
+                let n = opt(usage, path).map_err(refuse)?.unwrap_or(0);
+                *s = Some(s.unwrap_or(0).saturating_sub(n));
+            }
+            CountRead::More(path) => {
+                let n = opt(usage, path).map_err(refuse)?.unwrap_or(0);
+                *s = Some(s.unwrap_or(0).saturating_add(n));
+            }
+            CountRead::ListSum { list, key, value, count } => {
+                let mut sum: Option<u64> = None;
+                for entry in at(usage, list).and_then(|l| l.as_array()).into_iter().flatten() {
+                    if entry.get(key).and_then(|k| k.as_str()) != Some(value) {
+                        continue;
+                    }
+                    if let Some(n) = billed_count_opt(Some(entry), count).map_err(refuse)? {
+                        sum = Some(sum.unwrap_or(0).saturating_add(n));
+                    }
+                }
+                *s = sum;
+            }
+            CountRead::ListFirst { list, key, value, count } => {
+                *s = at(usage, list)
+                    .and_then(|l| l.as_array())
+                    .and_then(|l| {
+                        l.iter()
+                            .find(|e| e.get(key).and_then(|k| k.as_str()) == Some(value))
+                    })
+                    .and_then(|e| e.get(count))
+                    .and_then(read_count_u64);
+            }
+        }
     }
+    let get = |slot: CountSlot| slots[slot as usize];
+    Ok(crate::codec::ir::IrUsage {
+        input_tokens: get(CountSlot::Input).unwrap_or(0),
+        output_tokens: get(CountSlot::Output).unwrap_or(0),
+        cache_creation_input_tokens: get(CountSlot::CacheWrite),
+        cache_read_input_tokens: get(CountSlot::CacheRead),
+        detail: crate::codec::ir::IrUsageDetail {
+            reasoning_tokens: get(CountSlot::Reasoning),
+            cache_creation_5m_input_tokens: get(CountSlot::CacheWrite5m),
+            cache_creation_1h_input_tokens: get(CountSlot::CacheWrite1h),
+            web_search_requests: get(CountSlot::WebSearchRequests),
+            search_units: get(CountSlot::SearchUnits),
+            billed_input_tokens: get(CountSlot::ProviderInput),
+            billed_output_tokens: get(CountSlot::ProviderOutput),
+            billed_classifications: get(CountSlot::Classifications),
+            tool_use_prompt_tokens: get(CountSlot::ToolUsePrompt),
+            input_audio_tokens: get(CountSlot::InputAudio),
+            output_audio_tokens: get(CountSlot::OutputAudio),
+            accepted_prediction_tokens: get(CountSlot::AcceptedPrediction),
+            rejected_prediction_tokens: get(CountSlot::RejectedPrediction),
+            ..Default::default()
+        },
+    })
 }
 
 #[cfg(test)]

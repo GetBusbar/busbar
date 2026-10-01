@@ -1,6 +1,6 @@
-use crate::codec::usage_count::{read_count, read_count_opt};
 use crate::codec::dialect::ir_parse_error;
 use super::*;
+use crate::codec::usage_count::{CountRead, CountSlot, UsageCount};
 
 impl ProtocolReader for CohereReader {
     /// The top-level `finish_reason` — the field `read_response` reads its stop reason from.
@@ -16,40 +16,14 @@ impl ProtocolReader for CohereReader {
 
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
-        let tokens = v.get("tokens");
-        // The BILLED bucket, read exactly as `read_response` reads it. Cohere reports usage TWICE —
-        // a raw `tokens` bucket and the separately-metered `billed_units` bucket the operator is
-        // actually invoiced on — and `to_token_usage` lets the billed counts WIN for the reserved
-        // input/output tiers. Carrying only `tokens` here meant a head-truncated body billed the RAW
-        // counts while the identical untruncated body billed the BILLED ones: one completion, two
-        // invoices, decided by nothing but whether the tail fit the reassembly cap. `search_units`
-        // (a separately billed unit that is not a token count at all) was lost outright on this path.
-        let billed_units = v.get("billed_units");
-        // A truncated body must price the cache hit like an untruncated one; see `read_response`
-        // for why a Cohere `cached_tokens` count belongs in `cache_read_input_tokens`.
-        //
-        // Every count the kernel prices is read through `read_count`/`read_count_opt`: an unreadable
-        // one yields NO recovered usage, never a zero one (#42), and the caller then bills its
-        // conservative floor estimate for the truncated body instead of $0.
-        let cached = read_count_opt(COUNT_LABEL, Some(&v), "cached_tokens").ok()?;
-        Some(
-            crate::codec::ir::IrUsage {
-                input_tokens: read_count(COUNT_LABEL, tokens, "input_tokens")
-                    .ok()?
-                    .saturating_sub(cached.unwrap_or(0)),
-                output_tokens: read_count(COUNT_LABEL, tokens, "output_tokens").ok()?,
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: cached,
-                detail: crate::codec::ir::IrUsageDetail {
-                    search_units: read_count_opt(COUNT_LABEL, billed_units, "search_units").ok()?,
-                    billed_input_tokens: read_count_opt(COUNT_LABEL, billed_units, "input_tokens").ok()?,
-                    billed_output_tokens: read_count_opt(COUNT_LABEL, billed_units, "output_tokens").ok()?,
-                    billed_classifications: read_count_opt(COUNT_LABEL, billed_units, "classifications").ok()?,
-                    ..Default::default()
-                },
-            }
-            .to_token_usage(),
-        )
+        // The provider-metered `billed_units` bucket and the cache hit are read exactly as
+        // `read_response` reads them (one table, `USAGE`): Cohere reports usage TWICE — a raw `tokens`
+        // bucket and the separately-metered `billed_units` bucket the operator is invoiced on — and
+        // `to_token_usage` lets the metered counts WIN for the reserved input/output tiers. Carrying
+        // only `tokens` here meant a head-truncated body reported the RAW counts while the identical
+        // untruncated body reported the metered ones. An unreadable count yields NO recovered usage,
+        // never a zero one (#42).
+        Some(read_cohere_usage(Some(&v)).ok()?.to_token_usage())
     }
 
     fn extract_error(
@@ -1098,48 +1072,7 @@ impl ProtocolReader for CohereReader {
                 let usage = data
                     .get("delta")
                     .and_then(|d| d.get("usage"))
-                    .map(|u| -> Result<crate::codec::ir::IrUsage, IrError> {
-                        let tokens = u.get("tokens");
-                        // `cached_tokens` rides the STREAM's terminal `message-end.delta.usage`
-                        // object exactly as it rides the buffered `usage`. See the buffered site
-                        // for why a prompt-cache hit belongs in `cache_read_input_tokens`.
-                        let cached = read_count_opt(COUNT_LABEL, Some(u), "cached_tokens")?;
-                        Ok(crate::codec::ir::IrUsage {
-                            input_tokens: read_count(COUNT_LABEL, tokens, "input_tokens")?
-                                .saturating_sub(cached.unwrap_or(0)),
-                            output_tokens: read_count(COUNT_LABEL, tokens, "output_tokens")?,
-                            cache_creation_input_tokens: None,
-                            cache_read_input_tokens: cached,
-                            // `billed_units.search_units` rides the STREAM's terminal
-                            // `message-end.delta.usage` object exactly as it rides the buffered
-                            // `usage` — and it is a SEPARATELY BILLED unit that is not a token count
-                            // at all, so its loss is invisible in a token total that reconciles
-                            // perfectly. Reading it only on the buffered path meant a streamed RAG
-                            // call silently dropped the search charge.
-                            detail: crate::codec::ir::IrUsageDetail {
-                                // Present-but-unreadable REFUSES, exactly like the billed trio
-                                // below: a `None` here would drop the unit (item 133).
-                                search_units: read_count_opt(COUNT_LABEL, u.get("billed_units"), "search_units")?,
-                                // Cohere's `billed_units.{input,output}_tokens`/`classifications`
-                                // ride the STREAM's terminal `message-end.delta.usage` exactly as
-                                // `search_units` does; reading them only on the buffered path meant
-                                // a streamed call silently dropped the billed attribution.
-                                billed_input_tokens: read_count_opt(COUNT_LABEL,
-                                    u.get("billed_units"),
-                                    "input_tokens",
-                                )?,
-                                billed_output_tokens: read_count_opt(COUNT_LABEL,
-                                    u.get("billed_units"),
-                                    "output_tokens",
-                                )?,
-                                billed_classifications: read_count_opt(COUNT_LABEL,
-                                    u.get("billed_units"),
-                                    "classifications",
-                                )?,
-                                ..Default::default()
-                            },
-                        })
-                    })
+                    .map(|u| read_cohere_usage(Some(u)))
                     .transpose();
                 let usage = match usage {
                     Ok(usage) => usage.unwrap_or(crate::codec::ir::IrUsage {
@@ -1470,53 +1403,15 @@ impl ProtocolReader for CohereReader {
         // readers tolerate the same condition with a zero-usage fallback. `usage_val` is an
         // `Option`, so each token lookup below already defaults to 0.
         let usage_val = obj.get("usage");
-        let tokens_val = usage_val.and_then(|u| u.get("tokens"));
         // `cached_tokens` is Cohere's prompt-cache hit count, reported on `ApiMeta` beside `tokens`
         // and `billed_units` — PROMPT tokens (counted inside `tokens.input_tokens`) the model did
         // not have to process. They belong in `cache_read_input_tokens`, the field every sibling
-        // dialect's cache-read count lands in (OpenAI `prompt_tokens_details.cached_tokens`,
-        // Anthropic `cache_read_input_tokens`, Bedrock `cacheReadInputTokens`) and the one that
-        // prices them at the cache-READ tier instead of the full input rate. Hardcoded `None`, a
-        // Cohere cache hit was billed as ordinary input. The IR keeps `input_tokens` UNCACHED and
-        // the cache fields ADDITIVE, so the two reconstruct exactly the reported `input_tokens`:
-        // the TOTAL is unchanged and only the tier the cached share prices at moves.
-        //
-        // BILLED COUNTS: absent is zero, a present-but-UNREADABLE count REFUSES (#42).
-        let cached = read_count_opt(COUNT_LABEL, usage_val, "cached_tokens")?;
-        let usage = crate::codec::ir::IrUsage {
-            input_tokens: read_count(COUNT_LABEL, tokens_val, "input_tokens")?.saturating_sub(cached.unwrap_or(0)),
-            output_tokens: read_count(COUNT_LABEL, tokens_val, "output_tokens")?,
-            cache_creation_input_tokens: None,
-            cache_read_input_tokens: cached,
-            // `billed_units.search_units` is a SEPARATELY BILLED unit that is not a token count at
-            // all, so no token field can carry it — and its loss is invisible in a token total that
-            // reconciles perfectly, which is exactly why it went unnoticed.
-            detail: crate::codec::ir::IrUsageDetail {
-                // Present-but-unreadable REFUSES (item 133): a `None` would drop the unit.
-                search_units: read_count_opt(COUNT_LABEL,
-                    usage_val.and_then(|u| u.get("billed_units")),
-                    "search_units",
-                )?,
-                // Cohere reports a raw `tokens` bucket AND a separately-metered `billed_units`
-                // bucket. The raw totals populate `input_tokens`/`output_tokens` above; carry the
-                // billed attribution here so a Cohere->Cohere read->write does not drop it (the raw
-                // totals reconcile perfectly, so a lost billed count is invisible — the same trap
-                // `search_units` sits in). No cross-protocol analog: a foreign writer never emits it.
-                billed_input_tokens: read_count_opt(COUNT_LABEL,
-                    usage_val.and_then(|u| u.get("billed_units")),
-                    "input_tokens",
-                )?,
-                billed_output_tokens: read_count_opt(COUNT_LABEL,
-                    usage_val.and_then(|u| u.get("billed_units")),
-                    "output_tokens",
-                )?,
-                billed_classifications: read_count_opt(COUNT_LABEL,
-                    usage_val.and_then(|u| u.get("billed_units")),
-                    "classifications",
-                )?,
-                ..Default::default()
-            },
-        };
+        // dialect's cache-read count lands in, and the IR keeps `input_tokens` UNCACHED and the
+        // cache fields ADDITIVE, so the two reconstruct exactly the reported `input_tokens`.
+        // `billed_units.search_units` is a separately metered unit that is not a token count at
+        // all, so its loss would be invisible in a token total that reconciles perfectly. See
+        // `USAGE`. Absent is zero, a present-but-UNREADABLE count REFUSES (#42).
+        let usage = read_cohere_usage(usage_val)?;
 
         // Cohere v2 response `logprobs[]`: one item per decoded text chunk, mapped to the neutral
         // per-span entries a foreign client reads (`read_cohere_logprob`). They used to be dropped
@@ -1561,8 +1456,39 @@ impl ProtocolReader for CohereReader {
 
 // ── USAGE COUNTS (#42) ───────────────────────────────────────────────────────────────────────────
 
-/// This reader's label on a refused usage count (`usage_count::read_count`).
-const COUNT_LABEL: &str = "cohere";
+/// COHERE'S USAGE COUNTS, AS DATA. The raw `tokens` bucket gives the totals; `cached_tokens` is
+/// the cache hit, a slice INSIDE `tokens.input_tokens` (so it is subtracted there and carried as
+/// the cache read); `billed_units` is the provider-metered bucket — its token counts, its
+/// `search_units` and its `classifications` — carried as attribution beside the totals.
+const USAGE: &[UsageCount] = &[
+    (CountSlot::Input, CountRead::Zero(&["tokens", "input_tokens"])),
+    (CountSlot::Input, CountRead::Less(&["cached_tokens"])),
+    (CountSlot::Output, CountRead::Zero(&["tokens", "output_tokens"])),
+    (CountSlot::CacheRead, CountRead::Opt(&["cached_tokens"])),
+    (
+        CountSlot::SearchUnits,
+        CountRead::Opt(&["billed_units", "search_units"]),
+    ),
+    (
+        CountSlot::ProviderInput,
+        CountRead::Opt(&["billed_units", "input_tokens"]),
+    ),
+    (
+        CountSlot::ProviderOutput,
+        CountRead::Opt(&["billed_units", "output_tokens"]),
+    ),
+    (
+        CountSlot::Classifications,
+        CountRead::Opt(&["billed_units", "classifications"]),
+    ),
+];
+
+/// A Cohere `usage` / `meta` object (`None` when absent) → the IR usage, through [`USAGE`].
+fn read_cohere_usage(
+    usage: Option<&serde_json::Value>,
+) -> Result<crate::codec::ir::IrUsage, IrError> {
+    crate::codec::usage_count::read_usage("cohere", usage, USAGE)
+}
 
 #[cfg(test)]
 #[path = "tests/unreadable_count_refusal_tests.rs"]

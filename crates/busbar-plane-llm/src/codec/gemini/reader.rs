@@ -1,4 +1,3 @@
-use crate::codec::usage_count::{read_count, read_count_opt};
 use crate::codec::dialect::ir_parse_error;
 use super::*;
 
@@ -16,49 +15,13 @@ impl ProtocolReader for GeminiReader {
 
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usageMetadata\"")?;
-        // Every count the kernel prices is read through `read_count`/`read_count_opt`: an unreadable
-        // one yields NO recovered usage, never a zero one (#42), and the caller then bills its
-        // conservative floor estimate for the truncated body instead of $0.
-        let u = Some(&v);
-        let cached = read_count_opt(COUNT_LABEL, u, FIELD_CACHED_CONTENT_TOKEN_COUNT).ok()?;
-        // THINKING TOKENS ARE OUTPUT TOKENS — mirror `gemini_usage` exactly. `candidatesTokenCount`
-        // counts only the visible answer; the 2.5-series reasoning tokens arrive in the separate,
-        // ADDITIVE `thoughtsTokenCount` (Google's `totalTokenCount = prompt + candidates + thoughts`).
-        // A truncated response is recovered here rather than through `gemini_usage`, and reading only
-        // `candidatesTokenCount` ledgered every thinking token as ZERO — under-billing and
-        // under-capping by the (often dominant) thinking count on exactly the responses whose large
-        // thinking overflowed the reassembly cap and marked them truncated. Sum the two into
-        // `output_tokens` so a truncated response bills the same as a complete one, and record the
-        // thinking count as the reasoning sub-bucket (pure attribution; it is already folded into
-        // `output_tokens`).
-        let thoughts = read_count_opt(COUNT_LABEL, u, FIELD_THOUGHTS_TOKEN_COUNT).ok()?;
-        // THE TOOL-USE PROMPT TERM IS ADDITIVE — mirror `gemini_usage` exactly here too. It is not a
-        // slice of `promptTokenCount` (`GEMINI_USAGE_ADDITIVE_TERMS` records the recording that
-        // proves it: 32 tool-use tokens against an 18-token prompt) and Google charges it at the
-        // input rate. Reading only `promptTokenCount` here billed a grounded turn 32 tokens less
-        // when it was large enough to be truncated than when it was not — the same under-count the
-        // buffered path shed in 1.6.0, surviving on exactly the responses nobody can inspect.
-        let tool_use = read_count_opt(COUNT_LABEL, u, FIELD_TOOL_USE_PROMPT_TOKEN_COUNT).ok()?;
+        // The same table the complete response reads (`USAGE`): thinking tokens fold into the
+        // output and the tool-use prompt term into the input, so a truncated response counts the same
+        // as a complete one. An unreadable count yields NO recovered usage, never a zero one (#42).
         Some(
-            crate::codec::ir::IrUsage {
-                input_tokens: read_count(COUNT_LABEL, u, FIELD_PROMPT_TOKEN_COUNT)
-                    .ok()?
-                    .saturating_sub(cached.unwrap_or(0))
-                    .saturating_add(tool_use.unwrap_or(0)),
-                output_tokens: read_count(COUNT_LABEL, u, FIELD_CANDIDATES_TOKEN_COUNT)
-                    .ok()?
-                    .saturating_add(thoughts.unwrap_or(0)),
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: cached,
-                detail: crate::codec::ir::IrUsageDetail {
-                    reasoning_tokens: thoughts,
-                    // Attribution only — the tokens themselves are already inside `input_tokens`
-                    // above; this records HOW MANY of them were server-side tool use.
-                    tool_use_prompt_tokens: tool_use,
-                    ..Default::default()
-                },
-            }
-            .to_token_usage(),
+            crate::codec::usage_count::read_usage(COUNT_LABEL, Some(&v), USAGE)
+                .ok()?
+                .to_token_usage(),
         )
     }
 
@@ -881,7 +844,7 @@ impl ProtocolReader for GeminiReader {
                     out.push(IrStreamEvent::BlockStop { index: oai_idx });
                 }
                 // BILLED COUNTS: an unreadable one REFUSES (#42) — the stream ends in an error.
-                let usage = match gemini_billed_usage(data) {
+                let usage = match read_gemini_usage(data) {
                     Ok(usage) => usage,
                     Err(refusal) => {
                         out.push(IrStreamEvent::Error(refusal));
@@ -1359,7 +1322,7 @@ impl ProtocolReader for GeminiReader {
 
                 // Parse usageMetadata if present. BILLED COUNTS: absent is zero, an unreadable one
                 // REFUSES (#42) — the stream ends in an error instead of ledgering zero tokens.
-                let usage = match gemini_billed_usage(data) {
+                let usage = match read_gemini_usage(data) {
                     Ok(usage) => usage,
                     Err(refusal) => {
                         out.push(IrStreamEvent::Error(refusal));
@@ -1418,7 +1381,7 @@ impl ProtocolReader for GeminiReader {
         // SAFETY-filtered-candidate tolerance below. Usage is still surfaced when present.
         if candidates_absent(body) {
             if let Some(block_reason) = prompt_block_reason(body) {
-                let usage = gemini_billed_usage(body)?;
+                let usage = read_gemini_usage(body)?;
                 let model = obj
                     .get(FIELD_MODEL_VERSION)
                     .or_else(|| obj.get("model"))
@@ -1648,7 +1611,7 @@ impl ProtocolReader for GeminiReader {
         };
 
         // Parse usageMetadata: promptTokenCount→input_tokens, candidatesTokenCount→output_tokens
-        let usage = gemini_billed_usage(body)?;
+        let usage = read_gemini_usage(body)?;
 
         // Gemini reports the serving model as `modelVersion` (fall back to `model`).
         let model = obj
@@ -1665,7 +1628,7 @@ impl ProtocolReader for GeminiReader {
         // would be a fabricated field a native client never sees). `system_fingerprint`/
         // `stop_sequence` have no Gemini analogue and remain `None`. A Vertex body DOES carry its
         // own top-level timestamp, `createTime` (RFC3339, not a Unix epoch) — read into
-        // `usage.detail.create_time` by `gemini_billed_usage` below (OWNER RULING Q1; see that
+        // `usage.detail.create_time` by `read_gemini_usage` below (OWNER RULING Q1; see that
         // field's doc comment for why it rides the usage-detail bag rather than this struct).
         let id = obj
             .get(FIELD_RESPONSE_ID)

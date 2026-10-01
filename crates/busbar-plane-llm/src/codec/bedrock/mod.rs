@@ -19,6 +19,7 @@ use busbar_contract::upstream::StatusClass;
 #[allow(unused_imports)]
 // used standalone; redundant with the `busbar_contract::protocol::*` glob when netted into core
 use super::proto_codec::*;
+use crate::codec::usage_count::{CountRead, CountSlot, UsageCount};
 use busbar_contract::ir::egress_prep::LaneCaps;
 // See the anthropic dialect for the rationale: an explicit import of the codec surface so it binds to
 // THIS crate's own `proto_codec` rather than the `busbar_contract::protocol::*` glob.
@@ -1504,84 +1505,56 @@ fn stop_reason_reverse(canonical: crate::codec::ir::IrStopReason) -> &'static st
     }
 }
 
-/// Read the prompt-cache token fields off a Bedrock Converse `usage` object into the IR's
-/// `(cache_creation_input_tokens, cache_read_input_tokens)` pair. AWS names the write side
-/// `cacheWriteInputTokens` (tokens written to the cache this turn = a cache *creation* in
-/// Anthropic terminology) and the read side `cacheReadInputTokens` (per the Bedrock
-/// `TokenUsage` shape). Both are OPTIONAL on the wire — a model/region without prompt caching,
-/// or a request that neither created nor read a cache entry, simply omits them — so each maps
-/// to `None` when absent (distinct from `Some(0)`, which a backend may legitimately send when
-/// caching was active but contributed zero tokens). The old code hardcoded both to `None`,
-/// silently dropping real cache accounting on every read; this plumbs the actual values so a
-/// Bedrock→Bedrock (and Bedrock→Anthropic) round-trip preserves cache usage.
-///
-/// A present-but-UNREADABLE count is an [`crate::codec::usage_count::UnreadableCount`] the caller turns
-/// into a refusal (#42, item 133). The old read returned `None` for it — indistinguishable from "no
-/// caching this turn" — so a reported cache read or write was ledgered as none.
-fn read_cache_usage(
+/// BEDROCK'S USAGE COUNTS, AS DATA (#42). AWS names the cache write `cacheWriteInputTokens` (a
+/// cache CREATION in Anthropic terms) and the read `cacheReadInputTokens`; both are OPTIONAL on the
+/// wire, so each maps to `None` when absent (distinct from `Some(0)`). `cacheDetails` is the per-TTL
+/// breakdown of the cache write — a list of `{ttl, inputTokens}` the service model sorts 1h before
+/// 5m — and the two TTLs are PRICED DIFFERENTLY, so each TTL is the sum of its entries
+/// (`CountRead::ListSum`): a TTL the upstream did not report stays `None`, and an unrecognized `ttl`
+/// reaches no tier (the `cacheWriteInputTokens` total still carries it). The buffered response, the
+/// stream's `metadata` frame and a truncated-body recovery read this one table.
+const USAGE: &[UsageCount] = &[
+    (CountSlot::Input, CountRead::Zero(&["inputTokens"])),
+    (CountSlot::Output, CountRead::Zero(&["outputTokens"])),
+    (CountSlot::CacheWrite, CountRead::Opt(&["cacheWriteInputTokens"])),
+    (CountSlot::CacheRead, CountRead::Opt(&["cacheReadInputTokens"])),
+    (
+        CountSlot::CacheWrite5m,
+        CountRead::ListSum {
+            list: &["cacheDetails"],
+            key: "ttl",
+            value: CACHE_TTL_5M,
+            count: "inputTokens",
+        },
+    ),
+    (
+        CountSlot::CacheWrite1h,
+        CountRead::ListSum {
+            list: &["cacheDetails"],
+            key: "ttl",
+            value: CACHE_TTL_1H,
+            count: "inputTokens",
+        },
+    ),
+];
+
+/// This dialect's label on a refused usage count.
+const COUNT_LABEL: &str = "bedrock";
+
+/// A Bedrock Converse `usage` object (`None` when absent) → the IR usage, through [`USAGE`].
+fn read_bedrock_usage(
     usage_obj: Option<&serde_json::Value>,
-) -> Result<(Option<u64>, Option<u64>), crate::codec::usage_count::UnreadableCount> {
-    let cache_creation_input_tokens =
-        crate::codec::usage_count::billed_count_opt(usage_obj, "cacheWriteInputTokens")?;
-    let cache_read_input_tokens =
-        crate::codec::usage_count::billed_count_opt(usage_obj, "cacheReadInputTokens")?;
-    Ok((cache_creation_input_tokens, cache_read_input_tokens))
+) -> Result<crate::codec::ir::IrUsage, IrError> {
+    crate::codec::usage_count::read_usage(COUNT_LABEL, usage_obj, USAGE)
 }
 
 /// The `CacheTTL` enum's two values, as the Bedrock service model spells them.
 const CACHE_TTL_5M: &str = "5m";
 const CACHE_TTL_1H: &str = "1h";
 
-/// Read Bedrock's per-TTL cache-WRITE breakdown off a Converse `usage` object into the neutral
-/// [`crate::codec::ir::IrUsageDetail`] 5m/1h pair.
-///
-/// The service model gives `TokenUsage` a `cacheDetails` member — "Detailed breakdown of cache
-/// writes by TTL. Empty if no cache creation occurred. Sorted by TTL duration (1h before 5m)" — a
-/// list of `CacheDetail { ttl: CacheTTL ("5m" | "1h"), inputTokens }`. That is the SAME split
-/// Anthropic reports as `cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens`,
-/// and the IR carries it in exactly those two fields, for exactly the reason stated there: the two
-/// TTLs are PRICED DIFFERENTLY, so collapsing them into the one `cacheWriteInputTokens` total leaves
-/// a bill that reconciles in aggregate and cannot be reconciled per line. Reading only the total
-/// dropped the split on every Bedrock response.
-///
-/// A TTL the upstream did not report stays `None` (never `Some(0)`), matching the sibling buckets;
-/// an unrecognized `ttl` string is ignored rather than folded into one of the two known tiers (the
-/// total in `cacheWriteInputTokens` still carries it, so nothing is unbilled).
-///
-/// Counts are read through [`crate::codec::usage_count::billed_count_opt`], the crate's billed-count seam —
-/// a float-spelled `20.0` is twenty tokens here, not a silent zero; an entry with no (or a `null`)
-/// `inputTokens` contributes nothing, as before; and a present-but-UNREADABLE `inputTokens` on a
-/// 5m/1h entry is an [`crate::codec::usage_count::UnreadableCount`] the caller turns into a refusal (#42,
-/// item 133). The old read skipped that entry, so its tier reported fewer tokens than were written.
-/// An unrecognized TTL's count is not read at all: it reaches no tier.
-fn read_cache_details(
-    usage_obj: Option<&serde_json::Value>,
-) -> Result<(Option<u64>, Option<u64>), crate::codec::usage_count::UnreadableCount> {
-    let Some(list) = usage_obj
-        .and_then(|u| u.get("cacheDetails"))
-        .and_then(|d| d.as_array())
-    else {
-        return Ok((None, None));
-    };
-    let mut five_m: Option<u64> = None;
-    let mut one_h: Option<u64> = None;
-    for entry in list {
-        let tier = match entry.get("ttl").and_then(|t| t.as_str()) {
-            Some(CACHE_TTL_5M) => &mut five_m,
-            Some(CACHE_TTL_1H) => &mut one_h,
-            _ => continue,
-        };
-        let Some(tokens) = crate::codec::usage_count::billed_count_opt(Some(entry), "inputTokens")?
-        else {
-            continue;
-        };
-        *tier = Some(tier.unwrap_or(0).saturating_add(tokens));
-    }
-    Ok((five_m, one_h))
-}
 
 /// Write the IR's per-TTL cache-write split back onto a Bedrock Converse `usage` object, the inverse
-/// of [`read_cache_details`]. Emits the entries in the order the service model documents (1h before
+/// of the `cacheDetails` rows in [`USAGE`]. Emits the entries in the order the service model documents (1h before
 /// 5m) and ONLY for the tiers the IR actually carries — the spec says `cacheDetails` is "Empty if no
 /// cache creation occurred", so a response with no per-TTL split gains no member at all.
 fn write_cache_details(
@@ -1604,7 +1577,7 @@ fn write_cache_details(
 }
 
 /// Write the IR's prompt-cache token fields back onto a Bedrock Converse `usage` object, the
-/// inverse of `read_cache_usage`. Emits `cacheWriteInputTokens` from `cache_creation_input_tokens`
+/// inverse of the cache rows in [`USAGE`]. Emits `cacheWriteInputTokens` from `cache_creation_input_tokens`
 /// and `cacheReadInputTokens` from `cache_read_input_tokens`, and ONLY when the IR carries a value
 /// (`Some`) — a `None` field is omitted rather than serialized as `0`, so a Bedrock→Bedrock
 /// round-trip of a no-cache response stays byte-identical to native AWS (which omits the fields

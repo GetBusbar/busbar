@@ -1,4 +1,3 @@
-use crate::codec::usage_count::{read_count, read_count_opt, refuse_unreadable_count};
 use crate::codec::dialect::ir_parse_error;
 use super::*;
 
@@ -7,24 +6,9 @@ impl ProtocolReader for BedrockReader {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
         // An unreadable billed count yields NO recovered usage, never a zero one (#42): the caller
         // then bills its conservative floor estimate for the truncated body instead of $0.
-        let u = Some(&v);
         // The per-TTL cache-write split rides the same `usage` object a truncated body still
         // carries, so a body too large to buffer whole reports the same breakdown a small one does.
-        let (cache_5m, cache_1h) = super::read_cache_details(Some(&v)).ok()?;
-        Some(
-            crate::codec::ir::IrUsage {
-                input_tokens: read_count(COUNT_LABEL, u, "inputTokens").ok()?,
-                output_tokens: read_count(COUNT_LABEL, u, "outputTokens").ok()?,
-                cache_creation_input_tokens: read_count_opt(COUNT_LABEL, u, "cacheWriteInputTokens").ok()?,
-                cache_read_input_tokens: read_count_opt(COUNT_LABEL, u, "cacheReadInputTokens").ok()?,
-                detail: crate::codec::ir::IrUsageDetail {
-                    cache_creation_5m_input_tokens: cache_5m,
-                    cache_creation_1h_input_tokens: cache_1h,
-                    ..Default::default()
-                },
-            }
-            .to_token_usage(),
-        )
+        Some(read_bedrock_usage(Some(&v)).ok()?.to_token_usage())
     }
 
     fn extract_error(
@@ -1202,44 +1186,12 @@ impl ProtocolReader for BedrockReader {
                 // total made the same turn's bill reconcilable buffered and not reconcilable
                 // streamed.
                 let usage_val = data.get("usage");
-                let read = (|| -> Result<_, IrError> {
-                    let (cache_creation, cache_read) =
-                        read_cache_usage(usage_val).map_err(refuse_unreadable_count(COUNT_LABEL))?;
-                    let (cache_5m, cache_1h) =
-                        super::read_cache_details(usage_val).map_err(refuse_unreadable_count(COUNT_LABEL))?;
-                    Ok((
-                        read_count(COUNT_LABEL, usage_val, "inputTokens")?,
-                        read_count(COUNT_LABEL, usage_val, "outputTokens")?,
-                        cache_creation,
-                        cache_read,
-                        cache_5m,
-                        cache_1h,
-                    ))
-                })();
-                let (
-                    input_tokens,
-                    output_tokens,
-                    cache_creation_input_tokens,
-                    cache_read_input_tokens,
-                    cache_5m,
-                    cache_1h,
-                ) = match read {
-                    Ok(counts) => counts,
+                let usage = match read_bedrock_usage(usage_val) {
+                    Ok(usage) => usage,
                     Err(refusal) => {
                         out.push(IrStreamEvent::Error(refusal));
                         return out;
                     }
-                };
-                let usage = crate::codec::ir::IrUsage {
-                    input_tokens,
-                    output_tokens,
-                    cache_creation_input_tokens,
-                    cache_read_input_tokens,
-                    detail: crate::codec::ir::IrUsageDetail {
-                        cache_creation_5m_input_tokens: cache_5m,
-                        cache_creation_1h_input_tokens: cache_1h,
-                        ..Default::default()
-                    },
                 };
 
                 out.push(IrStreamEvent::MessageDelta {
@@ -1443,25 +1395,9 @@ impl ProtocolReader for BedrockReader {
         // response-format quirk (mock/staging backend, or a future model variant), not a client
         // error, so a spurious `ClientError` here would mislabel the cause and confuse retry logic.
         let usage_obj = obj.get("usage");
-        let (cache_creation_input_tokens, cache_read_input_tokens) =
-            read_cache_usage(usage_obj).map_err(refuse_unreadable_count(COUNT_LABEL))?;
-        // `cacheDetails` — the per-TTL breakdown of `cacheWriteInputTokens`. The two TTLs are
-        // PRICED DIFFERENTLY, so the total alone leaves a bill that reconciles in aggregate and
-        // cannot be reconciled per line. See `read_cache_details`.
-        let (cache_5m, cache_1h) =
-            super::read_cache_details(usage_obj).map_err(refuse_unreadable_count(COUNT_LABEL))?;
-        // BILLED COUNTS: absent is zero, a present-but-UNREADABLE count REFUSES (#42).
-        let usage = crate::codec::ir::IrUsage {
-            input_tokens: read_count(COUNT_LABEL, usage_obj, "inputTokens")?,
-            output_tokens: read_count(COUNT_LABEL, usage_obj, "outputTokens")?,
-            cache_creation_input_tokens,
-            cache_read_input_tokens,
-            detail: crate::codec::ir::IrUsageDetail {
-                cache_creation_5m_input_tokens: cache_5m,
-                cache_creation_1h_input_tokens: cache_1h,
-                ..Default::default()
-            },
-        };
+        // `cacheDetails` — the per-TTL breakdown of `cacheWriteInputTokens` — rides the same table
+        // as the totals (see `USAGE`). Absent is zero, a present-but-UNREADABLE count REFUSES (#42).
+        let usage = read_bedrock_usage(usage_obj)?;
 
         Ok(crate::codec::ir::IrResponse {
             logprobs: Vec::new(),
@@ -1498,11 +1434,6 @@ impl ProtocolReader for BedrockReader {
         Box::new(self.clone())
     }
 }
-
-// ── USAGE COUNTS (#42) ───────────────────────────────────────────────────────────────────────────
-
-/// This reader's label on a refused usage count (`usage_count::read_count`).
-const COUNT_LABEL: &str = "bedrock";
 
 #[cfg(test)]
 #[path = "tests/unreadable_count_refusal_tests.rs"]

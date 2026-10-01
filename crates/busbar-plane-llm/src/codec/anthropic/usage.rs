@@ -1,58 +1,56 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Anthropic `usage` objects: the cache-tier read and the buffered / `message_delta` usage writers.
+//! Anthropic `usage` objects: the usage table and the buffered / `message_delta` usage writers.
 
-/// Read Anthropic's 5m/1h cache-creation TIER SPLIT off a wire `usage` object into the neutral
-/// [`crate::codec::ir::IrUsageDetail`].
-///
-/// The two tiers are SLICES of `cache_creation_input_tokens`, never additions to it, but they are
-/// PRICED DIFFERENTLY — collapsing them into the one total leaves a bill that reconciles in aggregate
-/// and cannot be reconciled per line. Factored out of `read_response` so the STREAMING sites
-/// (`message_start` and `message_delta`) read the identical object instead of defaulting the split
-/// away: the same request must not report the tier split at `stream: false` and lose it at
-/// `stream: true`.
-///
-/// The PRICED counts here — both cache tiers and the separately-metered `web_search_requests` — are
-/// read through [`crate::codec::usage_count::billed_count_opt`] (#42, item 133): absent or `null` is
-/// `None`, a present-but-UNREADABLE count is an [`crate::codec::usage_count::UnreadableCount`] the caller
-/// turns into a refusal. The old read returned `None` for it, which reads as "not reported".
-/// `reasoning_tokens` stays a lenient read: it is ATTRIBUTION inside `output_tokens` (already
-/// billed there), not a priced term, exactly as item 133 left the other dialects' reasoning slices.
-pub(super) fn read_cache_tier_detail(
+use super::IrError;
+use crate::codec::usage_count::{read_usage, CountRead, CountSlot, UsageCount};
+
+/// ANTHROPIC'S USAGE COUNTS, AS DATA (#42). The four totals come first: a truncated-body recovery
+/// reads only those (`USAGE[..4]`). Then the 5m/1h cache-creation TIER SPLIT — SLICES of
+/// `cache_creation_input_tokens`, never additions to it, but PRICED DIFFERENTLY — the
+/// separately-metered `server_tool_use.web_search_requests`, and the thinking slice of
+/// `output_tokens` (attribution: already counted inside the output total, so a lenient read).
+/// The buffered response and both stream frames (`message_start`, `message_delta`) read the same
+/// table, so one request never reports the split at `stream: false` and loses it at `stream: true`.
+pub(super) const USAGE: &[UsageCount] = &[
+    (CountSlot::Input, CountRead::Zero(&["input_tokens"])),
+    (CountSlot::Output, CountRead::Zero(&["output_tokens"])),
+    (CountSlot::CacheWrite, CountRead::Opt(&["cache_creation_input_tokens"])),
+    (CountSlot::CacheRead, CountRead::Opt(&["cache_read_input_tokens"])),
+    (
+        CountSlot::CacheWrite5m,
+        CountRead::Opt(&["cache_creation", "ephemeral_5m_input_tokens"]),
+    ),
+    (
+        CountSlot::CacheWrite1h,
+        CountRead::Opt(&["cache_creation", "ephemeral_1h_input_tokens"]),
+    ),
+    (
+        CountSlot::WebSearchRequests,
+        CountRead::Opt(&["server_tool_use", "web_search_requests"]),
+    ),
+    (
+        CountSlot::Reasoning,
+        CountRead::Lenient(&["output_tokens_details", "thinking_tokens"]),
+    ),
+];
+
+/// This dialect's label on a refused usage count.
+pub(super) const COUNT_LABEL: &str = "anthropic";
+
+/// An Anthropic wire `usage` object (`None` when the frame carries none) → the IR usage: the
+/// [`USAGE`] table, plus `usage.service_tier` — which tier served the turn
+/// (`standard`/`priority`/`batch`), a word rather than a count.
+pub(super) fn read_anthropic_usage(
     usage_val: Option<&serde_json::Value>,
-) -> Result<crate::codec::ir::IrUsageDetail, crate::codec::usage_count::UnreadableCount> {
-    let tiers = usage_val.and_then(|u| u.get("cache_creation"));
-    Ok(crate::codec::ir::IrUsageDetail {
-        cache_creation_5m_input_tokens: crate::codec::usage_count::billed_count_opt(
-            tiers,
-            "ephemeral_5m_input_tokens",
-        )?,
-        cache_creation_1h_input_tokens: crate::codec::usage_count::billed_count_opt(
-            tiers,
-            "ephemeral_1h_input_tokens",
-        )?,
-        // `usage.server_tool_use.web_search_requests` — count of server-side web-search invocations,
-        // a separately-metered bucket (see the IR field). Read alongside the cache tiers so the
-        // buffered AND streaming usage sites all surface it.
-        web_search_requests: crate::codec::usage_count::billed_count_opt(
-            usage_val.and_then(|u| u.get("server_tool_use")),
-            "web_search_requests",
-        )?,
-        // `usage.service_tier` — which tier served/billed the turn (`standard`/`priority`/`batch`).
-        service_tier: usage_val
-            .and_then(|u| u.get("service_tier"))
-            .and_then(|v| v.as_str())
-            .map(String::from),
-        // `usage.output_tokens_details.thinking_tokens` — the reasoning slice of `output_tokens`.
-        // The IR already has a neutral slot for it (OpenAI `reasoning_tokens`, Gemini
-        // `thoughtsTokenCount`), so read it into that slot rather than dropping it.
-        reasoning_tokens: usage_val
-            .and_then(|u| u.get("output_tokens_details"))
-            .and_then(|d| d.get("thinking_tokens"))
-            .and_then(crate::codec::usage_count::read_count_u64),
-        ..Default::default()
-    })
+) -> Result<crate::codec::ir::IrUsage, IrError> {
+    let mut usage = read_usage(COUNT_LABEL, usage_val, USAGE)?;
+    usage.detail.service_tier = usage_val
+        .and_then(|u| u.get("service_tier"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    Ok(usage)
 }
 
 /// The `cache_creation` tier object for a wire `usage`, in Anthropic's native nested

@@ -1,32 +1,13 @@
-use crate::codec::usage_count::{read_count, read_count_opt, refuse_unreadable_count};
 use crate::codec::dialect::ir_parse_error;
 use super::*;
 
 impl ProtocolReader for OpenAiReader {
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
-        // Every count that reaches the bill is read through `billed`/`billed_opt`: an unreadable
-        // one yields NO recovered usage, never a zero one (#42), and the caller then bills its
-        // conservative floor estimate for the truncated body instead of $0.
-        let u = Some(&v);
-        let cached = read_count_opt(COUNT_LABEL, v.get("prompt_tokens_details"), "cached_tokens").ok()?;
-        // `cache_write_tokens` is the OTHER slice of `prompt_tokens`, priced at the cache-WRITE
-        // tier. A truncated body must price it like an untruncated one. See
-        // `read_cache_write_tokens`.
-        let cache_write = super::read_cache_write_tokens(&v).ok()?;
-        Some(
-            crate::codec::ir::IrUsage {
-                input_tokens: read_count(COUNT_LABEL, u, "prompt_tokens")
-                    .ok()?
-                    .saturating_sub(cached.unwrap_or(0))
-                    .saturating_sub(cache_write.unwrap_or(0)),
-                output_tokens: read_count(COUNT_LABEL, u, "completion_tokens").ok()?,
-                cache_creation_input_tokens: cache_write,
-                cache_read_input_tokens: cached,
-                detail: crate::codec::ir::IrUsageDetail::default(),
-            }
-            .to_token_usage(),
-        )
+        // Every count is read through the dialect's usage table (`USAGE`): an unreadable one yields
+        // NO recovered usage, never a zero one (#42). A truncated body prices the cache tiers like an
+        // untruncated one does.
+        Some(read_openai_usage(Some(&v), None).ok()?.to_token_usage())
     }
 
     fn extract_error(
@@ -1123,62 +1104,14 @@ impl ProtocolReader for OpenAiReader {
         //
         // BILLED COUNTS: absent is zero, a present-but-UNREADABLE count REFUSES (#42) — the stream
         // ends in an error instead of ledgering zero tokens.
-        let chunk_usage = data.get("usage").filter(|u| u.is_object()).map(|u| {
-            let prompt_tokens = read_count(COUNT_LABEL, Some(u), "prompt_tokens")?;
-            let cached = read_count_opt(COUNT_LABEL, u.get("prompt_tokens_details"), "cached_tokens")?;
-            // `cache_write_tokens` rides the STREAM's usage chunk exactly as `cached_tokens` does —
-            // the OTHER slice of `prompt_tokens`, priced at the cache-WRITE tier. See
-            // `read_cache_write_tokens`.
-            let cache_write = super::read_cache_write_tokens(u).map_err(refuse_unreadable_count(COUNT_LABEL))?;
-            Ok::<_, IrError>(IrUsage {
-                // NORMALIZE to the additive-cache convention: OpenAI's `prompt_tokens` is a
-                // TOTAL that already INCLUDES the cached prefix and the cache-write slice, so
-                // subtract both to leave only the uncached input. `saturating_sub` guards a
-                // hostile/odd upstream where the slices exceed the total (would otherwise
-                // underflow).
-                input_tokens: prompt_tokens
-                    .saturating_sub(cached.unwrap_or(0))
-                    .saturating_sub(cache_write.unwrap_or(0)),
-                output_tokens: read_count(COUNT_LABEL, Some(u), "completion_tokens")?,
-                cache_creation_input_tokens: cache_write,
-                cache_read_input_tokens: cached,
-                // The sub-bucket is on the STREAM's usage chunk too (a `stream_options:
-                // {include_usage: true}` stream's final chunk carries the identical `usage` object
-                // the buffered response does). Reading it only on the buffered path made the same
-                // request report reasoning tokens at `stream: false` and a hard `0` at
-                // `stream: true` — the streaming twin of the bug the field was added to fix.
-                detail: crate::codec::ir::IrUsageDetail {
-                    reasoning_tokens: u
-                        .get("completion_tokens_details")
-                        .and_then(|d| d.get("reasoning_tokens"))
-                        .and_then(read_count_u64),
-                    // Align the streaming usage sub-buckets with the buffered path: the trailing
-                    // `include_usage` chunk carries the identical `usage` object, so the audio /
-                    // predicted-outputs attribution slices are present on the stream too. Reading only
-                    // `reasoning_tokens` here made the same request report these buckets at
-                    // `stream:false` and absent at `stream:true` — the streaming twin of the gap.
-                    input_audio_tokens: u
-                        .get("prompt_tokens_details")
-                        .and_then(|d| d.get("audio_tokens"))
-                        .and_then(read_count_u64),
-                    output_audio_tokens: u
-                        .get("completion_tokens_details")
-                        .and_then(|d| d.get("audio_tokens"))
-                        .and_then(read_count_u64),
-                    accepted_prediction_tokens: u
-                        .get("completion_tokens_details")
-                        .and_then(|d| d.get("accepted_prediction_tokens"))
-                        .and_then(read_count_u64),
-                    rejected_prediction_tokens: u
-                        .get("completion_tokens_details")
-                        .and_then(|d| d.get("rejected_prediction_tokens"))
-                        .and_then(read_count_u64),
-                    // The serving tier rides the chunk's top level, beside `usage` (OAI-03).
-                    service_tier: super::read_openai_service_tier(data.get("service_tier")),
-                    ..Default::default()
-                },
-            })
-        });
+        // The sub-buckets ride the STREAM's usage chunk too (a `stream_options:
+        // {include_usage: true}` stream's final chunk carries the identical `usage` object the
+        // buffered response does), so the one table reads them here as well; the serving tier rides
+        // the chunk's top level, beside `usage` (OAI-03).
+        let chunk_usage = data
+            .get("usage")
+            .filter(|u| u.is_object())
+            .map(|u| read_openai_usage(Some(u), data.get("service_tier")));
         let chunk_usage = match chunk_usage.transpose() {
             Ok(usage) => usage,
             Err(refusal) => {
@@ -1476,68 +1409,10 @@ impl ProtocolReader for OpenAiReader {
         // `Option`, so each token lookup below already defaults to 0.
         let usage_val = obj.get("usage");
         //
-        // BILLED COUNTS: absent is zero, a present-but-UNREADABLE count REFUSES (#42).
-        let cache_read_input_tokens = read_count_opt(COUNT_LABEL,
-            usage_val.and_then(|u| u.get("prompt_tokens_details")),
-            "cached_tokens",
-        )?;
-        // `prompt_tokens_details.cache_write_tokens` — the OTHER slice of `prompt_tokens`, priced at
-        // the cache-WRITE tier. See `read_cache_write_tokens`.
-        let cache_write_input_tokens = match usage_val {
-            Some(u) => super::read_cache_write_tokens(u).map_err(refuse_unreadable_count(COUNT_LABEL))?,
-            None => None,
-        };
-
-        let usage = crate::codec::ir::IrUsage {
-            // NORMALIZE to the additive-cache convention: OpenAI's `prompt_tokens` is a TOTAL that
-            // already INCLUDES the cached prefix and the cache-write slice, so subtract both to
-            // leave only the uncached input. `saturating_sub` guards an odd upstream where the
-            // slices exceed the total.
-            input_tokens: read_count(COUNT_LABEL, usage_val, "prompt_tokens")?
-                .saturating_sub(cache_read_input_tokens.unwrap_or(0))
-                .saturating_sub(cache_write_input_tokens.unwrap_or(0)),
-            output_tokens: read_count(COUNT_LABEL, usage_val, "completion_tokens")?,
-            // `prompt_tokens_details.cache_write_tokens` is the cache-WRITE tier's count; hardcoded
-            // `None` ("OpenAI doesn't provide this split" — it does), a cache-writing turn billed
-            // the write at the plain input rate. Map it to the IR's ADDITIVE
-            // `cache_creation_input_tokens`.
-            cache_creation_input_tokens: cache_write_input_tokens,
-            cache_read_input_tokens,
-            // `completion_tokens_details.reasoning_tokens` is a SUB-BUCKET of `completion_tokens`
-            // (never added to it). Unread, every cross-protocol reasoning call reported a hard `0`
-            // for it — which reads as "this model did no thinking", not as "busbar did not carry the
-            // number". Totals were always right; ATTRIBUTION is what a customer reconciles a bill
-            // against.
-            detail: crate::codec::ir::IrUsageDetail {
-                reasoning_tokens: usage_val
-                    .and_then(|u| u.get("completion_tokens_details"))
-                    .and_then(|d| d.get("reasoning_tokens"))
-                    .and_then(read_count_u64),
-                // OpenAI multimodal / predicted-outputs attribution sub-buckets (all SLICES of the
-                // totals above, never additions). Unread, they arrived as absent on every
-                // cross-protocol / pool-alias-re-serialize OpenAI response even though the totals were
-                // right — the same attribution gap `reasoning_tokens` closed.
-                input_audio_tokens: usage_val
-                    .and_then(|u| u.get("prompt_tokens_details"))
-                    .and_then(|d| d.get("audio_tokens"))
-                    .and_then(read_count_u64),
-                output_audio_tokens: usage_val
-                    .and_then(|u| u.get("completion_tokens_details"))
-                    .and_then(|d| d.get("audio_tokens"))
-                    .and_then(read_count_u64),
-                accepted_prediction_tokens: usage_val
-                    .and_then(|u| u.get("completion_tokens_details"))
-                    .and_then(|d| d.get("accepted_prediction_tokens"))
-                    .and_then(read_count_u64),
-                rejected_prediction_tokens: usage_val
-                    .and_then(|u| u.get("completion_tokens_details"))
-                    .and_then(|d| d.get("rejected_prediction_tokens"))
-                    .and_then(read_count_u64),
-                // The tier that served the request: a top-level member beside `usage` (OAI-03).
-                service_tier: super::read_openai_service_tier(obj.get("service_tier")),
-                ..Default::default()
-            },
-        };
+        // Absent is zero, a present-but-UNREADABLE count REFUSES (#42). See `USAGE` for the cache
+        // normalization and the attribution sub-buckets; the serving tier is a top-level member
+        // beside `usage` (OAI-03).
+        let usage = read_openai_usage(usage_val, obj.get("service_tier"))?;
 
         let model = obj.get("model").and_then(|m| m.as_str()).map(String::from);
 
@@ -1656,11 +1531,6 @@ fn tool_input_from_arguments(v: Option<&serde_json::Value>) -> serde_json::Value
         None => serde_json::json!({}),
     }
 }
-
-// ── USAGE COUNTS (#42) ───────────────────────────────────────────────────────────────────────────
-
-/// This reader's label on a refused usage count (`usage_count::read_count`).
-const COUNT_LABEL: &str = "openai";
 
 #[cfg(test)]
 #[path = "tests/unreadable_count_refusal_tests.rs"]

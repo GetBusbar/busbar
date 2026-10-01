@@ -1,32 +1,13 @@
-use crate::codec::usage_count::{read_count, read_count_opt, refuse_unreadable_count};
 use crate::codec::dialect::ir_parse_error;
 use super::*;
 
 impl ProtocolReader for ResponsesReader {
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
-        // Every count the kernel prices is read through `read_count`/`read_count_opt`: an unreadable
-        // one yields NO recovered usage, never a zero one (#42), and the caller then bills its
-        // conservative floor estimate for the truncated body instead of $0.
-        let u = Some(&v);
-        let cached = read_count_opt(COUNT_LABEL, v.get("input_tokens_details"), "cached_tokens").ok()?;
-        // A truncated body bills the same cache tiers an untruncated one does: `cache_write_tokens`
-        // is the OTHER slice of `input_tokens`, priced at the cache-WRITE tier. See
-        // `read_cache_write_tokens`.
-        let cache_write = super::read_cache_write_tokens(&v).ok()?;
-        Some(
-            crate::codec::ir::IrUsage {
-                input_tokens: read_count(COUNT_LABEL, u, "input_tokens")
-                    .ok()?
-                    .saturating_sub(cached.unwrap_or(0))
-                    .saturating_sub(cache_write.unwrap_or(0)),
-                output_tokens: read_count(COUNT_LABEL, u, "output_tokens").ok()?,
-                cache_creation_input_tokens: cache_write,
-                cache_read_input_tokens: cached,
-                detail: crate::codec::ir::IrUsageDetail::default(),
-            }
-            .to_token_usage(),
-        )
+        // Every count is read through the dialect's usage table (`USAGE`): an unreadable one yields
+        // NO recovered usage, never a zero one (#42). A truncated body reads the same cache tiers an
+        // untruncated one does.
+        Some(read_responses_usage(Some(&v), None).ok()?.to_token_usage())
     }
 
     fn extract_error(
@@ -1359,46 +1340,7 @@ impl ProtocolReader for ResponsesReader {
                     // — the stream ends in an error instead of ledgering zero tokens.
                     let usage = response_obj
                         .get("usage")
-                        .map(|u| -> Result<crate::codec::ir::IrUsage, IrError> {
-                            let cached = read_cached_tokens(u).map_err(refuse_unreadable_count(COUNT_LABEL))?;
-                            // `cache_write_tokens` rides the STREAM's terminal usage object exactly
-                            // as `cached_tokens` does — the OTHER slice of `input_tokens`, priced at
-                            // the cache-WRITE tier. See `read_cache_write_tokens`.
-                            let cache_write =
-                                read_cache_write_tokens(u).map_err(refuse_unreadable_count(COUNT_LABEL))?;
-                            Ok(crate::codec::ir::IrUsage {
-                                // NORMALIZE to the additive-cache convention: the Responses API's
-                                // `input_tokens` is a TOTAL that already INCLUDES the cached prefix
-                                // and the cache-write slice, so subtract both to leave only the
-                                // uncached input. `saturating_sub` guards an odd upstream where the
-                                // slices exceed the total.
-                                input_tokens: read_count(COUNT_LABEL, Some(u), "input_tokens")?
-                                    .saturating_sub(cached.unwrap_or(0))
-                                    .saturating_sub(cache_write.unwrap_or(0)),
-                                output_tokens: read_count(COUNT_LABEL, Some(u), "output_tokens")?,
-                                cache_creation_input_tokens: cache_write,
-                                // Carry the streamed prompt-cache hit count
-                                // (`usage.input_tokens_details.cached_tokens`) into the IR's
-                                // read-side cache field so a streaming Responses terminal preserves
-                                // the cache saving.
-                                cache_read_input_tokens: cached,
-                                // `output_tokens_details.reasoning_tokens` is on the STREAM's
-                                // terminal `response.completed` usage object exactly as it is on the
-                                // buffered response. Reading it only on the buffered path made the
-                                // same request report reasoning tokens at `stream: false` and a hard
-                                // `0` at `stream: true`.
-                                detail: crate::codec::ir::IrUsageDetail {
-                                    reasoning_tokens: u
-                                        .get("output_tokens_details")
-                                        .and_then(|d| d.get("reasoning_tokens"))
-                                        .and_then(read_count_u64),
-                                    // RSP-17: the tier that served the response, read off the
-                                    // terminal `response` exactly as the buffered read does.
-                                    service_tier: read_responses_service_tier(response_obj),
-                                    ..Default::default()
-                                },
-                            })
-                        })
+                        .map(|u| read_responses_usage(Some(u), Some(response_obj)))
                         .transpose();
                     let usage = match usage {
                         Ok(usage) => usage.unwrap_or(crate::codec::ir::IrUsage {
@@ -1787,53 +1729,9 @@ impl ProtocolReader for ResponsesReader {
         // proxy engine discard a valid body and emit a spurious 500.
         let usage_val = obj.get("usage");
 
-        let cached = match usage_val {
-            Some(u) => read_cached_tokens(u).map_err(refuse_unreadable_count(COUNT_LABEL))?,
-            None => None,
-        };
-        // `input_tokens_details.cache_write_tokens` — the OTHER slice of `input_tokens`, priced at
-        // the cache-WRITE tier. See `read_cache_write_tokens`.
-        let cache_write = match usage_val {
-            Some(u) => read_cache_write_tokens(u).map_err(refuse_unreadable_count(COUNT_LABEL))?,
-            None => None,
-        };
-        let usage = crate::codec::ir::IrUsage {
-            // NORMALIZE to the additive-cache convention: the Responses API's `input_tokens` is a
-            // TOTAL that already INCLUDES the cached prefix and the cache-write slice, so subtract
-            // both to leave only the uncached input. `saturating_sub` guards an odd upstream where
-            // the slices exceed the total.
-            //
-            // BILLED COUNTS: absent is zero, a present-but-UNREADABLE count REFUSES (#42).
-            input_tokens: read_count(COUNT_LABEL, usage_val, "input_tokens")?
-                .saturating_sub(cached.unwrap_or(0))
-                .saturating_sub(cache_write.unwrap_or(0)),
-            output_tokens: read_count(COUNT_LABEL, usage_val, "output_tokens")?,
-            // `input_tokens_details.cache_write_tokens` is the CACHE-WRITE tier's count; leaving it
-            // inside the plain input total (hardcoded `None`) charged a cache-writing turn at the
-            // wrong rate — and the writer has always emitted the member, so the reader was the only
-            // half of the pair that did not carry it. Map it to the IR's ADDITIVE
-            // `cache_creation_input_tokens`.
-            cache_creation_input_tokens: cache_write,
-            // The Responses API reports prompt-cache hits under
-            // `usage.input_tokens_details.cached_tokens`. Map it into the IR's
-            // `cache_read_input_tokens` (the read-side cache field Bedrock already uses) so the cache
-            // saving survives a cross-protocol hop instead of being dropped. No new IR field is added.
-            cache_read_input_tokens: cached,
-            // `output_tokens_details.reasoning_tokens` is a SUB-BUCKET of `output_tokens`. It was
-            // previously unread, and the writer hardcoded `0` — so every cross-protocol reasoning
-            // call CLAIMED the model did no thinking rather than admitting the number was not
-            // carried.
-            detail: crate::codec::ir::IrUsageDetail {
-                reasoning_tokens: usage_val
-                    .and_then(|u| u.get("output_tokens_details"))
-                    .and_then(|d| d.get("reasoning_tokens"))
-                    .and_then(read_count_u64),
-                // RSP-17: the tier that SERVED the response (top-level `service_tier`), mapped onto
-                // the IR's attribution vocabulary. See `read_responses_service_tier`.
-                service_tier: read_responses_service_tier(body),
-                ..Default::default()
-            },
-        };
+        // Absent is zero, a present-but-UNREADABLE count REFUSES (#42). See `USAGE` for the cache
+        // normalization; RSP-17's serving tier is the top-level `service_tier`.
+        let usage = read_responses_usage(usage_val, Some(body))?;
 
         let model = obj.get("model").and_then(|m| m.as_str()).map(String::from);
 
@@ -1954,11 +1852,6 @@ fn tool_input_from_arguments(v: Option<&serde_json::Value>) -> serde_json::Value
         None => serde_json::json!({}),
     }
 }
-
-// ── USAGE COUNTS (#42) ───────────────────────────────────────────────────────────────────────────
-
-/// This reader's label on a refused usage count (`usage_count::read_count`).
-const COUNT_LABEL: &str = "openai_responses";
 
 #[cfg(test)]
 #[path = "tests/unreadable_count_refusal_tests.rs"]
