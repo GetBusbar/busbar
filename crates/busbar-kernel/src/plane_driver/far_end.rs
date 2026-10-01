@@ -814,6 +814,7 @@ impl EgressFarEnd<'_> {
                 fields: &borrowed,
                 body: &request.body,
                 timeout_ms: cap_ms,
+                ..OpenDesc::default()
             },
         );
         let now_ms = e.clock.now_millis();
