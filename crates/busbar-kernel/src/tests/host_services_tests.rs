@@ -302,3 +302,27 @@ fn without_an_override_metadata_stays_refused_on_the_dial() {
     done(Ok(vec!["169.254.169.254".parse().unwrap()]));
     assert_eq!(*pinned.lock().unwrap(), Some(Err(svc::DEST_METADATA)));
 }
+
+/// RULING A ON THE DIAL: every resolved address is judged by the same lists the configuration check
+/// reads, operator-blocked addresses included. A name answering an address in
+/// `security.blocked_metadata_hosts` is refused on the dial, exactly as the literal is.
+#[test]
+fn an_operator_blocked_answer_is_refused_on_the_dial() {
+    let r = Arc::new(HandResolver::default());
+    let s = services_under(
+        Arc::clone(&r),
+        Denylist::new(&["93.184.216.34".to_string()], &[], false),
+    );
+    assert_eq!(
+        s.judge_dial("93.184.216.34:443", 0, Box::new(|_| {})),
+        Some(Err(svc::DEST_METADATA))
+    );
+    let pinned = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&pinned);
+    assert!(s
+        .judge_dial("blocked.example:443", 0, Box::new(move |v| *slot.lock().unwrap() = Some(v)))
+        .is_none());
+    let done = r.held.lock().unwrap().pop().expect("resolved");
+    done(Ok(vec!["93.184.216.34".parse().unwrap()]));
+    assert_eq!(*pinned.lock().unwrap(), Some(Err(svc::DEST_METADATA)));
+}
