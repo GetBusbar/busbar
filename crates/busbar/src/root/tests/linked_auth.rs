@@ -452,7 +452,8 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
     let now = busbar_kernel::store::now();
     let (_binding, old_token) = gov.mint_signed(spec, now + 10_000, now).expect("mint");
     assert!(
-        gov.verify_token(old_token.expose_secret(), now, None).is_some(),
+        gov.verify_token(old_token.expose_secret(), now, None)
+            .is_some(),
         "valid pre-rotation"
     );
 
@@ -465,7 +466,8 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
     .expect("apply");
 
     assert!(
-        gov.verify_token(old_token.expose_secret(), now, None).is_none(),
+        gov.verify_token(old_token.expose_secret(), now, None)
+            .is_none(),
         "a token minted under the PRE-rotation signing key must stop verifying after the reload"
     );
     let spec2 = busbar_kernel::governance::NewKeySpec {

@@ -3044,7 +3044,8 @@ mod signed_token {
         // The bound token admits exactly on its own plane; the plain one must not.
         assert!(g.verify_token(&bound, 1_000, Some(plane_x)).is_some());
         assert!(
-            g.verify_token(plain.expose_secret(), 1_000, Some(plane_x)).is_none(),
+            g.verify_token(plain.expose_secret(), 1_000, Some(plane_x))
+                .is_none(),
             "a plain data-plane key must be rejected on an audience-checked ingress"
         );
     }
@@ -3061,12 +3062,17 @@ mod signed_token {
                 1_000,
             )
             .expect("mint");
-        assert!(token.expose_secret().starts_with("bbk_"), "token carries the prefix");
+        assert!(
+            token.expose_secret().starts_with("bbk_"),
+            "token carries the prefix"
+        );
         assert!(binding.id.starts_with("vk_"));
         assert_eq!(binding.group.as_deref(), Some("growth"));
         assert_eq!(binding.allowed_scopes, Some(vec![ScopeRef::pool("fast")]));
 
-        let resolved = g.verify_token(token.expose_secret(), 1_500, None).expect("verify");
+        let resolved = g
+            .verify_token(token.expose_secret(), 1_500, None)
+            .expect("verify");
         assert_eq!(resolved.id, binding.id);
         assert_eq!(resolved.group.as_deref(), Some("growth"));
     }
@@ -3078,7 +3084,9 @@ mod signed_token {
         let (_b, token) = g
             .mint_signed(spec("free", None, None), 2_000, 1_000)
             .expect("mint");
-        let resolved = g.verify_token(token.expose_secret(), 1_500, None).expect("verify");
+        let resolved = g
+            .verify_token(token.expose_secret(), 1_500, None)
+            .expect("verify");
         assert_eq!(resolved.group, None);
         // Omitted allowed_pools carries as None = all pools (intent intact in the binding).
         assert!(resolved.allowed_scopes.is_none());
@@ -3160,7 +3168,8 @@ mod signed_token {
             Arc::new(GovState::new_with_signer(store, Some("t".into()), Some(signer2)).unwrap());
         assert!(g2.is_revoked(&binding.id), "denylist re-hydrated at boot");
         assert!(
-            g2.verify_token(token.expose_secret(), 1_500, None).is_none(),
+            g2.verify_token(token.expose_secret(), 1_500, None)
+                .is_none(),
             "the revoked token is still rejected after restart"
         );
     }
@@ -3191,7 +3200,9 @@ mod signed_token {
             GovState::new_with_signer(store_b.clone(), Some("t".into()), Some(key_b_same)).unwrap(),
         );
         assert!(
-            node_b.verify_token(token.expose_secret(), 1_500, None).is_some(),
+            node_b
+                .verify_token(token.expose_secret(), 1_500, None)
+                .is_some(),
             "a token signed by the shared key verifies on another node"
         );
 
@@ -3201,7 +3212,9 @@ mod signed_token {
             GovState::new_with_signer(store_b, Some("t".into()), Some(key_b_rotated)).unwrap(),
         );
         assert!(
-            node_b2.verify_token(token.expose_secret(), 1_500, None).is_none(),
+            node_b2
+                .verify_token(token.expose_secret(), 1_500, None)
+                .is_none(),
             "after rotation, a token signed by the old key is rejected (revoke-all)"
         );
     }
@@ -3293,14 +3306,16 @@ mod signed_token {
             .mint_signed(spec("bob", None, None), base + 10_000, base)
             .expect("mint");
         assert!(
-            g.verify_token(token.expose_secret(), base + 1, None).is_some(),
+            g.verify_token(token.expose_secret(), base + 1, None)
+                .is_some(),
             "admitted before the revoke"
         );
 
         g.revoke(&binding.id, "compromised").expect("revoke");
 
         assert!(
-            g.verify_token(token.expose_secret(), base + 1, None).is_none(),
+            g.verify_token(token.expose_secret(), base + 1, None)
+                .is_none(),
             "the very next signed-token check after a local revoke must reject — no window"
         );
         assert!(
@@ -3373,7 +3388,8 @@ mod signed_token {
             .mint_signed(spec("bob", Some("growth"), None), 9_000, 1_000)
             .expect("mint");
         assert!(
-            g.verify_token(old_token.expose_secret(), 1_500, None).is_some(),
+            g.verify_token(old_token.expose_secret(), 1_500, None)
+                .is_some(),
             "valid at mint"
         );
 
@@ -3393,7 +3409,8 @@ mod signed_token {
             "policy carries over untouched"
         );
         assert!(
-            g.verify_token(old_token.expose_secret(), 1_500, None).is_none(),
+            g.verify_token(old_token.expose_secret(), 1_500, None)
+                .is_none(),
             "the PRE-ROTATION token must be rejected immediately after rotate"
         );
         assert!(
@@ -4329,7 +4346,8 @@ fn rotate_key_with_a_failing_refresh_kills_the_old_credential_and_says_so() {
         )
         .expect("mint");
     assert!(
-        gov.verify_token(token.expose_secret(), 1_500, None).is_some(),
+        gov.verify_token(token.expose_secret(), 1_500, None)
+            .is_some(),
         "the original token verifies before the rotation"
     );
 
@@ -4342,7 +4360,8 @@ fn rotate_key_with_a_failing_refresh_kills_the_old_credential_and_says_so() {
     // (1) SAFETY: the store already holds the NEW generation, so the old token is durably dead —
     // the cache must not go on honouring it.
     assert!(
-        gov.verify_token(token.expose_secret(), 1_500, None).is_none(),
+        gov.verify_token(token.expose_secret(), 1_500, None)
+            .is_none(),
         "the PREVIOUS credential must stop verifying the moment the new generation is committed, \
          even when the cache refresh failed"
     );
@@ -5205,7 +5224,8 @@ fn proof_one_session_mints_a_personal_key_plus_n_independent_app_tokens() {
     let (_, _, victim_key, victim_tok) = &minted[1];
     gov.revoke(&victim_key.id, "compromised app token").unwrap();
     assert!(
-        gov.verify_token(victim_tok.expose_secret(), now, None).is_none(),
+        gov.verify_token(victim_tok.expose_secret(), now, None)
+            .is_none(),
         "the revoked app token is dead"
     );
     assert!(
@@ -5255,14 +5275,16 @@ fn proof_time_bound_expiry_is_enforced_locally() {
         "precondition: the token MUST verify at mint time, or the post-expiry None proves nothing"
     );
     assert!(
-        gov.verify_token(token.expose_secret(), exp - 1, None).is_some(),
+        gov.verify_token(token.expose_secret(), exp - 1, None)
+            .is_some(),
         "precondition: the token MUST still verify one second before its expiry"
     );
 
     // CLAIM: advance the clock to exp+1 and the SAME token is dead — expiry is enforced by busbar
     // itself, locally, on every verify.
     assert!(
-        gov.verify_token(token.expose_secret(), exp + 1, None).is_none(),
+        gov.verify_token(token.expose_secret(), exp + 1, None)
+            .is_none(),
         "past exp the token MUST NOT verify — time-bound expiry is enforced locally"
     );
     // And exactly AT `exp` it is already expired (`exp` is exclusive: verify rejects when exp <= now).
@@ -5321,7 +5343,11 @@ fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
         let mut chars: Vec<char> = token.expose_secret().chars().collect();
         chars[10] = if chars[10] == 'x' { 'y' } else { 'x' };
         let tampered: String = chars.into_iter().collect();
-        assert_ne!(&tampered, token.expose_secret(), "the tamper actually changed the token");
+        assert_ne!(
+            &tampered,
+            token.expose_secret(),
+            "the tamper actually changed the token"
+        );
         assert!(
             gov.verify_token(&tampered, now, None).is_none(),
             "signature gate: a tampered token fails the local ed25519 verify"
@@ -5330,7 +5356,8 @@ fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
 
     // GATE 2 — EXPIRE: advance past exp. Local exp check.
     assert!(
-        gov.verify_token(token.expose_secret(), exp + 1, None).is_none(),
+        gov.verify_token(token.expose_secret(), exp + 1, None)
+            .is_none(),
         "expire gate: past exp the token is dead (local time check, no network)"
     );
 
@@ -5385,8 +5412,12 @@ fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
             "the plain token verifies on the plain data plane (expected_aud = None)"
         );
         assert!(
-            gov.verify_token(token.expose_secret(), now, Some("plane-x://example/canonical"))
-                .is_none(),
+            gov.verify_token(
+                token.expose_secret(),
+                now,
+                Some("plane-x://example/canonical")
+            )
+            .is_none(),
             "audience gate: a plain token is refused where a specific audience is required (local)"
         );
     }
@@ -5425,7 +5456,9 @@ fn proof_minted_admission_is_store_state_config_signing_is_not() {
         )
         .unwrap();
     assert!(
-        gov_s.verify_token(token.expose_secret(), now, None).is_some(),
+        gov_s
+            .verify_token(token.expose_secret(), now, None)
+            .is_some(),
         "precondition: the token verifies on the node that minted it (config + store agree)"
     );
 

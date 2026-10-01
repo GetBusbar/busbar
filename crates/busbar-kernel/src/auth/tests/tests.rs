@@ -1184,7 +1184,10 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
     // Control: the PLAIN sibling for the same binding is admitted on /stats.
     let r = client
         .get(format!("http://{addr}/stats"))
-        .header("authorization", format!("Bearer {}", plain_token.expose_secret()))
+        .header(
+            "authorization",
+            format!("Bearer {}", plain_token.expose_secret()),
+        )
         .send()
         .await
         .unwrap();

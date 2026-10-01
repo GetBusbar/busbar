@@ -1735,7 +1735,9 @@ async fn send_user_projects_governance_key_identity() {
         "anthropic",
         busbar_contract::operation::OpVerb::CHAT,
         false,
-        Some(&crate::engine::CallerCredential::for_test(secret.expose_secret())),
+        Some(&crate::engine::CallerCredential::for_test(
+            secret.expose_secret(),
+        )),
         None,
     )
     .await;
