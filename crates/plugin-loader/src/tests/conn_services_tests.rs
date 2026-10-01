@@ -355,7 +355,14 @@ use busbar_contract::conn::PieceKind;
 use busbar_contract::ids::StreamId;
 
 /// What one open carried: the need, target, head words, fields and body.
-type Opened = (NeedId, String, Vec<u8>, Vec<u8>, Vec<(String, Vec<u8>)>, Vec<u8>);
+type Opened = (
+    NeedId,
+    String,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<(String, Vec<u8>)>,
+    Vec<u8>,
+);
 
 /// A connection table whose needs are framed (or not), whose opens are recorded (or refused) and
 /// whose reads answer a script, one piece and its bytes per read.
@@ -502,7 +509,8 @@ fn head_of<I>(op: u32, seq: u32) -> ServiceHead {
 fn call<I>(p: &Plugin<TestKind>, f: Option<ServiceFn>, input: &I) -> ServiceOut {
     // SAFETY: an all-zero `ServiceOut` is a valid value the slot overwrites.
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
-    let _: RawOutcome = f.expect("served")(p.inner.ctx(), std::ptr::from_ref(input).cast(), &mut out);
+    let _: RawOutcome =
+        f.expect("served")(p.inner.ctx(), std::ptr::from_ref(input).cast(), &mut out);
     out
 }
 
@@ -516,7 +524,13 @@ fn opened_stream(p: &Plugin<TestKind>, seq: u32) -> ServiceOut {
     call(p, CONN_SLOTS.establish, &i)
 }
 
-fn request(p: &Plugin<TestKind>, seq: u32, stream: u64, piece: &RequestPiece, bytes: &[u8]) -> ServiceOut {
+fn request(
+    p: &Plugin<TestKind>,
+    seq: u32,
+    stream: u64,
+    piece: &RequestPiece,
+    bytes: &[u8],
+) -> ServiceOut {
     let i = RequestIn {
         head: head_of::<RequestIn>(service::WRITE_REQUEST, seq),
         stream,
@@ -555,7 +569,12 @@ fn kind_piece(kind: u32) -> RequestPiece {
     }
 }
 
-fn read_reply(p: &Plugin<TestKind>, seq: u32, stream: u64, buf: &mut [u8]) -> (ServiceOut, ReplyPiece) {
+fn read_reply(
+    p: &Plugin<TestKind>,
+    seq: u32,
+    stream: u64,
+    buf: &mut [u8],
+) -> (ServiceOut, ReplyPiece) {
     let mut piece = ReplyPiece::default();
     let i = ReplyIn {
         head: head_of::<ReplyIn>(service::READ_REPLY, seq),
@@ -581,7 +600,12 @@ fn error_text(o: &ServiceOut) -> String {
         .into_owned()
 }
 
-fn piece(kind: PieceKind, code: Option<u32>, reason: Option<std::ops::Range<usize>>, len: usize) -> Piece {
+fn piece(
+    kind: PieceKind,
+    code: Option<u32>,
+    reason: Option<std::ops::Range<usize>>,
+    len: usize,
+) -> Piece {
     Piece {
         kind,
         stream: StreamId(0),
@@ -607,15 +631,39 @@ fn a_framed_request_goes_out_whole_as_the_opening_message_with_its_head_words() 
     let p = bound_over(&table);
     let est = opened_stream(&p, 0);
     assert!(ready(&est));
-    assert!(table.opened.lock().unwrap().is_empty(), "nothing is sent at establish");
+    assert!(
+        table.opened.lock().unwrap().is_empty(),
+        "nothing is sent at establish"
+    );
     let stream = est.value;
     let h = request(&p, 1, stream, &head_piece(), HEAD_BYTES);
     assert!(ready(&h));
     assert_eq!(h.len, HEAD_BYTES.len() as u64);
-    assert!(ready(&request(&p, 2, stream, &kind_piece(REQUEST_BODY), b"hi")));
-    assert!(ready(&request(&p, 3, stream, &kind_piece(REQUEST_BODY), b"!")));
-    assert!(table.opened.lock().unwrap().is_empty(), "nothing is sent before the end");
-    assert!(ready(&request(&p, 4, stream, &kind_piece(REQUEST_END), b"")));
+    assert!(ready(&request(
+        &p,
+        2,
+        stream,
+        &kind_piece(REQUEST_BODY),
+        b"hi"
+    )));
+    assert!(ready(&request(
+        &p,
+        3,
+        stream,
+        &kind_piece(REQUEST_BODY),
+        b"!"
+    )));
+    assert!(
+        table.opened.lock().unwrap().is_empty(),
+        "nothing is sent before the end"
+    );
+    assert!(ready(&request(
+        &p,
+        4,
+        stream,
+        &kind_piece(REQUEST_END),
+        b""
+    )));
     assert_eq!(
         table.opened.lock().unwrap().as_slice(),
         &[(
@@ -636,7 +684,11 @@ fn write_request_is_refused_on_a_raw_stream_and_out_of_order() {
     let raw = Arc::new(Scripted::default());
     let p = bound_over(&raw);
     let stream = opened_stream(&p, 0).value;
-    assert_eq!(raw.opened.lock().unwrap().len(), 1, "a raw stream opens at establish");
+    assert_eq!(
+        raw.opened.lock().unwrap().len(),
+        1,
+        "a raw stream opens at establish"
+    );
     let o = request(&p, 1, stream, &head_piece(), HEAD_BYTES);
     assert_eq!(o.outcome, RawOutcome::of(Outcome::Refused));
     let framed = Arc::new(Scripted {
@@ -684,7 +736,11 @@ fn a_reply_reads_its_head_its_body_and_one_terminal_end() {
     assert!(ready(&o));
     assert_eq!(e.kind, REPLY_END);
     let (o, _) = read_reply(&p, 4, stream, &mut buf);
-    assert_eq!(o.outcome, RawOutcome::of(Outcome::Failed), "one terminal piece");
+    assert_eq!(
+        o.outcome,
+        RawOutcome::of(Outcome::Failed),
+        "one terminal piece"
+    );
 }
 
 /// RED: a reply that had no head (a raw stream) ends in ONE ack.
@@ -716,13 +772,23 @@ fn an_egress_refusal_is_a_failed_ack_with_its_text() {
     let p = bound_over(&table);
     let stream = opened_stream(&p, 0).value;
     assert!(ready(&request(&p, 1, stream, &head_piece(), HEAD_BYTES)));
-    assert!(ready(&request(&p, 2, stream, &kind_piece(REQUEST_END), b"")));
+    assert!(ready(&request(
+        &p,
+        2,
+        stream,
+        &kind_piece(REQUEST_END),
+        b""
+    )));
     let mut buf = [0_u8; 8];
     let (o, _) = read_reply(&p, 3, stream, &mut buf);
     assert_eq!(o.outcome, RawOutcome::of(Outcome::Refused));
     assert_eq!(error_text(&o), ConnError::Refused.text());
     let (o, _) = read_reply(&p, 4, stream, &mut buf);
-    assert_eq!(o.outcome, RawOutcome::of(Outcome::Failed), "the reply has ended");
+    assert_eq!(
+        o.outcome,
+        RawOutcome::of(Outcome::Failed),
+        "the reply has ended"
+    );
 }
 
 /// RED: the host never runs a service twice: a re-issued ESTABLISH handle answers the same
@@ -755,7 +821,10 @@ fn a_replayed_handle_never_runs_its_service_twice() {
     let h = request(&q, 1, stream, &head_piece(), HEAD_BYTES);
     let replayed = request(&q, 1, stream, &head_piece(), HEAD_BYTES);
     assert!(ready(&h));
-    assert!(ready(&replayed), "the replay answers the stored result, not a second head");
+    assert!(
+        ready(&replayed),
+        "the replay answers the stored result, not a second head"
+    );
     assert_eq!(replayed.len, h.len);
     super::forget(T);
     let fresh = request(&q, 1, stream, &head_piece(), HEAD_BYTES);

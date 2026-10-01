@@ -97,10 +97,7 @@ fn every_egress_class_is_judged_under_its_own_rules() {
 fn provider_and_default_keep_the_deployments_metadata_rules() {
     let j = root_judge(&["imds.corp.example"], &[]);
     for class in [EGRESS_DEFAULT, EGRESS_PROVIDER] {
-        assert_eq!(
-            now(&j, "imds.corp.example:80", class),
-            Err(DEST_METADATA)
-        );
+        assert_eq!(now(&j, "imds.corp.example:80", class), Err(DEST_METADATA));
         assert!(now(&j, "10.0.0.5:8000", class).is_ok(), "class {class}");
     }
 }
@@ -137,8 +134,16 @@ fn loopback_allowed_refuses_the_nodes_own_ports() {
     assert_eq!(now(&j, &format!("127.0.0.1:{OWN}"), c), Err(DEST_INTERNAL));
     assert_eq!(now(&j, &format!("[::1]:{OWN}"), c), Err(DEST_INTERNAL));
     // Another class may name that port: the rule is loopback-allowed's.
-    assert!(now(&j, &format!("127.0.0.1:{OWN}"), EGRESS_OPERATOR_INFRASTRUCTURE).is_ok());
-    assert_eq!(pended(&j, &format!("localhost:{OWN}"), c), Err(DEST_INTERNAL));
+    assert!(now(
+        &j,
+        &format!("127.0.0.1:{OWN}"),
+        EGRESS_OPERATOR_INFRASTRUCTURE
+    )
+    .is_ok());
+    assert_eq!(
+        pended(&j, &format!("localhost:{OWN}"), c),
+        Err(DEST_INTERNAL)
+    );
 }
 
 /// Judge a name that must resolve: `None` at once, the pin or the refusal later.

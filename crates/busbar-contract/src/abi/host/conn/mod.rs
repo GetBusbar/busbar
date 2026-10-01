@@ -465,7 +465,12 @@ extern "C-unwind" fn host_read(
             unsafe { std::slice::from_raw_parts_mut(buf, cap) }
         };
         let piece = host.conns.read(host.instance, ConnId(conn), ticket, into)?;
-        if piece.len > cap || piece.reason.as_ref().is_some_and(|r| r.start > r.end || r.end > cap) {
+        if piece.len > cap
+            || piece
+                .reason
+                .as_ref()
+                .is_some_and(|r| r.start > r.end || r.end > cap)
+        {
             return Err(ConnError::Fault);
         }
         // The numbering is held until the connection closes, so the plugin's borrow outlives the

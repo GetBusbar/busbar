@@ -426,22 +426,24 @@ impl Connector {
                         if got.reason.is_some() {
                             held.reason.lock().expect("reason").clone_from(&got.reason);
                         }
-                        (Piece {
-                            kind: if got.fields {
-                                PieceKind::Fields
-                            } else {
-                                PieceKind::Body
+                        (
+                            Piece {
+                                kind: if got.fields {
+                                    PieceKind::Fields
+                                } else {
+                                    PieceKind::Body
+                                },
+                                stream: StreamId(got.stream),
+                                len: 0,
+                                end: got.end_of_frame,
+                                status: class(got.status_class),
+                                status_code: got.status_code,
+                                status_namespace: None,
+                                retry_after_secs: got.retry_after_secs,
+                                reason: None,
                             },
-                            stream: StreamId(got.stream),
-                            len: 0,
-                            end: got.end_of_frame,
-                            status: class(got.status_class),
-                            status_code: got.status_code,
-                            status_namespace: None,
-                            retry_after_secs: got.retry_after_secs,
-                            reason: None,
-                        },
-                        got.bytes)
+                            got.bytes,
+                        )
                     }
                 }
             }

@@ -413,7 +413,11 @@ fn a_descriptor_without_the_head_words_states_none() {
     let pa = unsafe { HostConns::new(slots, host.ctx()) };
     let mut buf = [0_u8; 16];
     let piece = pa.read(ConnId(conn), 0, &mut buf).unwrap();
-    assert_eq!(&buf[..piece.len], b"b", "no head word was read past the size");
+    assert_eq!(
+        &buf[..piece.len],
+        b"b",
+        "no head word was read past the size"
+    );
     d.size = OPEN_DESC_HEADLESS as u32 - 8;
     assert_eq!(
         open(host.ctx(), 0, &d, &mut conn).result(),

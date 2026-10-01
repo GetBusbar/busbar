@@ -274,8 +274,11 @@ fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
         .build()
         .unwrap();
     rt.block_on(async {
-        let (far, seen_rx) =
-            serve_once(respond(scheme, "{V} 200 OK\r\ncontent-length: 5\r\n\r\nhello")).await;
+        let (far, seen_rx) = serve_once(respond(
+            scheme,
+            "{V} 200 OK\r\ncontent-length: 5\r\n\r\nhello",
+        ))
+        .await;
         let mut c = Connection::dial(
             door,
             Dial {
@@ -524,10 +527,12 @@ fn an_empty_head_yields_one_empty_fields_piece() {
 /// as sent, as a range of the caller's buffer right after the block.
 #[test]
 fn the_reply_head_carries_its_reason_phrase_exactly_as_sent() {
-    let (got, reason) = head_through_the_table(
-        "{V} 200 Fine By Me\r\nx-a: 1\r\ncontent-length: 2\r\n\r\nok",
+    let (got, reason) =
+        head_through_the_table("{V} 200 Fine By Me\r\nx-a: 1\r\ncontent-length: 2\r\n\r\nok");
+    assert_eq!(
+        got[0],
+        (PieceKind::Fields, Some(200), b"x-a: 1\r\n".to_vec())
     );
-    assert_eq!(got[0], (PieceKind::Fields, Some(200), b"x-a: 1\r\n".to_vec()));
     assert_eq!(reason.as_deref(), Some(&b"Fine By Me"[..]));
     let (_, reason) = head_through_the_table("{V} 204 No Content\r\n\r\n");
     assert_eq!(reason.as_deref(), Some(&b"No Content"[..]));
@@ -539,11 +544,22 @@ fn the_reply_head_carries_its_reason_phrase_exactly_as_sent() {
 fn the_head_words_reach_the_framer_byte_for_byte() {
     use busbar_core_connector::framer::{encode, encode_head};
     let door = composing_door();
-    let wire = encode_head(door.as_ref(), b"PATCH", b"/v1/x?y=%20z", &[("x-a", b"1")], b"")
-        .expect("renders");
+    let wire = encode_head(
+        door.as_ref(),
+        b"PATCH",
+        b"/v1/x?y=%20z",
+        &[("x-a", b"1")],
+        b"",
+    )
+    .expect("renders");
     let text = String::from_utf8_lossy(&wire).into_owned();
     assert!(text.starts_with("PATCH /v1/x?y=%20z "), "{text}");
-    assert!(text.split("\r\n").next().is_some_and(|line| line.split(' ').count() == 3), "{text}");
+    assert!(
+        text.split("\r\n")
+            .next()
+            .is_some_and(|line| line.split(' ').count() == 3),
+        "{text}"
+    );
     let plain = socket_framer_door().expect("a socket-framing door is built beside the test");
     assert_eq!(
         encode_head(plain.as_ref(), b"PATCH", b"/x", &[], b"body").ok(),
@@ -624,7 +640,10 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
     );
     let owner = InstanceId(1);
     c.declare_over(owner, NeedId(1), raw);
-    assert!(!c.framed(owner, NeedId(1)), "the socket framer is a raw stream");
+    assert!(
+        !c.framed(owner, NeedId(1)),
+        "the socket framer is a raw stream"
+    );
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -642,11 +661,16 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
             head_target: b"/v1/x?y=1",
             ..OpenDesc::default()
         };
-        let id = c.open(owner, NeedId(0), &desc).expect("opens at the declared target");
+        let id = c
+            .open(owner, NeedId(0), &desc)
+            .expect("opens at the declared target");
         let mut buf = [0_u8; 1024];
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let request = loop {
-            assert!(std::time::Instant::now() < deadline, "the far end reads the request");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the far end reads the request"
+            );
             // Reading drives the connection: its opening message goes out.
             match c.read(owner, id, 7, &mut buf) {
                 Err(ConnError::Pending) | Ok(_) => {}
@@ -658,7 +682,10 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
             tokio::task::yield_now().await;
         };
         assert!(request.starts_with("PATCH /v1/x?y=1 "), "{request}");
-        assert!(request.to_ascii_lowercase().contains("\r\nx-a: 1\r\n"), "{request}");
+        assert!(
+            request.to_ascii_lowercase().contains("\r\nx-a: 1\r\n"),
+            "{request}"
+        );
         c.close(owner, id).unwrap();
     });
 }

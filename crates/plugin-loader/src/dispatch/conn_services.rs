@@ -440,7 +440,11 @@ fn held_id() -> u64 {
 /// The connection `stream` names: a table id as it is, a held stream's once open. A held stream
 /// whose request was never written is opened as it was named, raw (a WRITE or READ on a framed
 /// stream).
-fn resolve(id: InstanceId, table: &Arc<dyn DeclaredConns>, stream: u64) -> Result<ConnId, ConnError> {
+fn resolve(
+    id: InstanceId,
+    table: &Arc<dyn DeclaredConns>,
+    stream: u64,
+) -> Result<ConnId, ConnError> {
     if stream & HELD == 0 {
         return Ok(ConnId(stream));
     }
