@@ -117,7 +117,8 @@ mod test_seams {
             // The operator credential's test registry row, before anything resolves the auth axis.
             // This binary links the operator plugin the composition root links and pins the root's
             // bytes, so it hands in the root's words as the root does (crates/busbar's legacy
-            // table, `data/operator_credential.toml`; ARCHITECT 2026-09-30, KERNEL-AUTH-ZERO Q2).
+            // table, `root::auth_bindings::OPERATOR_AUTH_MODULE`; ARCHITECT 2026-09-30,
+            // KERNEL-AUTH-ZERO Q2).
             for_each_operator_auth_row!(install_operator_row);
             fn install_operator_row(entry: busbar_kernel::test_support::AuthBoundary) {
                 const ROOT_WORDS: busbar_kernel::test_support::OperatorWords =

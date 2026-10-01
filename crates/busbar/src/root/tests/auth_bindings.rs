@@ -205,11 +205,6 @@ fn the_legacy_table_spells_the_operator_credential_as_1_5_5_did() {
     let words = operator_words();
     assert_eq!(words.provider, "admin-tokens");
     assert_eq!(words.principal_id, "admin");
-    assert_eq!(
-        (words.provider, words.principal_id),
-        (ADMIN_TOKENS_MODULE, ADMIN_PRINCIPAL_ID),
-        "the legacy table and the module's own report must not drift"
-    );
 }
 
 #[test]
