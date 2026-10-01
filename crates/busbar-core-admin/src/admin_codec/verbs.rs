@@ -33,6 +33,31 @@ pub(crate) struct VerbEntry {
     pub(crate) read_only: bool,
 }
 
+/// The HTTP method of every read-only row below.
+const GET: &str = "GET";
+/// The HTTP method of every mutating row below.
+const POST: &str = "POST";
+
+/// A read-only `GET` row.
+const fn read(path: &'static str, verb: &'static str) -> VerbEntry {
+    VerbEntry {
+        method: GET,
+        path,
+        verb,
+        read_only: true,
+    }
+}
+
+/// A mutating `POST` row.
+const fn write(path: &'static str, verb: &'static str) -> VerbEntry {
+    VerbEntry {
+        method: POST,
+        path,
+        verb,
+        read_only: false,
+    }
+}
+
 /// The 9 1.6.0-additive money-governance verbs. The first eight carry the synthetic HTTP
 /// binding flagged in the module doc; the ninth, `amend_rate_history`, carries the
 /// design's own binding under `/ledger/`.
@@ -42,64 +67,19 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
     // here made the live admin gate — the (method, path) matrix, under which every non-dry-run
     // `POST` is `full` — demand `full` of a verb `verbs::required_scope` answers `read-only` for
     // (1.6.0 item 149).
-    VerbEntry {
-        method: "GET",
-        path: "/api/v1/admin/verify",
-        verb: "verify",
-        read_only: true,
-    },
-    VerbEntry {
-        method: "GET",
-        path: "/api/v1/admin/plane-facts",
-        verb: "plane_facts",
-        read_only: true,
-    },
-    VerbEntry {
-        method: "POST",
-        path: "/api/v1/admin/plane-record-write",
-        verb: "plane_record_write",
-        read_only: false,
-    },
-    VerbEntry {
-        method: "POST",
-        path: "/api/v1/admin/chain-break",
-        verb: "chain_break",
-        read_only: false,
-    },
-    VerbEntry {
-        method: "POST",
-        path: "/api/v1/admin/store-restore",
-        verb: "store_restore",
-        read_only: false,
-    },
-    VerbEntry {
-        method: "POST",
-        path: "/api/v1/admin/reseal-epoch-floor",
-        verb: "reseal_epoch_floor",
-        read_only: false,
-    },
-    VerbEntry {
-        method: "POST",
-        path: "/api/v1/admin/commit-upgrade",
-        verb: "commit_upgrade",
-        read_only: false,
-    },
-    VerbEntry {
-        method: "POST",
-        path: "/api/v1/admin/adjust",
-        verb: "adjust",
-        read_only: false,
-    },
+    read("/api/v1/admin/verify", "verify"),
+    read("/api/v1/admin/plane-facts", "plane_facts"),
+    write("/api/v1/admin/plane-record-write", "plane_record_write"),
+    write("/api/v1/admin/chain-break", "chain_break"),
+    write("/api/v1/admin/store-restore", "store_restore"),
+    write("/api/v1/admin/reseal-epoch-floor", "reseal_epoch_floor"),
+    write("/api/v1/admin/commit-upgrade", "commit_upgrade"),
+    write("/api/v1/admin/adjust", "adjust"),
     // `amend_rate_history`: unlike the eight above, its path is NOT a judgment call. The
     // dated rate-card-history design binds it at `POST /api/v1/admin/ledger/amend-rate-history` —
     // under the `/ledger/` prefix the five views share, because it is the one write among them — and
     // `full` + irreducible, because it corrects what the past cost.
-    VerbEntry {
-        method: "POST",
-        path: "/api/v1/admin/ledger/amend-rate-history",
-        verb: "amend_rate_history",
-        read_only: false,
-    },
+    write("/api/v1/admin/ledger/amend-rate-history", "amend_rate_history"),
 ];
 
 /// The five 1.6.0 ledger views, mounted under one sub-prefix of the admin surface.
@@ -113,36 +93,11 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
 /// legacy `GET /usage`: the same credential that may read what a bucket spent may read what the
 /// ledger posted for it, and neither may write anything.
 const LEDGER_VERBS_1_6_0: &[VerbEntry] = &[
-    VerbEntry {
-        method: "GET",
-        path: "/api/v1/admin/ledger/totals",
-        verb: "get_ledger_totals",
-        read_only: true,
-    },
-    VerbEntry {
-        method: "GET",
-        path: "/api/v1/admin/ledger/checkpoints",
-        verb: "get_ledger_checkpoints",
-        read_only: true,
-    },
-    VerbEntry {
-        method: "GET",
-        path: "/api/v1/admin/ledger/reconciliation",
-        verb: "get_ledger_reconciliation",
-        read_only: true,
-    },
-    VerbEntry {
-        method: "GET",
-        path: "/api/v1/admin/ledger/migration",
-        verb: "get_ledger_migration",
-        read_only: true,
-    },
-    VerbEntry {
-        method: "GET",
-        path: "/api/v1/admin/ledger/openapi.json",
-        verb: "get_ledger_openapi_json",
-        read_only: true,
-    },
+    read("/api/v1/admin/ledger/totals", "get_ledger_totals"),
+    read("/api/v1/admin/ledger/checkpoints", "get_ledger_checkpoints"),
+    read("/api/v1/admin/ledger/reconciliation", "get_ledger_reconciliation"),
+    read("/api/v1/admin/ledger/migration", "get_ledger_migration"),
+    read("/api/v1/admin/ledger/openapi.json", "get_ledger_openapi_json"),
 ];
 
 /// THE THREE AUDIT-CHAIN READS, and their paths are not a judgment call either.
@@ -165,24 +120,9 @@ const LEDGER_VERBS_1_6_0: &[VerbEntry] = &[
 /// because a query names ARGUMENTS to an operation and `from`/`to` are arguments — the same reason
 /// `GET /audit?limit=4` and `GET /audit` are one row here (see [`operation_target`]).
 const AUDIT_VERBS_1_6_0: &[VerbEntry] = &[
-    VerbEntry {
-        method: "GET",
-        path: "/api/v1/admin/audit/head",
-        verb: "get_audit_head",
-        read_only: true,
-    },
-    VerbEntry {
-        method: "GET",
-        path: "/api/v1/admin/audit/range",
-        verb: "get_audit_range",
-        read_only: true,
-    },
-    VerbEntry {
-        method: "GET",
-        path: "/api/v1/admin/audit/keys",
-        verb: "get_audit_keys",
-        read_only: true,
-    },
+    read("/api/v1/admin/audit/head", "get_audit_head"),
+    read("/api/v1/admin/audit/range", "get_audit_range"),
+    read("/api/v1/admin/audit/keys", "get_audit_keys"),
 ];
 
 /// How many rows the closed table declares: 66 from the pinned 1.5.5 tag, the 9 1.6.0
@@ -435,6 +375,16 @@ pub struct ResolvedVerb {
 }
 
 impl ResolvedVerb {
+    /// The row a table entry resolves to.
+    fn of(entry: &VerbEntry) -> Self {
+        Self {
+            verb: entry.verb,
+            method: entry.method,
+            template: entry.path,
+            read_only: entry.read_only,
+        }
+    }
+
     /// The operation class this row prices under.
     #[must_use]
     pub fn op_class(&self) -> OpClassId {
@@ -460,12 +410,7 @@ impl ResolvedVerb {
 /// unsupported operation and never an invitation to guess one.
 #[must_use]
 pub fn resolve(method: &str, path: &str) -> Option<ResolvedVerb> {
-    find_verb(method, path).map(|(entry, _params)| ResolvedVerb {
-        verb: entry.verb,
-        method: entry.method,
-        template: entry.path,
-        read_only: entry.read_only,
-    })
+    find_verb(method, path).map(|(entry, _params)| ResolvedVerb::of(entry))
 }
 
 /// Every row the closed table declares, in the order the table holds them.
@@ -474,15 +419,7 @@ pub fn resolve(method: &str, path: &str) -> Option<ResolvedVerb> {
 /// 66, the 9 and the 5 as three runs rather than as one undifferentiated list.
 #[must_use]
 pub fn table() -> Vec<ResolvedVerb> {
-    all_verbs()
-        .iter()
-        .map(|entry| ResolvedVerb {
-            verb: entry.verb,
-            method: entry.method,
-            template: entry.path,
-            read_only: entry.read_only,
-        })
-        .collect()
+    all_verbs().iter().map(ResolvedVerb::of).collect()
 }
 
 #[cfg(test)]
