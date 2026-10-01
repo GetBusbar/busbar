@@ -397,6 +397,36 @@ pub const EMIT_WATCH_CATALOGUE: u32 = 1 << 3;
 /// [`EMIT_WATCH_CATALOGUE`].
 pub const EMIT_UNWATCH_CATALOGUE: u32 = 1 << 4;
 
+/// Whether every flag in `flags` is one bit and no two share it. Each flag set below is asserted
+/// with it, so two lanes that pick the same bit for different flags fail to compile.
+const fn one_bit_each(flags: &[u32]) -> bool {
+    let mut seen = 0u32;
+    let mut i = 0;
+    while i < flags.len() {
+        let f = flags[i];
+        if f.count_ones() != 1 || seen & f != 0 {
+            return false;
+        }
+        seen |= f;
+        i += 1;
+    }
+    true
+}
+const _: () = assert!(one_bit_each(&[
+    PIECE_END_OF_FRAME,
+    PIECE_LAST,
+    PIECE_HAS_STATUS,
+    PIECE_FIELDS,
+    PIECE_CATALOGUE_MOVED,
+]));
+const _: () = assert!(one_bit_each(&[
+    EMIT_TO_FAR_END,
+    EMIT_DONE,
+    PIECE_OUT_TEXT,
+    EMIT_WATCH_CATALOGUE,
+    EMIT_UNWATCH_CATALOGUE,
+]));
+
 /// [`OnPieceOut::verdict`]: no verdict; the walk's status table alone decides.
 pub const VERDICT_NONE: u32 = 0;
 /// [`OnPieceOut::verdict`]: the far end's answer is a success.
