@@ -61,12 +61,12 @@ use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use busbar_contract::caps::{
-    Abort, AdminVerb, Admission, Admit, Admittance, Approve, Arrival, Audit, Authenticate,
-    Authenticated, CallId, Canary, Consumption, Decode, Dial, DurabilityLost, DurableWrite, Encode,
-    Exit, Grant, Hold, HoldAccrual, HoldCell, HoldCellState, KernelSeal, Meter, Origin, OriginKind,
-    Outcome, Pass, Posted, PostingFlags, PrincipalId, QuantitySource, ReasonCode, Refusal, Route,
-    SeatVerdict, SessionId, Sign, StepName, UnitEnd, UnitKey, Usage, UsageLine,
-    VerifiedDestination, Verify, WriteMoney,
+    Abort, AdminVerb, Admission, Admit, Admittance, Approve, Arrival, Audit, AuditFacts,
+    Authenticate, Authenticated, CallId, Canary, Consumption, Decode, Dial, DurabilityLost,
+    DurableWrite, Encode, Exit, Grant, Hold, HoldAccrual, HoldCell, HoldCellState, KernelSeal,
+    Meter, Origin, OriginKind, Outcome, Pass, Posted, PostingFlags, PrincipalId, QuantitySource,
+    ReasonCode, Refusal, Route, SeatVerdict, SessionId, Sign, StepName, UnitEnd, UnitKey, Usage,
+    UsageLine, VerifiedDestination, Verify, WriteMoney,
 };
 
 use crate::registry::Generation;
@@ -406,6 +406,12 @@ pub trait Units {
         refusal: &Refusal,
     ) -> SeatVerdict<Audit>;
 
+    /// The facts the audit door sealed, handed back to whoever drives the unit WITH the door's own
+    /// pass: the unit's record is sealed where its one line is written, after this door, and only
+    /// that pass can seal it — so a unit that never passed its audit step has no record to seal.
+    /// The default drops both.
+    fn audited(&self, _ctx: &UnitCtx, _facts: AuditFacts, _pass: Pass<Audit>) {}
+
     /// The bytes that leave.
     fn encode(&self, token: &Pass<Encode>, ctx: &UnitCtx, outcome: &Outcome)
         -> SeatVerdict<Encode>;
@@ -606,9 +612,10 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
             // from a decision at all, and the door is the last step it could have been raised at.
             let outcome =
                 Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
-            let _sealed = units
-                .audit_refused(&Pass::<Audit>::mint(seal), ctx, &refusal)
-                .into_result(seal);
+            let pass = Pass::<Audit>::mint(seal);
+            if let Ok(facts) = units.audit_refused(&pass, ctx, &refusal).into_result(seal) {
+                units.audited(ctx, facts, pass);
+            }
             let _bytes = units
                 .encode(&Pass::<Encode>::mint(seal), ctx, &outcome)
                 .into_result(seal);
@@ -852,9 +859,10 @@ pub fn open_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'
         Err(refusal) => {
             let outcome =
                 Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
-            let _sealed = units
-                .audit_refused(&Pass::<Audit>::mint(seal), ctx, &refusal)
-                .into_result(seal);
+            let pass = Pass::<Audit>::mint(seal);
+            if let Ok(facts) = units.audit_refused(&pass, ctx, &refusal).into_result(seal) {
+                units.audited(ctx, facts, pass);
+            }
             let _bytes = units
                 .encode(&Pass::<Encode>::mint(seal), ctx, &outcome)
                 .into_result(seal);
@@ -866,9 +874,10 @@ pub fn open_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'
         // step here to hand the sealed destinations to; they are discarded with the admission.
         Ok((_admission, _destinations)) => {
             let outcome = Outcome::Completed;
-            let _sealed = units
-                .audit(&Pass::<Audit>::mint(seal), ctx, &outcome)
-                .into_result(seal);
+            let pass = Pass::<Audit>::mint(seal);
+            if let Ok(facts) = units.audit(&pass, ctx, &outcome).into_result(seal) {
+                units.audited(ctx, facts, pass);
+            }
             let _bytes = units
                 .encode(&Pass::<Encode>::mint(seal), ctx, &outcome)
                 .into_result(seal);
@@ -1057,9 +1066,10 @@ fn terminal<U: Units>(
         },
         other => (outcome, other),
     };
-    let _sealed = units
-        .audit(&Pass::<Audit>::mint(seal), ctx, &outcome)
-        .into_result(seal);
+    let pass = Pass::<Audit>::mint(seal);
+    if let Ok(facts) = units.audit(&pass, ctx, &outcome).into_result(seal) {
+        units.audited(ctx, facts, pass);
+    }
     let _bytes = units
         .encode(&Pass::<Encode>::mint(seal), ctx, &outcome)
         .into_result(seal);
