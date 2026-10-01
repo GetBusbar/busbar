@@ -90,7 +90,12 @@ pub struct Dial {
     pub open_timeout: Duration,
     /// The first message, as envelope fields and a body; `None` sends nothing first.
     pub opening: Option<Opening>,
+    /// The first message's head words, method and target (`framer::encode_head`); empty = none.
+    pub head_words: HeadWords,
 }
+
+/// A message's head words, method and target; empty = none.
+pub type HeadWords = (Vec<u8>, Vec<u8>);
 
 impl std::fmt::Debug for Dial {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -125,6 +130,8 @@ pub struct Connection {
     inbox: VecDeque<Got>,
     /// The first message, sent once the framing begins.
     opening: Option<Opening>,
+    /// Its head words.
+    head_words: HeadWords,
     /// Writes the caller made before the framing began, in order.
     early: Vec<(Vec<u8>, bool)>,
     open_deadline: Option<Instant>,
@@ -266,6 +273,7 @@ impl Planned {
             out: VecDeque::new(),
             inbox: VecDeque::new(),
             opening: dial.opening,
+            head_words: dial.head_words,
             early: Vec::new(),
             open_deadline: Some(Instant::now() + dial.open_timeout),
             framer_deadline: None,
@@ -498,13 +506,15 @@ impl Connection {
         self.phase = Phase::Open;
         self.absorb(y)?;
         if let Some((fields, body)) = self.opening.take() {
-            if !fields.is_empty() || !body.is_empty() {
+            let (method, target) = std::mem::take(&mut self.head_words);
+            if !fields.is_empty() || !body.is_empty() || !method.is_empty() || !target.is_empty() {
                 let fields: Vec<(&str, &[u8])> = fields
                     .iter()
                     .map(|(n, v)| (n.as_str(), v.as_slice()))
                     .collect();
-                let message = framer::encode(self.door.as_ref(), &fields, &body)
-                    .map_err(|e| Failure::Refused(e.to_string()))?;
+                let message =
+                    framer::encode_head(self.door.as_ref(), &method, &target, &fields, &body)
+                        .map_err(|e| Failure::Refused(e.to_string()))?;
                 let framing = self.framing.as_mut().ok_or(Failure::Closed)?;
                 let y = framing
                     .emit(EXCHANGE_STREAM, &message, true)

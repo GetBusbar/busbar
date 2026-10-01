@@ -26,7 +26,7 @@ impl Conns for Echo {
             self.0.check_need(caller, need)?;
             return Err(ConnError::Refused);
         }
-        let mut first = desc.body.to_vec();
+        let mut first = [desc.method, desc.head_target, desc.body].concat();
         for (name, value) in desc.fields {
             first.extend_from_slice(name.as_bytes());
             first.extend_from_slice(value);
@@ -133,6 +133,7 @@ fn every_operation_crosses_the_lowering() {
                 fields: &[("k", b"v")],
                 body: b"hello",
                 timeout_ms: 5,
+                ..OpenDesc::default()
             },
         )
         .unwrap();
@@ -355,4 +356,76 @@ fn a_host_moved_after_minting_its_context_still_serves_the_table() {
     let piece = p.read(conn, 7, &mut buf).expect("the echo");
     assert_eq!(&buf[..piece.len], b"moved");
     drop(hosts);
+}
+
+/// RED: the opening message's head words cross the lowering as the plugin stated them (appended
+/// to `WireOpenDesc`), and none are stated by a descriptor without them.
+#[test]
+fn the_head_words_cross_the_lowering() {
+    let (_a, _b, pa, _) = two();
+    let conn = pa
+        .open(
+            NEED,
+            &OpenDesc {
+                target: "echo.test",
+                method: b"PATCH",
+                head_target: b"/v1/x?y=1",
+                ..OpenDesc::default()
+            },
+        )
+        .unwrap();
+    let mut buf = [0_u8; 64];
+    let piece = pa.read(conn, 0, &mut buf).unwrap();
+    assert_eq!(&buf[..piece.len], b"PATCH/v1/x?y=1");
+}
+
+/// RED: a descriptor whose size ends before the appended head words is read without them, never
+/// past its size; one shorter than that is a fault.
+#[test]
+fn a_descriptor_without_the_head_words_states_none() {
+    let echo = Echo::default();
+    echo.0.declare(InstanceId(1), NEED);
+    let host = Box::new(ConnHost::new(Arc::new(echo), InstanceId(1)));
+    let slots = host_slots();
+    let open = slots.open.unwrap();
+    let garbage = DeclStr {
+        ptr: b"POST".as_ptr(),
+        len: 4,
+    };
+    let mut d = WireOpenDesc {
+        size: OPEN_DESC_HEADLESS as u32,
+        _reserved: 0,
+        target: DeclStr {
+            ptr: b"echo.test".as_ptr(),
+            len: 9,
+        },
+        fields: std::ptr::null(),
+        fields_len: 0,
+        body: b"b".as_ptr(),
+        body_len: 1,
+        timeout_ms: 0,
+        method: garbage,
+        head_target: garbage,
+    };
+    let mut conn = 0_u64;
+    assert_eq!(open(host.ctx(), 0, &d, &mut conn).result(), Ok(()));
+    // SAFETY: the host's own table over the context `host` keeps alive.
+    let pa = unsafe { HostConns::new(slots, host.ctx()) };
+    let mut buf = [0_u8; 16];
+    let piece = pa.read(ConnId(conn), 0, &mut buf).unwrap();
+    assert_eq!(&buf[..piece.len], b"b", "no head word was read past the size");
+    d.size = OPEN_DESC_HEADLESS as u32 - 8;
+    assert_eq!(
+        open(host.ctx(), 0, &d, &mut conn).result(),
+        Err(ConnError::Fault)
+    );
+}
+
+/// The appended head words sit after every field a headless descriptor states, in order.
+#[test]
+fn the_open_descriptor_appends_its_head_words() {
+    assert_eq!(OPEN_DESC_HEADLESS, 64);
+    assert_eq!(core::mem::offset_of!(WireOpenDesc, method), 64);
+    assert_eq!(core::mem::offset_of!(WireOpenDesc, head_target), 80);
+    assert_eq!(core::mem::size_of::<WireOpenDesc>(), 96);
 }

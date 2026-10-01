@@ -902,7 +902,18 @@ fn compute_layout() -> String {
     record!(
         s,
         WireOpenDesc,
-        [size, _reserved, target, fields, fields_len, body, body_len, timeout_ms]
+        [
+            size,
+            _reserved,
+            target,
+            fields,
+            fields_len,
+            body,
+            body_len,
+            timeout_ms,
+            method,
+            head_target
+        ]
     );
     record!(
         s,

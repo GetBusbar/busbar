@@ -518,6 +518,23 @@ impl DeclaredConns for Connector {
         let declared = self.declared.lock().expect("declared needs");
         declared.get(&(owner, need)).map(|(_, answer)| *answer)
     }
+
+    /// A need is framed when the entry serving its transport composes over another claim (a framer
+    /// above a carrier, http's kind); an entry directly over the host's socket is a raw stream.
+    fn framed(&self, owner: InstanceId, need: NeedId) -> bool {
+        let Some(scheme) = self
+            .over
+            .lock()
+            .expect("needs")
+            .get(&(owner, need))
+            .map(|d| d.transport.clone())
+        else {
+            return false;
+        };
+        let view = self.transports.read().expect("transports");
+        view.serving(&scheme)
+            .is_some_and(|served| !served.entry.door.facts().composes_over.is_empty())
+    }
 }
 
 impl Conns for Connector {
@@ -528,7 +545,6 @@ impl Conns for Connector {
         desc: &OpenDesc<'_>,
     ) -> Result<ConnId, ConnError> {
         self.slab.check_need(caller, need)?;
-        endpoint::check(desc.target).map_err(|_| ConnError::Refused)?;
         let DeclaredNeed {
             transport: scheme,
             egress_class,
@@ -540,13 +556,20 @@ impl Conns for Connector {
             .get(&(caller, need))
             .cloned()
             .ok_or(NO_TRANSPORT_YET)?;
+        // No target named: the need's own, its config's (`EstablishIn.target` absent = the need's
+        // `target_from`).
+        let target = match (desc.target, declared_target.as_deref()) {
+            ("", Some(declared)) => declared,
+            (named, _) => named,
+        };
+        endpoint::check(target).map_err(|_| ConnError::Refused)?;
         let (door, alpn) = {
             let view = self.transports.read().expect("transports");
             let served = view.serving(&scheme).ok_or(NO_TRANSPORT_YET)?;
             (Arc::clone(&served.entry.door), served.entry.alpn.clone())
         };
         let dial = Dial {
-            target: desc.target.to_owned(),
+            target: target.to_owned(),
             tls: self.tls.clone(),
             alpn,
             open_timeout: if desc.timeout_ms == 0 {
@@ -561,6 +584,7 @@ impl Conns for Connector {
                     .collect(),
                 desc.body.to_vec(),
             )),
+            head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
         };
         let planned = Planned::locate(Arc::clone(&door), dial).map_err(|f| map(&f))?;
         // THE DECLARED TARGET (1.5.5's per-module target guarantee, on every need): a need whose

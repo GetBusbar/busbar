@@ -290,6 +290,7 @@ fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
                     ],
                     Vec::new(),
                 )),
+                head_words: Default::default(),
             },
         )
         .expect("the connector dials through the http door");
@@ -363,6 +364,7 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
                 alpn: Vec::new(),
                 open_timeout: std::time::Duration::from_secs(5),
                 opening: Some((Vec::new(), b"opening;".to_vec())),
+                head_words: Default::default(),
             },
         )
         .expect("the connector dials through the door");
@@ -585,4 +587,78 @@ async fn serve_once(
         s.write_all(&response).await.unwrap();
     });
     (far, seen_rx)
+}
+
+/// RED: A FRAMED REQUEST'S HEAD WORDS GO OUT THROUGH THE CONNECTION TABLE. An open whose
+/// descriptor states head words sends them as the opening message's own request line, byte for
+/// byte; an open that names no target dials the need's declared one. The table reports the
+/// composing door's need framed and the socket framer's raw.
+#[test]
+fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
+    use busbar_contract::conn::{Conns, DeclaredConns, InstanceId, NeedId, OpenDesc};
+    use busbar_core_connector::registry::{Entry, Transports};
+    use busbar_core_connector::{Connector, Judged};
+
+    let door = composing_door();
+    let scheme = door.facts().claims[0];
+    let plain = socket_framer_door().expect("a socket-framing door is built beside the test");
+    let raw = plain.facts().claims[0];
+    let judge = |dest: &str, _: u32, _: Judged| {
+        Some(dest.parse::<std::net::SocketAddr>().map_err(|_| 1_u64))
+    };
+    let c = Connector::serving(
+        Transports::new(vec![
+            Entry {
+                door,
+                alpn: Vec::new(),
+            },
+            Entry {
+                door: plain,
+                alpn: Vec::new(),
+            },
+        ])
+        .unwrap(),
+        std::sync::Arc::new(judge),
+        None,
+        std::sync::Arc::new(|_| {}),
+    );
+    let owner = InstanceId(1);
+    c.declare_over(owner, NeedId(1), raw);
+    assert!(!c.framed(owner, NeedId(1)), "the socket framer is a raw stream");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let (far, mut seen) =
+            serve_once(respond(scheme, "{V} 200 OK\r\ncontent-length: 0\r\n\r\n")).await;
+        let declared = format!("{scheme}://{far}");
+        c.declare_need_to(owner, NeedId(0), scheme, 0, &declared);
+        assert!(c.framed(owner, NeedId(0)), "the composing door is framed");
+        let fields: [(&str, &[u8]); 1] = [("x-a", b"1")];
+        let desc = OpenDesc {
+            fields: &fields,
+            method: b"PATCH",
+            head_target: b"/v1/x?y=1",
+            ..OpenDesc::default()
+        };
+        let id = c.open(owner, NeedId(0), &desc).expect("opens at the declared target");
+        let mut buf = [0_u8; 1024];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let request = loop {
+            assert!(std::time::Instant::now() < deadline, "the far end reads the request");
+            // Reading drives the connection: its opening message goes out.
+            match c.read(owner, id, 7, &mut buf) {
+                Err(ConnError::Pending) | Ok(_) => {}
+                Err(e) => panic!("the exchange failed: {e}"),
+            }
+            if let Ok(request) = seen.try_recv() {
+                break request;
+            }
+            tokio::task::yield_now().await;
+        };
+        assert!(request.starts_with("PATCH /v1/x?y=1 "), "{request}");
+        assert!(request.to_ascii_lowercase().contains("\r\nx-a: 1\r\n"), "{request}");
+        c.close(owner, id).unwrap();
+    });
 }

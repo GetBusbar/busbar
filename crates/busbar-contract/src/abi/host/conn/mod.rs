@@ -129,7 +129,50 @@ pub struct WireOpenDesc {
     pub body_len: usize,
     /// Milliseconds the open may take; `0` = the host's default.
     pub timeout_ms: u64,
+    /// [`OpenDesc::method`], appended: a descriptor whose `size` ends before it states none.
+    pub method: DeclStr,
+    /// [`OpenDesc::head_target`], appended: a descriptor whose `size` ends before it states none.
+    pub head_target: DeclStr,
 }
+
+/// A [`WireOpenDesc`] as a descriptor without the appended head words states it: read from a
+/// plugin whose `size` ends at [`OPEN_DESC_HEADLESS`], never past it.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Headless {
+    size: u32,
+    _reserved: u32,
+    target: DeclStr,
+    fields: *const WireField,
+    fields_len: usize,
+    body: *const u8,
+    body_len: usize,
+    timeout_ms: u64,
+}
+
+impl Headless {
+    const fn into_wire(self) -> WireOpenDesc {
+        WireOpenDesc {
+            size: self.size,
+            _reserved: self._reserved,
+            target: self.target,
+            fields: self.fields,
+            fields_len: self.fields_len,
+            body: self.body,
+            body_len: self.body_len,
+            timeout_ms: self.timeout_ms,
+            method: DeclStr::NONE,
+            head_target: DeclStr::NONE,
+        }
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<Headless>() == OPEN_DESC_HEADLESS);
+
+/// How much of a [`WireOpenDesc`] a sized descriptor must state: everything before the appended
+/// head words ([`WireOpenDesc::method`], [`WireOpenDesc::head_target`]), which a shorter one
+/// states as none.
+pub const OPEN_DESC_HEADLESS: usize = core::mem::offset_of!(WireOpenDesc, method);
 
 /// [`Piece`], written by the host into the caller's slot.
 #[repr(C)]
@@ -348,10 +391,15 @@ extern "C-unwind" fn host_open(
         // as it attests.
         unsafe {
             let size = core::ptr::read_unaligned(core::ptr::addr_of!((*desc).size)) as usize;
-            if size < core::mem::size_of::<WireOpenDesc>() {
+            if size < OPEN_DESC_HEADLESS {
                 return Err(ConnError::Fault);
             }
-            let d = core::ptr::read_unaligned(desc);
+            // The head words are read only where the descriptor's size states them.
+            let d = if size >= core::mem::size_of::<WireOpenDesc>() {
+                core::ptr::read_unaligned(desc)
+            } else {
+                core::ptr::read_unaligned(desc.cast::<Headless>()).into_wire()
+            };
             if d.fields.is_null() && d.fields_len != 0 {
                 return Err(ConnError::Fault);
             }
@@ -370,6 +418,8 @@ extern "C-unwind" fn host_open(
                     fields: &fields,
                     body: bytes(d.body, d.body_len)?,
                     timeout_ms: d.timeout_ms,
+                    method: bytes(d.method.ptr, d.method.len)?,
+                    head_target: bytes(d.head_target.ptr, d.head_target.len)?,
                 },
             )?;
             set(out_conn, conn.0)
@@ -594,6 +644,14 @@ impl HostConns {
             body: desc.body.as_ptr(),
             body_len: desc.body.len(),
             timeout_ms: desc.timeout_ms,
+            method: DeclStr {
+                ptr: desc.method.as_ptr(),
+                len: desc.method.len(),
+            },
+            head_target: DeclStr {
+                ptr: desc.head_target.as_ptr(),
+                len: desc.head_target.len(),
+            },
         };
         let mut conn = 0_u64;
         f(self.ctx, need.0, &wire, &mut conn).result()?;

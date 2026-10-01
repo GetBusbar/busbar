@@ -53,6 +53,7 @@ fn dial(target: &str) -> Dial {
         alpn: Vec::new(),
         open_timeout: Duration::from_secs(5),
         opening: None,
+        head_words: Default::default(),
     }
 }
 

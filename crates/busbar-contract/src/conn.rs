@@ -51,6 +51,13 @@ pub struct OpenDesc<'a> {
     pub body: &'a [u8],
     /// Milliseconds the open may take; `0` = the host's default.
     pub timeout_ms: u64,
+    /// The opening message's method, a head word (`RequestPiece::method`); empty = none. A framer
+    /// whose wire has head words takes it as the request's own, byte for byte; one without ignores
+    /// it.
+    pub method: &'a [u8],
+    /// The opening message's target, a head word (`RequestPiece::target`: the path and query, or
+    /// what the framer's protocol names a target); empty = none.
+    pub head_target: &'a [u8],
 }
 
 /// What a piece a connection delivered carries.
@@ -251,6 +258,15 @@ pub trait DeclaredConns: Conns {
 
     /// What [`DeclaredConns::declare`] answered for `owner`'s `need`; `None` = never declared.
     fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>>;
+
+    /// Whether `owner`'s `need` is carried over a FRAMED transport (a framer composed over a
+    /// carrier, http's kind): its request goes out as one opening message, head words, fields and
+    /// body, so the host opens it when the request is whole. A raw byte stream, or a need never
+    /// declared, is not.
+    fn framed(&self, owner: InstanceId, need: NeedId) -> bool {
+        let _ = (owner, need);
+        false
+    }
 }
 
 /// THE HOST-SIDE READER'S CONNECTION TABLE: [`Conns`] plus a read that wakes a [`Waker`] instead of
