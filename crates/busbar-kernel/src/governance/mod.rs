@@ -819,6 +819,36 @@ impl crate::trust::validate::GovResolve for LiveResolve<'_> {
     }
 }
 
+/// The principal's granting bindings in one module's `role_bindings` table, in role order (ALL of
+/// them, not just the first role that has a binding).
+pub(crate) fn granting_bindings<'a>(
+    principal: &crate::auth::Principal,
+    table: &'a std::collections::BTreeMap<String, crate::config::RoleBindingCfg>,
+) -> Vec<&'a crate::config::RoleBindingCfg> {
+    principal
+        .roles
+        .iter()
+        .filter_map(|role| table.get(role))
+        .collect()
+}
+
+/// The pool union across granting bindings. OMITTED `allowed_pools` on any granting binding widens
+/// the union to ALL pools (`None`, the runtime encoding too); otherwise the union is the
+/// de-duplicated concatenation of every binding's explicit list (an explicit `[]` contributes
+/// nothing, so an every-binding-`[]` union is `Some(vec![])`).
+pub(crate) fn pool_union(granting: &[&crate::config::RoleBindingCfg]) -> Option<Vec<String>> {
+    let mut pool_names: Vec<String> = Vec::new();
+    for b in granting {
+        let list = b.allowed_pools.as_deref()?;
+        for p in list {
+            if !pool_names.contains(p) {
+                pool_names.push(p.clone());
+            }
+        }
+    }
+    Some(pool_names)
+}
+
 fn synthesize_key(
     principal: &crate::auth::Principal,
     bindings: Option<&std::collections::BTreeMap<String, crate::config::RoleBindingCfg>>,
@@ -843,40 +873,15 @@ fn synthesize_key(
         );
         return None;
     }
-    let table = bindings?;
-    let granting: Vec<&crate::config::RoleBindingCfg> = principal
-        .roles
-        .iter()
-        .filter_map(|role| table.get(role))
-        .collect();
+    let granting = granting_bindings(principal, bindings?);
     if granting.is_empty() {
         return None;
     }
-    // Pool union semantics: OMITTED `allowed_pools` on any granting binding = ALL pools
-    // (`None` in the runtime encoding too); an explicit list contributes its entries; an explicit
-    // `[]` contributes nothing. An all-bindings-empty union = the EMPTY SET = no data-plane access
-    // (fail closed: no key at all - nothing to admit).
-    let mut pool_names: Vec<String> = Vec::new();
-    let mut all_pools = false;
-    for b in &granting {
-        match b.allowed_pools.as_deref() {
-            None => all_pools = true,
-            Some(list) => {
-                for p in list {
-                    if !pool_names.contains(p) {
-                        pool_names.push(p.clone());
-                    }
-                }
-            }
-        }
-    }
-    let allowed_pools = if all_pools {
-        None // any omitted grant widens the union to ALL pools
-    } else if pool_names.is_empty() {
-        // Every granting binding said `allowed_pools: []` - the empty set. No access.
-        return None;
-    } else {
-        Some(pool_names)
+    // An all-bindings-empty union = the EMPTY SET = no data-plane access (fail closed: no key at
+    // all - nothing to admit).
+    let allowed_pools = match pool_union(&granting) {
+        Some(list) if list.is_empty() => return None,
+        union => union,
     };
     // The bound group (first in role order). Group limits are enforced through the group chain;
     // the key itself carries NO inline caps (keys are pure auth).
