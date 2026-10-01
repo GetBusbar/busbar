@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **`kind: store`, BOTH WAYS, THROUGH THE ONE DISPATCHER** (TODO ABI-b4; THE DESIGN §11.4). The
+//! **`kind: store`, BOTH WAYS, THROUGH THE ONE DISPATCHER** (TODO ABI-b4). The
 //! build's store (its row reached by KIND, `both_ways::store_fixture`) loaded LINKED and DROPPED IN
 //! (`door_both_ways`), each opened as the host opens a store ([`LoadedStore`]), and driven over one
 //! get/put script: record writes and reads, an overwrite, a miss, a key written and read back, and

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE BOTH-WAYS HARNESS ON THE MEMORY ABI** (TODO ABI-b4; THE DESIGN §11.4: compiled in or
+//! **THE BOTH-WAYS HARNESS ON THE MEMORY ABI** (TODO ABI-b4: compiled in or
 //! dropped in, the same table). One door is loaded TWICE through the one dispatcher:
 //!
 //! * LINKED — the door function, compiled into this test build, through [`load_linked`];

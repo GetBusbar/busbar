@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **`kind: hook`, BOTH WAYS, THROUGH THE ONE DISPATCHER** (TODO ABI-b4; THE DESIGN §11.4, §11.7).
+//! **`kind: hook`, BOTH WAYS, THROUGH THE ONE DISPATCHER** (TODO ABI-b4).
 //! The hook kind's fixture (`hook_door_plugin`) loaded LINKED and DROPPED IN (`door_both_ways`) and
 //! driven over one script of the kind's table: `validate` and `open` over bad and good settings,
 //! `decide` over a request inside the gate (ABSTAIN) and one over it (REJECT with its status), an op

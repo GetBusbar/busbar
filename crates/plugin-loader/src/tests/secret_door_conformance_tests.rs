@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **`kind: secret`, BOTH WAYS, THROUGH THE ONE DISPATCHER** (TODO ABI-b4; THE DESIGN §11.4). The
+//! **`kind: secret`, BOTH WAYS, THROUGH THE ONE DISPATCHER** (TODO ABI-b4). The
 //! secret kind's fixture (`secret_door_plugin`) loaded LINKED and DROPPED IN (`door_both_ways`) and
 //! driven over one script of the kind's table: `validate` and `open` over bad and good settings,
 //! `resolve` of a known name (READY, its material under a lease), an unknown name (FAILED,
