@@ -936,22 +936,24 @@ fn file_media_type_from_name(name: Option<&str>) -> &'static str {
         .and_then(|n| n.rsplit_once('.'))
         .map(|(_, e)| e.to_ascii_lowercase())
         .unwrap_or_default();
-    match ext.as_str() {
-        "pdf" => "application/pdf",
-        "txt" => "text/plain",
-        "md" => "text/markdown",
-        "csv" => "text/csv",
-        "html" | "htm" => "text/html",
-        "json" => "application/json",
-        "xml" => "application/xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "wav" => "audio/wav",
-        "mp3" => "audio/mpeg",
-        _ => "application/octet-stream",
-    }
+    const CHAT_MEDIA_TYPES: &[(&str, &str)] = &[
+        ("htm", "text/html"),
+        ("json", "application/json"),
+        ("xml", "application/xml"),
+        ("jpg", "image/jpeg"),
+        ("jpeg", "image/jpeg"),
+        ("wav", "audio/wav"),
+        ("mp3", "audio/mpeg"),
+    ];
+    crate::codec::dialect::media_type(
+        &[
+            crate::codec::dialect::DOCUMENT_MEDIA_TYPES,
+            crate::codec::dialect::IMAGE_MEDIA_TYPES,
+            CHAT_MEDIA_TYPES,
+        ],
+        &ext,
+    )
+    .unwrap_or("application/octet-stream")
 }
 
 /// Read an OpenAI-format tool from JSON.

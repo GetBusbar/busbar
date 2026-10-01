@@ -699,12 +699,13 @@ fn bedrock_text_media_type(format: &str) -> String {
 /// Unknown tokens fall back to the kind's generic type rather than fabricating `application/<token>`,
 /// which would be a mime type that does not exist.
 fn bedrock_media_type_for_format(kind: crate::codec::ir::IrMediaKind, format: &str) -> String {
-    match format.to_ascii_lowercase().as_str() {
-        "pdf" => "application/pdf".to_string(),
-        "csv" => "text/csv".to_string(),
-        "txt" => "text/plain".to_string(),
-        "md" => "text/markdown".to_string(),
-        "html" => "text/html".to_string(),
+    let token = format.to_ascii_lowercase();
+    if let Some(m) =
+        crate::codec::dialect::media_type(&[crate::codec::dialect::DOCUMENT_MEDIA_TYPES], &token)
+    {
+        return m.to_string();
+    }
+    match token.as_str() {
         "doc" => "application/msword".to_string(),
         "docx" => {
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string()

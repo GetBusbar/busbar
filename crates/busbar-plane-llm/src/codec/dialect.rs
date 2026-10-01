@@ -50,6 +50,31 @@ pub const PROVIDER_SIGNAL_CONTEXT_LENGTH: &str = "context_length";
 /// name costs one entry, and so the writer's lookup cannot be thrown off by a `null` hole.
 pub const MESSAGE_NAMES_SENTINEL: &str = "__busbar_message_names";
 
+/// File extension → media type, the rows two or more dialects read alike. Each dialect lists which
+/// of these groups it recognises, beside its own rows: documents (OpenAI Chat, Bedrock) and images
+/// (OpenAI Chat, Gemini).
+pub const DOCUMENT_MEDIA_TYPES: &[(&str, &str)] = &[
+    ("pdf", "application/pdf"),
+    ("csv", "text/csv"),
+    ("txt", "text/plain"),
+    ("md", "text/markdown"),
+    ("html", "text/html"),
+];
+pub const IMAGE_MEDIA_TYPES: &[(&str, &str)] = &[
+    ("png", "image/png"),
+    ("gif", "image/gif"),
+    ("webp", "image/webp"),
+];
+
+/// The media type of extension `ext` (already lower-cased) in the first of `tables` that lists it.
+pub fn media_type(tables: &[&[(&'static str, &'static str)]], ext: &str) -> Option<&'static str> {
+    tables
+        .iter()
+        .flat_map(|t| t.iter())
+        .find(|(e, _)| *e == ext)
+        .map(|(_, m)| *m)
+}
+
 /// How a dialect's egress warn names a dropped control: the field the name rides under and the
 /// dialect's own message. Data per dialect; [`warn_dropped`] is the one walker.
 pub enum DropWarn {

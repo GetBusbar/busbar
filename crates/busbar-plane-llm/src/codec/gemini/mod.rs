@@ -807,14 +807,12 @@ fn gemini_image_mime_for_url(uri: &str) -> &'static str {
     // Compare only the path's extension, lowercased, ignoring any `?query`/`#fragment` suffix.
     let path = uri.split(['?', '#']).next().unwrap_or(uri);
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    match ext.as_str() {
-        "png" => "image/png",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "heic" => "image/heic",
-        "heif" => "image/heif",
-        _ => "image/jpeg",
-    }
+    const GEMINI_IMAGE_TYPES: &[(&str, &str)] = &[("heic", "image/heic"), ("heif", "image/heif")];
+    crate::codec::dialect::media_type(
+        &[crate::codec::dialect::IMAGE_MEDIA_TYPES, GEMINI_IMAGE_TYPES],
+        &ext,
+    )
+    .unwrap_or("image/jpeg")
 }
 
 /// Gemini's `thinkingConfig.thinkingLevel` (Gemini 3) → the IR effort ask (IR audit GEM-09). The
