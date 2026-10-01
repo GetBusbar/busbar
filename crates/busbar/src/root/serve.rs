@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-use busbar_contract::services::{HostServices, Later, Ran, Reading, Stored};
+use busbar_contract::services::{Caller, HostServices, Later, Ran, Reading, RecordsList, Stored};
 use busbar_kernel::config::RootCfg;
 use busbar_kernel::host_services::{DestRules, KernelServices, SystemResolver};
 use busbar_kernel::net_guard::{Denylist, GuardPolicy};
@@ -101,6 +101,14 @@ impl LateServices {
     pub fn is_installed(&self) -> bool {
         self.installed.get().is_some()
     }
+
+    /// The installed services, or the refusal every service answers before the install.
+    fn served(&self) -> Result<&dyn HostServices, Stored> {
+        self.installed
+            .get()
+            .map(|s| &**s)
+            .ok_or_else(|| Stored::refused(NOT_INSTALLED))
+    }
 }
 
 impl HostServices for LateServices {
@@ -113,10 +121,74 @@ impl HostServices for LateServices {
         }
     }
 
+    // Every other service is the installed services' answer, or REFUSED before the install.
     fn dest_judge(&self, dest: &str, class: u32, resolve: bool, later: Option<Later>) -> Ran {
-        match self.installed.get() {
-            Some(s) => s.dest_judge(dest, class, resolve, later),
-            None => Ran::Now(Stored::refused(NOT_INSTALLED)),
+        match self.served() {
+            Ok(s) => s.dest_judge(dest, class, resolve, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
+
+    fn records_get(&self, caller: &Caller, kind: &str, key: &[u8], later: Later) -> Ran {
+        match self.served() {
+            Ok(s) => s.records_get(caller, kind, key, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
+
+    fn records_list(&self, caller: &Caller, list: RecordsList, later: Later) -> Ran {
+        match self.served() {
+            Ok(s) => s.records_list(caller, list, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
+
+    fn records_claim(
+        &self,
+        caller: &Caller,
+        kind: &str,
+        key: &[u8],
+        ttl_ms: u64,
+        later: Later,
+    ) -> Ran {
+        match self.served() {
+            Ok(s) => s.records_claim(caller, kind, key, ttl_ms, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
+
+    fn sign(&self, caller: &Caller, data: &[u8]) -> Stored {
+        match self.served() {
+            Ok(s) => s.sign(caller, data),
+            Err(r) => r,
+        }
+    }
+
+    fn trust_sight(&self, caller: &Caller, counterparty: &str, hash: &str, later: Later) -> Ran {
+        match self.served() {
+            Ok(s) => s.trust_sight(caller, counterparty, hash, later),
+            Err(r) => Ran::Now(r),
+        }
+    }
+
+    fn trust_due(&self, caller: &Caller) -> Stored {
+        match self.served() {
+            Ok(s) => s.trust_due(caller),
+            Err(r) => r,
+        }
+    }
+
+    fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored {
+        match self.served() {
+            Ok(s) => s.entitlement_check(caller, unit, target),
+            Err(r) => r,
+        }
+    }
+
+    fn random_fill(&self, len: u64) -> Stored {
+        match self.served() {
+            Ok(s) => s.random_fill(len),
+            Err(r) => r,
         }
     }
 }

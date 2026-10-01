@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use busbar_contract::abi::host::service as svc;
+use busbar_contract::abi::mechanism::call::Outcome;
 
 use super::*;
 
@@ -20,6 +21,30 @@ impl HostServices for Judges {
     }
     fn dest_judge(&self, _: &str, _: u32, _: bool, _: Option<Later>) -> Ran {
         Ran::Now(Stored::ready(1))
+    }
+    fn records_get(&self, _: &Caller, _: &str, _: &[u8], _: Later) -> Ran {
+        Ran::Now(Stored::ready(2))
+    }
+    fn records_list(&self, _: &Caller, _: RecordsList, _: Later) -> Ran {
+        Ran::Now(Stored::ready(3))
+    }
+    fn records_claim(&self, _: &Caller, _: &str, _: &[u8], _: u64, _: Later) -> Ran {
+        Ran::Now(Stored::ready(4))
+    }
+    fn sign(&self, _: &Caller, _: &[u8]) -> Stored {
+        Stored::ready(5)
+    }
+    fn trust_sight(&self, _: &Caller, _: &str, _: &str, _: Later) -> Ran {
+        Ran::Now(Stored::ready(6))
+    }
+    fn trust_due(&self, _: &Caller) -> Stored {
+        Stored::ready(7)
+    }
+    fn entitlement_check(&self, _: &Caller, _: Option<u64>, _: &str) -> Stored {
+        Stored::ready(8)
+    }
+    fn random_fill(&self, _: u64) -> Stored {
+        Stored::ready(9)
     }
 }
 
@@ -56,6 +81,49 @@ fn the_installed_services_answer_and_a_second_install_is_refused() {
         "a second install is refused"
     );
     assert!(late.is_installed());
+}
+
+/// Every caller-scoped service's answer, in the order [`Judges`] numbers them.
+fn every_service(s: &LateServices) -> Vec<Stored> {
+    let caller = Caller {
+        instance: Arc::from("the-instance"),
+        plugin: Arc::from("the-plugin"),
+        kind: busbar_contract::abi::mechanism::KindCode::Plane,
+    };
+    let now = |ran| match ran {
+        Ran::Now(stored) => stored,
+        Ran::Later => panic!("the late services never pend"),
+    };
+    let list = RecordsList {
+        kind: "k".to_string(),
+        prefix: Vec::new(),
+        after: None,
+        limit: 0,
+    };
+    vec![
+        now(s.records_get(&caller, "k", b"key", Box::new(|_| {}))),
+        now(s.records_list(&caller, list, Box::new(|_| {}))),
+        now(s.records_claim(&caller, "k", b"key", 1, Box::new(|_| {}))),
+        s.sign(&caller, b"data"),
+        now(s.trust_sight(&caller, "peer", "hash", Box::new(|_| {}))),
+        s.trust_due(&caller),
+        s.entitlement_check(&caller, None, "model:m"),
+        s.random_fill(16),
+    ]
+}
+
+/// The late services are the installed services for every service the host table serves, not
+/// `clock.now` and `dest.judge` alone; before the install each answers REFUSED.
+#[test]
+fn every_service_is_the_installed_services_answer() {
+    let late = LateServices::new();
+    let before = every_service(&late);
+    assert!(before.iter().all(|s| *s == Stored::refused(NOT_INSTALLED)));
+    late.install(Arc::new(Judges)).expect("the install");
+    let after = every_service(&late);
+    assert!(after.iter().all(|s| s.outcome == Outcome::Ready));
+    let values: Vec<u64> = after.iter().map(|s| s.value).collect();
+    assert_eq!(values, (2..=9).collect::<Vec<u64>>());
 }
 
 fn kernel(blocked: &[&str], allow_all: bool) -> KernelServices {
