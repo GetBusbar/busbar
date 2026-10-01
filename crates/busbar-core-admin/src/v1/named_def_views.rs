@@ -12,8 +12,6 @@
 use super::service::settings_keys;
 use busbar_kernel::admin::v1::contract::NamedDefView;
 
-/// The key a definition names its backing plugin under.
-pub(super) const MODULE_KEY: &str = "module";
 /// The key a definition carries its opaque settings bag under.
 pub(super) const SETTINGS_KEY: &str = "settings";
 
@@ -80,7 +78,7 @@ pub(super) fn unparseable_def_view(
             name,
             entry
                 .raw
-                .get(MODULE_KEY)
+                .get("module")
                 .and_then(|m| m.as_str())
                 .unwrap_or_default()
                 .to_string(),

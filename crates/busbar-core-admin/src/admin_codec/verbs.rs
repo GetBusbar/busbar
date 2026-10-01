@@ -74,7 +74,10 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
     // dated rate-card-history design binds it at `POST /api/v1/admin/ledger/amend-rate-history` —
     // under the `/ledger/` prefix the five views share, because it is the one write among them — and
     // `full` + irreducible, because it corrects what the past cost.
-    post_row("/api/v1/admin/ledger/amend-rate-history", "amend_rate_history"),
+    post_row(
+        "/api/v1/admin/ledger/amend-rate-history",
+        "amend_rate_history",
+    ),
 ];
 
 /// The five 1.6.0 ledger views, mounted under one sub-prefix of the admin surface.
@@ -90,9 +93,15 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
 const LEDGER_VERBS_1_6_0: &[VerbEntry] = &[
     get_row("/api/v1/admin/ledger/totals", "get_ledger_totals"),
     get_row("/api/v1/admin/ledger/checkpoints", "get_ledger_checkpoints"),
-    get_row("/api/v1/admin/ledger/reconciliation", "get_ledger_reconciliation"),
+    get_row(
+        "/api/v1/admin/ledger/reconciliation",
+        "get_ledger_reconciliation",
+    ),
     get_row("/api/v1/admin/ledger/migration", "get_ledger_migration"),
-    get_row("/api/v1/admin/ledger/openapi.json", "get_ledger_openapi_json"),
+    get_row(
+        "/api/v1/admin/ledger/openapi.json",
+        "get_ledger_openapi_json",
+    ),
 ];
 
 /// THE THREE AUDIT-CHAIN READS, and their paths are not a judgment call either.

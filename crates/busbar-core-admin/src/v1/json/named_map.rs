@@ -60,17 +60,17 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::Extension;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch};
+use axum::Extension;
 use axum::Router;
 
 use super::{
     config_transaction, err_json, err_json_cond, if_match_version, respond, stale_if_match,
     with_config_etag, Outcome,
 };
-use crate::v1::named_def_views::{MODULE_KEY, SETTINGS_KEY};
+use crate::v1::named_def_views::SETTINGS_KEY;
 use busbar_kernel::admin::v1::contract::taxonomy::Cond;
 use busbar_kernel::admin::v1::contract::AdminError;
 use busbar_kernel::audit_ring as audit;
@@ -93,10 +93,7 @@ pub(crate) fn routes() -> Router<Arc<AppHandle>> {
                 )
                 .route(
                     &item_path(section),
-                    get(get_one)
-                        .put(put)
-                        .delete(delete)
-                        .fallback(wrong_method),
+                    get(get_one).put(put).delete(delete).fallback(wrong_method),
                 )
                 .route(
                     &settings_path(section),
@@ -746,7 +743,7 @@ fn validate_definition(
     // defect this handler's `validate_def` call exists to prevent. The value is read ONCE, out here,
     // because the converse check below needs it too: a non-plugin section must not merely tolerate
     // a `module:`, it must refuse one.
-    let module = obj.get(MODULE_KEY).and_then(|m| m.as_str()).unwrap_or("");
+    let module = obj.get("module").and_then(|m| m.as_str()).unwrap_or("");
     if section.requires_module() && module.trim().is_empty() {
         return Err(AdminError::Validation(format!(
             "a {} must name its backing plugin via a non-empty `module:`",
