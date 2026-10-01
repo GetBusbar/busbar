@@ -966,7 +966,10 @@ async fn a_context_length_refusal_excludes_only_admissible_smaller_windows() {
     assert!(far.send(&t, request()).await);
     assert!(far.next(&t).await.expect("a piece").fail_over);
     let w = far.lock();
-    assert!(w.ctx.is_excluded(DestinationId::new(1)), "the member that refused");
+    assert!(
+        w.ctx.is_excluded(DestinationId::new(1)),
+        "the member that refused"
+    );
     assert!(
         !w.ctx.is_excluded(DestinationId::new(2)),
         "a blocklisted member is not the exclusion's to record"
