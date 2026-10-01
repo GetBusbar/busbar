@@ -51,7 +51,8 @@ impl ProtocolWriter for GeminiWriter {
         if stream {
             // SSE streaming endpoint. `alt=sse` yields `data:`-framed chunks the gemini
             // reader's read_response_events already decodes.
-            format!("{GEMINI_PATH_BASE}/{model}:streamGenerateContent?alt=sse")
+            let (key, value) = super::STREAM_QUERY;
+            format!("{GEMINI_PATH_BASE}/{model}:streamGenerateContent?{key}={value}")
         } else {
             format!("{GEMINI_PATH_BASE}/{model}:generateContent")
         }

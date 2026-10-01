@@ -26,13 +26,19 @@
 //! as 1.5.5's `STATUS_ERR`. `FAILED` on `complete_login` is [`LOGIN_OUTAGE`]. Both exclude the
 //! short-buffer answer ([`IdentifyOut`]).
 //!
+//! `verify` ON THE SPOT. The host may call `verify` TICKET-LESS (`Ticket::NONE`, on its own
+//! thread, which cannot wait): a plugin that can judge the credential without waiting answers as it
+//! would on a ticket; one whose `verify` must wait on I/O answers `REFUSED` there, never `PENDING`
+//! (a ticket-less `PENDING` is FAULT), and the host submits the same `verify` on a ticket.
+//!
 //! DEADLINES ARE HOST-OWNED. No op carries a timeout of its own: the host stamps
 //! `InHead.deadline_ns`, bounds every read on a need's connection, and calls `cancel` at expiry.
 //!
 //! A slot for a capability the tail does not declare is never called. The plugin still fills it
 //! (a NULL slot refuses the load) and answers `REFUSED`.
 //!
-//! The one dispatcher calls this table (`busbar-plugin-loader`, `dispatch::kinds::auth`).
+//! The host side is `busbar_contract::auth_calls`: the kernel's identity chain calls `verify` through
+//! it, the loader dispatching it through the one dispatcher.
 
 use super::mechanism::call::{AbiStr, Op};
 use super::mechanism::door::KindTailHead;
@@ -165,6 +171,12 @@ pub const FACT_INBOUND_NEEDS_BODY_HASH: u32 = 2;
 /// kernel passes them all in [`VerifyIn::carrier`]. An inbound signature check needs it: the set of
 /// signed headers varies per request.
 pub const FACT_INBOUND_ALL_HEADERS: u32 = 4;
+
+/// THE CACHE-FLUSH COUNT's metric family name. An auth plugin that caches verdicts declares a
+/// counter family of this name (no labels) in its Statement, and on `refresh` adds to it the number
+/// of inbound cache entries it dropped. The host sums it across auth plugins into the admin cache
+/// flush's `{"flushed": N}` (1.5.5's count). A plugin that caches nothing declares nothing.
+pub const METRIC_CACHE_FLUSHED: &str = "busbar_auth_cache_flushed_total";
 
 /// [`AuthTail::login_kind`]: no login ([`CAP_LOGIN`] not declared).
 pub const LOGIN_KIND_NONE: u32 = 0;

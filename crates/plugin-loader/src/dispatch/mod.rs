@@ -26,6 +26,7 @@
 //! timeout outcome.
 
 pub mod answer;
+pub mod auth_outbound;
 pub mod kinds;
 pub mod load;
 pub mod log_file;

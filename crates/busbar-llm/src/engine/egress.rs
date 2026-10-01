@@ -332,17 +332,7 @@ pub(crate) fn egress_accept(egress_protocol: &str, wants_stream: bool) -> &'stat
 // `anthropic-version` is scoped to the native `anthropic` dialect only (Bedrock carries its version as
 // a BODY field, not a header, so it is deliberately absent). The table NEVER contains hop-by-hop,
 // `host`, or auth/credential headers — forwarding is strictly opt-in on this list.
-pub(crate) const FORWARDED_CLIENT_HEADERS: &[(&str, &[&str])] = &[
-    ("anthropic-beta", &[crate::proto_codec::PROTO_ANTHROPIC]),
-    ("anthropic-version", &[crate::proto_codec::PROTO_ANTHROPIC]),
-    (
-        "openai-beta",
-        &[
-            crate::proto_codec::PROTO_OPENAI,
-            crate::proto_codec::PROTO_RESPONSES,
-        ],
-    ),
-];
+pub(crate) use crate::engine::xchg::attempt::FORWARDED_CLIENT_HEADERS;
 
 /// The UNION of every forwardable client-header name — the set the neutral collector captures off the
 /// inbound request at ingress (before the egress dialect is known: routing/failover may pick a

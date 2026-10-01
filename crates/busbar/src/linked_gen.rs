@@ -373,6 +373,22 @@ pub(crate) fn linked_source(
     }
     out.push_str("};\n");
     out.push_str(&door_builds);
+    // THE CONNECTOR'S VIEW of the same door rows: each memory-ABI transport door's key and its
+    // `door`, which the root's one Connector opens as a framer entry (`crate::root::connector`).
+    out.push_str(
+        "/// Every linked memory-ABI transport door, by key, for the root's one Connector.\n\
+         #[allow(dead_code)]\n\
+         pub(crate) static LINKED_TRANSPORT_DOORS: &[(&str, busbar_contract::abi::mechanism::door::DoorFn)] = &[",
+    );
+    for (e, axes) in linked
+        .iter()
+        .filter(|(_, a)| a.iter().any(|x| x == TRANSPORT_AXIS))
+    {
+        if axes.iter().any(|x| x == DOOR_AXIS) {
+            out.push_str(&format!("({e}::KEY, {e}::door), "));
+        }
+    }
+    out.push_str("];\n");
     // Test builds only: each gauntlet row's declaration key beside the key its plane's gauntlet asks
     // the host-selection seam for (`<crate>::PLANE_KEY`), so the flip is proven to land where the
     // plane looks.

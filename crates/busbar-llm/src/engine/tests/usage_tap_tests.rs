@@ -257,6 +257,8 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
             }],
             ..Default::default()
         },
@@ -476,6 +478,8 @@ fn ledger_prices_an_aliased_lane_at_the_rate_card() {
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
             }],
             ..Default::default()
         },

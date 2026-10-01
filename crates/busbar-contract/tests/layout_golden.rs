@@ -1569,6 +1569,11 @@ fn compute_layout() -> String {
     );
     record!(
         s,
+        pkind::RefusalStatus,
+        [dialect, reason, status, _reserved]
+    );
+    record!(
+        s,
         pkind::PlaneTail,
         [
             head,
@@ -1609,10 +1614,16 @@ fn compute_layout() -> String {
             record_chains,
             record_chains_len,
             trust_keys,
-            trust_keys_len
+            trust_keys_len,
+            refusal_statuses,
+            refusal_statuses_len
         ]
     );
-    record!(s, pkind::Claim, [verb, target, carrier, flags, _reserved]);
+    record!(
+        s,
+        pkind::Claim,
+        [verb, target, carrier, flags, refusal_dialect, _pad]
+    );
     record!(s, pkind::AdminRoute, [verb, target, flags, _reserved]);
     record!(
         s,
@@ -1639,7 +1650,10 @@ fn compute_layout() -> String {
     record!(
         s,
         pkind::ArriveIn,
-        [head, unit, claim, _reserved, target, fields, fields_len, body, units_buf, units_cap]
+        [
+            head, unit, claim, _reserved, target, fields, fields_len, body, units_buf, units_cap,
+            method
+        ]
     );
     record!(
         s,
@@ -1651,6 +1665,8 @@ fn compute_layout() -> String {
             dialect,
             units_written,
             units_needed,
+            refusal,
+            refusal_status,
             _reserved
         ]
     );
@@ -1678,7 +1694,15 @@ fn compute_layout() -> String {
             arena_cap,
             member,
             attempt_no,
-            _reserved
+            _reserved,
+            pool,
+            caller_ref,
+            claim,
+            dialect,
+            head_fields,
+            head_fields_len,
+            passthrough,
+            _reserved_tail
         ]
     );
     record!(
@@ -1707,8 +1731,22 @@ fn compute_layout() -> String {
         s,
         pkind::RefusalIn,
         [
-            head, cause, status, dialect, _reserved, text, reply_buf, reply_cap, fields_buf,
-            fields_cap, arena_buf, arena_cap
+            head,
+            cause,
+            status,
+            dialect,
+            reason,
+            text,
+            reply_buf,
+            reply_cap,
+            fields_buf,
+            fields_cap,
+            arena_buf,
+            arena_cap,
+            unit,
+            plane_code,
+            retry_after_s,
+            target
         ]
     );
     record!(
@@ -1795,7 +1833,9 @@ fn compute_layout() -> String {
             auth,
             target_from,
             trust_from,
-            details
+            details,
+            keep_response_headers,
+            keep_response_headers_len
         ]
     );
     record!(s, hconn::EstablishIn, [head, need, _reserved, target]);

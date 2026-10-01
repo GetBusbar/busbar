@@ -320,6 +320,21 @@ pub struct LimitCfg {
     /// The scope a `downgrade` sends exhausted traffic to. Present iff `on_exhaust: downgrade`.
     /// Same wire treatment as `scope`: the YAML key stays `downgrade_to: <pool-name>`.
     pub downgrade_to: Option<ScopeRef>,
+    /// How a BUDGET limit admits (`BUSBAR-1.6.0.md` §7, #77(6)): `exact` (the default when
+    /// absent) refuses at admit only a budget already exhausted; `estimate` is one check at admit,
+    /// the plane's expected units priced at the highest price among the allowed destinations,
+    /// against what is left. Budget limits only. New in 1.6.0; a 1.5.5 config never carries it.
+    pub admission: Option<AdmissionMode>,
+    /// What a BUDGET limit does to a unit already in flight when it runs dry (`BUSBAR-1.6.0.md` §7, #77(7)):
+    /// `finish-unit` (the default when absent) finishes it; `cut-stream` cuts it, bills what
+    /// streamed, and tells the client in-stream. Budget limits only. New in 1.6.0.
+    ///
+    /// PRECEDENCE WITH `on_exhaust`: the two act at different moments and both may be set.
+    /// `on_exhaust` (`block` | `downgrade`) decides a unit that ARRIVES at an exhausted budget, at
+    /// admission; `on_exhaustion` decides a unit that is ALREADY RUNNING when the budget dries, at
+    /// its next checkpoint. A downgraded unit is governed mid-stream by the limits of the scope it
+    /// was downgraded into.
+    pub on_exhaustion: Option<ExhaustionMode>,
 }
 
 /// The budget-exhaustion behavior a limit may declare (see [`LimitCfg::on_exhaust`]).
@@ -330,6 +345,61 @@ pub enum OnExhaust {
     Block,
     /// Re-route the request through `downgrade_to` instead of refusing it.
     Downgrade,
+}
+
+/// A budget limit's admission mode (see [`LimitCfg::admission`]).
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionMode {
+    /// Refuse at admit only a budget already exhausted — the default.
+    #[default]
+    Exact,
+    /// One check at admit: the plane's expected units at the highest allowed price, against what
+    /// is left.
+    Estimate,
+}
+
+/// A budget limit's in-flight exhaustion mode (see [`LimitCfg::on_exhaustion`]).
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExhaustionMode {
+    /// Finish the unit in flight — the default. A non-streaming unit overshoots by at most one
+    /// request.
+    #[default]
+    FinishUnit,
+    /// Cut the unit at the checkpoint that dries the budget: the client is told in-stream, and one
+    /// Abort line bills what streamed (#62, #77(7)).
+    CutStream,
+}
+
+impl ExhaustionMode {
+    /// The mode a unit governed by `limits` runs under: any governing `cut-stream` cuts (the
+    /// strictest wins, as every other limit does); otherwise the unit finishes.
+    pub fn governing<'a>(limits: impl IntoIterator<Item = &'a LimitCfg>) -> Self {
+        if limits
+            .into_iter()
+            .any(|l| l.on_exhaustion == Some(ExhaustionMode::CutStream))
+        {
+            ExhaustionMode::CutStream
+        } else {
+            ExhaustionMode::FinishUnit
+        }
+    }
+}
+
+impl AdmissionMode {
+    /// The mode a unit governed by `limits` is admitted under: any governing `estimate` estimates;
+    /// otherwise the admission is exact.
+    pub fn governing<'a>(limits: impl IntoIterator<Item = &'a LimitCfg>) -> Self {
+        if limits
+            .into_iter()
+            .any(|l| l.admission == Some(AdmissionMode::Estimate))
+        {
+            AdmissionMode::Estimate
+        } else {
+            AdmissionMode::Exact
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for LimitCfg {
@@ -367,6 +437,8 @@ impl<'de> Deserialize<'de> for LimitCfg {
                 let mut pool: Option<String> = None;
                 let mut on_exhaust: Option<OnExhaust> = None;
                 let mut downgrade_to: Option<String> = None;
+                let mut admission: Option<AdmissionMode> = None;
+                let mut on_exhaustion: Option<ExhaustionMode> = None;
 
                 while let Some(key) = map.next_key::<String>()? {
                     let named = match key.as_str() {
@@ -404,6 +476,22 @@ impl<'de> Deserialize<'de> for LimitCfg {
                                 return Err(de::Error::duplicate_field("downgrade_to"));
                             }
                             downgrade_to = Some(map.next_value()?);
+                            None
+                        }
+                        // 1.6.0-additive (`BUSBAR-1.6.0.md` §7): parsed, and deliberately NOT named in the
+                        // frozen `expected one of` list below, as the `tokens_*` metrics are not.
+                        "admission" => {
+                            if admission.is_some() {
+                                return Err(de::Error::duplicate_field("admission"));
+                            }
+                            admission = Some(map.next_value()?);
+                            None
+                        }
+                        "on_exhaustion" => {
+                            if on_exhaustion.is_some() {
+                                return Err(de::Error::duplicate_field("on_exhaustion"));
+                            }
+                            on_exhaustion = Some(map.next_value()?);
                             None
                         }
                         other => {
@@ -476,6 +564,19 @@ impl<'de> Deserialize<'de> for LimitCfg {
                         metric.as_str()
                     )));
                 }
+                if metric != LimitMetric::Budget {
+                    for (key, set) in [
+                        ("admission", admission.is_some()),
+                        ("on_exhaustion", on_exhaustion.is_some()),
+                    ] {
+                        if set {
+                            return Err(de::Error::custom(format!(
+                                "`{key}` is a BUDGET behavior; a `{}` limit does not take it",
+                                metric.as_str()
+                            )));
+                        }
+                    }
+                }
                 if on_exhaust == Some(OnExhaust::Downgrade) && pool.is_none() {
                     return Err(de::Error::custom(
                         "`on_exhaust: downgrade` requires a `pool:` scope on the limit - a \
@@ -500,6 +601,8 @@ impl<'de> Deserialize<'de> for LimitCfg {
                         scope: None,
                         on_exhaust: None,
                         downgrade_to: None,
+                        admission: None,
+                        on_exhaustion: None,
                     }),
                     (_, None) => Err(de::Error::custom(format!(
                         "a `{}` limit requires a `per:` window \
@@ -513,6 +616,8 @@ impl<'de> Deserialize<'de> for LimitCfg {
                         scope: pool.map(ScopeRef::pool),
                         on_exhaust,
                         downgrade_to: downgrade_to.map(ScopeRef::pool),
+                        admission,
+                        on_exhaustion,
                     }),
                 }
             }
@@ -537,7 +642,9 @@ impl Serialize for LimitCfg {
             + usize::from(self.per.is_some())
             + usize::from(self.scope.is_some())
             + usize::from(self.on_exhaust.is_some())
-            + usize::from(self.downgrade_to.is_some());
+            + usize::from(self.downgrade_to.is_some())
+            + usize::from(self.admission.is_some())
+            + usize::from(self.on_exhaustion.is_some());
         let mut map = serializer.serialize_map(Some(len))?;
         map.serialize_entry(self.metric.as_str(), &self.amount)?;
         if let Some(window) = self.per {
@@ -554,6 +661,12 @@ impl Serialize for LimitCfg {
         }
         if let Some(to) = &self.downgrade_to {
             map.serialize_entry("downgrade_to", &to.value)?;
+        }
+        if let Some(admission) = self.admission {
+            map.serialize_entry("admission", &admission)?;
+        }
+        if let Some(on_exhaustion) = self.on_exhaustion {
+            map.serialize_entry("on_exhaustion", &on_exhaustion)?;
         }
         map.end()
     }

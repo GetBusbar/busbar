@@ -593,6 +593,30 @@ impl GovState {
         );
     }
 
+    /// ONE METERED REQUEST on `lane`'s metering row, keyed exactly as [`GovState::meter_classes`]
+    /// keys the same lane, so a unit's request and its classes never split across two rows: an
+    /// unqualified (pools) lane meters on `(lane, provider)` with the token split, and with no
+    /// serving provider it meters nothing (1.5.5 metered no response it could not attribute to a
+    /// serving lane); a plane-qualified lane `"<plane>\u{1f}<subject>"` meters on
+    /// `(subject, plane)` with no token split, its classes carried by the mirror.
+    pub fn record_lane_metering(
+        &self,
+        key_id: &str,
+        lane: &str,
+        provider: Option<&str>,
+        usage: Option<&crate::billing::TokenUsage>,
+        now: u64,
+    ) {
+        match split_plane_lane(lane) {
+            ("", _) => {
+                if let Some(provider) = provider {
+                    self.record_metering(key_id, lane, provider, usage, now);
+                }
+            }
+            (plane, subject) => self.record_metering(key_id, subject, plane, None, now),
+        }
+    }
+
     /// Accrue `units` under `model` to ONE bucket's current-window ledger cell (straddle-safe;
     /// see [`GovState::record_usage`]).
     fn accrue_bucket(
@@ -1715,6 +1739,48 @@ impl GovState {
         pool: &str,
         now: u64,
     ) -> Result<AdmitGrant, LimitBlocked> {
+        self.admit_checked(cost, key, pool, now, Some(0))
+    }
+
+    /// [`GovState::try_admit`] for a unit whose plane reported its EXPECTED units at decode
+    /// (the design's budget modes, `admission: estimate`):
+    ///
+    /// - ONE check at admit, inside the same check-then-charge: a budget bucket whose limit declared
+    ///   `admission: estimate` must also hold the estimate ([`CostModel::estimate_minor`] over
+    ///   `models`, the destinations verify allowed) on top of its spend and the one fee, BEFORE
+    ///   anything is charged — so a unit the estimate refuses charges nothing, no request slot and
+    ///   no fee, exactly like 1.5.5's budget refusal;
+    /// - no reservation is kept: the estimate is never stored, never held against a later
+    ///   admission and never billed; the route walk never looks at it;
+    /// - a miss is the budget block itself, so a limit that declared `on_exhaust: downgrade`
+    ///   downgrades, and the refusal renders exact's over-budget bytes;
+    /// - an `exact` bucket (the default) ignores the estimate: [`GovState::try_admit`] unchanged;
+    /// - an estimate the card cannot price (#42) blocks every estimate bucket, never downgraded.
+    ///
+    /// [`CostModel::estimate_minor`]: crate::cost::CostModel::estimate_minor
+    pub fn try_admit_estimated(
+        &self,
+        cost: &crate::cost::CostModel,
+        key: &VirtualKey,
+        pool: &str,
+        now: u64,
+        models: &[&str],
+        expected: &BTreeMap<String, u64>,
+    ) -> Result<AdmitGrant, LimitBlocked> {
+        self.admit_checked(cost, key, pool, now, cost.estimate_minor(models, expected))
+    }
+
+    /// The one check-then-charge behind [`GovState::try_admit`] and
+    /// [`GovState::try_admit_estimated`]; `estimate` is the minor-unit guess an `estimate` budget
+    /// bucket must also hold (`Some(0)` = none; `None` = unpriceable, fail closed).
+    fn admit_checked(
+        &self,
+        cost: &crate::cost::CostModel,
+        key: &VirtualKey,
+        pool: &str,
+        now: u64,
+        estimate: Option<i64>,
+    ) -> Result<AdmitGrant, LimitBlocked> {
         let (plane, pool) = split_plane_lane(pool);
         // FAIL-CLOSED: a key bound to a group this node's config does not know cannot be admitted
         // under the chain's caps, so it is not admitted at all.
@@ -1893,6 +1959,13 @@ impl GovState {
                 Ok(d) => (d, false),
                 Err(_) => (0, true),
             };
+            // `admission: estimate`: this bucket must also hold the unit's estimate; an
+            // estimate the card refused to price blocks it like a refused spend (never downgraded).
+            let (guess, refused) = match (bucket.budget_admission, estimate) {
+                (crate::config::groups::AdmissionMode::Exact, _) => (0, refused),
+                (crate::config::groups::AdmissionMode::Estimate, Some(e)) => (e, refused),
+                (crate::config::groups::AdmissionMode::Estimate, None) => (0, true),
+            };
             let blocked_metric = if bucket
                 .requests_cap
                 .is_some_and(|cap| requests.saturating_add(1) > cap)
@@ -1914,10 +1987,9 @@ impl GovState {
                 .is_some_and(|cap| t_cache_write >= cap)
             {
                 Some("tokens_cache_write")
-            } else if bucket
-                .budget_cap
-                .is_some_and(|cap| refused || derived >= cap || derived.saturating_add(fee) > cap)
-            {
+            } else if bucket.budget_cap.is_some_and(|cap| {
+                refused || derived >= cap || derived.saturating_add(fee).saturating_add(guess) > cap
+            }) {
                 Some("budget")
             } else {
                 None
@@ -1991,6 +2063,12 @@ impl GovState {
     /// OLDER than this request's window is a no-op: that is a window already left behind rather
     /// than one this request reached.
     /// Floored at 0 - a refund can never drive a counter negative.
+    ///
+    /// PER-PLANE FEES (#47): a `pool` qualified
+    /// `"<plane>\u{1f}<pool>"` is that plane's request, exactly as [`GovState::try_admit`] reads it:
+    /// the pool predicate reads the unqualified part, and what comes back is ONE [`PER_REQUEST`]
+    /// fee unit from that plane's own fee lane — never the flat fee base, which that request never
+    /// charged ([`GovState::refund_fee_unit`]).
     pub fn refund_request(
         &self,
         cost: &crate::cost::CostModel,
@@ -1998,20 +2076,47 @@ impl GovState {
         pool: &str,
         now: u64,
     ) {
+        self.refund_fee_unit(cost, key, pool, now, PER_REQUEST);
+    }
+
+    /// THE FEE REFUND PRIMITIVE (the design's money section: the budget refund is a separate act,
+    /// and a refund returns the bucket actually charged): give back one `fee_unit` charged at admission
+    /// across exactly the buckets that admission charged, in the cell its pinned `now` reached.
+    /// An unqualified `pool` (the pools plane) refunds the flat fee base, 1.5.5's arm, unchanged; a
+    /// plane-qualified one refunds one `fee_unit` count ([`PER_REQUEST`] or, for a session-account
+    /// owner, `PER_SESSION`) from that plane's fee lane, newest era first, as the flat base's
+    /// [`FeeEras::refund`] does. The admission's `requests` count is never touched. Floored at 0.
+    pub fn refund_fee_unit(
+        &self,
+        cost: &crate::cost::CostModel,
+        key: &VirtualKey,
+        pool: &str,
+        now: u64,
+        fee_unit: &str,
+    ) {
+        let (plane, pool) = split_plane_lane(pool);
+        let lane = (!plane.is_empty()).then(|| (plane_fee_lane(plane), fee_unit));
+        let lane = lane.as_ref().map(|(l, u)| (l.as_str(), *u));
         let Ok(chain) = cost.chain_for(key) else {
             // The charge failed closed on a missing group, so nothing was charged; refund only the
             // key bucket defensively (it floors at 0 on a no-op).
-            self.refund_bucket(&key.id, super::WINDOW_TOTAL, now);
+            self.refund_bucket(&key.id, super::WINDOW_TOTAL, now, lane);
             return;
         };
         // Refund EXACTLY the buckets the admission charged: the same pool predicate, so a
         // pool-scoped bucket another pool's request never charged is never eroded by its refund.
         for bucket in chain.iter().filter(|b| b.applies_to_pool(pool)) {
-            self.refund_bucket(bucket.bucket_id, bucket.window, now);
+            self.refund_bucket(bucket.bucket_id, bucket.window, now, lane);
         }
     }
 
-    fn refund_bucket(&self, bucket_id: &str, budget_period: &str, now: u64) {
+    fn refund_bucket(
+        &self,
+        bucket_id: &str,
+        budget_period: &str,
+        now: u64,
+        lane: Option<(&str, &str)>,
+    ) {
         let window = budget_window(budget_period, now);
         let mut map = self.budget.write(bucket_id);
         if let Some(cell) = map.get_mut(bucket_id) {
@@ -2025,8 +2130,31 @@ impl GovState {
                 // admission `requests` counter is NEVER refunded, so a failed request still
                 // consumed its requests-limit slot (a caller cannot escape the requests cap by
                 // hammering failures).
-                cell.billable_requests = cell.billable_requests.saturating_sub(1);
-                cell.fee_eras.refund();
+                match lane {
+                    None => {
+                        cell.billable_requests = cell.billable_requests.saturating_sub(1);
+                        cell.fee_eras.refund();
+                    }
+                    // A plane's fee unit: one count off its fee lane, from the newest era still
+                    // holding one (the charge accrued it there at admission).
+                    Some((lane, unit)) => {
+                        let held = cell
+                            .models
+                            .iter_mut()
+                            .filter(|m| {
+                                &*m.model == lane && m.cur.get(unit).is_some_and(|n| *n > 0)
+                            })
+                            .max_by_key(|m| m.era);
+                        if let Some(m) = held {
+                            if let Some(n) = m.cur.get_mut(unit) {
+                                *n -= 1;
+                                if *n == 0 {
+                                    m.cur.remove(unit);
+                                }
+                            }
+                        }
+                    }
+                }
                 cell.dirty = true;
             }
         }

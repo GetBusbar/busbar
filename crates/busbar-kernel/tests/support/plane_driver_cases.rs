@@ -20,11 +20,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::plane::{UnitCount, CANCEL_FAILED, CANCEL_OK_PARTIAL};
-use busbar_contract::caps::{Canary, Outcome, ReasonCode, StepName};
+use busbar_contract::abi::plane::{
+    reason_code, RefusalStatus, UnitCount, CANCEL_FAILED, CANCEL_OK_PARTIAL, REFUSAL_ANY_DIALECT,
+};
+use busbar_contract::caps::{Canary, Outcome, Pass, ReasonCode, Route, StepName};
 use busbar_kernel::plane_driver::{
     Arrival, BufferCaps, CallerEnd, CancelBill, Checkpoint, FarEnd, FarPiece, MoneySeam,
-    OutboundRequest, PlaneUnits,
+    OutboundRequest, Pick, PlaneUnits,
 };
 use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
 use busbar_kernel::teller::{
@@ -75,6 +77,9 @@ impl Far {
                 bytes: c.to_vec(),
                 status: (k == 0).then_some((200, 2)),
                 last: k + 1 == n,
+                fail_over: false,
+                fields: false,
+                head: Vec::new(),
             })
             .collect();
         Far {
@@ -90,20 +95,71 @@ impl Far {
     }
 }
 
+/// The pool the test walk picks every member from.
+const POOL: &str = "pool-a";
+
+/// The member whose far end answers 529, which the walk's status table fails over.
+const OVERLOADED: &str = "overloaded";
+
 impl FarEnd for Far {
-    fn member(&self, attempt_no: u32) -> Option<String> {
-        self.members
-            .get(attempt_no as usize - 1)
-            .map(|m| (*m).to_string())
+    fn member<'a>(
+        &'a self,
+        _: &'a Pass<Route>,
+        attempt_no: u32,
+    ) -> impl Future<Output = Pick> + Send + 'a {
+        let pick = match self.members.get(attempt_no as usize - 1) {
+            Some(m) => Pick::Member {
+                name: (*m).to_string(),
+                pool: POOL.to_string(),
+                passthrough: false,
+            },
+            None => Pick::Exhausted {
+                status: 503,
+                retry_after: Some(2),
+            },
+        };
+        async move { pick }
     }
 
-    fn send(&self, request: OutboundRequest) -> impl Future<Output = bool> + Send + '_ {
+    fn send<'a>(
+        &'a self,
+        _: &'a Pass<Route>,
+        request: OutboundRequest,
+    ) -> impl Future<Output = bool> + Send + 'a {
+        let script = if request.member == OVERLOADED {
+            vec![FarPiece {
+                bytes: b"overloaded".to_vec(),
+                status: Some((529, 5)),
+                last: true,
+                fail_over: true,
+                fields: false,
+                head: Vec::new(),
+            }]
+        } else if request.member.starts_with("trailers") {
+            // The body, then the far end's trailers after it.
+            let mut script = self.script.clone();
+            if let Some(last) = script.last_mut() {
+                last.last = false;
+            }
+            script.push(FarPiece {
+                bytes: b"far-status: 0".to_vec(),
+                last: true,
+                fields: true,
+                ..FarPiece::default()
+            });
+            script
+        } else {
+            self.script.clone()
+        };
         self.sent.lock().unwrap().push(request);
-        *self.current.lock().unwrap() = self.script.iter().cloned().collect();
+        *self.current.lock().unwrap() = script.into_iter().collect();
         async { true }
     }
 
-    fn next(&self) -> impl Future<Output = Option<FarPiece>> + Send + '_ {
+    fn next<'a>(
+        &'a self,
+        _: &'a Pass<Route>,
+    ) -> impl Future<Output = Option<FarPiece>> + Send + 'a {
         let piece = self.current.lock().unwrap().pop_front();
         async move {
             tokio::task::yield_now().await;
@@ -121,6 +177,8 @@ struct Caller {
     head: Mutex<Option<Head>>,
     bytes: Mutex<Vec<u8>>,
     writes: AtomicU64,
+    /// Writes that came as ONE text message.
+    texts: AtomicU64,
 }
 
 impl CallerEnd for Caller {
@@ -133,6 +191,11 @@ impl CallerEnd for Caller {
         self.bytes.lock().unwrap().extend_from_slice(bytes);
         self.writes.fetch_add(1, Ordering::SeqCst);
         true
+    }
+
+    async fn write_text(&self, bytes: &[u8]) -> bool {
+        self.texts.fetch_add(1, Ordering::SeqCst);
+        self.write(bytes).await
     }
 }
 
@@ -181,8 +244,13 @@ impl Book {
 }
 
 fn arrival(target: &str, body: &[u8]) -> Arrival {
+    arrival_by("POST", target, body)
+}
+
+fn arrival_by(method: &str, target: &str, body: &[u8]) -> Arrival {
     Arrival {
         claim: 0,
+        method: method.as_bytes().to_vec(),
         target: target.as_bytes().to_vec(),
         fields: vec![(b"content-type".to_vec(), b"text/plain".to_vec())],
         body: Arc::from(body),
@@ -541,10 +609,10 @@ async fn a_local_answer_ends_the_unit_without_the_far_end() {
     }
 }
 
-/// With no member and no local answer the unit has nowhere to go: it fails as unreachable, and the
-/// far end is never sent to.
+/// With no member and no local answer the unit has nowhere to go: the walk's exhaustion terminal
+/// ends it (its status and Retry-After, rendered by the plane), and the far end is never sent to.
 #[tokio::test]
-async fn with_no_member_a_far_bound_unit_is_unreachable() {
+async fn with_no_member_a_far_bound_unit_ends_at_the_walks_terminal() {
     for way in ways() {
         let r = rig(way, BufferCaps::default(), Book::default());
         let (steps, far, caller) = (
@@ -559,10 +627,13 @@ async fn with_no_member_a_far_bound_unit_is_unreachable() {
         assert!(
             matches!(
                 outcome,
-                Outcome::Failed(StepName::Route, ReasonCode::DestinationUnreachable)
+                Outcome::Refused(StepName::Route, ReasonCode::BreakerOpen)
+                    | Outcome::Failed(StepName::Route, ReasonCode::BreakerOpen)
             ),
             "{way:?}: {outcome:?}"
         );
+        let rendered = units.take_rendered().expect("the terminal is rendered");
+        assert_eq!(rendered.status, 503, "{way:?}");
         assert!(far.sent().is_empty(), "{way:?}");
     }
 }
@@ -589,6 +660,157 @@ async fn a_retry_verdict_before_the_first_byte_fails_over() {
         );
         assert_eq!(sent[1].fields, vec![(b"x-attempt".to_vec(), b"2".to_vec())]);
         assert_eq!(caller.text(), "hello far end");
+    }
+}
+
+/// An attempt names the pool the walk picked its member from: the far end is sent both.
+#[tokio::test]
+async fn an_attempt_carries_the_pool_the_walk_picked() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), Book::default());
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], CHUNKS),
+            Caller::default(),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival("/call", b"p"), 0);
+        assert!(matches!(drive(&units).await, Outcome::Completed));
+        let sent = far.sent();
+        assert_eq!(
+            (sent[0].member.as_str(), sent[0].pool.as_str()),
+            ("ok", POOL),
+            "{way:?}"
+        );
+    }
+}
+
+/// THE WALK'S OWN STATUS TABLE (step 24): a far-end status the breaker's `Disposition` fails over
+/// (529) moves to the next member before the first byte, and the plane never sees that piece.
+#[tokio::test]
+async fn the_walks_status_table_fails_over_before_the_plane_sees_the_piece() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), Book::default());
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&[OVERLOADED, "ok"], CHUNKS),
+            Caller::default(),
+        );
+        let before = r.stats()[stat::ON_PIECES];
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival("/call", b"p"), 0);
+        assert!(matches!(drive(&units).await, Outcome::Completed));
+        assert_eq!(
+            far.sent().len(),
+            2,
+            "{way:?}: failed over to the second member"
+        );
+        assert_eq!(
+            caller.text(),
+            "hello far end",
+            "{way:?}: no 529 byte reached the caller"
+        );
+        assert_eq!(caller.status(), Some(200));
+        assert_eq!(
+            r.stats()[stat::ON_PIECES] - before,
+            2 + 2 + 3,
+            "{way:?}: ATTEMPT + body twice, then the second far end's three pieces; never the 529"
+        );
+    }
+}
+
+/// The far end's trailers reach the plane, flagged as fields: a plane that reads them (mode
+/// `trailers`: it renders them in brackets) gets their bytes; a plane that does not (any other)
+/// ignores them. The kernel drops nothing.
+#[tokio::test]
+async fn trailers_reach_the_plane_which_decides() {
+    for way in ways() {
+        for (member, expect) in [
+            ("trailers", "hello far end[far-status: 0]"),
+            ("trailers-ignored", "hello far end"),
+        ] {
+            let r = rig(way, BufferCaps::default(), Book::default());
+            let (steps, far, caller) = (
+                TestUnits::passing(),
+                Far::new(&[member], CHUNKS),
+                Caller::default(),
+            );
+            let units = r
+                .driver
+                .unit(&steps, &far, &caller, arrival("/call", b"p"), 0);
+            assert!(
+                matches!(drive(&units).await, Outcome::Completed),
+                "{way:?} {member}"
+            );
+            assert_eq!(caller.text(), expect, "{way:?} {member}");
+        }
+    }
+}
+
+/// A plane's text message reaches the caller's side as text: the driver hands PIECE_OUT_TEXT on to
+/// the caller's writer; a plane that does not say so writes plain bytes.
+#[tokio::test]
+async fn a_text_message_reaches_the_caller_as_text() {
+    for way in ways() {
+        for (member, texts) in [("text", true), ("ok", false)] {
+            let r = rig(way, BufferCaps::default(), Book::default());
+            let (steps, far, caller) = (
+                TestUnits::passing(),
+                Far::new(&[member], CHUNKS),
+                Caller::default(),
+            );
+            let units = r
+                .driver
+                .unit(&steps, &far, &caller, arrival("/call", b"p"), 0);
+            assert!(
+                matches!(drive(&units).await, Outcome::Completed),
+                "{way:?} {member}"
+            );
+            let (t, w) = (
+                caller.texts.load(Ordering::SeqCst),
+                caller.writes.load(Ordering::SeqCst),
+            );
+            assert!(w > 0, "{way:?} {member}");
+            assert_eq!(
+                t == w,
+                texts,
+                "{way:?} {member}: {t} of {w} writes were text"
+            );
+        }
+    }
+}
+
+/// The walk's exhaustion terminal: no member left answers its status and its Retry-After floor.
+#[tokio::test]
+async fn exhaustion_answers_the_walks_status_and_retry_after() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), Book::default());
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&[OVERLOADED], CHUNKS),
+            Caller::default(),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival("/call", b"p"), 0);
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(
+                outcome,
+                Outcome::Refused(StepName::Route, ReasonCode::BreakerOpen)
+                    | Outcome::Failed(StepName::Route, ReasonCode::BreakerOpen)
+            ),
+            "{way:?}: {outcome:?}"
+        );
+        let rendered = units.take_rendered().expect("the terminal is rendered");
+        assert_eq!(rendered.status, 503, "{way:?}");
+        assert_eq!(
+            rendered.body, b"refused:503:breaker_open:retry=2",
+            "{way:?}: the plane renders the walk's status and Retry-After"
+        );
+        assert_eq!(caller.text(), "", "{way:?}: nothing had streamed");
     }
 }
 
@@ -640,6 +862,169 @@ async fn a_short_arrive_is_recalled_once_with_what_it_needs() {
         assert_eq!(
             units.decoded().map(|d| d.expected.len()),
             Some(2),
+            "{way:?}"
+        );
+    }
+}
+
+/// The statuses the test plane's tail states: `revoked` is 403 in its one dialect (index 0) and
+/// 451 in any other; `scope_denied` is 404 in every dialect. The kernel's defaults are 401 and 403.
+pub fn statuses() -> Vec<RefusalStatus> {
+    let row = |dialect, reason, status| RefusalStatus {
+        dialect,
+        reason: reason_code(reason),
+        status,
+        _reserved: 0,
+    };
+    vec![
+        row(0, ReasonCode::Revoked, 403),
+        row(REFUSAL_ANY_DIALECT, ReasonCode::Revoked, 451),
+        row(REFUSAL_ANY_DIALECT, ReasonCode::ScopeDenied, 404),
+    ]
+}
+
+/// RED: a refusal wears the plane's status for its dialect, else the plane's status for every
+/// dialect, else the kernel's default; and the plane is told the reason beside the status.
+#[tokio::test]
+async fn a_refusal_wears_the_status_the_plane_states_for_its_dialect() {
+    for way in ways() {
+        for (step, reason, body) in [
+            (
+                StepName::Authenticate,
+                ReasonCode::Revoked,
+                "refused:403:revoked",
+            ),
+            (
+                StepName::Approve,
+                ReasonCode::ScopeDenied,
+                "refused:404:scope_denied",
+            ),
+            (
+                StepName::Admit,
+                ReasonCode::OverBudget,
+                "refused:429:over_budget",
+            ),
+        ] {
+            let r = rig(way, BufferCaps::default(), Book::default());
+            let (steps, far, caller) = (
+                TestUnits::refusing(step, reason),
+                Far::new(&["ok"], CHUNKS),
+                Caller::default(),
+            );
+            let units = r
+                .driver
+                .unit(&steps, &far, &caller, arrival("/call", b"x"), 0);
+            let outcome = drive(&units).await;
+            assert!(
+                matches!(outcome, Outcome::Refused(s, r) if s == step && r == reason),
+                "{way:?}: {outcome:?}"
+            );
+            let rendered = units.take_rendered().expect("the refusal is rendered");
+            assert_eq!(
+                String::from_utf8_lossy(&rendered.body),
+                body,
+                "{way:?} {reason:?}"
+            );
+        }
+    }
+}
+
+/// RED: a refusal the plane's own `arrive` decided wears the 4xx the plane stated, and the plane
+/// is told its own code and the unit when it renders it.
+#[tokio::test]
+async fn a_refused_arrival_wears_the_planes_status_and_code() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), Book::default());
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], CHUNKS),
+            Caller::default(),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival("/refuse", b"x"), 0);
+        let outcome = drive(&units).await;
+        assert!(
+            matches!(
+                outcome,
+                Outcome::Refused(StepName::Decode, ReasonCode::DecodeFailed)
+            ),
+            "{way:?}: {outcome:?}"
+        );
+        assert!(far.sent().is_empty());
+        let rendered = units.take_rendered().expect("the refusal is rendered");
+        assert_eq!(rendered.status, 404, "{way:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&rendered.body),
+            "refused:404:decode_failed:7@7",
+            "{way:?}"
+        );
+    }
+}
+
+/// RED: the method crosses at arrive, and a plane that takes only POST on a path declines another
+/// method with its own 405.
+#[tokio::test]
+async fn the_method_crosses_at_arrive() {
+    for way in ways() {
+        for (method, refused) in [("POST", false), ("GET", true)] {
+            let r = rig(way, BufferCaps::default(), Book::default());
+            let (steps, far, caller) = (
+                TestUnits::passing(),
+                Far::new(&["ok"], CHUNKS),
+                Caller::default(),
+            );
+            let units = r.driver.unit(
+                &steps,
+                &far,
+                &caller,
+                arrival_by(method, "/post-only", b"x"),
+                0,
+            );
+            let outcome = drive(&units).await;
+            if refused {
+                assert!(
+                    matches!(
+                        outcome,
+                        Outcome::Refused(StepName::Decode, ReasonCode::DecodeFailed)
+                    ),
+                    "{way:?}: {outcome:?}"
+                );
+                let rendered = units.take_rendered().expect("the refusal is rendered");
+                assert_eq!(rendered.status, 405, "{way:?}");
+                assert_eq!(
+                    String::from_utf8_lossy(&rendered.body),
+                    "refused:405:decode_failed:9@7"
+                );
+            } else {
+                assert!(
+                    !matches!(outcome, Outcome::Refused(StepName::Decode, _)),
+                    "{way:?}: {outcome:?}"
+                );
+            }
+        }
+    }
+}
+
+/// RED: the request target crosses beside a refusal, so a plane can choose its envelope for a
+/// refusal the kernel raised before or without its `arrive` having decided one.
+#[tokio::test]
+async fn a_refusal_carries_the_request_target() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), Book::default());
+        let (steps, far, caller) = (
+            TestUnits::refusing(StepName::Authenticate, ReasonCode::Unauthenticated),
+            Far::new(&["ok"], CHUNKS),
+            Caller::default(),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival("/target-echo", b"x"), 0);
+        let _ = drive(&units).await;
+        let rendered = units.take_rendered().expect("the refusal is rendered");
+        assert_eq!(
+            String::from_utf8_lossy(&rendered.body),
+            "refused:401:unauthenticated for /target-echo",
             "{way:?}"
         );
     }
@@ -933,9 +1318,10 @@ fn open_unit_drives_the_same_steps() {
                 "{way:?} {target}"
             );
             if want == SessionOpen::Refused {
+                // The plane's own decode refusal: its status, its code and the unit.
                 assert_eq!(
                     units.take_rendered().unwrap().body,
-                    b"refused:400:decode_failed"
+                    b"refused:404:decode_failed:7@9"
                 );
             }
         }

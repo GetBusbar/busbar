@@ -97,6 +97,7 @@
 //! | `served_op_classes` | tail [`PlaneTail::op_classes`]; [`ArriveOut::op_class`] indexes it |
 //! | `record_kinds` | tail [`PlaneTail::record_kinds`]; [`RecordWrite::kind`] indexes it |
 //! | (new) chained record framing | tail [`PlaneTail::record_chains`] |
+//! | (new) refusal statuses per dialect and reason | tail [`PlaneTail::refusal_statuses`]; [`RefusalIn::reason`] |
 //! | `dispatch_flags` / `DISPATCH_BLOCKS` | DROPPED — a plane never blocks (the design's plugin-ABI section: no blocking on the hot path). Replaced by [`PlaneTail::dispatch_shape`] |
 //! | `required_sections` | tail: [`SECTION_REQUIRED`] on a [`PlaneTail::sections`] entry |
 //! | `BuildCtx.host`, `host_ctx` | [`crate::abi::mechanism::lifecycle::OpenIn::host`] |
@@ -149,6 +150,7 @@ use super::mechanism::lifecycle::{
     slot as life, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, RefreshIn,
     ReleaseIn, TickIn, TickOut, ValidateIn, LIFECYCLE_SLOTS,
 };
+use crate::caps::ReasonCode;
 
 /// The plane kind's ABI version: new in 1.6.0 (v1.5.5 had no plane ABI), so it ships `1`.
 pub const ABI_VERSION: u32 = 1;
@@ -311,11 +313,20 @@ pub const PIECE_END_OF_FRAME: u32 = 1;
 pub const PIECE_LAST: u32 = 1 << 1;
 /// [`OnPieceIn::flags`]: `status_code`/`status_class` are set.
 pub const PIECE_HAS_STATUS: u32 = 1 << 2;
+/// [`OnPieceIn::flags`], [`FROM_FAR_END`]: the bytes are a head of the far end's fields that
+/// follows its body (trailers), as the transport rendered them. The plane decides: one whose far
+/// end reports its outcome there (a trailer status) reads it, any other ignores the piece. The
+/// kernel never drops or reads it.
+pub const PIECE_FIELDS: u32 = 1 << 3;
 
 /// [`OnPieceOut::flags`]: the emitted bytes go to the far end (else to the caller).
 pub const EMIT_TO_FAR_END: u32 = 1;
 /// [`OnPieceOut::flags`]: the unit's reply is complete.
 pub const EMIT_DONE: u32 = 1 << 1;
+/// [`OnPieceOut::flags`]: the bytes this answer emits are ONE text message (a carrier with text and
+/// binary messages sends them as text). Only on an answer that emits at least one byte and
+/// completes its message (`more == 0`).
+pub const PIECE_OUT_TEXT: u32 = 1 << 2;
 
 /// [`OnPieceOut::verdict`]: no verdict; the walk's status table alone decides.
 pub const VERDICT_NONE: u32 = 0;
@@ -350,6 +361,278 @@ pub const CHAIN_LENGTH_PREFIXED: u32 = 1;
 pub const CHAIN_PIPE_SEPARATED: u32 = 2;
 /// [`RecordChain::flags`]: the record's scope enters its digest.
 pub const CHAIN_DIGESTS_SCOPE: u32 = 1;
+
+/// [`RefusalStatus::dialect`]: the row holds for every dialect the plane has no row of its own for.
+pub const REFUSAL_ANY_DIALECT: u32 = u32::MAX;
+
+/// THE WIRE REFUSAL CODES: a refusal reason as it crosses the plane ABI ([`RefusalStatus::reason`],
+/// [`RefusalIn::reason`]). Every number is written out and the table is APPEND-ONLY: a code never
+/// changes meaning, and a reason the kernel's vocabulary gains takes the next number here. The
+/// kernel's vocabulary maps to and from it ([`reason_code`], [`reason_of`]; both matches are
+/// exhaustive, so a new reason cannot be left off). This crate's tests pin every code to its word.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RefusalCode {
+    /// `InFlightCap`.
+    InFlightCap = 0,
+    /// `CursorBudget`.
+    CursorBudget = 1,
+    /// `CredentialBudget`.
+    CredentialBudget = 2,
+    /// `SessionBudget`.
+    SessionBudget = 3,
+    /// `SpillBudget`.
+    SpillBudget = 4,
+    /// `ScratchExhausted`.
+    ScratchExhausted = 5,
+    /// `RateLimited`.
+    RateLimited = 6,
+    /// `BodyTooLarge`.
+    BodyTooLarge = 7,
+    /// `OpenSlotBusy`.
+    OpenSlotBusy = 8,
+    /// `DecodeFailed`.
+    DecodeFailed = 9,
+    /// `SchemeNotDeclared`.
+    SchemeNotDeclared = 10,
+    /// `SessionUnbound`.
+    SessionUnbound = 11,
+    /// `Unauthenticated`.
+    Unauthenticated = 12,
+    /// `ChallengeExhausted`.
+    ChallengeExhausted = 13,
+    /// `Revoked`.
+    Revoked = 14,
+    /// `ScopeDenied`.
+    ScopeDenied = 15,
+    /// `PoolNotPermitted`.
+    PoolNotPermitted = 16,
+    /// `NoRate`.
+    NoRate = 17,
+    /// `HookVeto`.
+    HookVeto = 18,
+    /// `NoDestination`.
+    NoDestination = 19,
+    /// `OverBudget`.
+    OverBudget = 20,
+    /// `GroupFrozen`.
+    GroupFrozen = 21,
+    /// `Unpriced`.
+    Unpriced = 22,
+    /// `OverdraftCeiling`.
+    OverdraftCeiling = 23,
+    /// `StaleSlice`.
+    StaleSlice = 24,
+    /// `DurabilityUnavailable`.
+    DurabilityUnavailable = 25,
+    /// `TierMismatch`.
+    TierMismatch = 26,
+    /// `Replayed`.
+    Replayed = 27,
+    /// `InFlight`.
+    InFlight = 28,
+    /// `DestinationBudgetExhausted`.
+    DestinationBudgetExhausted = 29,
+    /// `BreakerOpen`.
+    BreakerOpen = 30,
+    /// `DestinationUnreachable`.
+    DestinationUnreachable = 31,
+    /// `MeterDisputed`.
+    MeterDisputed = 32,
+    /// `HandoffMismatch`.
+    HandoffMismatch = 33,
+    /// `PlanePanic`.
+    PlanePanic = 34,
+    /// `TaskLost`.
+    TaskLost = 35,
+    /// `Stalled`.
+    Stalled = 36,
+    /// `SecretPlaceholder`.
+    SecretPlaceholder = 37,
+    /// `Drain`.
+    Drain = 38,
+    /// `Superseded`.
+    Superseded = 39,
+    /// `ClientGone`.
+    ClientGone = 40,
+    /// `DeadlineExceeded`.
+    DeadlineExceeded = 41,
+}
+
+impl RefusalCode {
+    /// Every code, in number order.
+    pub const ALL: &'static [RefusalCode] = &[
+        RefusalCode::InFlightCap,
+        RefusalCode::CursorBudget,
+        RefusalCode::CredentialBudget,
+        RefusalCode::SessionBudget,
+        RefusalCode::SpillBudget,
+        RefusalCode::ScratchExhausted,
+        RefusalCode::RateLimited,
+        RefusalCode::BodyTooLarge,
+        RefusalCode::OpenSlotBusy,
+        RefusalCode::DecodeFailed,
+        RefusalCode::SchemeNotDeclared,
+        RefusalCode::SessionUnbound,
+        RefusalCode::Unauthenticated,
+        RefusalCode::ChallengeExhausted,
+        RefusalCode::Revoked,
+        RefusalCode::ScopeDenied,
+        RefusalCode::PoolNotPermitted,
+        RefusalCode::NoRate,
+        RefusalCode::HookVeto,
+        RefusalCode::NoDestination,
+        RefusalCode::OverBudget,
+        RefusalCode::GroupFrozen,
+        RefusalCode::Unpriced,
+        RefusalCode::OverdraftCeiling,
+        RefusalCode::StaleSlice,
+        RefusalCode::DurabilityUnavailable,
+        RefusalCode::TierMismatch,
+        RefusalCode::Replayed,
+        RefusalCode::InFlight,
+        RefusalCode::DestinationBudgetExhausted,
+        RefusalCode::BreakerOpen,
+        RefusalCode::DestinationUnreachable,
+        RefusalCode::MeterDisputed,
+        RefusalCode::HandoffMismatch,
+        RefusalCode::PlanePanic,
+        RefusalCode::TaskLost,
+        RefusalCode::Stalled,
+        RefusalCode::SecretPlaceholder,
+        RefusalCode::Drain,
+        RefusalCode::Superseded,
+        RefusalCode::ClientGone,
+        RefusalCode::DeadlineExceeded,
+    ];
+
+    /// The number on the wire.
+    #[must_use]
+    pub const fn code(self) -> u32 {
+        self as u32
+    }
+
+    /// The code `code` names; `None` for a number the table does not hold.
+    #[must_use]
+    pub const fn of(code: u32) -> Option<RefusalCode> {
+        let all = Self::ALL;
+        let mut i = 0;
+        while i < all.len() {
+            if all[i] as u32 == code {
+                return Some(all[i]);
+            }
+            i += 1;
+        }
+        None
+    }
+}
+
+/// A kernel refusal reason's wire code.
+#[must_use]
+pub const fn reason_code(reason: ReasonCode) -> u32 {
+    wire_code(reason).code()
+}
+
+/// A kernel refusal reason's wire code, as the code.
+#[must_use]
+pub const fn wire_code(reason: ReasonCode) -> RefusalCode {
+    match reason {
+        ReasonCode::InFlightCap => RefusalCode::InFlightCap,
+        ReasonCode::CursorBudget => RefusalCode::CursorBudget,
+        ReasonCode::CredentialBudget => RefusalCode::CredentialBudget,
+        ReasonCode::SessionBudget => RefusalCode::SessionBudget,
+        ReasonCode::SpillBudget => RefusalCode::SpillBudget,
+        ReasonCode::ScratchExhausted => RefusalCode::ScratchExhausted,
+        ReasonCode::RateLimited => RefusalCode::RateLimited,
+        ReasonCode::BodyTooLarge => RefusalCode::BodyTooLarge,
+        ReasonCode::OpenSlotBusy => RefusalCode::OpenSlotBusy,
+        ReasonCode::DecodeFailed => RefusalCode::DecodeFailed,
+        ReasonCode::SchemeNotDeclared => RefusalCode::SchemeNotDeclared,
+        ReasonCode::SessionUnbound => RefusalCode::SessionUnbound,
+        ReasonCode::Unauthenticated => RefusalCode::Unauthenticated,
+        ReasonCode::ChallengeExhausted => RefusalCode::ChallengeExhausted,
+        ReasonCode::Revoked => RefusalCode::Revoked,
+        ReasonCode::ScopeDenied => RefusalCode::ScopeDenied,
+        ReasonCode::PoolNotPermitted => RefusalCode::PoolNotPermitted,
+        ReasonCode::NoRate => RefusalCode::NoRate,
+        ReasonCode::HookVeto => RefusalCode::HookVeto,
+        ReasonCode::NoDestination => RefusalCode::NoDestination,
+        ReasonCode::OverBudget => RefusalCode::OverBudget,
+        ReasonCode::GroupFrozen => RefusalCode::GroupFrozen,
+        ReasonCode::Unpriced => RefusalCode::Unpriced,
+        ReasonCode::OverdraftCeiling => RefusalCode::OverdraftCeiling,
+        ReasonCode::StaleSlice => RefusalCode::StaleSlice,
+        ReasonCode::DurabilityUnavailable => RefusalCode::DurabilityUnavailable,
+        ReasonCode::TierMismatch => RefusalCode::TierMismatch,
+        ReasonCode::Replayed => RefusalCode::Replayed,
+        ReasonCode::InFlight => RefusalCode::InFlight,
+        ReasonCode::DestinationBudgetExhausted => RefusalCode::DestinationBudgetExhausted,
+        ReasonCode::BreakerOpen => RefusalCode::BreakerOpen,
+        ReasonCode::DestinationUnreachable => RefusalCode::DestinationUnreachable,
+        ReasonCode::MeterDisputed => RefusalCode::MeterDisputed,
+        ReasonCode::HandoffMismatch => RefusalCode::HandoffMismatch,
+        ReasonCode::PlanePanic => RefusalCode::PlanePanic,
+        ReasonCode::TaskLost => RefusalCode::TaskLost,
+        ReasonCode::Stalled => RefusalCode::Stalled,
+        ReasonCode::SecretPlaceholder => RefusalCode::SecretPlaceholder,
+        ReasonCode::Drain => RefusalCode::Drain,
+        ReasonCode::Superseded => RefusalCode::Superseded,
+        ReasonCode::ClientGone => RefusalCode::ClientGone,
+        ReasonCode::DeadlineExceeded => RefusalCode::DeadlineExceeded,
+    }
+}
+
+/// The kernel refusal reason a wire code names; `None` for a number the table does not hold.
+#[must_use]
+pub const fn reason_of(code: u32) -> Option<ReasonCode> {
+    let Some(c) = RefusalCode::of(code) else {
+        return None;
+    };
+    Some(match c {
+        RefusalCode::InFlightCap => ReasonCode::InFlightCap,
+        RefusalCode::CursorBudget => ReasonCode::CursorBudget,
+        RefusalCode::CredentialBudget => ReasonCode::CredentialBudget,
+        RefusalCode::SessionBudget => ReasonCode::SessionBudget,
+        RefusalCode::SpillBudget => ReasonCode::SpillBudget,
+        RefusalCode::ScratchExhausted => ReasonCode::ScratchExhausted,
+        RefusalCode::RateLimited => ReasonCode::RateLimited,
+        RefusalCode::BodyTooLarge => ReasonCode::BodyTooLarge,
+        RefusalCode::OpenSlotBusy => ReasonCode::OpenSlotBusy,
+        RefusalCode::DecodeFailed => ReasonCode::DecodeFailed,
+        RefusalCode::SchemeNotDeclared => ReasonCode::SchemeNotDeclared,
+        RefusalCode::SessionUnbound => ReasonCode::SessionUnbound,
+        RefusalCode::Unauthenticated => ReasonCode::Unauthenticated,
+        RefusalCode::ChallengeExhausted => ReasonCode::ChallengeExhausted,
+        RefusalCode::Revoked => ReasonCode::Revoked,
+        RefusalCode::ScopeDenied => ReasonCode::ScopeDenied,
+        RefusalCode::PoolNotPermitted => ReasonCode::PoolNotPermitted,
+        RefusalCode::NoRate => ReasonCode::NoRate,
+        RefusalCode::HookVeto => ReasonCode::HookVeto,
+        RefusalCode::NoDestination => ReasonCode::NoDestination,
+        RefusalCode::OverBudget => ReasonCode::OverBudget,
+        RefusalCode::GroupFrozen => ReasonCode::GroupFrozen,
+        RefusalCode::Unpriced => ReasonCode::Unpriced,
+        RefusalCode::OverdraftCeiling => ReasonCode::OverdraftCeiling,
+        RefusalCode::StaleSlice => ReasonCode::StaleSlice,
+        RefusalCode::DurabilityUnavailable => ReasonCode::DurabilityUnavailable,
+        RefusalCode::TierMismatch => ReasonCode::TierMismatch,
+        RefusalCode::Replayed => ReasonCode::Replayed,
+        RefusalCode::InFlight => ReasonCode::InFlight,
+        RefusalCode::DestinationBudgetExhausted => ReasonCode::DestinationBudgetExhausted,
+        RefusalCode::BreakerOpen => ReasonCode::BreakerOpen,
+        RefusalCode::DestinationUnreachable => ReasonCode::DestinationUnreachable,
+        RefusalCode::MeterDisputed => ReasonCode::MeterDisputed,
+        RefusalCode::HandoffMismatch => ReasonCode::HandoffMismatch,
+        RefusalCode::PlanePanic => ReasonCode::PlanePanic,
+        RefusalCode::TaskLost => ReasonCode::TaskLost,
+        RefusalCode::Stalled => ReasonCode::Stalled,
+        RefusalCode::SecretPlaceholder => ReasonCode::SecretPlaceholder,
+        RefusalCode::Drain => ReasonCode::Drain,
+        RefusalCode::Superseded => ReasonCode::Superseded,
+        RefusalCode::ClientGone => ReasonCode::ClientGone,
+        RefusalCode::DeadlineExceeded => ReasonCode::DeadlineExceeded,
+    })
+}
 
 // ── the Statement tail ───────────────────────────────────────────────────────────────────────────
 
@@ -455,6 +738,24 @@ pub struct PinMechanism {
     pub _reserved: u32,
 }
 
+/// The status one refusal reason wears in one dialect (or in every dialect, with
+/// [`REFUSAL_ANY_DIALECT`]). The kernel chooses a refusal's status from the plane's rows: the row
+/// for the unit's dialect, else the [`REFUSAL_ANY_DIALECT`] row, else its own default. A protocol
+/// whose dialects answer the same condition with different statuses states each here, so the
+/// status a client reads is the dialect's own.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefusalStatus {
+    /// Index into [`PlaneTail::dialects`], or [`REFUSAL_ANY_DIALECT`].
+    pub dialect: u32,
+    /// The reason's code ([`reason_code`]).
+    pub reason: u32,
+    /// The status number, 400 to 599.
+    pub status: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
+}
+
 /// One per-registration key of the plane's declaring section that the KERNEL parses for the trust
 /// lifecycle. At most one key per role.
 #[repr(C)]
@@ -556,6 +857,11 @@ pub struct PlaneTail {
     pub trust_keys: *const TrustKey,
     /// How many.
     pub trust_keys_len: usize,
+    /// The statuses its refusals wear where they are not the kernel's defaults; at most one entry
+    /// per `(dialect, reason)`.
+    pub refusal_statuses: *const RefusalStatus,
+    /// How many.
+    pub refusal_statuses_len: usize,
 }
 
 // ── the generation snapshot ──────────────────────────────────────────────────────────────────────
@@ -573,8 +879,13 @@ pub struct Claim {
     pub carrier: AbiStr,
     /// [`CLAIM_OPEN`] | [`CLAIM_EXACT`]; any other bit refuses the snapshot.
     pub flags: u32,
+    /// The dialect a refusal on this route wears before `arrive` has read the arrival: an index
+    /// into [`PlaneTail::dialects`], opaque to the kernel, which carries it from the matched route
+    /// into [`RefusalIn::dialect`] (the kernel authenticates and sizes a request before the plane
+    /// reads it, and picks no dialect of its own). `0` for a plane with no dialects.
+    pub refusal_dialect: u16,
     /// Alignment padding.
-    pub _reserved: u32,
+    pub _pad: u16,
 }
 
 /// One admin route the built plane serves through [`slot::SERVE`].
@@ -650,6 +961,69 @@ pub struct PlaneRefreshOut {
 
 // ── per-call shapes ──────────────────────────────────────────────────────────────────────────────
 
+/// A HOST-OWNED LIST OF [`Field`]s a host lends a plane (`OnPieceIn::head_fields`): the names and
+/// values it owns and the field array pointing into them, built once and moved as one value. The
+/// pointers point only into this list's own heap bytes, which never move while it lives, so it
+/// may cross threads with the op that lends it.
+#[derive(Debug, Default)]
+pub struct FieldList {
+    /// The names and values, kept only to own the bytes `fields` points into.
+    _owned: Vec<(Vec<u8>, Vec<u8>)>,
+    fields: Vec<Field>,
+}
+
+// SAFETY: every pointer in `fields` points into `_owned`'s own heap allocations, owned here and
+// never mutated or moved (a Vec's heap does not move when the Vec does) while the list lives.
+unsafe impl Send for FieldList {}
+// SAFETY: as above; the list is read-only once built.
+unsafe impl Sync for FieldList {}
+
+impl FieldList {
+    /// The list of `pairs` (name, value), in order.
+    #[must_use]
+    pub fn new(pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Self {
+        let fields = pairs
+            .iter()
+            .map(|(n, v)| Field {
+                name: AbiStr {
+                    ptr: n.as_ptr(),
+                    len: n.len(),
+                },
+                value: AbiStr {
+                    ptr: v.as_ptr(),
+                    len: v.len(),
+                },
+            })
+            .collect();
+        FieldList {
+            _owned: pairs,
+            fields,
+        }
+    }
+
+    /// The field array, NULL when empty.
+    #[must_use]
+    pub fn as_ptr(&self) -> *const Field {
+        if self.fields.is_empty() {
+            core::ptr::null()
+        } else {
+            self.fields.as_ptr()
+        }
+    }
+
+    /// How many fields.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.fields.len()
+    }
+
+    /// Whether there are none.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.fields.is_empty()
+    }
+}
+
 /// One head field the plugin writes, its bytes in the call's `arena`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -718,6 +1092,9 @@ pub struct ArriveIn {
     pub units_buf: *mut UnitCount,
     /// Its capacity.
     pub units_cap: usize,
+    /// The request method, as the caller sent it. The plane decides which methods its paths
+    /// accept; one it does not is a refused arrive, with the plane's own status and bytes.
+    pub method: AbiStr,
 }
 
 /// `arrive`'s `out`.
@@ -736,6 +1113,13 @@ pub struct ArriveOut {
     pub units_written: u32,
     /// Short answer: the units `units_buf` needs.
     pub units_needed: u32,
+    /// On REFUSED: the plane's own code for why, opaque to the kernel and echoed to `refusal` as
+    /// [`RefusalIn::plane_code`], so the plane renders what its `arrive` decided. Nonzero on
+    /// REFUSED, `0` on every other outcome.
+    pub refusal: u32,
+    /// On REFUSED: the status the refusal wears, 400 to 499: an arrive refusal is the caller's
+    /// fault by definition. `0` on every other outcome.
+    pub refusal_status: u32,
     /// Alignment padding.
     pub _reserved: u32,
 }
@@ -787,6 +1171,29 @@ pub struct OnPieceIn {
     pub attempt_no: u32,
     /// Alignment padding.
     pub _reserved: u32,
+    /// On an ATTEMPT piece: the operator's name for the pool the kernel picked `member` from (a
+    /// member may shape its request differently in each pool it serves); absent otherwise.
+    pub pool: AbiStr,
+    /// On every piece of a unit: the caller's opaque, stable, non-reversible per-principal
+    /// reference (lower-case hex), never the principal itself; absent when the node keeps no
+    /// signing material to derive it from.
+    pub caller_ref: AbiStr,
+    /// On every piece of a unit: the snapshot claim the unit arrived on (`ArriveIn::claim`).
+    pub claim: u32,
+    /// On every piece of a unit: the dialect `arrive` answered (`ArriveOut::dialect`).
+    pub dialect: u32,
+    /// With [`FROM_FAR_END`] on the answer's first piece: the far end's response head fields the
+    /// plane's need keeps (`Need::keep_response_headers`), in the far end's order, names lower-case;
+    /// no other response field ever crosses. NULL with `0` otherwise.
+    pub head_fields: *const Field,
+    /// How many.
+    pub head_fields_len: usize,
+    /// From the unit's first attempt on, on every piece: `1` when the attempt's member relays the
+    /// caller's own credential to the far end (the operator configured its upstream credentials as
+    /// passthrough), `0` otherwise and before any attempt.
+    pub passthrough: u32,
+    /// Alignment padding.
+    pub _reserved_tail: u32,
 }
 
 /// `on_piece`'s `out`.
@@ -842,9 +1249,11 @@ pub struct RefusalIn {
     pub status: u32,
     /// Index into [`PlaneTail::dialects`].
     pub dialect: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-    /// The refusal text; never secret material.
+    /// The refusal reason's code ([`reason_code`]): with the status and the dialect, what the
+    /// plane renders. Two reasons may share a status and still read differently to a client.
+    pub reason: u32,
+    /// The refusal text: the kernel's own message for the refusal (for a limit, it names the
+    /// bucket that blocked); never secret material.
     pub text: AbiStr,
     /// HOST buffer for the rendered body.
     pub reply_buf: *mut u8,
@@ -858,6 +1267,16 @@ pub struct RefusalIn {
     pub arena_buf: *mut u8,
     /// Its capacity.
     pub arena_cap: usize,
+    /// The unit the refusal ends, as the kernel minted it; `0` when no unit had arrived.
+    pub unit: u64,
+    /// The plane's own code from a REFUSED `arrive` ([`ArriveOut::refusal`]); `0` otherwise.
+    pub plane_code: u32,
+    /// The seconds the caller is told to wait before retrying; `0` = no such advice.
+    pub retry_after_s: u32,
+    /// The request target, as the caller sent it. A refusal can precede `arrive` (the kernel
+    /// authenticates first): the plane then chooses its envelope from the target by its own rule;
+    /// the kernel never picks a dialect.
+    pub target: AbiStr,
 }
 
 /// `refusal`'s `out`.

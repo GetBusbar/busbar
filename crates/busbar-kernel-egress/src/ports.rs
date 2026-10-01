@@ -222,6 +222,22 @@ pub trait Breaker: Send + Sync {
         token: &Pass<Route>,
     ) -> bool;
 
+    /// A non-success answer judged and recorded: [`Self::classify`], then [`Self::observe`] of the
+    /// outcome it names on `pool`'s cell. Returns the classification and whether the record was a
+    /// fresh trip. The walk's attempt and the plane driver's far end both judge an answer here.
+    fn judge(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        status: UpstreamStatus,
+        now: u64,
+        token: &Pass<Route>,
+    ) -> (Classified, bool) {
+        let classified = self.classify(destination, status);
+        let tripped = self.observe(pool, destination, classified.outcome, now, token);
+        (classified, tripped)
+    }
+
     /// Release a probe that was won but never dispatched. Owner-checked against the epoch that was
     /// captured at the win, so a late release cannot revert a newer probe.
     fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, now: u64);

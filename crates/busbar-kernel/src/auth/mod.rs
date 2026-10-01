@@ -204,7 +204,10 @@ pub struct AdminAuthChain {
     pub operator: Operator,
 }
 
-pub use busbar_kernel_identity::operator::{Operator, OperatorCredential};
+pub use busbar_kernel_identity::{
+    caller_ref::CallerRefKey,
+    operator::{Operator, OperatorCredential},
+};
 
 /// Open the operator credential from `registry`: the row answering
 /// [`crate::config::operator_provider`], over the operator token's SHA-256 hex `digest` (the

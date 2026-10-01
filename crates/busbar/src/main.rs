@@ -813,6 +813,17 @@ async fn run(data_workers: usize) {
     // The rows are the linked wires and the ones dropped into `plugins.dir`, folded in one pass; the
     // sealed registry names the wire under the data door when that wire came in dropped in.
     let boot = root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));
+    // THE PROCESS'S ONE CONNECTOR, right after the transport registry sealed: every linked
+    // transport door as a framer entry, every dial judged by the kernel's one judge. Inbound
+    // listening and outbound egress both take it from `root::connector::the()`.
+    let _connector = root::connector::boot(
+        LINKED_TRANSPORT_DOORS,
+        root::connector::services(
+            &cfg.blocked_metadata_hosts,
+            &cfg.allow_metadata_hosts,
+            cfg.allow_all_metadata,
+        ),
+    );
     let door = boot.dropped_door();
     // THE ROOT UNITS' CONFIGURATION STEP, in the same slot: the card repricer is installed BEFORE the
     // first app build below, so the boot's own rate resolution is the history's OPENING ENTRY and

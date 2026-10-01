@@ -327,6 +327,11 @@ pub(crate) fn is_lifecycle(s: u32) -> bool {
 }
 
 impl Instance {
+    /// [`Kind::context`] of the bound kind, as `T`.
+    pub(crate) fn context<T: 'static>(&self) -> Option<&T> {
+        self.context.as_deref().and_then(|c| c.downcast_ref::<T>())
+    }
+
     pub(crate) fn name(&self) -> &str {
         &self.name
     }

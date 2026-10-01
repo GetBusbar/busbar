@@ -28,6 +28,8 @@
 
 mod cancel;
 mod epoch;
+mod far_end;
+mod money;
 mod route;
 
 use std::sync::{Arc, Mutex};
@@ -37,7 +39,8 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    ArriveIn, ArriveOut, OutField, RefusalIn, RefusalOut, UnitCount, REFUSAL_GATE, REFUSAL_KERNEL,
+    reason_code, ArriveIn, ArriveOut, OutField, RefusalIn, RefusalOut, RefusalStatus, UnitCount,
+    REFUSAL_ANY_DIALECT, REFUSAL_GATE, REFUSAL_KERNEL,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{
@@ -50,8 +53,13 @@ use tokio::sync::watch;
 
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
 pub use epoch::FlushEpoch;
-pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest};
+pub use far_end::{
+    AuthBinding, Egress, EgressFarEnd, MemberRoute, UnitRoute, DEFAULT_ERROR_BODY_MAX,
+};
+pub use money::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
+pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick};
 
+use crate::auth::CallerRefKey;
 use crate::slice::GroupLeaseSlip;
 use crate::teller::{Ended, Evidence, RouteAwait, RouteLeg, UnitCtx, Units};
 
@@ -100,8 +108,31 @@ pub struct DriverConfig {
     pub caps: BufferCaps,
     /// The plane's operation classes, in its tail's order: `arrive`'s `op_class` indexes them.
     pub op_classes: Vec<OpClassId>,
-    /// The status number the kernel chooses for a refusal the plane renders.
+    /// The status number the kernel chooses for a refusal the plane renders, where the plane
+    /// states none of its own.
     pub status_of: fn(ReasonCode) -> u32,
+    /// The statuses the plane's tail states per dialect and reason (validated at load).
+    pub refusal_statuses: Vec<RefusalStatus>,
+    /// The key the caller's opaque reference is derived under (the node's signing material);
+    /// `None` = the node keeps none, and no reference is lent.
+    pub caller_refs: Option<Arc<CallerRefKey>>,
+}
+
+impl DriverConfig {
+    /// The status a refusal for `reason` wears in `dialect`: the plane's row for that dialect,
+    /// else its row for every dialect, else [`DriverConfig::status_of`].
+    pub fn status(&self, dialect: u32, reason: ReasonCode) -> u32 {
+        let code = reason_code(reason);
+        let row = |d: u32| {
+            self.refusal_statuses
+                .iter()
+                .find(|r| r.dialect == d && r.reason == code)
+                .map(|r| r.status)
+        };
+        row(dialect)
+            .or_else(|| row(REFUSAL_ANY_DIALECT))
+            .unwrap_or_else(|| (self.status_of)(reason))
+    }
 }
 
 /// The status the kernel hands `refusal` for a reason, when the deployment states no other.
@@ -196,6 +227,8 @@ pub type HeadFields = Vec<(Vec<u8>, Vec<u8>)>;
 pub struct Arrival {
     /// Index into the plane's snapshot claims.
     pub claim: u32,
+    /// The request method.
+    pub method: Vec<u8>,
     /// The request target.
     pub target: Vec<u8>,
     /// The head fields.
@@ -230,10 +263,16 @@ pub struct Rendered {
 
 #[derive(Debug, Default)]
 pub(crate) struct UnitState {
+    /// The unit's kernel-minted key, once decode has run.
+    unit: u64,
     decoded: Option<Decoded>,
+    /// A REFUSED `arrive`'s own code and 4xx status.
+    declined: Option<(u32, u32)>,
     rendered: Option<Rendered>,
     facts: cancel::Facts,
     bill: Option<CancelBill>,
+    /// The caller's opaque reference, derived at verify (never the principal itself).
+    caller_ref: Vec<u8>,
 }
 
 /// ONE UNIT OF A PLANE, as the loop drives it.
@@ -321,6 +360,7 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             body: blob(&a.body),
             units_buf: units.as_mut_ptr(),
             units_cap: units.len(),
+            method: AbiStr::over(&a.method),
             ..blank_in()
         };
         let mut o: ArriveOut = blank_out();
@@ -332,6 +372,10 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
                 i.units_buf = units.as_mut_ptr();
                 i.units_cap = units.len();
             });
+        if outcome == AbiOutcome::Refused {
+            // The dispatcher judged the answer: a nonzero code and a 4xx status.
+            self.lock().declined = Some((o.refusal, o.refusal_status));
+        }
         (outcome == AbiOutcome::Ready).then(|| Decoded {
             op_class: o.op_class,
             principal_need: o.principal_need,
@@ -347,8 +391,26 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
     /// The plane renders a refusal (`refusal`, ticketless, one re-call when short); the kernel's
     /// generic failure, with no body, when it cannot.
     fn render(&self, reason: ReasonCode) -> Rendered {
-        let status = (self.driver.config.status_of)(reason);
-        let dialect = self.lock().decoded.as_ref().map_or(0, |d| d.dialect);
+        self.render_as(reason, None)
+    }
+
+    /// [`Self::render`], or under the status and Retry-After the walk chose (an exhaustion
+    /// terminal's `walk`), which the plane renders in its dialect.
+    fn render_as(&self, reason: ReasonCode, walk: Option<(u32, Option<u32>)>) -> Rendered {
+        let (unit, dialect, declined) = {
+            let st = self.lock();
+            let dialect = st.decoded.as_ref().map_or(0, |d| d.dialect);
+            let declined = st.declined.filter(|_| reason == ReasonCode::DecodeFailed);
+            (st.unit, dialect, declined)
+        };
+        // A refusal the plane's own `arrive` decided wears the status it stated; the walk's
+        // terminal wears its own; every other one the plane's stated row or the kernel's default.
+        let status = match (walk, declined) {
+            (Some((status, _)), _) => status,
+            (None, Some((_, status))) => status,
+            (None, None) => self.driver.config.status(dialect, reason),
+        };
+        let retry_after_s = walk.and_then(|(_, r)| r).unwrap_or(0);
         let text = reason.as_str();
         let caps = self.driver.config.caps;
         let (mut reply, mut fields, mut arena) = (
@@ -364,6 +426,7 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             },
             status,
             dialect,
+            reason: reason_code(reason),
             text: AbiStr::over(text.as_bytes()),
             reply_buf: reply.as_mut_ptr(),
             reply_cap: reply.len(),
@@ -371,6 +434,10 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             fields_cap: fields.len(),
             arena_buf: arena.as_mut_ptr(),
             arena_cap: arena.len(),
+            unit,
+            plane_code: declined.map_or(0, |(code, _)| code),
+            retry_after_s,
+            target: AbiStr::over(&self.arrival.target),
             ..blank_in()
         };
         let mut o: RefusalOut = blank_out();
@@ -425,16 +492,31 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         };
         let mut run = route::Pumping::new(
             d,
+            token,
             &self.state,
             ctx,
             ticket,
             self.deadline_ns,
             self.arrival.body.clone(),
         );
+        {
+            let st = self.lock();
+            let dialect = st.decoded.as_ref().map_or(0, |d| d.dialect);
+            let caller_ref = st.caller_ref.clone();
+            drop(st);
+            run.lend_unit(self.arrival.claim, dialect, &caller_ref);
+        }
         let end = self.attempts(&mut run).await;
         let answer = match end {
             route::End::Done => StepAnswer::proceed(token, RoutePlan::default()),
             route::End::Failed(reason) => StepAnswer::refuse(token, Refusal::new(reason)),
+            route::End::Exhausted(status, retry_after) => {
+                // THE WALK'S EXHAUSTION TERMINAL: its status and its Retry-After floor, handed to
+                // the plane's `refusal` (RefusalIn.retry_after_s), which renders them in its dialect.
+                let rendered = self.render_as(ReasonCode::BreakerOpen, Some((status, retry_after)));
+                self.lock().rendered = Some(rendered);
+                StepAnswer::refuse(token, Refusal::new(ReasonCode::BreakerOpen))
+            }
             route::End::Cancel(cause, done) => {
                 let bill = run.cancel(cause, done);
                 self.lock().bill = Some(bill);
@@ -444,6 +526,9 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                 StepAnswer::refuse(token, Refusal::new(cause))
             }
         };
+        if self.lock().bill.is_none() {
+            d.money.finished(ctx);
+        }
         run.finish();
         answer
     }
@@ -461,7 +546,7 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
 }
 
 /// The seats the kernel's own steps answer, forwarded to `self.steps` unchanged: one line per
-/// seat, so the plane's three seats (decode, route, encode) are the only bodies in the impl.
+/// seat, so the plane's own seats (decode, verify, route, encode) are the only bodies in the impl.
 macro_rules! forward_to_steps {
     ($($seat:ident($($arg:ident: $ty:ty),* $(,)?) -> $answer:ty;)*) => {$(
         fn $seat(&self, $($arg: $ty),*) -> $answer {
@@ -474,8 +559,6 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C>
     forward_to_steps! {
         arrival(token: &Pass<ArrivalStep>, ctx: &UnitCtx) -> StepAnswer<ArrivalStep>;
         authenticate(token: &Pass<Authenticate>, ctx: &UnitCtx) -> StepAnswer<Authenticate>;
-        verify(token: &Pass<Verify>, trust: &Grant<Dial>, ctx: &UnitCtx, principal: &PrincipalId)
-            -> StepAnswer<Verify>;
         approve(token: &Pass<Approve>, ctx: &UnitCtx, principal: &PrincipalId,
             destinations: &[VerifiedDestination]) -> StepAnswer<Approve>;
         admit(token: &Pass<Admit>, admit: &Grant<Admittance>, ctx: &UnitCtx, principal: &PrincipalId,
@@ -488,9 +571,25 @@ impl<S: Units + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C>
         at_parent_exit(ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal>;
     }
 
+    /// The kernel's verify, after which the unit's caller reference is derived under the node's
+    /// key (none when the node keeps no key); the principal itself never enters a plane input.
+    fn verify(
+        &self,
+        token: &Pass<Verify>,
+        trust: &Grant<Dial>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+    ) -> StepAnswer<Verify> {
+        if let Some(key) = &self.driver.config.caller_refs {
+            self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
+        }
+        self.steps.verify(token, trust, ctx, principal)
+    }
+
     /// S1, DECODE: the plane's `arrive`; a plane that did not answer, or named an operation class
     /// it does not have, is refused.
     fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> StepAnswer<Decode> {
+        self.lock().unit = ctx.key.get();
         let decoded = self.arrive(ctx.key.get());
         let classes = &self.driver.config.op_classes;
         let op = decoded

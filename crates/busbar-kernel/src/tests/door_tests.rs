@@ -139,3 +139,21 @@ fn a_refused_unit_is_never_a_completion() {
     let f = refused_facts(op);
     assert_eq!((f.op_class, f.finish), (op, FinishClass::Error));
 }
+
+/// Under `admission: exact` (the default) the admission carries a ZERO hold. The design's budget
+/// modes: "the 'hold sized at admit from estimate' idea ... becomes the estimate mode only"; exact
+/// refuses at admit only a budget already exhausted and reserves nothing. RED: any admission that
+/// reserves (an estimate-sized hold) fails this pin.
+#[test]
+fn an_exact_admission_carries_a_zero_hold() {
+    use busbar_contract::caps::KernelSeal;
+    let seal = KernelSeal::acquire_for_kernel();
+    let admit: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
+    match admitted_at_zero(&admit, PrincipalId::new("vk_exact")) {
+        Admission::Own(hold) => {
+            assert_eq!(hold.reserved(), 0, "an exact admission reserves nothing");
+            assert_eq!(hold.principal().as_str(), "vk_exact");
+        }
+        _ => panic!("an exact admission opens the unit's own hold"),
+    }
+}

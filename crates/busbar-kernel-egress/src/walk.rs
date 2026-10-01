@@ -237,8 +237,10 @@ pub async fn walk(request: &RouteRequest<'_>, ctx: &mut RequestCtx) -> RouteOutc
     handle_exhaustion_for_pool(request, ctx, pool, &members).await
 }
 
-/// Exclude every member whose window is at or below the one that just refused the request.
-fn exclude_smaller_windows(members: &[Member], failed: &Member, ctx: &mut RequestCtx) {
+/// Exclude every member of `members` (the pool's ADMISSIBLE members) whose window is at or below
+/// the one that just refused the request. The walk and the plane driver's far end both exclude
+/// here.
+pub fn exclude_smaller_windows(members: &[Member], failed: &Member, ctx: &mut RequestCtx) {
     let Some(failed_limit) = failed.context_max else {
         return;
     };

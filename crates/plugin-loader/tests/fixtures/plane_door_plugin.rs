@@ -106,6 +106,8 @@ const TAIL: &PlaneTail = &PlaneTail {
     record_chains_len: 0,
     trust_keys: ptr::null(),
     trust_keys_len: 0,
+    refusal_statuses: std::ptr::null(),
+    refusal_statuses_len: 0,
 };
 
 /// Every generation's claim.
@@ -114,7 +116,8 @@ const CLAIMS: &[Claim] = &[Claim {
     target: abi_str("/echo"),
     carrier: abi_str("door"),
     flags: 0,
-    _reserved: 0,
+    refusal_dialect: 0,
+    _pad: 0,
 }];
 /// The admin route a REFRESHED generation adds.
 const ROUTES: &[AdminRoute] = &[AdminRoute {

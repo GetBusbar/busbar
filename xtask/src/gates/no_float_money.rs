@@ -393,6 +393,7 @@ const KERNEL_MONEY_FILES: &[&str] = &[
     "crates/busbar-kernel/src/cost.rs",
     "crates/busbar-kernel/src/rate_apply.rs",
     "crates/busbar-kernel/src/metrics/money.rs",
+    "crates/busbar-kernel/src/plane_driver/money.rs",
 ];
 
 /// The float tokens a money path may not name. Word-boundary matched so `nf64` or an identifier that

@@ -28,8 +28,8 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, RefusalIn, RefusalOut, UnitCount,
     CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER,
-    FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_OPTIONAL, UNITS_ESTIMATED,
-    UNITS_REPORTED, VERDICT_RETRY,
+    FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT,
+    PRINCIPAL_OPTIONAL, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };
 use busbar_contract::caps::OpClassId;
 use busbar_contract::plane_calls::{Answered, Grow, Lent, PieceInFlight, PlaneCalls};
@@ -78,6 +78,8 @@ pub(crate) fn rig(_way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
             caps,
             op_classes: vec![OpClassId::new("call")],
             status_of: refusal_status,
+            refusal_statuses: cases::statuses(),
+            caller_refs: None,
         },
         book.clone(),
     );
@@ -335,7 +337,14 @@ impl Double {
                 }
                 _ => {}
             }
-            u.pending.extend_from_slice(piece);
+            if i.flags & PIECE_FIELDS == 0 {
+                u.pending.extend_from_slice(piece);
+            } else if u.mode == b"trailers" {
+                // A plane that reads the far end's trailers.
+                u.pending.push(b'[');
+                u.pending.extend_from_slice(piece);
+                u.pending.push(b']');
+            }
             if u.mode == b"retry-late" && u.far_pieces == 2 {
                 o.verdict = VERDICT_RETRY;
             }
@@ -373,6 +382,10 @@ impl Double {
         if u.saw_last && u.pending.is_empty() {
             o.flags = EMIT_DONE;
             o.verdict = 0;
+        }
+        // A plane whose emitted messages are text (mode `text`): each whole message says so.
+        if u.mode == b"text" && o.emitted > 0 && o.more == 0 {
+            o.flags |= PIECE_OUT_TEXT;
         }
         (ready(Outcome::Ready), hold)
     }
@@ -419,7 +432,18 @@ impl PlaneCalls for Double {
         for call in 0..2 {
             let cap = input.units_cap;
             let wants: Vec<UnitCount> = match target.as_slice() {
-                b"/refuse" => return Outcome::Refused,
+                // A path that takes POST only: another method is the plane's own 405.
+                b"/post-only" if unsafe { text(input.method) } != b"POST" => {
+                    out.refusal = 9;
+                    out.refusal_status = 405;
+                    return Outcome::Refused;
+                }
+                b"/refuse" => {
+                    // The plane's own decode refusal: its code, and the 4xx it wears.
+                    out.refusal = 7;
+                    out.refusal_status = 404;
+                    return Outcome::Refused;
+                }
                 b"/short-twice" => vec![estimate(0); cap + 1],
                 b"/short" => vec![estimate(1), estimate(2)],
                 _ => vec![estimate(input.body.len as u64)],
@@ -451,13 +475,33 @@ impl PlaneCalls for Double {
         out: &mut RefusalOut,
         grow: Grow<'_, RefusalIn, RefusalOut>,
     ) -> Outcome {
-        let body = [
+        // The reason crosses beside its text: a refusal whose code names another reason is FAULT.
+        let named =
+            busbar_contract::abi::plane::reason_of(input.reason).map(|r| r.as_str().as_bytes());
+        if named != Some(unsafe { text(input.text) }) {
+            return Outcome::Fault;
+        }
+        let mut body = [
             b"refused:".as_slice(),
             input.status.to_string().as_bytes(),
             b":",
             unsafe { text(input.text) },
         ]
         .concat();
+        // The target crosses beside every refusal (one may precede `arrive`): this plane names it
+        // when the target asks.
+        let target = unsafe { text(input.target) };
+        if target == b"/target-echo" {
+            body.extend_from_slice(b" for ");
+            body.extend_from_slice(target);
+        }
+        // A Retry-After the kernel hands (the walk's exhaustion terminal): this plane names it.
+        if input.retry_after_s != 0 {
+            body.extend_from_slice(format!(":retry={}", input.retry_after_s).as_bytes());
+        }
+        if input.plane_code != 0 {
+            body.extend_from_slice(format!(":{}@{}", input.plane_code, input.unit).as_bytes());
+        }
         let (name, value) = (b"content-type".as_slice(), b"text/plain".as_slice());
         let arena = name.len() + value.len();
         for call in 0..2 {

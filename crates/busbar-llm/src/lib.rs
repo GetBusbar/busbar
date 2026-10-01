@@ -163,6 +163,18 @@ pub mod test_support {
     // The dispatch-cell builders and the handler lookup the money-path tests frame their cells with.
     pub use busbar_kernel::handlers::{chat, frame, op_for, request_handler, Op};
 
+    /// THE INTERN GUARD: `Registration::interned()` counts a process-global vocabulary that every
+    /// concurrently running test in this binary can grow. Everything here that interns a name
+    /// (the plane's `build_runtime`, the chain rehearsal's lane interner) holds this for the
+    /// interning, and a test that measures the count holds it across its before/after reads, so
+    /// the measured window contains no other test's interning.
+    pub static INTERN_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Take [`INTERN_GUARD`]; a panicking test must not poison the rest.
+    pub fn intern_guard() -> std::sync::MutexGuard<'static, ()> {
+        INTERN_GUARD.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// THE CHAT DISPATCH CELL the money-path tests hold by value — `frame(Http, CHAT, ChatOperation)`
     /// over THIS crate's real openai chat codec. It USED to live in core's `handlers/tests/chat_fixture`
     /// (a `#[cfg(test)]` file that named `busbar_llm::chat_handle::ChatOperation` across the dev-dep

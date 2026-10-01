@@ -170,23 +170,23 @@ fn test_egress_ua_versions_are_pinned_and_present() {
 fn test_cross_protocol_error_kind_mapping() {
     crate::testkit::install_test_seams();
     assert_eq!(
-        cross_protocol_error_kind(StatusCode::UNAUTHORIZED),
+        cross_protocol_error_kind(StatusCode::UNAUTHORIZED.as_u16()),
         "authentication_error" // golden wire-contract literal (kept bare on purpose)
     );
     assert_eq!(
-        cross_protocol_error_kind(StatusCode::FORBIDDEN),
+        cross_protocol_error_kind(StatusCode::FORBIDDEN.as_u16()),
         "permission_error" // golden wire-contract literal (kept bare on purpose)
     );
     assert_eq!(
-        cross_protocol_error_kind(StatusCode::TOO_MANY_REQUESTS),
+        cross_protocol_error_kind(StatusCode::TOO_MANY_REQUESTS.as_u16()),
         "rate_limit_error" // golden wire-contract literal (kept bare on purpose)
     );
     assert_eq!(
-        cross_protocol_error_kind(StatusCode::INTERNAL_SERVER_ERROR),
+        cross_protocol_error_kind(StatusCode::INTERNAL_SERVER_ERROR.as_u16()),
         "api_error" // golden wire-contract literal (kept bare on purpose)
     );
     assert_eq!(
-        cross_protocol_error_kind(StatusCode::BAD_GATEWAY),
+        cross_protocol_error_kind(StatusCode::BAD_GATEWAY.as_u16()),
         "api_error" // golden wire-contract literal (kept bare on purpose)
     );
     // A genuine upstream 503 must map to `overloaded`, NOT `api_error`.
@@ -194,20 +194,20 @@ fn test_cross_protocol_error_kind_mapping() {
     // 503/InternalServerException pairing the real AWS runtime never produces (503 pairs with
     // ServiceUnavailableException). `overloaded` is the kind busbar already uses for its own 503s.
     assert_eq!(
-        cross_protocol_error_kind(StatusCode::SERVICE_UNAVAILABLE),
+        cross_protocol_error_kind(StatusCode::SERVICE_UNAVAILABLE.as_u16()),
         "overloaded" // golden wire-contract literal (kept bare on purpose)
     );
     // 504 maps to the timeout class, distinct from the generic 5xx `api_error`.
     assert_eq!(
-        cross_protocol_error_kind(StatusCode::GATEWAY_TIMEOUT),
+        cross_protocol_error_kind(StatusCode::GATEWAY_TIMEOUT.as_u16()),
         "timeout" // golden wire-contract literal (kept bare on purpose)
     );
     assert_eq!(
-        cross_protocol_error_kind(StatusCode::BAD_REQUEST),
+        cross_protocol_error_kind(StatusCode::BAD_REQUEST.as_u16()),
         "invalid_request_error" // golden wire-contract literal (kept bare on purpose)
     );
     assert_eq!(
-        cross_protocol_error_kind(StatusCode::NOT_FOUND),
+        cross_protocol_error_kind(StatusCode::NOT_FOUND.as_u16()),
         "invalid_request_error" // golden wire-contract literal (kept bare on purpose)
     );
 }

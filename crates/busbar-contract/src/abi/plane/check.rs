@@ -19,23 +19,26 @@
 
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
+use super::reason_of;
 use super::{
     AdminRoute, ArriveOut, BillableClass, Claim, DialectAuth, OnPieceOut, OutField, PinMechanism,
     PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite, RefusalOut,
-    RouteCost, Section, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL,
-    CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN,
-    EMIT_DONE, EMIT_TO_FAR_END, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION,
-    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MARK_GATE_REJECTED,
-    MECHANISM_ROOT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL, RECORD_PUT, ROUTE_PUBLIC,
-    SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED, SHAPE_PIECEWISE, SHAPE_WHOLE,
-    TAIL_FALLBACK, TAIL_PROBES, TRUST_PIN, TRUST_RECOVERY_BACKOFF, UNITS_ESTIMATED, UNITS_REPORTED,
-    VERDICT_HARD,
+    RefusalStatus, RouteCost, Section, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED,
+    CANCEL_OK_PARTIAL, CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED,
+    CLAIM_EXACT, CLAIM_OPEN, EMIT_DONE, EMIT_TO_FAR_END, INGRESS_ACCEPT_LOOP,
+    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
+    INGRESS_SUBSCRIPTION, MARK_GATE_REJECTED, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT,
+    PRINCIPAL_OPTIONAL, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_PUBLIC, SECTION_CONSUMED,
+    SECTION_DECLARING, SECTION_REQUIRED, SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_PROBES,
+    TRUST_PIN, TRUST_RECOVERY_BACKOFF, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
     SIGNAL_TAG_BOOL, SIGNAL_TAG_STR, SIGNAL_TAG_U64,
 };
-use crate::abi::host::conn::connector::{Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND};
+use crate::abi::host::conn::connector::{
+    Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND, KEEP_RESPONSE_HEADERS_MAX, NEVER_KEPT,
+};
 use crate::abi::mechanism::call::{AbiStr, Outcome};
 use crate::abi::mechanism::check::{
     bits, code, fault, first, index, listed, range, result, results, span, text, weight, Dim,
@@ -104,7 +107,8 @@ fn named(s: AbiStr, field: &'static str) -> Result<(), Fault> {
 }
 
 fn units(buf: &[UnitCount], n: u64, b: &Bounds) -> Result<(), Fault> {
-    for u in first(buf, n, "unit")? {
+    let counts = first(buf, n, "unit")?;
+    for (i, u) in counts.iter().enumerate() {
         index(u.class, b.billable_classes, "unit.class")?;
         code(
             u64::from(u.source),
@@ -112,6 +116,14 @@ fn units(buf: &[UnitCount], n: u64, b: &Bounds) -> Result<(), Fault> {
             u64::from(UNITS_REPORTED),
             "unit.source",
         )?;
+        // ONE CUMULATIVE COUNT per class and source: a second is a contradiction (two running
+        // totals of one thing), never a sum the host would have to add.
+        if counts[..i]
+            .iter()
+            .any(|p| p.class == u.class && p.source == u.source)
+        {
+            return Err(fault(Rule::Contradiction, "unit.class"));
+        }
     }
     Ok(())
 }
@@ -162,6 +174,19 @@ pub fn check_arrive(
         "arrive.units",
     )?;
     units(units_buf, written, b)?;
+    if outcome == Outcome::Refused {
+        if out.refusal == 0 {
+            return Err(fault(Rule::Missing, "arrive.refusal"));
+        }
+        code(
+            u64::from(out.refusal_status),
+            400,
+            499,
+            "arrive.refusal_status",
+        )?;
+    } else if out.refusal != 0 || out.refusal_status != 0 {
+        return Err(fault(Rule::Contradiction, "arrive.refusal"));
+    }
     if outcome == Outcome::Ready {
         code(
             u64::from(out.principal_need),
@@ -175,6 +200,9 @@ pub fn check_arrive(
     Ok(())
 }
 
+/// (`arrive` above: a REFUSED answer names the plane's own refusal code and a 4xx status; any other
+/// outcome carries neither.)
+///
 /// `on_piece`: backpressure rules for the reply, the short-buffer rule for every other buffer, a short answer
 /// emits nothing, and every unit, record and field written is judged on any outcome.
 ///
@@ -194,9 +222,13 @@ pub fn check_on_piece(
     code(u64::from(out.more), 0, 1, "on_piece.more")?;
     bits(
         u64::from(out.flags),
-        u64::from(EMIT_TO_FAR_END | EMIT_DONE),
+        u64::from(EMIT_TO_FAR_END | EMIT_DONE | PIECE_OUT_TEXT),
         "on_piece.flags",
     )?;
+    // A text message is a whole message of at least one byte.
+    if out.flags & PIECE_OUT_TEXT != 0 && (out.emitted == 0 || out.more != 0) {
+        return Err(fault(Rule::Contradiction, "on_piece.text"));
+    }
     if out.more == 1 && out.emitted == 0 {
         return Err(fault(Rule::Contradiction, "on_piece.more_without_emitted"));
     }
@@ -535,13 +567,14 @@ pub fn check_snapshot(s: &PlaneSnapshot, generation: u64) -> Result<(), Fault> {
     text(s.resource_metadata, "snapshot.resource_metadata")
 }
 
-/// Every snapshot claim: a verb, a target, a carrier and known flags. Two claims of one route are
-/// not judged here: overlapping claims resolve by precedence in the kernel's registry.
+/// Every snapshot claim: a verb, a target, a carrier, known flags, and a refusal dialect the tail
+/// declares (`0` when the tail declares none). Two claims of one route are not judged here:
+/// overlapping claims resolve by precedence in the kernel's registry.
 ///
 /// # Errors
 ///
 /// The rule a claim breaks.
-pub fn check_claims(claims: &[Claim]) -> Result<(), Fault> {
+pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
     for c in claims {
         named(c.verb, "claim.verb")?;
         named(c.target, "claim.target")?;
@@ -551,6 +584,13 @@ pub fn check_claims(claims: &[Claim]) -> Result<(), Fault> {
             u64::from(CLAIM_OPEN | CLAIM_EXACT),
             "claim.flags",
         )?;
+        if dialects_len > 0 || c.refusal_dialect != 0 {
+            index(
+                u32::from(c.refusal_dialect),
+                dialects_len,
+                "claim.refusal_dialect",
+            )?;
+        }
     }
     Ok(())
 }
@@ -575,8 +615,10 @@ pub fn check_admin_routes(routes: &[AdminRoute]) -> Result<(), Fault> {
 
 /// The Statement tail, at load: known flags, ingress bits and dispatch shape; at least one ingress
 /// shape; no string or list counted with a NULL pointer. Its elements: [`check_sections`],
-/// [`check_dialect_auth`], [`check_route_cost`], [`check_billable_classes`], [`check_needs`],
-/// [`check_record_chains`], [`check_trust_keys`] and each pin's [`check_pin_mechanisms`].
+/// [`check_dialect_auth`], [`check_route_cost`], [`check_billable_classes`], [`check_fee_units`],
+/// [`check_needs`], [`check_record_chains`], [`check_trust_keys`] and each pin's
+/// [`check_pin_mechanisms`], and
+/// [`check_refusal_statuses`].
 ///
 /// # Errors
 ///
@@ -634,7 +676,12 @@ pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
         "tail.egress_targets",
     )?;
     listed(t.record_chains, t.record_chains_len, "tail.record_chains")?;
-    listed(t.trust_keys, t.trust_keys_len, "tail.trust_keys")
+    listed(t.trust_keys, t.trust_keys_len, "tail.trust_keys")?;
+    listed(
+        t.refusal_statuses,
+        t.refusal_statuses_len,
+        "tail.refusal_statuses",
+    )
 }
 
 /// The tail's sections: each named, known flags, and EXACTLY ONE is the declaring section.
@@ -697,6 +744,33 @@ pub fn check_billable_classes(classes: &[BillableClass]) -> Result<(), Fault> {
     Ok(())
 }
 
+/// The fee units: each named and each ALSO one of the tail's billable classes, so the plane
+/// reports "a fee unit was incurred" as a `UNITS_REPORTED` count of 0 or 1 on that class
+/// (the design's money section: the plane reports whether a fee unit was incurred). A fee unit the
+/// classes do not list is [`Rule::Contradiction`]: the plane could never report it.
+///
+/// # Errors
+///
+/// The rule a fee unit breaks.
+pub fn check_fee_units(fee_units: &[AbiStr], classes: &[BillableClass]) -> Result<(), Fault> {
+    const FIELD: &str = "tail.fee_units";
+    for f in fee_units {
+        named(*f, FIELD)?;
+        // SAFETY: `named` checked the string non-NULL with its length; the plugin's static bytes.
+        let fee = unsafe { core::slice::from_raw_parts(f.ptr, f.len) };
+        let listed = classes.iter().any(|c| {
+            c.class.len == fee.len()
+                && !c.class.ptr.is_null()
+                // SAFETY: a non-NULL class string of its stated length; the plugin's static bytes.
+                && unsafe { core::slice::from_raw_parts(c.class.ptr, c.class.len) } == fee
+        });
+        if !listed {
+            return Err(fault(Rule::Contradiction, FIELD));
+        }
+    }
+    Ok(())
+}
+
 /// The needs: a known direction and a transport claim; strings and details never counted with a
 /// NULL pointer.
 ///
@@ -716,6 +790,40 @@ pub fn check_needs(needs: &[Need]) -> Result<(), Fault> {
         text(n.target_from, "need.target_from")?;
         text(n.trust_from, "need.trust_from")?;
         listed(n.details.ptr, n.details.len, "need.details")?;
+        keep_response_headers(n)?;
+    }
+    Ok(())
+}
+
+/// A need's kept response head fields: a bounded list of lower-case tokens, none hop-by-hop or
+/// credential-bearing ([`NEVER_KEPT`]: [`Rule::Foreign`], a field that is not the plugin's to read).
+fn keep_response_headers(n: &Need) -> Result<(), Fault> {
+    const FIELD: &str = "need.keep_response_headers";
+    listed(n.keep_response_headers, n.keep_response_headers_len, FIELD)?;
+    if n.keep_response_headers_len > KEEP_RESPONSE_HEADERS_MAX {
+        return Err(fault(Rule::OverMax, FIELD));
+    }
+    if n.keep_response_headers_len == 0 {
+        return Ok(());
+    }
+    // SAFETY: a non-NULL list of `keep_response_headers_len` strings the plugin's door states as
+    // `'static` data (checked non-NULL above), bounded by `KEEP_RESPONSE_HEADERS_MAX`.
+    let names = unsafe {
+        core::slice::from_raw_parts(n.keep_response_headers, n.keep_response_headers_len)
+    };
+    for s in names {
+        named(*s, FIELD)?;
+        // SAFETY: `named` checked the string non-NULL with its length; the plugin's static bytes.
+        let name = unsafe { core::slice::from_raw_parts(s.ptr, s.len) };
+        let token = name
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-' || *b == b'_');
+        if !token {
+            return Err(fault(Rule::UnknownCode, FIELD));
+        }
+        if NEVER_KEPT.iter().any(|k| k.as_bytes() == name) {
+            return Err(fault(Rule::Foreign, FIELD));
+        }
     }
     Ok(())
 }
@@ -784,6 +892,31 @@ pub fn check_trust_keys(keys: &[TrustKey]) -> Result<(), Fault> {
         }
         if keys[..i].iter().any(|p| p.role == k.role) {
             return Err(fault(Rule::Contradiction, "trust_key.role_twice"));
+        }
+    }
+    Ok(())
+}
+
+/// The refusal statuses: each names a dialect the tail declares (or every dialect), a reason the
+/// vocabulary holds and a status from 400 to 599, and no `(dialect, reason)` is stated twice.
+///
+/// # Errors
+///
+/// The rule an entry breaks.
+pub fn check_refusal_statuses(rows: &[RefusalStatus], dialects_len: u64) -> Result<(), Fault> {
+    for (i, r) in rows.iter().enumerate() {
+        if r.dialect != REFUSAL_ANY_DIALECT {
+            index(r.dialect, dialects_len, "refusal_status.dialect")?;
+        }
+        if reason_of(r.reason).is_none() {
+            return Err(fault(Rule::UnknownCode, "refusal_status.reason"));
+        }
+        code(u64::from(r.status), 400, 599, "refusal_status.status")?;
+        if rows[..i]
+            .iter()
+            .any(|d| d.dialect == r.dialect && d.reason == r.reason)
+        {
+            return Err(fault(Rule::Contradiction, "refusal_status.twice"));
         }
     }
     Ok(())

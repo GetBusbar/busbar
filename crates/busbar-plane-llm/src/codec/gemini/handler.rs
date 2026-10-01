@@ -258,6 +258,20 @@ leaf_op! {
     SpeechRespHandle = read_speech_response;
 }
 
+/// The `text` parts of the parts array at `pointer`, joined (empty when there are none).
+fn joined_text(v: &Value, pointer: &str) -> String {
+    v.pointer(pointer)
+        .and_then(Value::as_array)
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|p| p.get(keys::TEXT).and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default()
+}
+
 /// One named prebuilt speaker: `{voiceConfig: {prebuiltVoiceConfig: {voiceName}}}` (the single
 /// speaker's config, and each multi-speaker entry's beside its `speaker`).
 fn prebuilt_speaker(name: &str) -> Value {
@@ -577,17 +591,7 @@ pub fn read_transcription_response(
 ) -> Result<crate::codec::ir::audio::TranscriptionResp, CodecError> {
     let v: Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-    let text = v
-        .pointer("/candidates/0/content/parts")
-        .and_then(Value::as_array)
-        .map(|parts| {
-            parts
-                .iter()
-                .filter_map(|p| p.get(keys::TEXT).and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join("")
-        })
-        .unwrap_or_default();
+    let text = joined_text(&v, "/candidates/0/content/parts");
     let usage = v
         .get(FIELD_USAGE_METADATA)
         .map(
@@ -647,17 +651,7 @@ pub fn read_speech_request(
 ) -> Result<crate::codec::ir::audio::SpeechReq, IngressReject> {
     let wire: Value =
         serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
-    let input = wire
-        .pointer("/contents/0/parts")
-        .and_then(Value::as_array)
-        .map(|parts| {
-            parts
-                .iter()
-                .filter_map(|p| p.get(keys::TEXT).and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join("")
-        })
-        .unwrap_or_default();
+    let input = joined_text(&wire, "/contents/0/parts");
     if input.is_empty() {
         return Err(IngressReject::BadRequest(
             "speech requires a text part".into(),
@@ -894,17 +888,7 @@ pub fn read_embeddings_request(
     // it via `IrReq::set_model`); the body carries `content.parts[].text`.
     let wire: Value =
         serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
-    let text = wire
-        .pointer("/content/parts")
-        .and_then(Value::as_array)
-        .map(|parts| {
-            parts
-                .iter()
-                .filter_map(|p| p.get(keys::TEXT).and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join("")
-        })
-        .unwrap_or_default();
+    let text = joined_text(&wire, "/content/parts");
     if text.is_empty() {
         return Err(IngressReject::BadRequest(
             "embedContent requires `content.parts[].text`".into(),

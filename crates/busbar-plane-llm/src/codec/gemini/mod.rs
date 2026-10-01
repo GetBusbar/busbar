@@ -45,6 +45,10 @@ use schema::*;
 use slots::*;
 use usage::*;
 
+/// The query pair a Gemini request carries to ask for its answer as event-framed chunks: the
+/// dialect's own wire parameter, written on the far-end stream path and read at arrival.
+pub const STREAM_QUERY: (&str, &str) = ("alt", "sse");
+
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
 /// resolution, exactly as the registry's field doc requires. Mirrors
 /// `super::anthropic::protocol`.

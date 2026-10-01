@@ -70,10 +70,14 @@ impl HostServices for Provider {
         let mut stored = Stored::ready(svc::FOUND);
         stored.bytes = [key, b"=v"].concat();
         stored.spans = vec![ItemSpan {
-            key_off: 0,
-            key_len: key.len() as u32,
-            value_off: key.len() as u32,
-            value_len: 2,
+            key: Span {
+                offset: 0,
+                len: key.len() as u32,
+            },
+            value: Span {
+                offset: key.len() as u32,
+                len: 2,
+            },
         }];
         later(stored);
         Ran::Later
@@ -523,10 +527,8 @@ fn records_get_reaches_the_kernel_as_its_caller_and_delivers_the_record() {
     let d = double();
     let mut buf = [0u8; 16];
     let mut spans = [ItemSpan {
-        key_off: 0,
-        key_len: 0,
-        value_off: 0,
-        value_len: 0,
+        key: Span { offset: 0, len: 0 },
+        value: Span { offset: 0, len: 0 },
     }; 1];
     let i = RecordsGetIn {
         head: head(op::RECORDS_GET, TICKET, 0, size_of::<RecordsGetIn>()),

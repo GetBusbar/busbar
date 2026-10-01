@@ -227,10 +227,11 @@ fn send_deadline_ms(hop: &Hop<'_>) -> u64 {
     secs.saturating_mul(1000)
 }
 
-/// The per-attempt cap on time to the first answer, floored by what the walk has left. A cap can
-/// never grant more time than the request still has, and it is never zero.
-fn attempt_cap_ms(ms: u64, remaining_secs: u64) -> u64 {
-    ms.min(remaining_secs.saturating_mul(1000).max(1))
+/// The per-attempt cap on time to the first answer, floored by what the walk has left
+/// (`remaining_ms`). A cap can never grant more time than the request still has, and it is never
+/// zero. The walk's attempt and the plane driver's far end both cap here.
+pub fn attempt_cap_ms(ms: u64, remaining_ms: u64) -> u64 {
+    ms.min(remaining_ms.max(1))
 }
 
 /// Give back one unit of lifetime budget when a delivery that spent it does not complete.
@@ -370,7 +371,7 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
     let deadline_ms = send_deadline_ms(&hop);
     let cap_ms = hop
         .attempt_timeout_ms
-        .map(|ms| attempt_cap_ms(ms, hop.remaining_secs));
+        .map(|ms| attempt_cap_ms(ms, hop.remaining_secs.saturating_mul(1000)));
     let outcome = send(&hop, &wire, deadline_ms, cap_ms).await;
 
     let first = match outcome {
@@ -667,14 +668,14 @@ fn classify_failure(
     permit: Permit,
     now: u64,
 ) -> AttemptOutcome {
-    let Classified {
-        disposition,
-        outcome,
-        label,
-    } = hop.breaker.classify(hop.destination, status);
-    let tripped = hop
+    let (
+        Classified {
+            disposition, label, ..
+        },
+        tripped,
+    ) = hop
         .breaker
-        .observe(hop.pool, hop.destination, outcome, now, hop.token);
+        .judge(hop.pool, hop.destination, status, now, hop.token);
     if tripped {
         hop.telemetry.breaker_trip(hop.metric_pool, hop.destination);
     }

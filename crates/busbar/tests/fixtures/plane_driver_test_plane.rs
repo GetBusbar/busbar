@@ -39,10 +39,11 @@ use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, Claim, OnPieceIn, OnPieceOut, OpClass, Ops, OutField,
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneSnapshot, PlaneTail, RefusalIn,
-    RefusalOut, Section, UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, EMIT_DONE,
-    EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE,
-    INGRESS_RESPONSE_STREAM, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_OPTIONAL, SECTION_DECLARING,
-    SHAPE_WHOLE, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    RefusalOut, RefusalStatus, Section, UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL,
+    EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE,
+    INGRESS_RESPONSE_STREAM, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT,
+    PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT, SECTION_DECLARING, SHAPE_WHOLE, UNITS_ESTIMATED,
+    UNITS_REPORTED, VERDICT_RETRY,
 };
 
 /// The counters `/stats` answers, in this order.
@@ -101,10 +102,82 @@ static OP_CLASSES: Shared<[OpClass; 1]> = Shared([OpClass {
     op: s(b"call"),
     name: s(b"test"),
 }]);
-static CLASSES: Shared<[BillableClass; 1]> = Shared([BillableClass {
-    class: s(b"bytes"),
-    family: s(b"bytes"),
-}]);
+/// Twelve billable classes: the check refuses a class counted twice, so a report of several counts
+/// (the short-buffer cases, `/stats`) names a distinct class for each.
+static CLASSES: Shared<[BillableClass; 12]> = Shared([
+    BillableClass {
+        class: s(b"bytes"),
+        family: s(b"bytes"),
+    },
+    BillableClass {
+        class: s(b"c1"),
+        family: s(b"bytes"),
+    },
+    BillableClass {
+        class: s(b"c2"),
+        family: s(b"bytes"),
+    },
+    BillableClass {
+        class: s(b"c3"),
+        family: s(b"bytes"),
+    },
+    BillableClass {
+        class: s(b"c4"),
+        family: s(b"bytes"),
+    },
+    BillableClass {
+        class: s(b"c5"),
+        family: s(b"bytes"),
+    },
+    BillableClass {
+        class: s(b"c6"),
+        family: s(b"bytes"),
+    },
+    BillableClass {
+        class: s(b"c7"),
+        family: s(b"bytes"),
+    },
+    BillableClass {
+        class: s(b"c8"),
+        family: s(b"bytes"),
+    },
+    BillableClass {
+        class: s(b"c9"),
+        family: s(b"bytes"),
+    },
+    BillableClass {
+        class: s(b"c10"),
+        family: s(b"bytes"),
+    },
+    BillableClass {
+        class: s(b"c11"),
+        family: s(b"bytes"),
+    },
+]);
+
+/// The statuses its refusals wear where they are not the kernel's defaults (`plane_driver_cases`'s
+/// `STATUSES`): `revoked` (code 14) is 403 in its one dialect and 451 in any other, and
+/// `scope_denied` (code 15) is 404 in every dialect.
+static STATUSES: Shared<[RefusalStatus; 3]> = Shared([
+    RefusalStatus {
+        dialect: 0,
+        reason: 14,
+        status: 403,
+        _reserved: 0,
+    },
+    RefusalStatus {
+        dialect: REFUSAL_ANY_DIALECT,
+        reason: 14,
+        status: 451,
+        _reserved: 0,
+    },
+    RefusalStatus {
+        dialect: REFUSAL_ANY_DIALECT,
+        reason: 15,
+        status: 404,
+        _reserved: 0,
+    },
+]);
 
 static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     head: KindTailHead {
@@ -134,7 +207,7 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     op_classes: &OP_CLASSES.0 as *const OpClass,
     op_classes_len: 1,
     billable_classes: &CLASSES.0 as *const BillableClass,
-    billable_classes_len: 1,
+    billable_classes_len: 12,
     route_cost: std::ptr::null(),
     route_cost_len: 0,
     fee_units: std::ptr::null(),
@@ -149,6 +222,8 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     record_chains_len: 0,
     trust_keys: std::ptr::null(),
     trust_keys_len: 0,
+    refusal_statuses: &STATUSES.0 as *const RefusalStatus,
+    refusal_statuses_len: 3,
 });
 
 static FAMILIES: Shared<[MetricFamily; 1]> = Shared([MetricFamily {
@@ -217,7 +292,8 @@ static CLAIMS: Shared<[Claim; 1]> = Shared([Claim {
     target: s(b"/call"),
     carrier: s(b"inbound"),
     flags: 0,
-    _reserved: 0,
+    refusal_dialect: 0,
+    _pad: 0,
 }]);
 
 /// THE DOOR: the `DoorFn` a compiled-in row holds.
@@ -411,18 +487,29 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 *i.units_buf.add(k) = *u;
             }
         };
-        let estimate = |amount: u64| UnitCount {
-            class: 0,
+        let estimate = |class: u32, amount: u64| UnitCount {
+            class,
             source: UNITS_ESTIMATED,
             amount,
         };
         let wants: Vec<UnitCount> = match target {
-            b"/refuse" => return say(out, Outcome::Refused),
+            // A path that takes POST only: another method is the plane's own 405.
+            b"/post-only" if text(i.method) != b"POST" => {
+                o.refusal = 9;
+                o.refusal_status = 405;
+                return say(out, Outcome::Refused);
+            }
+            b"/refuse" => {
+                // The plane's own decode refusal: its code, and the 4xx it wears.
+                o.refusal = 7;
+                o.refusal_status = 404;
+                return say(out, Outcome::Refused);
+            }
             b"/short-twice" => {
                 o.units_needed = cap as u32 + 1;
                 return say(out, Outcome::Failed);
             }
-            b"/short" => vec![estimate(1), estimate(2)],
+            b"/short" => vec![estimate(0, 1), estimate(1, 2)],
             t if t.starts_with(b"/wake:") => {
                 // `/wake:<slot>:<generation>`: wake that ticket (the test's way to wake a driver
                 // ticket, which only a plugin can).
@@ -434,7 +521,7 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 };
                 me.count(Stat::HostCalls);
                 (me.wake)(me.ctx, ticket);
-                vec![estimate(0)]
+                vec![estimate(0, 0)]
             }
             b"/clock" => {
                 // The host's own clock, through its service table: the reading, as two amounts. A
@@ -467,14 +554,15 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 {
                     return say(out, Outcome::Refused);
                 }
-                vec![estimate(reading.wall_ns), estimate(reading.mono_ns)]
+                vec![estimate(0, reading.wall_ns), estimate(1, reading.mono_ns)]
             }
             b"/stats" => me
                 .stats
                 .iter()
-                .map(|v| estimate(v.load(Ordering::SeqCst)))
+                .enumerate()
+                .map(|(k, v)| estimate(k as u32, v.load(Ordering::SeqCst)))
                 .collect(),
-            _ => vec![estimate(i.body.len as u64)],
+            _ => vec![estimate(0, i.body.len as u64)],
         };
         if wants.len() > cap {
             o.units_needed = wants.len() as u32;
@@ -606,7 +694,14 @@ extern "C" fn on_piece(
                 }
                 _ => {}
             }
-            u.pending.extend_from_slice(piece);
+            if i.flags & PIECE_FIELDS == 0 {
+                u.pending.extend_from_slice(piece);
+            } else if u.mode.as_slice() == b"trailers" {
+                // A plane that reads the far end's trailers.
+                u.pending.push(b'[');
+                u.pending.extend_from_slice(piece);
+                u.pending.push(b']');
+            }
             if u.mode.as_slice() == b"retry-late" && u.far_pieces == 2 {
                 o.verdict = VERDICT_RETRY;
             }
@@ -635,7 +730,7 @@ extern "C" fn on_piece(
         let wide = if u.mode.starts_with(b"short") { 12 } else { 1 };
         for k in 0..wide {
             *i.units_buf.add(k) = UnitCount {
-                class: 0,
+                class: k as u32,
                 source: UNITS_REPORTED,
                 amount: u.emitted,
             };
@@ -645,6 +740,10 @@ extern "C" fn on_piece(
             o.flags = EMIT_DONE;
             o.verdict = 0;
         }
+        // A plane whose emitted messages are text (mode `text`): each whole message says so.
+        if u.mode.as_slice() == b"text" && o.emitted > 0 && o.more == 0 {
+            o.flags |= PIECE_OUT_TEXT;
+        }
         say(out, Outcome::Ready)
     }
 }
@@ -653,13 +752,32 @@ extern "C" fn refusal(_: *mut c_void, input: *const c_void, out: *mut c_void) ->
     unsafe {
         let i = &*input.cast::<RefusalIn>();
         let o = &mut *out.cast::<RefusalOut>();
-        let body = [
+        // The reason crosses beside its text: a refusal whose code names another reason is FAULT.
+        let named = busbar_contract::abi::plane::reason_of(i.reason).map(|r| r.as_str().as_bytes());
+        if named != Some(text(i.text)) {
+            return RawOutcome::of(Outcome::Fault);
+        }
+        let mut body = [
             b"refused:".as_slice(),
             i.status.to_string().as_bytes(),
             b":",
             text(i.text),
         ]
         .concat();
+        // The target crosses beside every refusal (one may precede `arrive`): this plane names it
+        // when the target asks.
+        let target = text(i.target);
+        if target == b"/target-echo" {
+            body.extend_from_slice(b" for ");
+            body.extend_from_slice(target);
+        }
+        // A Retry-After the kernel hands (the walk's exhaustion terminal): this plane names it.
+        if i.retry_after_s != 0 {
+            body.extend_from_slice(format!(":retry={}", i.retry_after_s).as_bytes());
+        }
+        if i.plane_code != 0 {
+            body.extend_from_slice(format!(":{}@{}", i.plane_code, i.unit).as_bytes());
+        }
         let (name, value) = (b"content-type".as_slice(), b"text/plain".as_slice());
         let arena = name.len() + value.len();
         if body.len() > i.reply_cap || i.fields_cap < 1 || arena > i.arena_cap {

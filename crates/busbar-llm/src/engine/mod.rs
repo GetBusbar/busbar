@@ -17,6 +17,8 @@
 // `Value`/`Disposition`/`OnExhausted`/`StatusClass`/`App`/`now`/`Permit`/… at their historical short
 // paths. The core-staying items are named DOWN across the crate boundary (the allowed plane→core
 // edge); the relocated `WeightedLane`/`Lane`/… come from the submodule globs below.
+/// The plane's sans-I/O exchange: the byte steps this engine shares with the plane's door.
+pub(crate) use busbar_plane_llm::exchange as xchg;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -35,6 +37,8 @@ use serde_json::Value;
 use busbar_contract::upstream::Disposition;
 #[cfg_attr(not(test), allow(unused_imports))]
 use busbar_contract::upstream::StatusClass;
+#[cfg(test)]
+use busbar_kernel::handlers::op_for;
 use busbar_kernel::plane_host::OnExhaustedInput as OnExhausted;
 use busbar_kernel::{
     auth::{present_caller, CallerCredential as KernelCallerCredential},
@@ -54,7 +58,7 @@ use busbar_kernel::{
         ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE, UPSTREAM_MIDSTREAM_TRANSPORT_ERROR,
         UPSTREAM_PREFIRSTBYTE_TRANSPORT_ERROR, USAGE_TAP_REASSEMBLY_CAP_EXCEEDED,
     },
-    handlers::{op_for, request_handler, Op, OpDispatch},
+    handlers::{request_handler, Op, OpDispatch},
     proto::convert_headers,
     sigv4::uri_encode_path,
 };
@@ -124,9 +128,7 @@ pub(crate) use busbar_kernel::egress::engine::{
 // (`busbar_kernel::proxy`) — the plane names the neutral ABI crate directly. Re-exported into the
 // flattened engine namespace so the moved classification/error-envelope call sites keep naming them at
 // their historical short paths (`crate::engine::{KIND_*, DISPOSITION_TRANSIENT, APPLICATION_JSON, …}`).
-pub(crate) use busbar_kernel::proxy::{
-    APPLICATION_JSON, EGRESS_UA_DEFAULT, PROVIDER_CODE_CONTEXT_LENGTH, TEXT_EVENT_STREAM,
-};
+pub(crate) use busbar_kernel::proxy::{APPLICATION_JSON, EGRESS_UA_DEFAULT, TEXT_EVENT_STREAM};
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use busbar_kernel::proxy::{
     DISPOSITION_ATTEMPT_TIMEOUT, DISPOSITION_CONTEXT_LENGTH, DISPOSITION_HARD_DOWN,
@@ -237,6 +239,12 @@ mod on_exhausted_tests;
 #[cfg(test)]
 #[path = "tests/ordered_walk_tests.rs"]
 mod ordered_walk_tests;
+#[cfg(test)]
+#[path = "tests/plane_attempt_parity_tests.rs"]
+mod plane_attempt_parity_tests;
+#[cfg(test)]
+#[path = "tests/plane_reply_parity_tests.rs"]
+mod plane_reply_parity_tests;
 #[cfg(test)]
 #[path = "tests/pool_upstream_creds_tests.rs"]
 mod pool_upstream_creds_tests;

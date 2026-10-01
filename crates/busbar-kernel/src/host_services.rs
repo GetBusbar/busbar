@@ -48,7 +48,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use busbar_contract::abi::host::service::{self as svc, ItemSpan, MAX_SPANS};
-use busbar_contract::abi::mechanism::call::Outcome;
+use busbar_contract::abi::mechanism::call::{Outcome, Span};
 use busbar_contract::caps::{IdempotencyKey, KernelSeal};
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
@@ -767,10 +767,14 @@ fn spans_of(rows: Vec<(Vec<u8>, Vec<u8>)>) -> Stored {
 fn span(key_off: usize, key_len: usize, value_off: usize, value_len: usize) -> ItemSpan {
     let n = |x: usize| u32::try_from(x).unwrap_or(u32::MAX);
     ItemSpan {
-        key_off: n(key_off),
-        key_len: n(key_len),
-        value_off: n(value_off),
-        value_len: n(value_len),
+        key: Span {
+            offset: n(key_off),
+            len: n(key_len),
+        },
+        value: Span {
+            offset: n(value_off),
+            len: n(value_len),
+        },
     }
 }
 
@@ -843,8 +847,7 @@ impl HostServices for KernelServices {
             let mut s = Stored::ready(svc::FOUND);
             s.bytes = v;
             s.spans.push(ItemSpan {
-                key_off: svc_absent(),
-                key_len: 0,
+                key: absent_span(),
                 ..span(0, 0, 0, len)
             });
             s
@@ -1028,8 +1031,7 @@ impl HostServices for KernelServices {
             let off = stored.bytes.len();
             stored.bytes.extend_from_slice(n.as_bytes());
             stored.spans.push(ItemSpan {
-                value_off: svc_absent(),
-                value_len: 0,
+                value: absent_span(),
                 ..span(off, n.len(), 0, 0)
             });
         }
@@ -1080,9 +1082,12 @@ impl KernelServices {
     }
 }
 
-/// An absent span's offset.
-const fn svc_absent() -> u32 {
-    busbar_contract::abi::mechanism::check::SPAN_ABSENT
+/// An absent span.
+const fn absent_span() -> Span {
+    Span {
+        offset: busbar_contract::abi::mechanism::check::SPAN_ABSENT,
+        len: 0,
+    }
 }
 
 /// The verdict a refusal answers. A destination naming a scheme the web schemes do not cover reads

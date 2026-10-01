@@ -245,133 +245,34 @@ fn inject_stream_usage(hop: &Hop<'_>, payload: Bytes) -> Result<Bytes, Response>
     })
 }
 
-/// The refusal detail for a streaming body whose `stream_options` is neither an object nor `null`.
-pub(crate) const DETAIL_STREAM_OPTIONS_NOT_OBJECT: &str =
-    "Invalid type for 'stream_options': expected an object.";
+pub(crate) use crate::engine::xchg::attempt::DETAIL_STREAM_OPTIONS_NOT_OBJECT;
 
-/// Force `stream_options.include_usage: true` on an OpenAI Chat Completions streaming request body so
-/// the upstream emits token usage busbar can bill. Parses `payload`, sets the nested flag
-/// (creating `stream_options` if absent or `null`, overwriting a `false`), and re-serializes. On a
-/// parse failure or a non-object body the ORIGINAL bytes are returned unchanged (`Ok`) — a malformed
-/// body is the upstream's to reject, not busbar's to mangle. A `stream_options` that is present but
-/// neither an object nor `null` returns `Err(original bytes)`: that body cannot be made to report
-/// usage without reshaping the caller's value, and the caller refuses it (item 362). A body that
-/// already opted in re-serializes identically in effect.
+/// Ask a streamed request for its usage (the plane's
+/// `xchg::attempt::try_inject_stream_include_usage`, over this engine's bytes).
 pub(crate) fn try_inject_openai_stream_include_usage(payload: Bytes) -> Result<Bytes, Bytes> {
-    let mut v: Value = match busbar_plane_llm::codec::json::parse(&payload) {
-        Ok(v) => v,
-        Err(_) => return Ok(payload),
-    };
-    let Some(obj) = v.as_object_mut() else {
-        return Ok(payload);
-    };
-    let so = obj
-        .entry("stream_options".to_string())
-        .or_insert_with(|| Value::Object(serde_json::Map::new()));
-    if so.is_null() {
-        *so = Value::Object(serde_json::Map::new());
-    }
-    let Some(so_obj) = so.as_object_mut() else {
-        // `stream_options` present but not an object: busbar must not silently reshape a caller's
-        // value, and forwarding it leaves a lenient upstream silent on usage (a zero-token ledger).
-        return Err(payload);
-    };
-    so_obj.insert("include_usage".to_string(), Value::Bool(true));
-    match busbar_plane_llm::codec::json::to_vec(&v) {
-        Ok(bytes) => Ok(Bytes::from(bytes)),
-        Err(_) => Ok(payload),
-    }
+    crate::engine::xchg::attempt::try_inject_stream_include_usage(payload.to_vec())
+        .map(Bytes::from)
+        .map_err(Bytes::from)
 }
 
-/// [`try_inject_openai_stream_include_usage`] with the unmeterable case folded back to the caller's
-/// bytes verbatim: the injector's byte contract, as the injector tests read it.
 #[cfg(test)]
 pub(crate) fn inject_openai_stream_include_usage(payload: Bytes) -> Bytes {
     try_inject_openai_stream_include_usage(payload).unwrap_or_else(|verbatim| verbatim)
 }
 
-/// [`try_inject_openai_stream_include_usage_pristine`] with the unmeterable case folded back to the
-/// caller's bytes verbatim, as the injector tests read it.
 #[cfg(test)]
 pub(crate) fn inject_openai_stream_include_usage_pristine(payload: Bytes) -> Bytes {
     try_inject_openai_stream_include_usage_pristine(payload).unwrap_or_else(|verbatim| verbatim)
 }
 
-/// Cheap forward substring scan (needle is a short constant `"stream_options"` key literal). Avoids
-/// pulling a dependency for the one idempotency check below; the haystack is a request body scanned
-/// at most once, so the naive O(n*m) walk is well within the byte-level path's budget.
-fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return needle.is_empty();
-    }
-    haystack.windows(needle.len()).any(|w| w == needle)
-}
-
-/// PRISTINE-PRESERVING variant of [`try_inject_openai_stream_include_usage`] for a body the head
-/// projection already proved carries NO top-level `stream_options` key. Splices
-/// `"stream_options":{"include_usage":true},` in immediately after the opening `{` instead of
-/// parsing + re-serializing the whole DOM, so a same-protocol pristine passthrough body stays
-/// parse-free while still forcing the upstream to emit billable token usage.
-///
-/// SOUNDNESS: the caller gates entry on `!client_has_stream_options`, but that decision was captured
-/// off the PRE-rewrite ingress body; a `prompt: rw` hook that injects a top-level `stream_options`
-/// key leaves it STALE (`false`), and a blind leading-member splice would then produce a DUPLICATE
-/// top-level `stream_options`. Under JSON last-wins the rewrite's copy would be honored and busbar's
-/// injected `include_usage` silently discarded, so the upstream emits no usage and busbar bills ZERO
-/// tokens for the stream. To stay correct regardless of what a rewrite did, this injector is itself
-/// IDEMPOTENT: it first scans the (post-any-rewrite) body being sent for the `"stream_options"` key
-/// bytes and, if present, defers to the DOM injector [`try_inject_openai_stream_include_usage`], which is
-/// duplicate-safe via `entry()` (it upgrades the existing object in place). The substring scan is
-/// conservative: a body that merely mentions `stream_options` inside a string value would also defer
-/// (a rare, harmless extra DOM parse, never a correctness or duplicate-key issue). The common
-/// no-rewrite pristine path carries no such bytes, so it still takes the cheap byte-splice with no
-/// DOM parse. The splice is a LEADING member, so it never lands after the object's final key without
-/// a comma, and the object is known non-empty on the streaming path (`stream` at minimum). Any body
-/// that is not a JSON object starting with `{` (or the degenerate empty `{}`) falls back to the DOM
-/// injector, which itself returns the bytes unchanged on a non-object - so a malformed/edge body is
-/// never corrupted.
-/// A deferred body whose `stream_options` is neither an object nor `null` answers `Err` exactly as
-/// the DOM injector does, so a rewrite-injected wrong-typed value is refused, not forwarded.
+/// The same ask without a parse when the bytes provably carry no `stream_options` (the plane's
+/// `xchg::attempt::try_inject_stream_include_usage_pristine`).
 pub(crate) fn try_inject_openai_stream_include_usage_pristine(
     payload: Bytes,
 ) -> Result<Bytes, Bytes> {
-    const INSERT: &[u8] = br#""stream_options":{"include_usage":true},"#;
-    // IDEMPOTENCY GUARD: if the body being sent already carries a `stream_options` key (e.g. a rewrite
-    // hook injected one after the caller's has-stream_options decision was captured), a blind splice
-    // would duplicate the top-level key and last-wins would drop busbar's include_usage, billing
-    // zero. Defer to the duplicate-safe DOM injector. Cheap byte scan; the no-rewrite fast path (no
-    // such bytes present) is unaffected and still takes the splice below.
-    if contains_subslice(&payload, br#""stream_options""#) {
-        return try_inject_openai_stream_include_usage(payload);
-    }
-    // Find the first `{`, skipping only leading ASCII whitespace (the sole bytes JSON permits before
-    // the top-level value). Anything else at the front is not a plain object body - defer to the DOM
-    // injector rather than splice blindly.
-    let mut i = 0usize;
-    while i < payload.len() && payload[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    // The byte AFTER the brace must begin a KEY (`"`) for the leading-member splice to stay valid
-    // JSON; on `{}` (next non-space is `}`) or any non-object body, fall back to the DOM path.
-    let opens_object = payload.get(i) == Some(&b'{');
-    let next = {
-        let mut j = i + 1;
-        while j < payload.len() && payload[j].is_ascii_whitespace() {
-            j += 1;
-        }
-        payload.get(j).copied()
-    };
-    if !opens_object || next != Some(b'"') {
-        return try_inject_openai_stream_include_usage(payload);
-    }
-    // Splice: [ .. up to and including `{` ] + INSERT + [ first key .. end ]. `i+1` is the byte just
-    // past the brace; the retained tail is byte-for-byte the caller's, so nothing else is disturbed.
-    let brace_end = i + 1;
-    let mut out = Vec::with_capacity(payload.len() + INSERT.len());
-    out.extend_from_slice(&payload[..brace_end]);
-    out.extend_from_slice(INSERT);
-    out.extend_from_slice(&payload[brace_end..]);
-    Ok(Bytes::from(out))
+    crate::engine::xchg::attempt::try_inject_stream_include_usage_pristine(payload.to_vec())
+        .map(Bytes::from)
+        .map_err(Bytes::from)
 }
 
 #[cfg(test)]

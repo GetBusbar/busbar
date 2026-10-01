@@ -29,6 +29,8 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 # The folded `egress_auth` sigv4 signer.
 hmac = { workspace = true }
+# The caller reference (`caller_ref`): HKDF and HMAC-SHA256 on the one crypto backend.
+ring = { workspace = true }
 # The OAuth token response's tolerant `expires_in` parse (`egress_auth::deserialize_expires_in`) is a
 # serde deserializer. A leaf already in this crate's closure through `busbar-contract`.
 serde = { workspace = true }

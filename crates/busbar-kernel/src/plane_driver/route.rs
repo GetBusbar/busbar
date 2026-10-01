@@ -26,11 +26,12 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, EMIT_DONE, EMIT_TO_FAR_END,
-    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, VERDICT_RETRY,
+    FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, EMIT_DONE, EMIT_TO_FAR_END,
+    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
+    PIECE_OUT_TEXT, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
-use busbar_contract::caps::ReasonCode;
+use busbar_contract::caps::{Pass, ReasonCode, Route};
 use busbar_contract::plane_calls::{Answered, Lent, PieceInFlight};
 use tokio::sync::watch;
 
@@ -47,6 +48,40 @@ pub struct FarPiece {
     pub status: Option<(u32, u32)>,
     /// No piece follows.
     pub last: bool,
+    /// On the reply's first piece: the far end's response head fields the plane's need keeps, in
+    /// the far end's order, names lower-case (no other response field crosses).
+    pub head: Vec<(Vec<u8>, Vec<u8>)>,
+    /// The bytes are the far end's fields after its body (trailers): pushed with `PIECE_FIELDS`,
+    /// and the plane decides what they mean.
+    pub fields: bool,
+    /// The walk's own status table (the breaker's `Disposition` of this piece's status) says this
+    /// attempt fails over: the pump moves to the next member WITHOUT pushing the piece to the
+    /// plane, while no byte has reached the caller.
+    pub fail_over: bool,
+}
+
+/// What the walk answers for an attempt: the member to try, or the pool's exhaustion terminal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pick {
+    /// The member the walk picked and admitted through its breaker, and the pool it picked it
+    /// from (a member shapes its request per pool).
+    Member {
+        /// The member's configured name.
+        name: String,
+        /// The pool's configured name.
+        pool: String,
+        /// Whether the member relays the caller's own credential to the far end (its upstream
+        /// credentials are passthrough); the plane is told on every piece from this attempt on.
+        passthrough: bool,
+    },
+    /// No member is left: the walk's exhaustion terminal, the status the caller is told and its
+    /// Retry-After seconds (the floor the walk applies), when it names one.
+    Exhausted {
+        /// The status number.
+        status: u32,
+        /// The Retry-After seconds.
+        retry_after: Option<u32>,
+    },
 }
 
 /// One attempt's request, as the plane bound it for the far end.
@@ -54,6 +89,8 @@ pub struct FarPiece {
 pub struct OutboundRequest {
     /// The member the walk picked.
     pub member: String,
+    /// The pool the walk picked it from.
+    pub pool: String,
     /// The attempt's number, from `1`.
     pub attempt_no: u32,
     /// The verb.
@@ -70,12 +107,26 @@ pub struct OutboundRequest {
 /// in production (member pick, breaker, allow-list, pin, auth fields, the send); a test double in
 /// the driver's own proofs.
 pub trait FarEnd: Sync {
-    /// The member for attempt `attempt_no` (from `1`); `None` when the walk has none left.
-    fn member(&self, attempt_no: u32) -> Option<String>;
+    /// The member for attempt `attempt_no` (from `1`), or the walk's exhaustion terminal. May await
+    /// (the walk's backoff and queue terminals); the pump bounds it by the unit's deadline.
+    ///
+    /// Every method is handed the route step's pass, which the walk's breaker records under.
+    fn member<'a>(
+        &'a self,
+        token: &'a Pass<Route>,
+        attempt_no: u32,
+    ) -> impl Future<Output = Pick> + Send + 'a;
     /// Send one attempt's request; `false` when it could not be sent.
-    fn send(&self, request: OutboundRequest) -> impl Future<Output = bool> + Send + '_;
+    fn send<'a>(
+        &'a self,
+        token: &'a Pass<Route>,
+        request: OutboundRequest,
+    ) -> impl Future<Output = bool> + Send + 'a;
     /// The current attempt's next reply piece; `None` once the reply has ended.
-    fn next(&self) -> impl Future<Output = Option<FarPiece>> + Send + '_;
+    fn next<'a>(
+        &'a self,
+        token: &'a Pass<Route>,
+    ) -> impl Future<Output = Option<FarPiece>> + Send + 'a;
 }
 
 /// THE CALLER'S SIDE of the unit: the reply head, then the reply bytes.
@@ -85,6 +136,11 @@ pub trait CallerEnd: Sync {
     /// Write `bytes`, resolving once they are written (the caller's side was writable); `false`
     /// when the caller has gone.
     fn write<'a>(&'a self, bytes: &'a [u8]) -> impl Future<Output = bool> + Send + 'a;
+    /// Write `bytes` as ONE text message (the plane answered `PIECE_OUT_TEXT`); a caller's side
+    /// with no text/binary distinction writes them as any bytes.
+    fn write_text<'a>(&'a self, bytes: &'a [u8]) -> impl Future<Output = bool> + Send + 'a {
+        self.write(bytes)
+    }
 }
 
 /// Every host buffer an `on_piece` names, and the bytes it borrows. Owned by the op while it is in
@@ -101,6 +157,18 @@ pub(crate) struct PieceBufs {
     input: Vec<u8>,
     /// The current attempt's member.
     member: Vec<u8>,
+    /// The pool the current attempt's member was picked from.
+    pool: Vec<u8>,
+    /// The snapshot claim the unit arrived on, lent on every piece.
+    pub(crate) claim: u32,
+    /// The dialect `arrive` answered, lent on every piece.
+    pub(crate) dialect: u32,
+    /// The caller's opaque reference, lent on every piece (empty = none).
+    pub(crate) caller_ref: Vec<u8>,
+    /// The far end's kept response head fields, lent on the answer's first piece.
+    head: FieldList,
+    /// Whether the current attempt's member relays the caller's own credential.
+    pub(crate) passthrough: bool,
 }
 
 impl PieceBufs {
@@ -114,6 +182,12 @@ impl PieceBufs {
             body,
             input: Vec::new(),
             member: Vec::new(),
+            pool: Vec::new(),
+            claim: 0,
+            dialect: 0,
+            caller_ref: Vec::new(),
+            head: FieldList::default(),
+            passthrough: false,
         };
         bufs.grow(caps.units, caps.records, caps.fields, caps.arena);
         bufs
@@ -165,6 +239,8 @@ struct Piece {
     status: (u32, u32),
     attempt_no: u32,
     src: Src,
+    /// The piece lends the far end's kept response head fields.
+    head: bool,
 }
 
 impl Piece {
@@ -176,6 +252,7 @@ impl Piece {
             status: (0, 0),
             attempt_no: 0,
             src: Src::None,
+            head: false,
             ..self
         }
     }
@@ -189,10 +266,23 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
         Src::Input => &bufs.input[..],
         Src::None => &[][..],
     };
-    let member = if p.attempt_no == 0 {
-        &[][..]
+    let (member, pool) = if p.attempt_no == 0 {
+        (&[][..], &[][..])
     } else {
-        &bufs.member[..]
+        (&bufs.member[..], &bufs.pool[..])
+    };
+    let str_of = |b: &[u8]| {
+        if b.is_empty() {
+            AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            }
+        } else {
+            AbiStr {
+                ptr: b.as_ptr(),
+                len: b.len(),
+            }
+        }
     };
     let input = OnPieceIn {
         unit,
@@ -213,6 +303,18 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
         arena_cap: bufs.arena.len(),
         member: AbiStr::over(member),
         attempt_no: p.attempt_no,
+        // The walk's pool is named with its member, on an ATTEMPT piece.
+        pool: str_of(pool),
+        caller_ref: str_of(&bufs.caller_ref),
+        claim: bufs.claim,
+        dialect: bufs.dialect,
+        head_fields: if p.head {
+            bufs.head.as_ptr()
+        } else {
+            std::ptr::null()
+        },
+        head_fields_len: if p.head { bufs.head.len() } else { 0 },
+        passthrough: u32::from(bufs.passthrough),
         ..blank_in()
     };
     (input, blank_out())
@@ -224,6 +326,8 @@ pub(crate) enum End {
     Done,
     /// The unit failed; nothing was cancelled.
     Failed(ReasonCode),
+    /// The walk had no member left: its exhaustion terminal's status and Retry-After seconds.
+    Exhausted(u32, Option<u32>),
     /// The driver cancels the unit; the answer of the op that was in flight, if one was.
     Cancel(ReasonCode, Option<Answered>),
 }
@@ -296,6 +400,7 @@ type Keep = Arc<Mutex<Option<Box<PieceBufs>>>>;
 /// sweep's ticketless `cancel`.
 pub(crate) struct Pumping<'u> {
     driver: &'u PlaneDriver,
+    token: &'u Pass<Route>,
     state: &'u Mutex<UnitState>,
     ctx: &'u UnitCtx,
     ticket: Ticket,
@@ -308,8 +413,10 @@ pub(crate) struct Pumping<'u> {
 }
 
 impl<'u> Pumping<'u> {
+    #[allow(clippy::too_many_arguments)] // the unit's pass beside its six
     pub(crate) fn new(
         driver: &'u PlaneDriver,
+        token: &'u Pass<Route>,
         state: &'u Mutex<UnitState>,
         ctx: &'u UnitCtx,
         ticket: Ticket,
@@ -318,6 +425,7 @@ impl<'u> Pumping<'u> {
     ) -> Self {
         Pumping {
             driver,
+            token,
             state,
             ctx,
             ticket,
@@ -381,6 +489,14 @@ impl<'u> Pumping<'u> {
         let bill = CancelBill::new(cause, disposition, &facts);
         self.driver.money.cancelled(self.ctx, &bill);
         bill
+    }
+
+    /// Lend the unit's own facts on every piece it pushes: the claim it arrived on, the dialect
+    /// `arrive` answered, and the caller's opaque reference (empty = none).
+    pub(crate) fn lend_unit(&mut self, claim: u32, dialect: u32, caller_ref: &[u8]) {
+        self.bufs.claim = claim;
+        self.bufs.dialect = dialect;
+        self.bufs.caller_ref = caller_ref.to_vec();
     }
 
     /// The unit reached its end: its ticket goes back.
@@ -466,16 +582,36 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
         let mut attempt_no = 0;
         'attempt: loop {
             attempt_no += 1;
-            let member = self.far.member(attempt_no);
-            if member.is_none() && attempt_no > 1 {
-                return End::Failed(ReasonCode::DestinationUnreachable);
-            }
-            let member = member.unwrap_or_default();
+            let picked = guarded_run(run, self.far.member(run.token, attempt_no)).await;
+            let ((member, pool), terminal) = match picked {
+                Ok(Pick::Member {
+                    name,
+                    pool,
+                    passthrough,
+                }) => {
+                    run.bufs.passthrough = passthrough;
+                    ((name, pool), None)
+                }
+                Ok(Pick::Exhausted {
+                    status,
+                    retry_after,
+                }) if attempt_no == 1 => {
+                    ((String::new(), String::new()), Some((status, retry_after)))
+                }
+                Ok(Pick::Exhausted {
+                    status,
+                    retry_after,
+                }) => return End::Exhausted(status, retry_after),
+                Err(cause) => return End::Cancel(cause, None),
+            };
             run.bufs.member.clear();
             run.bufs.member.extend_from_slice(member.as_bytes());
+            run.bufs.pool.clear();
+            run.bufs.pool.extend_from_slice(pool.as_bytes());
             let far_bound = !member.is_empty();
             let mut request = OutboundRequest {
                 member,
+                pool,
                 attempt_no,
                 ..OutboundRequest::default()
             };
@@ -488,6 +624,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 status: (0, 0),
                 attempt_no,
                 src: Src::None,
+                head: false,
             };
             let body = Piece {
                 from: FROM_CALLER,
@@ -513,9 +650,12 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 return End::Done;
             }
             if !far_bound {
-                return End::Failed(ReasonCode::DestinationUnreachable);
+                return match terminal {
+                    Some((status, retry_after)) => End::Exhausted(status, retry_after),
+                    None => End::Failed(ReasonCode::DestinationUnreachable),
+                };
             }
-            match guarded_run(run, self.far.send(request)).await {
+            match guarded_run(run, self.far.send(run.token, request)).await {
                 Ok(true) => {}
                 // Not sent, so nothing reached the caller: fail over.
                 Ok(false) => continue 'attempt,
@@ -523,7 +663,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             }
             let mut first = true;
             loop {
-                let piece = match guarded_run(run, self.far.next()).await {
+                let piece = match guarded_run(run, self.far.next(run.token)).await {
                     Ok(Some(piece)) => piece,
                     Ok(None) => FarPiece {
                         last: true,
@@ -531,14 +671,24 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     },
                     Err(cause) => return End::Cancel(cause, None),
                 };
+                // THE WALK'S OWN STATUS TABLE: an attempt it fails over never reaches the plane,
+                // while nothing has reached the caller.
+                if piece.fail_over && !run.lock().facts.streamed {
+                    continue 'attempt;
+                }
                 run.lock().facts.far_end_answered = true;
                 run.bufs.input.clear();
                 run.bufs.input.extend_from_slice(&piece.bytes);
                 let status = piece.status.filter(|_| first);
+                if status.is_some() {
+                    // THE ANSWER'S HEAD: the kept response fields cross with its first piece.
+                    run.bufs.head = FieldList::new(piece.head.clone());
+                }
                 first = false;
                 let far = Piece {
                     from: FROM_FAR_END,
                     flags: if piece.last { PIECE_LAST } else { 0 }
+                        | if piece.fields { PIECE_FIELDS } else { 0 }
                         | if status.is_some() {
                             PIECE_HAS_STATUS
                         } else {
@@ -547,6 +697,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     status: status.unwrap_or((0, 0)),
                     attempt_no: 0,
                     src: Src::Input,
+                    head: status.is_some(),
                 };
                 match self.push(run, far, &mut Toward::Caller).await {
                     Step::End(end) => return end,
@@ -632,7 +783,14 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         let left = run.left();
                         let Pumping { stop, bufs, .. } = &mut *run;
                         let emitted = &bufs.reply[..n];
-                        match guarded(stop, left, self.caller.write(emitted)).await {
+                        let written = async {
+                            if out.flags & PIECE_OUT_TEXT != 0 {
+                                self.caller.write_text(emitted).await
+                            } else {
+                                self.caller.write(emitted).await
+                            }
+                        };
+                        match guarded(stop, left, written).await {
                             Ok(true) => {}
                             Ok(false) => {
                                 return Step::End(End::Cancel(ReasonCode::ClientGone, None));
@@ -653,3 +811,8 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/route_tests.rs"]
+mod tests;

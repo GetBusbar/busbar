@@ -347,8 +347,7 @@ extern "C" {
 #define BB_PLANE_REFUSAL_KERNEL UINT32_C(0) /* [`RefusalIn::cause`]: the kernel refused. */
 #define BB_PLANE_REFUSAL_GATE UINT32_C(1) /* [`RefusalIn::cause`]: a gate refused. */
 #define BB_PLANE_MARK_GATE_REJECTED UINT32_C(1) /* [`RefusalOut::marker`]: the rendered refusal is a gate rejection (the `GateRejected` marker the */
-#define BB_PLANE_RECORD_PUT UINT32_C(1) /* [`RecordWrite::op`]: put. */
-#define BB_PLANE_RECORD_DELETE UINT32_C(2) /* [`RecordWrite::op`]: delete. */
+#define BB_PLANE_RECORD_PUT UINT32_C(1) /* [`RecordWrite::op`]: put, the one record write there is. A record is never deleted by a write: */
 #define BB_PLANE_ROUTE_PUBLIC UINT32_C(1) /* [`AdminRoute::flags`]: a public route. [`slot::SERVE`] serves it to an unauthenticated caller; */
 #define BB_PLANE_CHAIN_LENGTH_PREFIXED UINT32_C(1) /* [`RecordChain::framing`]: each field of the record's digest is length-prefixed. */
 #define BB_PLANE_CHAIN_PIPE_SEPARATED UINT32_C(2) /* [`RecordChain::framing`]: the fields of the record's digest are joined by `|`. */
@@ -472,7 +471,8 @@ extern "C" {
 #define BB_HSVC_OP_ENTITLEMENT_CHECK UINT32_C(15) /* `entitlement.check`. */
 #define BB_HSVC_OP_CONTENT_SCAN UINT32_C(16) /* `content.scan`. */
 #define BB_HSVC_OP_HOOK_CALL UINT32_C(17) /* `hook.call`. */
-#define BB_HSVC_SERVICES UINT32_C(18) /* How many services [`HostSlots`] holds. */
+#define BB_HSVC_OP_RANDOM_FILL UINT32_C(18) /* `random.fill`. */
+#define BB_HSVC_SERVICES UINT32_C(19) /* How many services [`HostSlots`] holds. */
 #define BB_HSVC_ABSENT UINT64_C(0) /* `value` of [`op::RECORDS_GET`]: no such record. */
 #define BB_HSVC_FOUND UINT64_C(1) /* `value` of [`op::RECORDS_GET`]: the record is in span `0`. */
 #define BB_HSVC_CLAIM_WON UINT64_C(1) /* `value` of [`op::RECORDS_CLAIM`]: this call made the claim. */
@@ -496,6 +496,7 @@ extern "C" {
 #define BB_HSVC_VERIFY_FOLLOW UINT64_C(3) /* `verify.lookup`: the caller followed a leader, whose entry is in span `0`. */
 #define BB_HSVC_NOT_ENTITLED UINT64_C(0) /* `entitlement.check`: not entitled. */
 #define BB_HSVC_ENTITLED UINT64_C(1) /* `entitlement.check`: entitled. */
+#define BB_HSVC_MAX_RANDOM_FILL UINT64_C(1024) /* The most bytes one `random.fill` answers. */
 #define BB_HSVC_CONTENT_PASS UINT64_C(0) /* `content.scan`: the content passes. */
 #define BB_HSVC_CONTENT_BLOCK UINT64_C(1) /* `content.scan`: the gate blocked it. */
 
@@ -777,6 +778,7 @@ typedef struct bb_hsvc_TrustDueIn bb_hsvc_TrustDueIn;
 typedef struct bb_hsvc_VerifyLookupIn bb_hsvc_VerifyLookupIn;
 typedef struct bb_hsvc_VerifyStoreIn bb_hsvc_VerifyStoreIn;
 typedef struct bb_hsvc_EntitlementCheckIn bb_hsvc_EntitlementCheckIn;
+typedef struct bb_hsvc_RandomFillIn bb_hsvc_RandomFillIn;
 typedef struct bb_hsvc_ContentScanIn bb_hsvc_ContentScanIn;
 typedef struct bb_hsvc_HookCallIn bb_hsvc_HookCallIn;
 typedef struct bb_hsvc_HostSlots bb_hsvc_HostSlots;
@@ -3054,6 +3056,13 @@ struct bb_hsvc_EntitlementCheckIn {
     bb_mech_AbiStr target;
 };
 
+/* [`op::RANDOM_FILL`]'s `in`: `len` bytes from the kernel's CSPRNG, written into `into`'s bytes */
+struct bb_hsvc_RandomFillIn {
+    bb_hsvc_ServiceHead head;
+    uint64_t len;
+    bb_hsvc_ServiceBufs into;
+};
+
 /* [`op::CONTENT_SCAN`]'s `in`: pass a piece of in-session content through the gate that governs */
 struct bb_hsvc_ContentScanIn {
     bb_hsvc_ServiceHead head;
@@ -3092,9 +3101,10 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn entitlement_check;
     bb_hsvc_ServiceFn content_scan;
     bb_hsvc_ServiceFn hook_call;
+    bb_hsvc_ServiceFn random_fill;
 };
 
-/* ---- layout proof: 244 of 245 structures are pinned by the golden ---- */
+/* ---- layout proof: 245 of 246 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -4869,6 +4879,11 @@ BB_ASSERT(sizeof(bb_hsvc_EntitlementCheckIn) == 40, "bb_hsvc_EntitlementCheckIn:
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_EntitlementCheckIn) == 8, "bb_hsvc_EntitlementCheckIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_EntitlementCheckIn, head) == 0, "bb_hsvc_EntitlementCheckIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_EntitlementCheckIn, target) == 24, "bb_hsvc_EntitlementCheckIn.target: offset");
+BB_ASSERT(sizeof(bb_hsvc_RandomFillIn) == 64, "bb_hsvc_RandomFillIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_RandomFillIn) == 8, "bb_hsvc_RandomFillIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_RandomFillIn, head) == 0, "bb_hsvc_RandomFillIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_RandomFillIn, len) == 24, "bb_hsvc_RandomFillIn.len: offset");
+BB_ASSERT(offsetof(bb_hsvc_RandomFillIn, into) == 32, "bb_hsvc_RandomFillIn.into: offset");
 BB_ASSERT(sizeof(bb_hsvc_ContentScanIn) == 80, "bb_hsvc_ContentScanIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_ContentScanIn) == 8, "bb_hsvc_ContentScanIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_ContentScanIn, head) == 0, "bb_hsvc_ContentScanIn.head: offset");
@@ -4881,7 +4896,7 @@ BB_ASSERT(offsetof(bb_hsvc_HookCallIn, stage) == 24, "bb_hsvc_HookCallIn.stage: 
 BB_ASSERT(offsetof(bb_hsvc_HookCallIn, _reserved) == 28, "bb_hsvc_HookCallIn._reserved: offset");
 BB_ASSERT(offsetof(bb_hsvc_HookCallIn, view) == 32, "bb_hsvc_HookCallIn.view: offset");
 BB_ASSERT(offsetof(bb_hsvc_HookCallIn, into) == 40, "bb_hsvc_HookCallIn.into: offset");
-BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 152, "bb_hsvc_HostSlots: size");
+BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 160, "bb_hsvc_HostSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_HostSlots) == 8, "bb_hsvc_HostSlots: alignment");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, size) == 0, "bb_hsvc_HostSlots.size: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, slots) == 4, "bb_hsvc_HostSlots.slots: offset");
@@ -4903,6 +4918,7 @@ BB_ASSERT(offsetof(bb_hsvc_HostSlots, verify_store) == 120, "bb_hsvc_HostSlots.v
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, entitlement_check) == 128, "bb_hsvc_HostSlots.entitlement_check: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, content_scan) == 136, "bb_hsvc_HostSlots.content_scan: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, hook_call) == 144, "bb_hsvc_HostSlots.hook_call: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, random_fill) == 152, "bb_hsvc_HostSlots.random_fill: offset");
 #endif
 
 #ifdef __cplusplus

@@ -19,6 +19,8 @@
 //! the dialect-specific helpers are not shapes and stay there.
 
 use crate::operation::OpVerb;
+// TRANSITIONAL: drains at codec-seam (a)/(c).
+use http::{HeaderMap, HeaderName, HeaderValue};
 
 // ── THE CANONICAL error-`type` VOCABULARY. The forward layer's error-KIND bank below, the admin
 //    API's not-found/invalid-request types and every dialect writer alias these, so each shared
@@ -256,6 +258,25 @@ pub struct ClaimStrength(pub u16);
 /// alone.
 pub type ClaimsFn = fn(&http::HeaderMap, &str) -> Option<ClaimStrength>;
 
+/// A request head as a plane receives it: its fields in order, each name and value as bytes (the
+/// plane ABI's head fields, borrowed). A plane is transport-blind, so it reads a head as this and
+/// never as a transport's header type.
+/// TRANSITIONAL: drains at codec-seam (a)/(c).
+pub type HeadFields<'a> = &'a [(&'a [u8], &'a [u8])];
+
+/// `fields` as the header map a [`ClaimsFn`] or a dialect's error-header writer reads; a field whose
+/// name or value is not a legal header is skipped, as no such header reaches a dialect today.
+/// TRANSITIONAL: drains at codec-seam (a)/(c).
+fn header_map(fields: HeadFields<'_>) -> HeaderMap {
+    let mut h = HeaderMap::with_capacity(fields.len());
+    for (name, value) in fields {
+        if let (Ok(n), Ok(v)) = (HeaderName::from_bytes(name), HeaderValue::from_bytes(value)) {
+            h.append(n, v);
+        }
+    }
+    h
+}
+
 /// The RESIDUAL detection predicate a protocol supplies: `path -> Option<ClaimStrength>`, from the
 /// path SHAPE ALONE (no headers). Narrower than [`ClaimsFn`] — it is the arm the mount table falls
 /// through to when deciding which native error envelope an UNMOUNTED path should wear, and it owns
@@ -336,6 +357,20 @@ pub trait DialectCodec: Send + Sync {
         kind: &str,
         envelope: &serde_json::Value,
     );
+    /// The head fields this dialect's error response carries, as a plane writes them: what
+    /// [`DialectCodec::attach_error_response_headers`] attaches, in order, names lowercase.
+    /// TRANSITIONAL: drains at codec-seam (a)/(c).
+    fn error_response_fields(
+        &self,
+        kind: &str,
+        envelope: &serde_json::Value,
+    ) -> Vec<(String, Vec<u8>)> {
+        let mut h = header_map(&[]);
+        self.attach_error_response_headers(&mut h, kind, envelope);
+        h.iter()
+            .map(|(n, v)| (n.as_str().to_string(), v.as_bytes().to_vec()))
+            .collect()
+    }
     /// This protocol's upstream-error vocabulary (the reader's `extract_error`), reached by name so
     /// `handlers::protocol_error` names no concrete reader. `status` is the raw HTTP code.
     fn extract_error(&self, status: u16, body: &[u8]) -> crate::upstream::RawUpstreamError;
@@ -720,6 +755,15 @@ pub struct ProtocolDecl {
 }
 
 impl ProtocolDecl {
+    /// This dialect's router claim on `(path, fields)`: [`ProtocolDecl::claims`] over a plane's
+    /// head fields, `None` when the dialect claims no request at all.
+    /// TRANSITIONAL: drains at codec-seam (a)/(c).
+    #[must_use]
+    pub fn claim_over(&self, path: &str, fields: HeadFields<'_>) -> Option<ClaimStrength> {
+        let claims = self.claims?;
+        claims(&header_map(fields), path)
+    }
+
     /// A NAME-ONLY DECLARATION: this key, and the neutral zero for every other field.
     ///
     /// The declaration has forty-odd fields and almost every one of them is "no". A caller that

@@ -4534,6 +4534,8 @@ fn limit_requests_per_minute(amount: u64) -> crate::config::groups::LimitCfg {
         scope: None,
         on_exhaust: None,
         downgrade_to: None,
+        admission: None,
+        on_exhaustion: None,
     }
 }
 
