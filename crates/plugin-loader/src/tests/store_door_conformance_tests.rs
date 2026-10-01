@@ -60,6 +60,15 @@ fn reserved(s: &LoadedStore, amount: u64) -> Result<Vec<Grant>, StoreFailure> {
     block(StoreCalls::reserve(s, OpId::from_parts(3, 1), 1, &cells))
 }
 
+/// A record read, its bytes shown as text: the derived `Debug` prints a byte list, which no
+/// assertion on the value written can read.
+fn read(answer: Result<Option<RecordBytes>, StoreFailure>) -> String {
+    format!(
+        "{:?}",
+        answer.map(|r| r.map(|r| String::from_utf8_lossy(r.as_slice()).into_owned()))
+    )
+}
+
 /// THE SCRIPT: the store's get/put through its table, one line per answer.
 fn script(s: &LoadedStore) -> Vec<String> {
     let r = |v: &[u8]| RecordBytes::new(v.to_vec()).expect("a record");
@@ -70,20 +79,20 @@ fn script(s: &LoadedStore) -> Vec<String> {
             s.record_put(SCHEMA, b"a", &r(b"one")).await
         ));
         t.push(format!(
-            "get a = {:?}",
-            StoreCalls::record_get(s, SCHEMA, b"a").await
+            "get a = {}",
+            read(StoreCalls::record_get(s, SCHEMA, b"a").await)
         ));
         t.push(format!(
-            "get missing = {:?}",
-            StoreCalls::record_get(s, SCHEMA, b"missing").await
+            "get missing = {}",
+            read(StoreCalls::record_get(s, SCHEMA, b"missing").await)
         ));
         t.push(format!(
             "put a again = {:?}",
             s.record_put(SCHEMA, b"a", &r(b"two")).await
         ));
         t.push(format!(
-            "get a after = {:?}",
-            StoreCalls::record_get(s, SCHEMA, b"a").await
+            "get a after = {}",
+            read(StoreCalls::record_get(s, SCHEMA, b"a").await)
         ));
     });
     let key = VirtualKey {
