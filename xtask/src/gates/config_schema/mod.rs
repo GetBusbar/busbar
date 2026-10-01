@@ -45,7 +45,6 @@ pub mod declared;
 pub mod scan;
 pub mod schema;
 
-
 use serde_json::Value;
 
 use crate::ctx::Ctx;
