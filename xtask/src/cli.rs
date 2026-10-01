@@ -134,9 +134,14 @@ pub fn main(args: &[String]) -> i32 {
             Err(code) => code,
         },
         Some("perf-ab-mock") => crate::perf_ab::mock_main(&args[1..]),
-        // THE DIALECT MAPPING COMPILER. Not a gate: it WRITES the table files; the gate that
-        // refuses their drift is `dialect-map`.
+        // THE DIALECT MAPPING COMPILER (`dialect compile`). Not a gate: it WRITES the table files;
+        // the gate that refuses their drift is `dialect-map`. THE WIRE LOCKS (`dialect wire`). Not a
+        // gate: it GENERATES `dialects/<d>.wire.json` from the pinned provider specs (and checks or
+        // diffs them); `gate field-inventory` reads the result.
         Some("dialect") => match open_ctx() {
+            Ok(cx) if args.get(1).map(String::as_str) == Some("wire") => {
+                crate::wire_lock::main(&cx, &args[1..])
+            }
             Ok(cx) => crate::dialect::main(&cx, &args[1..]),
             Err(code) => code,
         },
@@ -153,12 +158,6 @@ pub fn main(args: &[String]) -> i32 {
         // already reconciled, read-only, so the release pipeline can shell to it directly
         // (`CONFORMANCE-GATES-PLAN.md` §1.3 — turnstile drives local subprocesses, never GitHub
         // check-runs).
-        // THE WIRE LOCKS. Not a gate: it GENERATES `dialects/<d>.wire.json` from the pinned
-        // provider specs (and checks or diffs them); `gate field-inventory` reads the result.
-        Some("dialect") => match open_ctx() {
-            Ok(cx) => crate::wire_lock::main(&cx, &args[1..]),
-            Err(code) => code,
-        },
         Some("conformance") => match open_ctx() {
             Ok(cx) => conformance_check::main(&cx, &args[1..]),
             Err(code) => code,
