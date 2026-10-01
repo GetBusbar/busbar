@@ -752,7 +752,7 @@ fn a_need_keeps_only_declarable_response_fields() {
     n.direction = DIRECTION_OUTBOUND;
     n.transport = s("t");
     let kept = [
-        s("mcp-session-id"),
+        s("x-session-id"),
         s("retry-after"),
         s("x-ratelimit-remaining"),
     ];
