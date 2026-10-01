@@ -37,7 +37,8 @@ use busbar_contract::abi::mechanism::lifecycle::{CancelIn, CancelOut, OpsHead, L
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket, WakeFn};
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
 use busbar_contract::abi::plane::{
-    ArriveIn, ArriveOut, BillableClass, Claim, OnPieceIn, OnPieceOut, OpClass, Ops, OutField,
+    AdminRoute, ArriveIn, ArriveOut, BillableClass, Claim, OnPieceIn, OnPieceOut, OpClass, Ops,
+    OutField, ServeIn, ServeOut, AUDIT_APPLIED, AUDIT_NONE, AUDIT_REJECTED, ROUTE_PUBLIC,
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneSnapshot, PlaneTail, RefusalIn,
     RefusalOut, RefusalStatus, UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL,
     EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE,
@@ -286,7 +287,7 @@ static OPS: Shared<Ops> = Shared(Ops {
     arrive: Some(arrive),
     on_piece: Some(on_piece),
     refusal: Some(refusal),
-    serve: Some(refused),
+    serve: Some(serve),
     hydrate: Some(ready),
     start: Some(ready),
     project: Some(refused),
@@ -310,6 +311,29 @@ static CLAIMS: Shared<[Claim; 1]> = Shared([Claim {
     refusal_dialect: 0,
     _pad: 0,
 }]);
+
+/// The admin routes the snapshot publishes, served through `serve`: an audited admin route, and a
+/// public one the kernel's admin table never serves.
+static ADMIN_ROUTES: Shared<[AdminRoute; 2]> = Shared([
+    AdminRoute {
+        verb: s(b"POST"),
+        target: s(b"/items/{name}/act"),
+        flags: 0,
+        _reserved: 0,
+        audit_verb: s(b"act"),
+    },
+    AdminRoute {
+        verb: s(b"POST"),
+        target: s(b"/items/{name}/hook"),
+        flags: ROUTE_PUBLIC,
+        _reserved: 0,
+        audit_verb: NO_STR,
+    },
+]);
+
+/// The reply bytes a `short` request needs: past the kernel's default reply buffer, so the first
+/// answer is short and the one re-call is served.
+const SHORT_REPLY: usize = 1 << 20;
 
 /// THE DOOR: the `DoorFn` a compiled-in row holds.
 pub extern "C" fn door() -> *const Door {
@@ -423,8 +447,8 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             generation: i.open.generation,
             claims: &CLAIMS.0 as *const Claim,
             claims_len: 1,
-            admin_routes: std::ptr::null(),
-            admin_routes_len: 0,
+            admin_routes: ADMIN_ROUTES.0.as_ptr(),
+            admin_routes_len: ADMIN_ROUTES.0.len(),
             openapi: NO_BLOB,
             audience: NO_STR,
             resource_metadata: NO_STR,
@@ -820,6 +844,73 @@ extern "C" fn refusal(_: *mut c_void, input: *const c_void, out: *mut c_void) ->
         };
         o.fields_written = 1;
         o.arena_written = arena as u64;
+        say(out, Outcome::Ready)
+    }
+}
+
+/// `serve`, route 0 only. The body chooses the answer: `malformed` is 400 and unaudited,
+/// `disagree` is 400 and audited `rejected`, `bad-audit` reports an unknown audit code, `short`
+/// answers short once, `short-twice` on every call; anything else is 200 and audited `applied`.
+/// The reply names the target and the head field names the plane was handed.
+extern "C" fn serve(_: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
+    unsafe {
+        let i = &*input.cast::<ServeIn>();
+        let o = &mut *out.cast::<ServeOut>();
+        if i.route != 0 {
+            return say(out, Outcome::Refused);
+        }
+        let body = bytes(i.body);
+        let (status, audit) = match body {
+            b"malformed" => (400, AUDIT_NONE),
+            b"disagree" => (400, AUDIT_REJECTED),
+            b"bad-audit" => (200, AUDIT_REJECTED + 1),
+            _ => (200, AUDIT_APPLIED),
+        };
+        let fields = if i.fields_len == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(i.fields, i.fields_len)
+        };
+        let names: Vec<&[u8]> = fields.iter().map(|f| text(f.name)).collect();
+        let mut reply = [
+            b"served ".as_slice(),
+            text(i.target),
+            b" fields=",
+            names.join(&b","[..]).as_slice(),
+        ]
+        .concat();
+        let need = match body {
+            b"short" => SHORT_REPLY,
+            b"short-twice" => i.reply_cap + 1,
+            _ => reply.len(),
+        };
+        let (name, value) = (b"content-type".as_slice(), b"text/plain".as_slice());
+        let arena = name.len() + value.len();
+        if need > i.reply_cap || i.fields_cap < 1 || arena > i.arena_cap {
+            o.reply_needed = need as u64;
+            o.fields_needed = 1;
+            o.arena_needed = arena as u64;
+            return say(out, Outcome::Failed);
+        }
+        reply.truncate(i.reply_cap);
+        std::ptr::copy_nonoverlapping(reply.as_ptr(), i.reply_buf, reply.len());
+        o.reply_written = reply.len() as u64;
+        std::ptr::copy_nonoverlapping(name.as_ptr(), i.arena_buf, name.len());
+        std::ptr::copy_nonoverlapping(value.as_ptr(), i.arena_buf.add(name.len()), value.len());
+        *i.fields_buf = OutField {
+            name: Span {
+                offset: 0,
+                len: name.len() as u32,
+            },
+            value: Span {
+                offset: name.len() as u32,
+                len: value.len() as u32,
+            },
+        };
+        o.fields_written = 1;
+        o.arena_written = arena as u64;
+        o.status = status;
+        o.audit = audit;
         say(out, Outcome::Ready)
     }
 }

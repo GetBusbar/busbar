@@ -25,12 +25,15 @@
 //! awaited, so the pump never parks a runtime thread.
 //!
 //! The driver moves no money: units, cancel bills and abandoned ends go to the [`MoneySeam`].
+//!
+//! A plane's admin routes are served by its `serve` op, on the admin router: [`serve`].
 
 mod cancel;
 mod epoch;
 mod far_end;
 mod money;
 mod route;
+pub mod serve;
 
 use std::sync::{Arc, Mutex};
 

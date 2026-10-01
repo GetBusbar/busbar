@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::Outcome as AbiOutcome;
-use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
+use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, PlaneOpenIn, PlaneOpenOut, UnitCount,
     FROM_FAR_END,
@@ -29,7 +29,7 @@ use busbar_contract::abi::plane::{
 use busbar_contract::caps::OpClassId;
 use busbar_kernel::plane_driver::{refusal_status, BufferCaps, DriverConfig, PlaneDriver};
 use busbar_plugin_loader::dispatch::{
-    in_head, kinds::plane::Plane, load_dropped, load_linked, now_ns as dispatch_now, out_head,
+    in_head, kinds::plane::{OwnedSnapshot, Plane}, load_dropped, load_linked, now_ns as dispatch_now, out_head,
     plane_calls::PlaneInstance, rendering_of, Bind, Diagnostic, DispatchConfig, Dispatcher,
     Dropped, EnvelopeSink, Frame, LinkedRow, Metric, NoSink, Plugin, NO_BLOB,
 };
@@ -79,6 +79,15 @@ fn load(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
 
 /// [`load`], with the #85 envelope going to `sink`.
 fn load_with(way: Way, dispatcher: &Dispatcher, sink: Arc<dyn EnvelopeSink>) -> Plugin<Plane> {
+    load_open(way, dispatcher, sink).0
+}
+
+/// [`load_with`], and the first generation's snapshot as the host copied it.
+fn load_open(
+    way: Way,
+    dispatcher: &Dispatcher,
+    sink: Arc<dyn EnvelopeSink>,
+) -> (Plugin<Plane>, OwnedSnapshot) {
     let bind = Bind {
         instance: Arc::from("the-instance"),
         max_inflight_cap: 64,
@@ -123,11 +132,9 @@ fn load_with(way: Way, dispatcher: &Dispatcher, sink: Arc<dyn EnvelopeSink>) -> 
             snapshot: std::ptr::null(),
         },
     );
-    assert_eq!(
-        plugin.call(life::OPEN, &mut open).outcome,
-        AbiOutcome::Ready
-    );
-    plugin
+    let (called, snapshot) = plugin.open(&mut open);
+    assert_eq!(called.outcome, AbiOutcome::Ready);
+    (plugin, snapshot.expect("the snapshot is copied"))
 }
 
 /// The plane's own counters, read through `arrive` on `/stats`.
@@ -428,5 +435,150 @@ fn zero_piece_out() -> OnPieceOut {
         arena_needed: 0,
         verb: span,
         target: span,
+    }
+}
+
+// ── the plane's `serve` op on the admin table (B.9; ARCHITECT C2c S5 Q1-Q6) ─────────────────────
+
+/// The test plane's admin table, as the composition root publishes an open instance's snapshot.
+fn serve_table(
+    way: Way,
+    instance: &str,
+) -> (Plugin<Plane>, busbar_kernel::plane_driver::serve::ServeTable) {
+    use busbar_kernel::plane_driver::serve::{ServeRoute, ServeTable};
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
+        workers: 2,
+        ..DispatchConfig::default()
+    }));
+    let (plugin, snapshot) = load_open(way, &dispatcher, Arc::new(NoSink));
+    let routes = snapshot
+        .admin_routes
+        .iter()
+        .map(|r| ServeRoute {
+            verb: r.verb.clone(),
+            target: r.target.clone(),
+            flags: r.flags,
+            audit_verb: r.audit_verb.clone(),
+        })
+        .collect();
+    let table = ServeTable {
+        instance: instance.to_string(),
+        audit_kind: "testkind".to_string(),
+        calls: Arc::new(PlaneInstance::new(plugin.clone(), dispatcher, 1)),
+        caps: BufferCaps::default(),
+        routes,
+    };
+    (plugin, table)
+}
+
+/// One admin request through the admin router's fallback: its status and body, or `None` when no
+/// published instance names the path (the router's own `404`).
+fn admin(method: &str, path: &str, body: &str) -> Option<(u16, String)> {
+    use axum::http::{HeaderMap, HeaderValue, Method, Uri};
+    let mut headers = HeaderMap::new();
+    headers.insert("authorization", HeaderValue::from_static("Bearer operator-secret"));
+    headers.insert("cookie", HeaderValue::from_static("session=secret"));
+    headers.insert("proxy-authorization", HeaderValue::from_static("Basic secret"));
+    headers.insert("x-trace", HeaderValue::from_static("t-1"));
+    let uri: Uri = format!("{}{path}", busbar_kernel::api::ADMIN_PREFIX)
+        .parse()
+        .expect("a path");
+    let method = Method::from_bytes(method.as_bytes()).expect("a verb");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    rt.block_on(async {
+        let resp = busbar_kernel::plane_driver::serve::answer(
+            &method,
+            &uri,
+            headers,
+            None,
+            None,
+            axum::body::Bytes::from(body.to_string()),
+        )
+        .await?;
+        let status = resp.status().as_u16();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("the body");
+        Some((status, String::from_utf8_lossy(&bytes).into_owned()))
+    })
+}
+
+/// The audit rows written for `resource` under the test plane's audit verb.
+fn rows(resource: &str) -> Vec<String> {
+    busbar_kernel::audit_ring::AUDIT
+        .export()
+        .into_iter()
+        .filter(|e| e.action == "testkind.act" && e.resource == resource)
+        .map(|e| e.outcome)
+        .collect()
+}
+
+/// A DECLARED ADMIN ROUTE REACHES `serve`, AND NOTHING ELSE DOES, both ways. The plane is handed
+/// the request's own head fields without a credential (Q3), answers with its own status, fields
+/// and body, and reports the audit row the kernel writes under the route's audit word (Q4):
+/// 1.5.5's two `400`s, one unaudited (a malformed body), one audited `rejected` (a disagreement).
+/// An undeclared path, a public route (Q6) and an unpublished instance are the router's `404`; a
+/// declared path under another verb is the admin `405`; an index past the snapshot never crosses;
+/// a short answer is re-called once, and a second short answer or an unknown audit code is `502`
+/// (Q5). A route that overlaps another instance's, or a kernel route, is refused at publish (Q2).
+#[test]
+fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
+    use busbar_kernel::plane_driver::serve::{publish, serve, withdraw, Unserved};
+    for way in ways() {
+        let item = format!("{way:?}").to_lowercase();
+        let act = format!("/items/{item}/act");
+        // Unpublished: nothing mounts.
+        assert_eq!(admin("POST", &act, "go"), None, "{way:?}");
+        let (_plugin, table) = serve_table(way, "the-instance");
+        let calls = table.calls.clone();
+        assert_eq!(table.routes.len(), 2, "{way:?}: both routes are copied");
+        publish(table.clone(), &[]).expect("the instance publishes");
+
+        let served = admin("POST", &act, "go").expect("a declared route is served");
+        assert_eq!(
+            served,
+            (200, format!("served {act} fields=x-trace")),
+            "{way:?}: the plane serves it, and sees no credential"
+        );
+        let resource = format!("testkind:{item}");
+        assert_eq!(rows(&resource), ["applied"], "{way:?}");
+        let malformed = admin("POST", &act, "malformed");
+        assert_eq!(malformed.map(|r| r.0), Some(400), "{way:?}");
+        assert_eq!(rows(&resource), ["applied"], "{way:?}: a malformed body is not audited");
+        let disagree = admin("POST", &act, "disagree");
+        assert_eq!(disagree.map(|r| r.0), Some(400), "{way:?}");
+        assert_eq!(rows(&resource), ["applied", "rejected"], "{way:?}");
+
+        assert_eq!(admin("POST", &format!("/items/{item}/other"), "go"), None);
+        assert_eq!(admin("POST", &format!("/items/{item}/hook"), "go"), None);
+        assert_eq!(admin("GET", &act, "").map(|r| r.0), Some(405), "{way:?}");
+
+        assert_eq!(admin("POST", &act, "short").map(|r| r.0), Some(200), "{way:?}");
+        assert_eq!(admin("POST", &act, "short-twice").map(|r| r.0), Some(502));
+        assert_eq!(admin("POST", &act, "bad-audit").map(|r| r.0), Some(502));
+        assert_eq!(rows(&resource).len(), 3, "{way:?}: a FAULT writes no row");
+
+        let past = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a runtime")
+            .block_on(serve(&*calls, BufferCaps::default(), 2, 2, b"/x", Vec::new(), "".into()));
+        assert_eq!(past, Err(Unserved::NoRoute), "{way:?}");
+
+        let other = busbar_kernel::plane_driver::serve::ServeTable {
+            instance: "another".to_string(),
+            ..table.clone()
+        };
+        let refused = publish(other, &[]).expect_err("an overlapping instance is refused");
+        assert_eq!(refused.with, "the-instance", "{way:?}");
+        let kernel = [("POST", "/items/{id}/act")];
+        let refused = publish(table.clone(), &kernel).expect_err("a kernel route is never shadowed");
+        assert_eq!(refused.with, "kernel", "{way:?}");
+        publish(table, &[]).expect("a refresh of the same instance publishes");
+
+        withdraw("the-instance");
+        assert_eq!(admin("POST", &act, "go"), None, "{way:?}: withdrawn, nothing mounts");
     }
 }
