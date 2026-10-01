@@ -500,3 +500,16 @@ fn n_slots_are_reported_dropped_and_not_written() {
         assert!(out.get(key).is_none(), "{key} written: {out}");
     }
 }
+
+/// IR-04 placement: `service_tier` moved from "always raw in `extra`" to a parked mapping row. The
+/// SAME-DIALECT write must still re-emit the caller's exact member — a known word through the
+/// slot, an unknown one raw from `extra` — and an absent member stays absent.
+#[test]
+fn ir04_same_dialect_service_tier_bytes_are_the_callers() {
+    let writer = protocol_for("anthropic").unwrap().writer();
+    for raw in [json!("auto"), json!("standard_only"), json!("turbo"), json!(7)] {
+        let out = writer.write_request(&read(&with(base(), "service_tier", raw.clone())));
+        assert_eq!(out.get("service_tier"), Some(&raw), "{raw}");
+    }
+    assert!(writer.write_request(&read(&base())).get("service_tier").is_none());
+}
