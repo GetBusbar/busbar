@@ -1011,19 +1011,16 @@ dependencies = [
  "http",
  "http-body-util",
  "hyper",
- "hyper-rustls",
  "hyper-util",
  "libloading",
  "memchr",
  "reqwest 0.12.28",
- "rustls",
  "serde_json",
  "tokio",
  "tokio-util",
  "tonic",
  "tower",
  "url",
- "webpki-roots",
 ]
 
 [[package]]

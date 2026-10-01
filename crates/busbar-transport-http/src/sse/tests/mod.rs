@@ -1,6 +1,6 @@
-//! The transport battery, for `sse`: the request/N-response-frame shape over a real streamed
-//! upstream, the inherited `WireStatusClass` at the first response frame, and the terminator/frame
-//! parser tests ported alongside `proto` itself.
+//! The transport battery, for `sse`: the request/N-response-frame shape over the frames the layer
+//! below hands up, the inherited `WireStatusClass` at the first response frame, and the
+//! terminator/frame parser tests ported alongside `proto` itself.
 
 use super::*;
 // The battery drives the `Transport` surface, which now lives in the kind's own `transport.rs`
@@ -11,6 +11,9 @@ use busbar_contract::{
     Frame, Plugin, ScratchBytes, StreamId, Transport, TransportConfigView, TransportKeyHandle,
 };
 use futures::StreamExt;
+
+mod scripted_lower;
+use scripted_lower::{body_frame, ScriptedLower};
 
 /// The seal these fixtures build kernel-side values with: the contract's one blessed fixture
 /// implementor of the SEALED `KernelSeal` trait (#65), dev-only and feature-gated.
@@ -49,37 +52,12 @@ const FIXTURE_FRAMES: [&[u8]; 2] = [
     b"data: {\"a\":2}\n\n",
 ];
 
-/// A fixed upstream that streams two SSE frames in one response body.
-async fn sse_server() -> String {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut buf = [0_u8; 4096];
-        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
-        let body: Vec<u8> = FIXTURE_FRAMES.concat();
-        let resp = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n",
-            body.len()
-        );
-        tokio::io::AsyncWriteExt::write_all(&mut stream, resp.as_bytes())
-            .await
-            .unwrap();
-        tokio::io::AsyncWriteExt::write_all(&mut stream, &body)
-            .await
-            .unwrap();
-    });
-    format!("http://{addr}/")
-}
-
 #[tokio::test]
-async fn request_plus_n_response_frames_over_a_real_stream() {
-    let uri = sse_server().await;
-    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
-    let sse = SseTransport::new(http);
-
+async fn request_plus_n_response_frames_from_the_layer_below() {
+    let body = FIXTURE_FRAMES.concat();
+    let sse = SseTransport::over(ScriptedLower::answering(200, &[body.as_slice()]));
     let conn = sse
-        .dial(&upstream_dest(&uri), &fixture_key())
+        .dial(&upstream_dest("10.0.0.1:443"), &fixture_key())
         .await
         .unwrap();
     sse.write(
@@ -196,39 +174,15 @@ fn the_resegmentation_scan_costs_one_pass_over_the_frame_not_one_per_chunk() {
 #[tokio::test]
 async fn byte_at_a_time_delivery_segments_identically_to_one_shot_delivery() {
     async fn frames_of(trickle: bool) -> Vec<Vec<u8>> {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut buf = [0_u8; 4096];
-            let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
-            let body = b"event: a\ndata: one\n\ndata: two\r\n\r\ndata: three\r\rdata: four\n\n";
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n",
-                body.len()
-            );
-            tokio::io::AsyncWriteExt::write_all(&mut stream, resp.as_bytes())
-                .await
-                .unwrap();
-            if trickle {
-                for byte in body {
-                    tokio::io::AsyncWriteExt::write_all(&mut stream, &[*byte])
-                        .await
-                        .unwrap();
-                    tokio::io::AsyncWriteExt::flush(&mut stream).await.unwrap();
-                }
-            } else {
-                tokio::io::AsyncWriteExt::write_all(&mut stream, body)
-                    .await
-                    .unwrap();
-            }
-        });
-
-        let uri = format!("http://{addr}/");
-        let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
-        let sse = SseTransport::new(http);
+        let body: &[u8] = b"event: a\ndata: one\n\ndata: two\r\n\r\ndata: three\r\rdata: four\n\n";
+        let pieces: Vec<&[u8]> = if trickle {
+            body.chunks(1).collect()
+        } else {
+            vec![body]
+        };
+        let sse = SseTransport::over(ScriptedLower::answering(200, &pieces));
         let conn = sse
-            .dial(&upstream_dest(&uri), &fixture_key())
+            .dial(&upstream_dest("10.0.0.1:443"), &fixture_key())
             .await
             .unwrap();
         sse.write(
@@ -238,6 +192,7 @@ async fn byte_at_a_time_delivery_segments_identically_to_one_shot_delivery() {
         )
         .await
         .unwrap();
+
         let mut out = Vec::new();
         let mut frames = sse.frames(conn);
         while let Some(Ok((_s, f))) = frames.next().await {
@@ -268,59 +223,28 @@ async fn byte_at_a_time_delivery_segments_identically_to_one_shot_delivery() {
 /// here as well as next door — this is where the shape is actually used.
 #[tokio::test]
 async fn a_never_closing_event_stream_delivers_its_events_as_they_arrive() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut buf = [0_u8; 4096];
-        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
-        tokio::io::AsyncWriteExt::write_all(
-            &mut stream,
-            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
-        )
-        .await
-        .unwrap();
-        // One event every 100ms, and no terminal chunk ever: the stream does not end.
-        for i in 0.. {
-            let event = format!("data: {{\"n\":{i}}}\n\n");
-            let mut piece = format!("{:x}\r\n", event.len()).into_bytes();
-            piece.extend_from_slice(event.as_bytes());
-            piece.extend_from_slice(b"\r\n");
-            if tokio::io::AsyncWriteExt::write_all(&mut stream, &piece)
-                .await
-                .is_err()
-            {
-                return;
-            }
-            let _ = tokio::io::AsyncWriteExt::flush(&mut stream).await;
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-    });
-
-    let uri = format!("http://{addr}/");
-    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
-    let sse = SseTransport::new(http);
+    let (more, lower) = ScriptedLower::open(200);
+    let sse = SseTransport::over(lower);
     let conn = sse
-        .dial(&upstream_dest(&uri), &fixture_key())
+        .dial(&upstream_dest("10.0.0.1:443"), &fixture_key())
         .await
         .unwrap();
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        sse.write(
-            &conn,
-            StreamId(0),
-            ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
-        ),
+    sse.write(
+        &conn,
+        StreamId(0),
+        ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
     )
     .await
-    .expect("the request answers on the response head, not on the upstream's close")
     .unwrap();
 
     let mut frames = sse.frames(conn);
     for i in 0..2 {
+        // One event at a time, and the layer below never ends its stream: `more` stays held.
+        more.send(Ok(body_frame(format!("data: {{\"n\":{i}}}\n\n").as_bytes())))
+            .unwrap();
         let (_s, frame) = tokio::time::timeout(std::time::Duration::from_secs(2), frames.next())
             .await
-            .expect("an event arrives while the upstream connection is still open")
+            .expect("an event arrives while the stream below is still open")
             .unwrap()
             .unwrap();
         let (event, data) = proto::parse_sse_frame(frame.bytes.as_slice()).unwrap();
@@ -332,7 +256,7 @@ async fn a_never_closing_event_stream_delivers_its_events_as_they_arrive() {
             "the inherited status leg rides the first response frame only"
         );
     }
-    server.abort();
+    drop(more);
 }
 
 /// An upstream that never ends a frame is refused at the cursor budget, not accumulated forever.
@@ -346,34 +270,15 @@ async fn a_never_closing_event_stream_delivers_its_events_as_they_arrive() {
 /// above pin.
 #[tokio::test]
 async fn an_upstream_frame_past_the_cursor_budget_ends_the_stream() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
     let filler = busbar_contract::MAX_CURSOR_BYTES * 2;
-    tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut buf = [0_u8; 4096];
-        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
-        let mut body = b"data: ".to_vec();
-        // Not one blank line anywhere in it.
-        body.extend_from_slice(&vec![b'x'; filler]);
-        let resp = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n",
-            body.len()
-        );
-        tokio::io::AsyncWriteExt::write_all(&mut stream, resp.as_bytes())
-            .await
-            .unwrap();
-        tokio::io::AsyncWriteExt::write_all(&mut stream, &body)
-            .await
-            .unwrap();
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    });
-
-    let uri = format!("http://{addr}/");
-    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
-    let sse = SseTransport::new(http);
+    let mut body = b"data: ".to_vec();
+    // Not one blank line anywhere in it.
+    body.extend_from_slice(&vec![b'x'; filler]);
+    let (more, lower) = ScriptedLower::open(200);
+    more.send(Ok(body_frame(&body))).unwrap();
+    let sse = SseTransport::over(lower);
     let conn = sse
-        .dial(&upstream_dest(&uri), &fixture_key())
+        .dial(&upstream_dest("10.0.0.1:443"), &fixture_key())
         .await
         .unwrap();
     sse.write(
@@ -394,6 +299,7 @@ async fn an_upstream_frame_past_the_cursor_budget_ends_the_stream() {
         TransportError::Framing,
         "an unterminated frame past the cursor budget is refused, not buffered"
     );
+    drop(more);
 }
 
 /// An upstream error response reaches the plane as a frame carrying its status leg, not as a clean
@@ -408,30 +314,10 @@ async fn an_upstream_frame_past_the_cursor_budget_ends_the_stream() {
 /// swallowed it.
 #[tokio::test]
 async fn an_upstream_error_body_reaches_the_plane_with_its_status_leg() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
     let body = br#"{"error":{"type":"rate_limit_error","message":"slow down"}}"#;
-    tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut buf = [0_u8; 4096];
-        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
-        let resp = format!(
-            "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-            body.len()
-        );
-        tokio::io::AsyncWriteExt::write_all(&mut stream, resp.as_bytes())
-            .await
-            .unwrap();
-        tokio::io::AsyncWriteExt::write_all(&mut stream, body)
-            .await
-            .unwrap();
-    });
-
-    let uri = format!("http://{addr}/");
-    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
-    let sse = SseTransport::new(http);
+    let sse = SseTransport::over(ScriptedLower::answering(429, &[&body[..]]));
     let conn = sse
-        .dial(&upstream_dest(&uri), &fixture_key())
+        .dial(&upstream_dest("10.0.0.1:443"), &fixture_key())
         .await
         .unwrap();
     sse.write(
@@ -554,30 +440,10 @@ async fn a_single_body_of_many_complete_frames_past_the_budget_is_refused() {
 /// upstream's whole answer is lost. It has to survive the composition as a visible frame.
 #[tokio::test]
 async fn a_success_body_that_is_not_an_event_stream_reaches_the_plane() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
     let body = b"<html><body>gateway says hello, not an event</body></html>";
-    tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut buf = [0_u8; 4096];
-        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
-        let resp = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n",
-            body.len()
-        );
-        tokio::io::AsyncWriteExt::write_all(&mut stream, resp.as_bytes())
-            .await
-            .unwrap();
-        tokio::io::AsyncWriteExt::write_all(&mut stream, body)
-            .await
-            .unwrap();
-    });
-
-    let uri = format!("http://{addr}/");
-    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
-    let sse = SseTransport::new(http);
+    let sse = SseTransport::over(ScriptedLower::answering(200, &[&body[..]]));
     let conn = sse
-        .dial(&upstream_dest(&uri), &fixture_key())
+        .dial(&upstream_dest("10.0.0.1:443"), &fixture_key())
         .await
         .unwrap();
     sse.write(
@@ -641,11 +507,10 @@ async fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
         }
     }
 
-    let uri = sse_server().await;
-    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
-    let sse = SseTransport::new(http);
+    let body = FIXTURE_FRAMES.concat();
+    let sse = SseTransport::over(ScriptedLower::answering(200, &[body.as_slice()]));
     let conn = sse
-        .dial(&upstream_dest(&uri), &fixture_key())
+        .dial(&upstream_dest("10.0.0.1:443"), &fixture_key())
         .await
         .unwrap();
     sse.write(
@@ -840,27 +705,11 @@ async fn no_frame_is_emitted_after_the_terminal_framing_error() {
 /// The events that DID complete are still events, and go out ahead of it.
 #[tokio::test]
 async fn an_event_stream_that_ends_mid_event_is_a_framing_error() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut buf = [0_u8; 4096];
-        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
-        // One whole event, then an event with no terminator — and a body that ends anyway.
-        let body: &[u8] = b"data: {\"a\":1}\n\ndata: {\"a\":2}";
-        let head = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n",
-            body.len()
-        );
-        let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, head.as_bytes()).await;
-        let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, body).await;
-    });
-    let uri = format!("http://{addr}/");
-
-    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
-    let sse = SseTransport::new(http);
+    // One whole event, then an event with no terminator — and a body that ends anyway.
+    let body: &[u8] = b"data: {\"a\":1}\n\ndata: {\"a\":2}";
+    let sse = SseTransport::over(ScriptedLower::answering(200, &[&body[..]]));
     let conn = sse
-        .dial(&upstream_dest(&uri), &fixture_key())
+        .dial(&upstream_dest("10.0.0.1:443"), &fixture_key())
         .await
         .unwrap();
     sse.write(
@@ -894,27 +743,12 @@ async fn an_event_stream_that_ends_mid_event_is_a_framing_error() {
 /// are the events, and the stream ends cleanly behind them.
 #[tokio::test]
 async fn a_trailer_frame_from_the_layer_below_is_not_read_as_an_event() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut buf = [0_u8; 4096];
-        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
-        let mut out: Vec<u8> = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nTrailer: X-Tokens\r\n\r\n".to_vec();
-        for frame in FIXTURE_FRAMES {
-            out.extend_from_slice(format!("{:x}\r\n", frame.len()).as_bytes());
-            out.extend_from_slice(frame);
-            out.extend_from_slice(b"\r\n");
-        }
-        out.extend_from_slice(b"0\r\nX-Tokens: 42\r\n\r\n");
-        let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, &out).await;
-    });
-    let uri = format!("http://{addr}/");
-
-    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
-    let sse = SseTransport::new(http);
+    // The layer below hands the trailer section up as one final frame, in header wire form.
+    let mut pieces: Vec<&[u8]> = FIXTURE_FRAMES.to_vec();
+    pieces.push(b"X-Tokens: 42\r\n");
+    let sse = SseTransport::over(ScriptedLower::answering(200, &pieces));
     let conn = sse
-        .dial(&upstream_dest(&uri), &fixture_key())
+        .dial(&upstream_dest("10.0.0.1:443"), &fixture_key())
         .await
         .unwrap();
     sse.write(

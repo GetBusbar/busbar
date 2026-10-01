@@ -1,17 +1,17 @@
-//! The transport battery, for `http`: request in as a HEAD-plus-body frame pair, a real egress
-//! round trip through the pinned client, per-frame `WireStatusClass` at the first response frame, and
-//! the frame-meta honesty check.
+//! The transport battery, for `http`: request in as a HEAD-plus-body frame pair, the ingress
+//! framing refusals, the frame-meta honesty check, and a dial that is refused before any socket.
 
 use super::*;
 // The `Transport` surface, its meta and its claim forms moved to the kind's own `transport.rs`,
 // `meta.rs` and `claims.rs` (`BUSBAR-1.6.0.md` THE DESIGN, §2), so `use super::*` no longer carries them.
-use busbar_contract::transport::registry::status_ns;
-use busbar_contract::transport::wire::WireStatus;
 use busbar_contract::transport::wire::{CloseReason, FrameMeta, TransportError};
 use busbar_contract::ConfigView;
 use busbar_contract::{ScratchBytes, Transport, TransportConfigView, TransportKeyHandle};
 use futures::StreamExt;
 use std::sync::Arc as StdArc;
+
+// The dial is refused before any socket (TODO #145): its own file, as the repo's tests live.
+mod dial_refused;
 
 use busbar_contract::plugin::TestKernelSeal as FixtureSeal;
 fn fixture_key() -> TransportKeyHandle {
@@ -50,349 +50,6 @@ fn upstream_dest(uri: &str) -> busbar_contract::VerifiedDestination {
         "http",
         None,
     )
-}
-
-/// A minimal fixed-response TCP server, standing in for an upstream, for the egress-side tests.
-async fn fixed_response_server(response: &'static [u8]) -> String {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut buf = [0_u8; 4096];
-        // Drain the request (don't care about its shape for this fixture).
-        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
-        tokio::io::AsyncWriteExt::write_all(&mut stream, response)
-            .await
-            .unwrap();
-    });
-    format!("http://{addr}/")
-}
-
-/// An upstream that answers with the request line it actually received, so a test can assert what
-/// went out on the wire rather than what the caller meant to put there.
-async fn request_line_echo_server() -> String {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        while let Ok((mut stream, _)) = listener.accept().await {
-            tokio::spawn(async move {
-                let mut buf = vec![0_u8; 4096];
-                let n = tokio::io::AsyncReadExt::read(&mut stream, &mut buf)
-                    .await
-                    .unwrap_or(0);
-                let text = String::from_utf8_lossy(&buf[..n]).into_owned();
-                let line = text.lines().next().unwrap_or("").trim_end().to_string();
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
-                    line.len(),
-                    line
-                );
-                let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, resp.as_bytes()).await;
-            });
-        }
-    });
-    format!("http://{addr}/")
-}
-
-#[tokio::test]
-async fn the_envelopes_own_method_and_path_are_what_reach_the_upstream() {
-    let uri = request_line_echo_server().await;
-    let transport = HttpTransport::new(ClientSettings::default());
-    let conn = transport
-        .dial(&upstream_dest(&uri), &fixture_key())
-        .await
-        .unwrap();
-    let req = b"POST /v1/messages HTTP/1.1\r\nHost: x\r\ncontent-length: 0\r\n\r\n";
-    transport
-        .write(&conn, StreamId(0), ScratchBytes::new(req))
-        .await
-        .unwrap();
-
-    let mut frames = transport.frames(conn);
-    let (_s, _head) = frames.next().await.unwrap().unwrap();
-    let (_s, body) = frames.next().await.unwrap().unwrap();
-    let echoed = String::from_utf8(body.bytes.as_slice().to_vec()).unwrap();
-    assert!(
-        echoed.starts_with("POST /v1/messages "),
-        "the upstream saw {echoed:?}, not the request the envelope named"
-    );
-}
-
-/// Only TCP connect and HTTP/2 keepalive bounded `client.request(req).await`; an HTTP/1.1 upstream
-/// that accepts the connection and then never answers held it open forever (item 153). The bound is
-/// the OPERATOR'S configured `ClientSettings::request_timeout_secs`, not a value this crate invents
-/// — set to 1s here (rather than the 300s production default) so the test proves the cut in real
-/// time instead of needing a paused clock, and proves the CONFIGURED value drives it: a build using
-/// the 300s default would not cut this upstream inside any test's real budget.
-#[tokio::test]
-async fn a_stalled_upstream_response_is_cut_at_the_configured_request_timeout() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    // Accepts the connection (so `dial`/`write` get a real socket to write the request on) and then
-    // holds it open, reading and answering nothing — the "hangs after connect" upstream.
-    tokio::spawn(async move {
-        let (_stream, _) = listener.accept().await.unwrap();
-        std::future::pending::<()>().await;
-    });
-    let uri = format!("http://{addr}/");
-    let settings = ClientSettings {
-        request_timeout_secs: 1,
-        ..ClientSettings::default()
-    };
-    let transport = HttpTransport::new(settings);
-    let conn = transport
-        .dial(&upstream_dest(&uri), &fixture_key())
-        .await
-        .unwrap();
-    let req = b"POST / HTTP/1.1\r\nHost: x\r\ncontent-length: 0\r\n\r\n";
-    let err = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        transport.write(&conn, StreamId(0), ScratchBytes::new(req)),
-    )
-    .await
-    .expect(
-        "the transport's own 1s configured bound must cut this well inside the test's 5s budget",
-    )
-    .unwrap_err();
-    assert_eq!(
-        err,
-        TransportError::Timeout,
-        "a stalled upstream response must be cut at the configured request timeout, not held open forever"
-    );
-}
-
-/// The mirror of the above: a response that lands WITHIN the configured bound must not be cut.
-/// Configured at 2s against an upstream that answers after ~200ms — proves the bound only fires on
-/// an upstream that actually stalls, not on every exchange, and that a bound far shorter than the
-/// 300s default (so a wrongly-hardcoded 300s would make this indistinguishable from "never cut" and
-/// prove nothing) is honoured for the ALLOW side too.
-#[tokio::test]
-async fn a_response_within_the_configured_request_timeout_is_not_cut() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut buf = [0_u8; 4096];
-        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
-        tokio::io::AsyncWriteExt::write_all(&mut stream, resp)
-            .await
-            .unwrap();
-    });
-    let uri = format!("http://{addr}/");
-    let settings = ClientSettings {
-        request_timeout_secs: 2,
-        ..ClientSettings::default()
-    };
-    let transport = HttpTransport::new(settings);
-    let conn = transport
-        .dial(&upstream_dest(&uri), &fixture_key())
-        .await
-        .unwrap();
-    let req = b"POST / HTTP/1.1\r\nHost: x\r\ncontent-length: 0\r\n\r\n";
-    transport
-        .write(&conn, StreamId(0), ScratchBytes::new(req))
-        .await
-        .expect("an upstream that answers inside the configured bound must not be cut");
-}
-
-/// A second exchange on a connection whose answer can no longer be delivered is an ERROR, not an
-/// `Ok` the caller will read as sent-and-answered.
-///
-/// The response sender lives in the connection and is TAKEN by the first exchange. A second whole
-/// message therefore goes out on the wire — the upstream is asked, and charges for being asked —
-/// and then finds no sender to hand the answer to. Reporting `Ok` there tells the caller its
-/// request was carried when the only observable half of it, the response, has been dropped on the
-/// floor: a write that failed silently, which is the one thing this transport's write path must
-/// never do. The same holds when the receiver has gone: the head frame's send fails, and that is a
-/// closed connection, not a delivery.
-#[tokio::test]
-async fn a_second_egress_exchange_with_nowhere_to_answer_is_reported_not_swallowed() {
-    let uri = request_line_echo_server().await;
-    let transport = HttpTransport::new(ClientSettings::default());
-    let conn = transport
-        .dial(&upstream_dest(&uri), &fixture_key())
-        .await
-        .unwrap();
-    let req = b"POST /first HTTP/1.1\r\nHost: x\r\ncontent-length: 0\r\n\r\n";
-    transport
-        .write(&conn, StreamId(0), ScratchBytes::new(req))
-        .await
-        .expect("the first exchange has a sender and answers normally");
-
-    // The sender is spent. The second message still reaches the upstream; its answer cannot reach
-    // anyone.
-    let again = b"POST /second HTTP/1.1\r\nHost: x\r\ncontent-length: 0\r\n\r\n";
-    let err = transport
-        .write(&conn, StreamId(0), ScratchBytes::new(again))
-        .await
-        .expect_err("an exchange whose answer is unreachable must not report success");
-    assert_eq!(
-        err,
-        TransportError::Closed,
-        "the connection has no way left to deliver an answer, and that is what it must say"
-    );
-}
-
-#[tokio::test]
-async fn a_status_line_is_not_a_request_this_transport_can_send() {
-    let uri = fixed_response_server(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await;
-    let transport = HttpTransport::new(ClientSettings::default());
-    let conn = transport
-        .dial(&upstream_dest(&uri), &fixture_key())
-        .await
-        .unwrap();
-    let msg = b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n";
-    let err = transport
-        .write(&conn, StreamId(0), ScratchBytes::new(msg))
-        .await
-        .unwrap_err();
-    assert_eq!(err, TransportError::Framing);
-}
-
-#[tokio::test]
-async fn egress_round_trip_reports_status_class_on_the_first_frame() {
-    let uri = fixed_response_server(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello").await;
-    let transport = HttpTransport::new(ClientSettings::default());
-    let conn = transport
-        .dial(&upstream_dest(&uri), &fixture_key())
-        .await
-        .unwrap();
-    let req = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n";
-    transport
-        .write(&conn, StreamId(0), ScratchBytes::new(req))
-        .await
-        .unwrap();
-
-    let mut frames = transport.frames(conn);
-    let (_s, head) = frames.next().await.unwrap().unwrap();
-    assert_eq!(head.meta.status, Some(WireStatusClass::Success));
-    assert!(std::str::from_utf8(head.bytes.as_slice())
-        .unwrap()
-        .starts_with("HTTP/1.1 200"));
-
-    let (_s, body) = frames.next().await.unwrap().unwrap();
-    assert_eq!(body.bytes.as_slice(), b"hello");
-    assert!(frames.next().await.is_none());
-}
-
-#[tokio::test]
-async fn egress_maps_4xx_and_5xx_status_classes() {
-    for (status, class) in [
-        (404_u16, WireStatusClass::CallerFault),
-        (500, WireStatusClass::FarEndFault),
-    ] {
-        let resp: &'static [u8] = Box::leak(
-            format!("HTTP/1.1 {status} X\r\nContent-Length: 0\r\n\r\n")
-                .into_bytes()
-                .into_boxed_slice(),
-        );
-        let uri = fixed_response_server(resp).await;
-        let transport = HttpTransport::new(ClientSettings::default());
-        let conn = transport
-            .dial(&upstream_dest(&uri), &fixture_key())
-            .await
-            .unwrap();
-        transport
-            .write(
-                &conn,
-                StreamId(0),
-                ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
-            )
-            .await
-            .unwrap();
-        let mut frames = transport.frames(conn);
-        let (_s, head) = frames.next().await.unwrap().unwrap();
-        assert_eq!(head.meta.status, Some(class));
-    }
-}
-
-/// The number, not just the class. A 401, a 403 and a 404 all read `CallerFault`, and only one of
-/// the three is a malformed request — the layer that has to tell them apart reads this field.
-#[tokio::test]
-async fn egress_reports_the_exact_upstream_status_on_the_first_frame() {
-    for status in [401_u16, 403, 404, 429, 503] {
-        let resp: &'static [u8] = Box::leak(
-            format!("HTTP/1.1 {status} X\r\nContent-Length: 0\r\n\r\n")
-                .into_bytes()
-                .into_boxed_slice(),
-        );
-        let uri = fixed_response_server(resp).await;
-        let transport = HttpTransport::new(ClientSettings::default());
-        let conn = transport
-            .dial(&upstream_dest(&uri), &fixture_key())
-            .await
-            .unwrap();
-        transport
-            .write(
-                &conn,
-                StreamId(0),
-                ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
-            )
-            .await
-            .unwrap();
-        let mut frames = transport.frames(conn);
-        let (_s, head) = frames.next().await.unwrap().unwrap();
-        assert_eq!(
-            head.meta.status_code,
-            Some(WireStatus::new(status_ns::HTTP, u32::from(status)))
-        );
-    }
-}
-
-/// The wait the upstream asked for rides the same frame as the status it asked it on, already in
-/// whole seconds — and an answer that asked for nothing carries nothing.
-#[tokio::test]
-async fn egress_carries_the_upstreams_retry_after_on_the_first_frame() {
-    let uri =
-        fixed_response_server(b"HTTP/1.1 429 X\r\nRetry-After: 7\r\nContent-Length: 0\r\n\r\n")
-            .await;
-    let transport = HttpTransport::new(ClientSettings::default());
-    let conn = transport
-        .dial(&upstream_dest(&uri), &fixture_key())
-        .await
-        .unwrap();
-    transport
-        .write(
-            &conn,
-            StreamId(0),
-            ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
-        )
-        .await
-        .unwrap();
-    let mut frames = transport.frames(conn);
-    let (_s, head) = frames.next().await.unwrap().unwrap();
-    assert_eq!(
-        head.meta.status_code,
-        Some(WireStatus::new(status_ns::HTTP, 429))
-    );
-    assert_eq!(head.meta.retry_after_secs, Some(7));
-}
-
-#[tokio::test]
-async fn egress_reports_no_retry_after_when_the_upstream_asked_for_none() {
-    let uri = fixed_response_server(b"HTTP/1.1 503 X\r\nContent-Length: 0\r\n\r\n").await;
-    let transport = HttpTransport::new(ClientSettings::default());
-    let conn = transport
-        .dial(&upstream_dest(&uri), &fixture_key())
-        .await
-        .unwrap();
-    transport
-        .write(
-            &conn,
-            StreamId(0),
-            ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
-        )
-        .await
-        .unwrap();
-    let mut frames = transport.frames(conn);
-    let (_s, head) = frames.next().await.unwrap().unwrap();
-    assert_eq!(
-        head.meta.status_code,
-        Some(WireStatus::new(status_ns::HTTP, 503))
-    );
-    assert_eq!(head.meta.retry_after_secs, None);
 }
 
 /// Both RFC 9110 forms, and nothing else. A value nobody can read is a value nobody asked for.
@@ -510,14 +167,12 @@ async fn a_declared_length_body_cut_short_at_eof_is_a_framing_error() {
     writer.abort();
 }
 
-/// The body cap the crate doc names is real, on both sides, and it is the operator's own
-/// `limits.request_body_max_bytes` rather than a constant invented here.
-///
-/// Ingress refuses a declared length past the cap without reading the body behind it; egress
-/// refuses to keep accumulating a message past it. One knob, two accumulators, so the cap this
-/// transport applies can never disagree with the one the served door applies.
+/// The body cap the crate doc names is real, and it is the operator's own
+/// `limits.request_body_max_bytes` rather than a constant invented here: ingress refuses a declared
+/// length past the cap without reading the body behind it, so the cap this transport applies can
+/// never disagree with the one the served door applies.
 #[tokio::test]
-async fn a_body_past_the_configured_maximum_is_refused_on_both_sides() {
+async fn a_body_past_the_configured_maximum_is_refused() {
     let settings = ClientSettings {
         request_body_max_bytes: 64,
         ..ClientSettings::default()
@@ -556,38 +211,6 @@ async fn a_body_past_the_configured_maximum_is_refused_on_both_sides() {
         "a declared length past the configured maximum is refused, not accumulated"
     );
     writer.abort();
-
-    // Egress: the pending accumulator refuses to grow past the same cap.
-    let transport = HttpTransport::new(settings);
-    let conn = transport
-        .dial(&upstream_dest("http://127.0.0.1:1/"), &fixture_key())
-        .await
-        .unwrap();
-    // Chunked, so no declared total: only the accumulator itself can refuse this.
-    let head = b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n";
-    transport
-        .write(&conn, StreamId(0), ScratchBytes::new(head))
-        .await
-        .unwrap();
-    let mut err = None;
-    for _ in 0..64 {
-        if let Err(e) = transport
-            .write(
-                &conn,
-                StreamId(0),
-                ScratchBytes::new(b"10\r\naaaaaaaaaaaaaaaa\r\n"),
-            )
-            .await
-        {
-            err = Some(e);
-            break;
-        }
-    }
-    assert_eq!(
-        err,
-        Some(TransportError::Framing),
-        "the egress accumulator refuses past the configured maximum instead of growing unbounded"
-    );
 }
 
 /// Ingress refuses a CHUNKED body past the cap even when the whole message already sits in the read
@@ -910,53 +533,6 @@ async fn a_content_length_with_a_leading_sign_is_a_framing_error() {
     writer.abort();
 }
 
-/// A `write` dropped mid-exchange ends the connection observably instead of hanging `frames`.
-///
-/// The battery's cancel-mid-frame cell, on the egress side. The exchange runs inside `write`, and a
-/// caller is free to drop that future — a timeout, a select, a cancelled task. When it does, the
-/// response sender is still sitting in the connection's slot, so nothing ever closes the channel
-/// and `frames` waits on a receive that can never complete. A half-sent exchange is not resumable
-/// and this does not pretend otherwise; what it guarantees is that the stream ENDS.
-#[tokio::test]
-async fn a_cancelled_egress_write_ends_the_frame_stream_rather_than_hanging_it() {
-    // An upstream that accepts the connection and then never answers.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move {
-        let mut held = Vec::new();
-        while let Ok((sock, _)) = listener.accept().await {
-            held.push(sock);
-        }
-    });
-
-    let transport = HttpTransport::new(ClientSettings::default());
-    let uri: &'static str = Box::leak(format!("http://{addr}/").into_boxed_str());
-    let conn = transport
-        .dial(&upstream_dest(uri), &fixture_key())
-        .await
-        .unwrap();
-
-    // A complete message, so the exchange starts — and then the write future is dropped in it.
-    let write_fut = transport.write(
-        &conn,
-        StreamId(0),
-        ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
-    );
-    let cancelled = tokio::time::timeout(std::time::Duration::from_millis(50), write_fut).await;
-    assert!(
-        cancelled.is_err(),
-        "the write really was dropped mid-flight"
-    );
-
-    let mut frames = transport.frames(conn);
-    let ended = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next()).await;
-    assert!(
-        matches!(ended, Ok(None) | Ok(Some(Err(_)))),
-        "a cancelled exchange ends the stream; it must not leave frames() waiting forever"
-    );
-    server.abort();
-}
-
 /// A chunked body of at least a mebibyte, written in chunks that straddle the read budget, arrives
 /// byte-exact — and the trailers that follow it arrive as their own frame rather than as body.
 ///
@@ -1025,88 +601,6 @@ async fn a_chunked_body_of_at_least_a_mebibyte_at_a_budget_boundary() {
     let (_s, trailers) = frames.next().await.unwrap().unwrap();
     assert_eq!(trailers.bytes.as_slice(), b"X-Checksum: 42\r\n");
     writer.abort();
-}
-
-/// A body written across several calls goes on the wire once, when the message is whole.
-///
-/// The design's large-body shape is a HEAD frame followed by body-chunk frames, so `write` is
-/// handed a message in pieces. Before this accumulated, the first piece was parsed as a complete
-/// message and sent on its own, and every piece after it was sent as another request.
-#[tokio::test]
-async fn an_egress_body_accumulates_across_calls_until_the_declared_length() {
-    // A server that records how many requests arrived and what the last body was.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let seen = StdArc::new(std::sync::Mutex::new(Vec::<Vec<u8>>::new()));
-    let server = tokio::spawn({
-        let seen = seen.clone();
-        async move {
-            while let Ok((mut sock, _)) = listener.accept().await {
-                let mut buf = Vec::new();
-                loop {
-                    let mut chunk = vec![0_u8; 8192];
-                    let n = tokio::io::AsyncReadExt::read(&mut sock, &mut chunk)
-                        .await
-                        .unwrap_or(0);
-                    if n == 0 {
-                        break;
-                    }
-                    buf.extend_from_slice(&chunk[..n]);
-                    if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                        let head = String::from_utf8_lossy(&buf[..pos]).to_string();
-                        let declared: usize = head
-                            .lines()
-                            .find_map(|l| {
-                                l.strip_prefix("content-length: ")
-                                    .or_else(|| l.strip_prefix("Content-Length: "))
-                            })
-                            .and_then(|v| v.trim().parse().ok())
-                            .unwrap_or(0);
-                        if buf.len() >= pos + 4 + declared {
-                            seen.lock().unwrap().push(buf[pos + 4..].to_vec());
-                            let _ = tokio::io::AsyncWriteExt::write_all(
-                                &mut sock,
-                                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
-                            )
-                            .await;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    });
-
-    let transport = HttpTransport::new(ClientSettings::default());
-    let uri: &'static str = Box::leak(format!("http://{addr}/units").into_boxed_str());
-    let conn = transport
-        .dial(&upstream_dest(uri), &fixture_key())
-        .await
-        .unwrap();
-
-    // The message, split the way a plane writing a large body would split it.
-    let head = b"POST /units HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\n\r\n";
-    let pieces: [&[u8]; 3] = [head, b"hello ", b"world"];
-    for piece in pieces {
-        transport
-            .write(&conn, StreamId(0), ScratchBytes::new(piece))
-            .await
-            .unwrap();
-    }
-
-    let mut frames = transport.frames(conn);
-    let (_s, response_head) =
-        tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
-            .await
-            .expect("the exchange ran once the message was whole")
-            .unwrap()
-            .unwrap();
-    assert_eq!(response_head.meta.status, Some(WireStatusClass::Success));
-
-    let bodies = seen.lock().unwrap().clone();
-    assert_eq!(bodies.len(), 1, "one request, not one per write call");
-    assert_eq!(bodies[0], b"hello world", "reassembled byte-exact");
-    server.abort();
 }
 
 /// The envelope's bytes are an HTTP message, because that is what this wire is.
@@ -1220,21 +714,12 @@ impl busbar_contract::PlaneAlloc for TestPlaneAlloc {
     }
 }
 
-#[tokio::test]
-async fn every_transport_error_is_mapped_on_dial() {
-    let transport = HttpTransport::new(ClientSettings::default());
-
-    // The dial's own refusals: an address that is not one, and a destination that is not upstream.
-    let bad = upstream_dest("not a uri at all");
-    let err = transport.dial(&bad, &fixture_key()).await.unwrap_err();
-    assert_eq!(err, TransportError::AddressRefused);
-
-    // EVERY arm of the mapper this crate shares with its whole ingress and egress path, one
-    // io::Error per arm. The name of this cell claims exhaustiveness; before this, swapping two
-    // arms of map_io_err left it green, which is the definition of an unpinned mapping. `http`
-    // dials through a pooled client rather than a socket of its own, so the connect-time kinds
-    // cannot be provoked through `dial` the way `tcp`'s sibling cell provokes them — the mapper is
-    // driven directly instead, which is the same claim with nothing left implicit.
+#[test]
+fn every_transport_error_is_mapped() {
+    // EVERY arm of the mapper this crate's ingress path shares, one io::Error per arm. The name of
+    // this cell claims exhaustiveness; before this, swapping two arms of map_io_err left it green,
+    // which is the definition of an unpinned mapping. The mapper is driven directly, which is the
+    // same claim with nothing left implicit.
     for (kind, expected) in [
         (io::ErrorKind::ConnectionRefused, TransportError::Refused),
         (io::ErrorKind::TimedOut, TransportError::Timeout),
@@ -1254,26 +739,6 @@ async fn every_transport_error_is_mapped_on_dial() {
             "io::ErrorKind::{kind:?} maps to {expected:?}"
         );
     }
-
-    // And a real refusal off a real closed port, so the mapper's Refused arm is not only pinned
-    // against a fabricated error: the exchange runs inside `write`, so that is where it surfaces.
-    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = closed.local_addr().unwrap();
-    drop(closed);
-    let uri: &'static str = Box::leak(format!("http://{addr}/").into_boxed_str());
-    let conn = transport
-        .dial(&upstream_dest(uri), &fixture_key())
-        .await
-        .expect("dialling is address parsing here; the socket comes later");
-    let err = transport
-        .write(
-            &conn,
-            StreamId(0),
-            ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(err, TransportError::Refused);
 }
 
 /// The header-end scan costs a pass over the header, not a pass per read.
@@ -1347,219 +812,6 @@ fn the_egress_header_block_is_parsed_once_across_many_write_calls() {
         cache.head.is_none(),
         "a completed message leaves no stale head"
     );
-}
-
-/// An upstream that streams and never closes delivers frames while it is still open.
-///
-/// This is the whole of what "composes over" means for a streamed body: `sse` re-segments the bytes
-/// `http` hands it, so a body that only arrives when the upstream closes is a body `sse` can never
-/// re-segment in time. Collecting the response before emitting anything turned every event stream
-/// into a zero-frame stream until close, and a stream that never closes into nothing at all. The
-/// response HEAD leaves as soon as the head arrives, and each body chunk as hyper yields it.
-#[tokio::test]
-async fn a_streamed_upstream_yields_frames_before_it_closes() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move {
-        let (mut sock, _) = listener.accept().await.unwrap();
-        let mut buf = [0_u8; 4096];
-        let _ = tokio::io::AsyncReadExt::read(&mut sock, &mut buf).await;
-        tokio::io::AsyncWriteExt::write_all(
-            &mut sock,
-            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
-        )
-        .await
-        .unwrap();
-        // One event every 100ms, and no terminal chunk ever: the stream does not end.
-        loop {
-            let event = b"data: tick\n\n";
-            let mut piece = format!("{:x}\r\n", event.len()).into_bytes();
-            piece.extend_from_slice(event);
-            piece.extend_from_slice(b"\r\n");
-            if tokio::io::AsyncWriteExt::write_all(&mut sock, &piece)
-                .await
-                .is_err()
-            {
-                return;
-            }
-            let _ = tokio::io::AsyncWriteExt::flush(&mut sock).await;
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-    });
-
-    let transport = HttpTransport::new(ClientSettings::default());
-    let uri: &'static str = Box::leak(format!("http://{addr}/").into_boxed_str());
-    let conn = transport
-        .dial(&upstream_dest(uri), &fixture_key())
-        .await
-        .unwrap();
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        transport.write(
-            &conn,
-            StreamId(0),
-            ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
-        ),
-    )
-    .await
-    .expect("write answers on the response head, not on the upstream's close")
-    .unwrap();
-
-    let mut frames = transport.frames(conn);
-    let (_s, head) = tokio::time::timeout(std::time::Duration::from_secs(2), frames.next())
-        .await
-        .expect("the HEAD frame is emitted as soon as the head arrives")
-        .unwrap()
-        .unwrap();
-    assert_eq!(head.meta.status, Some(WireStatusClass::Success));
-
-    for _ in 0..2 {
-        let (_s, body) = tokio::time::timeout(std::time::Duration::from_secs(2), frames.next())
-            .await
-            .expect("a body frame arrives while the upstream is still sending")
-            .unwrap()
-            .unwrap();
-        assert_eq!(body.bytes.as_slice(), b"data: tick\n\n");
-        assert_eq!(body.meta.status, None, "the status leg rides the HEAD only");
-        assert_eq!(body.meta.bytes, body.bytes.len() as u64);
-    }
-    server.abort();
-}
-
-/// A response body past the configured maximum ends the stream instead of growing the node's heap.
-///
-/// The request cap has always been real on both accumulators. The RESPONSE had none: an upstream —
-/// or anything wearing one's address — could answer with as many bytes as it liked and this node
-/// would hold every one of them. The cap is held against the bytes that actually arrive, since a
-/// streamed body declares no total, and nothing past it is emitted.
-#[tokio::test]
-async fn a_response_body_past_the_cap_ends_the_stream_rather_than_accumulating() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move {
-        let (mut sock, _) = listener.accept().await.unwrap();
-        let mut buf = [0_u8; 4096];
-        let _ = tokio::io::AsyncReadExt::read(&mut sock, &mut buf).await;
-        tokio::io::AsyncWriteExt::write_all(
-            &mut sock,
-            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
-        )
-        .await
-        .unwrap();
-        for _ in 0..64 {
-            let payload = [b'a'; 1024];
-            let mut piece = format!("{:x}\r\n", payload.len()).into_bytes();
-            piece.extend_from_slice(&payload);
-            piece.extend_from_slice(b"\r\n");
-            if tokio::io::AsyncWriteExt::write_all(&mut sock, &piece)
-                .await
-                .is_err()
-            {
-                return;
-            }
-            let _ = tokio::io::AsyncWriteExt::flush(&mut sock).await;
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    });
-
-    const CAP: usize = 4096;
-    let transport = HttpTransport::new(ClientSettings {
-        response_body_max_bytes: CAP,
-        ..ClientSettings::default()
-    });
-    let uri: &'static str = Box::leak(format!("http://{addr}/").into_boxed_str());
-    let conn = transport
-        .dial(&upstream_dest(uri), &fixture_key())
-        .await
-        .unwrap();
-    transport
-        .write(
-            &conn,
-            StreamId(0),
-            ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
-        )
-        .await
-        .unwrap();
-
-    let mut frames = transport.frames(conn);
-    let (_s, head) = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
-        .await
-        .expect("the head arrives")
-        .unwrap()
-        .unwrap();
-    assert_eq!(head.meta.status, Some(WireStatusClass::Success));
-
-    let mut body_bytes = 0_usize;
-    let ended = loop {
-        let item = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
-            .await
-            .expect("the stream ends rather than accumulating an unbounded body");
-        match item {
-            Some(Ok((_s, frame))) => body_bytes += frame.bytes.len(),
-            Some(Err(e)) => break Some(e),
-            None => break None,
-        }
-    };
-    assert_eq!(
-        ended,
-        Some(TransportError::Framing),
-        "a response past the cap ends the stream with an error, not with a clean close"
-    );
-    assert!(
-        body_bytes <= CAP,
-        "{body_bytes} bytes were emitted for a {CAP}-byte cap"
-    );
-    server.abort();
-}
-
-/// The synthesised response head describes the bytes that follow it, not the ones on the wire.
-///
-/// hyper de-chunks the body before this transport ever sees it, so a `Transfer-Encoding: chunked`
-/// copied out of the upstream's head describes a framing that is no longer there — and a
-/// `Content-Length` copied beside it describes a body this transport now hands over in pieces. The
-/// request side already strips both for exactly this reason; the response side says the same.
-#[tokio::test]
-async fn a_chunked_upstream_response_head_carries_no_framing_headers() {
-    let uri = fixed_response_server(
-        b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
-    )
-    .await;
-    let transport = HttpTransport::new(ClientSettings::default());
-    let conn = transport
-        .dial(&upstream_dest(&uri), &fixture_key())
-        .await
-        .unwrap();
-    transport
-        .write(
-            &conn,
-            StreamId(0),
-            ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
-        )
-        .await
-        .unwrap();
-
-    let mut frames = transport.frames(conn);
-    let (_s, head) = frames.next().await.unwrap().unwrap();
-    let head_text = String::from_utf8(head.bytes.as_slice().to_vec())
-        .unwrap()
-        .to_ascii_lowercase();
-    assert!(head_text.starts_with("http/1.1 200"));
-    assert!(
-        head_text.contains("content-type: text/plain"),
-        "the headers that describe the payload are still carried: {head_text:?}"
-    );
-    assert!(
-        !head_text.contains("transfer-encoding"),
-        "a de-chunked body must not be described as chunked: {head_text:?}"
-    );
-    assert!(
-        !head_text.contains("content-length"),
-        "the length of a body handed over in frames is not the head's to state: {head_text:?}"
-    );
-    assert_eq!(head.meta.bytes, head.bytes.len() as u64);
-
-    let (_s, body) = frames.next().await.unwrap().unwrap();
-    assert_eq!(body.bytes.as_slice(), b"hello");
 }
 
 /// The egress chunked body is decoded once, not once per `write` call.
@@ -1653,67 +905,6 @@ fn egress_refuses_a_chunked_body_declared_with_a_content_length() {
         done.body, b"abc",
         "the clean chunked body still decodes byte-exact"
     );
-}
-
-/// One wrapping layer, standing in for the connector and pool layers a real client error arrives
-/// wrapped in: the fact this transport reports must be read off the CHAIN, not off the top.
-#[derive(Debug)]
-struct Wrapped(io::Error);
-impl std::fmt::Display for Wrapped {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "client error")
-    }
-}
-impl std::error::Error for Wrapped {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.0)
-    }
-}
-
-/// An error with nothing underneath it: the shape the fallback exists for.
-#[derive(Debug)]
-struct Opaque;
-impl std::fmt::Display for Opaque {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "opaque")
-    }
-}
-impl std::error::Error for Opaque {}
-
-/// Every egress failure used to be reported as `Refused` — nothing was listening. A connect that
-/// timed out, a keep-alive that went unanswered and a connection reset mid-response are three
-/// different facts about an upstream, and collapsing them tells an operator the upstream is down
-/// when it is slow, or wedged, or resetting mid-body.
-#[test]
-fn an_egress_failure_reports_the_fact_it_carries_not_a_refusal_for_everything() {
-    let cases: Vec<(io::ErrorKind, TransportError)> = vec![
-        (io::ErrorKind::TimedOut, TransportError::Timeout),
-        (io::ErrorKind::ConnectionReset, TransportError::Reset),
-        (io::ErrorKind::ConnectionAborted, TransportError::Reset),
-        (io::ErrorKind::ConnectionRefused, TransportError::Refused),
-        (
-            io::ErrorKind::AddrNotAvailable,
-            TransportError::AddressRefused,
-        ),
-        (io::ErrorKind::BrokenPipe, TransportError::Closed),
-    ];
-    for (kind, expected) in cases {
-        let bare = io::Error::new(kind, "x");
-        assert_eq!(map_egress_err(&bare), expected, "bare {kind:?}");
-        let wrapped = Wrapped(io::Error::new(kind, "x"));
-        assert_eq!(map_egress_err(&wrapped), expected, "wrapped {kind:?}");
-    }
-    assert_eq!(
-        map_egress_err(&Opaque),
-        TransportError::Refused,
-        "an error carrying no io fact is the one case there is nothing more specific to say about"
-    );
-}
-
-/// A writer that accepts every byte and then fails to flush: the exact shape a Unit 0 refusal must
-/// not be able to report as delivered. `write_all` succeeds, so only the flush leg can catch it.
-struct FlushFailsWriter {
-    written: Vec<u8>,
 }
 
 impl tokio::io::AsyncWrite for FlushFailsWriter {
@@ -1961,38 +1152,6 @@ async fn a_header_block_cut_short_at_eof_is_a_framing_error() {
     assert_eq!(first.unwrap_err(), TransportError::Framing);
 }
 
-/// A response header value the wire allows is not required to be UTF-8. Rendering an un-decodable
-/// one as the empty string hands the layer above a head that says the header was present and empty
-/// — a claim about the upstream's answer that the upstream did not make. What arrived goes up.
-#[tokio::test]
-async fn a_non_ascii_response_header_value_reaches_the_head_frame_as_its_own_bytes() {
-    let uri = fixed_response_server(
-        b"HTTP/1.1 200 OK\r\nx-note: caf\xc3\xa9\xff\r\nContent-Length: 0\r\n\r\n",
-    )
-    .await;
-    let transport = HttpTransport::new(ClientSettings::default());
-    let conn = transport
-        .dial(&upstream_dest(&uri), &fixture_key())
-        .await
-        .unwrap();
-    transport
-        .write(
-            &conn,
-            StreamId(0),
-            ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
-        )
-        .await
-        .unwrap();
-    let mut frames = transport.frames(conn);
-    let (_s, head) = frames.next().await.unwrap().unwrap();
-    let joined = head.bytes.as_slice();
-    let needle = b"x-note: caf\xc3\xa9\xff";
-    assert!(
-        joined.windows(needle.len()).any(|w| w == needle),
-        "the head must carry the value the upstream sent, not an empty stand-in"
-    );
-}
-
 /// The read buffer is per-connection and reused across reads, so a short read following a long one
 /// must not carry the tail of its predecessor, and the buffer must be the same allocation each time
 /// rather than a fresh `READ_CHUNK_BYTES` one per read syscall — of which this reader does several
@@ -2079,53 +1238,17 @@ fn a_start_line_with_no_http_version_is_not_a_message() {
     assert!(raw::parse_message(b"HTTP/1.1 200 OK\r\n\r\n").is_some());
 }
 
-/// Frame meta is honest on the frames this transport REALLY emits, on both sides.
+/// Frame meta is honest on the frames this transport REALLY emits.
 ///
 /// A predicate applied to hand-built `Frame` literals proves the predicate, not the transport: the
 /// fixtures agree with themselves by construction and the transport is never asked. So the frames
-/// here come out of a live ingress read and a live egress round trip, and the check is shown to
-/// discriminate by perturbing a real one either way.
-///
-/// The egress HEAD frame is the one with somewhere to go wrong: its bytes are rebuilt from the
-/// upstream's status line and headers with `Content-Length` and `Transfer-Encoding` stripped, so its
-/// meta must count the bytes that survived the strip and not the head that arrived.
+/// here come out of a live ingress read, and the check is shown to discriminate by perturbing a
+/// real one either way.
 #[tokio::test]
 async fn frame_meta_is_honest_on_the_frames_this_transport_emits() {
     fn honest(frame: &Frame) -> bool {
         frame.meta.bytes == frame.bytes.len() as u64
     }
-
-    // Egress: a HEAD frame rebuilt past a stripped `Content-Length`, and the body frame after it.
-    let uri =
-        fixed_response_server(b"HTTP/1.1 200 OK\r\nX-Tag: t\r\nContent-Length: 5\r\n\r\nhello")
-            .await;
-    let transport = HttpTransport::new(ClientSettings::default());
-    let conn = transport
-        .dial(&upstream_dest(&uri), &fixture_key())
-        .await
-        .unwrap();
-    transport
-        .write(
-            &conn,
-            StreamId(0),
-            ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
-        )
-        .await
-        .unwrap();
-    let mut frames = transport.frames(conn);
-    let (_s, head) = frames.next().await.unwrap().unwrap();
-    let head_text = String::from_utf8(head.bytes.as_slice().to_vec()).unwrap();
-    assert!(
-        !head_text.to_ascii_lowercase().contains("content-length"),
-        "the head that goes up is the stripped one: {head_text:?}"
-    );
-    assert!(
-        honest(&head),
-        "the HEAD frame's meta counts the bytes that survived the strip, not the ones that arrived"
-    );
-    let (_s, body) = frames.next().await.unwrap().unwrap();
-    assert_eq!(body.bytes.as_slice(), b"hello");
-    assert!(honest(&body));
 
     // Ingress: the HEAD frame is the verbatim header prefix, the body frame is the decoded body.
     let served = StdArc::new(HttpTransport::new(ClientSettings::default()));
@@ -2154,7 +1277,7 @@ async fn frame_meta_is_honest_on_the_frames_this_transport_emits() {
 
     // And the check discriminates: a real frame perturbed either way fails it.
     for drift in [1_i64, -1] {
-        for real in [&head, &body, &in_head, &in_body] {
+        for real in [&in_head, &in_body] {
             let perturbed = Frame {
                 meta: FrameMeta {
                     bytes: real.meta.bytes.wrapping_add_signed(drift),
@@ -2261,55 +1384,3 @@ async fn a_request_expecting_a_continue_is_answered_before_its_body_is_waited_fo
     assert!(head.bytes.as_slice().starts_with(b"POST /x HTTP/1.1"));
 }
 
-/// An upstream's response TRAILERS reach the caller as one final frame, in the same wire form the
-/// ingress reader hands a request's trailers up in — one `name: value` line each.
-///
-/// A trailer is a header that arrived late. Dropping it loses whatever the upstream chose to say
-/// only after it knew the body — a checksum, a token count, a `grpc-status` — which is exactly the
-/// class of fact a byte-blind transport has no business deciding is uninteresting.
-#[tokio::test]
-async fn upstream_response_trailers_reach_the_caller_as_a_final_frame() {
-    let uri = fixed_response_server(
-        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTrailer: X-Checksum\r\n\r\n\
-          5\r\nhello\r\n0\r\nX-Checksum: abc123\r\n\r\n",
-    )
-    .await;
-    let transport = HttpTransport::new(ClientSettings::default());
-    let conn = transport
-        .dial(&upstream_dest(&uri), &fixture_key())
-        .await
-        .unwrap();
-    transport
-        .write(
-            &conn,
-            StreamId(0),
-            ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
-        )
-        .await
-        .unwrap();
-    let mut frames = transport.frames(conn);
-
-    let (_s, head) = frames.next().await.unwrap().unwrap();
-    assert!(
-        head.meta.status.is_some(),
-        "the head carries the status leg"
-    );
-    let (_s, body) = frames.next().await.unwrap().unwrap();
-    assert_eq!(body.bytes.as_slice(), b"hello");
-
-    let (_s, trailer) = tokio::time::timeout(Duration::from_secs(5), frames.next())
-        .await
-        .expect("the trailer frame must arrive rather than be dropped")
-        .expect("the stream must still be live")
-        .unwrap();
-    assert_eq!(
-        trailer.bytes.as_slice(),
-        b"x-checksum: abc123\r\n",
-        "the trailer goes up in wire form, as the ingress reader renders one"
-    );
-    assert_eq!(
-        trailer.meta.status, None,
-        "only the HEAD frame carries the status leg, which is how a composed layer tells the two apart"
-    );
-    assert_eq!(trailer.meta.bytes, trailer.bytes.len() as u64);
-}
