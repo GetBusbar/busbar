@@ -19,7 +19,7 @@
 //!   render does not produce or the entry does not `keep`, every top-level path is the render's, one
 //!   of the two crate dirs (`<kind>-<name>/`, `<kind>-<name>-plugin/`), `Cargo.lock` or kept, both
 //!   crate dirs exist, the README carries the skeleton's sections, and the repo is public,
-//!   Apache-2.0 and defaults to `dev`. Any drift exits 1, one
+//!   Apache-2.0 and defaults to `main`. Any drift exits 1, one
 //!   line per finding naming the repo and the file (or branch). Reads GitHub through `gh`.
 //! * `fleet sync [--repo <repo>]... [--workdir <dir>] [--dry-run]` — applies the render to each
 //!   repo's `dev` (seeding an EMPTY registered repo by pushing `dev` first; it never creates a repo

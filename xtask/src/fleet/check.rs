@@ -38,8 +38,11 @@ fn skip(repo: &str, subject: &str, reason: impl Into<String>) -> Finding {
 const PENDING: &str =
     "pending-crate: registered before its crates moved in (plugins.yaml `pending_crate`)";
 
-/// The branch the render is compared on.
+/// The branch the render is compared on, and the only one classic protection applies to.
 pub const DEV: &str = "dev";
+
+/// The repo's default branch: the public sees released code.
+pub const MAIN: &str = "main";
 
 /// Where a file the render does not produce is drift unless the entry keeps it.
 const OWNED_DIRS: &[&str] = &[".github/"];
@@ -172,14 +175,14 @@ fn check_repo(
         }
     }
 
-    // SETTINGS: public, Apache-2.0, `dev` the default branch.
+    // SETTINGS: public, Apache-2.0, `main` the default branch.
     match remote.settings(repo) {
         Err(e) => out.push(f(repo, "settings", format!("could not read: {e}"))),
         Ok(s) => {
             for (what, have, norm) in [
                 ("visibility", s.visibility.as_str(), NORM_VISIBILITY),
                 ("license", s.license.as_str(), NORM_LICENSE),
-                ("default branch", s.default_branch.as_str(), DEV),
+                ("default branch", s.default_branch.as_str(), MAIN),
             ] {
                 if have != norm {
                     out.push(f(
