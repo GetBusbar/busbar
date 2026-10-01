@@ -249,8 +249,6 @@ fn a_refused_arrivals_text_is_bounded_and_never_cut() {
         f(Rule::NullWithCount, "arrive.refusal_text")
     );
     let mut o: ArriveOut = z();
-    o.refusal = 1;
-    o.refusal_status = 400;
     o.head.error = text(&over);
     assert_eq!(
         check_arrive(Ready, &o, &[], 4, &bounds()),
