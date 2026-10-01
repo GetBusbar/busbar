@@ -101,7 +101,7 @@ fn a_second_install_is_refused() {
     }
     let _guard = exclusive();
     assert!(!install_plugin_observer(&Other));
-    assert!(observer_installed());
+    assert!(OBSERVER.get().is_some());
 }
 
 /// K9b: a first-party sink's declaration marked `shed` is the counter the host counts its shed
