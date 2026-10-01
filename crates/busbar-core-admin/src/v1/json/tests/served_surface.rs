@@ -667,15 +667,20 @@ async fn named_map_section_routes_answer_wrong_method_unknown_name_and_bad_body(
             .body(body);
         async move { req.send().await.unwrap().status().as_u16() }
     };
-    let root = abs("/export");
-    let item = abs("/export/served-surface-probe");
-    let settings = abs("/export/served-surface-probe/settings");
-    assert_eq!(ask(reqwest::Method::GET, &root, "").await, 200, "list");
-    assert_eq!(ask(reqwest::Method::POST, &root, "").await, 405, "wrong method on the root");
-    assert_eq!(ask(reqwest::Method::POST, &item, "").await, 405, "wrong method on one name");
-    assert_eq!(ask(reqwest::Method::PUT, &settings, "").await, 405, "wrong method on settings");
-    assert_eq!(ask(reqwest::Method::GET, &item, "").await, 404, "unknown name");
-    assert_eq!(ask(reqwest::Method::PUT, &item, "{").await, 400, "malformed definition body");
-    assert_eq!(ask(reqwest::Method::PATCH, &settings, "{").await, 400, "malformed settings body");
+    use reqwest::Method as M;
+    let (root, item) = (abs("/export"), abs("/export/served-surface-probe"));
+    let settings = format!("{item}/settings");
+    let cases = [
+        (M::GET, &root, "", 200, "list"),
+        (M::POST, &root, "", 405, "wrong method on the root"),
+        (M::POST, &item, "", 405, "wrong method on one name"),
+        (M::PUT, &settings, "", 405, "wrong method on settings"),
+        (M::GET, &item, "", 404, "unknown name"),
+        (M::PUT, &item, "{", 400, "malformed definition body"),
+        (M::PATCH, &settings, "{", 400, "malformed settings body"),
+    ];
+    for (method, path, body, want, what) in cases {
+        assert_eq!(ask(method, path, body).await, want, "{what}");
+    }
     handle.abort();
 }
