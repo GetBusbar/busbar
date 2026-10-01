@@ -94,33 +94,15 @@ pub struct LedgerRow {
     pub planes: Vec<String>,
 }
 
-pub fn concerns(a: &Addresses) -> Vec<Concern> {
-    let core = &a.core;
-    vec![
-        Concern {
-            id: "outbound-credentials".into(),
-            owner: format!("{core}/egress_auth"),
-            remedy: "one lease/mint with the grant kinds as parameters, not a copy per plane"
-                .into(),
-        },
-        Concern {
-            id: "metering".into(),
-            owner: format!("{core}/governance"),
-            remedy:
-                "one attribution + admission, taken from governance rather than restated per plane"
-                    .into(),
-        },
-        Concern {
-            id: "plane-admin-verbs".into(),
-            owner: format!("{core}/admin"),
-            remedy: "one admin verb surface parameterised by plane, not one handler set per plane"
-                .into(),
-        },
-    ]
+/// The declared concerns. NONE: `outbound-credentials`, `metering` and `plane-admin-verbs` have no
+/// DEBT row left, so each was RETIRED — a concern with nothing owed is a heading somebody adds a
+/// row under. A new concern is declared here together with the DEBT row that owes against it.
+pub fn concerns(_a: &Addresses) -> Vec<Concern> {
+    Vec::new()
 }
 
 /// THE LEDGER. Every row here is a signed DISTINCT claim: a name two unrelated concerns share.
-/// Four concerns have been RETIRED off this list rather than left with an empty row list — a concern
+/// Seven concerns have been RETIRED off this list rather than left with an empty row list — a concern
 /// with nothing owed is a heading somebody adds a row under.
 pub fn ledger() -> Vec<LedgerRow> {
     // Every row below was argued for the MCP and A2A planes — the only pair the scan could see
