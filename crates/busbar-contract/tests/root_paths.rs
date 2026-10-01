@@ -110,11 +110,8 @@ fn the_scheme_and_the_frame_stream_are_root_names() {
     assert_eq!(scheme.key(), "root-scheme");
     assert_eq!(scheme.kind(), Kind::Auth);
 
-    let _decorate: for<'u> fn(
-        &RootScheme,
-        &dyn ConfigView,
-        &EgressBody<'u>,
-    ) -> AuthDecoration<'u> = RootScheme::decorate;
+    let _decorate: for<'u> fn(&RootScheme, &dyn ConfigView, &EgressBody<'u>) -> AuthDecoration<'u> =
+        RootScheme::decorate;
     let _again: for<'u> fn(
         &RootScheme,
         &busbar_contract::ChallengeState,
