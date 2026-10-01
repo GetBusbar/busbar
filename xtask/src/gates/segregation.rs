@@ -117,7 +117,10 @@ const SRC_FLOOR: usize = 132;
 /// RE-MEASURED after the codec fold (owner ruling R7, 2026-09-27, #39): `busbar-llm-codec` and
 /// `busbar-voice-codec` dissolved into their plane crates, taking two manifests with them — 63
 /// tracked `Cargo.toml` files. The floor moves with it, same one-fifth margin: 50.
-const MANIFEST_FLOOR: usize = 50;
+///
+/// RE-MEASURED after AUTH-SPLIT (owner ruling Q99): busbar-auth-header, -sigv4, -oauth and
+/// -webhook-signature arrive as four crates — 67 tracked `Cargo.toml` files. Same one-fifth margin: 53.
+const MANIFEST_FLOOR: usize = 53;
 
 pub struct SegregationGate;
 
