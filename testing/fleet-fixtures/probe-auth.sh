@@ -125,6 +125,19 @@ fi
 IDTOKEN="$(curl -fsS -m 30 "http://127.0.0.1:${IDP_PORT}/mint" 2>/dev/null || true)"
 [ -n "$IDTOKEN" ] || fail_here "the stub IdP did not mint an id_token" "the credential exchange has nothing to present."
 
+# POSITIVE CONTROL: a token the verifier must refuse (signed by a key not in the JWKS, expired, wrong
+# audience) must NOT exchange for a key. A provider that accepts any of them is not verifying.
+for BAD in bad-signature expired wrong-audience; do
+  BADTOKEN="$(curl -fsS -m 30 "http://127.0.0.1:${IDP_PORT}/mint/${BAD}" 2>/dev/null || true)"
+  [ -n "$BADTOKEN" ] || fail_here "the stub IdP did not mint the ${BAD} control token" "the positive control has nothing to present."
+  BADEXCH="$(curl -sS -m 30 -X POST "http://127.0.0.1:${LISTEN_PORT}/auth/token" \
+    -H "Authorization: Bearer ${BADTOKEN}" 2>/dev/null || true)"
+  if [ -n "$(printf '%s' "$BADEXCH" | jq -r '.api_key // empty' 2>/dev/null)" ]; then
+    fail_here "the ${ALIAS} provider exchanged a ${BAD} token for a busbar key" \
+      "a verifier that accepts a ${BAD} credential is not verifying; the PASS path below would prove nothing."
+  fi
+done
+
 EXCH="$(curl -fsS -m 30 -X POST "http://127.0.0.1:${LISTEN_PORT}/auth/token" \
   -H "Authorization: Bearer ${IDTOKEN}" 2>/dev/null || true)"
 APIKEY="$(printf '%s' "$EXCH" | jq -r '.api_key // empty' 2>/dev/null)"

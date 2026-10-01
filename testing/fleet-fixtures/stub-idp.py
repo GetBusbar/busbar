@@ -9,6 +9,12 @@ end to end WITHOUT a real IdP, this fixture is a complete-enough issuer:
   GET /jwks                              -> the RS256 public key as a JWK set
   GET /mint                              -> a freshly signed RS256 id_token for the configured sub
                                             (the probe grabs this and presents it to /auth/token)
+  GET /mint/bad-signature                -> the same claims signed by a key that is NOT in the JWKS
+  GET /mint/expired                      -> a correctly signed token whose exp is in the past
+  GET /mint/wrong-audience               -> a correctly signed token for a different audience
+
+Paths match exactly (query string ignored); any other path is a 404. The three bad tokens are the
+probe's positive control: a verifier that accepts them is not verifying.
 
 RS256 signing is done by shelling out to `openssl` (present on every GitHub-hosted runner and on
 macOS), so the fixture needs no Python crypto package — it stays dependency-free and self-contained,
@@ -35,6 +41,7 @@ GROUP_VALUE = sys.argv[7]
 
 TMP = tempfile.mkdtemp(prefix="stub-idp-")
 PRIV = os.path.join(TMP, "priv.pem")
+WRONG_PRIV = os.path.join(TMP, "wrong.pem")  # signs /mint/bad-signature; never published in the JWKS
 KID = "stub-idp-key-1"
 
 
@@ -44,10 +51,11 @@ def b64url(raw: bytes) -> str:
 
 def gen_key():
     # 2048-bit RSA; traditional PEM so `openssl dgst -sign` reads it directly.
-    subprocess.run(
-        ["openssl", "genrsa", "-out", PRIV, "2048"],
-        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    for path in (PRIV, WRONG_PRIV):
+        subprocess.run(
+            ["openssl", "genrsa", "-out", path, "2048"],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
 
 
 def public_numbers():
@@ -69,12 +77,12 @@ def jwks():
                       "n": b64url(n), "e": b64url(e)}]}
 
 
-def sign_jwt():
+def sign_jwt(key=PRIV, aud=None, exp_offset=3600):
     now = int(time.time())
     header = {"alg": "RS256", "typ": "JWT", "kid": KID}
     payload = {
-        "iss": ISSUER, "aud": AUDIENCE, "sub": SUB,
-        "iat": now, "exp": now + 3600, GROUP_CLAIM: [GROUP_VALUE],
+        "iss": ISSUER, "aud": aud or AUDIENCE, "sub": SUB,
+        "iat": now, "exp": now + exp_offset, GROUP_CLAIM: [GROUP_VALUE],
     }
     signing_input = (
         b64url(json.dumps(header, separators=(",", ":")).encode())
@@ -82,7 +90,7 @@ def sign_jwt():
         + b64url(json.dumps(payload, separators=(",", ":")).encode())
     )
     proc = subprocess.run(
-        ["openssl", "dgst", "-sha256", "-sign", PRIV],
+        ["openssl", "dgst", "-sha256", "-sign", key],
         input=signing_input.encode(), capture_output=True, check=True,
     )
     return signing_input + "." + b64url(proc.stdout)
@@ -106,7 +114,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path.startswith("/.well-known/openid-configuration"):
+        path = self.path.split("?", 1)[0]
+        if path == "/.well-known/openid-configuration":
             self._json({
                 "issuer": ISSUER,
                 "jwks_uri": SELF + "/jwks",
@@ -116,10 +125,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "subject_types_supported": ["public"],
                 "id_token_signing_alg_values_supported": ["RS256"],
             })
-        elif self.path.startswith("/jwks"):
+        elif path == "/jwks":
             self._json(jwks())
-        elif self.path.startswith("/mint"):
+        elif path == "/mint":
             self._text(sign_jwt())
+        elif path == "/mint/bad-signature":
+            self._text(sign_jwt(key=WRONG_PRIV))
+        elif path == "/mint/expired":
+            self._text(sign_jwt(exp_offset=-3600))
+        elif path == "/mint/wrong-audience":
+            self._text(sign_jwt(aud=AUDIENCE + "-other"))
         else:
             self.send_response(404)
             self.send_header("Content-Length", "0")
