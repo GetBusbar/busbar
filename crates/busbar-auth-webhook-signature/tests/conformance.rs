@@ -427,7 +427,7 @@ fn red_open_without_a_signing_secret_or_with_foreign_settings_fails() {
 
 /// THE STRIPS AND THE DECISION (THE DESIGN, "Auth points and guest lists", step 3): whatever the
 /// verdict, the plugin names its four signature header lines for the transport to strip, so the
-/// plane never sees them; an identity or a pass continues, a reject stops.
+/// request's handler never sees them; an identity or a pass continues, a reject stops.
 #[test]
 fn every_verdict_names_the_signature_lines_and_a_decision() {
     let d = Dispatcher::new(DispatchConfig::default());
