@@ -84,7 +84,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 #    class, extended to this gate for EXACTLY these two files. Test-only: the store v3 door fixture
 #    and the store money acceptance test name the memory store (`busbar_store_memory`) as their
 #    test double. EXPIRES WITH THE WIRE-STORE TRAIN, which moves both into crates/store-memory/tests
-#    (the noun in its own family) or onto a kind-neutral store double (spec §1, "tests use
+#    (the noun in its own family) or onto a kind-neutral store double (the spec's "tests use
 #    kind-neutral doubles"), and deletes these four rows in the same train.
 
 # TEST-ANCHOR (ARCHITECT 2026-09-30, T13b); expires with the WIRE-STORE train.
