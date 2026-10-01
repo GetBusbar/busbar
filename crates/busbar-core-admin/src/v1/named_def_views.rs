@@ -12,6 +12,28 @@
 use super::service::settings_keys;
 use busbar_kernel::admin::v1::contract::NamedDefView;
 
+/// The key a definition names its backing plugin under.
+pub(super) const MODULE_KEY: &str = "module";
+/// The key a definition carries its opaque settings bag under.
+pub(super) const SETTINGS_KEY: &str = "settings";
+
+/// A view carrying only the three fields every definition has; each projection sets the rest it
+/// can know and leaves the others absent.
+fn bare_view(name: &str, module: String, settings_keys: Vec<String>) -> NamedDefView {
+    NamedDefView {
+        name: name.to_string(),
+        module,
+        settings_keys,
+        max_admin_scope: None,
+        token_configured: None,
+        browser_login_configured: None,
+        pin_mechanism: None,
+        fingerprint_pinned: None,
+        reverify_ttl: None,
+        unparseable: None,
+    }
+}
+
 /// Project one `identity-providers:` DEFINITION onto the shared named-map view. The `token:` secret
 /// REFERENCE is collapsed to a boolean here and the `settings:` bag to its KEY NAMES — the two
 /// places a secret could leak, closed by construction.
@@ -20,16 +42,10 @@ pub(super) fn identity_provider_view(
     cfg: &busbar_kernel::config::IdentityProviderCfg,
 ) -> NamedDefView {
     NamedDefView {
-        name: name.to_string(),
-        module: cfg.module.clone(),
-        settings_keys: settings_keys(&cfg.settings),
         max_admin_scope: cfg.max_admin_scope.clone(),
         token_configured: Some(cfg.token.is_some()),
         browser_login_configured: Some(cfg.browser_login.is_some()),
-        pin_mechanism: None,
-        fingerprint_pinned: None,
-        reverify_ttl: None,
-        unparseable: None,
+        ..bare_view(name, cfg.module.clone(), settings_keys(&cfg.settings))
     }
 }
 
@@ -41,18 +57,7 @@ pub(super) fn export_def_view(
     name: &str,
     cfg: &busbar_kernel::config::ExportDefCfg,
 ) -> NamedDefView {
-    NamedDefView {
-        name: name.to_string(),
-        module: cfg.module.clone(),
-        settings_keys: settings_keys(&cfg.settings),
-        max_admin_scope: None,
-        token_configured: None,
-        browser_login_configured: None,
-        pin_mechanism: None,
-        fingerprint_pinned: None,
-        reverify_ttl: None,
-        unparseable: None,
-    }
+    bare_view(name, cfg.module.clone(), settings_keys(&cfg.settings))
 }
 
 // A plane-owned named-map section is NOT projected here: each compiled-in plane owns its own
@@ -70,25 +75,21 @@ pub(super) fn unparseable_def_view(
     entry: &busbar_kernel::config::overlay::UnparseableNamedDef,
 ) -> NamedDefView {
     NamedDefView {
-        name: name.to_string(),
-        module: entry
-            .raw
-            .get("module")
-            .and_then(|m| m.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        settings_keys: entry
-            .raw
-            .get("settings")
-            .and_then(|s| s.as_object())
-            .map(settings_keys)
-            .unwrap_or_default(),
-        max_admin_scope: None,
-        token_configured: None,
-        browser_login_configured: None,
-        pin_mechanism: None,
-        fingerprint_pinned: None,
-        reverify_ttl: None,
         unparseable: Some(entry.error.clone()),
+        ..bare_view(
+            name,
+            entry
+                .raw
+                .get(MODULE_KEY)
+                .and_then(|m| m.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            entry
+                .raw
+                .get(SETTINGS_KEY)
+                .and_then(|s| s.as_object())
+                .map(settings_keys)
+                .unwrap_or_default(),
+        )
     }
 }
