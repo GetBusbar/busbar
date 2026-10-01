@@ -227,6 +227,8 @@ fn a_refused_arrivals_text_is_bounded_and_never_cut() {
         len: t.len(),
     };
     let mut o: ArriveOut = z();
+    o.refusal = 1;
+    o.refusal_status = 400;
     o.head.error = text(&at_cap);
     assert_eq!(
         check_arrive(Refused, &o, &[], 4, &bounds()),
@@ -247,6 +249,8 @@ fn a_refused_arrivals_text_is_bounded_and_never_cut() {
         f(Rule::NullWithCount, "arrive.refusal_text")
     );
     let mut o: ArriveOut = z();
+    o.refusal = 1;
+    o.refusal_status = 400;
     o.head.error = text(&over);
     assert_eq!(
         check_arrive(Ready, &o, &[], 4, &bounds()),
@@ -254,6 +258,8 @@ fn a_refused_arrivals_text_is_bounded_and_never_cut() {
         "not judged on READY"
     );
     let mut o: ArriveOut = z();
+    o.refusal = 1;
+    o.refusal_status = 400;
     o.head.error = s("Method `x` is not implemented by this server.");
     assert_eq!(check_arrive(Refused, &o, &[], 4, &bounds()), Ok(()));
 }
@@ -271,6 +277,8 @@ fn a_refusal_echoing_the_largest_admitted_field_line_fits() {
         assert!(MAX_REFUSAL_TEXT >= LARGEST_ADMITTED_FIELD_LINE + 1024);
     }
     let mut o: ArriveOut = z();
+    o.refusal = 1;
+    o.refusal_status = 400;
     o.head.error = AbiStr {
         ptr: echoed.as_ptr(),
         len: echoed.len(),
