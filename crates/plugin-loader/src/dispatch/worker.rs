@@ -19,7 +19,10 @@
 //!   `max_inflight`. A wake on one calls `drive`; a PENDING drive resumes like any op. The one op
 //!   submitted on a driver ticket is `tick` ([`Dispatcher::tick`]): it holds no `max_inflight`
 //!   unit, a wake during it is owed to `drive` once it ends, and its PENDING answer ends it, since
-//!   what pended inside it goes on through `drive`.
+//!   what pended inside it goes on through `drive`. A driver ticket is never recycled, so a tick's
+//!   start is its cycle's boundary: what the services kept under it since the last tick (the conn
+//!   answers and the stored service results the drives between redeemed by handle) is forgotten
+//!   then, the most ever kept counted ([`DispatchStats::driver_kept_high`]).
 //! * DEADLINE CLASSES. Call, Stream and Connection: when `deadline_ns` passes with the op pending,
 //!   the host calls `cancel` (ticket-less: it may not pend) and answers the kind's timeout outcome;
 //!   a client drop does the same. WriteBehind is NEVER cancelled — not by its deadline, a client
@@ -127,6 +130,8 @@ pub struct DispatchStats {
     /// Library unloads still running on their reapers, process-wide: a count that stays up names a
     /// hung `.fini_array` (never forced; see `load::reap`).
     pub live_reapers: u64,
+    /// The most service answers one driver ticket kept over one tick cycle (a high-water gauge).
+    pub driver_kept_high: u64,
 }
 
 #[derive(Debug, Default)]
@@ -134,6 +139,7 @@ pub(crate) struct Stats {
     stale_wakes: AtomicU64,
     pub(crate) replacements: AtomicU64,
     write_behind_late: AtomicU64,
+    driver_kept_high: AtomicU64,
 }
 
 /// What a worker thread needs besides its worker.
@@ -860,6 +866,13 @@ impl Worker {
                 let Some((meta, mut job)) = e.queue.pop_front() else {
                     return Some(st);
                 };
+                if e.driver.is_some() {
+                    // A tick starts the driver ticket's next cycle: the last cycle's kept answers go.
+                    let kept = env.services.forget(ticket) + super::conn_services::forget(ticket);
+                    env.stats
+                        .driver_kept_high
+                        .fetch_max(kept as u64, Ordering::Relaxed);
+                }
                 let inst = meta.instance.clone();
                 let expired = meta.class != DeadlineClass::WriteBehind
                     && meta.deadline_ns != 0
@@ -1188,6 +1201,7 @@ impl Dispatcher {
             replacements: s.replacements.load(Ordering::Relaxed),
             write_behind_late: s.write_behind_late.load(Ordering::Relaxed),
             live_reapers: super::load::live_reapers(),
+            driver_kept_high: s.driver_kept_high.load(Ordering::Relaxed),
         }
     }
 

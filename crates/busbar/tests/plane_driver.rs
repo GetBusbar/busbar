@@ -465,6 +465,8 @@ struct Far {
     slab: ConnSlab<()>,
     bytes: Mutex<Option<Vec<u8>>>,
     waiting: Mutex<Vec<u64>>,
+    /// Connections opened (each ESTABLISH that ran).
+    opened: Mutex<u32>,
 }
 
 impl DeclaredConns for Far {
@@ -491,6 +493,7 @@ impl Conns for Far {
         _: &OpenDesc<'_>,
     ) -> Result<ConnId, ConnError> {
         self.slab.check_need(caller, need)?;
+        *self.opened.lock().unwrap() += 1;
         self.slab.insert(caller, need, ())
     }
     fn write(&self, c: InstanceId, id: ConnId, b: &[u8], _: bool) -> Result<usize, ConnError> {
@@ -564,6 +567,37 @@ async fn a_read_inside_tick_pends_on_the_driver_ticket_and_resumes_through_drive
         assert!(
             stats(&plugin)[cases::stat::DRIVES] >= 1,
             "{way:?}: drive ran"
+        );
+    }
+}
+
+/// EACH TICK STARTS A NEW CYCLE ON THE DRIVER TICKET (ARCHITECT S7-TICK (iii)): the services'
+/// kept answers under the driver ticket are forgotten when the next tick starts, so the second
+/// tick's ESTABLISH (handle 1 again) runs afresh instead of answering the first tick's stream; the
+/// cycle's kept count reaches the dispatcher's high-water gauge. RED before: the driver ticket is
+/// never recycled, the second ESTABLISH replayed the first one's answer (one connection opened) and
+/// the kept answers grew without bound.
+#[tokio::test]
+async fn a_tick_forgets_what_the_last_cycle_kept_on_the_driver_ticket() {
+    for way in ways() {
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let far = Arc::new(Far::default());
+        let plugin = load_over(way, &dispatcher, Arc::new(NoSink), Some(far.clone()));
+        let driver = driver_of(&plugin, dispatcher.clone());
+        for _ in 0..2 {
+            arrive_at(&plugin, "/tick-read");
+            tokio::time::timeout(Duration::from_secs(5), driver.ticks())
+                .await
+                .expect("one tick");
+        }
+        assert_eq!(
+            *far.opened.lock().unwrap(),
+            2,
+            "{way:?}: each tick's ESTABLISH ran"
+        );
+        assert!(
+            dispatcher.stats().driver_kept_high >= 1,
+            "{way:?}: the first cycle's kept ESTABLISH answer is counted"
         );
     }
 }

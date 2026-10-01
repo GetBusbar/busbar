@@ -7,7 +7,7 @@
 //! * **Stored once, redeemed on the handle.** A ticketed call runs its service once under its
 //!   [`CompletionHandle`] and stores the result. A re-issued handle (a resume, or the re-call a short
 //!   answer earns) reads the stored result; nothing runs twice. The store forgets a ticket's results
-//!   when the ticket is recycled.
+//!   when the ticket is recycled, and a driver ticket's when its next tick starts.
 //! * **The short-buffer rule.** A result that does not fit the caller's buffers answers FAILED with
 //!   `needed_bytes`/`needed_items` at their full sizes and writes nothing. The one re-call on the same
 //!   handle reads the stored result; a second short answer on that handle is FAULT.
@@ -90,9 +90,10 @@ impl ServiceStore {
         }
     }
 
-    /// Forget every result under `ticket` (it was recycled).
-    pub(crate) fn forget(&self, ticket: Ticket) {
-        self.lock().remove(&ticket);
+    /// Forget every result under `ticket` (it was recycled, or a driver ticket's tick started);
+    /// how many there were.
+    pub(crate) fn forget(&self, ticket: Ticket) -> usize {
+        self.lock().remove(&ticket).map_or(0, |held| held.len())
     }
 
     /// Forget every result of worker `worker` (it was replaced).
