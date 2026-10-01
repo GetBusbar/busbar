@@ -35,17 +35,11 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::trust::signed::KEY_INFO_HEAD;
+
 /// The token prefix, so a busbar key is visually distinct from an opaque bearer and a quick
 /// structural pre-check can reject an obviously-non-busbar credential before any crypto.
 pub const TOKEN_PREFIX: &str = "bbk_";
-
-/// The DER prefix of an Ed25519 SubjectPublicKeyInfo, RFC 8410 section 4: `SEQUENCE { SEQUENCE {
-/// OID 1.3.101.112 }, BIT STRING }`. Fixed-length and fully determined; prefixed to the 32 raw key
-/// bytes to render busbar's PUBLIC card-issuer key in the ONE spelling the verifier accepts.
-#[cfg_attr(not(feature = "relay"), allow(dead_code))]
-const ED25519_KEY_INFO_PREFIX: [u8; 12] = [
-    0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
-];
 
 /// The signing-key id carried in every token's `kid`. Single-key for 1.5.0; a keyset later maps
 /// several ids to several verifying keys. Stable so a token minted before a restart still names a
@@ -222,8 +216,8 @@ impl TokenSigner {
     #[cfg_attr(not(feature = "relay"), allow(dead_code))]
     pub fn card_subkey_key_info_base64(&self, domain: &str) -> String {
         let key = SigningKey::from_bytes(&self.derived_subkey_seed(domain));
-        let mut der = Vec::with_capacity(ED25519_KEY_INFO_PREFIX.len() + 32);
-        der.extend_from_slice(&ED25519_KEY_INFO_PREFIX);
+        let mut der = Vec::with_capacity(KEY_INFO_HEAD.len() + 32);
+        der.extend_from_slice(&KEY_INFO_HEAD);
         der.extend_from_slice(key.verifying_key().as_bytes());
         base64::engine::general_purpose::STANDARD.encode(der)
     }

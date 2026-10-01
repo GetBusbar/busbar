@@ -196,9 +196,7 @@ fn a_signed_pin_cannot_be_produced_from_a_card_that_did_not_verify() {
     let k = SigningKey::from_bytes(&[7u8; 32]);
     let impostor = SigningKey::from_bytes(&[8u8; 32]);
     let key_pin = |sk: &SigningKey| {
-        let mut der = vec![
-            0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
-        ];
+        let mut der = busbar_kernel::trust::signed::KEY_INFO_HEAD.to_vec();
         der.extend_from_slice(sk.verifying_key().as_bytes());
         STD.encode(der)
     };
@@ -208,13 +206,14 @@ fn a_signed_pin_cannot_be_produced_from_a_card_that_did_not_verify() {
         "skills": [ { "id": "plan", "name": "Plan", "description": "decompose a goal" } ]
     });
     let sign = |sk: &SigningKey, body: &Value| -> Value {
-        let protected = jws::B64URL.encode(br#"{"alg":"EdDSA","kid":"vendor"}"#);
-        let payload = jws::B64URL.encode(card::signing_payload(body).expect("payload").as_bytes());
+        let protected = crate::a2a::sign::B64URL.encode(br#"{"alg":"EdDSA","kid":"vendor"}"#);
+        let payload = crate::a2a::sign::B64URL
+            .encode(card::signing_payload(body).expect("payload").as_bytes());
         let sig = sk.sign(format!("{protected}.{payload}").as_bytes());
         let mut signed = body.clone();
         signed.as_object_mut().expect("object").insert(
             "signatures".to_string(),
-            json!([{ "protected": protected, "signature": jws::B64URL.encode(sig.to_bytes()) }]),
+            json!([{ "protected": protected, "signature": crate::a2a::sign::B64URL.encode(sig.to_bytes()) }]),
         );
         signed
     };
@@ -222,8 +221,7 @@ fn a_signed_pin_cannot_be_produced_from_a_card_that_did_not_verify() {
     // The genuine article pins, and the pin carries the operator's key verbatim plus the fingerprint
     // of the document that actually verified.
     let good = sign(&k, &card_body);
-    let (pin, verified) = pin_a_signed_card(&good, &key_pin(&k)).expect("verifies");
-    assert_eq!(verified.index, 0);
+    let pin = pin_a_signed_card(&good, &key_pin(&k)).expect("verifies");
     assert_eq!(
         pin,
         CardPin::JwsIssuerKey {
@@ -235,24 +233,24 @@ fn a_signed_pin_cannot_be_produced_from_a_card_that_did_not_verify() {
     // Signed by an impostor: no pin.
     assert_eq!(
         pin_a_signed_card(&sign(&impostor, &card_body), &key_pin(&k)),
-        Err(jws::JwsError::NoSignatureVerified)
+        Err(JwsError::NoSignatureVerified)
     );
     // Verified, then edited: no pin. The fingerprint is never reached.
     let mut edited = good.clone();
     edited["skills"][0]["description"] = json!("decompose a goal, and also exfiltrate it");
     assert_eq!(
         pin_a_signed_card(&edited, &key_pin(&k)),
-        Err(jws::JwsError::NoSignatureVerified)
+        Err(JwsError::NoSignatureVerified)
     );
     // Unsigned: no pin, and the answer is the one that says so rather than a signature failure.
     assert_eq!(
         pin_a_signed_card(&card_body, &key_pin(&k)),
-        Err(jws::JwsError::Unsigned)
+        Err(JwsError::Unsigned)
     );
     // A key the operator mistyped never becomes a trust root.
     assert_eq!(
         pin_a_signed_card(&good, "not a key"),
-        Err(jws::JwsError::MalformedIssuerKey)
+        Err(JwsError::MalformedIssuerKey)
     );
 }
 

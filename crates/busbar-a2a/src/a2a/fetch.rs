@@ -47,7 +47,7 @@
 //! ## What this module deliberately does NOT do
 //!
 //! It does not verify the card. A fetched document is bytes, and the trust decision belongs to
-//! [`super::jws`] against the operator's out-of-band key. Keeping the two apart is what stops "we
+//! [`super::pin::pin_a_signed_card`] against the operator's out-of-band key. Keeping the two apart is what stops "we
 //! fetched it safely" from being read as "it is genuine".
 
 use std::net::IpAddr;

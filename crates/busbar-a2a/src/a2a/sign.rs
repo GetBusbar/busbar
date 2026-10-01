@@ -46,7 +46,7 @@
 //! ## THE WIRE FORMAT IS THE ONE BUSBAR ALREADY VERIFIES
 //!
 //! Not a second format that happens to look similar. The signature this module produces is checked
-//! by [`super::jws::verify_card`] — the same detached-payload construction, over
+//! by [`super::pin::pin_a_signed_card`] — the same detached-payload construction, over
 //! [`super::card::signing_payload`], which is [`super::canonical::canonicalize`] with `signatures`
 //! removed. There is exactly one canonicalizer on this plane and both halves call it, because two
 //! halves with two canonicalizers disagree about what was signed the first time a card contains a
@@ -57,7 +57,11 @@ use serde_json::{json, Map, Value};
 
 use super::canonical::canonicalize;
 use super::card::{signing_payload, CardError};
-use super::jws::B64URL;
+
+/// Base64url WITHOUT padding, which is the only encoding JWS permits for these fields (busbar signs
+/// its own card; the kernel's `trust::signed` decodes what a counterparty signed).
+pub(crate) const B64URL: base64::engine::general_purpose::GeneralPurpose =
+    base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 /// The domain string the card-signing subkey is derived under. Versioned, so a future change to the
 /// derivation is a NEW key rather than a silently different one under the same name.
@@ -158,7 +162,7 @@ impl CardSigner<'_> {
     ///
     /// Base64 of an Ed25519 SubjectPublicKeyInfo — the string an operator hands their counterparty
     /// out of band, and the string that counterparty pastes into their own `pin.key:`. Computed
-    /// host-side under the same SPKI prefix [`super::jws::IssuerKey::from_key_info_base64`] requires, so a
+    /// host-side under the same SPKI prefix [`busbar_kernel::trust::signed::root_key`] requires, so a
     /// value this method emits and a value that method accepts cannot drift into two spellings.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn issuer_key_info_base64(&self) -> String {
@@ -170,7 +174,7 @@ impl CardSigner<'_> {
     /// Any signature already on the document is REPLACED, not appended to. A served card carries
     /// busbar's signature and no other: the vendor's cannot verify over a rewritten document, and a
     /// second signature from an unnamed party is the countersigning shape
-    /// [`super::jws::verify_card`] is written to give no weight to. Attaching after the payload is
+    /// [`busbar_kernel::trust::signed::verify`] is written to give no weight to. Attaching after the payload is
     /// computed is not merely convenient — [`signing_payload`] REMOVES `signatures`, so what is
     /// signed is the card without it and inserting afterwards cannot change what was signed.
     pub(crate) fn sign_card(&self, card: &Value) -> Result<Value, SignError> {

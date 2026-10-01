@@ -11,7 +11,8 @@
 //!
 //! ## Every assertion here is made with the INBOUND verifier
 //!
-//! Nothing below re-implements a signature check. `jws::verify_card` is the function busbar points
+//! Nothing below re-implements a signature check. `pin::pin_a_signed_card` (the kernel's
+//! `trust::signed` verifier underneath) is the function busbar points
 //! at every vendor's card, and it is the function pointed at busbar's own here. A test that
 //! verified with a bespoke checker would prove that the signer agrees with the test, which is the
 //! one thing that does not matter — the two halves have to agree with EACH OTHER about what was
@@ -25,7 +26,7 @@ use ed25519_dalek::{Verifier, VerifyingKey};
 use serde_json::{json, Value};
 
 use super::*;
-use crate::a2a::jws::{self, IssuerKey, JwsError, B64URL};
+use crate::a2a::pin::{pin_a_signed_card, JwsError};
 use crate::a2a::serve::rewrite_card;
 use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
 
@@ -89,9 +90,11 @@ fn served_by(signer: &crate::a2a::sign::CardSigner<'_>) -> Value {
     rewrite_card(&backend_card(), BACKEND, PUBLIC, "planner", Some(signer)).expect("rewrite")
 }
 
-fn busbars_issuer_key(signer: &crate::a2a::sign::CardSigner<'_>) -> IssuerKey {
-    IssuerKey::from_key_info_base64(&signer.issuer_key_info_base64())
-        .expect("busbar's published key must parse under the verifier that consumes it")
+fn busbars_issuer_key(signer: &crate::a2a::sign::CardSigner<'_>) -> String {
+    let key = signer.issuer_key_info_base64();
+    busbar_kernel::trust::signed::root_key(&key)
+        .expect("busbar's published key must parse under the verifier that consumes it");
+    key
 }
 
 // ══ THE SERVED CARD IS SIGNED, AND IT VERIFIES ═══════════════════════════════════════════════════
@@ -103,11 +106,18 @@ fn a_served_card_carries_a_signature_that_verifies_against_busbars_published_key
     let signer = card_signer(&host).expect("a deployment with a signing key has a card signer");
     let served = served_by(&signer);
 
-    let verified = jws::verify_card(&served, &busbars_issuer_key(&signer))
+    pin_a_signed_card(&served, &busbars_issuer_key(&signer))
         .expect("busbar's own card must verify under busbar's own published key");
-    assert_eq!(verified.index, 0);
+    let protected = B64URL
+        .decode(
+            served["signatures"][0]["protected"]
+                .as_str()
+                .expect("one signature"),
+        )
+        .expect("base64url");
+    let header: Value = serde_json::from_slice(&protected).expect("a JSON header");
     assert_eq!(
-        verified.kid.as_deref(),
+        header["kid"].as_str(),
         Some(signer.kid()),
         "the caller reads the kid off the card and must find the one busbar publishes under"
     );
@@ -152,7 +162,7 @@ fn tampering_with_one_byte_of_the_served_document_breaks_verification() {
     let signer = card_signer(&host).expect("a signing key means a card signer");
     let key = busbars_issuer_key(&signer);
     let served = served_by(&signer);
-    jws::verify_card(&served, &key).expect("the untampered card verifies — the control");
+    pin_a_signed_card(&served, &key).expect("the untampered card verifies — the control");
 
     // ONE CHARACTER, in a member busbar does not even model on the read path. The fingerprint and
     // the signature are both taken over the document AS RECEIVED precisely so that this registers.
@@ -164,7 +174,7 @@ fn tampering_with_one_byte_of_the_served_document_breaks_verification() {
         "the tamper must actually change something"
     );
     assert_eq!(
-        jws::verify_card(&tampered, &key),
+        pin_a_signed_card(&tampered, &key),
         Err(JwsError::NoSignatureVerified),
         "one changed character must break the signature; a card whose bytes can move under a valid \
          signature is not pinned to anything"
@@ -178,7 +188,7 @@ fn tampering_with_one_byte_of_the_served_document_breaks_verification() {
         .expect("object")
         .insert("x-vendor-extension".to_string(), json!({ "region": "eu" }));
     assert_eq!(
-        jws::verify_card(&extended, &key),
+        pin_a_signed_card(&extended, &key),
         Err(JwsError::NoSignatureVerified),
         "a member busbar does not model is still part of what was signed"
     );
@@ -192,7 +202,7 @@ fn tampering_with_one_byte_of_the_served_document_breaks_verification() {
     raw[0] ^= 0x01;
     resigned["signatures"][0]["signature"] = Value::String(B64URL.encode(&raw));
     assert_eq!(
-        jws::verify_card(&resigned, &key),
+        pin_a_signed_card(&resigned, &key),
         Err(JwsError::NoSignatureVerified)
     );
 }
@@ -208,7 +218,7 @@ fn a_card_signed_by_a_different_busbar_deployment_does_not_verify_here() {
     let ours = card_signer(&ours_host).expect("a signing key means a card signer");
     let theirs = card_signer(&theirs_host).expect("a signing key means a card signer");
     assert_eq!(
-        jws::verify_card(&served_by(&theirs), &busbars_issuer_key(&ours)),
+        pin_a_signed_card(&served_by(&theirs), &busbars_issuer_key(&ours)),
         Err(JwsError::NoSignatureVerified)
     );
 }
@@ -396,7 +406,7 @@ fn rotating_the_token_key_rotates_the_card_key_with_it() {
         after.issuer_key_info_base64()
     );
     assert_eq!(
-        jws::verify_card(&served_by(&after), &busbars_issuer_key(&before)),
+        pin_a_signed_card(&served_by(&after), &busbars_issuer_key(&before)),
         Err(JwsError::NoSignatureVerified)
     );
 }
@@ -437,7 +447,7 @@ fn the_signature_is_taken_over_the_document_that_is_actually_served() {
     assert!(served["securitySchemes"]
         .get(crate::a2a::serve::INBOUND_SCHEME_NAME)
         .is_some());
-    jws::verify_card(&served, &busbars_issuer_key(&signer))
+    pin_a_signed_card(&served, &busbars_issuer_key(&signer))
         .expect("and THAT document is the one the signature covers");
 }
 

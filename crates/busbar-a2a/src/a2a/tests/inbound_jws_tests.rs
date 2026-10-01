@@ -19,7 +19,7 @@ fn key(seed: u8) -> SigningKey {
 
 /// The operator's out-of-band issuer key, as they paste it: base64 of the RFC 8410 SPKI.
 fn key_info_base64(k: &SigningKey) -> String {
-    let mut der = jws::ED25519_KEY_INFO_PREFIX.to_vec();
+    let mut der = busbar_kernel::trust::signed::KEY_INFO_HEAD.to_vec();
     der.extend_from_slice(k.verifying_key().as_bytes());
     STD.encode(der)
 }
@@ -34,8 +34,9 @@ fn a_card() -> Value {
 
 fn signed_by(k: &SigningKey) -> Value {
     let mut card = a_card();
-    let protected = jws::B64URL.encode(serde_json::to_string(&json!({ "alg": "EdDSA" })).unwrap());
-    let payload = jws::B64URL.encode(
+    let protected =
+        crate::a2a::sign::B64URL.encode(serde_json::to_string(&json!({ "alg": "EdDSA" })).unwrap());
+    let payload = crate::a2a::sign::B64URL.encode(
         super::super::card::signing_payload(&card)
             .unwrap()
             .as_bytes(),
@@ -43,7 +44,7 @@ fn signed_by(k: &SigningKey) -> Value {
     let sig = k.sign(format!("{protected}.{payload}").as_bytes());
     card.as_object_mut().unwrap().insert(
         "signatures".to_string(),
-        json!([{ "protected": protected, "signature": jws::B64URL.encode(sig.to_bytes()) }]),
+        json!([{ "protected": protected, "signature": crate::a2a::sign::B64URL.encode(sig.to_bytes()) }]),
     );
     card
 }
@@ -77,7 +78,7 @@ fn the_seam_refuses_a_wrong_key_and_a_malformed_key_exactly_as_the_free_function
     );
     assert_eq!(
         host.verify_signed_card(&card, &wrong),
-        Err(jws::JwsError::NoSignatureVerified),
+        Err(JwsError::NoSignatureVerified),
     );
     // A malformed operator key is refused identically.
     assert_eq!(
@@ -86,7 +87,7 @@ fn the_seam_refuses_a_wrong_key_and_a_malformed_key_exactly_as_the_free_function
     );
     assert_eq!(
         host.verify_signed_card(&card, "not-base64-key-info"),
-        Err(jws::JwsError::MalformedIssuerKey),
+        Err(JwsError::MalformedIssuerKey),
     );
 }
 
@@ -115,20 +116,14 @@ impl InboundCardJws for Sentinel {
         &self,
         _card: &Value,
         issuer_key_info: &str,
-    ) -> Result<(CardPin, jws::Verified), jws::JwsError> {
+    ) -> Result<CardPin, JwsError> {
         if issuer_key_info == "refuse" {
-            return Err(jws::JwsError::NoSignatureVerified);
+            return Err(JwsError::NoSignatureVerified);
         }
-        Ok((
-            CardPin::JwsIssuerKey {
-                issuer_key: "sentinel".to_string(),
-                card_fingerprint: "sentinel".to_string(),
-            },
-            jws::Verified {
-                index: 0,
-                kid: None,
-            },
-        ))
+        Ok(CardPin::JwsIssuerKey {
+            issuer_key: "sentinel".to_string(),
+            card_fingerprint: "sentinel".to_string(),
+        })
     }
 }
 
@@ -169,7 +164,7 @@ fn verify_document_reaches_the_card_signature_only_through_the_seam() {
             &signed_by(&k),
             Handshake::default()
         ),
-        Err(VerifyRefusal::Jws(jws::JwsError::NoSignatureVerified)),
+        Err(VerifyRefusal::Jws(JwsError::NoSignatureVerified)),
     );
 }
 
@@ -179,7 +174,7 @@ fn verify_document_over_the_process_seam_matches_the_free_function() {
     let k = key(6);
     let card = signed_by(&k);
     let key_pin = key_info_base64(&k);
-    let (pin, _) = super::super::pin::pin_a_signed_card(&card, &key_pin).expect("verifies");
+    let pin = super::super::pin::pin_a_signed_card(&card, &key_pin).expect("verifies");
     let verified =
         verify_document(&jws_pin(&key_pin), &card, Handshake::default()).expect("verifies");
     assert_eq!(verified.pin, pin);

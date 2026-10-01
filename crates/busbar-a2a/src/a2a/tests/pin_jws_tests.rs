@@ -8,8 +8,13 @@
 //! silently is not one".
 
 use super::*;
+use crate::a2a::sign::B64URL;
+use base64::Engine as _;
+use busbar_kernel::trust::signed::{KEY_INFO_HEAD, MAX_SIGNATURES};
 use ed25519_dalek::{Signer, SigningKey};
-use serde_json::json;
+use serde_json::{json, Value};
+
+use crate::a2a::card::signing_payload;
 
 const STD: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::STANDARD;
@@ -20,13 +25,18 @@ fn key(seed: u8) -> SigningKey {
 
 /// Wrap a raw Ed25519 public key the way an operator receives it: base64 of the RFC 8410 SPKI.
 fn key_info_base64(k: &SigningKey) -> String {
-    let mut der = ED25519_KEY_INFO_PREFIX.to_vec();
+    let mut der = KEY_INFO_HEAD.to_vec();
     der.extend_from_slice(k.verifying_key().as_bytes());
     STD.encode(der)
 }
 
-fn issuer(k: &SigningKey) -> IssuerKey {
-    IssuerKey::from_key_info_base64(&key_info_base64(k)).expect("well-formed issuer key")
+fn issuer(k: &SigningKey) -> String {
+    key_info_base64(k)
+}
+
+/// The card's verdict against the pinned key, through the one entry point that verifies a card.
+fn verify_card(card: &Value, issuer_key_info: &str) -> Result<(), JwsError> {
+    pin_a_signed_card(card, issuer_key_info).map(|_| ())
 }
 
 fn a_card() -> Value {
@@ -62,13 +72,7 @@ fn signed_by(k: &SigningKey) -> Value {
 #[test]
 fn a_card_signed_by_the_pinned_issuer_verifies() {
     let k = key(1);
-    assert_eq!(
-        verify_card(&signed_by(&k), &issuer(&k)),
-        Ok(Verified {
-            index: 0,
-            kid: Some("vendor-2026".to_string())
-        })
-    );
+    assert_eq!(verify_card(&signed_by(&k), &issuer(&k)), Ok(()));
 }
 
 /// THE LOOK-ALIKE. A card signed by a perfectly valid key that is simply not the one the operator
@@ -251,11 +255,10 @@ fn a_signature_pile_is_capped_before_any_verification_runs() {
 }
 
 /// A KEY ROTATION, which is the legitimate reason a card carries two signatures. The old key's
-/// signature is present and does not verify against the new pin; the new one does. Verification
-/// reports WHICH, so an operator can see the rotation happened rather than merely that something
-/// passed.
+/// signature is present and does not verify against the new pin; the new one does, and either
+/// pinned key alone accepts the card.
 #[test]
-fn a_rotation_carrying_two_signatures_reports_which_one_verified() {
+fn a_rotation_carrying_two_signatures_verifies_against_either_pinned_key() {
     let old = key(1);
     let new = key(2);
     let mut card = a_card();
@@ -265,20 +268,8 @@ fn a_rotation_carrying_two_signatures_reports_which_one_verified() {
         .expect("object")
         .insert("signatures".to_string(), json!([s_old, s_new]));
 
-    assert_eq!(
-        verify_card(&card, &issuer(&new)),
-        Ok(Verified {
-            index: 1,
-            kid: Some("vendor-2026".to_string())
-        })
-    );
-    assert_eq!(
-        verify_card(&card, &issuer(&old)),
-        Ok(Verified {
-            index: 0,
-            kid: Some("vendor-2025".to_string())
-        })
-    );
+    assert_eq!(verify_card(&card, &issuer(&new)), Ok(()));
+    assert_eq!(verify_card(&card, &issuer(&old)), Ok(()));
     // And a third party's countersignature buys nothing: the operator pinned one identity.
     assert_eq!(
         verify_card(&card, &issuer(&key(3))),
@@ -346,19 +337,13 @@ fn the_protected_header_is_verified_as_received_not_as_we_would_spell_it() {
         "signatures".to_string(),
         json!([{ "protected": protected, "signature": b64url(&sig.to_bytes()) }]),
     );
-    assert_eq!(
-        verify_card(&signed, &issuer(&k)),
-        Ok(Verified {
-            index: 0,
-            kid: Some("vendor".to_string())
-        })
-    );
+    assert_eq!(verify_card(&signed, &issuer(&k)), Ok(()));
 }
 
-/// The `kid` is REPORTED, never used to select a key. It is written by the same party as the
+/// The `kid` is never used to select a key. It is written by the same party as the
 /// signature, so selecting on it would let the card choose which key authenticates it.
 #[test]
-fn the_kid_is_reported_and_never_used_to_select_the_key() {
+fn the_kid_is_never_used_to_select_the_key() {
     let k = key(1);
     let mut card = a_card();
     // A signature by the WRONG key, claiming the RIGHT kid.
@@ -376,23 +361,23 @@ fn the_kid_is_reported_and_never_used_to_select_the_key() {
     );
 }
 
-/// The issuer key is parsed at the boundary into a type that cannot be built from a bad key, so no
-/// caller can reach verification holding something unchecked. Only the SPKI form is accepted: a raw
-/// 32-byte fallback would let an operator paste the wrong thing and have it silently become the
-/// trust root.
+/// The issuer key is read at the boundary, before the card is touched. Only the SPKI form is
+/// accepted: a raw 32-byte fallback would let an operator paste the wrong thing and have it silently
+/// become the trust root.
 #[test]
 fn only_a_well_formed_ed25519_key_info_becomes_an_issuer_key() {
     let k = key(1);
-    assert!(IssuerKey::from_key_info_base64(&key_info_base64(&k)).is_ok());
+    let card = signed_by(&k);
+    assert_eq!(verify_card(&card, &key_info_base64(&k)), Ok(()));
     // Leading and trailing whitespace survives a copy and paste.
-    assert!(IssuerKey::from_key_info_base64(&format!("  {}\n", key_info_base64(&k))).is_ok());
+    assert_eq!(
+        verify_card(&card, &format!("  {}\n", key_info_base64(&k))),
+        Ok(())
+    );
 
     // The raw key, unwrapped: unambiguous by length, and still refused.
     let raw = STD.encode(k.verifying_key().as_bytes());
-    assert_eq!(
-        IssuerKey::from_key_info_base64(&raw),
-        Err(JwsError::MalformedIssuerKey)
-    );
+    assert_eq!(verify_card(&card, &raw), Err(JwsError::MalformedIssuerKey));
     for bad in [
         "",
         "not base64",
@@ -400,10 +385,69 @@ fn only_a_well_formed_ed25519_key_info_becomes_an_issuer_key() {
         &STD.encode([0u8; 12]),
     ] {
         assert_eq!(
-            IssuerKey::from_key_info_base64(bad),
+            verify_card(&card, bad),
             Err(JwsError::MalformedIssuerKey),
             "issuer key {bad:?} must be refused"
         );
+    }
+}
+
+/// THE WORDS. Every kernel `SIGNED_*` verdict reads back as this plane's refusal, byte for byte as
+/// the retired in-plane verifier wrote it: the operator-facing sentence does not move with the code.
+#[test]
+fn every_signed_verdict_reads_back_in_the_planes_words() {
+    let k = key(1);
+    let with = |sigs: Value| {
+        let mut card = a_card();
+        card.as_object_mut()
+            .expect("object")
+            .insert("signatures".to_string(), sigs);
+        verify_card(&card, &issuer(&k))
+            .expect_err("refused")
+            .to_string()
+    };
+    let one = sign_with(&a_card(), &k, json!({ "alg": "EdDSA" }));
+    let zeros = b64url(&[0u8; 64]);
+    let cases: [(String, &str); 8] = [
+        (
+            verify_card(&signed_by(&k), "not base64")
+                .expect_err("refused")
+                .to_string(),
+            "the pinned issuer key is not an Ed25519 SubjectPublicKeyInfo",
+        ),
+        (with(json!([])), "the agent card carries no signature"),
+        (
+            with(Value::Array(vec![one; MAX_SIGNATURES + 1])),
+            "the agent card carries 9 signatures, more than any legitimate card needs",
+        ),
+        (
+            with(json!([{ "protected": "!", "signature": zeros }])),
+            "a signature's protected header is not a base64url JSON object",
+        ),
+        (
+            with(json!([{ "protected": b64url(br#"{"alg":"HS256"}"#), "signature": zeros }])),
+            "signature algorithm `HS256` is refused: the pinned key selects the algorithm, and a \
+             header that disagrees with it is not honored",
+        ),
+        (
+            with(
+                json!([{ "protected": b64url(br#"{"alg":"EdDSA","crit":["b64"]}"#), "signature": zeros }]),
+            ),
+            "a signature marks `b64` critical and this verifier does not implement it",
+        ),
+        (
+            with(json!([{ "protected": b64url(br#"{"alg":"EdDSA"}"#), "signature": "" }])),
+            "a signature is not 64 bytes of base64url",
+        ),
+        (
+            verify_card(&signed_by(&key(2)), &issuer(&k))
+                .expect_err("refused")
+                .to_string(),
+            "the agent card is signed, but not by the pinned issuer key",
+        ),
+    ];
+    for (got, want) in cases {
+        assert_eq!(got, want);
     }
 }
 

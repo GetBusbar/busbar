@@ -13,13 +13,9 @@ use serde_json::{json, Value};
 use super::*;
 use crate::trust::reverify::Policy;
 use crate::trust::section::{DeclaredPin, TrustEntry};
+use crate::trust::signed::KEY_INFO_HEAD;
 
 const PAYLOAD: &[u8] = br#"{"name":"peer","version":"1"}"#;
-
-/// The DER head of an Ed25519 SubjectPublicKeyInfo (RFC 8410 section 4).
-const KEY_INFO_HEAD: [u8; 12] = [
-    0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
-];
 
 fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])

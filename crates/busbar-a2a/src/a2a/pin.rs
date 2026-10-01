@@ -38,8 +38,10 @@
 // construction `pin_a_signed_card` performs for a mechanism the sweep does not reach.
 #![cfg_attr(not(test), allow(dead_code))]
 
+use super::card::{self, CardError};
 use super::config::PinMechanism;
-use super::{card, jws};
+use busbar_contract::abi::host::service as svc;
+use busbar_kernel::trust::signed;
 use busbar_kernel::trust::{Approval, PinnedArtifact, Sighting, TrustError};
 
 /// The identity an A2A registration is pinned to. The mechanism is part of the value, not a
@@ -246,6 +248,82 @@ fn observed_pin(sighting: &Sighting<CardPin>) -> Option<CardPin> {
     }
 }
 
+/// Why a card was not accepted as signed by the pinned issuer. Every arm is a REFUSAL: there is no
+/// arm that means "could not check, proceeding".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum JwsError {
+    /// The operator-supplied key is not an Ed25519 SubjectPublicKeyInfo.
+    MalformedIssuerKey,
+    /// The card carries no `signatures` member, or an empty one. Distinct from
+    /// [`JwsError::NoSignatureVerified`] on purpose: "this vendor does not sign" is an operator
+    /// decision about which mechanism to pin, while "signed, but not by the pinned key" is an alarm.
+    Unsigned,
+    /// More signatures than any legitimate card needs.
+    TooManySignatures(usize),
+    /// A `protected` header that is not base64url, not JSON, or not an object.
+    MalformedProtectedHeader,
+    /// The header's `alg` is not the one the pinned key implies. Carries what was asked for, so an
+    /// audit row can say whether it saw `none`, a symmetric algorithm, or simply an algorithm this
+    /// build does not implement.
+    UnsupportedAlgorithm(String),
+    /// RFC 7515 section 4.1.11: a verifier that does not understand a member listed in `crit` MUST
+    /// reject the signature. Ignoring it is how an extension that CHANGES the meaning of the
+    /// signature gets silently dropped.
+    UnknownCriticalHeader(String),
+    /// The signature is not base64url, or not 64 bytes.
+    MalformedSignature,
+    /// The card is signed, well-formed, and NOT by the pinned issuer key. This is the look-alike and
+    /// the hijacked-CDN case, and it is the one that must never degrade to anything softer.
+    NoSignatureVerified,
+    /// The card could not be canonicalized, so there is no payload to verify against.
+    Card(CardError),
+}
+
+impl std::fmt::Display for JwsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JwsError::MalformedIssuerKey => write!(
+                f,
+                "the pinned issuer key is not an Ed25519 SubjectPublicKeyInfo"
+            ),
+            JwsError::Unsigned => write!(f, "the agent card carries no signature"),
+            JwsError::TooManySignatures(n) => write!(
+                f,
+                "the agent card carries {n} signatures, more than any legitimate card needs"
+            ),
+            JwsError::MalformedProtectedHeader => {
+                write!(
+                    f,
+                    "a signature's protected header is not a base64url JSON object"
+                )
+            }
+            JwsError::UnsupportedAlgorithm(alg) => write!(
+                f,
+                "signature algorithm `{alg}` is refused: the pinned key selects the algorithm, and \
+                 a header that disagrees with it is not honored"
+            ),
+            JwsError::UnknownCriticalHeader(name) => write!(
+                f,
+                "a signature marks `{name}` critical and this verifier does not implement it"
+            ),
+            JwsError::MalformedSignature => {
+                write!(f, "a signature is not 64 bytes of base64url")
+            }
+            JwsError::NoSignatureVerified => write!(
+                f,
+                "the agent card is signed, but not by the pinned issuer key"
+            ),
+            JwsError::Card(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl From<CardError> for JwsError {
+    fn from(e: CardError) -> Self {
+        JwsError::Card(e)
+    }
+}
+
 /// THE SANCTIONED WAY TO PRODUCE A SIGNED PIN: verify first, then pin what verified.
 ///
 /// The ordering is the whole point. A fingerprint taken before verification is a fingerprint of
@@ -253,27 +331,55 @@ fn observed_pin(sighting: &Sighting<CardPin>) -> Option<CardPin> {
 /// nobody authenticated. So the signature is checked against the operator's out-of-band key FIRST,
 /// and the fingerprint is only computed on the document that passed.
 ///
+/// The verdict is the kernel's ([`busbar_kernel::trust::signed`], the verifier behind
+/// `trust.verify`): the card's detached payload is [`card::signing_payload`], its `signatures` go
+/// as written, and the `SIGNED_*` refusal is read back as this plane's [`JwsError`] words.
+///
 /// `issuer_key_info` travels into the pin verbatim, as the operator wrote it, because that string is
 /// what an operator compares against the value their vendor published out of band. Re-rendering it
 /// from the parsed key would produce a value that is correct and that they cannot check by eye.
 pub(crate) fn pin_a_signed_card(
     card: &serde_json::Value,
     issuer_key_info: &str,
-) -> Result<(CardPin, jws::Verified), jws::JwsError> {
-    let issuer = jws::IssuerKey::from_key_info_base64(issuer_key_info)?;
-    let verified = jws::verify_card(card, &issuer)?;
-    Ok((
-        CardPin::JwsIssuerKey {
-            issuer_key: issuer_key_info.trim().to_string(),
-            card_fingerprint: card::fingerprint(card)?,
-        },
-        verified,
-    ))
+) -> Result<CardPin, JwsError> {
+    let refused = |r| jws_refusal(r, card);
+    let root = signed::root_key(issuer_key_info).map_err(refused)?;
+    let payload = card::signing_payload(card)?;
+    let signatures = card.get("signatures").unwrap_or(&serde_json::Value::Null);
+    signed::verify(payload.as_bytes(), signatures, &root).map_err(refused)?;
+    Ok(CardPin::JwsIssuerKey {
+        issuer_key: issuer_key_info.trim().to_string(),
+        card_fingerprint: card::fingerprint(card)?,
+    })
+}
+
+/// The kernel's `SIGNED_*` verdict, in this plane's words: one arm per verdict, the name it carries
+/// where it carries one, and the card's own signature count for [`JwsError::TooManySignatures`].
+fn jws_refusal((verdict, name): signed::Refused, card: &serde_json::Value) -> JwsError {
+    match verdict {
+        svc::SIGNED_MALFORMED_ROOT => JwsError::MalformedIssuerKey,
+        svc::SIGNED_TOO_MANY => JwsError::TooManySignatures(
+            card.get("signatures")
+                .and_then(serde_json::Value::as_array)
+                .map_or(0, Vec::len),
+        ),
+        svc::SIGNED_MALFORMED_HEADER => JwsError::MalformedProtectedHeader,
+        svc::SIGNED_ALGORITHM => JwsError::UnsupportedAlgorithm(name),
+        svc::SIGNED_CRITICAL => JwsError::UnknownCriticalHeader(name),
+        svc::SIGNED_MALFORMED_SIGNATURE => JwsError::MalformedSignature,
+        svc::SIGNED_NOT_BY_ROOT => JwsError::NoSignatureVerified,
+        // SIGNED_NONE: no `signatures` member, or an empty one.
+        _ => JwsError::Unsigned,
+    }
 }
 
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/pin_tests.rs"]
 mod pin_tests;
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/pin_jws_tests.rs"]
+mod pin_jws_tests;
 
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/reuse_tests.rs"]

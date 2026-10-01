@@ -16,9 +16,9 @@ use std::net::IpAddr;
 
 use super::*;
 use crate::a2a::fetch::HttpResponse;
-use crate::a2a::jws::ED25519_KEY_INFO_PREFIX;
 use crate::a2a::pin::CardPin;
 use base64::Engine as _;
+use busbar_kernel::trust::signed::KEY_INFO_HEAD;
 use busbar_kernel::trust::TrustState;
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::json;
@@ -34,7 +34,7 @@ fn key(seed: u8) -> SigningKey {
 }
 
 fn key_info_base64(k: &SigningKey) -> String {
-    let mut der = ED25519_KEY_INFO_PREFIX.to_vec();
+    let mut der = KEY_INFO_HEAD.to_vec();
     der.extend_from_slice(k.verifying_key().as_bytes());
     STD.encode(der)
 }
@@ -49,8 +49,8 @@ fn a_card(description: &str) -> Value {
 
 fn signed_by(k: &SigningKey, card: Value) -> Value {
     let mut card = card;
-    let protected = crate::a2a::jws::B64URL.encode(br#"{"alg":"EdDSA","kid":"vendor-2026"}"#);
-    let payload = crate::a2a::jws::B64URL.encode(
+    let protected = crate::a2a::sign::B64URL.encode(br#"{"alg":"EdDSA","kid":"vendor-2026"}"#);
+    let payload = crate::a2a::sign::B64URL.encode(
         crate::a2a::card::signing_payload(&card)
             .expect("payload")
             .as_bytes(),
@@ -58,7 +58,7 @@ fn signed_by(k: &SigningKey, card: Value) -> Value {
     let sig = k.sign(format!("{protected}.{payload}").as_bytes());
     card.as_object_mut().expect("object").insert(
         "signatures".to_string(),
-        json!([{ "protected": protected, "signature": crate::a2a::jws::B64URL.encode(sig.to_bytes()) }]),
+        json!([{ "protected": protected, "signature": crate::a2a::sign::B64URL.encode(sig.to_bytes()) }]),
     );
     card
 }
@@ -196,7 +196,7 @@ fn a_card_signed_by_the_wrong_key_is_refused_and_recorded_as_a_failed_contact() 
     assert_eq!(
         p.refusal,
         Some(VerifyRefusal::Jws(
-            crate::a2a::jws::JwsError::NoSignatureVerified
+            crate::a2a::pin::JwsError::NoSignatureVerified
         ))
     );
     assert_eq!(
@@ -219,7 +219,7 @@ fn an_unsigned_card_under_a_signed_pin_is_refused_rather_than_degraded() {
     let p = pass(&mut reg, &signed_pin(&k), &endpoint, 1_000, false);
     assert_eq!(
         p.refusal,
-        Some(VerifyRefusal::Jws(crate::a2a::jws::JwsError::Unsigned)),
+        Some(VerifyRefusal::Jws(crate::a2a::pin::JwsError::Unsigned)),
         "\"this vendor does not sign\" is an operator decision about the mechanism, never a \
          runtime downgrade"
     );
@@ -729,7 +729,7 @@ fn the_legacy_well_known_path_is_tried_only_when_the_canonical_one_served_nothin
     assert_eq!(
         p.refusal,
         Some(VerifyRefusal::Jws(
-            crate::a2a::jws::JwsError::NoSignatureVerified
+            crate::a2a::pin::JwsError::NoSignatureVerified
         )),
         "a verification failure at the canonical path must NOT fall through to the legacy one"
     );

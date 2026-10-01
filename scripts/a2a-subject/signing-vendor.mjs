@@ -15,7 +15,7 @@
 //
 // So this process IS that vendor. It generates the issuer key, signs the control agent's OWN card
 // with it — the same RFC 8785 canonicalization and the same detached-JWS shape `a2a/sign.rs`
-// produces and `a2a/jws.rs` verifies — and proxies every other request through untouched. Nothing
+// produces and `trust/signed.rs` verifies — and proxies every other request through untouched. Nothing
 // about busbar is relaxed to accommodate it: busbar performs the full fetch, the full signature
 // verification against the operator-supplied key, and the full fingerprint pin, and REFUSES if any
 // of them fails. The alternative — handing busbar a synthetic card, or weakening the approval cap

@@ -578,7 +578,6 @@ pub(crate) mod fetch;
 pub(crate) mod grpc;
 pub(crate) mod idmap;
 pub mod inbound;
-pub(crate) mod jws;
 // THE COMPOSITION-ROOT-OWNED INBOUND AGENT-CARD JWS SEAM (HOST-CAPS S3, DECISIONS #26): the
 // `InboundCardJws` trait naming verify-then-pin as ONE host capability, with a byte-for-byte
 // pass-through impl and a plane-composition install/get. The ONE verifier: `verify_document` reaches

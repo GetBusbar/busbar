@@ -25,7 +25,7 @@ use serde_json::{Map, Value};
 
 /// The DER head of an Ed25519 SubjectPublicKeyInfo (RFC 8410 section 4): a root key that does not
 /// carry it byte for byte is not one this verifier reads.
-const KEY_INFO_HEAD: [u8; 12] = [
+pub const KEY_INFO_HEAD: [u8; 12] = [
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
 ];
 

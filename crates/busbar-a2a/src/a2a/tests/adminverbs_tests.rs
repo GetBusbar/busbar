@@ -22,8 +22,8 @@ use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{json, Value};
 
 use crate::a2a::config::{AgentDefCfg, AgentPinCfg, PinMechanism};
-use crate::a2a::jws::ED25519_KEY_INFO_PREFIX;
 use crate::testkit::engine_boot::engine;
+use busbar_kernel::trust::signed::KEY_INFO_HEAD;
 
 const TOKEN: &str = "admintok";
 const STD: base64::engine::general_purpose::GeneralPurpose =
@@ -67,7 +67,7 @@ fn key() -> SigningKey {
 }
 
 fn key_info_base64(k: &SigningKey) -> String {
-    let mut der = ED25519_KEY_INFO_PREFIX.to_vec();
+    let mut der = KEY_INFO_HEAD.to_vec();
     der.extend_from_slice(k.verifying_key().as_bytes());
     STD.encode(der)
 }
@@ -83,8 +83,8 @@ fn a_card(skill: &str) -> Value {
 
 fn signed_by(k: &SigningKey, card: Value) -> Value {
     let mut card = card;
-    let protected = crate::a2a::jws::B64URL.encode(br#"{"alg":"EdDSA","kid":"vendor-2026"}"#);
-    let payload = crate::a2a::jws::B64URL.encode(
+    let protected = crate::a2a::sign::B64URL.encode(br#"{"alg":"EdDSA","kid":"vendor-2026"}"#);
+    let payload = crate::a2a::sign::B64URL.encode(
         crate::a2a::card::signing_payload(&card)
             .expect("payload")
             .as_bytes(),
@@ -92,7 +92,7 @@ fn signed_by(k: &SigningKey, card: Value) -> Value {
     let sig = k.sign(format!("{protected}.{payload}").as_bytes());
     card.as_object_mut().expect("object").insert(
         "signatures".to_string(),
-        json!([{ "protected": protected, "signature": crate::a2a::jws::B64URL.encode(sig.to_bytes()) }]),
+        json!([{ "protected": protected, "signature": crate::a2a::sign::B64URL.encode(sig.to_bytes()) }]),
     );
     card
 }

@@ -3,7 +3,7 @@
 
 //! THE DRIVER: the thing that actually looks.
 //!
-//! [`super::jws`], [`super::anomaly`] and [`super::reverify`] are decisions. Until this module
+//! [`super::pin`], [`super::anomaly`] and [`super::reverify`] are decisions. Until this module
 //! existed, nothing called them: the plane could say what a drifted card meant and had no way to
 //! notice one. This is the loop that fetches, verifies against the operator's out-of-band key,
 //! folds the answer into what is recorded, and applies the breaker.
@@ -39,8 +39,7 @@ use super::anomaly;
 use super::card::{self, CardError};
 use super::config::{AgentPinCfg, PinMechanism};
 use super::fetch::{self, FetchPolicy, FetchRefusal, Resolver, Transport};
-use super::jws::JwsError;
-use super::pin::CardPin;
+use super::pin::{CardPin, JwsError};
 use super::registry::AgentRegistration;
 use super::reverify::{self, Due, Ledger, Policy, Settled};
 
@@ -216,10 +215,8 @@ pub(crate) fn verify_document_through(
             // VERIFY FIRST, fingerprint only what passed. The ordering lives in `pin_a_signed_card`
             // behind the inbound-JWS seam and is not re-implemented here, because a second copy of it
             // is a second chance to get it the wrong way round.
-            let (pin, _verified) = jws
-                .verify_signed_card(document, key)
-                .map_err(VerifyRefusal::Jws)?;
-            pin
+            jws.verify_signed_card(document, key)
+                .map_err(VerifyRefusal::Jws)?
         }
         // THE HONEST DEGRADE, implemented. An unsigned card has no JWS root; what it has is the
         // certificate its endpoint proved possession of, and that is a real network-layer root and
