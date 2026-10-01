@@ -4,6 +4,7 @@
 //! Cohere v2 protocol reader/writer implementation.
 
 use crate::codec::ir::IrStreamEvent;
+use crate::codec::keys;
 use busbar_contract::http::StatusCode;
 use busbar_contract::protocol::*;
 #[cfg(test)]
@@ -32,7 +33,7 @@ mod writer;
 /// resolution, exactly as the registry's field doc requires (the writer carries per-stream mutable
 /// state). Mirrors `super::anthropic::protocol`.
 pub fn protocol() -> Protocol {
-    Protocol::new("cohere", CohereReader, CohereWriter)
+    Protocol::new(VENDOR_NAME, CohereReader, CohereWriter)
 }
 
 /// COHERE'S ROUTER DETECTION — its rungs of the old core `protocol_id` ladder: the v2/v1 chat paths
@@ -63,11 +64,11 @@ fn residual_claims(path: &str) -> Option<busbar_contract::protocol::ClaimStrengt
 
 /// COHERE'S DECLARATION.
 pub const DECL: ProtocolDecl = ProtocolDecl {
-    name: "cohere",
+    name: VENDOR_NAME,
     codec: {
         // The dialect's neutral codec facade as a STATIC, so the decl hands out a `&'static dyn`
         // borrow (pure memory, zero alloc per `dialect()` call) — the seam's perf contract.
-        static CODEC: super::proto_codec::DialectRef = super::proto_codec::dialect_ref("cohere");
+        static CODEC: super::proto_codec::DialectRef = super::proto_codec::dialect_ref(VENDOR_NAME);
         Some(&CODEC)
     },
     handler: Some(&handler::CohereRequestHandler),
@@ -165,10 +166,10 @@ pub fn read_cohere_citations(citations: &serde_json::Value) -> Vec<crate::codec:
     for entry in arr {
         // A citation with neither a quoted span nor offsets carries no locatable claim; skip it
         // rather than synthesize one (never invent a fact).
-        let start = entry.get("start").and_then(|v| v.as_i64());
-        let end = entry.get("end").and_then(|v| v.as_i64());
+        let start = entry.get(keys::START).and_then(|v| v.as_i64());
+        let end = entry.get(keys::END).and_then(|v| v.as_i64());
         let cited_text = entry
-            .get("text")
+            .get(keys::TEXT)
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(String::from);
@@ -178,10 +179,10 @@ pub fn read_cohere_citations(citations: &serde_json::Value) -> Vec<crate::codec:
         // The first source supplies the neutral title/url/document-index coordinates; the WHOLE
         // entry (all sources included) is preserved in `raw`.
         let first_source = entry
-            .get("sources")
+            .get(SOURCES)
             .and_then(|s| s.as_array())
             .and_then(|a| a.first());
-        let doc = first_source.and_then(|s| s.get("document"));
+        let doc = first_source.and_then(|s| s.get(keys::DOCUMENT));
         out.push(crate::codec::ir::IrCitation {
             domain: None,
             // Cohere citations are character spans into the answer text — the same thing
@@ -189,12 +190,12 @@ pub fn read_cohere_citations(citations: &serde_json::Value) -> Vec<crate::codec:
             kind: Some("char_location".to_string()),
             cited_text,
             title: doc
-                .and_then(|d| d.get("title"))
+                .and_then(|d| d.get(keys::TITLE))
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .map(String::from),
             url: doc
-                .and_then(|d| d.get("url"))
+                .and_then(|d| d.get(keys::URL))
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .map(String::from),
@@ -221,31 +222,31 @@ fn write_cohere_citation(c: &crate::codec::ir::IrCitation) -> serde_json::Value 
         // Only re-emit `raw` when it IS a Cohere citation: a foreign raw (an Anthropic
         // `web_search_result_location`) would put a foreign shape on the Cohere wire, which is the
         // exact defect typed IR fields exist to prevent.
-        if raw.get("start").is_some() || raw.get("sources").is_some() {
+        if raw.get(keys::START).is_some() || raw.get(SOURCES).is_some() {
             return raw.clone();
         }
     }
     let mut obj = serde_json::Map::new();
     if let Some(s) = c.start_index {
-        obj.insert("start".to_string(), serde_json::json!(s));
+        obj.insert(keys::START.to_string(), serde_json::json!(s));
     }
     if let Some(e) = c.end_index {
-        obj.insert("end".to_string(), serde_json::json!(e));
+        obj.insert(keys::END.to_string(), serde_json::json!(e));
     }
     if let Some(t) = &c.cited_text {
-        obj.insert("text".to_string(), serde_json::json!(t));
+        obj.insert(keys::TEXT.to_string(), serde_json::json!(t));
     }
     let mut source = serde_json::Map::new();
     if let Some(u) = &c.url {
-        source.insert("url".to_string(), serde_json::json!(u));
+        source.insert(keys::URL.to_string(), serde_json::json!(u));
     }
     if let Some(t) = &c.title {
-        source.insert("title".to_string(), serde_json::json!(t));
+        source.insert(keys::TITLE.to_string(), serde_json::json!(t));
     }
     if !source.is_empty() {
         obj.insert(
-            "sources".to_string(),
-            serde_json::json!([{ "type": "document", "document": serde_json::Value::Object(source) }]),
+            SOURCES.to_string(),
+            serde_json::json!([{ (keys::TYPE): keys::DOCUMENT, (keys::DOCUMENT): serde_json::Value::Object(source) }]),
         );
     }
     serde_json::Value::Object(obj)
@@ -256,6 +257,58 @@ fn write_cohere_citation(c: &crate::codec::ir::IrCitation) -> serde_json::Value 
 /// bytes with a mime type, so it has NO neutral base64/url form. Only this protocol's writer
 /// re-emits it; a foreign writer, which could only mangle it, drops it with a warn.
 const VENDOR_NAME: &str = "cohere";
+
+// Cohere wire words no other dialect speaks: one const each, spelled once (OWNER 2026-10-01).
+/// The cohere wire word `binary`, spelled once.
+const BINARY: &str = "binary";
+
+/// The cohere wire word `classifications`, spelled once.
+const CLASSIFICATIONS: &str = "classifications";
+
+/// The cohere wire word `embeddings`, spelled once.
+const EMBEDDINGS: &str = "embeddings";
+
+/// The cohere wire word `embedding_types`, spelled once.
+const EMBEDDING_TYPES: &str = "embedding_types";
+
+/// The cohere wire word `float`, spelled once.
+const FLOAT: &str = "float";
+
+/// The cohere wire word `input_type`, spelled once.
+const INPUT_TYPE: &str = "input_type";
+
+/// The cohere wire word `int8`, spelled once.
+const INT8: &str = "int8";
+
+/// The cohere wire word `max_tokens_per_doc`, spelled once.
+const MAX_TOKENS_PER_DOC: &str = "max_tokens_per_doc";
+
+/// The cohere wire word `output_dimension`, spelled once.
+const OUTPUT_DIMENSION: &str = "output_dimension";
+
+/// The cohere wire word `sources`, spelled once.
+const SOURCES: &str = "sources";
+
+/// The cohere wire word `strict_tools`, spelled once.
+const STRICT_TOOLS: &str = "strict_tools";
+
+/// The cohere wire word `texts`, spelled once.
+const TEXTS: &str = "texts";
+
+/// The cohere wire word `token_budget`, spelled once.
+const TOKEN_BUDGET: &str = "token_budget";
+
+/// The cohere wire word `tool_plan`, spelled once.
+const TOOL_PLAN: &str = "tool_plan";
+
+/// The cohere wire word `truncate`, spelled once.
+const TRUNCATE: &str = "truncate";
+
+/// The cohere wire word `ubinary`, spelled once.
+const UBINARY: &str = "ubinary";
+
+/// The cohere wire word `uint8`, spelled once.
+const UINT8: &str = "uint8";
 
 /// Hard cap on the number of distinct tool-call frame indices recorded in `state.open_tools` for a
 /// single stream. The set is intentionally never shrunk (so each tool's IR block index stays stable
@@ -350,7 +403,7 @@ const COHERE_TOOL_CHOICE_NONE: &str = "NONE";
 /// Read the upstream-controlled stream-frame `index`, defaulting to 0 when absent/non-numeric, and
 /// clamp it to `MAX_TOOL_FRAME_INDEX` so the packed entry can never collide with the sentinel.
 fn clamp_frame_index(data: &serde_json::Value) -> usize {
-    data.get("index")
+    data.get(keys::INDEX)
         .and_then(|i| i.as_u64())
         .unwrap_or(0)
         .min(MAX_TOOL_FRAME_INDEX) as usize
@@ -380,8 +433,8 @@ fn read_cohere_response_format(
     v: &serde_json::Value,
 ) -> Option<crate::codec::ir::IrResponseFormat> {
     let o = v.as_object()?;
-    match o.get("type").and_then(|t| t.as_str()) {
-        Some("text") => Some(crate::codec::ir::IrResponseFormat {
+    match o.get(keys::TYPE).and_then(|t| t.as_str()) {
+        Some(keys::TEXT) => Some(crate::codec::ir::IrResponseFormat {
             json: false,
             schema: None,
             name: None,
@@ -393,7 +446,7 @@ fn read_cohere_response_format(
         Some(_) => Some(crate::codec::ir::IrResponseFormat {
             json: true,
             schema: o
-                .get("json_schema")
+                .get(keys::JSON_SCHEMA)
                 .filter(|s| s.is_object())
                 .cloned()
                 .or_else(|| o.get("schema").cloned()),
@@ -409,11 +462,13 @@ fn read_cohere_response_format(
 /// ONLY code that builds Cohere's structured-output wire shape.
 fn write_cohere_response_format(rf: &crate::codec::ir::IrResponseFormat) -> serde_json::Value {
     if !rf.json {
-        return serde_json::json!({ "type": "text" });
+        return serde_json::json!({ (keys::TYPE): keys::TEXT });
     }
     match &rf.schema {
-        Some(schema) => serde_json::json!({ "type": "json_object", "json_schema": schema }),
-        None => serde_json::json!({ "type": "json_object" }),
+        Some(schema) => {
+            serde_json::json!({ (keys::TYPE): keys::JSON_OBJECT, (keys::JSON_SCHEMA): schema })
+        }
+        None => serde_json::json!({ (keys::TYPE): keys::JSON_OBJECT }),
     }
 }
 
@@ -425,14 +480,14 @@ fn read_cohere_reasoning(
     v: Option<&serde_json::Value>,
 ) -> Option<crate::codec::ir::IrReasoningAsk> {
     let t = v?.as_object()?;
-    match t.get("type").and_then(|ty| ty.as_str()) {
-        Some("enabled") => {}
+    match t.get(keys::TYPE).and_then(|ty| ty.as_str()) {
+        Some(keys::ENABLED) => {}
         // IR-09: reasoning switched OFF — a reasoning-by-default model stops thinking. Not the
         // same as saying nothing.
-        Some("disabled") => return Some(crate::codec::ir::IrReasoningAsk::Off),
+        Some(keys::DISABLED) => return Some(crate::codec::ir::IrReasoningAsk::Off),
         _ => return None,
     }
-    match t.get("token_budget") {
+    match t.get(TOKEN_BUDGET) {
         None | Some(serde_json::Value::Null) => Some(crate::codec::ir::IrReasoningAsk::Dynamic),
         Some(b) => b
             .as_u64()
@@ -452,9 +507,15 @@ fn write_cohere_reasoning(
     match ask {
         // IR-09: matched FIRST — `to_budget` gives `Off` 0, which as an enable ask would invert
         // the caller's meaning.
-        crate::codec::ir::IrReasoningAsk::Off => serde_json::json!({ "type": "disabled" }),
-        crate::codec::ir::IrReasoningAsk::Dynamic => serde_json::json!({ "type": "enabled" }),
-        other => serde_json::json!({ "type": "enabled", "token_budget": other.to_budget(table) }),
+        crate::codec::ir::IrReasoningAsk::Off => {
+            serde_json::json!({ (keys::TYPE): keys::DISABLED })
+        }
+        crate::codec::ir::IrReasoningAsk::Dynamic => {
+            serde_json::json!({ (keys::TYPE): keys::ENABLED })
+        }
+        other => {
+            serde_json::json!({ (keys::TYPE): keys::ENABLED, (TOKEN_BUDGET): other.to_budget(table) })
+        }
     }
 }
 
@@ -492,22 +553,22 @@ fn read_cohere_document(doc: &serde_json::Value) -> crate::codec::ir::IrBlock {
         return text_document(text, None);
     }
     let id = doc
-        .get("id")
+        .get(keys::ID)
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty());
-    match doc.get("data") {
+    match doc.get(keys::DATA) {
         Some(serde_json::Value::String(text)) => text_document(text, id),
         Some(serde_json::Value::Object(d)) => {
             let title = d
-                .get("title")
+                .get(keys::TITLE)
                 .and_then(|t| t.as_str())
                 .filter(|s| !s.is_empty());
             let name = title.or(id);
             let plain = d.iter().all(|(k, v)| match k.as_str() {
-                "text" | "title" => v.is_string(),
+                keys::TEXT | keys::TITLE => v.is_string(),
                 _ => false,
             });
-            match d.get("text").and_then(|t| t.as_str()) {
+            match d.get(keys::TEXT).and_then(|t| t.as_str()) {
                 Some(text) if plain => text_document(text, name),
                 _ => text_document(
                     &crate::codec::json::to_string(&serde_json::Value::Object(d.clone()))
@@ -536,7 +597,7 @@ fn read_cohere_document(doc: &serde_json::Value) -> crate::codec::ir::IrBlock {
 fn read_cohere_image_detail(
     image_url: Option<&serde_json::Value>,
 ) -> Option<crate::codec::ir::IrImageDetail> {
-    let word = image_url?.get("detail")?.as_str()?;
+    let word = image_url?.get(keys::DETAIL)?.as_str()?;
     let detail = crate::codec::ir::IrImageDetail::parse(word);
     if detail.is_none() {
         tracing::warn!(
@@ -555,7 +616,7 @@ fn read_cohere_image_detail(
 /// Bedrock `{"json": …}`, Cohere as its JSON text). The document `id` is a Cohere citation handle
 /// with no foreign analog. A document with no `data` keeps the opaque cohere `Vendor` escape.
 fn read_cohere_tool_result_document(doc: &serde_json::Value) -> crate::codec::ir::IrBlock {
-    match doc.get("data") {
+    match doc.get(keys::DATA) {
         Some(serde_json::Value::String(text)) => crate::codec::ir::IrBlock::Text {
             text: text.clone(),
             cache_control: None,
@@ -570,7 +631,7 @@ fn read_cohere_tool_result_document(doc: &serde_json::Value) -> crate::codec::ir
                 value: doc.clone(),
             },
             name: doc
-                .get("id")
+                .get(keys::ID)
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .map(String::from),
@@ -602,11 +663,11 @@ fn write_cohere_document(
             let bytes = busbar_contract::media::base64_decode(data)?;
             let text = std::str::from_utf8(&bytes).ok()?;
             let mut d = serde_json::Map::new();
-            d.insert("text".to_string(), serde_json::json!(text));
+            d.insert(keys::TEXT.to_string(), serde_json::json!(text));
             if let Some(n) = name.filter(|s| !s.is_empty()) {
-                d.insert("title".to_string(), serde_json::json!(n));
+                d.insert(keys::TITLE.to_string(), serde_json::json!(n));
             }
-            Some(serde_json::json!({ "data": serde_json::Value::Object(d) }))
+            Some(serde_json::json!({ (keys::DATA): serde_json::Value::Object(d) }))
         }
         _ => None,
     }
@@ -626,8 +687,8 @@ const TEXT_PLAIN: &str = "text/plain";
 /// log probabilities, or an unreadable one carries no span to report and is skipped (never
 /// invented). Cohere reports no alternatives, so `top` is empty.
 fn read_cohere_logprob(item: &serde_json::Value) -> Option<crate::codec::ir::IrTokenLogprob> {
-    let text = item.get("text")?.as_str()?;
-    let lps = item.get("logprobs")?.as_array()?;
+    let text = item.get(keys::TEXT)?.as_str()?;
+    let lps = item.get(keys::LOGPROBS)?.as_array()?;
     if lps.is_empty() {
         return None;
     }
@@ -941,10 +1002,14 @@ fn cohere_close_text_slot(
 /// member and no `text` member.
 fn cohere_thinking_part(content: &serde_json::Value) -> Option<&str> {
     let obj = content.as_object()?;
-    let ty = obj.get("type").and_then(|t| t.as_str());
-    let is_thinking = ty == Some("thinking")
-        || (ty.is_none() && obj.contains_key("thinking") && !obj.contains_key("text"));
-    is_thinking.then(|| obj.get("thinking").and_then(|t| t.as_str()).unwrap_or(""))
+    let ty = obj.get(keys::TYPE).and_then(|t| t.as_str());
+    let is_thinking = ty == Some(keys::THINKING)
+        || (ty.is_none() && obj.contains_key(keys::THINKING) && !obj.contains_key(keys::TEXT));
+    is_thinking.then(|| {
+        obj.get(keys::THINKING)
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+    })
 }
 
 #[derive(Clone)]
@@ -968,12 +1033,12 @@ impl CohereReader {
             // for column"), mis-synthesizing the canonical `context_length_exceeded` code and
             // triggering a no-penalty ContextLength failover for an unrelated client error.
             || (lower.contains("too long")
-                && (lower.contains("token")
-                    || lower.contains("context")
+                && (lower.contains(keys::TOKEN)
+                    || lower.contains(keys::CONTEXT)
                     || lower.contains("input")))
             || lower.contains("token limit")
-            || (lower.contains("exceeds") && lower.contains("context"))
-            || (lower.contains("maximum") && lower.contains("token"))
+            || (lower.contains("exceeds") && lower.contains(keys::CONTEXT))
+            || (lower.contains(keys::MAXIMUM) && lower.contains(keys::TOKEN))
     }
 }
 

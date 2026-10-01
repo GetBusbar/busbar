@@ -3,9 +3,14 @@
 
 //! Cohere `RequestHandler` + cells. Embeddings via `/v2/embed`.
 
+use super::{
+    BINARY, EMBEDDINGS, EMBEDDING_TYPES, FLOAT, INPUT_TYPE, INT8, MAX_TOKENS_PER_DOC,
+    OUTPUT_DIMENSION, TEXTS, TRUNCATE, UBINARY, UINT8, VENDOR_NAME,
+};
 use crate::codec::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
+use crate::codec::keys;
 use busbar_contract::codec::{CodecError, IngressReject, OperationHandler, RequestHandler};
 use busbar_contract::codec::{EgressCtx, WireBody};
 use busbar_contract::operation::OpVerb;
@@ -23,7 +28,7 @@ pub struct CohereRequestHandler;
 /// This protocol's OWN chat instance — delete this line (and the registry arm) and this
 /// protocol's chat 404s via the standard no-handler path; everything else keeps working.
 static CHAT: super::super::chat_handle::ChatOperation =
-    super::super::chat_handle::ChatOperation("cohere");
+    super::super::chat_handle::ChatOperation(VENDOR_NAME);
 static EMB: CohereEmbeddings = CohereEmbeddings;
 static RERANK: CohereRerank = CohereRerank;
 
@@ -45,7 +50,7 @@ static PATHS: &[(OpVerb, &str)] = &[
 
 impl RequestHandler for CohereRequestHandler {
     fn protocol_name(&self) -> &'static str {
-        "cohere"
+        VENDOR_NAME
     }
     fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
         busbar_contract::codec::cell_of(CELLS, op)
@@ -74,12 +79,12 @@ impl RequestHandler for CohereRequestHandler {
 /// these six), so a requested encoding is served natively instead of downgraded to float.
 fn cohere_embedding_type(f: &EncFmt) -> &'static str {
     match f {
-        EncFmt::Float => "float",
-        EncFmt::Base64 => "base64",
-        EncFmt::Int8 => "int8",
-        EncFmt::Uint8 => "uint8",
-        EncFmt::Binary => "binary",
-        EncFmt::Ubinary => "ubinary",
+        EncFmt::Float => FLOAT,
+        EncFmt::Base64 => keys::BASE64,
+        EncFmt::Int8 => INT8,
+        EncFmt::Uint8 => UINT8,
+        EncFmt::Binary => BINARY,
+        EncFmt::Ubinary => UBINARY,
     }
 }
 
@@ -98,11 +103,11 @@ const ALL_ENCODINGS: [EncFmt; 6] = [
 /// collapsed to float on the read side. Unknown strings fall back to float.
 fn cohere_encoding_format(s: &str) -> EncFmt {
     match s {
-        "base64" => EncFmt::Base64,
-        "int8" => EncFmt::Int8,
-        "uint8" => EncFmt::Uint8,
-        "binary" => EncFmt::Binary,
-        "ubinary" => EncFmt::Ubinary,
+        keys::BASE64 => EncFmt::Base64,
+        INT8 => EncFmt::Int8,
+        UINT8 => EncFmt::Uint8,
+        BINARY => EncFmt::Binary,
+        UBINARY => EncFmt::Ubinary,
         _ => EncFmt::Float,
     }
 }
@@ -147,7 +152,7 @@ pub fn write_embeddings_request(r: &EmbeddingsReq) -> Bytes {
     // `EncFmt` variants, so a base64 ask is served natively rather than silently downgraded to
     // float (the same drop that was fixed for the OpenAI egress writer). Default to float.
     let embedding_types: Vec<&str> = if r.encoding_formats.is_empty() {
-        vec!["float"]
+        vec![FLOAT]
     } else {
         r.encoding_formats
             .iter()
@@ -155,18 +160,18 @@ pub fn write_embeddings_request(r: &EmbeddingsReq) -> Bytes {
             .collect()
     };
     let mut body = json!({
-        "model": r.model,
-        "texts": texts,
-        "input_type": input_type,
-        "embedding_types": embedding_types,
+        (keys::MODEL): r.model,
+        (TEXTS): texts,
+        (INPUT_TYPE): input_type,
+        (EMBEDDING_TYPES): embedding_types,
     });
     // Carry the shape/truncation controls the reader captures (Cohere is the lone embeddings
     // writer that was dropping these): `output_dimension` (Matryoshka on embed-v4) and `truncate`.
     if let Some(d) = r.dimensions {
-        body["output_dimension"] = json!(d);
+        body[OUTPUT_DIMENSION] = json!(d);
     }
     if let Some(t) = &r.truncate {
-        body["truncate"] = json!(t);
+        body[TRUNCATE] = json!(t);
     }
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
@@ -196,20 +201,20 @@ pub fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
     }
     // Emit an empty `float` key when the IR carried no vectors, for response-shape stability.
     if emb.is_empty() {
-        emb.insert("float".to_string(), json!(Vec::<Vec<f32>>::new()));
+        emb.insert(FLOAT.to_string(), json!(Vec::<Vec<f32>>::new()));
     }
     let mut body = json!({
         "response_type": "embeddings_by_type",
-        "embeddings": emb,
+        (EMBEDDINGS): emb,
     });
     if let Some(id) = &r.id {
-        body["id"] = json!(id);
+        body[keys::ID] = json!(id);
     }
     if let Some(texts) = &r.input_echo {
-        body["texts"] = json!(texts);
+        body[TEXTS] = json!(texts);
     }
     if let Some(u) = &r.usage {
-        body["meta"] = json!({ "billed_units": { "input_tokens": u.input } });
+        body[keys::META] = json!({ (keys::BILLED_UNITS): { (keys::INPUT_TOKENS): u.input } });
     }
     WireBody::json(SlabBytes::from(
         serde_json::to_vec(&body).unwrap_or_default(),
@@ -230,9 +235,11 @@ fn rerank_documents(v: Option<&Value>) -> Vec<String> {
         .map(|a| {
             a.iter()
                 .filter_map(|d| {
-                    d.as_str()
-                        .map(str::to_string)
-                        .or_else(|| d.get("text").and_then(Value::as_str).map(str::to_string))
+                    d.as_str().map(str::to_string).or_else(|| {
+                        d.get(keys::TEXT)
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
                 })
                 .collect()
         })
@@ -255,20 +262,20 @@ leaf_op! {
 /// `(rerank, cohere)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
 pub fn write_rerank_request(r: &crate::codec::ir::rerank::RerankReq) -> Bytes {
     let mut body = json!({
-        "model": r.model,
-        "query": r.query,
-        "documents": r.documents,
+        (keys::MODEL): r.model,
+        (keys::QUERY): r.query,
+        (keys::DOCUMENTS): r.documents,
     });
     if let Some(n) = r.top_n {
-        body["top_n"] = json!(n);
+        body[keys::TOP_N] = json!(n);
     }
     if let Some(m) = r.max_tokens_per_doc {
-        body["max_tokens_per_doc"] = json!(m);
+        body[MAX_TOKENS_PER_DOC] = json!(m);
     }
     // Carry `return_documents` — Cohere echoes each ranked document's text when it is set. Dropping
     // it meant the caller's ask for the echoed documents was silently ignored on a rerank hop.
     if let Some(rd) = r.return_documents {
-        body["return_documents"] = json!(rd);
+        body[keys::RETURN_DOCUMENTS] = json!(rd);
     }
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
@@ -280,20 +287,20 @@ pub fn write_rerank_response(r: &crate::codec::ir::rerank::RerankResp) -> WireBo
         .results
         .iter()
         .map(|x| {
-            let mut o = json!({"index": x.index, "relevance_score": x.relevance_score});
+            let mut o = json!({(keys::INDEX): x.index, (keys::RELEVANCE_SCORE): x.relevance_score});
             // Echo the ranked document in Cohere's `{text}` shape when the request asked for it.
             if let Some(doc) = &x.document {
-                o["document"] = json!({ "text": doc });
+                o[keys::DOCUMENT] = json!({ (keys::TEXT): doc });
             }
             o
         })
         .collect();
-    let mut body = json!({ "results": results });
+    let mut body = json!({ (keys::RESULTS): results });
     if let Some(id) = &r.id {
-        body["id"] = json!(id);
+        body[keys::ID] = json!(id);
     }
     if let Some(su) = r.search_units {
-        body["meta"] = json!({ "billed_units": { "search_units": su } });
+        body[keys::META] = json!({ (keys::BILLED_UNITS): { (keys::SEARCH_UNITS): su } });
     }
     WireBody::json(SlabBytes::from(
         serde_json::to_vec(&body).unwrap_or_default(),
@@ -308,13 +315,15 @@ pub fn read_rerank_results(v: Option<&Value>) -> Vec<crate::codec::ir::rerank::R
             a.iter()
                 .filter_map(|x| {
                     Some(crate::codec::ir::rerank::RerankResult {
-                        index: x.get("index").and_then(Value::as_u64)? as usize,
-                        relevance_score: x.get("relevance_score").and_then(Value::as_f64)?,
+                        index: x.get(keys::INDEX).and_then(Value::as_u64)? as usize,
+                        relevance_score: x.get(keys::RELEVANCE_SCORE).and_then(Value::as_f64)?,
                         // `return_documents` echoes the ranked text. Cohere returns it as a
                         // `{text}` object, Bedrock as a bare string — accept both, else None.
-                        document: x.get("document").and_then(|d| {
+                        document: x.get(keys::DOCUMENT).and_then(|d| {
                             d.as_str().map(str::to_string).or_else(|| {
-                                d.get("text").and_then(Value::as_str).map(str::to_string)
+                                d.get(keys::TEXT)
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string)
                             })
                         }),
                     })
@@ -338,7 +347,7 @@ pub fn read_embeddings_request(
     let wire: Value =
         serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
     let texts = wire
-        .get("texts")
+        .get(TEXTS)
         .and_then(Value::as_array)
         .map(|a| {
             a.iter()
@@ -352,7 +361,7 @@ pub fn read_embeddings_request(
         ));
     }
     let encoding_formats = wire
-        .get("embedding_types")
+        .get(EMBEDDING_TYPES)
         .and_then(Value::as_array)
         .map(|a| {
             a.iter()
@@ -363,21 +372,21 @@ pub fn read_embeddings_request(
         .unwrap_or_else(|| vec![EncFmt::Float]);
     Ok(crate::codec::ir::embeddings::EmbeddingsReq {
         model: wire
-            .get("model")
+            .get(keys::MODEL)
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
         input: EmbInput::Text(texts),
         input_type: wire
-            .get("input_type")
+            .get(INPUT_TYPE)
             .and_then(Value::as_str)
             .map(str::to_string),
         dimensions: wire
-            .get("output_dimension")
+            .get(OUTPUT_DIMENSION)
             .and_then(Value::as_u64)
             .and_then(|d| u32::try_from(d).ok()),
         truncate: wire
-            .get("truncate")
+            .get(TRUNCATE)
             .and_then(Value::as_str)
             .map(str::to_string),
         encoding_formats,
@@ -398,7 +407,7 @@ pub fn read_embeddings_response(
     // request leg can ask for — float, base64, and the four integer forms — so an int8/uint8/
     // binary/ubinary response is not silently dropped (its `float` key is absent when only that
     // encoding was requested). Float -> Float, base64 -> Base64, the int forms -> Int.
-    let emb = v.get("embeddings");
+    let emb = v.get(EMBEDDINGS);
     let arrays: Vec<(EncFmt, &Vec<Value>)> = ALL_ENCODINGS
         .iter()
         .filter_map(|&e| {
@@ -444,8 +453,8 @@ pub fn read_embeddings_response(
     // BILLED COUNT (item 133): absent or `null` is no usage (unchanged); a present-but-UNREADABLE
     // count REFUSES rather than reading as "no usage reported".
     let usage = crate::codec::usage_count::billed_count_opt(
-        v.get("meta").and_then(|m| m.get("billed_units")),
-        "input_tokens",
+        v.get(keys::META).and_then(|m| m.get(keys::BILLED_UNITS)),
+        keys::INPUT_TOKENS,
     )
     .map_err(|e| CodecError::Malformed(e.to_string()))?
     .map(|n| busbar_contract::billing::TokenUsage {
@@ -453,7 +462,7 @@ pub fn read_embeddings_response(
         ..Default::default()
     });
     Ok(EmbeddingsResp {
-        id: v.get("id").and_then(Value::as_str).map(str::to_string),
+        id: v.get(keys::ID).and_then(Value::as_str).map(str::to_string),
         embeddings,
         usage,
         ..Default::default()
@@ -470,11 +479,11 @@ pub fn read_rerank_request(
     let wire: Value =
         serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
     let query = wire
-        .get("query")
+        .get(keys::QUERY)
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let documents = rerank_documents(wire.get("documents"));
+    let documents = rerank_documents(wire.get(keys::DOCUMENTS));
     if query.is_empty() || documents.is_empty() {
         return Err(IngressReject::BadRequest(
             "rerank request requires `query` and `documents`".into(),
@@ -482,21 +491,21 @@ pub fn read_rerank_request(
     }
     Ok(crate::codec::ir::rerank::RerankReq {
         model: wire
-            .get("model")
+            .get(keys::MODEL)
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
         query,
         documents,
         top_n: wire
-            .get("top_n")
+            .get(keys::TOP_N)
             .and_then(Value::as_u64)
             .and_then(|n| u32::try_from(n).ok()),
         max_tokens_per_doc: wire
-            .get("max_tokens_per_doc")
+            .get(MAX_TOKENS_PER_DOC)
             .and_then(Value::as_u64)
             .and_then(|n| u32::try_from(n).ok()),
-        return_documents: wire.get("return_documents").and_then(Value::as_bool),
+        return_documents: wire.get(keys::RETURN_DOCUMENTS).and_then(Value::as_bool),
         ..Default::default()
     })
 }
@@ -510,14 +519,14 @@ pub fn read_rerank_response(
     let v: Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
     Ok(crate::codec::ir::rerank::RerankResp {
-        id: v.get("id").and_then(Value::as_str).map(str::to_string),
-        results: read_rerank_results(v.get("results")),
+        id: v.get(keys::ID).and_then(Value::as_str).map(str::to_string),
+        results: read_rerank_results(v.get(keys::RESULTS)),
         // The PRICED quantity (item 134, `RerankResp::billing`). Absent or `null` stays `None` (the
         // flat marker); a present-but-UNREADABLE count REFUSES (item 133) — the lenient read made
         // it `None`, so `"search_units":"3"` billed the flat marker instead of 3 counted units.
         search_units: crate::codec::usage_count::billed_count_opt(
-            v.get("meta").and_then(|m| m.get("billed_units")),
-            "search_units",
+            v.get(keys::META).and_then(|m| m.get(keys::BILLED_UNITS)),
+            keys::SEARCH_UNITS,
         )
         .map_err(|e| CodecError::Malformed(e.to_string()))?,
         ..Default::default()

@@ -2,7 +2,7 @@
 # literal in its production source. LOWER-ONLY: the one-spelling pass drives each to 0.
 anthropic = 459
 bedrock = 443
-cohere = 386
+cohere = 2
 gemini = 388
 openai_chat = 552
 openai_responses = 524

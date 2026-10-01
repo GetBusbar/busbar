@@ -37,7 +37,7 @@ impl ProtocolReader for CohereReader {
         let json = crate::codec::json::parse::<serde_json::Value>(body).ok();
         let provider_code = json
             .as_ref()
-            .and_then(|j| j.get("message"))
+            .and_then(|j| j.get(keys::MESSAGE))
             .and_then(|m| m.as_str())
             .map(String::from);
         let structured_type = json
@@ -118,7 +118,7 @@ impl ProtocolReader for CohereReader {
 
         if (status == StatusCode::BAD_REQUEST || status == StatusCode::PAYLOAD_TOO_LARGE)
             && (lower.contains("too many tokens")
-                || (lower.contains("maximum") && lower.contains("tokens")))
+                || (lower.contains(keys::MAXIMUM) && lower.contains(keys::TOKENS)))
         {
             return CanonicalSignal {
                 class: StatusClass::ContextLength,
@@ -159,16 +159,19 @@ impl ProtocolReader for CohereReader {
         let mut system_folds: Vec<crate::codec::ir::IrSystemFold> = Vec::new();
 
         let mut messages: Vec<crate::codec::ir::IrMessage> = Vec::new();
-        if let Some(messages_val) = obj.get("messages") {
+        if let Some(messages_val) = obj.get(keys::MESSAGES) {
             let msgs_arr = messages_val.as_array().ok_or_else(ir_parse_error)?;
 
             for msg_val in msgs_arr {
-                let role_str = msg_val.get("role").and_then(|r| r.as_str()).unwrap_or("");
+                let role_str = msg_val
+                    .get(keys::ROLE)
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("");
                 let role = match role_str {
-                    "system" => crate::codec::ir::IrRole::System,
-                    "user" => crate::codec::ir::IrRole::User,
-                    "assistant" => crate::codec::ir::IrRole::Assistant,
-                    "tool" => crate::codec::ir::IrRole::Tool,
+                    keys::SYSTEM => crate::codec::ir::IrRole::System,
+                    keys::USER => crate::codec::ir::IrRole::User,
+                    keys::ASSISTANT => crate::codec::ir::IrRole::Assistant,
+                    keys::TOOL => crate::codec::ir::IrRole::Tool,
                     _ => return Err(ir_parse_error()),
                 };
 
@@ -178,7 +181,7 @@ impl ProtocolReader for CohereReader {
                 // violation the lenient projections below would silently coerce (to empty, or to a
                 // JSON-stringified blob) — reject it with the same 400 the top-level `messages` array
                 // uses. Absent/null/empty stay lenient (forward-compat).
-                if let Some(cv) = msg_val.get("content") {
+                if let Some(cv) = msg_val.get(keys::CONTENT) {
                     if !cv.is_null() && !cv.is_string() && !cv.is_array() {
                         return Err(ir_parse_error());
                     }
@@ -190,7 +193,7 @@ impl ProtocolReader for CohereReader {
                 if role == crate::codec::ir::IrRole::System {
                     system_turns_folded += 1;
                     let blocks_before = system_blocks.len();
-                    if let Some(content_val) = msg_val.get("content") {
+                    if let Some(content_val) = msg_val.get(keys::CONTENT) {
                         if let Some(s) = content_val.as_str() {
                             system_blocks.push(crate::codec::ir::IrBlock::Text {
                                 text: s.to_string(),
@@ -201,8 +204,11 @@ impl ProtocolReader for CohereReader {
                         } else if let Some(arr) = content_val.as_array() {
                             for block_val in arr {
                                 if let Some(bo) = block_val.as_object() {
-                                    if bo.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                        if let Some(text) = bo.get("text").and_then(|t| t.as_str())
+                                    if bo.get(keys::TYPE).and_then(|t| t.as_str())
+                                        == Some(keys::TEXT)
+                                    {
+                                        if let Some(text) =
+                                            bo.get(keys::TEXT).and_then(|t| t.as_str())
                                         {
                                             system_blocks.push(crate::codec::ir::IrBlock::Text {
                                                 text: text.to_string(),
@@ -218,7 +224,7 @@ impl ProtocolReader for CohereReader {
                                         // a system instruction block is otherwise invisible.
                                         tracing::warn!(
                                             block_type = bo
-                                                .get("type")
+                                                .get(keys::TYPE)
                                                 .and_then(|t| t.as_str())
                                                 .unwrap_or("<missing>"),
                                             "dropping non-text block in cohere system array (cohere \
@@ -250,7 +256,7 @@ impl ProtocolReader for CohereReader {
                 // Tool branch owns a tool message's content exclusively (mirrors the System early
                 // `continue` above, which keeps System content out of this loop too).
                 if role != crate::codec::ir::IrRole::Tool {
-                    if let Some(content_val) = msg_val.get("content") {
+                    if let Some(content_val) = msg_val.get(keys::CONTENT) {
                         if content_val.is_string() {
                             msg_content.push(crate::codec::ir::IrBlock::Text {
                                 text: content_val.as_str().unwrap_or("").to_string(),
@@ -261,10 +267,10 @@ impl ProtocolReader for CohereReader {
                         } else if let Some(arr) = content_val.as_array() {
                             for block_val in arr {
                                 if let Some(block_obj) = block_val.as_object() {
-                                    match block_obj.get("type").and_then(|t| t.as_str()) {
-                                        Some("text") => {
+                                    match block_obj.get(keys::TYPE).and_then(|t| t.as_str()) {
+                                        Some(keys::TEXT) => {
                                             if let Some(text) =
-                                                block_obj.get("text").and_then(|t| t.as_str())
+                                                block_obj.get(keys::TEXT).and_then(|t| t.as_str())
                                             {
                                                 msg_content.push(crate::codec::ir::IrBlock::Text {
                                                     text: text.to_string(),
@@ -286,10 +292,10 @@ impl ProtocolReader for CohereReader {
                                         // image round-trips and translates losslessly. ASSUMPTION (see
                                         // report): the wire shape is OpenAI-style `image_url`; no
                                         // Cohere v2 image fixture exists in-repo to confirm it.
-                                        Some("image_url") => {
+                                        Some(keys::IMAGE_URL) => {
                                             if let Some(url) = block_obj
-                                                .get("image_url")
-                                                .and_then(|iu| iu.get("url"))
+                                                .get(keys::IMAGE_URL)
+                                                .and_then(|iu| iu.get(keys::URL))
                                                 .and_then(|u| u.as_str())
                                             {
                                                 msg_content.push(crate::codec::ir::IrBlock::Image {
@@ -300,7 +306,7 @@ impl ProtocolReader for CohereReader {
                                                     cache_control: None,
                                                     // IR-08: the requested fidelity.
                                                     detail: read_cohere_image_detail(
-                                                        block_obj.get("image_url"),
+                                                        block_obj.get(keys::IMAGE_URL),
                                                     ),
                                                 });
                                             }
@@ -309,19 +315,19 @@ impl ProtocolReader for CohereReader {
                                         // a document the user attached. It used to be dropped
                                         // silently (COH-04); it now reads into the IR's document
                                         // Media — see `read_cohere_document`.
-                                        Some("document") => {
-                                            if let Some(doc) = block_obj.get("document") {
+                                        Some(keys::DOCUMENT) => {
+                                            if let Some(doc) = block_obj.get(keys::DOCUMENT) {
                                                 msg_content.push(read_cohere_document(doc));
                                             }
                                         }
                                         // An assistant turn replaying a reasoning model's
                                         // `{"type":"thinking"}` part: the IR's Thinking block, in
                                         // place (COH-04).
-                                        Some("thinking")
+                                        Some(keys::THINKING)
                                             if role == crate::codec::ir::IrRole::Assistant =>
                                         {
                                             if let Some(text) = block_obj
-                                                .get("thinking")
+                                                .get(keys::THINKING)
                                                 .and_then(|t| t.as_str())
                                                 .filter(|s| !s.is_empty())
                                             {
@@ -352,7 +358,7 @@ impl ProtocolReader for CohereReader {
                 // mistaken for visible content. The writer reshapes it back into the native
                 // `tool_plan` slot on a Cohere egress.
                 if role == crate::codec::ir::IrRole::Assistant {
-                    if let Some(plan) = msg_val.get("tool_plan").and_then(|p| p.as_str()) {
+                    if let Some(plan) = msg_val.get(TOOL_PLAN).and_then(|p| p.as_str()) {
                         if !plan.is_empty() {
                             msg_content.insert(
                                 0,
@@ -376,7 +382,7 @@ impl ProtocolReader for CohereReader {
                 // they are neither dropped nor multiplied across blocks. Uses the same
                 // `read_cohere_citations` seam as the response path.
                 if role != crate::codec::ir::IrRole::Tool {
-                    if let Some(cits_val) = msg_val.get("citations") {
+                    if let Some(cits_val) = msg_val.get(keys::CITATIONS) {
                         let cits = super::read_cohere_citations(cits_val);
                         if !cits.is_empty() {
                             if let Some(crate::codec::ir::IrBlock::Text { citations, .. }) =
@@ -402,27 +408,27 @@ impl ProtocolReader for CohereReader {
                 }
 
                 if role == crate::codec::ir::IrRole::Assistant {
-                    if let Some(tool_calls) = msg_val.get("tool_calls") {
+                    if let Some(tool_calls) = msg_val.get(keys::TOOL_CALLS) {
                         if let Some(tc_arr) = tool_calls.as_array() {
                             for tc_val in tc_arr {
-                                if let Some(func_obj) = tc_val.get("function") {
+                                if let Some(func_obj) = tc_val.get(keys::FUNCTION) {
                                     // A present tool call MUST carry a non-empty string `id`: it is
                                     // the correlation key an egress dialect emits to pair the eventual
                                     // tool result. An absent/blank/wrong-typed id yields an empty IR id
                                     // that silently breaks that pairing — reject rather than invent.
                                     let id = tc_val
-                                        .get("id")
+                                        .get(keys::ID)
                                         .and_then(|v| v.as_str())
                                         .filter(|s| !s.is_empty())
                                         .ok_or_else(ir_parse_error)?
                                         .to_string();
                                     let name = func_obj
-                                        .get("name")
+                                        .get(keys::NAME)
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("")
                                         .to_string();
                                     let arguments = func_obj
-                                        .get("arguments")
+                                        .get(keys::ARGUMENTS)
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("{}");
                                     let input = crate::codec::json::parse_str(arguments).unwrap_or(
@@ -443,11 +449,11 @@ impl ProtocolReader for CohereReader {
 
                 if role == crate::codec::ir::IrRole::Tool {
                     let tool_call_id = msg_val
-                        .get("tool_call_id")
+                        .get(keys::TOOL_CALL_ID)
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    let content_text = if let Some(content_val) = msg_val.get("content") {
+                    let content_text = if let Some(content_val) = msg_val.get(keys::CONTENT) {
                         if let Some(arr) = content_val.as_array() {
                             // Cohere v2 tool content is an array. Bare strings are accepted, but
                             // the native (SDK-emitted) shape is an array of typed objects, e.g.
@@ -461,11 +467,13 @@ impl ProtocolReader for CohereReader {
                                     if let Some(s) = b.as_str() {
                                         Some(s.to_string())
                                     } else if let Some(bo) = b.as_object() {
-                                        if bo.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                            bo.get("text")
+                                        if bo.get(keys::TYPE).and_then(|t| t.as_str())
+                                            == Some(keys::TEXT)
+                                        {
+                                            bo.get(keys::TEXT)
                                                 .and_then(|t| t.as_str())
                                                 .map(String::from)
-                                        } else if bo.contains_key("document") {
+                                        } else if bo.contains_key(keys::DOCUMENT) {
                                             // A `document` part is captured STRUCTURALLY below (see
                                             // `doc_blocks`); serializing it into this text join is
                                             // what turned the document into a literal JSON string in
@@ -518,9 +526,9 @@ impl ProtocolReader for CohereReader {
                     // Anthropic backend saw an empty tool result (the ANT-17 follow-up). The
                     // document `id` is a Cohere citation handle with no foreign analog; only a
                     // document with no readable `data` keeps the `Vendor` escape.
-                    if let Some(arr) = msg_val.get("content").and_then(|c| c.as_array()) {
+                    if let Some(arr) = msg_val.get(keys::CONTENT).and_then(|c| c.as_array()) {
                         for b in arr {
-                            let Some(doc) = b.get("document") else {
+                            let Some(doc) = b.get(keys::DOCUMENT) else {
                                 continue;
                             };
                             result_content.push(read_cohere_tool_result_document(doc));
@@ -555,19 +563,19 @@ impl ProtocolReader for CohereReader {
         }
 
         let mut tools: Vec<crate::codec::ir::IrTool> = Vec::new();
-        if let Some(tools_arr) = obj.get("tools").and_then(|v| v.as_array()) {
+        if let Some(tools_arr) = obj.get(keys::TOOLS).and_then(|v| v.as_array()) {
             for tool_val in tools_arr {
-                if let Some(func_obj) = tool_val.get("function") {
+                if let Some(func_obj) = tool_val.get(keys::FUNCTION) {
                     let name = func_obj
-                        .get("name")
+                        .get(keys::NAME)
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
                     let description = func_obj
-                        .get("description")
+                        .get(keys::DESCRIPTION)
                         .and_then(|v| v.as_str().map(String::from));
                     let input_schema = func_obj
-                        .get("parameters")
+                        .get(keys::PARAMETERS)
                         .cloned()
                         .unwrap_or(serde_json::Value::Null);
                     tools.push(crate::codec::ir::IrTool {
@@ -588,7 +596,7 @@ impl ProtocolReader for CohereReader {
         // instead, matching the hardened Gemini reader (gemini.rs). The `v > 0` filter still
         // rejects zero/negative caps first.
         let max_tokens = obj
-            .get("max_tokens")
+            .get(keys::MAX_TOKENS)
             .and_then(|v| v.as_i64())
             .filter(|&v| v > 0)
             .and_then(|v| u32::try_from(v).ok());
@@ -596,13 +604,16 @@ impl ProtocolReader for CohereReader {
         // rows of the mapping file, read below.
         // Cohere v2 `tool_choice` is a top-level enum string (REQUIRED/NONE). Promote it to the IR
         // union so a forced directive survives the cross-protocol seam.
-        let tool_choice = read_cohere_tool_choice(obj.get("tool_choice"));
-        let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+        let tool_choice = read_cohere_tool_choice(obj.get(keys::TOOL_CHOICE));
+        let stream = obj
+            .get(keys::STREAM)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         // Cohere v2 chat models `response_format` (json_object / json_schema structured output) at the
         // top level. Carry the raw object verbatim into the IR so it round-trips and translates.
         let response_format = obj
-            .get("response_format")
+            .get(keys::RESPONSE_FORMAT)
             .and_then(read_cohere_response_format);
 
         // Cohere v2 chat's REQUEST `logprobs` is a top-level BOOLEAN ask (return per-token log
@@ -612,7 +623,7 @@ impl ProtocolReader for CohereReader {
         // `logprobs` to the modeled-key set so it is not ALSO echoed via `extra`, which would
         // double-emit on a same-protocol passthrough). The RESPONSE-side logprobs data is a separate,
         // provider-specific concern (see `read_response`).
-        let logprobs = obj.get("logprobs").and_then(|v| v.as_bool());
+        let logprobs = obj.get(keys::LOGPROBS).and_then(|v| v.as_bool());
 
         // Built once per process and reused across every request rather than rebuilt on each
         // read_request call (the per-request allocation/hashing was wasted work on the ingress hot
@@ -637,11 +648,11 @@ impl ProtocolReader for CohereReader {
         // the caller's schema guarantee off on a foreign backend. Promoted only when there are
         // tools to carry it; a bare flag stays in `extra`.
         if !tools.is_empty() {
-            if let Some(strict) = obj.get("strict_tools").and_then(|v| v.as_bool()) {
+            if let Some(strict) = obj.get(STRICT_TOOLS).and_then(|v| v.as_bool()) {
                 for tool in &mut tools {
                     tool.strict = Some(strict);
                 }
-                extra.remove("strict_tools");
+                extra.remove(STRICT_TOOLS);
             }
         }
 
@@ -652,7 +663,7 @@ impl ProtocolReader for CohereReader {
         // translation seam clears, so a foreign model answered with no grounding at all. The Cohere
         // writer lifts text documents back into `documents` (COH-18). A `documents` that is not an
         // array stays in `extra` untouched.
-        if let Some(docs) = obj.get("documents").and_then(|d| d.as_array()) {
+        if let Some(docs) = obj.get(keys::DOCUMENTS).and_then(|d| d.as_array()) {
             let blocks: Vec<crate::codec::ir::IrBlock> =
                 docs.iter().map(read_cohere_document).collect();
             match messages
@@ -671,13 +682,13 @@ impl ProtocolReader for CohereReader {
                 ),
                 None => {}
             }
-            extra.remove("documents");
+            extra.remove(keys::DOCUMENTS);
         }
 
-        let reasoning = read_cohere_reasoning(obj.get("thinking"));
+        let reasoning = read_cohere_reasoning(obj.get(keys::THINKING));
         if reasoning.is_some() {
             // Promoted: the writer re-emits it from the typed field, so it must not also ride extra.
-            extra.remove("thinking");
+            extra.remove(keys::THINKING);
         }
 
         let mut ir = crate::codec::ir::IrRequest {
@@ -737,7 +748,7 @@ impl ProtocolReader for CohereReader {
             return out;
         }
 
-        let event_type_val = data.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let event_type_val = data.get(keys::TYPE).and_then(|t| t.as_str()).unwrap_or("");
         match event_type_val {
             ET_MESSAGE_START => {
                 if !state.started {
@@ -746,7 +757,7 @@ impl ProtocolReader for CohereReader {
                     // frame. Capture it for same-protocol stream passthrough; synthesize a
                     // shape-valid id when the upstream omitted it. Cohere has no stream `created`.
                     let id = data
-                        .get("id")
+                        .get(keys::ID)
                         .and_then(|v| v.as_str())
                         .filter(|s| !s.is_empty())
                         .map(String::from)
@@ -760,7 +771,7 @@ impl ProtocolReader for CohereReader {
                         // backends) rather than hardcoding None so a cross-protocol ingress can surface
                         // it; native Cohere omits it here, in which case this stays None.
                         model: data
-                            .get("model")
+                            .get(keys::MODEL)
                             .and_then(|v| v.as_str())
                             .filter(|s| !s.is_empty())
                             .map(String::from),
@@ -777,20 +788,20 @@ impl ProtocolReader for CohereReader {
             // latch the answer's text block closed before the answer has even started (COH-01).
             ET_CONTENT_START
                 if data
-                    .get("delta")
-                    .and_then(|d| d.get("message"))
-                    .and_then(|m| m.get("content"))
-                    .and_then(|c| c.get("type"))
+                    .get(keys::DELTA)
+                    .and_then(|d| d.get(keys::MESSAGE))
+                    .and_then(|m| m.get(keys::CONTENT))
+                    .and_then(|c| c.get(keys::TYPE))
                     .and_then(|t| t.as_str())
-                    == Some("thinking") =>
+                    == Some(keys::THINKING) =>
             {
                 if cohere_open_thinking_index(state).is_none() {
                     cohere_close_text_slot(state, &mut out);
                     if let Some(index) = cohere_open_thinking_block(state, &mut out) {
                         if let Some(text) = data
-                            .get("delta")
-                            .and_then(|d| d.get("message"))
-                            .and_then(|m| m.get("content"))
+                            .get(keys::DELTA)
+                            .and_then(|d| d.get(keys::MESSAGE))
+                            .and_then(|m| m.get(keys::CONTENT))
                             .and_then(cohere_thinking_part)
                             .filter(|s| !s.is_empty())
                         {
@@ -807,16 +818,16 @@ impl ProtocolReader for CohereReader {
             // `content-start` — never into the text block (COH-02).
             ET_CONTENT_DELTA
                 if data
-                    .get("delta")
-                    .and_then(|d| d.get("message"))
-                    .and_then(|m| m.get("content"))
+                    .get(keys::DELTA)
+                    .and_then(|d| d.get(keys::MESSAGE))
+                    .and_then(|m| m.get(keys::CONTENT))
                     .and_then(cohere_thinking_part)
                     .is_some() =>
             {
                 let text = data
-                    .get("delta")
-                    .and_then(|d| d.get("message"))
-                    .and_then(|m| m.get("content"))
+                    .get(keys::DELTA)
+                    .and_then(|d| d.get(keys::MESSAGE))
+                    .and_then(|m| m.get(keys::CONTENT))
                     .and_then(cohere_thinking_part)
                     .unwrap_or("");
                 let index = match cohere_open_thinking_index(state) {
@@ -873,9 +884,10 @@ impl ProtocolReader for CohereReader {
                     });
                 }
 
-                if let Some(delta_obj) = data.get("delta") {
-                    if let Some(content_obj) =
-                        delta_obj.get("message").and_then(|m| m.get("content"))
+                if let Some(delta_obj) = data.get(keys::DELTA) {
+                    if let Some(content_obj) = delta_obj
+                        .get(keys::MESSAGE)
+                        .and_then(|m| m.get(keys::CONTENT))
                     {
                         if let Some(text) = content_obj.as_str() {
                             if !text.is_empty() {
@@ -892,9 +904,11 @@ impl ProtocolReader for CohereReader {
                             // check) silently dropped every streamed chunk from a real Cohere
                             // backend — a lossy reader that only round-tripped its own writer.
                             // Reject only an object that declares a DIFFERENT type.
-                            let ty = block_obj.get("type").and_then(|t| t.as_str());
-                            if ty.is_none() || ty == Some("text") {
-                                if let Some(text) = block_obj.get("text").and_then(|t| t.as_str()) {
+                            let ty = block_obj.get(keys::TYPE).and_then(|t| t.as_str());
+                            if ty.is_none() || ty == Some(keys::TEXT) {
+                                if let Some(text) =
+                                    block_obj.get(keys::TEXT).and_then(|t| t.as_str())
+                                {
                                     if !text.is_empty() {
                                         out.push(IrStreamEvent::BlockDelta {
                                             index: text_idx,
@@ -908,11 +922,11 @@ impl ProtocolReader for CohereReader {
                         } else if let Some(content_arr) = content_obj.as_array() {
                             for block_val in content_arr {
                                 if let Some(block_obj) = block_val.as_object() {
-                                    if block_obj.get("type").and_then(|t| t.as_str())
-                                        == Some("text")
+                                    if block_obj.get(keys::TYPE).and_then(|t| t.as_str())
+                                        == Some(keys::TEXT)
                                     {
                                         if let Some(text) =
-                                            block_obj.get("text").and_then(|t| t.as_str())
+                                            block_obj.get(keys::TEXT).and_then(|t| t.as_str())
                                         {
                                             out.push(IrStreamEvent::BlockDelta {
                                                 index: text_idx,
@@ -931,7 +945,7 @@ impl ProtocolReader for CohereReader {
                 // (`logprobs: {text, token_ids, logprobs}`), mapped exactly as the buffered
                 // `logprobs[]` items are, onto the text block they describe. They used to be
                 // dropped (COH-14).
-                if let Some(lp) = data.get("logprobs").and_then(read_cohere_logprob) {
+                if let Some(lp) = data.get(keys::LOGPROBS).and_then(read_cohere_logprob) {
                     out.push(IrStreamEvent::BlockDelta {
                         index: text_idx,
                         delta: crate::codec::ir::IrDelta::LogprobsDelta(vec![lp]),
@@ -966,9 +980,9 @@ impl ProtocolReader for CohereReader {
                     });
                 }
                 if let Some(text) = data
-                    .get("delta")
-                    .and_then(|d| d.get("message"))
-                    .and_then(|m| m.get("tool_plan"))
+                    .get(keys::DELTA)
+                    .and_then(|d| d.get(keys::MESSAGE))
+                    .and_then(|m| m.get(TOOL_PLAN))
                     .and_then(|p| p.as_str())
                     .filter(|s| !s.is_empty())
                 {
@@ -1010,8 +1024,8 @@ impl ProtocolReader for CohereReader {
                 cohere_close_thinking_block(state, &mut out);
                 cohere_close_text_slot(state, &mut out);
                 let raw_finish_reason = data
-                    .get("delta")
-                    .and_then(|d| d.get("finish_reason"))
+                    .get(keys::DELTA)
+                    .and_then(|d| d.get(keys::FINISH_REASON))
                     .and_then(|r| r.as_str())
                     .unwrap_or("");
                 let stop_reason = if raw_finish_reason.is_empty() {
@@ -1048,8 +1062,8 @@ impl ProtocolReader for CohereReader {
                 // BILLED COUNTS: absent is zero, a present-but-UNREADABLE count REFUSES (#42) —
                 // the stream ends in an error instead of ledgering zero tokens.
                 let usage = data
-                    .get("delta")
-                    .and_then(|d| d.get("usage"))
+                    .get(keys::DELTA)
+                    .and_then(|d| d.get(keys::USAGE))
                     .map(|u| read_cohere_usage(Some(u)))
                     .transpose();
                 let usage = match usage {
@@ -1113,17 +1127,17 @@ impl ProtocolReader for CohereReader {
                 cohere_close_text_slot(state, &mut out);
                 let frame_idx = clamp_frame_index(data);
                 let tc = data
-                    .get("delta")
-                    .and_then(|d| d.get("message"))
-                    .and_then(|m| m.get("tool_calls"));
+                    .get(keys::DELTA)
+                    .and_then(|d| d.get(keys::MESSAGE))
+                    .and_then(|m| m.get(keys::TOOL_CALLS));
                 let id = tc
-                    .and_then(|t| t.get("id"))
+                    .and_then(|t| t.get(keys::ID))
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
                 let name = tc
-                    .and_then(|t| t.get("function"))
-                    .and_then(|f| f.get("name"))
+                    .and_then(|t| t.get(keys::FUNCTION))
+                    .and_then(|f| f.get(keys::NAME))
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
@@ -1140,8 +1154,8 @@ impl ProtocolReader for CohereReader {
                     });
                     // Cohere may include initial argument text on the start frame.
                     if let Some(args) = tc
-                        .and_then(|t| t.get("function"))
-                        .and_then(|f| f.get("arguments"))
+                        .and_then(|t| t.get(keys::FUNCTION))
+                        .and_then(|f| f.get(keys::ARGUMENTS))
                         .and_then(|v| v.as_str())
                         .filter(|s| !s.is_empty())
                     {
@@ -1161,11 +1175,11 @@ impl ProtocolReader for CohereReader {
                 // arguments. Mirrors the tool-call-end guard.
                 if let Some(ir_idx) = cohere_lookup_tool_ir_index(state, frame_idx) {
                     if let Some(args) = data
-                        .get("delta")
-                        .and_then(|d| d.get("message"))
-                        .and_then(|m| m.get("tool_calls"))
-                        .and_then(|t| t.get("function"))
-                        .and_then(|f| f.get("arguments"))
+                        .get(keys::DELTA)
+                        .and_then(|d| d.get(keys::MESSAGE))
+                        .and_then(|m| m.get(keys::TOOL_CALLS))
+                        .and_then(|t| t.get(keys::FUNCTION))
+                        .and_then(|f| f.get(keys::ARGUMENTS))
                         .and_then(|v| v.as_str())
                         .filter(|s| !s.is_empty())
                     {
@@ -1200,9 +1214,9 @@ impl ProtocolReader for CohereReader {
             ET_CITATION_START => {
                 if state.text_block_open && !state.thinking_block_open {
                     if let Some(raw) = data
-                        .get("delta")
-                        .and_then(|d| d.get("message"))
-                        .and_then(|m| m.get("citations"))
+                        .get(keys::DELTA)
+                        .and_then(|d| d.get(keys::MESSAGE))
+                        .and_then(|m| m.get(keys::CITATIONS))
                     {
                         let cits = if raw.is_array() {
                             super::read_cohere_citations(raw)
@@ -1248,7 +1262,7 @@ impl ProtocolReader for CohereReader {
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrResponse, IrError> {
         let obj = body.as_object().ok_or_else(ir_parse_error)?;
-        let message_val = obj.get("message").ok_or_else(ir_parse_error)?;
+        let message_val = obj.get(keys::MESSAGE).ok_or_else(ir_parse_error)?;
 
         let mut content: Vec<crate::codec::ir::IrBlock> = Vec::new();
         // Cohere v2 carries the assistant's INTERNAL plan that precedes its tool calls in
@@ -1263,7 +1277,7 @@ impl ProtocolReader for CohereReader {
         // the native `tool_plan` slot on a Cohere egress because the IR finally distinguishes it.
         // Writers with no reasoning slot drop it, which is the correct outcome for text the model
         // did not intend the user to see.
-        if let Some(plan) = message_val.get("tool_plan").and_then(|p| p.as_str()) {
+        if let Some(plan) = message_val.get(TOOL_PLAN).and_then(|p| p.as_str()) {
             if !plan.is_empty() {
                 content.push(crate::codec::ir::IrBlock::Thinking {
                     text: plan.to_string(),
@@ -1280,16 +1294,16 @@ impl ProtocolReader for CohereReader {
         // from — see the base-offset accumulation in `openai_chat::url_annotations`). Attaching them
         // to each block instead would multiply them.
         let response_citations = message_val
-            .get("citations")
+            .get(keys::CITATIONS)
             .map(super::read_cohere_citations)
             .unwrap_or_default();
         let mut citations_pending = response_citations;
-        if let Some(content_arr) = message_val.get("content").and_then(|c| c.as_array()) {
+        if let Some(content_arr) = message_val.get(keys::CONTENT).and_then(|c| c.as_array()) {
             for block_val in content_arr {
                 if let Some(block_obj) = block_val.as_object() {
-                    match block_obj.get("type").and_then(|t| t.as_str()) {
-                        Some("text") => {
-                            if let Some(text) = block_obj.get("text").and_then(|t| t.as_str()) {
+                    match block_obj.get(keys::TYPE).and_then(|t| t.as_str()) {
+                        Some(keys::TEXT) => {
+                            if let Some(text) = block_obj.get(keys::TEXT).and_then(|t| t.as_str()) {
                                 content.push(crate::codec::ir::IrBlock::Text {
                                     text: text.to_string(),
                                     cache_control: None,
@@ -1301,9 +1315,9 @@ impl ProtocolReader for CohereReader {
                         // A reasoning model's `{"type":"thinking","thinking":"…"}` content part is
                         // the model's reasoning: the IR's Thinking block, never visible text. It
                         // used to fall through and vanish (COH-03).
-                        Some("thinking") => {
+                        Some(keys::THINKING) => {
                             if let Some(text) = block_obj
-                                .get("thinking")
+                                .get(keys::THINKING)
                                 .and_then(|t| t.as_str())
                                 .filter(|s| !s.is_empty())
                             {
@@ -1334,21 +1348,21 @@ impl ProtocolReader for CohereReader {
             });
         }
 
-        if let Some(tool_calls_arr) = message_val.get("tool_calls").and_then(|t| t.as_array()) {
+        if let Some(tool_calls_arr) = message_val.get(keys::TOOL_CALLS).and_then(|t| t.as_array()) {
             for tc_val in tool_calls_arr {
-                if let Some(func_obj) = tc_val.get("function") {
+                if let Some(func_obj) = tc_val.get(keys::FUNCTION) {
                     let id = tc_val
-                        .get("id")
+                        .get(keys::ID)
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
                     let name = func_obj
-                        .get("name")
+                        .get(keys::NAME)
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
                     let arguments = func_obj
-                        .get("arguments")
+                        .get(keys::ARGUMENTS)
                         .and_then(|v| v.as_str())
                         .unwrap_or("{}");
                     let input = crate::codec::json::parse_str(arguments)
@@ -1365,7 +1379,7 @@ impl ProtocolReader for CohereReader {
         }
 
         let raw_finish_reason = obj
-            .get("finish_reason")
+            .get(keys::FINISH_REASON)
             .and_then(|r| r.as_str())
             .unwrap_or("");
         let stop_reason = if raw_finish_reason.is_empty() {
@@ -1380,7 +1394,7 @@ impl ProtocolReader for CohereReader {
         // `ClientError` here mislabels the cause and breaks retry logic; the Bedrock and Gemini
         // readers tolerate the same condition with a zero-usage fallback. `usage_val` is an
         // `Option`, so each token lookup below already defaults to 0.
-        let usage_val = obj.get("usage");
+        let usage_val = obj.get(keys::USAGE);
         // `cached_tokens` is Cohere's prompt-cache hit count, reported on `ApiMeta` beside `tokens`
         // and `billed_units` — PROMPT tokens (counted inside `tokens.input_tokens`) the model did
         // not have to process. They belong in `cache_read_input_tokens`, the field every sibling
@@ -1395,12 +1409,15 @@ impl ProtocolReader for CohereReader {
         // per-span entries a foreign client reads (`read_cohere_logprob`). They used to be dropped
         // with a warn on every cross-protocol hop (COH-13).
         let logprobs: Vec<crate::codec::ir::IrTokenLogprob> = obj
-            .get("logprobs")
+            .get(keys::LOGPROBS)
             .and_then(|l| l.as_array())
             .map(|items| items.iter().filter_map(read_cohere_logprob).collect())
             .unwrap_or_default();
 
-        let model = obj.get("model").and_then(|m| m.as_str()).map(String::from);
+        let model = obj
+            .get(keys::MODEL)
+            .and_then(|m| m.as_str())
+            .map(String::from);
 
         // Capture the upstream response identity so same-protocol (Cohere → Cohere) passthrough
         // preserves it exactly. Cohere v2 chat responses carry an opaque UUID-like `id`; if the
@@ -1408,7 +1425,7 @@ impl ProtocolReader for CohereReader {
         // native SDK reading `.id` always sees a string). Cohere v2 has no `created`,
         // `system_fingerprint`, or `stop_sequence` field — those stay `None`.
         let id = obj
-            .get("id")
+            .get(keys::ID)
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(String::from)
@@ -1441,29 +1458,29 @@ impl ProtocolReader for CohereReader {
 const USAGE: &[UsageCount] = &[
     (
         CountSlot::Input,
-        CountRead::Zero(&["tokens", "input_tokens"]),
+        CountRead::Zero(&[keys::TOKENS, keys::INPUT_TOKENS]),
     ),
-    (CountSlot::Input, CountRead::Less(&["cached_tokens"])),
+    (CountSlot::Input, CountRead::Less(&[keys::CACHED_TOKENS])),
     (
         CountSlot::Output,
-        CountRead::Zero(&["tokens", "output_tokens"]),
+        CountRead::Zero(&[keys::TOKENS, keys::OUTPUT_TOKENS]),
     ),
-    (CountSlot::CacheRead, CountRead::Opt(&["cached_tokens"])),
+    (CountSlot::CacheRead, CountRead::Opt(&[keys::CACHED_TOKENS])),
     (
         CountSlot::SearchUnits,
-        CountRead::Opt(&["billed_units", "search_units"]),
+        CountRead::Opt(&[keys::BILLED_UNITS, keys::SEARCH_UNITS]),
     ),
     (
         CountSlot::ProviderInput,
-        CountRead::Opt(&["billed_units", "input_tokens"]),
+        CountRead::Opt(&[keys::BILLED_UNITS, keys::INPUT_TOKENS]),
     ),
     (
         CountSlot::ProviderOutput,
-        CountRead::Opt(&["billed_units", "output_tokens"]),
+        CountRead::Opt(&[keys::BILLED_UNITS, keys::OUTPUT_TOKENS]),
     ),
     (
         CountSlot::Classifications,
-        CountRead::Opt(&["billed_units", "classifications"]),
+        CountRead::Opt(&[keys::BILLED_UNITS, CLASSIFICATIONS]),
     ),
 ];
 
@@ -1471,7 +1488,7 @@ const USAGE: &[UsageCount] = &[
 fn read_cohere_usage(
     usage: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
-    crate::codec::usage_count::read_usage("cohere", usage, USAGE)
+    crate::codec::usage_count::read_usage(VENDOR_NAME, usage, USAGE)
 }
 
 #[cfg(test)]

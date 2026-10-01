@@ -46,7 +46,9 @@ impl ProtocolWriter for CohereWriter {
             .collect::<Vec<_>>()
             .join("\n");
         if !system_text.is_empty() {
-            messages_arr.push(serde_json::json!({ "role": "system", "content": system_text }));
+            messages_arr.push(
+                serde_json::json!({ (keys::ROLE): keys::SYSTEM, (keys::CONTENT): system_text }),
+            );
         }
 
         // Text documents lifted out of message content into the request's top-level `documents`
@@ -54,10 +56,10 @@ impl ProtocolWriter for CohereWriter {
         let mut documents: Vec<serde_json::Value> = Vec::new();
         for msg in &req.messages {
             let role_str = match msg.role {
-                crate::codec::ir::IrRole::System => "system",
-                crate::codec::ir::IrRole::User => "user",
-                crate::codec::ir::IrRole::Assistant => "assistant",
-                crate::codec::ir::IrRole::Tool => "tool",
+                crate::codec::ir::IrRole::System => keys::SYSTEM,
+                crate::codec::ir::IrRole::User => keys::USER,
+                crate::codec::ir::IrRole::Assistant => keys::ASSISTANT,
+                crate::codec::ir::IrRole::Tool => keys::TOOL,
             };
 
             // Cohere v2 multimodal output: an image block is written as an
@@ -77,7 +79,9 @@ impl ProtocolWriter for CohereWriter {
             for b in &msg.content {
                 match b {
                     crate::codec::ir::IrBlock::Text { text, .. } => {
-                        parts.push(serde_json::json!({ "type": "text", "text": text }));
+                        parts.push(
+                            serde_json::json!({ (keys::TYPE): keys::TEXT, (keys::TEXT): text }),
+                        );
                     }
                     // A URL/base64 image projects to an `image_url`; a Responses `file_id` or
                     // Bedrock `s3Location` reference has no Cohere projection (returns None) and is
@@ -87,16 +91,16 @@ impl ProtocolWriter for CohereWriter {
                             Some(url) => {
                                 has_image = true;
                                 let mut image_url = serde_json::Map::new();
-                                image_url.insert("url".to_string(), serde_json::json!(url));
+                                image_url.insert(keys::URL.to_string(), serde_json::json!(url));
                                 // IR-08: the requested fidelity, Cohere's own `image_url.detail`.
                                 if let Some(d) = detail {
                                     image_url.insert(
-                                        "detail".to_string(),
+                                        keys::DETAIL.to_string(),
                                         serde_json::json!(d.as_str()),
                                     );
                                 }
                                 parts.push(serde_json::json!({
-                                    "type": "image_url", "image_url": image_url
+                                    (keys::TYPE): keys::IMAGE_URL, (keys::IMAGE_URL): image_url
                                 }));
                             }
                             None => tracing::warn!(
@@ -190,9 +194,10 @@ impl ProtocolWriter for CohereWriter {
                     } = block
                     {
                         let mut tool_result_obj = serde_json::Map::new();
-                        tool_result_obj.insert("role".to_string(), serde_json::json!("tool"));
+                        tool_result_obj
+                            .insert(keys::ROLE.to_string(), serde_json::json!(keys::TOOL));
                         tool_result_obj.insert(
-                            "tool_call_id".to_string(),
+                            keys::TOOL_CALL_ID.to_string(),
                             serde_json::Value::String(tool_use_id.clone()),
                         );
                         let mut text_parts: Vec<String> = content
@@ -234,8 +239,8 @@ impl ProtocolWriter for CohereWriter {
                                     if *vendor == VENDOR_NAME =>
                                 {
                                     doc_parts.push(serde_json::json!({
-                                        "type": "document",
-                                        "document": value
+                                        (keys::TYPE): keys::DOCUMENT,
+                                        (keys::DOCUMENT): value
                                     }));
                                 }
                                 _ => tracing::warn!(
@@ -260,12 +265,12 @@ impl ProtocolWriter for CohereWriter {
                         } else {
                             let mut parts: Vec<serde_json::Value> = Vec::new();
                             if !joined.is_empty() {
-                                parts.push(serde_json::json!({"type": "text", "text": joined}));
+                                parts.push(serde_json::json!({(keys::TYPE): keys::TEXT, (keys::TEXT): joined}));
                             }
                             parts.extend(doc_parts);
                             serde_json::Value::Array(parts)
                         };
-                        tool_result_obj.insert("content".to_string(), content_value);
+                        tool_result_obj.insert(keys::CONTENT.to_string(), content_value);
                         messages_arr.push(serde_json::Value::Object(tool_result_obj));
                         emitted_tool_result = true;
                     }
@@ -280,8 +285,8 @@ impl ProtocolWriter for CohereWriter {
                     // user message).
                     if let Some(user_content) = content_val {
                         let mut user_obj = serde_json::Map::new();
-                        user_obj.insert("role".to_string(), serde_json::json!("user"));
-                        user_obj.insert("content".to_string(), user_content);
+                        user_obj.insert(keys::ROLE.to_string(), serde_json::json!(keys::USER));
+                        user_obj.insert(keys::CONTENT.to_string(), user_content);
                         messages_arr.push(serde_json::Value::Object(user_obj));
                     }
                 } else if !emitted_tool_result && !text_blocks.is_empty() {
@@ -291,9 +296,9 @@ impl ProtocolWriter for CohereWriter {
                     // ToolResult path: forwarding `content_val` here would emit a JSON array for
                     // multi-block turns, producing an invalid Cohere request.
                     let mut tool_obj = serde_json::Map::new();
-                    tool_obj.insert("role".to_string(), serde_json::json!("tool"));
+                    tool_obj.insert(keys::ROLE.to_string(), serde_json::json!(keys::TOOL));
                     tool_obj.insert(
-                        "content".to_string(),
+                        keys::CONTENT.to_string(),
                         serde_json::Value::String(
                             text_blocks
                                 .iter()
@@ -308,9 +313,9 @@ impl ProtocolWriter for CohereWriter {
             }
 
             let mut msg_obj = serde_json::Map::new();
-            msg_obj.insert("role".to_string(), serde_json::json!(role_str));
+            msg_obj.insert(keys::ROLE.to_string(), serde_json::json!(role_str));
             if let Some(content_val) = content_val {
-                msg_obj.insert("content".to_string(), content_val);
+                msg_obj.insert(keys::CONTENT.to_string(), content_val);
             }
 
             // Replay a request-history assistant message's pre-tool-call plan in Cohere's native
@@ -343,21 +348,23 @@ impl ProtocolWriter for CohereWriter {
                 if has_tool_calls {
                     let plan: String = thinking.concat();
                     if !plan.is_empty() {
-                        msg_obj.insert("tool_plan".to_string(), serde_json::json!(plan));
+                        msg_obj.insert(TOOL_PLAN.to_string(), serde_json::json!(plan));
                     }
                 } else if !thinking.is_empty() {
                     let mut parts: Vec<serde_json::Value> = thinking
                         .iter()
-                        .map(|t| serde_json::json!({ "type": "thinking", "thinking": t }))
+                        .map(|t| serde_json::json!({ (keys::TYPE): keys::THINKING, (keys::THINKING): t }))
                         .collect();
-                    match msg_obj.remove("content") {
+                    match msg_obj.remove(keys::CONTENT) {
                         Some(serde_json::Value::String(text)) => {
-                            parts.push(serde_json::json!({ "type": "text", "text": text }));
+                            parts.push(
+                                serde_json::json!({ (keys::TYPE): keys::TEXT, (keys::TEXT): text }),
+                            );
                         }
                         Some(serde_json::Value::Array(rest)) => parts.extend(rest),
                         _ => {}
                     }
-                    msg_obj.insert("content".to_string(), serde_json::Value::Array(parts));
+                    msg_obj.insert(keys::CONTENT.to_string(), serde_json::Value::Array(parts));
                 }
             }
 
@@ -378,7 +385,7 @@ impl ProtocolWriter for CohereWriter {
                 .collect();
             if !msg_citations.is_empty() {
                 msg_obj.insert(
-                    "citations".to_string(),
+                    keys::CITATIONS.to_string(),
                     serde_json::Value::Array(msg_citations),
                 );
             }
@@ -394,12 +401,12 @@ impl ProtocolWriter for CohereWriter {
                         // than JSON-encoding it a second time (double-encoding) — same as the OpenAI/
                         // Responses writers.
                         let args_str = crate::codec::dialect::tool_arguments_to_string(input);
-                        tool_calls_arr.push(serde_json::json!({ "id": id, "type": "function", "function": { "name": name, "arguments": args_str }}));
+                        tool_calls_arr.push(serde_json::json!({ (keys::ID): id, (keys::TYPE): keys::FUNCTION, (keys::FUNCTION): { (keys::NAME): name, (keys::ARGUMENTS): args_str }}));
                     }
                 }
                 if !tool_calls_arr.is_empty() {
                     msg_obj.insert(
-                        "tool_calls".to_string(),
+                        keys::TOOL_CALLS.to_string(),
                         serde_json::Value::Array(tool_calls_arr),
                     );
                 }
@@ -409,7 +416,7 @@ impl ProtocolWriter for CohereWriter {
         }
 
         out.insert(
-            "messages".to_string(),
+            keys::MESSAGES.to_string(),
             serde_json::Value::Array(messages_arr),
         );
 
@@ -431,30 +438,33 @@ impl ProtocolWriter for CohereWriter {
         let strict: Vec<Option<bool>> = tools.iter().map(|t| t.strict).collect();
         match strict.first() {
             Some(Some(first)) if strict.iter().all(|s| *s == Some(*first)) => {
-                out.insert("strict_tools".to_string(), serde_json::json!(first));
+                out.insert(STRICT_TOOLS.to_string(), serde_json::json!(first));
             }
-            _ => super::super::ir_encode::warn_dropped_tool_strict(&req.tools, "cohere"),
+            _ => super::super::ir_encode::warn_dropped_tool_strict(&req.tools, VENDOR_NAME),
         }
         if !tools.is_empty() {
             let mut tools_arr: Vec<serde_json::Value> = Vec::new();
             for tool in &tools {
                 let mut func_obj = serde_json::Map::new();
-                func_obj.insert("name".to_string(), serde_json::json!(tool.name));
+                func_obj.insert(keys::NAME.to_string(), serde_json::json!(tool.name));
                 if let Some(desc) = &tool.description {
-                    func_obj.insert("description".to_string(), serde_json::json!(desc));
+                    func_obj.insert(keys::DESCRIPTION.to_string(), serde_json::json!(desc));
                 }
                 let params = if !tool.input_schema.is_null() {
                     tool.input_schema.clone()
                 } else {
                     serde_json::json!({})
                 };
-                func_obj.insert("parameters".to_string(), params);
+                func_obj.insert(keys::PARAMETERS.to_string(), params);
                 let mut tool_obj = serde_json::Map::new();
-                tool_obj.insert("type".to_string(), serde_json::json!("function"));
-                tool_obj.insert("function".to_string(), serde_json::Value::Object(func_obj));
+                tool_obj.insert(keys::TYPE.to_string(), serde_json::json!(keys::FUNCTION));
+                tool_obj.insert(
+                    keys::FUNCTION.to_string(),
+                    serde_json::Value::Object(func_obj),
+                );
                 tools_arr.push(serde_json::Value::Object(tool_obj));
             }
-            out.insert("tools".to_string(), serde_json::Value::Array(tools_arr));
+            out.insert(keys::TOOLS.to_string(), serde_json::Value::Array(tools_arr));
         }
 
         // Cohere v2 `tool_choice` is a top-level enum string with only REQUIRED/NONE — there is NO
@@ -488,7 +498,7 @@ impl ProtocolWriter for CohereWriter {
                     crate::codec::ir::IrToolChoice::Auto => None,
                 };
                 if let Some(s) = v {
-                    out.insert("tool_choice".to_string(), serde_json::json!(s));
+                    out.insert(keys::TOOL_CHOICE.to_string(), serde_json::json!(s));
                 }
             }
         }
@@ -514,7 +524,7 @@ impl ProtocolWriter for CohereWriter {
         );
 
         if let Some(max_tokens) = req.max_tokens {
-            out.insert("max_tokens".to_string(), serde_json::json!(max_tokens));
+            out.insert(keys::MAX_TOKENS.to_string(), serde_json::json!(max_tokens));
         }
         // temperature (clamped to [0.0, 1.0]), `p`, `k`, stop_sequences (capped at 5), the penalties
         // and seed: rows of the mapping file. Emitted before the `extra` overlay (the reader pulled
@@ -529,7 +539,7 @@ impl ProtocolWriter for CohereWriter {
         // same shape OpenAI/Gemini model. Emit it when the IR carries the ask so it survives the
         // seam (the reader models it as a modeled key, so there is no double-emit via `extra`).
         if let Some(logprobs) = req.logprobs {
-            out.insert("logprobs".to_string(), serde_json::json!(logprobs));
+            out.insert(keys::LOGPROBS.to_string(), serde_json::json!(logprobs));
         }
         // `response_format` (structured output): a Cohere-native object passes through verbatim; a
         // foreign shape (OpenAI `type:"json_schema"` with a nested `json_schema.schema`, or Gemini
@@ -537,7 +547,7 @@ impl ProtocolWriter for CohereWriter {
         // json_schema:<schema>}` so a Cohere backend accepts it instead of 400-ing on the off-shape.
         if let Some(response_format) = &req.response_format {
             out.insert(
-                "response_format".to_string(),
+                keys::RESPONSE_FORMAT.to_string(),
                 write_cohere_response_format(response_format),
             );
         }
@@ -547,13 +557,13 @@ impl ProtocolWriter for CohereWriter {
         // reader treats `stream` as a modeled key, so it is never echoed via `extra`). The Gemini
         // writer likewise never emits `stream` in the body.
         if req.stream {
-            out.insert("stream".to_string(), serde_json::json!(true));
+            out.insert(keys::STREAM.to_string(), serde_json::json!(true));
         }
         // The reasoning ASK in Cohere v2's native `thinking` param (COH-06). It used to be dropped
         // with a warn, as if Cohere had no reasoning control; it has `thinking.token_budget`.
         if let Some(ask) = req.reasoning {
             out.insert(
-                "thinking".to_string(),
+                keys::THINKING.to_string(),
                 write_cohere_reasoning(
                     ask,
                     req.reasoning_budgets
@@ -568,10 +578,13 @@ impl ProtocolWriter for CohereWriter {
         // array `documents` into the IR — IR-13 — so only an unreadable one is left there), after
         // them.
         if !documents.is_empty() {
-            match out.get_mut("documents").and_then(|d| d.as_array_mut()) {
+            match out.get_mut(keys::DOCUMENTS).and_then(|d| d.as_array_mut()) {
                 Some(existing) => existing.extend(documents),
                 None => {
-                    out.insert("documents".to_string(), serde_json::Value::Array(documents));
+                    out.insert(
+                        keys::DOCUMENTS.to_string(),
+                        serde_json::Value::Array(documents),
+                    );
                 }
             }
         }
@@ -583,7 +596,7 @@ impl ProtocolWriter for CohereWriter {
         match ev {
             IrStreamEvent::MessageStart { role, id, .. } => {
                 let cohere_role = match role {
-                    crate::codec::ir::IrRole::Assistant => "assistant",
+                    crate::codec::ir::IrRole::Assistant => keys::ASSISTANT,
                     crate::codec::ir::IrRole::System
                     | crate::codec::ir::IrRole::User
                     | crate::codec::ir::IrRole::Tool => return None,
@@ -597,9 +610,9 @@ impl ProtocolWriter for CohereWriter {
                 Some((
                     "".to_string(),
                     serde_json::json!({
-                        "id": id,
-                        "type": ET_MESSAGE_START,
-                        "delta": { "message": { "role": cohere_role } }
+                        (keys::ID): id,
+                        (keys::TYPE): ET_MESSAGE_START,
+                        (keys::DELTA): { (keys::MESSAGE): { (keys::ROLE): cohere_role } }
                     }),
                 ))
             }
@@ -618,11 +631,11 @@ impl ProtocolWriter for CohereWriter {
                     Some((
                         "".to_string(),
                         serde_json::json!({
-                            "type": ET_CONTENT_START,
-                            "index": index,
-                            "delta": {
-                                "message": {
-                                    "content": { "type": "text", "text": "" }
+                            (keys::TYPE): ET_CONTENT_START,
+                            (keys::INDEX): index,
+                            (keys::DELTA): {
+                                (keys::MESSAGE): {
+                                    (keys::CONTENT): { (keys::TYPE): keys::TEXT, (keys::TEXT): "" }
                                 }
                             }
                         }),
@@ -642,14 +655,14 @@ impl ProtocolWriter for CohereWriter {
                     Some((
                         "".to_string(),
                         serde_json::json!({
-                            "type": ET_TOOL_CALL_START,
-                            "index": index,
-                            "delta": {
-                                "message": {
-                                    "tool_calls": {
-                                        "id": id,
-                                        "type": "function",
-                                        "function": { "name": name, "arguments": "" }
+                            (keys::TYPE): ET_TOOL_CALL_START,
+                            (keys::INDEX): index,
+                            (keys::DELTA): {
+                                (keys::MESSAGE): {
+                                    (keys::TOOL_CALLS): {
+                                        (keys::ID): id,
+                                        (keys::TYPE): keys::FUNCTION,
+                                        (keys::FUNCTION): { (keys::NAME): name, (keys::ARGUMENTS): "" }
                                     }
                                 }
                             }
@@ -667,11 +680,11 @@ impl ProtocolWriter for CohereWriter {
                     Some((
                         "".to_string(),
                         serde_json::json!({
-                            "type": ET_CONTENT_START,
-                            "index": index,
-                            "delta": {
-                                "message": {
-                                    "content": { "type": "thinking", "thinking": "" }
+                            (keys::TYPE): ET_CONTENT_START,
+                            (keys::INDEX): index,
+                            (keys::DELTA): {
+                                (keys::MESSAGE): {
+                                    (keys::CONTENT): { (keys::TYPE): keys::THINKING, (keys::THINKING): "" }
                                 }
                             }
                         }),
@@ -703,9 +716,9 @@ impl ProtocolWriter for CohereWriter {
                     // is the writer catching up to match the real wire, not a breaking change to the
                     // read side.
                     serde_json::json!({
-                        "type": ET_CONTENT_DELTA,
-                        "index": index,
-                        "delta": { "message": { "content": { "text": text } } }
+                        (keys::TYPE): ET_CONTENT_DELTA,
+                        (keys::INDEX): index,
+                        (keys::DELTA): { (keys::MESSAGE): { (keys::CONTENT): { (keys::TEXT): text } } }
                     }),
                 )),
                 // Streamed tool-call argument fragments map to a native `tool-call-delta` frame
@@ -715,11 +728,11 @@ impl ProtocolWriter for CohereWriter {
                 crate::codec::ir::IrDelta::InputJsonDelta(args) => Some((
                     "".to_string(),
                     serde_json::json!({
-                        "type": ET_TOOL_CALL_DELTA,
-                        "index": index,
-                        "delta": {
-                            "message": {
-                                "tool_calls": { "function": { "arguments": args } }
+                        (keys::TYPE): ET_TOOL_CALL_DELTA,
+                        (keys::INDEX): index,
+                        (keys::DELTA): {
+                            (keys::MESSAGE): {
+                                (keys::TOOL_CALLS): { (keys::FUNCTION): { (keys::ARGUMENTS): args } }
                             }
                         }
                     }),
@@ -731,9 +744,9 @@ impl ProtocolWriter for CohereWriter {
                 crate::codec::ir::IrDelta::ThinkingDelta(text) => Some((
                     "".to_string(),
                     serde_json::json!({
-                        "type": ET_CONTENT_DELTA,
-                        "index": index,
-                        "delta": { "message": { "content": { "thinking": text } } }
+                        (keys::TYPE): ET_CONTENT_DELTA,
+                        (keys::INDEX): index,
+                        (keys::DELTA): { (keys::MESSAGE): { (keys::CONTENT): { (keys::THINKING): text } } }
                     }),
                 )),
                 // IR-21: Cohere has no streamed media member.
@@ -760,11 +773,11 @@ impl ProtocolWriter for CohereWriter {
                     Some((
                         "".to_string(),
                         serde_json::json!({
-                            "type": ET_CITATION_START,
-                            "index": index,
-                            "delta": {
-                                "message": {
-                                    "citations": write_cohere_citation(c)
+                            (keys::TYPE): ET_CITATION_START,
+                            (keys::INDEX): index,
+                            (keys::DELTA): {
+                                (keys::MESSAGE): {
+                                    (keys::CITATIONS): write_cohere_citation(c)
                                 }
                             }
                         }),
@@ -795,12 +808,12 @@ impl ProtocolWriter for CohereWriter {
                 if self.take_tool_open(*index) {
                     Some((
                         "".to_string(),
-                        serde_json::json!({ "type": ET_TOOL_CALL_END, "index": index }),
+                        serde_json::json!({ (keys::TYPE): ET_TOOL_CALL_END, (keys::INDEX): index }),
                     ))
                 } else if self.take_text_open(*index) {
                     Some((
                         "".to_string(),
-                        serde_json::json!({ "type": ET_CONTENT_END, "index": index }),
+                        serde_json::json!({ (keys::TYPE): ET_CONTENT_END, (keys::INDEX): index }),
                     ))
                 } else {
                     None
@@ -824,15 +837,15 @@ impl ProtocolWriter for CohereWriter {
                 // Cohere's `tokens.input_tokens` is the WHOLE prompt, cached share included, with the
                 // cache hit reported beside it as `cached_tokens` — see `cohere_prompt_tokens`.
                 let mut usage_obj = serde_json::json!({
-                    "tokens": {
-                        "input_tokens": cohere_prompt_tokens(usage),
-                        "output_tokens": usage.output_tokens
+                    (keys::TOKENS): {
+                        (keys::INPUT_TOKENS): cohere_prompt_tokens(usage),
+                        (keys::OUTPUT_TOKENS): usage.output_tokens
                     }
                 });
                 if let (Some(cached), Some(uo)) =
                     (usage.cache_read_input_tokens, usage_obj.as_object_mut())
                 {
-                    uo.insert("cached_tokens".to_string(), serde_json::json!(cached));
+                    uo.insert(keys::CACHED_TOKENS.to_string(), serde_json::json!(cached));
                 }
                 // The separately-billed search units, in Cohere's native `billed_units` slot — the
                 // same field the buffered writer emits. `search_units` is not a token count at all,
@@ -842,21 +855,21 @@ impl ProtocolWriter for CohereWriter {
                 // `billed_units` object.
                 let mut billed_units = serde_json::Map::new();
                 if let Some(v) = usage.detail.billed_input_tokens {
-                    billed_units.insert("input_tokens".to_string(), serde_json::json!(v));
+                    billed_units.insert(keys::INPUT_TOKENS.to_string(), serde_json::json!(v));
                 }
                 if let Some(v) = usage.detail.billed_output_tokens {
-                    billed_units.insert("output_tokens".to_string(), serde_json::json!(v));
+                    billed_units.insert(keys::OUTPUT_TOKENS.to_string(), serde_json::json!(v));
                 }
                 if let Some(su) = usage.detail.search_units {
-                    billed_units.insert("search_units".to_string(), serde_json::json!(su));
+                    billed_units.insert(keys::SEARCH_UNITS.to_string(), serde_json::json!(su));
                 }
                 if let Some(v) = usage.detail.billed_classifications {
-                    billed_units.insert("classifications".to_string(), serde_json::json!(v));
+                    billed_units.insert(CLASSIFICATIONS.to_string(), serde_json::json!(v));
                 }
                 if !billed_units.is_empty() {
                     if let Some(uo) = usage_obj.as_object_mut() {
                         uo.insert(
-                            "billed_units".to_string(),
+                            keys::BILLED_UNITS.to_string(),
                             serde_json::Value::Object(billed_units),
                         );
                     }
@@ -864,10 +877,10 @@ impl ProtocolWriter for CohereWriter {
                 Some((
                     "".to_string(),
                     serde_json::json!({
-                        "type": ET_MESSAGE_END,
-                        "delta": {
-                            "finish_reason": cohere_finish_reason,
-                            "usage": usage_obj
+                        (keys::TYPE): ET_MESSAGE_END,
+                        (keys::DELTA): {
+                            (keys::FINISH_REASON): cohere_finish_reason,
+                            (keys::USAGE): usage_obj
                         }
                     }),
                 ))
@@ -916,11 +929,11 @@ impl ProtocolWriter for CohereWriter {
                 Some((
                     "".to_string(),
                     serde_json::json!({
-                        "type": ET_MESSAGE_END,
-                        "delta": {
-                            "finish_reason": finish_reason,
-                            "usage": {
-                                "tokens": { "input_tokens": 0, "output_tokens": 0 }
+                        (keys::TYPE): ET_MESSAGE_END,
+                        (keys::DELTA): {
+                            (keys::FINISH_REASON): finish_reason,
+                            (keys::USAGE): {
+                                (keys::TOKENS): { (keys::INPUT_TOKENS): 0, (keys::OUTPUT_TOKENS): 0 }
                             }
                         }
                     }),
@@ -960,7 +973,7 @@ impl ProtocolWriter for CohereWriter {
                     frames.push(start);
                     frames.push((
                         "".to_string(),
-                        serde_json::json!({ "type": ET_CITATION_END, "index": index }),
+                        serde_json::json!({ (keys::TYPE): ET_CITATION_END, (keys::INDEX): index }),
                     ));
                 }
             }
@@ -983,7 +996,8 @@ impl ProtocolWriter for CohereWriter {
         for block in &resp.content {
             match block {
                 crate::codec::ir::IrBlock::Text { text, .. } => {
-                    content_arr.push(serde_json::json!({ "type": "text", "text": text }));
+                    content_arr
+                        .push(serde_json::json!({ (keys::TYPE): keys::TEXT, (keys::TEXT): text }));
                 }
                 crate::codec::ir::IrBlock::ToolUse {
                     id, name, input, ..
@@ -992,7 +1006,7 @@ impl ProtocolWriter for CohereWriter {
                     let args_str = crate::codec::dialect::tool_arguments_to_string(input);
                     // Accumulate every tool call. Inserting per-iteration would overwrite the
                     // key and silently drop all but the last call on parallel tool use.
-                    tool_calls_arr.push(serde_json::json!({ "id": id, "type": "function", "function": { "name": name, "arguments": args_str }}));
+                    tool_calls_arr.push(serde_json::json!({ (keys::ID): id, (keys::TYPE): keys::FUNCTION, (keys::FUNCTION): { (keys::NAME): name, (keys::ARGUMENTS): args_str }}));
                 }
                 // A reasoning block is the model's reasoning, and a Cohere reasoning model returns
                 // that as a `{"type":"thinking"}` content part, in place, ahead of the answer — the
@@ -1008,7 +1022,7 @@ impl ProtocolWriter for CohereWriter {
                 } => {
                     if !text.is_empty() {
                         content_arr
-                            .push(serde_json::json!({ "type": "thinking", "thinking": text }));
+                            .push(serde_json::json!({ (keys::TYPE): keys::THINKING, (keys::THINKING): text }));
                     }
                 }
                 crate::codec::ir::IrBlock::Thinking { .. } => {}
@@ -1038,11 +1052,11 @@ impl ProtocolWriter for CohereWriter {
         let mut tokens_map = serde_json::Map::new();
         // The WHOLE prompt, cached share included — see `cohere_prompt_tokens`.
         tokens_map.insert(
-            "input_tokens".to_string(),
+            keys::INPUT_TOKENS.to_string(),
             serde_json::json!(cohere_prompt_tokens(&resp.usage)),
         );
         tokens_map.insert(
-            "output_tokens".to_string(),
+            keys::OUTPUT_TOKENS.to_string(),
             serde_json::json!(resp.usage.output_tokens),
         );
 
@@ -1051,13 +1065,13 @@ impl ProtocolWriter for CohereWriter {
         // hits `None` and we synthesize a shape-valid Cohere id so a native SDK always reads a
         // non-empty `.id` string.
         let id = resp.id.clone().unwrap_or_else(synthesize_cohere_id);
-        out.insert("id".to_string(), serde_json::Value::String(id));
+        out.insert(keys::ID.to_string(), serde_json::Value::String(id));
         // model that served the response (preserved across cross-protocol translation)
         if let Some(ref model) = resp.model {
-            out.insert("model".to_string(), serde_json::json!(model));
+            out.insert(keys::MODEL.to_string(), serde_json::json!(model));
         }
         out.insert(
-            "finish_reason".to_string(),
+            keys::FINISH_REASON.to_string(),
             serde_json::json!(cohere_finish_reason),
         );
         // Native Cohere v2 carries tool calls INSIDE the message object (response.message
@@ -1065,8 +1079,11 @@ impl ProtocolWriter for CohereWriter {
         // here (rather than at the top level) keeps the body native for a real Cohere SDK and lets
         // a Cohere -> Cohere passthrough round-trip every parallel tool call.
         let mut message_obj = serde_json::Map::new();
-        message_obj.insert("role".to_string(), serde_json::json!("assistant"));
-        message_obj.insert("content".to_string(), serde_json::Value::Array(content_arr));
+        message_obj.insert(keys::ROLE.to_string(), serde_json::json!(keys::ASSISTANT));
+        message_obj.insert(
+            keys::CONTENT.to_string(),
+            serde_json::Value::Array(content_arr),
+        );
         // Grounding citations, in Cohere's native `message.citations` slot. A citation READ from a
         // Cohere response carries the source object verbatim in `raw`, so a same-protocol path
         // re-emits it unchanged; a cross-protocol citation is synthesized from the neutral fields.
@@ -1084,28 +1101,31 @@ impl ProtocolWriter for CohereWriter {
             .collect();
         if !citations_arr.is_empty() {
             message_obj.insert(
-                "citations".to_string(),
+                keys::CITATIONS.to_string(),
                 serde_json::Value::Array(citations_arr),
             );
         }
         if !tool_calls_arr.is_empty() {
             message_obj.insert(
-                "tool_calls".to_string(),
+                keys::TOOL_CALLS.to_string(),
                 serde_json::Value::Array(tool_calls_arr),
             );
         }
         out.insert(
-            "message".to_string(),
+            keys::MESSAGE.to_string(),
             serde_json::Value::Object(message_obj),
         );
         // Wrap tokens under "tokens" key per Cohere API spec
         let mut usage_map = serde_json::Map::new();
-        usage_map.insert("tokens".to_string(), serde_json::Value::Object(tokens_map));
+        usage_map.insert(
+            keys::TOKENS.to_string(),
+            serde_json::Value::Object(tokens_map),
+        );
         // The prompt-cache hit, in Cohere's native `usage.cached_tokens` slot (beside `tokens`, the
         // same member this dialect's reader reads it from). Emitted only when the source reported a
         // cache read, so an uncached response does not acquire a fabricated `cached_tokens: 0`.
         if let Some(cached) = resp.usage.cache_read_input_tokens {
-            usage_map.insert("cached_tokens".to_string(), serde_json::json!(cached));
+            usage_map.insert(keys::CACHED_TOKENS.to_string(), serde_json::json!(cached));
         }
         // Cohere's native `billed_units` slot: the separately-metered BILLED attribution, distinct
         // from the raw `tokens` bucket above. Each member is emitted only when the source actually
@@ -1114,24 +1134,27 @@ impl ProtocolWriter for CohereWriter {
         // are the billed token counts, `search_units`/`classifications` are non-token billed units.
         let mut billed_units = serde_json::Map::new();
         if let Some(v) = resp.usage.detail.billed_input_tokens {
-            billed_units.insert("input_tokens".to_string(), serde_json::json!(v));
+            billed_units.insert(keys::INPUT_TOKENS.to_string(), serde_json::json!(v));
         }
         if let Some(v) = resp.usage.detail.billed_output_tokens {
-            billed_units.insert("output_tokens".to_string(), serde_json::json!(v));
+            billed_units.insert(keys::OUTPUT_TOKENS.to_string(), serde_json::json!(v));
         }
         if let Some(su) = resp.usage.detail.search_units {
-            billed_units.insert("search_units".to_string(), serde_json::json!(su));
+            billed_units.insert(keys::SEARCH_UNITS.to_string(), serde_json::json!(su));
         }
         if let Some(v) = resp.usage.detail.billed_classifications {
-            billed_units.insert("classifications".to_string(), serde_json::json!(v));
+            billed_units.insert(CLASSIFICATIONS.to_string(), serde_json::json!(v));
         }
         if !billed_units.is_empty() {
             usage_map.insert(
-                "billed_units".to_string(),
+                keys::BILLED_UNITS.to_string(),
                 serde_json::Value::Object(billed_units),
             );
         }
-        out.insert("usage".to_string(), serde_json::Value::Object(usage_map));
+        out.insert(
+            keys::USAGE.to_string(),
+            serde_json::Value::Object(usage_map),
+        );
 
         serde_json::Value::Object(out)
     }
@@ -1153,7 +1176,7 @@ impl ProtocolWriter for CohereWriter {
     /// dead-code lint never fires on vtable-dispatched trait method implementations.
     fn write_error(&self, _status: u16, _kind: &str, message: &str) -> serde_json::Value {
         serde_json::json!({
-            "message": message,
+            (keys::MESSAGE): message,
         })
     }
 
