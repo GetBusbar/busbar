@@ -158,8 +158,19 @@
 # answered later cells from stale state, outliving the run. Still a feature branch head; re-pin to the
 # integration/merge commit when that branch lands.
 #
+# 2026-10-02 (owner ruling §9.2 OWNER ACTS, lane ORACLE-CELLS): moved ccef3c1 -> 7168e25 (busbar-release
+# branch `lane-oracle-cells`, cut from main 4a5f57d which carries ccef3c1). fe8cc49: the capture driver
+# boots the build under test by ABSOLUTE path. With a relative `--bin target/release/busbar` (ci.yml,
+# oracle-proof.yml, prove-remote.sh) the boot, run with the cell's work dir as cwd, spawned nothing, so
+# `record --native` recorded none of the capture-driver cells (wire.*, egress.*, export.*, ...): every
+# one was FAIL `capture cell: No such file or directory`. Each capture cell now also leaves a
+# diagnostic trail under <out>/raw/. 7168e25: the owner-review cells (574's driven as_of, usage.gemini,
+# money.reserved-tier, egress.image-detail, egress.headers, boot.deprecated-env, plugins.abi), staged
+# for the owner; no golden is recorded by this move. Still a feature branch head; re-pin to the merge
+# commit when it lands.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=ccef3c1
+release_ref=7168e25
 crate=busbar-release-oracle
 bin=busbar-oracle
