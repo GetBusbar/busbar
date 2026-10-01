@@ -835,7 +835,10 @@ impl AStream {
         self.finish(&Head {
             fields: vec![
                 (msg::GRPC_STATUS.into(), code.to_string().into_bytes()),
-                (msg::GRPC_MESSAGE.into(), msg::encode_message(why).into_bytes()),
+                (
+                    msg::GRPC_MESSAGE.into(),
+                    msg::encode_message(why).into_bytes(),
+                ),
             ],
             content_length: None,
         });

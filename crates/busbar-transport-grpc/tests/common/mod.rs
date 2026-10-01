@@ -352,12 +352,8 @@ impl Host {
                 .into_owned()
         };
         for h in &self.heads[..o.yielded.heads_len as usize] {
-            self.words.push((
-                h.stream,
-                text(h.method),
-                text(h.target),
-                text(h.authority),
-            ));
+            self.words
+                .push((h.stream, text(h.method), text(h.target), text(h.authority)));
         }
         let w = self.wire[..o.yielded.wire_len as usize].to_vec();
         if !w.is_empty() {

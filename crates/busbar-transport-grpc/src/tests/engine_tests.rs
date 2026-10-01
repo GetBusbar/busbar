@@ -86,7 +86,10 @@ fn of(got: &[Piece], stream: u64) -> Vec<&Piece> {
 /// The stream's head: its FIRST piece, a field block with no status code.
 fn head(got: &[Piece], stream: u64) -> &Piece {
     let h = of(got, stream)[0];
-    assert!(h.fields && h.status.is_none(), "the head comes first: {h:?}");
+    assert!(
+        h.fields && h.status.is_none(),
+        "the head comes first: {h:?}"
+    );
     h
 }
 
@@ -159,7 +162,11 @@ fn a_unary_call_half_closes_and_its_answer_ends_with_status_ok() {
     let t = terminal(&p.got_d, 1).expect("the trailers");
     assert!(t.fields && !t.failed);
     assert_eq!(t.status, Some(0));
-    assert_eq!(field(&t.bytes, "grpc-status"), None, "the status is the code");
+    assert_eq!(
+        field(&t.bytes, "grpc-status"),
+        None,
+        "the status is the code"
+    );
     let end = last(&p.got_d, 1).expect("a terminal piece");
     assert!(!end.fields && !end.failed && end.bytes.is_empty() && end.status.is_none());
 }
@@ -443,8 +450,10 @@ fn resets(wire: &[u8]) -> Vec<(u32, u32)> {
     let mut out = Vec::new();
     let mut i = 0;
     while i + 9 <= wire.len() {
-        let len = usize::from(wire[i]) << 16 | usize::from(wire[i + 1]) << 8 | usize::from(wire[i + 2]);
-        let stream = u32::from_be_bytes([wire[i + 5], wire[i + 6], wire[i + 7], wire[i + 8]]) & 0x7fff_ffff;
+        let len =
+            usize::from(wire[i]) << 16 | usize::from(wire[i + 1]) << 8 | usize::from(wire[i + 2]);
+        let stream =
+            u32::from_be_bytes([wire[i + 5], wire[i + 6], wire[i + 7], wire[i + 8]]) & 0x7fff_ffff;
         if wire[i + 3] == 3 && len == 4 && i + 13 <= wire.len() {
             out.push((
                 stream,
@@ -464,7 +473,11 @@ fn a_wrong_te_is_reset_protocol_error_and_never_handed_up() {
     a.ingest(&opening(Some("gzip")), false);
     a.drive(5 * SEC);
     let wire = a.take_wire(usize::MAX);
-    assert_eq!(resets(&wire), vec![(1, 1)], "RST_STREAM PROTOCOL_ERROR on stream 1");
+    assert_eq!(
+        resets(&wire),
+        vec![(1, 1)],
+        "RST_STREAM PROTOCOL_ERROR on stream 1"
+    );
     assert!(a.pieces().is_empty(), "no call reached the host");
 }
 

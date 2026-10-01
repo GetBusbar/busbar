@@ -24,8 +24,7 @@ use busbar_contract::abi::sdk::door::Entry;
 use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
 use busbar_contract::abi::transport::{
     slot, FramePiece, FramerOut, FramingIn, HeadSlots, PIECE_CONTINUED, PIECE_END_OF_FRAME,
-    PIECE_FIELDS, PIECE_HAS_CODE, PIECE_STREAM_FAILED, YIELD_ENDED, YIELD_HAS_DEADLINE,
-    YIELD_MORE,
+    PIECE_FIELDS, PIECE_HAS_CODE, PIECE_STREAM_FAILED, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 use hyper_io::{field_cut, fill, HeadWords, HostIo, Owed, Piece, WRITE_HIGH_WATER};
 
@@ -161,12 +160,13 @@ impl SafeSlot for FillSlot {
         OWES.with(|c| {
             let mut owes = c.borrow_mut();
             let owes = owes.as_mut().expect("a framing to fill from");
-            fill(
-                owes,
-                i.field(|x| &x.sink),
-                &mut o,
-                |c| if c == 0 { 1 } else { 3 },
-            );
+            fill(owes, i.field(|x| &x.sink), &mut o, |c| {
+                if c == 0 {
+                    1
+                } else {
+                    3
+                }
+            });
         });
         Outcome::Ready
     }
@@ -308,7 +308,10 @@ fn fill_hands_the_head_words_in_the_slots_and_cuts_a_field_block_inside_a_value(
     assert_eq!(pieces[0].flags, PIECE_FIELDS);
     assert_eq!(&frame[8..], b"x-a: 1234567");
     let (_, _, frame, pieces, heads) = run_fill(&mut o, (1, 20, 4));
-    assert!(heads.is_empty(), "the words went with the head's first piece");
+    assert!(
+        heads.is_empty(),
+        "the words went with the head's first piece"
+    );
     assert_eq!(
         pieces[0].flags,
         PIECE_FIELDS | PIECE_CONTINUED | PIECE_END_OF_FRAME
