@@ -147,6 +147,10 @@ fn arrive(plugin: &Plugin<Plane>, target: &[u8]) -> (AbiOutcome, Vec<u64>) {
             body: NO_BLOB,
             units_buf: units.as_mut_ptr(),
             units_cap: units.len(),
+            method: AbiStr {
+                ptr: b"GET".as_ptr(),
+                len: 3,
+            },
         },
         ArriveOut {
             head: out_head(),
@@ -155,6 +159,8 @@ fn arrive(plugin: &Plugin<Plane>, target: &[u8]) -> (AbiOutcome, Vec<u64>) {
             dialect: 0,
             units_written: 0,
             units_needed: 0,
+            refusal: 0,
+            refusal_status: 0,
             _reserved: 0,
         },
     );

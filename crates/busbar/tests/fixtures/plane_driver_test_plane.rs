@@ -554,7 +554,7 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 {
                     return say(out, Outcome::Refused);
                 }
-                vec![estimate(reading.wall_ns), estimate(reading.mono_ns)]
+                vec![estimate(0, reading.wall_ns), estimate(1, reading.mono_ns)]
             }
             b"/stats" => me
                 .stats
