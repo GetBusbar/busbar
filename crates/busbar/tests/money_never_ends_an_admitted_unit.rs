@@ -429,13 +429,25 @@ fn every_value_a_computed_refusal_could_carry_excludes_the_ceiling_and_the_stale
     let mut values: BTreeSet<(String, String)> = BTreeSet::new();
     for (file, text) in &sources {
         for name in ["OverdraftCeiling", "StaleSlice"] {
-            let needle = format!("::{name}");
+            // `ReasonCode::` values only, the type this test is named for (ARCHITECT ruling
+            // 2026-10-01). The plane ABI's `RefusalCode` encode arms and its `ALL` list name the
+            // same two variants as kernel->plane WIRE codes: a plane receives them and never sends
+            // them, because the plane->kernel decode answers no reason for either
+            // (`a_plane_sent_ceiling_or_stale_slice_code_decodes_to_no_reason`, below).
+            let needle = format!("ReasonCode::{name}");
             let mut rest = 0;
             while let Some(found) = text[rest..].find(&needle) {
                 let at = rest + found;
                 let end = at + needle.len();
                 rest = end;
                 let after = &text[end..];
+                if text[..at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                {
+                    continue; // another type whose name ends in `ReasonCode`
+                }
                 if after
                     .chars()
                     .next()
@@ -584,4 +596,40 @@ fn the_overdraft_ceiling_is_a_verdict_no_shipped_path_branches_on() {
         with_a_value.is_empty(),
         "SetOverdraftCeiling is flag-only; something gave it a payload: {with_a_value:?}"
     );
+}
+
+/// THE PLANE->KERNEL HALF of the carried-refusal claim (ARCHITECT ruling 2026-10-01): the overdraft
+/// ceiling and a stale slice are kernel-only money verdicts. Their wire codes (23, 24) exist for the
+/// kernel->plane direction; a plane that sends either is answering malformed, never carrying the
+/// verdict: the decode answers no reason, and a plane tail row naming either is refused.
+///
+/// RED: a decode that answers `Some` for 23 or 24 (as the wire table's did before this guard) fails
+/// the first assertion.
+#[test]
+fn a_plane_sent_ceiling_or_stale_slice_code_decodes_to_no_reason() {
+    use busbar_contract::abi::plane::check::check_refusal_statuses;
+    use busbar_contract::abi::plane::{reason_code, reason_of, RefusalStatus, REFUSAL_ANY_DIALECT};
+    use busbar_contract::caps::ReasonCode;
+
+    for (reason, wire) in [
+        (ReasonCode::OverdraftCeiling, 23),
+        (ReasonCode::StaleSlice, 24),
+    ] {
+        assert_eq!(reason_code(reason), wire, "{reason:?} keeps its wire code");
+        assert_eq!(
+            reason_of(wire),
+            None,
+            "a plane-sent {wire} decodes to no reason: it can never become {reason:?}"
+        );
+        let row = RefusalStatus {
+            dialect: REFUSAL_ANY_DIALECT,
+            reason: wire,
+            status: 402,
+            _reserved: 0,
+        };
+        assert!(
+            check_refusal_statuses(&[row], 1).is_err(),
+            "a plane tail row naming {wire} is malformed"
+        );
+    }
 }

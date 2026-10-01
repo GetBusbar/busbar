@@ -1330,6 +1330,14 @@ fn every_wire_refusal_code_is_pinned_to_its_number_and_word() {
         assert_eq!(code.code(), *number, "{word}: its number");
         assert_eq!(RefusalCode::ALL[i], *code, "{word}: its place");
         assert_eq!(RefusalCode::of(*number), Some(*code), "{word}: the reverse");
+        if matches!(
+            code,
+            RefusalCode::OverdraftCeiling | RefusalCode::StaleSlice
+        ) {
+            // A kernel-only money verdict: pinned on the wire, never decoded from a plane.
+            assert_eq!(reason_of(*number), None, "{word}: no plane carries it");
+            continue;
+        }
         let reason = reason_of(*number).expect("a pinned code names a reason");
         assert_eq!(reason.as_str(), *word, "code {number}");
         assert_eq!(reason_code(reason), *number);
@@ -1556,4 +1564,26 @@ fn drive_names_its_ready_sessions_under_the_short_buffer_rule() {
         check_drive(Failed, &o, 4),
         f(Rule::OverMax, "drive.sessions")
     );
+}
+
+/// RED (ARCHITECT ruling 2026-10-01, a money invariant): the overdraft ceiling and a stale slice
+/// are kernel-only money verdicts. A plane that names either code is answering malformed, never
+/// carrying the verdict: its tail row is refused, and the code decodes to no reason.
+#[test]
+fn a_plane_naming_a_kernel_money_verdict_is_malformed_not_the_verdict() {
+    for reason in [ReasonCode::OverdraftCeiling, ReasonCode::StaleSlice] {
+        let code = reason_code(reason);
+        assert_eq!(reason_of(code), None, "{reason:?} decodes from no plane");
+        let row = RefusalStatus {
+            dialect: REFUSAL_ANY_DIALECT,
+            reason: code,
+            status: 402,
+            _reserved: 0,
+        };
+        assert_eq!(
+            check_refusal_statuses(&[row], 1),
+            f(Rule::UnknownCode, "refusal_status.reason"),
+            "{reason:?}: a tail row naming it is malformed"
+        );
+    }
 }
