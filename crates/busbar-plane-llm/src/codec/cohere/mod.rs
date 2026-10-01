@@ -8,6 +8,7 @@ use busbar_contract::http::StatusCode;
 use busbar_contract::protocol::*;
 #[cfg(test)]
 use busbar_contract::upstream::CanonicalSignal;
+#[cfg(test)]
 use busbar_contract::upstream::StatusClass;
 // G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
 // protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
