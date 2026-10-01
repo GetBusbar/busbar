@@ -467,6 +467,10 @@ fn whole_multiples_and_whole_constructors_are_checked() {
     assert_eq!(Count::from_integer(0), Ok(Count::ZERO));
     assert_eq!(Count::from_integer(-27), Ok(ok("-27")));
     assert_eq!(Count::from_integer(i128::MAX), Err(CountError::OutOfRange));
+    assert_eq!(ok("27.5").checked_mul_integer(2), Ok(ok("55")));
+    assert_eq!(MAX.checked_mul_integer(2), Err(CountError::Overflow));
+    assert!(ok("27").is_whole());
+    assert!(!ok("27.5").is_whole());
     assert!(ok("0").is_zero());
     assert!(ok("-0.000001").is_negative());
 }
