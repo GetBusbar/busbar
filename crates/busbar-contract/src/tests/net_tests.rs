@@ -321,7 +321,13 @@ fn ipv6_link_local_is_its_own_predicate_not_a_metadata_one() {
         assert!(host_is_link_local_v6(host), "{host}");
         assert!(!host_is_cloud_metadata(host), "{host}");
     }
-    for host in ["fe7f:ffff::1", "fec0::1", "fd00:ec2::254", "169.254.169.254", "example.com"] {
+    for host in [
+        "fe7f:ffff::1",
+        "fec0::1",
+        "fd00:ec2::254",
+        "169.254.169.254",
+        "example.com",
+    ] {
         assert!(!host_is_link_local_v6(host), "{host}");
     }
 }
