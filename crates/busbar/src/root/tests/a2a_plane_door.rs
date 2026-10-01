@@ -25,7 +25,6 @@ use busbar_contract::abi::mechanism::lifecycle::{
     ValidateIn,
 };
 use busbar_contract::abi::mechanism::ticket::Ticket;
-use busbar_contract::abi::mechanism::{KindCode, MECHANISM_VERSION};
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut,
     PlaneRefreshOut,
@@ -33,8 +32,8 @@ use busbar_contract::abi::plane::{
 
 use crate::root::loader::dispatch::kinds::plane::{OwnedSnapshot, Plane};
 use crate::root::loader::dispatch::{
-    in_head, load_dropped, load_linked, out_head, Bind, DispatchConfig, Dispatcher, Frame,
-    ManifestFacts, NoSink, Plugin,
+    in_head, load_dropped, load_linked, out_head, rendering_of, Bind, DispatchConfig, Dispatcher,
+    Frame, LinkedRow, NoSink, Plugin,
 };
 
 /// The settings the script opens with: one fronted agent.
@@ -57,9 +56,11 @@ fn dispatcher() -> &'static Dispatcher {
 
 fn bind() -> Bind {
     Bind {
+        instance: Arc::from("a2a"),
         max_inflight_cap: 8,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher().adopter(),
+        conns: None,
     }
 }
 
@@ -107,8 +108,8 @@ fn snapshot(s: Option<OwnedSnapshot>) -> String {
 }
 
 fn linked() -> Plugin<Plane> {
-    load_linked::<Plane>(busbar_plane_a2a::plane_door::door, bind())
-        .expect("the linked a2a door loads")
+    let row = LinkedRow::of(busbar_plane_a2a::plane_door::door).expect("the a2a door states");
+    load_linked::<Plane>(&row, bind()).expect("the linked a2a door loads")
 }
 
 /// The example `cdylib` in this target dir. Under CI a missing artifact is a failure, never a skip.
@@ -123,13 +124,9 @@ fn dropped() -> Option<Plugin<Plane>> {
         path.exists() || std::env::var_os("CI").is_none(),
         "the a2a_plane_door_cdylib example is not built under CI; a both-ways proof must not skip"
     );
-    let facts = ManifestFacts {
-        mechanism_version: MECHANISM_VERSION,
-        kind: KindCode::Plane,
-        kind_abi: KindCode::Plane.abi_version(),
-    };
+    let stated = rendering_of(busbar_plane_a2a::plane_door::door).expect("the a2a door renders");
     path.exists()
-        .then(|| load_dropped::<Plane>(&path, &facts, bind()).expect("the dropped a2a door loads"))
+        .then(|| load_dropped::<Plane>(&path, &stated, bind()).expect("the dropped a2a door loads"))
 }
 
 fn gen_frame(generation: u64) -> Frame<GenIn, busbar_contract::abi::mechanism::call::OutHead> {
@@ -146,10 +143,13 @@ fn gen_frame(generation: u64) -> Frame<GenIn, busbar_contract::abi::mechanism::c
 fn script(p: &Plugin<Plane>) -> Vec<String> {
     let mut t = Vec::new();
 
+    let mut reason = vec![0_u8; 1024];
     let mut v = Frame::new(
         ValidateIn {
             head: in_head(),
             settings: json(BAD),
+            err_buf: reason.as_mut_ptr(),
+            err_cap: reason.len(),
         },
         out_head(),
     );
@@ -174,6 +174,8 @@ fn script(p: &Plugin<Plane>) -> Vec<String> {
                 secrets: null(),
                 secrets_len: 0,
                 generation: 1,
+                err_buf: null_mut(),
+                err_cap: 0,
             },
             public_url: text(PUBLIC),
         },
@@ -181,6 +183,7 @@ fn script(p: &Plugin<Plane>) -> Vec<String> {
             open: OpenOut {
                 head: out_head(),
                 instance: null_mut(),
+                err_len: 0,
             },
             snapshot: null(),
         },
@@ -265,6 +268,7 @@ fn script(p: &Plugin<Plane>) -> Vec<String> {
     let mut a = Frame::new(
         ArriveIn {
             head: in_head(),
+            unit: 1,
             claim: 0,
             _reserved: 0,
             target: text(b"/a2a"),
@@ -273,6 +277,7 @@ fn script(p: &Plugin<Plane>) -> Vec<String> {
             body: json(b"{}"),
             units_buf: null_mut(),
             units_cap: 0,
+            method: text(b"POST"),
         },
         ArriveOut {
             head: out_head(),
@@ -281,7 +286,11 @@ fn script(p: &Plugin<Plane>) -> Vec<String> {
             dialect: 0,
             units_written: 0,
             units_needed: 0,
+            refusal: 0,
+            refusal_status: 0,
             _reserved: 0,
+            correlation: 0,
+            cancels: 0,
         },
     );
     t.push(format!("arrive {:?}", p.call(slot::ARRIVE, &mut a).outcome));
