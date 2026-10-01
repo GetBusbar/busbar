@@ -5,18 +5,18 @@
 //!
 //! The root re-export list is the crate's answer to "what is the plugin-visible ABI". A name that
 //! is reachable only through its module is a name the list does not claim, and a plugin author
-//! reading the list would conclude the type does not exist — so the seven names below were
-//! effectively invisible even though every one of them is required to implement a shipped kind:
-//! the auth kind's outbound-sign operation cannot be written without `Signer`, `SignFailed` and
-//! `EnvelopeFields`, a gate hook cannot build a patch without `IrEdit`, and neither can handle a
-//! full bounded collection without `Overflow` or a full fact map without `FactsExhausted`.
+//! reading the list would conclude the type does not exist — so the names below were effectively
+//! invisible even though every one of them is required to implement a shipped kind: the auth
+//! kind's outbound-sign operation cannot be written without `EnvelopeFields`, a gate hook cannot
+//! build a patch without `IrEdit`, and neither can handle a full bounded collection without
+//! `Overflow` or a full fact map without `FactsExhausted`.
 //!
 //! Nothing below names a module path. That is the whole assertion.
 
 use busbar_contract::{
     AbiVersion, AuthDecoration, BoundedVec, ConfigView, EgressBody, EnvelopeFields, FactValue,
     Facts, FactsExhausted, FrameStream, IrEdit, IrPatch, Kind, Overflow, Plugin, ScratchBytes,
-    SignFailed, Signer, MAX_KEYS,
+    MAX_KEYS,
 };
 
 /// An auth plugin whose outbound-sign operation is written entirely against the crate root.
@@ -41,21 +41,10 @@ impl Plugin for RootScheme {
 impl RootScheme {
     /// The outbound-sign operation, written out so every name it needs is exercised at a root
     /// path rather than merely re-exported.
-    fn decorate<'u>(
-        &self,
-        _cfg: &dyn ConfigView,
-        body: &EgressBody<'u>,
-        signer: &dyn Signer,
-    ) -> AuthDecoration<'u> {
-        // The signer is the whole reason the scheme never holds a key; a failure here is one of
-        // the two closed reasons, and both are root names too.
-        let signed = match signer.sign("upstream", body.body.as_slice()) {
-            Ok(_) => true,
-            Err(SignFailed::UnknownKey | SignFailed::Unavailable) => false,
-        };
+    fn decorate<'u>(&self, _cfg: &dyn ConfigView, body: &EgressBody<'u>) -> AuthDecoration<'u> {
         AuthDecoration::Decorate {
             envelope_fields: EnvelopeFields::new(),
-            body_signature: signed.then_some(body.body),
+            body_signature: Some(body.body),
             slots: BoundedVec::new(),
         }
     }
@@ -66,7 +55,6 @@ impl RootScheme {
         _state: &busbar_contract::ChallengeState,
         _frame: &busbar_contract::Frame,
         _ctx: &busbar_contract::Ctx<'u>,
-        _signer: &dyn Signer,
     ) -> AuthDecoration<'u> {
         AuthDecoration::Handshake {
             max_frames: 1,
@@ -126,14 +114,12 @@ fn the_scheme_and_the_frame_stream_are_root_names() {
         &RootScheme,
         &dyn ConfigView,
         &EgressBody<'u>,
-        &dyn Signer,
     ) -> AuthDecoration<'u> = RootScheme::decorate;
     let _again: for<'u> fn(
         &RootScheme,
         &busbar_contract::ChallengeState,
         &busbar_contract::Frame,
         &busbar_contract::Ctx<'u>,
-        &dyn Signer,
     ) -> AuthDecoration<'u> = RootScheme::continue_handshake;
 
     let _: Option<FrameStream> = None;

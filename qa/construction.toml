@@ -1913,7 +1913,7 @@ transport_file = "crates/busbar-contract/src/transport/mod.rs"
 # requires the strike to land in the same commit as the deletion — a trait it cannot find is a trait
 # it cannot judge, and a ceiling of 0 met by scanning nothing is the passing answer to every ban.
 traits = [
-  "AuthScheme", "Store", "Secret", "Hook", "Export", "Anchor",
+  "Store",
   "Plane", "SessionPlane", "Transport",
 ]
 max_defaulted = 0

@@ -160,10 +160,8 @@ pub use ids::{
     SessionId, StreamId, TransportId, UnitKey, UpstreamIdx, MAX_VOCABULARY,
 };
 pub use kinds::{
-    Ack, Anchor, AuthOutcome, AuthScheme, Challenge, ChallengeState, ContentFacts, Credential,
-    CredentialFacts, CredentialLocator, EnvelopeFields, Export, ExportItem, Head, Hook, HookFacts,
-    HookKindDecl, HookView, KernelCounts, KeyMaterial, OnFailure, PlaneFacts, RecordBytes, Seat,
-    Secret, SecretError, SecretRef, SecretValue, SignFailed, Signer, SliceGrant, Store, StoreError,
+    Ack, Challenge, ChallengeState, ContentFacts, CredentialLocator, EnvelopeFields, Head,
+    PlaneFacts, RecordBytes, SecretRef, SliceGrant, Store, StoreError,
 };
 pub use plane::{
     Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,

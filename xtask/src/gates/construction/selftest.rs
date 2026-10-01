@@ -1564,8 +1564,8 @@ fn vocabulary_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<
         ov.set(
             "crates/busbar-contract/src/kinds.rs",
             basetext.replace(
-                "pub trait Hook: Plugin + Send + Sync + 'static {",
-                "pub trait Hook: Plugin + Send + Sync + 'static {\n    fn \
+                "pub trait Store: Plugin + Send + Sync + 'static {",
+                "pub trait Store: Plugin + Send + Sync + 'static {\n    fn \
                  planted_default_body(&self) -> u32 { 0 }",
             ),
         );
