@@ -519,7 +519,12 @@ pub fn check_serve(
     fields_buf: &[OutField],
     caps: &Caps,
 ) -> Result<(), Fault> {
-    code(u64::from(out.audit), 0, u64::from(super::AUDIT_REJECTED), "serve.audit")?;
+    code(
+        u64::from(out.audit),
+        0,
+        u64::from(super::AUDIT_REJECTED),
+        "serve.audit",
+    )?;
     reply(
         outcome,
         ["serve.reply", "serve.fields", "serve.arena", "serve"],

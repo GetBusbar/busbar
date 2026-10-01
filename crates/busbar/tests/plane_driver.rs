@@ -29,9 +29,12 @@ use busbar_contract::abi::plane::{
 use busbar_contract::caps::OpClassId;
 use busbar_kernel::plane_driver::{refusal_status, BufferCaps, DriverConfig, PlaneDriver};
 use busbar_plugin_loader::dispatch::{
-    in_head, kinds::plane::{OwnedSnapshot, Plane}, load_dropped, load_linked, now_ns as dispatch_now, out_head,
-    plane_calls::PlaneInstance, rendering_of, Bind, Diagnostic, DispatchConfig, Dispatcher,
-    Dropped, EnvelopeSink, Frame, LinkedRow, Metric, NoSink, Plugin, NO_BLOB,
+    in_head,
+    kinds::plane::{OwnedSnapshot, Plane},
+    load_dropped, load_linked, now_ns as dispatch_now, out_head,
+    plane_calls::PlaneInstance,
+    rendering_of, Bind, Diagnostic, DispatchConfig, Dispatcher, Dropped, EnvelopeSink, Frame,
+    LinkedRow, Metric, NoSink, Plugin, NO_BLOB,
 };
 
 /// The dispatcher's clock, the one a unit's deadline is on.
@@ -444,7 +447,10 @@ fn zero_piece_out() -> OnPieceOut {
 fn serve_table(
     way: Way,
     instance: &str,
-) -> (Plugin<Plane>, busbar_kernel::plane_driver::serve::ServeTable) {
+) -> (
+    Plugin<Plane>,
+    busbar_kernel::plane_driver::serve::ServeTable,
+) {
     use busbar_kernel::plane_driver::serve::{ServeRoute, ServeTable};
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
         workers: 2,
@@ -476,9 +482,15 @@ fn serve_table(
 fn admin(method: &str, path: &str, body: &str) -> Option<(u16, String)> {
     use axum::http::{HeaderMap, HeaderValue, Method, Uri};
     let mut headers = HeaderMap::new();
-    headers.insert("authorization", HeaderValue::from_static("Bearer operator-secret"));
+    headers.insert(
+        "authorization",
+        HeaderValue::from_static("Bearer operator-secret"),
+    );
     headers.insert("cookie", HeaderValue::from_static("session=secret"));
-    headers.insert("proxy-authorization", HeaderValue::from_static("Basic secret"));
+    headers.insert(
+        "proxy-authorization",
+        HeaderValue::from_static("Basic secret"),
+    );
     headers.insert("x-trace", HeaderValue::from_static("t-1"));
     let uri: Uri = format!("{}{path}", busbar_kernel::api::ADMIN_PREFIX)
         .parse()
@@ -547,7 +559,11 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
         assert_eq!(rows(&resource), ["applied"], "{way:?}");
         let malformed = admin("POST", &act, "malformed");
         assert_eq!(malformed.map(|r| r.0), Some(400), "{way:?}");
-        assert_eq!(rows(&resource), ["applied"], "{way:?}: a malformed body is not audited");
+        assert_eq!(
+            rows(&resource),
+            ["applied"],
+            "{way:?}: a malformed body is not audited"
+        );
         let disagree = admin("POST", &act, "disagree");
         assert_eq!(disagree.map(|r| r.0), Some(400), "{way:?}");
         assert_eq!(rows(&resource), ["applied", "rejected"], "{way:?}");
@@ -556,7 +572,11 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
         assert_eq!(admin("POST", &format!("/items/{item}/hook"), "go"), None);
         assert_eq!(admin("GET", &act, "").map(|r| r.0), Some(405), "{way:?}");
 
-        assert_eq!(admin("POST", &act, "short").map(|r| r.0), Some(200), "{way:?}");
+        assert_eq!(
+            admin("POST", &act, "short").map(|r| r.0),
+            Some(200),
+            "{way:?}"
+        );
         assert_eq!(admin("POST", &act, "short-twice").map(|r| r.0), Some(502));
         assert_eq!(admin("POST", &act, "bad-audit").map(|r| r.0), Some(502));
         assert_eq!(rows(&resource).len(), 3, "{way:?}: a FAULT writes no row");
@@ -564,7 +584,15 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
         let past = tokio::runtime::Builder::new_current_thread()
             .build()
             .expect("a runtime")
-            .block_on(serve(&*calls, BufferCaps::default(), 2, 2, b"/x", Vec::new(), "".into()));
+            .block_on(serve(
+                &*calls,
+                BufferCaps::default(),
+                2,
+                2,
+                b"/x",
+                Vec::new(),
+                "".into(),
+            ));
         assert_eq!(past, Err(Unserved::NoRoute), "{way:?}");
 
         let other = busbar_kernel::plane_driver::serve::ServeTable {
@@ -574,11 +602,16 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
         let refused = publish(other, &[]).expect_err("an overlapping instance is refused");
         assert_eq!(refused.with, "the-instance", "{way:?}");
         let kernel = [("POST", "/items/{id}/act")];
-        let refused = publish(table.clone(), &kernel).expect_err("a kernel route is never shadowed");
+        let refused =
+            publish(table.clone(), &kernel).expect_err("a kernel route is never shadowed");
         assert_eq!(refused.with, "kernel", "{way:?}");
         publish(table, &[]).expect("a refresh of the same instance publishes");
 
         withdraw("the-instance");
-        assert_eq!(admin("POST", &act, "go"), None, "{way:?}: withdrawn, nothing mounts");
+        assert_eq!(
+            admin("POST", &act, "go"),
+            None,
+            "{way:?}: withdrawn, nothing mounts"
+        );
     }
 }

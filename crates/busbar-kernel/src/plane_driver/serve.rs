@@ -183,7 +183,9 @@ pub async fn answer(
         match found {
             Some(f) => f,
             None if named => {
-                return Some(crate::admin::v1::json::err_json(&AdminError::MethodNotAllowed))
+                return Some(crate::admin::v1::json::err_json(
+                    &AdminError::MethodNotAllowed,
+                ))
             }
             None => return None,
         }
@@ -202,26 +204,28 @@ pub async fn answer(
     let calls = &*table.calls;
     let at = index as u32;
     let served = serve(calls, table.caps, routes, at, target.as_bytes(), head, body).await;
-    Some(match served.and_then(|s| reply(&s).map(|resp| (s.audit, resp))) {
-        Ok((audit, resp)) => {
-            let outcome = match audit {
-                AUDIT_APPLIED => Some(busbar_contract::vocab::OUTCOME_APPLIED),
-                AUDIT_REJECTED => Some(busbar_contract::vocab::OUTCOME_REJECTED),
-                _ => None,
-            };
-            if let Some(outcome) = outcome.filter(|_| !route.audit_verb.is_empty()) {
-                let actor = principal.unwrap_or(AuthPrincipal(None));
-                crate::audit_ring::AUDIT.record_by(
-                    &format!("{}.{}", table.audit_kind, route.audit_verb),
-                    &format!("{}:{name}", table.audit_kind),
-                    outcome,
-                    actor.actor_id(),
-                );
+    Some(
+        match served.and_then(|s| reply(&s).map(|resp| (s.audit, resp))) {
+            Ok((audit, resp)) => {
+                let outcome = match audit {
+                    AUDIT_APPLIED => Some(busbar_contract::vocab::OUTCOME_APPLIED),
+                    AUDIT_REJECTED => Some(busbar_contract::vocab::OUTCOME_REJECTED),
+                    _ => None,
+                };
+                if let Some(outcome) = outcome.filter(|_| !route.audit_verb.is_empty()) {
+                    let actor = principal.unwrap_or(AuthPrincipal(None));
+                    crate::audit_ring::AUDIT.record_by(
+                        &format!("{}.{}", table.audit_kind, route.audit_verb),
+                        &format!("{}:{name}", table.audit_kind),
+                        outcome,
+                        actor.actor_id(),
+                    );
+                }
+                resp
             }
-            resp
-        }
-        Err(unserved) => status_only(unserved.status()),
-    })
+            Err(unserved) => status_only(unserved.status()),
+        },
+    )
 }
 
 /// Why a request was not served.

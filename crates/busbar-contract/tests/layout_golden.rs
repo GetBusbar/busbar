@@ -1669,7 +1669,11 @@ fn compute_layout() -> String {
         pkind::Claim,
         [verb, target, carrier, flags, refusal_dialect, _pad]
     );
-    record!(s, pkind::AdminRoute, [verb, target, flags, _reserved, audit_verb]);
+    record!(
+        s,
+        pkind::AdminRoute,
+        [verb, target, flags, _reserved, audit_verb]
+    );
     record!(
         s,
         pkind::PlaneSnapshot,
