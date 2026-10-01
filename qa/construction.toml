@@ -871,7 +871,9 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # kernel-only money verdicts decode from no plane, measured on the stacked unit.
 # RE-ARMED 26631 -> 26656 with its pair, AT THE MEASUREMENT: The late arm carries the exit's posting into the unit's one line (Posted::with_late, PostingFlags::without), contract +25.
 # ── SUMMED on the trunk (CONVERGER): contract_caps 27103 + (26656 - 26631) = 27128; the measurement at the segment tip re-arms it.
-contract_caps = 27128
+# LOWERED 26656 -> 26596 with its pair, AT THE MEASUREMENT: The HOT metering-lease slots, their registry and the plane-side price field are deleted: kernel -198, contract -60.
+# ── SUMMED on the trunk (CONVERGER): contract_caps 27128 + (26596 - 26656) = 27068; the measurement at the segment tip re-arms it.
+contract_caps = 27068
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1502,7 +1504,9 @@ kernel_crate = "busbar-kernel"
 # ── SUMMED on the trunk (CONVERGER): kernel_ceiling 55799 + (54949 - 54919) = 55829; the measurement at the segment tip re-arms it.
 # ── LOWERED 54949 -> 54900, AT THE MEASUREMENT (OWNER GRANT 2026-09-29 (3)): The settlement writes what the plane reported and the kernel's own fee decider is deleted, -49.
 # ── SUMMED on the trunk (CONVERGER): kernel_ceiling 55829 + (54900 - 54949) = 55780; the measurement at the segment tip re-arms it.
-kernel_ceiling = 55780
+# ── LOWERED 54900 -> 54702, AT THE MEASUREMENT (OWNER GRANT 2026-09-29 (3)): The HOT metering-lease slots, their registry and the plane-side price field are deleted: kernel -198, contract -60.
+# ── SUMMED on the trunk (CONVERGER): kernel_ceiling 55780 + (54702 - 54900) = 55582; the measurement at the segment tip re-arms it.
+kernel_ceiling = 55582
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -1621,7 +1625,9 @@ contract_crate = "busbar-contract"
 # RE-ARMED 26615 -> 26631 with its pair (the tail check that fee units are billable classes, +16).
 # RE-ARMED 26631 -> 26656 with its pair: The late arm carries the exit's posting into the unit's one line (Posted::with_late, PostingFlags::without), contract +25.
 # ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27103 + (26656 - 26631) = 27128; the measurement at the segment tip re-arms it.
-caps_contract_ceiling = 27128
+# LOWERED 26656 -> 26596 with its pair: The HOT metering-lease slots, their registry and the plane-side price field are deleted: kernel -198, contract -60.
+# ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27128 + (26596 - 26656) = 27068; the measurement at the segment tip re-arms it.
+caps_contract_ceiling = 27068
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
