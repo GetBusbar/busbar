@@ -998,7 +998,9 @@ list, naming the auth its guests must pass.
   route walk never looks at the budget. `on_exhaustion: finish-unit` (the default) finishes the unit in
   flight; `cut-stream` cuts it, and a cut bills what streamed. A non-streaming unit overshoots by at
   most one request. The budget check may use the plane's estimated units; billing never does: a
-  line carries only far-end-reported units (`UNITS_REPORTED`), and "what streamed" is the last
+  line carries only far-end-reported units (`UNITS_REPORTED`) or the plane's usage floor
+  (`UNITS_FLOOR`, which bills like a reported count, cancel bills and fee units included; `units_bill`
+  is the one rule, ARCHITECT 2026-10-01, Q24/Q28), and "what streamed" is the last
   far-end-reported cumulative count the plane gave before the cut (owner, 2026-09-28). This is 1.5.5's
   rule, measured against the v1.5.5 source: 1.5.5 had no budget cut of a stream at all (its
   exhaustion behaviours were `block` and `downgrade`, `crates/busbar/src/config/groups.rs:183`); a
