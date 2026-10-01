@@ -741,6 +741,10 @@ pub const NO_DOMAIN: &str = "the instance declares no signing domain";
 pub const NO_KEY: &str = "no signing key is configured";
 /// The refusal of `trust.sight` for a counterparty the instance does not declare.
 pub const NOT_A_COUNTERPARTY: &str = "not a counterparty the instance declares";
+/// The refusal of `trust.verify` for a counterparty whose declared pin names no root key.
+pub const NO_ROOT_KEY: &str = "the counterparty declares no root key";
+/// The refusal of `trust.verify` for signatures that are not one JSON document.
+pub const SIGNATURES_NOT_JSON: &str = "the signatures are not one JSON document";
 /// The refusal of a store-reaching service on a host with no pool bound.
 pub const NO_POOL: &str = "no pool is bound";
 /// The FAILED answer of a store call the pool refused to run.
@@ -1181,3 +1185,7 @@ fn guard_verdict(r: &AddressRefusal) -> u64 {
 #[cfg(test)]
 #[path = "tests/host_services_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/trust_verify_tests.rs"]
+mod trust_verify_tests;
