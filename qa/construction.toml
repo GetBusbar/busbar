@@ -521,11 +521,13 @@ because = "OWNER GRANT 2026-09-29 (3), ARCHITECT approval: line-limit re-arm at 
 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25682 -> 26157 (train BIG) — EXPIRED AND STRUCK: its commit reached the base.
 
+# [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 26157 -> 29284 (REARM cg-31) — EXPIRED AND STRUCK: its commit reached the base; struck by REARM cg-58 below.
+
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 file    = "qa/construction.toml"
-from    = 26157
-to      = 29284
-because = "REARM cg-31 (pipeline v2 section 6; OWNER GRANT 2026-09-29 (3), ARCHITECT GRANT 3: line-limit re-arm at the measured value): gate.surface_ceilings.contract_caps measured 29284 by cargo xtask gate construction at 15c46528b; predev 5c325b58a carries 26157; the cap is 29604 = the tree value 29604 (predev plus the ruled deltas stacked on it). Ruled deltas: +# ── SUMMED on the trunk (CONVERGER): contract_caps 27103 + (26656 - 26631) = 27128; the measurement at the segment tip re-arms it.; +# ── SUMMED on the trunk (CONVERGER): contract_caps 27128 + (26596 - 26656) = 27068; the measurement at the segment tip re-arms it.; +# ── SUMMED on the trunk (CONVERGER): contract_caps 27068 + (26608 - 26596) = 27080; the measurement at the segment tip re-arms it.; +# ── SUMMED on the trunk (CONVERGER): contract_caps 27080 + (26609 - 26608) = 27081; the measurement at the segment tip re-arms it.; +# ── SUMMED on the trunk (CONVERGER): contract_caps 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.; 48ba21a97 qa/construction.toml: the P1 core unit's ledger, one declaration per ceiling over BIG; 6c72c29b9 qa/construction.toml: contract pair re-arms 26157 -> 26184 (ABI-TRIM F3); 8d38eca86 qa/construction.toml: kernel ceiling re-arms 54707 -> 54726, contract pair 26608 -> 26609, at the measurement (GRANT3); eac9f4c7a qa/construction.toml: kernel ceiling re-arms 54702 -> 54707, contract pair 26596 -> 26608, teller.rs 595 -> 600, at the measurement (GRANT3); c19dfbe69 qa/construction.toml: kernel ceiling lowers 54900 -> 54702, contract pair 26656 -> 26596, at the measurement (GRANT3); 122f90f71 qa/construction.toml: contract pair re-arms 26631 -> 26656, at the measurement (GRANT3);  ."
+from    = 29284
+to      = 29772
+because = "REARM cg-58 (CONVERGER; ARCHITECT ruling 2026-10-01: ceilings land as approved DELTAS on top of what predev measures): gate.surface_ceilings.contract_caps measured 29772 by cargo xtask gate construction on the DEST-PIN tip 93c14402a (lane-fast2); predev 8fc5e67e2 carries 29284 and already measures 29590 (the standing loc-ceilings:caps-contract / surface-ceiling:contract red); the bundle adds exactly the approved +182 (SDK-SVC wrappers +130, ARCHITECT S7-TICK 2026-10-01; DEST-PIN judged-address pin +52, ARCHITECT DEST-PIN 2026-10-01): 29590 + 182 = 29772."
 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25682 -> 26157 (TRAIN BIG: E12 -243, URL-SEAM +489, H2 +229) — EXPIRED AND
 # STRUCK: its commit reached the base; struck by the P1 core unit's re-arm above.
@@ -550,11 +552,13 @@ because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan a
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 25682 -> 26157 (train BIG) — EXPIRED AND STRUCK: its commit reached the base.
 
+# [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 26157 -> 29284 (REARM cg-31) — EXPIRED AND STRUCK: its commit reached the base; struck by REARM cg-58 below.
+
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 file    = "qa/construction.toml"
-from    = 26157
-to      = 29284
-because = "REARM cg-31 (pipeline v2 section 6; OWNER GRANT 2026-09-29 (3), ARCHITECT GRANT 3: line-limit re-arm at the measured value): rules.loc-ceilings.caps_contract_ceiling measured 29284 by cargo xtask gate construction at 15c46528b; predev 5c325b58a carries 26157; the cap is 29604 = the tree value 29604 (predev plus the ruled deltas stacked on it). Ruled deltas: +# ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27103 + (26656 - 26631) = 27128; the measurement at the segment tip re-arms it.; +# ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27128 + (26596 - 26656) = 27068; the measurement at the segment tip re-arms it.; +# ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27068 + (26608 - 26596) = 27080; the measurement at the segment tip re-arms it.; +# ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27080 + (26609 - 26608) = 27081; the measurement at the segment tip re-arms it.; +# ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.; 48ba21a97 qa/construction.toml: the P1 core unit's ledger, one declaration per ceiling over BIG; 6c72c29b9 qa/construction.toml: contract pair re-arms 26157 -> 26184 (ABI-TRIM F3); 8d38eca86 qa/construction.toml: kernel ceiling re-arms 54707 -> 54726, contract pair 26608 -> 26609, at the measurement (GRANT3); eac9f4c7a qa/construction.toml: kernel ceiling re-arms 54702 -> 54707, contract pair 26596 -> 26608, teller.rs 595 -> 600, at the measurement (GRANT3); c19dfbe69 qa/construction.toml: kernel ceiling lowers 54900 -> 54702, contract pair 26656 -> 26596, at the measurement (GRANT3); 122f90f71 qa/construction.toml: contract pair re-arms 26631 -> 26656, at the measurement (GRANT3);  ."
+from    = 29284
+to      = 29772
+because = "REARM cg-58 (CONVERGER; ARCHITECT ruling 2026-10-01: ceilings land as approved DELTAS on top of what predev measures): rules.loc-ceilings.caps_contract_ceiling measured 29772 by cargo xtask gate construction on the DEST-PIN tip 93c14402a (lane-fast2); predev 8fc5e67e2 carries 29284 and already measures 29590 (the standing loc-ceilings:caps-contract / surface-ceiling:contract red); the bundle adds exactly the approved +182 (SDK-SVC wrappers +130, ARCHITECT S7-TICK 2026-10-01; DEST-PIN judged-address pin +52, ARCHITECT DEST-PIN 2026-10-01): 29590 + 182 = 29772."
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 25682 -> 26157 (TRAIN BIG: E12 -243, URL-SEAM +489, H2 +229) — EXPIRED AND
 # STRUCK: its commit reached the base; struck by the P1 core unit's re-arm above.
@@ -894,7 +898,7 @@ because = "Q77-PENDING (a), a MOVE forced by a cited ruling: ARCHITECT RULINGS 2
 # ── SUMMED on the trunk (CONVERGER): contract_caps 27080 + (26609 - 26608) = 27081; the measurement at the segment tip re-arms it.
 # RE-ARMED 26157 -> 26184 with its pair (ABI-TRIM F3 $, +27).
 # ── SUMMED on the trunk (CONVERGER): contract_caps 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
-contract_caps = 29284
+contract_caps = 29772
 # RE-ARMED 26157 -> 28653 with its pair (the P1 core unit: KIND-SHARE +1826, BOOT-CHAIN +506, HEAD-FIELDS +111, CONNECTOR-19-U12 +57; composed -4), declared above.
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
@@ -1662,7 +1666,7 @@ contract_crate = "busbar-contract"
 # ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27080 + (26609 - 26608) = 27081; the measurement at the segment tip re-arms it.
 # RE-ARMED 26157 -> 26184 with its pair (ABI-TRIM F3 $, +27).
 # ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
-caps_contract_ceiling = 29284
+caps_contract_ceiling = 29772
 # RE-ARMED 26157 -> 28653 with its pair (the P1 core unit), declared above.
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
