@@ -177,7 +177,17 @@ pub struct EstablishIn {
     pub _reserved: u32,
     /// The target; absent = the need's `target_from`.
     pub target: AbiStr,
+    /// Appended: the address set the dial must land on, IP literals joined by
+    /// [`WITHIN_SEPARATOR`] (the addresses `dest.judge` wrote under `DEST_RESOLVE`). The address
+    /// the connector's judgement pins at dial time is held against it at the connect, before any
+    /// byte is written: outside it, the stream is REFUSED (a name that resolved elsewhere since it
+    /// was judged never receives the request). An entry that is not an IP literal refuses the
+    /// call. Absent or empty = no pin beyond the judgement's own.
+    pub within: AbiStr,
 }
+
+/// The separator between the addresses of [`EstablishIn::within`].
+pub const WITHIN_SEPARATOR: &str = ",";
 
 /// The `in` of [`service::REJECT_ENDPOINT`], [`service::SIDE_STREAM`] and [`service::CLOSE`].
 /// `REJECT_ENDPOINT` answers the stream on the next endpoint, or FAILED when none is left.

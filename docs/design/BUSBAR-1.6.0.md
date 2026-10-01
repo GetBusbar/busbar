@@ -1553,7 +1553,7 @@ the host never runs a service twice. `HostTables.conns` is swapped to the connec
 |---|---|---|
 | clock | `clock.now` | wall and monotonic time from the kernel's one clock (§1); never pends |
 | records | `records.get`, `records.list`, `records.claim` | the calling plane's own records (its Statement's record kinds only), through the store's plane-record slots. Reads see the instance's own queued write-behind batch (read-your-writes within the instance). `records.claim` is a one-time put-if-absent with a TTL (a store slot): the ONE path for approval redemption and replay refusal |
-| dest | `dest.judge` | judges a destination named inside content against the egress rules (allow-list, class, cloud metadata hosts) without dialing, at the same point and with the same refusal timing as 1.5.5; its name resolution may pend |
+| dest | `dest.judge` | judges a destination named inside content against the egress rules (allow-list, class, cloud metadata hosts) without dialing, at the same point and with the same refusal timing as 1.5.5; its name resolution may pend. Asked to resolve (`DEST_RESOLVE`) and admitted, it writes every address it judged into the caller's buffers, one span each: the set a plane-originated dial is pinned to (`EstablishIn.within`, the dial-pin appends below) |
 | sign | `sign` | signs bytes with busbar's key under the plane's declared signing domain and key-id prefix; refused for a plane that declares none. The plane assembles its envelope itself |
 | unit | `unit.nest` | runs a nested unit on whatever plane serves the named claim, as a child of the calling unit (its principal, its audit correlation, accruing against its admission), depth-capped; the reply comes back whole and buffered. The kernel never learns what the child is |
 | work | `work.open`, `work.find`, `work.settle`, `work.resume` | durable work handles (§1: never evicted; a bound refuses at admission; retention bounds only settled handles; the sweep runs on submit). `work.find` is the anti-enumeration scoped lookup: every denial answers alike. `work.resume` only binds the record: a continuation is a NEW unit with its own arrival, admission and window |
@@ -2708,6 +2708,23 @@ byte-identical). The per-stream head slots are neutral, `HeadSlots{stream, metho
 reason}`: the accepted side fills method, target and authority, the dialled side the reason; a frame
 piece's status field is `code`. The egress class (resolve, pin, the SSRF refusal, 1.5.5 texts) is the
 connector's (HEAD-FIELDS and KIND-SHARE rulings, 2026-09-30).
+
+**A plane-originated hop lands where the judge looked (ARCHITECT DEST-PIN 2026-10-01; predev's
+anti-rebinding rule kept).** Two appends, no version bump, guarded by the layout golden:
+- `abi/host/service`: `DestJudgeIn.into: ServiceBufs`. Under `DEST_RESOLVE`, an admitted judgement
+  writes every address it judged there, one span each (key = the IP literal, value absent; the first
+  is the one a dial pins). Same judge, same single resolution; nothing is written without
+  `DEST_RESOLVE` or on a refusal.
+- `abi/host/conn`: `EstablishIn.within: AbiStr`, the address set the dial must land on (IP literals
+  joined by `WITHIN_SEPARATOR`). The connector holds the address its own judgement pins at dial time
+  to that set at the connect, before any byte is written; outside it, the stream is REFUSED. That
+  includes a framed need, whose connect is at `WRITE_REQUEST`'s end, so the request never leaves.
+  An entry that is not an IP literal refuses the ESTABLISH; an empty `within` keeps the dial as it
+  was.
+The plane checks the judged set against its prior-reached set and hands the same set to ESTABLISH,
+so the judge, the overlap check and the dial see one address set. The SDK's `Services::dest_judge`
+answers the addresses (`Judged::within`), and `Connector::establish` (with `Exchange::landing_within`)
+takes the set.
 
 ## Axis 4 — METERING, money-scalar (reserve/settle: the DEMOTION BELOW SHIPPED ANYWAY — read the box)
 > **SUPERSEDED 2026-09-27 by THE DESIGN §7:** `meter_charge` and `cost_reserve`/`cost_settle` give way to
@@ -4880,13 +4897,13 @@ Row notes:
 2. Work handles: `work.*`.
 3. Trust lifecycle: `trust.*`.
 4. Signing: `sign`.
-5. Plane-originated hops outside the route (fetch, push delivery): existing conn. The plane declares an outbound Need of class `open-web` in its tail and uses ESTABLISH with its target (§5 BB:423/445, F-rulings); metadata hosts are refused before the dial. Nothing new.
+5. Plane-originated hops outside the route (fetch, push delivery): existing conn. The plane declares an outbound Need of class `open-web` in its tail and uses ESTABLISH with its target (§5 BB:423/445, F-rulings); metadata hosts are refused before the dial. The dial is pinned to the addresses `dest.judge` judged through `EstablishIn.within` (the dial-pin appends, Axis 3, ARCHITECT DEST-PIN 2026-10-01).
 6. Inbound webhook receiver: a plane SERVE op (d), covered in B.9.
 7. Tick (reverify, retry): lifecycle `tick` with `next_tick_ns`, plus `trust.due`.
 8. `{tool, arguments}` projection: the `project` op (B.9).
 9. Nested dispatch: `unit.nest`.
 10. Approval / elicitation: the elicitation request is plane traffic to the caller. On a duplex session it is an unsolicited emit plus a `FROM_CALLER` answer; across separate HTTP arrivals it is correlated with `work.*`. Approval redemption is `records.claim`. No separate service.
-11. Argument-embedded URL judging: `dest.judge`, called where it is called today (F6).
+11. Argument-embedded URL judging: `dest.judge`, called where it is called today (F6). Under `DEST_RESOLVE` it also writes the addresses it judged (`DestJudgeIn.into`), the set item 5's dial is pinned to.
 12. Auth `exchange()` (F7): no plane service. It is an outbound style whose one per-request call (§6.4) runs `exchange` inside the auth plugin, using the caller's verified credential (the caller-credential precedent) and the provider's target as the audience (TD step 39). The plane never sees the token (§6 trust boundary).
 13. Per-session metering: the driver's session path (A).
 14. **Health probers (b, F23).** A plane declares tail flag `TAIL_PROBES`, a new vocabulary bit with no layout change. kernel-breaker's tick starts a probe unit: kernel origin, no lease, zero-billed (BB:198), pinned to one member. The driver calls `arrive` with `claim = CLAIM_PROBE` (`u32::MAX`), then pushes the ATTEMPT piece, and the plane emits the probe request. The walk's status table classifies the result, recording nothing on a client-fault class, as in 1.5.5 `health.rs`.

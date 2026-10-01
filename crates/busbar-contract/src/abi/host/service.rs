@@ -274,10 +274,16 @@ pub struct DestJudgeIn {
     pub egress_class: u32,
     /// [`DEST_RESOLVE`].
     pub flags: u32,
+    /// Appended: where the judged addresses go under [`DEST_RESOLVE`], one span each (key = the
+    /// address as text, an IP literal without port or brackets; value absent). Written only on
+    /// [`DEST_ALLOWED`]: every address the judgement admitted, in the resolver's order, the first
+    /// the one a dial pins. The set a plane hands back as `EstablishIn::within`, so the judge, its
+    /// overlap check and the dial see one address set. Without [`DEST_RESOLVE`] nothing is written.
+    pub into: ServiceBufs,
 }
 
-/// [`DestJudgeIn::flags`]: resolve a name and judge every address it answers; without it the
-/// judgement is the name's alone.
+/// [`DestJudgeIn::flags`]: resolve a name and judge every address it answers, and write the
+/// addresses judged into [`DestJudgeIn::into`]; without it the judgement is the name's alone.
 pub const DEST_RESOLVE: u32 = 1;
 
 /// `dest.judge` verdict: admissible.
@@ -865,7 +871,7 @@ pub fn check_dest_judge(
         ret,
         &i.head,
         out,
-        bare(op::DEST_JUDGE, (DEST_ALLOWED, DEST_NO_ADDRESSES)),
+        into(op::DEST_JUDGE, i.into, (DEST_ALLOWED, DEST_NO_ADDRESSES)),
     )
 }
 

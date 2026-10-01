@@ -86,6 +86,7 @@ fn judge_in(ticket: Ticket) -> DestJudgeIn {
         dest: none(),
         egress_class: 0,
         flags: 0,
+        into: bufs(&mut [], &mut []),
     }
 }
 

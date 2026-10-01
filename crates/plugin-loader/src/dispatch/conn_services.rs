@@ -6,7 +6,10 @@
 //! at bind, each slot a thin frame over the host's ONE connection table
 //! ([`busbar_contract::conn::Conns`]), called under the instance's own identity.
 //!
-//! * `ESTABLISH` opens the need (its Statement index) at the target the plugin names.
+//! * `ESTABLISH` opens the need (its Statement index) at the target the plugin names, landing only
+//!   on an address of its `within` set when it states one (the addresses its `dest.judge` judged):
+//!   the connector holds the pinned address to the set at the connect, before any byte is
+//!   written, a framed need's included (its connect is at `WRITE_REQUEST`'s end).
 //! * `READ` answers the next piece's bytes; nothing ready is PENDING on the caller's ticket (the
 //!   table wakes it), and never PENDING without one. A closed stream reads as its end (`len` 0).
 //! * `WRITE` offers bytes; `CLOSE` closes.
@@ -30,6 +33,7 @@
 
 use std::collections::HashMap;
 use std::mem::size_of;
+use std::net::IpAddr;
 use std::os::raw::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -38,7 +42,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use busbar_contract::abi::host::conn::connector::{
     service, ConnectorSlots, EstablishIn, IdentityIn, IoIn, ProcessIdentity, RandomIn, ReplyIn,
     ReplyPiece, RequestIn, RequestPiece, StreamIn, REPLY_ACK, REPLY_BODY, REPLY_END, REPLY_HEAD,
-    REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES,
+    REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, WITHIN_SEPARATOR,
 };
 use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
@@ -217,6 +221,16 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 return Answer::with(Outcome::Fault, "");
             };
             let target = String::from_utf8_lossy(target);
+            // SAFETY: a checked range of the caller's, live for the call.
+            let Some(within) = (unsafe { bytes(i.within.ptr.cast_mut(), i.within.len) }) else {
+                return Answer::with(Outcome::Fault, "");
+            };
+            let Some(within) = addresses(within) else {
+                return Answer::with(
+                    Outcome::Refused,
+                    "an address the dial must land on is not an IP literal",
+                );
+            };
             if table.framed(id, NeedId(i.need)) {
                 // A FRAMED need opens when its request is whole (`WRITE_REQUEST`'s end): its
                 // request is the connection's opening message.
@@ -227,6 +241,7 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                         conn: Conn::Held {
                             need: NeedId(i.need),
                             target: target.into_owned(),
+                            within,
                             head: None,
                             body: Vec::new(),
                         },
@@ -238,6 +253,7 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             }
             let desc = OpenDesc {
                 target: &target,
+                within: &within,
                 ..OpenDesc::default()
             };
             match table.open(id, NeedId(i.need), &desc) {
@@ -246,6 +262,18 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             }
         },
     )
+}
+
+/// `EstablishIn::within`'s address set: IP literals joined by [`WITHIN_SEPARATOR`], empty = none;
+/// `None` when an entry is not text or not an IP literal.
+fn addresses(within: &[u8]) -> Option<Vec<IpAddr>> {
+    let text = std::str::from_utf8(within).ok()?;
+    if text.is_empty() {
+        return Some(Vec::new());
+    }
+    text.split(WITHIN_SEPARATOR)
+        .map(|a| a.trim().parse().ok())
+        .collect()
 }
 
 extern "C" fn read(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
@@ -398,10 +426,12 @@ struct Head {
 #[derive(Debug)]
 enum Conn {
     /// A framed stream ESTABLISH answered before its request is whole: the need, the target named
-    /// at ESTABLISH (empty = the need's own), and the request so far.
+    /// at ESTABLISH (empty = the need's own), the address set its dial must land on, and the
+    /// request so far.
     Held {
         need: NeedId,
         target: String,
+        within: Vec<IpAddr>,
         head: Option<Head>,
         body: Vec<u8>,
     },
@@ -454,9 +484,15 @@ fn resolve(
         Conn::Open(c) => Ok(*c),
         Conn::Failed(e) => Err(*e),
         Conn::Held { head: Some(_), .. } => Err(ConnError::Refused),
-        Conn::Held { need, target, .. } => {
+        Conn::Held {
+            need,
+            target,
+            within,
+            ..
+        } => {
             let desc = OpenDesc {
                 target,
+                within,
                 ..OpenDesc::default()
             };
             let opened = table.open(id, *need, &desc);
@@ -522,6 +558,7 @@ extern "C" fn write_request(
             let Conn::Held {
                 need,
                 target,
+                within,
                 head,
                 body,
             } = &mut s.conn
@@ -578,6 +615,7 @@ extern "C" fn write_request(
                         timeout_ms: h.timeout_ms,
                         method: &h.method,
                         head_target: &h.target,
+                        within,
                     };
                     // The request is handed over whole; what became of it is the reply's to say.
                     let opened = table.open(id, *need, &desc);

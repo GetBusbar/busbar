@@ -467,6 +467,7 @@ extern "C" fn dest_judge(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
                     "dest_judge.flags",
                 )
                 .is_err()
+                || check_bufs(&i.into).is_err()
             {
                 return Answered::fault();
             }
@@ -481,9 +482,9 @@ extern "C" fn dest_judge(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
                 .into_owned()
             };
             let provider = Arc::clone(&served.provider);
-            // SAFETY: no buffer is named.
+            // SAFETY: `into` checked above; the caller's buffers, where the judged addresses go.
             unsafe {
-                serve(&served.store, &route, &head, None, |completer| {
+                serve(&served.store, &route, &head, Some(&i.into), |completer| {
                     let later = completer.map(|c| -> Later { Box::new(move |s| c.complete(s)) });
                     provider.dest_judge(&dest, i.egress_class, resolve, later)
                 })

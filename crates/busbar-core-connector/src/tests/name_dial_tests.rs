@@ -231,3 +231,144 @@ fn a_name_the_judge_refuses_is_never_dialled() {
         }
     });
 }
+
+/// One read of `id` straight on the connector (the table a plugin's ESTABLISH reaches, where its
+/// `within` rides), driving the connection by reads alone.
+async fn read_direct(c: &Arc<Connector>, id: ConnId) -> Result<Vec<u8>, ConnError> {
+    let mut buf = [0_u8; 64];
+    for _ in 0..2000 {
+        match c.read(OWNER, id, 7, &mut buf) {
+            Err(ConnError::Pending) => tokio::time::sleep(Duration::from_millis(1)).await,
+            Err(e) => return Err(e),
+            Ok(p) => return Ok(buf[..p.len].to_vec()),
+        }
+    }
+    panic!("no answer in two seconds");
+}
+
+/// A far end on 127.0.0.1 that counts the connections it accepts and echoes four bytes on each.
+async fn counting_echo() -> (u16, Arc<AtomicU64>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let l = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    let accepted = Arc::new(AtomicU64::new(0));
+    let seen = Arc::clone(&accepted);
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = l.accept().await {
+            seen.fetch_add(1, Ordering::SeqCst);
+            let mut buf = [0_u8; 4];
+            if s.read_exact(&mut buf).await.is_ok() {
+                let _ = s.write_all(&buf).await;
+            }
+        }
+    });
+    (port, accepted)
+}
+
+/// THE LANDING RULE, GREEN: a dial stated `within` the address set the plugin's `dest.judge`
+/// answered lands on the address the judge pins in it, and the bytes round-trip.
+#[test]
+fn a_judged_address_set_pins_the_dial() {
+    worker().block_on(async {
+        let (port, accepted) = counting_echo().await;
+        let c = connector(
+            Arc::new(Table(vec![("pinned.test", [127, 0, 0, 1].into())])),
+            Arc::default(),
+        );
+        let target = format!("pinned.test:{port}");
+        let judged: [IpAddr; 2] = [[127, 0, 0, 1].into(), [127, 0, 0, 9].into()];
+        let id = c
+            .open(
+                OWNER,
+                NEED,
+                &OpenDesc {
+                    target: &target,
+                    within: &judged,
+                    ..OpenDesc::default()
+                },
+            )
+            .expect("a name opens, its dial in flight");
+        assert_eq!(c.write(OWNER, id, b"pin!", false), Ok(4));
+        assert_eq!(read_direct(&c, id).await.expect("the echo"), b"pin!");
+        assert_eq!(accepted.load(Ordering::SeqCst), 1);
+    });
+}
+
+/// THE LANDING RULE, RED: the name was judged at one address and answers another at dial time
+/// (a rebinding). The open is REFUSED at the connect, before any byte leaves: the far end accepts
+/// no connection, and the bytes written while the dial was in flight never reach it. An IP literal
+/// outside the set is refused at once. RED on the connector that held the pin only to the class.
+#[test]
+fn a_rebound_name_is_refused_before_its_bytes_leave() {
+    worker().block_on(async {
+        let (port, accepted) = counting_echo().await;
+        let c = connector(
+            Arc::new(Table(vec![("rebound.test", [127, 0, 0, 1].into())])),
+            Arc::default(),
+        );
+        let judged: [IpAddr; 1] = [[127, 0, 0, 2].into()];
+        let target = format!("rebound.test:{port}");
+        let id = c
+            .open(
+                OWNER,
+                NEED,
+                &OpenDesc {
+                    target: &target,
+                    within: &judged,
+                    ..OpenDesc::default()
+                },
+            )
+            .expect("a name opens, its judgement pending");
+        assert_eq!(c.write(OWNER, id, b"leak", false), Ok(4), "held, not sent");
+        assert_eq!(read_direct(&c, id).await, Err(ConnError::Refused));
+        assert_eq!(
+            read_direct(&c, id).await,
+            Err(ConnError::Refused),
+            "the refusal stays"
+        );
+        let literal = format!("127.0.0.1:{port}");
+        assert_eq!(
+            c.open(
+                OWNER,
+                NEED,
+                &OpenDesc {
+                    target: &literal,
+                    within: &judged,
+                    ..OpenDesc::default()
+                },
+            ),
+            Err(ConnError::Refused),
+            "a literal outside the set, at once"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(accepted.load(Ordering::SeqCst), 0, "nothing was dialled");
+    });
+}
+
+/// THE LANDING RULE, EMPTY: no set states no pin, so the same answer as the RED above (a name
+/// resolving to an address nobody judged before) dials as it always did.
+#[test]
+fn an_empty_address_set_keeps_the_dial_as_it_was() {
+    worker().block_on(async {
+        let (port, accepted) = counting_echo().await;
+        let c = connector(
+            Arc::new(Table(vec![("rebound.test", [127, 0, 0, 1].into())])),
+            Arc::default(),
+        );
+        let target = format!("rebound.test:{port}");
+        let id = c
+            .open(
+                OWNER,
+                NEED,
+                &OpenDesc {
+                    target: &target,
+                    within: &[],
+                    ..OpenDesc::default()
+                },
+            )
+            .expect("opens");
+        assert_eq!(c.write(OWNER, id, b"same", false), Ok(4));
+        assert_eq!(read_direct(&c, id).await.expect("the echo"), b"same");
+        assert_eq!(accepted.load(Ordering::SeqCst), 1);
+    });
+}

@@ -168,6 +168,70 @@ fn dest_judge_resolves_only_when_asked_and_judges_what_answered() {
     assert_eq!(r.asked.load(Ordering::SeqCst), 2);
 }
 
+/// The addresses a stored `dest.judge` answer names: each span's key, as text.
+fn addresses(s: &Stored) -> Vec<String> {
+    s.spans
+        .iter()
+        .map(|sp| {
+            assert_eq!(sp.value.len, 0, "an address span carries no value");
+            let at = sp.key.offset as usize;
+            String::from_utf8(s.bytes[at..at + sp.key.len as usize].to_vec()).unwrap()
+        })
+        .collect()
+}
+
+/// THE JUDGED ADDRESSES (ARCHITECT DEST-PIN 2026-10-01): asked to resolve and admitted, `dest.judge`
+/// writes every address its one judgement judged, one span each, the pin first, from the SAME
+/// resolution (no second lookup); an IP literal names itself; a refusal and a judgement that did
+/// not resolve name none. RED on the judge that answered the verdict alone.
+#[test]
+fn dest_judge_writes_the_addresses_it_judged() {
+    let r = Arc::new(HandResolver::default());
+    let s = services(Arc::clone(&r));
+    let (slot, later) = recorder();
+    assert!(matches!(
+        s.dest_judge("https://push.example.com/hook", 0, true, Some(later)),
+        Ran::Later
+    ));
+    let done = r.held.lock().unwrap().pop().unwrap();
+    done(Ok(vec![
+        "93.184.216.34".parse().unwrap(),
+        "2606:2800:220:1:248:1893:25c8:1946".parse().unwrap(),
+    ]));
+    let got = slot.lock().unwrap().take().unwrap();
+    assert_eq!(got.value, svc::DEST_ALLOWED);
+    assert_eq!(
+        addresses(&got),
+        ["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"]
+    );
+    assert_eq!(r.asked.load(Ordering::SeqCst), 1, "one resolution");
+
+    let (_, later) = recorder();
+    let got = verdict_now(s.dest_judge("https://93.184.216.34/x", 0, true, Some(later)));
+    assert_eq!(
+        (got.value, addresses(&got)),
+        (svc::DEST_ALLOWED, vec!["93.184.216.34".to_owned()])
+    );
+
+    let (slot, later) = recorder();
+    assert!(matches!(
+        s.dest_judge("https://mixed.example.com/", 0, true, Some(later)),
+        Ran::Later
+    ));
+    let done = r.held.lock().unwrap().pop().unwrap();
+    done(Ok(vec![
+        "93.184.216.34".parse().unwrap(),
+        "10.0.0.7".parse().unwrap(),
+    ]));
+    let got = slot.lock().unwrap().take().unwrap();
+    assert_eq!(got.value, svc::DEST_INTERNAL);
+    assert!(got.spans.is_empty() && got.bytes.is_empty(), "a refusal names none");
+
+    let (_, later) = recorder();
+    let got = verdict_now(s.dest_judge("https://push.example.com/", 0, false, Some(later)));
+    assert!(got.spans.is_empty(), "not asked to resolve, none");
+}
+
 #[test]
 fn an_egress_class_the_kernel_did_not_map_is_refused() {
     let s = services(Arc::default());

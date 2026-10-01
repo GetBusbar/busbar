@@ -497,6 +497,7 @@ extern "C" {
 #define BB_HCONN_SERVICE_READ_REPLY UINT32_C(12) /* Read the next piece of the far end's reply to what the plugin sent, with its descriptor. */
 #define BB_HCONN_SERVICE_WRITE_REQUEST UINT32_C(13) /* Write one piece of a request on a FRAMED stream, with its descriptor: the framer builds its */
 #define BB_HCONN_SERVICES UINT32_C(14) /* How many services [`ConnectorSlots`] holds. */
+#define BB_HCONN_WITHIN_SEPARATOR "," /* The separator between the addresses of [`EstablishIn::within`]. */
 #define BB_HCONN_CHECKIN_REUSE UINT32_C(0) /* [`CheckinIn::disposition`]: return the stream to the pool as is. */
 #define BB_HCONN_CHECKIN_RESET UINT32_C(1) /* [`CheckinIn::disposition`]: return it after the plugin kind's reset op. */
 #define BB_HCONN_CHECKIN_DROP UINT32_C(2) /* [`CheckinIn::disposition`]: close it; it is not fit for reuse. */
@@ -535,7 +536,7 @@ extern "C" {
 #define BB_HSVC_FOUND UINT64_C(1) /* `value` of [`op::RECORDS_GET`]: the record is in span `0`. */
 #define BB_HSVC_CLAIM_WON UINT64_C(1) /* `value` of [`op::RECORDS_CLAIM`]: this call made the claim. */
 #define BB_HSVC_CLAIM_TAKEN UINT64_C(2) /* `value` of [`op::RECORDS_CLAIM`]: the key was already claimed. */
-#define BB_HSVC_DEST_RESOLVE UINT32_C(1) /* [`DestJudgeIn::flags`]: resolve a name and judge every address it answers; without it the */
+#define BB_HSVC_DEST_RESOLVE UINT32_C(1) /* [`DestJudgeIn::flags`]: resolve a name and judge every address it answers, and write the */
 #define BB_HSVC_DEST_ALLOWED UINT64_C(0) /* `dest.judge` verdict: admissible. */
 #define BB_HSVC_DEST_SCHEME UINT64_C(1) /* `dest.judge` verdict: not an admitted scheme. */
 #define BB_HSVC_DEST_NO_HOST UINT64_C(2) /* `dest.judge` verdict: no usable host. */
@@ -3015,6 +3016,7 @@ struct bb_hconn_EstablishIn {
     uint32_t need;
     uint32_t _reserved;
     bb_mech_AbiStr target;
+    bb_mech_AbiStr within;
 };
 
 /* The `in` of [`service::REJECT_ENDPOINT`], [`service::SIDE_STREAM`] and [`service::CLOSE`]. */
@@ -3222,6 +3224,7 @@ struct bb_hsvc_DestJudgeIn {
     bb_mech_AbiStr dest;
     uint32_t egress_class;
     uint32_t flags;
+    bb_hsvc_ServiceBufs into;
 };
 
 /* [`op::SIGN`]'s `in`: sign bytes with busbar's key under the plugin's declared signing domain and */
@@ -5002,12 +5005,13 @@ BB_ASSERT(offsetof(bb_hconn_Need, details) == 72, "bb_hconn_Need.details: offset
 BB_ASSERT(offsetof(bb_hconn_Need, keep_response_headers) == 96, "bb_hconn_Need.keep_response_headers: offset");
 BB_ASSERT(offsetof(bb_hconn_Need, keep_response_headers_len) == 104, "bb_hconn_Need.keep_response_headers_len: offset");
 BB_ASSERT(offsetof(bb_hconn_Need, timeout_ms) == 112, "bb_hconn_Need.timeout_ms: offset");
-BB_ASSERT(sizeof(bb_hconn_EstablishIn) == 48, "bb_hconn_EstablishIn: size");
+BB_ASSERT(sizeof(bb_hconn_EstablishIn) == 64, "bb_hconn_EstablishIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hconn_EstablishIn) == 8, "bb_hconn_EstablishIn: alignment");
 BB_ASSERT(offsetof(bb_hconn_EstablishIn, head) == 0, "bb_hconn_EstablishIn.head: offset");
 BB_ASSERT(offsetof(bb_hconn_EstablishIn, need) == 24, "bb_hconn_EstablishIn.need: offset");
 BB_ASSERT(offsetof(bb_hconn_EstablishIn, _reserved) == 28, "bb_hconn_EstablishIn._reserved: offset");
 BB_ASSERT(offsetof(bb_hconn_EstablishIn, target) == 32, "bb_hconn_EstablishIn.target: offset");
+BB_ASSERT(offsetof(bb_hconn_EstablishIn, within) == 48, "bb_hconn_EstablishIn.within: offset");
 BB_ASSERT(sizeof(bb_hconn_StreamIn) == 32, "bb_hconn_StreamIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hconn_StreamIn) == 8, "bb_hconn_StreamIn: alignment");
 BB_ASSERT(offsetof(bb_hconn_StreamIn, head) == 0, "bb_hconn_StreamIn.head: offset");
@@ -5166,12 +5170,13 @@ BB_ASSERT(offsetof(bb_hsvc_RecordsClaimIn, head) == 0, "bb_hsvc_RecordsClaimIn.h
 BB_ASSERT(offsetof(bb_hsvc_RecordsClaimIn, kind) == 24, "bb_hsvc_RecordsClaimIn.kind: offset");
 BB_ASSERT(offsetof(bb_hsvc_RecordsClaimIn, key) == 40, "bb_hsvc_RecordsClaimIn.key: offset");
 BB_ASSERT(offsetof(bb_hsvc_RecordsClaimIn, ttl_ms) == 56, "bb_hsvc_RecordsClaimIn.ttl_ms: offset");
-BB_ASSERT(sizeof(bb_hsvc_DestJudgeIn) == 48, "bb_hsvc_DestJudgeIn: size");
+BB_ASSERT(sizeof(bb_hsvc_DestJudgeIn) == 80, "bb_hsvc_DestJudgeIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_DestJudgeIn) == 8, "bb_hsvc_DestJudgeIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_DestJudgeIn, head) == 0, "bb_hsvc_DestJudgeIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_DestJudgeIn, dest) == 24, "bb_hsvc_DestJudgeIn.dest: offset");
 BB_ASSERT(offsetof(bb_hsvc_DestJudgeIn, egress_class) == 40, "bb_hsvc_DestJudgeIn.egress_class: offset");
 BB_ASSERT(offsetof(bb_hsvc_DestJudgeIn, flags) == 44, "bb_hsvc_DestJudgeIn.flags: offset");
+BB_ASSERT(offsetof(bb_hsvc_DestJudgeIn, into) == 48, "bb_hsvc_DestJudgeIn.into: offset");
 BB_ASSERT(sizeof(bb_hsvc_SignIn) == 80, "bb_hsvc_SignIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_SignIn) == 8, "bb_hsvc_SignIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_SignIn, head) == 0, "bb_hsvc_SignIn.head: offset");

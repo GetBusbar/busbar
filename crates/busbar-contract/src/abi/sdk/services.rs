@@ -10,13 +10,14 @@
 //!
 //! A service that MAY PEND answers a [`Pend`]: [`Poll::Pending`] means the host holds the call on
 //! the handle's ticket and wakes it; the op answers PENDING and, re-entered, re-issues the SAME
-//! handle to read the stored answer. Nothing here allocates: every result is a scalar or a view
-//! into the caller's own buffers.
+//! handle to read the stored answer. Nothing here allocates but [`Judged::within`] (the address
+//! set an ESTABLISH takes): every result is a scalar or a view into the caller's own buffers.
 
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::task::Poll;
 
+use crate::abi::host::conn::connector::WITHIN_SEPARATOR;
 use crate::abi::host::service::{
     check_dest_judge, check_entitlement_check, check_random_fill, check_random_fill_in,
     check_trust_due, check_trust_sight, op, DestJudgeIn, EntitlementCheckIn, HostSlots, ItemSpan,
@@ -49,31 +50,54 @@ pub enum ServiceError {
 /// The answer of a service that may pend.
 pub type Pend<T> = Poll<Result<T, ServiceError>>;
 
-/// `trust.due`'s answer: the counterparties due for re-verification, as views into the caller's
-/// buffers, every one checked present and UTF-8 before it is answered.
-#[derive(Debug, Clone, Copy)]
-pub struct Due<'b> {
+/// A service's answer that names things, one span's key each, as views into the caller's buffers,
+/// every one checked present and UTF-8 before it is answered: `trust.due`'s counterparties due for
+/// re-verification, and `dest.judge`'s judged addresses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Names<'b> {
     bytes: &'b [u8],
     spans: &'b [ItemSpan],
 }
 
-impl<'b> Due<'b> {
-    /// How many counterparties are due.
+impl<'b> Names<'b> {
+    /// How many names.
     #[must_use]
     pub const fn len(&self) -> usize {
         self.spans.len()
     }
 
-    /// Whether none is due.
+    /// Whether there is none.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.spans.is_empty()
     }
 
-    /// The counterparties, in the host's order.
+    /// The names, in the host's order.
     pub fn names(&self) -> impl Iterator<Item = &'b str> + 'b {
         let bytes = self.bytes;
         self.spans.iter().filter_map(move |s| name(bytes, s))
+    }
+}
+
+/// `dest.judge`'s answer: the `DEST_*` verdict, and, asked to resolve and admitted, every address
+/// the host's one judgement judged (the first the one a dial pins).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Judged<'b> {
+    /// The `DEST_*` verdict; `DEST_ALLOWED` = admissible.
+    pub verdict: u64,
+    /// The addresses judged, as text; none unless asked to resolve and admitted.
+    pub addresses: Names<'b>,
+}
+
+impl Judged<'_> {
+    /// The addresses as the set an ESTABLISH's dial must land on (`EstablishIn::within`): so the
+    /// judge, the caller's overlap check and the dial see one address set.
+    #[must_use]
+    pub fn within(&self) -> String {
+        self.addresses
+            .names()
+            .collect::<Vec<_>>()
+            .join(WITHIN_SEPARATOR)
     }
 }
 
@@ -174,23 +198,41 @@ impl Services {
 
     /// `dest.judge`: the host's ONE destination judge over `dest` (a URL or `host:port` named
     /// inside content) under egress class `egress_class` (`0` = the host's default), without
-    /// dialing. Ready: a `DEST_*` verdict, `DEST_ALLOWED` = admissible. A refusal the name decides
-    /// answers at once; with `resolve` the name is then resolved and the call may pend, so it is
-    /// callable only from a ticketed op (on `Ticket::NONE` the host refuses it).
-    pub fn dest_judge(
+    /// dialing. Ready: the `DEST_*` verdict, `DEST_ALLOWED` = admissible. A refusal the name decides
+    /// answers at once. With `resolve` (the caller's preallocated bytes and spans) the name is then
+    /// resolved and every address judged; admitted, those addresses are written there and answered
+    /// ([`Judged::within`] is the set an ESTABLISH lands within). Resolving may pend, so it is
+    /// callable only from a ticketed op (on `Ticket::NONE` the host refuses it). A short answer is
+    /// [`ServiceError::Short`]: re-call once, same handle, with the sizes it names.
+    pub fn dest_judge<'b>(
         &self,
         handle: CompletionHandle,
         dest: &str,
         egress_class: u32,
-        resolve: bool,
-    ) -> Pend<u64> {
+        resolve: Option<(&'b mut [u8], &'b mut [ItemSpan])>,
+    ) -> Pend<Judged<'b>> {
+        let flags = if resolve.is_some() { DEST_RESOLVE } else { 0 };
+        let (buf, spans): (&'b mut [u8], &'b mut [ItemSpan]) = resolve.unwrap_or_default();
         let input = DestJudgeIn {
             head: head::<DestJudgeIn>(op::DEST_JUDGE, handle),
             dest: text(dest),
             egress_class,
-            flags: if resolve { DEST_RESOLVE } else { 0 },
+            flags,
+            into: bufs(buf, spans),
         };
-        verdict(self.cross(op::DEST_JUDGE, |t| t.dest_judge, &input, check_dest_judge))
+        let crossed = self.cross(op::DEST_JUDGE, |t| t.dest_judge, &input, check_dest_judge);
+        if let Ok((Outcome::Pending, ..)) = crossed {
+            return Poll::Pending;
+        }
+        let (buf, spans): (&'b [u8], &'b [ItemSpan]) = (buf, spans);
+        Poll::Ready(
+            crossed
+                .and_then(move |c| named(c, buf, spans))
+                .map(|(out, addresses)| Judged {
+                    verdict: out.value,
+                    addresses,
+                }),
+        )
     }
 
     /// `trust.sight`: report `counterparty`'s catalogue hash; the KERNEL judges it. Ready: a
@@ -227,38 +269,13 @@ impl Services {
         handle: CompletionHandle,
         buf: &'b mut [u8],
         spans: &'b mut [ItemSpan],
-    ) -> Result<Due<'b>, ServiceError> {
+    ) -> Result<Names<'b>, ServiceError> {
         let input = TrustDueIn {
             head: head::<TrustDueIn>(op::TRUST_DUE, handle),
-            into: ServiceBufs {
-                buf: buf.as_mut_ptr(),
-                cap: buf.len(),
-                spans: spans.as_mut_ptr(),
-                spans_cap: spans.len(),
-            },
+            into: bufs(buf, spans),
         };
-        let (outcome, out, filled) =
-            self.cross(op::TRUST_DUE, |t| t.trust_due, &input, check_trust_due)?;
-        match (outcome, filled) {
-            (Outcome::Ready, _) => {}
-            (Outcome::Failed, Filled::Short) => {
-                return Err(ServiceError::Short {
-                    bytes: out.needed_bytes,
-                    items: out.needed_items,
-                })
-            }
-            (other, _) => return Err(ServiceError::Declined(other)),
-        }
-        // `check_trust_due` held `len` and `items` within the caps and every span inside `len`.
-        let (bytes, spans): (&'b [u8], &'b [ItemSpan]) = (buf, spans);
-        let due = Due {
-            bytes: &bytes[..out.len as usize],
-            spans: &spans[..out.items as usize],
-        };
-        if due.names().count() != due.len() {
-            return Err(ServiceError::Broken);
-        }
-        Ok(due)
+        let crossed = self.cross(op::TRUST_DUE, |t| t.trust_due, &input, check_trust_due)?;
+        named(crossed, buf, spans).map(|(_, due)| due)
     }
 
     /// Call `service` through `pick`'s slot with `input`, and judge the answer by `check`: the
@@ -294,6 +311,45 @@ impl Services {
         }
         pick(table).ok_or(ServiceError::Unserved)
     }
+}
+
+/// The caller's `buf` and `spans`, lent to the host for one call.
+fn bufs(buf: &mut [u8], spans: &mut [ItemSpan]) -> ServiceBufs {
+    ServiceBufs {
+        buf: buf.as_mut_ptr(),
+        cap: buf.len(),
+        spans: spans.as_mut_ptr(),
+        spans_cap: spans.len(),
+    }
+}
+
+/// A naming service's crossed answer over the caller's `buf` and `spans`: READY, its `out` and the
+/// names it wrote; a short answer, [`ServiceError::Short`]; any other outcome declined. A name
+/// absent or not UTF-8 is broken.
+fn named<'b>(
+    (outcome, out, filled): (Outcome, ServiceOut, Filled),
+    buf: &'b [u8],
+    spans: &'b [ItemSpan],
+) -> Result<(ServiceOut, Names<'b>), ServiceError> {
+    match (outcome, filled) {
+        (Outcome::Ready, _) => {}
+        (Outcome::Failed, Filled::Short) => {
+            return Err(ServiceError::Short {
+                bytes: out.needed_bytes,
+                items: out.needed_items,
+            })
+        }
+        (other, _) => return Err(ServiceError::Declined(other)),
+    }
+    // The service's check held `len` and `items` within the caps and every span inside `len`.
+    let names = Names {
+        bytes: &buf[..out.len as usize],
+        spans: &spans[..out.items as usize],
+    };
+    if names.names().count() != names.len() {
+        return Err(ServiceError::Broken);
+    }
+    Ok((out, names))
 }
 
 /// The head of an `I` for `service`, under `handle`.

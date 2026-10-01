@@ -96,6 +96,8 @@ pub struct Exchange {
     applied: u32,
     /// The handle of the read that answered the terminal piece, once one has.
     ended: Option<u32>,
+    /// The address set the dial must land on ([`Exchange::landing_within`]); empty = no pin.
+    within: String,
 }
 
 fn piece(kind: u32) -> Box<RequestPiece> {
@@ -122,7 +124,17 @@ impl Exchange {
             code: 0,
             applied: 0,
             ended: None,
+            within: String::new(),
         }
+    }
+
+    /// Land this exchange's dial only on an address of `within`, the set the plugin's
+    /// `dest.judge` judged (`Judged::within`): a name that resolves elsewhere at dial time is
+    /// refused before the request leaves.
+    #[must_use]
+    pub fn landing_within(mut self, within: String) -> Self {
+        self.within = within;
+        self
     }
 
     /// An exchange sending `request` through a framed need.
@@ -251,7 +263,7 @@ fn send_and_read(
     need: u32,
     target: Option<&str>,
 ) -> Answer<()> {
-    let stream = ready!(c.establish(need, target));
+    let stream = ready!(c.establish(need, target, &state.within));
     ready!(send(c, state, stream));
     loop {
         let this = c.issued();

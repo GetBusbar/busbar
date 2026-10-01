@@ -272,13 +272,16 @@ impl Connector<'_> {
     }
 
     /// Establish a stream for the declared need `need` (its index), to `target` (`None` = the
-    /// need's `target_from`): the stream.
-    pub fn establish(&mut self, need: u32, target: Option<&str>) -> Answer<u64> {
+    /// need's `target_from`), its dial landing only on an address of `within` (the set a
+    /// `dest.judge` answered, `Judged::within`; `""` = no pin beyond the host's judgement): the
+    /// stream. A dial the host's judgement pins outside `within` is refused before any byte leaves.
+    pub fn establish(&mut self, need: u32, target: Option<&str>, within: &str) -> Answer<u64> {
         let input = EstablishIn {
             head: blank_head(),
             need,
             _reserved: 0,
             target: text(target),
+            within: text(Some(within)),
         };
         self.call(service::ESTABLISH, |s| s.establish, input)
             .map(|r| r.map(|o| o.value))

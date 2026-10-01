@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use busbar_contract::abi::host::service::{
     check_clock_now, check_dest_judge, check_random_fill, ContentScanIn, EntitlementCheckIn,
-    ItemSpan, RandomFillIn, DEST_INTERNAL, DEST_METADATA, DEST_RESOLVE,
+    ItemSpan, RandomFillIn, DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, DEST_RESOLVE,
 };
 use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::check::Filled;
@@ -204,7 +204,38 @@ fn judge_in(dest: &'static str, ticket: Ticket, seq: u32, flags: u32) -> DestJud
         },
         egress_class: 0,
         flags,
+        into: ServiceBufs {
+            buf: std::ptr::null_mut(),
+            cap: 0,
+            spans: std::ptr::null_mut(),
+            spans_cap: 0,
+        },
     }
+}
+
+const NO_SPAN: ItemSpan = ItemSpan {
+    key: Span { offset: 0, len: 0 },
+    value: Span { offset: 0, len: 0 },
+};
+
+/// The kernel's admitted answer naming `addrs`, one span's key each.
+fn admitted(addrs: &[&str]) -> Stored {
+    let mut s = Stored::ready(DEST_ALLOWED);
+    for a in addrs {
+        let at = s.bytes.len() as u32;
+        s.bytes.extend_from_slice(a.as_bytes());
+        s.spans.push(ItemSpan {
+            key: Span {
+                offset: at,
+                len: a.len() as u32,
+            },
+            value: Span {
+                offset: check::SPAN_ABSENT,
+                len: 0,
+            },
+        });
+    }
+    s
 }
 
 fn call_judge(d: &Double, i: &DestJudgeIn) -> (RawOutcome, ServiceOut) {
@@ -370,6 +401,34 @@ fn dest_judge_pends_on_the_ticket_and_the_recall_reads_the_verdict() {
     assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 1);
 }
 
+/// THE JUDGED ADDRESSES go into the caller's buffers under the short-buffer rule: no room is a
+/// FAILED short answer naming the full size, and the re-call with room reads the stored addresses
+/// (the kernel judged once).
+#[test]
+fn dest_judge_writes_the_judged_addresses_under_the_short_buffer_rule() {
+    let d = double();
+    let mut i = judge_in("https://api.example.com/v1", TICKET, 6, DEST_RESOLVE);
+    assert_eq!(call_judge(&d, &i).0.outcome(), Outcome::Pending);
+    let later = d.route.provider.held.lock().unwrap().pop().unwrap();
+    later(admitted(&["198.51.100.7", "2001:db8::7"]));
+    let (ret, o) = call_judge(&d, &i);
+    assert_eq!(
+        (ret.outcome(), o.needed_bytes, o.needed_items),
+        (Outcome::Failed, 23, 2)
+    );
+    assert!(check_dest_judge(&i, ret, &o).is_ok());
+    let (mut buf, mut spans) = ([0u8; 23], [NO_SPAN; 2]);
+    i.into = bufs(&mut buf, &mut spans);
+    let (ret, o) = call_judge(&d, &i);
+    assert_eq!(
+        (ret.outcome(), o.value, o.len, o.items),
+        (Outcome::Ready, DEST_ALLOWED, 23, 2)
+    );
+    assert!(check_dest_judge(&i, ret, &o).is_ok());
+    assert_eq!(&buf[..12], b"198.51.100.7");
+    assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 1);
+}
+
 /// THE SDK'S WRAPPER over this table: `dest.judge` pends on the op's ticket, the answer wakes it,
 /// and the op's re-entry re-issues the same handle and reads the stored verdict (the kernel judged
 /// once).
@@ -393,14 +452,19 @@ fn the_sdk_dest_judge_pends_and_its_reissue_reads_the_stored_verdict() {
         _reserved: 0,
     };
     let url = "https://api.example.com/v1";
-    assert!(s.dest_judge(handle, url, 0, true).is_pending());
+    let (mut buf, mut spans) = ([0u8; 32], [NO_SPAN; 2]);
+    assert!(s
+        .dest_judge(handle, url, 0, Some((&mut buf[..], &mut spans[..])))
+        .is_pending());
     let later = d.route.provider.held.lock().unwrap().pop().unwrap();
-    later(Stored::ready(DEST_INTERNAL));
+    later(admitted(&["198.51.100.7"]));
     assert_eq!(*d.route.wakes.lock().unwrap(), vec![TICKET]);
-    assert_eq!(
-        s.dest_judge(handle, url, 0, true),
-        std::task::Poll::Ready(Ok(DEST_INTERNAL))
-    );
+    let std::task::Poll::Ready(Ok(j)) =
+        s.dest_judge(handle, url, 0, Some((&mut buf[..], &mut spans[..])))
+    else {
+        panic!("the stored answer");
+    };
+    assert_eq!((j.verdict, j.within()), (DEST_ALLOWED, "198.51.100.7".to_owned()));
     assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 1);
 }
 

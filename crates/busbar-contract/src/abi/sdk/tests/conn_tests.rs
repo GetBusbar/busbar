@@ -15,10 +15,19 @@ static SEEN: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 /// One SEEN-reading test at a time.
 static SERIAL: Mutex<()> = Mutex::new(());
 
+/// The `within` set each `establish` handed the host.
+static WITHIN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 extern "C" fn establish(_: HostCtx, i: *const c_void, o: *mut ServiceOut) -> RawOutcome {
     // SAFETY: an `EstablishIn`, leading with its `ServiceHead`.
-    let head = unsafe { *i.cast::<ServiceHead>() };
-    SEEN.lock().unwrap().push(head.handle.seq);
+    let input = unsafe { *i.cast::<EstablishIn>() };
+    SEEN.lock().unwrap().push(input.head.handle.seq);
+    // SAFETY: the SDK's text, live for the call.
+    let within = unsafe { std::slice::from_raw_parts(input.within.ptr, input.within.len) };
+    WITHIN
+        .lock()
+        .unwrap()
+        .push(String::from_utf8_lossy(within).into_owned());
     // SAFETY: the SDK's `out`, live for the call.
     unsafe { (*o).value = 7 };
     RawOutcome::of(Outcome::Ready)
@@ -119,11 +128,11 @@ const TICKET: Ticket = Ticket {
 fn an_instance_handed_no_connector_is_unarmed_and_no_ticket_cannot_pend() {
     let unarmed = host(std::ptr::null());
     let mut c = unarmed.connector(TICKET);
-    assert_eq!(c.establish(0, None), Poll::Ready(Err(ConnFailure::Unarmed)));
+    assert_eq!(c.establish(0, None, ""), Poll::Ready(Err(ConnFailure::Unarmed)));
     let h = host(&SLOTS);
     let mut c = h.connector(Ticket::NONE);
     assert_eq!(
-        c.establish(0, None),
+        c.establish(0, None, ""),
         Poll::Ready(Err(ConnFailure::NoTicket))
     );
     let mut c = h.connector(TICKET);
@@ -142,12 +151,12 @@ fn a_connector_resumed_from_a_parked_count_issues_on_from_it() {
     SEEN.lock().unwrap().clear();
     let h = host(&SLOTS);
     let mut c = h.connector(TICKET);
-    assert_eq!(c.establish(0, None), Poll::Ready(Ok(7)));
-    assert_eq!(c.establish(0, None), Poll::Ready(Ok(7)));
+    assert_eq!(c.establish(0, None, ""), Poll::Ready(Ok(7)));
+    assert_eq!(c.establish(0, None, ""), Poll::Ready(Ok(7)));
     let parked = c.issued();
     assert_eq!(parked, 2);
     let mut resumed = h.connector_from(TICKET, parked);
-    assert_eq!(resumed.establish(0, None), Poll::Ready(Ok(7)));
+    assert_eq!(resumed.establish(0, None, ""), Poll::Ready(Ok(7)));
     assert_eq!(*SEEN.lock().unwrap(), vec![0, 1, 2]);
     assert_eq!(h.connector(TICKET).within(5).budget_ms(), Some(5));
 }
@@ -222,4 +231,25 @@ fn open_learns_the_hosts_verdict_on_a_need() {
         services: std::ptr::null(),
     });
     assert_eq!(bare.connector(TICKET).admit(0), Err(ConnFailure::Unarmed));
+}
+
+/// THE LANDING SET (ARCHITECT DEST-PIN 2026-10-01): `establish` hands the host the address set its
+/// dial must land on, verbatim, and `""` for none.
+#[test]
+fn establish_hands_the_host_the_set_its_dial_lands_within() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    WITHIN.lock().unwrap().clear();
+    let h = host(&SLOTS);
+    let mut c = h.connector(TICKET);
+    assert_eq!(
+        c.establish(0, None, "203.0.113.5,2001:db8::1"),
+        Poll::Ready(Ok(7))
+    );
+    assert_eq!(c.establish(0, None, ""), Poll::Ready(Ok(7)));
+    assert_eq!(
+        *WITHIN.lock().unwrap(),
+        vec!["203.0.113.5,2001:db8::1".to_owned(), String::new()]
+    );
 }

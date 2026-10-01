@@ -157,6 +157,7 @@ fn establish(p: &Plugin<TestKind>, need: u32, target: &'static str) -> ServiceOu
         need,
         _reserved: 0,
         target: abi_str(target),
+        within: NONE,
     };
     // SAFETY: an all-zero `ServiceOut` is a valid value the slot overwrites.
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
@@ -378,6 +379,8 @@ struct Scripted {
     framed: bool,
     refuse: Option<ConnError>,
     opened: Mutex<Vec<Opened>>,
+    /// The address set each open was stated within, in open order.
+    within: Mutex<Vec<Vec<std::net::IpAddr>>>,
     writes: Mutex<Vec<Vec<u8>>>,
     script: Mutex<VecDeque<(Piece, Vec<u8>)>>,
 }
@@ -420,6 +423,7 @@ impl Conns for Scripted {
                 .collect(),
             desc.body.to_vec(),
         ));
+        self.within.lock().unwrap().push(desc.within.to_vec());
         if let Some(e) = self.refuse {
             return Err(e);
         }
@@ -524,11 +528,17 @@ fn call<I>(p: &Plugin<TestKind>, f: Option<ServiceFn>, input: &I) -> ServiceOut 
 }
 
 fn opened_stream(p: &Plugin<TestKind>, seq: u32) -> ServiceOut {
+    pinned_stream(p, seq, "")
+}
+
+/// `ESTABLISH` of need 0 at `127.0.0.1:9`, its dial stated `within` the address set `within`.
+fn pinned_stream(p: &Plugin<TestKind>, seq: u32, within: &'static str) -> ServiceOut {
     let i = EstablishIn {
         head: head_of::<EstablishIn>(service::ESTABLISH, seq),
         need: 0,
         _reserved: 0,
         target: abi_str("127.0.0.1:9"),
+        within: abi_str(within),
     };
     call(p, CONN_SLOTS.establish, &i)
 }
@@ -842,4 +852,49 @@ fn a_replayed_handle_never_runs_its_service_twice() {
         RawOutcome::of(Outcome::Refused),
         "a forgotten ticket's handle runs afresh"
     );
+}
+
+/// THE LANDING RULE AT THE LOADER: ESTABLISH's `within` reaches the connection table's open, the
+/// connect, for a raw need at ESTABLISH and for a FRAMED need at WRITE_REQUEST's end, the open
+/// that carries the request; so the connector holds its pinned address to the set before the
+/// request's bytes leave. An empty `within` states no set (today's open); an entry that is not an
+/// IP literal is REFUSED and nothing opens. RED on the loader that dropped `within`.
+#[test]
+fn establish_within_reaches_the_connect_raw_and_framed() {
+    let set: Vec<std::net::IpAddr> = vec![
+        "203.0.113.5".parse().unwrap(),
+        "2001:db8::1".parse().unwrap(),
+    ];
+    let raw = Arc::new(Scripted::default());
+    let p = bound_over(&raw);
+    assert!(ready(&pinned_stream(&p, 0, "203.0.113.5,2001:db8::1")));
+    assert!(ready(&pinned_stream(&p, 1, "")));
+    assert_eq!(
+        raw.within.lock().unwrap().as_slice(),
+        &[set.clone(), Vec::new()]
+    );
+
+    let framed = Arc::new(Scripted {
+        framed: true,
+        ..Scripted::default()
+    });
+    let p = bound_over(&framed);
+    let stream = pinned_stream(&p, 0, "203.0.113.5,2001:db8::1").value;
+    assert!(framed.within.lock().unwrap().is_empty(), "nothing opens at establish");
+    assert!(ready(&request(&p, 1, stream, &head_piece(), HEAD_BYTES)));
+    assert!(framed.within.lock().unwrap().is_empty(), "nor before the end");
+    assert!(ready(&request(&p, 2, stream, &kind_piece(REQUEST_END), b"")));
+    assert_eq!(framed.within.lock().unwrap().as_slice(), &[set]);
+
+    let refused = Arc::new(Scripted::default());
+    let p = bound_over(&refused);
+    for (seq, bad) in [(0, "203.0.113.5,api.example.com"), (1, "203.0.113.5:443")] {
+        let o = pinned_stream(&p, seq, bad);
+        assert_eq!(o.outcome, RawOutcome::of(Outcome::Refused), "{bad}");
+        assert_eq!(
+            error_text(&o),
+            "an address the dial must land on is not an IP literal"
+        );
+    }
+    assert!(refused.opened.lock().unwrap().is_empty(), "nothing opened");
 }

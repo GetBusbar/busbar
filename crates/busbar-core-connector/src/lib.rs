@@ -52,7 +52,7 @@ pub mod udp;
 pub mod wire;
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
@@ -140,12 +140,16 @@ impl DialJudge for LiteralsOnly {
 /// loopback-allowed over connection security, or in plaintext to loopback only; every other
 /// class takes the scheme its target names (operator-infrastructure's plaintext and private
 /// targets included). Which addresses a class admits at all is the kernel judge's, per class.
-fn class_admits(egress_class: u32, secure: bool, addr: SocketAddr) -> bool {
-    match egress_class {
-        EGRESS_OPEN_WEB => secure,
-        EGRESS_LOOPBACK_ALLOWED => secure || addr.ip().is_loopback(),
-        _ => true,
-    }
+/// THE LANDING RULE rides with it: a dial stated `within` an address set (`EstablishIn::within`)
+/// lands only on an address in it, so a name that resolves elsewhere since the plugin judged it
+/// is refused at the connect, before any byte is written; an empty set states no pin.
+fn class_admits(egress_class: u32, secure: bool, within: &[IpAddr], addr: SocketAddr) -> bool {
+    (within.is_empty() || within.contains(&addr.ip()))
+        && match egress_class {
+            EGRESS_OPEN_WEB => secure,
+            EGRESS_LOOPBACK_ALLOWED => secure || addr.ip().is_loopback(),
+            _ => true,
+        }
 }
 
 /// What the connector holds for one declared need.
@@ -169,6 +173,8 @@ struct Judging {
     planned: Option<Planned>,
     /// The need's egress class, whose scheme rule the pinned address is held to.
     egress_class: u32,
+    /// The address set the pinned address must be in (`OpenDesc::within`); empty = any.
+    within: Vec<IpAddr>,
     /// Writes the caller made before the dial, in order.
     early: Vec<(Vec<u8>, bool)>,
     answer: Answer,
@@ -486,7 +492,7 @@ impl Connector {
         };
         let addr = got.map_err(|_| ConnError::Refused)?;
         let secure = j.planned.as_ref().is_some_and(Planned::secure);
-        if !class_admits(j.egress_class, secure, addr) {
+        if !class_admits(j.egress_class, secure, &j.within, addr) {
             // The refusal stays the connection's answer.
             j.answer.lock().expect("judgement").0 = Some(Err(DEST_PLAINTEXT));
             return Err(ConnError::Refused);
@@ -744,7 +750,7 @@ impl Conns for Connector {
         let (conn, judging) = match judged {
             // Decided at once: a refusal answers the open, as 1.5.5 answered it.
             Some(Err(_)) => return Err(ConnError::Refused),
-            Some(Ok(addr)) if !class_admits(egress_class, planned.secure(), addr) => {
+            Some(Ok(addr)) if !class_admits(egress_class, planned.secure(), desc.within, addr) => {
                 return Err(ConnError::Refused)
             }
             Some(Ok(addr)) => (Some(planned.dial_at(addr).map_err(|f| map(&f))?), None),
@@ -755,6 +761,7 @@ impl Conns for Connector {
                 Some(Judging {
                     planned: Some(planned),
                     egress_class,
+                    within: desc.within.to_vec(),
                     early: Vec::new(),
                     answer,
                 }),
