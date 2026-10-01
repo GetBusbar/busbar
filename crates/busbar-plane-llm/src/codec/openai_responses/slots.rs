@@ -8,34 +8,6 @@
 
 use super::*;
 
-/// IR-03. The Responses `metadata` map (string -> string) in the caller's key order. `None` when
-/// absent or when the member is not a string-valued object (the raw member still rides `extra` for a
-/// same-protocol relay; a mis-typed map is not re-shaped into something the caller never sent).
-pub(super) fn read_metadata(v: Option<&serde_json::Value>) -> Option<Vec<(String, String)>> {
-    let obj = v?.as_object()?;
-    obj.iter()
-        .map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-        .collect()
-}
-
-/// IR-03 writer half: the metadata map back as a JSON object.
-pub(super) fn write_metadata(pairs: &[(String, String)]) -> serde_json::Value {
-    serde_json::Value::Object(
-        pairs
-            .iter()
-            .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
-            .collect(),
-    )
-}
-
-/// A string-valued top-level member (IR-06 `safety_identifier` / `prompt_cache_key`).
-pub(super) fn read_string(
-    obj: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Option<String> {
-    obj.get(key).and_then(|v| v.as_str()).map(String::from)
-}
-
 /// IR-08. `input_image.detail` → the IR detail. An unknown word is dropped with a warn rather than
 /// coerced onto a fidelity the caller did not ask for.
 pub(super) fn read_image_detail(

@@ -596,11 +596,9 @@ impl ProtocolWriter for OpenAiWriter {
             }
         }
 
-        // The Q57 typed request slots (metadata, service_tier, store, safety_identifier,
-        // prompt_cache_key, verbosity, modalities, web_search_options) — see `slots.rs`. Written
-        // before `extra`, which wins on the same dialect (the reader parks there only a raw member
-        // the slot cannot reproduce).
-        out.extend(super::slots::write_slot_members(req));
+        // The flat request fields (`fields.rs`). Written before `extra`, which wins on the same
+        // dialect (the reader parks there only a raw member the slot cannot reproduce).
+        crate::codec::carry::write(super::fields::FIELDS, req, &mut out);
 
         // Add extra fields
         for (key, value) in &req.extra {
@@ -901,8 +899,9 @@ impl ProtocolWriter for OpenAiWriter {
                     }
                 }
                 // The serving tier rides the chunk's top level, as on a native stream (OAI-03).
-                if let Some(tier) = write_openai_service_tier(usage.detail.service_tier.as_deref())
-                {
+                if let Some(tier) = usage.detail.service_tier.as_deref().and_then(|t| {
+                    crate::codec::carry::word_out(super::fields::SERVED_TIER, t)
+                }) {
                     if let Some(obj) = chunk_obj.as_object_mut() {
                         obj.insert("service_tier".to_string(), serde_json::json!(tier));
                     }
@@ -1331,7 +1330,9 @@ impl ProtocolWriter for OpenAiWriter {
         obj.insert("usage".to_string(), serde_json::Value::Object(usage_map));
         // The tier that served the request, in OpenAI's vocabulary (OAI-03). Omitted when the
         // source named none, or a tier OpenAI has no response value for.
-        if let Some(tier) = write_openai_service_tier(resp.usage.detail.service_tier.as_deref()) {
+        if let Some(tier) = resp.usage.detail.service_tier.as_deref().and_then(|t| {
+            crate::codec::carry::word_out(super::fields::SERVED_TIER, t)
+        }) {
             obj.insert("service_tier".to_string(), serde_json::json!(tier));
         }
 

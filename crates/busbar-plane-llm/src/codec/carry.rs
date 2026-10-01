@@ -142,6 +142,11 @@ pub fn word_in(words: &[Word], wire: &str) -> Option<&'static str> {
         .map(|(_, neutral, _)| *neutral)
 }
 
+/// The neutral word for the wire member `v` (absent, or not a string → `None`).
+pub fn read_word(words: &[Word], v: Option<&Value>) -> Option<String> {
+    word_in(words, v?.as_str()?).map(String::from)
+}
+
 /// The wire word for neutral word `neutral` (the first row), if the dialect has one.
 pub fn word_out(words: &[Word], neutral: &str) -> Option<&'static str> {
     words

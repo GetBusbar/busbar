@@ -681,10 +681,9 @@ impl ProtocolReader for OpenAiReader {
             },
             output_modalities: None,
         };
-        // The Q57 typed request slots (metadata, service_tier, store, safety_identifier,
-        // prompt_cache_key, verbosity, modalities, web_search_options, allowed_tools) — see
-        // `slots.rs`.
-        super::slots::read_request_slots(obj, &mut ir);
+        // The flat request fields (`fields.rs`), then the allowed-tools subset of `tool_choice`.
+        crate::codec::carry::read(super::fields::FIELDS, obj, &mut ir);
+        super::slots::read_tool_choice_slots(obj, &mut ir);
         Ok(ir)
     }
 
@@ -1161,7 +1160,10 @@ impl ProtocolReader for OpenAiReader {
                 cache_read_input_tokens: None,
                 // A finish chunk without usage still names the serving tier (OAI-03).
                 detail: crate::codec::ir::IrUsageDetail {
-                    service_tier: super::read_openai_service_tier(data.get("service_tier")),
+                    service_tier: crate::codec::carry::read_word(
+                        super::fields::SERVED_TIER,
+                        data.get("service_tier"),
+                    ),
                     ..Default::default()
                 },
             });

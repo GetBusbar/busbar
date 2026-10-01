@@ -483,26 +483,6 @@ impl ProtocolWriter for ResponsesWriter {
             out.insert("user".to_string(), serde_json::json!(user));
         }
 
-        // IR-03..06: the members Chat and Responses share, same names on both. Written from the
-        // typed slots; a same-protocol request's verbatim members in `extra` (overlaid below) win.
-        if let Some(metadata) = &req.metadata {
-            out.insert(
-                "metadata".to_string(),
-                super::slots::write_metadata(metadata),
-            );
-        }
-        if let Some(tier) = req.service_tier {
-            out.insert("service_tier".to_string(), serde_json::json!(tier.as_str()));
-        }
-        if let Some(store) = req.store {
-            out.insert("store".to_string(), serde_json::json!(store));
-        }
-        if let Some(id) = &req.safety_identifier {
-            out.insert("safety_identifier".to_string(), serde_json::json!(id));
-        }
-        if let Some(key) = &req.prompt_cache_key {
-            out.insert("prompt_cache_key".to_string(), serde_json::json!(key));
-        }
         if req
             .output_modalities
             .as_ref()
@@ -590,19 +570,10 @@ impl ProtocolWriter for ResponsesWriter {
             // The extra-forwarding loop below SKIPS `text` when `response_format` is Some (see its
             // guard), so the bare extra `text` cannot clobber this merged object back to format-less.
         }
-        // IR-07: verbosity rides `text.verbosity` beside any `format` (a verbatim `extra` `text`
-        // that already names it keeps the caller's value).
-        if let Some(verbosity) = req.verbosity {
-            if let Some(text_obj) = out
-                .entry("text".to_string())
-                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
-                .as_object_mut()
-            {
-                text_obj
-                    .entry("verbosity".to_string())
-                    .or_insert_with(|| serde_json::json!(verbosity.as_str()));
-            }
-        }
+        // The flat request fields (`fields.rs`): IR-03..06 (the members Chat spells alike) and
+        // IR-07 `text.verbosity`, overlaid on the `text` written above. A same-protocol request's
+        // raw members in `extra` (overlaid below) win.
+        crate::codec::carry::write(super::fields::FIELDS, req, &mut out);
 
         // `stream` is a modeled key (excluded from `extra`), so it must be emitted explicitly or it
         // is silently dropped — a `stream: true` request would otherwise be answered non-streaming,
@@ -1478,9 +1449,9 @@ impl ProtocolWriter for ResponsesWriter {
                     resp_obj.insert("error".to_string(), serde_json::Value::Null);
                 }
                 // RSP-17: the tier that served the response, as `write_response` emits it.
-                if let Some(tier) =
-                    write_responses_service_tier(usage.detail.service_tier.as_deref())
-                {
+                if let Some(tier) = usage.detail.service_tier.as_deref().and_then(|t| {
+                    crate::codec::carry::word_out(super::fields::SERVED_TIER, t)
+                }) {
                     resp_obj.insert("service_tier".to_string(), serde_json::json!(tier));
                 }
                 // Spec-required request-echo members plus `incomplete_details: null` on a completed
@@ -1789,8 +1760,9 @@ impl ProtocolWriter for ResponsesWriter {
         // RSP-17: the tier that SERVED the response (Anthropic `usage.service_tier`, or a Responses
         // backend's own), in the Responses vocabulary; omitted when the IR carries none or a tier
         // this vocabulary has no word for.
-        if let Some(tier) = write_responses_service_tier(resp.usage.detail.service_tier.as_deref())
-        {
+        if let Some(tier) = resp.usage.detail.service_tier.as_deref().and_then(|t| {
+            crate::codec::carry::word_out(super::fields::SERVED_TIER, t)
+        }) {
             obj.insert("service_tier".to_string(), serde_json::json!(tier));
         }
         // The official SDK types `Response.error` as a REQUIRED nullable field present on EVERY

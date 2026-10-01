@@ -697,7 +697,7 @@ impl ProtocolReader for ResponsesReader {
             .filter(|u| !u.is_empty())
             .map(String::from);
 
-        Ok(crate::codec::ir::IrRequest {
+        let mut ir = crate::codec::ir::IrRequest {
             reasoning,
             reasoning_budgets: None,
             logprobs,
@@ -721,28 +721,22 @@ impl ProtocolReader for ResponsesReader {
             seed: None,
             n: None,
             response_format,
-            // IR-03..07: the typed slots carry these across the seam; the raw members also stay in
-            // `extra` (see `responses_modeled_keys`) so a same-protocol write is verbatim.
-            metadata: super::slots::read_metadata(obj.get("metadata")),
-            service_tier: obj
-                .get("service_tier")
-                .and_then(|v| v.as_str())
-                .and_then(crate::codec::ir::IrServiceTier::parse),
-            store: obj.get("store").and_then(|v| v.as_bool()),
-            safety_identifier: super::slots::read_string(obj, "safety_identifier"),
-            prompt_cache_key: super::slots::read_string(obj, "prompt_cache_key"),
-            verbosity: obj
-                .get("text")
-                .and_then(|t| t.get("verbosity"))
-                .and_then(|v| v.as_str())
-                .and_then(crate::codec::ir::IrVerbosity::parse),
+            // IR-03..07: filled from the flat request fields (`fields.rs`) below.
+            metadata: None,
+            service_tier: None,
+            store: None,
+            safety_identifier: None,
+            prompt_cache_key: None,
+            verbosity: None,
             allowed_tools,
             hosted_tools,
             system_role: super::slots::system_role(saw_system, saw_developer, saw_instructions),
             // IR-19: Responses has no output-modality ask.
             output_modalities: None,
             extra,
-        })
+        };
+        crate::codec::carry::read(super::fields::FIELDS, obj, &mut ir);
+        Ok(ir)
     }
 
     fn read_response_events(
@@ -1349,7 +1343,10 @@ impl ProtocolReader for ResponsesReader {
                             cache_creation_input_tokens: None,
                             cache_read_input_tokens: None,
                             detail: crate::codec::ir::IrUsageDetail {
-                                service_tier: read_responses_service_tier(response_obj),
+                                service_tier: crate::codec::carry::read_word(
+                                    super::fields::SERVED_TIER,
+                                    response_obj.get("service_tier"),
+                                ),
                                 ..Default::default()
                             },
                         }),

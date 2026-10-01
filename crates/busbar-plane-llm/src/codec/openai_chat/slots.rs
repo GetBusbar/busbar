@@ -1,156 +1,47 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The Q57 typed IR request slots on the OpenAI Chat Completions wire (ir-slots-landed.md): the
-//! reader FILLS each slot from its Chat member and the writer EMITS it back.
+//! The irregular half of the Q57 typed IR request slots on the OpenAI Chat Completions wire
+//! (ir-slots-landed.md). The flat members (`metadata`, `service_tier`, `store`,
+//! `safety_identifier`, `prompt_cache_key`, `verbosity`) are rows in `fields.rs`, walked by
+//! `codec::carry`; what stays here is code no row can state, each case named:
 //!
-//! | Chat member                | IR slot                      | Id    |
-//! |----------------------------|------------------------------|-------|
-//! | `metadata`                 | `IrRequest::metadata`        | IR-03 |
-//! | `service_tier`             | `IrRequest::service_tier`    | IR-04 (OAI-03) |
-//! | `store`                    | `IrRequest::store`           | IR-05 |
-//! | `safety_identifier`        | `IrRequest::safety_identifier` | IR-06 |
-//! | `prompt_cache_key`         | `IrRequest::prompt_cache_key`  | IR-06 |
-//! | `verbosity`                | `IrRequest::verbosity`       | IR-07 |
-//! | `modalities`               | `IrRequest::output_modalities` | IR-19 |
-//! | `web_search_options`       | `IrRequest::hosted_tools` (`WebSearch`) | IR-11 |
-//! | `tool_choice.allowed_tools`| `IrRequest::allowed_tools` + `tool_choice` | IR-10 |
+//! | Chat member                | IR slot                      | Why it is code |
+//! |----------------------------|------------------------------|----------------|
+//! | `modalities`               | `IrRequest::output_modalities` (IR-19) | `audio` needs the `audio` member |
+//! | `web_search_options`       | `IrRequest::hosted_tools` (`WebSearch`, IR-11) | one search per request, nested location |
+//! | `tool_choice.allowed_tools`| `IrRequest::allowed_tools` + `tool_choice` (IR-10) | tool-choice semantics |
+//! | `tools[]` `custom` entries | `IrRequest::hosted_tools` (`Custom`, OAI-09) | a tools-array entry |
 //!
-//! Same-dialect fidelity: every member above is a MODELED key (it no longer rides `extra`). A value
-//! the typed slot cannot hold exactly (a non-string metadata value, an unknown tier word, an unknown
-//! `web_search_options` member) would otherwise be lost on an OpenAI→OpenAI re-serialize, so the
-//! reader compares what the writer would emit from the slot against the caller's raw member and,
-//! when they differ, parks the RAW member in `extra` too. `extra` is written last (it wins on the
-//! same dialect) and is cleared on the cross-protocol seam, where the typed slot is what crosses.
+//! Same-dialect fidelity: a value the typed slot cannot hold exactly (a non-string metadata value,
+//! an unknown tier word, an unknown `web_search_options` member) is parked RAW in `extra` by the
+//! walker; `extra` is written last (it wins on the same dialect) and is cleared on the
+//! cross-protocol seam, where the typed slot is what crosses.
 
 use crate::codec::ir::{
-    IrHostedTool, IrModality, IrRequest, IrServiceTier, IrToolChoice, IrUserLocation, IrVerbosity,
-    IrWebSearch,
+    IrHostedTool, IrModality, IrRequest, IrToolChoice, IrUserLocation, IrVerbosity, IrWebSearch,
 };
-
-/// The Chat request members this module models (added to `modeled_request_keys`).
-pub(super) const SLOT_KEYS: [&str; 8] = [
-    "metadata",
-    "service_tier",
-    "store",
-    "safety_identifier",
-    "prompt_cache_key",
-    "verbosity",
-    "modalities",
-    "web_search_options",
-];
 
 /// The `tool_choice.type` of a Chat allowed-tools subset.
 const TOOL_CHOICE_ALLOWED_TOOLS: &str = "allowed_tools";
 
-/// Fill the typed slots of `ir` from the Chat body `obj`, then park in `extra` every raw member the
-/// slot does not reproduce byte-for-byte (see the module doc).
-pub(super) fn read_request_slots(
+/// IR-10: the allowed-tools subset of `tool_choice`, then the `tool_choice` fidelity park.
+/// `tool_choice` is modeled by the reader's own `read_openai_tool_choice`; a shape neither that nor
+/// the allowed-tools read understands (a `custom` tool target, a future type) would be dropped even
+/// OpenAI→OpenAI, so it rides `extra` raw.
+pub(super) fn read_tool_choice_slots(
     obj: &serde_json::Map<String, serde_json::Value>,
     ir: &mut IrRequest,
 ) {
-    ir.metadata = obj.get("metadata").and_then(read_metadata);
-    ir.service_tier = obj
-        .get("service_tier")
-        .and_then(|v| v.as_str())
-        .and_then(IrServiceTier::parse);
-    ir.store = obj.get("store").and_then(|v| v.as_bool());
-    ir.safety_identifier = obj
-        .get("safety_identifier")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    ir.prompt_cache_key = obj
-        .get("prompt_cache_key")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    ir.verbosity = obj
-        .get("verbosity")
-        .and_then(|v| v.as_str())
-        .and_then(IrVerbosity::parse);
-    ir.output_modalities = obj.get("modalities").and_then(read_modalities);
-    if let Some(ws) = obj.get("web_search_options").and_then(read_web_search) {
-        ir.hosted_tools.push(IrHostedTool::WebSearch(ws));
-    }
     if let Some((names, mode)) = obj.get("tool_choice").and_then(read_allowed_tools) {
         ir.allowed_tools = Some(names);
         ir.tool_choice = Some(mode);
     }
-
-    // Same-dialect fidelity (module doc): a raw member the slot does not reproduce rides `extra`.
-    let written = write_slot_members(ir);
-    for key in SLOT_KEYS {
-        if let Some(raw) = obj.get(key) {
-            if written.get(key) != Some(raw) {
-                ir.extra.insert(key.to_string(), raw.clone());
-            }
-        }
-    }
-    // `tool_choice` is modeled by the reader's own `read_openai_tool_choice`; a shape neither that
-    // nor the allowed-tools read understands (a `custom` tool target, a future type) was dropped
-    // even OpenAI→OpenAI. Park it the same way.
     if let Some(raw) = obj.get("tool_choice") {
         if write_tool_choice(ir).as_ref() != Some(raw) {
             ir.extra.insert("tool_choice".to_string(), raw.clone());
         }
     }
-}
-
-/// Every slot member the writer emits for `req`, keyed by its Chat member name.
-pub(super) fn write_slot_members(req: &IrRequest) -> serde_json::Map<String, serde_json::Value> {
-    let mut out = serde_json::Map::new();
-    if let Some(md) = &req.metadata {
-        let m: serde_json::Map<String, serde_json::Value> = md
-            .iter()
-            .map(|(k, v)| (k.clone(), serde_json::json!(v)))
-            .collect();
-        out.insert("metadata".to_string(), serde_json::Value::Object(m));
-    }
-    if let Some(tier) = req.service_tier {
-        out.insert("service_tier".to_string(), serde_json::json!(tier.as_str()));
-    }
-    if let Some(store) = req.store {
-        out.insert("store".to_string(), serde_json::json!(store));
-    }
-    if let Some(s) = &req.safety_identifier {
-        out.insert("safety_identifier".to_string(), serde_json::json!(s));
-    }
-    if let Some(s) = &req.prompt_cache_key {
-        out.insert("prompt_cache_key".to_string(), serde_json::json!(s));
-    }
-    if let Some(v) = req.verbosity {
-        out.insert("verbosity".to_string(), serde_json::json!(v.as_str()));
-    }
-    if let Some(mods) = &req.output_modalities {
-        if let Some(v) = write_modalities(mods, req.extra.contains_key("audio")) {
-            out.insert("modalities".to_string(), v);
-        }
-    }
-    let mut web_search_written = false;
-    for tool in &req.hosted_tools {
-        match tool {
-            IrHostedTool::WebSearch(ws) if !web_search_written => {
-                web_search_written = true;
-                out.insert("web_search_options".to_string(), write_web_search(ws));
-            }
-            IrHostedTool::WebSearch(_) => {
-                tracing::warn!(
-                    "dropping a second hosted web search on OpenAI Chat egress: Chat has one \
-                     `web_search_options` member per request"
-                );
-            }
-            IrHostedTool::CodeExecution | IrHostedTool::WebFetch(_) => {
-                tracing::warn!(
-                    hosted_tool = tool.kind_str(),
-                    "dropping a hosted tool on OpenAI Chat egress: Chat Completions has no \
-                     built-in tool of this kind (only web search, as `web_search_options`)"
-                );
-            }
-            // A custom tool is a `tools[]` entry, written by the writer's tools loop
-            // (`write_custom_tools`), not a top-level member.
-            IrHostedTool::Custom(_) => {}
-        }
-    }
-    out
 }
 
 /// OAI-09: a Chat `{"type":"custom","custom":{name, description?, format?}}`
@@ -227,29 +118,24 @@ pub(super) fn write_tool_choice(req: &IrRequest) -> Option<serde_json::Value> {
     })
 }
 
-/// `metadata` is a string→string map on the Chat wire; any other value shape is not the slot's.
-fn read_metadata(v: &serde_json::Value) -> Option<Vec<(String, String)>> {
-    v.as_object()?
-        .iter()
-        .map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-        .collect()
+/// Hook (`modalities`, IR-19): every entry must be a known word, else the slot is left absent.
+pub(super) fn read_modalities(v: &serde_json::Value, ir: &mut IrRequest) {
+    ir.output_modalities = v.as_array().and_then(|arr| {
+        arr.iter()
+            .map(|m| m.as_str().and_then(IrModality::parse))
+            .collect()
+    });
 }
 
-/// `modalities`: every entry must be a known word, else the slot is left absent.
-fn read_modalities(v: &serde_json::Value) -> Option<Vec<IrModality>> {
-    v.as_array()?
-        .iter()
-        .map(|m| m.as_str().and_then(IrModality::parse))
-        .collect()
-}
-
-/// Chat accepts `text` and `audio`. `audio` output also REQUIRES the `audio` request member (the
-/// voice and format), which is a vendor catalogue the IR does not carry — so it is written only when
-/// the Chat caller's own `audio` member rides alongside (same dialect); cross-protocol it is dropped
-/// with a warn rather than sent as a request OpenAI rejects. `image` has no Chat output modality.
-fn write_modalities(mods: &[IrModality], has_audio_member: bool) -> Option<serde_json::Value> {
+/// Hook (`modalities`, IR-19). Chat accepts `text` and `audio`. `audio` output also REQUIRES the
+/// `audio` request member (the voice and format), which is a vendor catalogue the IR does not carry
+/// — so it is written only when the Chat caller's own `audio` member rides alongside (same
+/// dialect); cross-protocol it is dropped with a warn rather than sent as a request OpenAI rejects.
+/// `image` has no Chat output modality.
+pub(super) fn write_modalities(req: &IrRequest) -> Option<serde_json::Value> {
+    let has_audio_member = req.extra.contains_key("audio");
     let mut out: Vec<serde_json::Value> = Vec::new();
-    for m in mods {
+    for m in req.output_modalities.as_deref()? {
         match m {
             IrModality::Text => out.push(serde_json::json!(m.as_str())),
             IrModality::Audio if has_audio_member => out.push(serde_json::json!(m.as_str())),
@@ -266,10 +152,13 @@ fn write_modalities(mods: &[IrModality], has_audio_member: bool) -> Option<serde
     (!out.is_empty()).then_some(serde_json::Value::Array(out))
 }
 
-/// Chat `web_search_options{search_context_size, user_location:{type:"approximate",
-/// approximate:{city, region, country, timezone}}}` → the neutral web search.
-fn read_web_search(v: &serde_json::Value) -> Option<IrWebSearch> {
-    let o = v.as_object()?;
+/// Hook (`web_search_options`, IR-11): Chat `web_search_options{search_context_size,
+/// user_location:{type:"approximate", approximate:{city, region, country, timezone}}}` → the
+/// neutral web search.
+pub(super) fn read_web_search(v: &serde_json::Value, ir: &mut IrRequest) {
+    let Some(o) = v.as_object() else {
+        return;
+    };
     let search_context_size = o
         .get("search_context_size")
         .and_then(|s| s.as_str())
@@ -287,16 +176,45 @@ fn read_web_search(v: &serde_json::Value) -> Option<IrWebSearch> {
                 timezone: s("timezone"),
             }
         });
-    Some(IrWebSearch {
+    ir.hosted_tools.push(IrHostedTool::WebSearch(IrWebSearch {
         search_context_size,
         user_location,
         ..Default::default()
-    })
+    }));
 }
 
-/// The inverse of [`read_web_search`]. `max_uses` and the domain filters have no Chat member: they
-/// are dropped with a warn and the search itself is kept.
-fn write_web_search(ws: &IrWebSearch) -> serde_json::Value {
+/// Hook (`web_search_options`, IR-11): the first hosted web search, in Chat's one member. A second
+/// search, and every hosted kind Chat has no built-in for, is dropped with a warn; a custom tool is
+/// a `tools[]` entry (`write_custom_tools`), not this member.
+pub(super) fn write_web_search(req: &IrRequest) -> Option<serde_json::Value> {
+    let mut written = None;
+    for tool in &req.hosted_tools {
+        match tool {
+            IrHostedTool::WebSearch(ws) if written.is_none() => {
+                written = Some(web_search_options(ws));
+            }
+            IrHostedTool::WebSearch(_) => {
+                tracing::warn!(
+                    "dropping a second hosted web search on OpenAI Chat egress: Chat has one \
+                     `web_search_options` member per request"
+                );
+            }
+            IrHostedTool::CodeExecution | IrHostedTool::WebFetch(_) => {
+                tracing::warn!(
+                    hosted_tool = tool.kind_str(),
+                    "dropping a hosted tool on OpenAI Chat egress: Chat Completions has no \
+                     built-in tool of this kind (only web search, as `web_search_options`)"
+                );
+            }
+            IrHostedTool::Custom(_) => {}
+        }
+    }
+    written
+}
+
+/// One web search as `web_search_options`. `max_uses` and the domain filters have no Chat member:
+/// they are dropped with a warn and the search itself is kept.
+fn web_search_options(ws: &IrWebSearch) -> serde_json::Value {
     if ws.max_uses.is_some() || !ws.allowed_domains.is_empty() || !ws.blocked_domains.is_empty() {
         tracing::warn!(
             "dropping web search max_uses / domain filters on OpenAI Chat egress: \

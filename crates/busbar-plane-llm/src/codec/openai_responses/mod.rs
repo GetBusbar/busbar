@@ -33,6 +33,7 @@ use crate::codec::usage_count::{CountRead, CountSlot, UsageCount};
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+mod fields;
 pub mod handler;
 mod reader;
 mod slots;
@@ -614,34 +615,6 @@ fn read_responses_reasoning_effort(word: &str) -> Option<crate::codec::ir::IrRea
     }
 }
 
-/// The Responses top-level `service_tier` (the tier that SERVED the response) → the IR attribution
-/// slot [`crate::codec::ir::IrUsageDetail::service_tier`], whose vocabulary is the Anthropic one
-/// (`standard` / `priority` / `batch`). Only the tiers both vocabularies name are mapped: OpenAI's
-/// `default` IS the standard tier, and `priority` is `priority`. `flex` / `scale` have no word in
-/// the IR vocabulary and `auto` is a request-side instruction, not a served tier, so they are not
-/// carried (an invented equivalent would mis-state the tier). RSP-17.
-fn read_responses_service_tier(resp: &serde_json::Value) -> Option<String> {
-    match resp.get("service_tier").and_then(|t| t.as_str())? {
-        "default" => Some("standard".to_string()),
-        "priority" => Some("priority".to_string()),
-        _ => None,
-    }
-}
-
-/// The inverse of [`read_responses_service_tier`]: the IR served tier → the Responses
-/// `service_tier` word, or `None` (member omitted) for a tier the Responses vocabulary has no word
-/// for (Anthropic `batch`). The OpenAI-family words are accepted as-is so a tier that arrived in
-/// that vocabulary is not lost either.
-fn write_responses_service_tier(tier: Option<&str>) -> Option<&'static str> {
-    match tier? {
-        "standard" | "default" => Some("default"),
-        "priority" => Some("priority"),
-        "flex" => Some("flex"),
-        "scale" => Some("scale"),
-        _ => None,
-    }
-}
-
 /// Synthesize a protocol-correct Responses id (`resp_<opaque base62>`) for cross-protocol responses
 /// where the backend supplied none. Native OpenAI Responses ids are `resp_` followed by ~38+ chars
 /// of opaque random data with NO embedded structure; the previous form encoded the unix timestamp as
@@ -872,11 +845,10 @@ fn responses_error_code(err: &busbar_contract::protocol::IrError) -> String {
 /// `OnceLock` instead of being reconstructed on every `read_request` call — the rebuild was a
 /// pointless per-request allocation on the Responses ingress hot path.
 ///
-/// NOTE: `metadata` is deliberately NOT in this set. The Responses API accepts a top-level
-/// `metadata` object (user-defined key/value tagging); it is read into `IrRequest.metadata` (IR-03)
-/// so it crosses the seam, AND kept in `extra` so a same-protocol write re-emits the caller's exact
-/// member. The same holds for `service_tier`, `store`, `safety_identifier`, `prompt_cache_key` and
-/// `text.verbosity` (IR-04..07): the typed slot carries them across, `extra` keeps them verbatim.
+/// The flat request fields (`fields.rs`: `metadata`, `service_tier`, `store`, `safety_identifier`,
+/// `prompt_cache_key`) join the set from their table; a raw member the typed slot cannot reproduce
+/// is parked in `extra` by the walker, so a same-protocol write still re-emits the caller's exact
+/// member.
 fn responses_modeled_keys() -> &'static std::collections::HashSet<&'static str> {
     static MODELED_KEYS: OnceLock<std::collections::HashSet<&'static str>> = OnceLock::new();
     MODELED_KEYS.get_or_init(|| {
@@ -895,8 +867,8 @@ fn responses_modeled_keys() -> &'static std::collections::HashSet<&'static str> 
             // RSP-05: read into `IrRequest.user`, written back from it.
             "user",
         ]
-        .iter()
-        .cloned()
+        .into_iter()
+        .chain(crate::codec::carry::keys(fields::FIELDS))
         .collect()
     })
 }
@@ -1312,7 +1284,10 @@ fn read_responses_usage(
     response: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
     let mut usage = crate::codec::usage_count::read_usage("openai_responses", usage, USAGE)?;
-    usage.detail.service_tier = response.and_then(read_responses_service_tier);
+    usage.detail.service_tier = crate::codec::carry::read_word(
+        fields::SERVED_TIER,
+        response.and_then(|r| r.get("service_tier")),
+    );
     Ok(usage)
 }
 

@@ -33,6 +33,7 @@ use busbar_contract::ir::egress_prep::{LaneCaps, MaxOutputKey};
 #[allow(unused_imports)]
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
 
+pub(crate) mod fields;
 pub mod handler;
 mod reader;
 mod slots;
@@ -244,38 +245,8 @@ fn read_openai_usage(
     tier: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
     let mut usage = crate::codec::usage_count::read_usage("openai", usage, USAGE)?;
-    usage.detail.service_tier = read_openai_service_tier(tier);
+    usage.detail.service_tier = crate::codec::carry::read_word(fields::SERVED_TIER, tier);
     Ok(usage)
-}
-
-/// OpenAI `service_tier` (the tier that SERVED the request, a top-level response / chunk member) →
-/// the IR's `IrUsageDetail::service_tier`, which speaks the Anthropic vocabulary
-/// (`standard` / `priority` / `batch`, see the field's doc). OpenAI's `default` IS the standard tier
-/// and `priority` is the same word on both wires (OAI-03). `flex` and `scale` are OpenAI-family
-/// tiers with no Anthropic word; they are carried in the IR tier vocabulary
-/// ([`crate::codec::ir::IrServiceTier::as_str`]), which the Responses writer also speaks, so a flex/scale
-/// turn keeps its tier across the two OpenAI dialects.
-fn read_openai_service_tier(v: Option<&serde_json::Value>) -> Option<String> {
-    match v?.as_str()? {
-        "default" => Some("standard".to_string()),
-        "priority" => Some("priority".to_string()),
-        "flex" => Some(crate::codec::ir::IrServiceTier::Flex.as_str().to_string()),
-        "scale" => Some(crate::codec::ir::IrServiceTier::Scale.as_str().to_string()),
-        _ => None,
-    }
-}
-
-/// The inverse of [`read_openai_service_tier`]: the IR tier word → OpenAI's `service_tier` value,
-/// `None` when OpenAI has no response value for it (`batch` is a separate OpenAI API, not a tier a
-/// chat completion reports). The OpenAI-family words are accepted as-is.
-fn write_openai_service_tier(tier: Option<&str>) -> Option<&'static str> {
-    match tier? {
-        "standard" | "default" => Some("default"),
-        "priority" => Some("priority"),
-        "flex" => Some("flex"),
-        "scale" => Some("scale"),
-        _ => None,
-    }
 }
 
 /// Fallback `model` string stamped onto a cross-protocol OpenAI response when the egress backend
@@ -690,9 +661,8 @@ fn modeled_request_keys() -> &'static std::collections::HashSet<&'static str> {
             "reasoning_effort",
         ]
         .into_iter()
-        // The Q57 typed request slots (`slots.rs`): metadata, service_tier, store,
-        // safety_identifier, prompt_cache_key, verbosity, modalities, web_search_options.
-        .chain(slots::SLOT_KEYS)
+        // The flat request fields (`fields.rs`).
+        .chain(crate::codec::carry::keys(fields::FIELDS))
         .collect()
     })
 }
