@@ -1408,7 +1408,9 @@ kernel_crate = "busbar-kernel"
 # mirror folded; metrics' four cached-handle copies share one path), measured on k1-dedup. Downward only.
 # ── LOWERED 53148 -> 53038 by SWEEP-KERNEL (16 kernel dedup commits; -110 measured on 5f8e86152,
 # 52135 -> 52025; K1's kernel files untouched by it), the measurement. Downward only.
-kernel_ceiling = 53038
+# ── LOWERED 53038 -> 52945 at the train's measurement (SWEEP-KERNEL -110 with LLM-CLEAN's kernel forwarder
+# sweep -93 on top of K1-DEDUP's 53148; cargo xtask gate construction on lander8-e2). Downward only.
+kernel_ceiling = 52945
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
