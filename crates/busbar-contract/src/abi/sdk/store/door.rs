@@ -34,8 +34,8 @@ use serde::Serialize;
 
 use super::{Cap, CapsRefused, Cell, CellKey, Dimension, OpRefused, ReserveRefused, StoreSlots};
 use crate::abi::mechanism::call::{
-    AbiStr, Blob, Diag, InHead, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
-    MAX_TEXT, SEVERITY_WARN,
+    AbiStr, Blob, Diag, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET, MAX_TEXT,
+    SEVERITY_WARN,
 };
 use crate::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn, TickOut,
@@ -292,12 +292,6 @@ fn blob_over(bytes: &[u8], fmt: u32, secret: bool) -> Blob {
     }
 }
 
-const NO_BLOB: Blob = Blob {
-    ptr: std::ptr::null(),
-    len: 0,
-    fmt: BLOB_ABSENT,
-    flags: 0,
-};
 
 /// Answer one record (or none) under a lease.
 fn lease_one<B: StoreSlots>(
@@ -309,7 +303,7 @@ fn lease_one<B: StoreSlots>(
     match record {
         None => {
             out.found = ABSENT;
-            out.record = NO_BLOB;
+            out.record = Blob::ABSENT;
         }
         Some(bytes) => {
             out.found = FOUND;
@@ -446,7 +440,7 @@ fn list_into<T: Copy>(
 
 fn span_blob(at: Option<(*const u8, usize)>, fmt: u32) -> Blob {
     match at {
-        None => NO_BLOB,
+        None => Blob::ABSENT,
         Some((ptr, len)) => Blob {
             ptr,
             len,

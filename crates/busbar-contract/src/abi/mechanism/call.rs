@@ -112,6 +112,17 @@ pub struct AbiStr {
     pub len: usize,
 }
 
+impl AbiStr {
+    /// `bytes`, borrowed for the call they cross in.
+    #[must_use]
+    pub fn over(bytes: &[u8]) -> AbiStr {
+        AbiStr {
+            ptr: bytes.as_ptr(),
+            len: bytes.len(),
+        }
+    }
+}
+
 /// [`Blob::fmt`]: absent.
 pub const BLOB_ABSENT: u32 = 0;
 /// [`Blob::fmt`]: one JSON document.
@@ -135,6 +146,16 @@ pub struct Blob {
     pub fmt: u32,
     /// [`BLOB_SECRET`].
     pub flags: u32,
+}
+
+impl Blob {
+    /// No payload.
+    pub const ABSENT: Blob = Blob {
+        ptr: std::ptr::null(),
+        len: 0,
+        fmt: BLOB_ABSENT,
+        flags: 0,
+    };
 }
 
 /// The head of every `in` of every kind.

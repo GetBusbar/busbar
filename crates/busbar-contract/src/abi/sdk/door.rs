@@ -50,9 +50,7 @@ use std::mem::{offset_of, size_of, MaybeUninit};
 use std::panic::{catch_unwind, RefUnwindSafe, UnwindSafe};
 use std::ptr;
 
-use crate::abi::mechanism::call::{
-    AbiStr, Blob, InHead, Op, OutHead, Outcome, RawOutcome, BLOB_ABSENT,
-};
+use crate::abi::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead, Outcome, RawOutcome};
 use crate::abi::mechanism::door::{Door, KindTailHead, MetricFamily, Statement};
 use crate::abi::mechanism::lifecycle::{
     self as lc, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, RefreshIn,
@@ -541,19 +539,9 @@ pub const fn statement(name: &'static str, version: &'static str, max_inflight: 
         diag_ids_len: 0,
         secret_refs: ptr::null::<AbiStr>(),
         secret_refs_len: 0,
-        settings_schema: Blob {
-            ptr: ptr::null(),
-            len: 0,
-            fmt: BLOB_ABSENT,
-            flags: 0,
-        },
+        settings_schema: Blob::ABSENT,
         kind_tail: ptr::null::<KindTailHead>(),
-        extensions: Blob {
-            ptr: ptr::null(),
-            len: 0,
-            fmt: BLOB_ABSENT,
-            flags: 0,
-        },
+        extensions: Blob::ABSENT,
     }
 }
 
