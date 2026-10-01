@@ -875,7 +875,9 @@ because = "ARCHITECT ruling on the kernel budget (R-KERNEL, sd-extra.txt; K2-0 u
 # ── SUMMED on the trunk (CONVERGER): contract_caps 27128 + (26596 - 26656) = 27068; the measurement at the segment tip re-arms it.
 # RE-ARMED 26596 -> 26608 with its pair, AT THE MEASUREMENT: The audit door hands back its own pass and the vocabulary resolves a line's classes by lookup: kernel +5, contract +12.
 # ── SUMMED on the trunk (CONVERGER): contract_caps 27068 + (26608 - 26596) = 27080; the measurement at the segment tip re-arms it.
-contract_caps = 27080
+# RE-ARMED 26608 -> 26609 with its pair, AT THE MEASUREMENT: A line refuses a class no plane declared (the refusal, its diagnostic, the posting flag): kernel +19, contract +1.
+# ── SUMMED on the trunk (CONVERGER): contract_caps 27080 + (26609 - 26608) = 27081; the measurement at the segment tip re-arms it.
+contract_caps = 27081
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
 # measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
@@ -1510,7 +1512,9 @@ kernel_crate = "busbar-kernel"
 # ── SUMMED on the trunk (CONVERGER): kernel_ceiling 55780 + (54702 - 54900) = 55582; the measurement at the segment tip re-arms it.
 # ── RE-ARMED 54702 -> 54707, AT THE MEASUREMENT (OWNER GRANT 2026-09-29 (3)): The audit door hands back its own pass and the vocabulary resolves a line's classes by lookup: kernel +5, contract +12.
 # ── SUMMED on the trunk (CONVERGER): kernel_ceiling 55582 + (54707 - 54702) = 55587; the measurement at the segment tip re-arms it.
-kernel_ceiling = 55587
+# ── RE-ARMED 54707 -> 54726, AT THE MEASUREMENT (OWNER GRANT 2026-09-29 (3)): A line refuses a class no plane declared (the refusal, its diagnostic, the posting flag): kernel +19, contract +1.
+# ── SUMMED on the trunk (CONVERGER): kernel_ceiling 55587 + (54726 - 54707) = 55606; the measurement at the segment tip re-arms it.
+kernel_ceiling = 55606
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -1633,7 +1637,9 @@ contract_crate = "busbar-contract"
 # ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27128 + (26596 - 26656) = 27068; the measurement at the segment tip re-arms it.
 # RE-ARMED 26596 -> 26608 with its pair: The audit door hands back its own pass and the vocabulary resolves a line's classes by lookup: kernel +5, contract +12.
 # ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27068 + (26608 - 26596) = 27080; the measurement at the segment tip re-arms it.
-caps_contract_ceiling = 27080
+# RE-ARMED 26608 -> 26609 with its pair: A line refuses a class no plane declared (the refusal, its diagnostic, the posting flag): kernel +19, contract +1.
+# ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27080 + (26609 - 26608) = 27081; the measurement at the segment tip re-arms it.
+caps_contract_ceiling = 27081
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
