@@ -648,18 +648,21 @@ pub fn claim_pattern(target: &'static str) -> Result<Vec<PathSeg>, Fault> {
 /// THE HOST'S READING OF ONE PLANE CLAIM as the claim grammar's selector: [`CLAIM_EXACT`] is
 /// [`Selector::ExactPath`], [`CLAIM_PATTERN`] is [`Selector::PathPattern`], and neither is
 /// [`Selector::PrefixOneLevel`]. The registry orders and seals the result as it does every claim.
-/// The pattern's segments are kept for the life of the process, as the loaded image's are.
+/// A pattern's segments are handed to `keep`, which decides how long they live: the host keeps
+/// them with the generation that stated them. The contract holds nothing.
 ///
 /// # Errors
 ///
 /// [`Rule::Contradiction`] for both flags, or the pattern's own fault ([`claim_pattern`]).
-pub fn claim_selector(target: &'static str, flags: u32) -> Result<Selector, Fault> {
+pub fn claim_selector(
+    target: &'static str,
+    flags: u32,
+    keep: impl FnOnce(Vec<PathSeg>) -> &'static [PathSeg],
+) -> Result<Selector, Fault> {
     match (flags & CLAIM_EXACT != 0, flags & CLAIM_PATTERN != 0) {
         (true, true) => Err(fault(Rule::Contradiction, "claim.flags")),
         (true, false) => Ok(Selector::ExactPath(target)),
-        (false, true) => Ok(Selector::PathPattern(Box::leak(
-            claim_pattern(target)?.into_boxed_slice(),
-        ))),
+        (false, true) => Ok(Selector::PathPattern(keep(claim_pattern(target)?))),
         (false, false) => Ok(Selector::PrefixOneLevel(target)),
     }
 }

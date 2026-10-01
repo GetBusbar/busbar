@@ -783,6 +783,11 @@ fn a_claims_refusal_dialect_is_a_declared_dialect() {
     assert_eq!(check_claims(&[c], 0), Ok(()), "no dialects: 0");
 }
 
+/// A test keeps a pattern's segments for the process.
+fn kept(segments: Vec<crate::grammar::PathSeg>) -> &'static [crate::grammar::PathSeg] {
+    Box::leak(segments.into_boxed_slice())
+}
+
 #[test]
 fn a_pattern_claim_is_never_also_exact() {
     let pattern = claim("V", "/t/{id}", CLAIM_OPEN | CLAIM_PATTERN);
@@ -790,7 +795,7 @@ fn a_pattern_claim_is_never_also_exact() {
     let both = claim("V", "/t/{id}", CLAIM_EXACT | CLAIM_PATTERN);
     assert_eq!(check_claims(&[both], 1), f(Rule::Contradiction, "claim.flags"));
     assert_eq!(
-        claim_selector("/t/{id}", CLAIM_EXACT | CLAIM_PATTERN),
+        claim_selector("/t/{id}", CLAIM_EXACT | CLAIM_PATTERN, kept).map(|_| ()),
         f(Rule::Contradiction, "claim.flags")
     );
 }
@@ -799,34 +804,37 @@ fn a_pattern_claim_is_never_also_exact() {
 fn a_pattern_target_parses_into_literals_and_one_level_placeholders() {
     use crate::grammar::PathSeg::{Lit, Var};
     assert_eq!(
-        claim_pattern("/a2a/tasks/{id}/configs/{config_id}"),
-        Ok(vec![Lit("a2a"), Lit("tasks"), Var, Lit("configs"), Var])
+        claim_pattern("/v1/tasks/{id}/configs/{config_id}"),
+        Ok(vec![Lit("v1"), Lit("tasks"), Var, Lit("configs"), Var])
     );
     for bad in [
         "t/{id}", "/t//{id}", "/t/{}", "/t/{id", "/t/id}", "/t/{i}d}", "/t/{id}/",
     ] {
         assert_eq!(
-            claim_pattern(bad),
+            claim_pattern(bad).map(|_| ()),
             f(Rule::Contradiction, "claim.pattern"),
             "{bad}"
         );
     }
-    assert_eq!(claim_pattern("/t/id"), f(Rule::Missing, "claim.pattern"));
+    assert_eq!(
+        claim_pattern("/t/id").map(|_| ()),
+        f(Rule::Missing, "claim.pattern")
+    );
 }
 
 #[test]
 fn a_claim_reads_as_the_grammars_selector_by_its_flags() {
     use crate::grammar::{PathSeg, Selector};
     assert_eq!(
-        claim_selector("/t", CLAIM_EXACT),
+        claim_selector("/t", CLAIM_EXACT, kept),
         Ok(Selector::ExactPath("/t"))
     );
     assert_eq!(
-        claim_selector("/t", CLAIM_OPEN),
+        claim_selector("/t", CLAIM_OPEN, kept),
         Ok(Selector::PrefixOneLevel("/t"))
     );
     assert_eq!(
-        claim_selector("/t/{id}", CLAIM_PATTERN),
+        claim_selector("/t/{id}", CLAIM_PATTERN, kept),
         Ok(Selector::PathPattern(&[PathSeg::Lit("t"), PathSeg::Var]))
     );
 }
@@ -835,14 +843,14 @@ fn a_claim_reads_as_the_grammars_selector_by_its_flags() {
 #[test]
 fn a_pattern_claims_one_level_only() {
     let Ok(crate::grammar::Selector::PathPattern(p)) =
-        claim_selector("/a2a/tasks/{id}", CLAIM_PATTERN)
+        claim_selector("/v1/tasks/{id}", CLAIM_PATTERN, kept)
     else {
         panic!("a pattern claim reads as a segment pattern");
     };
-    assert!(crate::grammar::pattern_matches(p, "/a2a/tasks/t1"));
-    assert!(!crate::grammar::pattern_matches(p, "/a2a/tasks/t1/x"));
-    assert!(!crate::grammar::pattern_matches(p, "/a2a/tasks/"));
-    assert!(!crate::grammar::pattern_matches(p, "/a2a/tasks"));
+    assert!(crate::grammar::pattern_matches(p, "/v1/tasks/t1"));
+    assert!(!crate::grammar::pattern_matches(p, "/v1/tasks/t1/x"));
+    assert!(!crate::grammar::pattern_matches(p, "/v1/tasks/"));
+    assert!(!crate::grammar::pattern_matches(p, "/v1/tasks"));
 }
 
 #[test]

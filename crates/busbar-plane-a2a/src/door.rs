@@ -23,9 +23,9 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Blob, BLOB_ABSENT, BLOB_JSON
 use busbar_contract::abi::mechanism::door::KindTailHead;
 use busbar_contract::abi::plane::{
     AdminRoute, BillableClass, Claim, PinMechanism, PlaneSnapshot, PlaneTail, Section, TrustKey,
-    CLAIM_EXACT, CLAIM_OPEN, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, MECHANISM_ROOT,
-    PIN_FINGERPRINT, SECTION_DECLARING, SHAPE_PIECEWISE, TRUST_PIN, TRUST_RECOVERY_BACKOFF,
-    TRUST_REVERIFY_TTL,
+    CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
+    MECHANISM_ROOT, PIN_FINGERPRINT, SECTION_DECLARING, SHAPE_PIECEWISE, TRUST_PIN,
+    TRUST_RECOVERY_BACKOFF, TRUST_REVERIFY_TTL,
 };
 use busbar_contract::abi::sdk::door::abi_str;
 
@@ -395,15 +395,16 @@ impl Generation {
     }
 }
 
-/// A route as the snapshot's claim: an open route takes no inbound credential, and a target with
-/// no path variable matches exactly.
+/// A route as the snapshot's claim: an open route takes no inbound credential; a target with a
+/// path variable is a pattern, one level per variable, and any other target matches exactly.
 fn claim(r: &Route) -> Claim {
-    let mut flags = 0;
+    let mut flags = if r.target.contains('{') {
+        CLAIM_PATTERN
+    } else {
+        CLAIM_EXACT
+    };
     if r.open {
         flags |= CLAIM_OPEN;
-    }
-    if !r.target.contains('{') {
-        flags |= CLAIM_EXACT;
     }
     Claim {
         verb: abi_str(r.verb),

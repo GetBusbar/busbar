@@ -366,8 +366,10 @@ fn a_deployment_is_bootstrapped_exactly_once() {
 /// A plane door's claim as the host reads it: the target and flags through the contract's one
 /// mapping onto the claim grammar.
 fn door_claim(target: &'static str, flags: u32) -> Claim {
-    let selector = busbar_contract::abi::plane::check::claim_selector(target, flags)
-        .expect("a well-formed door claim");
+    let selector = busbar_contract::abi::plane::check::claim_selector(target, flags, |v| {
+        Box::leak(v.into_boxed_slice())
+    })
+    .expect("a well-formed door claim");
     claim("wire", selector)
 }
 

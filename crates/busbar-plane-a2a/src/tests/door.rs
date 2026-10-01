@@ -101,14 +101,19 @@ fn the_abi_trust_keys_are_the_grammars_trust_keys() {
 }
 
 #[test]
-fn an_open_route_claims_open_and_a_literal_target_claims_exact() {
+fn an_open_route_claims_open_and_a_templated_target_claims_a_pattern() {
     let g = Generation::build(1, Some(&endpoint("gw", "")));
     for (c, r) in g.claims.iter().zip(ROUTES) {
+        let templated = r.target.contains('{');
         assert_eq!(c.flags & CLAIM_OPEN != 0, r.open, "{}", r.target);
-        assert_eq!(
-            c.flags & CLAIM_EXACT != 0,
-            !r.target.contains('{'),
-            "{}",
+        assert_eq!(c.flags & CLAIM_EXACT != 0, !templated, "{}", r.target);
+        assert_eq!(c.flags & CLAIM_PATTERN != 0, templated, "{}", r.target);
+        let selector = busbar_contract::abi::plane::check::claim_selector(r.target, c.flags, |v| {
+            Box::leak(v.into_boxed_slice())
+        });
+        assert!(
+            selector.is_ok(),
+            "{} reads as a claim: {selector:?}",
             r.target
         );
     }
