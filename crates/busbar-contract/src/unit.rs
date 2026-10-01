@@ -700,17 +700,6 @@ impl<'u> Unit<'u> {
         self.leg_results.as_slice()
     }
 
-    /// Record the kernel's byte and frame counts. Kernel-only.
-    pub fn set_counts(
-        &mut self,
-        _seal: &dyn KernelSeal,
-        byte_counts: (u64, u64),
-        frame_counts: (u32, u32),
-    ) {
-        self.byte_counts = byte_counts;
-        self.frame_counts = frame_counts;
-    }
-
     /// Record a leg's reply. Kernel-only.
     ///
     /// # Errors
