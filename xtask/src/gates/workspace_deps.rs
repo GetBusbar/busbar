@@ -1168,14 +1168,21 @@ mod tests {
         let real = cx
             .walk(&WalkSpec::new(["crates"]).ext("toml"))
             .expect("the real crates/ walk");
+        // `crates/` also holds `.toml` files that are not manifests (the LLM dialect mapping
+        // files): keep the first `n` manifests and remove every other `.toml`.
+        let manifests = real.iter().filter(|f| f.rel.ends_with("Cargo.toml")).count();
         assert!(
-            real.len() >= n,
-            "the tree holds {} manifests; this fixture needs {n}",
-            real.len()
+            manifests >= n,
+            "the tree holds {manifests} manifests; this fixture needs {n}"
         );
         let mut ov = Overlay::new();
-        for f in real.iter().skip(n) {
-            ov.remove(&f.rel);
+        let mut kept = 0;
+        for f in &real {
+            if f.rel.ends_with("Cargo.toml") && kept < n {
+                kept += 1;
+            } else {
+                ov.remove(&f.rel);
+            }
         }
         cx.with_overlay(ov)
     }
