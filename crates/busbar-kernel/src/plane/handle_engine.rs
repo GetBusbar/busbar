@@ -728,17 +728,11 @@ impl DurableHandleEngine {
             .ok_or_else(|| HandleEngineError::NoSuchHandle(id.to_string()))?;
         // The per-handle inner lock serializes THIS handle's chain across its durable I/O.
         let mut slot = Self::lock_slot(&slot_arc);
-        let plan_out = plan(slot.row.as_ref(), &slot.pos).map_err(|e| match e {
-            MutateError::Rejected(s) => HandleEngineError::Rejected(s),
-            MutateError::Store(e) => HandleEngineError::Store(e),
-        })?;
-        let Some(m) = plan_out else {
-            // No-op: return the current row unchanged.
-            return Ok(slot.row.clone());
-        };
-        self.apply_mutation_to_slot(id, &mut slot, m)
-            .map_err(HandleEngineError::Store)?;
-        Ok(slot.row.clone())
+        self.plan_and_apply(id, &mut slot, plan)
+            .map_err(|e| match e {
+                MutateError::Rejected(s) => HandleEngineError::Rejected(s),
+                MutateError::Store(e) => HandleEngineError::Store(e),
+            })
     }
 
     /// SCOPED MUTATE — the authorization gate on the WRITE/RESUME path, mirroring
@@ -764,32 +758,54 @@ impl DurableHandleEngine {
             &ChainPosition,
         ) -> Result<Option<Mutation>, MutateError>,
     {
-        if owner.is_empty() {
-            return Err(ScopedMutateError::NotYours);
-        }
-        // Take the outer lock only to clone out the shard; a missing id collapses to the same refusal as
-        // a foreign owner, so nothing before the ownership check leaks whether the id exists.
-        let Some(slot_arc) = self.lock().get(id).cloned() else {
-            return Err(ScopedMutateError::NotYours);
-        };
-        // The per-handle inner lock serializes THIS handle's chain across its durable I/O.
-        let mut slot = Self::lock_slot(&slot_arc);
         // Owner gate BEFORE plan: a foreign, missing, or empty-owner target is one refusal, so `plan`'s
         // side effects and timing never leak whether the id exists.
-        if slot.meta.owner != owner {
-            return Err(ScopedMutateError::NotYours);
+        self.with_owned_slot(owner, id, |slot| self.plan_and_apply(id, slot, plan))
+            .ok_or(ScopedMutateError::NotYours)?
+            .map_err(|e| match e {
+                MutateError::Rejected(s) => ScopedMutateError::Rejected(s),
+                MutateError::Store(e) => ScopedMutateError::Store(e),
+            })
+    }
+
+    /// Run `plan` against a held slot and, unless it is a no-op, persist-then-update. Returns the
+    /// resulting opaque row (the current row unchanged on a no-op).
+    fn plan_and_apply<F>(
+        &self,
+        id: &str,
+        slot: &mut HandleSlot,
+        plan: F,
+    ) -> Result<Arc<dyn Any + Send + Sync>, MutateError>
+    where
+        F: FnOnce(
+            &(dyn Any + Send + Sync),
+            &ChainPosition,
+        ) -> Result<Option<Mutation>, MutateError>,
+    {
+        if let Some(m) = plan(slot.row.as_ref(), &slot.pos)? {
+            self.apply_mutation_to_slot(id, slot, m)
+                .map_err(MutateError::Store)?;
         }
-        let plan_out = plan(slot.row.as_ref(), &slot.pos).map_err(|e| match e {
-            MutateError::Rejected(s) => ScopedMutateError::Rejected(s),
-            MutateError::Store(e) => ScopedMutateError::Store(e),
-        })?;
-        let Some(m) = plan_out else {
-            // No-op: return the current row unchanged.
-            return Ok(slot.row.clone());
-        };
-        self.apply_mutation_to_slot(id, &mut slot, m)
-            .map_err(ScopedMutateError::Store)?;
         Ok(slot.row.clone())
+    }
+
+    /// THE OWNER GATE shared by the scoped read and the scoped write: run `f` on `id`'s slot, held
+    /// under its inner lock, only when `owner` is non-empty and owns it. An empty owner, a missing
+    /// handle and a foreign one all collapse to `None`. The outer lock is taken only to clone out the
+    /// shard, so nothing before the ownership check leaks whether the id exists.
+    fn with_owned_slot<T>(
+        &self,
+        owner: &str,
+        id: &str,
+        f: impl FnOnce(&mut HandleSlot) -> T,
+    ) -> Option<T> {
+        if owner.is_empty() {
+            return None;
+        }
+        let slot_arc = self.lock().get(id).cloned()?;
+        // The per-handle inner lock serializes THIS handle's chain across its durable I/O.
+        let mut slot = Self::lock_slot(&slot_arc);
+        (slot.meta.owner == owner).then(|| f(&mut slot))
     }
 
     /// THE RETENTION SWEEP. Three rules, IN ORDER, and the order is part of the outcome: (0)
@@ -1040,18 +1056,8 @@ impl DurableHandleEngine {
         owner: &str,
         id: &str,
     ) -> Result<Arc<dyn Any + Send + Sync>, HandleDenied> {
-        if owner.is_empty() {
-            return Err(HandleDenied::NotYours);
-        }
-        let Some(slot_arc) = self.lock().get(id).cloned() else {
-            return Err(HandleDenied::NotYours);
-        };
-        let slot = Self::lock_slot(&slot_arc);
-        if slot.meta.owner == owner {
-            Ok(slot.row.clone())
-        } else {
-            Err(HandleDenied::NotYours)
-        }
+        self.with_owned_slot(owner, id, |slot| slot.row.clone())
+            .ok_or(HandleDenied::NotYours)
     }
 
     /// SCOPED LIST — every handle owned by `owner`, sorted by id so the result is deterministic. An
