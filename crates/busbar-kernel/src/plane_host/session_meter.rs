@@ -94,8 +94,14 @@ impl SessionAccount {
             usage_units: std::collections::BTreeMap::from([(PER_SESSION.to_string(), 1)]),
         };
         let lane = plane_fee_lane(plane);
-        self.host
-            .meter_ledger(&self.pin, &self.key, &self.pool, &lane, &one, self.opened_at);
+        self.host.meter_ledger(
+            &self.pin,
+            &self.key,
+            &self.pool,
+            &lane,
+            &one,
+            self.opened_at,
+        );
     }
 
     /// GIVE BACK THE OPEN'S SESSION COUNT (Q17-6, ARCHITECT ruling R4): a session whose open failed

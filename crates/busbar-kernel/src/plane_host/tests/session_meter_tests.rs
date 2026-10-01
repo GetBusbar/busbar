@@ -59,6 +59,10 @@ fn a_refunded_open_gives_back_its_session_fee_on_the_budget_book() {
     let (kept, failed) = (open(), open());
     assert_eq!(spend(), 80, "two counted opens at 40");
     failed.refund_open();
-    assert_eq!(spend(), 40, "the failed open's fee is back, the kept one stays");
+    assert_eq!(
+        spend(),
+        40,
+        "the failed open's fee is back, the kept one stays"
+    );
     drop(kept);
 }
