@@ -479,3 +479,52 @@ fn every_service_field_sits_at_its_op_index() {
     assert_eq!(table.len(), SERVICES as usize);
     assert_eq!(size_of::<HostSlots>(), slot(SERVICES));
 }
+
+/// RED ARM (`service.rs` `answer`, the `service.out.size` arm): an `out` whose `size` is not this
+/// layout's is `Foreign`, named by field.
+#[test]
+fn red_an_out_of_a_foreign_size_names_service_out_size() {
+    let i = judge_in(TICKET);
+    let mut o = out(Outcome::Ready);
+    o.size += 8;
+    assert_eq!(
+        check_dest_judge(&i, ready(&o), &o).unwrap_err(),
+        fault(Rule::Foreign, "service.out.size")
+    );
+}
+
+/// RED ARM (`check_clock_now`, the `clock_now.reading` arm): a READY answer with a NULL reading slot
+/// is `NullWithCount`, named by field.
+#[test]
+fn red_a_ready_clock_answer_with_no_reading_names_clock_now_reading() {
+    let o = out(Outcome::Ready);
+    let i = ClockNowIn {
+        head: head(op::CLOCK_NOW, Ticket::NONE, 0),
+        reading: core::ptr::null_mut(),
+    };
+    assert_eq!(
+        check_clock_now(&i, ready(&o), &o).unwrap_err(),
+        fault(Rule::NullWithCount, "clock_now.reading")
+    );
+}
+
+/// RED ARM (`check_clock_now`, the `clock_now.reading.size` arm): a READY answer whose reading is
+/// not this layout's size is `Foreign`, named by field.
+#[test]
+fn red_a_ready_clock_answer_of_a_foreign_reading_names_clock_now_reading_size() {
+    let o = out(Outcome::Ready);
+    let mut reading = ClockReading {
+        size: core::mem::size_of::<ClockReading>() as u32 + 8,
+        _reserved: 0,
+        wall_ns: 1,
+        mono_ns: 1,
+    };
+    let i = ClockNowIn {
+        head: head(op::CLOCK_NOW, Ticket::NONE, 0),
+        reading: &mut reading,
+    };
+    assert_eq!(
+        check_clock_now(&i, ready(&o), &o).unwrap_err(),
+        fault(Rule::Foreign, "clock_now.reading.size")
+    );
+}
