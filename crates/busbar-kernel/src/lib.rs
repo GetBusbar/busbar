@@ -282,6 +282,9 @@ pub mod proxy;
 /// de-vocab): it is core's own auth-middleware infrastructure — gating every request in
 /// `auth_middleware` before any handler runs — not part of the admin HTTP API service.
 pub mod ratelimit;
+/// THE DURABLE PER-PRINCIPAL RESIDUAL LOG: one hash-chained `usage.residual` row per settle that
+/// carried usage counts no billing class records (MONEY LAW). See the module header.
+pub mod residual_log;
 // THE NEUTRAL PER-SESSION SUBSTRATE relocated DOWN to busbar-substrate (std-only, money-safe, zero
 // busbar deps). Core re-exports it so `crate::session::{SessionStore, SessionKey, OwnerKey}` — the
 // gate's screen-cache tenant, the appbuild session_store construction and the App field — are

@@ -42,6 +42,11 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
     if let Some(gov) = app.governance.as_ref() {
         crate::plane::auditlog::register_and_migrate(app, &gov.store());
     }
+    // THE RESIDUAL LOG (MONEY LAW, ARCHITECT ruling 2026-10-02): core's per-principal
+    // `usage.residual` chain, registered and REPLAYED from the durable store before a listener binds,
+    // so every principal's chain continues where the last process stopped. Core's, not a plane's: the
+    // kernel spells the row at the settle step for every plane.
+    crate::residual_log::register_and_restore(app);
 
     // THE PLANE HYDRATION FOLD. Each plane restores its OWN durable state through the `hydrate` hook
     // it declared, in plane-list order (the audit ring, above, already went first). The store handed
