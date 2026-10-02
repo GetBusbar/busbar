@@ -73,6 +73,12 @@ const TRANSPORT_AXIS: &str = "transport";
 /// the host's sockets by the connector.
 pub(crate) const DOOR_AXIS: &str = "transport-door";
 
+/// Beside `transport`, for a wire whose row keeps its own `build`: the row's entry ALSO exports its
+/// memory-ABI `door`, which the root's one Connector opens as a framer entry, so a plugin's need over
+/// this scheme is served on the connector (an export sink's outbound `http`, `BUSBAR-1.6.0.md` Part 2
+/// #50) while the wire the registry folds is unchanged.
+pub(crate) const CONNECTOR_DOOR_AXIS: &str = "connector-door";
+
 /// The plane door axis (#2, THE DESIGN §11.4): the row's entry exports its plane kind's memory-ABI
 /// `door`, and the root hands it to the loader beside every dropped-in plane door
 /// (`crate::root::boot::dropped_planes_of`), so a compiled-in plane is bound through the same table
@@ -259,6 +265,7 @@ pub(crate) fn linked_source(
                     || axis == "hot-plane"
                     || axis == TRANSPORT_AXIS
                     || axis == DOOR_AXIS
+                    || axis == CONNECTOR_DOOR_AXIS
                     || axis == PLANE_DOOR_AXIS
                     || axis == AUTH_AXIS
                     || axis == SECRET_AXIS
@@ -428,7 +435,7 @@ pub(crate) fn linked_source(
         .iter()
         .filter(|(_, a)| a.iter().any(|x| x == TRANSPORT_AXIS))
     {
-        if axes.iter().any(|x| x == DOOR_AXIS) {
+        if axes.iter().any(|x| x == DOOR_AXIS || x == CONNECTOR_DOOR_AXIS) {
             out.push_str(&format!("({e}::KEY, {e}::door), "));
         }
     }

@@ -411,7 +411,9 @@ hooks-ranking = "hooks"
 secret-env = "secret-doors"
 secret-file = "secret-doors"
 transport-tcp = "transport transport-door"
-transport-http = "transport"
+# `connector-door`: the http framer's door is opened on the root's one Connector, so an export
+# sink's outbound `http` need is served compiled-in; the wire the registry folds keeps its build.
+transport-http = "transport connector-door"
 transport-sse = "transport"
 transport-ws = "transport"
 transport-grpc = "transport"
