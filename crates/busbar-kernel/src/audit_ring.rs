@@ -13,7 +13,7 @@
 //!
 //! ## Where durability lives — the ONE durable path
 //!
-//! Durability is the neutral journal seam's ([`crate::plane::auditlog`]): [`AuditLog::record_by`] is
+//! Durability is the neutral journal seam's ([`crate::audit::auditlog`]): [`AuditLog::record_by`] is
 //! the ONE place an admin mutation is recorded, and it feeds that mutation onto the store-backed
 //! durable seam, which persists the hash-chained record into `plane_records`, seeds the read-model ring
 //! `GET /audit` serves, and is restored + verified at boot. This ring keeps NO durable state: it is a
@@ -229,7 +229,7 @@ pub use crate::audit::MAX_AUDIT_ENTRIES;
 
 /// The in-memory admin audit ring. `record_by` is append-only + bounded (FIFO prune of the oldest — a
 /// hot cache of the recent tail); `list` returns most-recent-first. It holds NO durable state: the
-/// durable path is the neutral journal seam ([`crate::plane::auditlog`]), which `record_by` feeds and
+/// durable path is the neutral journal seam ([`crate::audit::auditlog`]), which `record_by` feeds and
 /// which serves the durable write, the `GET /audit` read, and the boot restore + verify. This ring is
 /// ephemeral by construction, started fresh on every boot. Interior-mutable so it can be a shared
 /// global.
@@ -290,9 +290,9 @@ impl AuditLog {
         // THE CHOKEPOINT FEED onto the durable journal seam. `record_by` is the ONE place an admin
         // mutation is recorded, so this ONE call — with the SAME `ts` sealed above — is the durable
         // write. Fire-and-forget: it NEVER fails the mutation it records (see
-        // `plane::auditlog::emit_admin_hostless`), and the seam's own seq/prev_hash/hash are minted
+        // `audit::auditlog::emit_admin_hostless`), and the seam's own seq/prev_hash/hash are minted
         // independently of this in-process ring's (both continue the same persisted chain).
-        crate::plane::auditlog::emit_admin_hostless(ts, action, resource, outcome, principal);
+        crate::audit::auditlog::emit_admin_hostless(ts, action, resource, outcome, principal);
     }
 
     /// Export the retained ring, oldest first. TEST-ONLY: the durable seam is production's restore
@@ -305,7 +305,7 @@ impl AuditLog {
     }
 
     /// Seed the ring from an in-process snapshot. TEST-ONLY: the durable seam is production's restore
-    /// source (`plane::auditlog::PlaneAuditLog::restore_from_store`); this remains as the in-process
+    /// source (`audit::auditlog::PlaneAuditLog::restore_from_store`); this remains as the in-process
     /// restart-simulation seam the ring tests drive. Replaces the current contents and resumes the
     /// sequence AFTER the highest restored seq, so post-restart entries chain on without seq reuse.
     #[cfg(test)]
@@ -340,7 +340,7 @@ impl AuditLog {
     /// skip `offset`, then take `limit`. `None` filters match everything.
     ///
     /// NO PRODUCTION CALLER after the 1.6.0 seam read cutover: `GET /audit` reads the durable journal
-    /// seam's [`crate::plane::auditlog::AUDIT_LOG`]. This in-process ring's `list_filtered`/`list`
+    /// seam's [`crate::audit::auditlog::AUDIT_LOG`]. This in-process ring's `list_filtered`/`list`
     /// remain the direct-ring read the audit unit tests still assert on.
     #[allow(dead_code)]
     pub fn list_filtered(

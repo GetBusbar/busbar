@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/plane/auditlog.rs`.
+//! Tests for `crates/busbar-kernel/src/audit/auditlog.rs`.
 
 use super::*;
 use crate::audit::{digest, frame_prelude, Framing};

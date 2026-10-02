@@ -2017,7 +2017,7 @@ impl TestApp {
         // once cut over) would stay empty. This funnel guarantees every live-server audit test's
         // `record_by` feeds the seam. Idempotent + re-entrancy-guarded (this is itself on the shared
         // global app's build path).
-        crate::plane::auditlog::ensure_global_audit_stream_registered();
+        crate::audit::auditlog::ensure_global_audit_stream_registered();
         (app, store)
     }
 }
