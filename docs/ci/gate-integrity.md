@@ -115,22 +115,14 @@ green-with-the-list-printed on the dev line and red for `qa`/`main` while anythi
 
 ## The landing runner
 
-`scripts/land.sh --to qa|main` is the promotion posture. In it:
-
-- the standing-red allowance is **refused entirely** — `land_construction_standing_reds` returns
-  nothing, so any construction FAIL row aborts the leg, and the refusal names the rows;
-- every override that could let a red through (`LAND_PUSH_ANYWAY`, `LAND_CI_RED_OK`, `LAND_FORCE`,
-  `LAND_SKIP_GATES`, `LAND_ALLOW_RED`) is refused up front, by name, before any work happens;
-- the posture is printed at the top of the run, with the sentence that no override can turn a red
-  into a land.
-
-An override flag that survives into `qa`/`main` is the same thing as no gate at all — it is the
-`--no-verify` of promotion, and it is always used on exactly the day it should not be.
+Promotion is `promote.yml`'s hop (busbar-release `ci/promote/`): a pull request into `qa` or `main`
+is admitted by the turnstile or not at all, and the hop has no override flag. A lane lands on
+`predev` through `busbar-release ship`, which opens the pull request and stops; CI is the proof.
 
 ## The sentence this all exists for
 
 **There is no human step between a red and a fix.** Humans and agents write code and push it; the
 gates go red on their own, in CI, on the fleet, with the offending line printed; the push to `qa` or
 `main` is impossible until it is green — not discouraged, not reviewed, impossible, because branch
-protection is code and the landing runner refuses its own overrides. Nobody has to remember to run
+protection is code and the hop has no override. Nobody has to remember to run
 anything, nobody has to read a checklist, and nobody has the option of deciding this one is fine.
