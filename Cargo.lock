@@ -4754,6 +4754,8 @@ dependencies = [
  "proc-macro2",
  "rcgen",
  "ring",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "serde_yaml_ng",

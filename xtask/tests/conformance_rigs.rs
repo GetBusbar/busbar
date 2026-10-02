@@ -9,8 +9,7 @@
 use serde_json::{json, Value};
 use xtask::conformance_record::{
     as_signing_key, base64_std, idp_reply, oidf_plan_config, oidf_subject_config,
-    rsa_jwk_from_pkcs8, suite_client_key, OidfClient, OidfSubject, AS_KEY_ID,
-    OIDF_RESOURCE_PATH,
+    rsa_jwk_from_pkcs8, suite_client_key, OidfClient, OidfSubject, AS_KEY_ID, OIDF_RESOURCE_PATH,
 };
 use xtask::conformance_record::{
     b64url, decide_h2, decide_jev, decide_oidf, decide_slsa, decide_tls, discriminates, es256_jwk,

@@ -58,6 +58,11 @@ ring = { workspace = true }
 # public CA. rcgen on ring, already in Cargo.lock (busbar-core-connector, busbar-a2a); `pem` writes
 # the files busbar's `tls:` block reads. xtask ships in no binary.
 rcgen = { workspace = true, features = ["pem"] }
+# The oidf rig's IdP stub serves the authorization server's JWKS over HTTPS on a loopback port of
+# its own (the destination guard keeps a node's own ports off-limits). rustls on ring, both already
+# in Cargo.lock as the TLS stack busbar ships; no crate enters the lock.
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
 
 [dev-dependencies]
 # Test-only: proves the verifier's small-order key table against an independent curve

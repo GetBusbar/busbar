@@ -272,6 +272,10 @@ pub struct Pki {
     pub ca: PathBuf,
     pub cert: PathBuf,
     pub key: PathBuf,
+    /// The leaf and the CA, DER, for a rig-owned TLS listener (the oidf rig's IdP stub).
+    pub chain_der: Vec<Vec<u8>>,
+    /// The leaf's PKCS#8 private key, DER.
+    pub key_der: Vec<u8>,
 }
 
 pub fn mint_pki(dir: &Path, sans: &[&str]) -> Result<Pki, String> {
@@ -320,6 +324,8 @@ pub fn mint_pki(dir: &Path, sans: &[&str]) -> Result<Pki, String> {
         ca: dir.join("ca.pem"),
         cert: dir.join("cert.pem"),
         key: dir.join("key.pem"),
+        chain_der: vec![leaf.der().to_vec(), ca_cert.der().to_vec()],
+        key_der: leaf_key.serialize_der(),
     };
     let w = |p: &Path, s: String| std::fs::write(p, s).map_err(|e| format!("{}: {e}", p.display()));
     w(&pki.ca, ca_cert.pem())?;

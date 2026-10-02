@@ -49,9 +49,9 @@ pub use a2a::{discriminates, governance_observed, NEGATIVE_PAIRS};
 pub use h2::{decide_h2, junit_cases, Case, CaseResult, H2Run};
 pub use jev::{decide_jev, is_jev_refusal, judge_jev_ledger, tests_passed, JevRun, REPORTED_UNITS};
 pub use oidf::{
-    decide_oidf, es256_jwk, module_results, oidf_plan_config, oidf_subject_config,
-    rsa_jwk_from_pkcs8, OidfClient, OidfRun, RESOURCE_PATH as OIDF_RESOURCE_PATH,
-    SUITES as OIDF_SUITES,
+    as_signing_key, base64_std, decide_oidf, es256_jwk, idp_reply, module_results,
+    oidf_plan_config, oidf_subject_config, rsa_jwk_from_pkcs8, suite_client_key, OidfClient,
+    OidfRun, OidfSubject, AS_KEY_ID, RESOURCE_PATH as OIDF_RESOURCE_PATH, SUITES as OIDF_SUITES,
 };
 pub use rigs::{
     decide_legs, decide_llm, decide_voice, decide_ws, rig_for, Inputs, LlmRun, VoiceRun, WsRun,
