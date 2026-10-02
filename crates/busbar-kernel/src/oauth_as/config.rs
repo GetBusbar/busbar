@@ -115,7 +115,7 @@ impl std::fmt::Display for AsCfgError {
 
 /// The VALIDATED authorization server: every endpoint derived, every refusal already taken.
 ///
-/// Holds no key and no server object — those are runtime state and live on `busbar_oauth2::plane::AsPlane`
+/// Holds no key and no server object — those are runtime state and live on `busbar_core_oauth2::plane::AsPlane`
 /// (the sibling crate the plane's runtime moved to in 1.6.0). This is the config half, so it can be
 /// compared, logged and swapped without touching a secret.
 ///
@@ -125,7 +125,7 @@ impl std::fmt::Display for AsCfgError {
 /// and a walk through an accessor cannot deliver that (`identity.signing_key()` keeps compiling the
 /// day somebody adds a second `SecretRef` here, and the new secret is then one `--validate` reports
 /// as fine and the process fails on at runtime). The second reason is the 1.6.0 plane split:
-/// `busbar-oauth2`'s own gating proof (`tests::mount_tests::inventory`) destructures this the SAME
+/// `busbar-core-oauth2`'s own gating proof (`tests::mount_tests::inventory`) destructures this the SAME
 /// exhaustive way, from OUTSIDE this crate — so the field visibility widened from `pub(crate)` to
 /// `pub` to cross that boundary; the exhaustive-destructure discipline itself is unchanged.
 #[derive(Clone, Debug, PartialEq)]
