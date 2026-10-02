@@ -1042,6 +1042,56 @@ fn usage_metadata_extracts_split_token_classes() {
     assert_eq!(back, src);
 }
 
+/// RED-BEFORE-GREEN (MONEY-AUDIT STR-4): `usageMetadata` is a TOP-LEVEL field Gemini Live may send on
+/// the same message as `serverContent` (typically the `turnComplete` frame) or `toolCall`. The reader
+/// dispatched on the message type and returned before it looked at `usageMetadata`, so usage riding on
+/// a content frame produced no `Usage` event and the turn billed zero tokens.
+#[test]
+fn usage_metadata_riding_on_a_content_frame_is_billed() {
+    let codec = GeminiLiveCodec;
+    let usage = json!({
+        "promptTokenCount": 95,
+        "responseTokenCount": 50,
+        "totalTokenCount": 145,
+        "promptTokensDetails": [
+            { "modality": "AUDIO", "tokenCount": 80 },
+            { "modality": "TEXT", "tokenCount": 15 }
+        ],
+        "responseTokensDetails": [
+            { "modality": "AUDIO", "tokenCount": 40 },
+            { "modality": "TEXT", "tokenCount": 10 }
+        ]
+    });
+    let frames = [
+        json!({ "serverContent": { "turnComplete": true }, "usageMetadata": usage }),
+        json!({
+            "toolCall": { "functionCalls": [ { "id": "fc_1", "name": "f", "args": {} } ] },
+            "usageMetadata": usage
+        }),
+    ];
+    for src in frames {
+        let ir = codec.read_down(wire(&src.to_string()), &mut DecodeState::default());
+        let usages: Vec<&IrDuplexUsage> = ir
+            .iter()
+            .filter_map(|e| match e {
+                IrServerEvent::Usage(u) => Some(u),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(usages.len(), 1, "one Usage event for {src}: {ir:?}");
+        let u = usages[0];
+        assert_eq!(
+            (u.audio_in, u.text_in, u.audio_out, u.text_out),
+            (80, 15, 40, 10)
+        );
+        // The frame's own content still decodes ahead of the usage.
+        assert!(
+            ir.len() > 1 && !matches!(ir[0], IrServerEvent::Usage(_)),
+            "content events precede the usage: {ir:?}"
+        );
+    }
+}
+
 /// RED-BEFORE-GREEN: a MISSING modality breakdown must not meter the turn at zero.
 ///
 /// Gemini can omit `promptTokensDetails`/`responseTokensDetails` while still stating the turn's
