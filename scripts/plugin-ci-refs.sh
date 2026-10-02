@@ -79,7 +79,7 @@ build_matrix() {
   local plugin_root="$1" moving_want="$2"
   local pin="" pin_sha="" moving="$moving_want" moving_sha=""
 
-  # -- PINNED: what this repo's release.yml will actually build against. Field 1 of `.busbar-ref`.
+  # -- PINNED: what this repo's the removed release.yml will actually build against. Field 1 of `.busbar-ref`.
   if [ -f "${plugin_root}/.busbar-ref" ]; then
     pin="$(cut -d' ' -f1 "${plugin_root}/.busbar-ref" | tr -d '[:space:]')"
   fi

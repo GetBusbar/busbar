@@ -5,9 +5,9 @@
 # WHAT THIS TESTS
 #   Everything the unit/integration test suite cannot: that the ACTUAL signed-shape plugin
 #   tarballs a user downloads (built + packed this script's own Phase 0b, in the same shape each
-#   plugin's own standalone-repo release workflow packs it — busbarAI's release.yml no longer
+#   plugin's own standalone-repo release workflow packs it — busbarAI's the removed release.yml no longer
 #   builds or uploads store/auth plugin tarballs itself; see the "Store/auth plugin releases moved
-#   out" comment in .github/workflows/release.yml) load into a REAL busbar binary, that busbar
+#   out" comment in the removed release.yml) load into a REAL busbar binary, that busbar
 #   serves REAL HTTP traffic through each backend exactly the way docs/getting-started.md and
 #   docs/configuration.md tell an operator to configure it, and that keys/usage genuinely
 #   SURVIVE A PROCESS RESTART, driven against store-postgres's own real-Postgres test suite (the
@@ -31,7 +31,7 @@
 #     workspace) — see Phase 1 below for how this script reaches it via a sibling checkout.
 #   - The release-SIGNING pipeline (BUSBAR_SIGN_KEY) — out of scope by design. Every tarball
 #     here is packed with `--allow-unsigned`, exactly like CI's fallback path when the signing
-#     secret isn't provisioned (see the TODO(release-keys) seam in release.yml).
+#     secret isn't provisioned (see the TODO(release-keys) seam in the removed release.yml).
 #   - OIDC's real-ABI plugin proof — auth-oidc now lives entirely in its own repo (GetBusbar/busbar-auth-oidc,
 #     a same-repo 2-crate workspace bringing 100% of its own logic + adapter). That repo's own test
 #     suite already stands up a real local JWKS server + a real minted JWT and drives the plugin
@@ -60,15 +60,15 @@
 #   for the busbar binary + every plugin cdylib, run multiple times).
 #
 # BRANCH MODEL (dev → qa → main)
-#   - `dev`: push often; only the cheap per-push CI (ci.yml) runs there. Nothing here.
-#   - `qa`: promoting dev→qa is what spends THIS gate — qa-gate.yml runs release-check.sh on every
+#   - `dev`: push often; only the cheap per-push CI (the removed ci.yml) runs there. Nothing here.
+#   - `qa`: promoting dev→qa is what spends THIS gate — the removed qa-gate.yml runs release-check.sh on every
 #     qa push (the pre-release soak). A green qa is what earns promotion to main.
-#   - `main`: release.yml runs on the push and cuts the release from crates/busbar/Cargo.toml's
+#   - `main`: the removed release.yml runs on the push and cuts the release from crates/busbar/Cargo.toml's
 #     version. THE TAG IS THE LAST THING THAT HAPPENS, NOT THE FIRST: it refuses a red commit,
 #     builds, drafts the release, stages the image under a throwaway tag, verifies all of that from
 #     the consumer side, and only then tags, promotes and fans out. A failure before the promote
 #     leaves no tag, no listed release and no container version tag, so a re-run is a clean retry.
-#     Prep the bump on dev with prepare-release.yml before promoting. See RELEASE.md.
+#     Prep the bump on dev with the removed prepare-release.yml before promoting. See RELEASE.md.
 #
 # PREREQUISITES
 #   - A working Rust toolchain (`cargo build --release` must succeed for this workspace).
@@ -106,7 +106,7 @@
 #   the phase RAN, only that it did not fail, and those are different claims. The verdict is now
 #   COMPUTED: a coverage gap changes the banner text, NAMES every phase that did not run and why,
 #   and is FATAL under --require-siblings (or BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=1, which
-#   qa-gate.yml sets, because a release must never be signed off by a run that tested less).
+#   the removed qa-gate.yml sets, because a release must never be signed off by a run that tested less).
 #   A by-design `not-in-segment` skip is NOT a gap: --check-coverage already proves the segments
 #   tile the phase set exactly.
 #
@@ -121,7 +121,7 @@
 #     live    core-data-plane + plugins — the aggregate form, where one `plugins` leg carries every
 #             plugin phase.
 #     fanout  core-data-plane + plugin-<repo> for EVERY plugins.yaml entry — the per-plugin fan-out.
-#             This is exactly what scripts/qa-segments.sh emits once its capability probe sees the
+#             This is exactly what the removed scripts/qa-segments.sh emits once its capability probe sees the
 #             `plugin-*` token from --list-segments: it suppresses the aggregate `plugins` stand-in
 #             and expands one leg per registry entry. Every entry gets a leg regardless of its
 #             `gate` (suite/binary/smoke), so no registry entry can produce a matrix leg whose run
@@ -166,7 +166,7 @@ CHECK_COVERAGE=0
 # prove the phase RAN, only that it did not fail, and those two are not the same claim. The
 # busbar-admin phase is the sharpest case: busbar-admin is a separate repo holding its own copy of
 # busbar's wire shapes, its `integration.sh` is the ONLY cross-repo behavioural check on that mirror,
-# and qa-gate-run.sh's `clone_sibling` warns and continues when the clone fails. One failed clone
+# and the removed qa-gate-run.sh's `clone_sibling` warns and continues when the clone fails. One failed clone
 # and the widest mirror in the fleet went completely unverified under a green banner.
 #
 # The fix is two-part and both parts matter. Unconditionally, the verdict banner now NAMES the gaps
@@ -266,7 +266,7 @@ REGISTRY_LIST="$(./scripts/plugin-registry-check.sh --list)"
 
 # EVERY registry entry maps to exactly one phase id, keyed off its `gate` column. This is what lets
 # `--segment plugin-<repo>` work for ALL TEN registry plugins rather than only the seven `gate: suite`
-# ones: scripts/qa-segments.sh expands its per-plugin fan-out straight from plugins.yaml, so a
+# ones: the removed scripts/qa-segments.sh expands its per-plugin fan-out straight from plugins.yaml, so a
 # registry entry with no accepted segment here would emit a matrix leg whose run command exits 2.
 #   suite  -> phase-2-suite-<repo>    (sibling repo's own cargo test; needs no busbar binary)
 #   binary -> phase-1-<alias>-binary  (store-sqlite's full-binary/HTTP/restart-durability phase)
@@ -359,7 +359,7 @@ partition_segments() {
   case "$1" in
     live) echo "core-data-plane"; echo "plugins" ;;
     fanout)
-      # EXACTLY what scripts/qa-segments.sh emits when its per-plugin fan-out goes live: the
+      # EXACTLY what the removed scripts/qa-segments.sh emits when its per-plugin fan-out goes live: the
       # aggregate `plugins` stand-in is suppressed and replaced by one plugin-<repo> leg per
       # plugins.yaml entry, alongside the unchanged core-data-plane leg.
       echo "core-data-plane"
@@ -377,7 +377,7 @@ partition_segments() {
 segment_phases() {
   local seg="$1" want
   case "$seg" in
-    # ── partition: live (mirrors qa/segments.toml's two active live-mock segments) ──
+    # ── partition: live (mirrors the removed qa/segments.toml's two active live-mock segments) ──
     core-data-plane)
       echo phase-0a2-signing-key
       echo phase-0c-soak-reject
@@ -385,7 +385,7 @@ segment_phases() {
       echo phase-admin-cli
       echo phase-152-feature-gate
       ;;
-    # The aggregate plugin stand-in: every plugin phase in one leg. qa-segments.sh SUPPRESSES this
+    # The aggregate plugin stand-in: every plugin phase in one leg. the removed qa-segments.sh SUPPRESSES this
     # segment once the per-plugin fan-out is live, so exactly one of {plugins, plugin-*} ever runs.
     plugins)
       list_plugin_phase_ids
@@ -408,9 +408,9 @@ if [ "$LIST_PHASES" = "1" ]; then
 fi
 
 # ── --list-segments ───────────────────────────────────────────────────────────────────────────────
-# CONTRACT (consumed by scripts/qa-segments.sh's capability probe): print, one per line, the segment
+# CONTRACT (consumed by the removed scripts/qa-segments.sh's capability probe): print, one per line, the segment
 # tokens this script accepts, and exit 0. The literal token `plugin-*` is emitted to ADVERTISE that
-# per-plugin segments are supported — qa-segments.sh probes for exactly that line
+# per-plugin segments are supported — the removed qa-segments.sh probes for exactly that line
 # (`--list-segments | grep -qx 'plugin-\*'`) and, until it appears, falls back to the aggregate
 # `plugins` segment. It is a capability marker, NOT a runnable segment id; the concrete
 # `plugin-<repo>` ids printed alongside it are the runnable ones.
@@ -986,7 +986,7 @@ wait_for_http() {
 # ── Millisecond wall clock (the soak phase asserts per-request latency against the failover budget). ─
 now_ms() { python3 -c 'import time; print(int(time.time()*1000))'; }
 
-# ── Platform-specific cdylib naming (host-native build; matches release.yml's per-target matrix
+# ── Platform-specific cdylib naming (host-native build; matches the removed release.yml's per-target matrix
 #    entries for the OS this script actually runs on). ─────────────────────────────────────────────
 case "$(uname -s)" in
   Darwin) LIBEXT="dylib"; LIBPREFIX="lib" ;;
@@ -1082,7 +1082,7 @@ fi
 # ── Nothing left to build here. Every first-party store/auth/secret plugin has been extracted to
 #    its own repo (GetBusbar/busbar-store-sqlite, GetBusbar/busbar-store-postgres, GetBusbar/busbar-store-valkey,
 #    GetBusbar/busbar-auth-oidc, GetBusbar/busbar-secret-vault; each a same-repo 2-crate workspace, the pattern
-#    auth-oidc's own extraction established) — busbarAI's release.yml itself no longer builds or
+#    auth-oidc's own extraction established) — busbarAI's the removed release.yml itself no longer builds or
 #    packs any of them; it only ships the busbar binary + the bundled hook plugins now (see the
 #    "Store/auth plugin releases moved out" comment there). Phase 1 and the registry-driven
 #    Phase 2 suite loop below each gate on their respective repo's own test suite via a sibling

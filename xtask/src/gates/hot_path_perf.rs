@@ -31,7 +31,7 @@
 //! hot-path-perf`, Tier::Fast) builds nothing — `xtask` depends on no product crate (the
 //! `segregation` gate) — and holds the CONTRACT: the instrument still constructs the vtable, still
 //! compares it to a direct call, and still asserts the exact budget at both percentiles and a zero
-//! per-token crossing. That alone never proved the budget is MET: `qa/segments.toml`'s `benches`
+//! per-token crossing. That alone never proved the budget is MET: the removed `qa/segments.toml`'s `benches`
 //! segment is `cargo bench --workspace --no-run`, which compiles this bench and never executes it.
 //! [`HotPathPerfExecGate`] is the other half: the same text rows plus four `:executed*` rows that
 //! RUN the bench (`cargo bench -p busbar-kernel --bench plane_host_vtable_perf`) and judge its real
@@ -461,7 +461,7 @@ fn text_cases<'a>(cx: &'a Ctx, gate: &'a dyn Gate, report: &mut Report<'a>) {
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 //
 // The text rows above hold the CONTRACT: the bench still asserts the budget. They cannot hold that
-// the budget is MET, because nothing on this tree ran the bench (`qa/segments.toml`'s `benches`
+// the budget is MET, because nothing on this tree ran the bench (the removed `qa/segments.toml`'s `benches`
 // segment is `cargo bench --workspace --no-run`). [`HotPathPerfExecGate`] closes that half: it
 // builds and runs `cargo bench -p busbar-kernel --bench plane_host_vtable_perf` into a FRESH criterion
 // home, then judges three things of what came back, independently of each other:

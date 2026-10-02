@@ -19,7 +19,7 @@ hook_fixture_cdylib = busbar_hook_test_plugin
 published_store_plugin_id = store-sqlite
 
 # The REAL plugin repos that prove the secret and auth kinds (`src/tests/plugin_proof_tests.rs`;
-# ci.yml `plugin-proofs` builds them into BUSBAR_PLUGIN_PROOF_DIR). The cdylib names are what those
+# the removed ci.yml `plugin-proofs` builds them into BUSBAR_PLUGIN_PROOF_DIR). The cdylib names are what those
 # repos' own builds produce; the rest is what each plugin's own code answers.
 proof_secret_cdylib = busbar_secret_vault_plugin
 proof_secret_config = {"addr": "https://127.0.0.1:9", "token": "busbar-proof", "timeout_secs": 2}
@@ -34,7 +34,7 @@ proof_auth_refusal = github plugin requires config (client_id); none provided
 
 # The REAL plugin repos that prove the store and hook kinds' dropped-in doors (R-FIX2): the durable
 # store (GetBusbar/busbar-store-sqlite: a durable file, a restart, two handles on one file) and the
-# forwarding hook (GetBusbar/busbar-hook-webrequest, against the proof's local mock upstream). ci.yml
+# forwarding hook (GetBusbar/busbar-hook-webrequest, against the proof's local mock upstream). the removed ci.yml
 # `plugin-proofs` builds each at the rev it pins into BUSBAR_PLUGIN_PROOF_DIR.
 proof_store_cdylib = busbar_store_sqlite_plugin
 proof_store_path_key = db_path

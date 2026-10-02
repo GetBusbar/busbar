@@ -20,130 +20,6 @@ fn empty_vtable_grants_nothing() {
     assert_eq!(crate::abi::check_preamble(&vt.abi), Ok(()));
 }
 
-/// EVERY slot of the stub vtable, checked STRUCTURALLY. The list below is a destructuring pattern,
-/// not a series of field reads: adding a slot to `PlaneHostVtable` without naming it here fails to
-/// COMPILE ("pattern does not mention field ..."), so the assertion set cannot silently fall behind
-/// the ABI the way an append-only surface always eventually does. The previous form asserted 37 of
-/// the 44 slots and nothing said so.
-#[test]
-fn stub_vtable_populates_every_slot() {
-    let PlaneHostVtable {
-        abi: _,
-        size: _,
-        version: _,
-        govern_admit,
-        meter_charge,
-        breaker_admit,
-        breaker_settle,
-        verify_lookup,
-        verify_store,
-        egress_open,
-        egress_poll,
-        egress_write,
-        egress_close,
-        journal_append,
-        journal_read,
-        nested_dispatch,
-        workhandle_open,
-        workhandle_resume,
-        drift_quarantine,
-        approval_redeem,
-        metrics_emit,
-        clock_now,
-        auth_resolve,
-        trust_evaluate,
-        entitlement_check,
-        gate_scan,
-        breaker_admit_reason,
-        verify_decide,
-        approval_redeem_q,
-        govern_admit_reason,
-        pipe_read,
-        pipe_write,
-        egress_fault,
-        journal_register,
-        journal_append_scoped,
-        journal_read_scoped,
-        journal_restore,
-        journal_seed,
-        journal_forget,
-        journal_compact,
-        journal_verify_scoped,
-        subkey_sign,
-        guard_url,
-        identity_admit,
-        gate_decide,
-        counter_add,
-        entropy_fill,
-        wall_clock,
-        tap_fault_latch,
-        translate_cap,
-    } = PlaneHostVtable::STUB;
-
-    for (name, slot) in [
-        ("govern_admit", govern_admit.is_some()),
-        ("meter_charge", meter_charge.is_some()),
-        ("breaker_admit", breaker_admit.is_some()),
-        ("breaker_settle", breaker_settle.is_some()),
-        ("verify_lookup", verify_lookup.is_some()),
-        ("verify_store", verify_store.is_some()),
-        ("egress_open", egress_open.is_some()),
-        ("egress_poll", egress_poll.is_some()),
-        ("egress_write", egress_write.is_some()),
-        ("egress_close", egress_close.is_some()),
-        ("journal_append", journal_append.is_some()),
-        ("journal_read", journal_read.is_some()),
-        ("nested_dispatch", nested_dispatch.is_some()),
-        ("workhandle_open", workhandle_open.is_some()),
-        ("workhandle_resume", workhandle_resume.is_some()),
-        ("drift_quarantine", drift_quarantine.is_some()),
-        ("approval_redeem", approval_redeem.is_some()),
-        ("metrics_emit", metrics_emit.is_some()),
-        ("clock_now", clock_now.is_some()),
-        ("auth_resolve", auth_resolve.is_some()),
-        ("trust_evaluate", trust_evaluate.is_some()),
-        ("entitlement_check", entitlement_check.is_some()),
-        ("gate_scan", gate_scan.is_some()),
-        ("breaker_admit_reason", breaker_admit_reason.is_some()),
-        ("verify_decide", verify_decide.is_some()),
-        ("approval_redeem_q", approval_redeem_q.is_some()),
-        ("govern_admit_reason", govern_admit_reason.is_some()),
-        ("pipe_read", pipe_read.is_some()),
-        ("pipe_write", pipe_write.is_some()),
-        ("egress_fault", egress_fault.is_some()),
-        ("journal_register", journal_register.is_some()),
-        ("journal_append_scoped", journal_append_scoped.is_some()),
-        ("journal_read_scoped", journal_read_scoped.is_some()),
-        ("journal_restore", journal_restore.is_some()),
-        ("journal_seed", journal_seed.is_some()),
-        ("journal_forget", journal_forget.is_some()),
-        ("journal_compact", journal_compact.is_some()),
-        ("journal_verify_scoped", journal_verify_scoped.is_some()),
-        ("subkey_sign", subkey_sign.is_some()),
-        ("guard_url", guard_url.is_some()),
-        ("identity_admit", identity_admit.is_some()),
-        ("gate_decide", gate_decide.is_some()),
-        ("counter_add", counter_add.is_some()),
-        ("entropy_fill", entropy_fill.is_some()),
-        ("wall_clock", wall_clock.is_some()),
-        ("tap_fault_latch", tap_fault_latch.is_some()),
-        ("translate_cap", translate_cap.is_some()),
-    ] {
-        assert!(slot, "STUB leaves `{name}` unpopulated");
-    }
-
-    let vt = &PlaneHostVtable::STUB;
-    assert_eq!(vt.size as usize, core::mem::size_of::<PlaneHostVtable>());
-}
-
-#[test]
-#[should_panic(expected = "govern_admit")]
-fn stub_slot_is_unimplemented() {
-    let vt = &PlaneHostVtable::STUB;
-    let g = Facts::new(1, 10, 0, 0, 0, b"p");
-    (vt.govern_admit.unwrap())(HostCtx::NULL, &*g as *const Facts);
-}
-
 // ── The table's own sized-struct guard: `size` is now READ, and clamped in both directions ──────
 // `PlaneHostVtable::size` was written at construction and never read by anything, so the one
 // compensating control for `check_preamble`'s deliberately open MINOR window was inert.
@@ -151,7 +27,7 @@ fn stub_slot_is_unimplemented() {
 /// A well-formed table checks out and honours exactly its own size.
 #[test]
 fn a_well_formed_vtable_honours_its_own_size() {
-    let vt = PlaneHostVtable::STUB;
+    let vt = PlaneHostVtable::SERVICES;
     // SAFETY: `vt` is a whole, live `PlaneHostVtable`.
     let honoured = unsafe { PlaneHostVtable::check(&vt as *const PlaneHostVtable) }
         .expect("a table this build built checks out");
@@ -210,13 +86,29 @@ fn a_bad_vtable_preamble_is_refused_before_size() {
     assert!(matches!(err, VtableRefusal::Preamble(_)), "got {err:?}");
 }
 
+/// A fail-closed `counter_add` slot, so the table below grants a slot past the short peer's size.
+extern "C-unwind" fn refuse_counter_add(
+    _host: HostCtx,
+    _family_ptr: *const u8,
+    _family_len: usize,
+    _values_ptr: *const crate::abi::hot::decl::DeclStr,
+    _values_len: usize,
+    _delta: u64,
+) -> StatusClass {
+    StatusClass::Refused
+}
+
 /// The load-bearing half: a SHORTER (older) peer's table is NOT a refusal, but its trailing slots
 /// read as ABSENT rather than as bytes past the end of its allocation. `host_slot!` is what makes
 /// that true — before it, a build with more slots than the peer formed `&PlaneHostVtable` over the
 /// short table and loaded a garbage fn-pointer it would then call.
 #[test]
 fn a_shorter_vtable_hides_its_trailing_slots() {
-    let vt = PlaneHostVtable::STUB;
+    let vt = PlaneHostVtable {
+        govern_admit: Some(bench_govern_admit_ffi),
+        counter_add: Some(refuse_counter_add),
+        ..PlaneHostVtable::SERVICES
+    };
     // A peer that predates the minor-25 metric-family slot: it attests everything up to (but not
     // including) `counter_add`.
     let short = core::mem::offset_of!(PlaneHostVtable, counter_add) as u32;
@@ -248,7 +140,7 @@ fn a_shorter_vtable_hides_its_trailing_slots() {
 // reference`): deleting `crates/plane-abi-spike` took the only assertion of (a) the vtable
 // fn-pointer-hop wall-clock budget and (b) the no-allocation property of the POD host-call paths
 // with it — `the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate`,
-// invoked from qa/segments.toml's `benches` segment. The budget (1000ns) and the round/iteration
+// invoked from the removed qa/segments.toml's `benches` segment. The budget (1000ns) and the round/iteration
 // counts below are the ones that test used (`git show 527bdbf96:crates/plane-abi-spike/src/tests/
 // lib_tests.rs`); everything else is re-derived against the REAL surface rather than the spike's
 // own hand-rolled duplicate of it: the real [`Facts`]/[`Decision`] from `hot/pod.rs` (not a spike
@@ -325,11 +217,11 @@ fn bench_sample() -> (Vec<u8>, u64, u64, u64, u32, u32) {
 
 /// THE 1 µs/CALL BUDGET, ASSERTED — see the module-level OWED comment above.
 ///
-/// IGNORED BY DEFAULT, run explicitly by qa/segments.toml's `benches` segment
+/// IGNORED BY DEFAULT, run explicitly by the removed qa/segments.toml's `benches` segment
 /// (`--ignored --test-threads=1`): it measures WALL CLOCK (meaningless alongside other tests on a
 /// shared runner) and uses [`crate::abi::CountingAlloc`], a per-THREAD (not per-test) counter, so the
-/// alloc arms below must run alone in this thread the same way `stub_vtable_populates_every_slot`'s
-/// sibling gates do.
+/// alloc arms below must run alone in this thread the same way the other
+/// counting-allocator gates do.
 ///
 /// The estimator is the MINIMUM over several rounds, not the mean: scheduler noise can only ever add
 /// time, so the smallest observation is closest to the real cost and least able to flake this test.

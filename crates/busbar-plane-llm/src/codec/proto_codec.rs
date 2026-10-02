@@ -321,6 +321,13 @@ pub trait ProtocolWriter: Send + Sync {
         true
     }
 
+    /// Whether this dialect's request carries an input image's requested fidelity (IR-08,
+    /// `image_url.detail`). A dialect without the slot answers `false`, and the egress seam warns for
+    /// each image whose ask it drops (1.5.5's operator warning).
+    fn carries_image_detail(&self) -> bool {
+        true
+    }
+
     /// The caller controls this writer will DROP for `req` on cross-protocol egress because the target
     /// dialect has no native representation (audit-and-allow: the request still forwards, but each drop
     /// is recorded as a first-class audit event by the cross-protocol seam). Default: none.

@@ -2,8 +2,8 @@
 //! TABLE PINS. The Rust successor to `scripts/service-images-check.sh`.
 //!
 //! THE DRIFT THIS EXISTS TO STOP, measured before it was written. The service containers busbar's
-//! durable stores need were provisioned in FIVE places: `ci.yml`'s `check` job, `ci.yml`'s
-//! `coverage` job, `release-stage.yml`'s `gate` job, `plugin-ci.yml`'s `build-test-signoff` job,
+//! durable stores need were provisioned in FIVE places: the removed `ci.yml`'s `check` job, the removed `ci.yml`'s
+//! `coverage` job, the removed `release-stage.yml`'s `gate` job, `plugin-ci.yml`'s `build-test-signoff` job,
 //! and `scripts/release-check.sh`. The four workflows agreed on a digest. `release-check.sh` — the
 //! script the QA GATE runs — used FLOATING tags. So the gate that decides a release was not pinned
 //! to the bytes CI was pinned to, and nothing anywhere said so.
@@ -58,7 +58,7 @@
 //! ternary is still read, which is what keeps a third unpinned literal from hiding beside two
 //! pinned ones.
 //!
-//! ON ROW IDS. The shell recorded one row per image LOCATION (`images|ci.yml:413`), which cannot be
+//! ON ROW IDS. The shell recorded one row per image LOCATION (`images|the removed ci.yml`), which cannot be
 //! a static owed set — the ids would change with every line number. So the location moves into the
 //! row's detail and the RULE becomes the id, which is strictly finer than the shell was: the three
 //! distinct failures it folded into one dynamic id (floating, no row, wrong digest) are three
@@ -118,8 +118,8 @@ fn release_check_divergence(rule: &str) -> Option<crate::gates::Divergence> {
     })
 }
 
-/// Twelve `image:` references exist today across `ci.yml` (4), `plugin-ci.yml` (6) and
-/// `release-stage.yml` (2). The floor is set below that on purpose: it must catch a scanner that
+/// Twelve `image:` references exist today across the removed `ci.yml` (4), `plugin-ci.yml` (6) and
+/// the removed `release-stage.yml` (2). The floor is set below that on purpose: it must catch a scanner that
 /// broke, not fail every time somebody legitimately deletes a service. A floor of 1 catches
 /// nothing. Not overridable from the environment — a floor a caller can lower is a floor a caller
 /// can turn off.

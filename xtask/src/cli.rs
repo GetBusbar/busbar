@@ -32,6 +32,7 @@ usage:
   cargo xtask loc --selftest
   cargo xtask teller-steps [--root-legs] [--root-legs-gating]
   cargo xtask ledger {sync|status|next|record|fixed|move} | --check
+  cargo xtask audit-verify --range <range.json> --keys <keys.json> [--head <head.json>]
   cargo xtask conformance check --suite <id>|all|--musts [--sha <sha>] [--manifest <path>] [--format=tsv]
   cargo xtask conformance check --selftest
   cargo xtask dialect wire [--write | --diff] <dialect|all>
@@ -48,13 +49,14 @@ const LEGACY_LEDGER_ENV: &str = "LEDGER";
 /// The subcommands below that NAME NO GATE.
 ///
 /// `cargo xtask <name>` is a gate invocation for `denylist` and `teller-steps` — both are registry
-/// names kept in their pre-registry spelling — so a reader of `ci.yml` cannot tell a gate from a
+/// names kept in their pre-registry spelling — so a reader of the removed `ci.yml` cannot tell a gate from a
 /// subcommand by shape alone, and [`crate::yaml_lite::xtask_gate_invocations`] reads the token
 /// after `cargo xtask` as a gate name. These two are the exceptions: the runner that DRIVES the
 /// gates and the register that RECORDS the audit, neither of which has an owed row set. Listed
 /// here, beside the dispatch arms that prove it, so the reader and the dispatcher cannot drift.
 pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
     "ledger",
+    "audit-verify",
     "conformance",
     "loc",
     "fleet",
@@ -105,14 +107,14 @@ pub fn main(args: &[String]) -> i32 {
         // register (`sync`/`record`/`fixed`) or the report (`status`), which a gate must not do.
         // THE ONE LINE COUNTER. Not a gate: it is an INSTRUMENT, and the gates that ratchet a
         // line ceiling call the same library in process. It is listed in
-        // `NON_GATE_SUBCOMMANDS` for the same reason `ledger` is — a reader of `ci.yml` cannot
+        // `NON_GATE_SUBCOMMANDS` for the same reason `ledger` is — a reader of the removed `ci.yml` cannot
         // tell a gate from a subcommand by shape, and nothing reconciles an owed row set for it.
         Some("loc") => match open_ctx() {
             Ok(cx) => crate::loc::main(&cx, &args[1..]),
             Err(code) => code,
         },
         // THE PLUGIN FLEET. Not a gate: it renders and checks OTHER repos (plugins.yaml's), and its
-        // RED is the nightly `sched-fleet-check.yml` run, not a row in this tree's ledger.
+        // RED is the nightly the removed `sched-fleet-check.yml` run, not a row in this tree's ledger.
         Some("fleet") => match open_ctx() {
             Ok(cx) => crate::fleet::main(&cx, &args[1..]),
             Err(code) => code,
@@ -137,6 +139,9 @@ pub fn main(args: &[String]) -> i32 {
             Ok(cx) => crate::dialect::main(&cx, &args[1..]),
             Err(code) => code,
         },
+        // THE OUT-OF-PROCESS AUDIT-CHAIN VERIFIER (#82(c), TODO 597). Not a gate: it checks bodies a
+        // node published, by the published recipe pages alone, and reads no tree.
+        Some("audit-verify") => crate::audit_verify::main(&args[1..]),
         Some("ledger") => match open_ctx() {
             Ok(cx) => crate::audit_cmd::main(cx.root(), &args[1..]),
             Err(code) => code,

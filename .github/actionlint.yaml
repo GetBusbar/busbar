@@ -4,8 +4,7 @@
 # an unknown label, and a lint that cries wolf on 32 correct lines is a lint nobody reads.
 #
 # `latchkey-small|medium|large|xlarge` are Latchkey's runner-size labels (latchkey.dev), used by
-# ci.yml, keep-proof.yml and gate-mutants.yml's `runs-on:` lines now that those three workflows are
-# migrated off the EC2 fleet. Without declaring them here actionlint reports each one as an unknown
+# `runs-on:` lines of the Latchkey-hosted jobs. Without declaring them here actionlint reports each one as an unknown
 # label — 37 findings measured on this migration (LK-4) — for the same reason `busbar-xl` needed
 # declaring: they are real, fleet-issued (Latchkey-issued) labels, not typos.
 #
