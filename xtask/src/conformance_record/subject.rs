@@ -308,6 +308,12 @@ pub fn mint_pki(dir: &Path, sans: &[&str]) -> Result<Pki, String> {
     );
     leaf_params.not_before = date(days - 1);
     leaf_params.not_after = date(days + 90);
+    // A revocation pointer, as every publicly issued leaf carries: without one a scanner grades the
+    // throwaway certificate (testssl `cert_revocation`, HIGH), not busbar's TLS stack. Nothing
+    // fetches it; the scanner judges that the leaf names one.
+    leaf_params.crl_distribution_points = vec![rcgen::CrlDistributionPoint {
+        uris: vec!["http://127.0.0.1/busbar-conformance-ca.crl".to_string()],
+    }];
     let leaf = leaf_params.signed_by(&leaf_key, &issuer).map_err(e)?;
 
     let pki = Pki {

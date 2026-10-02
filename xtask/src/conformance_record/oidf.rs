@@ -533,7 +533,9 @@ impl Runner {
         for n in 1..=2 {
             let (private, public) = es256_jwk(&format!("{ALIAS}-{n}"))?;
             let body = json!({
-                "client_name": format!("{ALIAS}-{n}"),
+                // Not the deployment's name: busbar's open registration refuses a client that
+                // names itself after the gateway (busbar-core-oauth2 policy.rs, consent phishing).
+                "client_name": format!("oidf-suite-client-{n}"),
                 "redirect_uris": [callback],
                 "grant_types": ["authorization_code", "refresh_token"],
                 "response_types": ["code"],

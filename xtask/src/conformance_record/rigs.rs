@@ -550,6 +550,25 @@ pub(super) fn on_path(tool: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// `Some(version)` when `node --version` reports a major below `major` (or cannot be read).
+pub(super) fn node_older_than(major: u32) -> Option<String> {
+    let out = Command::new("node").arg("--version").output().ok()?;
+    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let found = v
+        .trim_start_matches('v')
+        .split('.')
+        .next()
+        .and_then(|m| m.parse::<u32>().ok());
+    match found {
+        Some(m) if m >= major => None,
+        _ => Some(if v.is_empty() {
+            "(unreadable)".to_string()
+        } else {
+            v
+        }),
+    }
+}
+
 pub(super) fn read_opt(p: &Path) -> Option<String> {
     std::fs::read_to_string(p).ok()
 }
@@ -841,7 +860,7 @@ impl Runner {
                     ][..],
                 ),
                 (
-                    "boot-validate-voice-boot",
+                    "boot-validate-owned-sections",
                     &[
                         "cargo",
                         "test",
@@ -850,7 +869,9 @@ impl Runner {
                         "--features",
                         "plane-streaming",
                         "--test",
-                        "voice_boot",
+                        // `voice_boot` folded into this one test over every linked plane that owns
+                        // a section (142d77646f, K3); the streams plane's `streams:` is one of them.
+                        "plane_owned_sections_boot",
                     ][..],
                 ),
             ] {
@@ -884,6 +905,15 @@ impl Runner {
             &["bash", "node", "npx", "pnpm", "python3", "cargo", "curl"],
         ) {
             return o;
+        }
+        // The official suite (@modelcontextprotocol/conformance) imports `fs.globSync`, which node
+        // gained in 22: on an older node the CONTROL leg dies in the import and the run reads as an
+        // instrument fault. Say what is missing instead.
+        if let Some(found) = node_older_than(22) {
+            return Outcome::not_run(format!(
+                "the mcp rig needs node 22 or newer (the official suite imports fs.globSync); \
+                 this runner has node {found}"
+            ));
         }
         let bin = match self.busbar() {
             Ok(b) => b,
