@@ -180,6 +180,34 @@ fn path_base_members(far: &ProtocolDecl) -> Vec<(String, Option<Vec<u8>>)> {
     members
 }
 
+/// The common relay, proved without allocating: a body-model object that carries none of busbar's
+/// router keys and already names the lane's wire model (its last `model`, as a last-wins reader
+/// sees it). `false` means "splice and see"; a body that is not an object needs no splice.
+fn needs_no_splice(lane: FarShape<'_>, hop_bytes: &[u8]) -> bool {
+    let wire = lane.wire_model.as_bytes();
+    let plain = !wire.iter().any(|c| *c == b'"' || *c == b'\\' || *c < 0x20);
+    let mut router_key = false;
+    let mut model_is_wire = false;
+    let scanned = json_splice::scan_object(hop_bytes, 0, |m| {
+        if DECLS
+            .iter()
+            .filter_map(|d| d.array_stream_shim_key)
+            .any(|k| m.is(k))
+        {
+            router_key = true;
+        }
+        if m.is("model") {
+            let v = &hop_bytes[m.value_start..m.value_end];
+            model_is_wire = plain
+                && v.len() == wire.len() + 2
+                && v.first() == Some(&b'"')
+                && v.last() == Some(&b'"')
+                && &v[1..v.len() - 1] == wire;
+        }
+    });
+    scanned.is_none() || (!router_key && model_is_wire)
+}
+
 /// THE RELAY of one same-dialect body: the caller's bytes with the governed splices only, each a
 /// byte-level member edit (`json_splice`), never a re-serialization (LLM DIALECT FIDELITY, owner
 /// 2026-10-02; DIALECT-FIDELITY-DESIGN F2). The governed members: busbar's own router keys (never a
@@ -200,6 +228,9 @@ pub fn relay_request<'a>(
         return unchanged;
     };
     if !relays_json(lane.dialect, content_type) {
+        return unchanged;
+    }
+    if !far.has_model_in_url && lane.path_base.is_none() && needs_no_splice(lane, hop_bytes) {
         return unchanged;
     }
     let model = serde_json::to_vec(lane.wire_model).unwrap_or_default();

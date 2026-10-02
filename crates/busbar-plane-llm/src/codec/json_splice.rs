@@ -61,21 +61,50 @@ fn unescape_key(raw: &[u8]) -> Option<String> {
     }
 }
 
-/// The object whose opening brace is the first significant byte at or after `at`.
-#[must_use]
-pub fn object_at(b: &[u8], at: usize) -> Option<Object> {
+/// One member as the scan meets it: the raw key (quotes included, escapes as written) and the
+/// member's positions.
+#[derive(Clone, Copy, Debug)]
+pub struct RawMember<'a> {
+    /// The key as written, quotes included.
+    pub raw_key: &'a [u8],
+    /// The key's opening quote.
+    pub key_start: usize,
+    /// The value's first byte.
+    pub value_start: usize,
+    /// One past the value's last byte.
+    pub value_end: usize,
+    /// The comma that follows the member, when another member follows.
+    pub comma: Option<usize>,
+}
+
+impl RawMember<'_> {
+    /// Whether the key is `key`, without allocating when it is written without escapes.
+    #[must_use]
+    pub fn is(&self, key: &str) -> bool {
+        let inner = &self.raw_key[1..self.raw_key.len() - 1];
+        if inner.contains(&b'\\') {
+            unescape_key(self.raw_key).is_some_and(|k| k == key)
+        } else {
+            inner == key.as_bytes()
+        }
+    }
+}
+
+/// SCAN the object whose opening brace is the first significant byte at or after `at`, meeting
+/// each member in order, allocating nothing. Answers `(open, close)`, or `None` when the bytes
+/// cannot be read as an object.
+pub fn scan_object<'a>(
+    b: &'a [u8],
+    at: usize,
+    mut each: impl FnMut(RawMember<'a>),
+) -> Option<(usize, usize)> {
     let open = skip_ws(b, at);
     if b.get(open) != Some(&b'{') {
         return None;
     }
-    let mut members = Vec::new();
     let mut i = skip_ws(b, open + 1);
     if b.get(i) == Some(&b'}') {
-        return Some(Object {
-            open,
-            close: i,
-            members,
-        });
+        return Some((open, i));
     }
     loop {
         if b.get(i) != Some(&b'"') {
@@ -83,7 +112,6 @@ pub fn object_at(b: &[u8], at: usize) -> Option<Object> {
         }
         let key_start = i;
         let key_end = scan_json_string_end(b, i)?;
-        let key = unescape_key(&b[key_start..key_end])?;
         i = skip_ws(b, key_end);
         if b.get(i) != Some(&b':') {
             return None;
@@ -91,34 +119,45 @@ pub fn object_at(b: &[u8], at: usize) -> Option<Object> {
         let value_start = skip_ws(b, i + 1);
         let value_end = scan_json_value_end(b, value_start)?;
         i = skip_ws(b, value_end);
-        match b.get(i) {
-            Some(b',') => {
-                members.push(Member {
-                    key,
-                    key_start,
-                    value_start,
-                    value_end,
-                    comma: Some(i),
-                });
-                i = skip_ws(b, i + 1);
-            }
-            Some(b'}') => {
-                members.push(Member {
-                    key,
-                    key_start,
-                    value_start,
-                    value_end,
-                    comma: None,
-                });
-                return Some(Object {
-                    open,
-                    close: i,
-                    members,
-                });
-            }
+        let comma = match b.get(i) {
+            Some(b',') => Some(i),
+            Some(b'}') => None,
             _ => return None,
+        };
+        each(RawMember {
+            raw_key: &b[key_start..key_end],
+            key_start,
+            value_start,
+            value_end,
+            comma,
+        });
+        match comma {
+            Some(c) => i = skip_ws(b, c + 1),
+            None => return Some((open, i)),
         }
     }
+}
+
+/// The object whose opening brace is the first significant byte at or after `at`.
+#[must_use]
+pub fn object_at(b: &[u8], at: usize) -> Option<Object> {
+    let mut members = Vec::new();
+    let mut keys_ok = true;
+    let (open, close) = scan_object(b, at, |m| match unescape_key(m.raw_key) {
+        Some(key) => members.push(Member {
+            key,
+            key_start: m.key_start,
+            value_start: m.value_start,
+            value_end: m.value_end,
+            comma: m.comma,
+        }),
+        None => keys_ok = false,
+    })?;
+    keys_ok.then_some(Object {
+        open,
+        close,
+        members,
+    })
 }
 
 impl Object {
@@ -226,12 +265,12 @@ fn edit_cuts<'a>(b: &'a [u8], obj: &Object, edits: &'a [Edit<'a>]) -> Option<Vec
         while j + 1 < n && removed[j + 1] {
             j += 1;
         }
-        let (start, end) = if j + 1 < n {
-            // A kept member follows: the run goes with the comma after it.
-            (obj.members[i].key_start, obj.members[j].comma? + 1)
-        } else if i > 0 {
-            // The run ends the object: it goes with the comma before it.
+        let (start, end) = if i > 0 {
+            // A kept member precedes: the run goes with the comma before it.
             (obj.members[i - 1].comma?, obj.members[j].value_end)
+        } else if j + 1 < n {
+            // The run opens the object and a kept member follows: it goes with the comma after it.
+            (obj.members[i].key_start, obj.members[j].comma? + 1)
         } else {
             (obj.members[i].key_start, obj.members[j].value_end)
         };
