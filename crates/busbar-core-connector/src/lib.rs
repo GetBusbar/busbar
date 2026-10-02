@@ -13,6 +13,8 @@
 //!   need nobody declared are refused.
 //! * [`endpoint`] is the pure check an open's target passes before any dial: a cloud metadata host,
 //!   in any spelling, is refused by name.
+//! * [`guard`] is THE DESTINATION GUARD, the one check deciding which addresses any outbound
+//!   connection may be dialled at (private refused unless allowlisted, metadata always).
 //! * [`tls`] is connection security — core-only, never a plugin, never crossing the ABI.
 //! * [`dtls`] is its datagram sibling — the DTLS engine a WebRTC association runs on (the RFC 7983
 //!   demux, the ICE-gated bind, the SRTP exporter), on ring like [`tls`].
@@ -25,8 +27,8 @@
 //!   composes each accepted connection the same way, begun on the accept side; [`registry`] is the
 //!   view of which entry serves which scheme; [`wire`] presents a framer entry over host sockets to
 //!   the kernel's transport seam.
-//! * [`process`] builds the process's one connector for the root: the kernel's destination rules,
-//!   one set per egress class, behind the one dial judge, and the default outbound trust.
+//! * [`process`] builds the process's one connector for the root: the deployment's one destination
+//!   guard behind the one dial judge, and the default outbound trust.
 //!
 //! No `unsafe` is written here outside the tests' framer entry, which writes a host sink through its
 //! raw pointers as a plugin does.
@@ -41,6 +43,7 @@ pub mod compose;
 pub mod dtls;
 pub mod endpoint;
 pub mod framer;
+pub mod guard;
 pub mod io;
 pub mod listen;
 pub mod process;
@@ -109,8 +112,8 @@ pub trait DialJudge: Send + Sync {
     ) -> Option<Result<SocketAddr, Verdict>>;
 }
 
-/// Any function of the judge's shape is a judge: [`process::judge`] joins the kernel's one judge
-/// (`KernelServices::judge_dial`) here, so the connection table itself names no kernel type.
+/// Any function of the judge's shape is a judge: [`process::judge`] joins the deployment's one
+/// destination guard here, so the connection table itself names no kernel type.
 impl<F> DialJudge for F
 where
     F: Fn(&str, u32, Judged) -> Option<Result<SocketAddr, Verdict>> + Send + Sync,
@@ -125,21 +128,30 @@ where
     }
 }
 
-/// The judge a connector built with none holds: an IP literal is its own address and a name is
-/// refused, because nothing here resolves one.
-struct LiteralsOnly;
+/// The judge a connector built with none holds: an IP literal is its own address, judged by the
+/// guard it holds (the strict default for [`Connector::new`]), and a name is refused, because
+/// nothing here resolves one.
+pub(crate) struct LiteralsOnly(pub(crate) guard::Guard);
 
 impl DialJudge for LiteralsOnly {
-    fn judge_dial(&self, dest: &str, _: u32, _: Judged) -> Option<Result<SocketAddr, Verdict>> {
-        Some(socket::address_of(dest).ok_or(busbar_contract::abi::host::service::DEST_UNRESOLVABLE))
+    fn judge_dial(&self, dest: &str, class: u32, _: Judged) -> Option<Result<SocketAddr, Verdict>> {
+        let Some(at) = socket::address_of(dest) else {
+            return Some(Err(busbar_contract::abi::host::service::DEST_UNRESOLVABLE));
+        };
+        Some(
+            self.0
+                .judge_answer(&at.ip().to_string(), &[at.ip()], class)
+                .map(|()| at)
+                .map_err(|r| r.verdict),
+        )
     }
 }
 
 /// THE SCHEME RULE OF A NEED'S EGRESS CLASS (`abi::host::conn::connector`, `EGRESS_*`), held
 /// against the address the judge pinned: open-web dials over connection security only;
 /// loopback-allowed over connection security, or in plaintext to loopback only; every other
-/// class takes the scheme its target names (operator-infrastructure's plaintext and private
-/// targets included). Which addresses a class admits at all is the kernel judge's, per class.
+/// class takes the scheme its target names (operator-infrastructure's plaintext included). Which
+/// addresses may be dialled at all is the destination guard's ([`guard`]), the same in every class.
 /// THE LANDING RULE rides with it: a dial stated `within` an address set (`EstablishIn::within`)
 /// lands only on an address in it, so a name that resolves elsewhere since the plugin judged it
 /// is refused at the connect, before any byte is written; an empty set states no pin.
@@ -232,7 +244,7 @@ impl Default for Connector {
             transports: RwLock::new(Transports::default()),
             tls: None,
             wake: Arc::new(|_| {}),
-            judge: Arc::new(LiteralsOnly),
+            judge: Arc::new(LiteralsOnly(guard::Guard::default())),
             listeners: Mutex::new(HashMap::new()),
         }
     }
@@ -732,6 +744,10 @@ impl Conns for Connector {
             head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
         };
         let planned = Planned::locate(Arc::clone(&door), dial).map_err(|f| map(&f))?;
+        // A TARGET THE NEED'S CONFIG NAMES IS THE OPERATOR'S OWN (OWNER Q7: a destination the
+        // operator writes into config is trusted): its address is judged as operator
+        // infrastructure, never under a class that refuses request-data destinations.
+        let judged_class = guard::judged_class(egress_class, declared_target.is_some());
         // THE DECLARED TARGET (1.5.5's per-module target guarantee, on every need): a need whose
         // config names its target dials that target and no other.
         if let Some(declared) = declared_target {
@@ -753,7 +769,7 @@ impl Conns for Connector {
         let later = Arc::clone(&answer);
         let judged = self.judge.judge_dial(
             planned.authority(),
-            egress_class,
+            judged_class,
             Box::new(move |v| {
                 let mut a = later.lock().expect("judgement");
                 a.0 = Some(v);

@@ -1255,15 +1255,13 @@ pub fn register_ws_arrivals(linked: &Linked) {
 /// (the manifest's `egress` / `plane-sections` / `admin-envelope` axes, emitted by the build script as
 /// `linked_*` cfgs): the hostless-egress driver and the egress-trust host, the parse-time section
 /// list a cross-plane hook refusal reads, and the envelope a self-enveloping admin verb replies
-/// through. Each backing is a ZST unit struct, so it promotes to `'static`.
+/// through. Each backing is a ZST unit struct, so it promotes to `'static`. The egress-trust host
+/// is installed by `run` once the configuration loads, over the destination guard.
 pub fn register_seams() {
     #[cfg(linked_egress)]
     {
         busbar_kernel::egress::seam::install_hostless_egress(
             &busbar_kernel::egress::seam::CoreHostlessEgress,
-        );
-        busbar_kernel::plane_host::egress_trust::install_egress_trust_host(
-            &busbar_kernel::plane_host::egress_trust::PassThroughEgressTrust,
         );
     }
     #[cfg(linked_plane_sections)]

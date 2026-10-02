@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::HashMap;
-
 use busbar_contract::abi::host::service as svc;
 use busbar_contract::abi::mechanism::call::Outcome;
 
@@ -127,14 +125,13 @@ fn every_service_is_the_installed_services_answer() {
 }
 
 fn kernel(blocked: &[&str], allow_all: bool) -> KernelServices {
-    let blocked: Vec<String> = blocked.iter().map(|h| (*h).to_string()).collect();
-    KernelServices::new(
-        HashMap::from([(
-            DEFAULT_EGRESS_CLASS,
-            default_egress_rules(&blocked, &[], allow_all),
-        )]),
-        Arc::new(SystemResolver),
-    )
+    let d = busbar_kernel::config::Destinations {
+        block_private_addresses: true,
+        blocked: blocked.iter().map(|h| (*h).to_string()).collect(),
+        allow_all_metadata: allow_all,
+        ..Default::default()
+    };
+    kernel_services(crate::root::connector::guard_for(&d).expect("the guard"))
 }
 
 fn verdict(s: &dyn HostServices, dest: &str, class: u32) -> Stored {
@@ -144,10 +141,12 @@ fn verdict(s: &dyn HostServices, dest: &str, class: u32) -> Stored {
     }
 }
 
-/// The default egress class is the deployment's `security` section: the metadata denylist with the
-/// operator's additions and override; a class the kernel did not map is refused.
+/// `dest.judge` asks the deployment's one destination guard: the metadata denylist with the
+/// operator's additions and override, private addresses refused by default, plaintext to a public
+/// host judged by its host (the default class takes its target's scheme); a class the guard does
+/// not know is refused.
 #[test]
-fn the_default_egress_class_is_the_deployments_security_stance() {
+fn dest_judge_asks_the_deployments_one_guard() {
     let late = LateServices::new();
     late.install(Arc::new(kernel(&["metadata.corp.example"], false)))
         .expect("the install");
@@ -164,9 +163,9 @@ fn the_default_egress_class_is_the_deployments_security_stance() {
     assert_eq!(judged("https://10.0.0.7/"), svc::DEST_INTERNAL);
     assert_eq!(judged("http://93.184.216.34/"), svc::DEST_ALLOWED);
     assert_eq!(
-        verdict(late.as_ref(), "https://93.184.216.34/", 9).outcome,
-        busbar_contract::abi::mechanism::call::Outcome::Refused,
-        "an unmapped class is refused"
+        verdict(late.as_ref(), "https://93.184.216.34/", 9).value,
+        svc::DEST_NO_HOST,
+        "a class the guard does not know dials nothing"
     );
     // `allow_all_metadata` is 1.5.5's nuclear override: the metadata guard is fully disabled, the
     // operator's additions and the metadata address alike; with it off the address stays refused.

@@ -29,8 +29,8 @@ path = "src/lib.rs"
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
 # One-way: this crate reads `busbar-kernel`'s `TlsCfg` config shape and its `SecretResolver` seam
-# (the "secret kind" — the one place a `SecretRef` is turned into bytes), and joins the kernel's one
-# destination judge (`KernelServices`, its per-class rules) behind the dial judge (`process`);
+# (the "secret kind" — the one place a `SecretRef` is turned into bytes), reads its `Destinations`
+# config and implements its `DestJudge` trait with the one destination guard (`guard`, `process`);
 # `busbar-kernel` names nothing here.
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 rustls = { workspace = true }

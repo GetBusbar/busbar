@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A NEED DIALS A HOSTNAME THROUGH THE KERNEL'S ONE JUDGE, END TO END (`BUSBAR-1.6.0.md` THE
-//! DESIGN, connections; R-K; CONNECTOR-19 ruling (b)). A plugin's view of the connection table
-//! (`HostConns`, over the host's lowered slots) opens a need whose target is a NAME; the connector
-//! judges the authority through the kernel's `dest.judge` (`KernelServices::judge_dial`), the name
-//! resolves off the caller's thread, and the connector dials exactly the pinned address. The open
-//! answers at once with the dial in flight; the resolution wakes the reader's ticket; a refusal the
-//! name decides answers the open, and an answered address the rules refuse answers the read —
-//! 1.5.5's refusal timing.
+//! A NEED DIALS A HOSTNAME THROUGH THE ONE DESTINATION GUARD, END TO END (`BUSBAR-1.6.0.md` THE
+//! DESIGN, connections; CONNECTOR-19 ruling (b); OWNER ruling DESTINATION GUARD). A plugin's view of
+//! the connection table (`HostConns`, over the host's lowered slots) opens a need whose target is a
+//! NAME; the connector judges the authority through the deployment's one judge
+//! (`process::GuardJudge`), the name resolves off the caller's thread, and the connector dials
+//! exactly the pinned address. The open answers at once with the dial in flight; the resolution
+//! wakes the reader's ticket; a refusal the name decides answers the open, and an answered address
+//! the guard refuses answers the read — 1.5.5's refusal timing. The far ends here are on loopback,
+//! so the fixture allowlists loopback (the guard refuses it by default).
 
-use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -18,9 +18,10 @@ use std::time::Duration;
 
 use busbar_contract::abi::host::conn::{host_slots, ConnHost, HostConns};
 use busbar_contract::conn::{ConnError, ConnId, Conns, InstanceId, NeedId, OpenDesc};
-use busbar_kernel::host_services::{DestRules, KernelServices, Resolve, Resolved};
-use busbar_kernel::net_guard::{Denylist, GuardPolicy};
+use busbar_kernel::config::Destinations;
 
+use crate::guard::{Guard, Resolve, Resolved, SystemResolver};
+use crate::process::{judge, GuardJudge};
 use crate::registry::{Entry, Transports};
 use crate::support::{worker, TestDoor};
 use crate::Connector;
@@ -51,28 +52,27 @@ impl Resolve for Table {
     }
 }
 
-/// The connector serving a byte-exact door, its dials judged by the kernel's one judge over
-/// `resolver` (the host default class admitting internal addresses, as a loopback far end needs).
-fn connector(resolver: Arc<dyn Resolve>, wakes: Arc<AtomicU64>) -> Arc<Connector> {
+/// The connector serving a byte-exact door, its dials judged by the one guard over `allow` and
+/// `resolver`.
+fn connector_over(
+    allow: &[&str],
+    resolver: Arc<dyn Resolve>,
+    wakes: Arc<AtomicU64>,
+) -> Arc<Connector> {
     let view = Transports::new(vec![Entry {
         door: Arc::new(TestDoor::identity("bytes")),
         alpn: Vec::new(),
     }])
     .expect("the view");
-    let rules = DestRules {
-        policy: GuardPolicy {
-            allow_private: true,
-            ..GuardPolicy::default()
-        },
-        denylist: Arc::new(Denylist::new(&[], &[], false)),
-    };
-    // The root's join: the kernel's one judge, as the connector's dial judge.
-    let kernel = KernelServices::new(HashMap::from([(0, rules)]), resolver);
-    let judge =
-        move |dest: &str, class: u32, done: crate::Judged| kernel.judge_dial(dest, class, done);
+    let guard = Guard::from_config(&Destinations {
+        block_private_addresses: true,
+        allow: allow.iter().map(|s| (*s).to_owned()).collect(),
+        ..Destinations::default()
+    })
+    .expect("a valid allowlist");
     let c = Arc::new(Connector::serving(
         view,
-        Arc::new(judge),
+        judge(Arc::new(GuardJudge::new(guard, resolver)), &[]),
         None,
         Arc::new(move |_| {
             wakes.fetch_add(1, Ordering::SeqCst);
@@ -80,6 +80,11 @@ fn connector(resolver: Arc<dyn Resolve>, wakes: Arc<AtomicU64>) -> Arc<Connector
     ));
     c.declare_over(OWNER, NEED, "bytes");
     c
+}
+
+/// The connector over a guard allowlisting the loopback far ends these tests dial.
+fn connector(resolver: Arc<dyn Resolve>, wakes: Arc<AtomicU64>) -> Arc<Connector> {
+    connector_over(&["127.0.0.0/8", "::1"], resolver, wakes)
 }
 
 /// Read one piece, driving the connection by reads alone.
@@ -124,7 +129,7 @@ fn table(host: &ConnHost) -> HostConns {
 /// THE PROOF: a hostname target opens at once, the read before the resolution answers is Pending,
 /// the resolution wakes the ticket, and the bytes round-trip over the address the judge pinned.
 #[test]
-fn a_need_dials_a_hostname_through_the_kernel_judge() {
+fn a_need_dials_a_hostname_through_the_one_guard() {
     worker().block_on(async {
         let port = echo([127, 0, 0, 1].into()).await;
         let wakes = Arc::new(AtomicU64::new(0));
@@ -173,10 +178,7 @@ fn a_need_dials_localhost_through_the_system_resolver() {
         .ip();
     worker().block_on(async {
         let port = echo(first).await;
-        let c = connector(
-            Arc::new(busbar_kernel::host_services::SystemResolver),
-            Arc::default(),
-        );
+        let c = connector(Arc::new(SystemResolver), Arc::default());
         let host = host(&c);
         let t = table(&host);
         let target = format!("localhost:{port}");
@@ -371,6 +373,86 @@ fn an_empty_address_set_keeps_the_dial_as_it_was() {
             .expect("opens");
         assert_eq!(c.write(OWNER, id, b"same", false), Ok(4));
         assert_eq!(read_direct(&c, id).await.expect("the echo"), b"same");
+        assert_eq!(accepted.load(Ordering::SeqCst), 1);
+    });
+}
+
+/// RED (the destination guard): under the default, a name resolving to loopback is refused after
+/// its one resolution, on the read that finds the judgement, before any socket: the far end
+/// accepts nothing and the bytes written meanwhile never leave.
+#[test]
+fn a_name_resolving_to_loopback_is_refused_before_any_socket() {
+    worker().block_on(async {
+        let (port, accepted) = counting_echo().await;
+        let c = connector_over(
+            &[],
+            Arc::new(Table(vec![("db.test", [127, 0, 0, 1].into())])),
+            Arc::default(),
+        );
+        let target = format!("db.test:{port}");
+        let id = c
+            .open(
+                OWNER,
+                NEED,
+                &OpenDesc {
+                    target: &target,
+                    ..OpenDesc::default()
+                },
+            )
+            .expect("a name opens, its judgement pending");
+        assert_eq!(c.write(OWNER, id, b"leak", false), Ok(4), "held, not sent");
+        assert_eq!(read_direct(&c, id).await, Err(ConnError::Refused));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(accepted.load(Ordering::SeqCst), 0, "nothing was dialled");
+    });
+}
+
+/// GREEN: the same name dials once the allowlist names it.
+#[test]
+fn the_same_name_dials_when_allowlisted() {
+    worker().block_on(async {
+        let (port, accepted) = counting_echo().await;
+        let c = connector_over(
+            &["db.test"],
+            Arc::new(Table(vec![("db.test", [127, 0, 0, 1].into())])),
+            Arc::default(),
+        );
+        let target = format!("db.test:{port}");
+        let id = c
+            .open(
+                OWNER,
+                NEED,
+                &OpenDesc {
+                    target: &target,
+                    ..OpenDesc::default()
+                },
+            )
+            .expect("opens");
+        assert_eq!(c.write(OWNER, id, b"dial", false), Ok(4));
+        assert_eq!(read_direct(&c, id).await.expect("the echo"), b"dial");
+        assert_eq!(accepted.load(Ordering::SeqCst), 1);
+    });
+}
+
+/// OWNER Q7 (operator infrastructure EXEMPT): the same name, when the need's CONFIG names it
+/// (`target_from`, a store/secret/auth plugin's connection), is the operator's own destination and
+/// dials with no allowlist; the name a plugin names per open (above) stays refused.
+#[test]
+fn a_config_named_target_on_loopback_is_trusted() {
+    worker().block_on(async {
+        let (port, accepted) = counting_echo().await;
+        let c = connector_over(
+            &[],
+            Arc::new(Table(vec![("db.test", [127, 0, 0, 1].into())])),
+            Arc::default(),
+        );
+        let target = format!("db.test:{port}");
+        c.declare_need_to(OWNER, NEED, "bytes", crate::DEFAULT_CLASS, &target);
+        let id = c
+            .open(OWNER, NEED, &OpenDesc::default())
+            .expect("the configured target opens");
+        assert_eq!(c.write(OWNER, id, b"conf", false), Ok(4));
+        assert_eq!(read_direct(&c, id).await.expect("the echo"), b"conf");
         assert_eq!(accepted.load(Ordering::SeqCst), 1);
     });
 }
