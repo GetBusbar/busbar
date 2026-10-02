@@ -41,7 +41,10 @@ source "${H2_REPO}/testing/fleet-fixtures/lib.sh"
 # four tiers, so THERE IS NO CONFIGURATION THAT PRICES EITHER DECLARED CLASS. An empty map is
 # therefore the most a billing-ON mcp deployment can say today, and `h2-class-price.sh` is the leg
 # that says what that costs.
-H2_RATE_CARD_DEFAULT='rate_card: {}'
+# The card is the PLANE's own (`tools.rate_card`, keyed by lane): it must configure every class the plane
+# declares, and an explicit 0 counts. Written inside the `tools:` section, two-space indented.
+H2_RATE_CARD_DEFAULT='  rate_card:
+    probe_ping: { units: { tool_calls: 0, bytes: 0 } }'
 
 H2_BIN="${MCP_SUBJECT_BUSBAR_BIN:-${H2_REPO}/target/release/busbar}"
 # `--selftest` (bottom of this file) drives no busbar at all, so it is the one run that needs no binary.
@@ -114,10 +117,10 @@ mcp:
   authorization_servers:
     - "http://127.0.0.1:${H2_ADMIN_PORT}"
   scopes_supported: ["mcp:tools:list", "mcp:tools:call"]
-per_request_fee: 1
-${H2_RATE_CARD_YAML:-$H2_RATE_CARD_DEFAULT}
 ${groups_yaml}
 tools:
+  fees: { per_request: 1 }
+${H2_RATE_CARD_YAML:-$H2_RATE_CARD_DEFAULT}
   probe:
     url: "http://127.0.0.1:${H2_UPSTREAM_PORT}/mcp"
     allow_private: true
@@ -290,7 +293,7 @@ h2_put_fee() {
   local cents="$1"
   curl -sS -m 15 -X PUT "http://127.0.0.1:${H2_ADMIN_PORT}/api/v1/admin/config/settings" \
     -H "Authorization: Bearer $H2_ADMIN_TOKEN" -H 'content-type: application/json' \
-    -d "{\"per_request_fee\":${cents},\"rate_card\":{}}"
+    -d "{\"per_request_fee\":${cents}}"
 }
 
 # `--validate` THIS boot's own config with its `rate_card:` line replaced by <card-yaml>, and print
@@ -301,16 +304,16 @@ h2_validate_card() {
   local card_yaml="$1" out
   out="${H2_WORKDIR}/validate-card.$$.yaml"
   # The substitution is CHECKED, not assumed: a boot that overrode `H2_RATE_CARD_YAML` has no
-  # `rate_card: {}` line to replace, and a silent no-op here would validate the UNCHANGED config and
+  # default card block to replace, and a silent no-op here would validate the UNCHANGED config and
   # report `ok` — a false green on the one question this helper exists to ask.
-  if ! CARD="$card_yaml" python3 -c "import os,sys
+  if ! NEEDLE="$H2_RATE_CARD_DEFAULT" CARD="$card_yaml" python3 -c "import os,sys
 src=open(sys.argv[1]).read()
-needle='rate_card: {}'
+needle=os.environ['NEEDLE']
 if needle not in src:
     sys.exit(3)
 sys.stdout.write(src.replace(needle, os.environ['CARD']))" "${H2_WORKDIR}/config.yaml" >"$out"; then
     rm -f "$out"
-    printf 'harness: this boot wrote no `rate_card: {}` line to substitute\n'
+    printf 'harness: this boot wrote no default `tools.rate_card` block to substitute\n'
     return
   fi
   local res rc
