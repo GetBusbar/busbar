@@ -180,13 +180,6 @@ why = "crates of kind contract naming transport vocabulary: transport package na
 drain = "delete the transport name from the contract crate: a contract reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
 [[edge]]
-from = "export"
-to = "store"
-cite = "none. BUSBAR-1.6.0.md THE DESIGN, §1 — three blind axes, one small kernel: a crate of kind export has no clause that lets it name store vocabulary. Every hit is a coupling to delete."
-why = "crates of kind export naming store vocabulary: store package names in any spelling, the kind-qualified id (store-<id>), and — where store is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the store name from the export crate: a export reaches store through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
 from = "kernel"
 to = "plane"
 cite = "none. BUSBAR-1.6.0.md THE DESIGN, §1 — three blind axes, one small kernel: a crate of kind kernel has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
@@ -314,13 +307,6 @@ why = "crates of kind plugin-tooling naming store vocabulary: store package name
 drain = "delete the store name from the plugin-tooling crate: a plugin-tooling reaches store through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
 [[edge]]
-from = "plugin-tooling"
-to = "transport"
-cite = "none by clause. The loader, packer, signer and SDK are the tools that BUILD plugins, so a transport name in them is a tool naming its subject; BUSBAR-1.6.0.md THE DESIGN, §2 keeps them a kind of their own for exactly that reason, and the number says how much of the subject leaked into the tool."
-why = "crates of kind plugin-tooling naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the transport name from the plugin-tooling crate: a plugin-tooling reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
 from = "root"
 to = "hooks"
 cite = "none. BUSBAR-1.6.0.md THE DESIGN, §1 gives the composition root a REGISTRY to assemble from — it mounts what a plugin DECLARES. A hooks name inside crates/busbar is the assembly hand-wired instead of read, and no clause grants it."
@@ -357,14 +343,6 @@ drain = "delete the per-plugin-tooling wiring from crates/busbar/src/root/** and
 
 [[edge]]
 from = "root"
-to = "store"
-cite = "none. BUSBAR-1.6.0.md THE DESIGN, §1 gives the composition root a REGISTRY to assemble from — it mounts what a plugin DECLARES. A store name inside crates/busbar is the assembly hand-wired instead of read, and no clause grants it."
-why = "crates of kind root naming store vocabulary: store package names in any spelling, the kind-qualified id (store-<id>), and — where store is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the per-store wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the store itself."
-
-
-[[edge]]
-from = "root"
 to = "transport"
 cite = "none. BUSBAR-1.6.0.md THE DESIGN, §1 gives the composition root a REGISTRY to assemble from — it mounts what a plugin DECLARES. A transport name inside crates/busbar is the assembly hand-wired instead of read, and no clause grants it."
 why = "crates of kind root naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -376,31 +354,6 @@ to = "plane"
 cite = "none. BUSBAR-1.6.0.md THE DESIGN, §1 — three blind axes, one small kernel: a crate of kind store has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
 why = "crates of kind store naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the plane name from the store crate: a store reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "store"
-to = "plugin-tooling"
-cite = "none. BUSBAR-1.6.0.md THE DESIGN, §1 — three blind axes, one small kernel: a crate of kind store has no clause that lets it name plugin-tooling vocabulary. Every hit is a coupling to delete."
-why = "crates of kind store naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the plugin-tooling name from the store crate: a store reaches plugin-tooling through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "store"
-to = "store"
-cite = "none. BUSBAR-1.6.0.md THE DESIGN, §1 — three blind axes, one small kernel: a crate of kind store has no clause that lets it name store vocabulary. Every hit is a coupling to delete."
-why = "crates of kind store naming store vocabulary: store package names in any spelling, the kind-qualified id (store-<id>), and — where store is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the store name from the store crate: a store reaches store through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-
-
-
-
-[[edge]]
-from = "transport"
-to = "legacy"
-cite = "none. The retiring 1.5.x crates predate the plane/transport split (BUSBAR-1.6.0.md THE DESIGN, §9); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
-why = "crates of kind transport naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
 
 [[edge]]
 from = "transport"
@@ -435,10 +388,6 @@ kind = "plane"
 [[cell]]
 crate = "busbar"
 kind = "plugin-tooling"
-
-[[cell]]
-crate = "busbar"
-kind = "store"
 
 
 [[cell]]
@@ -484,10 +433,6 @@ kind = "transport"
 [[cell]]
 crate = "busbar-kernel-breaker"
 kind = "plane"
-
-[[cell]]
-crate = "busbar-kernel-breaker"
-kind = "transport"
 
 [[cell]]
 crate = "busbar-kernel-budget"
@@ -550,27 +495,11 @@ kind = "plugin-tooling"
 
 [[cell]]
 crate = "busbar-mcp"
-kind = "store"
-
-[[cell]]
-crate = "busbar-mcp"
 kind = "transport"
 
 [[cell]]
 crate = "busbar-core-oauth2"
 kind = "plane"
-
-[[cell]]
-crate = "busbar-core-oauth2"
-kind = "plugin-tooling"
-
-[[cell]]
-crate = "busbar-core-oauth2"
-kind = "store"
-
-[[cell]]
-crate = "busbar-core-oauth2"
-kind = "transport"
 
 [[cell]]
 crate = "busbar-plane-a2a"
@@ -581,16 +510,8 @@ crate = "busbar-plane-a2a"
 kind = "plane"
 
 [[cell]]
-crate = "busbar-plane-a2a"
-kind = "transport"
-
-[[cell]]
 crate = "busbar-plane-llm"
 kind = "plane"
-
-[[cell]]
-crate = "busbar-plane-llm"
-kind = "transport"
 
 [[cell]]
 crate = "busbar-plane-mcp"
@@ -618,10 +539,6 @@ kind = "plugin-tooling"
 
 [[cell]]
 crate = "busbar-plugin-loader"
-kind = "contract"
-
-[[cell]]
-crate = "busbar-plugin-loader"
 kind = "hooks"
 
 [[cell]]
@@ -641,16 +558,6 @@ crate = "busbar-plugin-loader"
 kind = "store"
 
 [[cell]]
-crate = "busbar-plugin-loader"
-kind = "transport"
-
-
-
-
-
-
-
-[[cell]]
 crate = "busbar-store-memory"
 kind = "plane"
 
@@ -661,15 +568,8 @@ kind = "plane"
 crate = "busbar-transport-stdio"
 kind = "plane"
 
-[[cell]]
-crate = "busbar-transport-stdio"
-kind = "transport"
-
-
-[[cell]]
-crate = "busbar-transport-ws"
-kind = "plane"
-
+# 23 -> 24: the ws locate's ALPN id literal b"\x08http/1.1" (door/mod.rs:378; ARCHITECT ruling
+# 2026-09-29 for the offer, row approved 2026-09-30), armed at today's measurement on METER-FIX's meter.
 [[cell]]
 crate = "busbar-transport-ws"
 kind = "transport"
@@ -682,31 +582,20 @@ kind = "contract"
 crate = "busbar-voice"
 kind = "plane"
 
-[[cell]]
-crate = "busbar-voice"
-kind = "store"
-
-[[cell]]
-crate = "busbar-voice"
-kind = "transport"
-
-
-
-# L5-INTERIM, ruling-backed (K9b; decisions.md "L5 kind-isolation rows to add at regen").
-[[cell]]
-crate = "busbar-export-file"
+[[disagreement]]
+crate = "busbar"
 kind = "plane"
+note = "segment scanner 1942, window scanner 1941. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
 
-# L5-INTERIM, ruling-backed (K9b same shape; decisions.md "L5 kind-isolation rows to add at regen").
-[[cell]]
-crate = "busbar-export-webhook"
+[[disagreement]]
+crate = "busbar-a2a"
 kind = "plane"
+note = "segment scanner 3167, window scanner 3147; scored 3167. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the UNION of the two hit sets, never either one alone, and it falls to zero with the hits."
 
-# L5-INTERIM, ruling-backed (K9b same shape / K9d; decisions.md "L5 kind-isolation rows to add at
-# regen").
-[[cell]]
-crate = "busbar-export-prometheus"
+[[disagreement]]
+crate = "busbar-contract"
 kind = "plane"
+note = "segment scanner 115, window scanner 113. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
 
 # ------------------------------------------------------------------------------------------------
 #
@@ -1820,10 +1709,6 @@ kind = "secret"
 [[instance]]
 crate = "busbar-kernel"
 kind = "store"
-
-[[instance]]
-crate = "busbar-core-oauth2"
-kind = "secret"
 
 [[instance]]
 crate = "busbar-plugin-loader"
