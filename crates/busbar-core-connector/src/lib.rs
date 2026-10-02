@@ -25,6 +25,8 @@
 //!   composes each accepted connection the same way, begun on the accept side; [`registry`] is the
 //!   view of which entry serves which scheme; [`wire`] presents a framer entry over host sockets to
 //!   the kernel's transport seam.
+//! * [`spawn`] is the carrier for a program destination: a child process whose standard input
+//!   and output are the connection, spawned under 1.5.5's carrier rules.
 //! * [`process`] builds the process's one connector for the root: the kernel's destination rules,
 //!   one set per egress class, behind the one dial judge, and the default outbound trust.
 //!
@@ -46,6 +48,7 @@ pub mod listen;
 pub mod process;
 pub mod registry;
 pub mod socket;
+pub mod spawn;
 pub mod stream;
 pub mod tls;
 pub mod udp;
