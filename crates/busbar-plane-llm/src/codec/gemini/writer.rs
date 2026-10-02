@@ -1228,7 +1228,7 @@ impl ProtocolWriter for GeminiWriter {
                         serde_json::json!(cache_read),
                     );
                 }
-                // busbar 1.6.x field-coverage carry: re-emit the tool-use prompt sub-bucket on the
+                // field carry: re-emit the tool-use prompt sub-bucket on the
                 // streaming terminal chunk too (buffered twin above), when the IR carried it.
                 if let Some(tool_use_prompt) = usage.detail.tool_use_prompt_tokens {
                     usage_metadata.insert(
@@ -1459,7 +1459,7 @@ impl ProtocolWriter for GeminiWriter {
                 serde_json::json!(cache_read),
             );
         }
-        // busbar 1.6.x field-coverage carry: re-emit the tool-use prompt sub-bucket when the IR
+        // field carry: re-emit the tool-use prompt sub-bucket when the IR
         // carried it (a same-protocol Gemini read set it; a foreign backend leaves it None), so the
         // native `toolUsePromptTokenCount` survives a read→write round-trip. Only emitted when
         // present, so an ordinary response stays byte-identical.

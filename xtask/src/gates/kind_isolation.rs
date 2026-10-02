@@ -293,7 +293,7 @@ static KINDS: &[KindDef] = &[
             "=busbar-admin",
             "=busbar-core-admin",
             "=busbar-core-connector",
-            "=busbar-oauth2",
+            "=busbar-core-oauth2",
         ],
     },
     KindDef {
@@ -6262,7 +6262,7 @@ impl Gate for KindIsolationGate {
                 &[
                     "unlisted-dep-edge",
                     "cleanliness -> transport",
-                    "busbar-oauth2 -> busbar-transport-http",
+                    "busbar-core-oauth2 -> busbar-transport-http",
                 ],
             ));
             report.push(prove_rows_red(
@@ -6274,7 +6274,7 @@ impl Gate for KindIsolationGate {
                 &[
                     "unlisted-dep-edge",
                     "plane -> cleanliness",
-                    "busbar-plane-mcp -> busbar-oauth2",
+                    "busbar-plane-mcp -> busbar-core-oauth2",
                 ],
             ));
         }
@@ -6303,7 +6303,7 @@ impl Gate for KindIsolationGate {
             "two cleanliness surfaces claiming the same route",
             &[ROW_REGISTRY],
             cleanliness_shared_route(),
-            &["shared-route", "busbar-admin", "busbar-oauth2"],
+            &["shared-route", "busbar-admin", "busbar-core-oauth2"],
         ));
 
         // THE REGISTRATION EXPIRES WITH THE RENAME IT WAS WRITTEN FOR. Land `busbar-admin` and a
@@ -6769,7 +6769,7 @@ impl Gate for KindIsolationGate {
             // planted in a cleanliness crate that has none: the loader as a dev-edge whose
             // only user is `tests/universal_needs.rs` is scored nowhere…
             let universal = |normal: bool, extra_user: bool| {
-                // A crate the tree does not carry, registered as cleanliness: `busbar-oauth2` names the loader for real today
+                // A crate the tree does not carry, registered as cleanliness: `busbar-core-oauth2` names the loader for real today
                 // (`routes.rs`), so planting a second declaration there measures "row 1 vs 2" and
                 // is a pre-existing edge, never the NEW forbidden one this case is about.
                 let dir = "crates/busbar-planted-clean";
@@ -8870,10 +8870,10 @@ impl Gate for KindIsolationGate {
         // RE-TARGETED (item 89): the plants were a `busbar-control-planted` crate — but `control`
         // is not a kind (DECISIONS #5) and that name resolves to none, so the rule, which reads the
         // `cleanliness` surfaces, never saw it: both cases came back GREEN once the row's standing
-        // debt stopped hiding them. The surface is a real cleanliness crate, `busbar-oauth2`.
+        // debt stopped hiding them. The surface is a real cleanliness crate, `busbar-core-oauth2`.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-oauth2/src/planted_route.rs",
+            "crates/busbar-core-oauth2/src/planted_route.rs",
             "pub struct P;\nimpl P {\n    fn route(&self) -> u8 { 0 }\n}\n",
         );
         report.push(prove_rows_red(
@@ -8885,14 +8885,14 @@ impl Gate for KindIsolationGate {
             &[
                 "data-path-step",
                 "planted_route.rs",
-                "busbar-oauth2",
+                "busbar-core-oauth2",
                 "route",
             ],
         ));
 
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-oauth2/src/planted_pool.rs",
+            "crates/busbar-core-oauth2/src/planted_pool.rs",
             "pub fn pick(pool: u8) -> u8 { let failover = pool; failover }\n",
         );
         report.push(prove_rows_red(
@@ -8901,7 +8901,7 @@ impl Gate for KindIsolationGate {
             "a control surface naming the vocabulary of reaching an upstream",
             &[ROW_CONTROL],
             ov,
-            &["upstream", "busbar-oauth2", "pool"],
+            &["upstream", "busbar-core-oauth2", "pool"],
         ));
 
         // A TRANSITIONAL ROW WHOSE CRATE IS STILL HERE AT SHIP TIME IS RED. The exemption's expiry
@@ -9354,7 +9354,7 @@ fn registry_plant(rows: &str) -> Overlay {
 /// (both folded away) planted exactly that. The exit test holds both to the census. The drain
 /// target was `busbar-unit-transport-key` until fold F14 2/2 deleted it and retired the `unit`
 /// kind; it is now a `cleanliness` crate, the one neutral drain-target kind.
-const PLANTED_DRAIN_TARGET: &str = "busbar-oauth2";
+const PLANTED_DRAIN_TARGET: &str = "busbar-core-oauth2";
 
 /// THE `[[dep]]` ROW THE `--write` VERDICT PLANT FLIPS from `not-allowed` to `allowed`. It must be
 /// a live row whose class the architecture withholds (the kernel naming a plugin instance). It was
@@ -9392,21 +9392,21 @@ fn drain_row_plant() -> Overlay {
     ))
 }
 
-/// `busbar-oauth2` — a `cleanliness` crate — declaring a wire.
+/// `busbar-core-oauth2` — a `cleanliness` crate — declaring a wire.
 fn cleanliness_reaches_wire() -> Overlay {
     manifest_plant(
-        "crates/busbar-oauth2",
-        "busbar-oauth2",
+        "crates/busbar-core-oauth2",
+        "busbar-core-oauth2",
         &["busbar-contract", "busbar-transport-http"],
     )
 }
 
-/// A plane declaring the `cleanliness` crate `busbar-oauth2`.
+/// A plane declaring the `cleanliness` crate `busbar-core-oauth2`.
 fn plane_reaches_cleanliness() -> Overlay {
     manifest_plant(
         "crates/busbar-plane-mcp",
         "busbar-plane-mcp",
-        &["busbar-contract", "busbar-oauth2"],
+        &["busbar-contract", "busbar-core-oauth2"],
     )
 }
 
@@ -9414,7 +9414,7 @@ fn plane_reaches_cleanliness() -> Overlay {
 fn cleanliness_names_money() -> Overlay {
     let mut ov = Overlay::new();
     ov.set(
-        "crates/busbar-oauth2/src/planted_money.rs",
+        "crates/busbar-core-oauth2/src/planted_money.rs",
         "pub fn charge(card: u32) -> u32 { let rate_card = card; let fee_cents = rate_card; \
          fee_cents }\n",
     );
@@ -9426,12 +9426,12 @@ const PLANTED_ROUTE: &str =
     "pub const P: &[PathSeg] = &[PathSeg::Lit(\"api\"), PathSeg::Lit(\"v1\"), \
                              PathSeg::Lit(\"admin\"), PathSeg::Tail];\n";
 
-/// `busbar-admin` landed beside `busbar-oauth2` — both `cleanliness` by NAME (the kind's matchers
+/// `busbar-admin` landed beside `busbar-core-oauth2` — both `cleanliness` by NAME (the kind's matchers
 /// are exact) — and both claiming [`PLANTED_ROUTE`].
 fn cleanliness_shared_route() -> Overlay {
     let mut ov = manifest_plant("crates/busbar-admin", "busbar-admin", &["busbar-contract"]);
     ov.set("crates/busbar-admin/src/claims.rs", PLANTED_ROUTE);
-    ov.set("crates/busbar-oauth2/src/claims.rs", PLANTED_ROUTE);
+    ov.set("crates/busbar-core-oauth2/src/claims.rs", PLANTED_ROUTE);
     ov
 }
 
@@ -10232,7 +10232,7 @@ mod plant_tests {
             &[
                 "unlisted-dep-edge",
                 "cleanliness -> transport",
-                "busbar-oauth2 -> busbar-transport-http",
+                "busbar-core-oauth2 -> busbar-transport-http",
             ],
         );
     }
@@ -10245,7 +10245,7 @@ mod plant_tests {
             &[
                 "unlisted-dep-edge",
                 "plane -> cleanliness",
-                "busbar-plane-mcp -> busbar-oauth2",
+                "busbar-plane-mcp -> busbar-core-oauth2",
             ],
         );
     }
@@ -10418,7 +10418,7 @@ mod plant_tests {
         let (crates, planes) = crates_of(&cx);
         assert!(crates
             .iter()
-            .any(|c| c.name == "busbar-oauth2" && c.kind == Some(CLEANLINESS)));
+            .any(|c| c.name == "busbar-core-oauth2" && c.kind == Some(CLEANLINESS)));
         assert_green(&rule_vocab(&cx, &crates, &planes));
     }
 
@@ -10427,7 +10427,7 @@ mod plant_tests {
         assert_bites(&ws(), &cleanliness_shared_route());
         assert_red_naming(
             &registry_over(cleanliness_shared_route()),
-            &["shared-route", "busbar-admin", "busbar-oauth2"],
+            &["shared-route", "busbar-admin", "busbar-core-oauth2"],
         );
     }
 

@@ -3095,16 +3095,15 @@ autoscaler" confusion.
 
 | Branch | Rule | CI |
 |---|---|---|
-| `predev` | **permanent WIP.** Every in-flight session lands here and forks from here. | No push CI. predev MUST stay green: the LANDER's full proof runs before every push, and a train that would leave any gate or selftest red does not land. |
+| `predev` | **permanent WIP.** Every in-flight session lands here and forks from here. | Pull requests only; `promote.yml` `preflight` + `hop` are the required checks and the verdict is "no worse than base" (see "How work lands" below). |
 | `dev` | **release-train-write-only.** "Next version's WIP, nowhere near done." | full `ci.yml` |
 | `qa` | promotion target. **The one release build happens here** — the PGO build that ships, tested for real. | full CI + the real-media matrix |
 | `main` | **a push here cuts a release** — tag, GitHub Release, container promotion, `latest` moved. Irreversible. **`main` never compiles:** it tags and publishes the artifacts, by digest, that `qa` built and verified. | release orchestration |
 
-**Never push `dev`, `qa` or `main` by hand.** `--force-with-lease` is permitted only on `predev`
-(#61), which carries no protection rule and no ruleset. **Branch protection is on `qa` only** —
+**Never push `dev`, `qa` or `main` by hand.** `predev` and `dev` take changes by pull request only
+(ruleset; OWNER R3 2026-10-01); `--force-with-lease` is permitted only on your own `lane-*` branch. **Branch protection is on `qa` only** —
 required CI and train-only pushes (OWNER ruling 2026-09-28); the ARCHITECT drafts the settings and
-the owner applies them. Only the LANDER commits to `predev` and pushes it (`1.6.0-TODO.md`, THE RULES
-2.6).
+the owner applies them. Nobody pushes `predev`: lanes land by PR (see "How work lands" below).
 
 **The qa build is the bytes that ship** (owner, 2026-09-05): *"when qa is green it's prod ready and
 we just tag it and move it to main and release, but the qa build is what we release"* and *"we
@@ -3270,6 +3269,92 @@ job-minutes. (The comment at `ci.yml:23` claiming `branches: ['**']` is stale; t
 is narrow.) Deleting `pr/*` auto-closes those PRs, which also fires nothing, because `closed` is not
 in the default `pull_request` types.
 
+
+## How work lands: the PR flow and the rules every contributor follows
+
+These are the binding process rules, moved here from the laptop-side `agent-rules.md` (lane R7,
+2026-10-01). Where a line in this Part above disagrees (the LANDER pushing `predev`, "no push CI"),
+this section wins. `CONTRIBUTING.md` points here.
+
+**The PR flow** (ARCHITECT 2026-10-01T23:54Z, pilot #134 admitted; OWNER R3 ruling 2026-10-01:
+"require `promote` (PR-only, ff) on predev and dev"; OWNER 2026-10-01: predev and the `lane-*`
+branches live on GitHub so CI runs the pipeline).
+
+1. One branch per lane, `lane-<name>`, cut from `origin/predev`. A branch that depends on another
+   unmerged lane says so in its PR body.
+2. Changes reach `predev` and `dev` **only by pull request**. The ruleset on both requires the two
+   jobs of `.github/workflows/promote.yml`, `preflight` and `hop`; no direct push, no force-push, no
+   deletion. `dev` moves only through the promote engine.
+3. The promote run on the PR is the proof of record. Its verdict is "no worse than base": a PR may
+   not add a red. A local Latchkey run is for iteration only.
+4. A `$` (money-touching) change is its own PR, never bundled with anything else.
+5. On merge the branch is deleted (OWNER 2026-10-01, BRANCH LIFETIME: "as soon as merged into
+   predev get rid of the branch").
+
+**Ship and stop** (ARCHITECT 2026-10-02, supersedes every polling instruction). When a slice is
+ready, run one command from the lane's worktree:
+`cargo xtask ship "<PR title>" [--body <file>]`. It refuses any branch that is not `lane-*`,
+merges `origin/predev` in, runs the local pre-flight, commits what the pre-flight changed (tracked
+files only), pushes, opens or reuses the PR into `predev` and turns on auto-merge. Then STOP: no
+polling of CI, PRs or Latchkey, no sleep loops. A red or conflicted PR comes back to the owning
+lane as a new task; fix it, ship again, stop again.
+
+**Never bless a golden or a ratchet.** A red is fixed forward with a root cause; nothing is waived
+and nothing is blessed (OWNER 2026-10-01, PREDEV IS THE CONVERGENCE BRANCH). Customer-visible
+bytes stay 1.5.5's. A golden cell that must change goes to the owner as one batch, each cell with
+its bytes and its diff against 1.5.5; lanes record and draft, the owner signs (OWNER 2026-10-02,
+§9.2 OWNER ACTS).
+
+**The 1.5.5 golden is read-only.** `golden/1.5.5` is the recording of the PUBLISHED 1.5.5 (OWNER
+Q108, 2026-10-02: comparisons are against the published 1.5.5 only). No lane re-records,
+regenerates or edits it; the only writes are the owner-approved batch above and a harness-stamp
+re-record proven byte-identical (ARCHITECT 2026-10-02, ORACLE-COMMIT).
+
+**Line count is not a CI check** (OWNER 2026-10-02, SIZE). No PR carries a ceiling re-arm and no
+gate fails on lines. **Size is judged by hand at PERF** (`1.6.0-TODO.md` PERF-1, OWNER 2026-10-01:
+"messy code = slow code"; "dig in HARD at perf time"): `tools/loc.py` and `tools/dup.py` on the
+frozen DEV-GREEN sha. Until then the SIZE PRINCIPLE (OWNER 2026-10-01) still binds the author: code
+moved into a plugin shrinks and grows only by the ABI glue, the source is deleted in the same lane,
+and no wrappers, mirror types, From/Into ladders or per-dialect copies are added.
+
+**Git.**
+- `git -C <path>` only, never `cd <path> && git`.
+- No `git stash`: the stash list is shared by every worktree of a repo, so a pop in one lane
+  applies another lane's work (ARCHITECT 2026-10-02). Set work aside as a WIP commit on your own
+  branch or `git diff > file`.
+- No force-push, except `--force-with-lease` on your OWN `lane-*` branch after a rebase.
+- No AI attribution and no `Co-Authored-By` trailers, in commits or PR bodies (OWNER).
+- Never print a secret, a token or a process's argv; kill processes by PID, never by pattern.
+
+**No builds on the laptop** (OWNER, HARD RULE 0). The laptop is for development only. Locally a
+contributor runs the pre-flight and nothing else: `cargo fmt --all`, `cargo metadata
+--format-version 1` (refreshes a stale `Cargo.lock` without compiling) and `cargo xtask gate
+abi-header --write`. Every build, test, clippy, gate and oracle run happens in CI or on Latchkey.
+
+**Quality rules that still bind every PR.**
+- Red-before-green: every behaviour change ships a test that fails without it.
+- Tests live in separate files; no inline `#[cfg(test)] mod tests { … }` bodies in production
+  files (OWNER 2026-10-01).
+- One home per fact, and the same rule in every dialect or kind is data walked once, not code per
+  dialect (OWNER 2026-10-01).
+- Dependencies (OWNER 2026-09-30, "keep an eye on bloat"): a PR that adds or changes a third-party
+  dependency states the `cargo tree` delta in its body; one protocol = one library, one crypto
+  backend = `ring`; no C dependency without ARCHITECT approval.
+- A seam question the sources do not answer is never designed around: open a `needs-owner` issue
+  on `GetBusbar/busbar` with the question and a proposed option. Owner rulings are recorded as
+  comments on the pinned "Rulings log" issue, and the binding ones are folded into this spec.
+
+**Product hard rules carried from the same rule set** (each OWNER 2026-10-02):
+- busbar does not act on the data it carries. Request in, response out, in every plane; content is
+  read only to translate dialects and to meter. A tool call is relayed to the caller, never executed.
+- busbar is invisible to upstreams. On a same-dialect route every client header and body field
+  passes through unchanged, except what busbar governs: credential headers and tenant selectors
+  (declared as dialect data), the mapped model, hook rewrites, and hop-by-hop headers plus
+  Host/Content-Length.
+
+**Retired with the laptop pipeline** (no longer rules): `handin.queue` and the CONVERGER / MERGE
+STEWARD, the LANDER and its trains, the interim "paste an `lk-cached.sh` proof in the PR body" rule
+(retired when the hop builds and tests, #181), the STANDING CEILING RULE and every ceiling re-arm.
 
 ---
 
