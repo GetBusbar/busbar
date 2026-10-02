@@ -869,6 +869,9 @@ each dialect translates, field by field, is listed in the generated
   split of the cache-write tokens (additive: billed counts are unchanged).
 - A buffered OpenAI chat response carries its citations as nested `url_citation` annotations, the
   shape the published Chat Completions schema defines.
+- A request translated between LLM dialects no longer carries an empty text block in place of a
+  content block the target dialect cannot represent, and an answer translated back no longer
+  delivers one; the block is dropped with a warning and an audit row naming its wire path.
 
 ### Fixed
 
