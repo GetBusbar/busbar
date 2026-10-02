@@ -1393,6 +1393,7 @@ fn string_args_writers_emit_raw_tool_args_verbatim() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
 
     // Responses: output[].arguments (bind the const to a local before borrowing — the writer holds
