@@ -522,6 +522,12 @@ because = "OWNER GRANT 2026-09-29 (3), ARCHITECT approval: line-limit re-arm at 
 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 29284 -> 29803 (REARM cg-58, cg-60) — STRUCK by train/cg-61a: DEL-HOTCOLD-A lowers the contract to its measured 29392, so no raise stands.
 
+[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
+file    = "qa/construction.toml"
+from    = 29397
+to      = 29926
+because = "GRPC-DOOR Q1 (ARCHITECT 2026-10-02T00:15Z): contract_caps re-arms as the approved delta over predev's measure: predev carries 29397 (train/cg-61a lowered it to the measured 29392, train/cg-65 +5); the lane adds +529 (busbar_contract::hyper_io!, the sans-IO hyper drive moved out of busbar-transport-http, +694 in crates/busbar-contract/src/sdk_hyper.rs, a dev-only hyper dependency; RefuseIn.status +11; measured 30119 against predev 8fc5e67e2's 29590 at 6f604f51b), 29397 + 529 = 29926. The http door shrinks by 486 in the same lane."
+
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25682 -> 26157 (TRAIN BIG: E12 -243, URL-SEAM +489, H2 +229) — EXPIRED AND
 # STRUCK: its commit reached the base; struck by the P1 core unit's re-arm above.
 
@@ -548,6 +554,12 @@ because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan a
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 26157 -> 29284 (REARM cg-31) — EXPIRED AND STRUCK: its commit reached the base; struck by REARM cg-58 below.
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 29284 -> 29803 (REARM cg-58, cg-60) — STRUCK by train/cg-61a: DEL-HOTCOLD-A lowers the contract to its measured 29392, so no raise stands.
+
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+file    = "qa/construction.toml"
+from    = 29397
+to      = 29926
+because = "GRPC-DOOR Q1 (ARCHITECT 2026-10-02T00:15Z): caps_contract_ceiling re-arms as the approved delta over predev's measure: predev carries 29397 (train/cg-61a lowered it to the measured 29392, train/cg-65 +5); the lane adds +529 (busbar_contract::hyper_io!, the sans-IO hyper drive moved out of busbar-transport-http, +694 in crates/busbar-contract/src/sdk_hyper.rs, a dev-only hyper dependency; RefuseIn.status +11; measured 30119 against predev 8fc5e67e2's 29590 at 6f604f51b), 29397 + 529 = 29926. The http door shrinks by 486 in the same lane."
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 25682 -> 26157 (TRAIN BIG: E12 -243, URL-SEAM +489, H2 +229) — EXPIRED AND
 # STRUCK: its commit reached the base; struck by the P1 core unit's re-arm above.
@@ -578,17 +590,9 @@ from    = 233
 to      = 236
 because = "Q77-PENDING (a), a MOVE forced by a cited ruling: ARCHITECT RULINGS 2026-09-30 (URL-PARSE audit) SEAM puts the one URL and host reader at busbar-contract/src/net.rs (BUSBAR-1.6.0.md, the engine-folds paragraph). The three hits are the web scheme names the reader must spell: net.rs:398 (the http literal of strip_scheme, moved verbatim from busbar-kernel-egress trust::net) and net.rs:518 (the http and ws arms of UrlFamily::of, folded from the two split_ws_url copies). The pair nets down in the same commit: busbar-kernel-egress x transport 56 -> 55 and x plane 16 -> 13 (net -1). Measured by cargo xtask gate kind-isolation --report on predev 8a4b18692: 233 at the base, 236 at the tip."
 
-[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
-file    = "qa/construction.toml"
-from    = 29392
-to      = 29397
-because = "train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (xtask loc 29397 over predev 29392, after the union drain), merge-steward delegation <= +150 (ARCHITECT 2026-10-01). Predev arms 29392."
+# [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 29392 -> 29397 (train/cg-65) — EXPIRED AND STRUCK: its commit reached the base; struck by GRPC-DOOR Q1 above.
 
-[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
-file    = "qa/construction.toml"
-from    = 29392
-to      = 29397
-because = "train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (xtask loc 29397 over 29392, after the union drain), merge-steward delegation <= +150. Predev arms 29392."
+# [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 29392 -> 29397 (train/cg-65) — EXPIRED AND STRUCK: its commit reached the base; struck by GRPC-DOOR Q1 above.
 
 # ── THE CONTRACT CEILING PAIR, RE-ARMED BY LANDER'S BATCH (XTASK-SPEED, KI-ABI-SCOPE, M3-SDK,
 #    M3-SHAPES AUTH, billing-cite) — EXPIRED AND STRUCK
@@ -901,7 +905,8 @@ because = "train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (xtask loc 29397 over 29392, 
 # ── SUMMED on the trunk (CONVERGER): contract_caps 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
 # ── LOWERED 29803 -> 29392 by train/cg-61a at the measurement (DEL-HOTCOLD-A deletes the dead hot/cold ABI; lower only).
 # ── RE-ARMED 29392 -> 29397 by train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (measured after the union drain) (merge-steward delegation <= +150).
-contract_caps = 29397
+# ── RE-ARMED 29397 -> 29926 by GRPC-DOOR Q1 (+529), declared above.
+contract_caps = 29926
 # RE-ARMED 26157 -> 28653 with its pair (the P1 core unit: KIND-SHARE +1826, BOOT-CHAIN +506, HEAD-FIELDS +111, CONNECTOR-19-U12 +57; composed -4), declared above.
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
@@ -1683,7 +1688,8 @@ contract_crate = "busbar-contract"
 # ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
 # ── LOWERED 29803 -> 29392 by train/cg-61a at the measurement (DEL-HOTCOLD-A; lower only).
 # ── RE-ARMED 29392 -> 29397 by train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (measured after the union drain) (merge-steward delegation <= +150).
-caps_contract_ceiling = 29397
+# ── RE-ARMED 29397 -> 29926 by GRPC-DOOR Q1 (+529), declared above.
+caps_contract_ceiling = 29926
 # RE-ARMED 26157 -> 28653 with its pair (the P1 core unit), declared above.
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
@@ -1867,6 +1873,10 @@ reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-tra
 # OS sockets, TLS, ALPN and pools (busbar-core-connector; BUSBAR-1.6.0.md THE DESIGN, §5) regardless
 # of which wire library a transport links to reach them.
 [rules.manifest-allowlist.reviewed_extra]
+# The gRPC door (OWNER 2026-09-29, "1 new transport"): HTTP/2 is hyper's, driven over the host's
+# bytes through the contract's hyper_io!; first cells as GRPC-DOOR's tip check measured them
+# (ARCHITECT cells ruling 2026-10-01).
+busbar-transport-grpc = ["hyper", "http", "http-body"]
 busbar-transport-stdio = ["tokio", "futures"]
 # The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.

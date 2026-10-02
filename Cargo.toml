@@ -31,6 +31,7 @@ members = [
     "crates/hooks-ranking",
     "crates/store-memory",
     "crates/busbar-transport-ws",
+    "crates/busbar-transport-grpc",
     "crates/busbar-transport-stdio",
     "testing/ws-conformance/subject",
     "xtask",
@@ -79,7 +80,7 @@ busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-e
 # same rev, one resolved copy in Cargo.lock.
 busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "3ad5a711aad433f2015a980cf3a792afa5fd3a7a" }
 # THE HTTP TRANSPORT (kind: transport), pulled at a pinned rev; the logic crate the root links.
-busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "17cfd311eb8f72340dc323f9947f0055a8b537bd" }
+busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "a92207c74a1a62f6fa3ee1bcd4c49ac33e7a278a" }
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "3ad5a711aad433f2015a980cf3a792afa5fd3a7a" }
 # ── A2A, from the a2aproject's OWN crates ──────────────────────────────────────────────────────
 # THE OBVIOUS NAME IS THE WRONG ONE. `a2a-rs` on crates.io is `emillindfors/a2a-rs` (MIT, v0.5.0) —

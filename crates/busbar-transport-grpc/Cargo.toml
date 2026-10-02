@@ -1,0 +1,49 @@
+[package]
+name = "busbar-transport-grpc"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The gRPC transport: gRPC calls over HTTP/2, dialled and accepted, as a sans-IO framer."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_transport_grpc"
+path = "src/lib.rs"
+# rlib: the linked door and the tests. The dropped-in door is `examples/grpc_door.rs`, the same
+# table exported as the one door symbol.
+crate-type = ["rlib"]
+
+[dependencies]
+# The only busbar crate this plugin names (#40(a)). Its `hyper_io!` SDK macro is the sans-IO drive
+# this framer runs `hyper` on, expanded here over this crate's own `hyper` and `bytes`.
+busbar-contract = { path = "../busbar-contract" }
+# HTTP/2 is `hyper`'s (the owner's PLUGIN LIBRARIES ruling: a prebuilt library, driven over the
+# host's bytes); gRPC's own layer — the length-prefixed message, grpc-timeout, grpc-status — is
+# this crate's.
+hyper = { workspace = true }
+http = { workspace = true }
+http-body = { workspace = true }
+bytes = { workspace = true }
+# The door's settings blob is JSON.
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# THE DOOR'S CONFORMANCE (`tests/conformance.rs`): the dropped-in image (`examples/grpc_door.rs`)
+# loaded beside the linked one.
+libloading = { workspace = true }
+# THE REAL PEERS (`tests/peers.rs`): tonic servers and clients on real sockets, over cleartext and
+# over TLS, with this door on the other end through a test host that carries the socket's bytes.
+tonic = { workspace = true, features = ["server", "channel", "router", "codegen"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+rcgen = { workspace = true }
+hyper-util = { workspace = true, features = ["tokio"] }
+tower = { workspace = true }
+futures = { workspace = true }
+
+# THE DROPPED-IN IMAGE ON THE ONE DOOR: built by `cargo test`.
+[[example]]
+name = "grpc_door"
+crate-type = ["cdylib"]

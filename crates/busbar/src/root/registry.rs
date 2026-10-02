@@ -77,8 +77,8 @@
 //!
 //! ## The shape that would pass both checks and still refuse every connection
 //!
-//! Two of the transports have a constructor that yields a serviceable transport and a constructor
-//! that does not: `ws` and `grpc` built over nothing refuse every listen, accept and dial. A root
+//! One of the transports has a constructor that yields a serviceable transport and a constructor
+//! that does not: `ws` built over nothing refuses every listen, accept and dial. A root
 //! that forgot the composition would register, pass `check_composition` — because `composed_over()`
 //! returns `None` and the check reads a declaration — and then refuse every connection. That is why
 //! the fold hands every wire the layer it built beneath it, and why the registered rows record what
