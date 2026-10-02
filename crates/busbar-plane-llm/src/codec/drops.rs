@@ -330,3 +330,7 @@ pub fn note_unmodelled_blocks(grammar: &[Blocks], body: &Value, message: &'stati
 #[cfg(test)]
 #[path = "tests/drops_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/drop_names_tests.rs"]
+mod names_tests;
