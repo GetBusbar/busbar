@@ -1557,16 +1557,9 @@ fn read_moderation(
             .and_then(|s| s.get(MODERATION_RESULTS))
             .and_then(|r| r.as_array());
         for r in results.into_iter().flatten() {
-            let categories = r.get(MODERATION_CATEGORIES).and_then(|c| c.as_object());
-            for (category, on) in categories.into_iter().flatten() {
-                if on.as_bool() == Some(true) {
-                    out.push(crate::codec::ir::IrSafetyVerdict {
-                        category: category.clone(),
-                        flagged: true,
-                        blocked: false,
-                    });
-                }
-            }
+            out.extend(crate::codec::ir::IrSafetyVerdict::flagged_categories(
+                r.get(MODERATION_CATEGORIES),
+            ));
         }
     }
     out

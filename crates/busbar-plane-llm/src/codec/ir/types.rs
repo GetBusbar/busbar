@@ -406,6 +406,24 @@ pub struct IrSafetyVerdict {
     pub blocked: bool,
 }
 
+impl IrSafetyVerdict {
+    /// A `{"<category>": true|false, …}` map (the OpenAI family's moderation `categories`) as one
+    /// flagged, non-blocking verdict per category that is `true`.
+    pub fn flagged_categories(categories: Option<&Value>) -> Vec<IrSafetyVerdict> {
+        categories
+            .and_then(|c| c.as_object())
+            .into_iter()
+            .flatten()
+            .filter(|(_, on)| on.as_bool() == Some(true))
+            .map(|(category, _)| IrSafetyVerdict {
+                category: category.clone(),
+                flagged: true,
+                blocked: false,
+            })
+            .collect()
+    }
+}
+
 /// Audio the model produced in its answer (ARCHITECT ruling 2026-10-02, DF-MAP item 3).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct IrAudioOutput {
