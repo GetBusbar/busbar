@@ -798,6 +798,7 @@ fn streamed_citations_reach_openai_and_cohere_clients() {
         end_index: Some(6),
         encrypted_index: None,
         raw: None,
+        ..Default::default()
     };
     let ev = crate::codec::ir::IrStreamEvent::BlockDelta {
         index: 0,
@@ -1007,6 +1008,7 @@ fn streamed_citations_reach_a_bedrock_client() {
             end_index: Some(5),
             encrypted_index: None,
             raw: None,
+            ..Default::default()
         }]),
     };
     let bedrock = crate::codec::proto_codec::protocol_for("bedrock").expect("bedrock");
@@ -1044,6 +1046,7 @@ fn bedrock_citation_omits_a_location_it_cannot_honestly_fill() {
             end_index: Some(8),
             encrypted_index: None,
             raw: None,
+            ..Default::default()
         }]),
     };
     let bedrock = crate::codec::proto_codec::protocol_for("bedrock").expect("bedrock");
@@ -1476,6 +1479,7 @@ fn bedrock_uncited_text_keeps_the_plain_shape() {
 
             request_echo: None,
             stop_detail: None,
+            ..Default::default()
         });
     assert_eq!(
         out["output"]["message"]["content"][0]["text"], "plain",

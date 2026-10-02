@@ -444,3 +444,39 @@ fn ir09_reasoning_off_and_effort_above_high() {
     // A budget never bucketizes above High: the table has no row there.
     assert_eq!(Budget(u32::MAX).to_effort(table), High);
 }
+
+/// MONEY LAW (ARCHITECT ruling 2026-10-02, DF-MAP item 4): the by-modality split is presentation
+/// only. What the plane reports for billing (`to_token_usage`) and the normalization total are
+/// byte-equal with and without it populated.
+#[test]
+fn usage_by_modality_never_moves_a_billed_figure() {
+    let plain = IrUsage {
+        input_tokens: 120,
+        output_tokens: 40,
+        cache_read_input_tokens: Some(20),
+        cache_creation_input_tokens: Some(5),
+        ..Default::default()
+    };
+    let mut split = plain.clone();
+    split.detail.by_modality = Some(IrUsageByModality {
+        input: IrModalityCounts {
+            text: Some(100),
+            image: Some(20),
+            ..Default::default()
+        },
+        output: IrModalityCounts {
+            text: Some(30),
+            audio: Some(10),
+            ..Default::default()
+        },
+        cache: IrModalityCounts {
+            text: Some(20),
+            ..Default::default()
+        },
+    });
+    assert_eq!(
+        format!("{:?}", plain.to_token_usage()),
+        format!("{:?}", split.to_token_usage())
+    );
+    assert_eq!(plain.billable_tokens(), split.billable_tokens());
+}

@@ -69,6 +69,38 @@ pub enum Slot {
     Structure,
 }
 
+/// THE ANSWER-SIDE SLOT REGISTRY: the response and stream concepts a mapping file's `response` /
+/// `stream` rows may name as `ir = "<slot>"` (snake case), each a member of the IR answer added once
+/// for every dialect that has the field (design F3; ARCHITECT ruling 2026-10-02, DF-MAP items 1-5).
+/// `cargo xtask dialect compile` refuses an answer row naming any other slot. The answer walk lives in
+/// each dialect's reader and writer code; this registry is the shared vocabulary they map onto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnswerSlot {
+    /// `IrResponse::safety`: a safety or moderation verdict (category, flagged, blocked).
+    SafetyVerdict,
+    /// `IrBlock::HostedToolRecord` of kind `WebSearch`: a provider-run web search and its results.
+    WebSearch,
+    /// `IrResponse::audio`: audio the model produced (data, format, transcript).
+    AudioOutput,
+    /// `IrUsageDetail::by_modality`: tokens by modality (presentation only, never billed).
+    UsageByModality,
+    /// `IrCitation::file`: a citation of an uploaded file.
+    FileCitation,
+}
+
+impl AnswerSlot {
+    /// The slot's registry name, as a mapping file spells it.
+    pub fn name(self) -> &'static str {
+        match self {
+            AnswerSlot::SafetyVerdict => "safety_verdict",
+            AnswerSlot::WebSearch => "web_search",
+            AnswerSlot::AudioOutput => "audio_output",
+            AnswerSlot::UsageByModality => "usage_by_modality",
+            AnswerSlot::FileCitation => "file_citation",
+        }
+    }
+}
+
 /// THE CONTROL ORDER: every request control a dialect may have no form for, in the order a
 /// dialect's dropped controls are warned and audited. Each dialect's dropped set is DERIVED from
 /// its mapping: a control is dropped when the request carries it and the dialect has no row for it
