@@ -32,6 +32,7 @@ usage:
   cargo xtask loc --selftest
   cargo xtask teller-steps [--root-legs] [--root-legs-gating]
   cargo xtask ledger {sync|status|next|record|fixed|move} | --check
+  cargo xtask txn-fence   (the transaction compile fence: passes only when the fence fails to compile, for its three reasons)
   cargo xtask audit-verify --range <range.json> --keys <keys.json> [--head <head.json>]
   cargo xtask conformance check --suite <id>|all|--musts [--sha <sha>] [--manifest <path>] [--format=tsv]
   cargo xtask conformance check --selftest
@@ -62,6 +63,7 @@ pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
     "perf-ab-mock",
     "dialect",
     "ship",
+    "txn-fence",
 ];
 
 pub fn main(args: &[String]) -> i32 {
@@ -137,6 +139,9 @@ pub fn main(args: &[String]) -> i32 {
         // THE OUT-OF-PROCESS AUDIT-CHAIN VERIFIER (#82(c), TODO 597). Not a gate: it checks bodies a
         // node published, by the published recipe pages alone, and reads no tree.
         Some("audit-verify") => crate::audit_verify::main(&args[1..]),
+        // THE TRANSACTION COMPILE FENCE. Not a gate: it COMPILES busbar-kernel under a cfg and
+        // passes only when that build fails for its three named reasons.
+        Some("txn-fence") => crate::txn_fence::main(&args[1..]),
         Some("ledger") => match open_ctx() {
             Ok(cx) => crate::audit_cmd::main(cx.root(), &args[1..]),
             Err(code) => code,

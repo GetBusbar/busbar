@@ -60,5 +60,6 @@ pub mod sha256;
 pub mod ship;
 pub mod toml_doc;
 pub mod toml_lite;
+pub mod txn_fence;
 pub mod wire_lock;
 pub mod yaml_lite;

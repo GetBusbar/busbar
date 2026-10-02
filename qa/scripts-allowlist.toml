@@ -422,11 +422,6 @@ class = "port"
 reason = "plugin-ci.yml's signing gate: becomes an xtask fleet subcommand the reusable workflow calls"
 
 [[script]]
-path = "scripts/txn-fence.sh"
-class = "port"
-reason = "the transaction compile fence (must fail to compile): becomes an xtask gate"
-
-[[script]]
 path = "scripts/verify-1.6.0-done.sh"
 class = "port"
 reason = "the 1.6.0 done verifier (busbar-release status reads its groups): becomes `cargo xtask verify-done`, group for group"
