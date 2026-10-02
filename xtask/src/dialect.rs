@@ -414,6 +414,30 @@ fn compile_one(all: &[Dialect], d: &Dialect) -> Result<String, String> {
         }
     }
 
+    // The answer directions (response, stream): the wire paths this dialect carries, as written.
+    // A translate attempt's drop walk names every path of an answer that is not one of these and
+    // not under one (design F3 "Drops"). A dialect with no rows in a direction emits no table.
+    for dir in ["response", "stream"] {
+        let paths: Vec<&str> = directions
+            .iter()
+            .filter(|(_, d2)| **d2 == dir)
+            .flat_map(|(name, _)| d.doc.tables[&format!("rows.{name}")].entries.iter())
+            .map(|(key, _)| key.as_str())
+            .filter(|key| *key != "park")
+            .collect();
+        if paths.is_empty() {
+            continue;
+        }
+        body.push_str(&format!(
+            "\n/// The {dir} wire paths this dialect carries (the drop walk's map).\npub(crate) const {}_PATHS: &[&str] = &[\n",
+            dir.to_ascii_uppercase()
+        ));
+        for p in paths {
+            body.push_str(&format!("    {},\n", lit(p)));
+        }
+        body.push_str("];\n");
+    }
+
     // The emitted direction tables.
     let dialect_t = d.doc.table("dialect");
     for dir in EMITTED {

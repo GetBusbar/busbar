@@ -77,6 +77,33 @@ pub(crate) const ROWS_TIER: &[Field] = &[
     row(&["serviceTier", "type"], Slot::ServiceTier, ValueCodec::Words(WORDS_SERVICE_TIER)),
 ];
 
+/// The response wire paths this dialect carries (the drop walk's map).
+pub(crate) const RESPONSE_PATHS: &[&str] = &[
+    "output.message.role",
+    "output.message.content",
+    "stopReason",
+    "usage.inputTokens",
+    "usage.outputTokens",
+    "usage.totalTokens",
+    "usage.cacheReadInputTokens",
+    "usage.cacheWriteInputTokens",
+    "metrics.latencyMs",
+    "trace.guardrail",
+    "trace.promptRouter",
+    "additionalModelResponseFields",
+    "performanceConfig",
+];
+
+/// The stream wire paths this dialect carries (the drop walk's map).
+pub(crate) const STREAM_PATHS: &[&str] = &[
+    "messageStart",
+    "contentBlockStart",
+    "contentBlockDelta",
+    "contentBlockStop",
+    "messageStop",
+    "metadata",
+];
+
 /// The request table, walked in order.
 pub(crate) const REQUEST: Table = &[ROWS_STRUCTURE, ROWS_INFERENCE_CONFIG, ROWS_TIER, ROWS_OUTPUT_CONFIG, ROWS_BLOCKS];
 

@@ -105,6 +105,45 @@ pub(crate) const ROWS_OPENAI_SAMPLING: &[Field] = &[
     row(&["top_p"], Slot::TopP, ValueCodec::Plain),
 ];
 
+/// The response wire paths this dialect carries (the drop walk's map).
+pub(crate) const RESPONSE_PATHS: &[&str] = &[
+    "usage.completion_tokens_details.reasoning_tokens",
+    "usage.prompt_tokens",
+    "usage.completion_tokens",
+    "usage.total_tokens",
+    "id",
+    "object",
+    "created",
+    "model",
+    "system_fingerprint",
+    "service_tier",
+    "choices[].index",
+    "choices[].finish_reason",
+    "choices[].logprobs",
+    "choices[].message.role",
+    "choices[].message.content",
+    "choices[].message.refusal",
+    "choices[].message.tool_calls",
+    "choices[].message.annotations",
+    "choices[].message.audio",
+    "usage.prompt_tokens_details.cached_tokens",
+    "usage.prompt_tokens_details.audio_tokens",
+    "usage.completion_tokens_details.audio_tokens",
+    "usage.completion_tokens_details.accepted_prediction_tokens",
+    "usage.completion_tokens_details.rejected_prediction_tokens",
+    "choices[].message.function_call.arguments",
+    "choices[].message.function_call.name",
+    "usage.prompt_tokens_details.cache_write_tokens",
+];
+
+/// The stream wire paths this dialect carries (the drop walk's map).
+pub(crate) const STREAM_PATHS: &[&str] = &[
+    "choices[].delta.role",
+    "choices[].delta.content",
+    "choices[].delta.refusal",
+    "choices[].delta.tool_calls",
+];
+
 /// The request table, walked in order.
 pub(crate) const REQUEST: Table = &[ROWS_CHAT_STRUCTURE, ROWS_OPENAI_SAMPLING, ROWS_OPENAI_PENALTIES, ROWS_CHAT_SAMPLING, ROWS_OPENAI_FAMILY, ROWS_CHAT, ROWS_BLOCKS];
 

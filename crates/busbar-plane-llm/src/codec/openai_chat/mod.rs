@@ -807,6 +807,22 @@ const PARKED: &[crate::codec::drops::Parked] = &[
     },
 ];
 
+/// What this dialect's answers carry beyond its map file's rows (the drop walk, design F3 "Drops").
+// A chunk's identity, model, clock, index, finish reason, logprobs, usage and served tier are read by
+// the stream reader (the stream rows name only the delta).
+const RESPONSE_CODE: &[&str] = &[];
+const STREAM_CODE: &[&str] = &[
+    "id",
+    "model",
+    "created",
+    "object",
+    "choices[].index",
+    "choices[].finish_reason",
+    "choices[].logprobs",
+    "usage",
+    "service_tier",
+];
+
 /// Read one OpenAI-format content part: `None` for a part kind this reader does not model, which
 /// is dropped — nothing is put in its place.
 fn read_openai_part(

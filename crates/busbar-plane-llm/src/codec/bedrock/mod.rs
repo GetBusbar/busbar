@@ -641,6 +641,17 @@ const PARKED: &[crate::codec::drops::Parked] = &[
     },
 ];
 
+/// What this dialect's answers carry beyond its map file's rows (the drop walk, design F3 "Drops").
+// The per-TTL cache split is read into the usage detail; a stream exception is the terminal error.
+const RESPONSE_CODE: &[&str] = &["usage.cacheDetails"];
+const STREAM_CODE: &[&str] = &[
+    "internalServerException",
+    "modelStreamErrorException",
+    "serviceUnavailableException",
+    "throttlingException",
+    "validationException",
+];
+
 /// Read a native Bedrock Converse `reasoningContent` content block into an IR `Thinking` block, or
 /// `None` when the block carries neither known member (forward-compatibility: a future
 /// `reasoningContent` union member is left undecoded rather than mis-mapped).

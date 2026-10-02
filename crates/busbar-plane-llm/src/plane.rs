@@ -746,8 +746,17 @@ impl Plane for LlmPlane {
                 .ok_or(Encode::Unrepresentable)?;
             let value: serde_json::Value =
                 sonic_rs::from_slice(data).map_err(|_| Encode::Unrepresentable)?;
+            // A translate attempt's stream: its drops go through the one drop path both hosts share
+            // (design F3 "Drops", F7), once per path per stream.
+            let seam = crate::codec::drops::Seam {
+                direction: crate::codec::drops::Direction::Response,
+                ingress: ingress.name,
+                egress: source,
+            };
             let events = with_decode_state(st, |state| {
-                with_reader(source, |r| r.read_response_events(name, &value, state))
+                with_reader(source, |r| {
+                    crate::codec::drops::read_stream_frame(seam, r, name, &value, state)
+                })
             })
             .ok_or(Encode::Unrepresentable)?;
             let mut out = Vec::new();

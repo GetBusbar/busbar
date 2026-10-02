@@ -754,3 +754,93 @@ fn a_reply_that_is_cut_says_so() {
     assert_eq!(cut.head.map(|h| h.status), Some(502));
     assert_eq!(cut.fault, Some(Fault::Transient("transport")));
 }
+
+// ── the stream's one drop path (design F3 "Drops", DF-MAP-IR-GAPS section E) ─────────────────────
+
+/// A far end's stream of `far`, relayed to a caller of `caller`: the paths the relay dropped.
+fn stream_drops(caller: &str, far: &str, bytes: &[u8]) -> Vec<String> {
+    let mut ctx = relay_ctx(caller, far, true);
+    ctx.client_include_usage = true;
+    let mut r = Relay::new(ctx);
+    for piece in bytes.chunks(7) {
+        let _ = r.feed(piece);
+    }
+    r.end().dropped
+}
+
+/// The far end's spec-shaped stream of `dialect` (the OpenAI stream itself, or as busbar writes it
+/// for that dialect).
+fn far_stream(dialect: &str) -> Vec<u8> {
+    if dialect == "openai" {
+        openai_stream()
+    } else {
+        native_stream(dialect)
+    }
+}
+
+/// RED ARM of the stream walk: a stream of members every dialect's map or code carries drops
+/// nothing, for every translated pair. A walk that named a carried member (a chunk's `id`, a
+/// keepalive, a block index) would fail here.
+#[test]
+fn a_translated_stream_of_carried_members_drops_nothing() {
+    for far in SIX {
+        let bytes = far_stream(far);
+        for caller in SIX.into_iter().filter(|c| *c != far) {
+            assert_eq!(
+                stream_drops(caller, far, &bytes),
+                Vec::<String>::new(),
+                "{far} -> {caller}"
+            );
+        }
+    }
+}
+
+/// A member the caller's dialect has no form for is dropped on the one drop path, named by its wire
+/// path ONCE for the whole stream however many frames carry it. RED before: a stream dropped it
+/// silently (no warn, no path, no audit row).
+#[test]
+fn a_translated_stream_names_each_unmapped_path_once() {
+    let far = String::from_utf8(openai_stream())
+        .unwrap()
+        .replace("\"object\":", "\"obfuscation\":\"x\",\"object\":");
+    assert_eq!(
+        stream_drops("anthropic", "openai", far.as_bytes()),
+        vec!["obfuscation".to_string()]
+    );
+
+    // An event of a kind the far end's reader does not carry: Anthropic's frame is a union on `type`.
+    let mut far = far_stream("anthropic");
+    for _ in 0..2 {
+        far.extend_from_slice(b"event: zz_future\ndata: {\"type\":\"zz_future\",\"x\":1}\n\n");
+    }
+    assert_eq!(
+        stream_drops("openai", "anthropic", &far),
+        vec!["type=zz_future".to_string()]
+    );
+
+    // A Responses refusal streamed as its own event: the stream reader does not carry it.
+    let mut far = far_stream("responses");
+    far.extend_from_slice(
+        b"event: response.refusal.delta\ndata: {\"type\":\"response.refusal.delta\",\"item_id\":\"m1\",\"output_index\":0,\"content_index\":0,\"delta\":\"no\",\"sequence_number\":99}\n\n",
+    );
+    assert!(stream_drops("openai", "responses", &far)
+        .contains(&"type=response.refusal.delta".to_string()));
+
+    // Bedrock's frames are keyed by their event name.
+    let mut far =
+        busbar_plane_llm::codec::eventstream::encode_frame("zzNeverHeardOf", br#"{"zz":{"b":1}}"#);
+    far.extend_from_slice(&far_stream("bedrock"));
+    assert_eq!(
+        stream_drops("anthropic", "bedrock", &far),
+        vec!["zzNeverHeardOf".to_string()]
+    );
+}
+
+/// A same-dialect stream is a relay: its reader is a tap and drops nothing, whatever it carries.
+#[test]
+fn a_same_dialect_stream_drops_nothing() {
+    let far = String::from_utf8(openai_stream())
+        .unwrap()
+        .replace("\"object\":", "\"obfuscation\":\"x\",\"object\":");
+    assert!(stream_drops("openai", "openai", far.as_bytes()).is_empty());
+}

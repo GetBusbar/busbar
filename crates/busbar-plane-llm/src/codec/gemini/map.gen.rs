@@ -64,6 +64,31 @@ pub(crate) const ROWS_TIER: &[Field] = &[
     row(&["store"], Slot::Store, ValueCodec::Plain).park(),
 ];
 
+/// The response wire paths this dialect carries (the drop walk's map).
+pub(crate) const RESPONSE_PATHS: &[&str] = &[
+    "usageMetadata.thoughtsTokenCount",
+    "usageMetadata.promptTokenCount",
+    "usageMetadata.candidatesTokenCount",
+    "usageMetadata.totalTokenCount",
+    "candidates[].content",
+    "candidates[].finishReason",
+    "candidates[].index",
+    "candidates[].safetyRatings",
+    "candidates[].citationMetadata",
+    "candidates[].groundingMetadata",
+    "candidates[].avgLogprobs",
+    "candidates[].logprobsResult",
+    "candidates[].tokenCount",
+    "promptFeedback.blockReason",
+    "promptFeedback.safetyRatings",
+    "usageMetadata.cachedContentTokenCount",
+    "usageMetadata.toolUsePromptTokenCount",
+    "usageMetadata.promptTokensDetails",
+    "modelVersion",
+    "responseId",
+    "candidates[].content.parts[].functionCall.name",
+];
+
 /// The request table, walked in order.
 pub(crate) const REQUEST: Table = &[ROWS_STRUCTURE, ROWS_GENERATION_CONFIG, ROWS_TIER, ROWS_BLOCKS];
 

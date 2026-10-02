@@ -73,6 +73,55 @@ pub(crate) const ROWS_SAMPLING: &[Field] = &[
     row(&["top_p"], Slot::TopP, ValueCodec::Plain),
 ];
 
+/// The response wire paths this dialect carries (the drop walk's map).
+pub(crate) const RESPONSE_PATHS: &[&str] = &[
+    "usage.output_tokens_details.reasoning_tokens",
+    "usage.input_tokens",
+    "usage.output_tokens",
+    "usage.total_tokens",
+    "id",
+    "object",
+    "created_at",
+    "model",
+    "status",
+    "output",
+    "output_text",
+    "error",
+    "incomplete_details",
+    "instructions",
+    "metadata",
+    "usage.input_tokens_details.cached_tokens",
+    "output[].type=message.id",
+    "output[].type=message.status",
+    "output[].type=message.content",
+    "output[].type=reasoning.summary",
+    "output[].type=reasoning.encrypted_content",
+    "output[].type=function_call.call_id",
+    "output[].type=function_call.name",
+    "output[].type=function_call.arguments",
+    "output[].type=web_search_call.id",
+    "output[].type=web_search_call.status",
+    "service_tier",
+    "usage.input_tokens_details.cache_write_tokens",
+];
+
+/// The stream wire paths this dialect carries (the drop walk's map).
+pub(crate) const STREAM_PATHS: &[&str] = &[
+    "type=response.created",
+    "type=response.in_progress",
+    "type=response.output_item.added",
+    "type=response.output_item.done",
+    "type=response.content_part.added",
+    "type=response.content_part.done",
+    "type=response.output_text.delta",
+    "type=response.output_text.done",
+    "type=response.function_call_arguments.delta",
+    "type=response.reasoning_summary_text.delta",
+    "type=response.completed",
+    "type=response.failed",
+    "type=response.incomplete",
+];
+
 /// The request table, walked in order.
 pub(crate) const REQUEST: Table = &[ROWS_RESPONSES_STRUCTURE, ROWS_SAMPLING, ROWS_OPENAI_FAMILY, ROWS_RESPONSES, ROWS_BLOCKS];
 

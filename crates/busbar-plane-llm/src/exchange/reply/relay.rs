@@ -89,6 +89,9 @@ pub struct End {
     pub usage: Option<TokenUsage>,
     /// Every open class the body counted beside its tokens (only when metering).
     pub open_units: BTreeMap<String, u64>,
+    /// The far-end wire paths a translated stream dropped (design F3 "Drops"), each warned once:
+    /// the host records one audit row per path.
+    pub dropped: Vec<String>,
 }
 
 /// How a relayed answer was cut: by the far end's transport, or by the stream's ceiling.
@@ -391,6 +394,11 @@ impl Relay {
             failed,
             usage,
             open_units: wire::open_units_of(&open_billing),
+            dropped: self
+                .translate
+                .as_ref()
+                .map(|t| t.dropped())
+                .unwrap_or_default(),
         }
     }
 
