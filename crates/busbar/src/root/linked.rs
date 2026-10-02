@@ -334,8 +334,10 @@ pub fn link_secrets(
     if let Some(rows) = SECRETS.get() {
         return Ok(rows);
     }
-    let mut rows =
-        crate::root::loader::secret_calls::SecretRows::new(crate::root::dispatch::dispatcher);
+    let mut rows = crate::root::loader::secret_calls::SecretRows::new(
+        crate::root::dispatch::dispatcher,
+        conns,
+    );
     for door in doors {
         rows.link(*door)
             .map_err(|e| format!("a linked secret plugin does not state itself: {e}"))?;
@@ -343,10 +345,16 @@ pub fn link_secrets(
     Ok(SECRETS.get_or_init(|| rows))
 }
 
+/// The host's one connection table (`root::connector::the()`), on which a secret plugin that declares
+/// a need is declared and through which it is lent its connector.
+fn conns() -> Option<std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>> {
+    Some(crate::root::connector::the().clone())
+}
+
 /// The secret axis [`register_stores`] installed (an empty one where no root registered).
 pub fn secret_rows() -> &'static crate::root::loader::secret_calls::SecretRows {
     SECRETS.get_or_init(|| {
-        crate::root::loader::secret_calls::SecretRows::new(crate::root::dispatch::dispatcher)
+        crate::root::loader::secret_calls::SecretRows::new(crate::root::dispatch::dispatcher, conns)
     })
 }
 

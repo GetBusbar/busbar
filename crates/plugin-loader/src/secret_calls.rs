@@ -27,6 +27,7 @@ use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, ReleaseIn};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::secret::{slot, ResolveIn, ResolveOut, ERROR_KIND_INTERNAL};
+use busbar_contract::conn::DeclaredConns;
 use busbar_contract::redacted::Redacted;
 use busbar_contract::secret::{SecretAxis, SecretCalls, SecretRefused};
 use busbar_contract::secret_ref::SecretRef;
@@ -239,6 +240,9 @@ impl SecretCalls for LoadedSecret {
 pub struct SecretRows {
     /// The process dispatcher, asked for at first use: a plugin is opened on it, never before.
     dispatcher: fn() -> Arc<Dispatcher>,
+    /// The host's one connection table, asked for at each load: a plugin that declares a need (a
+    /// dropped-in vault's http exchange) is declared on it and lent its connector.
+    conns: fn() -> Option<Arc<dyn DeclaredConns>>,
     linked: Vec<Candidate>,
     dropped: RwLock<Vec<Candidate>>,
     shared: Mutex<BTreeMap<String, Arc<LoadedSecret>>>,
@@ -264,10 +268,15 @@ fn answers(c: &Candidate, word: &str) -> bool {
 
 impl SecretRows {
     /// No rows yet; every instance opens on the dispatcher `dispatcher` answers, asked for at the
-    /// first open (so the rows can be built before the process dispatcher is).
-    pub fn new(dispatcher: fn() -> Arc<Dispatcher>) -> Self {
+    /// first open (so the rows can be built before the process dispatcher is), its needs declared on
+    /// the connection table `conns` answers.
+    pub fn new(
+        dispatcher: fn() -> Arc<Dispatcher>,
+        conns: fn() -> Option<Arc<dyn DeclaredConns>>,
+    ) -> Self {
         Self {
             dispatcher,
+            conns,
             linked: Vec::new(),
             dropped: RwLock::new(Vec::new()),
             shared: Mutex::new(BTreeMap::new()),
@@ -324,7 +333,7 @@ impl SecretRows {
             max_inflight_cap: MAX_INFLIGHT_CAP,
             sink: Arc::new(NoSink),
             dispatcher: (self.dispatcher)().adopter(),
-            conns: None,
+            conns: (self.conns)(),
         };
         match &c.origin {
             Origin::Linked(row) => load_linked::<Secret>(row, bind),

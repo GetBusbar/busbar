@@ -62,7 +62,7 @@ fn transcript(axis: &dyn SecretAxis) -> Vec<String> {
 /// and its refusal carries the plugin's own code and text.
 #[test]
 fn a_linked_secret_plugin_answers_and_resolves_through_the_axis() {
-    let mut rows = SecretRows::new(dispatcher);
+    let mut rows = SecretRows::new(dispatcher, || None);
     rows.link(conforming::door)
         .expect("the fixture's door links");
     assert!(rows.answers(NAME) && rows.linked(NAME));
@@ -101,7 +101,7 @@ fn a_dropped_in_secret_plugin_is_the_same_plugin_through_the_axis() {
     )
     .expect("the rendering reads back");
     assert_eq!(candidate.kind, KindCode::Secret);
-    let rows = SecretRows::new(dispatcher);
+    let rows = SecretRows::new(dispatcher, || None);
     rows.set_dropped([candidate]);
     assert!(rows.answers(NAME) && !rows.linked(NAME));
     assert!(
@@ -109,7 +109,7 @@ fn a_dropped_in_secret_plugin_is_the_same_plugin_through_the_axis() {
         "a dropped-in plugin has no shared instance"
     );
 
-    let mut linked = SecretRows::new(dispatcher);
+    let mut linked = SecretRows::new(dispatcher, || None);
     linked
         .link(conforming::door)
         .expect("the fixture's door links");
@@ -127,7 +127,7 @@ fn a_dropped_in_secret_plugin_is_the_same_plugin_through_the_axis() {
 /// RED: a door of another kind is refused on the secret axis.
 #[test]
 fn a_door_of_another_kind_is_refused() {
-    let mut rows = SecretRows::new(dispatcher);
+    let mut rows = SecretRows::new(dispatcher, || None);
     let err = rows
         .link(hook_door_plugin::conforming::door)
         .err()
