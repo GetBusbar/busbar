@@ -21,9 +21,10 @@
 //! | `on_piece`, the far end | [`crate::exchange::reply::Reply`]: the caller's head, bytes, verdict and cumulative counts |
 //! | `refusal` | [`crate::exchange::refuse`]: the declined arrival's own envelope, else the kernel's refusal in the unit's dialect |
 //!
-//! The plane is the fallback catch-all ([`TAIL_FALLBACK`]): it publishes no claim of its own and
-//! takes every arrival no other plane claims, its detection deciding the dialect as the previous
-//! release's did.
+//! The plane states its paths as claims, like every plane ([`claims`], ARCHITECT Q-FL1): each
+//! dialect's own paths, then the previous release's fallback as prefix claims on `/`, which the
+//! claim precedence ranks below every more specific claim. Its detection decides the dialect of an
+//! arrival as the previous release's did.
 //!
 //! An answer is computed ONCE per piece and kept with its unit: a re-call after a short answer or
 //! `more = 1` re-delivers it, never re-computes it. Every kernel or far-end piece reads the host's
@@ -50,15 +51,15 @@ use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, OpClass, OutField, PlaneDriveIn,
     PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
-    ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, CANCEL_ABORTED, CLAIM_PROBE,
-    EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE,
-    INGRESS_RESPONSE_STREAM, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_REQUIRED,
-    SHAPE_PIECEWISE, TAIL_FALLBACK, TAIL_PROBES, UNITS_REPORTED, VERDICT_HARD, VERDICT_NONE,
-    VERDICT_OK, VERDICT_RETRY,
+    ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, CANCEL_ABORTED, CLAIM_EXACT,
+    CLAIM_PROBE, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
+    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE,
+    PRINCIPAL_REQUIRED, SHAPE_PIECEWISE, TAIL_FALLBACK, TAIL_PROBES, UNITS_REPORTED, VERDICT_HARD,
+    VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::Refusal;
-use busbar_contract::abi::sdk::publish::SnapshotSpec;
+use busbar_contract::abi::sdk::publish::{ClaimSpec, SnapshotSpec};
 use busbar_contract::abi::sdk::{
     open_failed, Generations, HostBuf, Instance, Lent, Out, Safe, SafeSlot, Services,
 };
@@ -399,6 +400,56 @@ impl LlmDoor {
     }
 }
 
+// ── the claims ───────────────────────────────────────────────────────────────────────────────────
+
+/// One claim: its verb, its target, whether the target is exact (else its whole subtree), and the
+/// dialect a refusal on it wears before `arrive` has read the arrival.
+type ClaimRow = (&'static str, &'static str, bool, &'static str);
+
+/// The verbs the previous release's fallback answered on any path (a dialect path hit with another
+/// verb reads the dialect's 405 from `arrive`; any other path its not-found).
+const FALLBACK_VERBS: [&str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+
+/// THE DIALECTS' OWN PATHS (ARCHITECT Q-FL1, 2026-10-02), each with the dialect its path shape
+/// names (the rule [`crate::exchange::arrive::envelope_for`] renders a refusal by): exact where
+/// the previous release named one path, the whole subtree where it named a family.
+const DIALECT_CLAIMS: [ClaimRow; 7] = [
+    ("POST", "/v1/messages", true, "anthropic"),
+    ("POST", "/v1/chat/completions", true, "openai"),
+    ("POST", "/v1/responses", true, "responses"),
+    ("POST", "/v2/chat", true, "cohere"),
+    ("POST", "/v1beta/models", false, "gemini"),
+    ("POST", "/model", false, "bedrock"),
+    ("POST", "/v1/models", false, "openai"),
+];
+
+/// THE PLANE'S CLAIMS: [`DIALECT_CLAIMS`], then the previous release's fallback, a prefix claim on
+/// `/` per verb wearing the residual default dialect. The fallback reaches every path at any depth
+/// no more specific claim or kernel route takes (CG-62); the router has no plane-shaped branch.
+#[must_use]
+pub fn claims() -> Vec<ClaimSpec> {
+    let fallback = crate::exchange::arrive::envelope_for("/");
+    DIALECT_CLAIMS
+        .iter()
+        .copied()
+        .chain(FALLBACK_VERBS.iter().map(|&verb| (verb, "/", false, fallback)))
+        .map(|(verb, target, exact, dialect)| {
+            let flags = if exact { CLAIM_EXACT } else { 0 };
+            let mut claim = ClaimSpec::new(verb, target, TRANSPORT, flags);
+            claim.refusal_dialect = u16::try_from(dialect_index(dialect)).unwrap_or(0);
+            claim
+        })
+        .collect()
+}
+
+/// The generation's snapshot: the plane's claims.
+fn snapshot() -> SnapshotSpec {
+    SnapshotSpec {
+        claims: claims(),
+        ..SnapshotSpec::default()
+    }
+}
+
 // ── the answers ──────────────────────────────────────────────────────────────────────────────────
 
 fn dialect_index(name: &str) -> u32 {
@@ -728,8 +779,7 @@ slot!(
             tickets: Mutex::new(HashMap::new()),
             services: open.host().and_then(|h| Services::of(&h)),
         };
-        // The fallback catch-all publishes no claim of its own.
-        out.publish(|o| &o.snapshot, &door.generations, open.generation, &SnapshotSpec::default());
+        out.publish(|o| &o.snapshot, &door.generations, open.generation, &snapshot());
         instance.open(door);
         Outcome::Ready
     }
@@ -746,7 +796,7 @@ slot!(
             Err(words) => return out.fail(Refusal::refused(words)),
         };
         guard(&door.shapings).insert(input.generation, Arc::new(shaping));
-        out.publish(|o| &o.snapshot, &door.generations, input.generation, &SnapshotSpec::default());
+        out.publish(|o| &o.snapshot, &door.generations, input.generation, &snapshot());
         Outcome::Ready
     }
 );
@@ -914,7 +964,8 @@ slot!(
                 declined: Some(d), ..
             }) if given.plane_code != 0 => refuse::declined(d),
             _ => {
-                let envelope = match held.as_ref().and_then(|u| u.arrived.as_ref()) {
+                let arrived = held.as_ref().and_then(|u| u.arrived.as_ref());
+                let envelope = match arrived {
                     Some(a) => a.dialect,
                     None => {
                         let target =
@@ -923,11 +974,25 @@ slot!(
                         envelope_for(path)
                     }
                 };
+                // A model that resolved to no destination reads the previous release's not-found
+                // sentence, which names the model the caller asked for; every other refusal reads
+                // the kernel's own text.
+                let text = match arrived {
+                    Some(a) if given.reason == crate::refusal::reason::NO_DESTINATION => {
+                        refuse::model_not_found(
+                            &a.model,
+                            a.path_model
+                                .as_ref()
+                                .and_then(|p| p.model_not_found_message.as_deref()),
+                        )
+                    }
+                    _ => String::from_utf8_lossy(input.field(|i| &i.text).bytes()).into_owned(),
+                };
                 refuse::kernel_refusal(
                     envelope,
                     given.reason,
                     u16::try_from(given.status).unwrap_or(500),
-                    &String::from_utf8_lossy(input.field(|i| &i.text).bytes()),
+                    &text,
                     given.retry_after_s,
                 )
             }

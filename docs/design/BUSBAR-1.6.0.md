@@ -4924,6 +4924,27 @@ Other rulings:
 - ARCHITECT: the usage floor (Q24/Q28, owner told) is the billing baseline: the plane UNITS class
   flag FLOOR bills like REPORTED; ESTIMATED never bills.
 
+### 2026-10-02 — ARCHITECT rulings (FOLD-LLM, the llm door)
+- 2026-10-02 ARCHITECT Q-FL1 (how the llm door is reached): no catch-all special case. The llm plane
+  states its inbound paths as claims like every plane, and whatever 1.5.5 served as llm's fallback is a
+  prefix claim at the lowest precedence, ordered by CG-62 (most specific wins); the router has no
+  llm-shaped branch. A prefix claim is its target's whole subtree at any depth (settled with
+  SERVE-WIRE), so the 1.5.5 fallback (cells `http.crosscut|unknown-path|bare`, `|openai-suffix`) is
+  a prefix claim on `/` per verb, and each dialect's own paths are claims wearing their dialect
+  (44ca63ad53).
+- 2026-10-02 ARCHITECT Q-FL2 (a safe plane naming its pool): the same field as Q-SW6
+  (`ArriveOut.pool: AbiStr`); SERVE-WIRE adds the SDK setter with the field and the llm door consumes
+  it. Implementing commit (llm side): pending.
+- 2026-10-02 ARCHITECT Q-FL3 (llm's pools): the llm plane owns `pools` and `models` as its two root
+  keys (#47). `ArriveOut` carries the route entry plus a one-byte route class {pool, direct}. A direct
+  route keys the kernel's state by (plane key, model entry) and writes 1.5.5's empty pool label in
+  meter and ledger rows (Q-SW6 amended). A model that resolves to no destination answers 1.5.5's
+  dialect not-found envelope, 404: the llm plane's refusal-status rows state no_destination 404 and
+  no_rate 400 (any dialect), and its refusal renders the model-not-found sentence (594fee170e). The
+  unknown-model cell is recorded add-only through ORACLE-PLANES; no existing golden is edited.
+- 2026-10-02 ARCHITECT K5: a K5 lane is staffed (the hook stage on the driver and the `project` ABI);
+  the llm plane's `project` op follows K5's interface commit.
+
 # APPENDIX C — THE PLANE DRIVER AND HOST SERVICES (design, owner-ruled 2026-09-28)
 
 
