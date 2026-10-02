@@ -3,7 +3,7 @@
 //! The kernel's single named home for the v1.5.5 `kind: hook` test corpus, ported as BLACK-BOX
 //! assertions against the CURRENT dispatch path (the real `test_env`/`resolve_one` harness above,
 //! which resolves a `plugin:` ref through the same loader `scan_and_validate` +
-//! `resolve_gate_transport` seam a live request uses — not a hand-rolled `HookPolicy::new`).
+//! `resolve_gate_transport` seam a live request uses — not a hand-rolled `HookPolicy::policy`).
 //!
 //! ## Reconciliation: 189 counted vs the signed brief's "178+4"
 //!
