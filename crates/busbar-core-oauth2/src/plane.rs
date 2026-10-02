@@ -170,6 +170,7 @@ impl AsPlane {
             MemoryStorage::new(),
             super::policy::default_grant_scopes(&identity),
             Arc::new(super::cimd::GuardedFetch),
+            provisioned_clients(&identity),
         );
         let server = Arc::new(
             AuthorizationServer::new(config, store)
@@ -248,6 +249,46 @@ impl AsPlane {
     pub(crate) fn sessions(&self) -> &Arc<super::consent::Sessions> {
         &self.sessions
     }
+}
+
+/// `oauth_as.clients:` as `oauth-as` clients: confidential, authenticating with an RFC 7523 ES256
+/// assertion against the configured PUBLIC keys, for the authorization-code and refresh grants,
+/// with the operator's `default_grant` as their whole scope (the same ceiling every other client
+/// lands under). The keys were validated at boot (`AsIdentity::from_cfg`): EC P-256, no `d`.
+fn provisioned_clients(identity: &AsIdentity) -> Vec<oauth_as::client::Client> {
+    let ceiling = super::policy::default_grant_scopes(identity);
+    identity
+        .clients
+        .iter()
+        .map(|c| oauth_as::client::Client {
+            client_id: oauth_as::client::ClientId::new(&c.client_id),
+            auth: oauth_as::client::ClientAuth::ConfidentialAssertion {
+                keys: oauth_as::client_assertion::AssertionKeys::PublicKeys {
+                    alg: oauth_as::jwt::JwsAlg::Es256,
+                    keys: c
+                        .jwks
+                        .keys
+                        .iter()
+                        .map(|k| oauth_as::jwt::Jwk::Ec {
+                            crv: oauth_as::jwt::EcCurve::P256,
+                            x: k.x.clone(),
+                            y: k.y.clone(),
+                            kid: k.kid.clone(),
+                        })
+                        .collect(),
+                },
+            },
+            grant_types: vec![
+                oauth_as::grant::GrantType::AuthorizationCode,
+                oauth_as::grant::GrantType::RefreshToken,
+            ],
+            redirect_uris: c.redirect_uris.clone(),
+            allowed_scopes: ceiling.clone(),
+            default_scopes: ceiling.clone(),
+            name: Some(c.client_id.clone()),
+            registration: None,
+        })
+        .collect()
 }
 
 /// THE FAPI 2.0 SECURITY PROFILE POSTURE, written onto a plain `ServerConfig`. The values are the

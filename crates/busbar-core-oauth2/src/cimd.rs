@@ -354,6 +354,9 @@ pub(crate) struct CimdStore {
     ceiling: ScopeSet,
     /// Swappable so the flow tests can stand in a stub document host; production never swaps it.
     fetcher: RwLock<Arc<dyn CimdFetch>>,
+    /// The operator's `oauth_as.clients:`, by `client_id`. Answered before anything else: the
+    /// config is the operator's own word on who these clients are.
+    provisioned: HashMap<String, Arc<Client>>,
     /// What the consent screen needs to show of each RFC 9126 pushed request that has not been
     /// redeemed, keyed by `request_uri`. See [`Pushed`].
     pushed: Mutex<HashMap<String, Pushed>>,
@@ -382,11 +385,16 @@ impl CimdStore {
         inner: MemoryStorage,
         ceiling: ScopeSet,
         fetcher: Arc<dyn CimdFetch>,
+        provisioned: Vec<Client>,
     ) -> Self {
         Self {
             inner,
             ceiling,
             fetcher: RwLock::new(fetcher),
+            provisioned: provisioned
+                .into_iter()
+                .map(|c| (c.client_id.as_str().to_string(), Arc::new(c)))
+                .collect(),
             pushed: Mutex::new(HashMap::new()),
         }
     }
@@ -433,6 +441,10 @@ impl CimdStore {
 
 impl Storage for CimdStore {
     async fn get_client(&self, client_id: &ClientId) -> Result<Option<Arc<Client>>, StorageError> {
+        // A PROVISIONED client first: `oauth_as.clients:` is the operator's config.
+        if let Some(found) = self.provisioned.get(client_id.as_str()) {
+            return Ok(Some(Arc::clone(found)));
+        }
         // A STORED client wins, whatever its id looks like: the store is what the operator
         // and the registration endpoint wrote, and a fetch cannot override either.
         if let Some(found) = self.inner.get_client(client_id).await? {
