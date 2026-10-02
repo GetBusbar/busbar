@@ -262,6 +262,17 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     static_headers: &[],
 };
 
+/// This dialect's registration (its one line is in `crate::codec::DIALECTS`).
+pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::DialectEntry {
+    decl: &DECL,
+    protocol,
+    with_writer: |f| {
+        let w = BedrockWriter;
+        f(&w)
+    },
+    with_reader: |f| f(&BedrockReader),
+};
+
 /// The two response headers a native AWS Bedrock endpoint ALWAYS emits (lowercase on the wire):
 /// the per-request id the AWS SDK surfaces via `*Output::request_id()`, and the error-type header
 /// the SDK reads BEFORE the body `__type` for typed-exception dispatch. Defined here (the Bedrock

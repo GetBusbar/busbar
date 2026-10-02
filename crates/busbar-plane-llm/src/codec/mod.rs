@@ -282,14 +282,33 @@ pub(crate) use test_host::ensure_test_protocols_registered;
 /// published 1.5.5 binary prints that tail on a bad `protocol:` (shadow-oracle
 /// `boot.refusal|BOOT-020|validate`). The swap was therefore an unannounced move of an
 /// operator-visible list and of every metric-family index behind it, and it is undone here.
-pub static DECLS: &[&busbar_contract::protocol::ProtocolDecl] = &[
-    &anthropic::DECL,
-    &openai_chat::DECL,
-    &gemini::DECL,
-    &bedrock::DECL,
-    &openai_responses::DECL,
-    &cohere::DECL,
+///
+/// ONE REGISTRATION LINE PER DIALECT (design F3 SELF-CONTAINED; spec Part 3 #5): each dialect
+/// declares its own [`proto_codec::DialectEntry`] in its module, and this list is the only place the
+/// plane names it. [`DECLS`] is read off this list, in this order.
+pub(crate) const DIALECTS: &[&proto_codec::DialectEntry] = &[
+    &anthropic::ENTRY,
+    &openai_chat::ENTRY,
+    &gemini::ENTRY,
+    &bedrock::ENTRY,
+    &openai_responses::ENTRY,
+    &cohere::ENTRY,
 ];
+
+/// Every registered dialect's declaration, in [`DIALECTS`] order (the operator-visible order
+/// documented there).
+pub static DECLS: &[&busbar_contract::protocol::ProtocolDecl] = &decls::<{ DIALECTS.len() }>();
+
+/// [`DIALECTS`]' declarations as an array, evaluated at compile time.
+const fn decls<const N: usize>() -> [&'static busbar_contract::protocol::ProtocolDecl; N] {
+    let mut out = [DIALECTS[0].decl; N];
+    let mut i = 0;
+    while i < N {
+        out[i] = DIALECTS[i].decl;
+        i += 1;
+    }
+    out
+}
 
 #[cfg(test)]
 #[path = "tests/write_error_frame_tests.rs"]

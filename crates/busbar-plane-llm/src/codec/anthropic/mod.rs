@@ -222,6 +222,17 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     static_headers: &[(HDR_ANTHROPIC_VERSION, ANTHROPIC_API_VERSION)],
 };
 
+/// This dialect's registration (its one line is in `crate::codec::DIALECTS`).
+pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::DialectEntry {
+    decl: &DECL,
+    protocol,
+    with_writer: |f| {
+        let w = AnthropicWriter;
+        f(&w)
+    },
+    with_reader: |f| f(&AnthropicReader),
+};
+
 /// Value of the required `anthropic-version` request header (the Messages API version busbar
 /// targets). Bump when adopting a newer Anthropic API version.
 const ANTHROPIC_API_VERSION: &str = "2023-06-01";

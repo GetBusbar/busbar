@@ -205,6 +205,17 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     static_headers: &[],
 };
 
+/// This dialect's registration (its one line is in `crate::codec::DIALECTS`).
+pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::DialectEntry {
+    decl: &DECL,
+    protocol,
+    with_writer: |f| {
+        let w = GeminiWriter;
+        f(&w)
+    },
+    with_reader: |f| f(&GeminiReader),
+};
+
 /// GEMINI'S RESPONSE-side untranslatable metadata: `safetyRatings` (Google's own harm-category
 /// vocabulary) live under `candidates[].safetyRatings`, present only when the request asked for them.
 /// Reported so the cross-protocol seam can LOG that they were dropped — no other protocol can carry

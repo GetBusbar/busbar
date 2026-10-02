@@ -131,6 +131,17 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     static_headers: &[],
 };
 
+/// This dialect's registration (its one line is in `crate::codec::DIALECTS`).
+pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::DialectEntry {
+    decl: &DECL,
+    protocol,
+    with_writer: |f| {
+        let w = CohereWriter;
+        f(&w)
+    },
+    with_reader: |f| f(&CohereReader),
+};
+
 /// Upstream URL path for the Cohere v2 chat endpoint. Mirrors the `PATH_UPSTREAM` pattern used by
 /// openai_chat.rs and anthropic.rs — single source of truth for the string that was previously
 /// hard-coded in `upstream_path()`.

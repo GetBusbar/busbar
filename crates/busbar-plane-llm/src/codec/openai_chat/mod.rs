@@ -161,6 +161,17 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     static_headers: &[],
 };
 
+/// This dialect's registration (its one line is in `crate::codec::DIALECTS`).
+pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::DialectEntry {
+    decl: &DECL,
+    protocol,
+    with_writer: |f| {
+        let w = OpenAiWriter;
+        f(&w)
+    },
+    with_reader: |f| f(&OpenAiReader),
+};
+
 /// Largest upstream `tool_calls[].index` we accept in a streaming chunk. OpenAI documents at most
 /// 128 parallel tool calls, so any larger index is malformed; we clamp to this value before it
 /// reaches the IR index arithmetic (`oai_idx + 1 + offset`) so a crafted `u64::MAX` index can never

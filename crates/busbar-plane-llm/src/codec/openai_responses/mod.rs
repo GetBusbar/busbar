@@ -126,6 +126,17 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     static_headers: &[],
 };
 
+/// This dialect's registration (its one line is in `crate::codec::DIALECTS`).
+pub(crate) const ENTRY: super::proto_codec::DialectEntry = super::proto_codec::DialectEntry {
+    decl: &DECL,
+    protocol,
+    with_writer: |f| {
+        let w = ResponsesWriter;
+        f(&w)
+    },
+    with_reader: |f| f(&ResponsesReader),
+};
+
 /// Largest wire `output_index` we accept in a streaming Responses event before clamping. The
 /// Responses API, like Chat Completions, documents at most 128 parallel output items, so any larger
 /// index is malformed; clamp it to this value (the highest valid 0-based index, 127) before the
