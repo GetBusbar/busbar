@@ -638,7 +638,7 @@ extern "C" fn records_secret(
             // THE DECLARED NEED: the caller's Statement names the kinds it reads; every other kind,
             // and every caller that names none (any non-auth instance), is refused before the
             // kernel reads anything.
-            if !credential_kinds(ctx).iter().any(|k| *k == kind) {
+            if !credential_kinds(ctx).contains(&kind) {
                 return Answered::bare(Outcome::Refused, UNDECLARED_KIND);
             }
             let provider = Arc::clone(&served.provider);
