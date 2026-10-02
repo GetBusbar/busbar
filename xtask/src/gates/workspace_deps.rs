@@ -34,10 +34,9 @@
 //! 6. `workspace-deps:member-floor` — at least [`MIN_MEMBERS`] member manifests were inspected.
 //! 7. `workspace-deps:inherited-floor` — at least [`MIN_INHERITED`] inheriting declarations were
 //!    seen. Either the table is not actually in use or the walk is broken; both are RED.
-//! 8. `workspace-deps:discovery` — the `crates/` tree still holds at least
-//!    [`MIN_CRATE_MANIFESTS`] manifests. Rules 6 and 7 are counted off the DECLARED member list, so
-//!    a `crates/` layout change that the root manifest was edited to match would leave them both
-//!    satisfied; this row walks the directory itself, through [`WalkSpec::min_files`], so an
+//! 8. `workspace-deps:discovery` — the `crates/` walk finds a `Cargo.toml` for EVERY declared
+//!    `crates/` member, and names any it missed (ARCHITECT 2026-10-02: exact, not a floor). Rules 6
+//!    and 7 are counted off the DECLARED member list; this row walks the directory itself, so an
 //!    emptied or moved `crates/` cannot read as a clean tree.
 //!
 //! Every count has a floor because "for each X, assert Y" is vacuously true when X is empty, and a
@@ -51,7 +50,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
+use crate::ctx::{Ctx, Overlay, WalkSpec};
 use crate::gates::{prove_green, prove_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
 use crate::toml_lite;
@@ -71,13 +70,6 @@ pub const ROW_DISCOVERY: &str = "workspace-deps:discovery";
 /// one is a reviewable source edit.
 pub const MIN_MEMBERS: usize = 8;
 pub const MIN_INHERITED: usize = 40;
-/// 30, not 40. The crate fold's planned end state is 35 crates under `crates/`, 34 if
-/// `busbar-core-connsec` folds, and the architecture's crate roster names 33 — at 40 this row went RED at 39 crates, i.e. at
-/// fold #10, against a planned shrink. The floor guards against a BLIND walk (a moved or emptied
-/// `crates/`, a filter that stopped matching), which finds a handful or nothing; it is not a
-/// ratchet on the roster. 30 sits three under the smallest roster variant, so no planned fold
-/// trips it, while any walk that loses more than a sixth of the smallest roster is still RED.
-pub const MIN_CRATE_MANIFESTS: usize = 30;
 
 const SECTIONS: &[&str] = &["dependencies", "dev-dependencies", "build-dependencies"];
 
@@ -272,12 +264,28 @@ fn read_manifest(cx: &Ctx, rel: &str) -> Result<toml_lite::Document, String> {
     Ok(doc)
 }
 
-/// The `crates/` walk, with its floor. Separate from the declared member list on purpose: the two
+/// The `crates/` walk, held to the member list. Separate from the survey on purpose: the two
 /// instruments fail for different reasons and must be able to fail apart.
+///
+/// EXACT, NOT A FLOOR (ARCHITECT 2026-10-02). Every `[workspace.members]` entry under `crates/`
+/// must be a `Cargo.toml` this walk found, and a member it missed is RED by name. A number fought
+/// the roster (spec #39 ends the repo at 15 crates); the member list is right at any size, and an
+/// extraction strikes the member line with the crate, so it is never a miss.
 fn rule_discovery(cx: &Ctx) -> Row {
-    let spec = WalkSpec::new(["crates"])
-        .ext("toml")
-        .min_files(MIN_CRATE_MANIFESTS);
+    let declared: Vec<String> = match cx.read("Cargo.toml") {
+        Ok(root) => crate::manifest::workspace_members(&root)
+            .into_iter()
+            .filter(|m| m.starts_with("crates/"))
+            .collect(),
+        Err(e) => {
+            return Row::fail(
+                ROW_DISCOVERY,
+                "the crates/ manifest walk has no member list to be held to",
+                format!("the workspace root manifest is unreadable ({e})"),
+            )
+        }
+    };
+    let spec = WalkSpec::new(["crates"]).ext("toml").min_files(1);
     let files = match cx.walk(&spec) {
         Ok(f) => f,
         Err(e) => {
@@ -288,28 +296,36 @@ fn rule_discovery(cx: &Ctx) -> Row {
             )
         }
     };
-    let manifests: Vec<String> = files
+    let found: BTreeSet<String> = files
         .iter()
         .map(|f| f.rel_str())
-        .filter(|p| p.ends_with("/Cargo.toml"))
+        .filter_map(|p| p.strip_suffix("/Cargo.toml").map(str::to_string))
         .collect();
-    if manifests.len() < MIN_CRATE_MANIFESTS {
+    let missed: Vec<&str> = declared
+        .iter()
+        .map(String::as_str)
+        .filter(|m| !found.contains(*m))
+        .collect();
+    if !missed.is_empty() {
         return Row::fail(
             ROW_DISCOVERY,
-            "the crates/ manifest walk collapsed below its floor",
+            "the crates/ manifest walk missed declared members",
             format!(
-                "only {} Cargo.toml file(s) under crates/ (floor {MIN_CRATE_MANIFESTS}). A walk \
-                 that finds almost nothing passes almost everything.",
-                manifests.len()
+                "{} declared crates/ member(s) the walk did not find a Cargo.toml for: {}. A walk \
+                 that misses a member passes everything about it.",
+                missed.len(),
+                missed.join(", ")
             ),
         );
     }
     Row::pass(
         ROW_DISCOVERY,
-        "the crates/ tree still holds the manifests this gate is a gate over",
+        "the crates/ walk found every declared crates/ member",
         format!(
-            "{} Cargo.toml file(s) under crates/ (floor {MIN_CRATE_MANIFESTS})",
-            manifests.len()
+            "{} Cargo.toml file(s) under crates/, every one of the {} declared crates/ member(s) \
+             among them",
+            found.len(),
+            declared.len()
         ),
     )
 }
@@ -674,7 +690,7 @@ impl Gate for WorkspaceDepsGate {
             ov,
             &["crates/busbar-plane-llm", "no [workspace] members entry"],
         ));
-        for plant in plants(cx) {
+        for plant in plants() {
             report.push(plant.case(cx, self));
         }
         report
@@ -691,8 +707,8 @@ impl Gate for WorkspaceDepsGate {
     /// member. That list is derived from the plant itself, not written out again, because a member
     /// left off it is a member the Python reads out of the REAL repository, and the probe would
     /// then grade a tree nobody planted.
-    fn parity_probes(&self, cx: &Ctx) -> Vec<crate::gates::ParityProbe> {
-        plants(cx)
+    fn parity_probes(&self, _cx: &Ctx) -> Vec<crate::gates::ParityProbe> {
+        plants()
             .into_iter()
             .map(|p| {
                 let probe = crate::gates::ParityProbe::red(
@@ -705,13 +721,13 @@ impl Gate for WorkspaceDepsGate {
                     Some(w) => probe.named_by(w),
                     // The one rule with no legacy counterpart at all. The Python walks the DECLARED
                     // member list and never looks at `crates/`, so a layout change the root
-                    // manifest was edited to match is invisible to it — there is no denominator
-                    // floor to fall below because there is no denominator.
+                    // manifest was edited to match is invisible to it.
                     None => probe.diverges(crate::gates::Divergence::LegacyGreen {
                         reason: "the legacy walks the declared member list and never reads \
                                  `crates/`, so a directory that moved out from under the workspace \
-                                 is not something it can see. This gate's walk carries a floor, and \
-                                 a scan that collapsed is a named failure rather than a clean tree."
+                                 is not something it can see. This gate's walk is held to the member \
+                                 list, and a member it missed is a named failure rather than a clean \
+                                 tree."
                             .to_string(),
                     }),
                 }
@@ -802,7 +818,7 @@ fn planted(
 }
 
 /// The nine planted violations, one per rule this gate enforces.
-fn plants(cx: &Ctx) -> Vec<Plant> {
+fn plants() -> Vec<Plant> {
     let mut out = Vec::new();
 
     // Rule 2, three plants, because "dependencies" is three tables plus their per-target forms and
@@ -927,26 +943,27 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
         &[],
     ));
 
-    // Rule 8, alone: a workspace whose declared members are all present and clean, over a `crates/`
-    // tree that has collapsed. Rules 1-7 read the ROOT MANIFEST's member list, so they are all
-    // green here and only the directory walk can name this.
+    // Rule 8: a declared `crates/` member the directory walk does not find. The member is declared
+    // and its manifest withdrawn, so the walk has nothing at that path; the row names the member,
+    // not a count (ARCHITECT 2026-10-02: exact, not a floor).
     //
     // THE LEGACY SCRIPT CANNOT SEE THIS ONE. It never looks at `crates/` — it walks the declared
-    // member list and nothing else — so the plant is invisible to it by construction. The probe
-    // stays: a rule the Rust gate enforces and the Python never did is a finding to report at the
-    // call-site switch, not a probe to drop so the run comes out quiet.
-    if let Ok(real) = cx.walk(&WalkSpec::new(["crates"]).ext("toml")) {
-        let removed: Vec<String> = real.iter().skip(2).map(SourceFile::rel_str).collect();
-        let refs: Vec<&str> = removed.iter().map(String::as_str).collect();
-        out.push(planted(
-            "the crates/ manifest walk collapsed",
-            ROW_DISCOVERY,
-            &["walk over [crates]"],
-            &clean_members(),
-            &clean_table(),
-            &refs,
-        ));
-    }
+    // member list and nothing else. The probe stays: a rule the Rust gate enforces and the Python
+    // never did is a finding to report at the call-site switch, not a probe to drop so the run
+    // comes out quiet.
+    let mut missed = clean_members();
+    missed.push((
+        "crates/ws-plant-missed".to_string(),
+        member_body(CLEAN_DEPS, ""),
+    ));
+    out.push(planted(
+        "the crates/ manifest walk missed a declared member",
+        ROW_DISCOVERY,
+        &["crates/ws-plant-missed"],
+        &missed,
+        &clean_table(),
+        &["crates/ws-plant-missed/Cargo.toml"],
+    ));
 
     out
 }
@@ -1159,75 +1176,34 @@ mod tests {
         );
     }
 
-    /// The directory floor is the third one, and it is counted off a different instrument than the
-    /// other two — so it too needs a fixture the other seven rules pass.
-    #[test]
-    fn the_crates_walk_floor_rejects_alone() {
-        let real = cx()
-            .walk(&WalkSpec::new(["crates"]).ext("toml"))
-            .expect("the real crates/ walk");
-        let mut ov = plant(&clean_members(), &clean_table());
-        for f in real.iter().skip(2) {
-            ov.remove(&f.rel);
-        }
-        assert_eq!(
-            failed_ids(ov),
-            vec![ROW_DISCOVERY.to_string()],
-            "an emptied crates/ must be named by the walk and by nothing else"
-        );
-    }
+    /// THE WALK READS EXACTLY THE DECLARED MEMBERS (ARCHITECT 2026-10-02). The `crates/` walk is
+    /// held to the root manifest's own member list rather than to a number: a declared `crates/`
+    /// member the walk did not find is RED by name, the real tree is green, and an extraction
+    /// (manifest AND member line gone) is not a miss, however few crates are left.
+    const MISSED: &str = "crates/busbar-kernel-scope";
 
-    /// The real `crates/` walk thinned to exactly `n` manifests, every other file removed.
-    fn crates_walk_holding(n: usize) -> Ctx {
-        let cx = cx();
-        let real = cx
-            .walk(&WalkSpec::new(["crates"]).ext("toml"))
-            .expect("the real crates/ walk");
-        // `crates/` also holds `.toml` files that are not manifests (kernel data, the LLM dialect
-        // mapping files): keep at most the first `n` manifests and remove every other `.toml`.
+    #[test]
+    fn a_crates_walk_that_misses_a_declared_member_is_red_naming_it() {
         let mut ov = Overlay::new();
-        let mut kept = 0;
-        for f in &real {
-            if f.rel.ends_with("Cargo.toml") && kept < n {
-                kept += 1;
-            } else {
-                ov.remove(&f.rel);
-            }
-        }
-        cx.with_overlay(ov)
+        ov.remove(format!("{MISSED}/Cargo.toml"));
+        let row = rule_discovery(&cx().with_overlay(ov));
+        assert_ne!(row.status, crate::ledger::Status::Pass, "{row:?}");
+        assert!(row.detail.contains(MISSED), "the miss is named: {row:?}");
+
+        let real = rule_discovery(&cx());
+        assert_eq!(real.status, crate::ledger::Status::Pass, "{real:?}");
     }
 
-    /// ITEM F0. The floor is a guard against a BLIND walk, not a ratchet on the roster: the fold's
-    /// planned end state (34 crates, and the 33 / 32 roster variants) must pass it, and a walk that
-    /// finds a handful must not. At 40 the floor errored at 39 crates, i.e. at fold #10.
-    ///
-    /// RE-MEASURED after the codec fold (owner ruling R7, 2026-09-27, #39): `busbar-llm-codec` and
-    /// `busbar-voice-codec` dissolved, taking two manifests out of `crates/` with them (36 -> 34
-    /// `.toml` files, the real walk this fixture truncates FROM). The sample set moves down with
-    /// it, one for one — it was never a ratchet on the roster, only a range of healthy sizes this
-    /// rule must not redden on.
-    ///
-    /// RE-MEASURED after the kernel's operator credential moved out: `crates/busbar-kernel/data/operator_credential.toml`
-    /// left the kernel for the root legacy table, so the real walk holds 33 `.toml` files, and the
-    /// sample set moves down with it, one for one (still clear of the floor of 30).
     #[test]
-    fn the_crates_walk_floor_admits_the_fold_end_state_and_rejects_a_collapse() {
-        for n in [33, 32, 31] {
-            let row = rule_discovery(&crates_walk_holding(n));
-            assert_eq!(
-                row.status,
-                crate::ledger::Status::Pass,
-                "a crates/ of {n} manifests is a planned fold end state, not a collapse: {row:?}"
-            );
-        }
-        for n in [0, 5, 20] {
-            let row = rule_discovery(&crates_walk_holding(n));
-            assert_ne!(
-                row.status,
-                crate::ledger::Status::Pass,
-                "a crates/ walk that found {n} manifests is a collapse and must be RED"
-            );
-        }
+    fn an_extracted_crate_is_not_a_missed_member() {
+        let root = cx().read("Cargo.toml").expect("the root manifest reads");
+        let line = format!("    \"{MISSED}\",\n");
+        assert!(root.contains(&line), "the root declares {MISSED}");
+        let mut ov = Overlay::new();
+        ov.remove(format!("{MISSED}/Cargo.toml"));
+        ov.set("Cargo.toml", root.replace(&line, ""));
+        let row = rule_discovery(&cx().with_overlay(ov));
+        assert_eq!(row.status, crate::ledger::Status::Pass, "{row:?}");
     }
 
     #[test]
