@@ -4816,11 +4816,10 @@ fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
             if implementors == 0 {
                 offenders.push(format!(
                     "no-implementor\t{}\t{} is kind `{kind}` and implements `{want_trait}` nowhere \
-                     in shipped source{}, so its battery has no subject — a conformance file that \
-                     passes over no implementor is not evidence about this crate",
-                    c.dir,
-                    c.name,
-                    format!(" and exports no `{kind}` door through the SDK door macro")
+                     in shipped source and exports no `{kind}` door through the SDK door macro, \
+                     so its battery has no subject — a conformance file that passes over no \
+                     implementor is not evidence about this crate",
+                    c.dir, c.name
                 ));
             }
             if idx.conformance_dead.contains(&c.dir) {
