@@ -389,7 +389,7 @@ impl ProtocolWriter for GeminiWriter {
                             );
                         }
                     },
-                    crate::codec::ir::IrBlock::Json(_) => {
+                    crate::codec::ir::IrBlock::Json(_) | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {
                         // Structured-json (Bedrock tool-result content) has no Gemini part shape.
                     }
                     // A REDACTED reasoning block holds opaque encrypted bytes with no Gemini analog —
@@ -1392,7 +1392,8 @@ impl ProtocolWriter for GeminiWriter {
                 crate::codec::ir::IrBlock::Image { .. }
                 | crate::codec::ir::IrBlock::Media { .. }
                 | crate::codec::ir::IrBlock::ToolResult { .. }
-                | crate::codec::ir::IrBlock::Json(_) => {}
+                | crate::codec::ir::IrBlock::Json(_)
+                | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {}
             }
         }
 
