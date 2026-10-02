@@ -110,6 +110,11 @@ pub const ASK_ROOTS: &str = "roots/list";
 
 /// THE CLOSED SET of methods a `tools_allow.<tool>.ask_caller` round may name, matched by exact
 /// string. Boot refuses a method outside it, against the same three strings dispatch matches on.
+///
+/// Why boot has to look at all: a method outside the set is silently DROPPED at dispatch (the
+/// round's filter removes the ask), so an operator who wrote `elicitation/created` got a destructive
+/// tool that dispatches with NO confirmation. A typo must not be able to remove a confirmation gate:
+/// an unknown is REFUSED, never silently defaulted.
 pub const ASK_METHODS: &[&str] = &[ASK_ELICITATION, ASK_SAMPLING, ASK_ROOTS];
 
 /// `tools.<server>.pin.mechanism` — WHICH authenticity root this registration has.

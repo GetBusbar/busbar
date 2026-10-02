@@ -48,6 +48,7 @@ pub mod client;
 pub mod codec;
 pub mod config;
 pub mod diagnostics;
+pub mod door;
 pub mod facts;
 pub mod identity;
 pub mod jsonrpc;
@@ -55,6 +56,7 @@ pub mod meta;
 pub mod ops;
 pub mod outputschema;
 pub mod plane;
+pub mod plane_door;
 pub mod record;
 pub mod records;
 /// The dated revisions of the one MCP dialect, and their negotiation.
