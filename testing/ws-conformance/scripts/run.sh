@@ -149,8 +149,11 @@ case "$mode" in
     ;;
   --subject)
     echo "$mode: Docker-live mode; runs in CI (crossbario/autobahn-testsuite vs busbar's ws-conformance-subject)." >&2
-    cargo build --manifest-path "$REPO_ROOT/Cargo.toml" -p ws-conformance-subject
-    bin="$REPO_ROOT/target/debug/ws-conformance-subject"
+    # RELEASE, as busbar ships: the door runs under the dispatcher's watchdog (1 s per crossing), and
+    # an unoptimised framer unmasking Autobahn's 16 MiB messages (case 9.1.6) overruns it, which
+    # faults the door for every later connection — a statement about a debug build nobody ships.
+    cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" -p ws-conformance-subject
+    bin="$REPO_ROOT/target/release/ws-conformance-subject"
     armed=false
     port=""
     if [ -x "$bin" ]; then

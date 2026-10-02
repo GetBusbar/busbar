@@ -70,11 +70,7 @@ async fn send(conn: &mut Connection, stream: u64, bytes: &[u8]) -> Result<(), Fa
 /// Echo every message on `conn`, whole, on the stream it came on.
 async fn echo(mut conn: Connection) {
     let mut message: Vec<u8> = Vec::new();
-    loop {
-        let piece = match poll_fn(|cx| conn.poll_piece(cx)).await {
-            Ok(Some(p)) => p,
-            Ok(None) | Err(_) => break,
-        };
+    while let Ok(Some(piece)) = poll_fn(|cx| conn.poll_piece(cx)).await {
         // A field block (a head) is the handshake's, not a message.
         if piece.fields {
             continue;
