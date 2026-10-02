@@ -44,6 +44,7 @@
 /// The session revisions raised into, and lowered out of, the one dispatch.
 pub mod adapt;
 pub mod arrival;
+pub mod catalogue;
 pub mod checks;
 pub mod claims;
 pub mod client;
@@ -60,6 +61,7 @@ pub mod ops;
 pub mod outputschema;
 pub mod plane;
 pub mod plane_door;
+pub mod reads;
 pub mod record;
 pub mod records;
 /// The dated revisions of the one MCP dialect, and their negotiation.
