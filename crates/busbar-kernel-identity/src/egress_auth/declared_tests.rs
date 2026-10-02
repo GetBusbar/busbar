@@ -153,7 +153,7 @@ fn a_signing_scheme_signs_for_the_region_its_host_names() {
                     session_token: Some(SessionToken("TOK")),
                 },
                 "SECRET",
-                &request(&c, &signed),
+                &request(&c, &signed, ""),
             ),
             "SECRET",
             Vec::new(),
@@ -166,4 +166,47 @@ fn a_signing_scheme_signs_for_the_region_its_host_names() {
     for refused in ["", "AKID", ":SECRET", "AKID:SECRET:bad\ntoken"] {
         assert!(present(&t, &SIGNING, refused, &ctx(UpstreamCreds::Own)).is_empty());
     }
+}
+
+/// A SIGNED REQUEST WITH A QUERY signs the canonical query (the far end checks it): a request whose
+/// `canonical_uri` carries `path?query` presents the signature over the path and the canonical
+/// query, and the RED arm, the same request signed with the query left out, is a different
+/// signature (the one the far end would refuse).
+#[test]
+fn a_signed_request_signs_its_query() {
+    let t = token();
+    let c = SigningContext {
+        canonical_uri: "/model/m/invoke?b=2&a=x%2Fy",
+        ..ctx(UpstreamCreds::Own)
+    };
+    let bare = ctx(UpstreamCreds::Own);
+    let signed = [
+        ("content-type".to_string(), "application/json".to_string()),
+        ("host".to_string(), c.host.to_string()),
+    ];
+    let scheme = Scheme::SigV4 {
+        access_key_id: "AKID",
+        region: "region-7",
+        service: "svc",
+        session_token: None,
+    };
+    let sign = |query: &str| {
+        substitute(
+            &decorate(&t, &scheme, "SECRET", &request(&bare, &signed, query)),
+            "SECRET",
+            Vec::new(),
+        )
+    };
+    assert_eq!(sigv4::canonical_query("b=2&a=x%2Fy"), "a=x%2Fy&b=2");
+    let presented = present(&t, &SIGNING, "AKID:SECRET", &c);
+    assert_eq!(
+        presented,
+        sign("a=x%2Fy&b=2"),
+        "the canonical query is signed"
+    );
+    assert_ne!(
+        presented,
+        sign(""),
+        "RED: a signature that leaves the query out differs"
+    );
 }

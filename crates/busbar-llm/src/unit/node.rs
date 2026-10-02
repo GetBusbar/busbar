@@ -830,6 +830,7 @@ async fn body_arrival(proto: &'static str, a: ArrivalRequest) -> PlaneAnswer {
         operation,
         caller_token: payload.caller_token.clone(),
         headers,
+        query: uri.query().map(str::to_string),
         body,
         // A body-model arrival: the model rides the body, so there is no URL fact to carry and the
         // dialect's miss copy, where it has one, is not this surface's.
@@ -878,6 +879,7 @@ async fn path_arrival(
     parsed: PathArrivalFacts,
     ctx: ArrivalCtx,
     headers: axum::http::HeaderMap,
+    query: Option<String>,
     body: axum::body::Bytes,
 ) -> PlaneAnswer {
     // The URL's facts, the operation they resolved to, and the routing hint a body-model shape
@@ -914,6 +916,7 @@ async fn path_arrival(
         operation,
         caller_token: payload.caller_token.clone(),
         headers,
+        query,
         body,
         // THE URL'S FACTS, handed to the unit's own carry rather than pinned to a thread. They are
         // read by three steps — the parse-and-splice at step 0, the handler lookup at step 1 and the
@@ -958,6 +961,7 @@ pub(crate) fn gemini_path_arrival(
             other,
             a.ctx,
             a.headers,
+            a.uri.query().map(str::to_string),
             a.body,
         )),
     }
@@ -995,6 +999,7 @@ pub(crate) fn bedrock_path_arrival(
             other,
             a.ctx,
             a.headers,
+            a.uri.query().map(str::to_string),
             a.body,
         )),
     }

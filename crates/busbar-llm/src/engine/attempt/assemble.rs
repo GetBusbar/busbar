@@ -46,11 +46,28 @@ pub(super) async fn build(
     else {
         return Err(internal_error(hop.ingress_protocol));
     };
+    // Busbar is invisible to upstreams: a same-dialect hop carries the caller's own URL query (the
+    // dialect's governed parameters left out, busbar's own transport parameters kept), and a signed
+    // dialect signs it. `None` (the common case) keeps the boot-built target untouched.
+    let with_query: Option<(axum::http::Uri, String)> = (hop.ingress_protocol == hop.egress_name)
+        .then_some(hop.client_fwd.query.as_deref())
+        .flatten()
+        .and_then(|q| {
+            let pq = target.uri.path_and_query()?.as_str();
+            let joined = crate::engine::xchg::attempt::with_caller_query(hop.egress_name, pq, q)?;
+            let mut parts = target.uri.clone().into_parts();
+            parts.path_and_query = Some(joined.parse().ok()?);
+            let uri = axum::http::Uri::from_parts(parts).ok()?;
+            let (_, query) = joined.split_once('?')?;
+            Some((uri, format!("{}?{query}", target.canonical_uri)))
+        });
     let _cb_auth = busbar_kernel::profile::start(busbar_kernel::profile::Stage::CbAuth);
     // The SigV4 timestamp is taken here, inside the attempt, per attempt (the five-minute-skew rule).
     let signing_ctx = busbar_kernel::proto::SigningContext {
         host: &hop.lane_row().signing_host,
-        canonical_uri: &target.canonical_uri,
+        canonical_uri: with_query
+            .as_ref()
+            .map_or(target.canonical_uri.as_str(), |(_, signed)| signed.as_str()),
         body: &payload,
         timestamp_epoch: now(),
         upstream_creds: EngineTables::new(rt).upstream_creds(),
@@ -129,9 +146,10 @@ pub(super) async fn build(
     // collected (none of them governed), the client's value winning over busbar's native defaults.
     // A translated hop forwards none: no header maps between dialects.
     if hop.ingress_protocol == hop.egress_name {
-        busbar_kernel::proxy::apply_client_headers(&mut egress_headers, hop.client_fwd);
+        busbar_kernel::proxy::apply_client_headers(&mut egress_headers, &hop.client_fwd.headers);
     }
-    let hreq = crate::engine::egress_request(target.uri.clone(), egress_headers, payload);
+    let uri = with_query.map_or_else(|| target.uri.clone(), |(uri, _)| uri);
+    let hreq = crate::engine::egress_request(uri, egress_headers, payload);
     drop(_cb_reqwest);
     Ok(hreq)
 }

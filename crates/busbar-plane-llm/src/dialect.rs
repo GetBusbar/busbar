@@ -54,6 +54,9 @@ pub struct Dialect {
     /// never pass, because busbar's upstream credential and configuration replace them (OWNER HARD
     /// RULE 2026-10-02, "BUSBAR IS INVISIBLE TO UPSTREAMS", governed fields (1) and (2)).
     pub governed_headers: &'static [&'static str],
+    /// The request URL query parameters busbar GOVERNS for this dialect: its credential parameters.
+    /// A same-dialect route forwards every other caller parameter unchanged; these never pass.
+    pub governed_query: &'static [&'static str],
 }
 
 /// The top-level member the four body-carrying dialects name the model under.
@@ -91,6 +94,7 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "api-key",
         egress_scheme: "bearer",
         governed_headers: &["authorization", "x-api-key"],
+        governed_query: &[],
     },
     Dialect {
         name: "openai",
@@ -108,6 +112,7 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "bearer",
         egress_scheme: "bearer",
         governed_headers: OPENAI_GOVERNED,
+        governed_query: &[],
     },
     Dialect {
         name: "gemini",
@@ -122,6 +127,7 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "api-key",
         egress_scheme: "bearer",
         governed_headers: &["authorization", "x-goog-api-key", "x-goog-user-project"],
+        governed_query: &["key"],
     },
     Dialect {
         name: "bedrock",
@@ -141,6 +147,7 @@ pub const DIALECTS: &[Dialect] = &[
             "x-amz-content-sha256",
             "x-amz-security-token",
         ],
+        governed_query: &[],
     },
     Dialect {
         name: "responses",
@@ -154,6 +161,7 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "bearer",
         egress_scheme: "bearer",
         governed_headers: OPENAI_GOVERNED,
+        governed_query: &[],
     },
     Dialect {
         name: "cohere",
@@ -168,6 +176,7 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "bearer",
         egress_scheme: "bearer",
         governed_headers: &["authorization"],
+        governed_query: &[],
     },
 ];
 

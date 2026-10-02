@@ -67,7 +67,18 @@ pub(crate) struct RequestCtx {
     /// forward is decided at the egress assembly site ([`busbar_kernel::proxy::apply_client_headers`],
     /// same dialect only), NOT here: a request may fail over to a different dialect's lane after
     /// this is captured.
-    pub(crate) forwarded_client_headers: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
+    pub(crate) forwarded_client: ClientFwd,
+}
+
+/// What a same-dialect egress forwards of the caller's own request (busbar is invisible to
+/// upstreams): its headers, collected at ingress, and its URL query, the dialect's governed
+/// parameters left out at the egress assembly site.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ClientFwd {
+    /// The collected client headers.
+    pub(crate) headers: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
+    /// The caller's URL query, as it arrived (`None` when the URL carried none).
+    pub(crate) query: Option<String>,
 }
 
 impl RequestCtx {
@@ -102,7 +113,7 @@ impl RequestCtx {
             // Empty by default: `forward_with_pool_parsed_inner` OVERWRITES this with the ingress-
             // collected client headers before the failover walk. Every test/entry that constructs
             // `RequestCtx` directly forwards nothing.
-            forwarded_client_headers: Vec::new(),
+            forwarded_client: ClientFwd::default(),
         }
     }
 

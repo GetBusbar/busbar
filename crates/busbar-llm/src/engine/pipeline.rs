@@ -4,7 +4,6 @@ use super::*;
 // re-forks the policy. `tracing::instrument`'s `level = <path>` form rejects a leading `crate`
 // keyword segment (it parses a bare `Ident`/`Path`, and `crate` is not one), so the constant is
 // imported here and referenced unqualified at each instrument site instead.
-use axum::http::HeaderName;
 use busbar_contract::records::VirtualKey;
 use busbar_kernel::observability::HOTPATH_LEVEL;
 // The single neutral translate entrypoint (G6 step 4): the non-stream cross-protocol response arm
@@ -67,7 +66,7 @@ mod test_forward_entry {
             usage_sink,
             // No inbound `HeaderMap` on this bytes-only test entry ⇒ nothing to forward. The
             // production ingress path collects the real client headers.
-            Vec::new(),
+            Default::default(),
         )
         .await
     }
@@ -88,7 +87,7 @@ mod test_forward_entry {
         usage_sink: Option<UsageSink>,
         // The collected client headers a same-dialect egress forwards. A test entry that exercises
         // the forwarding path passes a collected set; every other test passes an empty Vec.
-        client_fwd: Vec<(HeaderName, axum::http::HeaderValue)>,
+        client_fwd: crate::engine::select::ClientFwd,
     ) -> Response {
         // Mint the neutral host/rt the production path threads (see the module note).
         let host = busbar_kernel::test_support::engine_host(app);
@@ -172,7 +171,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
     usage_sink: Option<UsageSink>,
     // The client headers a same-dialect egress forwards (captured at ingress by the neutral
     // `busbar_kernel::proxy::collect_client_headers`), threaded to the egress assembly site.
-    client_fwd: Vec<(HeaderName, axum::http::HeaderValue)>,
+    client_fwd: crate::engine::select::ClientFwd,
 ) -> impl std::future::Future<Output = Response> + 'a {
     use tracing::Instrument;
     let span = tracing::span!(
@@ -323,7 +322,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // `busbar_kernel::proxy::collect_client_headers` (every one but the per-connection mechanics and
     // the dialect-governed names). Stored on `RequestCtx` below so BOTH the hot path here and the
     // degraded exhaustion paths read the same set for the whole failover walk.
-    client_fwd: Vec<(HeaderName, axum::http::HeaderValue)>,
+    client_fwd: crate::engine::select::ClientFwd,
 ) -> Response {
     // Stage profiler: PREPARE spans all pre-dispatch bookkeeping (op-support filter, wants_stream +
     // affinity derivation, failover/breaker config) up to the failover loop. Zero cost when
@@ -1179,7 +1178,7 @@ fn prepare_failover_ctx(
     cands: &mut Vec<WeightedLane>,
     pool_name: &str,
     request_id: u64,
-    client_fwd: Vec<(HeaderName, axum::http::HeaderValue)>,
+    client_fwd: crate::engine::select::ClientFwd,
 ) -> (
     RequestCtx,
     std::sync::Arc<busbar_kernel::store::BreakerCfg>,
@@ -1200,7 +1199,7 @@ fn prepare_failover_ctx(
     let breaker_cfg: std::sync::Arc<busbar_kernel::store::BreakerCfg> =
         resolve_breaker_cfg(rt, pool_name);
     let mut request_ctx = RequestCtx::new(deadline_secs, request_id);
-    request_ctx.forwarded_client_headers = client_fwd;
+    request_ctx.forwarded_client = client_fwd;
     if let Some(excl) = pool_failover.and_then(|f| f.exclusions.as_ref()) {
         cands.retain(|wl| {
             !excl
@@ -1944,7 +1943,7 @@ async fn dispatch_hop(
             resolved_gov_key,
             remaining_secs: request_ctx.remaining(now()),
             breaker_cfg,
-            client_fwd: &request_ctx.forwarded_client_headers,
+            client_fwd: &request_ctx.forwarded_client,
             chosen_policy_name,
             metric_pool,
             degraded: false,

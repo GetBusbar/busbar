@@ -49,7 +49,7 @@ fn forward_future_size_is_pinned() {
         crate::test_support::CHAT,
         None,
         // No client headers under this size probe.
-        Vec::new(),
+        Default::default(),
     );
     let size = std::mem::size_of_val(&fut);
     eprintln!("[future-size] forward_with_pool = {size} bytes");

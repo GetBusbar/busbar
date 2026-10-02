@@ -2017,7 +2017,7 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
         ),
         None,
         // No client beta/version headers under test here.
-        Vec::new(),
+        Default::default(),
     )
     .await;
     let captured = seen.lock().unwrap().clone().expect("pool policy ran");

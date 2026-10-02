@@ -607,6 +607,7 @@ async fn drive(rig: &Rig, fixture: Fixture) -> Response {
         operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: json_headers(),
+        query: None,
         body: fixture.body(),
         path: None,
     };
@@ -767,6 +768,7 @@ async fn a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in(
         operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: json_headers(),
+        query: None,
         body: Fixture::BufferedOk.body(),
         path: None,
     };
@@ -1362,6 +1364,7 @@ async fn drive_keeping_the_unit(
         operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: json_headers(),
+        query: None,
         body: fixture.body(),
         path: None,
     };
@@ -1714,6 +1717,7 @@ async fn leg_loop_path(fixture: Fixture, proto: &'static str) -> Observed {
         operation: facts.operation,
         caller_token: None,
         headers: json_headers(),
+        query: None,
         body: path_body(proto),
         path: Some(facts),
     };
@@ -1851,6 +1855,7 @@ async fn an_empty_url_model_ends_where_the_shipped_path_model_entry_point_ends_i
                 operation: busbar_contract::operation::OpVerb::CHAT,
                 caller_token: None,
                 headers: json_headers(),
+                query: None,
                 body: path_body(proto),
                 path: Some(nameless(proto)),
             };
@@ -1915,6 +1920,7 @@ async fn the_url_facts_ride_the_unit_and_not_the_thread() {
         operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: json_headers(),
+        query: None,
         body: path_body(proto),
         path,
     };
@@ -2101,6 +2107,7 @@ async fn leg_loop_decode(
         operation,
         caller_token: None,
         headers: json_headers(),
+        query: None,
         body,
         path: None,
     };
@@ -2301,6 +2308,7 @@ async fn leg_loop_as(rig: &Rig, gov: busbar_contract::records::PlaneRequestCtx) 
         operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: json_headers(),
+        query: None,
         body: Fixture::BufferedOk.body(),
         path: None,
     };
@@ -2418,6 +2426,7 @@ async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
                         operation: busbar_contract::operation::OpVerb::CHAT,
                         caller_token: None,
                         headers: json_headers(),
+                        query: None,
                         body: Fixture::BufferedOk.body(),
                         path: None,
                     },
@@ -2500,6 +2509,7 @@ async fn leg_loop_seated(
         operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: json_headers(),
+        query: None,
         body: Fixture::BufferedOk.body(),
         path: None,
     };
@@ -2630,6 +2640,7 @@ async fn drive_counting(rig: &Rig, fixture: Fixture) -> (Response, Option<u64>) 
         operation: busbar_contract::operation::OpVerb::CHAT,
         caller_token: None,
         headers: json_headers(),
+        query: None,
         body: fixture.body(),
         path: None,
     };
@@ -2830,6 +2841,7 @@ async fn native_run_via_loop(
         operation,
         caller_token: None,
         headers: headers.clone(),
+        query: None,
         body,
         path: None,
     };
@@ -4098,6 +4110,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         operation: busbar_contract::operation::OpVerb::RERANK,
         caller_token: None,
         headers: json_headers(),
+        query: None,
         body: Bytes::from_static(br#"{"query":"which is fastest","documents":["a","b","c"]}"#),
         path: Some(PathFacts {
             operation: busbar_contract::operation::OpVerb::RERANK,

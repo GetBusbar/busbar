@@ -114,6 +114,10 @@ async fn drive<A: busbar_kernel::test_support::BuiltAppSeam + ?Sized>(
     body: bytes::Bytes,
     client_fwd: Vec<(HeaderName, HeaderValue)>,
 ) {
+    let client_fwd = crate::engine::ClientFwd {
+        headers: client_fwd,
+        query: None,
+    };
     let resp = forward_with_pool_keyed(
         app,
         vec![crate::engine::WeightedLane {
@@ -461,4 +465,100 @@ fn neutral_apply_replaces_then_appends() {
         .map(|v| v.to_str().unwrap())
         .collect();
     assert_eq!(values, vec!["first", "second"]);
+}
+
+// ── THE URL: a same-dialect hop carries the caller's query ──────────────────────────────────────────
+
+/// One request through an `upstream_protocol` lane on a one-shot server that records the request
+/// line and answers `reply`; the request line it saw.
+async fn request_line(
+    ingress: &'static str,
+    upstream_protocol: &'static str,
+    query: &str,
+    reply: serde_json::Value,
+) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    crate::testkit::install_test_seams();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let seen = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = sock.read(&mut chunk).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        let body = reply.to_string();
+        let answer = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        sock.write_all(answer.as_bytes()).await.unwrap();
+        let text = String::from_utf8_lossy(&buf).to_string();
+        text.lines().next().unwrap_or_default().to_string()
+    });
+    let app = TestApp::new()
+        .lane(LaneSpec::new("test-model", upstream_protocol, &base).provider("zai"))
+        .pool("p", &[(0, 1)])
+        .build();
+    let body = if ingress == "anthropic" {
+        anthropic_body()
+    } else {
+        openai_body()
+    };
+    let resp = forward_with_pool_keyed(
+        &app,
+        vec![crate::engine::WeightedLane {
+            reasoning: None,
+            idx: 0,
+            weight: 1,
+            attempt_timeout_ms: None,
+        }],
+        body,
+        None,
+        None,
+        "p",
+        None,
+        ingress,
+        crate::test_support::CHAT,
+        None,
+        crate::engine::ClientFwd {
+            headers: Vec::new(),
+            query: Some(query.to_string()),
+        },
+    )
+    .await;
+    let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
+    seen.await.unwrap()
+}
+
+/// A same-dialect hop sends the caller's query; a translated hop sends none.
+#[tokio::test]
+async fn a_same_dialect_hop_carries_the_callers_query() {
+    let same = request_line(
+        "openai",
+        crate::proto_codec::PROTO_OPENAI,
+        "trace=a%2Fb&beta=true",
+        openai_reply(),
+    )
+    .await;
+    assert!(
+        same.starts_with("POST /v1/chat/completions?trace=a%2Fb&beta=true "),
+        "{same}"
+    );
+    let crossed = request_line(
+        "anthropic",
+        crate::proto_codec::PROTO_OPENAI,
+        "beta=true",
+        openai_reply(),
+    )
+    .await;
+    assert!(
+        crossed.starts_with("POST /v1/chat/completions "),
+        "{crossed}"
+    );
 }
