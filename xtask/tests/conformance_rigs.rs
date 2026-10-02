@@ -8,13 +8,15 @@
 
 use serde_json::{json, Value};
 use xtask::conformance_record::{
+    as_signing_key, base64_std, idp_reply, oidf_plan_config, oidf_subject_config,
+    rsa_jwk_from_pkcs8, suite_client_key, OidfClient, OidfSubject, AS_KEY_ID,
+    OIDF_RESOURCE_PATH,
+};
+use xtask::conformance_record::{
     b64url, decide_h2, decide_jev, decide_oidf, decide_slsa, decide_tls, discriminates, es256_jwk,
     governance_observed, is_jev_refusal, judge_jev_ledger, junit_cases, module_results,
     provenance_commit, rig_for, tests_passed, CaseResult, H2Run, JevRun, OidfRun, SlsaRun, Status,
     TlsRun, NEGATIVE_PAIRS, OIDF_SUITES, REPORTED_UNITS,
-};
-use xtask::conformance_record::{
-    oidf_plan_config, oidf_subject_config, rsa_jwk_from_pkcs8, OidfClient, OIDF_RESOURCE_PATH,
 };
 
 fn registry_ids() -> Vec<String> {
@@ -515,7 +517,7 @@ fn base64url_is_rfc4648_section_5_unpadded() {
 fn oidf_clients() -> Vec<OidfClient> {
     (1..=2)
         .map(|n| {
-            let (private, public) = rsa_jwk_from_pkcs8(&rsa_fixture(), &format!("k{n}")).unwrap();
+            let (private, public) = suite_client_key(n).unwrap();
             OidfClient::new(
                 n,
                 "https://localhost.emobix.co.uk:8443/test/a/x/callback",
@@ -533,13 +535,16 @@ fn oidf_clients() -> Vec<OidfClient> {
 fn the_oidf_subject_is_the_fapi2_posture_with_static_clients() {
     let clients = oidf_clients();
     let cfg = oidf_subject_config(
-        "https://h:1",
-        1,
-        "BASE\n",
-        "/c.pem",
-        "/k.pem",
-        "PEM",
-        "/plugins",
+        &OidfSubject {
+            issuer: "https://h:1",
+            base: "BASE\n",
+            cert: "/c.pem",
+            key: "/k.pem",
+            ca_pem: "PEM",
+            plugins: "/plugins",
+            as_key_file: "/as.key",
+            jwks_url: "https://127.0.0.1:9/jwks",
+        },
         &clients,
     );
     let doc: serde_json::Value =
@@ -576,10 +581,68 @@ fn the_oidf_subject_is_the_fapi2_posture_with_static_clients() {
         declared[0]["jwks"]["keys"][0]["kty"], "RSA",
         "the suite's clients are PS256 so the RS256 refusal module runs"
     );
+    // The JWKS comes from the rig's IdP stub on its OWN port (DEST-GUARD keeps the node's own ports
+    // off-limits), and it is the JWKS of the signing key the rig hands the AS.
     assert_eq!(
         doc["identity-providers"]["fapi-as"]["settings"]["jwks_url"],
-        "https://127.0.0.1:1/jwks"
+        "https://127.0.0.1:9/jwks"
     );
+    assert_eq!(
+        doc["oauth_as"]["signing_key"],
+        serde_json::json!({ "file": "/as.key" })
+    );
+    assert_eq!(doc["oauth_as"]["key_id"], serde_json::json!(AS_KEY_ID));
+}
+
+/// The two suite clients hold DISTINCT PS256 keys (a module signs one client's assertion with the
+/// other's key and expects a refusal), pinned so the runner needs no key-generation tool.
+#[test]
+fn the_suite_clients_hold_two_distinct_pinned_ps256_keys() {
+    let (one_private, one) = suite_client_key(1).unwrap();
+    let (_, two) = suite_client_key(2).unwrap();
+    assert_eq!(one["kty"], "RSA");
+    assert_eq!(one["alg"], "PS256");
+    assert_ne!(one["n"], two["n"], "two clients, two keys");
+    assert!(one.get("d").is_none() && one_private.get("d").is_some());
+    assert!(suite_client_key(3).is_err());
+}
+
+/// The AS signing key the rig mints and the JWKS its IdP stub serves describe ONE key.
+#[test]
+fn the_as_signing_key_and_its_jwks_agree() {
+    use ring::signature::KeyPair as _;
+    let (der, jwks) = as_signing_key().unwrap();
+    let pair = ring::signature::EcdsaKeyPair::from_pkcs8(
+        &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+        &der,
+        &ring::rand::SystemRandom::new(),
+    )
+    .unwrap();
+    let point = pair.public_key().as_ref();
+    let key = &jwks["keys"][0];
+    assert_eq!(key["kid"], serde_json::json!(AS_KEY_ID));
+    assert_eq!(key["x"], serde_json::json!(b64url(&point[1..33])));
+    assert_eq!(key["y"], serde_json::json!(b64url(&point[33..65])));
+}
+
+/// busbar reads `oauth_as.signing_key` as STANDARD (padded, `+/`) base64, RFC 4648 s4.
+#[test]
+fn base64_std_is_rfc4648_section_4_padded() {
+    assert_eq!(base64_std(b""), "");
+    assert_eq!(base64_std(b"f"), "Zg==");
+    assert_eq!(base64_std(b"fo"), "Zm8=");
+    assert_eq!(base64_std(b"foo"), "Zm9v");
+    assert_eq!(base64_std(&[0xfb, 0xff]), "+/8=");
+}
+
+/// The IdP stub answers `/jwks` with the key set and nothing else.
+#[test]
+fn the_idp_stub_serves_only_the_jwks() {
+    assert_eq!(
+        idp_reply("/jwks", "{\"keys\":[]}"),
+        (200, "{\"keys\":[]}".to_string())
+    );
+    assert_eq!(idp_reply("/other", "{}").0, 404);
 }
 
 /// The plan config: the two static clients with their PRIVATE keys, the token-requiring resource,
