@@ -112,25 +112,48 @@ async fn a_served_sessions_turn_lands_the_planes_counts_on_the_presenting_key() 
     assert_eq!(rows.len(), 2, "only the classes the turn carried");
 }
 
-/// #47 `streams.fees.per_session` (OWNER RULING Q32): each session the kernel's account OPENS counts
-/// ONE session on the presenting key — through the one metering path, a count and never a figure —
-/// and a refused open counts none. What a session costs is the kernel's read of the plane's fees.
+/// #47 `streams.fees.per_session` (OWNER RULING Q32): each session SERVED counts ONE session on the
+/// presenting key — through the one metering path, a count and never a figure — and a refused open
+/// counts none. Q17-6 (a): an open the route could not serve (no provider composed here, so the mint
+/// answers `501`) never opened, and counts none either. What a session costs is the kernel's read of
+/// the plane's fees.
 #[tokio::test]
-async fn each_opened_session_counts_one_session_and_a_refused_open_counts_none() {
+async fn each_served_session_counts_one_session_and_an_unserved_or_refused_open_counts_none() {
     let rt = runtime(Arc::new(DurableHandleEngine::new()));
     let sessions = |host: &FixtureHost| host.ledger_usage(&key().id).map_or(0, |u| u.sessions);
     let room = Arc::new(FixtureHost::new().governed().with_count_cap(1_000));
     open(&room, &rt, "call-one").await;
-    open(&room, &rt, "call-two").await;
-    assert_eq!(sessions(&room), 2, "two opened sessions, two counts");
+    assert_eq!(sessions(&room), 0, "a mint with no provider served nothing");
+    let hosted =
+        crate::runtime::build_runtime_hosted(&rt, Arc::clone(&room) as Arc<dyn EngineHost>);
+    for call in ["call-two", "call-three"] {
+        let meter = crate::runtime::TurnMeter::new(
+            Arc::clone(&room) as Arc<dyn EngineHost>,
+            key(),
+            "streaming-server",
+            crate::OPENAI_REALTIME,
+        );
+        let (core, _handle) = crate::topology::begin_session(
+            &hosted,
+            crate::ir::codec::OpenAiRealtimeCodec,
+            "acct-meter",
+            call,
+            None,
+            crate::runtime::Carrier::sideband(),
+            Some(meter),
+            5,
+        )
+        .expect("the session opens");
+        crate::runtime::session::serve_with_sweep(core, async {}).await;
+    }
+    assert_eq!(sessions(&room), 2, "two served sessions, two counts");
     let dry = Arc::new(FixtureHost::new().governed().with_count_cap(0));
     open(&dry, &rt, "call-dry").await;
     assert_eq!(sessions(&dry), 0, "a refused open counts nothing");
 }
 
 /// Q17-6 (ARCHITECT ruling R4): a session whose durable open fails never opened, so it charges no
-/// `fees.per_session`. The kernel's account counted the session before the durable open; the failed
-/// open gives that count back. RED before the refund: the count stayed at 1.
+/// `fees.per_session`. The fee counts only when a session is served, so nothing was counted.
 #[tokio::test]
 async fn a_failed_durable_open_gives_back_its_session_fee() {
     let engine = Arc::new(DurableHandleEngine::new());

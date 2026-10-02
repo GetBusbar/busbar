@@ -534,3 +534,92 @@ fn billable_classes_are_pairwise_disjoint_and_exclude_cached_tokens() {
         );
     }
 }
+
+/// The presenting key the session-fee cells below open under.
+#[cfg(feature = "test-support")]
+fn fee_key() -> busbar_contract::records::VirtualKey {
+    busbar_contract::records::VirtualKey {
+        id: "vk-session-fee".to_string(),
+        name: "session-fee".to_string(),
+        ..Default::default()
+    }
+}
+
+/// RED-BEFORE-GREEN (MONEY-AUDIT STR-3, Q17-6 (a) "per_session refund on failed open"): a session
+/// whose provider cannot be reached never opened, and a unit that never opened charges nothing. The
+/// kernel's account counted the session fee at the open, and neither the mint nor the SDP broker's
+/// failure gave it back: with the provider down, every connect billed a session that never served.
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn an_unreachable_provider_charges_no_session_fee_on_the_one_shot_passes() {
+    use crate::testkit::fixture_host::FixtureHost;
+    let host = Arc::new(FixtureHost::new().governed().with_count_cap(1_000));
+    let rt = runtime_for("allowed-model");
+    // Nothing listens on the discard port: the provider leg fails at connect.
+    let down = super::ProviderEndpoint {
+        base_url: "http://127.0.0.1:9".to_string(),
+        api_key: "sk-test".to_string(),
+    };
+    for ingress in [Ingress::Mint, Ingress::Sdp] {
+        let mut open = governed_open(
+            &rt,
+            Arc::clone(&host) as Arc<dyn EngineHost>,
+            ingress,
+            "call-down",
+        );
+        open.provider = Some(&down);
+        open.vkey = Some(fee_key());
+        let status = open_governed(open).await.status();
+        assert!(
+            !status.is_success(),
+            "{ingress:?}: the premise — the provider leg failed, got {status}"
+        );
+    }
+    assert_eq!(
+        host.ledger_usage(&fee_key().id).map_or(0, |u| u.sessions),
+        0,
+        "no session served, so no session fee is counted on the budget book or the metering row"
+    );
+}
+
+/// RED-BEFORE-GREEN (MONEY-AUDIT STR-3): the WS telephony / Gemini leg opens the session, then dials
+/// the provider; a failed dial settles the durable row and drops the proxy without serving it. That
+/// session never served and charges no fee; the same open, served, counts exactly one.
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn a_session_whose_provider_dial_fails_charges_no_session_fee() {
+    use crate::testkit::fixture_host::FixtureHost;
+    let host = Arc::new(FixtureHost::new().governed().with_count_cap(1_000));
+    let rt = crate::runtime::build_runtime_hosted(
+        &runtime_for("allowed-model"),
+        Arc::clone(&host) as Arc<dyn EngineHost>,
+    );
+    let sessions = || host.ledger_usage(&fee_key().id).map_or(0, |u| u.sessions);
+    let open = |call: &str| {
+        crate::topology::telephony::open_admitted_telephony(
+            &rt,
+            OpenAiRealtimeCodec,
+            "acct",
+            call,
+            g711_config(),
+            Some(crate::runtime::TurnMeter::new(
+                Arc::clone(&host) as Arc<dyn EngineHost>,
+                fee_key(),
+                "streaming-server",
+                crate::OPENAI_REALTIME,
+            )),
+            1,
+            None,
+        )
+        .expect("the session opens")
+    };
+    // The dial-failure arm: settle the row, drop the proxy, serve nothing.
+    let failed = open("call-dial-down");
+    failed.handle.finish(1);
+    drop(failed);
+    assert_eq!(sessions(), 0, "a session whose dial failed charges nothing");
+    // The dialed arm serves through the one serving loop: one session, one fee.
+    let served = open("call-dialed");
+    crate::runtime::serve_with_sweep(Arc::clone(served.core()), async {}).await;
+    assert_eq!(sessions(), 1, "a served session counts one session fee");
+}

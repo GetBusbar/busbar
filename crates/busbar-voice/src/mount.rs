@@ -813,13 +813,21 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
             meter,
             now,
         ) {
-            // (4) THE SERVING LEG, past a clean governed open.
-            Ok((_core, handle)) => match ingress {
-                Ingress::Mint => serve_mint(provider, handle.owner(), &session_cfg).await,
-                Ingress::Sdp => serve_sdp(provider, &headers, body, &handle, now).await,
-                // The inbound WS-accept seam (browser sideband) lands separately — no bare on_upgrade.
-                _ => sideband_pending(),
-            },
+            // (4) THE SERVING LEG, past a clean governed open. The session fee counts only when the
+            // pass answers success: a mint or broker that failed served nothing (Q17-6 (a)).
+            Ok((core, handle)) => {
+                let resp = match ingress {
+                    Ingress::Mint => serve_mint(provider, handle.owner(), &session_cfg).await,
+                    Ingress::Sdp => serve_sdp(provider, &headers, body, &handle, now).await,
+                    // The inbound WS-accept seam (browser sideband) lands separately — no bare
+                    // on_upgrade.
+                    _ => sideband_pending(),
+                };
+                if resp.status().is_success() {
+                    core.served();
+                }
+                resp
+            }
             Err(e) => start_refusal(&e),
         },
     };
@@ -1497,7 +1505,8 @@ where
                                     // The dial failed: nothing to relay client frames to. Settle the
                                     // just-opened durable row terminal and evict it, then drop the
                                     // proxy rather than serve a client socket with no upstream — fail closed, no
-                                    // orphaned row. The handle has no drop path of its own.
+                                    // orphaned row. The handle has no drop path of its own. The
+                                    // session was never served, so no session fee was counted.
                                     proxy.handle.finish(unix_secs(&*teardown_clock));
                                     tracing::warn!(
                                         error = %redact_url_credentials(&e.to_string()),

@@ -962,23 +962,6 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
         }
     }
 
-    fn meter_refund_fee(
-        &self,
-        pin: &busbar_kernel::plane_host::MeterPin,
-        key: &busbar_contract::records::VirtualKey,
-        pool: &str,
-        plane: &str,
-        fee_unit: &str,
-        now: u64,
-    ) {
-        // The refund primitive reads a plane-qualified pool: the plane names the fee lane, the pool
-        // the buckets the count reached.
-        if let Some((g, c)) = pin_models(pin) {
-            let pool = format!("{plane}{}{pool}", crate::governance::PLANE_LANE_SEP);
-            g.refund_fee_unit(&c, key, &pool, now, fee_unit);
-        }
-    }
-
     fn meter_series(
         &self,
         gov: &busbar_kernel::plane_host::GovHandle,
@@ -2945,20 +2928,6 @@ pub trait BudgetHost: Send + Sync {
         pool: &str,
         model: &str,
         usage: &crate::billing::Usage,
-        now: u64,
-    );
-
-    /// GIVE BACK ONE FEE UNIT `fee_unit` a plane's admission counted on its own fee lane, across the
-    /// buckets of the key's chain `pool` reaches, in the window `now` (the count's own clock reading)
-    /// reached: the host-driven form of `GovState::refund_fee_unit` over the state `pin` carries. The
-    /// budget book only; the metering row stays. Floored at 0.
-    fn meter_refund_fee(
-        &self,
-        pin: &MeterPin,
-        key: &busbar_contract::records::VirtualKey,
-        pool: &str,
-        plane: &str,
-        fee_unit: &str,
         now: u64,
     );
 

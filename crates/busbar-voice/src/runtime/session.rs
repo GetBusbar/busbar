@@ -95,6 +95,16 @@ where
         }
     }
 
+    /// The session is SERVED: count its fee on the kernel account, once (Q17-6 (a), MONEY-AUDIT
+    /// STR-3). Every socket session is marked by [`serve_with_sweep`], the one loop each serves
+    /// through; a one-shot pass marks it when its answer succeeds. A session that opened and was
+    /// never served — its provider dial, mint or SDP broker failed — charges nothing.
+    pub fn served(&self) {
+        if let Some(metering) = &self.metering {
+            metering.served();
+        }
+    }
+
     /// Bind the hard session wall-clock ceiling (`streams.session_max_secs:`).
     #[must_use]
     pub fn with_session_ceiling(mut self, secs: u32) -> Self {
@@ -217,6 +227,8 @@ where
     C: DuplexReader + DuplexWriter + Send + Sync + 'static,
     F: std::future::Future<Output = ()>,
 {
+    // Being served is what the session fee buys: counted here, as the session starts to serve.
+    core.served();
     let sweep = async {
         loop {
             tokio::time::sleep(SWEEP_EVERY).await;

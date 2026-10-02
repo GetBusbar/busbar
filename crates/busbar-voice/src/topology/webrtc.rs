@@ -135,6 +135,8 @@ where
         .mint(&locked_config)
         .await
         .map_err(AttachError::Mint)?;
+    // The secret is out: the session is served, and its fee counts (a failed mint charged nothing).
+    core.served();
 
     let session = VoiceSession::new(Arc::clone(&core));
     Ok(Attached {

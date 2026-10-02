@@ -27,6 +27,7 @@ use super::{EngineHost, MeterPin};
 use crate::billing::Usage;
 use busbar_contract::records::VirtualKey;
 use busbar_kernel_ledger::cost::{plane_fee_lane, split_plane_lane, PER_SESSION};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// What a reported turn means for the carrier. The plane never learns why a session must close.
@@ -49,14 +50,22 @@ pub struct SessionAccount {
     key: VirtualKey,
     pool: String,
     lane: String,
-    /// The clock reading the open's session count landed at: a refund of that count lands in the
-    /// same budget window.
-    opened_at: u64,
+    /// Whether the session's one fee count has landed ([`SessionAccount::served`]): set once, so a
+    /// session is counted at most once however many serving sites mark it.
+    counted: AtomicBool,
 }
 
 impl SessionAccount {
     /// Open the account. `Ok(None)` is an ungoverned deployment or a keyless caller — nothing to
     /// ledger against and nothing to refuse, as on every other plane. `Err` is a chain already dry.
+    ///
+    /// OPENING COUNTS NOTHING (Q17-6 (a), MONEY-AUDIT STR-3). The session fee is counted when the
+    /// session is SERVED ([`SessionAccount::served`]), not here: a session whose provider dial, mint
+    /// or SDP broker fails after the account opened never opened, and a unit that never opened
+    /// charges nothing. Counting at the open and giving the count back on each failure left the
+    /// metering row the count reached at one session (the give-back was the budget book's alone),
+    /// and every failure arm a serving site forgot kept the fee; counting once, where the session
+    /// is served, needs no inverse.
     pub fn open(
         host: Arc<dyn EngineHost>,
         key: Option<&VirtualKey>,
@@ -66,27 +75,29 @@ impl SessionAccount {
         let (Some(pin), Some(key)) = (host.meter_pin(), key) else {
             return Ok(None);
         };
-        let opened_at = host.clock_now_secs();
         let account = SessionAccount {
             host,
             pin,
             key: key.clone(),
             pool: pool.to_string(),
             lane,
-            opened_at,
+            counted: AtomicBool::new(false),
         };
         if account.dry() {
             return Err(BudgetRefused);
         }
-        account.count_open();
         Ok(Some(account))
     }
 
-    /// ONE COUNT PER OPENED SESSION (#47 `fees.per_session`, OWNER RULING Q32): a count of the
-    /// reserved session class on the plane's own fee lane, through the same one metering path — the
-    /// plane's `fees.per_session` prices it at read, and a plane with none reads 0. A lane no plane
-    /// qualifies has no session fee to count.
-    fn count_open(&self) {
+    /// ONE COUNT PER SERVED SESSION (#47 `fees.per_session`, OWNER RULING Q32; Q17-6 (a)): a count
+    /// of the reserved session class on the plane's own fee lane, through the same one metering path
+    /// — the plane's `fees.per_session` prices it at read, and a plane with none reads 0. A lane no
+    /// plane qualifies has no session fee to count. Counted at most once per account, at the clock
+    /// reading the session was served at.
+    pub fn served(&self) {
+        if self.counted.swap(true, Ordering::AcqRel) {
+            return;
+        }
         let Some(plane) = self.fee_plane() else {
             return;
         };
@@ -100,25 +111,7 @@ impl SessionAccount {
             &self.pool,
             &lane,
             &one,
-            self.opened_at,
-        );
-    }
-
-    /// GIVE BACK THE OPEN'S SESSION COUNT (Q17-6, ARCHITECT ruling R4): a session whose open failed
-    /// after the account counted it never opened, and a unit that never opened charges nothing.
-    /// Consumes the account, so its count is given back at most once. The budget book only: the
-    /// metering row the count reached stays, as v1.5.5's fee refund left it.
-    pub fn refund_open(self) {
-        let Some(plane) = self.fee_plane() else {
-            return;
-        };
-        self.host.meter_refund_fee(
-            &self.pin,
-            &self.key,
-            &self.pool,
-            plane,
-            PER_SESSION,
-            self.opened_at,
+            self.host.clock_now_secs(),
         );
     }
 
