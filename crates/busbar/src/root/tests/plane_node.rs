@@ -1522,6 +1522,48 @@ async fn the_loop_leaves_the_money_where_the_shipped_plane_leaves_it() {
     assert_eq!(field(&post_door, "metering_rows"), "");
 }
 
+/// A CALLER THAT HANGS UP MID-DISPATCH KEEPS ITS FEE CHARGED (MONEY-AUDIT C-F1, spec §7 F13).
+///
+/// The upstream answers its headers and then holds its body, so the route step is parked on the
+/// read; the caller's answer future is dropped there, which is a client going away. The loop's
+/// guard ends the unit as `ClientGone` with nothing rendered. 1.5.5's dropped request never reached
+/// the non-2xx refund, so the flat fee the door charged stays on the key's bucket.
+/// RED: the abandoned end was finished as a 503 no client saw, and the non-2xx arm refunded it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_caller_that_hangs_up_mid_dispatch_keeps_its_flat_fee_charged() {
+    let rig = rig_billed(Fixture::BufferedOk).await;
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    // Popped next: the queue is a stack, so the last push is the first reply.
+    rig.upstream.push(MockResponse::Gated {
+        status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        body: serde_json::json!({"error": {"message": "still answering", "type": "server_error"}}),
+        started: Arc::clone(&started),
+        release: Arc::clone(&release),
+    });
+    tokio::select! {
+        _ = drive(&rig, Fixture::BufferedOk) => {
+            panic!("the upstream holds its body, so the unit cannot have answered");
+        }
+        // The route step is reading the held body: the caller goes away here, and the answer
+        // future is dropped with the unit inside its one await.
+        () = started.notified() => {}
+    }
+    release.notify_one();
+    let observed = observe(&rig, Response::new(axum::body::Body::empty())).await;
+    rig.server.shutdown().await;
+    assert_eq!(
+        field(&observed, "ledger_requests"),
+        "1",
+        "the door drew the admission slot"
+    );
+    assert_eq!(
+        field(&observed, "ledger_spend_cents"),
+        FEE_CENTS.to_string(),
+        "a caller that went away mid-dispatch is refunded nothing: the flat fee stays charged"
+    );
+}
+
 /// W3.c / DECISIONS #42 + #43: BILLING OFF (no `rate_card:`) ⇒ SERVE FREE, WRITE THE COUNTS, READ 0,
 /// YET STILL GOVERNED. The complement of `the_loop_leaves_the_money_where_the_shipped_plane_leaves_it`
 /// (which drives the BILLED rig): with no card the node is a pure failover/routing proxy — the SAME
