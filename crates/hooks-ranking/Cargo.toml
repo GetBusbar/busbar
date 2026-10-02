@@ -13,8 +13,13 @@ busbar-contract = { path = "../busbar-contract" }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-# THE DOOR'S CONFORMANCE WITNESS (`tests/conformance.rs`, the loader's only user here): the linked
-# door admitted through the one loader and driven through the one dispatcher (the plugin's own
-# conformance witness, the transport crates' pattern). Any other file naming the loader makes this
-# an ungranted test edge (kind-isolation:test-deps, :closure).
+# THE DOOR'S BOTH-WAYS WITNESS (`tests/conformance.rs`, the loader's only user here): the linked door
+# and this crate's own dropped-in image (the `ranking_door` example below), admitted through the one
+# loader and driven through the one dispatcher (#2 rule (1): compiled-in is dropped-in). Any other
+# file naming the loader makes this an ungranted test edge (kind-isolation:test-deps, :closure).
 busbar-plugin-loader = { path = "../plugin-loader" }
+
+# THE DROPPED-IN DOOR: built by `cargo test`.
+[[example]]
+name = "ranking_door"
+crate-type = ["cdylib"]
