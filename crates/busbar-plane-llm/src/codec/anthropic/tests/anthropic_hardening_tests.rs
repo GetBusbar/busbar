@@ -4114,7 +4114,8 @@ fn unmodelled_block_is_left_out_of_the_ir_and_spliced_back_same_dialect() {
     assert_eq!(ir.system.len(), 1, "{:?}", ir.system);
 
     // Same dialect through the IR: every turn block comes back, in its own place.
-    let out = AnthropicWriter.write_request(&ir);
+    let writer = AnthropicWriter;
+    let out = writer.write_request(&ir);
     assert_eq!(
         out["messages"][0]["content"], body["messages"][0]["content"],
         "{out}"

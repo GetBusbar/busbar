@@ -953,7 +953,17 @@ fn responses_response_web_search_call_dropped_with_warn() {
         ],
         "usage": { "input_tokens": 1, "output_tokens": 1 }
     });
-    let (ir, cap) = with_warns(|| ResponsesReader.read_response(&body).expect("read_response"));
+    // The drop is a TRANSLATE attempt's (design F3 "Drops"): read inside one, it is warned and
+    // named by its wire path; a same-dialect relay's tap says nothing.
+    let seam = crate::codec::drops::Seam {
+        direction: crate::codec::drops::Direction::Response,
+        ingress: "openai",
+        egress: "responses",
+    };
+    let ((ir, cap), dropped) = crate::codec::drops::scope(seam, || {
+        with_warns(|| ResponsesReader.read_response(&body).expect("read_response"))
+    });
+    assert_eq!(dropped, vec!["output[].type=web_search_call".to_string()]);
 
     assert!(
         ir.content
