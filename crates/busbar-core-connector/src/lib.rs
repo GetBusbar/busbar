@@ -325,7 +325,7 @@ impl Connector {
 
     /// Whether a loaded transport entry serves `transport` (a scheme).
     #[must_use]
-    pub fn serves(&self, transport: &str) -> bool {
+    pub fn serves_scheme(&self, transport: &str) -> bool {
         self.transports
             .read()
             .expect("transports")
@@ -702,7 +702,9 @@ impl DeclaredConns for Connector {
                 }
                 (true, None) => self.declare_need(owner, need, &spec.transport, spec.egress_class),
                 // An inbound need over a scheme no loaded transport serves is refused the same way.
-                (false, _) if !spec.transport.is_empty() && !self.serves(&spec.transport) => {
+                (false, _)
+                    if !spec.transport.is_empty() && !self.serves_scheme(&spec.transport) =>
+                {
                     Err(ConnError::Refused)
                 }
                 (false, _) => {
@@ -733,8 +735,8 @@ impl DeclaredConns for Connector {
             .is_some_and(|d| !d.door.facts().composes_over.is_empty())
     }
 
-    fn serves(&self, transport: &str) -> bool {
-        Connector::serves(self, transport)
+    fn serves_scheme(&self, transport: &str) -> bool {
+        Connector::serves_scheme(self, transport)
     }
 }
 

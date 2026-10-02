@@ -940,7 +940,7 @@ impl<K: Kind> Plugin<K> {
                         // #50): a need, outbound or inbound, over a scheme no loaded transport
                         // serves refuses the load, naming the plugin and the scheme — fail closed
                         // now, never at the need's first open or listen.
-                        if !need.transport.is_empty() && !table.serves(&need.transport) {
+                        if !need.transport.is_empty() && !table.serves_scheme(&need.transport) {
                             return Err(LoadError::UnservedScheme {
                                 plugin: str_bytes(st.name)
                                     .map(|n| String::from_utf8_lossy(n).into_owned())

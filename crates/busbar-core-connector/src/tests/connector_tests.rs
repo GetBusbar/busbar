@@ -43,8 +43,8 @@ fn a_need_over_an_unserved_scheme_is_refused_at_declare_and_a_served_one_opens()
     worker().block_on(async {
         let (_listening, far) = far_end().await;
         let c = literal_connector();
-        assert!(c.serves("bytes"));
-        assert!(!c.serves("nowhere"));
+        assert!(c.serves_scheme("bytes"));
+        assert!(!c.serves_scheme("nowhere"));
         assert_eq!(
             c.declare_over(OWNER, NeedId(0), "nowhere"),
             Err(ConnError::Refused)

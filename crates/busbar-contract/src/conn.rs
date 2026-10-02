@@ -277,7 +277,7 @@ pub trait DeclaredConns: Conns {
     /// (`BUSBAR-1.6.0.md` Part 2 #50): the loader refuses an instance whose outbound need names a
     /// scheme no loaded transport serves, naming the plugin and the scheme — fail closed at boot,
     /// never at the need's first open.
-    fn serves(&self, transport: &str) -> bool;
+    fn serves_scheme(&self, transport: &str) -> bool;
 }
 
 /// THE HOST-SIDE READER'S CONNECTION TABLE: [`Conns`] plus a read that wakes a [`Waker`] instead of
