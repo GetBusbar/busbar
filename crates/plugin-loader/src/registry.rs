@@ -126,7 +126,7 @@ impl LoadablePlugin {
     pub fn in_process(&self) -> bool {
         matches!(
             self.entry,
-            Some(LinkedEntry::Store(_) | LinkedEntry::BuiltinSecret)
+            Some(LinkedEntry::Store { .. } | LinkedEntry::BuiltinSecret)
         )
     }
 
@@ -203,7 +203,13 @@ pub enum LinkedEntry {
     /// default a build ships. `open_store` calls it with the row's configuration, where it would
     /// otherwise run the image load; everything before that (the row, its registration, name and
     /// alias resolution, the kind check) is the axis every other row takes.
-    Store(fn(&str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String>),
+    Store {
+        /// The row's in-process open (the cold lane; DEL-COLD-LOADER deletes it).
+        open: fn(&str) -> Result<Box<dyn busbar_contract::records::RecordStore>, String>,
+        /// The row's store v3 door, which boot opens it through ([`PluginRegistry::store_door`]);
+        /// `None` for a row that states none.
+        door: Option<busbar_contract::abi::mechanism::door::DoorFn>,
+    },
     /// A BUILT-IN secret module (`env`, `file`): the row's own name is the reference
     /// [`crate::builtin_secret::resolve_builtin`] resolves, in process. `open_secret` opens it where it would
     /// otherwise run the image load, on the same axis as [`LinkedEntry::Store`].
@@ -245,7 +251,23 @@ impl LinkedPlugin {
             busbar_contract::abi::cold::kind::STORE,
             busbar_contract::abi::cold::ABI_VERSION,
         );
-        Self::built_in(name, kind, abi, LinkedEntry::Store(open), ephemeral)
+        Self::built_in(
+            name,
+            kind,
+            abi,
+            LinkedEntry::Store { open, door: None },
+            ephemeral,
+        )
+    }
+
+    /// This STORE row with its store v3 `door` (the door boot opens it through); any other row is
+    /// returned as it was.
+    #[must_use]
+    pub fn with_store_door(mut self, door: busbar_contract::abi::mechanism::door::DoorFn) -> Self {
+        if let LinkedEntry::Store { door: d, .. } = &mut self.entry {
+            *d = Some(door);
+        }
+        self
     }
 
     /// The built-in SECRET module named `name` (its own alias), at this binary's secret payload
@@ -543,7 +565,7 @@ impl PluginRegistry {
         cfg_json: &str,
     ) -> Result<Box<dyn busbar_contract::records::RecordStore>, String> {
         let p = self.resolve_kind(name_or_alias, "store", "back the governance store")?;
-        if let Some(LinkedEntry::Store(open)) = p.entry {
+        if let Some(LinkedEntry::Store { open, .. }) = p.entry {
             return open(cfg_json);
         }
         // Hand the manifest's payload schema to the loader: a store built against an older schema
@@ -555,6 +577,44 @@ impl PluginRegistry {
             &p.manifest.kind,
             p.manifest.abi_version,
         )
+    }
+
+    /// THE DOOR a STORE resolved by name or alias opens through (the store axis,
+    /// `busbar_contract::store_calls::StoreAxis`): a linked row's store v3 door, or a dropped-in
+    /// plugin's verified bytes with the Statement its signed manifest states. A store that states no
+    /// door (a 1.5.5 JSON-contract plugin) is refused, naming the rebuild.
+    ///
+    /// # Errors
+    /// The name resolves to no store, or the store states no door.
+    pub fn store_door(
+        &self,
+        name_or_alias: &str,
+    ) -> Result<busbar_contract::store_calls::StoreDoor, String> {
+        use busbar_contract::store_calls::StoreDoor;
+        let p = self.resolve_kind(name_or_alias, "store", "back the governance store")?;
+        let no_door = || {
+            format!(
+                "plugin '{}' states no store door: rebuild the plugin against the 1.6.0 SDK",
+                p.manifest.name
+            )
+        };
+        if let Some(entry) = p.entry {
+            return match entry {
+                LinkedEntry::Store {
+                    door: Some(door), ..
+                } => Ok(StoreDoor::Linked(door)),
+                _ => Err(no_door()),
+            };
+        }
+        let named = |e: String| format!("plugin '{}': {e}", p.manifest.name);
+        match p.manifest.stated_rendering().map_err(named)? {
+            Some(stated) => Ok(StoreDoor::Dropped {
+                file: p.file.clone(),
+                bytes: std::sync::Arc::new(p.lib_bytes.clone()),
+                stated,
+            }),
+            None => Err(no_door()),
+        }
     }
 
     /// Open an AUTH plugin resolved by name or alias: verifies the resolved plugin's `kind` is `auth`,

@@ -1219,11 +1219,19 @@ pub fn build_app_from_config(
                 .map_err(|e| format!("store '{}' settings: {e}", g.module))?,
         };
         let cfg_json = serde_json::Value::Object(resolved).to_string();
-        let store: Arc<dyn governance::RecordStore> = Arc::from(
-            plugin_registry
-                .open_store(&g.module, &cfg_json)
-                .map_err(|e| format!("store '{}' plugin load failed: {e}", g.module))?,
-        );
+        // The configured store's DOOR (a linked row's, or a dropped-in plugin's verified bytes),
+        // loaded through the root's one dispatcher and opened through the store v3 table, on the
+        // store axis the composition root installed (WIRE-STORE Q8/Q9). Compiled in or dropped
+        // in, one path.
+        let load_failed = |e: String| format!("store '{}' plugin load failed: {e}", g.module);
+        let door = plugin_registry.store_door(&g.module).map_err(load_failed)?;
+        let axis = crate::preflight::root_rows()
+            .store_axis
+            .ok_or_else(|| load_failed("no store axis is installed".to_string()))?;
+        let store: Arc<dyn governance::RecordStore> = axis()
+            .open(door, &g.module, cfg_json.as_bytes())
+            .map_err(load_failed)?
+            .records;
         // The operator ADMIN credential: the operator-credential entry's `token:` secret ref.
         // FAIL-CLOSED: a configured-but-unresolvable admin token refuses boot (a silently-absent
         // token would lock the admin API while the operator believes it is guarded).

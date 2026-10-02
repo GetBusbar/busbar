@@ -1723,6 +1723,65 @@ fn zeroing(v: Vec<u8>) -> Zeroing {
     Zeroing(v)
 }
 
+/// THE STORE AXIS over the process's ONE dispatcher (WIRE-STORE Q8/Q9): the composition root
+/// builds it with its dispatcher, its `plugins.logs`, its one connection table and the kernel's
+/// `op_id` allocator, and installs it in the kernel, which opens its governance store through it.
+/// A compiled-in row is loaded by [`load_linked`](crate::dispatch::load_linked), a dropped-in
+/// plugin by [`load_dropped_bytes`](crate::dispatch::load_dropped_bytes) against its stated
+/// Statement; both are opened as a [`LoadedStore`].
+pub struct DoorStoreAxis {
+    /// The process's one dispatcher.
+    pub dispatcher: Arc<Dispatcher>,
+    /// Where each store instance's plugin log goes.
+    pub logs: crate::dispatch::PluginLogConfig,
+    /// The host's one connection table ([`crate::dispatch::Bind::conns`]).
+    pub conns: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>,
+    /// The node's one `op_id` allocator.
+    pub mint: OpIdMint,
+}
+
+impl busbar_contract::store_calls::StoreAxis for DoorStoreAxis {
+    fn open(
+        &self,
+        door: busbar_contract::store_calls::StoreDoor,
+        label: &str,
+        settings: &[u8],
+    ) -> Result<busbar_contract::store_calls::OpenedStore, String> {
+        use busbar_contract::abi::mechanism::KindCode;
+        use busbar_contract::store_calls::StoreDoor;
+        let sink = self
+            .logs
+            .sink(label, KindCode::Store, Arc::new(crate::dispatch::NoSink))?;
+        let bind = crate::dispatch::Bind {
+            instance: Arc::from(label),
+            max_inflight_cap: u32::MAX,
+            sink: Arc::new(sink),
+            dispatcher: self.dispatcher.adopter(),
+            conns: self.conns.clone(),
+        };
+        let plugin = match door {
+            StoreDoor::Linked(door) => crate::dispatch::LinkedRow::of(door)
+                .and_then(|row| crate::dispatch::load_linked::<Store>(&row, bind)),
+            StoreDoor::Dropped {
+                file,
+                bytes,
+                stated,
+            } => crate::dispatch::load_dropped_bytes::<Store>(&bytes, &file, &stated, bind),
+        }
+        .map_err(|e| e.to_string())?;
+        let store = Arc::new(LoadedStore::open(
+            plugin,
+            Arc::clone(&self.dispatcher),
+            settings,
+            self.mint,
+        )?);
+        Ok(busbar_contract::store_calls::OpenedStore {
+            records: store.clone(),
+            calls: Some(store),
+        })
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/store_v3_tests.rs"]
 mod tests;
@@ -1754,3 +1813,7 @@ pub(crate) mod wrap;
 #[cfg(test)]
 #[path = "tests/store_v3_pend_tests.rs"]
 mod pend_tests;
+
+#[cfg(test)]
+#[path = "tests/store_v3_axis_tests.rs"]
+mod axis_tests;

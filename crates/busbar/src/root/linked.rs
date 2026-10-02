@@ -305,12 +305,29 @@ pub fn register_stores(linked: &Linked) {
             registry_build: Some(crate::root::boot::registry),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
             hook_axis: Some(crate::root::hooks::axis),
+            store_axis: Some(store_axis),
         }),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
             std::process::exit(2);
         }
     }
+}
+
+/// THE STORE AXIS the kernel opens its governance store through (WIRE-STORE Q8/Q9): the loader's
+/// axis over the process's ONE dispatcher (`root::dispatch`, built at boot before the configuration
+/// is applied), each store instance logging under the configured `plugins.logs`, its needs declared
+/// on the process's one connection table, its bridge writes minted by the kernel's one `op_id`
+/// allocator.
+fn store_axis() -> std::sync::Arc<dyn busbar_contract::store_calls::StoreAxis> {
+    let conns: std::sync::Arc<dyn busbar_contract::conn::DeclaredConns> =
+        crate::root::connector::the().clone();
+    std::sync::Arc::new(crate::root::loader::store_v3::DoorStoreAxis {
+        dispatcher: crate::root::dispatch::dispatcher(),
+        logs: plugin_logs().clone(),
+        conns: Some(conns),
+        mint: busbar_kernel::door::op_id,
+    })
 }
 
 /// THE DEFAULT GOVERNANCE STORE — the one linked store row that DECLARES itself the default, the

@@ -42,10 +42,20 @@ pub fn fleet_data_dir() -> Option<std::path::PathBuf> {
 }
 
 type StoreOpen = fn(&str) -> Result<Box<dyn governance::RecordStore>, String>;
-/// A linked in-process STORE's entry: `(name, ephemeral, default, open)` — the name
-/// `governance.store` selects it by, whether what it holds is lost on restart, whether it claims to
-/// be the store a deployment that configures none runs on, and its open.
-pub type LinkedStore = (&'static str, bool, bool, StoreOpen);
+/// A linked STORE's entry: `(name, ephemeral, default, open, door)` — the name `governance.store`
+/// selects it by, whether what it holds is lost on restart, whether it claims to be the store a
+/// deployment that configures none runs on, its in-process open, and its store v3 door (the door
+/// boot opens it through, on the root's [`RootInstall::store_axis`]).
+pub type LinkedStore = (
+    &'static str,
+    bool,
+    bool,
+    StoreOpen,
+    busbar_contract::abi::mechanism::door::DoorFn,
+);
+/// The root's store axis (WIRE-STORE Q8/Q9): every store boot opens is loaded through the root's
+/// one dispatcher and opened through the store v3 table.
+pub type StoreAxisOf = fn() -> std::sync::Arc<dyn busbar_contract::store_calls::StoreAxis>;
 pub use busbar_kernel_identity::operator::LinkedAuth;
 use busbar_plugin_loader::{boot, dispatch::PluginLogConfig, LinkedPlugin, PluginRegistry};
 /// THE ROOT'S REGISTRY BUILD (ARCHITECT ruling Q8: the composition root builds the plugin registry;
@@ -118,6 +128,8 @@ pub struct RootInstall {
     /// the SWITCH-OVER hook axis): every `kind: hook` row, compiled in or dropped in, opened on the
     /// hook kind's ABI over the process's one dispatcher. `None` = no hook opens.
     pub hook_axis: Option<HookAxisBuild>,
+    /// The root's store axis: what boot opens the configured store through.
+    pub store_axis: Option<StoreAxisOf>,
 }
 
 /// THE ROOT'S HOOK AXIS over one plugin registry (each configuration's registry gets its own).
@@ -139,6 +151,7 @@ const STAND_IN: RootInstall = RootInstall {
     registry_build: Some(crate::test_support::registry_stand_in),
     plugins_fetch: Some(crate::test_support::fetch_stand_in),
     hook_axis: Some(crate::test_support::hook_axis_stand_in),
+    store_axis: Some(crate::test_support::store_axis_stand_in),
 };
 
 /// The hook doors a test build links in place of the root's (the stand-in hook axis,
@@ -208,7 +221,7 @@ pub(crate) fn auth_axis(
 /// takes (DECISIONS #2 rule (1)).
 fn linked_rows() -> Vec<LinkedPlugin> {
     let RootInstall { stores, .. } = root_rows();
-    let store = |s: &LinkedStore| LinkedPlugin::store(s.0, s.3, s.1);
+    let store = |s: &LinkedStore| LinkedPlugin::store(s.0, s.3, s.1).with_store_door(s.4);
     let own = [
         config::secret::SECRET_MODULE_ENV,
         config::secret::SECRET_MODULE_FILE,
