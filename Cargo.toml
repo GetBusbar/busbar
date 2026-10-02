@@ -11,7 +11,6 @@ members = [
     "crates/busbar-voice",
     "crates/busbar-contract",
     "crates/busbar-transport-tcp",
-    "crates/busbar-transport-http",
     "crates/busbar-kernel",
     "crates/busbar-kernel-identity",
     "crates/busbar-kernel-scope",
@@ -83,6 +82,8 @@ busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-e
 # links the logic crate; `busbar-plugin-loader`'s conformance test builds the cdylib crate. Same repo,
 # same rev, one resolved copy in Cargo.lock.
 busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "3ad5a711aad433f2015a980cf3a792afa5fd3a7a" }
+# THE HTTP TRANSPORT (kind: transport), pulled at a pinned rev; the logic crate the root links.
+busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "17cfd311eb8f72340dc323f9947f0055a8b537bd" }
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "3ad5a711aad433f2015a980cf3a792afa5fd3a7a" }
 # ── A2A, from the a2aproject's OWN crates ──────────────────────────────────────────────────────
 # THE OBVIOUS NAME IS THE WRONG ONE. `a2a-rs` on crates.io is `emillindfors/a2a-rs` (MIT, v0.5.0) —
