@@ -72,6 +72,22 @@ openai-chat:
   protocol: openai
   base_url: "http://127.0.0.1:${MP}"
 YAML
+# ONE DURABLE WRITE PER BOOT, NOT ONE PER FLUSH TICK THAT HAPPENS TO LAND MID-REQUEST. The engine
+# charges `requests += 1` at ADMISSION and the tokens at COMPLETION, and the write-behind flusher
+# ticks on its own clock (default 100 ms, first tick 100 ms after boot). When a tick fell between
+# the two, the one chat was written as TWO deltas, `{requests:+1, models:[]}` then
+# `{requests:0, models:[tokens]}`, and the published store-mysql drops a delta whose models list is
+# empty (docs/advisories/1.6.0/mysql-store-split-flush-request-count-loss.md). The restart then read
+# `requests 0` beside intact spend/tokens and `survived: no` -- whether it did was the phase of the
+# flush clock against the mock's latency, not the binary: busbar-release golden jobs 110875947634
+# and 110940772389 (both `usage_before_restart` requests 1, `usage_after_restart` requests 0,
+# spend_cents 250 and tokens 18 kept). With the periodic tick an hour out, no tick fires inside
+# this cell's boots, and the GRACEFUL stop below (`kill` = SIGTERM; 1.5.5's main.rs runs a final
+# flush after the drain, and its flusher's shutdown arm one more) writes the whole request as ONE
+# delta. What this cell measures is unchanged: does a graceful restart against the same store keep
+# the key and its usage. The split-flush defect is the advisory's and the store-conformance
+# cell's to prove, not a coin this cell flips.
+FLUSH_MS=3600000
 cat >"$W/config.yaml" <<YAML
 listen: "127.0.0.1:${LP}"
 admin_listen: "127.0.0.1:${AP}"
@@ -101,6 +117,8 @@ models:
     provider: openai-chat
 rate_card:
   m-openai-chat: { input_utok: 100000, output_utok: 200000 }
+advanced:
+  usage_flush_interval_ms: ${FLUSH_MS}
 YAML
 # The operator upgrade step (owner ruling Q42, docs/migration-1.6.md): the binary under test adds, at 0,
 # each billable class it names as unconfigured on this card. The 1.5.5 golden names none: its config runs as written.
@@ -143,14 +161,15 @@ kid="$(jq -r '.id // empty' <<<"$mint")"; tok="$(jq -r '.token // empty' <<<"$mi
 step mint_status "$mint_code"
 st="$(curl -sS -m 20 -o "$W/chat.body" -w '%{http_code}' -X POST "http://127.0.0.1:${LP}/v1/chat/completions" -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' -d '{"model":"m-openai-chat","messages":[{"role":"user","content":"ping"}]}')"
 step chat_status "$st"
-# USAGE IS COUNTED BEHIND THE ANSWER, so the read POLLS (every 0.1s, bounded at 10s) until it counts
-# the request, instead of a fixed 0.5s sleep a loaded runner outruns: busbar-release golden job run
-# 37018595669 read requests 0 on its second recording of the mysql cell and called persistence "no"
-# against a golden that says 1 and "yes". The bytes recorded are unchanged; only the wait is.
+# USAGE IS COUNTED BEHIND THE ANSWER, so the read POLLS (every 0.1s, bounded at 10s) until the
+# request is WHOLLY counted -- its admission (`requests`) AND its completion (`tokens`), which the
+# engine charges at two different moments -- instead of a fixed 0.5s sleep a loaded runner outruns.
+# (Golden job 37018595669's `requests 0` was on the read AFTER the restart, not this one: that is the
+# split flush the FLUSH_MS note above closes.) The bytes recorded are unchanged; only the wait is.
 u1=""; i=0
 while [ $i -lt 100 ]; do
   u1="$(curl -sS -m 10 -H "Authorization: Bearer $ADMIN" "http://127.0.0.1:${AP}/api/v1/admin/keys/${kid}/usage" | jq -c 'del(.as_of)')"
-  [ "$(jq -r '.requests // 0' <<<"$u1" 2>/dev/null)" -ge 1 ] 2>/dev/null && break
+  jq -e '(.requests // 0) >= 1 and (.tokens // 0) >= 1' <<<"$u1" >/dev/null 2>&1 && break
   sleep 0.1; i=$((i+1))
 done
 step usage_before_restart "$u1"
