@@ -24,11 +24,11 @@
 //! protocol crates` — seven prefixes — so `busbar-contract` and every `busbar-kernel-*` crate, the
 //! money path included, could branch on a transport with this row green. Widening it did NOT widen
 //! what is legitimate: the arms are still the allowed prefixes, and `busbar-plane-*` joined them as
-//! the protocol crates it is. What it did surface is recorded, not waived: `busbar-contract`'s
-//! claim-overlap equality (the same shape the kernel `registry.rs` row below had to be argued
-//! for) and `plugin-loader`'s ABI-version `transport` noun collision are standing reds for their
-//! owners — the collision's honest fix is the rename the scope note above anticipates, not a
-//! narrower scope.
+//! the protocol crates it is. What it surfaced was fixed in code, not waived (GATE-GREEN
+//! 2026-10-02): `busbar-contract`'s `Claim::overlaps` was a second copy of the kernel registry's
+//! `claims_overlap` binding equality (the one site the row below argues for) and is deleted; and
+//! `plugin-loader`'s four copies of the ABI-version handshake are one `abi_handshake`, whose
+//! version is named `abi_version` — the rename the scope note above anticipates, not a narrower scope.
 //!
 //! ## The exception ledger is EMPTY, and that is the point
 //!

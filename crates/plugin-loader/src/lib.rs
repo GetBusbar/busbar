@@ -256,6 +256,35 @@ fn ffi_guard<R>(path: &str, op: &str, f: impl FnOnce() -> R) -> Result<R, String
 /// `thread_local!` with a destructor on the calling thread, because that is what arms the plugin's
 /// `pthread_key` and puts a destructor inside the image on that thread. See `ffi_thread` for the
 /// full mechanism and `where_the_plugin_arms_its_tls_key` for the measurement that decided the split.
+/// The library's `busbar_abi` entry, or the refusal that names a library without one.
+pub(crate) fn abi_symbol(
+    lib: &Library,
+    display: &str,
+) -> Result<busbar_contract::abi::cold::AbiFn, String> {
+    unsafe { lib.get::<busbar_contract::abi::cold::AbiFn>(symbol::ABI) }
+        .map(|f| *f)
+        .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))
+}
+
+/// THE PLUGIN-ABI HANDSHAKE, one home for every load path. The cold kinds, the upload vet, the
+/// plane loader and the transport loader each spelled it: four copies. Calls `busbar_abi()` under
+/// the ffi guard (it runs plugin code, so a panic fails the load closed) and refuses a plugin whose
+/// plugin-ABI version is not the engine's. `noun` is how the refusal names it (`plugin`, `plane`,
+/// `transport`), so each path's text is unchanged byte for byte.
+pub(crate) fn abi_handshake(
+    abi: busbar_contract::abi::cold::AbiFn,
+    display: &str,
+    noun: &str,
+) -> Result<(), String> {
+    let abi_version = ffi_guard_confined(display, "abi", || unsafe { abi() })?;
+    if abi_version != TRANSPORT_VERSION {
+        return Err(format!(
+            "{noun} '{display}' targets transport ABI v{abi_version}, engine speaks v{TRANSPORT_VERSION}"
+        ));
+    }
+    Ok(())
+}
+
 fn ffi_guard_confined<R>(path: &str, op: &str, f: impl FnOnce() -> R) -> Result<R, String> {
     ffi_thread::on_plugin_thread(f).map_err(|_| {
         format!("plugin '{path}' panicked across the ABI boundary in {op} (treated as failure)")
@@ -737,22 +766,12 @@ fn wire_up(
     // ── 1. Transport handshake FIRST — refuse a non-matching transport before resolving open/call. ──
     // The `busbar_abi()` call runs plugin code, so it too rides `ffi_guard`: a plugin that panics in
     // its handshake fails the load CLOSED instead of aborting the engine during boot/reload.
-    let transport = {
-        let f = match (lib, entry) {
-            (Some(lib), _) => *unsafe { lib.get::<busbar_contract::abi::cold::AbiFn>(symbol::ABI) }
-                .map_err(|_| {
-                    format!("'{display}' is not a busbar plugin (no busbar_abi symbol)")
-                })?,
-            (None, Some(e)) => e.abi,
-            (None, None) => return Err(format!("'{display}' has no boundary to load")),
-        };
-        ffi_guard_confined(&display, "abi", || unsafe { f() })?
+    let abi = match (lib, entry) {
+        (Some(lib), _) => abi_symbol(lib, &display)?,
+        (None, Some(e)) => e.abi,
+        (None, None) => return Err(format!("'{display}' has no boundary to load")),
     };
-    if transport != TRANSPORT_VERSION {
-        return Err(format!(
-            "plugin '{display}' targets transport ABI v{transport}, engine speaks v{TRANSPORT_VERSION}"
-        ));
-    }
+    abi_handshake(abi, &display, "plugin")?;
 
     // ── 2. Kind bound at load — read the exported kind, cross-check it against the seam AND the
     // signed manifest. Any disagreement is a hard fail-closed load error naming both. ──
@@ -1941,16 +1960,7 @@ pub fn validate_plugin(lib_path: &Path) -> Result<u32, String> {
 /// exit paths cannot each be responsible for routing the unload — the caller unloads once.
 fn validate_mapped(lib: &Library, display: &str) -> Result<u32, String> {
     let display = display.to_string();
-    let transport = {
-        let f = unsafe { lib.get::<busbar_contract::abi::cold::AbiFn>(symbol::ABI) }
-            .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))?;
-        ffi_guard_confined(&display, "abi", || unsafe { (*f)() })?
-    };
-    if transport != TRANSPORT_VERSION {
-        return Err(format!(
-            "plugin '{display}' targets transport ABI v{transport}, engine speaks v{TRANSPORT_VERSION}"
-        ));
-    }
+    abi_handshake(abi_symbol(lib, &display)?, &display, "plugin")?;
     // The exported kind must be one the engine supports (a range exists for it).
     let plugin_kind = read_plugin_kind(lib, &display)?;
     if supported_abi(&plugin_kind).is_empty() {
