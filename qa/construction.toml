@@ -2062,6 +2062,7 @@ known_sites = [
   "crates/busbar-kernel/src/door.rs :: no configured rate for model '{name}'",
   "crates/busbar-kernel/src/ingress/mod.rs :: The model '{model}' does not exist or you do not have access to it.",
   "crates/busbar-kernel/src/ingress/mod.rs :: /{provider}/{model}/v1/messages",
+  "crates/busbar-kernel/src/metrics/mod.rs :: Per-(bucket, model, tier) tokens in the bucket's current budget window (key and budget-group buckets; derived from the token ledger at scrape time)",
   "crates/busbar-kernel/src/metrics/money.rs :: model",
   "crates/busbar-kernel/src/plane_host/build_input.rs :: model",
   "crates/busbar-kernel/src/router.rs :: /{provider}/{model}/v1/messages",
