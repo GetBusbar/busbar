@@ -156,6 +156,8 @@ enum State {
     Whole {
         status: u16,
         body: Vec<u8>,
+        /// The far end's head, kept for a same-dialect answer to relay (empty across dialects).
+        head: Vec<(Vec<u8>, Vec<u8>)>,
     },
     Relay {
         relay: Box<relay::Relay>,
@@ -239,14 +241,18 @@ impl Reply {
                 state: State::Whole {
                     status,
                     body: Vec::new(),
+                    head: Vec::new(),
                 },
             };
         };
-        if relay::takes_whole(ingress, egress, far_is_stream, ctx.intent.wants_stream) {
+        // Only a translated answer is taken whole, and a translated answer relays no far head; a
+        // same-dialect answer takes the relay path below, which carries the far head.
+        if relay::takes_whole(ingress, egress, far_is_stream) {
             return Reply {
                 state: State::Whole {
                     status,
                     body: Vec::new(),
+                    head: Vec::new(),
                 },
             };
         }
@@ -268,6 +274,9 @@ impl Reply {
             }
         }
         fields.extend(failure::request_id_field(ingress, head));
+        if ingress == egress {
+            wire::relay_far_head(ingress, &mut fields, head);
+        }
         let relay = relay::Relay::new(relay::RelayCtx {
             ingress,
             egress,
@@ -305,7 +314,7 @@ impl Reply {
                     pending()
                 }
             }
-            State::Whole { status, body } => {
+            State::Whole { status, body, head } => {
                 body.extend_from_slice(bytes);
                 if body.len() > crate::codec::wire_shim::max_translated_body_bytes() {
                     self.state = State::Done;
@@ -315,9 +324,13 @@ impl Reply {
                 if !last {
                     return pending();
                 }
-                let (status, body) = (*status, std::mem::take(body));
+                let (status, body, head) = (*status, std::mem::take(body), std::mem::take(head));
                 self.state = State::Done;
-                whole_piece(ctx, status, &body, at)
+                let far_head: Vec<(&[u8], &[u8])> = head
+                    .iter()
+                    .map(|(n, v)| (n.as_slice(), v.as_slice()))
+                    .collect();
+                whole_piece(ctx, status, &body, &far_head, at)
             }
             State::Relay { relay, head, units } => {
                 let (fed, _) = relay.feed(bytes);
@@ -447,8 +460,14 @@ impl Reply {
     }
 }
 
-fn whole_piece<'a>(ctx: &ReplyCtx<'_>, status: u16, body: &[u8], at: At) -> Piece<'a> {
-    let w = whole::translate(
+fn whole_piece<'a>(
+    ctx: &ReplyCtx<'_>,
+    status: u16,
+    body: &[u8],
+    far_head: HeadFields<'_>,
+    at: At,
+) -> Piece<'a> {
+    let mut w = whole::translate(
         &whole::WholeCtx {
             ingress: ctx.arrived.dialect,
             egress: ctx.lane.dialect,
@@ -463,6 +482,8 @@ fn whole_piece<'a>(ctx: &ReplyCtx<'_>, status: u16, body: &[u8], at: At) -> Piec
         status,
         body,
     );
+    // A same-dialect answer relays the far end's head (its head is empty across dialects).
+    wire::relay_far_head(ctx.arrived.dialect, &mut w.answer.fields, far_head);
     let units = Units::of(
         wire::token_usage_of(&w.usage).as_ref(),
         wire::open_units_of(&w.usage),

@@ -660,3 +660,50 @@ fn an_inbound_need_listens_and_its_connections_are_its_owners() {
         c.close(OWNER, id).unwrap();
     });
 }
+
+/// RED (ARCHITECT ruling 2026-10-02, WIRE-EXPORT userinfo): a need declared with a target that
+/// carries a userinfo — a URL's `user:pass@` or a bare `user@host:port` — is REFUSED, fail closed:
+/// the answer is kept for the need's admission, and nothing opens on it. The same target without
+/// the userinfo is declared.
+#[test]
+fn a_declared_target_carrying_a_userinfo_is_refused() {
+    worker().block_on(async {
+        let (_listening, resolved) = far_end().await;
+        let c = literal_connector();
+        let need = config_targeted_need("settings.url");
+        for credentialed in [
+            format!("http://user:secret@{resolved}/v1/traces"),
+            format!("user@{resolved}"),
+        ] {
+            assert_eq!(
+                DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&credentialed)),
+                Err(ConnError::Refused),
+                "{credentialed}"
+            );
+            assert_eq!(
+                DeclaredConns::declared(&c, OWNER, NeedId(0)),
+                Some(Err(ConnError::Refused))
+            );
+            assert!(c
+                .open(
+                    OWNER,
+                    NeedId(0),
+                    &OpenDesc {
+                        target: &resolved,
+                        ..OpenDesc::default()
+                    },
+                )
+                .is_err());
+        }
+        assert_eq!(
+            DeclaredConns::declare(
+                &c,
+                OWNER,
+                NeedId(0),
+                &need,
+                Some(&format!("http://{resolved}/v1/traces"))
+            ),
+            Ok(())
+        );
+    });
+}

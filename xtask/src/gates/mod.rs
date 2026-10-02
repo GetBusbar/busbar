@@ -33,6 +33,7 @@ pub mod denylist_gate;
 pub mod dep_wall;
 pub mod design_bindings;
 pub mod design_docs_allowlist;
+pub mod dialect_coverage;
 pub mod dialect_map;
 pub mod door_only;
 pub mod duplex_ws_default_edge;
@@ -2942,6 +2943,22 @@ pub static REGISTRY: &[Registration] = &[
         build: || Box::new(dialect_map::DialectMapGate),
         summary: "every committed LLM dialect table (codec/<d>/map.gen.rs) equals its \
                   dialects/<d>.toml mapping file, compiled",
+    },
+    Registration {
+        name: "dialect-map-in-lock",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(dialect_coverage::DialectMapInLockGate),
+        summary: "every path an LLM dialect mapping file maps or marks no-equivalent is in that \
+                  dialect's wire lock",
+    },
+    Registration {
+        name: "dialect-candidates",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(dialect_coverage::DialectCandidatesGate),
+        summary: "every wire path naming a field another LLM dialect maps is mapped or marked \
+                  no-equivalent in its own dialect's mapping file",
     },
     Registration {
         name: "no-tracked-ignored",

@@ -51,7 +51,7 @@ use crate::ctx::{Ctx, Overlay};
 use crate::gates::construction::model::{CRow, Cfg};
 use crate::gates::construction::tree::{crate_name_of_dir, dirs_for_globs};
 use crate::gates::construction::{
-    ceilings, census, external, rules, ConstructionGate, CEILINGS, UNSAFE_HALVES,
+    ceilings, census, external, rules, rules2, ConstructionGate, CEILINGS, UNSAFE_HALVES,
 };
 use crate::gates::{prove_red, prove_rows_green, prove_rows_red, Case, Expect, Gate, Report};
 
@@ -219,7 +219,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
 /// * `token-sealed` and its three sub-rows — today's sites NEUTRALISED in the overlay copy of their
 ///   files (`::mint(` becomes `::zz_fixture_mint(`), so the scan set is every other line of the
 ///   tree. The rule's `max_sites = 0` is untouched.
-/// * `lean-core` — today's sites added to the rule's own `known_sites`.
+/// * `lean-core` — today's sites added to the rule's own `known_sites` (as `<path> :: <literal text>`).
 /// * `manifest-allowlist:<crate>` — today's deps added to that crate's `reviewed_extra` and
 ///   `known_red_deps`, the rule's two review lists.
 /// * every RATCHETED ceiling (`ceilings::pins`) pinned to what it measures — which is exactly the
@@ -317,7 +317,7 @@ fn green_fixture(
         let known: Vec<String> = row
             .offenders
             .iter()
-            .filter_map(|o| site(o).map(|(rel, n)| format!("{rel}:{n}")))
+            .filter_map(|o| rules2::lean_core_key_of(o))
             .collect();
         text = ceilings::add_to_list(&text, "rules.lean-core", "known_sites", &known)
             .ok_or("[rules.lean-core] has no header to record its known sites under")?;
