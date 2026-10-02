@@ -1,5 +1,5 @@
 # crates/busbar-plane-llm/dialects/openai_chat.toml: the HAND-WRITTEN wire <> IR mapping of the
-# OpenAI Chat Completions dialect (stage 0: flat request fields and word tables).
+# OpenAI Chat Completions dialect (stage 1: request, response and stream rows, word tables).
 # `cargo xtask dialect compile` emits it as src/codec/openai_chat/map.gen.rs; the `dialect-map`
 # gate refuses a committed map.gen.rs that differs from a fresh compile.
 #
@@ -19,12 +19,19 @@ request = [
     "chat_sampling",
     "openai_family",
     "chat",
+    "blocks"
 ]
+response = ["response"]
+stream = ["stream"]
 
 # Members the dialect's own code models (`prim`): counted among the modelled keys only.
 [rows.chat_structure]
 "model" = { prim = "model" }
 "messages" = { prim = "messages" }
+"messages[].role=system" = { prim = "system" }
+"messages[].role=assistant.tool_calls[].type=function.function.arguments" = { prim = "tool_arguments" }
+"messages[].role=assistant.function_call.arguments" = { prim = "tool_arguments" }
+"tool_choice.type=allowed_tools.allowed_tools.tools" = { prim = "tool_choice_subset" }
 "tools" = { prim = "tools" }
 "max_tokens" = { prim = "max_output" }
 "max_completion_tokens" = { prim = "max_output" }
@@ -69,6 +76,93 @@ park = true
 "modalities" = { ir = "output_modalities", hook = "chat_modalities" }
 "web_search_options" = { ir = "web_search", hook = "chat_web_search" }
 
+# The request members inside the message, tool and config structure that the dialect's own code
+# reads and writes (`prim`: structure is code; the walker does not walk these rows).
+[rows.blocks]
+"messages[].role=assistant" = { prim = "assistant" }
+"messages[].role=developer" = { prim = "developer" }
+"messages[].role=function" = { prim = "function" }
+"messages[].role=tool" = { prim = "tool" }
+"messages[].role=user" = { prim = "user" }
+"messages[].role=tool.content" = { prim = "content" }
+"messages[].role=user.content" = { prim = "content" }
+"messages[].role=system.content" = { prim = "content" }
+"messages[].role=function.content" = { prim = "content" }
+"messages[].role=assistant.content" = { prim = "content" }
+"messages[].role=developer.content" = { prim = "content" }
+"messages[].role=user.content[].type=text.text" = { prim = "text" }
+"messages[].role=assistant.content[].type=text.text" = { prim = "text" }
+"messages[].role=user.content[].type=input_audio.input_audio.data" = { prim = "data" }
+"messages[].role=user.content[].type=input_audio.input_audio.format" = { prim = "format" }
+"messages[].role=user.content[].type=file.file.file_data" = { prim = "file_data" }
+"messages[].role=user.content[].type=file.file.filename" = { prim = "filename" }
+"messages[].role=user.content[].type=file.file.file_id" = { prim = "file_id" }
+"messages[].role=user.name" = { prim = "name" }
+"messages[].role=system.name" = { prim = "name" }
+"messages[].role=function.name" = { prim = "name" }
+"messages[].role=assistant.name" = { prim = "name" }
+"messages[].role=developer.name" = { prim = "name" }
+"messages[].role=assistant.tool_calls" = { prim = "tool_calls" }
+"messages[].role=tool.tool_call_id" = { prim = "tool_call_id" }
+"messages[].role=assistant.refusal" = { prim = "refusal" }
+"messages[].role=assistant.audio" = { prim = "audio" }
+"messages[].role=assistant.function_call" = { prim = "function_call" }
+"messages[].role=user.content[].type=image_url.image_url.url" = { prim = "url" }
+"messages[].role=assistant.content[].type=refusal.refusal" = { prim = "refusal" }
+"function_call.name" = { prim = "name" }
+"messages[].role=assistant.function_call.name" = { prim = "name" }
+"messages[].role=developer.content[].text" = { prim = "text" }
+"messages[].role=system.content[].text" = { prim = "text" }
+"messages[].role=tool.content[].text" = { prim = "text" }
+"messages[].role=assistant.tool_calls[].type=function.function.name" = { prim = "name" }
+"tool_choice.type=function.function.name" = { prim = "name" }
+"tools[].type=function.function.name" = { prim = "name" }
+
+# The answer members the dialect's reader and writer carry (`prim`: code carries them).
+[rows.response]
+"usage.completion_tokens_details.reasoning_tokens" = { prim = "reasoning_tokens" }
+"usage.prompt_tokens" = { prim = "input_tokens" }
+"usage.completion_tokens" = { prim = "output_tokens" }
+"usage.total_tokens" = { prim = "total_tokens" }
+"id" = { prim = "id" }
+"object" = { prim = "object" }
+"created" = { prim = "created" }
+"model" = { prim = "model" }
+"system_fingerprint" = { prim = "system_fingerprint" }
+"service_tier" = { prim = "served_tier" }
+"choices[].index" = { prim = "index" }
+"choices[].finish_reason" = { prim = "finish_reason" }
+"choices[].logprobs" = { prim = "logprobs" }
+"choices[].message.role" = { prim = "role" }
+"choices[].message.content" = { prim = "content" }
+"choices[].message.refusal" = { prim = "refusal" }
+"choices[].message.tool_calls" = { prim = "tool_calls" }
+"choices[].message.annotations" = { prim = "annotations" }
+"choices[].message.audio" = { prim = "audio" }
+"usage.prompt_tokens_details.cached_tokens" = { prim = "cache_read_tokens" }
+"usage.prompt_tokens_details.audio_tokens" = { prim = "audio_tokens" }
+"usage.completion_tokens_details.audio_tokens" = { prim = "audio_tokens" }
+"usage.completion_tokens_details.accepted_prediction_tokens" = { prim = "accepted_prediction_tokens" }
+"usage.completion_tokens_details.rejected_prediction_tokens" = { prim = "rejected_prediction_tokens" }
+"choices[].message.function_call.arguments" = { prim = "tool_arguments" }
+"choices[].message.function_call.name" = { prim = "name" }
+"usage.prompt_tokens_details.cache_write_tokens" = { prim = "cache_write_tokens" }
+
+# The stream events the dialect's stream reader and writer carry (`prim`: code carries them).
+[rows.stream]
+"choices[].delta.role" = { prim = "role" }
+"choices[].delta.content" = { prim = "content" }
+"choices[].delta.refusal" = { prim = "refusal" }
+"choices[].delta.tool_calls" = { prim = "tool_calls" }
+
+# Paths no row maps although another dialect maps a field of the same name under the same
+# parent (`dialect-candidates`): each says why it has no equivalent here.
+[unmapped.request]
+"prediction.content[].text" = { no-equivalent = "the text of an OpenAI Predicted Outputs hint: no other dialect has a predicted-output member, so the hint has no translation target" }
+
+[unmapped.response]
+"metadata" = { no-equivalent = "a stored completion's echo of the request's metadata: the IR answer has no request-echo slot (the request's metadata crosses on the request hop)" }
+
 # Controls beyond the rows. Chat has no top_k: 1.5.5 omitted it with no warn and no audit
 # (1.5.5: crates/busbar/src/proto/openai_chat/writer.rs:265). Custom tools are tools[] entries.
 [controls]
@@ -77,16 +171,11 @@ park = true
 
 # The response `service_tier` (the tier that SERVED the answer, OAI-03 / RSP-17) <> the IR
 # attribution word (the Anthropic vocabulary: `default` IS `standard`). The OpenAI-family words are
-# written as-is so a tier that arrived in that vocabulary is not lost.
-[words.openai_served_tier]
+# written as-is so a tier that arrived in that vocabulary is not lost; Chat also READS `flex` /
+# `scale`, carried in the IR tier vocabulary.
+[words.served_tier]
 "standard" = { wire = "default" }
 "default" = { wire = "default", dir = "write" }
 "priority" = { wire = "priority" }
-"flex" = { wire = "flex", dir = "write" }
-"scale" = { wire = "scale", dir = "write" }
-
-# Chat also READS `flex` / `scale`, carried in the IR tier vocabulary.
-[words.served_tier]
-base = "openai_served_tier"
-"flex" = { wire = "flex", dir = "read" }
-"scale" = { wire = "scale", dir = "read" }
+"flex" = { wire = "flex" }
+"scale" = { wire = "scale" }

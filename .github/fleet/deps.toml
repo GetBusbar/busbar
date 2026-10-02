@@ -1,0 +1,105 @@
+# THE PLUGIN FLEET'S DEPENDENCY POLICY (ARCHITECT ruling 3a, PLUGIN-TEMPLATE, 2026-10-01).
+#
+# Two homes, one fact each:
+#   - SHARED crates (anything busbar itself also uses) live in busbar's root Cargo.toml
+#     [workspace.dependencies], exactly as they do for busbar's own members. No second copy here.
+#   - PLUGIN-ONLY crates, the banned list, the socket/TLS ban and the C-dependency allow-list live HERE.
+# A crate may not appear in both (`busbar-release plugin sync` refuses the render).
+#
+# This file MOVES WITH THE BUSBAR PIN: GetBusbar/busbar-release's `busbar-release plugin sync` reads it
+# (and the root table, the toolchain and Cargo.lock) at the busbar commit each plugin repo pins in
+# `.busbar-ref`, and renders it into that repo's root Cargo.toml [workspace.dependencies], deny.toml and
+# dependabot ignores. The plugin harness (busbar-release ci/plugin/run.sh) enforces the rest at the
+# same commit: the net ban, the C-dependency allow-list and Cargo.lock parity with busbar's lock (RED,
+# ruling 3b). Adding a plugin-only crate is one reviewed row here; a plugin naming a crate in neither
+# table is a new row first.
+schema = 1
+
+# ── Plugin-only crates ────────────────────────────────────────────────────────────────────────────
+# Rendered as `name = { version, default-features, features }`; `repos` and `reason` are for review.
+[plugin-deps.ldap3]
+version = "0.11"
+default-features = false
+features = ["sync"]
+repos = ["busbar-auth-ldap"]
+reason = "the LDAP client of the ldap auth module. Its tls-rustls feature is a plugin-side TLS stack and is net-banned; ldap3 0.12 drops the rustls 0.21 / ring 0.16 second majors (DEPS-AUDIT cut #7)."
+
+[plugin-deps.mysql]
+version = "26"
+default-features = false
+features = ["minimal"]
+repos = ["busbar-store-mysql"]
+reason = "the MySQL/MariaDB driver of the mysql store (its zlib is libz-sys, on the C allow-list below)."
+
+[plugin-deps.postgres]
+version = "0.19"
+repos = ["busbar-store-postgres"]
+reason = "the Postgres driver of the postgres store (tokio-postgres underneath)."
+
+[plugin-deps.redis]
+version = "1"
+default-features = false
+features = ["script"]
+repos = ["busbar-store-valkey"]
+reason = "the Valkey client of the valkey store (wire-compatible upstream crate). Its tls-rustls feature is a plugin-side TLS stack and is net-banned."
+
+[plugin-deps.rusqlite]
+version = "0.40"
+features = ["bundled"]
+repos = ["busbar-store-sqlite"]
+reason = "the SQLite store's engine, with SQLite compiled in (libsqlite3-sys bundled, on the C allow-list below)."
+
+[plugin-deps.ulid]
+version = "1"
+repos = ["busbar-store-mysql"]
+reason = "sortable ids for the mysql store's rows."
+
+# ── cargo-deny [bans] ─────────────────────────────────────────────────────────────────────────────
+# ONE protocol = ONE library, ONE crypto backend = ring (BUSBAR-1.6.0.md §Libraries). Rendered into
+# every plugin's deny.toml; `cargo deny check` runs on it in the harness. These apply to the whole
+# graph, dev-dependencies included.
+[bans]
+multiple-versions = "warn"
+deny = [
+    { crate = "openssl", reason = "TLS is rustls (core-only); no OpenSSL anywhere in the fleet" },
+    { crate = "openssl-sys", reason = "TLS is rustls (core-only); no OpenSSL anywhere in the fleet" },
+    { crate = "native-tls", reason = "TLS is rustls (core-only); no platform TLS anywhere in the fleet" },
+    { crate = "hyper:<1", reason = "HTTP is hyper 1; no hyper 0.14 stack" },
+    { crate = "rustls:<0.23", reason = "one rustls major (0.23) fleet-wide" },
+    { crate = "ring:<0.17", reason = "one ring major (0.17) fleet-wide" },
+    { crate = "serde_yaml", reason = "unmaintained; busbar uses serde_yaml_ng" },
+]
+# Duplicate versions the fleet accepts. Empty while multiple-versions is "warn"; when it moves to
+# "deny", the accepted pairs (DEPS-AUDIT §3: getrandom 0.2 via ring, syn 2/3 at compile time, ...) are
+# listed here as `{ crate = "name:<req>", reason = "..." }`.
+skip = []
+
+# ── The socket/TLS ban (enforced by the harness, not cargo-deny) ─────────────────────────────────────
+# BUSBAR-1.6.0.md line 3980 (OWNER LAW 2026-09-27): "NO plugin opens its own socket, dials, binds, or
+# does TLS." A connection is a declared need; the kernel instantiates the transport through the
+# connector, and TLS lives only in busbar-core-connector (Part 2 #40, THE DESIGN §5). The harness walks
+# each plugin's NORMAL + BUILD closure (dev-dependencies are tests, not the shipped image) and is RED on
+# any crate below, on any feature below, and on any import below in the built cdylib (the post-LTO
+# import scan). `carriers` lists plugin repos exempt from the SOCKET half only (Part 2 #40 names the
+# carrier transports as the one exception); it is empty because no carrier opens a socket today.
+[net-ban]
+spec = "BUSBAR-1.6.0.md line 3980: NO plugin opens its own socket, dials, binds, or does TLS"
+crates = ["rustls", "native-tls", "openssl", "openssl-sys", "socket2", "tokio-rustls", "hyper-rustls", "tokio-native-tls"]
+features = ["tokio/net", "mio/net"]
+imports = [
+    "socket", "socketpair", "connect", "bind", "listen", "accept", "accept4",
+    "getaddrinfo", "gethostbyname", "gethostbyname_r", "sendto", "recvfrom", "sendmsg", "recvmsg",
+    "SSL_new", "SSL_connect", "SSL_CTX_new",
+]
+carriers = []
+
+# ── C dependencies (ARCHITECT approval, ruling 3d) ───────────────────────────────────────────────────
+# A crate with a `links` key (a native library) in a plugin's normal + build closure must be listed
+# here, at this version requirement, with these features on (bundled: the C source is compiled in,
+# never a system library). Anything else with `links` is RED.
+[c-deps]
+allow = [
+    { crate = "ring", version = "0.17", features = [], reason = "the one crypto backend (accepted, §Libraries)" },
+    { crate = "libsqlite3-sys", version = "=0.38.1", features = ["bundled"], reason = "SQLite compiled in for the sqlite store (ARCHITECT 2026-10-01, bundled + pinned)" },
+    { crate = "libz-sys", version = "=1.1.29", features = ["static"], reason = "zlib compiled in for the mysql store's compression (ARCHITECT 2026-10-01, bundled + pinned)" },
+]
