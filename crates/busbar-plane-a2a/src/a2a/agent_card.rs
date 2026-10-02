@@ -17,7 +17,9 @@ use serde_json::Value;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AgentProvider {
+    /// The organization's name.
     pub organization: String,
+    /// The organization's URL.
     pub url: String,
 }
 
@@ -25,9 +27,9 @@ pub struct AgentProvider {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AgentInterface {
+    /// The endpoint the card names (never dialled: the operator's `url:` says where).
     pub url: String,
-    /// `JSONRPC` today. `GRPC` is the revision that would earn this plane a superset intermediate
-    /// representation, and it is out of scope until it exists.
+    /// The binding's card word: `JSONRPC`, `HTTP+JSON` or `GRPC`.
     pub protocol_binding: String,
 }
 
@@ -36,10 +38,14 @@ pub struct AgentInterface {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AgentCapabilities {
+    /// The agent streams (`streaming`).
     #[serde(rename = "streaming")]
     pub is_stream: bool,
+    /// The agent delivers push notifications.
     pub push_notifications: bool,
+    /// The agent keeps its tasks' state history.
     pub state_transition_history: bool,
+    /// The agent serves an authenticated extended card.
     pub extended_agent_card: bool,
 }
 
@@ -50,13 +56,19 @@ pub struct AgentCapabilities {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AgentSkill {
+    /// The skill's id: what an approval and a request name it by.
     pub id: String,
+    /// Its name.
     pub name: String,
+    /// Its description.
     pub description: String,
     /// Tags GROUP. They are never how one specific skill is named.
     pub tags: Vec<String>,
+    /// The MIME modes it accepts; the card's defaults where empty.
     pub input_modes: Vec<String>,
+    /// The MIME modes it produces; the card's defaults where empty.
     pub output_modes: Vec<String>,
+    /// Example prompts.
     pub examples: Vec<String>,
 }
 
@@ -65,8 +77,11 @@ pub struct AgentSkill {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AgentCardSignature {
+    /// The JWS protected header.
     pub protected: String,
+    /// The JWS signature.
     pub signature: String,
+    /// The JWS unprotected header.
     pub header: BTreeMap<String, Value>,
 }
 
@@ -79,18 +94,31 @@ pub struct AgentCardSignature {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AgentCard {
+    /// The A2A protocol version the card is written in.
     pub protocol_version: String,
+    /// The agent's name.
     pub name: String,
+    /// The agent's description.
     pub description: String,
+    /// The agent's version.
     pub version: String,
+    /// Who provides the agent.
     pub provider: AgentProvider,
+    /// The bindings the agent is reachable on, preferred first.
     pub supported_interfaces: Vec<AgentInterface>,
+    /// The MIME modes it accepts by default.
     pub default_input_modes: Vec<String>,
+    /// The MIME modes it produces by default.
     pub default_output_modes: Vec<String>,
+    /// The optional protocol features it claims.
     pub capabilities: AgentCapabilities,
+    /// The skills it declares.
     pub skills: Vec<AgentSkill>,
+    /// The security schemes, verbatim.
     pub security_schemes: BTreeMap<String, Value>,
+    /// The scheme names a caller must satisfy.
     pub security: Vec<BTreeMap<String, Vec<String>>>,
+    /// The JWS signatures over the card.
     pub signatures: Vec<AgentCardSignature>,
 }
 
