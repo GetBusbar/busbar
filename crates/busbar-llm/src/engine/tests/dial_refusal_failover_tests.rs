@@ -36,6 +36,17 @@ fn names_answering(addr: SocketAddr) -> Arc<RebindingResolver> {
     Arc::new(RebindingResolver::counting(addr))
 }
 
+/// A mock upstream answering one streamed reply of `events`, and its state.
+async fn streaming_mock(events: &[&str]) -> (Arc<MockServerState>, MockServer) {
+    let state = Arc::new(MockServerState::new());
+    state.push(MockResponse::Sse {
+        events: events.iter().map(|e| (*e).to_string()).collect(),
+        abort_at_index: None,
+    });
+    let mock = MockServer::new(state.clone()).await;
+    (state, mock)
+}
+
 /// The mock's own address, off its base URL.
 fn address_of(mock: &MockServer) -> SocketAddr {
     mock.base_url()
@@ -122,18 +133,8 @@ async fn a_refused_dial_is_a_connect_failure_not_a_timeout() {
 #[tokio::test]
 async fn a_refused_primary_fails_over_to_the_next_lane() {
     crate::testkit::install_test_seams();
-    let primary_state = Arc::new(MockServerState::new());
-    primary_state.push(MockResponse::Sse {
-        events: vec!["never".to_string()],
-        abort_at_index: None,
-    });
-    let primary = MockServer::new(primary_state.clone()).await;
-    let next_state = Arc::new(MockServerState::new());
-    next_state.push(MockResponse::Sse {
-        events: vec!["event-0".to_string(), "event-1".to_string()],
-        abort_at_index: None,
-    });
-    let next = MockServer::new(next_state.clone()).await;
+    let (primary_state, primary) = streaming_mock(&["never"]).await;
+    let (next_state, next) = streaming_mock(&["event-0", "event-1"]).await;
 
     let primary_addr = address_of(&primary);
     let names = names_answering(primary_addr);
@@ -178,12 +179,7 @@ async fn a_refused_primary_fails_over_to_the_next_lane() {
 #[tokio::test]
 async fn an_allowlisted_primary_dials_and_answers() {
     crate::testkit::install_test_seams();
-    let primary_state = Arc::new(MockServerState::new());
-    primary_state.push(MockResponse::Sse {
-        events: vec!["event-0".to_string(), "event-1".to_string()],
-        abort_at_index: None,
-    });
-    let primary = MockServer::new(primary_state.clone()).await;
+    let (primary_state, primary) = streaming_mock(&["event-0", "event-1"]).await;
     let primary_addr = address_of(&primary);
     let names = names_answering(primary_addr);
     let primary_url = named_primary(primary_addr.port());
