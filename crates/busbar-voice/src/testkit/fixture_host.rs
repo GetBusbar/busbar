@@ -43,9 +43,9 @@ use busbar_kernel::plane::approvals::Sealer;
 use busbar_kernel::plane::calllog::CallInput;
 use busbar_kernel::plane_host::{
     AdmissionHost, AdmitHandle, AudienceBinding, BreakerHost, BudgetHost, ClockHost,
-    CompletionHost, DispatchScope, EngineHost, GateOutcome, GovAdmit, GovHandle, HookConfigHost,
-    HostCompletion, IdentityHost, JournalHost, LanePoolHost, MeterPin, MountHost, RegistryHost,
-    TelemetryHost, TransformVerdict,
+    CompletionHost, CompletionRefusal, DispatchScope, EngineHost, GateOutcome, GovAdmit, GovHandle,
+    HookConfigHost, HostCompletion, IdentityHost, JournalHost, LanePoolHost, MeterPin, MountHost,
+    RegistryHost, TelemetryHost, TransformVerdict,
 };
 use busbar_kernel::store::{BreakerState, HealthState, LaneRuntime, Unavailable};
 use busbar_kernel::trust::validate::{Lapsed, Standing};
@@ -819,8 +819,9 @@ impl CompletionHost for FixtureHost {
         _model: &str,
         _body: bytes::Bytes,
         _max_body_bytes: usize,
-    ) -> Result<HostCompletion, String> {
-        Err("the fixture host drives no dispatch pipeline".to_string())
+    ) -> Result<HostCompletion, CompletionRefusal> {
+        // The fixture host drives no dispatch pipeline, so no completion ingress is installed.
+        Err(CompletionRefusal::NotInstalled)
     }
 }
 

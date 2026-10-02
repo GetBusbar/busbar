@@ -229,7 +229,6 @@ token-sealed
 token-sealed:admit-token-mint
 token-sealed:kernel-seal
 token-sealed:secret-once-mint
-lean-core
 loc-ceilings:union
 EOF
 )"
