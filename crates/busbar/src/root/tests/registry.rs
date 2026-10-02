@@ -813,34 +813,39 @@ fn the_boot_path_seals_the_composition_in_every_build() {
 
 // ── BOTH DOORS, ONE FOLD ────────────────────────────────────────────────────────────────────────
 
-/// The in-tree transport door `cdylib`s, found by KIND: of the libraries beside this test binary,
-/// every one the one dispatcher admits as a transport door, one per key, served over the host's
-/// sockets as the boot serves a dropped-in door, once for the process (the root names no transport).
-/// Under CI a missing artifact is a hard failure, never a silent skip.
+/// The dropped-in wire these proofs serve: the neutral frame door (the plugin loader's
+/// `neutral_frame_door` example, an identity framer under a neutral claim), served over the host's
+/// sockets as the boot serves a dropped-in door, once for the process. It names no transport, so the
+/// root names none and no transport leaving this repo takes the fixture with it. Under CI a missing
+/// artifact is a hard failure, never a silent skip.
 fn dropped_doors() -> &'static [DroppedDoor] {
     static DOORS: std::sync::OnceLock<Vec<DroppedDoor>> = std::sync::OnceLock::new();
     let doors = DOORS.get_or_init(|| {
-        crate::root::test_plugins::transport_doors()
-            .iter()
-            // Only a door that frames the host's socket is served over it; a door composing over a
-            // layer (the http door example, when built) is not a dropped-in wire for these proofs.
-            .filter(|(plugin, _)| {
-                plugin
-                    .context::<crate::root::loader::dispatch::kinds::transport::TransportFacts>()
-                    .is_some_and(|f| f.composes_over.is_empty())
-            })
+        crate::root::test_plugins::neutral_frame_door()
+            .into_iter()
             .map(|(plugin, key)| DroppedDoor {
                 key,
                 composes_over: Vec::new(),
-                wire: crate::root::doors::host_wire(plugin.clone()).expect("the door serves"),
+                wire: crate::root::doors::host_wire(plugin).expect("the door serves"),
             })
             .collect()
     });
     assert!(
         !doors.is_empty() || std::env::var_os("CI").is_none(),
-        "no in-tree transport door cdylib is built beside the test binary under CI"
+        "the neutral frame door cdylib is built beside the test binary under CI"
     );
     doors
+}
+
+/// The linked row the dropped-in wire stands in for: its key, composing over nothing, built in
+/// process as the same served wire. The build's own linked table holds no row for the neutral
+/// claim, so a proof that the dropped-in wire takes a linked row's place adds that row first.
+fn the_wires_linked_row(wire: &DroppedDoor) -> LinkedTransport {
+    LinkedTransport {
+        key: wire.key,
+        composes_over: &[],
+        build: |_, _| dropped_doors()[0].wire.clone(),
+    }
 }
 
 /// TWO LINKED DOOR ROWS ARE TWO INSTANCES: a linked transport door is bound under its own row name,
@@ -888,25 +893,19 @@ fn rows_of(
 #[test]
 fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
     let Some(wire) = dropped_doors().first() else {
-        eprintln!("skip: no in-tree transport cdylib is built beside the test binary");
+        eprintln!("skip: the neutral frame door is not built beside the test binary");
         return;
     };
-    if !crate::LINKED.transports.iter().any(|r| r.key == wire.key) {
-        return;
-    }
     static ROWS: std::sync::OnceLock<Vec<LinkedTransport>> = std::sync::OnceLock::new();
-    let rows = rows_of(&ROWS, || {
-        let rows = crate::LINKED.transports.iter();
-        rows.filter(|r| r.key != wire.key).copied().collect()
-    });
-    let without = crate::root::linked::Linked {
-        transports: rows,
+    let with = crate::root::linked::Linked {
+        transports: rows_of(&ROWS, || {
+            [crate::LINKED.transports, &[the_wires_linked_row(wire)]].concat()
+        }),
         ..crate::LINKED
     };
-    let sealed =
-        seal(&without, one_door(), TransportSettings::default()).expect("the composition seals");
-    let linked =
-        seal(&crate::LINKED, Dropped::NONE, TransportSettings::default()).expect("it seals linked");
+    let sealed = seal(&crate::LINKED, one_door(), TransportSettings::default())
+        .expect("the composition seals");
+    let linked = seal(&with, Dropped::NONE, TransportSettings::default()).expect("it seals linked");
 
     let by_key = |mut rows: Vec<Registered>| {
         rows.sort_by_key(|r| r.key);
@@ -930,18 +929,21 @@ fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
 #[test]
 fn a_dropped_in_wire_on_a_linked_key_is_refused_as_a_second_linked_row_is() {
     let Some(wire) = dropped_doors().first() else {
-        eprintln!("skip: no in-tree transport cdylib is built beside the test binary");
+        eprintln!("skip: the neutral frame door is not built beside the test binary");
         return;
     };
-    let Some(row) = crate::LINKED.transports.iter().find(|r| r.key == wire.key) else {
-        return;
+    let row = the_wires_linked_row(wire);
+    static ONCE: std::sync::OnceLock<Vec<LinkedTransport>> = std::sync::OnceLock::new();
+    let with = crate::root::linked::Linked {
+        transports: rows_of(&ONCE, || [crate::LINKED.transports, &[row]].concat()),
+        ..crate::LINKED
     };
-    let dropped = seal(&crate::LINKED, one_door(), Default::default())
+    let dropped = seal(&with, one_door(), Default::default())
         .err()
         .expect("a dropped-in wire on a linked key is refused");
     static TWICE: std::sync::OnceLock<Vec<LinkedTransport>> = std::sync::OnceLock::new();
     let twice = crate::root::linked::Linked {
-        transports: rows_of(&TWICE, || [crate::LINKED.transports, &[*row]].concat()),
+        transports: rows_of(&TWICE, || [crate::LINKED.transports, &[row, row]].concat()),
         ..crate::LINKED
     };
     let linked = seal(&twice, Dropped::NONE, Default::default())

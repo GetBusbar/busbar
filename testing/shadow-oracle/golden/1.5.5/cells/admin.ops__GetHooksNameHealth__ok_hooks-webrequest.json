@@ -1,0 +1,1 @@
+{"applied":["hdr.date"],"body":{"json":{"detail":null,"name":"busbar-webrequest","reachable":true,"transport":{"kind":"plugin","target":"busbar-webrequest"}}},"effects":{"audit":{"added":0,"items":[]},"egress":[],"metrics":{},"usage":{}},"headers":{"content-length":"118","content-type":"application/json"},"status":200}
