@@ -106,6 +106,26 @@ impl Gate for DialectMapGate {
             &[responses.as_str()],
         ));
 
+        // An ANSWER row naming a slot the registry (`codec::carry::AnswerSlot`) does not have.
+        let anthropic = format!("{}/anthropic.toml", crate::dialect::DIALECT_DIR);
+        let mut unregistered = Overlay::new();
+        unregistered.set(
+            &anthropic,
+            cx.read(&anthropic).unwrap_or_default().replacen(
+                "\"stop_reason\" = { prim = \"finish_reason\" }",
+                "\"stop_reason\" = { ir = \"no_such_answer_slot\" }",
+                1,
+            ),
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "an answer row naming an unregistered slot does not compile, naming it",
+            &[ROW_DRIFT],
+            unregistered,
+            &["no_such_answer_slot"],
+        ));
+
         // A HAND EDIT of the generated translation matrix.
         let matrix = crate::dialect::MATRIX;
         let mut matrix_edit = Overlay::new();
