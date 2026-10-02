@@ -283,6 +283,35 @@ const IR_BLOCK_KINDS: &[(&str, &str)] = &[
     ),
 ];
 
+/// The IR request members the reader carries by code from a path no map-file row names (how a drop
+/// of one is named by the caller's wire path).
+const REQUEST_CODE_NAMES: &[(&str, &str)] = &[
+    (
+        crate::codec::drops::name::TOOL_CHOICE,
+        "toolConfig.functionCallingConfig",
+    ),
+    (
+        crate::codec::drops::name::RESPONSE_FORMAT,
+        "generationConfig.responseSchema",
+    ),
+    (crate::codec::drops::name::METADATA, FIELD_LABELS),
+    (
+        crate::codec::drops::name::TOP_LOGPROBS,
+        "generationConfig.logprobs",
+    ),
+    (
+        crate::codec::drops::name::OUTPUT_MODALITIES,
+        "generationConfig.responseModalities",
+    ),
+];
+
+/// The IR request members the reader never sets.
+// `cachedContent` names a stored cache, not a block's cache mark; no parallel-call switch.
+const UNREAD: &[&str] = &[
+    crate::codec::drops::name::CACHE_CONTROL,
+    crate::codec::drops::name::PARALLEL_TOOL_CALLS,
+];
+
 const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
     at: &["candidates[]", "content", "parts[]"],
     tag: None,

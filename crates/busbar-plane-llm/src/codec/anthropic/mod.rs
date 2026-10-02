@@ -383,6 +383,31 @@ const IR_BLOCK_KINDS: &[(&str, &str)] = &[
     (crate::codec::drops::kind::TOOL_RESULT, "type=tool_result"),
 ];
 
+/// The IR request members the reader carries by code from a path no map-file row names (how a drop
+/// of one is named by the caller's wire path).
+const REQUEST_CODE_NAMES: &[(&str, &str)] = &[
+    // `disable_parallel_tool_use`, inside whichever `tool_choice` arm the caller sent.
+    (
+        crate::codec::drops::name::PARALLEL_TOOL_CALLS,
+        "tool_choice.disable_parallel_tool_use",
+    ),
+    (
+        crate::codec::drops::name::RESPONSE_FORMAT,
+        "output_config.format",
+    ),
+];
+
+/// The IR request members the reader never sets.
+// No candidate count, logprobs or output modalities; `metadata` holds only `user_id`, which is the
+// IR's `user`.
+const UNREAD: &[&str] = &[
+    crate::codec::drops::name::N,
+    crate::codec::drops::name::METADATA,
+    crate::codec::drops::name::TOP_LOGPROBS,
+    crate::codec::drops::name::OUTPUT_MODALITIES,
+    crate::codec::drops::name::LOGPROBS,
+];
+
 const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::Blocks {
     at: &["content[]"],
     tag: Some(keys::TYPE),

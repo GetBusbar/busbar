@@ -1611,6 +1611,14 @@ impl ProtocolReader for GeminiReader {
     fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
         super::IR_BLOCK_KINDS
     }
+
+    fn request_code_names(&self) -> &'static [(&'static str, &'static str)] {
+        super::REQUEST_CODE_NAMES
+    }
+
+    fn unread(&self) -> &'static [&'static str] {
+        super::UNREAD
+    }
 }
 
 #[cfg(test)]

@@ -1870,6 +1870,14 @@ impl ProtocolReader for ResponsesReader {
     fn block_kinds(&self) -> &'static [(&'static str, &'static str)] {
         super::IR_BLOCK_KINDS
     }
+
+    fn request_code_names(&self) -> &'static [(&'static str, &'static str)] {
+        super::REQUEST_CODE_NAMES
+    }
+
+    fn unread(&self) -> &'static [&'static str] {
+        super::UNREAD
+    }
 }
 
 /// Synthesize a deterministic, non-empty `call_…` tool-call id for a RESPONSE function-call whose
