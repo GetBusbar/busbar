@@ -39,6 +39,11 @@ streaming, failover, billing, `/metrics`, and the published store plugins — 1.
 config, request and plugin exactly as 1.5.5 did, apart from the improvements and breaking changes
 named next.
 
+A request whose upstream is down is counted and billed nothing, as in 1.5.5. The published 1.5.5
+binary books it as one request with 0 cents of spend and 0 tokens (shadow-oracle cell
+`billing|key-usage|upstream-down-refunded` in `testing/shadow-oracle/golden/1.5.5`), and 1.6.0 books
+the same.
+
 ### Security
 
 - **Two admin key rotations could share one idempotency key, and the second was told the first's
@@ -479,10 +484,6 @@ identically, and every 1.5.5 key and minted secret carries over.
   `POST /api/v1/admin/ledger/amend-rate-history` verb rather than editing the live card. See [the
   1.6.0 migration guide](docs/migration-1.6.md).
 
-- 1.6.0 Changed: a request whose upstream fails is billed only the usage the upstream reports.
-  1.5.5 charged a request whose upstream was down as if it had completed (18 tokens, 250 cents on
-  the oracle's card); 1.6.0 charges nothing for it, because the upstream reported nothing. The
-  request is still counted. **Migration:** none; a request whose upstream answered nothing no longer adds to a key's spend.
 - 1.6.0 Changed: a failed request's flat fee is refunded from the window bucket it was charged to, even when that bucket has rolled into the next window.
   A request that arrives just before a window boundary can be charged on a group bucket another
   request has already rolled into the next window. 1.5.5 refunded such a request only against a
