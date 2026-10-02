@@ -2613,6 +2613,7 @@ pub fn selftest<'a>(
     // THE DIALECT WIRE-KEY SPAN (ARCHITECT ruling 2026-10-02, DF-MAP) is a COUNT property inside a
     // listed cell (`busbar-plane-llm × plane`), which presence cannot observe; it is proven on the
     // cell itself in `tests::a_dialect_wire_key_is_the_providers_word_and_the_same_word_elsewhere_counts`.
+
     // THE AUTH ABI'S `decision` FIELD IS NOT THE DECISIONS PLANE ([`auth_words`]), and the mask is
     // not a hole: an auth crate reading and naming the continue/stop field is green; the same crate
     // writing the decisions plane's registry key `"decision"` is still a `× plane` cell. The plant
@@ -2711,59 +2712,6 @@ pub fn selftest<'a>(
             format!("the census holds no plugin-tooling `{LOADER_PACKAGE}`"),
         ))),
     }
-
-    // THE DIALECT WIRE-KEY SPAN (ARCHITECT ruling 2026-10-02, DF-MAP): a quoted map key that IS a
-    // path of the file's wire lock is the provider's word; the same word anywhere else still counts.
-    // Every arm runs on the plane crate's row re-pinned to its measurement, so the plant alone moves it.
-    let dialect_case = |line: &'static str| {
-        let cx = cx.clone();
-        move || {
-            let file = "crates/busbar-plane-llm/dialects/openai_responses.toml";
-            let body = cx.read(file).unwrap_or_default();
-            row_at_measurement(&cx, "busbar-plane-llm", "plane").layered(&plant(
-                &cx,
-                file,
-                &format!("{body}\n{line}\n"),
-            ))
-        }
-    };
-    let llm_raised = ["ratchet", "busbar-plane-llm × plane", "RAISED"];
-    report.push(prove_rows_green(
-        cx,
-        gate,
-        "a dialect map key that is a wire-lock path (`input[].type=mcp_call.arguments`) is the \
-         provider's word, not a plane coupling",
-        &[ROW_MATRIX],
-        dialect_case(
-            "[unmapped.stream]\n\"input[].type=mcp_call.arguments\" = { no-equivalent = \"x\" }",
-        ),
-    ));
-    report.push(prove_rows_red(
-        cx,
-        gate,
-        "the same plane word in a dialect map VALUE still counts",
-        &[ROW_MATRIX],
-        dialect_case("[unmapped.stream]\n\"input[].type=function_call.arguments\" = { no-equivalent = \"an mcp call\" }"),
-        &llm_raised,
-    ));
-    report.push(prove_rows_red(
-        cx,
-        gate,
-        "the same plane word in a dialect map comment still counts",
-        &[ROW_MATRIX],
-        dialect_case("# the mcp tool"),
-        &llm_raised,
-    ));
-    report.push(prove_rows_red(
-        cx,
-        gate,
-        "a dialect map key the wire lock does not have still counts",
-        &[ROW_MATRIX],
-        dialect_case(
-            "[unmapped.stream]\n\"tools[].type=mcp.no_such_member\" = { no-equivalent = \"x\" }",
-        ),
-        &llm_raised,
-    ));
 
     // THIS ROW'S SCAN HAS A FLOOR, AND NOTHING PROVED IT. A mutation campaign turned
     // `files.len() < MIN_SCANNED` into `false && …` and the whole battery stayed green: every other
