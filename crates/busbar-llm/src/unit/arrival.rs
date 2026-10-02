@@ -256,8 +256,8 @@ pub fn arrival_body(headers: &HeaderMap, body: &Bytes) -> Result<BodyArrival, Ar
 ///
 /// Two dialects carry the model in the URL rather than the body. The shared resolution and forward
 /// plumbing downstream reads both the model and the stream flag from the body, so this step splices
-/// them in — which is the reason this path parses a full document where the body-model path is
-/// content to validate and project a head.
+/// them in — into the parsed document, and into the carried bytes as byte-level members (the
+/// caller's own bytes otherwise untouched; a same-dialect relay removes them again).
 ///
 /// `gemini_json_array` marks a streaming request that is NOT `alt=sse` and must be framed as a JSON
 /// array. The marker key is resolved through the writer vtable BY PROTOCOL NAME, never by naming a
@@ -293,15 +293,20 @@ pub fn arrival_path_model(
         None => return Err(ArrivalRefusal::NotAnObject),
     }
 
-    let injected: Bytes = match busbar_plane_llm::codec::json::to_vec(&v) {
-        Ok(b) => b.into(),
-        Err(_e) => {
-            // Same leak class as the parse arms: the library's error Display is a busbar-internal
-            // tell, so it is never echoed — an operator breadcrumb only.
-            tracing::debug!("injected request body re-serialization failed");
-            return Err(ArrivalRefusal::Reserialize);
-        }
-    };
+    // The carried bytes are the caller's own with the same three members spliced in at the byte
+    // level (never a re-serialization), so the relay's governed removals give a same-dialect far
+    // end the caller's bytes back.
+    let shim = gemini_json_array
+        .then(|| busbar_kernel::proto::array_stream_shim_key_for(proto))
+        .flatten();
+    let injected: Bytes =
+        match busbar_plane_llm::exchange::arrive::splice_path_facts(body, model, stream, shim) {
+            Some(b) => b.into(),
+            None => {
+                tracing::debug!("injected request body splice failed");
+                return Err(ArrivalRefusal::Reserialize);
+            }
+        };
 
     Ok(PathArrival {
         parsed: LazyBody::from_value(v),

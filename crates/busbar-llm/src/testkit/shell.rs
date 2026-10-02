@@ -350,40 +350,35 @@ async fn ingress_path_model_inner(
         }
     }
 
-    // Re-serializing a `serde_json::Value` we just parsed (with only `String`/`Bool` keys spliced
-    // in) cannot fail in practice — `to_vec` on an in-memory `Value` has no fallible component. The
-    // `Err` arm is kept as a non-panicking, protocol-shaped guard (never `unwrap`) so the request
-    // path stays panic-free even if a future change introduces a non-serializable injected value;
-    // it is effectively unreachable today, hence not exercised by a dedicated test.
-    let injected: Bytes = match busbar_plane_llm::codec::json::to_vec(&v) {
-        Ok(b) => b.into(),
-        Err(_e) => {
-            // Same leak class as the parse arms above: the JSON library's error Display is a
-            // busbar-internal tell (on the parse side it embeds raw body fragments), so we never echo
-            // it — a bare operator breadcrumb only, consistent with the `parse_err_log` policy used at
-            // every deserialize site. (Serialization errors don't carry body bytes today, but aligning
-            // here closes the latent leak class if that ever changes.)
-            tracing::debug!("injected request body re-serialization failed");
-            // Pre-routing failure (model never reached resolution): route through `finish_rejected`
-            // with the bounded `"unresolved"` label so it is observable in metrics + the webhook. This
-            // arm is effectively unreachable today (see the comment above), but keeping it on
-            // `finish_rejected` preserves the observability invariant for every pre-routing exit.
-            return finish_rejected_via_audit(
-                host,
-                gov,
-                proto,
-                POOL_LABEL_UNRESOLVED,
-                started,
-                charged_at,
-                ingress_error(
+    // The carried bytes: the caller's own with the same three members spliced in at the byte level
+    // (never a re-serialization), exactly as the live arrival carries them. `None` only for a body
+    // the scanner cannot read as an object, which the parse above already turned away.
+    let shim = gemini_json_array
+        .then(|| array_stream_shim_key_for(proto))
+        .flatten();
+    let injected: Bytes =
+        match busbar_plane_llm::exchange::arrive::splice_path_facts(&body, model, stream, shim) {
+            Some(b) => b.into(),
+            None => {
+                tracing::debug!("injected request body splice failed");
+                // Pre-routing failure (model never reached resolution): route through `finish_rejected`
+                // with the bounded `"unresolved"` label so it is observable in metrics + the webhook.
+                return finish_rejected_via_audit(
+                    host,
+                    gov,
                     proto,
-                    StatusCode::BAD_REQUEST,
-                    crate::engine::KIND_INVALID_REQUEST,
-                    "The request body could not be processed.",
-                ),
-            );
-        }
-    };
+                    POOL_LABEL_UNRESOLVED,
+                    started,
+                    charged_at,
+                    ingress_error(
+                        proto,
+                        StatusCode::BAD_REQUEST,
+                        crate::engine::KIND_INVALID_REQUEST,
+                        "The request body could not be processed.",
+                    ),
+                );
+            }
+        };
 
     // UNIVERSAL: the caller (that protocol's routing arm) already resolved WHICH operation this is
     // (`RequestHandler::resolve_operation`); look its handler up through the registry — identical
@@ -415,7 +410,7 @@ async fn ingress_path_model_inner(
         headers,
         injected,
         // Path-model ingress already parsed (and shim-injected into) the body — carry the DOM
-        // eagerly; the engine's pristine head check reads it directly and behaves as before.
+        // eagerly.
         Some(crate::engine::LazyBody::from_value(v)),
         caller_token,
         started,

@@ -3,17 +3,17 @@
 
 //! Tests for `crates/busbar-core/src/proxy/engine/mod.rs`.
 
-use super::{inject_openai_stream_include_usage, inject_openai_stream_include_usage_pristine};
+use super::inject_openai_stream_include_usage;
 use bytes::Bytes;
 
-/// The byte-level pristine injector splices `stream_options.include_usage:true` into a body
-/// with NO existing `stream_options` WITHOUT parsing - but the result must still be valid JSON with
-/// the flag set and every original key preserved.
+/// The byte-level injector splices `stream_options.include_usage:true` into a body with NO
+/// existing `stream_options` - the result must still be valid JSON with the flag set and every
+/// original key preserved.
 #[test]
-fn pristine_injector_splices_include_usage() {
+fn injector_splices_include_usage() {
     crate::testkit::install_test_seams();
     let body = br#"{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}"#;
-    let out = inject_openai_stream_include_usage_pristine(Bytes::from_static(body));
+    let out = inject_openai_stream_include_usage(Bytes::from_static(body));
     let v: serde_json::Value =
         busbar_plane_llm::codec::json::parse(&out).expect("spliced body must be valid JSON");
     assert_eq!(
@@ -30,20 +30,17 @@ fn pristine_injector_splices_include_usage() {
     );
 }
 
-/// BILLING-SAFETY: the pristine injector's `!client_has_stream_options` gate is decided off the
-/// PRE-rewrite ingress body, so a `prompt: rw` hook that injects a top-level `stream_options` can
-/// leave that decision stale and route a body that ALREADY has `stream_options` into the pristine
-/// splice. A blind splice would then produce a DUPLICATE top-level key and last-wins would discard
-/// busbar's injected include_usage - billing zero for the stream. The injector must instead be
-/// idempotent: detect the existing key and defer to the duplicate-safe DOM injector, so the body
-/// ends up with a SINGLE `stream_options` whose `include_usage` is honored true.
+/// BILLING-SAFETY: a body that ALREADY has `stream_options` (a caller's, or one a `prompt: rw` hook
+/// injected) must never gain a DUPLICATE top-level key - last-wins would discard busbar's
+/// include_usage and bill zero for the stream. The injector edits the existing member in place, so
+/// the body ends up with a SINGLE `stream_options` whose `include_usage` is honored true.
 #[test]
-fn pristine_injector_idempotent_when_stream_options_already_present() {
+fn injector_idempotent_when_stream_options_already_present() {
     crate::testkit::install_test_seams();
     // As if a rewrite hook injected `stream_options` after the has-stream_options decision was
     // captured false: the pristine injector is (wrongly, per the stale flag) selected.
     let body = br#"{"model":"gpt-4o","stream":true,"stream_options":{"include_usage":false},"messages":[]}"#;
-    let out = inject_openai_stream_include_usage_pristine(Bytes::from_static(body));
+    let out = inject_openai_stream_include_usage(Bytes::from_static(body));
     let v: serde_json::Value =
         busbar_plane_llm::codec::json::parse(&out).expect("body must remain valid JSON");
     // No duplicate top-level key: a single stream_options object survives.
@@ -70,10 +67,10 @@ fn pristine_injector_idempotent_when_stream_options_already_present() {
 /// Leading whitespace before the opening `{` is tolerated (the only bytes JSON permits
 /// ahead of the top-level value) - the splice still lands right after the brace.
 #[test]
-fn pristine_injector_tolerates_leading_whitespace() {
+fn injector_tolerates_leading_whitespace() {
     crate::testkit::install_test_seams();
     let body = b"  \n\t{\"model\":\"m\",\"stream\":true}";
-    let out = inject_openai_stream_include_usage_pristine(Bytes::copy_from_slice(body));
+    let out = inject_openai_stream_include_usage(Bytes::copy_from_slice(body));
     let v: serde_json::Value = busbar_plane_llm::codec::json::parse(&out).expect("valid JSON");
     assert_eq!(
         v.pointer("/stream_options/include_usage"),
@@ -82,22 +79,21 @@ fn pristine_injector_tolerates_leading_whitespace() {
     assert_eq!(v.pointer("/model"), Some(&serde_json::json!("m")));
 }
 
-/// A degenerate `{}` (no first key) and a non-object body fall back to the DOM injector
-/// rather than producing invalid JSON via a blind splice.
+/// A degenerate `{}` (no first key) gains the member; a non-object body passes through.
 #[test]
-fn pristine_injector_falls_back_on_empty_or_non_object() {
+fn injector_falls_back_on_empty_or_non_object() {
     crate::testkit::install_test_seams();
-    // `{}` - next non-space is `}`, not a key: DOM injector inserts stream_options.
-    let out = inject_openai_stream_include_usage_pristine(Bytes::from_static(b"{}"));
+    // `{}` - no first key: the member is inserted alone.
+    let out = inject_openai_stream_include_usage(Bytes::from_static(b"{}"));
     let v: serde_json::Value = busbar_plane_llm::codec::json::parse(&out).expect("valid JSON");
     assert_eq!(
         v.pointer("/stream_options/include_usage"),
         Some(&serde_json::json!(true)),
         "empty object must still gain include_usage via fallback: {v}"
     );
-    // Non-object top level: DOM injector returns it unchanged (nothing to reshape).
+    // Non-object top level: returned unchanged (nothing to reshape).
     let arr = br#"[1,2,3]"#;
-    let out = inject_openai_stream_include_usage_pristine(Bytes::from_static(arr));
+    let out = inject_openai_stream_include_usage(Bytes::from_static(arr));
     assert_eq!(
         &out[..],
         &arr[..],
@@ -105,30 +101,25 @@ fn pristine_injector_falls_back_on_empty_or_non_object() {
     );
 }
 
-/// A body of PURE whitespace (no `{` anywhere) must fall back to the DOM injector cleanly, not
-/// index past the end of the buffer while scanning for the opening brace (the leading-whitespace
-/// scan's `i < payload.len()` bound, exercised right at its own boundary since the scan runs to
-/// completion with nothing found).
+/// A body of PURE whitespace (no `{` anywhere) must pass through cleanly, not index past the end of
+/// the buffer while scanning for the opening brace.
 #[test]
-fn pristine_injector_does_not_overrun_an_all_whitespace_body() {
+fn injector_does_not_overrun_an_all_whitespace_body() {
     crate::testkit::install_test_seams();
-    let out = inject_openai_stream_include_usage_pristine(Bytes::from_static(b"   \n\t "));
+    let out = inject_openai_stream_include_usage(Bytes::from_static(b"   \n\t "));
     // Not valid JSON either way - the point is only that this does not panic, and passes the
     // untouched bytes through (nothing looked like an object to reshape).
     assert_eq!(&out[..], &b"   \n\t "[..]);
 }
 
-/// The splice path (not the DOM-reconstruct fallback) is what actually runs for a normal
-/// object-opening body whose first key is a string - proven by preserving BYTE-FOR-BYTE
-/// formatting the DOM path would normalize away (irregular internal whitespace here). If the
-/// `!opens_object || next != Some(b'"')` guard's `!` were lost, EVERY object-shaped body would
-/// wrongly fall back to the DOM injector - the semantic (parsed) assertions elsewhere can't tell
-/// the difference since both paths produce equivalent JSON, only the raw bytes can.
+/// The splice preserves BYTE-FOR-BYTE formatting a DOM re-serialize would normalize away
+/// (irregular internal whitespace here) - the semantic (parsed) assertions elsewhere can't tell
+/// the difference, only the raw bytes can.
 #[test]
-fn pristine_injector_actually_splices_rather_than_falling_back_to_dom_reconstruction() {
+fn injector_actually_splices_rather_than_falling_back_to_dom_reconstruction() {
     crate::testkit::install_test_seams();
     let body: &[u8] = br#"{"model":  "m",    "stream":true}"#;
-    let out = inject_openai_stream_include_usage_pristine(Bytes::from_static(body));
+    let out = inject_openai_stream_include_usage(Bytes::from_static(body));
     let out_str = String::from_utf8(out.to_vec()).unwrap();
     assert!(
         out_str.contains(r#""model":  "m",    "stream":true"#),
@@ -200,5 +191,31 @@ fn keeps_existing_true() {
     assert_eq!(
         v.pointer("/stream_options/include_usage"),
         Some(&serde_json::json!(true))
+    );
+}
+
+/// A caller's own `stream_options` is edited IN PLACE (LLM DIALECT FIDELITY): the flag is set where
+/// it stands, its siblings and every other byte (key order, spacing) stay the caller's. A DOM
+/// re-serialize would sort the keys and drop the spacing.
+#[test]
+fn an_existing_stream_options_is_edited_in_place() {
+    crate::testkit::install_test_seams();
+    let body = br#"{"model":"gpt-4o", "stream":true,"stream_options":{"foo":1, "include_usage":false},"messages":[]}"#;
+    let out = inject_openai_stream_include_usage(Bytes::from_static(body));
+    assert_eq!(
+        &out[..],
+        &br#"{"model":"gpt-4o", "stream":true,"stream_options":{"foo":1, "include_usage":true},"messages":[]}"#[..]
+    );
+    let body = br#"{"stream":true,"stream_options":{ "foo":1 },"z":1}"#;
+    let out = inject_openai_stream_include_usage(Bytes::from_static(body));
+    assert_eq!(
+        &out[..],
+        &br#"{"stream":true,"stream_options":{"include_usage":true, "foo":1 },"z":1}"#[..]
+    );
+    let body = br#"{"stream":true,"stream_options":null,"z":1}"#;
+    let out = inject_openai_stream_include_usage(Bytes::from_static(body));
+    assert_eq!(
+        &out[..],
+        &br#"{"stream":true,"stream_options":{"include_usage":true},"z":1}"#[..]
     );
 }

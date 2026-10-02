@@ -148,6 +148,9 @@ pub mod hex;
 /// The plane's own depth-guarded JSON seam.
 pub mod json;
 
+/// Byte-level member splices: how a relayed body's governed members are edited.
+pub mod json_splice;
+
 /// The cross-dialect translate pipeline (`TranslateCodec`).
 pub mod translate;
 

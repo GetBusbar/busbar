@@ -2129,6 +2129,40 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       }
+    },
+    {
+      "id": "DF-WIRE same-dialect request bodies are the caller's bytes",
+      "kind": "improvement",
+      "changelog": "A same-dialect request reaches the upstream as the caller's own bytes.",
+      "by": "owner (Matthew Jackson), STANDING RULE LLM DIALECT FIDELITY (2026-10-02) + R4 (invisible to upstreams except what busbar governs)",
+      "cells": "^llm\\.fidelity\\|(anthropic|openai|responses|cohere|gemini|bedrock)\\|request-bytes$",
+      "expected_cells": 0,
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "DIALECT-FIDELITY-DESIGN F2/F6 (lane DF-WIRE). Within one dialect the request body is relayed as the caller's bytes; the members busbar governs are edited in place by byte-level member splices (codec/json_splice.rs): the mapped `model` (replaced where it stands, or inserted after the opening brace), the metering `stream_options.include_usage` (set where it stands, or the object inserted after the brace, as 1.5.5's splice already did for a body without `stream_options`), busbar's own router keys, the Gemini/Bedrock `model`/`stream` the arrival carries for routing (removed again, both ride the URL), a `path_base` reshape, and a committed `prompt: rw` rewrite (only the members and elements it changed). 1.5.5 re-serialized every such body with its object keys sorted, numbers and escapes normalized, and so did 1.6.0 before this change; an unchanged body already went out verbatim. Bytes move only for a body that is not already compact and key-sorted. The oracle's client sends compact key-sorted JSON (build-request.py, sort_keys=True), so no recorded cell moves: the cells are OWED, `cells` names them and expected_cells is 0, the way AUTH-ROW's owed cells are written. Pinned by lazy_body_tests::a_same_dialect_hop_is_the_callers_bytes_with_governed_splices (six dialects, RED arm: a re-serialize sorts `z` after `a` and prints 1.50 as 1.5), exchange_attempt::a_path_model_same_dialect_request_reaches_the_far_end_as_the_caller_wrote_it, json_splice_tests, inject_include_usage_tests::an_existing_stream_options_is_edited_in_place. A move toward the caller's real protocol bytes: pre-approved by the LLM DIALECT FIDELITY standing rule and R4, no per-item sign-off. The premise probes the same-dialect gemini and openai stream cells, whose upstream body is the caller's.",
+      "premise": {
+        "all": [
+          {
+            "cell": "llm|gemini|gemini|request|ok",
+            "status": 200
+          },
+          {
+            "cell": "llm|openai|openai|request|ok_stream",
+            "status": 200
+          }
+        ]
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-02",
+        "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-02) + R4 (HARD RULE invisible to upstreams, 2026-10-02); DIALECT-FIDELITY-DESIGN FINAL F2/F6"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
     }
   ]
 }

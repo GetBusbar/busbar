@@ -507,29 +507,44 @@ impl Plane for LlmPlane {
             _ => None,
         };
 
-        let out = if ingress.name == egress.name && named_model == Some(upstream.model) {
-            // Same dialect, and the model the client named is already the model this lane wants. So
-            // there is nothing to rewrite, and the bytes the client sent are the bytes the upstream
-            // gets — the same conclusion the parse-and-compare below reaches, reached without the
-            // parse. Re-serializing an unchanged document would move whitespace and member order
-            // for no reason, and a request that is signed over its bytes would stop verifying.
+        let out = if ingress.name == egress.name {
+            // Same dialect: the RELAY, the one shared with the live engine path
+            // (`exchange::attempt::relay_request`, DIALECT-FIDELITY-DESIGN F7): the client's bytes
+            // with the governed member splices only, never a re-serialization.
             //
-            // The relay is a BORROW, not a copy: decode already put these bytes in this unit's
-            // arena (it copies them off the connection slab before reading them), so they live
-            // exactly as long as the hop that carries them.
-            ScratchBytes::new(bytes)
-        } else if ingress.name == egress.name {
-            // Same dialect, but the model may have to change. Only this arm needs the document.
-            let mut value: serde_json::Value =
-                sonic_rs::from_slice(bytes).map_err(|_| Encode::Unrepresentable)?;
-            let rewritten = with_writer(egress.name, |w| {
-                w.rewrite_model_if_needed(&mut value, upstream.model)
-            })
-            .ok_or(Encode::Unrepresentable)?;
-            if rewritten {
-                put(ctx, &serialize(&value)?)?
-            } else {
+            // When the model the client named is already this lane's, the dialect carries its
+            // model in the body and the bytes hold no router key, there is no splice to make — the
+            // same conclusion the relay reaches, reached without a scan. The relay is a BORROW, not
+            // a copy: decode already put these bytes in this unit's arena (it copies them off the
+            // connection slab before reading them), so they live exactly as long as the hop that
+            // carries them.
+            let body_model =
+                !crate::codec::decl_of(egress.name).is_some_and(|d| d.has_model_in_url);
+            let router_key = crate::codec::DECLS
+                .iter()
+                .filter_map(|d| d.array_stream_shim_key)
+                .any(|k| bytes.windows(k.len()).any(|w| w == k.as_bytes()));
+            if body_model && !router_key && named_model == Some(upstream.model) {
                 ScratchBytes::new(bytes)
+            } else {
+                let far = crate::exchange::shaping::FarShape {
+                    dialect: egress.name,
+                    wire_model: upstream.model,
+                    default_max_tokens: None,
+                    prompt_caching: false,
+                    caps: upstream.caps,
+                    path_base: None,
+                };
+                match crate::exchange::attempt::relay_request(
+                    far,
+                    busbar_contract::protocol::APPLICATION_JSON,
+                    bytes,
+                )
+                .bytes
+                {
+                    std::borrow::Cow::Borrowed(_) => ScratchBytes::new(bytes),
+                    std::borrow::Cow::Owned(spliced) => put(ctx, &spliced)?,
+                }
             }
         } else {
             let value: serde_json::Value =
@@ -714,6 +729,17 @@ impl Plane for LlmPlane {
         };
         let bytes = r.ir.body();
 
+        if source == ingress.name {
+            // Same dialect: the upstream's own bytes — a whole answer or one stream event — are
+            // already what the client reads. Relayed as they came, never re-encoded through the
+            // intermediate representation (DIALECT-FIDELITY-DESIGN F7, the live path's relay).
+            //
+            // ASKED BEFORE ANY DOCUMENT IS BUILT, and the order is the whole of it: this arm needs
+            // nothing out of the answer, so a parse taken above it is a full `serde_json::Value` of
+            // the upstream's answer built and dropped on the next statement. An allocation gate
+            // holds it.
+            return put(ctx, bytes);
+        }
         let is_event = matches!(
             r.facts.get(meta::FACT_FRAME_KIND),
             Some(FactValue::Str("event"))
@@ -748,18 +774,6 @@ impl Plane for LlmPlane {
             return put(ctx, &out);
         }
 
-        if source == ingress.name {
-            // Same dialect: the upstream's own bytes are already what the client reads.
-            //
-            // ASKED BEFORE THE DOCUMENT IS BUILT, and the order is the whole of it. This arm needs
-            // nothing out of the answer — it says so in one line — so a parse taken above it is a
-            // full `serde_json::Value` of the upstream's answer built and dropped on the next
-            // statement. An answer is the larger of the two documents on every request this plane
-            // serves, so it was the more expensive of the two copies the relay used to make; the
-            // request direction stopped making its one when the relay became a borrow, and this is
-            // the same move on the side that carries more bytes. An allocation gate holds it.
-            return put(ctx, bytes);
-        }
         let value: serde_json::Value =
             sonic_rs::from_slice(bytes).map_err(|_| Encode::Unrepresentable)?;
         let mut response = with_reader(source, |r| r.read_response(&value))

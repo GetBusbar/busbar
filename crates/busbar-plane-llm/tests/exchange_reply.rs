@@ -466,10 +466,10 @@ fn native_stream(dialect: &str) -> Vec<u8> {
 }
 
 /// A same-dialect whole body relays untouched (the far end's own bytes, borrowed) and its usage is
-/// read at the end.
+/// read at the end — in every dialect, Bedrock included (no busbar-measured `metrics` is added).
 #[test]
 fn a_same_dialect_whole_body_relays_untouched_and_meters() {
-    for dialect in ["openai", "anthropic", "cohere", "responses", "gemini"] {
+    for dialect in SIX {
         let (_, body) = native_answers(dialect)
             .into_iter()
             .next()
@@ -490,6 +490,63 @@ fn a_same_dialect_whole_body_relays_untouched_and_meters() {
             relay::content_type(dialect, dialect, false, false),
             ContentType::Far
         );
+    }
+}
+
+/// `json` with a member busbar has never heard of spliced in after its first opening brace.
+fn with_unknown_member(json: &[u8]) -> Vec<u8> {
+    let brace = json.iter().position(|b| *b == b'{').expect("an object");
+    let mut out = json[..=brace].to_vec();
+    out.extend_from_slice(br#""zz_never_heard_of":{"b":1,"a":[1.50, "x"]},"#);
+    out.extend_from_slice(&json[brace + 1..]);
+    out
+}
+
+/// SAME-DIALECT IDENTITY, the answer side (LLM DIALECT FIDELITY; DIALECT-FIDELITY-DESIGN F4): in
+/// every dialect a buffered answer and a stream that carry a member busbar has never heard of reach
+/// the caller byte-identical, and are still metered. The RED arm is any reserialize or rebuild on
+/// the relay (a parse-and-write drops the member, sorts the keys, prints `1.50` as `1.5`).
+#[test]
+fn a_same_dialect_answer_carrying_an_unknown_member_reaches_the_caller_byte_identical() {
+    for dialect in SIX {
+        let (_, body) = native_answers(dialect)
+            .into_iter()
+            .next()
+            .expect("an answer");
+        let body = with_unknown_member(&body);
+        let mut r = Relay::new(relay_ctx(dialect, dialect, false));
+        let out = relay_all(&mut r, &body, 9);
+        assert_eq!(out, body, "{dialect}: buffered");
+
+        let native = native_stream(dialect);
+        let far = if dialect == "bedrock" {
+            let mut far = busbar_plane_llm::codec::eventstream::encode_frame(
+                "zzNeverHeardOf",
+                br#"{"zz":{"b":1,"a":[1.50]}}"#,
+            );
+            far.extend_from_slice(&native);
+            far
+        } else {
+            let at = native
+                .windows(5)
+                .position(|w| w == b"data:")
+                .expect("a data line");
+            let mut far = native[..at].to_vec();
+            far.extend_from_slice(&with_unknown_member(&native[at..]));
+            far
+        };
+        let mut ctx = relay_ctx(dialect, dialect, true);
+        ctx.client_include_usage = true;
+        let mut r = Relay::new(ctx);
+        let out = relay_all(&mut r, &far, 7);
+        assert_eq!(out, far, "{dialect}: stream");
+        let mut ctx = relay_ctx(dialect, dialect, true);
+        ctx.client_include_usage = true;
+        let mut r = Relay::new(ctx);
+        for piece in far.chunks(7) {
+            let _ = r.feed(piece);
+        }
+        assert!(r.end().usage.is_some(), "{dialect}: the stream is metered");
     }
 }
 

@@ -859,6 +859,10 @@ each dialect translates, field by field, is listed in the generated
   split of the cache-write tokens (additive: billed counts are unchanged).
 - A buffered OpenAI chat response carries its citations as nested `url_citation` annotations, the
   shape the published Chat Completions schema defines.
+- A same-dialect request reaches the upstream as the caller's own bytes. Where busbar edits a
+  member it governs (the mapped `model`, the `stream_options.include_usage` it asks for to meter a
+  stream, a `prompt: rw` hook's rewrite), the member is edited in place; key order, spacing and
+  number spelling stay the caller's. 1.5.5 re-serialized such a body with its keys sorted.
 
 ### Fixed
 

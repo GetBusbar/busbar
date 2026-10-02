@@ -139,10 +139,12 @@ fn the_body_step_projects_what_the_live_parse_projects() {
     }
 }
 
-/// IDENTITY, path-model. For every recorded request, the step's injected bytes are byte-for-byte
-/// the bytes the live splice produces — same members, same order, same serializer.
+/// IDENTITY, path-model. For every recorded request, the step's injected bytes read as the document
+/// the live splice builds — and they are the caller's own bytes with the members spliced in at the
+/// byte level (LLM DIALECT FIDELITY): a request that names neither member keeps every byte after its
+/// opening brace, in order (a re-serialization, the RED arm, would sort and respace them).
 #[test]
-fn the_path_model_step_injects_the_bytes_the_live_splice_injects() {
+fn the_path_model_step_injects_the_members_into_the_callers_bytes() {
     let proto = a_registered_protocol();
     for (name, body) in fixtures() {
         let step = arrival_path_model(&body, "pinned-model", true, false, proto)
@@ -150,18 +152,25 @@ fn the_path_model_step_injects_the_bytes_the_live_splice_injects() {
         // The live arm, run here on the same bytes.
         let mut v: Value = busbar_plane_llm::codec::json::parse(&body).expect("live parse");
         let obj = v.as_object_mut().expect("a recorded request is a document");
+        let names_neither = !obj.contains_key("model") && !obj.contains_key("stream");
         obj.insert(
             "model".to_string(),
             Value::String("pinned-model".to_string()),
         );
         obj.insert("stream".to_string(), Value::Bool(true));
-        let live: Bytes = busbar_plane_llm::codec::json::to_vec(&v)
-            .expect("live serialize")
-            .into();
+        let carried: Value =
+            busbar_plane_llm::codec::json::parse(&step.injected).expect("carried JSON");
         assert_eq!(
-            step.injected, live,
-            "{name}: the step's injected body is not the live path's"
+            carried, v,
+            "{name}: the carried bytes read as another document"
         );
+        if names_neither {
+            let brace = body.iter().position(|b| *b == b'{').expect("an object");
+            assert!(
+                step.injected.ends_with(&body[brace + 1..]),
+                "{name}: the caller's own bytes moved"
+            );
+        }
         assert_eq!(
             step.parsed.probe(),
             &v,

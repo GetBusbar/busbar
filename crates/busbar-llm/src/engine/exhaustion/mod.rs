@@ -256,11 +256,6 @@ pub(crate) async fn dispatch_degraded(
             .and_then(|v| v.pointer("/stream_options/include_usage"))
             .and_then(|b| b.as_bool())
             .unwrap_or(false);
-    let client_has_stream_options = wants_stream
-        && hop_v
-            .as_ref()
-            .map(|v| v.get("stream_options").is_some())
-            .unwrap_or(false);
     // Gemini ingress streaming WITHOUT `?alt=sse` wants a JSON-array streamed body. Gated on the
     // ingress declaring the array shim (only a genuine Gemini client can ask) and on the operation
     // streaming at all, exactly as the hot loop gates it.
@@ -287,7 +282,6 @@ pub(crate) async fn dispatch_degraded(
             pool_cell: pool,
             cands,
             body,
-            pristine: false,
             body_is_json,
             req_content_type,
             ingress_protocol,
@@ -295,7 +289,6 @@ pub(crate) async fn dispatch_degraded(
             op,
             wants_stream,
             client_include_usage,
-            client_has_stream_options,
             gemini_json_array,
             caller_token,
             upstream_creds: EngineTables::new(rt).pool_upstream_creds(pool),
