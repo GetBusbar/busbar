@@ -2569,6 +2569,10 @@
       "refused": [],
       "wire_keys": []
     },
+    "type AdminChainAnswer": {
+      "kind": "alias",
+      "target": "Result<(ChainVerdict, Option<busbar_contract::authz::Scope>), AdminUnavailable>"
+    },
     "type Answer": {
       "kind": "alias",
       "target": "Arc<Mutex<(Option<Result<SocketAddr, Verdict>>, Option<Waker>)>>"

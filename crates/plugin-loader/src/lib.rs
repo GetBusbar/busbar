@@ -2141,8 +2141,9 @@ mod plugin_proof_tests;
 #[path = "tests/auth_conformance_tests.rs"]
 mod auth_conformance_tests;
 
-/// `kind: auth` through both doors, VERIFY VERDICTS: the token cases driven to every verdict
-/// (identify, reject, defer) over a second real auth plugin, one wire and one module either way.
+/// `kind: auth` through both doors on the memory ABI, VERIFY VERDICTS: the token cases driven to
+/// every verdict (identify, reject, pass) over a second real auth plugin, one row and one answer
+/// either way.
 #[cfg(test)]
 #[path = "tests/auth_verify_conformance_tests.rs"]
 mod auth_verify_conformance_tests;

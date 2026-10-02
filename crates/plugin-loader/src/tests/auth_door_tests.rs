@@ -137,7 +137,7 @@ fn rows() -> AuthRows {
     let registry = PluginRegistry::empty()
         .link(vec![LinkedPlugin::auth_door("judge", judge::door)])
         .expect("the linked door registers");
-    AuthRows::new(Box::leak(Box::new(registry)), dispatcher())
+    AuthRows::new(Arc::new(registry), dispatcher())
 }
 
 fn opened(label: &str) -> Arc<dyn AuthCalls> {
@@ -417,7 +417,7 @@ fn a_statement_secret_ref_is_handed_to_open_as_a_secret_not_a_setting() {
     let registry = PluginRegistry::empty()
         .link(vec![LinkedPlugin::auth_door("keyed", keyed::door)])
         .unwrap();
-    let rows = AuthRows::new(Box::leak(Box::new(registry)), dispatcher());
+    let rows = AuthRows::new(Arc::new(registry), dispatcher());
     let settings = serde_json::json!({ "token": "s3cret", "other": 1 });
     rows.open("keyed", "keyed", &settings)
         .expect("the credential reaches open as its secret");
@@ -469,7 +469,7 @@ fn an_auth_row_answers_to_its_statements_alias_rewrite() {
     let registry = PluginRegistry::empty()
         .link(vec![LinkedPlugin::auth_door("aliased", aliased::door)])
         .unwrap();
-    let rows = AuthRows::new(Box::leak(Box::new(registry)), dispatcher());
+    let rows = AuthRows::new(Arc::new(registry), dispatcher());
     assert!(rows.answers("aliased"));
     assert!(rows.answers("keyed-too"), "the Statement's alias answers");
     assert!(rows.linked("keyed-too"), "and names a linked row");

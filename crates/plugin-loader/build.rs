@@ -23,6 +23,11 @@ use std::path::PathBuf;
 /// The HOT-lane kinds (#30): their fixtures carry a `#[repr(C)]` decl, not a cold entry.
 const HOT_KINDS: &[&str] = &["plane", "transport"];
 
+/// The rows whose fixture is on its kind's MEMORY ABI: the linked door is the fixture's
+/// `door::door` (THE DESIGN, compiled-in = dropped-in: the same door its dropped-in build exports),
+/// not a cold entry.
+const DOOR_ROWS: &[&str] = &["auth-verify"];
+
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     let manifest = std::fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
@@ -45,6 +50,11 @@ fn main() {
     // source names the store instance (instance-noun-neutrality, ARCHITECT Q-GG4(c)).
     let mut store_fixture = String::new();
     let mut store_door = String::new();
+    // A memory-ABI row: its fixture's door.
+    let mut doors = String::from(
+        "/// `(row, cdylib crate name, linked door)` of each memory-ABI both-ways fixture.\n\
+         pub(crate) static DOOR_FIXTURES: &[(&str, &str, busbar_contract::abi::mechanism::door::DoorFn)] = &[\n",
+    );
     let mut in_table = false;
     for line in manifest.lines() {
         let code = line.split('#').next().unwrap_or("").trim();
@@ -57,6 +67,10 @@ fn main() {
             let snake = krate.trim().trim_matches('"').replace('-', "_");
             if HOT_KINDS.contains(&kind) {
                 hot.push_str(&format!("    (\"{kind}\", \"{snake}\"),\n"));
+            } else if DOOR_ROWS.contains(&kind) {
+                doors.push_str(&format!(
+                    "    (\"{kind}\", \"{snake}\", ::{snake}::door::door),\n"
+                ));
             } else {
                 out.push_str(&format!(
                     "    (\"{kind}\", \"{snake}\", &::{snake}::BUSBAR_COLD_ENTRY),\n"
@@ -103,6 +117,8 @@ fn main() {
     out.push_str("];\n");
     hot.push_str("];\n");
     out.push_str(&hot);
+    doors.push_str("];\n");
+    out.push_str(&doors);
     out.push_str(&crates);
     let dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
     std::fs::write(dir.join("both_ways.rs"), out).expect("write both_ways.rs");
