@@ -708,8 +708,8 @@ fn media_part_from_ir(
         }
         // An OpenAI Files handle — this dialect's own or a Responses `input_file.file_id`, the same
         // namespace (SHR-03): re-emit the native `file_id` form.
-        (K::Document, source) if super::openai_annotations::openai_file_id(source).is_some() => {
-            let id = super::openai_annotations::openai_file_id(source)?;
+        (K::Document, source) if super::url_citation_wire::files_api_id(source).is_some() => {
+            let id = super::url_citation_wire::files_api_id(source)?;
             let mut file = serde_json::Map::new();
             file.insert(keys::FILE_ID.to_string(), serde_json::json!(id));
             if let Some(n) = name {

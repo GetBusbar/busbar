@@ -916,7 +916,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::codec::ir::Ir
             // carries annotations, so this only fires for `output_text`.
             let citations = obj
                 .get(keys::ANNOTATIONS)
-                .map(super::openai_annotations::read_url_annotations)
+                .map(super::url_citation_wire::read_url_annotations)
                 .unwrap_or_default();
             Ok(crate::codec::ir::IrBlock::Text {
                 text,

@@ -168,7 +168,7 @@ impl ProtocolWriter for ResponsesWriter {
                                     && !citations.is_empty()
                                 {
                                     let annotations =
-                                        super::super::openai_annotations::url_annotations(
+                                        super::super::url_citation_wire::url_annotations(
                                             text, 0, citations,
                                         );
                                     if !annotations.is_empty() {
@@ -1201,7 +1201,7 @@ impl ProtocolWriter for ResponsesWriter {
                     // — without them it saw deltas against a part that was never opened/closed.
                     let item_id = self.item_id_for(ITEM_ID_PREFIX_MSG, *index);
                     let text = self.take_text_accum(*index);
-                    let annotations = super::super::openai_annotations::url_annotations(
+                    let annotations = super::super::url_citation_wire::url_annotations(
                         &text,
                         0,
                         &self.take_citation_accum(*index),
@@ -1575,7 +1575,7 @@ impl ProtocolWriter for ResponsesWriter {
                         continue;
                     }
                     let annotations =
-                        super::super::openai_annotations::url_annotations(text, 0, citations);
+                        super::super::url_citation_wire::url_annotations(text, 0, citations);
                     let logprobs =
                         write_responses_part_logprobs(pending_logprobs.take().unwrap_or(&[]));
                     // Match the native message-item shape the STREAMING `output_item.done` emits: an
@@ -1844,7 +1844,7 @@ fn input_image_source_part(source: &crate::codec::ir::IrImageSource) -> Option<s
     // SHR-03: an OpenAI Files id — this dialect's own `input_image.file_id` or a Chat `file_id`,
     // one namespace — re-emits as the native `input_image.file_id` form (a data URI would corrupt
     // it).
-    if let Some(id) = super::super::openai_annotations::openai_file_id(source) {
+    if let Some(id) = super::super::url_citation_wire::files_api_id(source) {
         return Some(serde_json::json!({ (keys::TYPE): INPUT_IMAGE, (keys::FILE_ID): id }));
     }
     match source {
@@ -1901,9 +1901,9 @@ fn input_file_part(
         // SHR-03: an OpenAI Files id (this dialect's own `input_file.file_id` or a Chat
         // `file.file_id` — one namespace) re-emits as `input_file.file_id`.
         crate::codec::ir::IrImageSource::Vendor { .. }
-            if super::super::openai_annotations::openai_file_id(source).is_some() =>
+            if super::super::url_citation_wire::files_api_id(source).is_some() =>
         {
-            let id = super::super::openai_annotations::openai_file_id(source)?;
+            let id = super::super::url_citation_wire::files_api_id(source)?;
             part.insert(keys::FILE_ID.to_string(), serde_json::json!(id));
         }
         // This protocol's OWN uploads handle round-trips verbatim; a FOREIGN handle (a Bedrock

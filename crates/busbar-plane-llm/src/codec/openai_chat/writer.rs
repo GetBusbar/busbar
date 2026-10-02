@@ -741,7 +741,7 @@ impl ProtocolWriter for OpenAiWriter {
                     // and a zero base — a citation whose span cannot be resolved is then emitted
                     // WITHOUT one rather than with a fabricated one.
                     let annotations =
-                        super::super::openai_annotations::chat_url_annotations("", 0, cits);
+                        super::super::url_citation_wire::chat_url_annotations("", 0, cits);
                     if annotations.is_empty() {
                         return None;
                     }
@@ -1134,7 +1134,7 @@ impl ProtocolWriter for OpenAiWriter {
                 text, citations, ..
             } = block
             {
-                annotations.extend(super::super::openai_annotations::chat_url_annotations(
+                annotations.extend(super::super::url_citation_wire::chat_url_annotations(
                     text, base, citations,
                 ));
                 // CHARACTERS, not bytes: the IR citation contract (`IrCitation::start_index`/

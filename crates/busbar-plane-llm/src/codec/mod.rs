@@ -166,8 +166,8 @@ pub mod usage_count;
 
 pub mod usage_tail;
 
-/// The OpenAI-family citation `annotations` mapping shared by the Chat and Responses codecs.
-pub mod openai_annotations;
+/// The `url_citation` annotations wire mapping the Chat and Responses codecs share.
+pub mod url_citation_wire;
 
 /// The per-token logprob wire object (`{content: [{token, logprob, bytes, top_logprobs}]}`) the
 /// Chat and Responses dialects read and write alike.

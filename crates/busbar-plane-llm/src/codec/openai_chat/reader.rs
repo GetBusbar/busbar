@@ -927,7 +927,7 @@ impl ProtocolReader for OpenAiReader {
         //     `read_url_annotations` gives (the buffered path drops them the same way).
         let citations = delta
             .and_then(|d| d.get(keys::ANNOTATIONS))
-            .map(super::super::openai_annotations::read_url_annotations)
+            .map(super::super::url_citation_wire::read_url_annotations)
             .unwrap_or_default();
         if !citations.is_empty() {
             if state.text_block_closed && !state.text_block_open {
@@ -1262,7 +1262,7 @@ impl ProtocolReader for OpenAiReader {
                     // `read_url_annotations` for why offsets are deliberately not carried.
                     let citations = message_val
                         .get(keys::ANNOTATIONS)
-                        .map(super::super::openai_annotations::read_url_annotations)
+                        .map(super::super::url_citation_wire::read_url_annotations)
                         .unwrap_or_default();
                     content.push(crate::codec::ir::IrBlock::Text {
                         text: text.to_string(),

@@ -209,7 +209,7 @@ impl ProtocolReader for ResponsesReader {
                             // Dropping them lost an assistant turn's grounding sources on replay.
                             let citations = item
                                 .get(keys::ANNOTATIONS)
-                                .map(super::super::openai_annotations::read_url_annotations)
+                                .map(super::super::url_citation_wire::read_url_annotations)
                                 .unwrap_or_default();
                             messages.push(crate::codec::ir::IrMessage {
                                 role: crate::codec::ir::IrRole::Assistant,
@@ -1020,7 +1020,7 @@ impl ProtocolReader for ResponsesReader {
                     .map_or(0, |v| (v as usize).min(MAX_OUTPUT_INDEX));
                 if state.open_tools.contains(&(idx + TEXT_INDEX_KEY_OFFSET)) {
                     if let Some(annotation) = data.get("annotation") {
-                        let citations = super::super::openai_annotations::read_url_annotations(
+                        let citations = super::super::url_citation_wire::read_url_annotations(
                             &serde_json::Value::Array(vec![annotation.clone()]),
                         );
                         if !citations.is_empty() {
@@ -1529,7 +1529,7 @@ impl ProtocolReader for ResponsesReader {
                                         // deliberately not carried.
                                         let citations = block_item
                                             .get(keys::ANNOTATIONS)
-                                            .map(super::super::openai_annotations::read_url_annotations)
+                                            .map(super::super::url_citation_wire::read_url_annotations)
                                             .unwrap_or_default();
                                         // RSP-03: the part's token `logprobs` join the response's
                                         // one IR logprob run, in part order — the writer's inverse
