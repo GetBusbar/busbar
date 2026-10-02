@@ -18,16 +18,18 @@ use crate::test_support::{metric_sum, LaneSpec, TestApp};
 use axum::response::IntoResponse;
 use busbar_contract::records::{PlaneRequestCtx, ScopeRef, VirtualKey};
 
-/// A deployment whose only pool is `pool`.
+/// A deployment whose only pool is `pool`. The lane's protocol is a neutral name: the neutral test
+/// plane builds no runtime from it, and no test here dispatches. (`known_protocols()` is empty when
+/// these tests run alone, so it cannot supply one.)
 fn deployment(pool: &str) -> Arc<App> {
     crate::test_support::register_neutral_test_plane();
     crate::metrics::init();
-    // `known_protocols` seeds nothing: the registry read seeds this binary's built-in protocols, so
-    // the list is not empty when these tests run alone.
-    let _ = crate::proto::registry();
-    let proto = crate::proto::known_protocols()[0];
     TestApp::new()
-        .lane(LaneSpec::new(pool, proto, "http://127.0.0.1:1"))
+        .lane(LaneSpec::new(
+            pool,
+            "ingress-terminal-lane-proto",
+            "http://127.0.0.1:1",
+        ))
         .pool(pool, &[(0, 1)])
         .build()
 }
