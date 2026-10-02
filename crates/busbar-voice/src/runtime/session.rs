@@ -16,102 +16,53 @@
 //! marquee behaviours — tool correlation, barge-in truncate, metered hard-close — deterministically
 //! unit-testable without the async plumbing, while the pump integration is tested separately.
 
-use crate::ir::codec::{DecodeState, DuplexReader, DuplexWriter, WireEvent};
+use crate::ir::codec::{DuplexReader, DuplexWriter, WireEvent};
 use crate::ir::config::SessionConfig;
-use crate::ir::control::IrDuplexControl;
-use crate::ir::event::{IrClientEvent, IrServerEvent};
-use crate::ir::media::AudioFormat;
-use crate::ir::tool::{CallRef, IrDuplexTool};
 use crate::ir::usage::IrDuplexUsage;
 use crate::runtime::carrier::Carrier;
 use crate::runtime::metering::{SessionMetering, TurnVerdict};
 use crate::runtime::tools::ToolExecutor;
 use busbar_plane_streaming::governed::GovernedSession;
 use busbar_plane_streaming::session::TurnCounters;
+use busbar_plane_streaming::session_pump::{SessionPump, TurnSink};
 use bytes::Bytes;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use busbar_kernel::ingress::byte_duplex::{CallRef as WireCallRef, DuplexHandle, DuplexPlane};
 
 /// THE FRAME PLAN one decoded inbound frame produces — what to write UPSTREAM (client→server events:
 /// tool results, barge-in cancel/truncate, `response.create`), what to relay DOWNLINK to the client,
-/// and whether the kernel's budget verdict tripped a HARD CLOSE this frame.
-#[derive(Debug, Default)]
-pub struct Outbound {
-    /// Client→server wire frames to write up the served socket (via the handler's `out`).
-    pub upstream: Vec<WireEvent>,
-    /// Server→client wire frames to relay to the client (via the [`Carrier`] downlink).
-    pub downlink: Vec<WireEvent>,
-    /// The kernel read the caller's budget dry after this frame's turn — the carrier must hard-close.
-    pub close: bool,
-    /// This frame carried a tool reply the node's table refused — nothing on this session was waiting
-    /// on the identifier it named.
-    ///
-    /// A bit rather than silence, and the distinction is the point: a refused reply put nothing on
-    /// the upstream wire, and a caller that could not tell that apart from a frame that was never
-    /// sent would have no way to report a client answering calls it was never asked to make.
-    pub refused_reply: bool,
-}
+/// and whether the kernel's budget verdict tripped a HARD CLOSE this frame. Re-exported with the named reason a
+/// session closed at its configured wall-clock ceiling is told under.
+pub use busbar_plane_streaming::session_pump::{Outbound, SESSION_CEILING_REASON};
 
-impl Outbound {
-    /// Queue one framed uplink event, honoring a DIALECT DROP: the writer answers `None` when the
-    /// upstream dialect has no verb for the concept (a Gemini upstream has no `response.cancel`), and
-    /// nothing is what a dropped concept must put on the wire.
-    fn push_up(&mut self, framed: Option<WireEvent>) {
-        if let Some(w) = framed {
-            self.upstream.push(w);
+/// A closed turn's way to the kernel account: the session's metering, when it has one. A turn the
+/// account answers `MustClose` for cuts the session.
+struct MeterSink<'m>(Option<&'m SessionMetering>);
+
+impl TurnSink for MeterSink<'_> {
+    fn turn_closed(&mut self, usage: Option<&IrDuplexUsage>, counters: TurnCounters) -> bool {
+        match self.0 {
+            Some(metering) => metering.report_turn(usage, counters) != TurnVerdict::MustClose,
+            None => true,
         }
     }
 }
 
-/// ONE IN-FLIGHT SERVER-SIDE TOOL CALL, correlated by [`CallRef`] and accumulated across the
-/// `CallOpen → CallArgs* → CallClose` frames the model streams (`BUSBAR-1.6.0.md` #18/#45). The raw `call_id` is kept so the
-/// stateless writer can re-frame the `function_call_output` without consulting the map.
-#[derive(Debug, Default, Clone)]
-struct PendingCall {
-    call_id: String,
-    name: String,
-    args: Vec<u8>,
-    closed: bool,
-    executed: bool,
-}
-
-/// The mutable per-session state guarded by one lock: the codec's decode state (seq, `CallRef` map,
-/// barge-in playback position), the in-flight tool-call table, and the open turn's own counters (the
-/// uplink audio admitted and the tool calls opened since the last turn closed — the two quantities no
-/// usage report carries).
-#[derive(Debug, Default)]
-struct Inner {
-    decode: DecodeState,
-    calls: HashMap<CallRef, PendingCall>,
-    turn: TurnCounters,
-}
-
 /// THE GOVERNED SESSION CORE — the synchronous heart shared across the concurrent frame handlers. It
-/// owns the codec, the locked config (the plane's tools + instructions the browser cannot override),
-/// the session's metering (each closed turn's counts go to the kernel account), the tool executor,
-/// the metered model id, and the carrier. Generic over the codec `C` (HARD RULE 3); the tool executor
-/// is a dependency-inverted port.
+/// holds the plane's session pump (the codec, the locked config the browser cannot override, the
+/// in-flight tool calls, the open turn's counters, the node's open-call binding) behind one lock,
+/// and around it the session's metering (each closed turn's counts go to the kernel account), the
+/// tool executor, the carrier and the session's wall-clock ceiling. Generic over the codec `C`
+/// (HARD RULE 3); the tool executor is a dependency-inverted port.
 pub struct SessionCore<C> {
-    codec: C,
-    inner: Mutex<Inner>,
-    /// The locked GA `session` config — the authoritative copy the plane holds server-side and
-    /// re-applies; a client `session.update` is a HINT reconciled against this, never trusted blind.
-    locked_config: Option<SessionConfig>,
+    pump: Mutex<SessionPump<C>>,
     /// The session's metering: each closed turn's raw counts per class go to the kernel account,
     /// which ledgers them through the one metering path and answers whether the carrier stays open.
     /// `None` on an ungoverned deployment — nothing to attribute, nothing to close on.
     metering: Option<SessionMetering>,
     tools: Arc<dyn ToolExecutor>,
-    /// The format uplink audio is counted in: the locked config's input format, else PCM16 — the
-    /// assumption the streaming plane states for its own `audio_seconds_in` estimate.
-    audio_in: AudioFormat,
     carrier: Carrier,
-    /// The node's open-call table, when a composition root bound one. `None` is an ungoverned
-    /// deployment: every call is served in-process and a client-authored result is carried upstream
-    /// verbatim, which is exactly what this runtime did before the governed wait existed.
-    governed: Option<GovernedSession>,
     /// When this session opened — the start of the wall clock [`Self::ceiling`] bounds.
     opened: std::time::Instant,
     /// The hard session wall-clock ceiling (`streams.session_max_secs:`), `None` until a runtime
@@ -134,42 +85,26 @@ where
         carrier: Carrier,
         locked_config: Option<SessionConfig>,
     ) -> Self {
-        let audio_in = locked_config
-            .as_ref()
-            .and_then(|c| c.input_audio_format)
-            .unwrap_or(AudioFormat::Pcm16);
         SessionCore {
-            codec,
-            inner: Mutex::new(Inner::default()),
-            locked_config,
+            pump: Mutex::new(SessionPump::new(codec, locked_config)),
             metering,
             tools,
-            audio_in,
             carrier,
-            governed: None,
             opened: std::time::Instant::now(),
             ceiling: None,
         }
     }
 
-    /// Bind the hard session wall-clock ceiling, in seconds (`streams.session_max_secs:`).
-    ///
-    /// The value was declared, defaulted, parsed and plumbed onto the runtime and then compared with
-    /// nothing, so an operator who set it to bound a session's worst-case cost bounded nothing. It is
-    /// taken literally: the session may run for exactly this many seconds of wall clock.
+    /// Bind the hard session wall-clock ceiling (`streams.session_max_secs:`).
     #[must_use]
     pub fn with_session_ceiling(mut self, secs: u32) -> Self {
         self.ceiling = Some(std::time::Duration::from_secs(u64::from(secs)));
         self
     }
 
-    /// **The ceiling's comparison.** Close the session when it has run for its ceiling as of `now`,
-    /// and say whether it is (now or already) closed on that account. A session with no ceiling bound
-    /// is never closed here.
-    ///
-    /// The close is the dialect's own: the client is told in its dialect's error frame, under the
-    /// named reason [`SESSION_CEILING_REASON`], and then the carrier hard-closes. The turn it cut is
-    /// settled by the session's teardown like any other close.
+    /// Close the session when it has run past its ceiling at `now`: the caller is told why, in its
+    /// dialect, and the carrier hard-closes. `true` when it closed; a session with no ceiling never
+    /// does.
     pub fn enforce_ceiling(&self, now: std::time::Instant) -> bool {
         let Some(ceiling) = self.ceiling else {
             return false;
@@ -178,19 +113,7 @@ where
             return false;
         }
         if !self.carrier.is_closed() {
-            let told = {
-                let mut g = self.inner.lock().expect("session inner poisoned");
-                self.codec.write_down(
-                    IrServerEvent::Error {
-                        code: SESSION_CEILING_REASON.to_string(),
-                        message: format!(
-                            "the session reached its configured ceiling of {} s (streams.session_max_secs)",
-                            ceiling.as_secs()
-                        ),
-                    },
-                    &mut g.decode,
-                )
-            };
+            let told = self.lock().ceiling_error(ceiling.as_secs());
             if let Some(frame) = told {
                 self.carrier.send_downlink(frame.0.to_vec());
             }
@@ -199,321 +122,75 @@ where
         true
     }
 
-    /// Bind this session to the node's open-call table.
-    ///
-    /// A builder step rather than a constructor argument because the table is not something every
-    /// deployment has: the runtime and topology tests, the conformance rig's ungoverned legs and a
-    /// `--validate` build all assemble a core with no root behind it, and each of them would
-    /// otherwise have to name a table it has no use for.
+    /// Bind the node's open-call table for this session.
     #[must_use]
-    pub fn with_governed(mut self, governed: GovernedSession) -> Self {
-        self.governed = Some(governed);
+    pub fn with_governed(self, governed: GovernedSession) -> Self {
+        self.lock().bind_governed(governed);
         self
     }
 
-    /// Which session the node's table knows this pump as, when a composition root bound one.
-    ///
-    /// `None` is the ungoverned deployment, and telling the two apart from outside is what lets a
-    /// composition prove that the sessions it serves are the governed kind rather than asserting it.
+    /// The node's session id, when a table is bound.
     #[must_use]
     pub fn governed_session(&self) -> Option<u64> {
-        self.governed.as_ref().map(|g| g.session)
+        self.lock().governed_session()
     }
 
-    /// **The tick's sweep.** End every governed call whose deadline has passed, and say how many.
-    ///
-    /// Driven from the node's tick beside the pump, because a wait that is never woken is a hold that
-    /// is never settled and there is nothing on the frame path that will notice. An ungoverned
-    /// session has no table and sweeps nothing.
+    /// Sweep the table's unanswered calls past their deadline at `now_ms`; how many ended.
     pub fn sweep_expired(&self, now_ms: u64) -> usize {
-        match &self.governed {
-            Some(g) => g.calls.expired(now_ms),
-            None => 0,
-        }
+        self.lock().sweep_expired(now_ms)
     }
 
-    /// The session's carrier (downlink + hard-close latch).
+    /// The session's carrier.
     pub fn carrier(&self) -> &Carrier {
         &self.carrier
     }
 
-    /// DECODE + ACT on ONE downlink (server→client) wire frame. Meters usage (hard-closing on
-    /// exhaustion), correlates + executes tool calls server-side, drives barge-in truncate, and relays
-    /// media/control downlink to the client. Returns the [`Outbound`] plan; a closed carrier yields an
-    /// empty plan (the hard-close guarantee — nothing more is processed once dry).
+    fn lock(&self) -> std::sync::MutexGuard<'_, SessionPump<C>> {
+        self.pump.lock().expect("session inner poisoned")
+    }
+
+    /// A FRAME FROM THE SERVED SOCKET's far side. Decoded and answered by the plane's pump; the
+    /// calls this session serves itself run here, off the lock, in close order.
     pub async fn on_server_frame(&self, frame: WireEvent) -> Outbound {
         if self.carrier.is_closed() {
             return Outbound::default();
         }
-
-        let mut out = Outbound::default();
-        // Tool calls whose arguments just completed — executed AFTER the lock is released (execute is
-        // async and must not hold the std mutex across `.await`).
-        let mut to_exec: Vec<(CallRef, String, String, Vec<u8>)> = Vec::new();
-
-        {
-            let mut g = self.inner.lock().expect("session inner poisoned");
-            let inner = &mut *g;
-            let events = self.codec.read_down(frame, &mut inner.decode);
-            for ev in events {
-                // A turn that ends on an upstream error consumed the audio and ran the tool calls a
-                // reported one would have: it closes with the plane's own counts, and is still relayed.
-                if matches!(ev, IrServerEvent::Error { .. }) {
-                    self.settle_turn(inner, None, &mut out);
-                }
-                match ev {
-                    // ── metering: the turn closes on its usage report ────────────────────────────
-                    IrServerEvent::Usage(u) => self.settle_turn(inner, Some(&u), &mut out),
-                    // ── barge-in: cancel + truncate at the audio the user actually heard (`BUSBAR-1.6.0.md` #18/#45) ────
-                    IrServerEvent::SpeechStarted { item_id, .. } => {
-                        let heard_ms = inner.decode.flush_playback();
-                        out.push_up(self.codec.write_up(
-                            IrClientEvent::Control(IrDuplexControl::ResponseCancel),
-                            &mut inner.decode,
-                        ));
-                        out.push_up(self.codec.write_up(
-                            IrClientEvent::Control(IrDuplexControl::ItemTruncate {
-                                item_ref: item_id.clone(),
-                                content_index: 0,
-                                audio_played_ms: heard_ms,
-                            }),
-                            &mut inner.decode,
-                        ));
-                        // The client still hears the barge-in acknowledgement.
-                        out.downlink.extend(self.codec.write_down(
-                            IrServerEvent::SpeechStarted {
-                                item_id,
-                                audio_start_ms: 0,
-                            },
-                            &mut inner.decode,
-                        ));
-                    }
-                    // ── tool moat: correlate + accumulate, execute server-side on close (`BUSBAR-1.6.0.md` #18/#45) ─────
-                    IrServerEvent::Tool(t) => {
-                        let call_ref = t.call_ref();
-                        match t {
-                            IrDuplexTool::CallOpen { call_id, name, .. } => {
-                                // A tool call the upstream opened is a count the turn carries.
-                                inner.turn.open_tool_call();
-                                let e = inner.calls.entry(call_ref).or_default();
-                                e.call_id = call_id;
-                                e.name = name;
-                            }
-                            IrDuplexTool::CallArgs {
-                                call_id,
-                                json_delta,
-                                ..
-                            } => {
-                                let e = inner.calls.entry(call_ref).or_default();
-                                if e.call_id.is_empty() {
-                                    e.call_id = call_id;
-                                }
-                                e.args.extend_from_slice(&json_delta);
-                            }
-                            IrDuplexTool::CallClose { call_id, .. } => {
-                                let e = inner.calls.entry(call_ref).or_default();
-                                if e.call_id.is_empty() {
-                                    e.call_id = call_id;
-                                }
-                                e.closed = true;
-                                if !e.executed {
-                                    e.executed = true;
-                                    // THE FORK. A tool this node serves is executed in-process below
-                                    // and the client never authors its result — the moat, unchanged.
-                                    // A tool it does not serve has only one possible answerer, so
-                                    // nothing is executed here: the call's reply leg is a wait, and
-                                    // THIS is where that leg is planned — so it is entered in the
-                                    // node's table here, and the answer comes back up the client's
-                                    // own uplink. A leg the table cannot enter has no answerer; its
-                                    // reply is refused like any other that names nothing open.
-                                    match &self.governed {
-                                        Some(g) if !self.tools.executes_here(&e.name) => {
-                                            g.calls.planned(g.session, &e.call_id, now_ms());
-                                        }
-                                        _ => to_exec.push((
-                                            call_ref,
-                                            e.call_id.clone(),
-                                            e.name.clone(),
-                                            e.args.clone(),
-                                        )),
-                                    }
-                                }
-                            }
-                            // A server-side result echoed back to us is not something we act on.
-                            IrDuplexTool::CallResult { .. } => {}
-                        }
-                    }
-                    // ── media + control: relay downlink verbatim (identity IR) ────────────────────
-                    ev @ (IrServerEvent::AudioFrame(_)
-                    | IrServerEvent::AudioDone { .. }
-                    | IrServerEvent::SpeechStopped { .. }
-                    | IrServerEvent::SessionCreated { .. }
-                    | IrServerEvent::Error { .. }) => {
-                        // A downlink event that is not a frame on its own (a held tool-argument
-                        // fragment) relays nothing — the same answer an unrepresentable uplink gives.
-                        out.downlink
-                            .extend(self.codec.write_down(ev, &mut inner.decode));
-                    }
-                    // Extraction-only — never client-translated (`BUSBAR-1.6.0.md` #18/#45).
-                    IrServerEvent::RateLimits => {}
-                }
-            }
+        let tools = Arc::clone(&self.tools);
+        let (mut out, to_exec) = self.lock().on_server_frame(
+            frame,
+            now_ms(),
+            &mut MeterSink(self.metering.as_ref()),
+            &|name: &str| tools.executes_here(name),
+        );
+        for run in to_exec {
+            let output = self.tools.execute(&run.name, &run.args).await;
+            self.lock().tool_executed(run, output, &mut out);
         }
-
-        // Execute completed tool calls server-side, then feed the result back upstream and ask the
-        // model to continue.
-        for (call_ref, call_id, name, args) in to_exec {
-            let output = self.tools.execute(&name, &args).await;
-            // The write seam threads the session's decode state, so the lock is retaken AFTER the
-            // await — never held across it.
-            let mut g = self.inner.lock().expect("session inner poisoned");
-            out.push_up(self.codec.write_up(
-                IrClientEvent::Tool(IrDuplexTool::CallResult {
-                    call_ref,
-                    call_id,
-                    // The tool the plane just ran — a dialect whose result frame requires a name
-                    // (Gemini) gets the one the model actually called for.
-                    name,
-                    output: Bytes::from(output),
-                }),
-                &mut g.decode,
-            ));
-            out.push_up(self.codec.write_up(
-                IrClientEvent::Control(IrDuplexControl::ResponseCreate { response: None }),
-                &mut g.decode,
-            ));
-            drop(g);
-        }
-
         if out.close {
             self.carrier.hard_close();
         }
         out
     }
 
-    /// DECODE + ACT on ONE uplink (client→server) wire frame — the governed forward leg. Audio and
-    /// control pass through to the upstream; a client `session.update` is RECONCILED against the locked
-    /// config (the plane re-applies its own tools+instructions, never the browser's). Returns the
-    /// upstream plan; downlink is unused on the uplink leg.
+    /// A FRAME FROM THE CALLER, decoded and answered by the plane's pump.
     pub fn on_client_frame(&self, frame: WireEvent) -> Outbound {
         if self.carrier.is_closed() {
             return Outbound::default();
         }
-        let mut out = Outbound::default();
-        let mut g = self.inner.lock().expect("session inner poisoned");
-        let events = self.codec.read_up(frame, &mut g.decode);
-        for ev in events {
-            match ev {
-                // The config-lock invariant: a client-originated configure is a hint. If the plane
-                // holds a locked config, re-apply THAT; otherwise pass the client's through.
-                IrClientEvent::Control(IrDuplexControl::SessionConfigure { config }) => {
-                    let effective = self.locked_config.clone().unwrap_or(config);
-                    out.push_up(self.codec.write_up(
-                        IrClientEvent::Control(IrDuplexControl::SessionConfigure {
-                            config: effective,
-                        }),
-                        &mut g.decode,
-                    ));
-                }
-                // A CLIENT-AUTHORED TOOL REPLY. This is the answer a governed wait was entered for,
-                // and it is the one client frame that is not simply carried: it names a call, and
-                // which unit that call belongs to is the node's decision, not this pump's. So the
-                // correlation goes to the node's table first and the wire second — a reply the table
-                // refuses reaches the model on no wire at all, because paying it out against
-                // whichever call happens to be standing is the exact failure the correlation exists
-                // to prevent.
-                IrClientEvent::Tool(IrDuplexTool::CallResult {
-                    call_ref,
-                    call_id,
-                    name,
-                    output,
-                }) if self.governed.is_some() => {
-                    let governed = self
-                        .governed
-                        .as_ref()
-                        .expect("the arm's own guard read it as bound");
-                    match governed.calls.replied(governed.session, &call_id) {
-                        Ok(()) => {
-                            // The wait was woken. The reply goes on to the model, and the model is
-                            // asked to continue — the same two frames the in-process path authors,
-                            // because a turn that stopped for a tool resumes the same way whoever
-                            // answered it.
-                            g.calls.remove(&call_ref);
-                            out.push_up(self.codec.write_up(
-                                IrClientEvent::Tool(IrDuplexTool::CallResult {
-                                    call_ref,
-                                    call_id,
-                                    name,
-                                    output,
-                                }),
-                                &mut g.decode,
-                            ));
-                            out.push_up(self.codec.write_up(
-                                IrClientEvent::Control(IrDuplexControl::ResponseCreate {
-                                    response: None,
-                                }),
-                                &mut g.decode,
-                            ));
-                        }
-                        Err(_) => out.refused_reply = true,
-                    }
-                }
-                // Everything else forwards verbatim (audio uplink, commits, item ops, tool results the
-                // plane itself authored are not re-authored here). Uplink audio is the turn's
-                // `audio_seconds_in`, counted as it is carried.
-                ev => {
-                    if let IrClientEvent::AudioFrame(f) = &ev {
-                        let fmt = self.audio_in;
-                        g.turn.admit_audio(fmt, f.media.len());
-                    }
-                    out.push_up(self.codec.write_up(ev, &mut g.decode));
-                }
-            }
-        }
-        out
+        self.lock().on_client_frame(frame)
     }
 
-    /// CLOSE THE OPEN TURN: hand its counts to the kernel account and, when the kernel reads the
-    /// caller's budget dry, cancel the in-flight response upstream and demand a hard close. The turn
-    /// that dried it was delivered and is ledgered; what the verdict decides is everything after it.
-    fn settle_turn(&self, inner: &mut Inner, usage: Option<&IrDuplexUsage>, out: &mut Outbound) {
-        let counters = std::mem::take(&mut inner.turn);
-        let Some(metering) = &self.metering else {
-            return;
-        };
-        if metering.report_turn(usage, counters) == TurnVerdict::MustClose {
-            out.push_up(self.codec.write_up(
-                IrClientEvent::Control(IrDuplexControl::ResponseCancel),
-                &mut inner.decode,
-            ));
-            out.close = true;
-        }
-    }
-
-    /// **The session is over, so is every call it had open.** Tell the node's table, once, so the
-    /// waits a conversation that has ended can no longer answer leave it now rather than at their
-    /// deadlines. Nothing to tell on an ungoverned session.
+    /// The session ends: the table forgets every call it had open.
     pub fn forget_governed_calls(&self) {
-        if let Some(g) = &self.governed {
-            g.calls.closed(g.session);
-        }
+        self.lock().forget_governed_calls();
     }
 
-    /// **The session is over.** A turn still open when the carrier ends — the caller hung up, a
-    /// barge-in was never answered, the ceiling cut it — was served all the same: its counts go to
-    /// the ledger with the session rather than with nobody.
+    /// The session ends with a turn open: its counters settle, once.
     pub fn settle_open_turn(&self) {
-        let mut g = self.inner.lock().expect("session inner poisoned");
-        if g.turn.is_empty() {
-            return;
-        }
-        let mut out = Outbound::default();
-        self.settle_turn(&mut g, None, &mut out);
+        self.lock()
+            .settle_open_turn(&mut MeterSink(self.metering.as_ref()));
     }
 }
-
-/// The named reason a session closed at its configured wall-clock ceiling is told under.
-pub const SESSION_CEILING_REASON: &str = "session_expired";
 
 /// How often the tick beside a session's pump sweeps its governed calls.
 ///
