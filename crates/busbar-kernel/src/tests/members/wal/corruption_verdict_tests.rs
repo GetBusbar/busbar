@@ -13,7 +13,9 @@
 use std::path::{Path, PathBuf};
 
 use busbar_kernel_wal::backend::{DirectoryFactory, MemoryFactory, SegmentBackend, SegmentFactory};
-use busbar_kernel_wal::record::{Record, FRAME_BYTES};
+use busbar_kernel_wal::record::{
+    decode_frame, frame_version, Record, FRAME_BYTES, FRAME_VERSION_LEGACY,
+};
 use busbar_kernel_wal::recover::{QuarantineKept, TailVerdict};
 use busbar_kernel_wal::ship::NullShipper;
 use busbar_kernel_wal::wal::{Mode, OpenError, Wal};
@@ -193,6 +195,65 @@ fn a_flipped_byte_in_the_final_record_is_quarantined_not_cut() {
         vec![(3, 4)]
     );
     assert_eq!(quarantine_files(dir.path()).len(), 1);
+}
+
+/// The four records of [`four`], framed under the LEGACY layout (version 1, no header check), as a
+/// build before the check wrote them: 4 x [`FRAME_BYTES`] = 2048 bytes, no padding.
+///
+/// PROVENANCE. A checked-in test vector, not produced by any encoder at test time (no legacy
+/// encoder is exposed outside busbar-kernel-wal). Generated once by reproducing
+/// `busbar_kernel_wal::record::encode_legacy` (crates/busbar-kernel-wal/src/record.rs, the
+/// `#[cfg(test)] pub(crate) fn encode_legacy`, at commit 4aa05a13d71ce79bf8e2320c6689e39cb6e03033)
+/// in a throwaway python3 script using `hashlib.sha256`. Per frame `i` (node 3, node_seq `i + 1`,
+/// body byte `b` = `(node_seq + b) % 251` for `b` in `0..200`): `[0,4)` "BWAL"; `[4,6)` version 1
+/// LE; `[6]` flags 0 (single part); `[7]` 0; `[8,16)` node LE; `[16,24)` node_seq LE; `[24,28)`
+/// part index 0 LE; `[28,32)` part count 1 LE; `[32,34)` payload length 200 LE; `[34,64)` zero
+/// (the header check is zero-filled under the legacy layout); `[64,96)` SHA-256 over `[0,64)` then
+/// `[96,512)`; `[96,296)` the body; `[296,512)` zero. SHA-256 of the whole file:
+/// 29d9b3e634b4bf1d278445d7fdb862e5ee3c694e5a6d164dca9888a65eccc286. The full procedure is in
+/// `vectors/legacy_segment.bin.provenance`. The test below checks the vector against the current
+/// encoder and decoder before it relies on it.
+const LEGACY_SEGMENT: &[u8] = include_bytes!("vectors/legacy_segment.bin");
+
+/// THE MIGRATION PATH: a segment written BEFORE the header check (layout version 1) is still read,
+/// under the rule it was written under — its flipped final record is a torn tail, cut silently, as
+/// that build would have cut it; the frames it already holds are never reinterpreted.
+#[test]
+fn a_legacy_segment_keeps_the_rule_it_was_written_under() {
+    let dir = TempDir::new("legacy-flip");
+    let written = four();
+    lay_down(dir.path(), &written);
+    // Rewrite every frame of the segment under the legacy layout, byte for byte otherwise.
+    let path = segment_path(dir.path());
+    let mut legacy: Vec<u8> = LEGACY_SEGMENT.to_vec();
+    // The vector is the legacy framing of exactly `written`: version 1, the header check zeroed, a
+    // digest that verifies, and every other byte the current encoder's.
+    assert_eq!(legacy.len(), written.len() * FRAME_BYTES);
+    for (record, chunk) in written.iter().zip(legacy.chunks_exact(FRAME_BYTES)) {
+        let frame: &[u8; FRAME_BYTES] = chunk.try_into().unwrap();
+        assert_eq!(frame_version(frame), FRAME_VERSION_LEGACY);
+        let current = record.encode().remove(0);
+        assert_eq!(frame[0..4], current[0..4]);
+        assert_eq!(frame[6..34], current[6..34]);
+        assert_eq!(frame[34..64], [0u8; 30]);
+        assert_eq!(frame[96..], current[96..]);
+        let (header, payload) = decode_frame(frame).unwrap();
+        assert_eq!((header.node, header.node_seq), record.identity());
+        assert_eq!(payload, &record.body[..]);
+    }
+    let len = std::fs::read(&path).unwrap().len();
+    legacy.resize(len, 0);
+    std::fs::write(&path, legacy).unwrap();
+    flip(dir.path(), 3 * FRAME_BYTES + 200);
+    let wal = Wal::in_directory(
+        dir.path(),
+        Box::new(NullShipper::new()),
+        super::fixtures::wall_ms,
+    )
+    .unwrap();
+    assert_eq!(wal.recovered(), &written[..3]);
+    assert!(wal.quarantined().is_empty());
+    assert!(quarantine_files(dir.path()).is_empty());
 }
 
 /// A tear INSIDE a version-2 frame's payload (the header was written whole) cannot be told from a

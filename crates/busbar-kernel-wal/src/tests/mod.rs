@@ -3,7 +3,6 @@
 
 //! The batteries.
 
-mod corruption_verdict;
 mod fixtures;
 mod journal_chain;
 mod no_disk;
