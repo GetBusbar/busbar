@@ -2351,14 +2351,14 @@ fn write_web_search_call(
         .collect();
     serde_json::json!({
         (keys::TYPE): ITEM_TYPE_WEB_SEARCH_CALL,
-        (keys::ID): call_id.map_or_else(|| synthesize_item_id(WS_ITEM_PREFIX), String::from),
+        (keys::ID): call_id.map_or_else(|| synthesize_item_id(ITEM_ID_PREFIX_WEB_SEARCH), String::from),
         (keys::STATUS): status.unwrap_or(STATUS_COMPLETED_WORD),
         (ACTION): { (keys::TYPE): SEARCH, (SOURCES): sources },
     })
 }
 
 /// The id prefix of a synthesized web-search item.
-const WS_ITEM_PREFIX: &str = "ws";
+const ITEM_ID_PREFIX_WEB_SEARCH: &str = "ws";
 /// A finished web search's status.
 const STATUS_COMPLETED_WORD: &str = "completed";
 
