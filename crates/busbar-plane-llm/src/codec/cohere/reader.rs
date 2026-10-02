@@ -1415,6 +1415,7 @@ impl ProtocolReader for CohereReader {
 
             request_echo: None,
             stop_detail: None,
+            ..Default::default()
         })
     }
 }
