@@ -39,7 +39,7 @@ use std::ptr;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use busbar_contract::abi::host::conn::connector::{
-    Need, DIRECTION_OUTBOUND, EGRESS_PROVIDER, KEEP_NAMED,
+    Need, DIRECTION_OUTBOUND, EGRESS_PROVIDER, KEEP_ALL_EXCEPT_DENIED,
 };
 use busbar_contract::abi::host::service::ClockReading;
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Outcome, BLOB_ABSENT};
@@ -176,8 +176,20 @@ const fn const_eq(a: &str, b: &str) -> bool {
     true
 }
 
-/// The far end's response field every need keeps: the document type of the answer.
-const KEEP_RESPONSE_HEADERS: &[AbiStr] = &[abi_str("content-type")];
+/// The response head fields the plane never reads, beyond the kernel's own strip list: what a far
+/// end derives from busbar's own credential and tenant, every dialect's governed response fields
+/// ([`DIALECTS`]' `governed_response_headers`, each named once). Every other field crosses, so a
+/// same-dialect answer relays the far end's head (OWNER ruling 2026-10-02, dialect fidelity F2).
+pub const DENY_RESPONSE_HEADERS: &[&str] = &[
+    DIALECTS[0].governed_response_headers[0],
+    DIALECTS[1].governed_response_headers[0],
+    DIALECTS[1].governed_response_headers[1],
+];
+const DENIED: &[AbiStr] = &[
+    abi_str(DENY_RESPONSE_HEADERS[0]),
+    abi_str(DENY_RESPONSE_HEADERS[1]),
+    abi_str(DENY_RESPONSE_HEADERS[2]),
+];
 
 const fn need(auth: &'static str) -> Need {
     Need {
@@ -193,13 +205,13 @@ const fn need(auth: &'static str) -> Need {
             fmt: BLOB_ABSENT,
             flags: 0,
         },
-        keep_response_headers: KEEP_RESPONSE_HEADERS.as_ptr(),
-        keep_response_headers_len: KEEP_RESPONSE_HEADERS.len(),
+        keep_response_headers: ptr::null(),
+        keep_response_headers_len: 0,
         timeout_ms: 0,
-        keep_mode: KEEP_NAMED,
+        keep_mode: KEEP_ALL_EXCEPT_DENIED,
         _reserved: 0,
-        deny_response_headers: core::ptr::null(),
-        deny_response_headers_len: 0,
+        deny_response_headers: DENIED.as_ptr(),
+        deny_response_headers_len: DENIED.len(),
     }
 }
 

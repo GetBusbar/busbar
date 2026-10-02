@@ -10,7 +10,7 @@ use busbar_contract::abi::plane::{TAIL_FALLBACK, TAIL_PROBES, UNITS_REPORTED};
 use busbar_plane_llm::dialect::DIALECTS;
 use busbar_plane_llm::exchange::reply::Units;
 use busbar_plane_llm::plane_door::{
-    counts, read_settings, EGRESS_SCHEMES, NEEDS, STATEMENT, TAIL, VERSION,
+    counts, read_settings, DENY_RESPONSE_HEADERS, EGRESS_SCHEMES, NEEDS, STATEMENT, TAIL, VERSION,
 };
 
 #[test]
@@ -84,4 +84,25 @@ fn counts_are_the_far_ends_tokens_in_the_tails_class_order_and_nothing_before_on
     let got: Vec<(u32, u64)> = counts(&units).iter().map(|u| (u.class, u.amount)).collect();
     assert_eq!(got, vec![(0, 7), (1, 3), (2, 2), (3, 1)]);
     assert!(counts(&units).iter().all(|u| u.source == UNITS_REPORTED));
+}
+
+/// RED for the keep mode: every need relays the far end's whole head but the governed fields, and
+/// the deny list is exactly every dialect's governed response fields, each once.
+#[test]
+fn every_need_keeps_all_but_every_dialects_governed_response_fields() {
+    use busbar_contract::abi::host::conn::connector::KEEP_ALL_EXCEPT_DENIED;
+    let mut governed: Vec<&str> = DIALECTS
+        .iter()
+        .flat_map(|d| d.governed_response_headers.iter().copied())
+        .collect();
+    governed.sort_unstable();
+    governed.dedup();
+    let mut denied = DENY_RESPONSE_HEADERS.to_vec();
+    denied.sort_unstable();
+    assert_eq!(denied, governed);
+    for n in NEEDS {
+        assert_eq!(n.keep_mode, KEEP_ALL_EXCEPT_DENIED);
+        assert_eq!(n.keep_response_headers_len, 0);
+        assert_eq!(n.deny_response_headers_len, DENY_RESPONSE_HEADERS.len());
+    }
 }
