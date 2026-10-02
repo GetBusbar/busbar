@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE STORE DOOR ALLOCATES NOTHING ON THE REQUEST PATH (THE DESIGN §11; A.8 "Zero allocation on
-//! the READY path": a counting-allocator witness is 0 for each request-path op).
+//! THE STORE DOOR ALLOCATES NOTHING ON THE REQUEST PATH (a counting-allocator witness is 0
+//! for each request-path op, on the READY path).
 //!
 //! Its own test binary, because the witness is a counting `#[global_allocator]`. The count is
 //! PER THREAD and ARMED only around one door call, so another test thread never lands in it. The

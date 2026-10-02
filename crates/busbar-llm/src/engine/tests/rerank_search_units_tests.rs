@@ -110,9 +110,8 @@ struct TwoBooks {
 }
 
 /// Drive ONE same-protocol, non-stream rerank body through the real `FirstByteBody` to its end, on a
-/// `protocol` lane with that protocol's own rerank cell, exactly as the relay serves it: Cohere relays
-/// verbatim, Bedrock through the body translator its writer installs for every same-protocol
-/// non-stream response. Return what each book holds of `search_units`.
+/// `protocol` lane with that protocol's own rerank cell, exactly as the relay serves it: verbatim,
+/// with the relay's own usage tap. Return what each book holds of `search_units`.
 async fn same_protocol_rerank_books(protocol: &'static str, body: &str) -> TwoBooks {
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
@@ -155,16 +154,20 @@ async fn same_protocol_rerank_books(protocol: &'static str, body: &str) -> TwoBo
         busbar_contract::transport::transport::Transport::Http,
     )
     .expect("the protocol serves rerank");
-    // The same-protocol non-stream translator the protocol's writer installs (Bedrock's body
-    // translator; none for Cohere, whose same-protocol body relays verbatim).
+    // A same-protocol non-stream body relays verbatim in every dialect: no translator, the relay's
+    // own tap reads the units.
     let translate: Option<Box<dyn busbar_contract::protocol::StreamTranslator>> =
-        if protocol == crate::proto_codec::PROTO_BEDROCK {
-            Some(Box::new(
-                busbar_plane_llm::codec::bedrock::BedrockConverseBodyTranslator::new(),
-            ))
-        } else {
-            None
-        };
+        crate::engine::xchg::reply::relay::parts(&crate::engine::xchg::reply::relay::RelayCtx {
+            ingress: protocol,
+            egress: protocol,
+            far_is_stream: false,
+            json_array: false,
+            client_include_usage: false,
+            request: None,
+            handler: op.op_handler,
+            meter: true,
+        })
+        .0;
     let tap = TapCell::new();
     let inner = futures::stream::iter(vec![Ok::<Bytes, hyper::Error>(Bytes::from(
         body.to_string(),
