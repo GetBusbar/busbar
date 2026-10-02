@@ -1,6 +1,6 @@
-//! A far end's success answer taken whole: a non-stream answer from a far end of another dialect,
-//! or one a caller asked to stream from a far end that answered one body. The whole body is read
-//! by the far end's dialect and written by the caller's, and the caller reads exactly one of four
+//! A far end's success answer taken whole: a non-stream answer from a far end of another dialect
+//! (written as the caller's own stream when the caller asked for one). The whole body is read by
+//! the far end's dialect and written by the caller's, and the caller reads exactly one of four
 //! ends.
 //!
 //! The previous release's decision tree, in its order: an opaque body (speech audio) bridges at
