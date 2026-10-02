@@ -55,7 +55,13 @@ pub mod rate;
 pub mod refusal;
 pub mod verb;
 pub mod verbs;
+<<<<<<< HEAD
 pub mod versions;
+=======
+// The test-build admin-error witness ledger (moved from the kernel's `admin_witness`).
+#[cfg(any(test, feature = "test-support"))]
+pub mod witness;
+>>>>>>> lane-d4-clean
 
 pub use admin_state::{AdminState, AppAdmin};
 pub use governance::{Governance, GovernanceError, MintedKey, RotateOutcome};
