@@ -244,14 +244,7 @@ fn json(
             ctx.request,
         );
         if answered.is_ok() {
-            crate::codec::dialect::drop_untranslatable_response_metadata(ctx.egress, rv);
-            crate::codec::proto_codec::with_reader(ctx.egress, |r| {
-                drops::note_unmodelled_blocks(
-                    r.response_blocks(),
-                    rv,
-                    drops::UNMODELLED_ANSWER_BLOCK,
-                )
-            });
+            crate::codec::chat_handle::drop_untranslatable_response(ctx.egress, rv);
         }
         answered
     };

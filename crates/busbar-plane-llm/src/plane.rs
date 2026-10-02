@@ -534,36 +534,51 @@ impl Plane for LlmPlane {
         } else {
             let value: serde_json::Value =
                 sonic_rs::from_slice(bytes).map_err(|_| Encode::Unrepresentable)?;
-            let mut request = with_reader(ingress.name, |r| r.read_request(&value))
-                .ok_or(Encode::Unrepresentable)?
-                .map_err(|_| Encode::Unrepresentable)?;
-            // Two normalizations the crossing needs that neither the reader nor the writer does
-            // for itself. Both are rules of the crossing, not of either dialect, which is why they
-            // sit here rather than in a codec.
-            //
-            // A dialect that refuses a request with no response ceiling gets one — only when the
-            // request carries none. A value the client sent is never rewritten and never clamped.
-            if request.max_tokens.is_none() && dialect::requires_max_response(egress.name) {
-                request.max_tokens = Some(configured_max_response(ctx));
-            }
-            // Everything the source dialect modelled and the intermediate representation does not
-            // is dropped. Carrying it over would put one vendor's member names into another
-            // vendor's request, where at best they are ignored and at worst they are rejected —
-            // and a control that survives the crossing by accident is a control nobody chose.
-            request.extra.clear();
-            // Two calls, ONE writer: what the second rewrites is what the first wrote, so the pair
-            // is a single question asked of a single instance — which is what the closure form
-            // gives, without either call reaching the heap for the writer that answers it.
-            // Written for THIS upstream: its model and its declared capabilities (the output-cap
-            // spelling, the reasoning form, the structured-output form), which the dialect writer
-            // cannot see from the request (OAI-01, ANT-07/09/10 lane-capability ruling).
-            let written = with_writer(egress.name, |w| {
-                let mut written =
-                    w.write_request_for_lane(&request, upstream.model, &upstream.caps);
-                w.rewrite_model_if_needed(&mut written, upstream.model);
-                written
-            })
-            .ok_or(Encode::Unrepresentable)?;
+            // ONE translate attempt: every drop on it goes through the one drop path (design F3).
+            let seam = crate::codec::drops::Seam {
+                direction: crate::codec::drops::Direction::Request,
+                ingress: ingress.name,
+                egress: egress.name,
+            };
+            let (written, _dropped) = crate::codec::drops::scope(seam, || {
+                let mut request = with_reader(ingress.name, |r| r.read_request(&value))
+                    .ok_or(Encode::Unrepresentable)?
+                    .map_err(|_| Encode::Unrepresentable)?;
+                // Two normalizations the crossing needs that neither the reader nor the writer does
+                // for itself. Both are rules of the crossing, not of either dialect, which is why they
+                // sit here rather than in a codec.
+                //
+                // A dialect that refuses a request with no response ceiling gets one — only when the
+                // request carries none. A value the client sent is never rewritten and never clamped.
+                if request.max_tokens.is_none() && dialect::requires_max_response(egress.name) {
+                    request.max_tokens = Some(configured_max_response(ctx));
+                }
+                // Everything the source dialect modelled and the intermediate representation does not
+                // is dropped. Carrying it over would put one vendor's member names into another
+                // vendor's request, where at best they are ignored and at worst they are rejected —
+                // and a control that survives the crossing by accident is a control nobody chose.
+                // It goes through the ONE drop path both hosts share (design F3 "Drops", F7): each member
+                // is named by its wire path with a warn, and nothing is substituted for it.
+                crate::codec::chat_handle::drop_untranslatable_request(
+                    &mut request,
+                    ingress.name,
+                    &value,
+                );
+                // Two calls, ONE writer: what the second rewrites is what the first wrote, so the pair
+                // is a single question asked of a single instance — which is what the closure form
+                // gives, without either call reaching the heap for the writer that answers it.
+                // Written for THIS upstream: its model and its declared capabilities (the output-cap
+                // spelling, the reasoning form, the structured-output form), which the dialect writer
+                // cannot see from the request (OAI-01, ANT-07/09/10 lane-capability ruling).
+                with_writer(egress.name, |w| {
+                    let mut written =
+                        w.write_request_for_lane(&request, upstream.model, &upstream.caps);
+                    w.rewrite_model_if_needed(&mut written, upstream.model);
+                    written
+                })
+                .ok_or(Encode::Unrepresentable)
+            });
+            let written = written?;
             put(ctx, &serialize(&written)?)?
         };
 
@@ -762,7 +777,21 @@ impl Plane for LlmPlane {
         }
         let value: serde_json::Value =
             sonic_rs::from_slice(bytes).map_err(|_| Encode::Unrepresentable)?;
-        let mut response = with_reader(source, |r| r.read_response(&value))
+        // ONE translate attempt on the answer: its drops go through the one drop path both hosts
+        // share (design F3 "Drops", F7).
+        let seam = crate::codec::drops::Seam {
+            direction: crate::codec::drops::Direction::Response,
+            ingress: ingress.name,
+            egress: source,
+        };
+        let (read, _dropped) = crate::codec::drops::scope(seam, || {
+            let read = with_reader(source, |r| r.read_response(&value));
+            if matches!(read, Some(Ok(_))) {
+                crate::codec::chat_handle::drop_untranslatable_response(source, &value);
+            }
+            read
+        });
+        let mut response = read
             .ok_or(Encode::Unrepresentable)?
             .map_err(|_| Encode::Unrepresentable)?;
         // THE ANSWER-NORMALIZATION PASS. The reference forward path runs exactly this between
