@@ -1638,6 +1638,7 @@ fn validate_orders_a_webhook_sinks_refusals_among_the_limits_as_before() {
 
 /// A store tarball whose signed manifest states a 1.6.0 Statement (`kind_abi` as given) over
 /// `lib`: bytes that are NOT a library, so any `dlopen` of them fails.
+#[cfg(linked_axis_body_ingress)]
 fn write_stated_store(dir: &Path, name: &str, alias: &str, kind_abi: u32, lib: &[u8]) {
     use busbar_contract::abi::mechanism::door::Statement;
     use busbar_contract::abi::mechanism::rendering::render;
