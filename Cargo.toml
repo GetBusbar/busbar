@@ -10,7 +10,6 @@ members = [
     "crates/busbar-a2a",
     "crates/busbar-voice",
     "crates/busbar-contract",
-    "crates/busbar-transport-http",
     "crates/busbar-kernel",
     "crates/busbar-kernel-identity",
     "crates/busbar-kernel-scope",
@@ -78,6 +77,8 @@ busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-e
 # links the logic crate; `busbar-plugin-loader`'s conformance test builds the cdylib crate. Same repo,
 # same rev, one resolved copy in Cargo.lock.
 busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "3ad5a711aad433f2015a980cf3a792afa5fd3a7a" }
+# THE HTTP TRANSPORT (kind: transport), pulled at a pinned rev; the logic crate the root links.
+busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "17cfd311eb8f72340dc323f9947f0055a8b537bd" }
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "3ad5a711aad433f2015a980cf3a792afa5fd3a7a" }
 # THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
@@ -117,7 +118,9 @@ a2a-pb = "0.2.0"
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"
-base64 = "0.23"
+# 0.22, the line axum, tonic, pbjson, oauth-as and a2a-lf already ship: one base64 in the binary.
+# STANDARD / URL_SAFE_NO_PAD encode and decode identically on 0.22 and 0.23 (same PAD/NO_PAD configs).
+base64 = "0.22"
 # THE CHUNK-CHAINING BUMP ALLOCATOR behind the per-call scratch pad (DECISIONS #41). It grows by
 # adding a chunk when the current one does not fit, which is exactly the grow-on-demand the design
 # requires; `try_alloc*` returns a Result on OOM rather than aborting, so the kernel — which is
@@ -165,7 +168,9 @@ hyper-util = { version = "0.1", default-features = false, features = [
     "tokio",
 ] }
 indexmap = { version = "2", features = ["serde"] }
-jsonschema = "0.49"
+# No default features: validation is offline (`validator_for`), never a remote `$ref`. The defaults
+# pulled reqwest 0.13 and rustls on aws-lc-rs, a second crypto backend and a C build (ring only).
+jsonschema = { version = "0.49", default-features = false }
 libc = "0.2"
 libloading = "0.9"
 loom = "0.7"
@@ -218,7 +223,9 @@ oauth-as = { version = "1.0.0", features = [
 # sink's own encoder. Not in any shipped build.
 opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "trace"] }
 proptest = "1"
-rcgen = "0.14"
+# DER minting on ring only. `pem` (and its base64 0.23) is a test-only need: the members whose tests
+# write PEM add the feature on their dev/test-support declaration.
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 # ── MCP, from the specification authors' own crate ─────────────────────────────────────────────
 # `rmcp` implements the stable `2026-07-28` revision — precisely the one busbar targets — while
 # staying compatible with `2025-11-25` and earlier.
@@ -287,7 +294,8 @@ sonic-rs = "0.5"
 # shape that hid from every line-oriented rule — and `visit` because the walk must reach EVERY node
 # that can carry an attribute rather than the handful somebody remembered to enumerate.
 syn = { version = "2", features = ["full", "visit", "parsing", "printing"] }
-tar = "0.4"
+# No `xattr`: the loader unpacks in memory and restores nothing to disk.
+tar = { version = "0.4", default-features = false }
 tikv-jemalloc-ctl = "0.6"
 tikv-jemallocator = "0.6"
 # No feature floor: each consumer needs a different slice of the runtime and tokio's default set is
