@@ -274,8 +274,8 @@ fn register_planes() {
     );
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.
-    let dropped = root::linked::dropped_from_config(&LINKED);
-    root::linked::register_planes(&LINKED, root::linked::dropped_planes_of(&LINKED, dropped));
+    let dropped = root::boot::dropped_from_config(&LINKED);
+    root::linked::register_planes(&LINKED, root::boot::dropped_planes_of(&LINKED, dropped));
     root::linked::register_exports(dropped);
     // A plugin that declares an inbound need is refused until an accepted connection has a
     // consumer, after the axes it selects against are registered.
@@ -718,7 +718,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The planes that state themselves through a door bind on the process's one dispatcher (built
     // full-size as `main()`'s first act), linked and dropped alike, each declaring its needs on the
     // one connector just built.
-    root::linked::load_door_planes();
+    root::boot::load_door_planes();
     // THE ROOT UNITS' CONFIGURATION STEP, in the same slot: the card repricer is installed BEFORE the
     // first app build below, so the boot's own rate resolution is the history's OPENING ENTRY and
     // nothing has to read the configuration twice. From there each resolution APPENDS an entry dated
