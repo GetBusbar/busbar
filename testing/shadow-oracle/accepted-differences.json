@@ -65,7 +65,7 @@
       "kind": "additive",
       "changelog": "Admin views gained fields; none changed.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^admin\\.ops\\|(GetHooksName|GetHooks)\\|ok$|^hooks\\|admin-list$|^hooks\\|register\\|plugin-alias$|^admin\\.ops\\|(DeleteHooksName|PatchHooksNameSettings|PutHooksName|PostHooks)\\|ok$|^admin\\.ops\\|PostHooks\\|if-match-stale$",
+      "cells": "^admin\\.ops\\|(GetHooksName|GetHooks)\\|ok@hooks-webrequest$|^hooks\\|admin-list@hooks-webrequest$|^hooks\\|register\\|plugin-alias@hooks-webrequest$|^admin\\.ops\\|(DeleteHooksName|PatchHooksNameSettings|PutHooksName|PostHooks)\\|ok@hooks-webrequest$|^admin\\.ops\\|PostHooks\\|if-match-stale@hooks-webrequest$",
       "expected_cells": 9,
       "classes": [
         "body",
@@ -75,22 +75,22 @@
       "premise": {
         "all": [
           {
-            "cell": "admin.ops|GetHooks|ok",
+            "cell": "admin.ops|GetHooks|ok@hooks-webrequest",
             "pointer": "/items/0/at",
             "exists": true
           },
           {
-            "cell": "admin.ops|GetHooks|ok",
+            "cell": "admin.ops|GetHooks|ok@hooks-webrequest",
             "pointer": "/items/0/fires_at",
             "exists": true
           },
           {
-            "cell": "admin.ops|GetHooksName|ok",
+            "cell": "admin.ops|GetHooksName|ok@hooks-webrequest",
             "pointer": "/at",
             "exists": true
           },
           {
-            "cell": "admin.ops|GetHooksName|ok",
+            "cell": "admin.ops|GetHooksName|ok@hooks-webrequest",
             "pointer": "/fires_at",
             "exists": true
           }
@@ -115,7 +115,7 @@
       "id": "F-011r hook write readback gains fires_at/groups/phase beside the kept `at`",
       "kind": "breaking",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage; split out 2026-09-05 (round-3 audit)",
-      "cells": "^admin\\.ops\\|(PostHooks|PutHooksName|PatchHooksNameSettings|DeleteHooksName)\\|ok$",
+      "cells": "^admin\\.ops\\|(PostHooks|PutHooksName|PatchHooksNameSettings|DeleteHooksName)\\|ok@hooks-webrequest$",
       "expected_cells": 4,
       "classes": [
         "effects.readback"
@@ -125,22 +125,22 @@
       "premise": {
         "all": [
           {
-            "cell": "admin.ops|GetHooksName|ok",
+            "cell": "admin.ops|GetHooksName|ok@hooks-webrequest",
             "pointer": "/at",
             "exists": true
           },
           {
-            "cell": "admin.ops|GetHooksName|ok",
+            "cell": "admin.ops|GetHooksName|ok@hooks-webrequest",
             "pointer": "/fires_at",
             "exists": true
           },
           {
-            "cell": "admin.ops|GetHooksName|ok",
+            "cell": "admin.ops|GetHooksName|ok@hooks-webrequest",
             "pointer": "/groups",
             "exists": true
           },
           {
-            "cell": "admin.ops|GetHooksName|ok",
+            "cell": "admin.ops|GetHooksName|ok@hooks-webrequest",
             "pointer": "/phase",
             "exists": true
           }
@@ -2009,7 +2009,7 @@
       ],
       "rationale": "Fixes a fail-open: 1.5.5 passed the request through when a hook's transform failed under on_error: reject; the docs always said it fails closed. CELL OWED: no corpus cell exercises a failing transform under on_error: reject (every hooks|* cell uses on_error: nothing), so `cells` names the owed cell id and expected_cells is 0, the way AUTH-ROW's owed cells are written; the entry forgives nothing until hooks|on-error-reject|transform-failed is recorded (1.5.5 passes the request through) and expected_cells becomes 1. The premise probes the existing hooks|hooked-pool|ok cell, the one real hook-serving cell.",
       "premise": {
-        "cell": "hooks|hooked-pool|ok",
+        "cell": "hooks|hooked-pool|ok@hooks-webrequest",
         "status": 200
       },
       "signoff": {
@@ -2034,7 +2034,7 @@
       ],
       "rationale": "A hook holding a prompt: ro or prompt: rw grant is shown the tool-call arguments and tool results of a turn (the prompt projection walks ToolUse input and ToolResult content); 1.5.5 projected text blocks only. Already named in CHANGELOG.md and docs/hooks.md. CELL OWED: hooks|hooked-pool|* carry no tool blocks, so `cells` names the owed hooked-pool tool-turn cell and expected_cells is 0, the way AUTH-ROW's owed cells are written; the entry forgives nothing until that cell is recorded. The premise probes the existing hooks|hooked-pool|ok cell.",
       "premise": {
-        "cell": "hooks|hooked-pool|ok",
+        "cell": "hooks|hooked-pool|ok@hooks-webrequest",
         "status": 200
       },
       "signoff": {
