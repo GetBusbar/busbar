@@ -22,20 +22,12 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use std::time::Duration;
 
-/// The default requested secret lifetime when the caller pins none.
-const DEFAULT_TTL_SECS: u64 = 600;
-/// The provider's minimum accepted secret lifetime.
-const MIN_TTL_SECS: u64 = 10;
-/// The provider's maximum accepted secret lifetime.
-const MAX_TTL_SECS: u64 = 7200;
-/// The prefix every ephemeral client secret the provider mints carries.
-const EK_PREFIX: &str = "ek_";
-/// The header binding a minted secret to the caller identity.
-const SAFETY_IDENTIFIER_HEADER: &str = "OpenAI-Safety-Identifier";
+use busbar_plane_streaming::broker::{
+    clamped_ttl_secs, mint_request_body, read_minted, CLIENT_SECRETS_PATH, SAFETY_IDENTIFIER_HEADER,
+};
+
 /// The bound on the whole mint exchange up to the response head plus its small body read.
 const MINT_DEADLINE: Duration = Duration::from_secs(30);
-/// The client-secrets endpoint path on the provider.
-const CLIENT_SECRETS_PATH: &str = "/v1/realtime/client_secrets";
 
 /// MINTS the browser's ephemeral client secret over a real HTTPS call to the provider's
 /// client-secrets endpoint, holding the real key server-side.
@@ -56,7 +48,8 @@ impl HttpsTokenMinter {
     /// Build a minter over an already-assembled egress client. `base_url` is the provider origin
     /// (scheme + authority, e.g. `https://api.openai.com`); `api_key` is the REAL provider key held
     /// server-side; `safety_identifier` is the caller-identity binding; `requested_ttl_secs` is the
-    /// desired secret lifetime (`None` ⇒ [`DEFAULT_TTL_SECS`]), clamped to the accepted window on mint.
+    /// desired secret lifetime (`None` ⇒ [`busbar_plane_streaming::broker::DEFAULT_TTL_SECS`]),
+    /// clamped to the accepted window on mint.
     pub fn new(
         client: EngineClient,
         base_url: impl Into<String>,
@@ -75,31 +68,15 @@ impl HttpsTokenMinter {
 
     /// The requested lifetime clamped to the provider's accepted `[MIN, MAX]` window.
     fn clamped_ttl_secs(&self) -> u64 {
-        self.requested_ttl_secs
-            .unwrap_or(DEFAULT_TTL_SECS)
-            .clamp(MIN_TTL_SECS, MAX_TTL_SECS)
+        clamped_ttl_secs(self.requested_ttl_secs)
     }
-}
-
-/// The provider's client-secret response: the `ek_` value and its absolute expiry in unix seconds.
-#[derive(serde::Deserialize)]
-struct ClientSecretResponse {
-    value: String,
-    #[serde(default)]
-    expires_at: u64,
 }
 
 #[async_trait]
 impl TokenMinter for HttpsTokenMinter {
     async fn mint(&self, config: &SessionConfig) -> Result<EphemeralToken, MintError> {
         let ttl_secs = self.clamped_ttl_secs();
-        let body = serde_json::json!({
-            "expires_after": { "anchor": "created_at", "seconds": ttl_secs },
-            "session": config,
-        });
-        let body_bytes = serde_json::to_vec(&body).map_err(|e| {
-            MintError::Provider(format!("mint request body did not serialize: {e}"))
-        })?;
+        let body_bytes = mint_request_body(ttl_secs, config).map_err(MintError::Provider)?;
 
         let uri = format!(
             "{}{}",
@@ -140,21 +117,11 @@ impl TokenMinter for HttpsTokenMinter {
             )));
         }
 
-        let parsed: ClientSecretResponse = serde_json::from_slice(&raw).map_err(|e| {
-            MintError::Provider(format!("client-secret response did not parse: {e}"))
-        })?;
-
-        // The browser-facing invariant: only an `ek_` secret ever leaves this boundary. A response
-        // whose value lacks the prefix is refused rather than handed on as if it were a client secret.
-        if !parsed.value.starts_with(EK_PREFIX) {
-            return Err(MintError::Provider(
-                "client-secret response value is not an ek_ ephemeral secret".into(),
-            ));
-        }
+        let minted = read_minted(&raw).map_err(MintError::Provider)?;
 
         Ok(EphemeralToken {
-            value: parsed.value,
-            expires_at_unix: parsed.expires_at,
+            value: minted.value,
+            expires_at_unix: minted.expires_at_unix,
         })
     }
 }

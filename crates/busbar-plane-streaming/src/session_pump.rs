@@ -187,7 +187,8 @@ where
 
     /// A FRAME FROM THE FAR END, at `now_ms`. `serves` answers whether this session runs a named tool
     /// itself; the calls it does are returned beside the plan, in close order, to be run and handed
-    /// back through [`Self::tool_executed`].
+    /// back through [`Self::tool_executed`]. A call it does not serve is relayed to the caller, whose
+    /// reply the node's open-call table waits for when one is bound; the gateway never answers it.
     pub fn on_server_frame(
         &mut self,
         frame: WireEvent,
@@ -228,6 +229,16 @@ where
                 }
                 IrServerEvent::Tool(t) => {
                     let call_ref = t.call_ref();
+                    let relayed = t.clone();
+                    let name = match &t {
+                        IrDuplexTool::CallOpen { name, .. } => name.clone(),
+                        _ => self
+                            .calls
+                            .get(&call_ref)
+                            .map(|e| e.name.clone())
+                            .unwrap_or_default(),
+                    };
+                    let served = serves(&name);
                     match t {
                         IrDuplexTool::CallOpen { call_id, name, .. } => {
                             self.turn.open_tool_call();
@@ -254,20 +265,28 @@ where
                             e.closed = true;
                             if !e.executed {
                                 e.executed = true;
-                                match &self.governed {
-                                    Some(g) if !serves(&e.name) => {
-                                        g.calls.planned(g.session, &e.call_id, now_ms);
-                                    }
-                                    _ => to_exec.push(ToolRun {
+                                if served {
+                                    to_exec.push(ToolRun {
                                         call_ref,
                                         call_id: e.call_id.clone(),
                                         name: e.name.clone(),
                                         args: e.args.clone(),
-                                    }),
+                                    });
+                                } else if let Some(g) = &self.governed {
+                                    g.calls.planned(g.session, &e.call_id, now_ms);
                                 }
                             }
                         }
                         IrDuplexTool::CallResult { .. } => {}
+                    }
+                    // A call this session does not serve is the caller's to answer, as the realtime
+                    // protocols define it: the call is relayed to the caller, and the gateway never
+                    // authors its result.
+                    if !served && !matches!(relayed, IrDuplexTool::CallResult { .. }) {
+                        out.downlink.extend(
+                            self.codec
+                                .write_down(IrServerEvent::Tool(relayed), &mut self.decode),
+                        );
                     }
                 }
                 ev @ (IrServerEvent::AudioFrame(_)

@@ -12,9 +12,9 @@
 /// `CostBreakdown` whose top-level components sum to `total` (the one invariant core enforces), with
 /// audio/text as labeled opaque components core never interprets.
 ///
-/// A plain token-class tally. The plane meters it through its own declared classes
-/// (`crate::session::class_counts`); `cached` is attribution only, a subset of the input it is part
-/// of, and never billed on its own.
+/// A plain token-class tally, folded (5→4 reserved keys, see [`Self::to_billing_usage`]) onto the
+/// neutral [`busbar_contract::billing::Usage`] the kernel prices at read
+/// (`runtime::metering::MeteringPort::price_usage`); the plane never prices it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IrDuplexUsage {
     /// Audio input tokens consumed this turn.
@@ -27,6 +27,58 @@ pub struct IrDuplexUsage {
     pub text_out: u64,
     /// Cached tokens billed at the cache rate this turn.
     pub cached: u64,
+}
+
+impl IrDuplexUsage {
+    /// FOLD this turn's five token classes onto the neutral [`busbar_contract::billing::Usage`] the
+    /// host prices — the 5→4 reserved-key map the plane hands
+    /// `MeteringHost::price_usage` (the host's pricer). Audio and
+    /// text collapse onto the SAME reserved lane by direction (a session prices audio vs text as separate
+    /// rate-card MODEL lanes, never separate unit keys), so NO new unit/label/constant is introduced —
+    /// only the four EXISTING reserved keys ([`busbar_contract::records::UNIT_INPUT`]/`UNIT_OUTPUT`/`UNIT_CACHE_READ`):
+    ///
+    /// - `(audio_in + text_in) - cached` → `input`
+    /// - `audio_out + text_out` → `output`
+    /// - `cached` → `cache_read`
+    ///
+    /// `cached` is NETTED OUT of the input lane because in BOTH dialects the cached figure is a SUBSET
+    /// of the input figure, not a class beside it — OpenAI Realtime reports `cached_tokens` INSIDE
+    /// `input_token_details` alongside `audio_tokens`/`text_tokens`, and Gemini's
+    /// `cachedContentTokenCount` is part of `promptTokenCount` (which is what `promptTokensDetails`
+    /// breaks out by modality). Billing the full input figure AND the cache figure would charge the
+    /// cached tokens on two lanes at once. This is the same normalization the LLM plane's reader makes
+    /// (`prompt_tokens` minus `cached_tokens` is what lands on the input lane), so a cached turn prices
+    /// identically whichever plane carried it.
+    ///
+    /// The IR carrier itself stays wire-faithful (extraction-only, raw provider figures, so the
+    /// re-frame writers round-trip); the netting happens HERE, at the billing fold, and nowhere else.
+    ///
+    /// Only non-zero classes are keyed (the pricer reads absent keys as zero, so this is purely tidy —
+    /// no zero component ever prices). Saturating sums: a runaway turn pins the count, never wraps small.
+    /// The subtraction saturates too: a provider that over-reports `cached` floors the input lane at
+    /// zero rather than wrapping to a colossal charge.
+    #[must_use]
+    pub fn to_billing_usage(&self) -> busbar_contract::billing::Usage {
+        let mut usage_units = std::collections::BTreeMap::new();
+        let input = self
+            .audio_in
+            .saturating_add(self.text_in)
+            .saturating_sub(self.cached);
+        let output = self.audio_out.saturating_add(self.text_out);
+        if input != 0 {
+            usage_units.insert(busbar_contract::records::UNIT_INPUT.to_string(), input);
+        }
+        if output != 0 {
+            usage_units.insert(busbar_contract::records::UNIT_OUTPUT.to_string(), output);
+        }
+        if self.cached != 0 {
+            usage_units.insert(
+                busbar_contract::records::UNIT_CACHE_READ.to_string(),
+                self.cached,
+            );
+        }
+        busbar_contract::billing::Usage { usage_units }
+    }
 }
 
 /// THE ONE SEAM every BILLED count read in this crate goes through.

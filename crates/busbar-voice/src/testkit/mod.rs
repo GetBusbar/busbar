@@ -14,6 +14,9 @@
 /// The in-memory [`busbar_kernel::plane_host::EngineHost`] this plane's cells drive when no engine
 /// `App` is in their closure at all: scripted hook gates/rewrites, breaker cells and a per-key ledger
 /// behind the same seam production reaches.
+/// The echo tool executor the batteries drive: answers every call with its own name and arguments.
+pub mod echo;
+
 pub mod fixture_host;
 
 /// A loopback HTTP provider that records what it was dialed with, for this plane's egress legs.

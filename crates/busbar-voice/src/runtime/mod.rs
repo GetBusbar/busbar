@@ -14,12 +14,14 @@ pub mod carrier;
 pub mod metering;
 pub mod scope;
 pub mod session;
-/// THE SERVER-SIDE TOOL EXECUTOR PORT, RE-EXPORTED FROM `busbar-plane-streaming`. `ToolExecutor` and
-/// `EchoToolExecutor` moved to the plane crate for the same reason the governed-call port below did:
-/// the port is what a tool call MEANS to this plane, and it names nothing this crate owns. Re-exported
-/// as a MODULE, not just its items, so `crate::runtime::tools::EchoToolExecutor` — the spelling the
-/// topology and governed-binding cells use — resolves exactly what it always did.
-pub use busbar_plane_streaming::tools;
+/// THE TOOL EXECUTOR PORT, from `busbar-plane-streaming`, and its production default
+/// ([`tools::ClientRelay`]: this node serves no tool, so every call is relayed to the caller). The
+/// echo executor the batteries drive is a test double, present only in test builds.
+pub mod tools {
+    pub use busbar_plane_streaming::tools::{ClientRelay, ToolExecutor};
+    #[cfg(any(test, feature = "test-support"))]
+    pub use crate::testkit::echo::EchoToolExecutor;
+}
 
 pub use carrier::Carrier;
 // THE GOVERNED-CALL PORT, RE-EXPORTED FROM `busbar-plane-streaming`. `GovernedCalls` / `ReplyRefusal` /
@@ -35,7 +37,9 @@ pub use scope::{SessionHandle, VoiceSessionRow};
 pub use session::{
     serve_to_teardown, serve_with_sweep, Outbound, SessionCore, UplinkForwarder, VoiceSession,
 };
-pub use tools::{EchoToolExecutor, ToolExecutor};
+pub use tools::{ClientRelay, ToolExecutor};
+#[cfg(any(test, feature = "test-support"))]
+pub use tools::EchoToolExecutor;
 
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use std::sync::Arc;
@@ -131,8 +135,8 @@ impl VoiceRuntime {
 /// WHAT IS WIRED, AND WHAT REMAINS A DEV DEFAULT. This entry reads the REAL `streams:` config (session
 /// posture / ceilings, via `with_streams`). A session's metering is not a runtime dependency at all:
 /// it is the kernel account the governed open binds for the presenting key over the live host. What is
-/// still a dev default is the durable engine (a fresh [`DurableHandleEngine`]) and the tool executor
-/// ([`EchoToolExecutor`]): deriving the config-driven engine/tool set is a SEPARATE, tracked slice.
+/// still a dev default is the durable engine (a fresh [`DurableHandleEngine`]). The tool executor is
+/// [`ClientRelay`]: this node serves no tool, and every call is relayed to the caller.
 /// `prior` (carry-over) is ignored today; the signature is the real one so binding those
 /// config-derived dependencies is a body change, not an ABI change.
 pub fn build_runtime(
@@ -150,7 +154,7 @@ pub fn build_runtime(
     Arc::new(
         VoiceRuntime::new(
             Arc::new(DurableHandleEngine::new()),
-            Arc::new(EchoToolExecutor),
+            Arc::new(ClientRelay),
         )
         .with_streams(&streams),
     )
