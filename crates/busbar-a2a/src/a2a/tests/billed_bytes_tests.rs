@@ -20,7 +20,7 @@ use busbar_kernel::{
     config::{self, groups::GroupCfg, groups::LimitCfg, groups::LimitMetric, groups::LimitWindow},
     config_validate::validate,
     cost::CostModel,
-    governance::{budget_window, PLANE_LANE_SEP},
+    governance::{budget_window, metering_bucket, PLANE_LANE_SEP},
     test_support::engine_kit::CostKit,
 };
 
@@ -333,7 +333,7 @@ async fn a_hop_refused_before_the_socket_keeps_no_fee() {
     let requests: u64 = h
         .gov
         .store()
-        .list_metering(busbar_kernel::governance::metering_bucket(crate::host_now()))
+        .list_metering(metering_bucket(crate::host_now()))
         .expect("metering reads back")
         .into_iter()
         .filter(|r| r.provider == "a2a")
