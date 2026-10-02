@@ -160,7 +160,8 @@ fn an_upstream_that_says_nothing_is_cut_by_the_per_attempt_cap() {
             DestinationId::new(0),
             disposition::ATTEMPT_TIMEOUT
         )],
-        "a hang is counted under its own label, not lumped in with a refusal"
+        "a hang is counted under its own label, not lumped in with a refusal (v1.5.5 \
+         `crates/busbar/src/proxy/engine/mod.rs:1713-1743`: the member cap's own arm)"
     );
     assert!(
         node.journal
@@ -222,6 +223,25 @@ fn an_upstream_that_says_nothing_and_has_no_cap_is_cut_by_the_walk_budget() {
         node.breaker.outcomes("primary", DestinationId::new(0)),
         vec![busbar_kernel_egress::ports::Outcome::Transient { retry_after: None }],
         "and the member that never answered is recorded against"
+    );
+    // 1.5.5 counted it as the walk's own timeout, not a hang the member's cap detected: with no
+    // `attempt_timeout_ms` the send ran under the request's remaining budget and its expiry took
+    // the transport-error arm — `upstream_failure(transient_upstream)`, `failover(timeout)`
+    // (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:1696-1698`, `:1753-1781`).
+    assert_eq!(
+        node.telemetry.failures.lock().unwrap().as_slice(),
+        &[(
+            "primary".to_string(),
+            DestinationId::new(0),
+            disposition::TRANSIENT
+        )]
+    );
+    assert_eq!(
+        node.telemetry.failovers.lock().unwrap().as_slice(),
+        &[(
+            "primary".to_string(),
+            busbar_kernel_egress::ports::net::TIMEOUT
+        )]
     );
 }
 

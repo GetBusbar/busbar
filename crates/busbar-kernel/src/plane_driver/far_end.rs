@@ -290,6 +290,25 @@ impl Drop for Head {
     }
 }
 
+/// Why an attempt ended before any answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoAnswer {
+    /// The far end could not be reached, or dropped the connection.
+    Connect,
+    /// A deadline passed first: the member's own attempt cap, or the walk's.
+    Timeout,
+}
+
+impl NoAnswer {
+    fn of(err: ConnError) -> Self {
+        if err == ConnError::Timeout {
+            Self::Timeout
+        } else {
+            Self::Connect
+        }
+    }
+}
+
 /// A far-end piece that ends the attempt without reaching the plane: fail over.
 fn fail_over() -> FarPiece {
     FarPiece {
@@ -413,14 +432,24 @@ impl EgressFarEnd<'_> {
         }
     }
 
-    /// A failure before any answer: a transient record on the member's cell, counted under
-    /// `label`; the attempt fails over.
-    fn no_answer(&self, token: &Pass<Route>, label: &'static str) -> FarPiece {
+    /// A failure before any answer: a transient record on the member's cell; the attempt fails
+    /// over. Counted as 1.5.5 counted it (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:1713-1781`):
+    /// a member's own attempt cap that fires is an `attempt_timeout` on both series; any other
+    /// failure is a `transient_upstream` failure that fails over under its network cause, `timeout`
+    /// (the walk's own deadline) or `connect`.
+    fn no_answer(&self, token: &Pass<Route>, cause: NoAnswer) -> FarPiece {
         let e = self.egress;
         let mut w = self.lock();
         if let Some(live) = w.live.as_mut() {
             let now = e.clock.now_secs();
             live.probe = None;
+            let (failure, failover) = match cause {
+                NoAnswer::Connect => (disposition::TRANSIENT, net::CONNECT),
+                NoAnswer::Timeout if live.member.attempt_timeout_ms.is_some() => {
+                    (disposition::ATTEMPT_TIMEOUT, disposition::ATTEMPT_TIMEOUT)
+                }
+                NoAnswer::Timeout => (disposition::TRANSIENT, net::TIMEOUT),
+            };
             let pool = Self::metric_pool(&live.pool, &live.member).to_string();
             if e.breaker.observe(
                 &live.pool,
@@ -432,8 +461,8 @@ impl EgressFarEnd<'_> {
                 e.telemetry.breaker_trip(&pool, live.member.destination);
             }
             e.telemetry
-                .upstream_failure(&pool, live.member.destination, label);
-            e.telemetry.failover(&pool, label);
+                .upstream_failure(&pool, live.member.destination, failure);
+            e.telemetry.failover(&pool, failover);
         }
         self.settle(&mut w);
         fail_over()
@@ -607,12 +636,7 @@ impl EgressFarEnd<'_> {
                 true
             }
             Err(err) => {
-                let label = if err == ConnError::Timeout {
-                    net::TIMEOUT
-                } else {
-                    net::CONNECT
-                };
-                let _ = self.no_answer(token, label);
+                let _ = self.no_answer(token, NoAnswer::of(err));
                 false
             }
         }
@@ -654,15 +678,10 @@ impl EgressFarEnd<'_> {
         .await;
         let piece = match read {
             Err(_elapsed) if !answered => {
-                return Some(self.no_answer(token, disposition::ATTEMPT_TIMEOUT));
+                return Some(self.no_answer(token, NoAnswer::Timeout));
             }
             Ok(Err(err)) if !answered => {
-                let label = if err == ConnError::Timeout {
-                    net::TIMEOUT
-                } else {
-                    net::CONNECT
-                };
-                return Some(self.no_answer(token, label));
+                return Some(self.no_answer(token, NoAnswer::of(err)));
             }
             // After the first answer a failure or a spent deadline ends the answer here: the
             // caller has what arrived, and there is nothing to fail over to.
