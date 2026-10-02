@@ -1981,6 +1981,7 @@ fn eventstream_emits_reasoning_content_for_thinking_block() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let bytes = bedrock_response_to_eventstream(&resp, Some(5));
     let text = String::from_utf8_lossy(&bytes);
@@ -2039,6 +2040,7 @@ fn eventstream_content_block_index_is_contiguous_when_a_block_is_skipped() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let mut bytes = bedrock_response_to_eventstream(&resp, Some(5));
     let frames = crate::codec::eventstream::drain_frames(&mut bytes);
@@ -2136,6 +2138,7 @@ fn eventstream_every_content_block_start_has_exactly_one_stop() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let mut bytes = bedrock_response_to_eventstream(&resp, Some(5));
     let frames = crate::codec::eventstream::drain_frames(&mut bytes);
@@ -2220,6 +2223,7 @@ fn test_write_response_total_tokens_saturates() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let body = writer.write_response(&resp);
     assert_eq!(
@@ -2287,6 +2291,7 @@ fn test_write_response_projects_image_block() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let body = writer.write_response(&resp);
     let content = body
@@ -2350,6 +2355,7 @@ fn test_write_response_empty_content_emits_placeholder() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let body = writer.write_response(&resp);
     let content = body
@@ -3781,6 +3787,7 @@ fn test_write_response_omits_absent_cache_tokens() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let written = writer.write_response(&resp);
     assert!(
@@ -6621,6 +6628,7 @@ fn buffered_to_eventstream_metadata_carries_metrics_even_without_timing() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let mut bytes = bedrock_response_to_eventstream(&ir, None);
     let frames = crate::codec::eventstream::drain_frames(&mut bytes);
@@ -6653,6 +6661,7 @@ fn bedrock_writer_emits_every_citation_in_a_multi_citation_delta() {
         end_index: Some(6),
         encrypted_index: None,
         raw: None,
+        ..Default::default()
     };
     let writer = BedrockWriter;
     let frames = writer.write_response_events(&crate::codec::ir::IrStreamEvent::BlockDelta {

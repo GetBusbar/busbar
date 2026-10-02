@@ -1345,6 +1345,7 @@ impl ProtocolReader for GeminiReader {
 
                     request_echo: None,
                     stop_detail: None,
+                    ..Default::default()
                 });
             }
         }
@@ -1598,6 +1599,7 @@ impl ProtocolReader for GeminiReader {
 
             request_echo: None,
             stop_detail: None,
+            ..Default::default()
         })
     }
 

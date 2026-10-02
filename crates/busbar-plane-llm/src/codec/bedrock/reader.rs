@@ -4,12 +4,29 @@ use crate::codec::keys;
 
 impl ProtocolReader for BedrockReader {
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
-        let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
-        // An unreadable billed count yields NO recovered usage, never a zero one (#42): the caller
-        // then bills its conservative floor estimate for the truncated body instead of $0.
-        // The per-TTL cache-write split rides the same `usage` object a truncated body still
-        // carries, so a body too large to buffer whole reports the same breakdown a small one does.
-        Some(read_bedrock_usage(Some(&v)).ok()?.to_token_usage())
+        // THE TURN'S `usage`, NOT A GUARDRAIL'S. A guardrail assessment carries its own
+        // `invocationMetrics.usage` (policy units) under `trace`, which can follow the turn's
+        // `usage` in the body; the last `"usage"` in the tail is then the guardrail's, which names
+        // no token count and read as a ZERO-token turn. Walk back to the last `usage` object that
+        // names a token count; none in the tail is no recovery (the caller's floor), never zero.
+        const KEY: &[u8] = b"\"usage\"";
+        let mut end = tail.len();
+        while let Some(at) = tail[..end].windows(KEY.len()).rposition(|w| w == KEY) {
+            if let Some(v) =
+                super::super::usage_tail::isolate_tail_usage_object(&tail[at..end], KEY)
+            {
+                if TOKEN_USAGE_MEMBERS.iter().any(|k| v.get(*k).is_some()) {
+                    // An unreadable billed count yields NO recovered usage, never a zero one
+                    // (#42): the caller then bills its conservative floor estimate instead of $0.
+                    // The per-TTL cache-write split rides the same `usage` object a truncated
+                    // body still carries, so a body too large to buffer whole reports the same
+                    // breakdown a small one does.
+                    return Some(read_bedrock_usage(Some(&v)).ok()?.to_token_usage());
+                }
+            }
+            end = at;
+        }
+        None
     }
 
     fn extract_error(
@@ -1165,6 +1182,8 @@ impl ProtocolReader for BedrockReader {
                         return out;
                     }
                 };
+                // The guardrail policy units ride the same frame's `trace`, as they do buffered.
+                warn_guardrail_units(data);
 
                 if let Some(tier) = read_served_tier(data) {
                     usage.detail.service_tier = Some(tier);
@@ -1378,6 +1397,8 @@ impl ProtocolReader for BedrockReader {
         if let Some(tier) = read_served_tier(body) {
             usage.detail.service_tier = Some(tier);
         }
+        // The guardrail policy units AWS bills beside the tokens ride `trace`, not `usage`.
+        warn_guardrail_units(body);
 
         Ok(crate::codec::ir::IrResponse {
             logprobs: Vec::new(),
@@ -1407,6 +1428,7 @@ impl ProtocolReader for BedrockReader {
 
             request_echo: None,
             stop_detail,
+            ..Default::default()
         })
     }
 

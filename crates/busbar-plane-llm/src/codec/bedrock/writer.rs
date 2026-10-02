@@ -534,7 +534,8 @@ impl ProtocolWriter for BedrockWriter {
                         content_arr.push(serde_json::json!({ (keys::IMAGE): image_block }));
                     }
                 }
-                crate::codec::ir::IrBlock::Json(_) => {
+                crate::codec::ir::IrBlock::Json(_)
+                | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {
                     // Structured-json content has no top-level Bedrock response shape (it is only a
                     // tool-result content member); omit it from an assistant response turn.
                 }
@@ -870,7 +871,8 @@ impl BedrockWriter {
                     | crate::codec::ir::IrBlock::Media { cache_control, .. } => {
                         cache_control.as_ref()
                     }
-                    crate::codec::ir::IrBlock::Json(_) => None,
+                    crate::codec::ir::IrBlock::Json(_)
+                    | crate::codec::ir::IrBlock::HostedToolRecord { .. } => None,
                 };
                 // The block's projection may be NOTHING (an image with no Converse source, an audio
                 // attachment); a cachePoint is only placed after a block that was actually written.
@@ -1057,7 +1059,8 @@ impl BedrockWriter {
                             content_arr.push(b);
                         }
                     }
-                    crate::codec::ir::IrBlock::Json(_) => {
+                    crate::codec::ir::IrBlock::Json(_)
+                    | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {
                         // Structured-json content is only a tool-result content member; it has no
                         // top-level message-content shape, so omit it from a message turn.
                     }
