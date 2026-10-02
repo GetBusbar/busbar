@@ -30,10 +30,10 @@ mod conformance;
 #[path = "transport_adapter_tests.rs"]
 mod adapter;
 
-/// A dropped-in transport door that frames the host's socket, found by KIND among the example
-/// `cdylib`s beside the test binary (a workspace test build emits the transport crates' door
-/// examples; no linked dev edge carries a door export). Under CI a missing artifact is a failure,
-/// never a skip.
+/// A dropped-in transport door that frames the host's socket, found by KIND among the `cdylib`s
+/// beside the test binary: the example doors a workspace test build emits and the transport
+/// fixture's own `cdylib` under `deps/` (its repo's plugin crate, a dev edge). Under CI a missing
+/// artifact is a failure, never a skip.
 fn fixture() -> Option<Vec<u8>> {
     Some(std::fs::read(fixture_path()?).expect("read the cdylib"))
 }
@@ -42,10 +42,14 @@ fn fixture() -> Option<Vec<u8>> {
 /// rendering, as a transport composing over nothing.
 fn fixture_path() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let examples = exe.parent()?.parent()?.join("examples");
-    let found = crate::list_plugin_files(&examples)
+    let profile = exe.parent()?.parent()?;
+    let found = [profile.join("examples"), profile.join("deps")]
         .into_iter()
-        .map(|f| examples.join(f))
+        .flat_map(|dir| {
+            crate::list_plugin_files(&dir)
+                .into_iter()
+                .map(move |f| dir.join(f))
+        })
         .find(|p| {
             crate::dispatch::rendering_of_library(p)
                 .ok()
@@ -63,7 +67,7 @@ fn fixture_path() -> Option<std::path::PathBuf> {
         });
     assert!(
         found.is_some() || std::env::var_os("CI").is_none(),
-        "a socket-framing transport door example is built beside the test binary under CI"
+        "a socket-framing transport door is built beside the test binary under CI"
     );
     found
 }

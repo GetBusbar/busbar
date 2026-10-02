@@ -198,7 +198,7 @@ fn dropped_door(name: &str) -> std::sync::Arc<dyn busbar_core_connector::framer:
 
 /// A door that frames the host's socket (an empty `composes_over`), found by KIND among the
 /// libraries beside this test binary (uplifted, under `deps/`, or an example `cdylib` such as the
-/// tcp crate's `tcp_door`): the first the one dispatcher admits as such a transport.
+/// tcp plugin crate's cdylib, which a workspace test build emits under `deps/`): the first the one dispatcher admits as such a transport.
 fn socket_framer_door() -> Option<std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>> {
     let exe = std::env::current_exe().ok()?;
     let profile = exe.parent()?.parent()?.to_path_buf();
