@@ -37,9 +37,6 @@ usage:
   cargo xtask conformance check --selftest
   cargo xtask dialect wire [--write | --diff] <dialect|all>
   cargo xtask dialect wire --diff-files <old.wire.json> <new.wire.json>
-  cargo xtask fleet render <repo> [--out <dir>]
-  cargo xtask fleet check [--repo <repo>]...
-  cargo xtask fleet sync [--repo <repo>]... [--workdir <dir>] [--dry-run]
   cargo xtask dialect compile
   cargo xtask perf-ab [--base <busbar>] [--candidate <busbar>] [--conc 1,64,512] [--secs N] [--streams N] [--trend <file>]";
 
@@ -59,7 +56,6 @@ pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
     "audit-verify",
     "conformance",
     "loc",
-    "fleet",
     "root",
     "perf-ab",
     "perf-ab-mock",
@@ -111,12 +107,6 @@ pub fn main(args: &[String]) -> i32 {
         // tell a gate from a subcommand by shape, and nothing reconciles an owed row set for it.
         Some("loc") => match open_ctx() {
             Ok(cx) => crate::loc::main(&cx, &args[1..]),
-            Err(code) => code,
-        },
-        // THE PLUGIN FLEET. Not a gate: it renders and checks OTHER repos (plugins.yaml's), and its
-        // RED is the nightly the removed `sched-fleet-check.yml` run, not a row in this tree's ledger.
-        Some("fleet") => match open_ctx() {
-            Ok(cx) => crate::fleet::main(&cx, &args[1..]),
             Err(code) => code,
         },
         // THE SAME-MACHINE A/B, a report-only trend line. Not a gate and never one (the pass/fail
