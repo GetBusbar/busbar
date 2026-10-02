@@ -483,6 +483,17 @@ fn old_store_audit_only_in_legacy_table_boots_migrates_and_verifies() {
 #[derive(Clone, Default)]
 struct DiagCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
 
+/// Install `cap` as THIS thread's subscriber and rebuild tracing's process-wide callsite interest cache.
+/// The cache is the state tests share: a callsite first hit on another test thread with no subscriber
+/// is cached as "never", and a scoped `set_default` alone does not always re-enable it, so the
+/// capture saw nothing depending on test order. Rebuilding after install makes the capture isolated.
+fn capture_into(cap: &DiagCapture) -> tracing::subscriber::DefaultGuard {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(cap.clone()));
+    tracing::callsite::rebuild_interest_cache();
+    guard
+}
+
 impl<S> tracing_subscriber::Layer<S> for DiagCapture
 where
     S: tracing::Subscriber,
@@ -519,7 +530,6 @@ where
 /// `GET /audit` view serves — one bad sibling does not take the decodable rows down with it.
 #[test]
 fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row() {
-    use tracing_subscriber::layer::SubscriberExt as _;
     let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
         std::sync::Arc::new(DualDurableStore::new());
     let (ts, res, out, pr) = (1_700_000_900u64, "hook:tamper", "applied", "admin");
@@ -553,8 +563,7 @@ fn restore_reports_an_undecodable_audit_row_loudly_and_still_seeds_the_good_row(
     let plane = PlaneStoreView::narrow(store.clone());
     let cap = DiagCapture::default();
     {
-        let subscriber = tracing_subscriber::registry().with(cap.clone());
-        let _g = tracing::subscriber::set_default(subscriber);
+        let _g = capture_into(&cap);
         // The decodable row seeds the good row and the bad one is REPORTED — the behaviour under
         // test here. (The undecodable sibling no longer aborts the restore; that no-fork guarantee
         // is pinned by `restore_does_not_fork_the_chain_when_one_row_is_undecodable`.)
@@ -932,13 +941,11 @@ fn pending_audit_queue_stops_at_the_first_failure_and_preserves_the_rest() {
 /// the counter and on the coded diagnostic actually firing at the eviction site.
 #[test]
 fn pending_audit_queue_reports_a_gap_when_it_overflows() {
-    use tracing_subscriber::layer::SubscriberExt as _;
     let q = PendingAuditQueue::new(2);
 
     let cap = DiagCapture::default();
     {
-        let subscriber = tracing_subscriber::registry().with(cap.clone());
-        let _g = tracing::subscriber::set_default(subscriber);
+        let _g = capture_into(&cap);
         for tag in 0..3u8 {
             q.enqueue(pending("admin", tag));
         }
@@ -969,5 +976,25 @@ fn pending_audit_queue_reports_a_gap_when_it_overflows() {
         "the overflow eviction must emit PLANE_AUDITLOG_WRITE_FAILED (BUSBAR-2044) at ERROR — a \
          silent counter with no guaranteed log sink is exactly the regression being fixed; \
          captured: {diags:?}"
+    );
+}
+
+/// RED ARM for the isolation above: the capture is per-test state. A restore over a CLEAN store, under
+/// a fresh capture, must record nothing: if a previous test's captured diagnostics (or its subscriber)
+/// leaked into this one, BUSBAR-2047 would show here.
+#[test]
+fn a_clean_restore_captures_no_unreadable_row_diagnostic() {
+    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
+        std::sync::Arc::new(DualDurableStore::new());
+    let h = AuditTestHarness::over(store.clone());
+    let plane = PlaneStoreView::narrow(store.clone());
+    let cap = DiagCapture::default();
+    {
+        let _g = capture_into(&cap);
+        let _ = h.host(|host| h.log.restore_from_store(host, plane.as_ref()));
+    }
+    assert!(
+        cap.0.lock().unwrap().iter().all(|d| !d.contains("BUSBAR-2047")),
+        "a clean restore must not report an unreadable audit row: capture state leaked between tests"
     );
 }
