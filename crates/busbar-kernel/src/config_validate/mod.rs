@@ -1675,6 +1675,46 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         }
     }
 
+    // EVERY REGISTRATION A PLANE BILLS FROM CONFIG IS PRICED (#42, #77(5)): a plane whose lanes are
+    // its config registrations names them ([`PlaneCfg::priced_lanes`]), and its present card silent
+    // about one refuses here with a paste-ready stub, rather than a unit ledgered on a lane no card
+    // prices (which fails every read of the bucket that holds it).
+    //
+    // [`PlaneCfg::priced_lanes`]: crate::plane::config::PlaneCfg::priced_lanes
+    if let Some(card) = &cfg.rate_card {
+        for defs in [cfg.tool_defs.as_ref(), cfg.agent_defs.as_ref()] {
+            let lanes = defs.priced_lanes();
+            let missing: Vec<&str> = (lanes.iter().map(String::as_str))
+                .filter(|l| {
+                    let plane = split_plane_lane(l).0;
+                    card.keys().any(|k| split_plane_lane(k).0 == plane) && !card.contains_key(*l)
+                })
+                .collect();
+            let Some(d) = missing
+                .first()
+                .and_then(|l| plane_decl_for(split_plane_lane(l).0))
+            else {
+                continue;
+            };
+            let zero = (d.billable_classes.iter())
+                .map(|c| format!("{}: 0", c.class))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let stub: String = (missing.iter())
+                .map(|l| format!("    {}: {{ units: {{ {zero} }} }}\n", split_plane_lane(l).1))
+                .collect();
+            errors.push(format!(
+                "{section}.rate_card is present but {n} {noun}{s} no rate entry (a present card is \
+                 AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
+                 Paste these under {section}.rate_card and fill in your rates:\n\n{stub}",
+                section = d.config_section,
+                n = missing.len(),
+                noun = d.subject_noun,
+                s = if missing.len() == 1 { " has" } else { "s have" },
+            ));
+        }
+    }
+
     if cfg.per_request_fee < 0 {
         errors.push(format!(
             "per_request_fee must be >= 0 (got {}); a negative fee would credit every request",

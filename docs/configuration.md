@@ -661,7 +661,9 @@ units: {...} }` shape (a non-LLM plane's classes are all OPEN, so only `units:` 
 it); the shipped field-by-field grammar and per-plane boot refusals for each are in
 [mcp.md](mcp.md) (`tools.rate_card`, keyed by tool name — prices `tool_calls` and `bytes`),
 [a2a.md](a2a.md) (`agents.rate_card`, keyed `agent:<id>` — prices `bytes`, the request + response
-body bytes an A2A hop relayed both ways), and [voice.md](voice.md) (`streams.rate_card`). The same
+body bytes an A2A hop relayed both ways; a present card must carry an entry for every agent under
+`agents:`, and one silent about an agent fails boot and every apply with a paste-ready stub), and
+[voice.md](voice.md) (`streams.rate_card`). The same
 rule applies everywhere: a plane section with no `rate_card` of its own bills that plane's traffic
 at `0` (no refusal); a plane section WITH a card must configure every class the plane declares (the
 generic boot rule above) and REFUSES a hit against a class or lane it left silent, rather than

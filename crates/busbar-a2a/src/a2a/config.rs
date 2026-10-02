@@ -469,6 +469,14 @@ impl busbar_kernel::plane::config::PlaneCfg for AgentsCfg {
         }
     }
 
+    /// Every agent is a lane: a hop is ledgered on `agent:<id>` qualified by this plane, the key the
+    /// operator writes under `agents.rate_card` (#42: a present card prices every agent).
+    fn priced_lanes(&self) -> Vec<String> {
+        (self.agents.keys())
+            .map(|name| super::receive::agent_lane(name.as_str()))
+            .collect()
+    }
+
     fn validate_registry(&self) -> Result<(), String> {
         // The A2A plane has no cross-registration section rule (the MCP published-name uniqueness is
         // the one plane that does); every A2A registry rule is per-entry, run at parse.

@@ -553,6 +553,17 @@ pub trait PlaneCfg: std::any::Any + Send + Sync + std::fmt::Debug {
     /// returns `Ok(())`.
     fn validate_registry(&self) -> Result<(), String>;
 
+    /// THE RATE-CARD KEYS THIS SECTION'S REGISTRATIONS ARE BILLED ON, each plane-qualified exactly
+    /// as the plane ledgers it (`<plane>\u{1f}<lane>`), for a plane whose billed lanes are its config
+    /// registrations. The config validator holds a present card of that plane to every key here
+    /// (#42, #77(5)): the registration set is config, so a lane the card is silent about refuses at
+    /// boot and on every apply, never as a unit ledgered on a lane no card prices.
+    ///
+    /// Empty default: a plane whose lanes are learned at run time (a tool a server lists) names none.
+    fn priced_lanes(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Every MODEL → `providers:` REFERENCE this section's own registry makes, as `(config-path,
     /// provider-name)` — the `models:`-shaped twin of [`Self::container_gates`]'s hook list, so
     /// `resolve` cross-checks a model-serving section's provider references (existence, then dialect
