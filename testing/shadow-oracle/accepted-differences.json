@@ -615,38 +615,6 @@
       }
     },
     {
-      "id": "S-3 bedrock metrics member",
-      "kind": "improvement",
-      "changelog": "A Bedrock `Converse` response always carries `metrics`.",
-      "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
-      "cells": "^llm\\|bedrock\\|bedrock\\|request\\|ok$",
-      "expected_cells": 1,
-      "classes": [
-        "body",
-        "headers"
-      ],
-      "rationale": "The Converse output shape requires metrics; 1.5.5's same-dialect passthrough dropped it. 1.6.0 always carries it (latencyMs is timing and normalized).",
-      "premise": {
-        "cell": "llm|bedrock|bedrock|request|ok",
-        "pointer": "/metrics",
-        "exists": true
-      },
-      "signoff": {
-        "who": "owner (Matthew Jackson)",
-        "when": "2026-09-04",
-        "ruling": "2026-09-04 maximum spec compliance",
-        "resigned": {
-          "who": "owner (Matthew Jackson)",
-          "when": "2026-09-30",
-          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
-        }
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      }
-    },
-    {
       "id": "S-4 anthropic required members",
       "kind": "improvement",
       "changelog": "An Anthropic response carries the members its published schema requires.",
@@ -692,13 +660,13 @@
       "kind": "improvement",
       "changelog": "A chat completion's `logprobs` object carries `refusal`.",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
-      "cells": "^llm\\|openai\\|(anthropic|bedrock|cohere|gemini|responses)\\|request\\|ok$|^route\\.failover\\|(fo\\|primary-(429|5xx|down)|fo\\|second-request-after-trip|lb\\|up)$|^(money\\.reserved-tier\\|absent\\|anthropic-cache|usage\\.gemini\\|(cached-content\\|subtractive|tool-use\\|total-billed|tool-use\\|total-not-a-sum))$",
-      "expected_cells": 14,
+      "cells": "^llm\\|openai\\|(anthropic|bedrock|cohere|gemini|responses)\\|request\\|ok$|^route\\.failover\\|(fo\\|primary-(429|5xx|down)|fo\\|second-request-after-trip|lb\\|up)$|^(money\\.reserved-tier\\|absent\\|anthropic-cache|usage\\.gemini\\|cached-content\\|subtractive)$",
+      "expected_cells": 12,
       "classes": [
         "body",
         "headers"
       ],
-      "rationale": "choices[].logprobs and message.refusal are required by the published chat schema; null when the backend carried none. WIDENED 2026-10-02 (owner R1, ORACLE batch, escalate.q 04:20Z): four owner-review cells recorded from the published 1.5.5 join the scope -- money.reserved-tier|absent|anthropic-cache (X-235), usage.gemini|cached-content|subtractive (605b), usage.gemini|tool-use|total-billed and total-not-a-sum (576). On each the candidate's openai-chat answer adds exactly choices[0].logprobs:null and choices[0].message.refusal:null, the two members the published schema requires; usage and spend are unchanged on the first two (the 576 cells' usage and spend move under R5, not here). Scope count 10 -> 14.",
+      "rationale": "choices[].logprobs and message.refusal are required by the published chat schema; null when the backend carried none. WIDENED 2026-10-02 (owner R1, ORACLE batch, escalate.q 04:20Z): four owner-review cells recorded from the published 1.5.5 join the scope -- money.reserved-tier|absent|anthropic-cache (X-235), usage.gemini|cached-content|subtractive (605b), usage.gemini|tool-use|total-billed and total-not-a-sum (576). On each the candidate's openai-chat answer adds exactly choices[0].logprobs:null and choices[0].message.refusal:null, the two members the published schema requires; usage and spend are unchanged on the first two (the 576 cells' usage and spend move under R5, not here). Scope count 10 -> 14. NARROWED 2026-10-02 (ARCHITECT ruling on the ORACLE-COMMIT findings): the two usage.gemini|tool-use cells (576) are NOT in S-5's scope: this entry is signed for the logprobs/refusal nulls and must never mask a money red; R5 alone covers the 576 cells. Scope count 14 -> 12.",
       "premise": {
         "all": [
           {
@@ -1009,38 +977,6 @@
         ]
       },
       "rationale": "RE-MEASURED 2026-09-28 against origin/predev of 2026-09-28 (release build, the engine oracle-rust.pin names, ./bin/oracle replay --strict over admin.ops, admin.auth, boot.refusal, billing, ledger, teller, crosscut.traps and neutrality, green), the oracle's 1.5.5-shaped config: the served document keeps all 49 of 1.5.5's paths and adds 17 core admin paths, every one marked `x-busbar-since: 1.6.0` and none marked `x-busbar-effect-bound: false` (the architect ruling in Q56 removed the unbound verbs from service and from the document, so the 13 the 2026-09-24 count carried are gone): adjust, audit head/keys/range, chain-break, commit-upgrade, ledger amend-rate-history/checkpoints/migration/openapi.json/reconciliation/totals, plane-facts, plane-record-write, reseal-epoch-floor, store-restore, verify. No `tools`/`agents` path is served. The 2026-09-24 figures (26 added: 13 bound, 13 unbound) are superseded; commit-upgrade, plane-facts, plane-record-write and verify are core admin verbs added since, and the premise now names all 17. MEASURED 2026-09-24 by P3A-register3 against a local ./bin/oracle record (pin 3519882) of b712a5763 (+ the Q54 message patch, which does not touch the document), default all-planes build, the oracle's 1.5.5-shaped config: the served document keeps all 49 of 1.5.5's paths and adds 26 core admin paths, every one marked `x-busbar-since: 1.6.0` (13 bound: adjust, audit head/keys/range, chain-break, ledger amend-rate-history/checkpoints/migration/openapi.json/reconciliation/totals, reseal-epoch-floor, store-restore; 13 marked `x-busbar-effect-bound: false`, which the architect ruling in Q56 removes from service and from the document); no `tools`/`agents` path is served. Owner ruling Q56 (answered in Q61): accept the core verbs as an additive difference every 1.6.0 node has. REPLACES F-011c's breaking blanket (and F-011b's additive coverage) on THIS cell: kind=additive, so the runner proves the candidate document a JSON superset of 1.5.5's at every leaf 1.5.5 names — a 1.5.5 operation, parameter, response or schema member that changed or went away stays red. What 1.5.5 operations gained is additive and ruled elsewhere: the `409 unpriced_class` response on the three usage reads (#42, owner-locked), the rotate `400` for an overlong id (K-1), the overlay-delete section enum's growth. The pin 3519882 runner resolves `~1`-escaped pointers, so F-011c's `/paths` prose leaves are now named leaf by leaf instead of blanketed. DESCRIPTION_CORRECTIONS (string leaves only, each already owner-signed on this cell): F-011b's six (HookView x2, NamedDefView x2, OverlayResetView reset, info.version); AuditEntry/description (Q41: the record's `scheme` frames the hash); PluginSchemaView restart_required_default/description (a Rust path renamed in prose, previously forgiven under F-011c's blanket); the overlay-delete summary, 400 and 409 descriptions (F-011c's 2026-09-15 owner decision: the grown section list and the new `conflict` guard). PREMISE (evaluated): the cell answers 200, each of the 17 core verbs carries `x-busbar-since: 1.6.0`, and the document advertises no `tools`/`agents` path. LIMIT: the premise grammar cannot say \"no OTHER path was added\" — the superset proof permits additions — so the 17 are enumerated here, and a future unrelated addition is only caught by a reviewer reading this cell's ACCEPTED row."
-    },
-    {
-      "id": "S-7 responses-door streams stream",
-      "kind": "improvement",
-      "changelog": "A `stream: true` request on the Responses door is answered as a stream.",
-      "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
-      "cells": "^llm\\|responses\\|responses\\|request\\|ok_stream$",
-      "expected_cells": 1,
-      "classes": [
-        "body",
-        "headers",
-        "norm.rules"
-      ],
-      "rationale": "A stream: true request on the Responses door is served as text/event-stream with the ResponseStreamEvent sequence; 1.5.5 answered the same-dialect case with a buffered JSON body. Metered identically (250 cents / 18 tokens). The buffered 1.5.5 body carried a synthesized content-length with no transfer-encoding; the SSE body is chunked, so the normalizer's header-shape rule fires where it did not before (norm.rules) -- a byproduct of the same content-type change, not a separate behavior.",
-      "premise": {
-        "cell": "llm|responses|responses|request|ok_stream",
-        "body_contains": "event: response.created"
-      },
-      "signoff": {
-        "who": "owner (Matthew Jackson)",
-        "when": "2026-09-04",
-        "ruling": "2026-09-04 maximum spec compliance",
-        "resigned": {
-          "who": "owner (Matthew Jackson)",
-          "when": "2026-09-30",
-          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
-        }
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      }
     },
     {
       "id": "E7-1 non-Responses doors stream when the backend is Responses-shaped",
@@ -2025,7 +1961,7 @@
       "classes": [
         "body"
       ],
-      "rationale": "Q91 (owner, 2026-09-27, option A): \"A Gemini turn bills Google's totalTokenCount: toolUsePromptTokenCount counts as input.\" 1.5.5 read toolUsePromptTokenCount as a slice of the prompt and left it out of the bill. On usage.gemini|tool-use|total-billed (promptTokenCount 18, toolUsePromptTokenCount 32, candidates 7, Google total 57) the candidate answers prompt_tokens 50 / total_tokens 57 and bills tokens_input 50, spend 64000000 where 1.5.5 answered 18 / 25 and 32000000. usage.gemini|tool-use|total-not-a-sum (Google total 64, which is NOT the sum 57) must bill Google's 64; predev bills 57, a defect routed to PROTO-FIXES, so this entry's premise on that cell is false (WITHHELD, the cell stays DIVERGING) until the fix lands. NOTE: written as a NEW entry: the ruling named \"the existing signed entry (accepted-differences.json:1083)\" but that line is S-8 and no register entry mentioned Gemini tool-use or Q91.",
+      "rationale": "Q91 (owner, 2026-09-27, option A): \"A Gemini turn bills Google's totalTokenCount: toolUsePromptTokenCount counts as input.\" 1.5.5 read toolUsePromptTokenCount as a slice of the prompt and left it out of the bill. On usage.gemini|tool-use|total-billed (promptTokenCount 18, toolUsePromptTokenCount 32, candidates 7, Google total 57) the candidate answers prompt_tokens 50 / total_tokens 57 and bills tokens_input 50, spend 64000000 where 1.5.5 answered 18 / 25 and 32000000. usage.gemini|tool-use|total-not-a-sum (Google total 64, which is NOT the sum 57) must bill Google's 64; predev bills 57, a defect routed to PROTO-FIXES, so this entry's premise on that cell is false (WITHHELD, the cell stays DIVERGING) until the fix lands. NOTE: written as a NEW entry: the ruling named \"the existing signed entry (accepted-differences.json:1083)\" but that line is S-8 and no register entry mentioned Gemini tool-use or Q91. PREMISE RE-CHECKED against PROTO-FIXES #157 (2026-10-02): the fix bills 50 input + 14 output = Google's 64 on total-not-a-sum, so the premise probes the ledger (tokens_input 50, tokens_output 14) rather than the response total.",
       "premise": {
         "all": [
           {
@@ -2035,8 +1971,13 @@
           },
           {
             "cell": "usage.gemini|tool-use|total-not-a-sum",
-            "pointer": "/steps/0/body/json/usage/total_tokens",
-            "equals": 64
+            "pointer": "/steps/1/body/json/total/tokens_input",
+            "equals": 50
+          },
+          {
+            "cell": "usage.gemini|tool-use|total-not-a-sum",
+            "pointer": "/steps/1/body/json/total/tokens_output",
+            "equals": 14
           }
         ]
       },

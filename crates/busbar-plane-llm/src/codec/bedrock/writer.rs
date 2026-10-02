@@ -531,7 +531,8 @@ impl ProtocolWriter for BedrockWriter {
                         content_arr.push(serde_json::json!({ (keys::IMAGE): image_block }));
                     }
                 }
-                crate::codec::ir::IrBlock::Json(_) => {
+                crate::codec::ir::IrBlock::Json(_)
+                | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {
                     // Structured-json content has no top-level Bedrock response shape (it is only a
                     // tool-result content member); omit it from an assistant response turn.
                 }
@@ -671,16 +672,6 @@ impl ProtocolWriter for BedrockWriter {
         // body that already carries a well-formed `metrics` keeps it, and the member is emitted
         // even when timing is unavailable — the same policy as the streaming `metadata` frame.
         super::ensure_metrics(value, elapsed_ms);
-    }
-
-    fn same_protocol_buffered_response_translator(
-        &self,
-    ) -> Option<Box<dyn busbar_contract::protocol::StreamTranslator>> {
-        // A Bedrock -> Bedrock non-stream response used to relay verbatim, so a Converse body whose
-        // upstream omitted `metrics` reached the client without its required member (the only
-        // Converse response busbar served that way; every cross-protocol lane injects it above).
-        // The translator buffers the body and completes it at end-of-stream.
-        Some(Box::new(super::BedrockConverseBodyTranslator::new()))
     }
 
     fn ingress_response_request_id(
@@ -870,7 +861,8 @@ impl BedrockWriter {
                     | crate::codec::ir::IrBlock::Media { cache_control, .. } => {
                         cache_control.as_ref()
                     }
-                    crate::codec::ir::IrBlock::Json(_) => None,
+                    crate::codec::ir::IrBlock::Json(_)
+                    | crate::codec::ir::IrBlock::HostedToolRecord { .. } => None,
                 };
                 // The block's projection may be NOTHING (an image with no Converse source, an audio
                 // attachment); a cachePoint is only placed after a block that was actually written.
@@ -1057,7 +1049,8 @@ impl BedrockWriter {
                             content_arr.push(b);
                         }
                     }
-                    crate::codec::ir::IrBlock::Json(_) => {
+                    crate::codec::ir::IrBlock::Json(_)
+                    | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {
                         // Structured-json content is only a tool-result content member; it has no
                         // top-level message-content shape, so omit it from a message turn.
                     }

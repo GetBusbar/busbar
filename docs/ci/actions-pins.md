@@ -22,9 +22,8 @@ Resolved 2026-09-11 from `https://github.com/<owner>/<repo>` (git ls-remote, liv
 | Action | Ref (comment) | Commit SHA | Resolved | Resolved from |
 |---|---|---|---|---|
 | actions/attest-build-provenance | v4 | `4d101475d8b20a2381f78447822ac1eab6504dd8` | 2026-09-11 | `git ls-remote` (tag, peeled) |
-| actions/checkout | v4 | `11d5960a326750d5838078e36cf38b85af677262` | 2026-09-11 | `git ls-remote` (tag) |
 | actions/checkout | v7 | `3d3c42e5aac5ba805825da76410c181273ba90b1` | 2026-09-11 | `git ls-remote` (tag) |
-| actions/upload-artifact | v4 | `ea165f8d65b6e75b540449e92b4886f43607fa02` | 2026-09-11 | `git ls-remote` (tag) |
+| actions/upload-artifact | v7.0.1 | `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a` | 2026-10-01 | `git ls-remote` (tag) |
 | codecov/codecov-action | v7.1.1 | `303a32d7a59b442fa8d48b6a1cc6825c09c847a5` | 2026-09-21 | `git ls-remote` (tag, peeled) |
 | dtolnay/rust-toolchain | stable (comment: `1.98.0`) | `62ae3a85dbdd2bedbb5819da8ce45635129289a1` | 2026-09-11 | `git ls-remote` (branch, historical — see note) |
 | mozilla-actions/sccache-action | v0.0.11 | `fc920bf0ec8de6ee65d409111f7ec508035751ba` | 2026-09-11 | `git ls-remote` (tag, peeled) |

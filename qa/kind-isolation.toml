@@ -600,22 +600,22 @@ kind = "transport"
 count = "583"
 
 [[cell]]
-crate = "busbar-oauth2"
+crate = "busbar-core-oauth2"
 kind = "plane"
 count = "22"
 
 [[cell]]
-crate = "busbar-oauth2"
+crate = "busbar-core-oauth2"
 kind = "plugin-tooling"
 count = "2"
 
 [[cell]]
-crate = "busbar-oauth2"
+crate = "busbar-core-oauth2"
 kind = "store"
 count = "5"
 
 [[cell]]
-crate = "busbar-oauth2"
+crate = "busbar-core-oauth2"
 kind = "transport"
 count = "9"
 
@@ -921,7 +921,7 @@ to      = "busbar-core-admin"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md:3780 (R2/#37) and ARCHITECT ruling: cleanliness crates are compiled-in with a one-way dependency on the kernel; the root links them (ARCHITECTURE_ALLOWED root -> cleanliness). busbar-core-admin is the compiled-in admin cleanliness crate the root mounts, as busbar -> busbar-oauth2 is (roster definition 1: the composition root names which crates exist and wires them at boot)."
+cite    = "BUSBAR-1.6.0.md:3780 (R2/#37) and ARCHITECT ruling: cleanliness crates are compiled-in with a one-way dependency on the kernel; the root links them (ARCHITECTURE_ALLOWED root -> cleanliness). busbar-core-admin is the compiled-in admin cleanliness crate the root mounts, as busbar -> busbar-core-oauth2 is (roster definition 1: the composition root names which crates exist and wires them at boot)."
 why     = "busbar names busbar-core-admin: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: the architecture grants root -> cleanliness. What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
@@ -1047,13 +1047,13 @@ why     = "busbar-kernel names busbar-contract: declared normal in the shipped g
 drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
-from    = "busbar-oauth2"
+from    = "busbar-core-oauth2"
 to      = "busbar-contract"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
 cite    = "BUSBAR-1.6.0.md THE DESIGN, §8 — a cleanliness crate reaches the kernel and the contract (ARCHITECTURE_ALLOWED cleanliness -> contract); ARCHITECT BOOT-LOOP ruling R2, 2026-09-27: the contract's route vocabulary is named from the crate that owns it, and the loader re-exports none of it."
-why     = "busbar-oauth2 names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit, replacing its busbar-plugin-loader edge (whose only use was the contract's RouteAuth/RouteMethod). The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+why     = "busbar-core-oauth2 names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit, replacing its busbar-plugin-loader edge (whose only use was the contract's RouteAuth/RouteMethod). The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
@@ -1158,14 +1158,14 @@ drain   = "delete the busbar-llm dependency from busbar-mcp's Cargo.toml. A crat
 
 
 [[dep]]
-from    = "busbar-oauth2"
+from    = "busbar-core-oauth2"
 to      = "busbar-kernel"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md:3780 (R2/#37) and ARCHITECT ruling: cleanliness crates are compiled-in with a one-way dependency on the kernel; the root links them (ARCHITECTURE_ALLOWED cleanliness -> kernel). busbar-oauth2 is a cleanliness crate and the kernel is the one tier it depends on."
-why     = "busbar-oauth2 names busbar-kernel: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: the architecture grants cleanliness -> kernel. What this row holds is the NUMBER; the dependency stays one-way, so the kernel naming busbar-oauth2 back would be an ungranted class."
+cite    = "BUSBAR-1.6.0.md:3780 (R2/#37) and ARCHITECT ruling: cleanliness crates are compiled-in with a one-way dependency on the kernel; the root links them (ARCHITECTURE_ALLOWED cleanliness -> kernel). busbar-core-oauth2 is a cleanliness crate and the kernel is the one tier it depends on."
+why     = "busbar-core-oauth2 names busbar-kernel: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: the architecture grants cleanliness -> kernel. What this row holds is the NUMBER; the dependency stays one-way, so the kernel naming busbar-core-oauth2 back would be an ungranted class."
 
 [[dep]]
 from    = "busbar-kernel"
@@ -1294,7 +1294,7 @@ drain   = "delete the busbar-kernel dependency from busbar-voice's Cargo.toml. A
 
 # busbar-core-connector (formerly busbar-core-connsec) is the core-side connection-security seam carved out of busbar-kernel
 # (DECISIONS #40). It is `cleanliness` kind: BUSBAR-1.6.0.md:3780 (R2/#37) seats it in the same
-# tier as busbar-core-admin and busbar-oauth2 -- compiled in, one-way dependency on the kernel, off
+# tier as busbar-core-admin and busbar-core-oauth2 -- compiled in, one-way dependency on the kernel, off
 # the hot path, never a plugin -- and the kind table names it exactly. It reaches the contract and
 # the kernel, both granted cleanliness classes (ARCHITECTURE_ALLOWED).
 [[dep]]
@@ -1328,14 +1328,14 @@ why     = "busbar names busbar-core-connector: declared normal in the shipped gr
 drain   = "none: the architecture grants root -> cleanliness. What this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
-from    = "busbar-oauth2"
+from    = "busbar-core-oauth2"
 to      = "busbar-kernel"
 half    = "test"
 count   = "1"
 verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md:3780 (R2/#37) and ARCHITECT ruling: cleanliness crates are compiled-in with a one-way dependency on the kernel; the root links them (ARCHITECTURE_ALLOWED cleanliness -> kernel). busbar-oauth2 is a cleanliness crate and the kernel is the one tier it depends on."
-why     = "busbar-oauth2 names busbar-kernel: declared dev in the test graph (dev-dependencies), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: the architecture grants cleanliness -> kernel. What this row holds is the NUMBER; the dependency stays one-way, so the kernel naming busbar-oauth2 back would be an ungranted class."
+cite    = "BUSBAR-1.6.0.md:3780 (R2/#37) and ARCHITECT ruling: cleanliness crates are compiled-in with a one-way dependency on the kernel; the root links them (ARCHITECTURE_ALLOWED cleanliness -> kernel). busbar-core-oauth2 is a cleanliness crate and the kernel is the one tier it depends on."
+why     = "busbar-core-oauth2 names busbar-kernel: declared dev in the test graph (dev-dependencies), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: the architecture grants cleanliness -> kernel. What this row holds is the NUMBER; the dependency stays one-way, so the kernel naming busbar-core-oauth2 back would be an ungranted class."
 
 
 [[dep]]
@@ -1475,7 +1475,7 @@ drain = "move both implementations into a store-kind crate and have the root REG
 
 [[dep]]
 from    = "busbar"
-to      = "busbar-oauth2"
+to      = "busbar-core-oauth2"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
@@ -1909,7 +1909,7 @@ kind = "store"
 count = "7"
 
 [[instance]]
-crate = "busbar-oauth2"
+crate = "busbar-core-oauth2"
 kind = "secret"
 count = "5"
 
