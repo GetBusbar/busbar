@@ -29,9 +29,9 @@ use super::{
     EMIT_DONE, EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP,
     INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
     INGRESS_SUBSCRIPTION, MAX_REFUSAL_TEXT, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT,
-    PRINCIPAL_OPTIONAL, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_PUBLIC, SHAPE_PIECEWISE,
-    SHAPE_WHOLE, TAIL_FALLBACK, TAIL_PROBES, TRUST_PIN, TRUST_RECOVERY_BACKOFF, UNITS_ESTIMATED,
-    VERDICT_HARD,
+    PRINCIPAL_OPTIONAL, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_DIRECT, ROUTE_POOL, ROUTE_PUBLIC,
+    SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_PROBES, TRUST_PIN, TRUST_RECOVERY_BACKOFF,
+    UNITS_ESTIMATED, VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -203,7 +203,10 @@ pub fn check_arrive(
         if out.pool.len > MAX_TEXT {
             return Err(fault(Rule::OverMax, "arrive.pool"));
         }
-    } else if out.pool.len != 0 || !out.pool.ptr.is_null() {
+        if out.route != ROUTE_POOL && out.route != ROUTE_DIRECT {
+            return Err(fault(Rule::UnknownCode, "arrive.route"));
+        }
+    } else if out.pool.len != 0 || !out.pool.ptr.is_null() || out.route != ROUTE_POOL {
         // The pool names where an admitted unit routes: an answer that admits nothing names none.
         return Err(fault(Rule::Contradiction, "arrive.pool"));
     }

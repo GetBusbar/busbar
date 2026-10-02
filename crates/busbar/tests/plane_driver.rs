@@ -205,6 +205,8 @@ fn stats(plugin: &Plugin<Plane>) -> [u64; cases::stat::COUNT] {
                 ptr: std::ptr::null(),
                 len: 0,
             },
+            route: 0,
+            _route_reserved: [0; 7],
         },
     );
     assert_eq!(
@@ -373,6 +375,8 @@ fn zero_arrive_out() -> ArriveOut {
             ptr: std::ptr::null(),
             len: 0,
         },
+        route: 0,
+        _route_reserved: [0; 7],
     }
 }
 

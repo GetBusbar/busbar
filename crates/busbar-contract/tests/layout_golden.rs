@@ -1754,7 +1754,9 @@ fn compute_layout() -> String {
             _reserved,
             correlation,
             cancels,
-            pool
+            pool,
+            route,
+            _route_reserved
         ]
     );
     record!(
