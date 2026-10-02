@@ -62,6 +62,7 @@ pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
     "root",
     "perf-ab",
     "perf-ab-mock",
+    "secret-hygiene-scan3",
     "dialect",
     "ship",
     "txn-fence",
@@ -96,6 +97,9 @@ pub fn main(args: &[String]) -> i32 {
         // as the one command a change under `abi/` ends with.
         Some("abi-header") => gate(args),
         Some("selftest") => selftest_cmd(&args[1..]),
+        // CHECK 3 against named files (the retro-proof), the script's `--scan3`. A debugging aid,
+        // not a gate: it prints findings and owns no rows.
+        Some("secret-hygiene-scan3") => crate::gates::secret_hygiene::scan3_main(&args[1..]),
         // The pre-registry spelling, kept byte-identical: `cargo xtask denylist` prints exactly
         // what it always printed, so nothing that reads its output has to move on the same day the
         // registry arrives.

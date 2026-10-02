@@ -407,11 +407,6 @@ class = "port"
 reason = "the #40 secret-accessor seal witness: becomes an xtask gate"
 
 [[script]]
-path = "scripts/secret-hygiene-gate.sh"
-class = "port"
-reason = "the #53 secret-hygiene scan (owner-locked release blocker): becomes an xtask gate"
-
-[[script]]
 path = "scripts/signing-gate.sh"
 class = "port"
 reason = "plugin-ci.yml's signing gate: becomes an xtask fleet subcommand the reusable workflow calls"
