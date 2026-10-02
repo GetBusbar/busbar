@@ -71,7 +71,7 @@ pub fn present(
                 ),
                 _ => (Scheme::Bearer, credential),
             };
-            let decoration = decorate(token, &scheme, secret, &request(ctx, &[], ""));
+            let decoration = decorate(token, &scheme, secret, &request(ctx, &[]));
             substitute(&decoration, secret, Vec::new())
         }
         EgressScheme::SigV4 {
@@ -94,13 +94,7 @@ pub fn present(
                 ("content-type".to_string(), (*content_type).to_string()),
                 ("host".to_string(), ctx.host.to_string()),
             ];
-            // A query the request carries (`canonical_uri` then holds `path?query`) is signed: the
-            // canonical request names it, so the far end's check covers it.
-            let query = ctx
-                .canonical_uri
-                .split_once('?')
-                .map_or_else(String::new, |(_, q)| sigv4::canonical_query(q));
-            let decoration = decorate(token, &scheme, secret, &request(ctx, &signed, &query));
+            let decoration = decorate(token, &scheme, secret, &request(ctx, &signed));
             substitute(&decoration, secret, Vec::new())
         }
     }
@@ -172,21 +166,13 @@ pub fn report_unpresented(
     }
 }
 
-/// The request a declared scheme decorates: a `POST` of `ctx`'s body to its path (the part of
-/// `canonical_uri` before any `?`), with `envelope` the fields a signer folds in and `query` the
-/// canonical query string.
-fn request<'b>(
-    ctx: &'b SigningContext<'_>,
-    envelope: &'b [(String, String)],
-    query: &'b str,
-) -> EgressBody<'b> {
+/// The request a declared scheme decorates: a `POST` of `ctx`'s body to its path, with `envelope`
+/// the fields a signer folds in.
+fn request<'b>(ctx: &'b SigningContext<'_>, envelope: &'b [(String, String)]) -> EgressBody<'b> {
     EgressBody {
         method: "POST",
-        canonical_uri: ctx
-            .canonical_uri
-            .split_once('?')
-            .map_or(ctx.canonical_uri, |(path, _)| path),
-        canonical_querystring: query,
+        canonical_uri: ctx.canonical_uri,
+        canonical_querystring: "",
         envelope,
         body: ctx.body,
         timestamp_epoch: ctx.timestamp_epoch,

@@ -494,12 +494,21 @@ pub fn governed_query(dialect: &str, name: &str) -> bool {
     crate::dialect::dialect(dialect).is_some_and(|d| d.governed_query.contains(&name))
 }
 
+/// The egress scheme of a dialect whose far end checks a request signature.
+const SIGNED_SCHEME: &str = "request-signature";
+
 /// The far end's target with the caller's own query on a same-dialect attempt (busbar is invisible
 /// to upstreams): each caller parameter, in the caller's order and spelling, but the ones the dialect
 /// governs ([`governed_query`]) and the ones the target already sets (busbar's own choice of
-/// transport). `None` when nothing is added.
+/// stream framing). `None` when nothing is added.
 #[must_use]
 pub fn with_caller_query(dialect: &str, target: &str, caller_query: &str) -> Option<String> {
+    // A far end that checks a request signature reads the query into it. Until the signer signs
+    // the canonical query (the auth plugin and the kernel's interim copy land it together, with one
+    // shared vector), a signed dialect's attempt carries none rather than one its signature omits.
+    if crate::dialect::dialect(dialect).is_some_and(|d| d.egress_scheme == SIGNED_SCHEME) {
+        return None;
+    }
     let key = |pair: &str| pair.split_once('=').map_or(pair, |(k, _)| k).to_string();
     let own: Vec<String> = target
         .split_once('?')
