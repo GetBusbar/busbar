@@ -81,8 +81,8 @@
 //!   request-serving code invoked this chain) parses and validates the bytes, and proceeds
 //!   unmodified on failure; a `ro` rewrite is dropped by the kernel from the grant.
 //!   [`slot::NOTIFY`] (P, taps): `in` is copied into the host-owned tap pool (global cap 1024, drop
-//!   metric, [`StageView`] with no prompt or signals, `groups:` filter); it never holds the
-//!   request. [`slot::CONFIGURE`], [`slot::STATUS`], [`slot::DESCRIBE`] (O): run on a FRESH
+//!   metric, [`StageView`] plus the request's declared signals and — under a `prompt: ro` grant
+//!   only — the prompt view (WIRE-HOOK Q5), `groups:` filter); it never holds the request. [`slot::CONFIGURE`], [`slot::STATUS`], [`slot::DESCRIBE`] (O): run on a FRESH
 //!   MANAGEMENT INSTANCE through the same door; status and describe return the 1.5.5 blobs (as
 //!   [`Blob`] payloads — off-path JSON is allowed here); configure acks the pushed version, 5s
 //!   deadline, a nack does not commit. [`slot::SERVE`] (O): routes are instance facts
@@ -423,7 +423,28 @@ pub struct PromptView {
     /// (the shared mechanism's own rule: JSON crosses only as an already-opaque payload the
     /// KERNEL never constructs). The SDK/plugin parses its own dialect (llm/mcp/a2a) to recover
     /// the flattened `(role, text)` view 1.5.5's `PromptProjection` computed kernel-side.
+    /// [`BLOB_ABSENT`](super::mechanism::call::BLOB_ABSENT) until the request-serving code hands
+    /// the host the raw bytes; [`messages`](Self::messages) carries the 1.5.5 view regardless.
     pub body: Blob,
+    /// The OLD `PromptProjection::messages`, flattened exactly as 1.5.5 projected them: one
+    /// [`MessageView`] per message, in request order (ARCHITECT ruling 2026-09-29, WIRE-HOOK Q1: a
+    /// hook sees exactly the 1.5.5 view — the design's accepted-differences ruling — without parsing a dialect). A
+    /// pre-tag v1 layout edit: the layout golden is regenerated, no version bump.
+    pub messages: *const MessageView,
+    /// How many; equals [`message_count`](Self::message_count)
+    /// ([`validate::check_prompt_view`]).
+    pub messages_len: usize,
+}
+
+/// One message of the prompt view (OLD `HookMessage`): its role and its flattened text, as 1.5.5's
+/// wire carried them under `request.messages[]`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MessageView {
+    /// The OLD `role`.
+    pub role: AbiStr,
+    /// The OLD `text`: the message's text content, flattened.
+    pub text: AbiStr,
 }
 
 /// The user view (OLD `CallerIdentity`): present iff `user` access is granted
@@ -687,6 +708,11 @@ pub struct StageView {
 
 /// `notify`'s `in`: a value COPY into the host-owned tap pool (global cap 1024, a drop metric past
 /// it, `groups:` filtered before this call is ever made) — it never holds the request open.
+///
+/// ARCHITECT ruling 2026-09-29 (WIRE-HOOK Q5, the design's accepted-differences ruling: a hook sees exactly the 1.5.5
+/// view): a 1.5.5 tap was handed the request's declared signals, and a `prompt: ro` tap the
+/// prompt, so both ride here beside the stage view — a pre-tag v1 layout edit, the layout golden
+/// regenerated, no bump.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct NotifyIn {
@@ -694,6 +720,16 @@ pub struct NotifyIn {
     pub head: InHead,
     /// The stage view.
     pub stage: StageView,
+    /// The request's declared signals ([`SignalEntry`]), in push order.
+    pub signals: *const SignalEntry,
+    /// How many.
+    pub signals_len: usize,
+    /// The prompt view; meaningful only when [`VIEW_HAS_PROMPT`] is set (a `prompt: ro` tap).
+    pub prompt: PromptView,
+    /// [`VIEW_HAS_PROMPT`].
+    pub present: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }
 
 /// `configure`'s `in`. ARCHITECT review ruling (fresh-Opus M3-SHAPES review, parity item):

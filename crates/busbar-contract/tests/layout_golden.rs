@@ -62,11 +62,12 @@ use busbar_contract::abi::hook::{
     BudgetBucketState as HookBudgetBucketState, CandidateDynamic as HookCandidateDynamic,
     CandidateStatic as HookCandidateStatic, ConfigureIn as HookConfigureIn,
     ConfigureOut as HookConfigureOut, DecideIn as HookDecideIn, DecideOut as HookDecideOut,
-    DescribeOut as HookDescribeOut, NotifyIn as HookNotifyIn, Ops as HookOps,
-    PromptView as HookPromptView, RequestView as HookRequestView, Route as HookRoute,
-    ServeIn as HookServeIn, ServeOut as HookServeOut, SignalEntry as HookSignalEntry,
-    SignalValue as HookSignalValue, StageView as HookStageView, StatusOut as HookStatusOut,
-    Tail as HookTail, TransformOut as HookTransformOut, UserView as HookUserView,
+    DescribeOut as HookDescribeOut, MessageView as HookMessageView, NotifyIn as HookNotifyIn,
+    Ops as HookOps, PromptView as HookPromptView, RequestView as HookRequestView,
+    Route as HookRoute, ServeIn as HookServeIn, ServeOut as HookServeOut,
+    SignalEntry as HookSignalEntry, SignalValue as HookSignalValue, StageView as HookStageView,
+    StatusOut as HookStatusOut, Tail as HookTail, TransformOut as HookTransformOut,
+    UserView as HookUserView,
 };
 use busbar_contract::abi::secret::{
     Ops as SecretOps, ResolveIn as SecretResolveIn, ResolveOut as SecretResolveOut,
@@ -2081,7 +2082,12 @@ fn compute_layout() -> String {
             _reserved
         ]
     );
-    record!(s, HookPromptView, [system, message_count, body]);
+    record!(
+        s,
+        HookPromptView,
+        [system, message_count, body, messages, messages_len]
+    );
+    record!(s, HookMessageView, [role, text]);
     record!(s, HookUserView, [key_id, key_name, user]);
     record!(
         s,
@@ -2177,7 +2183,19 @@ fn compute_layout() -> String {
             _reserved2
         ]
     );
-    record!(s, HookNotifyIn, [head, stage]);
+    record!(
+        s,
+        HookNotifyIn,
+        [
+            head,
+            stage,
+            signals,
+            signals_len,
+            prompt,
+            present,
+            _reserved
+        ]
+    );
     record!(s, HookConfigureIn, [head, version, settings, name]);
     record!(s, HookConfigureOut, [head, acked_version]);
     record!(s, HookStatusOut, [head, status]);
