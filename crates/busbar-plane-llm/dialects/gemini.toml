@@ -4,7 +4,7 @@
 [dialect]
 wire = "gemini"  # the wire lock: dialects/gemini.wire.json (notation A paths)
 label = "Gemini"
-request = ["structure", "generation_config"]
+request = ["structure", "generation_config", "tier"]
 drop_warn = "dropping a request control on Gemini egress: generateContent has no form for it"
 
 # Members the dialect's own code models (`prim`). `generationConfig` is NOT one: it rides `extra`
@@ -27,6 +27,19 @@ drop_warn = "dropping a request control on Gemini egress: generateContent has no
 "generationConfig.presencePenalty" = { ir = "presence_penalty" }
 "generationConfig.seed" = { ir = "seed" }
 "generationConfig.candidateCount" = { ir = "n" }
+
+# The service tier (Gemini `serviceTier`: standard / flex / priority) and the request-logging
+# switch (`store`), the members OpenAI Chat and Responses spell `service_tier` / `store`. A raw
+# member the slot cannot reproduce (`unspecified`) is parked in `extra` (same-dialect fidelity).
+[rows.tier]
+park = true
+"serviceTier" = { ir = "service_tier", words = "service_tier" }
+"store" = { ir = "store" }
+
+[words.service_tier]
+"default" = { wire = "standard" }
+"flex" = { wire = "flex" }
+"priority" = { wire = "priority" }
 
 # Controls beyond the rows: `labels` (validated per entry) and `responseModalities` are the
 # dialect's own code.
