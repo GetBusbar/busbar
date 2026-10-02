@@ -303,10 +303,6 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   be audio. A JSON body without the audio part is now refused, and the error the upstream sent
   reaches the caller as an error. A raw container still reads exactly as before.
   See [Spec fidelity](#spec-fidelity).
-- **A Bedrock `Converse` response always carries `metrics`.** The published Converse output shape
-  requires the member; 1.5.5's same-dialect passthrough dropped it when the upstream's own response
-  did not carry one. 1.6.0 always emits it, with the normalized `latencyMs` for the call.
-  See [Spec fidelity](#spec-fidelity).
 - **An Anthropic response carries the members its published schema requires.** `stop_details`,
   `container`, `citations`, the cache and service-tier usage members, `output_tokens_details` and
   `server_tool_use` are all marked required by Anthropic's published Message and stream-event
@@ -318,12 +314,6 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   `temperature`, `top_p`, a content part's `logprobs` and the usage detail objects are required by
   the published Response object and were omitted in 1.5.5; they are now emitted with the carried
   value or the spec's default. See [Spec fidelity](#spec-fidelity).
-- **A `stream: true` request on the Responses door is answered as a stream.** It is served as
-  `text/event-stream` carrying the `ResponseStreamEvent` sequence; 1.5.5 answered the same-dialect
-  case with a buffered `application/json` body, so a client that asked for a stream got one
-  response at the end instead. The response is metered identically. Because SSE is chunked, that
-  answer no longer carries the synthesized `content-length` the buffered body had.
-  See [Spec fidelity](#spec-fidelity).
 - **Every door streams when the routed lane is Responses-shaped.** A `stream: true` request whose
   lane speaks the Responses API is now served as `text/event-stream` in the frames of the door that
   received it — Cohere v2 SSE, Gemini's SSE framing, OpenAI `chat.completion.chunk` SSE — where
@@ -558,12 +548,11 @@ boot, as it did in 1.5.5. `BUSBAR_CONFIG`, secret `{ env: NAME }` references, `R
 
 ### Plugins
 
-The four published 1.5.5 store plugins (sqlite, postgres, mysql, valkey, `abi_version: 2`) load
-unchanged: the store ABI window is `2..=4`, the durable wire is additive, and a 1.5.5 plugin answers
-the eight new plane-record verbs with "unsupported", which the engine treats as inert. Secret, auth
-and hook plugins are untouched. Stores built against ABI 4 — the ones that persist MCP call
-records and A2A tasks durably — are a later release; nothing you have installed needs rebuilding
-for 1.6.0. See [the plugin guide](docs/plugins.md).
+**A published 1.5.5 JSON-contract plugin no longer loads** (spec section 11.8: no legacy loading). That
+includes the four published 1.5.5 store plugins (sqlite, postgres, mysql, valkey, `abi_version: 2`):
+boot refuses one with a message naming the rebuild against the 1.6.0 SDK. **Migration:** rebuild each
+plugin against the 1.6.0 SDK (see the SDK migration note) and install the rebuilt release before
+upgrading. See [the plugin guide](docs/plugins.md).
 
 **Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is
 named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset
