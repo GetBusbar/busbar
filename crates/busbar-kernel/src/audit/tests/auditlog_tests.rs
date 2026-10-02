@@ -483,15 +483,29 @@ fn old_store_audit_only_in_legacy_table_boots_migrates_and_verifies() {
 #[derive(Clone, Default)]
 struct DiagCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
 
-/// Install `cap` as THIS thread's subscriber and rebuild tracing's process-wide callsite interest cache.
-/// The cache is the state tests share: a callsite first hit on another test thread with no subscriber
-/// is cached as "never", and a scoped `set_default` alone does not always re-enable it, so the
-/// capture saw nothing depending on test order. Rebuilding after install makes the capture isolated.
-fn capture_into(cap: &DiagCapture) -> tracing::subscriber::DefaultGuard {
+/// Serializes every test that restores an admin audit stream holding an undecodable row, because they
+/// all hit the same process-wide tracing callsite (BUSBAR-2047). tracing caches a callsite's interest
+/// process-wide: a test with no subscriber that hits the callsite while another test's capture is
+/// being installed leaves the callsite disabled for the capture, so it saw nothing depending on test
+/// order. Holding this lock for the whole restore keeps each test's subscriber the only one in play.
+static DIAG_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The isolated capture: the serial lock, then `cap` as THIS thread's subscriber with tracing's
+/// callsite interest cache rebuilt, both released when it drops.
+struct IsolatedCapture {
+    _guard: tracing::subscriber::DefaultGuard,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+fn capture_into(cap: &DiagCapture) -> IsolatedCapture {
     use tracing_subscriber::layer::SubscriberExt as _;
+    let lock = DIAG_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(cap.clone()));
     tracing::callsite::rebuild_interest_cache();
-    guard
+    IsolatedCapture {
+        _guard: guard,
+        _lock: lock,
+    }
 }
 
 impl<S> tracing_subscriber::Layer<S> for DiagCapture
@@ -630,11 +644,11 @@ fn restore_does_not_fork_the_chain_when_one_row_is_undecodable() {
     // NOT abort the restore (before the fix this `?`-aborted and returned Err → the chain forked).
     let h2 = AuditTestHarness::over(store.clone());
     let plane = PlaneStoreView::narrow(store.clone());
-    let restored = h2
-        .host(|host| h2.log.restore_from_store(host, plane.as_ref()))
-        .expect(
-            "one undecodable row must NOT abort the whole restore and fork the governance chain",
-        );
+    let restored = {
+        let _serial = DIAG_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        h2.host(|host| h2.log.restore_from_store(host, plane.as_ref()))
+    }
+    .expect("one undecodable row must NOT abort the whole restore and fork the governance chain");
     assert_eq!(restored.unreadable, 1, "the bad row is counted, not fatal");
     assert_eq!(
         restored.records, 1,
