@@ -24,19 +24,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use base64::Engine as _;
-use oauth_as::client::{Client, ClientAuth, ClientId};
-use oauth_as::client_assertion::AssertionKeys;
-use oauth_as::grant::GrantType;
-use oauth_as::jwt::{EcCurve, Jwk, JwsAlg};
-use oauth_as::scope::ScopeSet;
 use ring::signature::{EcdsaKeyPair, KeyPair as _, ECDSA_P256_SHA256_FIXED_SIGNING};
 use serde_json::{json, Value};
 
-use busbar_kernel::oauth_as::config::OauthAsCfg;
+use busbar_kernel::oauth_as::config::{
+    OauthAsCfg, StaticClientCfg, StaticClientJwk, StaticClientJwks,
+};
 use busbar_kernel::test_support::TestApp;
 
 use crate::flow_tests::{location, path_of, percent_decode, query_param, send, Jar};
-use crate::testkit::{oauth_as_plane, TestAppOauthExt};
+use crate::testkit::TestAppOauthExt;
 
 /// The client's redirect URI. Never fetched: every flow ends at the redirect that carries the code.
 const REDIRECT_URI: &str = "http://127.0.0.1:9999/cb";
@@ -90,14 +87,17 @@ impl Key {
         (B64.encode(&point[1..33]), B64.encode(&point[33..65]))
     }
 
-    /// The public half as the client registers it.
-    fn jwk(&self) -> Jwk {
+    /// The public half as the operator declares it in `oauth_as.clients:`.
+    fn static_jwk(&self) -> StaticClientJwk {
         let (x, y) = self.coordinates();
-        Jwk::Ec {
-            crv: EcCurve::P256,
+        StaticClientJwk {
+            kty: "EC".to_string(),
+            crv: "P-256".to_string(),
             x,
             y,
             kid: Some(self.kid.to_string()),
+            alg: Some("ES256".to_string()),
+            d: None,
         }
     }
 
@@ -154,7 +154,9 @@ impl Key {
 
 // ── the subject ──────────────────────────────────────────────────────────────────────────────────
 
-/// A served `fapi2: true` deployment with two `private_key_jwt` clients, each with its own key.
+/// A served `fapi2: true` deployment with two `private_key_jwt` clients, each with its own key,
+/// both PROVISIONED BY CONFIG (`oauth_as.clients:`), which is how a deployment gets one: RFC 7591
+/// registration cannot carry a key.
 struct Subject {
     origin: String,
     client: reqwest::Client,
@@ -170,6 +172,14 @@ async fn serve(fapi2: bool) -> Subject {
         .await
         .expect("bind");
     let origin = format!("http://{}", listener.local_addr().expect("addr"));
+    let (key, other) = (Key::new("fapi-client-key"), Key::new("fapi-client-2-key"));
+    let declared = |client_id: &str, key: &Key| StaticClientCfg {
+        client_id: client_id.to_string(),
+        redirect_uris: vec![REDIRECT_URI.to_string()],
+        jwks: StaticClientJwks {
+            keys: vec![key.static_jwk()],
+        },
+    };
     let cfg = OauthAsCfg {
         issuer: origin.clone(),
         signing_key: None,
@@ -177,7 +187,7 @@ async fn serve(fapi2: bool) -> Subject {
         default_grant: vec![SCOPE.to_string()],
         access_token_ttl_secs: None,
         fapi2,
-        clients: Vec::new(),
+        clients: vec![declared(CLIENT_ID, &key), declared(OTHER_CLIENT_ID, &other)],
     };
     // The open admin posture, as in `flow_tests::serve`: the consent screen's `RouteAuth::Admin`
     // is not the property under test here.
@@ -185,29 +195,6 @@ async fn serve(fapi2: bool) -> Subject {
         .admin_chain(Vec::new())
         .oauth_as(&cfg)
         .build();
-    let (key, other) = (Key::new("fapi-client-key"), Key::new("fapi-client-2-key"));
-    let server = oauth_as_plane(&app).expect("configured").server().clone();
-    for (client_id, key) in [(CLIENT_ID, &key), (OTHER_CLIENT_ID, &other)] {
-        let scopes = ScopeSet::from_tokens([SCOPE]).expect("scope");
-        server
-            .register_client(Client {
-                client_id: ClientId::new(client_id),
-                auth: ClientAuth::ConfidentialAssertion {
-                    keys: AssertionKeys::PublicKeys {
-                        alg: JwsAlg::Es256,
-                        keys: vec![key.jwk()],
-                    },
-                },
-                grant_types: vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
-                redirect_uris: vec![REDIRECT_URI.to_string()],
-                allowed_scopes: scopes.clone(),
-                default_scopes: scopes,
-                name: Some(client_id.to_string()),
-                registration: None,
-            })
-            .await
-            .expect("register a private_key_jwt client");
-    }
     let router = busbar_kernel::build_router(Arc::clone(&app));
     tokio::spawn(async move {
         axum::serve(listener, router).await.expect("serve");
@@ -757,6 +744,14 @@ async fn the_pushed_authorization_endpoint_refuses_what_the_profile_forbids() {
         &[400],
         &["invalid_request"],
         "FAPI2 s5.3.2.2-5: S256 only, `plain` refused",
+    )
+    .await;
+    assert_push_refused(
+        &s,
+        &with(&good(), "scope", json!(format!("{SCOPE} admin"))),
+        &[400],
+        &["invalid_scope"],
+        "a provisioned client asks for no more than `default_grant`",
     )
     .await;
     assert_push_refused(
