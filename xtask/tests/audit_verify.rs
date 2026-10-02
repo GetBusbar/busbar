@@ -17,11 +17,18 @@ fn page(version: u8) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
 }
 
-/// The ```json block that follows the line naming `read` in a published page.
+/// The ```json block under the worked example's own heading line for `read` (a line that is only
+/// "`GET /api/v1/admin/audit/<read>...`:"), never the reads table above it.
 fn example(version: u8, read: &str) -> Value {
     let text = page(version);
+    let lead = format!("`GET /api/v1/admin/audit/{read}");
     let at = text
-        .find(&format!("`GET /api/v1/admin/audit/{read}"))
+        .match_indices('\n')
+        .map(|(i, _)| i + 1)
+        .find(|&i| {
+            let line = text[i..].lines().next().unwrap_or("");
+            line.starts_with(&lead) && line.ends_with("`:")
+        })
         .unwrap_or_else(|| panic!("the v{version} page shows no {read} body"));
     let rest = &text[at..];
     let open = rest.find("```json\n").expect("a json block") + "```json\n".len();
