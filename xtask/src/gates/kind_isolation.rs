@@ -10081,9 +10081,15 @@ mod plant_tests {
                 c.declared_keys
             );
         }
+        // Planted inside whichever transport crate the census holds first: the wires leave this
+        // tree for their own repos one by one, and the property is about a sibling's module.
+        let host = transports[0]
+            .manifest
+            .strip_suffix("/Cargo.toml")
+            .expect("a crate manifest path");
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-transport-tcp/src/planted_wire/meta.rs",
+            format!("{host}/src/planted_wire/meta.rs"),
             "impl TransportMeta for PlantedWire {\n    const KEY: &'static str = \"plantedwire\";\n}\n",
         );
         let planted = cx.with_overlay(ov);
