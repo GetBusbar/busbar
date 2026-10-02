@@ -182,7 +182,7 @@ fn bedrock_to_anthropic_to_bedrock_round_trips_a_one_part_search_result() {
 
 #[test]
 fn a_dialect_without_the_block_still_reads_the_passage_and_its_source() {
-    let out = xreq("bedrock", "openai_chat", &bedrock_body()).to_string();
+    let out = xreq("bedrock", "openai", &bedrock_body()).to_string();
     for needle in [
         "Refund policy",
         "https://kb.example/doc-7",
