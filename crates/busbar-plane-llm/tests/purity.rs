@@ -66,8 +66,8 @@ fn the_source_holds_nothing_mutable() {
     ];
     // THE DOOR'S ABI-MANDATED STATE (ARCHITECT 2026-10-02): the memory-ABI door keeps, per
     // instance, the shaping of its current refresh generation and the table of units in flight
-    // across their Ready|Pending calls (BUSBAR-1.6.0.md THE DESIGN §11: plugin-owned memory, valid to
-    // its next refresh generation). These lines are that state, named exactly; anything else in the
+    // across their Ready|Pending calls (the design's plugin ABI: plugin-owned memory, valid to its
+    // next refresh generation). These lines are that state, named exactly; anything else in the
     // door, and anything in the plane ([`LlmPlane`], [`Upstream`]), is still refused.
     const DOOR_STATE: &[(&str, &str)] = &[
         ("plane_door.rs", "shapings: Mutex<"),
