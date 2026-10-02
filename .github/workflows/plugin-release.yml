@@ -22,7 +22,7 @@
 #
 # A PRE-RELEASE tag (`vX.Y.Z-dev.N`, cut from a plugin repo's dev branch) runs the same build, sign and
 # pack, but its release is a GitHub pre-release: published, never marked latest, and no site dispatch.
-name: plugin-release
+name: "Plugins: release"
 
 on:
   workflow_call:
