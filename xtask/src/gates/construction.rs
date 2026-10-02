@@ -47,6 +47,10 @@ pub mod selftest;
 pub mod teller_paths;
 pub mod tree;
 
+#[cfg(test)]
+#[path = "construction/lean_core_tests.rs"]
+mod lean_core_tests;
+
 use std::collections::BTreeMap;
 
 use crate::ctx::Ctx;
