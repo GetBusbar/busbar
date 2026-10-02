@@ -76,12 +76,9 @@ use busbar_contract::transport::ConnFacts;
 use crate::compose::{
     Connection, Dial, Failure, Planned, DEFAULT_OPEN_TIMEOUT, WRITE_BUFFER_BYTES,
 };
+use crate::framer::FramerDoor;
 use crate::listen::{AcceptLimits, Listening};
 use crate::registry::Transports;
-
-/// What an open for a DECLARED need answers while no transport serves it: refused, never a silent
-/// success.
-pub const NO_TRANSPORT_YET: ConnError = ConnError::Refused;
 
 /// How the host wakes a caller's ticket.
 pub type WakeTicket = Arc<dyn Fn(Ticket) + Send + Sync>;
@@ -164,10 +161,13 @@ fn class_admits(egress_class: u32, secure: bool, within: &[IpAddr], addr: Socket
         }
 }
 
-/// What the connector holds for one declared need.
-#[derive(Debug, Clone)]
+/// What the connector holds for one declared need: the entry serving its transport, resolved once
+/// at declare (a need no entry serves is refused there, never at its open; spec Part 2 #50).
+#[derive(Clone)]
 struct DeclaredNeed {
-    transport: String,
+    door: Arc<dyn FramerDoor>,
+    /// The protocols the serving entry offers in the TLS handshake.
+    alpn: Vec<Vec<u8>>,
     egress_class: u32,
     /// The target the need's `target_from` resolved to; `None` = the plugin names it per open.
     declared_target: Option<String>,
@@ -317,33 +317,61 @@ impl Connector {
     }
 
     /// Record that `owner` declared `need` — the only needs it may open. A need declared without a
-    /// transport opens nothing ([`NO_TRANSPORT_YET`]).
+    /// transport (an inbound need: it listens and accepts) dials nothing, and an open on it is
+    /// refused.
     pub fn declare(&self, owner: InstanceId, need: NeedId) {
         self.slab.declare(owner, need);
     }
 
+    /// Whether a loaded transport entry serves `transport` (a scheme).
+    #[must_use]
+    pub fn serves_scheme(&self, transport: &str) -> bool {
+        self.transports
+            .read()
+            .expect("transports")
+            .serving(transport)
+            .is_some()
+    }
+
     /// Record that `owner` declared `need` over `transport` (a scheme the registry view serves), in
     /// the default egress class ([`DEFAULT_CLASS`]).
-    pub fn declare_over(&self, owner: InstanceId, need: NeedId, transport: &str) {
-        self.declare_need(owner, need, transport, DEFAULT_CLASS);
+    ///
+    /// # Errors
+    ///
+    /// No loaded transport serves `transport` ([`ConnError::Refused`]); nothing is recorded.
+    pub fn declare_over(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        transport: &str,
+    ) -> Result<(), ConnError> {
+        self.declare_need(owner, need, transport, DEFAULT_CLASS)
     }
 
     /// Record that `owner` declared `need` over `transport`, its dials judged under the need's own
     /// `egress_class` (`Need::egress_class`).
+    ///
+    /// # Errors
+    ///
+    /// No loaded transport serves `transport` ([`ConnError::Refused`]); nothing is recorded.
     pub fn declare_need(
         &self,
         owner: InstanceId,
         need: NeedId,
         transport: &str,
         egress_class: u32,
-    ) {
-        self.record(owner, need, transport, egress_class, None);
+    ) -> Result<(), ConnError> {
+        self.record(owner, need, transport, egress_class, None)
     }
 
     /// Record that `owner` declared `need` over `transport` in `egress_class`, its target named by
     /// the need's config (`target_from`) and resolved to `declared_target`. Every open on the need
     /// must dial that target: another authority, or the same one under another security, is
     /// refused before any judgement or dial.
+    ///
+    /// # Errors
+    ///
+    /// No loaded transport serves `transport` ([`ConnError::Refused`]); nothing is recorded.
     pub fn declare_need_to(
         &self,
         owner: InstanceId,
@@ -351,10 +379,13 @@ impl Connector {
         transport: &str,
         egress_class: u32,
         declared_target: &str,
-    ) {
-        self.record(owner, need, transport, egress_class, Some(declared_target));
+    ) -> Result<(), ConnError> {
+        self.record(owner, need, transport, egress_class, Some(declared_target))
     }
 
+    /// THE SCHEME MATCH (spec Part 2 #50: "no match ⇒ fail closed"): the need is recorded over the
+    /// entry serving `transport`, resolved here once, or refused here; an open never meets an
+    /// unserved scheme.
     fn record(
         &self,
         owner: InstanceId,
@@ -362,16 +393,28 @@ impl Connector {
         transport: &str,
         egress_class: u32,
         declared_target: Option<&str>,
-    ) {
+    ) -> Result<(), ConnError> {
+        let served = {
+            let view = self.transports.read().expect("transports");
+            view.serving(transport)
+                .map(|served| (Arc::clone(&served.entry.door), served.entry.alpn.clone()))
+        };
+        let Some((door, alpn)) = served else {
+            // Any earlier record of the need is dropped with it.
+            self.over.lock().expect("needs").remove(&(owner, need));
+            return Err(ConnError::Refused);
+        };
         self.slab.declare(owner, need);
         self.over.lock().expect("needs").insert(
             (owner, need),
             DeclaredNeed {
-                transport: transport.to_owned(),
+                door,
+                alpn,
                 egress_class,
                 declared_target: declared_target.map(str::to_owned),
             },
         );
+        Ok(())
     }
 
     /// Bind the one listener for `owner`'s INBOUND `need` on `bind` (`ip:port`), over the transport
@@ -391,18 +434,14 @@ impl Connector {
         limits: AcceptLimits,
     ) -> Result<SocketAddr, ConnError> {
         self.slab.check_need(owner, need)?;
-        let scheme = self
+        // A need declared without a transport binds nothing.
+        let (door, alpn) = self
             .over
             .lock()
             .expect("needs")
             .get(&(owner, need))
-            .map(|d| d.transport.clone())
-            .ok_or(NO_TRANSPORT_YET)?;
-        let (door, alpn) = {
-            let view = self.transports.read().expect("transports");
-            let served = view.serving(&scheme).ok_or(NO_TRANSPORT_YET)?;
-            (Arc::clone(&served.entry.door), served.entry.alpn.clone())
-        };
+            .map(|d| (Arc::clone(&d.door), d.alpn.clone()))
+            .ok_or(ConnError::Refused)?;
         let mut listeners = self.listeners.lock().expect("listeners");
         if listeners.contains_key(&(owner, need)) {
             return Err(ConnError::Refused);
@@ -646,8 +685,10 @@ impl DeclaredConns for Connector {
         // own egress class, and pinned to the target its config names when it names one (a
         // `target_from` that resolved to nothing is refused, and so is a target carrying a
         // userinfo: a credential never rides a dial target, it travels in the request's own
-        // headers — FAIL-CLOSED, ARCHITECT ruling 2026-10-02; any earlier pin is dropped); an
-        // inbound need is recorded (the listener binds it).
+        // headers — FAIL-CLOSED, ARCHITECT ruling 2026-10-02; any earlier pin is dropped), and
+        // refused when no loaded transport serves its scheme (spec Part 2 #50; the loader fails
+        // the boot on it, naming the plugin and the scheme); an inbound need is recorded (the
+        // listener binds it).
         let outbound = spec.direction == DIRECTION_OUTBOUND;
         let unresolved = !spec.target_from.is_empty() && target.is_none();
         let credentialed = target.is_some_and(carries_userinfo);
@@ -657,12 +698,14 @@ impl DeclaredConns for Connector {
         } else {
             match (outbound, target) {
                 (true, Some(t)) => {
-                    self.declare_need_to(owner, need, &spec.transport, spec.egress_class, t);
+                    self.declare_need_to(owner, need, &spec.transport, spec.egress_class, t)
                 }
                 (true, None) => self.declare_need(owner, need, &spec.transport, spec.egress_class),
-                (false, _) => self.slab.declare(owner, need),
+                (false, _) => {
+                    self.slab.declare(owner, need);
+                    Ok(())
+                }
             }
-            Ok(())
         };
         self.declared
             .lock()
@@ -679,18 +722,15 @@ impl DeclaredConns for Connector {
     /// A need is framed when the entry serving its transport composes over another claim (a framer
     /// above a carrier, http's kind); an entry directly over the host's socket is a raw stream.
     fn framed(&self, owner: InstanceId, need: NeedId) -> bool {
-        let Some(scheme) = self
-            .over
+        self.over
             .lock()
             .expect("needs")
             .get(&(owner, need))
-            .map(|d| d.transport.clone())
-        else {
-            return false;
-        };
-        let view = self.transports.read().expect("transports");
-        view.serving(&scheme)
-            .is_some_and(|served| !served.entry.door.facts().composes_over.is_empty())
+            .is_some_and(|d| !d.door.facts().composes_over.is_empty())
+    }
+
+    fn serves_scheme(&self, transport: &str) -> bool {
+        Connector::serves_scheme(self, transport)
     }
 }
 
@@ -702,8 +742,10 @@ impl Conns for Connector {
         desc: &OpenDesc<'_>,
     ) -> Result<ConnId, ConnError> {
         self.slab.check_need(caller, need)?;
+        // A need declared without a transport (an inbound need) dials nothing.
         let DeclaredNeed {
-            transport: scheme,
+            door,
+            alpn,
             egress_class,
             declared_target,
         } = self
@@ -712,7 +754,7 @@ impl Conns for Connector {
             .expect("needs")
             .get(&(caller, need))
             .cloned()
-            .ok_or(NO_TRANSPORT_YET)?;
+            .ok_or(ConnError::Refused)?;
         // No target named: the need's own, its config's (`EstablishIn.target` absent = the need's
         // `target_from`).
         let target = match (desc.target, declared_target.as_deref()) {
@@ -720,11 +762,6 @@ impl Conns for Connector {
             (named, _) => named,
         };
         endpoint::check(target).map_err(|_| ConnError::Refused)?;
-        let (door, alpn) = {
-            let view = self.transports.read().expect("transports");
-            let served = view.serving(&scheme).ok_or(NO_TRANSPORT_YET)?;
-            (Arc::clone(&served.entry.door), served.entry.alpn.clone())
-        };
         let dial = Dial {
             target: target.to_owned(),
             tls: self.tls.clone(),

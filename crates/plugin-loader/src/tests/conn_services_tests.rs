@@ -38,6 +38,8 @@ struct Recording {
     slab: ConnSlab<()>,
     declared: Mutex<Vec<Declared>>,
     opened: Mutex<Vec<(InstanceId, NeedId, String)>>,
+    /// The schemes no loaded transport serves, as this table answers [`DeclaredConns::serves`].
+    unserved: Vec<&'static str>,
 }
 
 impl DeclaredConns for Recording {
@@ -60,6 +62,9 @@ impl DeclaredConns for Recording {
     }
     fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>> {
         self.slab.check_need(owner, need).ok().map(Ok)
+    }
+    fn serves_scheme(&self, transport: &str) -> bool {
+        !self.unserved.contains(&transport)
     }
 }
 
@@ -114,6 +119,14 @@ const NEEDS: [Need; 1] = [Need {
 
 /// The test plugin's door, its Statement declaring `needs`, bound over `table`.
 fn bound(needs: &'static [Need], table: &Arc<Recording>) -> Plugin<TestKind> {
+    bind_over(needs, table).expect("the instance binds")
+}
+
+/// The test plugin's door, its Statement declaring `needs`, bound over `table`: the bind's answer.
+fn bind_over(
+    needs: &'static [Need],
+    table: &Arc<Recording>,
+) -> Result<Plugin<TestKind>, crate::dispatch::LoadError> {
     // SAFETY: the real door and its Statement are `'static`.
     let real: Door = unsafe { *plug::busbar_plugin_door() };
     let st: Statement = unsafe { *real.statement };
@@ -139,7 +152,6 @@ fn bound(needs: &'static [Need], table: &Arc<Recording>) -> Plugin<TestKind> {
             conns: Some(conns),
         },
     )
-    .expect("the instance binds")
 }
 
 /// `ESTABLISH` through the slots, under `p`'s context, for `need` at `target`.
@@ -223,6 +235,34 @@ fn targets(table: &Recording, p: &Plugin<TestKind>) -> Vec<Option<String>> {
         .filter(|(owner, need, _, _)| (*owner, *need) == (p.instance(), NeedId(0)))
         .map(|(_, _, _, target)| target.clone())
         .collect()
+}
+
+/// RED (spec Part 2 #50, THE BOOT'S SCHEME MATCH): an outbound need over a scheme no loaded
+/// transport serves refuses the load, naming the plugin and the scheme, and declares nothing; the
+/// same need over a served scheme binds.
+#[test]
+fn a_need_over_an_unserved_scheme_refuses_the_load_naming_plugin_and_scheme() {
+    let unserved = Arc::new(Recording {
+        unserved: vec!["sock"],
+        ..Recording::default()
+    });
+    let Err(refusal) = bind_over(Box::leak(Box::new(NEEDS)), &unserved) else {
+        panic!("a need over an unserved scheme must refuse the load");
+    };
+    let crate::dispatch::LoadError::UnservedScheme { plugin, scheme } = &refusal else {
+        panic!("refused for the wrong reason: {refusal}");
+    };
+    assert_eq!(scheme, "sock");
+    assert!(!plugin.is_empty(), "the refusal names the plugin");
+    let text = refusal.to_string();
+    assert!(
+        text.contains(plugin.as_str()) && text.contains("`sock`"),
+        "{text}"
+    );
+    assert!(unserved.declared.lock().unwrap().is_empty());
+
+    let served = Arc::new(Recording::default());
+    assert!(bind_over(Box::leak(Box::new(NEEDS)), &served).is_ok());
 }
 
 /// RED: the instance that declares a need is handed the slots; its config-targeted need is not
@@ -401,6 +441,9 @@ impl DeclaredConns for Scripted {
     }
     fn framed(&self, _: InstanceId, _: NeedId) -> bool {
         self.framed
+    }
+    fn serves_scheme(&self, _: &str) -> bool {
+        true
     }
 }
 

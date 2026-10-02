@@ -39,6 +39,7 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, Diag, InHead, MetricEntry, Op, OutHead, Outcome, RawOutcome,
     DIAG_LOG, DIAG_LOG_DROPPED, METRIC_ADD, METRIC_OBSERVE, METRIC_SET, SEVERITY_ERROR,
@@ -935,14 +936,28 @@ impl<K: Kind> Plugin<K> {
                         .map(|r| r.needs)
                         .ok_or_else(|| LoadError::BadStatement("the needs do not render".into()))?;
                     for (i, need) in needs.iter().enumerate() {
+                        // THE BOOT'S SCHEME MATCH (spec Part 2 #50): an outbound need over a
+                        // scheme no loaded transport serves refuses the load, naming the plugin
+                        // and the scheme — fail closed now, never at the need's first open.
+                        if need.direction == DIRECTION_OUTBOUND
+                            && !need.transport.is_empty()
+                            && !table.serves_scheme(&need.transport)
+                        {
+                            return Err(LoadError::UnservedScheme {
+                                plugin: str_bytes(st.name)
+                                    .map(|n| String::from_utf8_lossy(n).into_owned())
+                                    .unwrap_or_default(),
+                                scheme: need.transport.clone(),
+                            });
+                        }
                         // A need whose target comes from config is declared once its settings
                         // arrive (`open`, `refresh`); until then an open on it is undeclared.
                         if !need.target_from.is_empty() {
                             continue;
                         }
                         let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
-                        // The answer is the connection table's to keep; a need the host will not
-                        // carry is refused at its open, not at bind.
+                        // The answer is the connection table's to keep (`need.admit` reads it);
+                        // its scheme was matched above.
                         let _ = table.declare(instance, id, need, None);
                     }
                     declared_needs = needs.into_boxed_slice();
