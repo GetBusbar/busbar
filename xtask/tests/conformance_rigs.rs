@@ -9,9 +9,9 @@
 use serde_json::{json, Value};
 use xtask::conformance_record::{
     b64url, decide_h2, decide_jev, decide_oidf, decide_slsa, decide_tls, discriminates, es256_jwk,
-    governance_observed, is_jev_refusal, jev_fee_count, junit_cases, module_results,
+    governance_observed, is_jev_refusal, judge_jev_ledger, junit_cases, module_results,
     provenance_commit, rig_for, tests_passed, CaseResult, H2Run, JevRun, OidfRun, SlsaRun, Status,
-    TlsRun, NEGATIVE_PAIRS, OIDF_SUITES,
+    TlsRun, NEGATIVE_PAIRS, OIDF_SUITES, REPORTED_UNITS,
 };
 
 fn registry_ids() -> Vec<String> {
@@ -163,15 +163,31 @@ fn the_jev_refusal_shape_is_exactly_code_and_message() {
     assert!(is_jev_refusal(b"not json", "invalid_request").is_err());
 }
 
+fn totals(rows: &[(&str, &str, u64, &str)]) -> Vec<u8> {
+    json!({"rows": rows.iter().map(|(lane, provider, fees, micros)| json!({
+        "bucket": "k", "day": 0, "lane": lane, "provider": provider,
+        "fee_count": fees, "priced_nanos": "0", "priced_micros": micros,
+    })).collect::<Vec<_>>()})
+    .to_string()
+    .into_bytes()
+}
+
 #[test]
-fn the_fee_count_is_read_off_the_jev_lane_only() {
-    let totals = json!({"rows": [
-        {"bucket": "k", "day": 0, "lane": "jev-1", "provider": "typesafe", "fee_count": 1, "priced_nanos": "0", "priced_micros": "0"},
-        {"bucket": "k", "day": 0, "lane": "gpt", "provider": "openai", "fee_count": 9, "priced_nanos": "0", "priced_micros": "0"},
-    ]});
-    assert_eq!(jev_fee_count(totals.to_string().as_bytes()), Ok(1));
-    assert_eq!(jev_fee_count(br#"{"rows":[]}"#), Ok(0));
-    assert!(jev_fee_count(b"{}").is_err());
+fn the_jev_ledger_shows_one_fee_carrying_the_reported_units() {
+    assert_eq!(REPORTED_UNITS, 42);
+    // One billable success at 42 units; another lane's rows are not read.
+    assert!(judge_jev_ledger(&totals(&[
+        ("jev-1", "typesafe", 1, "42"),
+        ("gpt", "openai", 9, "100"),
+    ]))
+    .is_ok());
+    // The 422 billed too.
+    assert!(judge_jev_ledger(&totals(&[("jev-1", "typesafe", 2, "42")])).is_err());
+    // A fee with no units: the reported usage did not reach the ledger.
+    assert!(judge_jev_ledger(&totals(&[("jev-1", "typesafe", 1, "0")])).is_err());
+    // Nothing billed at all.
+    assert!(judge_jev_ledger(&totals(&[])).is_err());
+    assert!(judge_jev_ledger(b"{}").is_err());
 }
 
 // ── a2a ───────────────────────────────────────────────────────────────────────────────────────
