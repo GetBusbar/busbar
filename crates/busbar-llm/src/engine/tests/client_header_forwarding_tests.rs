@@ -397,7 +397,7 @@ async fn anthropic_egress_carries_exactly_the_declared_headers() {
             )
             .pool("p", &[(0, 1)])
             .build();
-        drive(&app, "anthropic", collect(&[])).await;
+        drive(&app, "anthropic", anthropic_body(), collect(&[])).await;
         let seen = |name: &str| state.get_last_request_header(name);
         assert_eq!(seen("x-api-key").as_deref(), x_api_key, "{key:?}");
         assert_eq!(seen("authorization").as_deref(), authorization, "{key:?}");
