@@ -398,6 +398,10 @@ pub(super) fn read_block(
                 signature_origin: None,
             })
         }
+        // A provider-run web search's results (DF-MAP, ARCHITECT ruling 2026-10-02 item 2): the
+        // IR's hosted-tool record. A `web_search_tool_result_error` content carries its error code
+        // as the record's status and no results.
+        WEB_SEARCH_TOOL_RESULT => Ok(read_web_search_tool_result(obj)),
         // A block kind the IR does not model never reaches here: [`read_blocks`] leaves it out of
         // the IR (nothing is put in its place, design F3 "Drops"). A direct call with one is
         // malformed.
@@ -515,3 +519,47 @@ pub(super) fn read_tool(tool_val: &serde_json::Value) -> Result<crate::codec::ir
         strict,
     })
 }
+
+/// The block type of a provider-run web search's results.
+pub(super) const WEB_SEARCH_TOOL_RESULT: &str = "web_search_tool_result";
+
+/// Anthropic `web_search_tool_result` -> [`crate::codec::ir::IrBlock::HostedToolRecord`].
+fn read_web_search_tool_result(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> crate::codec::ir::IrBlock {
+    let content = obj.get(keys::CONTENT);
+    let results = content
+        .and_then(|c| c.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|r| {
+                    Some(crate::codec::ir::IrSearchResult {
+                        url: r.get(keys::URL)?.as_str()?.to_string(),
+                        title: r
+                            .get(keys::TITLE)
+                            .and_then(|t| t.as_str())
+                            .map(String::from),
+                        snippet: None,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let status = content
+        .and_then(|c| c.get(ERROR_CODE))
+        .and_then(|e| e.as_str())
+        .map(String::from);
+    crate::codec::ir::IrBlock::HostedToolRecord {
+        kind: crate::codec::ir::IrHostedToolKind::WebSearch,
+        call_id: obj
+            .get(TOOL_USE_ID)
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        status,
+        results,
+    }
+}
+
+/// The error member of a `web_search_tool_result_error` content.
+const ERROR_CODE: &str = "error_code";

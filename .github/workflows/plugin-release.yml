@@ -1,5 +1,5 @@
 # plugin-release — build, sign, pack and publish ONE first-party plugin release, for every plugin
-# repo. The repo's `.github/workflows/release.yml` is a thin caller rendered by `cargo xtask fleet
+# repo. The repo's `.github/workflows/release.yml` is a thin caller rendered by `busbar-release plugin
 # render <repo>` from plugins.yaml: on a `v*` tag it runs plugin-ci.yml on the tagged commit, then this
 # file, then plugin-consumer-verify.yml, each taken at the busbar commit the repo pins.
 #
