@@ -52,7 +52,8 @@
 //!   finding rather than a filter: `off-tree-crate` for a crate of a kind living outside
 //!   `crates/<dir>`, `nested-crate` for one buried inside another crate's directory, `unmembered`
 //!   for one on disk and off `[workspace.members]`. All three were walked through by a red team
-//!   with every gate green. The row also holds the census floor, the dead-kind rule, the
+//!   with every gate green. The row also holds `missed-member` (the census reads every
+//!   `[workspace.members]` entry, by name, ARCHITECT 2026-10-02), the dead-kind rule, the
 //!   `qa/construction.toml [gate.plugin_kinds]` cross-check, the [`OFF_TREE_MANIFESTS`] expiry and
 //!   the LEGACY RATCHET.
 //! * `kind-isolation:matrix` — the rows above hold the line for the WIRES, and none of them looked
@@ -192,19 +193,7 @@ const MAKE_A_NEW_KIND: &str = "make a new plugin kind, do not fuse two";
 /// landings. Read through [`Ctx::read`] like every other input, so a selftest can plant it.
 pub const REGISTRY_FILE: &str = "qa/kind-isolation.toml";
 
-/// A crate census below this is not a tree this gate can be a gate over.
-///
-/// 30, not 50 (item F0b, same shape as F0's `workspace-deps` `MIN_CRATE_MANIFESTS`, `98434a220`).
-/// The Phase 4 fold's planned end state is 35 crates under `crates/`, 34 if `busbar-core-connsec`
-/// folds, and the roster's 33 (docs/design/1.6.0-TODO.md "THE FOLD"; docs/design/BUSBAR-1.6.0.md
-/// crate roster) — at 50 this row was already standing at its own floor pre-fold ("the tree sits
-/// EXACTLY at MIN_MANIFESTS") and would have reddened `:registry` at fold #1. The floor guards
-/// against a BLIND census (an emptied or unreadable `crates/`, a walk that stopped matching), which
-/// finds a handful or nothing; it is not a ratchet on the roster. 30 sits three under the smallest
-/// planned roster variant, so no planned fold trips it, while any walk that loses more than a
-/// third of today's census is still RED.
-const MIN_MANIFESTS: usize = 30;
-/// Likewise for the source walk the vocabulary rule reads.
+/// The floor under the source walk the vocabulary rule reads: a scan of no files names no leak.
 const MIN_SOURCES: usize = 600;
 
 // ------------------------------------------------------------------------------------------------
@@ -1991,6 +1980,33 @@ fn census(cx: &Ctx) -> Result<Vec<CrateInfo>, String> {
     Ok(out)
 }
 
+/// THE CENSUS IS THE WORKSPACE, EXACTLY (ARCHITECT 2026-10-02). Every `[workspace.members]` entry
+/// whose manifest is a crate of this tree (not an [`OFF_TREE_MANIFESTS`] entry) is in the census;
+/// the members it is not are returned by directory, and each is a finding by name. This replaced a
+/// crate-count floor: a number fights the roster (spec #39 ends the repo at 15 crates), while a
+/// census held to the member list is exact at any size and survives every extraction, because an
+/// extraction strikes the member line with the crate. `Err` when the root manifest declares no
+/// member at all, since a census checked against nothing is checked against nothing.
+fn missed_members(cx: &Ctx, crates: &[CrateInfo]) -> Result<Vec<String>, String> {
+    let root = cx
+        .read("Cargo.toml")
+        .map_err(|e| format!("the root manifest is unreadable ({e})"))?;
+    let members = manifest::workspace_members(&root);
+    if members.is_empty() {
+        return Err(
+            "the root manifest declares no [workspace.members], so the census has no \
+                    member list to be read against and every rule over it would hold vacuously"
+                .to_string(),
+        );
+    }
+    let dirs: BTreeSet<&str> = crates.iter().map(|c| c.dir.as_str()).collect();
+    Ok(members
+        .into_iter()
+        .filter(|m| off_tree_entry(&format!("{m}/Cargo.toml")).is_none())
+        .filter(|m| !dirs.contains(m.as_str()))
+        .collect())
+}
+
 /// The registry keys a transport or plane crate DECLARES: each `const KEY` inside an
 /// `impl <meta> for …` block (`TransportMeta`, `PlaneMeta`) of a `.rs` file under `<dir>/src`.
 /// Read off the source, never typed here, so a wire folded into a sibling crate stays a transport
@@ -3384,16 +3400,23 @@ fn rule_registry(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, ship: bool)
     // that did not parse, and neither may read a short table as a clean one.
     let mut offenders: Vec<String> = reg.errors.clone();
 
-    if crates.len() < MIN_MANIFESTS {
-        return Row::fail(
-            ROW_REGISTRY,
-            "the crate census collapsed below its floor",
+    // THE CENSUS READ EVERY MEMBER. A census that finds almost nothing recognises almost
+    // everything; one that skipped a member says nothing about that member, so each miss is named.
+    match missed_members(cx, crates) {
+        Err(why) => {
+            return Row::fail(
+                ROW_REGISTRY,
+                "the crate census has no member list to be read against",
+                why,
+            )
+        }
+        Ok(missed) => offenders.extend(missed.into_iter().map(|m| {
             format!(
-                "{} crate(s) under crates/ (floor {MIN_MANIFESTS}). A census that finds almost \
-                 nothing recognises almost everything.",
-                crates.len()
-            ),
-        );
+                "missed-member\t{m}\t`{m}` is in [workspace.members] and the census did not read \
+                 it: no manifest with a [package] name at {m}/Cargo.toml. Every rule here is \
+                 silent about a crate the census never saw."
+            )
+        })),
     }
 
     // WHERE A CRATE LIVES IS A FINDING, NOT A FILTER. The census walks every `Cargo.toml` in the
@@ -7437,7 +7460,6 @@ impl Gate for KindIsolationGate {
         // (It was `timing`, `=busbar-timing`, until OWNER Q70 folded that crate into the kernel.)
         let mut ov = Overlay::new();
         ov.remove("crates/busbar-contract/Cargo.toml");
-        hold_census_floor(&mut ov, 1);
         report.push(prove_rows_red(
             cx,
             subject,
@@ -7475,7 +7497,6 @@ impl Gate for KindIsolationGate {
         // is the `voice` entry's own finding, not merely some alias going red.
         let mut ov = Overlay::new();
         ov.remove("crates/busbar-plane-streaming/Cargo.toml");
-        hold_census_floor(&mut ov, 1);
         report.push(prove_rows_red(
             cx,
             subject,
@@ -7571,15 +7592,16 @@ impl Gate for KindIsolationGate {
             &["unreadable", "qa/construction.toml"],
         ));
 
-        // THE TWO FLOORS, AND THEY FAIL APART. A census that finds almost nothing recognises almost
-        // everything, and a scan of no files names no leak — both read exactly like a clean tree.
+        // THE CENSUS AND THE SOURCE WALK, AND THEY FAIL APART. A census that skipped a member says
+        // nothing about it (named by the member list, ARCHITECT 2026-10-02), and a scan of no files
+        // names no leak — both read exactly like a clean tree.
         report.push(prove_rows_red(
             cx,
             subject,
-            "the crate census collapsed below its floor",
+            "the crate census missed the workspace's members",
             &[ROW_REGISTRY],
             move || all_but(cx, "toml", 4),
-            &["floor", &MIN_MANIFESTS.to_string()],
+            &["missed-member", "crates/store-memory"],
         ));
         report.push(prove_rows_red(
             cx,
@@ -8459,7 +8481,6 @@ impl Gate for KindIsolationGate {
         // THE LEGACY RATCHET, proven by retiring one.
         let mut ov = Overlay::new();
         ov.remove("crates/busbar-a2a/Cargo.toml");
-        hold_census_floor(&mut ov, 1);
         report.push(prove_rows_red(
             cx,
             subject,
@@ -8654,8 +8675,6 @@ impl Gate for KindIsolationGate {
             &[ROW_REGISTRY],
             move || {
                 let mut ov = kinds_gone(cx, &[CLEANLINESS]);
-                let gone = ov.paths().count();
-                hold_census_floor(&mut ov, gone);
                 ov.set(REGISTRY_FILE, String::new());
                 ov
             },
@@ -9660,12 +9679,11 @@ fn wire_row_and_source(cx: &Ctx, wire: &str) -> Result<Overlay, String> {
     Ok(ov)
 }
 
-/// THE TREE WITH ALMOST EVERY FILE OF ONE EXTENSION REMOVED, for the two floors.
+/// THE TREE WITH ALMOST EVERY FILE OF ONE EXTENSION REMOVED, for the census and the source floor.
 ///
-/// A floor is the only rule whose subject is the SIZE of its own input, so the only honest fixture
-/// for one is a tree that really is that small. `keep` files survive, which is what makes the two
-/// floors fail APART: four manifests is under the census floor and nowhere near the source floor,
-/// and four sources are the mirror.
+/// A rule whose subject is its own input needs a fixture where that input really is gone. `keep`
+/// files survive, which is what makes the two fail APART: four manifests miss most of the
+/// workspace's members and leave the source walk whole, and four sources are the mirror.
 fn all_but(cx: &Ctx, ext: &str, keep: usize) -> Overlay {
     let mut ov = Overlay::new();
     let Ok(files) = cx.walk(&WalkSpec::new(["crates"]).ext(ext)) else {
@@ -9673,33 +9691,6 @@ fn all_but(cx: &Ctx, ext: &str, keep: usize) -> Overlay {
     };
     for f in files.iter().skip(keep) {
         ov.remove(f.rel_str());
-    }
-    ov
-}
-
-/// THE CENSUS HELD AT EXACTLY `n` MANIFESTS — item F0b's boundary fixture.
-///
-/// `all_but` thins the `crates/` walk, but [`census`] also reads root/`xtask`/`examples`/`testing`
-/// manifests the registry's off-tree table does not cover, so "keep 29 files under `crates/`" and
-/// "the census is 29" are not the same claim near the new, much lower floor — they were 24 apart at
-/// the old floor of 50 and nobody had to tell them apart. This removes exactly enough CENSUSED
-/// `crates/` manifests, and only those, to land the real census at `n`, so a boundary case can plant
-/// the number the floor actually reads rather than a number of files that merely implies it.
-///
-/// A `#[cfg(test)]`-only fixture: unlike `all_but`, its only caller is the two boundary cases in
-/// `plant_tests`, run through `cargo test`, not the `prove_rows_red` battery `cargo xtask selftest`
-/// runs (item 89's IMPOSS rule is why — see those cases' own comment).
-#[cfg(test)]
-fn census_holding(cx: &Ctx, n: usize) -> Overlay {
-    let full = census(cx).unwrap_or_default();
-    let excess = full.len().saturating_sub(n);
-    let mut ov = Overlay::new();
-    for c in full
-        .iter()
-        .filter(|c| c.manifest.starts_with("crates/"))
-        .take(excess)
-    {
-        ov.remove(c.manifest.clone());
     }
     ov
 }
@@ -9724,25 +9715,6 @@ fn kinds_gone(cx: &Ctx, kinds: &[&str]) -> Overlay {
         }
     }
     ov
-}
-
-/// THE CENSUS HELD AWAY FROM ITS FLOOR under a plant that removes `removed` manifests.
-///
-/// [`MIN_MANIFESTS`] is 30 (item F0b); the Phase 4 fold walks the real census down toward that
-/// number one commit at a time, so a plant elsewhere in this battery that removes a manifest for a
-/// reason of its own — a dead kind, a retired alias, a struck legacy row — can, late in the fold,
-/// land close enough to the floor that the removal ALSO drops the census below it. When that
-/// happens the floor refusal, its own proven case, answers for the whole `:registry` row: `the
-/// crate census collapsed below its floor`, and never the rule the case is about. The floor is not
-/// lowered. Each removed manifest is replaced by one inert kernel-kind filler crate, so the census
-/// stays a census and the row judges what was planted.
-fn hold_census_floor(ov: &mut Overlay, removed: usize) {
-    for i in 0..removed {
-        ov.set(
-            format!("crates/busbar-kernel-censusfill{i}/Cargo.toml"),
-            format!("[package]\nname = \"busbar-kernel-censusfill{i}\"\nversion = \"0.0.0\"\n"),
-        );
-    }
 }
 
 /// THE TREE WITH EVERY MANIFEST UNDER `crates/<marker>*` REMOVED — a whole KIND deleted.

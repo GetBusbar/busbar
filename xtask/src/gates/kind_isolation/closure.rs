@@ -72,15 +72,6 @@ pub const ROW_CLOSURE: &str = "kind-isolation:closure";
 /// THE ONE CRATE #40(a) ADMITS. Everything else in a plugin's closure is a finding.
 const CONTRACT: &str = "busbar-contract";
 
-/// A graph smaller than this is not this workspace, and a wall measured over it is a wall measured
-/// over nothing. Mirrors the census floor (`kind_isolation::MIN_MANIFESTS`) for the same reason,
-/// and moves with it: 30, not 40 (item F0b, same shape as F0's `workspace-deps`
-/// `MIN_CRATE_MANIFESTS`, `98434a220`). The Phase 4 fold's planned end state is 35 crates under
-/// `crates/` (34 / 33 in the roster variants); at 40 this row would have reddened around fold #11,
-/// against a planned shrink. 30 sits three under the smallest planned roster variant, so no planned
-/// fold trips it, while a graph collapsed to a third of today's census is still RED.
-const MIN_GRAPH_CRATES: usize = 30;
-
 // ------------------------------------------------------------------------------------------------
 // the graph
 // ------------------------------------------------------------------------------------------------
@@ -210,7 +201,7 @@ fn cargo_graph(cx: &Ctx) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
     graph_from_metadata(&cx.cargo_metadata("Cargo.toml")?)
 }
 
-/// The reading half of [`cargo_graph`], with the subprocess taken out so the FLOOR and the
+/// The reading half of [`cargo_graph`], with the subprocess taken out so the member check and the
 /// shipped/test split can be proven without one.
 fn graph_from_metadata(json: &str) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
     let value: serde_json::Value = serde_json::from_str(json)
@@ -223,12 +214,35 @@ fn graph_from_metadata(json: &str) -> Result<BTreeMap<String, BTreeSet<String>>,
         .iter()
         .filter_map(|p| p.get("name").and_then(|v| v.as_str()))
         .collect();
-    if members.len() < MIN_GRAPH_CRATES {
+    // THE GRAPH IS THE WORKSPACE, EXACTLY (ARCHITECT 2026-10-02): every id in cargo's own
+    // `workspace_members` resolves to a package of this graph, and there is at least one. A
+    // metadata that half-ran misses members by name; a number would only say it was small.
+    let ids: BTreeSet<&str> = packages
+        .iter()
+        .filter_map(|p| p.get("id").and_then(|v| v.as_str()))
+        .collect();
+    let workspace: Vec<&str> = value
+        .get("workspace_members")
+        .and_then(|m| m.as_array())
+        .map(|m| m.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    if workspace.is_empty() {
+        return Err(
+            "`cargo metadata` named no workspace member. A graph of no member is not this \
+                    workspace, and a closure walked over it satisfies every ban vacuously"
+                .to_string(),
+        );
+    }
+    let missed: Vec<&str> = workspace
+        .iter()
+        .copied()
+        .filter(|id| !ids.contains(id))
+        .collect();
+    if !missed.is_empty() {
         return Err(format!(
-            "`cargo metadata` named {} package(s), under the floor of {MIN_GRAPH_CRATES}. A graph \
-             that small is not this workspace, and a closure walked over it satisfies every ban \
-             vacuously",
-            members.len()
+            "missed-member: `cargo metadata` lists workspace member(s) its package graph does not \
+             carry: {}. A closure walked over a graph that skipped a member says nothing about it",
+            missed.join(", ")
         ));
     }
     let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -354,19 +368,32 @@ pub fn rule_closure(cx: &Ctx, crates: &[CrateInfo]) -> Row {
         }
     }
 
+    // THE CENSUS IS THE WORKSPACE, EXACTLY: a closure walked over a census that skipped a member
+    // satisfies every ban on that member vacuously, and a ban satisfied vacuously is not a ban.
+    match super::missed_members(cx, crates) {
+        Err(why) => {
+            return Row::fail(
+                ROW_CLOSURE,
+                "the closure could not be walked over this tree",
+                why,
+            )
+        }
+        Ok(missed) if !missed.is_empty() => {
+            return Row::fail(
+                ROW_CLOSURE,
+                "the closure could not be walked over this tree",
+                format!(
+                    "missed-member: the census did not read workspace member(s) {}. A closure \
+                     walked over a census that skipped a member satisfies every dependency ban on \
+                     it vacuously.",
+                    missed.join(", ")
+                ),
+            )
+        }
+        Ok(_) => {}
+    }
     let (census, dev) = census_graphs(cx, crates);
     let census_crates = census.len();
-    if census_crates < MIN_GRAPH_CRATES {
-        return Row::fail(
-            ROW_CLOSURE,
-            "the closure could not be walked over this tree",
-            format!(
-                "the census carried {census_crates} crate(s), under the floor of \
-                 {MIN_GRAPH_CRATES}. A closure walked over a graph this small satisfies every \
-                 dependency ban vacuously, and a ban satisfied vacuously is not a ban."
-            ),
-        );
-    }
 
     // THE CORROBORATION. See this module's own note for why cargo is the check and not the claim,
     // and why an overlaid tree is not asked.
