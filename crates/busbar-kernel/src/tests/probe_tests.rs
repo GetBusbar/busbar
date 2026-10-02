@@ -129,7 +129,7 @@ async fn dead_mode_probes_only_a_suppressed_member() {
 /// used to be replaced before its first tick and probing went dark. The deadline is inherited;
 /// only the newest generation probes; the older ones exit.
 #[tokio::test(start_paused = true)]
-async fn a_swap_does_not_push_the_probe_deadline_out() {
+async fn a_snapshot_swap_never_pushes_the_probe_deadline_out() {
     let t = Arc::new(Double::default());
     let s = Arc::new(ProbeSchedule::new(1));
     let ms = member(HealthMode::Active, 10);
@@ -155,7 +155,7 @@ async fn a_swap_does_not_push_the_probe_deadline_out() {
 
 /// A SHORTENED INTERVAL takes effect within one new interval, not after the old, longer one.
 #[tokio::test(start_paused = true)]
-async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
+async fn a_shortened_interval_takes_effect_on_the_inherited_deadlines() {
     let t = Arc::new(Double::default());
     let s = Arc::new(ProbeSchedule::new(1));
     spawn_probers(&t, &s, &member(HealthMode::Active, 3600));
@@ -172,7 +172,7 @@ async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
 /// A late tick's write does not revert a newer generation's clamp: `compare_exchange` on the
 /// value this prober last owned, not a `store`.
 #[test]
-fn a_late_tick_write_does_not_revert_a_newer_generations_clamp() {
+fn a_late_tick_never_reverts_a_newer_generations_clamp() {
     let slot = std::sync::atomic::AtomicU64::new(3_600_000);
     slot.fetch_min(10_000, Ordering::Relaxed);
     let got = advance_owned_deadline(&slot, 3_600_000, 3_610_000);
