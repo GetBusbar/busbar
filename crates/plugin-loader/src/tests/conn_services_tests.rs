@@ -63,7 +63,7 @@ impl DeclaredConns for Recording {
     fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>> {
         self.slab.check_need(owner, need).ok().map(Ok)
     }
-    fn serves(&self, transport: &str) -> bool {
+    fn serves_scheme(&self, transport: &str) -> bool {
         !self.unserved.contains(&transport)
     }
 }
@@ -442,7 +442,7 @@ impl DeclaredConns for Scripted {
     fn framed(&self, _: InstanceId, _: NeedId) -> bool {
         self.framed
     }
-    fn serves(&self, _: &str) -> bool {
+    fn serves_scheme(&self, _: &str) -> bool {
         true
     }
 }

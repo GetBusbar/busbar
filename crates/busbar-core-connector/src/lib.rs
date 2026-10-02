@@ -325,7 +325,7 @@ impl Connector {
 
     /// Whether a loaded transport entry serves `transport` (a scheme).
     #[must_use]
-    pub fn serves(&self, transport: &str) -> bool {
+    pub fn serves_scheme(&self, transport: &str) -> bool {
         self.transports
             .read()
             .expect("transports")
@@ -729,8 +729,8 @@ impl DeclaredConns for Connector {
             .is_some_and(|d| !d.door.facts().composes_over.is_empty())
     }
 
-    fn serves(&self, transport: &str) -> bool {
-        Connector::serves(self, transport)
+    fn serves_scheme(&self, transport: &str) -> bool {
+        Connector::serves_scheme(self, transport)
     }
 }
 

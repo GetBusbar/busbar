@@ -941,7 +941,7 @@ impl<K: Kind> Plugin<K> {
                         // and the scheme — fail closed now, never at the need's first open.
                         if need.direction == DIRECTION_OUTBOUND
                             && !need.transport.is_empty()
-                            && !table.serves(&need.transport)
+                            && !table.serves_scheme(&need.transport)
                         {
                             return Err(LoadError::UnservedScheme {
                                 plugin: str_bytes(st.name)
