@@ -1107,9 +1107,9 @@
       "line": 369,
       "status": "covered",
       "citers": [
-        "admin.ops|PutHooksName|if-match-malformed",
-        "admin.ops|PutHooksName|if-match-stale",
-        "admin.ops|PutHooksName|ok"
+        "admin.ops|PutHooksName|if-match-malformed@hooks-webrequest",
+        "admin.ops|PutHooksName|if-match-stale@hooks-webrequest",
+        "admin.ops|PutHooksName|ok@hooks-webrequest"
       ]
     },
     "CONF-221": {
@@ -4232,7 +4232,7 @@
       "line": 385,
       "status": "covered",
       "citers": [
-        "admin.ops|GetHooks|ok",
+        "admin.ops|GetHooks|ok@hooks-webrequest",
         "admin.ops|GetHooks|unauth"
       ]
     },
@@ -4243,9 +4243,9 @@
       "status": "covered",
       "citers": [
         "admin.ops|PostHooks|bad-body",
-        "admin.ops|PostHooks|if-match-malformed",
-        "admin.ops|PostHooks|if-match-stale",
-        "admin.ops|PostHooks|ok",
+        "admin.ops|PostHooks|if-match-malformed@hooks-webrequest",
+        "admin.ops|PostHooks|if-match-stale@hooks-webrequest",
+        "admin.ops|PostHooks|ok@hooks-webrequest",
         "admin.ops|PostHooks|unauth"
       ]
     },
@@ -4255,10 +4255,10 @@
       "line": 387,
       "status": "covered",
       "citers": [
-        "admin.ops|DeleteHooksName|if-match-malformed",
-        "admin.ops|DeleteHooksName|if-match-stale",
+        "admin.ops|DeleteHooksName|if-match-malformed@hooks-webrequest",
+        "admin.ops|DeleteHooksName|if-match-stale@hooks-webrequest",
         "admin.ops|DeleteHooksName|not-found",
-        "admin.ops|DeleteHooksName|ok",
+        "admin.ops|DeleteHooksName|ok@hooks-webrequest",
         "admin.ops|DeleteHooksName|unauth"
       ]
     },
@@ -4269,7 +4269,7 @@
       "status": "covered",
       "citers": [
         "admin.ops|GetHooksName|not-found",
-        "admin.ops|GetHooksName|ok",
+        "admin.ops|GetHooksName|ok@hooks-webrequest",
         "admin.ops|GetHooksName|unauth"
       ]
     },
@@ -4280,10 +4280,10 @@
       "status": "covered",
       "citers": [
         "admin.ops|PutHooksName|bad-body",
-        "admin.ops|PutHooksName|if-match-malformed",
-        "admin.ops|PutHooksName|if-match-stale",
+        "admin.ops|PutHooksName|if-match-malformed@hooks-webrequest",
+        "admin.ops|PutHooksName|if-match-stale@hooks-webrequest",
         "admin.ops|PutHooksName|not-found",
-        "admin.ops|PutHooksName|ok",
+        "admin.ops|PutHooksName|ok@hooks-webrequest",
         "admin.ops|PutHooksName|unauth"
       ]
     },
@@ -4294,7 +4294,7 @@
       "status": "covered",
       "citers": [
         "admin.ops|GetHooksNameHealth|not-found",
-        "admin.ops|GetHooksNameHealth|ok",
+        "admin.ops|GetHooksNameHealth|ok@hooks-webrequest",
         "admin.ops|GetHooksNameHealth|unauth"
       ]
     },
@@ -4305,7 +4305,7 @@
       "status": "covered",
       "citers": [
         "admin.ops|GetHooksNameSchema|not-found",
-        "admin.ops|GetHooksNameSchema|ok",
+        "admin.ops|GetHooksNameSchema|ok@hooks-webrequest",
         "admin.ops|GetHooksNameSchema|unauth"
       ]
     },
@@ -4316,10 +4316,10 @@
       "status": "covered",
       "citers": [
         "admin.ops|PatchHooksNameSettings|bad-body",
-        "admin.ops|PatchHooksNameSettings|if-match-malformed",
-        "admin.ops|PatchHooksNameSettings|if-match-stale",
+        "admin.ops|PatchHooksNameSettings|if-match-malformed@hooks-webrequest",
+        "admin.ops|PatchHooksNameSettings|if-match-stale@hooks-webrequest",
         "admin.ops|PatchHooksNameSettings|not-found",
-        "admin.ops|PatchHooksNameSettings|ok",
+        "admin.ops|PatchHooksNameSettings|ok@hooks-webrequest",
         "admin.ops|PatchHooksNameSettings|unauth"
       ]
     },
@@ -4330,7 +4330,7 @@
       "status": "covered",
       "citers": [
         "admin.ops|GetHooksNameStatus|not-found",
-        "admin.ops|GetHooksNameStatus|ok",
+        "admin.ops|GetHooksNameStatus|ok@hooks-webrequest",
         "admin.ops|GetHooksNameStatus|unauth"
       ]
     },
@@ -4545,7 +4545,7 @@
       "line": 411,
       "status": "covered",
       "citers": [
-        "admin.ops|GetPlugins|ok",
+        "admin.ops|GetPlugins|ok@hooks-webrequest",
         "admin.ops|GetPlugins|unauth"
       ]
     },
@@ -4556,7 +4556,7 @@
       "status": "covered",
       "citers": [
         "admin.ops|PostPlugins|bad-body",
-        "admin.ops|PostPlugins|ok",
+        "admin.ops|PostPlugins|ok@hooks-webrequest",
         "admin.ops|PostPlugins|unauth"
       ]
     },
@@ -4567,7 +4567,7 @@
       "status": "covered",
       "citers": [
         "admin.ops|PostPluginsInspect|bad-body",
-        "admin.ops|PostPluginsInspect|ok",
+        "admin.ops|PostPluginsInspect|ok@hooks-webrequest",
         "admin.ops|PostPluginsInspect|unauth"
       ]
     },
@@ -4588,9 +4588,9 @@
       "status": "covered",
       "citers": [
         "admin.ops|PostPluginsRollback|bad-body",
-        "admin.ops|PostPluginsRollback|if-match-malformed",
-        "admin.ops|PostPluginsRollback|if-match-stale",
-        "admin.ops|PostPluginsRollback|ok",
+        "admin.ops|PostPluginsRollback|if-match-malformed@hooks-webrequest",
+        "admin.ops|PostPluginsRollback|if-match-stale@hooks-webrequest",
+        "admin.ops|PostPluginsRollback|ok@hooks-webrequest",
         "admin.ops|PostPluginsRollback|unauth"
       ]
     },
@@ -4601,7 +4601,7 @@
       "status": "covered",
       "citers": [
         "admin.ops|DeletePluginsFile|not-found",
-        "admin.ops|DeletePluginsFile|ok",
+        "admin.ops|DeletePluginsFile|ok@hooks-webrequest",
         "admin.ops|DeletePluginsFile|unauth"
       ]
     },
@@ -4612,7 +4612,7 @@
       "status": "covered",
       "citers": [
         "admin.ops|GetPluginsFileSchema|not-found",
-        "admin.ops|GetPluginsFileSchema|ok",
+        "admin.ops|GetPluginsFileSchema|ok@hooks-webrequest",
         "admin.ops|GetPluginsFileSchema|unauth"
       ]
     },

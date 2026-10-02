@@ -142,7 +142,7 @@ tracing-subscriber = { workspace = true }
 # binary they must be declared here. `reqwest`'s `json` feature is likewise test-only (the live-server
 # tests decode responses), unioned with the `http2` prod feature by the resolver.
 reqwest = { workspace = true, features = ["json"] }
-rcgen = { workspace = true }
+rcgen = { workspace = true, features = ["pem"] }
 rustls = { workspace = true }
 # THE ADMIN JSON-REST SERVICE, dev-only — a dev-dep BACK-EDGE, not linked into any shipped target
 # (the same shape as busbar-mcp's `busbar-llm` back-edge). `/api/v1/admin/*` is served by
