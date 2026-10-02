@@ -15,7 +15,7 @@ durable_store_advice: Configure a durable store plugin.
 # The persisted credential `kind` of a row-looked-up (AccessKeyId) signed-ingress credential.
 signed_credential_kind: sigv4
 # THE ROOT LEGACY TABLE's rows, as a test build stands them in (`config::legacy::rows`, no root to hand
-# them in): the same rows `cargo xtask fleet sync` renders from plugins.yaml into the root manifest's
+# them in): the same rows plugins.yaml renders into the root manifest's
 # `[package.metadata.busbar.legacy]`; the root's tests hold the two equal.
 legacy_rows:
   renamed_display: Valkey

@@ -144,3 +144,183 @@ fn the_kernel_test_stand_in_is_the_root_table() {
     root.sort();
     assert_eq!(stand_in, root);
 }
+
+// ── THE TABLE IS THE RENDER OF plugins.yaml ─────────────────────────────────────────────────────
+// One home per fact: the words live in plugins.yaml (`legacy:` and each entry's `retired:`); the
+// manifest's `[package.metadata.busbar.legacy]` is their render, and an edit to either side alone is
+// red here, with the table to paste printed.
+
+const MANIFEST: &str = include_str!("../../../Cargo.toml");
+const REGISTRY: &str = include_str!("../../../../../plugins.yaml");
+const HEADER: &str = "[package.metadata.busbar.legacy]";
+const NOTE: &str = "# THE ROOT LEGACY TABLE (BUSBAR-1.6.0.md §2), @generated from plugins.yaml (`legacy:` and each\n\
+# entry's `retired:`); src/root/tests/legacy.rs is red on an edit and prints the render to paste.\n\
+# build.rs emits it as `LEGACY_ROWS`, which the root hands to the kernel before any config is read.\n";
+
+fn text(v: &serde_yaml::Value, k: &str) -> Option<String> {
+    v[k].as_str().map(str::to_string)
+}
+
+/// The table's rows, in order: the `legacy:` block's frozen 1.5.5 text, sorted by key; then, per
+/// entry in registry order with a `retired:` list, one `retired.<kind>.<word> = "<alias>"` row per
+/// word and the entry's `manifest.<alias>` / `asset.<alias>` rows (each defaulting to the repo).
+fn rows(registry: &str) -> Vec<(String, String)> {
+    let doc: serde_yaml::Value = serde_yaml::from_str(registry).expect("plugins.yaml parses");
+    let mut out: Vec<(String, String)> = doc["legacy"]
+        .as_mapping()
+        .map(|m| {
+            m.iter()
+                .map(|(k, v)| {
+                    let k = k.as_str().expect("a `legacy:` key is a string");
+                    let v = v
+                        .as_str()
+                        .unwrap_or_else(|| panic!("plugins.yaml legacy: `{k}` must be a string"));
+                    (k.to_string(), v.to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort();
+    for p in doc["plugins"].as_sequence().expect("`plugins:`") {
+        let Some(retired) = p["retired"].as_sequence() else {
+            continue;
+        };
+        let repo = text(p, "repo").expect("`repo`");
+        let (kind, alias) = (
+            text(p, "kind").expect("`kind`"),
+            text(p, "alias").expect("`alias`"),
+        );
+        for word in retired {
+            let word = word.as_str().expect("a `retired:` word is a string");
+            out.push((format!("retired.{kind}.{word}"), alias.clone()));
+        }
+        out.push((
+            format!("manifest.{alias}"),
+            text(p, "manifest_name").unwrap_or_else(|| repo.clone()),
+        ));
+        out.push((
+            format!("asset.{alias}"),
+            text(p, "asset_prefix").unwrap_or(repo),
+        ));
+    }
+    out
+}
+
+/// The rendered table: the header, the note and one quoted row per line.
+fn render(registry: &str) -> String {
+    let mut s = format!("{HEADER}\n{NOTE}");
+    for (k, v) in rows(registry) {
+        let v = v.replace('\\', "\\\\").replace('"', "\\\"");
+        s.push_str(&format!("\"{k}\" = \"{v}\"\n"));
+    }
+    s
+}
+
+/// The manifest's table as written: from its header to the line before the next table header (or
+/// the end), less trailing blank lines.
+fn table(manifest: &str) -> String {
+    let lines: Vec<&str> = manifest.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| l.trim() == HEADER)
+        .unwrap_or_else(|| panic!("crates/busbar/Cargo.toml carries no `{HEADER}`"));
+    let mut end = lines[start + 1..]
+        .iter()
+        .position(|l| l.trim_start().starts_with('['))
+        .map_or(lines.len(), |i| start + 1 + i);
+    while end > start + 1 && lines[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+    lines[start..end].iter().map(|l| format!("{l}\n")).collect()
+}
+
+/// `None` when the manifest's table is the render of the registry; else the reason, with the table
+/// to paste.
+fn drift(manifest: &str, registry: &str) -> Option<String> {
+    let want = render(registry);
+    (table(manifest) != want).then(|| {
+        format!(
+            "crates/busbar/Cargo.toml: `{HEADER}` is not the render of plugins.yaml; replace it with:\n\n{want}"
+        )
+    })
+}
+
+/// The committed manifest's table IS the render of the committed plugins.yaml.
+#[test]
+fn the_committed_legacy_table_is_the_render() {
+    if let Some(reason) = drift(MANIFEST, REGISTRY) {
+        panic!("{reason}");
+    }
+}
+
+/// An edit to the table by hand is drift (RED), and so is a `retired:` word added to plugins.yaml
+/// without its row.
+#[test]
+fn a_hand_edited_table_or_an_unrendered_word_is_drift() {
+    let (k, v) = rows(REGISTRY)
+        .into_iter()
+        .find(|(k, _)| k.starts_with("retired."))
+        .expect("a retired row");
+    let edited = MANIFEST.replace(
+        &format!("\"{k}\" = \"{v}\""),
+        &format!("\"{k}\" = \"x{v}\""),
+    );
+    assert_ne!(edited, MANIFEST, "the planted edit landed");
+    assert!(drift(&edited, REGISTRY).is_some());
+    let added = REGISTRY.replacen("retired: [", "retired: [planted-word, ", 1);
+    assert_ne!(added, REGISTRY, "the planted word landed");
+    let reason = drift(MANIFEST, &added).expect("an unrendered word is drift");
+    assert!(
+        reason.contains("\"retired.store.planted-word\" = "),
+        "{reason}"
+    );
+}
+
+/// A plugin's `retired:` words become `retired.<kind>.<word>` rows beside its manifest and asset
+/// rows (defaulting to the repo); a plugin with none adds no row.
+#[test]
+fn retired_words_render_as_rows_of_their_kind_and_alias() {
+    let registry = "plugins:\n  - repo: busbar-store-alpha\n    kind: store\n    alias: alpha\n    \
+                    retired: [old-alpha]\n  - repo: busbar-secret-beta\n    kind: secret\n    alias: beta\n";
+    let row = |k: &str, v: &str| (k.to_string(), v.to_string());
+    assert_eq!(
+        rows(registry),
+        vec![
+            row("retired.store.old-alpha", "alpha"),
+            row("manifest.alpha", "busbar-store-alpha"),
+            row("asset.alpha", "busbar-store-alpha"),
+        ]
+    );
+}
+
+/// Every frozen `legacy:` row of plugins.yaml cites the v1.5.5 line it is verbatim from (a
+/// `# … v1.5.5:crates/…` comment above it), and every row parsed.
+#[test]
+fn every_legacy_row_cites_v1_5_5() {
+    let block: Vec<&str> = REGISTRY
+        .lines()
+        .skip_while(|l| *l != "legacy:")
+        .skip(1)
+        .take_while(|l| l.starts_with("  ") || l.is_empty())
+        .collect();
+    let (mut cited, mut n) = (false, 0);
+    for line in block {
+        let t = line.trim();
+        if t.starts_with('#') {
+            cited |= t.contains("v1.5.5:crates/");
+            continue;
+        }
+        if t.is_empty() {
+            continue;
+        }
+        let key = t.split_once(':').expect("a row").0;
+        assert!(
+            cited,
+            "legacy row `{key}` carries no v1.5.5 citation above it"
+        );
+        (cited, n) = (false, n + 1);
+    }
+    let doc: serde_yaml::Value = serde_yaml::from_str(REGISTRY).expect("plugins.yaml parses");
+    assert_eq!(n, doc["legacy"].as_mapping().expect("`legacy:`").len());
+    assert!(n > 0);
+}

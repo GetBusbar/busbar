@@ -3,8 +3,8 @@
 
 //! THE ROOT LEGACY TABLE (`BUSBAR-1.6.0.md` §2: "Retired names … and migrations for plugins that are
 //! not in the build … live in the root legacy table, `[package.metadata.busbar.legacy]`, generated
-//! from `plugins.yaml`"). `cargo xtask fleet sync` renders the table into
-//! this crate's manifest and `build.rs` emits it as [`LEGACY_ROWS`]; [`install`] hands it to the
+//! from `plugins.yaml`"). The table in this crate's manifest is the render of `plugins.yaml` (its
+//! tests are red on drift) and `build.rs` emits it as [`LEGACY_ROWS`]; [`install`] hands it to the
 //! kernel before any configuration is read, as the operator credential's words are handed in.
 
 include!(concat!(env!("OUT_DIR"), "/legacy.rs"));

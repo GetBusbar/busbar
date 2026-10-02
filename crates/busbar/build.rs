@@ -108,8 +108,8 @@ fn main() {
     let (source, cfgs) = linked_source(&manifest, &enabled);
     let out = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("linked.rs");
     std::fs::write(out, source).expect("write linked.rs");
-    // THE ROOT LEGACY TABLE (`[package.metadata.busbar.legacy]`, rendered from plugins.yaml by
-    // `cargo xtask fleet sync`) as `LEGACY_ROWS`, which `root::legacy` hands to the kernel.
+    // THE ROOT LEGACY TABLE (`[package.metadata.busbar.legacy]`, rendered from plugins.yaml; the
+    // root's tests hold it to the render) as `LEGACY_ROWS`, which `root::legacy` hands to the kernel.
     let legacy: String = metadata_map(&manifest, "package.metadata.busbar.legacy")
         .iter()
         .map(|(k, v)| format!("    ({k:?}, {v:?}),\n"))
