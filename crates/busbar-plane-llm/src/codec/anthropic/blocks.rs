@@ -165,11 +165,13 @@ pub(super) fn read_block(
                         detail: None,
                     });
                 }
-                let media_type = src_obj
-                    .get(super::MEDIA_TYPE)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                // A present `media_type` that is not a string is the caller's error, answered in
+                // Anthropic's own error envelope (spec Part 2 #76), never read as "" and
+                // projected onto some format downstream.
+                let media_type = match src_obj.get(super::MEDIA_TYPE) {
+                    None => String::new(),
+                    Some(v) => v.as_str().ok_or_else(ir_parse_error)?.to_string(),
+                };
                 let data = src_obj
                     .get(keys::DATA)
                     .and_then(|v| v.as_str())

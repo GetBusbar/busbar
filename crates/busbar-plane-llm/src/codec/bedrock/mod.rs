@@ -102,17 +102,14 @@ const APPLICATION_VND_OPENXMLFORMATS_OFFICEDOCUMENT_WORDPROCESSINGML_DOCUMENT: &
 const DOC: &str = "doc";
 const DOCX: &str = "docx";
 const FLV: &str = "flv";
-const GIF: &str = "gif";
 const MKV: &str = "mkv";
 const MOV: &str = "mov";
 const FORMAT_MP4: &str = "mp4";
 const MPEG: &str = "mpeg";
 const MPG: &str = "mpg";
 const PDF: &str = "pdf";
-const PNG: &str = "png";
 const THREE_GP: &str = "three_gp";
 const WEBM: &str = "webm";
-const WEBP: &str = "webp";
 const WMV: &str = "wmv";
 const XLS: &str = "xls";
 const XLSX: &str = "xlsx";
@@ -735,8 +732,10 @@ fn bedrock_reasoning_block(
 /// The Bedrock Converse `image` block has only two source shapes: `source.bytes` (base64) and
 /// `source.s3Location` (an S3 URI). It has NO arbitrary-URL source. The typed `IrImageSource` maps
 /// cleanly onto this:
-///   - `Base64 { media_type, data }` → `source.bytes`, normalizing the MIME subtype onto Converse's
-///     `ImageFormat` union {png, jpeg, gif, webp} (jpg→jpeg; unknown→png with a warn).
+///   - `Base64 { media_type, data }` → `source.bytes`, the MIME subtype carried onto Converse's
+///     `ImageFormat` union {png, jpeg, gif, webp} (jpg is spelled jpeg). A subtype outside the union
+///     (or a media type that is not `image/<subtype>`) has no Converse form: the block is DROPPED on
+///     the one drop path, never relabelled as some other format (design F3).
 ///   - `Vendor { vendor: "bedrock", value }` → `source.s3Location` re-emitted faithfully (the reader
 ///     captured a native `s3Location` source here, preserving `uri`/`bucketOwner` for a lossless
 ///     same-protocol round-trip).
@@ -746,20 +745,25 @@ fn bedrock_image_block(source: &crate::codec::ir::IrImageSource) -> Option<serde
     match source {
         // A Bedrock-produced vendor reference is an `s3Location` (stored as `{format, s3Location}`);
         // re-emit it faithfully. A vendor reference from ANOTHER protocol has no Bedrock projection.
+        // The caller's own `format` is carried as it came; one it did not send is not invented.
         crate::codec::ir::IrImageSource::Vendor { vendor, value } if *vendor == VENDOR_NAME => {
-            let format_str = value
-                .get(keys::FORMAT)
-                .and_then(|f| f.as_str())
-                .filter(|s| !s.is_empty())
-                .unwrap_or(PNG);
             let s3_location = value
                 .get(S3_LOCATION)
                 .cloned()
                 .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-            Some(serde_json::json!({
-                (keys::FORMAT): format_str,
-                (keys::SOURCE): { (S3_LOCATION): s3_location }
-            }))
+            let mut block = serde_json::Map::new();
+            if let Some(format_str) = value
+                .get(keys::FORMAT)
+                .and_then(|f| f.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                block.insert(keys::FORMAT.to_string(), serde_json::json!(format_str));
+            }
+            block.insert(
+                keys::SOURCE.to_string(),
+                serde_json::json!({ (S3_LOCATION): s3_location }),
+            );
+            Some(serde_json::Value::Object(block))
         }
         // Bedrock Converse has no arbitrary-URL image source, and a foreign vendor reference (a
         // Responses file_id) has no Converse projection — emitting either as base64 `bytes` would
@@ -767,7 +771,7 @@ fn bedrock_image_block(source: &crate::codec::ir::IrImageSource) -> Option<serde
         crate::codec::ir::IrImageSource::Url(_)
         | crate::codec::ir::IrImageSource::Vendor { .. } => {
             crate::codec::drops::writer_drop!(
-                crate::codec::drops::block("image"),
+                crate::codec::drops::block(keys::IMAGE),
                 &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
                 [],
                 "dropping image with no Bedrock Converse projection (URL or foreign vendor ref)"
@@ -775,34 +779,19 @@ fn bedrock_image_block(source: &crate::codec::ir::IrImageSource) -> Option<serde
             None
         }
         crate::codec::ir::IrImageSource::Base64 { media_type, data } => {
-            // Map the MIME subtype onto a member of Bedrock Converse's `ImageFormat` union
-            // {png, jpeg, gif, webp}. `image/jpg` (and casing variants) is NOT a member — Bedrock
-            // spells it `jpeg` — so emitting it verbatim 400s a valid client image. Normalize
-            // jpg→jpeg; an empty/unsupported subtype coerces to `png` (with a warn) to keep the block
-            // valid rather than emit a `format: ""` the SDK rejects.
-            let format_str = match media_type.strip_prefix("image/").filter(|s| !s.is_empty()) {
-                Some(subtype) => match subtype.to_ascii_lowercase().as_str() {
-                    keys::JPEG | "jpg" => keys::JPEG,
-                    PNG => PNG,
-                    GIF => GIF,
-                    WEBP => WEBP,
-                    _ => {
-                        tracing::warn!(
-                            media_type = %media_type,
-                            "coercing unsupported image subtype to format=png: not a member of \
-                             Bedrock Converse's ImageFormat union {{png, jpeg, gif, webp}}"
-                        );
-                        PNG
-                    }
-                },
-                None => {
-                    tracing::warn!(
-                        media_type = %media_type,
-                        "coercing malformed image media_type to format=png: not a well-formed \
-                         'image/<subtype>'"
-                    );
-                    PNG
-                }
+            // Carry the MIME subtype onto its member of Bedrock Converse's `ImageFormat` union
+            // {png, jpeg, gif, webp}. `image/jpg` (and casing variants) is that union's `jpeg`
+            // spelled another way, so it maps; any other subtype, and a media type that is not a
+            // well-formed `image/<subtype>`, has no Converse form and the block is dropped.
+            let Some(format_str) = crate::codec::ir::image_subtype_if_supported(media_type) else {
+                crate::codec::drops::writer_drop!(
+                    crate::codec::drops::block(keys::IMAGE),
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    [media_type = %media_type, ],
+                    "dropping image block on Bedrock egress: media_type is not one of \
+                     image/{{png,jpeg,gif,webp}}, Bedrock Converse's ImageFormat union"
+                );
+                return None;
             };
             Some(serde_json::json!({
                 (keys::FORMAT): format_str,

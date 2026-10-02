@@ -542,17 +542,17 @@ fn write_cohere_reasoning(
     table: [u32; 4],
 ) -> serde_json::Value {
     match ask {
-        // IR-09: matched FIRST — `to_budget` gives `Off` 0, which as an enable ask would invert
-        // the caller's meaning.
+        // IR-09: matched FIRST — `Off` is a disable ask, never an enable with a budget.
         crate::codec::ir::IrReasoningAsk::Off => {
             serde_json::json!({ (keys::TYPE): keys::DISABLED })
         }
-        crate::codec::ir::IrReasoningAsk::Dynamic => {
-            serde_json::json!({ (keys::TYPE): keys::ENABLED })
-        }
-        other => {
-            serde_json::json!({ (keys::TYPE): keys::ENABLED, (TOKEN_BUDGET): other.to_budget(table) })
-        }
+        // `Dynamic` has no table entry: it is Cohere's own budget-less enable.
+        other => match other.to_budget(table) {
+            Some(budget) => {
+                serde_json::json!({ (keys::TYPE): keys::ENABLED, (TOKEN_BUDGET): budget })
+            }
+            None => serde_json::json!({ (keys::TYPE): keys::ENABLED }),
+        },
     }
 }
 

@@ -580,17 +580,19 @@ impl ProtocolReader for GeminiReader {
         let thinking_config = obj
             .get(FIELD_GENERATION_CONFIG)
             .and_then(|gc| gc.get(FIELD_THINKING_CONFIG));
-        let reasoning = match thinking_config.and_then(|tc| tc.get(FIELD_THINKING_BUDGET)) {
-            Some(budget) => budget.as_i64().and_then(|n| match n {
+        let reasoning = match thinking_config
+            .and_then(|tc| tc.get(FIELD_THINKING_BUDGET))
+            .filter(|b| !b.is_null())
+        {
+            // A budget that is not an int32 Gemini accepts is the caller's error, answered in
+            // Gemini's own error envelope (spec Part 2 #76), never silently left out.
+            Some(budget) => match read_gemini_thinking_budget(budget).ok_or_else(ir_parse_error)? {
                 -1 => Some(crate::codec::ir::IrReasoningAsk::Dynamic),
                 // 0 = thinking explicitly switched off (IR-09): a foreign reasoning-by-default
                 // backend must be told, not left to think.
                 0 => Some(crate::codec::ir::IrReasoningAsk::Off),
-                n if n > 0 => u32::try_from(n)
-                    .ok()
-                    .map(crate::codec::ir::IrReasoningAsk::Budget),
-                _ => None,
-            }),
+                n => Some(crate::codec::ir::IrReasoningAsk::Budget(n.unsigned_abs())),
+            },
             // Gemini 3's word-form knob, `thinkingLevel`, is the effort ask (GEM-09). The API
             // takes one of the two, so a budget, when present, is the ask.
             None => thinking_config

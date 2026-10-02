@@ -1081,6 +1081,29 @@ fn read_gemini_thinking_level(level: &str) -> Option<crate::codec::ir::IrReasoni
     Some(crate::codec::ir::IrReasoningAsk::Effort(effort))
 }
 
+/// Read `generationConfig.thinkingConfig.thinkingBudget` as Gemini's API does (an int32 in proto3
+/// JSON: a number with no fraction, or a decimal string): `-1` ("the model decides"), `0` (off) or a
+/// positive token count. `None` for anything else (wrong-typed, fractional, below -1, beyond the
+/// int32 range), which the reader answers with Gemini's error envelope.
+fn read_gemini_thinking_budget(v: &serde_json::Value) -> Option<i32> {
+    let n = match v {
+        serde_json::Value::Number(n) => match n.as_i64() {
+            Some(i) => i,
+            None => {
+                let f = n.as_f64()?;
+                if f.fract() != 0.0 || !f.is_finite() {
+                    return None;
+                }
+                // An integral float in int32 range; anything wider fails `try_from` below.
+                f as i64
+            }
+        },
+        serde_json::Value::String(s) => s.trim().parse::<i64>().ok()?,
+        _ => return None,
+    };
+    i32::try_from(n).ok().filter(|n| *n >= -1)
+}
+
 /// Normalize a Gemini OpenAPI-subset `Schema` (`parameters`, `responseSchema`) into JSON Schema for
 /// the IR (IR audit GEM-11). Gemini's native enum spells types in upper case (`OBJECT`, `STRING`, …)
 /// and marks optional-null with `nullable: true`; every foreign target validates JSON Schema, where
