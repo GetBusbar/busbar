@@ -399,3 +399,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/drop_names_tests.rs"]
 mod names_tests;
+
+#[cfg(test)]
+#[path = "tests/drop_writer_tests.rs"]
+mod writer_tests;
