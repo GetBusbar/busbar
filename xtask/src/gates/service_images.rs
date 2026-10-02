@@ -4,8 +4,8 @@
 //! THE DRIFT THIS EXISTS TO STOP, measured before it was written. The service containers busbar's
 //! durable stores need were provisioned in FIVE places: the removed `ci.yml`'s `check` job, the removed `ci.yml`'s
 //! `coverage` job, the removed `release-stage.yml`'s `gate` job, `plugin-ci.yml`'s `build-test-signoff` job,
-//! and `scripts/release-check.sh`. The four workflows agreed on a digest. `release-check.sh` — the
-//! script the QA GATE runs — used FLOATING tags. So the gate that decides a release was not pinned
+//! and the qa soak's `release-check.sh` (retired with its row, 2026-10-02). The four workflows agreed on a digest. `release-check.sh` — the
+//! script the QA GATE ran — used FLOATING tags. So the gate that decides a release was not pinned
 //! to the bytes CI was pinned to, and nothing anywhere said so.
 //!
 //! GitHub Actions cannot read a file into a `services:` block, so the workflows must keep literal
@@ -22,7 +22,7 @@
 //! 3. [`ROW_FLOOR`] — the scanner found at least [`MIN_IMAGE_LINES`] image references. A SCANNER
 //!    THAT FINDS NOTHING PASSES EVERYTHING, so a shrunken scan is red on its own terms.
 //! 4. [`ROW_FLOATING`] — no workflow image is on a floating tag (a `name:tag` with no `@sha256:`).
-//!    This is the specific hole `release-check.sh` had and it is invisible: a floating tag is a
+//!    This is the specific hole the qa soak script had and it is invisible: a floating tag is a
 //!    perfectly well-formed workflow that silently changes what it proved between two runs of the
 //!    same commit.
 //! 5. [`ROW_ROW_PRESENT`] — every workflow image HAS A ROW in the table. An image nobody pinned is
@@ -31,20 +31,14 @@
 //! 7. [`ROW_EVERY_PIN_USED`] — every row of the table is used by at least one workflow. An unused
 //!    pin is a pin nobody bumps, and it is how the table starts describing a world that stopped
 //!    existing while still reading as authoritative.
-//! 8. [`ROW_RELEASE_CHECK`] — THE SCAN SET IS WIDER THAN THE WORKFLOWS. The container references
-//!    `scripts/release-check.sh` names in its own `docker run` lines are held to the SAME two
-//!    demands rules 4 and 6 make of a workflow's `image:` line: each carries an `@sha256:`, and it
-//!    is the digest this table pins for that image. Asking only whether the tag NAMES a row is the
-//!    question the original drift answers yes to — `postgres:16` was in the table and was still a
-//!    floating reference — so the name test alone reads the four tags it exists to ban as clean.
-//!    That script is where the drift was found, and a lint that reads only `.github/workflows/`
-//!    would have declared the tree clean on the day the hole was open.
-//!
-//! 9. [`ROW_SCRIPTS`] — THE SCAN SET IS DISCOVERED, NOT LISTED (items 182, 220). Every tracked
+//! 8. [`ROW_SCRIPTS`] — THE SCAN SET IS DISCOVERED, NOT LISTED (items 182, 220). Every tracked
 //!    `*.sh` under [`SCRIPT_ROOTS`] that runs a container (`docker run`/`docker create`/`podman
-//!    run`) is read, and each reference it runs is held to rule 8's demands. Rule 8 read one named
-//!    script, so the qa gate's own `bash scripts/release-check-1.5.2.sh` hop and the shadow
-//!    oracle's store provisioner ran floating tags with this gate green. A shell VARIABLE is not
+//!    run`) is read, and each reference it runs is held to the SAME two demands rules 4 and 6 make of a
+//!    workflow's `image:` line: each carries an `@sha256:`, and it is the digest this table pins
+//!    for that image. A name test alone is the question the original drift answers yes to —
+//!    `postgres:16` was in the table and was still a floating reference. A script nobody listed
+//!    (once the qa gate's own hop, the shadow oracle's store provisioner) ran floating tags with
+//!    this gate green. A shell VARIABLE is not
 //!    an escape: `IMG="postgres:16"` … `docker run "$IMG"` is resolved through the file's own
 //!    assignments (a `${X:-default}` resolves to the default that runs when nothing overrides it);
 //!    only a value computed at run time (`$(…)`, a variable the file never assigns) is exempt, the
@@ -72,7 +66,6 @@ use crate::ledger::{Row, Verdict};
 
 pub const IMAGES_TSV: &str = "testing/fleet-fixtures/service-images.tsv";
 pub const WORKFLOW_DIR: &str = ".github/workflows";
-pub const RELEASE_CHECK: &str = "scripts/release-check.sh";
 
 pub const ROW_TABLE: &str = "images|table-readable";
 pub const ROW_SHAPE: &str = "images|table-digest-shape";
@@ -81,7 +74,6 @@ pub const ROW_FLOATING: &str = "images|no-floating-tag";
 pub const ROW_ROW_PRESENT: &str = "images|workflow-row-present";
 pub const ROW_PIN_MATCHES: &str = "images|workflow-pin-matches";
 pub const ROW_EVERY_PIN_USED: &str = "images|every-pin-used";
-pub const ROW_RELEASE_CHECK: &str = "images|release-check-tags";
 pub const ROW_SCRIPTS: &str = "images|script-containers";
 
 /// Where container-running scripts live. Every `*.sh` under these that runs a container is in the
@@ -103,21 +95,6 @@ fn legacy_title(rule: &str) -> Option<&'static str> {
     }
 }
 
-/// THE WIDENED SCAN SET, declared as the divergence it is.
-///
-/// The shell reads `.github/workflows/` and nothing else, so a container the release harness runs
-/// is not something it can see - which is why the qa gate's own floating tags were the drift that
-/// prompted widening the scan. Every probe of that rule is therefore a violation the legacy is
-/// green on, by construction rather than by accident.
-fn release_check_divergence(rule: &str) -> Option<crate::gates::Divergence> {
-    (rule == ROW_RELEASE_CHECK).then(|| crate::gates::Divergence::LegacyGreen {
-        reason: "the shell scans .github/workflows/ only, so a container the release harness runs \
-                 is outside everything it reads. Widening the scan to those tags is the point of \
-                 this rule, and the qa gate's own floating tags were the drift that prompted it."
-            .to_string(),
-    })
-}
-
 /// Twelve `image:` references exist today across the removed `ci.yml` (4), `plugin-ci.yml` (6) and
 /// the removed `release-stage.yml` (2). The floor is set below that on purpose: it must catch a scanner that
 /// broke, not fail every time somebody legitimately deletes a service. A floor of 1 catches
@@ -125,16 +102,8 @@ fn release_check_divergence(rule: &str) -> Option<crate::gates::Divergence> {
 /// can turn off.
 const MIN_IMAGE_LINES: usize = 6;
 
-/// `release-check.sh` runs four service containers today (postgres, mysql, valkey, vault). Same
-/// reasoning, same refusal to be configurable: a `docker run` parser that stopped matching would
-/// otherwise report a script full of floating tags as a script with no containers at all. The floor
-/// is the measured four (item 182): at three, moving one reference behind a variable the reader
-/// skipped still cleared it.
-const MIN_RELEASE_CHECK_TAGS: usize = 4;
-
-/// Third-party container references judged across the discovered scripts OTHER than
-/// `release-check.sh` (which has its own row and floor). Measured 6 when [`ROW_SCRIPTS`] was armed
-/// (`release-check-1.5.2.sh` 2, `oracle-box-store-services.sh` 3, `ws-conformance/scripts/run.sh`
+/// Third-party container references judged across the discovered scripts. Measured 6 when [`ROW_SCRIPTS`] was armed
+/// (`release-check-1.5.2.sh` 2, since retired, `oracle-box-store-services.sh` 3, `ws-conformance/scripts/run.sh`
 /// one); the floor sits below that so retiring the 1.5.2 harness does not trip it, while a reader
 /// that stopped matching finds zero.
 const MIN_SCRIPT_REFS: usize = 3;
@@ -244,16 +213,10 @@ impl Gate for ServiceImagesGate {
                     pins,
                     workflows.is_ok(),
                 ));
-                rows.push(rule_release_check(cx, pins));
                 rows.push(rule_scripts(cx, pins));
             }
             None => {
-                for id in [
-                    ROW_SHAPE,
-                    ROW_EVERY_PIN_USED,
-                    ROW_RELEASE_CHECK,
-                    ROW_SCRIPTS,
-                ] {
+                for id in [ROW_SHAPE, ROW_EVERY_PIN_USED, ROW_SCRIPTS] {
                     rows.push(Row::fail(
                         id,
                         "the pinned table could not be read",
@@ -377,72 +340,6 @@ impl Gate for ServiceImagesGate {
             workflow_overlay("        image: ${{ inputs.service_image }}\n"),
         ));
 
-        match a_pinned_reference(cx) {
-            Ok(reference) => {
-                let image = reference
-                    .split('@')
-                    .next()
-                    .unwrap_or(&reference)
-                    .to_string();
-                let unknown = format!("ghostdb:9@{PLANTED_DIGEST}");
-                report.push(plant_release_check(
-                    cx,
-                    self,
-                    "release-check.sh runs a container the table does not pin",
-                    &[ROW_RELEASE_CHECK],
-                    Some((&reference, &unknown)),
-                    &["ghostdb:9", "no row in"],
-                ));
-
-                // THE FLOATING TAG ITSELF — the drift this rule was written for, and the one shape
-                // a rule that only asks "is this name in the table?" is green over: the name IS in
-                // the table, and the reference still resolves to whatever the registry serves
-                // today.
-                report.push(plant_release_check(
-                    cx,
-                    self,
-                    "release-check.sh runs a container by a floating tag the table pins by digest",
-                    &[ROW_RELEASE_CHECK],
-                    Some((&reference, &image)),
-                    &[&image, "carries no @sha256:"],
-                ));
-            }
-            Err(e) => report.note_infra_failure(format!("service-images selftest: {e}")),
-        }
-
-        // ITEM 182: A VARIABLE IS NOT AN ESCAPE. The finding's own shape: one of the four pinned
-        // references moved behind `VAULT_IMAGE=` as a floating tag. The reader skipped `$`-tokens,
-        // the three that remained cleared a floor of 3, and the row stayed green.
-        match a_pinned_reference(cx) {
-            Ok(reference) => {
-                let image = reference
-                    .split('@')
-                    .next()
-                    .unwrap_or(&reference)
-                    .to_string();
-                let planted = cx.read(RELEASE_CHECK).map(|t| {
-                    let moved = t.replacen(&reference, "\"$PLANTED_SVC_IMAGE\"", 1);
-                    format!("PLANTED_SVC_IMAGE=\"{image}\"\n{moved}")
-                });
-                match planted {
-                    Ok(text) => {
-                        let mut ov = Overlay::new();
-                        ov.set(RELEASE_CHECK, text);
-                        report.push(prove_red(
-                            cx,
-                            self,
-                            "release-check.sh runs a floating tag spelled as a shell variable",
-                            &[ROW_RELEASE_CHECK],
-                            ov,
-                            &[&image, "carries no @sha256:"],
-                        ));
-                    }
-                    Err(e) => report.note_infra_failure(format!("service-images selftest: {e}")),
-                }
-            }
-            Err(e) => report.note_infra_failure(format!("service-images selftest: {e}")),
-        }
-
         // ITEM 220: A SCRIPT NOBODY LISTED. A new provisioning script runs a floating tag through
         // a `${X:-default}` variable; before discovery, nothing read it.
         {
@@ -455,21 +352,12 @@ impl Gate for ServiceImagesGate {
             report.push(prove_red(
                 cx,
                 self,
-                "a script outside release-check.sh runs a floating tag",
+                "a script runs a floating tag",
                 &[ROW_SCRIPTS],
                 ov,
                 &["planted-services.sh", "postgres:16", "carries no @sha256:"],
             ));
         }
-
-        report.push(plant_release_check(
-            cx,
-            self,
-            "release-check.sh names no container at all",
-            &[ROW_RELEASE_CHECK],
-            None,
-            &[&format!("floor is {MIN_RELEASE_CHECK_TAGS}")],
-        ));
 
         report
     }
@@ -478,7 +366,7 @@ impl Gate for ServiceImagesGate {
     ///
     /// The legacy script anchors on its own path, so the harness copies it into the planted tree
     /// and runs it there. Everything it reads therefore has to BE in that tree: every workflow, the
-    /// pinned table, `release-check.sh`, and the two fleet-fixture files it sources for `record`
+    /// pinned table, and the two fleet-fixture files it sources for `record`
     /// and its verdict. A path left out is a path it reads from the real repository, and the probe
     /// then proves nothing.
     ///
@@ -486,23 +374,17 @@ impl Gate for ServiceImagesGate {
     ///
     /// * the three per-image rules ([`ROW_FLOATING`], [`ROW_ROW_PRESENT`], [`ROW_PIN_MATCHES`])
     ///   carry ids the shell never printed — it recorded one row per LOCATION — so the verdicts
-    ///   agree while the rule NAMES cannot;
-    /// * the two [`ROW_RELEASE_CHECK`] probes are the WIDENED SCAN SET. The shell reads only
-    ///   `.github/workflows/`, so it is green on a `release-check.sh` running an unpinned
-    ///   container — which is precisely the drift that motivated the table. Those probes are kept
-    ///   set: the Rust being stricter there is the point of the widening, not a parity bug.
+    ///   agree while the rule NAMES cannot.
     fn parity_probes(&self, cx: &Ctx) -> Vec<crate::gates::ParityProbe> {
         let workflows: Vec<String> = match cx.walk(&workflow_spec()) {
             Ok(files) => files.iter().map(|f| f.rel_str()).collect(),
             Err(_) => Vec::new(),
         };
         let planted_workflow = format!("{WORKFLOW_DIR}/zz-planted.yml");
-        // What the relocated script reads beyond the workflows: the table it resolves against, the
-        // qa gate's own script (this gate's widened scan set), and the fixture library + verdict
-        // reader it sources.
+        // What the relocated script reads beyond the workflows: the table it resolves against and
+        // the fixture library + verdict reader it sources.
         let support = |with_table: bool| {
             let mut v = vec![
-                RELEASE_CHECK.to_string(),
                 "testing/fleet-fixtures/lib.sh".to_string(),
                 "testing/fleet-fixtures/verdict.sh".to_string(),
             ];
@@ -535,7 +417,7 @@ impl Gate for ServiceImagesGate {
                     // cannot be a `Gate::owed` set. The rule became the id and the location moved
                     // into the detail, so the probe carries the shell's TITLE for the same rule.
                     legacy_names: rule.and_then(legacy_title).map(str::to_string),
-                    divergence: rule.and_then(release_check_divergence),
+                    divergence: None,
                 });
             }
         };
@@ -627,29 +509,6 @@ impl Gate for ServiceImagesGate {
             all(std::slice::from_ref(&planted_workflow), true),
         );
 
-        let unknown = format!("ghostdb:9@{PLANTED_DIGEST}");
-        push(
-            "release-check.sh runs a container the table does not pin",
-            Some(ROW_RELEASE_CHECK),
-            a_pinned_reference(cx).and_then(|r| release_check_overlay(cx, Some((&r, &unknown)))),
-            all(&[], true),
-        );
-        push(
-            "release-check.sh runs a container by a floating tag the table pins by digest",
-            Some(ROW_RELEASE_CHECK),
-            a_pinned_reference(cx).and_then(|r| {
-                let image = r.split('@').next().unwrap_or(&r).to_string();
-                release_check_overlay(cx, Some((&r, &image)))
-            }),
-            all(&[], true),
-        );
-        push(
-            "release-check.sh names no container at all",
-            Some(ROW_RELEASE_CHECK),
-            release_check_overlay(cx, None),
-            all(&[], true),
-        );
-
         out
     }
 }
@@ -662,7 +521,6 @@ const OWED: &[&str] = &[
     ROW_ROW_PRESENT,
     ROW_PIN_MATCHES,
     ROW_EVERY_PIN_USED,
-    ROW_RELEASE_CHECK,
     ROW_SCRIPTS,
 ];
 
@@ -770,7 +628,7 @@ fn is_image_name(s: &str) -> bool {
 }
 
 /// A whole container reference as a shell command writes it: `<name>[:tag]` with an OPTIONAL
-/// `@sha256:<64 hex>` pin, split into the two halves the release-check rule judges separately.
+/// `@sha256:<64 hex>` pin, split into the two halves the scripts rule judges separately.
 ///
 /// `is_image_name` alone cannot read a pinned reference — it splits at the first `:` and the tag
 /// half then carries the whole digest — so a reader built on it drops exactly the references that
@@ -877,11 +735,6 @@ fn is_well_formed_digest(d: &str) -> bool {
                 .chars()
                 .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
     })
-}
-
-/// Every container tag `scripts/release-check.sh` names in a `docker run` — see [`container_refs`].
-fn release_check_tags(text: &str) -> Vec<String> {
-    container_refs(text).into_iter().map(|(_, r)| r).collect()
 }
 
 /// The shell assignments a script makes, `NAME=value` (optionally `export`/`local`/`readonly`),
@@ -1346,14 +1199,11 @@ fn rule_shape(pins: &[Pin]) -> Row {
     }
 }
 
-/// Every container reference the scripts run — `release-check.sh` and the discovered set — as the
+/// Every container reference the discovered scripts run — as the
 /// whole `image[@digest]` string. A pin a script runs is a used pin: `mysql:8.0` and the Autobahn
 /// suite are run by scripts and by no workflow, and a table row for them is not a dead pin.
 fn script_references(cx: &Ctx) -> Vec<String> {
-    let mut out: Vec<String> = cx
-        .read(RELEASE_CHECK)
-        .map(|t| release_check_tags(&t))
-        .unwrap_or_default();
+    let mut out: Vec<String> = Vec::new();
     if let Ok(scripts) = container_scripts(cx) {
         for f in &scripts {
             out.extend(container_refs(&f.text).into_iter().map(|(_, r)| r));
@@ -1419,71 +1269,14 @@ fn rule_every_pin_used(
     }
 }
 
-fn rule_release_check(cx: &Ctx, pins: &[Pin]) -> Row {
-    let text = match cx.read(RELEASE_CHECK) {
-        Ok(t) => t,
-        Err(e) => {
-            return Row::fail(
-                ROW_RELEASE_CHECK,
-                "the qa gate's own script could not be read",
-                format!("{RELEASE_CHECK}: {e}"),
-            )
-        }
-    };
-    let tags = release_check_tags(&text);
-    if tags.len() < MIN_RELEASE_CHECK_TAGS {
-        return Row::fail(
-            ROW_RELEASE_CHECK,
-            format!(
-                "only {} container tag(s) found in {RELEASE_CHECK}",
-                tags.len()
-            ),
-            format!(
-                "floor is {MIN_RELEASE_CHECK_TAGS}; the drift this gate exists to stop was found \
-                 in this script, and a reader that finds no containers in it clears it vacuously"
-            ),
-        );
-    }
-    // THE REFERENCE IS JUDGED, NOT ITS NAME. Asking only whether the tag NAMES a table row is the
-    // question the drift already answers yes to: `postgres:16` is in the table, and `postgres:16`
-    // is exactly the floating reference this rule exists to ban. So each reference must carry the
-    // digest, and it must carry the SAME digest the table pins — the identical demand
-    // `ROW_FLOATING` and `ROW_PIN_MATCHES` make of a workflow's `image:` line.
-    let offenders: Vec<String> = tags
-        .iter()
-        .filter_map(|tag| judge_reference(tag, pins))
-        .collect();
-    if offenders.is_empty() {
-        Row::pass(
-            ROW_RELEASE_CHECK,
-            "every container the qa gate's script runs is pinned to the digest the table pins",
-            format!(
-                "{} reference(s): {}",
-                tags.len(),
-                tags.iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        )
-    } else {
-        Row::fail(
-            ROW_RELEASE_CHECK,
-            "the qa gate's script runs a container that is not pinned to the table's bytes",
-            offenders.join(" | "),
-        )
-    }
-}
-
-/// The discovered scan set: every `*.sh` under [`SCRIPT_ROOTS`] other than [`RELEASE_CHECK`] that
-/// runs a container.
+/// The discovered scan set: every `*.sh` under [`SCRIPT_ROOTS`] that runs a container.
 fn container_scripts(cx: &Ctx) -> Result<Vec<SourceFile>, String> {
     let files = cx
         .walk(&WalkSpec::new(SCRIPT_ROOTS.iter().copied()).ext("sh"))
         .map_err(|e| e.to_string())?;
     Ok(files
         .into_iter()
-        .filter(|f| f.rel_str() != RELEASE_CHECK && !container_refs(&f.text).is_empty())
+        .filter(|f| !container_refs(&f.text).is_empty())
         .collect())
 }
 
@@ -1597,57 +1390,6 @@ fn plant_workflow<'a>(
     prove_red(cx, gate, name, covers, workflow_overlay(image_line), naming)
 }
 
-/// `Some((needle, replacement))` substitutes into the real script; `None` replaces it with a script
-/// that runs no container at all, which is the floor's case.
-fn plant_release_check<'a>(
-    cx: &'a Ctx,
-    gate: &'a dyn Gate,
-    name: &str,
-    covers: &[&str],
-    subst: Option<(&str, &str)>,
-    naming: &[&str],
-) -> crate::gates::CasePlan<'a> {
-    match release_check_overlay(cx, subst) {
-        Ok(ov) => prove_red(cx, gate, name, covers, ov, naming),
-        Err(e) => unplantable(name, covers, naming, e).into(),
-    }
-}
-
-/// A pinned reference the qa gate's script really runs, read out of the script itself.
-///
-/// The plants below rewrite a reference; naming one as a literal here would mean a digest bump in
-/// the table becoming an unplantable selftest, and a selftest that cannot plant proves nothing
-/// about the rule it names. So the needle is discovered the same way the rule discovers it.
-fn a_pinned_reference(cx: &Ctx) -> Result<String, String> {
-    let text = cx.read(RELEASE_CHECK)?;
-    release_check_tags(&text)
-        .into_iter()
-        .find(|t| matches!(split_reference(t), Some((_, Some(_)))))
-        .ok_or_else(|| {
-            format!("{RELEASE_CHECK} runs no digest-pinned container to plant over").to_string()
-        })
-}
-
-/// The overlay one plant into the qa gate's script produces, shared by the self-test and the parity
-/// probes.
-fn release_check_overlay(cx: &Ctx, subst: Option<(&str, &str)>) -> Result<Overlay, String> {
-    let text = cx.read(RELEASE_CHECK)?;
-    let planted = match subst {
-        Some((needle, with)) => {
-            if !text.contains(needle) {
-                return Err(format!(
-                    "`{needle}` is not in {RELEASE_CHECK} to plant over"
-                ));
-            }
-            text.replacen(needle, with, 1)
-        }
-        None => "#!/usr/bin/env bash\nset -euo pipefail\necho 'no containers here'\n".to_string(),
-    };
-    let mut ov = Overlay::new();
-    ov.set(RELEASE_CHECK, planted);
-    Ok(ov)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1690,7 +1432,7 @@ mod tests {
         );
     }
 
-    /// ITEM 220: a container-running script outside release-check.sh is in the scan set, and its
+    /// ITEM 220: a container-running script is in the scan set, and its
     /// floating tag is NAMED by the scripts row.
     #[test]
     fn a_floating_container_in_any_script_is_named() {
@@ -1748,38 +1490,5 @@ mod tests {
                 .to_string(),
         };
         assert!(extract_images(&[file]).is_empty());
-    }
-
-    #[test]
-    fn the_qa_gate_script_names_its_containers() {
-        let cx = Ctx::workspace().expect("workspace context");
-        let text = cx.read(RELEASE_CHECK).expect("release-check.sh");
-        let tags = release_check_tags(&text);
-        assert!(
-            tags.len() >= MIN_RELEASE_CHECK_TAGS,
-            "the docker-run reader found {tags:?}"
-        );
-        // THE WHOLE REFERENCE, digest and all. The reader used to stop at the image name, which is
-        // the same reader bug the rule had: `is_image_name` splits at the first `:`, so a pinned
-        // `postgres:16@sha256:…` failed its tag test and was dropped — the correctly pinned lines
-        // were exactly the ones that fell out of the scan set.
-        assert!(
-            tags.iter()
-                .any(|t| t.starts_with("postgres:16@sha256:")
-                    && t.len() == "postgres:16@".len() + 71),
-            "{tags:?}"
-        );
-        assert!(
-            tags.iter()
-                .any(|t| t.starts_with("hashicorp/vault@sha256:")),
-            "{tags:?}"
-        );
-        // ...and every one of them carries a digest: the tags this rule was written for were all
-        // floating, and a reader that still returns a bare name has lost the thing being judged.
-        assert!(
-            tags.iter()
-                .all(|t| matches!(split_reference(t), Some((_, Some(_))))),
-            "{tags:?}"
-        );
     }
 }
