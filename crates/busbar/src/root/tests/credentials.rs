@@ -108,6 +108,9 @@ impl HostServices for Inner {
     fn random_fill(&self, _: u64) -> Stored {
         Stored::ready(9)
     }
+    fn trust_verify(&self, _: &Caller, _: &str, _: &[u8], _: &[u8]) -> Stored {
+        Stored::ready(10)
+    }
     fn records_secret(&self, _: &str, _: &str, _: Later) -> Ran {
         panic!("the credential read is the source's, never the inner services'")
     }
@@ -154,11 +157,12 @@ fn the_services_delegate_and_serve_the_read() {
         s.trust_due(&caller),
         s.entitlement_check(&caller, None, "model:m"),
         s.random_fill(16),
+        s.trust_verify(&caller, "peer", b"payload", b"[]"),
     ]
     .iter()
     .map(|s| s.value)
     .collect();
-    assert_eq!(values, (1..=9).collect::<Vec<u64>>());
+    assert_eq!(values, (1..=10).collect::<Vec<u64>>());
     for (id, value) in [("live-1", SECRET_LIVE), ("gone", SECRET_NOT_LIVE)] {
         let read = now(s.records_secret("a-kind", id, Box::new(|_| {})));
         let span = read.spans[0];

@@ -101,6 +101,17 @@ impl HostServices for CredentialServices {
         self.inner.trust_due(caller)
     }
 
+    fn trust_verify(
+        &self,
+        caller: &Caller,
+        counterparty: &str,
+        payload: &[u8],
+        signatures: &[u8],
+    ) -> Stored {
+        self.inner
+            .trust_verify(caller, counterparty, payload, signatures)
+    }
+
     fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored {
         self.inner.entitlement_check(caller, unit, target)
     }
