@@ -38,8 +38,7 @@ for p in "$LISTEN_PORT" "$MOCK_PORT" "$SINK_PORT"; do
   assert_port_free "$p" || fail_here "port ${p} already in use before the probe starts" "refusing a possibly-false PASS."
 done
 
-python3 mock-upstream.py "$MOCK_PORT" "$MARKER" >/dev/null 2>&1 &
-track_pid $!
+start_oracle_mock "$MOCK_PORT" "$MARKER" || fail_here "the oracle mock upstream did not come up" "port ${MOCK_PORT}; bin/oracle could not obtain the pinned engine."
 python3 export-sink.py "$SINK_PORT" >/dev/null 2>&1 &
 track_pid $!
 wait_for_http "http://127.0.0.1:${SINK_PORT}/received" 5 || fail_here "the export sink fixture did not come up" "port ${SINK_PORT}."
