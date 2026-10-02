@@ -2025,7 +2025,7 @@
       "classes": [
         "body"
       ],
-      "rationale": "Q91 (owner, 2026-09-27, option A): \"A Gemini turn bills Google's totalTokenCount: toolUsePromptTokenCount counts as input.\" 1.5.5 read toolUsePromptTokenCount as a slice of the prompt and left it out of the bill. On usage.gemini|tool-use|total-billed (promptTokenCount 18, toolUsePromptTokenCount 32, candidates 7, Google total 57) the candidate answers prompt_tokens 50 / total_tokens 57 and bills tokens_input 50, spend 64000000 where 1.5.5 answered 18 / 25 and 32000000. usage.gemini|tool-use|total-not-a-sum (Google total 64, which is NOT the sum 57) must bill Google's 64; predev bills 57, a defect routed to PROTO-FIXES, so this entry's premise on that cell is false (WITHHELD, the cell stays DIVERGING) until the fix lands. NOTE: written as a NEW entry: the ruling named \"the existing signed entry (accepted-differences.json:1083)\" but that line is S-8 and no register entry mentioned Gemini tool-use or Q91.",
+      "rationale": "Q91 (owner, 2026-09-27, option A): \"A Gemini turn bills Google's totalTokenCount: toolUsePromptTokenCount counts as input.\" 1.5.5 read toolUsePromptTokenCount as a slice of the prompt and left it out of the bill. On usage.gemini|tool-use|total-billed (promptTokenCount 18, toolUsePromptTokenCount 32, candidates 7, Google total 57) the candidate answers prompt_tokens 50 / total_tokens 57 and bills tokens_input 50, spend 64000000 where 1.5.5 answered 18 / 25 and 32000000. usage.gemini|tool-use|total-not-a-sum (Google total 64, which is NOT the sum 57) must bill Google's 64; predev bills 57, a defect routed to PROTO-FIXES, so this entry's premise on that cell is false (WITHHELD, the cell stays DIVERGING) until the fix lands. NOTE: written as a NEW entry: the ruling named \"the existing signed entry (accepted-differences.json:1083)\" but that line is S-8 and no register entry mentioned Gemini tool-use or Q91. PREMISE RE-CHECKED against PROTO-FIXES #157 (2026-10-02): the fix bills 50 input + 14 output = Google's 64 on total-not-a-sum, so the premise probes the ledger (tokens_input 50, tokens_output 14) rather than the response total.",
       "premise": {
         "all": [
           {
@@ -2035,8 +2035,13 @@
           },
           {
             "cell": "usage.gemini|tool-use|total-not-a-sum",
-            "pointer": "/steps/0/body/json/usage/total_tokens",
-            "equals": 64
+            "pointer": "/steps/1/body/json/total/tokens_input",
+            "equals": 50
+          },
+          {
+            "cell": "usage.gemini|tool-use|total-not-a-sum",
+            "pointer": "/steps/1/body/json/total/tokens_output",
+            "equals": 14
           }
         ]
       },
