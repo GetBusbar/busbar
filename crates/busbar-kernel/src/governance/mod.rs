@@ -411,11 +411,13 @@ pub enum LimitBlocked {
 /// WHAT ONE ADMISSION'S FEE CHARGE REACHED, carried from the charge to its refund (the design's
 /// money section: a refund returns the bucket actually charged). Per bucket, the window of the cell
 /// the fee landed on — the request's own window, or the newer one a concurrent admission had
-/// already rolled the cell to — and the fee lane it landed on (`None`: the flat fee base). Read
-/// back only by [`GovState::refund_charge`]; a refund never re-derives any of it from a clock.
+/// already rolled the cell to — the fee lane it landed on (`None`: the flat fee base), and the card
+/// era it was charged under (`effective_from_at` of the admission instant). Read back only by
+/// [`GovState::refund_charge`]; a refund never re-derives any of it from a clock.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FeeCharge {
     lane: Option<String>,
+    era: u64,
     cells: Vec<(String, u64)>,
 }
 

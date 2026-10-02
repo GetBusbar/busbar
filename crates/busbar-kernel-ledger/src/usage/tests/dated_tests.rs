@@ -130,24 +130,29 @@ fn the_fee_base_splits_by_the_era_each_request_was_admitted_under() {
     assert_eq!(dated.minor_i64(), Ok(2 * 5 + 7));
 }
 
-/// A refund returns the newest dated era's request first, then the undated remainder; the split
-/// never goes negative.
+/// MONEY-AUDIT D-3/F-5: a refund returns the fee of the era its request was CHARGED in, not the
+/// newest era's. Two requests admitted under E1 and E2; the E1 one fails: E2's request stays billed.
+/// Era zero comes off the undated remainder, which the caller's total carries.
 #[test]
-fn a_refund_takes_the_newest_era_first() {
+fn a_refund_takes_the_era_its_request_was_charged_in() {
+    let (e1, e2) = (EDIT_MS, EDIT_MS + 5);
     let mut eras = FeeEras::default();
-    eras.charge(EDIT_MS);
-    eras.charge(EDIT_MS + 5);
-    eras.refund(); // the caller's total goes 2 -> 1 in the same step
+    eras.charge(e1);
+    eras.charge(e2);
+    eras.refund(e1); // the caller's total goes 2 -> 1 in the same step
     assert_eq!(
         eras.split(1).collect::<Vec<_>>(),
-        vec![(EDIT_MS, 1), (EDIT_MS + 5, 0), (0, 0)]
+        vec![(e1, 0), (e2, 1), (0, 0)],
+        "the E1 request's fee came back; the E2 request is still billed at E2"
     );
-    eras.refund();
-    eras.refund(); // nothing dated left: the caller's total carries it
-    assert_eq!(
-        eras.split(0).collect::<Vec<_>>(),
-        vec![(EDIT_MS, 0), (EDIT_MS + 5, 0), (0, 0)]
-    );
+
+    // An undated request (era zero: no history installed when it was admitted) beside a dated
+    // one: its refund comes off the undated remainder and leaves the dated request billed.
+    let mut eras = FeeEras::default();
+    eras.charge(0);
+    eras.charge(e1);
+    eras.refund(0); // 2 -> 1
+    assert_eq!(eras.split(1).collect::<Vec<_>>(), vec![(e1, 1), (0, 0)]);
 }
 
 /// A segment whose era began before the window resolves at the window's start: the card in force
