@@ -2224,6 +2224,10 @@ pub fn scratch_dir(name: &str) -> std::path::PathBuf {
 
 pub mod warn_capture;
 
+/// The kernel's own test-only mint (ARCHITECT ruling B): the seal is acquired here and minted tokens
+/// are handed to a dependent crate's tests, which never name the seal or a constructor.
+pub mod tokens;
+
 /// The export axis a test binary's configurations resolve against (K9b).
 pub mod export_axis;
 
