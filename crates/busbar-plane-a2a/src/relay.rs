@@ -25,7 +25,10 @@
 use busbar_contract::jsonrpc::{read_response, NotAnAnswerKind, Reply as RpcReply};
 use serde_json::{json, Value};
 
+use crate::a2a::task::TaskState;
 use crate::arrival::{Refusal, JSON_MEDIA_TYPE};
+use crate::binding::{self, Binding};
+use crate::identity;
 
 /// The verb every JSON-RPC hop is sent with.
 pub const VERB: &str = "POST";
@@ -207,6 +210,19 @@ pub fn read_answer(status: u32, body: &[u8], id: &Value) -> Result<Value, HopRef
     }
 }
 
+/// An HTTP+JSON far end's whole answer, read as the answer to `id` once re-wrapped into the
+/// JSON-RPC envelope ([`binding::rewrap`]); `None` when a 2xx body is not JSON (unframable).
+fn read_rest_answer(status: u32, body: &[u8], id: &Value) -> Option<Result<Value, HopRefusal>> {
+    if !(200..300).contains(&status) {
+        return Some(Err(HopRefusal::Status));
+    }
+    if body.len() > MAX_REPLY_BYTES {
+        return Some(Err(HopRefusal::BodyTooLarge));
+    }
+    let envelope = binding::rewrap(body, id).ok()?;
+    Some(read_answer(status, &envelope, id))
+}
+
 /// The caller's answer to a relayed `result`, VERBATIM, under the caller's own `id`.
 #[must_use]
 pub fn relayed(id: &Value, result: Value) -> Reply {
@@ -243,6 +259,41 @@ pub struct Relay {
     far: Vec<u8>,
     received: u64,
     answered: bool,
+    task: Option<TaskHop>,
+    instead: Option<Vec<u8>>,
+    instead_sent: bool,
+    settled: Option<Settled>,
+    binding: Binding,
+    method: String,
+    params: Value,
+}
+
+/// THE TASK A RELAYED HOP IS FOR (ARCHITECT ruling B1): busbar's identity for it, whether the
+/// request addressed a task the caller already holds, and the skill the arrival matched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskHop {
+    /// busbar's task id.
+    pub task_id: String,
+    /// busbar's `contextId`.
+    pub context_id: String,
+    /// The request named a task the caller holds: a failed hop says nothing about that task.
+    pub addressed: bool,
+    /// The skill the arrival matched, annotated on the answer.
+    pub skill: Option<String>,
+}
+
+/// WHAT A TASK HOP'S ANSWER SAYS ABOUT ITS TASK, for the door to record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Settled {
+    /// The far end answered: the state it reported, and its own id for the task.
+    Reported {
+        /// The reported state (`Working` when none could be read).
+        state: TaskState,
+        /// The far end's own task id, before the rewrite.
+        backend_id: Option<String>,
+    },
+    /// The hop failed a task it opened: the task ends `failed`.
+    Failed,
 }
 
 impl Relay {
@@ -257,7 +308,138 @@ impl Relay {
             far: Vec::new(),
             received: 0,
             answered: false,
+            task: None,
+            instead: None,
+            instead_sent: false,
+            settled: None,
+            binding: Binding::JsonRpc,
+            method: String::new(),
+            params: Value::Null,
         }
+    }
+
+    /// The binding the next attempt speaks (ARCHITECT ruling B4), for the request `envelope` (the
+    /// translated one, when a task id was translated): HTTP+JSON composes its request line from the
+    /// envelope's `method` and `params`. The request is read once, at the first attempt's binding;
+    /// each following attempt keeps it.
+    pub fn bind(&mut self, binding: Binding, envelope: &Value) {
+        let first = self.method.is_empty() && self.params.is_null();
+        self.binding = binding;
+        if !first {
+            return;
+        }
+        let translated = self
+            .instead
+            .as_deref()
+            .and_then(|b| serde_json::from_slice::<Value>(b).ok());
+        let envelope = translated.as_ref().unwrap_or(envelope);
+        self.method = envelope
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        self.params = envelope.get("params").cloned().unwrap_or(Value::Null);
+    }
+
+    /// REFUSED BY NAME before the hop: the agent's card declares only `word`, a binding the plane
+    /// does not frame (the engine's early `Unframable` refusal; the task stays as it is).
+    pub fn refuse_unspeakable(&mut self, word: &str) -> Answer {
+        self.answered = true;
+        Answer::ToCaller(self.unframable_reply(word))
+    }
+
+    /// The early refusal of a request that cannot be carried over `word`.
+    fn unframable_reply(&self, word: &str) -> Reply {
+        let refusal = Refusal {
+            status: STATUS_BAD_GATEWAY,
+            id: Some(self.id.clone()),
+            code: CODE_INVALID_AGENT_RESPONSE,
+            message: binding::unframable_text(&self.method, word),
+        };
+        Reply {
+            status: STATUS_BAD_GATEWAY,
+            content_type: JSON_MEDIA_TYPE,
+            body: serde_json::to_vec(&refusal.envelope()).unwrap_or_default(),
+        }
+    }
+
+    /// The hop could not be framed on its binding: a task-less hop is refused by name; a task hop
+    /// answers as any failed hop does.
+    fn unframable(&mut self) -> Answer {
+        self.answered = true;
+        let Some(task) = &self.task else {
+            return Answer::ToCaller(self.unframable_reply(self.binding.word()));
+        };
+        let (reply, failed) = task_refusal(None, task, &self.id);
+        if failed {
+            self.settled = Some(Settled::Failed);
+        }
+        Answer::ToCaller(reply)
+    }
+
+    /// The request one attempt sends on the hop's binding, to the agent at `url`.
+    fn attempt(&mut self, url: &str) -> Answer {
+        let version = (crate::arrival::H_VERSION, self.version.to_string());
+        match self.binding {
+            Binding::JsonRpc => match target_of(url) {
+                Some(target) => Answer::Attempt(Attempt {
+                    verb: VERB,
+                    target,
+                    fields: vec![
+                        (H_CONTENT_TYPE, JSON_MEDIA_TYPE.to_string()),
+                        (H_ACCEPT, ACCEPT_UNARY.to_string()),
+                        version,
+                    ],
+                }),
+                None => Answer::Refused,
+            },
+            Binding::HttpJson => match binding::compose(url, &self.method, &self.params) {
+                Ok(framed) => {
+                    let mut fields = Vec::new();
+                    if framed.has_body {
+                        fields.push((H_CONTENT_TYPE, JSON_MEDIA_TYPE.to_string()));
+                    }
+                    fields.push((H_ACCEPT, ACCEPT_UNARY.to_string()));
+                    fields.push(version);
+                    self.instead = Some(framed.body);
+                    Answer::Attempt(Attempt {
+                        verb: framed.verb,
+                        target: framed.target,
+                        fields,
+                    })
+                }
+                Err(_) => self.unframable(),
+            },
+        }
+    }
+
+    /// The hop is for `task`: its answer leaves under busbar's identity and its refusals name the
+    /// task.
+    pub fn for_task(&mut self, task: TaskHop) {
+        self.task = Some(task);
+    }
+
+    /// The request id the hop answers.
+    #[must_use]
+    pub const fn id(&self) -> &Value {
+        &self.id
+    }
+
+    /// The task this hop is for, once one is open.
+    #[must_use]
+    pub const fn task(&self) -> Option<&TaskHop> {
+        self.task.as_ref()
+    }
+
+    /// Every attempt sends `body` in place of the caller's bytes (a request whose task ids were
+    /// translated to the far end's).
+    pub fn send_instead(&mut self, body: Vec<u8>) {
+        self.instead = Some(body);
+    }
+
+    /// What the answer said about the task, once; `None` before the answer or for a task-less hop.
+    pub fn take_settled(&mut self) -> Option<Settled> {
+        self.settled.take()
     }
 
     /// `true` once the caller's answer has been given.
@@ -288,25 +470,26 @@ impl Relay {
                 self.status = None;
                 self.far.clear();
                 self.received = 0;
-                match url.and_then(target_of) {
-                    Some(target) => Answer::Attempt(Attempt {
-                        verb: VERB,
-                        target,
-                        fields: vec![
-                            (H_CONTENT_TYPE, JSON_MEDIA_TYPE.to_string()),
-                            (H_ACCEPT, ACCEPT_UNARY.to_string()),
-                            (crate::arrival::H_VERSION, self.version.to_string()),
-                        ],
-                    }),
+                self.instead_sent = false;
+                match url {
+                    Some(url) => self.attempt(url),
                     None => Answer::Refused,
                 }
             }
             From::Caller => {
-                self.sent = self.sent.saturating_add(piece.bytes.len() as u64);
-                if piece.bytes.is_empty() {
+                let bytes = match &self.instead {
+                    Some(_) if self.instead_sent => Vec::new(),
+                    Some(instead) => {
+                        self.instead_sent = true;
+                        instead.clone()
+                    }
+                    None => piece.bytes.to_vec(),
+                };
+                self.sent = self.sent.saturating_add(bytes.len() as u64);
+                if bytes.is_empty() {
                     Answer::Nothing
                 } else {
-                    Answer::ToFarEnd(piece.bytes.to_vec())
+                    Answer::ToFarEnd(bytes)
                 }
             }
             From::FarEnd => self.far_end_piece(piece),
@@ -328,12 +511,89 @@ impl Relay {
         let Some(status) = self.status else {
             return Answer::Refused;
         };
+        let answer = match self.binding {
+            Binding::JsonRpc => read_answer(status, &self.far, &self.id),
+            Binding::HttpJson => match read_rest_answer(status, &self.far, &self.id) {
+                Some(answer) => answer,
+                None => return self.unframable(),
+            },
+        };
         self.answered = true;
-        Answer::ToCaller(match read_answer(status, &self.far, &self.id) {
-            Ok(result) => relayed(&self.id, result),
-            Err(refusal) => refusal.reply(&self.id),
+        let Some(task) = &self.task else {
+            return Answer::ToCaller(match answer {
+                Ok(result) => relayed(&self.id, result),
+                Err(refusal) => refusal.reply(&self.id),
+            });
+        };
+        Answer::ToCaller(match answer {
+            Ok(mut result) => {
+                self.settled = Some(Settled::Reported {
+                    state: identity::reported_task_state(&result),
+                    backend_id: identity::backend_task_id(&result),
+                });
+                identity::rewrite_identity(
+                    &mut result,
+                    &task.task_id,
+                    &task.context_id,
+                    task.skill.as_deref(),
+                );
+                relayed(&self.id, result)
+            }
+            Err(refusal) => {
+                let code = (refusal == HopRefusal::BackendError)
+                    .then(|| backend_error_code(&self.far))
+                    .flatten();
+                let (reply, failed) = task_refusal(code, task, &self.id);
+                if failed {
+                    self.settled = Some(Settled::Failed);
+                }
+                reply
+            }
         })
     }
+}
+
+/// The far end's JSON-RPC error `code`, when it answered one A2A defines.
+fn backend_error_code(body: &[u8]) -> Option<i64> {
+    serde_json::from_slice::<Value>(body)
+        .ok()?
+        .pointer("/error/code")?
+        .as_i64()
+        .filter(|c| identity::status_of_code(*c).is_some())
+}
+
+/// THE CALLER'S ANSWER TO A REFUSED TASK HOP, and whether the task ends `failed` (the engine's
+/// `receive::refuse_hop`): the far end's own A2A error code travels, its prose never does, and the
+/// refusal names the task. A hop addressed to a task the caller holds fails the request, never the
+/// task.
+fn task_refusal(code: Option<i64>, task: &TaskHop, id: &Value) -> (Reply, bool) {
+    let (code, message, failed) = match (task.addressed, code) {
+        (true, code) => (
+            code.unwrap_or(CODE_INVALID_AGENT_RESPONSE),
+            "the backend agent refused this request",
+            false,
+        ),
+        (false, Some(code)) => (code, "the backend agent refused this task", true),
+        (false, None) => (
+            CODE_INVALID_AGENT_RESPONSE,
+            "the backend agent did not complete this task",
+            true,
+        ),
+    };
+    let status = identity::status_of_code(code).unwrap_or(STATUS_BAD_GATEWAY);
+    let refusal = Refusal {
+        status,
+        id: Some(id.clone()),
+        code,
+        message: message.to_string(),
+    };
+    let reply = Reply {
+        status,
+        content_type: JSON_MEDIA_TYPE,
+        body: serde_json::to_vec(&identity::about_task(&refusal, &task.task_id))
+            .unwrap_or_default(),
+    };
+    (reply, failed)
 }
 
 #[cfg(test)]

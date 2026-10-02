@@ -39,7 +39,7 @@ const SWEEP_BUDGET: usize = 32;
 #[derive(Debug, Default)]
 pub struct Pass {
     /// The host services its finished pieces made: the next piece's handles count on from here.
-    issued: u32,
+    pub(crate) issued: u32,
     /// The piece in flight's stamp, kept across its re-entries.
     entry: Option<Entry>,
     /// The reply bytes the last window did not hold.
@@ -78,6 +78,20 @@ impl<'h> Via<'h> {
         self.conn.issued()
     }
 
+    /// `random.fill` into `buf`, under this piece's next handle.
+    ///
+    /// # Errors
+    /// [`Halt::Failed`] when the host serves no `random.fill` or declined it.
+    pub fn random(&mut self, buf: &mut [u8]) -> Result<(), Halt> {
+        let Some(services) = self.services else {
+            return Err(Halt::Failed(format!("{:?}", ServiceError::Unserved)));
+        };
+        let handle = self.next_handle();
+        services
+            .random_fill(handle, buf)
+            .map_err(|e| Halt::Failed(format!("{e:?}")))
+    }
+
     /// The next handle, for a host service the connector does not wrap.
     fn next_handle(&mut self) -> CompletionHandle {
         let seq = self.conn.issued();
@@ -105,6 +119,12 @@ impl Records for Via<'_> {
 
     fn claim(&mut self, _kind: &str, _key: &str, _ttl_ms: u64) -> Result<bool, Halt> {
         Err(Halt::Failed(RECORDS_UNSERVED.to_owned()))
+    }
+}
+
+impl crate::task_hop::Mint for Via<'_> {
+    fn random(&mut self, buf: &mut [u8]) -> Result<(), Halt> {
+        Via::random(self, buf)
     }
 }
 
@@ -249,7 +269,7 @@ pub fn on_piece(
 }
 
 /// The kind index `kind` is in the tail's record kinds.
-fn kind_index(kind: &str) -> u32 {
+pub(crate) fn kind_index(kind: &str) -> u32 {
     HELD_KINDS
         .iter()
         .position(|k| *k == kind)

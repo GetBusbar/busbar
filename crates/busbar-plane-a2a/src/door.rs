@@ -128,6 +128,7 @@ const RECORD_KINDS: &[AbiStr] = &[
     abi_str(crate::records::HELD_KINDS[0]),
     abi_str(crate::records::HELD_KINDS[1]),
     abi_str(crate::records::HELD_KINDS[2]),
+    abi_str(crate::records::HELD_KINDS[3]),
 ];
 
 /// The pin's four mechanisms; three are authenticity roots and `unpinned` is not.
