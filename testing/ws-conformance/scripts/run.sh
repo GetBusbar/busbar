@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# WebSocket conformance harness driver: Autobahn|Testsuite against a real busbar ws-over-tcp
-# subject, following the same control-always + subject-armed-or-red shape as
+# WebSocket conformance harness driver: Autobahn|Testsuite against busbar's ws door, framed by the
+# connector's own listener (the ws-conformance-subject), following the same control-always + subject-armed-or-red shape as
 # `scripts/mcp-conformance.sh`.
 #
 # DOCKER-LIVE IS CI-ONLY. This script's `--selftest` mode never touches Docker: it proves the
@@ -149,8 +149,11 @@ case "$mode" in
     ;;
   --subject)
     echo "$mode: Docker-live mode; runs in CI (crossbario/autobahn-testsuite vs busbar's ws-conformance-subject)." >&2
-    cargo build --manifest-path "$REPO_ROOT/Cargo.toml" -p ws-conformance-subject
-    bin="$REPO_ROOT/target/debug/ws-conformance-subject"
+    # RELEASE, as busbar ships: the door runs under the dispatcher's watchdog (1 s per crossing), and
+    # an unoptimised framer unmasking Autobahn's 16 MiB messages (case 9.1.6) overruns it, which
+    # faults the door for every later connection — a statement about a debug build nobody ships.
+    cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" -p ws-conformance-subject
+    bin="$REPO_ROOT/target/release/ws-conformance-subject"
     armed=false
     port=""
     if [ -x "$bin" ]; then

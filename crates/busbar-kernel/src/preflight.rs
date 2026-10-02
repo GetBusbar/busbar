@@ -277,7 +277,7 @@ fn require_plugin(
 /// A registry holding only the [`linked_rows`] — what a build with the plugins directory off has.
 /// No directory is read and no root is needed: the kernel's own built-in secret modules resolve in
 /// any build.
-pub(crate) fn linked() -> Result<busbar_plugin_loader::PluginRegistry, String> {
+pub(crate) fn linked() -> Result<PluginRegistry, String> {
     PluginRegistry::empty().link(linked_rows())
 }
 
