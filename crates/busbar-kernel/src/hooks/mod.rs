@@ -200,7 +200,7 @@ impl HookEnv {
             .ok_or_else(|| format!("no `kind: hook` plugin answers to '{module}'"))?;
         let settings = serde_json::Value::Object(settings.clone());
         let calls = axis.open(module, name, &settings, policy_timeout(timeout_ms))?;
-        Ok(plugin::HookPolicy::new(calls, name))
+        Ok(plugin::HookPolicy::policy(calls, name))
     }
 
     /// Resolve a hook's opaque `settings:` map — substituting any SecretRef-typed value (e.g. a

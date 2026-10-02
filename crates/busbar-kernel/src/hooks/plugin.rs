@@ -35,7 +35,7 @@ pub(crate) struct HookPolicy {
 
 impl HookPolicy {
     /// The routing seam over `calls`, named `name` (the hook's registry name).
-    pub(crate) fn new(calls: Arc<dyn HookCalls>, name: &str) -> Arc<dyn RoutingPolicy> {
+    pub(crate) fn policy(calls: Arc<dyn HookCalls>, name: &str) -> Arc<dyn RoutingPolicy> {
         Arc::new(Self {
             calls,
             name: busbar_plugin_loader::intern_name(name),
