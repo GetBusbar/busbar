@@ -12,9 +12,9 @@
 
 use super::harness::{frame, Script};
 use super::{member, Node};
-use crate::ports::{disposition, Clock};
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::DestinationId;
+use busbar_kernel_egress::ports::{disposition, Clock};
 
 /// The client-level ceiling every walk in this module runs under, in milliseconds. The harness
 /// hands the unit `stream_ceiling_secs: 300`.
@@ -35,8 +35,14 @@ fn a_spent_deadline_refuses_before_the_first_attempt() {
 
     let outcome = node.route_with("primary", &mut ctx);
     let shed = outcome.shed().expect("a refusal");
-    assert_eq!(shed.detail, crate::wire::DETAIL_REQUEST_TIMEOUT);
-    assert_eq!(shed.status, crate::wire::STATUS_SERVICE_UNAVAILABLE);
+    assert_eq!(
+        shed.detail,
+        busbar_kernel_egress::wire::DETAIL_REQUEST_TIMEOUT
+    );
+    assert_eq!(
+        shed.status,
+        busbar_kernel_egress::wire::STATUS_SERVICE_UNAVAILABLE
+    );
     assert!(
         node.transport.dialled.lock().unwrap().is_empty(),
         "nothing is dialled once the walk's budget is spent"
@@ -52,7 +58,7 @@ fn a_spent_deadline_refuses_before_a_streamed_attempt_too() {
     let outcome = node.route_with("primary", &mut ctx);
     assert_eq!(
         outcome.shed().expect("a refusal").detail,
-        crate::wire::DETAIL_REQUEST_TIMEOUT,
+        busbar_kernel_egress::wire::DETAIL_REQUEST_TIMEOUT,
         "a streamed answer is bounded by the client ceiling once under way, never excused from \
          the check that there was budget to start it"
     );
@@ -98,7 +104,7 @@ fn a_deadline_that_expires_between_hops_stops_the_walk() {
             .shed()
             .expect("a refusal")
             .detail,
-        crate::wire::DETAIL_REQUEST_TIMEOUT
+        busbar_kernel_egress::wire::DETAIL_REQUEST_TIMEOUT
     );
 }
 
@@ -118,7 +124,7 @@ fn an_upstream_that_says_nothing_is_cut_by_the_per_attempt_cap() {
 
     let outcome = node.route("primary");
     assert!(
-        matches!(&outcome, crate::wire::RouteOutcome::Delivered(d) if d.destination == DestinationId::new(1))
+        matches!(&outcome, busbar_kernel_egress::wire::RouteOutcome::Delivered(d) if d.destination == DestinationId::new(1))
     );
     let failures = node.telemetry.failures.lock().unwrap();
     assert_eq!(
@@ -217,7 +223,7 @@ fn the_stream_ceiling_bounds_the_whole_answer_not_each_frame() {
     let outcome = node.route("primary");
     let elapsed = node.clock.now_millis() - started;
 
-    let crate::wire::RouteOutcome::Delivered(delivered) = &outcome else {
+    let busbar_kernel_egress::wire::RouteOutcome::Delivered(delivered) = &outcome else {
         panic!("the frames that did arrive are relayed, not shed: {outcome:?}");
     };
     assert_eq!(
@@ -246,7 +252,7 @@ fn a_streamed_answer_that_finishes_inside_the_ceiling_is_untouched() {
         .script("a", drip(&node, 3, CEILING_MS / 4, true));
 
     let outcome = node.route("primary");
-    let crate::wire::RouteOutcome::Delivered(delivered) = &outcome else {
+    let busbar_kernel_egress::wire::RouteOutcome::Delivered(delivered) = &outcome else {
         panic!("a whole answer is delivered: {outcome:?}");
     };
     assert_eq!(delivered.frames, 3);

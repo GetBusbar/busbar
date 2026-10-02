@@ -28,8 +28,8 @@ use busbar_contract::{
 
 use super::harness::{frame, Script, TestPlane};
 use super::{member, Node};
-use crate::ports::{DestinationId, Outcome};
-use crate::wire::RouteOutcome;
+use busbar_kernel_egress::ports::{DestinationId, Outcome};
+use busbar_kernel_egress::wire::RouteOutcome;
 
 /// The body of the frame an incremental answer ends on.
 const LAST: &[u8] = b"last";

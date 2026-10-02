@@ -5,5 +5,6 @@
 
 mod breaker_adapter_tests;
 mod fixtures;
+mod route;
 mod trust_net_tests;
 mod trust_unit_tests;

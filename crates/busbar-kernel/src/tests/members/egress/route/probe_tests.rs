@@ -11,9 +11,9 @@
 
 use super::harness::{ok_frames, Health, Script};
 use super::{member, Node};
-use crate::pool::OnExhausted;
-use crate::select::ProbeGuard;
 use busbar_contract::DestinationId;
+use busbar_kernel_egress::pool::OnExhausted;
+use busbar_kernel_egress::select::ProbeGuard;
 
 #[test]
 fn an_armed_guard_gives_the_probe_back_when_it_is_dropped() {

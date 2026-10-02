@@ -40,16 +40,18 @@ use busbar_kernel_breaker::classify::{
     GRPC_RESOURCE_EXHAUSTED, GRPC_UNAUTHENTICATED, GRPC_UNAVAILABLE, GRPC_UNKNOWN,
 };
 
-use crate::ports::{
+use busbar_kernel_egress::ports::{
     disposition, Admit, BoxFut, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched,
     Disposition, DurabilityUnavailable, EgressAuth, Journal, OutboundRequest, Outcome, Permit,
     PermitHandle, Telemetry, Unavailable, UpstreamStatus,
 };
 
-/// The blessed TEST seal (#65). `KernelSeal` is SEALED — no crate outside `busbar-contract` can
-/// implement it — so a fixture names the contract's own `test-seal` type instead of forging one.
-/// The type system stops a plugin now, not the manifest allow-list alone.
-pub use busbar_contract::plugin::TestKernelSeal as TestSeal;
+/// The seal the kernel-built views below are handed. `KernelSeal` is SEALED — no crate outside
+/// `busbar-contract` can implement it — and this crate is the kernel, so a fixture presents a real
+/// `Pass<Route>` minted through the kernel seal rather than the contract's `test-seal` type.
+fn kernel_seal() -> busbar_contract::caps::Pass<busbar_contract::caps::Route> {
+    busbar_contract::caps::Pass::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel())
+}
 
 // ── the clock ───────────────────────────────────────────────────────────────────────────────────
 
@@ -621,7 +623,7 @@ impl EgressAuth for TestEgressAuth {
     fn decorate(
         &self,
         request: &mut OutboundRequest<'_>,
-    ) -> Result<(), crate::ports::DecorationRefused> {
+    ) -> Result<(), busbar_kernel_egress::ports::DecorationRefused> {
         request
             .fields
             .push(("authorization".to_string(), b"decorated".to_vec()));
@@ -1322,7 +1324,7 @@ impl PlaneContext {
 /// build one could write its own evidence.
 pub fn test_unit() -> Unit<'static> {
     Unit::new(
-        &TestSeal,
+        &kernel_seal(),
         busbar_contract::UnitKey::new(1),
         busbar_contract::Origin::Client,
         None,
@@ -1339,7 +1341,7 @@ pub fn test_unit() -> Unit<'static> {
 /// A sealed destination on the named lane.
 pub fn sealed(lane: &'static str) -> VerifiedDestination {
     VerifiedDestination::seal(
-        &TestSeal,
+        &kernel_seal(),
         DestinationFacts::Upstream {
             transport: "test-transport",
             address: busbar_contract::transport::dest::UpstreamAddress::socket("test-host"),
@@ -1352,5 +1354,5 @@ pub fn sealed(lane: &'static str) -> VerifiedDestination {
 
 /// The transport key material handle.
 pub fn keys() -> TransportKeyHandle {
-    TransportKeyHandle::issue(&TestSeal, 0, "test-fingerprint")
+    TransportKeyHandle::issue(&kernel_seal(), 0, "test-fingerprint")
 }
