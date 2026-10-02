@@ -247,6 +247,19 @@ pub fn render_snapshot(lib: &[u8], name: &str, exposition: &str) -> (String, Str
     sink.scrape(families).expect("the sink renders")
 }
 
+/// THE NEUTRAL FRAME DOOR (the plugin loader's `neutral_frame_door` example): a transport door that
+/// frames the host's socket under a neutral claim and names no transport, admitted through the one
+/// dispatcher's door validation, and the key its tail states. `None` when it is not built beside the
+/// test binary.
+#[allow(dead_code)] // each integration-test binary compiles this module; not every one drives it
+pub fn neutral_frame_door() -> Option<(Plugin<Transport>, &'static str)> {
+    let file = plugin_library_filename("neutral_frame_door");
+    libraries()
+        .into_iter()
+        .filter(|p| p.file_name().is_some_and(|n| n == file.as_str()))
+        .find_map(|p| transport_door(&p))
+}
+
 /// The in-tree transport door `cdylib`s beside the test binary, admitted once for the process, one
 /// per key.
 pub fn transport_doors() -> &'static [(Plugin<Transport>, &'static str)] {
