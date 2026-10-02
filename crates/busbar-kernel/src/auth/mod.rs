@@ -2198,6 +2198,10 @@ pub use caller_credential::{present_caller, CallerCredential, ConsumedCredential
 /// to decide whether the token was minted for THIS resource.
 pub mod audience;
 
+/// RFC 9449 DPoP at the resource: `Authorization: DPoP` with its proof, verified through the
+/// authorization-server seam, and a DPoP-bound token refused as a bearer.
+pub mod dpop;
+
 /// The RFC 6750 `WWW-Authenticate` challenge, for ingresses that are OAuth 2.1 resource servers.
 /// Relocated to the neutral substrate (`busbar_kernel::auth::challenge`) — pure `axum::http` +
 /// `serde_json`, no core reach — so a plane crate names it without depending on core; re-exported

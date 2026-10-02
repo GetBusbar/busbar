@@ -19,6 +19,8 @@
 //! | a `request_uri` is single use and bound to its client | RFC 9126 s4, s7.3, s2.2 | [`a_request_uri_is_single_use_and_bound_to_its_client`] |
 //! | the push refusals: no client auth, wrong `aud`, no PKCE, `plain` PKCE, no `redirect_uri`, foreign key, replayed assertion | FAPI2 s5.3.2.1-8, s5.3.3.1-5, s5.3.2.2-6, RFC 7636, RFC 7523 s3 | [`the_pushed_authorization_endpoint_refuses_what_the_profile_forbids`] |
 //! | the token refusals: no proof, foreign proof key, wrong `htu`, wrong verifier, code reuse | FAPI2 s5.3.4-2, RFC 9449 s4.3 s10, RFC 7636 s4.6, RFC 6749 s4.1.2 | [`the_token_endpoint_refuses_what_the_profile_forbids`] |
+//! | busbar's resource admits a DPoP-bound token with its proof, any scheme case | FAPI2 s5.3.4-2, RFC 9449 s7.1 | [`a_dpop_bound_token_reaches_the_resource_with_its_proof`] |
+//! | the resource refusals: as Bearer, no/two proofs, foreign key, htm, htu, ath, iat, replay | RFC 9449 s4.3, s7.1, s11.1 | [`the_resource_refuses_what_rfc_9449_forbids`] |
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -150,6 +152,19 @@ impl Key {
             &json!({ "jti": jti(), "htm": htm, "htu": htu, "iat": now() }),
         )
     }
+
+    /// An RFC 9449 s7 proof for a protected resource request: `ath` binds it to `token` (the
+    /// base64url SHA-256 of the token, s4.2), and `iat` is given so a stale proof can be built.
+    fn resource_proof(&self, htm: &str, htu: &str, ath: Option<&str>, iat: u64) -> String {
+        let mut claims = json!({ "jti": jti(), "htm": htm, "htu": htu, "iat": iat });
+        if let Some(ath) = ath {
+            claims["ath"] = json!(ath);
+        }
+        self.sign(
+            &json!({ "typ": "dpop+jwt", "alg": "ES256", "jwk": self.public_json() }),
+            &claims,
+        )
+    }
 }
 
 // ── the subject ──────────────────────────────────────────────────────────────────────────────────
@@ -191,8 +206,12 @@ async fn serve(fapi2: bool) -> Subject {
     };
     // The open admin posture, as in `flow_tests::serve`: the consent screen's `RouteAuth::Admin`
     // is not the property under test here.
+    // The data-plane chain is the test IdP stand-in (identifies any credential, as an OIDC plugin
+    // trusting this AS's JWKS would identify one of its tokens), so `GET /stats` — a mounted route
+    // that requires a busbar token — is the protected resource the DPoP tests call.
     let app = TestApp::new()
         .admin_chain(Vec::new())
+        .idp_chain()
         .oauth_as(&cfg)
         .build();
     let router = busbar_kernel::build_router(Arc::clone(&app));
@@ -852,4 +871,156 @@ async fn the_token_endpoint_refuses_what_the_profile_forbids() {
         "RFC 6749 s4.1.2: a code is single use",
     )
     .await;
+}
+
+// ── the protected resource (RFC 9449 s7) ─────────────────────────────────────────────────────────
+
+/// RFC 9449 s4.2 `ath`: base64url SHA-256 of the access token.
+fn ath(token: &str) -> String {
+    B64.encode(ring::digest::digest(&ring::digest::SHA256, token.as_bytes()).as_ref())
+}
+
+/// Run the profile flow for `dpop` and hand back the DPoP-bound access token.
+async fn bound_token(s: &Subject, dpop: &Key) -> String {
+    let code = code_for(s, dpop).await;
+    let proof = dpop.proof("POST", &format!("{}/token", s.origin));
+    let (status, token) = post(s, "/token", &token_form(s, &code), Some(proof)).await;
+    assert_eq!(status, 200, "{token}");
+    token["access_token"]
+        .as_str()
+        .expect("access_token")
+        .to_string()
+}
+
+/// `GET /stats` with `authorization` and every proof in `proofs` as a `DPoP` header: the status.
+async fn resource(s: &Subject, authorization: &str, proofs: &[String]) -> u16 {
+    let mut req = s
+        .client
+        .get(format!("{}/stats", s.origin))
+        .header("authorization", authorization);
+    for proof in proofs {
+        req = req.header("DPoP", proof);
+    }
+    req.send().await.expect("resource").status().as_u16()
+}
+
+/// RFC 9449 s7.1: a DPoP-bound token is presented as `Authorization: DPoP <token>` with a proof for
+/// THIS request (`htm`, `htu`, fresh `iat`, `ath` of the token), signed by the key the token's
+/// `cnf.jkt` names, and busbar's own resource admits it. The scheme is case-insensitive (RFC 9110
+/// s11.1), which the OIDF suite's `access-token-type-header-case-sensitivity` checks.
+#[tokio::test]
+async fn a_dpop_bound_token_reaches_the_resource_with_its_proof() {
+    let s = serve(true).await;
+    let dpop = Key::new("dpop");
+    let token = bound_token(&s, &dpop).await;
+    let htu = format!("{}/stats", s.origin);
+    for scheme in ["DPoP", "dpop", "DPOP"] {
+        let proof = dpop.resource_proof("GET", &htu, Some(&ath(&token)), now());
+        assert_eq!(
+            resource(&s, &format!("{scheme} {token}"), &[proof]).await,
+            200,
+            "`{scheme}` with a valid proof is admitted"
+        );
+    }
+}
+
+/// Every refusal RFC 9449 s4.3 and s7 demand of a resource, each one deviation from the admitted
+/// request above.
+#[tokio::test]
+async fn the_resource_refuses_what_rfc_9449_forbids() {
+    let s = serve(true).await;
+    let dpop = Key::new("dpop");
+    let token = bound_token(&s, &dpop).await;
+    let htu = format!("{}/stats", s.origin);
+    let good = || dpop.resource_proof("GET", &htu, Some(&ath(&token)), now());
+    let as_dpop = format!("DPoP {token}");
+
+    assert_eq!(
+        resource(&s, &format!("Bearer {token}"), &[]).await,
+        401,
+        "s7.1: a DPoP-bound token is not a bearer token"
+    );
+    assert_eq!(
+        resource(&s, &format!("Bearer {token}"), &[good()]).await,
+        401,
+        "s7.1: not even with a proof alongside"
+    );
+    assert_eq!(resource(&s, &as_dpop, &[]).await, 401, "s7.1: no proof");
+    assert_eq!(
+        resource(&s, &as_dpop, &[good(), good()]).await,
+        401,
+        "s4.3 (1): exactly one DPoP header"
+    );
+    assert_eq!(
+        resource(
+            &s,
+            &as_dpop,
+            &[Key::new("stranger").resource_proof("GET", &htu, Some(&ath(&token)), now())]
+        )
+        .await,
+        401,
+        "s7.1: the proof key is the key cnf.jkt names"
+    );
+    assert_eq!(
+        resource(
+            &s,
+            &as_dpop,
+            &[dpop.resource_proof("POST", &htu, Some(&ath(&token)), now())]
+        )
+        .await,
+        401,
+        "s4.3 (8): htm is this request's method"
+    );
+    assert_eq!(
+        resource(
+            &s,
+            &as_dpop,
+            &[dpop.resource_proof(
+                "GET",
+                &format!("{}/elsewhere", s.origin),
+                Some(&ath(&token)),
+                now()
+            )]
+        )
+        .await,
+        401,
+        "s4.3 (9): htu is this request's URI"
+    );
+    assert_eq!(
+        resource(
+            &s,
+            &as_dpop,
+            &[dpop.resource_proof("GET", &htu, None, now())]
+        )
+        .await,
+        401,
+        "s4.3 (11): a proof with an access token carries ath"
+    );
+    assert_eq!(
+        resource(
+            &s,
+            &as_dpop,
+            &[dpop.resource_proof("GET", &htu, Some(&ath("another-token")), now())]
+        )
+        .await,
+        401,
+        "s4.3 (11): ath is the hash of THIS token"
+    );
+    assert_eq!(
+        resource(
+            &s,
+            &as_dpop,
+            &[dpop.resource_proof("GET", &htu, Some(&ath(&token)), now() - 3600)]
+        )
+        .await,
+        401,
+        "s4.3 (10): iat is within the window"
+    );
+    let once = good();
+    assert_eq!(resource(&s, &as_dpop, &[once.clone()]).await, 200);
+    assert_eq!(
+        resource(&s, &as_dpop, &[once]).await,
+        401,
+        "s11.1: a proof's jti is single use"
+    );
 }
