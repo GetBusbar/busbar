@@ -128,16 +128,17 @@ pub struct Attempt {
 /// The body's serializer text.
 pub fn mint_attempt(
     config: &SessionConfig,
-    caller: &str,
+    caller: Option<&str>,
     requested_ttl_secs: Option<u64>,
 ) -> Result<Attempt, String> {
+    let mut fields = vec![(FIELD_CONTENT_TYPE, JSON_CONTENT_TYPE.to_string())];
+    if let Some(r) = caller.filter(|r| !r.is_empty()) {
+        fields.push((SAFETY_IDENTIFIER_HEADER, r.to_string()));
+    }
     Ok(Attempt {
         verb: "POST",
         target: CLIENT_SECRETS_PATH,
-        fields: vec![
-            (FIELD_CONTENT_TYPE, JSON_CONTENT_TYPE.to_string()),
-            (SAFETY_IDENTIFIER_HEADER, caller.to_string()),
-        ],
+        fields,
         body: mint_request_body(clamped_ttl_secs(requested_ttl_secs), config)?,
     })
 }

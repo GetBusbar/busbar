@@ -112,7 +112,7 @@ http-body-util = { workspace = true, optional = true }
 metrics = { workspace = true, optional = true }
 # THE PURE HALF OF THIS PLANE, AND THE CODECS TOO NOW. Named for three things.
 # (1) The conformance harness and the governed-binding cells pin the tool-reply deadline
-# (`busbar_plane_streaming::plane::TOOL_REPLY_DEADLINE_SECS`) against the one declaration the composition
+# (`busbar_plane_streaming::open_calls::TOOL_REPLY_DEADLINE_SECS`) against the one declaration the composition
 # root's own leg is built from, rather than restating thirty seconds in a second place where the two
 # could drift apart in silence. (2) The GOVERNED-CALL PORT itself
 # (`busbar_plane_streaming::governed::{GovernedCalls, GovernedSession, ReplyRefusal}`) now lives there,

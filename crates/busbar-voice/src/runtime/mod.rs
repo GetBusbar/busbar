@@ -26,7 +26,7 @@ pub mod tools {
 pub use carrier::Carrier;
 // THE GOVERNED-CALL PORT, RE-EXPORTED FROM `busbar-plane-streaming`. `GovernedCalls` / `ReplyRefusal` /
 // `GovernedSession` moved to the plane crate, beside the two declarations the composition root
-// already pairs them with (`busbar_plane_streaming::plane::{FACT_TOOL_CORRELATION,
+// already pairs them with (`busbar_plane_streaming::open_calls::{FACT_TOOL_CORRELATION,
 // TOOL_REPLY_DEADLINE_SECS}`) — the port and the key a wait is entered under are now one crate, so
 // they cannot drift apart in silence. Re-exported HERE under the old name so every caller that
 // spells `busbar_voice::runtime::GovernedCalls` resolves exactly what it always did. The split is a

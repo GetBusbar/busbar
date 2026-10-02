@@ -12,7 +12,7 @@
 //!
 //! * **Twilio Media Streams rides the WebSocket carrier.** Its wire is one JSON event per WebSocket
 //!   message (`connected`/`start`/`media`/`mark`/`dtmf`/`stop`): the carrier frames the messages and
-//!   the event envelope is this plane's dialect ([`crate::twilio`], [`crate::ulaw`]). The design
+//!   the event envelope is this plane's dialect ([`crate::codec::topology::twilio`]). The design
 //!   lists five transports and no telephony one. Twilio
 //!   cannot present a busbar bearer or API key, so its claim authenticates under the
 //!   `webhook-signature` alternative alone: the `X-Twilio-Signature` HMAC over the request URL,

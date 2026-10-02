@@ -321,3 +321,101 @@ fn a_call_no_one_on_this_node_serves_is_relayed_to_the_caller_and_never_answered
         "no result is authored upstream by the gateway"
     );
 }
+
+fn uplink_ms(ms: usize) -> WireEvent {
+    wire(serde_json::json!({"type":"input_audio_buffer.append",
+        "audio": busbar_contract::media::base64_encode(&vec![0u8; ms * 48])}))
+}
+
+#[test]
+fn two_open_tool_calls_wait_on_two_different_correlations() {
+    let table = Arc::new(Table::default());
+    let mut p = pump();
+    p.bind_governed(GovernedSession {
+        session: 1,
+        calls: table.clone(),
+    });
+    let mut sink = Turns::default();
+    for f in call_frames("cc", "a", "{}").into_iter().chain(call_frames("dd", "b", "{}")) {
+        let _ = p.on_server_frame(f, 0, &mut sink, &serves_none);
+    }
+    let planned: Vec<String> = table
+        .planned
+        .lock()
+        .expect("lock")
+        .iter()
+        .map(|(_, c, _)| c.clone())
+        .collect();
+    assert_eq!(planned, ["cc", "dd"], "each call is its own wait");
+    let reply = |id: &str| {
+        wire(serde_json::json!({"type":"conversation.item.create","item":{
+            "type":"function_call_output","call_id":id,"output":"{}"}}))
+    };
+    assert!(!p.on_client_frame(reply("dd")).refused_reply);
+    assert!(p.on_client_frame(reply("dd")).refused_reply, "a wait is woken once");
+    assert!(!p.on_client_frame(reply("cc")).refused_reply);
+}
+
+#[test]
+fn an_upstream_error_still_meters_the_turn_it_ended() {
+    let mut p = pump();
+    let mut sink = Turns::default();
+    let _ = p.on_client_frame(uplink_ms(40_000));
+    for id in ["e1", "e2"] {
+        let open = call_frames(id, "t", "{}");
+        let [first, ..] = open;
+        let _ = p.on_server_frame(first, 0, &mut sink, &serves_none);
+    }
+    let _ = p.on_server_frame(
+        wire(serde_json::json!({"type":"error","error":{"code":"x","message":"y"}})),
+        0,
+        &mut sink,
+        &serves_none,
+    );
+    assert_eq!(sink.closed.len(), 1);
+    assert_eq!(
+        sink.closed[0].1,
+        TurnCounters {
+            audio_ms_in: 40_000,
+            tool_calls: 2
+        }
+    );
+}
+
+#[test]
+fn a_barge_in_bills_what_the_interrupted_turn_served_on_the_turn_that_takes_over() {
+    let mut p = pump();
+    let mut sink = Turns::default();
+    let _ = p.on_client_frame(uplink_ms(1_000));
+    let [open, ..] = call_frames("b1", "t", "{}");
+    let _ = p.on_server_frame(open, 0, &mut sink, &serves_none);
+    let _ = p.on_server_frame(
+        wire(serde_json::json!({"type":"input_audio_buffer.speech_started",
+            "audio_start_ms":0,"item_id":"it"})),
+        0,
+        &mut sink,
+        &serves_none,
+    );
+    assert!(sink.closed.is_empty(), "a barge-in closes no turn and drops no counter");
+    let _ = p.on_server_frame(usage_done(), 0, &mut sink, &serves_none);
+    assert_eq!(sink.closed.len(), 1);
+    assert_eq!(
+        sink.closed[0].1,
+        TurnCounters {
+            audio_ms_in: 1_000,
+            tool_calls: 1
+        }
+    );
+}
+
+#[test]
+fn a_caller_frame_that_is_not_utf8_or_names_no_known_event_goes_nowhere() {
+    let mut p = pump();
+    let mut sink = Turns::default();
+    let bad = p.on_client_frame(WireEvent(Bytes::from_static(&[0xff, 0xfe, 0x00])));
+    assert!(bad.upstream.is_empty() && bad.downlink.is_empty() && !bad.close);
+    let unknown = p.on_client_frame(wire(serde_json::json!({"type":"teleport.now"})));
+    assert!(unknown.upstream.is_empty() && unknown.downlink.is_empty());
+    p.settle_open_turn(&mut sink);
+    assert!(sink.closed.is_empty(), "nothing was counted");
+}

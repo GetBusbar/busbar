@@ -256,14 +256,77 @@ impl TwilioEnvelope {
     /// field order is fixed so the serialization is deterministic and byte-stable.
     #[must_use]
     pub fn encode_media(stream_sid: &str, mulaw: &[u8]) -> Vec<u8> {
-        let out = OutboundMedia {
-            event: "media",
-            stream_sid,
-            media: OutboundPayload {
-                payload: base64_encode(mulaw),
-            },
-        };
-        serde_json::to_vec(&out).expect("the outbound media envelope always serializes")
+        let mut out = Vec::new();
+        Self::encode_media_into(&mut out, stream_sid, mulaw);
+        out
+    }
+
+    /// The same envelope, rendered into a buffer the caller already holds.
+    ///
+    /// This is the shape the downlink writes in. The envelope is fixed (three members, in this
+    /// order) and everything about it except the identifier and the payload is known at compile
+    /// time. Building a document, a string for the payload, and then serializing would spend three
+    /// allocations per audio frame, and a call carries fifty frames a second in each direction.
+    /// The buffer is CLEARED, not appended to, so a caller may hand the same one back frame after
+    /// frame and pay for its growth once. An identifier the serializer would have to escape goes
+    /// through the serializer, which is the authority on those bytes.
+    pub fn encode_media_into(out: &mut Vec<u8>, stream_sid: &str, mulaw: &[u8]) {
+        out.clear();
+        if !is_bare_json_string(stream_sid) {
+            let doc = OutboundMedia {
+                event: "media",
+                stream_sid,
+                media: OutboundPayload {
+                    payload: base64_encode(mulaw),
+                },
+            };
+            out.extend_from_slice(
+                &serde_json::to_vec(&doc).expect("the outbound media envelope always serializes"),
+            );
+            return;
+        }
+        const HEAD: &[u8] = br#"{"event":"media","streamSid":""#;
+        const MIDDLE: &[u8] = br#"","media":{"payload":""#;
+        const TAIL: &[u8] = br#""}}"#;
+        out.reserve(
+            HEAD.len() + stream_sid.len() + MIDDLE.len() + mulaw.len().div_ceil(3) * 4 + TAIL.len(),
+        );
+        out.extend_from_slice(HEAD);
+        out.extend_from_slice(stream_sid.as_bytes());
+        out.extend_from_slice(MIDDLE);
+        base64_encode_into(mulaw, out);
+        out.extend_from_slice(TAIL);
+    }
+}
+
+/// Whether a string is its own JSON body: printable ASCII with neither character a JSON string
+/// cannot carry raw. Everything else goes to the serializer.
+fn is_bare_json_string(s: &str) -> bool {
+    s.bytes()
+        .all(|b| (0x20..0x7f).contains(&b) && b != b'"' && b != b'\\')
+}
+
+/// Standard base64 (RFC 4648) with padding, appended to a buffer the caller holds: the same bytes
+/// `busbar_contract::media::base64_encode` produces, without the string it would allocate.
+fn base64_encode_into(data: &[u8], out: &mut Vec<u8>) {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    for chunk in data.chunks(3) {
+        let b0 = u32::from(chunk[0]);
+        let b1 = u32::from(*chunk.get(1).unwrap_or(&0));
+        let b2 = u32::from(*chunk.get(2).unwrap_or(&0));
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[((n >> 18) & 63) as usize]);
+        out.push(ALPHABET[((n >> 12) & 63) as usize]);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[((n >> 6) & 63) as usize]
+        } else {
+            b'='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[(n & 63) as usize]
+        } else {
+            b'='
+        });
     }
 }
 
