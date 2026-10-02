@@ -475,11 +475,9 @@ fn every_attempt_is_recorded_before_its_dial() {
     assert_eq!(dispatched.len(), 2, "one record per attempt");
     assert_eq!(dispatched[0].destination, DestinationId::new(0));
     assert_eq!(dispatched[1].destination, DestinationId::new(1));
-    assert!(
-        dispatched[0].attempt < dispatched[1].attempt,
-        "each record names its own attempt: {:?}",
-        dispatched.iter().map(|d| d.attempt).collect::<Vec<_>>()
-    );
+    // v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:1448` numbered its attempts from one.
+    assert_eq!(dispatched[0].attempt, 1);
+    assert_eq!(dispatched[1].attempt, 2);
     assert_eq!(
         node.journal.abandoned.lock().unwrap().len(),
         1,
