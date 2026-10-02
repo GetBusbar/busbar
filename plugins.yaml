@@ -91,7 +91,7 @@
 #               qa are locked by the org ruleset "release branches: main + qa (owner say-so only)"; any
 #               other branch is stale.
 fleet:
-  busbar_ref: "23d8a6b46deb158839df8bc02115b09023633040 1.6.0"
+  busbar_ref: "e1d3d8b097201859751d77208e66249d98b50a4b 1.6.0"
   name_pattern: "^busbar-(store|secret|auth|hook|export|plane|transport)-[a-z0-9]+(-[a-z0-9]+)*$"
   branches: [dev, qa, main]
 
