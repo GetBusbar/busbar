@@ -131,3 +131,125 @@ fn dropping_the_connection_kills_the_child() {
         }
     });
 }
+
+// ── through the connection table ────────────────────────────────────────────────────────────────
+
+mod table {
+    use std::sync::Arc;
+
+    use busbar_contract::conn::{ConnError, ConnId, Conns, InstanceId, NeedId, OpenDesc};
+
+    use crate::registry::{Entry, Transports};
+    use crate::support::{worker, TestDoor};
+    use crate::{Connector, Program, DEFAULT_CLASS};
+
+    const OWNER: InstanceId = InstanceId(1);
+    const NEED: NeedId = NeedId(0);
+
+    /// A connector whose `bytes` entry frames a program's pipe (the identity test framer: every
+    /// byte the child writes comes back as frame bytes).
+    fn table() -> Connector {
+        let view = Transports::new(vec![Entry {
+            door: Arc::new(TestDoor::identity("bytes")),
+            alpn: Vec::new(),
+        }])
+        .unwrap();
+        Connector::serving(
+            view,
+            Arc::new(crate::LiteralsOnly),
+            None,
+            Arc::new(|_: busbar_contract::conn::Ticket| {}),
+        )
+    }
+
+    fn program(path: &str, args: &[&str], env: &[(&str, &str)]) -> Program {
+        Program {
+            path: path.to_owned(),
+            args: args.iter().map(|a| (*a).to_owned()).collect(),
+            env: env
+                .iter()
+                .map(|(n, v)| ((*n).to_owned(), (*v).to_owned()))
+                .collect(),
+        }
+    }
+
+    /// The first `n` bytes the connection delivers.
+    async fn read_n(c: &Connector, id: ConnId, n: usize) -> Vec<u8> {
+        let mut got = Vec::new();
+        let mut buf = [0_u8; 256];
+        while got.len() < n {
+            match c.read(OWNER, id, 7, &mut buf) {
+                Err(ConnError::Pending) => tokio::task::yield_now().await,
+                Ok(p) => got.extend_from_slice(&buf[..p.len]),
+                Err(e) => panic!("read: {e:?}"),
+            }
+        }
+        got
+    }
+
+    /// RED (C19-TAIL SPAWN-REPOINT): a need declared with a program opens like any other
+    /// connection: the child is spawned under the carrier's rules and its pipe framed, the opening
+    /// body written to its standard input and its output read back through the table.
+    #[test]
+    fn a_need_declared_with_a_program_opens_through_the_table() {
+        worker().block_on(async {
+            let c = table();
+            c.declare_program(
+                OWNER,
+                NEED,
+                "bytes",
+                DEFAULT_CLASS,
+                program("/bin/cat", &[], &[]),
+            );
+            let desc = OpenDesc {
+                body: b"ping\n",
+                ..OpenDesc::default()
+            };
+            let id = c.open(OWNER, NEED, &desc).expect("the program opens");
+            assert_eq!(c.write(OWNER, id, b"pong\n", true), Ok(5));
+            let got = read_n(&c, id, 10).await;
+            assert_eq!(got, b"ping\npong\n");
+            c.close(OWNER, id).unwrap();
+        });
+    }
+
+    /// The declared environment, and nothing else, reaches a program opened through the table.
+    #[test]
+    fn a_program_opened_through_the_table_gets_exactly_its_declared_environment() {
+        worker().block_on(async {
+            let c = table();
+            c.declare_program(
+                OWNER,
+                NEED,
+                "bytes",
+                DEFAULT_CLASS,
+                program("/usr/bin/env", &[], &[("ONLY", "1")]),
+            );
+            let id = c.open(OWNER, NEED, &OpenDesc::default()).unwrap();
+            assert_eq!(read_n(&c, id, 7).await, b"ONLY=1\n");
+        });
+    }
+
+    /// The plugin names no program: on a program need, any target but the declared path is
+    /// refused; on a need declared without one, a path is not a destination at all.
+    #[test]
+    fn a_plugin_named_program_is_refused() {
+        worker().block_on(async {
+            let c = table();
+            c.declare_program(
+                OWNER,
+                NEED,
+                "bytes",
+                DEFAULT_CLASS,
+                program("/bin/cat", &[], &[]),
+            );
+            let other = OpenDesc {
+                target: "/bin/sh",
+                ..OpenDesc::default()
+            };
+            assert_eq!(c.open(OWNER, NEED, &other), Err(ConnError::Refused));
+            c.declare_over(OWNER, NeedId(1), "bytes");
+            assert_eq!(c.open(OWNER, NeedId(1), &other), Err(ConnError::Refused));
+        });
+    }
+}

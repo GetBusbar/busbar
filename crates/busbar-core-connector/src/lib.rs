@@ -26,7 +26,8 @@
 //!   view of which entry serves which scheme; [`wire`] presents a framer entry over host sockets to
 //!   the kernel's transport seam.
 //! * [`spawn`] is the carrier for a program destination: a child process whose standard input
-//!   and output are the connection, spawned under 1.5.5's carrier rules.
+//!   and output are the connection, spawned under 1.5.5's carrier rules; a need declared with a
+//!   program ([`Connector::declare_program`]) opens through it.
 //! * [`process`] builds the process's one connector for the root: the kernel's destination rules,
 //!   one set per egress class, behind the one dial judge, and the default outbound trust.
 //!
@@ -162,6 +163,21 @@ struct DeclaredNeed {
     egress_class: u32,
     /// The target the need's `target_from` resolved to; `None` = the plugin names it per open.
     declared_target: Option<String>,
+    /// The program the operator's config declared for the need ([`Connector::declare_program`]):
+    /// opened by spawning it ([`spawn::spawn`]), never named by the plugin.
+    program: Option<Arc<Program>>,
+}
+
+/// A program destination as the operator's config declares it: its absolute path, its arguments
+/// and the whole of its environment (`transport::Dest::Program`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Program {
+    /// The absolute path of the program.
+    pub path: String,
+    /// The arguments, in order, without the program name.
+    pub args: Vec<String>,
+    /// The environment the program starts with, and nothing else.
+    pub env: Vec<(String, String)>,
 }
 
 /// A judgement's answer once it came, and the waker of the read or wait that found none.
@@ -346,6 +362,84 @@ impl Connector {
         self.record(owner, need, transport, egress_class, Some(declared_target));
     }
 
+    /// Record that `owner` declared `need` over `transport` with the PROGRAM its config names as the
+    /// far end: an open spawns it ([`spawn::spawn`]: absolute path, no shell, exactly `program.env`,
+    /// stderr the host's, killed on close) and frames its standard input and output through the
+    /// entry serving `transport` — a need over `stdio` opens like any other connection. The plugin
+    /// names no program: an open naming any target but the declared path is refused (1.5.5: the
+    /// command is the operator's; ARCHITECT 2026-09-30 TRANSPORT-UNIX, a plane-supplied path is RED).
+    pub fn declare_program(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        transport: &str,
+        egress_class: u32,
+        program: Program,
+    ) {
+        let path = program.path.clone();
+        self.record(owner, need, transport, egress_class, Some(&path));
+        if let Some(d) = self.over.lock().expect("needs").get_mut(&(owner, need)) {
+            d.program = Some(Arc::new(program));
+        }
+    }
+
+    /// Spawn `program` for `caller`'s `need` and frame it through the entry serving `scheme`.
+    fn open_program(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        scheme: &str,
+        program: &Program,
+        desc: &OpenDesc<'_>,
+    ) -> Result<ConnId, ConnError> {
+        if !desc.target.is_empty() && desc.target != program.path {
+            return Err(ConnError::Refused);
+        }
+        let (door, alpn) = {
+            let view = self.transports.read().expect("transports");
+            let served = view.serving(scheme).ok_or(NO_TRANSPORT_YET)?;
+            (Arc::clone(&served.entry.door), served.entry.alpn.clone())
+        };
+        let args: Vec<&str> = program.args.iter().map(String::as_str).collect();
+        let env: Vec<(&str, &str)> = program
+            .env
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_str()))
+            .collect();
+        let child = spawn::spawn(&program.path, &args, &env).map_err(|r| match r {
+            spawn::Refusal::NotOnAWorker => ConnError::Fault,
+            spawn::Refusal::NotAbsolute | spawn::Refusal::Spawn(_) => ConnError::Refused,
+        })?;
+        let dial = Dial {
+            target: program.path.clone(),
+            tls: None,
+            alpn,
+            open_timeout: if desc.timeout_ms == 0 {
+                DEFAULT_OPEN_TIMEOUT
+            } else {
+                Duration::from_millis(desc.timeout_ms)
+            },
+            opening: Some((
+                desc.fields
+                    .iter()
+                    .map(|(n, v)| ((*n).to_owned(), v.to_vec()))
+                    .collect(),
+                desc.body.to_vec(),
+            )),
+            head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
+        };
+        self.slab.insert(
+            caller,
+            need,
+            Held {
+                conn: Mutex::new(Some(Connection::spawned(door, child, dial))),
+                judging: Mutex::new(None),
+                rest: Mutex::new((None, Vec::new(), false)),
+                reason: Mutex::new(None),
+            },
+        )
+    }
+
     fn record(
         &self,
         owner: InstanceId,
@@ -361,6 +455,7 @@ impl Connector {
                 transport: transport.to_owned(),
                 egress_class,
                 declared_target: declared_target.map(str::to_owned),
+                program: None,
             },
         );
     }
@@ -682,6 +777,7 @@ impl Conns for Connector {
             transport: scheme,
             egress_class,
             declared_target,
+            program,
         } = self
             .over
             .lock()
@@ -689,6 +785,11 @@ impl Conns for Connector {
             .get(&(caller, need))
             .cloned()
             .ok_or(NO_TRANSPORT_YET)?;
+        // A program the operator declared is spawned, never dialled: no endpoint check, no judge,
+        // no locate (none of them reads a program path).
+        if let Some(program) = program {
+            return self.open_program(caller, need, &scheme, &program, desc);
+        }
         // No target named: the need's own, its config's (`EstablishIn.target` absent = the need's
         // `target_from`).
         let target = match (desc.target, declared_target.as_deref()) {

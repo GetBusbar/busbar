@@ -3,7 +3,9 @@
 
 //! COMPOSE: one connection, `socket -> [TLS] -> framer` (`BUSBAR-1.6.0.md` THE DESIGN, §5), dialled
 //! ([`Connection::dial`], the framing begun on `SIDE_DIAL`) or accepted ([`Connection::accepted`],
-//! the server-side mirror: TLS as the server, the framing begun on `SIDE_ACCEPT`).
+//! the server-side mirror: TLS as the server, the framing begun on `SIDE_ACCEPT`). A program
+//! destination composes the same way over the child the spawn carrier started instead of a socket
+//! ([`Connection::spawned`]: `child -> framer`).
 //!
 //! The socket is the host's, non-blocking, its readiness on the dialling worker's reactor
 //! ([`crate::io`]); connection security is `rustls` driven sans-IO here, with the protocol offer
@@ -32,6 +34,7 @@ use crate::endpoint;
 use crate::framer::{self, Established, FramerDoor, Framing, Got, Yielded};
 use crate::io::{self as reactor, Direction, Registered};
 use crate::socket;
+use crate::spawn::Spawned;
 
 /// How much one socket read takes.
 const READ_CHUNK: usize = 16 * 1024;
@@ -117,10 +120,41 @@ enum Phase {
     Failed(Failure),
 }
 
+/// What a connection's bytes ride: the host's socket, or a spawned child's standard input and
+/// output.
+enum Carried {
+    Socket(Registered<TcpStream>),
+    Child(Box<Spawned>),
+}
+
+impl Carried {
+    /// The open completed: a socket's connect; a child is open once spawned.
+    fn poll_connected(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self {
+            Self::Socket(s) => socket::poll_connected(s, cx),
+            Self::Child(_) => Poll::Ready(Ok(())),
+        }
+    }
+
+    fn poll_write(&mut self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        match self {
+            Self::Socket(s) => s.poll_io(Direction::Write, cx, |mut s| s.write(buf)),
+            Self::Child(c) => futures::io::AsyncWrite::poll_write(Pin::new(&mut **c), cx, buf),
+        }
+    }
+
+    fn poll_read(&mut self, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<io::Result<usize>> {
+        match self {
+            Self::Socket(s) => s.poll_io(Direction::Read, cx, |mut s| s.read(buf)),
+            Self::Child(c) => futures::io::AsyncRead::poll_read(Pin::new(&mut **c), cx, buf),
+        }
+    }
+}
+
 /// One composed connection.
 pub struct Connection {
     door: Arc<dyn FramerDoor>,
-    sock: Registered<TcpStream>,
+    sock: Carried,
     target: String,
     /// `SIDE_DIAL` | `SIDE_ACCEPT`.
     side: u32,
@@ -309,7 +343,9 @@ impl Planned {
         } else {
             None
         };
-        let sock = reactor::register(socket::connect(addr).map_err(failed)?).map_err(failed)?;
+        let sock = Carried::Socket(
+            reactor::register(socket::connect(addr).map_err(failed)?).map_err(failed)?,
+        );
         let established = Established {
             offered_name: tls.as_ref().and(located.name.clone()),
             agreed_protocol: None,
@@ -365,7 +401,7 @@ impl Connection {
                 ))
             }
         };
-        let sock = reactor::register(stream).map_err(failed)?;
+        let sock = Carried::Socket(reactor::register(stream).map_err(failed)?);
         let established = Established {
             offered_name: None,
             agreed_protocol: None,
@@ -394,6 +430,37 @@ impl Connection {
             conn.begin()?;
         }
         Ok(conn)
+    }
+
+    /// Frame `child`, a program destination the spawn carrier started, through `door`: no socket, no
+    /// connection security and no `locate` (the program is the host's, never the framer's), the
+    /// framing begun on `SIDE_DIAL` with `dial`'s first message and bound.
+    #[must_use]
+    pub fn spawned(door: Arc<dyn FramerDoor>, child: Spawned, dial: Dial) -> Self {
+        let established = Established {
+            offered_name: None,
+            agreed_protocol: None,
+            claim: door.facts().claims.first().map(|c| (*c).to_owned()),
+        };
+        Self {
+            door,
+            sock: Carried::Child(Box::new(child)),
+            target: dial.target,
+            side: SIDE_DIAL,
+            tls: None,
+            framing: None,
+            established,
+            phase: Phase::Connecting,
+            out: VecDeque::new(),
+            inbox: VecDeque::new(),
+            opening: dial.opening,
+            head_words: dial.head_words,
+            early: Vec::new(),
+            open_deadline: Some(Instant::now() + dial.open_timeout),
+            framer_deadline: None,
+            sleep: None,
+            _slot: None,
+        }
     }
 
     /// Whether the connection is past its handshake and framing.
@@ -526,7 +593,7 @@ impl Connection {
     fn drive(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
         let mut moved = false;
         if matches!(self.phase, Phase::Connecting) {
-            match socket::poll_connected(&self.sock, cx) {
+            match self.sock.poll_connected(cx) {
                 Poll::Ready(Ok(())) => {
                     moved = true;
                     if self.tls.is_some() {
@@ -553,7 +620,7 @@ impl Connection {
         let mut moved = false;
         while !self.out.is_empty() {
             let (a, _) = self.out.as_slices();
-            match self.sock.poll_io(Direction::Write, cx, |mut s| s.write(a)) {
+            match self.sock.poll_write(cx, a) {
                 Poll::Ready(Ok(0)) => return Err(Failure::Closed),
                 Poll::Ready(Ok(n)) => {
                     self.out.drain(..n);
@@ -569,10 +636,7 @@ impl Connection {
     /// Read what the socket has, and hand it on.
     fn read(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
         let mut buf = [0_u8; READ_CHUNK];
-        match self
-            .sock
-            .poll_io(Direction::Read, cx, |mut s| s.read(&mut buf))
-        {
+        match self.sock.poll_read(cx, &mut buf) {
             Poll::Ready(Ok(0)) => {
                 self.feed(&[], true)?;
                 Ok(true)
