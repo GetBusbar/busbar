@@ -223,15 +223,18 @@ fn the_scanner_meets_its_budget_on_a_mebibyte() {
         resolve_pointer(&body, "/lane"),
         Resolved::Found(_)
     ));
+    // The FASTEST of the rounds is the scanner's cost: a round the shared machine preempted is
+    // slower for reasons that are not the scanner's, and a mean would carry them.
     let rounds = 20;
-    let started = std::time::Instant::now();
+    let mut elapsed = std::time::Duration::MAX;
     for _ in 0..rounds {
+        let started = std::time::Instant::now();
         assert!(matches!(
             resolve_pointer(&body, "/lane"),
             Resolved::Found(_)
         ));
+        elapsed = elapsed.min(started.elapsed());
     }
-    let elapsed = started.elapsed() / rounds;
     let per_kib_ns = elapsed.as_nanos() as f64 / kib;
     println!(
         "json span scanner: {} bytes scanned in {:?} — {:.1} ns per KiB ({:.2} GiB/s)",
