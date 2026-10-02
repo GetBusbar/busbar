@@ -5,7 +5,7 @@
 //! `testing/llm-conformance/spec-digests.tsv` and committed as
 //! `testing/llm-conformance/wire/<dialect>.wire.json`. The lock is the one home of "what the
 //! provider's wire has": the hand-written mapping files check their rows against it, and the
-//! field-coverage gate reads its denominator from it.
+//! `dialect-candidates` gate finds cross-dialect candidates in it.
 //!
 //! ```text
 //! cargo xtask dialect wire [--write | --diff] <dialect|all>
