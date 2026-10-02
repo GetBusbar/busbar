@@ -114,6 +114,10 @@ smallvec = { workspace = true }
 zeroize = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+# `base64` renders the one document-fingerprint tag a plane writes, `sha256/<standard base64>`
+# (`abi::sdk::digest::sha256_tagged`; ARCHITECT card-fingerprint ruling option 1, 2026-10-01): a pure
+# leaf with no dependencies of its own, already in Cargo.lock, so a plane links no encoder.
+base64 = { workspace = true }
 http = { workspace = true }
 memchr = { workspace = true }
 tracing = { workspace = true }

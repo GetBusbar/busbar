@@ -31,6 +31,8 @@
 //! * `trust.sight` / `trust.due` — the kernel's trust state ([`TrustBook`]), judged from the
 //!   caller's parsed trust entries; demotion and its clearing are written through the durable
 //!   demotion record.
+//! * `trust.verify` — a document's detached signatures judged against the root key the caller's
+//!   declared pin names ([`signed`]); the verdict and the refused name, never a fallback.
 //!
 //! EVERY CALLER-SCOPED SERVICE ANSWERS FROM WHAT [`KernelServices::admit`] REGISTERED for the
 //! caller's instance: its record kinds, its signing declaration and its trust entries. Every
@@ -69,6 +71,7 @@ use crate::host_records::{
 use crate::plane::quarantine::DemotionRecord;
 use crate::trust::book::{Effect, Sight, TrustBook, Unjudged};
 use crate::trust::section::TrustEntry;
+use crate::trust::signed;
 
 /// THE DESTINATION JUDGE THE KERNEL ASKS (OWNER ruling DESTINATION GUARD): the connector's one
 /// guard, installed by the root. The judge lives in the connector; the kernel names only this
@@ -743,6 +746,10 @@ pub const NO_DOMAIN: &str = "the instance declares no signing domain";
 pub const NO_KEY: &str = "no signing key is configured";
 /// The refusal of `trust.sight` for a counterparty the instance does not declare.
 pub const NOT_A_COUNTERPARTY: &str = "not a counterparty the instance declares";
+/// The refusal of `trust.verify` for a counterparty whose declared pin names no root key.
+pub const NO_ROOT_KEY: &str = "the counterparty declares no root key";
+/// The refusal of `trust.verify` for signatures that are not one JSON document.
+pub const SIGNATURES_NOT_JSON: &str = "the signatures are not one JSON document";
 /// The refusal of a store-reaching service on a host with no pool bound.
 pub const NO_POOL: &str = "no pool is bound";
 /// The FAILED answer of a store call the pool refused to run.
@@ -1055,6 +1062,30 @@ impl HostServices for KernelServices {
         }
         stored
     }
+
+    fn trust_verify(&self, caller: &Caller, cp: &str, payload: &[u8], sigs: &[u8]) -> Stored {
+        let key = match self.trust.root_key(&caller.instance, cp) {
+            Ok(Some(key)) => key,
+            Ok(None) => return Stored::refused(NO_ROOT_KEY),
+            Err(Unjudged::UnknownInstance) => return Stored::refused(NOT_ADMITTED),
+            Err(Unjudged::UnknownCounterparty) => return Stored::refused(NOT_A_COUNTERPARTY),
+        };
+        let sigs = match sigs {
+            [] => serde_json::Value::Null,
+            json => match serde_json::from_slice(json) {
+                Ok(v) => v,
+                Err(_) => return Stored::refused(SIGNATURES_NOT_JSON),
+            },
+        };
+        let judged = signed::root_key(&key).and_then(|root| signed::verify(payload, &sigs, &root));
+        let (value, named) = judged
+            .err()
+            .unwrap_or((svc::SIGNED_VERIFIED, String::new()));
+        Stored {
+            bytes: named.into_bytes(),
+            ..Stored::ready(value)
+        }
+    }
 }
 
 /// Where a dial's judgement goes when it pended: the pinned address, or the `DEST_*` verdict that
@@ -1128,3 +1159,7 @@ const fn absent_span() -> Span {
 #[cfg(test)]
 #[path = "tests/host_services_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/trust_verify_tests.rs"]
+mod trust_verify_tests;

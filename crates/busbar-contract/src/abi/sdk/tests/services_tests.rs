@@ -74,6 +74,7 @@ fn table(slot: Option<ServiceFn>) -> HostSlots {
         hook_call: None,
         random_fill: None,
         need_admit: None,
+        trust_verify: None,
     }
 }
 
@@ -591,4 +592,123 @@ fn clock_now_answers_the_hosts_reading_and_every_failure_is_an_error() {
         services(&failing).clock_now(handle()),
         Err(ServiceError::Declined(Outcome::Failed))
     ));
+}
+
+/// A host that verifies payload `ok`, refuses any other algorithm by name (`long`: a name longer
+/// than the caller's buffer is answered short), and checks the blobs' formats.
+extern "C" fn verifies(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    use crate::abi::host::service::{SIGNED_ALGORITHM, SIGNED_VERIFIED};
+    // SAFETY: the wrapper hands a `TrustVerifyIn` naming live blobs and buffer, and a live `out`.
+    unsafe {
+        let i = input.cast::<TrustVerifyIn>().read_unaligned();
+        assert_eq!((i.payload.fmt, i.signatures.fmt), (BLOB_OCTETS, BLOB_JSON));
+        let payload = std::slice::from_raw_parts(i.payload.ptr, i.payload.len);
+        let named: Vec<u8> = match payload {
+            b"ok" => Vec::new(),
+            b"long" => vec![b'x'; 100],
+            _ => b"none".to_vec(),
+        };
+        if named.len() > i.into.cap {
+            (*out).needed_bytes = named.len() as u64;
+            (*out).outcome = RawOutcome::of(Outcome::Failed);
+            return RawOutcome::of(Outcome::Failed);
+        }
+        std::ptr::copy_nonoverlapping(named.as_ptr(), i.into.buf, named.len());
+        (*out).len = named.len() as u64;
+        (*out).value = if named.is_empty() {
+            SIGNED_VERIFIED
+        } else {
+            SIGNED_ALGORITHM
+        };
+        (*out).outcome = RawOutcome::of(Outcome::Ready);
+    }
+    RawOutcome::of(Outcome::Ready)
+}
+
+/// A host that answers a `trust.verify` verdict past the last.
+extern "C" fn past_the_last_verdict(
+    _ctx: HostCtx,
+    _input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    // SAFETY: a live `out`.
+    unsafe {
+        (*out).value = crate::abi::host::service::SIGNED_MALFORMED_ROOT + 1;
+        (*out).outcome = RawOutcome::of(Outcome::Ready);
+    }
+    RawOutcome::of(Outcome::Ready)
+}
+
+fn verify_table(slot: Option<ServiceFn>) -> HostSlots {
+    HostSlots {
+        trust_verify: slot,
+        ..table(None)
+    }
+}
+
+#[test]
+fn trust_verify_views_the_verdict_and_the_refused_name_and_reports_a_short_buffer() {
+    use crate::abi::host::service::{SIGNED_ALGORITHM, SIGNED_VERIFIED};
+    let t = verify_table(Some(verifies));
+    let s = services(&t);
+    let mut buf = [0u8; 8];
+    assert_eq!(
+        s.trust_verify(handle(), "peer", b"ok", b"[]", &mut buf),
+        Ok(Signed {
+            verdict: SIGNED_VERIFIED,
+            named: ""
+        })
+    );
+    assert_eq!(
+        s.trust_verify(handle(), "peer", b"alg", b"[]", &mut buf),
+        Ok(Signed {
+            verdict: SIGNED_ALGORITHM,
+            named: "none"
+        })
+    );
+    assert_eq!(
+        s.trust_verify(handle(), "peer", b"long", b"[]", &mut buf),
+        Err(ServiceError::Short {
+            bytes: 100,
+            items: 0
+        })
+    );
+    let mut big = [0u8; 100];
+    let long = "x".repeat(100);
+    assert_eq!(
+        s.trust_verify(handle(), "peer", b"long", b"[]", &mut big),
+        Ok(Signed {
+            verdict: SIGNED_ALGORITHM,
+            named: &long
+        })
+    );
+}
+
+#[test]
+fn trust_verify_failures_are_errors() {
+    let mut buf = [0u8; 8];
+    let none = verify_table(None);
+    assert_eq!(
+        services(&none).trust_verify(handle(), "peer", b"ok", b"", &mut buf),
+        Err(ServiceError::Unserved)
+    );
+    let failing = verify_table(Some(fails));
+    assert_eq!(
+        services(&failing).trust_verify(handle(), "peer", b"ok", b"", &mut buf),
+        Err(ServiceError::Declined(Outcome::Failed))
+    );
+    // A verdict past the last one is a host that broke the rules.
+    let broken = verify_table(Some(past_the_last_verdict));
+    assert_eq!(
+        services(&broken).trust_verify(handle(), "peer", b"ok", b"", &mut buf),
+        Err(ServiceError::Broken)
+    );
+    let old = HostSlots {
+        slots: op::TRUST_VERIFY,
+        ..verify_table(Some(verifies))
+    };
+    assert_eq!(
+        services(&old).trust_verify(handle(), "peer", b"ok", b"", &mut buf),
+        Err(ServiceError::Unserved)
+    );
 }

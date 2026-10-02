@@ -155,6 +155,13 @@ impl HostServices for LateServices {
         }
     }
 
+    fn trust_verify(&self, caller: &Caller, cp: &str, payload: &[u8], sigs: &[u8]) -> Stored {
+        match self.served() {
+            Ok(s) => s.trust_verify(caller, cp, payload, sigs),
+            Err(r) => r,
+        }
+    }
+
     fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored {
         match self.served() {
             Ok(s) => s.entitlement_check(caller, unit, target),

@@ -2047,10 +2047,16 @@ fn compute_layout() -> String {
             content_scan,
             hook_call,
             random_fill,
-            need_admit
+            need_admit,
+            trust_verify
         ]
     );
     record!(s, hsvc::NeedAdmitIn, [head, need, _reserved]);
+    record!(
+        s,
+        hsvc::TrustVerifyIn,
+        [head, counterparty, payload, signatures, into]
+    );
 
     // M3-SHAPES (abi-v2-perkind.md B.2): the secret kind's `resolve`.
     record!(s, SecretOps, [head, resolve]);
