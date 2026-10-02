@@ -2081,6 +2081,9 @@ plane_crates = 4
 # GetBusbar/busbar-transport-tcp and busbar pulls the logic crate and its -plugin cdylib crate at one pinned
 # rev (root Cargo.toml). Its gates run in that repo's plugin CI. `crates/busbar-transport-*` now matches
 # two: stdio and ws.
+# transport 2 -> 1 (EXTRACT-15, item ws, #214): the ws transport crate MOVED OUT with its history to
+# GetBusbar/busbar-transport-ws and busbar pulls it at one pinned rev (root Cargo.toml). Its gates run
+# in that repo's plugin CI. `crates/busbar-transport-*` now matches one: stdio.
 [gate.census.plugin_kinds]
 plane = 5
 hook = 2
@@ -2088,7 +2091,7 @@ auth = 0
 secret = 0
 store = 1
 export = 0
-transport = 2
+transport = 1
 loader = 1
 abi = 1
 
