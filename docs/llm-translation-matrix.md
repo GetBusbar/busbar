@@ -13,12 +13,12 @@ it; `-` means the dialect has no form for it.
 
 | dialect | direction | mapped paths | no-equivalent marks |
 | --- | --- | ---: | ---: |
-| anthropic | request | 15 | 1 |
+| anthropic | request | 15 | 0 |
 | bedrock | request | 13 | 0 |
-| cohere | request | 17 | 1 |
-| gemini | request | 19 | 3 |
-| openai_chat | request | 32 | 4 |
-| openai_responses | request | 22 | 20 |
+| cohere | request | 17 | 0 |
+| gemini | request | 19 | 1 |
+| openai_chat | request | 32 | 2 |
+| openai_responses | request | 22 | 1 |
 
 ## request
 

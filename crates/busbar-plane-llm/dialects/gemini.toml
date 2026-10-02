@@ -54,5 +54,3 @@ park = true
 # Paths no row maps although another dialect maps a field of the same name (`dialect-candidates`).
 [unmapped.request]
 "generationConfig.responseFormat" = { no-equivalent = "Gemini's output-media format object (audio, image, text mime type and schema); the dialect reads structured output from responseMimeType / responseSchema, and no other dialect has the audio and image delivery settings" }
-"tools[].fileSearch.topK" = { no-equivalent = "the file-search tool's retrieval count, not the sampling top_k; the IR has no file-search tool" }
-"tools[].googleSearch.searchTypes.webSearch" = { no-equivalent = "googleSearch's corpus selector; the IR web search has no corpus choice (the tool itself is carried, its sub-config dropped with a warn)" }

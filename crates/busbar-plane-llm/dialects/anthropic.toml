@@ -47,7 +47,3 @@ drop_field = "parameter"
 "seed" = { warn = "dropping seed on Anthropic egress: the Messages API models no deterministic-sampling seed (lossy-by-target)", value = true }
 "n" = { warn = "dropping n on Anthropic egress: the Messages API returns a single completion and models no candidate-count parameter (lossy-by-target)", value = true }
 "service_tier" = { warn = "dropping service_tier on Anthropic egress: Anthropic offers only auto /                      standard_only capacity (lossy-by-target)", value = true }
-
-# Paths no row maps although another dialect maps a field of the same name (`dialect-candidates`).
-[unmapped.request]
-"messages[].content[].type=server_tool_use.input" = { no-equivalent = "the input of an Anthropic server-tool call replayed in history (Anthropic's own hosted execution record); no IR block carries it. The name matches Responses' `input` message list" }

@@ -50,26 +50,7 @@ park = true
 
 # Paths no row maps although another dialect maps a field of the same name (`dialect-candidates`).
 [unmapped.request]
-"input[].type=additional_tools.tools" = { no-equivalent = "tools added mid-conversation by an additional_tools item; the IR declares tools once per request" }
-"input[].type=additional_tools.tools[].type=image_generation.model" = { no-equivalent = "the image-generation tool's own model, not the request's model; the IR has no image-generation tool" }
-"input[].type=additional_tools.tools[].type=namespace.tools" = { no-equivalent = "a tool namespace's member tools; the IR has no tool namespaces" }
-"input[].type=configuration_update.reasoning" = { no-equivalent = "a mid-conversation reasoning reconfiguration item; the IR reasoning ask is per request" }
-"input[].type=configuration_update.reasoning.effort" = { no-equivalent = "a mid-conversation reasoning reconfiguration item; the IR reasoning ask is per request" }
-"input[].type=custom_tool_call.input" = { no-equivalent = "a replayed custom-tool call's free-text input; the IR tool call carries function arguments only" }
-"input[].type=mcp_approval_request.arguments" = { no-equivalent = "the arguments of a replayed approval request of a provider-hosted tool server; the IR has no hosted tool-server calls" }
-"input[].type=mcp_call.arguments" = { no-equivalent = "the arguments of a replayed call to a provider-hosted tool server; the IR has no hosted tool-server calls" }
-"input[].type=tool_search_call.arguments" = { no-equivalent = "the arguments of a replayed tool-search call; the IR has no tool search" }
-"moderation.policy.input" = { no-equivalent = "OpenAI's moderation policy for the input; no other dialect has a moderation pass" }
-"input[].type=local_shell_call.action.user" = { no-equivalent = "the OS user of a replayed local-shell call; the matched `user` is the end-user identifier member" }
-"input[].type=mcp_list_tools.tools" = { no-equivalent = "a replayed tool listing of a provider-hosted tool server; the IR has no such listing" }
-"input[].type=message.content[].type=output_text.logprobs" = { no-equivalent = "log probabilities of a replayed assistant answer in history; the IR logprobs are an answer's, not a request's" }
-"input[].type=message.content[].type=output_text.logprobs[].top_logprobs" = { no-equivalent = "log probabilities of a replayed assistant answer in history; the IR logprobs are an answer's, not a request's" }
-"input[].type=tool_search_output.tools" = { no-equivalent = "tools returned by a replayed tool-search call; the IR has no tool search" }
-"input[].type=tool_search_output.tools[].type=image_generation.model" = { no-equivalent = "the image-generation tool's own model, not the request's model; the IR has no image-generation tool" }
-"input[].type=tool_search_output.tools[].type=namespace.tools" = { no-equivalent = "a tool namespace's member tools; the IR has no tool namespaces" }
 "moderation.model" = { no-equivalent = "the model of OpenAI's moderation pass, not the request's model; no other dialect has a moderation pass" }
-"tools[].type=image_generation.model" = { no-equivalent = "the image-generation tool's own model, not the request's model; the IR has no image-generation tool" }
-"tools[].type=namespace.tools" = { no-equivalent = "a tool namespace's member tools; the IR has no tool namespaces" }
 
 # Controls beyond the rows. The /v1/responses create API models no top_k, stop, penalties, seed or n
 # (openai-python ResponseCreateParamsBase); each drop is warned in these words and audited. The

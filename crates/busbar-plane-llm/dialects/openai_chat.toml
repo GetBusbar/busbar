@@ -75,8 +75,6 @@ park = true
 
 # Paths no row maps although another dialect maps a field of the same name (`dialect-candidates`).
 [unmapped.request]
-"messages[].role=user" = { no-equivalent = "the user-role message (structure, carried as `messages`); the matched `user` is the end-user identifier member" }
-"messages[].role=assistant.tool_calls[].type=custom.custom.input" = { no-equivalent = "a replayed custom-tool call's free-text input; the IR tool call carries function arguments only" }
 "moderation.model" = { no-equivalent = "the model of OpenAI's moderation pass, not the request's model; no other dialect has a moderation pass" }
 "moderation.policy.input" = { no-equivalent = "OpenAI's moderation policy for the input; no other dialect has a moderation pass" }
 

@@ -40,7 +40,3 @@ drop_warn = "dropping a request control on Cohere egress: Cohere v2 /chat has no
 [controls]
 "n" = { silent = true }
 "custom_tool" = { code = "cohere_hosted_tools" }
-
-# Paths no row maps although another dialect maps a field of the same name (`dialect-candidates`).
-[unmapped.request]
-"messages[].role=user" = { no-equivalent = "the user-role message (structure, carried as `messages`); the matched `user` is the OpenAI-family end-user identifier, which Cohere v2 /chat does not have" }
