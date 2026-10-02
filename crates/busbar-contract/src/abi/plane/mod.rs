@@ -1248,6 +1248,12 @@ pub struct ArriveOut {
     /// documentation).
     /// `0` = not a cancel. Never set together with a non-zero [`ArriveOut::correlation`].
     pub cancels: u64,
+    /// On READY: the POOL the unit routes over, as the ENTRY NAME inside the plane's own config
+    /// section (ARCHITECT Q-SW6, 2026-10-02). The kernel resolves (plane key, entry) against the
+    /// section's reserved `pools` sub-key and its entries and never parses the name; absent = the
+    /// plane's single entry, when its section has exactly one. Plane memory, valid until the
+    /// instance's next call. A tail addition; absent on every other outcome.
+    pub pool: AbiStr,
 }
 
 /// `on_piece`'s `in`.

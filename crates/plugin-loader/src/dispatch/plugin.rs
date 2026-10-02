@@ -908,7 +908,7 @@ pub(crate) fn str_bytes<'a>(s: AbiStr) -> Option<&'a [u8]> {
 }
 
 /// A copy of the text; `None` for absent (or malformed, which `validate` refused before).
-fn copy_str(s: AbiStr) -> Option<Vec<u8>> {
+pub(crate) fn copy_str(s: AbiStr) -> Option<Vec<u8>> {
     (!s.ptr.is_null())
         .then(|| str_bytes(s).map(<[u8]>::to_vec))
         .flatten()

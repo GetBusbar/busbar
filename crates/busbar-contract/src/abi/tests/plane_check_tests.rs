@@ -253,7 +253,19 @@ fn an_arrival_names_its_pool_only_when_ready_and_only_with_bytes() {
     assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()), "absent");
     o.pool = s("entry");
     assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()), "named");
-    o.pool = AbiStr { ptr: null(), len: 5 };
+    let long = "p".repeat(crate::abi::mechanism::call::MAX_TEXT + 1);
+    o.pool = AbiStr {
+        ptr: long.as_ptr(),
+        len: long.len(),
+    };
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::OverMax, "arrive.pool")
+    );
+    o.pool = AbiStr {
+        ptr: null(),
+        len: 5,
+    };
     assert_eq!(
         check_arrive(Ready, &o, &[], 4, &bounds()),
         f(Rule::NullWithCount, "arrive.pool")

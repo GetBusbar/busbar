@@ -201,6 +201,10 @@ fn stats(plugin: &Plugin<Plane>) -> [u64; cases::stat::COUNT] {
             _reserved: 0,
             correlation: 0,
             cancels: 0,
+            pool: busbar_contract::abi::mechanism::call::AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
         },
     );
     assert_eq!(
@@ -365,6 +369,10 @@ fn zero_arrive_out() -> ArriveOut {
         _reserved: 0,
         correlation: 0,
         cancels: 0,
+        pool: busbar_contract::abi::mechanism::call::AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
     }
 }
 

@@ -507,6 +507,10 @@ impl PlaneCalls for Double {
         Outcome::Fault
     }
 
+    fn arrived_pool(&self, out: &ArriveOut) -> Option<Vec<u8>> {
+        (!out.pool.ptr.is_null()).then(|| unsafe { text(out.pool) }.to_vec())
+    }
+
     fn refusal(
         &self,
         input: &mut RefusalIn,

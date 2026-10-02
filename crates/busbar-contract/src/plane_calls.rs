@@ -100,6 +100,10 @@ pub trait PlaneCalls: Send + Sync {
         grow: Grow<'_, ArriveIn, ArriveOut>,
     ) -> Outcome;
 
+    /// The pool a READY `arrive` named ([`ArriveOut::pool`], ARCHITECT Q-SW6), copied out of the
+    /// plane's memory while that answer is the instance's last; `None` when it named none.
+    fn arrived_pool(&self, out: &ArriveOut) -> Option<Vec<u8>>;
+
     /// `refusal`, ticketless, with the same one re-call as [`PlaneCalls::arrive`].
     fn refusal(
         &self,

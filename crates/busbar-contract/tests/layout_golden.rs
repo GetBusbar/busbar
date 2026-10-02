@@ -1753,7 +1753,8 @@ fn compute_layout() -> String {
             refusal_status,
             _reserved,
             correlation,
-            cancels
+            cancels,
+            pool
         ]
     );
     record!(

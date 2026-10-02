@@ -165,6 +165,10 @@ fn arrive(plugin: &Plugin<Plane>, target: &[u8]) -> (AbiOutcome, Vec<u64>) {
             _reserved: 0,
             correlation: 0,
             cancels: 0,
+            pool: AbiStr {
+                ptr: std::ptr::null(),
+                len: 0,
+            },
         },
     );
     let outcome = plugin.call(slot::ARRIVE, &mut frame).outcome;

@@ -37,7 +37,7 @@ use crate::abi::hook::{
     signal, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
     SIGNAL_TAG_BOOL, SIGNAL_TAG_STR, SIGNAL_TAG_U64,
 };
-use crate::abi::mechanism::call::{AbiStr, Outcome};
+use crate::abi::mechanism::call::{AbiStr, Outcome, MAX_TEXT};
 use crate::abi::mechanism::check::{
     bits, code, fault, first, index, listed, range, result, results, span, text, weight, Dim,
     Filled, MAX_BYTES,
@@ -199,6 +199,13 @@ pub fn check_arrive(
         if out.correlation != 0 && out.cancels != 0 {
             return Err(fault(Rule::Contradiction, "arrive.cancel_with_correlation"));
         }
+        text(out.pool, "arrive.pool")?;
+        if out.pool.len > MAX_TEXT {
+            return Err(fault(Rule::OverMax, "arrive.pool"));
+        }
+    } else if out.pool.len != 0 || !out.pool.ptr.is_null() {
+        // The pool names where an admitted unit routes: an answer that admits nothing names none.
+        return Err(fault(Rule::Contradiction, "arrive.pool"));
     }
     if outcome == Outcome::Refused {
         text(out.head.error, "arrive.refusal_text")?;
