@@ -321,7 +321,7 @@ impl Relay {
     /// The binding the next attempt speaks (ARCHITECT ruling B4), for the request `envelope` (the
     /// translated one, when a task id was translated): HTTP+JSON composes its request line from the
     /// envelope's `method` and `params`. The request is read once, at the first attempt's binding;
-    /// a later attempt keeps it.
+    /// each following attempt keeps it.
     pub fn bind(&mut self, binding: Binding, envelope: &Value) {
         let first = self.method.is_empty() && self.params.is_null();
         self.binding = binding;
