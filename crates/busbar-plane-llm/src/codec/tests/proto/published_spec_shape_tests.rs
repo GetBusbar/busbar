@@ -40,7 +40,7 @@ fn resp(
         stop_sequence: None,
         request_echo: None,
         stop_detail: None,
-    }
+    }..Default::default()
 }
 
 /// PUBLISHED OPENAI SPEC (`openai/openai-openapi` `openapi.yaml`, the pinned commit):

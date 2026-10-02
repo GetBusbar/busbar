@@ -1397,6 +1397,7 @@ impl ProtocolReader for BedrockReader {
 
             request_echo: None,
             stop_detail,
+            ..Default::default()
         })
     }
 

@@ -82,7 +82,8 @@ impl ProtocolWriter for OpenAiWriter {
                 | crate::codec::ir::IrBlock::ToolResult { .. }
                 | crate::codec::ir::IrBlock::Image { .. }
                 | crate::codec::ir::IrBlock::Media { .. }
-                | crate::codec::ir::IrBlock::Json(_) => "",
+                | crate::codec::ir::IrBlock::Json(_)
+                | crate::codec::ir::IrBlock::HostedToolRecord { .. } => "",
             };
             messages_array.push(serde_json::json!({
                 (keys::ROLE): system_role,
@@ -185,7 +186,8 @@ impl ProtocolWriter for OpenAiWriter {
                             // Lossy-by-necessity: OpenAI Chat Completions has no thinking/reasoning
                             // content block on request input, so a Thinking block is dropped here.
                         }
-                        crate::codec::ir::IrBlock::Json(_) => {
+                        crate::codec::ir::IrBlock::Json(_)
+                        | crate::codec::ir::IrBlock::HostedToolRecord { .. } => {
                             // Structured-json (a Bedrock tool-result content member) has no OpenAI
                             // message-content shape; dropped here.
                         }
