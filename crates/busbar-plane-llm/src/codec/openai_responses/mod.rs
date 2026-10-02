@@ -372,6 +372,8 @@ const INCOMPLETE_REASON_OTHER: &str = "other";
 /// Top-level `object` field value and vendor tag for the Responses protocol.
 const OBJ_RESPONSE: &str = keys::RESPONSE;
 const VENDOR_NAME: &str = "responses";
+/// The label this dialect's usage counts are logged under (the dialect's module name).
+const COUNT_LABEL: &str = "openai_responses";
 
 /// Synthesized id prefixes (bare prefix without trailing underscore for item ids).
 const RESPONSE_ID_PREFIX: &str = "resp_";
@@ -1318,9 +1320,9 @@ fn read_responses_usage(
     usage: Option<&serde_json::Value>,
     response: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
-    let mut ir = crate::codec::usage_count::read_usage("openai_responses", usage, USAGE)?;
+    let mut ir = crate::codec::usage_count::read_usage(COUNT_LABEL, usage, USAGE)?;
     ir.detail.usage_identity_note = crate::codec::usage_count::stated_total_note(
-        "openai_responses",
+        COUNT_LABEL,
         RESPONSES_USAGE_IDENTITY,
         usage.and_then(|u| u.get(keys::TOTAL_TOKENS)),
         &ir,
@@ -2352,15 +2354,13 @@ fn write_web_search_call(
     serde_json::json!({
         (keys::TYPE): ITEM_TYPE_WEB_SEARCH_CALL,
         (keys::ID): call_id.map_or_else(|| synthesize_item_id(ITEM_ID_PREFIX_WEB_SEARCH), String::from),
-        (keys::STATUS): status.unwrap_or(STATUS_COMPLETED_WORD),
+        (keys::STATUS): status.unwrap_or(STATUS_COMPLETED),
         (ACTION): { (keys::TYPE): SEARCH, (SOURCES): sources },
     })
 }
 
 /// The id prefix of a synthesized web-search item.
 const ITEM_ID_PREFIX_WEB_SEARCH: &str = "ws";
-/// A finished web search's status.
-const STATUS_COMPLETED_WORD: &str = "completed";
 
 /// The file annotations of an `output_text` part (`file_citation`, `container_file_citation`,
 /// `file_path`) -> IR citations carrying [`crate::codec::ir::IrFileLocation`]; url citations are

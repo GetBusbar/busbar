@@ -1516,7 +1516,7 @@ impl ProtocolWriter for GeminiWriter {
         // DF-MAP items 1-2: the hosted web-search records as grounding chunks, the safety verdicts
         // as safety ratings.
         if let Some(gm) = super::citations::write_grounding_chunks(&resp.content) {
-            candidate["groundingMetadata"] = gm;
+            candidate[super::citations::FIELD_GROUNDING_METADATA] = gm;
         }
         if let Some(ratings) = super::write_safety_ratings(&resp.safety) {
             candidate[super::FIELD_SAFETY_RATINGS] = ratings;
