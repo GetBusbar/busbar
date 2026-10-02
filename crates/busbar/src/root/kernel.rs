@@ -211,14 +211,26 @@ enum CardJournal {
     /// Armed at boot, before the book exists: applies are held until the boot's book rebuilds the
     /// history from its chain ([`RootHistory::restore`]).
     Armed(Vec<CardApplied>),
-    /// The history was rebuilt from the chain; applies are held until the book's shared handle is
-    /// bound ([`RootHistory::bind_journal`]).
-    Restored(Vec<CardApplied>),
+    /// The history was rebuilt from the chain and the boot's cards journalled; the book's shared
+    /// handle is not bound yet ([`RootHistory::bind_journal`]), so an apply has no journal to go on
+    /// and is refused ([`CardRefused::Unbound`]).
+    Restored,
     /// Every apply goes on this book's journal as it lands.
     Bound {
         book: Arc<Mutex<crate::root::durability::Durability>>,
         token: Grant<busbar_contract::caps::DurableWrite>,
     },
+}
+
+/// WHY A CONFIG CARD APPLY WAS REFUSED: the card was not made durable, so it was not published and
+/// the card in force is the one that was (MONEY-AUDIT D-6).
+#[derive(Debug)]
+pub enum CardRefused {
+    /// The journal could not make the applied card durable.
+    Lost(busbar_contract::caps::DurabilityLost),
+    /// The boot's book has rebuilt the history but its handle is not bound yet: there is no journal
+    /// the card could go on.
+    Unbound,
 }
 
 impl std::fmt::Debug for RootHistory {
@@ -279,20 +291,29 @@ impl RootHistory {
         card: busbar_kernel_ledger::cost::RateCard,
         now_ms: u64,
     ) -> busbar_kernel_ledger::cost::HistorySeq {
-        self.append_config(card, now_ms).0
+        let policy_epoch = self
+            .resolutions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.append_config(card, now_ms, policy_epoch)
     }
 
-    /// [`Self::apply`], answering the entry's number, its `effective_from` and its policy epoch —
-    /// the three facts a journalled record of the apply carries.
+    /// The `effective_from` a config card applied at `now_ms` takes: instant zero for the first
+    /// entry, `now_ms` for every later one (see [`Self::apply`]).
+    fn effective_from_for(&self, now_ms: u64) -> u64 {
+        match self.history.load().as_deref() {
+            Some(history) if !history.is_empty() => now_ms,
+            _ => 0,
+        }
+    }
+
+    /// [`Self::apply`] under a policy epoch the caller already took, answering the entry's number.
     fn append_config(
         &self,
         card: busbar_kernel_ledger::cost::RateCard,
         now_ms: u64,
-    ) -> (busbar_kernel_ledger::cost::HistorySeq, u64, u64) {
-        let policy_epoch = self
-            .resolutions
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut appended = (busbar_kernel_ledger::cost::HistorySeq::OPENING, 0);
+        policy_epoch: u64,
+    ) -> busbar_kernel_ledger::cost::HistorySeq {
+        let mut appended = busbar_kernel_ledger::cost::HistorySeq::OPENING;
         self.history.rcu(|current| {
             let mut next = match current {
                 Some(history) => busbar_kernel_ledger::cost::History::clone(history),
@@ -307,32 +328,50 @@ impl RootHistory {
                 author: busbar_kernel_ledger::cost::Author::Config { policy_epoch },
             });
             // The closure may run more than once; the run whose swap lands is the last one.
-            appended = (seq, effective_from);
+            appended = seq;
             Some(Arc::new(next))
         });
-        (appended.0, appended.1, policy_epoch)
+        appended
     }
 
-    /// **THE APPLY THE RATE-APPLY SEAM MAKES**: build the card from the configured figures, append
-    /// it (as [`Self::apply`]), and put the same entry on the node's journal — so a restart rebuilds
-    /// the history the node priced under rather than dating the boot card from instant zero (#79).
+    /// **THE APPLY THE RATE-APPLY SEAM MAKES**: build the card from the configured figures, put the
+    /// entry on the node's journal, and only then append it to the history (as [`Self::apply`]) —
+    /// so a restart rebuilds the history the node priced under rather than dating the boot card
+    /// from instant zero (#79).
+    ///
+    /// JOURNAL FIRST, PUBLISH SECOND (MONEY-AUDIT D-6). A card published before its record is
+    /// durable prices postings in an era a restart cannot reproduce: the rebuilt history lacks the
+    /// entry and every row earned under it reprices at the card before. So an apply the journal
+    /// will not take is REFUSED: the card in force stays the one that was, and no policy epoch is
+    /// spent on it — as `amend_rate_history` refuses a correction the journal will not take.
+    ///
+    /// # Errors
+    ///
+    /// The journal could not make the applied card durable, or the boot's book has rebuilt the
+    /// history but its handle is not bound yet, so there is no journal the card could go on.
     pub fn apply_rates(
         &self,
         rates: &busbar_kernel::rate_apply::RawRates<'_>,
         now_ms: u64,
-    ) -> busbar_kernel_ledger::cost::HistorySeq {
+    ) -> Result<busbar_kernel_ledger::cost::HistorySeq, CardRefused> {
         let _one_at_a_time = self.applying.lock().unwrap_or_else(|p| p.into_inner());
         register_classes(rates);
         let card = card_from_raw(rates);
         let form = CardForm::of(rates, &card);
-        let (seq, effective_from, policy_epoch) = self.append_config(card, now_ms);
+        // One apply at a time (the lock above), so the epoch and the `effective_from` read here are
+        // the ones the append below lands with.
+        let policy_epoch = self.resolutions.load(std::sync::atomic::Ordering::Relaxed);
         self.journal_applied(CardApplied {
-            effective_from,
+            effective_from: self.effective_from_for(now_ms),
             appended_at: now_ms,
             policy_epoch,
             form,
-        });
-        seq
+        })?;
+        self.resolutions.fetch_max(
+            policy_epoch.saturating_add(1),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        Ok(self.append_config(card, now_ms, policy_epoch))
     }
 
     /// ARM THE JOURNAL: from here on every apply is recorded — held until the boot's book has
@@ -353,29 +392,34 @@ impl RootHistory {
         *self.journal.lock().unwrap_or_else(|p| p.into_inner()) = CardJournal::Off;
     }
 
-    /// Record one apply wherever this holder's journal stands.
-    fn journal_applied(&self, applied: CardApplied) {
+    /// Record one apply wherever this holder's journal stands, BEFORE it is published.
+    ///
+    /// Off journals nothing (no chain to rebuild from). Armed holds the boot's opening card for
+    /// the boot's book, which journals it as it rebuilds the history — or refuses the boot. Bound
+    /// writes it. Restored refuses: the history was rebuilt from the chain but the book's handle
+    /// is not bound yet, so there is no journal the card could go on.
+    fn journal_applied(&self, applied: CardApplied) -> Result<(), CardRefused> {
         let mut journal = self.journal.lock().unwrap_or_else(|p| p.into_inner());
         match &mut *journal {
-            CardJournal::Off => {}
-            CardJournal::Armed(held) | CardJournal::Restored(held) => held.push(applied),
+            CardJournal::Off => Ok(()),
+            CardJournal::Armed(held) => {
+                held.push(applied);
+                Ok(())
+            }
+            CardJournal::Restored => Err(CardRefused::Unbound),
             CardJournal::Bound { book, token } => {
                 let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
-                if let Err(lost) = journal_card(&mut durability, &applied, token) {
-                    tracing::error!(
-                        step = lost.step().as_str(),
-                        effective_from = applied.effective_from,
-                        "the journal lost an applied rate card: a restart will not reproduce this \
-                         entry of the dated history"
-                    );
-                }
+                journal_card(&mut durability, &applied, token)
+                    .map(|_| ())
+                    .map_err(CardRefused::Lost)
             }
         }
     }
 
     /// **THE BOOT'S REBUILD OF THE DATED HISTORY FROM THE CHAIN**, run by the book before it prices
-    /// a single replayed posting. Answers the records the book must now write, or `None` when this
-    /// holder was not armed (nothing is rebuilt and nothing is written).
+    /// a single replayed posting, from the chain's cards and the applies `held` since the holder
+    /// was armed. Answers the history, the records the book must write before it is published, and
+    /// the next policy epoch.
     ///
     /// - A chain with NO config card on it (a fresh node, or a journal written before cards were
     ///   journalled): the history stays what the boot resolved — its card from instant zero, the
@@ -385,13 +429,11 @@ impl RootHistory {
     ///   resolution is appended, dated at the instant it landed, ONLY where it differs from the
     ///   newest journalled config card: a restart that changed no price appends nothing and moves
     ///   nothing; a restart that did prices what happens after the boot and nothing before it.
-    pub(crate) fn restore(&self, journalled: Vec<JournalledCard>) -> Option<Vec<CardApplied>> {
+    fn restore(
+        journalled: Vec<JournalledCard>,
+        held: Vec<CardApplied>,
+    ) -> (busbar_kernel_ledger::cost::History, Vec<CardApplied>, u64) {
         use busbar_kernel_ledger::cost::{CardEntryDraft, History};
-        let mut journal = self.journal.lock().unwrap_or_else(|p| p.into_inner());
-        let CardJournal::Armed(held) = &mut *journal else {
-            return None;
-        };
-        let held = std::mem::take(held);
         let mut opening: Option<CardEntryDraft> = None;
         let mut rest: Vec<CardEntryDraft> = Vec::new();
         let mut newest: Option<CardForm> = None;
@@ -434,13 +476,7 @@ impl RootHistory {
         for draft in opening.into_iter().chain(rest) {
             history.append(draft);
         }
-        if !history.is_empty() {
-            self.history.store(Some(Arc::new(history)));
-        }
-        self.resolutions
-            .fetch_max(next_epoch, std::sync::atomic::Ordering::Relaxed);
-        *journal = CardJournal::Restored(Vec::new());
-        Some(write)
+        (history, write, next_epoch)
     }
 
     /// **THE BOOT'S REBUILD, RUN BY THE BOOK** before it prices a replayed posting: `records` is the
@@ -450,39 +486,51 @@ impl RootHistory {
     ///
     /// A chain written before applied cards were journalled holds none: its history starts at the
     /// boot card from instant zero, exactly as it did, and that opening entry is journalled now.
+    ///
+    /// JOURNAL FIRST, PUBLISH SECOND (MONEY-AUDIT D-6): the boot's cards go on the chain before
+    /// the rebuilt history is published. A holder that was not armed rebuilds nothing.
+    ///
+    /// # Errors
+    ///
+    /// The journal could not make one of the boot's cards durable: the boot refuses rather than
+    /// price under an era a restart could not reproduce.
     pub(crate) fn rebuild_from_chain(
         &'static self,
         durability: &mut crate::root::durability::Durability,
         records: Option<&[busbar_kernel_wal::JournalRecord]>,
-    ) {
+    ) -> Result<(), busbar_contract::caps::DurabilityLost> {
         let Some(records) = records else {
             self.disarm_journal();
-            return;
+            return Ok(());
         };
-        let Some(write) = self.restore(journalled_cards(records)) else {
-            return;
+        let mut journal = self.journal.lock().unwrap_or_else(|p| p.into_inner());
+        let CardJournal::Armed(held) = &mut *journal else {
+            return Ok(());
         };
+        let (history, write, next_epoch) =
+            Self::restore(journalled_cards(records), std::mem::take(held));
         let token = new_kernel().durability_token();
         for applied in &write {
-            if let Err(lost) = journal_card(durability, applied, &token) {
-                tracing::error!(
-                    step = lost.step().as_str(),
-                    effective_from = applied.effective_from,
-                    "the journal lost an applied rate card: a restart will not reproduce this \
-                     entry of the dated history"
-                );
-            }
+            journal_card(durability, applied, &token)?;
         }
+        if !history.is_empty() {
+            self.history.store(Some(Arc::new(history)));
+        }
+        self.resolutions
+            .fetch_max(next_epoch, std::sync::atomic::Ordering::Relaxed);
+        *journal = CardJournal::Restored;
         durability.cards_from = Some(self);
+        Ok(())
     }
 
-    /// **BIND THE BOOK THE HISTORY WAS REBUILT FROM**: write what was applied since the rebuild and
-    /// journal every apply after it as it lands. A no-op for any other book and for a holder whose
-    /// history was not rebuilt from a chain — which is every holder but the production boot's.
+    /// **BIND THE BOOK THE HISTORY WAS REBUILT FROM**: journal every apply after it before it
+    /// lands. A no-op for any other book and for a holder whose history was not rebuilt from a
+    /// chain — which is every holder but the production boot's. Nothing is held to write here: an
+    /// apply between the rebuild and this bind was refused ([`CardRefused::Unbound`]).
     pub fn bind_journal(&self, book: &Arc<Mutex<crate::root::durability::Durability>>) {
         if !matches!(
             *self.journal.lock().unwrap_or_else(|p| p.into_inner()),
-            CardJournal::Restored(_)
+            CardJournal::Restored
         ) {
             return;
         }
@@ -495,27 +543,12 @@ impl RootHistory {
             return;
         }
         let mut journal = self.journal.lock().unwrap_or_else(|p| p.into_inner());
-        let CardJournal::Restored(held) = &mut *journal else {
+        if !matches!(*journal, CardJournal::Restored) {
             return;
-        };
-        let held = std::mem::take(held);
-        let token = new_kernel().durability_token();
-        {
-            let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
-            for applied in &held {
-                if let Err(lost) = journal_card(&mut durability, applied, &token) {
-                    tracing::error!(
-                        step = lost.step().as_str(),
-                        effective_from = applied.effective_from,
-                        "the journal lost an applied rate card: a restart will not reproduce this \
-                         entry of the dated history"
-                    );
-                }
-            }
         }
         *journal = CardJournal::Bound {
             book: Arc::clone(book),
-            token,
+            token: new_kernel().durability_token(),
         };
     }
 
@@ -666,7 +699,13 @@ pub struct CardRepricer;
 
 impl busbar_kernel::rate_apply::RateApply for CardRepricer {
     fn rates_applied(&self, rates: &busbar_kernel::rate_apply::RawRates<'_>) {
-        ROOT_CARD.apply_rates(rates, busbar_kernel::store::now_ms());
+        if let Err(refused) = ROOT_CARD.apply_rates(rates, busbar_kernel::store::now_ms()) {
+            tracing::error!(
+                ?refused,
+                "the journal did not take an applied rate card: the apply is refused and the card \
+                 in force is unchanged"
+            );
+        }
     }
 }
 

@@ -4290,7 +4290,7 @@ fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
                 cache_write: 0.0,
             },
         )];
-        holder.apply_rates(
+        let _ = holder.apply_rates(
             &busbar_kernel::rate_apply::RawRates {
                 lanes: &lanes,
                 units: &[],

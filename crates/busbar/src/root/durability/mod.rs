@@ -2295,7 +2295,15 @@ pub fn build_with_cards(
             (Some(_), Ok(Ok(records))) => Some(records.as_slice()),
             _ => None,
         };
-        cards.rebuild_from_chain(&mut durability, records);
+        // A boot card the journal will not take refuses the boot (MONEY-AUDIT D-6).
+        cards
+            .rebuild_from_chain(&mut durability, records)
+            .map_err(|lost| {
+                OpenError::Io(std::io::Error::other(format!(
+                    "the journal could not make the boot's rate card durable at step {}",
+                    lost.step().as_str()
+                )))
+            })?;
     }
     let pinned = (durability.history)();
     let view = pinned.as_ref().map(PinnedHistory::view);

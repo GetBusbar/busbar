@@ -644,11 +644,12 @@ fn plane_fees() -> busbar_kernel::config::PlaneFeesMap {
     )])
 }
 
-/// The engine resolving the deployment at `price`, heard by `holder` at `at`.
+/// The engine resolving the deployment at `price`, heard by `holder` at `at`. Whether the holder
+/// took the card is read off the history (`holder.len()`), never off the answer.
 fn apply_at(holder: &RootHistory, price: f64, at: u64) {
     let lanes = lanes_at(price);
     let fees = plane_fees();
-    holder.apply_rates(
+    let _ = holder.apply_rates(
         &busbar_kernel::rate_apply::RawRates {
             lanes: &lanes,
             units: &[("gpt".to_string(), "search_units".to_string(), 2_000)],
@@ -923,6 +924,95 @@ fn a_restart_prices_every_posting_at_the_card_in_force_when_it_arrived() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A store that takes nothing: a memory-buffered journal over it refuses every append.
+struct RefusingShipper;
+
+impl busbar_kernel_wal::Shipper for RefusingShipper {
+    fn ship(
+        &mut self,
+        _records: &[busbar_kernel_wal::Record],
+    ) -> Result<(), busbar_kernel_wal::ShipError> {
+        Err(busbar_kernel_wal::ShipError::Unavailable(
+            "the store is not answering".into(),
+        ))
+    }
+}
+
+/// The flat lane's input price in force at `at` on `holder`'s history.
+fn flat_price_at(holder: &RootHistory, at: u64) -> Option<u64> {
+    holder
+        .history()
+        .expect("a history")
+        .current()
+        .card_at(at)
+        .and_then(|(_, card)| {
+            card.lane_rates(FLAT_LANE)
+                .map(|r| r.nanos_per_unit("input"))
+        })
+}
+
+/// **JOURNAL FIRST, PUBLISH SECOND** (MONEY-AUDIT D-6): a config rate apply whose journal append
+/// fails is REFUSED and the card in force is unchanged. RED arm: the card was published first and
+/// the journal failure only logged, so the node priced an era its restart could not reproduce —
+/// every row earned under it repriced at the card before.
+#[test]
+fn a_rate_apply_the_journal_refuses_leaves_the_card_in_force_unchanged() {
+    let dir = journal_dir("refused-apply");
+    let holder = process_holder();
+    apply_at(holder, 3.0, BOOT_A);
+    let book = boot_book(holder, &dir);
+    assert_eq!(cards_on_chain(&book), 1, "the boot card is journalled");
+    book.lock().expect("the book").journal = busbar_kernel_wal::Journal::memory_buffered_to(
+        7,
+        Box::new(RefusingShipper),
+        busbar_kernel::store::now_ms,
+    );
+    apply_at(holder, 5.0, APPLIED_B);
+    assert_eq!(holder.len(), 1, "the refused card is not on the history");
+    assert_eq!(
+        flat_price_at(holder, EARNED_B),
+        Some(3_000),
+        "the card in force is the one the journal holds"
+    );
+    drop(book);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An apply between the boot's rebuild and the book's bind has no journal to go on: it is refused,
+/// and the first apply after the bind is journalled and published.
+#[test]
+fn a_rate_apply_before_the_book_is_bound_is_refused() {
+    let dir = journal_dir("unbound-apply");
+    let holder = process_holder();
+    apply_at(holder, 3.0, BOOT_A);
+    let book = crate::root::durability::build_with_cards(
+        &crate::root::durability::DurabilityConfig {
+            data_dir: Some(dir.clone()),
+        },
+        7,
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+        Box::new(move || holder.pin()),
+        Some(holder),
+    )
+    .expect("the journal opens");
+    apply_at(holder, 5.0, APPLIED_B);
+    assert_eq!(holder.len(), 1, "no journal bound, no card published");
+    assert_eq!(flat_price_at(holder, EARNED_B), Some(3_000));
+    let book = Arc::new(Mutex::new(book));
+    holder.bind_journal(&book);
+    apply_at(holder, 5.0, EARNED_B);
+    assert_eq!(holder.len(), 2);
+    assert_eq!(
+        cards_on_chain(&book),
+        2,
+        "the boot card and the bound apply"
+    );
+    assert_eq!(flat_price_at(holder, REBOOT), Some(5_000));
+    drop(book);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A holder that was not armed — every test holder, and a build with no root ledger — rebuilds
 /// nothing and journals nothing; a node with NO data directory keeps the boot card from instant
 /// zero exactly as the previous release did, and writes no card anywhere.
@@ -1178,7 +1268,7 @@ fn a_back_dated_correction_survives_a_restart() {
 fn applying_rates_registers_the_classes_a_unit_may_report() {
     let fees = plane_fees();
     let lanes = lanes_at(1.0);
-    process_holder().apply_rates(
+    let _ = process_holder().apply_rates(
         &busbar_kernel::rate_apply::RawRates {
             lanes: &lanes,
             units: &[(
