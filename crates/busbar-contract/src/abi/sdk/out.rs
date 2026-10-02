@@ -519,6 +519,20 @@ impl<'a, T: AbiOut> Out<'a, T> {
         self.put(pick, p);
     }
 
+    /// [`Out::publish`] with the plugin's `payload` for that generation, held beside it
+    /// ([`Generations::publish_with`]).
+    pub fn publish_with<P: Publish, D>(
+        &mut self,
+        pick: impl FnOnce(&T) -> &*const P,
+        gens: &Generations<P, D>,
+        generation: u64,
+        spec: &P::Spec,
+        payload: D,
+    ) {
+        let p = gens.publish_with(generation, spec, payload);
+        self.put(pick, p);
+    }
+
     /// Set the string field `pick` names to the bytes `span` names in the host buffer `buf`,
     /// which the host lent for this call and reads when it returns.
     pub fn host_str(
