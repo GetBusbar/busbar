@@ -158,7 +158,7 @@ busbar-transport-http = { path = "../busbar-transport-http" }
 # reaches it, so a build without voice must not carry it. Non-optional, `--no-default-features` still
 # pulled `tokio-tungstenite` through this line and voice stopped being strong-form deletable — the
 # exact leak `cargo xtask gate duplex-ws-default-edge` exists to catch. `plane-streaming` carries the edge.
-busbar-transport-ws = { path = "../busbar-transport-ws", optional = true }
+busbar-transport-ws = { workspace = true, optional = true }
 busbar-transport-stdio = { path = "../busbar-transport-stdio" }
 # The root's card is SWAPPED by a live config apply and PINNED by every unit that prices against it,
 # which is one atomic store against many lock-free readers — the same shape, and the same crate, the

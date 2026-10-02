@@ -17,7 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 busbar-contract = { path = "../../../crates/busbar-contract" }
-busbar-transport-ws = { path = "../../../crates/busbar-transport-ws" }
+busbar-transport-ws = { workspace = true }
 busbar-transport-tcp = { path = "../../../crates/busbar-transport-tcp" }
 # The root's transport doors (`crates/busbar/src/root/doors.rs`, mounted by path): the tcp door
 # admitted through the one dispatcher and served over the host's sockets by the connector.

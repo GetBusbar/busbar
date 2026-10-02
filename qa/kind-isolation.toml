@@ -750,18 +750,6 @@ kind = "transport"
 count = "1"
 
 [[cell]]
-crate = "busbar-transport-ws"
-kind = "plane"
-count = "2"
-
-# 23 -> 24: the ws locate's ALPN id literal b"\x08http/1.1" (door/mod.rs:378; ARCHITECT ruling
-# 2026-09-29 for the offer, row approved 2026-09-30), armed at today's measurement on METER-FIX's meter.
-[[cell]]
-crate = "busbar-transport-ws"
-kind = "transport"
-count = "24"
-
-[[cell]]
 crate = "busbar-voice"
 kind = "contract"
 count = "2"
@@ -1014,16 +1002,6 @@ count   = "1"
 verdict = "allowed"
 cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes."
 why     = "busbar names busbar-transport-tcp: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar"
-to      = "busbar-transport-ws"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes."
-why     = "busbar names busbar-transport-ws: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]

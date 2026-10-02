@@ -1044,12 +1044,10 @@ dependencies = [
 [[package]]
 name = "busbar-transport-ws"
 version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=2812d6355610673614681bd4f523da9bed32d07b#2812d6355610673614681bd4f523da9bed32d07b"
 dependencies = [
  "busbar-contract",
- "busbar-plugin-loader",
- "busbar-transport-ws",
  "futures",
- "libloading",
  "serde_json",
  "tokio",
  "tokio-tungstenite",

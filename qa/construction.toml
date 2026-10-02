@@ -562,14 +562,6 @@ because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan a
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 24189 -> 24237 (STEP-20) — EXPIRED AND STRUCK: its commit reached the base;
 # struck by the K1 plane driver re-arm above, which declares the next figure.
 
-# ── THE KIND-ISOLATION CELL busbar-transport-ws x transport, RAISED BY STEP-20 (the ALPN offer literal)
-
-[gate.ceiling_raises."cell[crate=busbar-transport-ws,kind=transport].count"]
-file    = "qa/kind-isolation.toml"
-from    = 23
-to      = 24
-because = "ARCHITECT 2026-09-30 (\"ws x transport 24 is approved and rides with A\"): the ws door's locate offers the ALPN id b\"\\x08http/1.1\" on a secured target (ARCHITECT ruling 2026-09-29; the opening handshake is HTTP/1.1), and METER-FIX's decoded scanner reads that wire literal as the http transport's name (door/mod.rs:378). Measured by cargo xtask gate kind-isolation --report on predev 9b279a546: 23 at the base, 24 at the tip, +1, that one line."
-
 # ── THE KIND-ISOLATION CELL busbar-contract x transport, RAISED BY URL-SEAM (Q77-PENDING (a))
 
 [gate.ceiling_raises."cell[crate=busbar-contract,kind=transport].count"]
@@ -1875,7 +1867,6 @@ busbar-transport-stdio = ["tokio", "futures"]
 # The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
 busbar-plane-mcp = ["base64"]
-busbar-transport-ws = ["tokio-util", "tokio", "tokio-tungstenite", "futures"]
 # Ratchet, NOT a review: each busbar-plane-* adapter names its own dialect's legacy engine crate
 # (busbar-llm/-mcp/-a2a/-voice) for codecs only, read-only, no engine state crossing back — but
 # those engine crates are ALSO named in gate.plane_crates, so this is structurally the exact "a
@@ -2208,8 +2199,6 @@ known_sites = [
   "crates/busbar-transport-http/src/grpc/tests/battery.rs",
   "crates/busbar-transport-http/src/tests/mod.rs",
   "crates/busbar-transport-stdio/src/tests/battery.rs",
-  "crates/busbar-transport-ws/src/tests/battery.rs",
-  "crates/busbar-transport-ws/src/transport.rs",
   "crates/busbar-kernel-egress/src/tests/harness.rs",
 ]
 
@@ -2384,7 +2373,6 @@ known_sites = [
   # was crates/busbar-substrate-values/src/proto.rs — the protocol registry moved to the kernel
   # verbatim (#83a SD-8).
   "crates/busbar-kernel/src/proto/installed.rs",
-  "crates/busbar-transport-ws/src/transport.rs",
   "crates/plugin-loader/src/",
   "crates/busbar-contract/src/abi/sdk/boundary.rs",
   "crates/plane-example/src/",
@@ -3228,7 +3216,7 @@ auth = 0
 secret = 0
 store = 1
 export = 0
-transport = 4
+transport = 3
 loader = 1
 abi = 1
 
