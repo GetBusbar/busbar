@@ -99,7 +99,7 @@ fn shr01_document_offsets_are_never_written_as_an_answer_span() {
         end_index: Some(5),
         ..Default::default()
     };
-    let chat = crate::codec::openai_annotations::chat_url_annotations(
+    let chat = crate::codec::url_citation_wire::chat_url_annotations(
         "hello world",
         0,
         std::slice::from_ref(&c),
@@ -114,7 +114,7 @@ fn shr01_document_offsets_are_never_written_as_an_answer_span() {
         kind: Some("web_search_result_location".to_string()),
         ..c
     };
-    let chat = crate::codec::openai_annotations::chat_url_annotations("hello world", 0, &[web]);
+    let chat = crate::codec::url_citation_wire::chat_url_annotations("hello world", 0, &[web]);
     assert_eq!(chat[0]["url_citation"]["start_index"], 0);
     assert_eq!(chat[0]["url_citation"]["end_index"], 5);
 }
@@ -176,13 +176,13 @@ fn seam_still_mints_a_native_id_and_clears_the_chat_only_fingerprint() {
 #[test]
 fn shr03_openai_file_id_is_read_from_either_openai_dialects_reference() {
     use crate::codec::ir::IrImageSource;
-    for vendor in crate::codec::openai_annotations::OPENAI_FILES_VENDOR_TAGS {
+    for vendor in crate::codec::url_citation_wire::FILES_API_VENDOR_TAGS {
         let src = IrImageSource::Vendor {
             vendor,
             value: json!({"file_id": "file-abc"}),
         };
         assert_eq!(
-            crate::codec::openai_annotations::openai_file_id(&src),
+            crate::codec::url_citation_wire::files_api_id(&src),
             Some("file-abc"),
             "{vendor}"
         );
@@ -191,15 +191,12 @@ fn shr03_openai_file_id_is_read_from_either_openai_dialects_reference() {
         vendor: "bedrock",
         value: json!({"file_id": "file-abc"}),
     };
-    assert_eq!(crate::codec::openai_annotations::openai_file_id(&s3), None);
+    assert_eq!(crate::codec::url_citation_wire::files_api_id(&s3), None);
     let empty = IrImageSource::Vendor {
         vendor: "openai",
         value: json!({"file_id": ""}),
     };
-    assert_eq!(
-        crate::codec::openai_annotations::openai_file_id(&empty),
-        None
-    );
+    assert_eq!(crate::codec::url_citation_wire::files_api_id(&empty), None);
 }
 
 /// The tags ARE what the two OpenAI readers stamp: a Chat `file.file_id` part and a Responses
@@ -229,7 +226,7 @@ fn shr03_both_openai_readers_produce_a_reference_the_helper_resolves() {
             .expect("read_request");
         let src = first_media_source(&ir);
         assert_eq!(
-            crate::codec::openai_annotations::openai_file_id(&src),
+            crate::codec::url_citation_wire::files_api_id(&src),
             Some("file-abc"),
             "{dialect}: {src:?}"
         );

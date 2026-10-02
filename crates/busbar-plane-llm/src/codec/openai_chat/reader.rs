@@ -78,9 +78,8 @@ impl ProtocolReader for OpenAiReader {
 
     #[cfg(test)]
     fn classify(&self, status: StatusCode, body: &[u8]) -> CanonicalSignal {
-        // Identical to ResponsesReader::classify — both emit the same OpenAI error envelope, so the
-        // mapping is single-sourced in `super::openai_classify` (the OpenAI dialect's codec home).
-        super::openai_classify(status, body)
+        // Both bearer-envelope dialects classify alike: single-sourced in the shared dialect module.
+        crate::codec::dialect::bearer_error_classify(status.as_u16(), body)
     }
 
     fn read_request(
@@ -889,7 +888,9 @@ impl ProtocolReader for OpenAiReader {
         let lp_entries = if state.text_block_closed {
             Vec::new()
         } else {
-            read_openai_logprobs(choice0.and_then(|c| c.get(keys::LOGPROBS)))
+            crate::codec::logprob_wire::read_token_logprobs(
+                choice0.and_then(|c| c.get(keys::LOGPROBS)),
+            )
         };
         if !lp_entries.is_empty() {
             if !state.text_block_open {
@@ -926,7 +927,7 @@ impl ProtocolReader for OpenAiReader {
         //     `read_url_annotations` gives (the buffered path drops them the same way).
         let citations = delta
             .and_then(|d| d.get(keys::ANNOTATIONS))
-            .map(super::super::openai_annotations::read_url_annotations)
+            .map(super::super::url_citation_wire::read_url_annotations)
             .unwrap_or_default();
         if !citations.is_empty() {
             if state.text_block_closed && !state.text_block_open {
@@ -1261,7 +1262,7 @@ impl ProtocolReader for OpenAiReader {
                     // `read_url_annotations` for why offsets are deliberately not carried.
                     let citations = message_val
                         .get(keys::ANNOTATIONS)
-                        .map(super::super::openai_annotations::read_url_annotations)
+                        .map(super::super::url_citation_wire::read_url_annotations)
                         .unwrap_or_default();
                     content.push(crate::codec::ir::IrBlock::Text {
                         text: text.to_string(),
@@ -1423,7 +1424,8 @@ impl ProtocolReader for OpenAiReader {
 
         // Per-token logprobs from the first choice, carried neutrally so a foreign-dialect caller
         // (e.g. Gemini) receives them in its own shape.
-        let logprobs = read_openai_logprobs(choices[0].get(keys::LOGPROBS));
+        let logprobs =
+            crate::codec::logprob_wire::read_token_logprobs(choices[0].get(keys::LOGPROBS));
 
         Ok(crate::codec::ir::IrResponse {
             logprobs,

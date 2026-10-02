@@ -1102,7 +1102,7 @@ fn gemini_grounding_metadata_reaches_a_foreign_client() {
     );
     // And it must be READABLE back: what the Chat writer emits is what the Chat reader parses, so
     // the source survives a further hop instead of being dropped on the way back in.
-    let recovered = crate::codec::openai_annotations::read_url_annotations(
+    let recovered = crate::codec::url_citation_wire::read_url_annotations(
         &out["choices"][0]["message"]["annotations"],
     );
     assert_eq!(
