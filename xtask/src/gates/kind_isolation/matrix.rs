@@ -87,6 +87,14 @@
 //! EDGE — refused, whatever `BUSBAR-1.6.0.md` may or may not grant, because an edge nobody wrote
 //! down is an edge nobody reviewed.
 //!
+//! ONE SPAN IS NOT READ, BY ARCHITECT RULING (2026-10-02, DF-MAP): a plane crate's dialect mapping
+//! file (`<plane crate>/dialects/<d>.toml`) quotes its rows' wire paths verbatim from the provider's
+//! pinned spec, and a provider's own vocabulary (OpenAI's hosted tool type `mcp`) is protocol, not a
+//! coupling. So a quoted map KEY is masked ONLY when it resolves EXACTLY to a path of the wire lock
+//! the file names (`[dialect] wire`, `testing/llm-conformance/wire/<lock>.wire.json`). The same word
+//! in a value, a comment, or a key the lock does not have is counted as before
+//! ([`mask_dialect_wire_keys`]).
+//!
 //! ONE COLUMN IS NOT MEASURED, AND IT IS A RULE RATHER THAN AN ALLOWANCE: a crate of one of the
 //! seven plugin kinds is not counted in the `contract` column. #40(a) makes `busbar-contract` the
 //! only crate a plugin may name, so that column in a plugin crate measures the wall standing, not a
@@ -114,6 +122,7 @@ pub const LEDGER: &str = "qa/kind-isolation.toml";
 /// whose extension is not on [`BINARY_EXTS`], which is 1 707 of them today.
 const MIN_SCANNED: usize = 600;
 
+mod auth_words;
 mod instances;
 mod os_words;
 mod vendors;
@@ -615,11 +624,15 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
 
     let (files, skipped) = scan_set(cx)?;
     let contract = contract_identifiers(&files, &vocab);
+    // The auth ABI's own `decision` field (continue/stop) is masked in auth crates while the
+    // contract declares it ([`auth_words`]).
+    let auth_decision = auth_words::declared(&files);
     // A plugin's own conformance test naming the loader it is granted is the witness, not a
     // coupling ([`super::conformance_witness_edges`]).
     let granted = super::conformance_witness_edges(cx, crates);
 
     let mut matrix: Matrix = BTreeMap::new();
+    let mut wire_locks: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (rel, text) in &files {
         let rel = rel.clone();
         let Some(dir) = owning_dir(&rel) else {
@@ -660,6 +673,18 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         // Its context is read off the ORIGINAL text: an earlier mask's filler must not change what
         // a neighbouring word says ("the unix socket" with `socket` masked as a contract name).
         let masked = os_words::mask_os_words_in(&rel, text, &masked);
+        let masked = match auth_words::scope(c.kind, &dir, &rel).filter(|_| auth_decision) {
+            Some(with_type) => std::borrow::Cow::Owned(
+                auth_words::mask_auth_decision(&rel, &masked, with_type).into_owned(),
+            ),
+            None => masked,
+        };
+        // A dialect mapping file's wire-lock keys are the provider's words (ruling above).
+        let masked = if c.kind == Some("plane") {
+            mask_dialect_wire_keys(cx, &dir, &rel, text, &masked, &mut wire_locks)
+        } else {
+            std::borrow::Cow::Borrowed(&*masked)
+        };
         for h in scan_file(per_kind, &dir, &rel, &masked).iter() {
             let line = h
                 .line
@@ -695,6 +720,70 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         }
     }
     Ok((matrix, files.len(), skipped))
+}
+
+/// Where the wire locks live, one `<lock>.wire.json` per dialect (see [`crate::wire_lock`]).
+const WIRE_LOCK_DIR: &str = "testing/llm-conformance/wire";
+
+/// THE ONE SPAN THE MATRIX DOES NOT READ (ARCHITECT ruling 2026-10-02, DF-MAP): in a plane crate's
+/// `dialects/<d>.toml`, a line's quoted KEY that is EXACTLY a path of the wire lock the file names
+/// (`[dialect] wire = "<lock>"`) is masked. Nothing else is: not the value, not a comment, not a key
+/// the lock lacks, not a file outside `<plane crate>/dialects/`. A file whose lock is missing or
+/// unreadable masks nothing. The keys are read off the ORIGINAL `text` (an earlier mask may have
+/// filled a word of it) and filled in `masked`, which every earlier mask keeps byte-aligned with it.
+/// `locks` caches each lock's path set across files.
+fn mask_dialect_wire_keys<'a>(
+    cx: &Ctx,
+    dir: &str,
+    rel: &str,
+    text: &str,
+    masked: &'a str,
+    locks: &mut BTreeMap<String, BTreeSet<String>>,
+) -> std::borrow::Cow<'a, str> {
+    let in_dialects = rel
+        .strip_prefix(dir)
+        .and_then(|r| r.strip_prefix("/dialects/"))
+        .is_some_and(|f| f.ends_with(".toml") && !f.contains('/'));
+    if !in_dialects || masked.len() != text.len() {
+        return std::borrow::Cow::Borrowed(masked);
+    }
+    let Some(wire) = crate::toml_lite::parse_text(text)
+        .table("dialect")
+        .get_one("wire")
+        .map(String::from)
+    else {
+        return std::borrow::Cow::Borrowed(masked);
+    };
+    let paths = locks.entry(wire.clone()).or_insert_with(|| {
+        cx.read(format!("{WIRE_LOCK_DIR}/{wire}.wire.json"))
+            .ok()
+            .and_then(|t| crate::wire_lock::Lock::parse(&t).ok())
+            .map(|l| l.dirs.into_values().flat_map(|d| d.into_keys()).collect())
+            .unwrap_or_default()
+    });
+    let mut out: Option<Vec<u8>> = None;
+    let mut at = 0usize;
+    for line in text.split_inclusive('\n') {
+        let lead = line.len() - line.trim_start().len();
+        let rest = &line[lead..];
+        if let Some(body) = rest.strip_prefix('"') {
+            if let Some(end) = body.find('"') {
+                let key = &body[..end];
+                let after = body[end + 1..].trim_start();
+                if after.starts_with('=') && key.is_ascii() && paths.contains(key) {
+                    let start = at + lead + 1;
+                    let buf = out.get_or_insert_with(|| masked.as_bytes().to_vec());
+                    buf[start..start + key.len()].fill(b'x');
+                }
+            }
+        }
+        at += line.len();
+    }
+    match out {
+        // Only ASCII key bytes were replaced by ASCII, so the buffer is still UTF-8.
+        Some(buf) => std::borrow::Cow::Owned(String::from_utf8(buf).expect("ascii-for-ascii")),
+        None => std::borrow::Cow::Borrowed(masked),
+    }
 }
 
 /// The contract crate's package name: the one crate whose exported identifiers are shapes every
@@ -2397,14 +2486,20 @@ fn the_accept_loop_that_named_its_plane() -> String {
 /// be measured or the row cannot be found: the red case then plants the file alone and says what
 /// it says, and nothing here hides that.
 fn root_plane_row_at_measurement(cx: &Ctx) -> crate::ctx::Overlay {
+    row_at_measurement(cx, "busbar", "plane")
+}
+
+/// The ledger with `krate × kind`'s row re-pinned to what the unplanted tree measures, so a plant
+/// is the only thing that moves the cell (empty when the row already equals it).
+fn row_at_measurement(cx: &Ctx, krate: &str, kind: &str) -> crate::ctx::Overlay {
     let repinned = super::census(cx)
         .and_then(|crates| measured_cells(cx, &crates))
         .and_then(|cells| {
             let now = cells
-                .get(&("busbar".to_string(), "plane".to_string()))
+                .get(&(krate.to_string(), kind.to_string()))
                 .copied()
                 .unwrap_or(0);
-            cell_subst(cx, "busbar", "plane", &now.to_string())
+            cell_subst(cx, krate, kind, &now.to_string())
         })
         .and_then(|(from, to)| {
             if from == to {
@@ -2613,6 +2708,158 @@ pub fn selftest<'a>(
 
     // THE FIVE INSTANCE AXES (item 118) — every one planted in core, plus the ratchet both ways.
     instances::selftest(cx, gate, false, report);
+
+    // THE AUTH ABI'S `decision` FIELD IS NOT THE DECISIONS PLANE ([`auth_words`]), and the mask is
+    // not a hole: an auth crate reading and naming the continue/stop field is green; the same crate
+    // writing the decisions plane's registry key `"decision"` is still a `× plane` cell. The plant
+    // files' own paths carry no plane word: a file's path is scanned as its line 0, unmasked.
+    let auth = super::census(cx).ok().and_then(|cs| {
+        cs.into_iter()
+            .filter(|c| c.kind == Some(auth_words::KIND))
+            .map(|c| (c.name, c.dir))
+            .min()
+    });
+    match auth {
+        Some((name, dir)) => {
+            let field = || {
+                plant(
+                    cx,
+                    &format!("{dir}/src/planted_verdict_field.rs"),
+                    "pub fn names_a_decision(out: &Out) -> u32 {\n    let decision = \
+                     out.decision;\n    decision\n}\n",
+                )
+            };
+            report.push(prove_rows_green(
+                cx,
+                gate,
+                "an auth crate naming its own ABI's `decision` field is no decisions-plane cell",
+                &[ROW_MATRIX],
+                field(),
+            ));
+            let mut plane = field();
+            plane.set(
+                format!("{dir}/src/planted_plane_key.rs"),
+                "pub const KEY: &str = \"decision\";\n".to_string(),
+            );
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                "an auth crate writing the decisions plane's key is still a `× plane` cell",
+                &[ROW_MATRIX],
+                plane,
+                &[&format!("{name} \u{d7} plane")],
+            ));
+        }
+        None => report.push(crate::gates::CasePlan::from(super::unplantable(
+            "an auth-kind crate to plant the `decision` field in",
+            &[ROW_MATRIX],
+            &["decision"],
+            "the census holds no auth-kind crate".to_string(),
+        ))),
+    }
+
+    const LOADER_PACKAGE: &str = "busbar-plugin-loader";
+    // …and on the LOADER'S side of the auth ABI: a plugin-tooling file whose path names `auth`
+    // reading the field and the contract's `Decision` type is green; the same file's crate writing
+    // the decisions plane's key in an auth file is still a `× plane` cell.
+    let loader = super::census(cx).ok().and_then(|cs| {
+        cs.into_iter()
+            .find(|c| c.kind == Some(auth_words::LOADER_KIND) && c.name == LOADER_PACKAGE)
+            .map(|c| (c.name, c.dir))
+    });
+    match loader {
+        Some((name, dir)) => {
+            let field = || {
+                plant(
+                    cx,
+                    &format!("{dir}/src/planted_auth_verdict.rs"),
+                    "use busbar_contract::auth_calls::Decision;\n\
+                     pub fn read(out: &Out) -> Decision {\n    let decision = out.decision;\n    \
+                     if decision == 0 { Decision::Continue } else { Decision::Stop }\n}\n",
+                )
+            };
+            report.push(prove_rows_green(
+                cx,
+                gate,
+                "the loader's auth file naming the auth ABI's `decision` and `Decision` is no \
+                 decisions-plane cell",
+                &[ROW_MATRIX],
+                field(),
+            ));
+            let mut plane = field();
+            plane.set(
+                format!("{dir}/src/planted_auth_key.rs"),
+                "pub const KEY: &str = \"decision\";\n".to_string(),
+            );
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                "the loader's auth file writing the `decision` key is still a `× plane` cell",
+                &[ROW_MATRIX],
+                plane,
+                &[&format!("{name} \u{d7} plane")],
+            ));
+        }
+        None => report.push(crate::gates::CasePlan::from(super::unplantable(
+            "the loader crate to plant its auth `decision` in",
+            &[ROW_MATRIX],
+            &["decision"],
+            format!("the census holds no plugin-tooling `{LOADER_PACKAGE}`"),
+        ))),
+    }
+
+    // THE DIALECT WIRE-KEY SPAN (ARCHITECT ruling 2026-10-02, DF-MAP): a quoted map key that IS a
+    // path of the file's wire lock is the provider's word; the same word anywhere else still counts.
+    // Every arm runs on the plane crate's row re-pinned to its measurement, so the plant alone moves it.
+    let dialect_case = |line: &'static str| {
+        let cx = cx.clone();
+        move || {
+            let file = "crates/busbar-plane-llm/dialects/openai_responses.toml";
+            let body = cx.read(file).unwrap_or_default();
+            row_at_measurement(&cx, "busbar-plane-llm", "plane").layered(&plant(
+                &cx,
+                file,
+                &format!("{body}\n{line}\n"),
+            ))
+        }
+    };
+    let llm_raised = ["ratchet", "busbar-plane-llm × plane", "RAISED"];
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a dialect map key that is a wire-lock path (`input[].type=mcp_call.arguments`) is the \
+         provider's word, not a plane coupling",
+        &[ROW_MATRIX],
+        dialect_case(
+            "[unmapped.stream]\n\"input[].type=mcp_call.arguments\" = { no-equivalent = \"x\" }",
+        ),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "the same plane word in a dialect map VALUE still counts",
+        &[ROW_MATRIX],
+        dialect_case("[unmapped.stream]\n\"input[].type=function_call.arguments\" = { no-equivalent = \"an mcp call\" }"),
+        &llm_raised,
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "the same plane word in a dialect map comment still counts",
+        &[ROW_MATRIX],
+        dialect_case("# the mcp tool"),
+        &llm_raised,
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a dialect map key the wire lock does not have still counts",
+        &[ROW_MATRIX],
+        dialect_case(
+            "[unmapped.stream]\n\"tools[].type=mcp.no_such_member\" = { no-equivalent = \"x\" }",
+        ),
+        &llm_raised,
+    ));
 
     // THIS ROW'S SCAN HAS A FLOOR, AND NOTHING PROVED IT. A mutation campaign turned
     // `files.len() < MIN_SCANNED` into `false && …` and the whole battery stayed green: every other

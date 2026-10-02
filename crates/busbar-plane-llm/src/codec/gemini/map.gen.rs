@@ -5,7 +5,7 @@
 // DO NOT EDIT: edit the mapping file and re-run the compile; the `dialect-map` gate refuses
 // a table file that differs from a fresh compile.
 
-use crate::codec::carry::{Field, Handled, Slot, Table, ValueCodec, row};
+use crate::codec::carry::{Dir, Field, Handled, Slot, Table, ValueCodec, Word, row};
 
 /// Row group `generation_config`.
 pub(crate) const ROWS_GENERATION_CONFIG: &[Field] = &[
@@ -24,12 +24,22 @@ pub(crate) const ROWS_STRUCTURE: &[Field] = &[
     row(&["contents"], Slot::Structure, ValueCodec::Prim("messages")),
     row(&["tools"], Slot::Structure, ValueCodec::Prim("tools")),
     row(&["systemInstruction"], Slot::Structure, ValueCodec::Prim("system")),
+    row(&["generationConfig", "maxOutputTokens"], Slot::Structure, ValueCodec::Prim("max_output")),
+    row(&["generationConfig", "responseLogprobs"], Slot::Structure, ValueCodec::Prim("logprobs")),
+    row(&["generationConfig", "logprobs"], Slot::Structure, ValueCodec::Prim("logprobs")),
+    row(&["tools[]", "googleSearch"], Slot::Structure, ValueCodec::Prim("web_search")),
     row(&["model"], Slot::Structure, ValueCodec::Prim("model")),
     row(&["__busbar_gemini_json_array"], Slot::Structure, ValueCodec::Prim("json_array_shim")),
 ];
 
+/// Row group `tier`.
+pub(crate) const ROWS_TIER: &[Field] = &[
+    row(&["serviceTier"], Slot::ServiceTier, ValueCodec::Words(WORDS_SERVICE_TIER)).park(),
+    row(&["store"], Slot::Store, ValueCodec::Plain).park(),
+];
+
 /// The request table, walked in order.
-pub(crate) const REQUEST: Table = &[ROWS_STRUCTURE, ROWS_GENERATION_CONFIG];
+pub(crate) const REQUEST: Table = &[ROWS_STRUCTURE, ROWS_GENERATION_CONFIG, ROWS_TIER];
 
 /// How each control slot beyond the rows is handled.
 pub(crate) const CONTROLS: &[(Slot, Handled)] = &[
@@ -40,3 +50,10 @@ pub(crate) const CONTROLS: &[(Slot, Handled)] = &[
 /// The warn for every other derived drop.
 pub(crate) const DROP_WARN: crate::codec::dialect::DropWarn =
     crate::codec::dialect::DropWarn::Control("dropping a request control on Gemini egress: generateContent has no form for it");
+
+/// Word table `service_tier`: (wire word, IR word, direction).
+pub(crate) const WORDS_SERVICE_TIER: &[Word] = &[
+    ("standard", "default", Dir::Both),
+    ("flex", "flex", Dir::Both),
+    ("priority", "priority", Dir::Both),
+];

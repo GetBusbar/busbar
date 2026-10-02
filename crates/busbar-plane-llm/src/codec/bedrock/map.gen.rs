@@ -14,12 +14,21 @@ pub(crate) const ROWS_INFERENCE_CONFIG: &[Field] = &[
     row(&["inferenceConfig", "stopSequences"], Slot::Stop, ValueCodec::Plain),
 ];
 
+/// Row group `output_config`.
+pub(crate) const ROWS_OUTPUT_CONFIG: &[Field] = &[
+    row(&["outputConfig", "effort"], Slot::ReasoningEffort, ValueCodec::Words(WORDS_EFFORT)),
+];
+
 /// Row group `structure`.
 pub(crate) const ROWS_STRUCTURE: &[Field] = &[
     row(&["messages"], Slot::Structure, ValueCodec::Prim("messages")),
     row(&["model"], Slot::Structure, ValueCodec::Prim("model")),
     row(&["stream"], Slot::Structure, ValueCodec::Prim("stream")),
     row(&["system"], Slot::Structure, ValueCodec::Prim("system")),
+    row(&["inferenceConfig", "maxTokens"], Slot::Structure, ValueCodec::Prim("max_output")),
+    row(&["toolConfig", "tools"], Slot::Structure, ValueCodec::Prim("tools")),
+    row(&["toolConfig", "toolChoice"], Slot::Structure, ValueCodec::Prim("tool_choice")),
+    row(&["messages[]", "content[]", "toolUse", "input"], Slot::Structure, ValueCodec::Prim("tool_arguments")),
 ];
 
 /// Row group `tier`.
@@ -28,7 +37,7 @@ pub(crate) const ROWS_TIER: &[Field] = &[
 ];
 
 /// The request table, walked in order.
-pub(crate) const REQUEST: Table = &[ROWS_STRUCTURE, ROWS_INFERENCE_CONFIG, ROWS_TIER];
+pub(crate) const REQUEST: Table = &[ROWS_STRUCTURE, ROWS_INFERENCE_CONFIG, ROWS_TIER, ROWS_OUTPUT_CONFIG];
 
 /// How each control slot beyond the rows is handled.
 pub(crate) const CONTROLS: &[(Slot, Handled)] = &[
@@ -44,6 +53,15 @@ pub(crate) const CONTROLS: &[(Slot, Handled)] = &[
 /// The warn for every other derived drop.
 pub(crate) const DROP_WARN: crate::codec::dialect::DropWarn =
     crate::codec::dialect::DropWarn::Control("dropping a request control on Bedrock egress: Converse has no form for it");
+
+/// Word table `effort`: (wire word, IR word, direction).
+pub(crate) const WORDS_EFFORT: &[Word] = &[
+    ("low", "low", Dir::Read),
+    ("medium", "medium", Dir::Read),
+    ("high", "high", Dir::Read),
+    ("xhigh", "xhigh", Dir::Read),
+    ("max", "max", Dir::Read),
+];
 
 /// Word table `service_tier`: (wire word, IR word, direction).
 pub(crate) const WORDS_SERVICE_TIER: &[Word] = &[

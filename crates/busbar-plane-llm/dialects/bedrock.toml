@@ -3,15 +3,19 @@
 
 [dialect]
 wire = "bedrock"  # the wire lock: dialects/bedrock.wire.json (notation A paths)
-request = ["structure", "inference_config", "tier"]
+request = ["structure", "inference_config", "tier", "output_config"]
 drop_warn = "dropping a request control on Bedrock egress: Converse has no form for it"
 
 # Members the dialect's own code models (`prim`). Everything else rides `extra` raw.
 [rows.structure]
 "messages" = { prim = "messages" }
-"model" = { prim = "model" }
-"stream" = { prim = "stream" }
+"model" = { prim = "model", off_wire = "Converse carries the model in the URL path; the arrival step writes it into the body for the codec" }
+"stream" = { prim = "stream", off_wire = "Converse picks a streamed answer by its URL path (converse-stream); the arrival step writes it into the body for the codec" }
 "system" = { prim = "system" }
+"inferenceConfig.maxTokens" = { prim = "max_output" }
+"toolConfig.tools" = { prim = "tools" }
+"toolConfig.toolChoice" = { prim = "tool_choice" }
+"messages[].content[].toolUse.input" = { prim = "tool_arguments" }
 
 # `inferenceConfig` rides `extra` raw; these rows overlay it. Thinking: Claude refuses a modified
 # sampling knob beside a thinking ask; the ask wins, observably. Temperature is clamped to
@@ -26,6 +30,19 @@ drop_warn = "dropping a request control on Bedrock egress: Converse has no form 
 # Converse word. The raw member rides `extra` and wins on the same dialect.
 [rows.tier]
 "serviceTier.type" = { ir = "service_tier", words = "service_tier" }
+
+# The reasoning effort word Converse spells `outputConfig.effort`, read when no
+# `additionalModelRequestFields` reasoning ask was given (that ask wins). Read only: the writer
+# states a reasoning ask in `additionalModelRequestFields` (BED-06).
+[rows.output_config]
+"outputConfig.effort" = { ir = "reasoning_effort", words = "effort" }
+
+[words.effort]
+"low" = { wire = "low", dir = "read" }
+"medium" = { wire = "medium", dir = "read" }
+"high" = { wire = "high", dir = "read" }
+"xhigh" = { wire = "xhigh", dir = "read" }
+"max" = { wire = "max", dir = "read" }
 
 [words.service_tier]
 "priority" = { wire = "priority" }
