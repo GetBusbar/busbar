@@ -245,17 +245,14 @@ impl Reply {
                 },
             };
         };
+        // Only a translated answer is taken whole, and a translated answer relays no far head; a
+        // same-dialect answer takes the relay path below, which carries the far head.
         if relay::takes_whole(ingress, egress, far_is_stream) {
-            let head = if ingress == egress {
-                head.iter().map(|(n, v)| (n.to_vec(), v.to_vec())).collect()
-            } else {
-                Vec::new()
-            };
             return Reply {
                 state: State::Whole {
                     status,
                     body: Vec::new(),
-                    head,
+                    head: Vec::new(),
                 },
             };
         }
