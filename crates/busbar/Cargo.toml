@@ -177,6 +177,8 @@ tracing = { workspace = true }
 # THE COLLECTOR EGRESS POLICY (`root::otlp`, K9e-2): the OTLP endpoint guard, which the host's egress
 # carrier holds a sink that declares `collector` to, parses the target as a URL.
 url = { workspace = true }
+# Selects `idna`'s unicode-rs backend for every `url` in the binary (see the workspace row).
+idna_adapter = { workspace = true }
 metrics = { workspace = true }
 serde_yaml = { workspace = true }
 # THE THREAD-PER-CORE BOOT SEAM — the one unix data-plane topology (non-unix keeps the classic
