@@ -6,7 +6,7 @@
     "json": {
       "error": {
         "code": "conflict",
-        "message": "hook `busbar-headroom` is defined in the base config file; edit config.yaml"
+        "message": "hook `busbar-webrequest` is defined in the base config file; edit config.yaml (the API cannot silently shadow operator file config)"
       }
     }
   },
@@ -15,11 +15,11 @@
       "added": 1,
       "items": [
         {
-          "action": "hook.settings",
+          "action": "hook.delete",
           "actor": "admin",
           "chain_ok": true,
           "outcome": "rejected",
-          "resource": "hook:busbar-headroom"
+          "resource": "hook:busbar-webrequest"
         }
       ]
     },
@@ -28,25 +28,25 @@
     "usage": {},
     "readback": [
       {
-        "path": "/api/v1/admin/hooks/busbar-headroom",
+        "path": "/api/v1/admin/hooks/busbar-webrequest",
         "status": 200,
         "body": {
           "json": {
             "at": null,
             "global": false,
             "kind": "gate",
-            "name": "busbar-headroom",
+            "name": "busbar-webrequest",
             "on_error": "nothing",
             "priority": 0,
-            "prompt": "rw",
+            "prompt": "no",
             "settings_keys": [
-              "min_savings_pct",
-              "target_ratio"
+              "timeout_ms",
+              "url"
             ],
             "timeout_ms": 50,
             "transport": {
               "kind": "plugin",
-              "target": "busbar-headroom"
+              "target": "busbar-webrequest"
             },
             "user": "no"
           }
@@ -55,7 +55,7 @@
     ]
   },
   "headers": {
-    "content-length": "117",
+    "content-length": "173",
     "content-type": "application/json"
   },
   "status": 409
