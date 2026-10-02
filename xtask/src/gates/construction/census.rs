@@ -163,7 +163,8 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
     if let Ok(base) = base_ref(cx) {
         if let Ok(was) = cx.git_show(&base.sha, CEILINGS) {
             if let Ok(doc) = crate::toml_doc::parse_str(&was) {
-                bad.extend(lowered_floors(&cfg.doc, &doc, base.short()));
+                let moved = moved_out_by_kind(cx, cfg, &doc, &base.sha);
+                bad.extend(lowered_floors(&cfg.doc, &doc, base.short(), &moved));
             }
         }
     }
@@ -211,13 +212,23 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
 /// A separate function from [`ceiling_census`] because the base is real git history, and the one
 /// property that most needs a test is the one a branch cannot stage — until this table lands on the
 /// integration line, no base commit carries it.
-fn lowered_floors(now_doc: &Document, base_doc: &Document, short: &str) -> Vec<String> {
+///
+/// THE ONE ACCEPTED WAY DOWN (ARCHITECT 2026-10-02, TODO PATH TO DEV-GREEN P5): a
+/// `plugin_kinds.<kind>` floor may drop by at most `moved[<key>]`, the number of that kind's crate
+/// directories that left the tree as MOVED-OUT plugins ([`moved_out`]). Every other drop is RED.
+fn lowered_floors(
+    now_doc: &Document,
+    base_doc: &Document,
+    short: &str,
+    moved: &BTreeMap<String, i64>,
+) -> Vec<String> {
     let now = census_pins(now_doc);
     census_pins(base_doc)
         .into_iter()
         .filter_map(|(k, before)| {
             let after = now.get(&k).copied().unwrap_or(0);
-            (after < before).then(|| {
+            let excused = moved.get(&k).copied().unwrap_or(0);
+            (after < before && before - after > excused).then(|| {
                 format!(
                     "[gate.census] {k}: the floor itself went {before} -> {after} since the base \
                      {short}. `ceiling-rose` watches numbers going UP; lowering a census floor is \
@@ -226,6 +237,94 @@ fn lowered_floors(now_doc: &Document, base_doc: &Document, short: &str) -> Vec<S
             })
         })
         .collect()
+}
+
+/// Per `plugin_kinds.<kind>` census key, how many of that kind's crate directories MOVED OUT since
+/// the base (`sha`): the directories the base's globs matched that this tree's globs no longer
+/// match. The count is entered only when EVERY such directory moved out ([`moved_out`]); a kind
+/// that lost one directory any other way gets no entry, so its floor drop stays RED.
+fn moved_out_by_kind(cx: &Ctx, cfg: &Cfg, base_doc: &Document, sha: &str) -> BTreeMap<String, i64> {
+    let root_manifest = cx.read("Cargo.toml").unwrap_or_default();
+    let base_kinds = base_doc.table_or_empty("gate.plugin_kinds");
+    let mut out = BTreeMap::new();
+    for kind in base_kinds.keys() {
+        let base_globs = base_kinds.list_of(kind);
+        let now: Vec<String> = cfg
+            .kind_globs(kind)
+            .map(|g| dirs_for_globs(cx, &g))
+            .unwrap_or_default();
+        let gone: Vec<String> = base_dirs(cx, sha, &base_globs)
+            .into_iter()
+            .filter(|d| !now.contains(d))
+            .collect();
+        let package_at_base = |dir: &str| {
+            cx.git_show(sha, &format!("{dir}/Cargo.toml"))
+                .ok()
+                .and_then(|m| {
+                    crate::toml_lite::parse_text(&m)
+                        .table("package")
+                        .get_one("name")
+                        .map(|n| n.trim().trim_matches('"').to_string())
+                })
+        };
+        if let Some(n) = moved_out(&gone, package_at_base, &root_manifest) {
+            out.insert(format!("plugin_kinds.{kind}"), n as i64);
+        }
+    }
+    out
+}
+
+/// A plugin crate MOVED OUT (TODO PATH TO DEV-GREEN P5: filter-repo into its own repo, pinned back
+/// in busbar as one git dependency at an exact commit). `Some(gone.len())` when every directory in
+/// `gone` is a crate whose package (`package_at_base`) the root manifest now pins as a git
+/// dependency at a `rev`; `None` when any one is not (deleted, renamed, or pulled by branch), and
+/// for an empty `gone`.
+fn moved_out(
+    gone: &[String],
+    package_at_base: impl Fn(&str) -> Option<String>,
+    root_manifest: &str,
+) -> Option<usize> {
+    if gone.is_empty() {
+        return None;
+    }
+    gone.iter()
+        .all(|dir| {
+            package_at_base(dir).is_some_and(|name| {
+                crate::gates::workspace_deps::pinned_git_dep(root_manifest, &name)
+            })
+        })
+        .then_some(gone.len())
+}
+
+/// The directories the globs `globs` matched at commit `sha`: each glob's parent listed at that
+/// commit (`git ls-tree -d`), kept where the glob matches.
+fn base_dirs(cx: &Ctx, sha: &str, globs: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for g in globs {
+        let parent = g.rsplit_once('/').map_or(".", |(p, _)| p);
+        let listed = cx
+            .git_lines(&["ls-tree", "-d", "--name-only", sha, &format!("{parent}/")])
+            .unwrap_or_default();
+        for d in listed {
+            if glob_matches(g, &d) && !out.contains(&d) {
+                out.push(d);
+            }
+        }
+    }
+    out
+}
+
+/// `pattern` (at most one `*`, never crossing a `/`) matches `path`.
+fn glob_matches(pattern: &str, path: &str) -> bool {
+    match pattern.split_once('*') {
+        None => pattern == path,
+        Some((head, tail)) => {
+            path.len() >= head.len() + tail.len()
+                && path.starts_with(head)
+                && path.ends_with(tail)
+                && !path[head.len()..path.len() - tail.len()].contains('/')
+        }
+    }
 }
 
 /// Every integer under `[gate.census]`, including its `plugin_kinds` sub-table, by dotted key.
@@ -247,6 +346,10 @@ fn census_pins(doc: &Document) -> BTreeMap<String, i64> {
     }
     out
 }
+
+#[cfg(test)]
+#[path = "census_moveout_tests.rs"]
+mod moveout_tests;
 
 #[cfg(test)]
 mod tests {
@@ -287,6 +390,7 @@ mod tests {
             &doc(&DOC.replace("plane_crates = 4", "plane_crates = 3")),
             &doc(DOC),
             "abc1234",
+            &BTreeMap::new(),
         );
         assert_eq!(out.len(), 1, "{out:?}");
         assert!(
@@ -303,6 +407,7 @@ mod tests {
             &doc("[gate.census]\nplane_crates = 4\n"),
             &doc(DOC),
             "abc1234",
+            &BTreeMap::new(),
         );
         assert_eq!(out.len(), 1, "{out:?}");
         assert!(
@@ -316,6 +421,6 @@ mod tests {
     fn a_floor_that_rose_or_appeared_is_not_a_finding() {
         let grown =
             format!("{DOC}egress_auth = 0\n").replace("plane_crates = 4", "plane_crates = 9");
-        assert!(lowered_floors(&doc(&grown), &doc(DOC), "abc1234").is_empty());
+        assert!(lowered_floors(&doc(&grown), &doc(DOC), "abc1234", &BTreeMap::new()).is_empty());
     }
 }
