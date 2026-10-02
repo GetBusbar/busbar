@@ -34,6 +34,18 @@ pub(crate) const ROWS_BLOCKS: &[Field] = &[
     row(&["messages[]", "content[]", "video", "source", "s3Location"], Slot::Structure, ValueCodec::Prim("s3_location")),
     row(&["messages[]", "content[]", "cachePoint", "type"], Slot::Structure, ValueCodec::Prim("type")),
     row(&["messages[]", "content[]", "guardContent"], Slot::Structure, ValueCodec::Prim("guard_content")),
+    row(&["messages[]", "content[]", "document", "source", "content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["messages[]", "content[]", "document", "source", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "content[]", "guardContent", "text", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "content[]", "toolResult", "content[]", "document", "citations"], Slot::Structure, ValueCodec::Prim("citations")),
+    row(&["messages[]", "content[]", "toolResult", "content[]", "document", "context"], Slot::Structure, ValueCodec::Prim("context")),
+    row(&["messages[]", "content[]", "toolResult", "content[]", "document", "source", "content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["messages[]", "content[]", "toolResult", "content[]", "document", "source", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["system[]", "guardContent", "text", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "content[]", "citationsContent", "content[]", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "content[]", "document", "source", "content[]", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "content[]", "toolResult", "content[]", "document", "source", "content[]", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "content[]", "toolResult", "content[]", "text"], Slot::Structure, ValueCodec::Prim("text")),
 ];
 
 /// Row group `inference_config`.

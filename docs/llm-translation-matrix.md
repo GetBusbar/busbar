@@ -13,22 +13,22 @@ it; `-` means the dialect has no form for it.
 
 | dialect | direction | mapped paths | no-equivalent marks |
 | --- | --- | ---: | ---: |
-| anthropic | request | 56 | 0 |
+| anthropic | request | 66 | 12 |
 | anthropic | response | 15 | 0 |
 | anthropic | stream | 10 | 0 |
-| bedrock | request | 38 | 0 |
-| bedrock | response | 13 | 0 |
+| bedrock | request | 50 | 8 |
+| bedrock | response | 13 | 1 |
 | bedrock | stream | 6 | 0 |
-| cohere | request | 35 | 0 |
+| cohere | request | 38 | 0 |
 | cohere | response | 14 | 0 |
 | cohere | stream | 11 | 0 |
-| gemini | request | 41 | 0 |
-| gemini | response | 20 | 0 |
-| openai_chat | request | 62 | 0 |
-| openai_chat | response | 24 | 0 |
+| gemini | request | 41 | 1 |
+| gemini | response | 21 | 1 |
+| openai_chat | request | 70 | 1 |
+| openai_chat | response | 27 | 1 |
 | openai_chat | stream | 4 | 0 |
-| openai_responses | request | 42 | 0 |
-| openai_responses | response | 26 | 0 |
+| openai_responses | request | 46 | 5 |
+| openai_responses | response | 28 | 3 |
 | openai_responses | stream | 13 | 0 |
 
 ## request
@@ -43,10 +43,10 @@ it; `-` means the dialect has no form for it.
 | bytes | - | `messages[].content[].image.source.bytes`<br>`messages[].content[].document.source.bytes`<br>`messages[].content[].video.source.bytes` | - | - | - | - |
 | cache_control | `messages[].content[].type=text.cache_control`<br>`messages[].content[].type=image.cache_control`<br>`messages[].content[].type=tool_use.cache_control`<br>`messages[].content[].type=tool_result.cache_control`<br>`messages[].content[].type=document.cache_control` | - | - | - | - | - |
 | call_id | - | - | - | - | - | `input[].type=function_call.call_id`<br>`input[].type=function_call_output.call_id` |
-| citations | `messages[].content[].type=text.citations`<br>`messages[].content[].type=document.citations` | `messages[].content[].document.citations` | `messages[].role=assistant.citations` | - | - | - |
+| citations | `messages[].content[].type=text.citations`<br>`messages[].content[].type=document.citations`<br>`messages[].content[].type=tool_result.content[].type=document.citations` | `messages[].content[].document.citations`<br>`messages[].content[].toolResult.content[].document.citations` | `messages[].role=assistant.citations` | - | - | - |
 | code_execution_result | - | - | - | `contents[].parts[].codeExecutionResult` | - | - |
-| content | `messages[].content`<br>`messages[].content[].type=document.source.type=content`<br>`messages[].content[].type=tool_result.content`<br>`messages[].content[].type=document.source.type=content.content`<br>`messages[].content[].type=search_result.content` | `messages[].content`<br>`messages[].content[].toolResult.content` | `messages[].role=tool.content`<br>`messages[].role=user.content`<br>`messages[].role=system.content`<br>`messages[].role=assistant.content` | - | `messages[].role=tool.content`<br>`messages[].role=user.content`<br>`messages[].role=system.content`<br>`messages[].role=function.content`<br>`messages[].role=assistant.content`<br>`messages[].role=developer.content` | `input[].type=reasoning.content` |
-| context | `messages[].content[].type=document.context` | `messages[].content[].document.context` | - | - | - | - |
+| content | `messages[].content`<br>`messages[].content[].type=document.source.type=content`<br>`messages[].content[].type=tool_result.content`<br>`messages[].content[].type=document.source.type=content.content`<br>`messages[].content[].type=search_result.content`<br>`messages[].content[].type=tool_result.content[].type=document.source.type=content` | `messages[].content`<br>`messages[].content[].toolResult.content`<br>`messages[].content[].document.source.content`<br>`messages[].content[].toolResult.content[].document.source.content` | `messages[].role=tool.content`<br>`messages[].role=user.content`<br>`messages[].role=system.content`<br>`messages[].role=assistant.content` | - | `messages[].role=tool.content`<br>`messages[].role=user.content`<br>`messages[].role=system.content`<br>`messages[].role=function.content`<br>`messages[].role=assistant.content`<br>`messages[].role=developer.content` | `input[].type=reasoning.content` |
+| context | `messages[].content[].type=document.context`<br>`messages[].content[].type=tool_result.content[].type=document.context` | `messages[].content[].document.context`<br>`messages[].content[].toolResult.content[].document.context` | - | - | - | - |
 | data | `messages[].content[].type=image.source.type=base64.data`<br>`messages[].content[].type=document.source.type=text.data`<br>`messages[].content[].type=document.source.type=base64.data`<br>`messages[].content[].type=redacted_thinking.data` | - | `messages[].role=tool.content[].type=document.document.data` | `contents[].parts[].inlineData.data` | `messages[].role=user.content[].type=input_audio.input_audio.data` | - |
 | detail | - | - | - | - | - | `input[].type=message.content[].type=input_image.detail` |
 | developer | - | - | - | - | `messages[].role=developer` | - |
@@ -54,7 +54,7 @@ it; `-` means the dialect has no form for it.
 | executable_code | - | - | - | `contents[].parts[].executableCode` | - | - |
 | file | `messages[].content[].type=image.source.type=file`<br>`messages[].content[].type=document.source.type=file` | - | - | - | - | - |
 | file_data | - | - | - | - | `messages[].role=user.content[].type=file.file.file_data` | `input[].type=message.content[].type=input_file.file_data` |
-| file_id | `messages[].content[].type=document.source.type=file.file_id` | - | - | - | `messages[].role=user.content[].type=file.file.file_id` | `input[].type=message.content[].type=input_file.file_id`<br>`input[].type=message.content[].type=input_image.file_id` |
+| file_id | `messages[].content[].type=document.source.type=file.file_id`<br>`messages[].content[].type=image.source.type=file.file_id`<br>`messages[].content[].type=tool_result.content[].type=document.source.type=file.file_id`<br>`messages[].content[].type=tool_result.content[].type=image.source.type=file.file_id` | - | - | - | `messages[].role=user.content[].type=file.file.file_id` | `input[].type=message.content[].type=input_file.file_id`<br>`input[].type=message.content[].type=input_image.file_id` |
 | file_uri | - | - | - | `contents[].parts[].fileData.fileUri` | - | - |
 | file_url | - | - | - | - | - | `input[].type=message.content[].type=input_file.file_url` |
 | filename | - | - | - | - | `messages[].role=user.content[].type=file.file.filename` | `input[].type=message.content[].type=input_file.filename` |
@@ -77,7 +77,7 @@ it; `-` means the dialect has no form for it.
 | mime_type | - | - | - | `contents[].parts[].inlineData.mimeType`<br>`contents[].parts[].fileData.mimeType` | - | - |
 | model | `model` | `model` (busbar's own) | `model` | `model` | `model` | `model` |
 | n | - | - | - | `generationConfig.candidateCount` | `n` | - |
-| name | `messages[].content[].type=tool_use.name` | `messages[].content[].document.name`<br>`messages[].content[].toolUse.name` | - | `contents[].parts[].functionCall.name`<br>`contents[].parts[].functionResponse.name` | `messages[].role=user.name`<br>`messages[].role=system.name`<br>`messages[].role=function.name`<br>`messages[].role=assistant.name`<br>`messages[].role=developer.name` | `input[].type=function_call.name` |
+| name | `messages[].content[].type=tool_use.name` | `messages[].content[].document.name`<br>`messages[].content[].toolUse.name` | `messages[].role=assistant.tool_calls[].function.name`<br>`tools[].function.name` | `contents[].parts[].functionCall.name`<br>`contents[].parts[].functionResponse.name` | `messages[].role=user.name`<br>`messages[].role=system.name`<br>`messages[].role=function.name`<br>`messages[].role=assistant.name`<br>`messages[].role=developer.name`<br>`function_call.name`<br>`messages[].role=assistant.function_call.name`<br>`messages[].role=assistant.tool_calls[].type=function.function.name`<br>`tool_choice.type=function.function.name`<br>`tools[].type=function.function.name` | `input[].type=function_call.name`<br>`tool_choice.type=function.name`<br>`tools[].type=function.name` |
 | output | - | - | - | - | - | `input[].type=function_call_output.output` |
 | output_modalities | - | - | - | code `gemini_response_modalities` | `modalities` | code `responses_modalities` |
 | parallel_tool_calls | - | - | - | - | `parallel_tool_calls` | `parallel_tool_calls` |
@@ -87,7 +87,7 @@ it; `-` means the dialect has no form for it.
 | reasoning | `output_config.effort` | - | - | - | `reasoning_effort` | `input[].type=reasoning`<br>`reasoning.effort` |
 | reasoning_effort | - | `outputConfig.effort` | - | - | - | - |
 | redacted_content | - | `messages[].content[].reasoningContent.redactedContent` | - | - | - | - |
-| refusal | - | - | - | - | `messages[].role=assistant.refusal`<br>`messages[].role=assistant.content[].type=refusal.refusal` | - |
+| refusal | - | - | - | - | `messages[].role=assistant.refusal`<br>`messages[].role=assistant.content[].type=refusal.refusal` | `input[].type=message.content[].type=refusal.refusal` |
 | response | - | - | - | `contents[].parts[].functionResponse.response` | - | - |
 | response_format | - | - | `response_format` | - | `response_format` | - |
 | response_mime_type | - | - | - | `generationConfig.responseMimeType` | - | - |
@@ -108,8 +108,8 @@ it; `-` means the dialect has no form for it.
 | summary | - | - | - | - | - | `reasoning.summary`<br>`input[].type=reasoning.summary` |
 | system | `system` | `system` | `messages[].role=system` | `systemInstruction` | `messages[].role=system` | `instructions` |
 | temperature | `temperature` | `inferenceConfig.temperature` | `temperature` | `generationConfig.temperature` | `temperature` | `temperature` |
-| text | `messages[].content[].type=text.text`<br>`messages[].content[].type=document.source.type=text` | `messages[].content[].text`<br>`messages[].content[].reasoningContent.reasoningText.text` | `messages[].role=tool.content[].type=text.text`<br>`messages[].role=user.content[].type=text.text`<br>`messages[].role=system.content[].type=text.text`<br>`messages[].role=assistant.content[].type=text.text` | `contents[].parts[].text` | `messages[].role=user.content[].type=text.text`<br>`messages[].role=assistant.content[].type=text.text` | `input[].type=message.content[].type=input_text.text`<br>`input[].type=message.content[].type=output_text.text` |
-| thinking | `messages[].content[].type=thinking.thinking` | - | - | - | - | - |
+| text | `messages[].content[].type=text.text`<br>`messages[].content[].type=document.source.type=text`<br>`messages[].content[].type=search_result.content[].text`<br>`messages[].content[].type=tool_result.content[].type=search_result.content[].text`<br>`messages[].content[].type=tool_result.content[].type=text.text`<br>`messages[].content[].type=tool_result.content[].type=document.source.type=text` | `messages[].content[].text`<br>`messages[].content[].reasoningContent.reasoningText.text`<br>`messages[].content[].document.source.text`<br>`messages[].content[].guardContent.text.text`<br>`messages[].content[].toolResult.content[].document.source.text`<br>`system[].guardContent.text.text`<br>`messages[].content[].citationsContent.content[].text`<br>`messages[].content[].document.source.content[].text`<br>`messages[].content[].toolResult.content[].document.source.content[].text`<br>`messages[].content[].toolResult.content[].text` | `messages[].role=tool.content[].type=text.text`<br>`messages[].role=user.content[].type=text.text`<br>`messages[].role=system.content[].type=text.text`<br>`messages[].role=assistant.content[].type=text.text` | `contents[].parts[].text` | `messages[].role=user.content[].type=text.text`<br>`messages[].role=assistant.content[].type=text.text`<br>`messages[].role=developer.content[].text`<br>`messages[].role=system.content[].text`<br>`messages[].role=tool.content[].text` | `input[].type=message.content[].type=input_text.text`<br>`input[].type=message.content[].type=output_text.text`<br>`input[].type=reasoning.content[].text` |
+| thinking | `messages[].content[].type=thinking.thinking` | - | `messages[].role=assistant.content[].type=thinking.thinking` | - | - | - |
 | thinking_budget | - | - | - | `generationConfig.thinkingConfig.thinkingBudget` | - | - |
 | thought | - | - | - | `contents[].parts[].thought` | - | - |
 | thought_signature | - | - | - | `contents[].parts[].thoughtSignature` | - | - |
@@ -144,7 +144,7 @@ it; `-` means the dialect has no form for it.
 | avg_logprobs | - | - | - | `candidates[].avgLogprobs` | - | - |
 | block_reason | - | - | - | `promptFeedback.blockReason` | - | - |
 | cache_read_tokens | `usage.cache_read_input_tokens` | `usage.cacheReadInputTokens` | - | `usageMetadata.cachedContentTokenCount` | `usage.prompt_tokens_details.cached_tokens` | `usage.input_tokens_details.cached_tokens` |
-| cache_write_tokens | `usage.cache_creation_input_tokens` | `usage.cacheWriteInputTokens` | - | - | - | - |
+| cache_write_tokens | `usage.cache_creation_input_tokens` | `usage.cacheWriteInputTokens` | - | - | `usage.prompt_tokens_details.cache_write_tokens` | `usage.input_tokens_details.cache_write_tokens` |
 | call_id | - | - | - | - | - | `output[].type=function_call.call_id` |
 | citation_metadata | - | - | - | `candidates[].citationMetadata` | - | - |
 | citations | - | - | `message.citations` | - | - | - |
@@ -169,7 +169,7 @@ it; `-` means the dialect has no form for it.
 | logprobs_result | - | - | - | `candidates[].logprobsResult` | - | - |
 | metadata | - | code `bedrock_request_metadata` | - | code `gemini_labels` | - | `metadata` |
 | model | `model` | - | - | `modelVersion` | `model` | `model` |
-| name | - | - | - | - | - | `output[].type=function_call.name` |
+| name | - | - | - | `candidates[].content.parts[].functionCall.name` | `choices[].message.function_call.name` | `output[].type=function_call.name` |
 | object | - | - | - | - | `object` | `object` |
 | output | - | - | - | - | - | `output` |
 | output_text | - | - | - | - | - | `output_text` |
@@ -184,12 +184,13 @@ it; `-` means the dialect has no form for it.
 | role | `role` | `output.message.role` | `message.role` | - | `choices[].message.role` | - |
 | safety_ratings | - | - | - | `candidates[].safetyRatings`<br>`promptFeedback.safetyRatings` | - | - |
 | search_units | - | - | `usage.billed_units.search_units` | - | - | - |
-| served_tier | `usage.service_tier` | - | - | - | `service_tier` | - |
+| served_tier | `usage.service_tier` | - | - | - | `service_tier` | `service_tier` |
 | status | - | - | - | - | - | `status`<br>`output[].type=message.status`<br>`output[].type=web_search_call.status` |
 | stop_sequence | `stop_sequence` | - | - | - | - | - |
 | summary | - | - | - | - | - | `output[].type=reasoning.summary` |
 | system_fingerprint | - | - | - | - | `system_fingerprint` | - |
 | token_count | - | - | - | `candidates[].tokenCount` | - | - |
+| tool_arguments | - | - | - | - | `choices[].message.function_call.arguments` | - |
 | tool_calls | - | - | `message.tool_calls` | - | `choices[].message.tool_calls` | - |
 | tool_plan | - | - | `message.tool_plan` | - | - | - |
 | tool_use_prompt_token_count | - | - | - | `usageMetadata.toolUsePromptTokenCount` | - | - |

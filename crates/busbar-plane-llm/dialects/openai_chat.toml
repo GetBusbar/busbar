@@ -109,6 +109,14 @@ park = true
 "messages[].role=assistant.function_call" = { prim = "function_call" }
 "messages[].role=user.content[].type=image_url.image_url.url" = { prim = "url" }
 "messages[].role=assistant.content[].type=refusal.refusal" = { prim = "refusal" }
+"function_call.name" = { prim = "name" }
+"messages[].role=assistant.function_call.name" = { prim = "name" }
+"messages[].role=developer.content[].text" = { prim = "text" }
+"messages[].role=system.content[].text" = { prim = "text" }
+"messages[].role=tool.content[].text" = { prim = "text" }
+"messages[].role=assistant.tool_calls[].type=function.function.name" = { prim = "name" }
+"tool_choice.type=function.function.name" = { prim = "name" }
+"tools[].type=function.function.name" = { prim = "name" }
 
 # The answer members the dialect's reader and writer carry (`prim`: code carries them).
 [rows.response]
@@ -136,6 +144,9 @@ park = true
 "usage.completion_tokens_details.audio_tokens" = { prim = "audio_tokens" }
 "usage.completion_tokens_details.accepted_prediction_tokens" = { prim = "accepted_prediction_tokens" }
 "usage.completion_tokens_details.rejected_prediction_tokens" = { prim = "rejected_prediction_tokens" }
+"choices[].message.function_call.arguments" = { prim = "tool_arguments" }
+"choices[].message.function_call.name" = { prim = "name" }
+"usage.prompt_tokens_details.cache_write_tokens" = { prim = "cache_write_tokens" }
 
 # The stream events the dialect's stream reader and writer carry (`prim`: code carries them).
 [rows.stream]
@@ -144,6 +155,13 @@ park = true
 "choices[].delta.refusal" = { prim = "refusal" }
 "choices[].delta.tool_calls" = { prim = "tool_calls" }
 
+# Paths no row maps although another dialect maps a field of the same name under the same
+# parent (`dialect-candidates`): each says why it has no equivalent here.
+[unmapped.request]
+"prediction.content[].text" = { no-equivalent = "the text of an OpenAI Predicted Outputs hint: no other dialect has a predicted-output member, so the hint has no translation target" }
+
+[unmapped.response]
+"metadata" = { no-equivalent = "a stored completion's echo of the request's metadata: the IR answer has no request-echo slot (the request's metadata crosses on the request hop)" }
 
 # Controls beyond the rows. Chat has no top_k: 1.5.5 omitted it with no warn and no audit
 # (1.5.5: crates/busbar/src/proto/openai_chat/writer.rs:265). Custom tools are tools[] entries.

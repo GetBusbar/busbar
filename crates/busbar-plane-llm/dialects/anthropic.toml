@@ -85,6 +85,16 @@ drop_field = "parameter"
 "messages[].content[].type=search_result.source" = { prim = "source" }
 "messages[].content[].type=search_result.title" = { prim = "title" }
 "messages[].content[].type=search_result.content" = { prim = "content" }
+"messages[].content[].type=image.source.type=file.file_id" = { prim = "file_id" }
+"messages[].content[].type=search_result.content[].text" = { prim = "text" }
+"messages[].content[].type=tool_result.content[].type=document.citations" = { prim = "citations" }
+"messages[].content[].type=tool_result.content[].type=document.context" = { prim = "context" }
+"messages[].content[].type=tool_result.content[].type=document.source.type=file.file_id" = { prim = "file_id" }
+"messages[].content[].type=tool_result.content[].type=image.source.type=file.file_id" = { prim = "file_id" }
+"messages[].content[].type=tool_result.content[].type=search_result.content[].text" = { prim = "text" }
+"messages[].content[].type=tool_result.content[].type=text.text" = { prim = "text" }
+"messages[].content[].type=tool_result.content[].type=document.source.type=content" = { prim = "content" }
+"messages[].content[].type=tool_result.content[].type=document.source.type=text" = { prim = "text" }
 
 # The answer members the dialect's reader and writer carry (`prim`: code carries them).
 [rows.response]
@@ -116,6 +126,22 @@ drop_field = "parameter"
 "type=content_block_stop" = { prim = "content_block_stop" }
 "type=message_delta" = { prim = "message_delta" }
 "type=message_stop" = { prim = "message_stop" }
+
+# Paths no row maps although another dialect maps a field of the same name under the same
+# parent (`dialect-candidates`): each says why it has no equivalent here.
+[unmapped.request]
+"messages[].content[].type=document.source.type=content.content[].type=image.source.type=file.file_id" = { no-equivalent = "inside a `content`-source document, which the Anthropic reader carries whole on its opaque Vendor source: re-emitted verbatim on an Anthropic hop, dropped with a warn by every other writer" }
+"messages[].content[].type=document.source.type=content.content[].type=text" = { no-equivalent = "inside a `content`-source document, which the Anthropic reader carries whole on its opaque Vendor source: re-emitted verbatim on an Anthropic hop, dropped with a warn by every other writer" }
+"messages[].content[].type=document.source.type=content.content[].type=text.text" = { no-equivalent = "inside a `content`-source document, which the Anthropic reader carries whole on its opaque Vendor source: re-emitted verbatim on an Anthropic hop, dropped with a warn by every other writer" }
+"messages[].content[].type=tool_result.content[].type=document.source.type=content.content[].type=image.source.type=file.file_id" = { no-equivalent = "inside a `content`-source document, which the Anthropic reader carries whole on its opaque Vendor source: re-emitted verbatim on an Anthropic hop, dropped with a warn by every other writer" }
+"messages[].content[].type=tool_result.content[].type=document.source.type=content.content[].type=text" = { no-equivalent = "inside a `content`-source document, which the Anthropic reader carries whole on its opaque Vendor source: re-emitted verbatim on an Anthropic hop, dropped with a warn by every other writer" }
+"messages[].content[].type=tool_result.content[].type=document.source.type=content.content[].type=text.text" = { no-equivalent = "inside a `content`-source document, which the Anthropic reader carries whole on its opaque Vendor source: re-emitted verbatim on an Anthropic hop, dropped with a warn by every other writer" }
+"messages[].content[].type=web_fetch_tool_result.content.type=web_fetch_result.content.source.type=content.content[].type=image.source.type=file.file_id" = { no-equivalent = "inside a `web_fetch_tool_result`, Anthropic's server-tool result block: parked verbatim for an Anthropic hop, degraded to a placeholder cross-dialect; no other dialect has a server web-fetch result" }
+"messages[].content[].type=web_fetch_tool_result.content.type=web_fetch_result.content.source.type=content.content[].type=text" = { no-equivalent = "inside a `web_fetch_tool_result`, Anthropic's server-tool result block: parked verbatim for an Anthropic hop, degraded to a placeholder cross-dialect; no other dialect has a server web-fetch result" }
+"messages[].content[].type=web_fetch_tool_result.content.type=web_fetch_result.content.source.type=content.content[].type=text.text" = { no-equivalent = "inside a `web_fetch_tool_result`, Anthropic's server-tool result block: parked verbatim for an Anthropic hop, degraded to a placeholder cross-dialect; no other dialect has a server web-fetch result" }
+"messages[].content[].type=web_fetch_tool_result.content.type=web_fetch_result.content.source.type=file.file_id" = { no-equivalent = "inside a `web_fetch_tool_result`, Anthropic's server-tool result block: parked verbatim for an Anthropic hop, degraded to a placeholder cross-dialect; no other dialect has a server web-fetch result" }
+"messages[].content[].type=web_fetch_tool_result.content.type=web_fetch_result.content.source.type=content" = { no-equivalent = "inside a `web_fetch_tool_result`, Anthropic's server-tool result block: parked verbatim for an Anthropic hop, degraded to a placeholder cross-dialect; no other dialect has a server web-fetch result" }
+"messages[].content[].type=web_fetch_tool_result.content.type=web_fetch_result.content.source.type=text" = { no-equivalent = "inside a `web_fetch_tool_result`, Anthropic's server-tool result block: parked verbatim for an Anthropic hop, degraded to a placeholder cross-dialect; no other dialect has a server web-fetch result" }
 
 # Controls beyond the rows: the Messages API models no penalties, seed or candidate count; each
 # drop is warned in these words, naming the value, and audited.

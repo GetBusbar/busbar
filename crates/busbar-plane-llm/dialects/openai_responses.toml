@@ -74,6 +74,10 @@ park = true
 "input[].type=reasoning.content" = { prim = "content" }
 "input[].type=reasoning.encrypted_content" = { prim = "encrypted_content" }
 "input[].type=reasoning.id" = { prim = "id" }
+"input[].type=message.content[].type=refusal.refusal" = { prim = "refusal" }
+"input[].type=reasoning.content[].text" = { prim = "text" }
+"tool_choice.type=function.name" = { prim = "name" }
+"tools[].type=function.name" = { prim = "name" }
 
 # The answer members the dialect's reader and writer carry (`prim`: code carries them).
 [rows.response]
@@ -103,6 +107,8 @@ park = true
 "output[].type=function_call.arguments" = { prim = "arguments" }
 "output[].type=web_search_call.id" = { prim = "id" }
 "output[].type=web_search_call.status" = { prim = "status" }
+"service_tier" = { prim = "served_tier" }
+"usage.input_tokens_details.cache_write_tokens" = { prim = "cache_write_tokens" }
 
 # The stream events the dialect's stream reader and writer carry (`prim`: code carries them).
 [rows.stream]
@@ -120,6 +126,19 @@ park = true
 "type=response.failed" = { prim = "failed" }
 "type=response.incomplete" = { prim = "incomplete" }
 
+# Paths no row maps although another dialect maps a field of the same name under the same
+# parent (`dialect-candidates`): each says why it has no equivalent here.
+[unmapped.request]
+"input[].type=additional_tools.tools[].type=function.name" = { no-equivalent = "a function inside an `additional_tools` input item (tools added mid-conversation): the Responses reader does not model the item and no other dialect adds tools inside its input" }
+"input[].type=additional_tools.tools[].type=namespace.tools[].type=function.name" = { no-equivalent = "a function inside a `namespace` group of an `additional_tools` input item: neither is modelled and no other dialect groups tools in namespaces" }
+"input[].type=tool_search_output.tools[].type=function.name" = { no-equivalent = "a function inside a `tool_search_output` input item (the hosted tool-search result): the reader does not model it and no other dialect has a tool-search result" }
+"input[].type=tool_search_output.tools[].type=namespace.tools[].type=function.name" = { no-equivalent = "a function inside a `namespace` group of a `tool_search_output` input item: neither is modelled and no other dialect has a tool-search result" }
+"tools[].type=namespace.tools[].type=function.name" = { no-equivalent = "a function inside a `namespace` tool group: the group rides the raw same-dialect hosted-tool carrier and no other dialect groups tools in namespaces" }
+
+[unmapped.response]
+"instructions[].type=message.content" = { no-equivalent = "the answer's echo of the request's instructions: the reader drops it with a warn (the IR answer has no request-echo slot; the request's instructions cross on the request hop)" }
+"instructions[].type=function_call.arguments" = { no-equivalent = "the answer's echo of the request's instructions: the reader drops it with a warn (the IR answer has no request-echo slot; the request's instructions cross on the request hop)" }
+"instructions[].type=function_call.name" = { no-equivalent = "the answer's echo of the request's instructions: the reader drops it with a warn (the IR answer has no request-echo slot; the request's instructions cross on the request hop)" }
 
 # Controls beyond the rows. The /v1/responses create API models no top_k, stop, penalties, seed or n
 # (openai-python ResponseCreateParamsBase); each drop is warned in these words and audited. The

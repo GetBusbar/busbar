@@ -94,6 +94,15 @@ park = true
 "usageMetadata.promptTokensDetails" = { prim = "prompt_tokens_details" }
 "modelVersion" = { prim = "model" }
 "responseId" = { prim = "response_id" }
+"candidates[].content.parts[].functionCall.name" = { prim = "name" }
+
+# Paths no row maps although another dialect maps a field of the same name under the same
+# parent (`dialect-candidates`): each says why it has no equivalent here.
+[unmapped.request]
+"systemInstruction.parts[].functionCall.name" = { no-equivalent = "a functionCall part inside systemInstruction: the Gemini reader takes the system instruction's text parts only (the IR system is text); no other dialect places a tool call in its system prompt" }
+
+[unmapped.response]
+"candidates[].groundingAttributions[].content.parts[].functionCall.name" = { no-equivalent = "inside groundingAttributions, Gemini's attributed-question-answering sources: the reader does not model them and no other dialect has an attribution source carrying content parts" }
 
 # Controls beyond the rows: `labels` (validated per entry) and `responseModalities` are the
 # dialect's own code.

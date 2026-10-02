@@ -29,6 +29,10 @@ pub(crate) const ROWS_BLOCKS: &[Field] = &[
     row(&["input[]", "type=reasoning", "content"], Slot::Structure, ValueCodec::Prim("content")),
     row(&["input[]", "type=reasoning", "encrypted_content"], Slot::Structure, ValueCodec::Prim("encrypted_content")),
     row(&["input[]", "type=reasoning", "id"], Slot::Structure, ValueCodec::Prim("id")),
+    row(&["input[]", "type=message", "content[]", "type=refusal", "refusal"], Slot::Structure, ValueCodec::Prim("refusal")),
+    row(&["input[]", "type=reasoning", "content[]", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["tool_choice", "type=function", "name"], Slot::Structure, ValueCodec::Prim("name")),
+    row(&["tools[]", "type=function", "name"], Slot::Structure, ValueCodec::Prim("name")),
 ];
 
 /// Row group `openai_family`.

@@ -39,6 +39,14 @@ pub(crate) const ROWS_BLOCKS: &[Field] = &[
     row(&["messages[]", "role=assistant", "function_call"], Slot::Structure, ValueCodec::Prim("function_call")),
     row(&["messages[]", "role=user", "content[]", "type=image_url", "image_url", "url"], Slot::Structure, ValueCodec::Prim("url")),
     row(&["messages[]", "role=assistant", "content[]", "type=refusal", "refusal"], Slot::Structure, ValueCodec::Prim("refusal")),
+    row(&["function_call", "name"], Slot::Structure, ValueCodec::Prim("name")),
+    row(&["messages[]", "role=assistant", "function_call", "name"], Slot::Structure, ValueCodec::Prim("name")),
+    row(&["messages[]", "role=developer", "content[]", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "role=system", "content[]", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "role=tool", "content[]", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "role=assistant", "tool_calls[]", "type=function", "function", "name"], Slot::Structure, ValueCodec::Prim("name")),
+    row(&["tool_choice", "type=function", "function", "name"], Slot::Structure, ValueCodec::Prim("name")),
+    row(&["tools[]", "type=function", "function", "name"], Slot::Structure, ValueCodec::Prim("name")),
 ];
 
 /// Row group `chat`.

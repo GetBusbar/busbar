@@ -57,6 +57,9 @@ drop_warn = "dropping a request control on Cohere egress: Cohere v2 /chat has no
 "messages[].role=system.content[].type=text.text" = { prim = "text" }
 "messages[].role=assistant.content[].type=text.text" = { prim = "text" }
 "messages[].role=user.content[].type=image_url.image_url.url" = { prim = "url" }
+"messages[].role=assistant.content[].type=thinking.thinking" = { prim = "thinking" }
+"messages[].role=assistant.tool_calls[].function.name" = { prim = "name" }
+"tools[].function.name" = { prim = "name" }
 
 # The answer members the dialect's reader and writer carry (`prim`: code carries them).
 [rows.response]

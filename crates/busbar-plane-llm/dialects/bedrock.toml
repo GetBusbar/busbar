@@ -79,6 +79,18 @@ drop_warn = "dropping a request control on Bedrock egress: Converse has no form 
 "messages[].content[].video.source.s3Location" = { prim = "s3_location" }
 "messages[].content[].cachePoint.type" = { prim = "type" }
 "messages[].content[].guardContent" = { prim = "guard_content" }
+"messages[].content[].document.source.content" = { prim = "content" }
+"messages[].content[].document.source.text" = { prim = "text" }
+"messages[].content[].guardContent.text.text" = { prim = "text" }
+"messages[].content[].toolResult.content[].document.citations" = { prim = "citations" }
+"messages[].content[].toolResult.content[].document.context" = { prim = "context" }
+"messages[].content[].toolResult.content[].document.source.content" = { prim = "content" }
+"messages[].content[].toolResult.content[].document.source.text" = { prim = "text" }
+"system[].guardContent.text.text" = { prim = "text" }
+"messages[].content[].citationsContent.content[].text" = { prim = "text" }
+"messages[].content[].document.source.content[].text" = { prim = "text" }
+"messages[].content[].toolResult.content[].document.source.content[].text" = { prim = "text" }
+"messages[].content[].toolResult.content[].text" = { prim = "text" }
 
 # The answer members the dialect's reader and writer carry (`prim`: code carries them).
 [rows.response]
@@ -104,6 +116,21 @@ drop_warn = "dropping a request control on Bedrock egress: Converse has no form 
 "contentBlockStop" = { prim = "content_block_stop" }
 "messageStop" = { prim = "message_stop" }
 "metadata" = { prim = "metadata" }
+
+# Paths no row maps although another dialect maps a field of the same name under the same
+# parent (`dialect-candidates`): each says why it has no equivalent here.
+[unmapped.request]
+"messages[].content[].searchResult.content" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
+"messages[].content[].searchResult.source" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
+"messages[].content[].searchResult.title" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
+"messages[].content[].toolResult.content[].searchResult.content" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
+"messages[].content[].toolResult.content[].searchResult.source" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
+"messages[].content[].toolResult.content[].searchResult.title" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
+"messages[].content[].searchResult.content[].text" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
+"messages[].content[].toolResult.content[].searchResult.content[].text" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
+
+[unmapped.response]
+"serviceTier" = { no-equivalent = "the tier that served a Converse answer: the Bedrock reader does not read it into the IR served-tier attribution (reader gap reported to DF-WIRE); the request-side serviceTier.type is mapped" }
 
 # Controls beyond the rows. `requestMetadata` (validated per entry), `top_k` (either spelling) and
 # the hosted tool kinds are the writer's own code. Converse has no penalties, seed or candidate

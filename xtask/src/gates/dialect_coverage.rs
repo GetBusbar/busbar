@@ -482,7 +482,7 @@ impl Gate for DialectCandidatesGate {
             .read(&chat)
             .unwrap_or_default()
             .lines()
-            .filter(|l| !l.starts_with("\"moderation.model\""))
+            .filter(|l| !l.starts_with("\"prediction.content[].text\""))
             .collect::<Vec<_>>()
             .join("\n");
         let mut withdrawn = Overlay::new();
@@ -493,24 +493,25 @@ impl Gate for DialectCandidatesGate {
             "a withdrawn no-equivalent mark is RED, naming the path",
             &[ROW_UNCLASSIFIED],
             withdrawn,
-            &["openai/request/moderation.model"],
+            &["openai/request/prediction.content[].text"],
         ));
 
-        // A mark on a path no other dialect's field matches classifies nothing.
-        let stale_mark = cx.read(&chat).unwrap_or_default().replacen(
-            "[unmapped.request]\n",
-            "[unmapped.request]\n\"messages[].role=user.name\" = { no-equivalent = \"plant\" }\n",
-            1,
+        // A mark on a path no other dialect's field matches classifies nothing. Planted in its own
+        // `[unmapped.request]` table in a file that marks no request path.
+        let cohere = format!("{DIALECT_DIR}/cohere.toml");
+        let stale_mark = format!(
+            "{}\n[unmapped.request]\n\"safety_mode\" = {{ no-equivalent = \"plant\" }}\n",
+            cx.read(&cohere).unwrap_or_default()
         );
         let mut stale = Overlay::new();
-        stale.set(&chat, stale_mark);
+        stale.set(&cohere, stale_mark);
         report.push(prove_red(
             cx,
             self,
             "a no-equivalent mark on a path that is not a candidate is RED, naming it",
             &[ROW_STALE_MARKS],
             stale,
-            &["openai/request/messages[].role=user.name"],
+            &["cohere/request/safety_mode"],
         ));
 
         report

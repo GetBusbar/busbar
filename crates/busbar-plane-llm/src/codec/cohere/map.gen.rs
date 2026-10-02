@@ -27,6 +27,9 @@ pub(crate) const ROWS_BLOCKS: &[Field] = &[
     row(&["messages[]", "role=system", "content[]", "type=text", "text"], Slot::Structure, ValueCodec::Prim("text")),
     row(&["messages[]", "role=assistant", "content[]", "type=text", "text"], Slot::Structure, ValueCodec::Prim("text")),
     row(&["messages[]", "role=user", "content[]", "type=image_url", "image_url", "url"], Slot::Structure, ValueCodec::Prim("url")),
+    row(&["messages[]", "role=assistant", "content[]", "type=thinking", "thinking"], Slot::Structure, ValueCodec::Prim("thinking")),
+    row(&["messages[]", "role=assistant", "tool_calls[]", "function", "name"], Slot::Structure, ValueCodec::Prim("name")),
+    row(&["tools[]", "function", "name"], Slot::Structure, ValueCodec::Prim("name")),
 ];
 
 /// Row group `penalties`.
