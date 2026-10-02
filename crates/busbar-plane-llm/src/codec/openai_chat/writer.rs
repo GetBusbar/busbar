@@ -463,7 +463,7 @@ impl ProtocolWriter for OpenAiWriter {
                 .unwrap_or(crate::codec::ir::REASONING_BUDGET_DEFAULTS);
             out.insert(
                 REASONING_EFFORT.to_string(),
-                serde_json::json!(ask.to_effort(table).as_openai_reasoning_effort()),
+                serde_json::json!(ask.to_effort(table).as_three_word_str()),
             );
         }
         // The logprobs ask in OpenAI's native spelling (a Gemini `responseLogprobs`/`logprobs`

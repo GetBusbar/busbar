@@ -494,7 +494,8 @@ impl IrReasoningAsk {
 }
 
 impl IrReasoningEffort {
-    /// The OpenAI-family `reasoning_effort` value. Identical to [`Self::as_str`] EXCEPT `Minimal`
+    /// The effort on the three-word `low`/`medium`/`high` scale every reasoning model accepts (the
+    /// OpenAI-family writers' `reasoning_effort` value). Identical to [`Self::as_str`] EXCEPT `Minimal`
     /// maps to `"low"`: `"minimal"` is only accepted by newer OpenAI reasoning models (gpt-5),
     /// while the o-series accepts only low/medium/high. `Minimal` reaches an OpenAI egress writer
     /// only via a small cross-protocol budget (Anthropic/Gemini source), and the lane's reasoning
@@ -505,7 +506,7 @@ impl IrReasoningEffort {
     /// `XHigh`/`Max` project to `"high"` for the same reason: `"xhigh"` is accepted only by the
     /// newest OpenAI reasoning models, and the lane's model is not known here. A writer that KNOWS
     /// its lane accepts it may emit [`Self::as_str`] instead.
-    pub fn as_openai_reasoning_effort(self) -> &'static str {
+    pub fn as_three_word_str(self) -> &'static str {
         match self {
             IrReasoningEffort::Minimal => "low",
             IrReasoningEffort::XHigh | IrReasoningEffort::Max => "high",

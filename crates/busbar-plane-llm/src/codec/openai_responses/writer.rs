@@ -562,7 +562,7 @@ impl ProtocolWriter for ResponsesWriter {
                     .unwrap_or(crate::codec::ir::REASONING_BUDGET_DEFAULTS);
                 out.insert(
                     keys::REASONING.to_string(),
-                    serde_json::json!({(keys::EFFORT): ask.to_effort(table).as_openai_reasoning_effort()}),
+                    serde_json::json!({(keys::EFFORT): ask.to_effort(table).as_three_word_str()}),
                 );
             }
         }
