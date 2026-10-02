@@ -247,6 +247,61 @@ pub fn strip_re_derived(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) {
     });
 }
 
+/// The fields of an upstream ANSWER that busbar re-derives for the caller beyond HTTP's hop-by-hop
+/// set: the body's length (busbar re-frames it) and its content coding (busbar asks for none and
+/// reads the body to meter it).
+pub const ANSWER_RE_DERIVED: &[&str] = &["content-length", "content-encoding"];
+
+/// Whether the upstream answer field `name` (lower-case, as a parsed head carries it) is a
+/// per-connection mechanic the caller's answer re-derives: a hop-by-hop field, one a `connection`
+/// field `nominated`, or one of [`ANSWER_RE_DERIVED`].
+#[must_use]
+pub fn answer_re_derived<'a>(name: &str, nominated: impl IntoIterator<Item = &'a [u8]>) -> bool {
+    ANSWER_RE_DERIVED.contains(&name)
+        || busbar_contract::abi::transport::fields::hop_by_hop(name, nominated)
+}
+
+/// Relay an upstream answer's head onto the answer busbar built for a same-dialect caller (busbar
+/// is invisible to the caller too): every upstream field, values and multiplicity kept, under each
+/// name the built answer does not already carry (busbar's own content type and request id stand),
+/// except the per-connection mechanics ([`answer_re_derived`]) and the names `governed` answers
+/// true for (the plane's data: the far end's echo of busbar's own credential or tenant). Borrows
+/// the upstream head and copies nothing but the relayed values' handles.
+pub fn add_relayed_headers(
+    answer: &mut http::HeaderMap,
+    upstream: &http::HeaderMap,
+    governed: impl Fn(&str) -> bool,
+) {
+    let nominated = || {
+        upstream
+            .get_all(http::header::CONNECTION)
+            .iter()
+            .map(http::HeaderValue::as_bytes)
+    };
+    for name in upstream.keys() {
+        let n = name.as_str();
+        if answer.contains_key(name) || answer_re_derived(n, nominated()) || governed(n) {
+            continue;
+        }
+        for value in upstream.get_all(name) {
+            answer.append(name.clone(), value.clone());
+        }
+    }
+}
+
+/// Drop from an answer's head fields the per-connection mechanics ([`answer_re_derived`]), as the
+/// answer is written for the caller.
+pub fn strip_answer_mechanics(fields: &mut Vec<(String, Vec<u8>)>) {
+    let nominated: Vec<Vec<u8>> = fields
+        .iter()
+        .filter(|(n, _)| n.eq_ignore_ascii_case("connection"))
+        .map(|(_, v)| v.clone())
+        .collect();
+    fields.retain(|(n, _)| {
+        !answer_re_derived(&n.to_ascii_lowercase(), nominated.iter().map(Vec::as_slice))
+    });
+}
+
 /// Fold previously-[`collect_client_headers`]ed headers into a freshly built egress header map. The
 /// FIRST value of a name REPLACES whatever busbar put there (the client's own `user-agent`, `accept`
 /// or `content-type` wins over busbar's native default); later values of the same name are

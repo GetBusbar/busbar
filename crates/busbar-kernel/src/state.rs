@@ -342,10 +342,10 @@ pub struct App {
     /// allocated, no signing key exists, no sweeper runs and no route is mounted. See
     /// `crate::oauth_as`.
     ///
-    /// TYPE-ERASED (`Arc<dyn Any + Send + Sync>`, not `Arc<busbar_oauth2::plane::AsPlane>`): the
-    /// concrete plane object lives in the sibling `busbar-oauth2` crate, which depends on
-    /// busbar-core ONE-WAY — core naming `busbar_oauth2::plane::AsPlane` here would be the reverse
-    /// edge Cargo refuses as a cycle. The real type is built and downcast on the `busbar-oauth2`
+    /// TYPE-ERASED (`Arc<dyn Any + Send + Sync>`, not `Arc<busbar_core_oauth2::plane::AsPlane>`): the
+    /// concrete plane object lives in the sibling `busbar-core-oauth2` crate, which depends on
+    /// busbar-core ONE-WAY — core naming `busbar_core_oauth2::plane::AsPlane` here would be the reverse
+    /// edge Cargo refuses as a cycle. The real type is built and downcast on the `busbar-core-oauth2`
     /// side of the seam (`crate::oauth_as::seam`); core only carries the opaque handle and knows
     /// `Some`/`None`.
     pub oauth_as: Option<Arc<dyn std::any::Any + Send + Sync>>,
@@ -543,7 +543,7 @@ impl App {
     }
 
     /// THE AUTHORIZATION-SERVER PLANE OBJECT, type-erased — `pub` (not test-gated) because the
-    /// `busbar-oauth2` plane's OWN route handlers (`forward`/`consent_screen`/`consent_submit`,
+    /// `busbar-core-oauth2` plane's OWN route handlers (`forward`/`consent_screen`/`consent_submit`,
     /// reached through the `CurrentApp` extractor exactly like every other core route) need it on
     /// the real request path, not only in tests. Mirrors [`Self::engine_tables_view`]'s downcast
     /// seam: core hands back the opaque `&Arc<dyn Any + Send + Sync>` and the plane crate — the only

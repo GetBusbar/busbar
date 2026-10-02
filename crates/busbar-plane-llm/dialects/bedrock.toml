@@ -1,17 +1,23 @@
 # crates/busbar-plane-llm/dialects/bedrock.toml: the HAND-WRITTEN wire <> IR mapping of the
-# Bedrock Converse dialect (stage 0: flat request fields). Format: see openai_chat.toml.
+# Bedrock Converse dialect (stage 1: request, response and stream). Format: see openai_chat.toml.
 
 [dialect]
 wire = "bedrock"  # the wire lock: dialects/bedrock.wire.json (notation A paths)
-request = ["structure", "inference_config", "tier"]
+request = ["structure", "inference_config", "tier", "output_config", "blocks"]
+response = ["response"]
+stream = ["stream"]
 drop_warn = "dropping a request control on Bedrock egress: Converse has no form for it"
 
 # Members the dialect's own code models (`prim`). Everything else rides `extra` raw.
 [rows.structure]
 "messages" = { prim = "messages" }
-"model" = { prim = "model" }
-"stream" = { prim = "stream" }
+"model" = { prim = "model", off_wire = "Converse carries the model in the URL path; the arrival step writes it into the body for the codec" }
+"stream" = { prim = "stream", off_wire = "Converse picks a streamed answer by its URL path (converse-stream); the arrival step writes it into the body for the codec" }
 "system" = { prim = "system" }
+"inferenceConfig.maxTokens" = { prim = "max_output" }
+"toolConfig.tools" = { prim = "tools" }
+"toolConfig.toolChoice" = { prim = "tool_choice" }
+"messages[].content[].toolUse.input" = { prim = "tool_arguments" }
 
 # `inferenceConfig` rides `extra` raw; these rows overlay it. Thinking: Claude refuses a modified
 # sampling knob beside a thinking ask; the ask wins, observably. Temperature is clamped to
@@ -27,10 +33,104 @@ drop_warn = "dropping a request control on Bedrock egress: Converse has no form 
 [rows.tier]
 "serviceTier.type" = { ir = "service_tier", words = "service_tier" }
 
+# The reasoning effort word Converse spells `outputConfig.effort`, read when no
+# `additionalModelRequestFields` reasoning ask was given (that ask wins). Read only: the writer
+# states a reasoning ask in `additionalModelRequestFields` (BED-06).
+[rows.output_config]
+"outputConfig.effort" = { ir = "reasoning_effort", words = "effort" }
+
+[words.effort]
+"low" = { wire = "low", dir = "read" }
+"medium" = { wire = "medium", dir = "read" }
+"high" = { wire = "high", dir = "read" }
+"xhigh" = { wire = "xhigh", dir = "read" }
+"max" = { wire = "max", dir = "read" }
+
 [words.service_tier]
 "priority" = { wire = "priority" }
 "default" = { wire = "default" }
 "flex" = { wire = "flex" }
+
+# The request members inside the message, tool and config structure that the dialect's own code
+# reads and writes (`prim`: structure is code; the walker does not walk these rows).
+[rows.blocks]
+"messages[].role" = { prim = "role" }
+"messages[].content" = { prim = "content" }
+"messages[].content[].text" = { prim = "text" }
+"messages[].content[].image.format" = { prim = "format" }
+"messages[].content[].image.source.bytes" = { prim = "bytes" }
+"messages[].content[].document.format" = { prim = "format" }
+"messages[].content[].document.name" = { prim = "name" }
+"messages[].content[].document.source.bytes" = { prim = "bytes" }
+"messages[].content[].video.format" = { prim = "format" }
+"messages[].content[].video.source.bytes" = { prim = "bytes" }
+"messages[].content[].toolUse.toolUseId" = { prim = "tool_use_id" }
+"messages[].content[].toolUse.name" = { prim = "name" }
+"messages[].content[].toolResult.toolUseId" = { prim = "tool_use_id" }
+"messages[].content[].toolResult.content" = { prim = "content" }
+"messages[].content[].toolResult.status" = { prim = "status" }
+"messages[].content[].reasoningContent.reasoningText.text" = { prim = "text" }
+"messages[].content[].reasoningContent.reasoningText.signature" = { prim = "signature" }
+"messages[].content[].reasoningContent.redactedContent" = { prim = "redacted_content" }
+"messages[].content[].image.source.s3Location" = { prim = "s3_location" }
+"messages[].content[].document.source.s3Location" = { prim = "s3_location" }
+"messages[].content[].document.citations" = { prim = "citations" }
+"messages[].content[].document.context" = { prim = "context" }
+"messages[].content[].video.source.s3Location" = { prim = "s3_location" }
+"messages[].content[].cachePoint.type" = { prim = "type" }
+"messages[].content[].guardContent" = { prim = "guard_content" }
+"messages[].content[].document.source.content" = { prim = "content" }
+"messages[].content[].document.source.text" = { prim = "text" }
+"messages[].content[].guardContent.text.text" = { prim = "text" }
+"messages[].content[].toolResult.content[].document.citations" = { prim = "citations" }
+"messages[].content[].toolResult.content[].document.context" = { prim = "context" }
+"messages[].content[].toolResult.content[].document.source.content" = { prim = "content" }
+"messages[].content[].toolResult.content[].document.source.text" = { prim = "text" }
+"system[].guardContent.text.text" = { prim = "text" }
+"messages[].content[].citationsContent.content[].text" = { prim = "text" }
+"messages[].content[].document.source.content[].text" = { prim = "text" }
+"messages[].content[].toolResult.content[].document.source.content[].text" = { prim = "text" }
+"messages[].content[].toolResult.content[].text" = { prim = "text" }
+
+# The answer members the dialect's reader and writer carry (`prim`: code carries them).
+[rows.response]
+"output.message.role" = { prim = "role" }
+"output.message.content" = { prim = "content" }
+"stopReason" = { prim = "finish_reason" }
+"usage.inputTokens" = { prim = "input_tokens" }
+"usage.outputTokens" = { prim = "output_tokens" }
+"usage.totalTokens" = { prim = "total_tokens" }
+"usage.cacheReadInputTokens" = { prim = "cache_read_tokens" }
+"usage.cacheWriteInputTokens" = { prim = "cache_write_tokens" }
+"metrics.latencyMs" = { prim = "latency_ms" }
+"trace.guardrail" = { prim = "guardrail" }
+"trace.promptRouter" = { prim = "prompt_router" }
+"additionalModelResponseFields" = { prim = "additional_model_response_fields" }
+"performanceConfig" = { prim = "performance_config" }
+
+# The stream events the dialect's stream reader and writer carry (`prim`: code carries them).
+[rows.stream]
+"messageStart" = { prim = "message_start" }
+"contentBlockStart" = { prim = "content_block_start" }
+"contentBlockDelta" = { prim = "content_block_delta" }
+"contentBlockStop" = { prim = "content_block_stop" }
+"messageStop" = { prim = "message_stop" }
+"metadata" = { prim = "metadata" }
+
+# Paths no row maps although another dialect maps a field of the same name under the same
+# parent (`dialect-candidates`): each says why it has no equivalent here.
+[unmapped.request]
+"messages[].content[].searchResult.content" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
+"messages[].content[].searchResult.source" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
+"messages[].content[].searchResult.title" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
+"messages[].content[].toolResult.content[].searchResult.content" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
+"messages[].content[].toolResult.content[].searchResult.source" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
+"messages[].content[].toolResult.content[].searchResult.title" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
+"messages[].content[].searchResult.content[].text" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
+"messages[].content[].toolResult.content[].searchResult.content[].text" = { no-equivalent = "a Converse `searchResult` block: the Bedrock reader has no arm for it, so it does not translate (Anthropic models its `search_result` as text plus a citation; reader gap reported to DF-WIRE)" }
+
+[unmapped.response]
+"serviceTier" = { no-equivalent = "the tier that served a Converse answer: the Bedrock reader does not read it into the IR served-tier attribution (reader gap reported to DF-WIRE); the request-side serviceTier.type is mapped" }
 
 # Controls beyond the rows. `requestMetadata` (validated per entry), `top_k` (either spelling) and
 # the hosted tool kinds are the writer's own code. Converse has no penalties, seed or candidate

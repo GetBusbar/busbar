@@ -831,9 +831,9 @@ pub struct TestApp {
     public_url: Option<String>,
     /// The built authorization server (`oauth_as:`), type-erased. `None` (the default) = this
     /// deployment is not one, which is what every pre-existing test expects and what the gating
-    /// proof in `busbar-oauth2`'s `tests::mount_tests` asserts costs nothing. Set through
+    /// proof in `busbar-core-oauth2`'s `tests::mount_tests` asserts costs nothing. Set through
     /// [`Self::oauth_as_plane`] — busbar-core itself never builds the concrete `AsPlane` (that type
-    /// now lives one-way-dependent in `busbar-oauth2`); `busbar-oauth2`'s own `TestAppOauthExt`
+    /// now lives one-way-dependent in `busbar-core-oauth2`); `busbar-core-oauth2`'s own `TestAppOauthExt`
     /// extension trait builds one and hands it in here type-erased.
     oauth_as: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     /// LAW 7: the configured plane sections. `None` (default) = every linked plane counts configured.
@@ -1299,7 +1299,7 @@ impl TestApp {
     ///
     /// The convenience `.oauth_as(cfg)` builder that used to live here (running the real
     /// `AsIdentity::from_cfg` + `AsPlane::build`, for the same reason [`TestApp::mcp`] takes a
-    /// config rather than a hand-assembled resource) moved to `busbar-oauth2`'s own
+    /// config rather than a hand-assembled resource) moved to `busbar-core-oauth2`'s own
     /// `testkit::TestAppOauthExt` extension trait, because `AsPlane` lives there now and
     /// busbar-core cannot name it. This is the seam that extension builds against: it constructs
     /// the real plane, then calls this to hand it in.

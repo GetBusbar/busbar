@@ -30,10 +30,10 @@
 //! (entropy, the wall clock, the translation cap, the usage-tap count) it reaches through the
 //! host services the contract carries, which the host installs where it installs the protocols.
 //!
-//! SIBLING PATHS ARE RELATIVE. A dialect referring to a SIBLING dialect does it RELATIVELY —
-//! `super::gemini::…` from a `mod.rs`, `super::super::…` from one file deeper. That convention
-//! predates this crate (it made the dual `#[path]` compile into `busbar-core` work) and is kept
-//! because it is correct either way and because keeping it makes this split a pure move.
+//! A DIALECT NEVER NAMES A SIBLING DIALECT (design F3 SELF-CONTAINED). What two dialects share
+//! is a wire mechanism, and it lives in a shared module named for the mechanism (`rerank_wire`,
+//! `logprob_wire`, the bearer-envelope helpers in `dialect`), never in one dialect for another to
+//! import. A seventh dialect is a seventh module plus its one registration line.
 
 /// The concrete chat IR + leaf-op IR. The substrate keeps the neutral `ir::facts` trait /
 /// `ir::handle` / `ir::invoke` / `ir::subscribe`; the concrete shapes are here.
@@ -166,8 +166,15 @@ pub mod usage_count;
 
 pub mod usage_tail;
 
-/// The OpenAI-family citation `annotations` mapping shared by the Chat and Responses codecs.
-pub mod openai_annotations;
+/// The `url_citation` annotations wire mapping the Chat and Responses codecs share.
+pub mod url_citation_wire;
+
+/// The per-token logprob wire object (`{content: [{token, logprob, bytes, top_logprobs}]}`) the
+/// Chat and Responses dialects read and write alike.
+pub mod logprob_wire;
+
+/// The rerank wire shape (`documents[]`, `results[]`) the rerank dialects read alike.
+pub mod rerank_wire;
 
 /// IR → wire encode helpers (image source, tool-result detection, strict-drop warn) shared by the
 /// dialect writers.
@@ -192,12 +199,11 @@ pub mod wire_shim;
 
 /// A dialect's own error envelope, with the entropy for any minted identifier supplied.
 ///
-/// One of the six dialects — anthropic — puts a freshly minted `request_id` at the top of its error
-/// envelope, because a native envelope carries one and an envelope without one is a tell. That is
-/// the only minted value on a refusal, and a caller that may not read a random source cannot use
-/// the writer's own form. So this takes the entropy as an argument: the caller hands the bytes, the
-/// id is built from them, and the same bytes produce the same envelope. The other five dialects
-/// mint nothing here and ignore the argument entirely.
+/// A dialect whose native envelope carries a freshly minted identifier (anthropic's top-level
+/// `request_id`: an envelope without one is a tell) builds it from these bytes rather than from a
+/// random source, so a caller that may not read one can still write the native envelope, and the
+/// same bytes produce the same envelope. Dialects that mint nothing ignore the argument. Each
+/// dialect states this itself ([`proto_codec::ProtocolWriter::write_error_from_entropy`]).
 ///
 /// Returns `None` for a protocol name the registry does not know.
 #[must_use]
@@ -209,23 +215,12 @@ pub fn write_error_envelope(
     entropy: &[u8],
 ) -> Option<serde_json::Value> {
     let protocol = proto_codec::protocol_for(ingress_protocol)?;
-    let mut envelope = protocol.writer().write_error(status, kind, message);
-    // The writer built the whole document, including a drawn id. Replace ONLY that member, and only
-    // where the writer put one, with the id the caller's entropy produces — so the envelope this
-    // returns is the writer's envelope in every other byte.
-    if let Some(obj) = envelope.as_object_mut() {
-        if obj.contains_key(ANTHROPIC_REQUEST_ID_MEMBER) {
-            obj.insert(
-                ANTHROPIC_REQUEST_ID_MEMBER.to_string(),
-                serde_json::Value::String(anthropic::request_id_from_entropy(entropy)),
-            );
-        }
-    }
-    Some(envelope)
+    Some(
+        protocol
+            .writer()
+            .write_error_from_entropy(status, kind, message, entropy),
+    )
 }
-
-/// The member the anthropic error envelope carries its minted identifier under.
-const ANTHROPIC_REQUEST_ID_MEMBER: &str = "request_id";
 
 /// THE REGISTRY KEY THE LLM PLANE IS KNOWN BY — the string the composition root flips onto the
 /// unified kernel loop ([`busbar_kernel::plane_host::register_gauntlet_runner`]) and the same
@@ -275,14 +270,33 @@ pub(crate) use test_host::ensure_test_protocols_registered;
 /// published 1.5.5 binary prints that tail on a bad `protocol:` (shadow-oracle
 /// `boot.refusal|BOOT-020|validate`). The swap was therefore an unannounced move of an
 /// operator-visible list and of every metric-family index behind it, and it is undone here.
-pub static DECLS: &[&busbar_contract::protocol::ProtocolDecl] = &[
-    &anthropic::DECL,
-    &openai_chat::DECL,
-    &gemini::DECL,
-    &bedrock::DECL,
-    &openai_responses::DECL,
-    &cohere::DECL,
+///
+/// ONE REGISTRATION LINE PER DIALECT (design F3 SELF-CONTAINED; spec Part 3 #5): each dialect
+/// declares its own [`proto_codec::DialectEntry`] in its module, and this list is the only place the
+/// plane names it. [`DECLS`] is read off this list, in this order.
+pub(crate) const DIALECTS: &[&proto_codec::DialectEntry] = &[
+    &anthropic::ENTRY,
+    &openai_chat::ENTRY,
+    &gemini::ENTRY,
+    &bedrock::ENTRY,
+    &openai_responses::ENTRY,
+    &cohere::ENTRY,
 ];
+
+/// Every registered dialect's declaration, in [`DIALECTS`] order (the operator-visible order
+/// documented there).
+pub static DECLS: &[&busbar_contract::protocol::ProtocolDecl] = &decls::<{ DIALECTS.len() }>();
+
+/// [`DIALECTS`]' declarations as an array, evaluated at compile time.
+const fn decls<const N: usize>() -> [&'static busbar_contract::protocol::ProtocolDecl; N] {
+    let mut out = [DIALECTS[0].decl; N];
+    let mut i = 0;
+    while i < N {
+        out[i] = DIALECTS[i].decl;
+        i += 1;
+    }
+    out
+}
 
 #[cfg(test)]
 #[path = "tests/write_error_frame_tests.rs"]
