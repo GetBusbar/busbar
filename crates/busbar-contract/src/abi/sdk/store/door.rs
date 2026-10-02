@@ -39,8 +39,10 @@ use std::sync::Mutex;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+use super::op::Parked;
 use super::{
-    Cap, CapsRefused, Cell, CellKey, Dimension, Grant, OpRefused, ReserveRefused, StoreSlots,
+    Cap, CapsRefused, Cell, CellKey, Dimension, Grant, Op, OpRefused, ReserveRefused, Step,
+    StoreSlots,
 };
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Diag, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET, MAX_TEXT,
@@ -50,6 +52,7 @@ use crate::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn, TickOut,
     ValidateIn,
 };
+use crate::abi::sdk::conn::Host;
 use crate::abi::sdk::door::abi_str;
 use crate::abi::sdk::{open_failed, HostBuf, Instance, Lent, LentList, Out, SafeSlot};
 use crate::abi::store::{
@@ -217,6 +220,8 @@ impl Text {
 /// error texts it keeps for the host.
 pub struct Served<B> {
     store: B,
+    /// The host tables `open` was handed: each op's connector.
+    host: Option<Host>,
     leases: Mutex<HashMap<u64, Leased>>,
     next_lease: AtomicU64,
     texts: Mutex<VecDeque<Text>>,
@@ -229,9 +234,10 @@ impl<B> std::fmt::Debug for Served<B> {
 }
 
 impl<B: StoreSlots> Served<B> {
-    fn new(store: B) -> Self {
+    fn new(store: B, host: Option<Host>) -> Self {
         Self {
             store,
+            host,
             leases: Mutex::new(HashMap::new()),
             next_lease: AtomicU64::new(0),
             // Sized here, once: keeping a text never grows the ring.
@@ -317,6 +323,53 @@ impl Head for OutHead {
     fn head(&mut self) -> &mut OutHead {
         self
     }
+}
+
+/// The op's result, or PENDING with its wake written into the head (an early return).
+macro_rules! step {
+    ($o:ident, $e:expr) => {
+        match $e {
+            Step::Ready(r) => r,
+            Step::Pending { wake_at_ns } => {
+                Head::head($o).wake_at_ns = wake_at_ns;
+                return Outcome::Pending;
+            }
+        }
+    };
+}
+
+/// The op's context for this entry: fresh, or resuming what it parked. `None` for a RESUME with
+/// nothing parked (FAULT: the op is never run afresh).
+fn op_enter<'a, B: StoreSlots>(
+    instance: &Instance<'_, Served<B>>,
+    s: &'a Served<B>,
+) -> Option<Op<'a>> {
+    let parked = instance.resume::<Parked>().map(|b| *b);
+    if instance.resuming() && parked.is_none() {
+        return None;
+    }
+    Some(Op::enter(instance.ticket(), s.host.as_ref(), parked))
+}
+
+/// The op's answer, settled: PENDING parks its context (FAULT when it pends on no ticket, or on the
+/// connector with no service in flight); any other answer closes its connection.
+fn op_finish<B: StoreSlots>(
+    instance: &Instance<'_, Served<B>>,
+    cx: Op<'_>,
+    answer: Outcome,
+    head: &mut OutHead,
+) -> Outcome {
+    if answer == Outcome::Pending {
+        if !cx.can_pend() || (head.wake_at_ns == 0 && !cx.made_a_service()) {
+            drop(cx.into_parked());
+            return Outcome::Fault;
+        }
+        instance.park(cx.into_parked());
+        return Outcome::Pending;
+    }
+    // Dropping the op's parked form closes its connection (`Parked`'s drop).
+    drop(cx.into_parked());
+    answer
 }
 
 /// FAILED with the store's own text, moved into the ring.
@@ -676,7 +729,7 @@ impl Extend<u64> for ReleasedInto<'_> {
 
 /// Declare one lifecycle or kind slot over `Served<B>`.
 macro_rules! slot {
-    ($(#[$m:meta])* $name:ident($in:ty, $out:ty) |$s:ident, $i:ident, $o:ident| $body:block) => {
+    ($(#[$m:meta])* $name:ident($in:ty, $out:ty) |$s:ident, $i:ident, $o:ident, $cx:ident| $body:block) => {
         $(#[$m])*
         #[derive(Debug)]
         pub struct $name<B>(PhantomData<B>);
@@ -684,23 +737,31 @@ macro_rules! slot {
             type In = $in;
             type Out = $out;
             type State = Served<B>;
-            #[allow(unused_variables)]
+            #[allow(unused_variables, clippy::redundant_closure_call)]
             fn call(
                 instance: Instance<'_, Served<B>>,
                 $i: Lent<'_, $in>,
                 mut out: Out<'_, $out>,
             ) -> Outcome {
-                let $o: &mut $out = out.raw();
                 let Some($s) = instance.get() else {
                     return Outcome::Fault;
                 };
-                $body
+                // A RESUME with nothing parked is FAULT: an op never runs afresh.
+                let Some(mut cx) = op_enter(&instance, $s) else {
+                    return Outcome::Fault;
+                };
+                let answer = {
+                    let $o: &mut $out = out.raw();
+                    let $cx: &mut Op<'_> = &mut cx;
+                    (|| -> Outcome { $body })()
+                };
+                op_finish(&instance, cx, answer, Head::head(out.raw()))
             }
         }
     };
 }
 
-/// `validate`: the settings open a store.
+/// `validate`: the store PARSES its settings (never opens); a refusal carries its own text.
 #[derive(Debug)]
 pub struct Validate<B>(PhantomData<B>);
 impl<B: StoreSlots> SafeSlot for Validate<B> {
@@ -710,12 +771,11 @@ impl<B: StoreSlots> SafeSlot for Validate<B> {
     fn call(
         _: Instance<'_, Served<B>>,
         input: Lent<'_, ValidateIn>,
-        _: Out<'_, OutHead>,
+        mut out: Out<'_, OutHead>,
     ) -> Outcome {
-        match B::open(input.field(|i| &i.settings).bytes()) {
-            Ok(_) => Outcome::Ready,
-            // The instance does not exist yet, so the reason has nowhere to live: REFUSED, bare.
-            Err(_) => Outcome::Refused,
+        match B::validate(input.field(|i| &i.settings).bytes()) {
+            Ok(()) => Outcome::Ready,
+            Err(t) => out.fail(crate::abi::sdk::life::Refusal::failed(t)),
         }
     }
 }
@@ -732,9 +792,10 @@ impl<B: StoreSlots> SafeSlot for Open<B> {
         input: Lent<'_, OpenIn>,
         mut out: Out<'_, OpenOut>,
     ) -> Outcome {
-        match B::open(input.field(|i| &i.settings).bytes()) {
+        let host = input.host().map(|h| Host::of(&h));
+        match B::open(input.field(|i| &i.settings).bytes(), host) {
             Ok(store) => {
-                instance.open(Served::new(store));
+                instance.open(Served::new(store, host));
                 Outcome::Ready
             }
             // No instance exists to hold the reason: it goes into the host's lent reason buffer.
@@ -745,34 +806,34 @@ impl<B: StoreSlots> SafeSlot for Open<B> {
 
 slot!(
     /// `refresh`: a store holds its settings for its lifetime; a reload opens a new instance.
-    Refresh(RefreshIn, OutHead) |s, i, o| { Outcome::Ready }
+    Refresh(RefreshIn, OutHead) |s, i, o, cx| { Outcome::Ready }
 );
 slot!(
     /// `retire`.
-    Retire(GenIn, OutHead) |s, i, o| { Outcome::Ready }
+    Retire(GenIn, OutHead) |s, i, o, cx| { Outcome::Ready }
 );
 slot!(
     /// `tick`: a store asks for no tick.
-    Tick(TickIn, TickOut) |s, i, o| {
+    Tick(TickIn, TickOut) |s, i, o, cx| {
         o.next_tick_ns = 0;
         Outcome::Ready
     }
 );
 slot!(
     /// `drive`: a store that never pends has nothing to drive.
-    Drive(DriveIn, OutHead) |s, i, o| { Outcome::Ready }
+    Drive(DriveIn, OutHead) |s, i, o, cx| { Outcome::Ready }
 );
 slot!(
     /// `cancel`: whether the cancelled op applied is not known here; the kernel re-issues it
     /// under the same `op_id` and dedupe settles it (`CANCEL_UNKNOWN`).
-    Cancel(CancelIn, CancelOut) |s, i, o| {
+    Cancel(CancelIn, CancelOut) |s, i, o, cx| {
         o.disposition = CANCEL_UNKNOWN;
         Outcome::Ready
     }
 );
 slot!(
     /// `release`: the host is done with a lease.
-    Release(ReleaseIn, OutHead) |s, i, o| {
+    Release(ReleaseIn, OutHead) |s, i, o, cx| {
         s.leases
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -782,25 +843,25 @@ slot!(
 );
 slot!(
     /// `close`: the SDK drops the instance when this answers READY.
-    Close(InHead, OutHead) |s, i, o| { Outcome::Ready }
+    Close(InHead, OutHead) |s, i, o, cx| { Outcome::Ready }
 );
 
 // ── the 1.5.5 op set ─────────────────────────────────────────────────────────────────────────
 
 slot!(
     /// `put_key` (slot 0).
-    PutKey(BlobIn, OutHead) |s, i, o| {
+    PutKey(BlobIn, OutHead) |s, i, o, cx| {
         match json::<VirtualKey>(i.field(|i| &i.record)) {
-            Ok(k) => done(s, o, s.store.put_key(&k)),
+            Ok(k) => done(s, o, step!(o, s.store.put_key(cx, &k))),
             Err(e) => refused(s, o, e),
         }
     }
 );
 slot!(
     /// `get_key` (slot 1).
-    GetKey(IdIn, LeasedBlobOut) |s, i, o| {
+    GetKey(IdIn, LeasedBlobOut) |s, i, o, cx| {
         let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match s.store.get_key(id) {
+        match step!(o, s.store.get_key(cx, id)) {
             Ok(k) => lease_one(s, o, k.as_ref().map(to_json), false),
             Err(e) => failed(s, o, e.0),
         }
@@ -808,37 +869,37 @@ slot!(
 );
 slot!(
     /// `list_keys` (slot 2).
-    ListKeys(InHead, LeasedListOut) |s, i, o| { listed(s, o, s.store.list_keys(), false) }
+    ListKeys(InHead, LeasedListOut) |s, i, o, cx| { listed(s, o, step!(o, s.store.list_keys(cx)), false) }
 );
 slot!(
     /// `delete_key` (slot 3).
-    DeleteKey(IdIn, OutHead) |s, i, o| {
+    DeleteKey(IdIn, OutHead) |s, i, o, cx| {
         match text_of(i.field(|i| &i.id)) {
-            Ok(id) => done(s, o, s.store.delete_key(id)),
+            Ok(id) => done(s, o, step!(o, s.store.delete_key(cx, id))),
             Err(e) => refused(s, o, e),
         }
     }
 );
 slot!(
     /// `scrub_key` (slot 4).
-    ScrubKey(IdIn, OutHead) |s, i, o| {
+    ScrubKey(IdIn, OutHead) |s, i, o, cx| {
         match text_of(i.field(|i| &i.id)) {
-            Ok(id) => done(s, o, s.store.scrub_key(id)),
+            Ok(id) => done(s, o, step!(o, s.store.scrub_key(cx, id))),
             Err(e) => refused(s, o, e),
         }
     }
 );
 slot!(
     /// `list_keys_since` (slot 5).
-    ListKeysSince(U64In, LeasedListOut) |s, i, o| {
-        listed(s, o, s.store.list_keys_since(i.value), false)
+    ListKeysSince(U64In, LeasedListOut) |s, i, o, cx| {
+        listed(s, o, step!(o, s.store.list_keys_since(cx, i.value)), false)
     }
 );
 slot!(
     /// `get_usage` (slot 6): an untouched cell is the empty ledger, FOUND.
-    GetUsage(WindowIn, LeasedBlobOut) |s, i, o| {
+    GetUsage(WindowIn, LeasedBlobOut) |s, i, o, cx| {
         let bucket = match text_of(i.field(|i| &i.bucket)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match s.store.get_usage(bucket, i.window_start) {
+        match step!(o, s.store.get_usage(cx, bucket, i.window_start)) {
             Ok(l) => lease_one(s, o, Some(to_json(&l)), false),
             Err(e) => failed(s, o, e.0),
         }
@@ -846,44 +907,44 @@ slot!(
 );
 slot!(
     /// `put_usage` (slot 7).
-    PutUsage(PutUsageIn, OutHead) |s, i, o| {
+    PutUsage(PutUsageIn, OutHead) |s, i, o, cx| {
         let bucket = match text_of(i.field(|i| &i.bucket)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match json::<UsageLedger>(i.field(|i| &i.ledger)) {
-            Ok(l) => done(s, o, s.store.put_usage(bucket, i.window_start, &l)),
+            Ok(l) => done(s, o, step!(o, s.store.put_usage(cx, bucket, i.window_start, &l))),
             Err(e) => refused(s, o, e),
         }
     }
 );
 slot!(
     /// `add_usage` (slot 8), deduped on its `op_id`.
-    AddUsage(AddUsageIn, OutHead) |s, i, o| {
+    AddUsage(AddUsageIn, OutHead) |s, i, o, cx| {
         let cell = i.field(|i| &i.cell);
         let bucket = match text_of(cell.field(|c| &c.bucket)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match json::<UsageDelta>(cell.field(|c| &c.delta)) {
-            Ok(d) => op_answer(s, o, s.store.add_usage_op(i.op_id, bucket, cell.window_start, &d)),
+            Ok(d) => op_answer(s, o, step!(o, s.store.add_usage_op(cx, i.op_id, bucket, cell.window_start, &d))),
             Err(e) => refused(s, o, e),
         }
     }
 );
 slot!(
     /// `add_metering` (slot 9), deduped on its `op_id`.
-    AddMetering(OpBlobIn, OutHead) |s, i, o| {
+    AddMetering(OpBlobIn, OutHead) |s, i, o, cx| {
         match json::<MeteringDelta>(i.field(|i| &i.record)) {
-            Ok(d) => op_answer(s, o, s.store.add_metering_op(i.op_id, &d)),
+            Ok(d) => op_answer(s, o, step!(o, s.store.add_metering_op(cx, i.op_id, &d))),
             Err(e) => refused(s, o, e),
         }
     }
 );
 slot!(
     /// `list_metering` (slot 10).
-    ListMetering(U64In, LeasedListOut) |s, i, o| {
-        listed(s, o, s.store.list_metering(i.value), false)
+    ListMetering(U64In, LeasedListOut) |s, i, o, cx| {
+        listed(s, o, step!(o, s.store.list_metering(cx, i.value)), false)
     }
 );
 slot!(
     /// `purge_windows_before` (slot 11).
-    PurgeWindowsBefore(U64In, CountOut) |s, i, o| {
-        match s.store.purge_windows_before(i.value) {
+    PurgeWindowsBefore(U64In, CountOut) |s, i, o, cx| {
+        match step!(o, s.store.purge_windows_before(cx, i.value)) {
             Ok(n) => { o.count = n; Outcome::Ready }
             Err(e) => failed(s, o, e.0),
         }
@@ -891,9 +952,9 @@ slot!(
 );
 slot!(
     /// `purge_metering_before` (slot 12).
-    PurgeMeteringBefore(IdIn, CountOut) |s, i, o| {
+    PurgeMeteringBefore(IdIn, CountOut) |s, i, o, cx| {
         let bucket = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match s.store.purge_metering_before(bucket) {
+        match step!(o, s.store.purge_metering_before(cx, bucket)) {
             Ok(n) => { o.count = n; Outcome::Ready }
             Err(e) => failed(s, o, e.0),
         }
@@ -901,36 +962,36 @@ slot!(
 );
 slot!(
     /// `put_credential` (slot 13).
-    PutCredential(BlobIn, OutHead) |s, i, o| {
+    PutCredential(BlobIn, OutHead) |s, i, o, cx| {
         match json::<CredentialSecret>(i.field(|i| &i.record)) {
-            Ok(c) => done(s, o, s.store.put_credential(&c)),
+            Ok(c) => done(s, o, step!(o, s.store.put_credential(cx, &c))),
             Err(e) => refused(s, o, e),
         }
     }
 );
 slot!(
     /// `put_key_with_credential` (slot 14): both rows or neither.
-    PutKeyWithCredential(KeyWithCredentialIn, OutHead) |s, i, o| {
+    PutKeyWithCredential(KeyWithCredentialIn, OutHead) |s, i, o, cx| {
         let k = match json::<VirtualKey>(i.field(|i| &i.key)) { Ok(k) => k, Err(e) => return refused(s, o, e) };
         match json::<CredentialSecret>(i.field(|i| &i.credential)) {
-            Ok(c) => done(s, o, s.store.put_key_with_credential(&k, &c)),
+            Ok(c) => done(s, o, step!(o, s.store.put_key_with_credential(cx, &k, &c))),
             Err(e) => refused(s, o, e),
         }
     }
 );
 slot!(
     /// `list_credentials` (slot 15): metadata, never a secret.
-    ListCredentials(IdIn, LeasedListOut) |s, i, o| {
+    ListCredentials(IdIn, LeasedListOut) |s, i, o, cx| {
         let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        listed(s, o, s.store.list_credentials(id), false)
+        listed(s, o, step!(o, s.store.list_credentials(cx, id)), false)
     }
 );
 slot!(
     /// `lookup_credential_secret` (slot 16): a secret blob; unknown is ABSENT.
-    LookupCredentialSecret(KindIdIn, LeasedBlobOut) |s, i, o| {
+    LookupCredentialSecret(KindIdIn, LeasedBlobOut) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match s.store.lookup_credential_secret(kind, id) {
+        match step!(o, s.store.lookup_credential_secret(cx, kind, id)) {
             Ok(c) => lease_one(s, o, c.as_ref().map(to_json), true),
             Err(e) => failed(s, o, e.0),
         }
@@ -938,47 +999,47 @@ slot!(
 );
 slot!(
     /// `revoke_credential` (slot 17).
-    RevokeCredential(IdReasonIn, OutHead) |s, i, o| {
+    RevokeCredential(IdReasonIn, OutHead) |s, i, o, cx| {
         let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match text_of(i.field(|i| &i.reason)) {
-            Ok(r) => done(s, o, s.store.revoke_credential(id, r)),
+            Ok(r) => done(s, o, step!(o, s.store.revoke_credential(cx, id, r))),
             Err(e) => refused(s, o, e),
         }
     }
 );
 slot!(
     /// `list_credentials_since` (slot 18): secret blobs.
-    ListCredentialsSince(U64In, LeasedListOut) |s, i, o| {
-        listed(s, o, s.store.list_credentials_since(i.value), true)
+    ListCredentialsSince(U64In, LeasedListOut) |s, i, o, cx| {
+        listed(s, o, step!(o, s.store.list_credentials_since(cx, i.value)), true)
     }
 );
 slot!(
     /// `append_audit` (slot 19), deduped on its `op_id`.
-    AppendAudit(OpBlobIn, OutHead) |s, i, o| {
+    AppendAudit(OpBlobIn, OutHead) |s, i, o, cx| {
         match json::<AuditRecord>(i.field(|i| &i.record)) {
-            Ok(a) => op_answer(s, o, s.store.append_audit_op(i.op_id, &a)),
+            Ok(a) => op_answer(s, o, step!(o, s.store.append_audit_op(cx, i.op_id, &a))),
             Err(e) => refused(s, o, e),
         }
     }
 );
 slot!(
     /// `list_audit` (slot 20).
-    ListAudit(InHead, LeasedListOut) |s, i, o| { listed(s, o, s.store.list_audit(), false) }
+    ListAudit(InHead, LeasedListOut) |s, i, o, cx| { listed(s, o, step!(o, s.store.list_audit(cx)), false) }
 );
 slot!(
     /// `add_denylist` (slot 21).
-    AddDenylist(IdReasonIn, OutHead) |s, i, o| {
+    AddDenylist(IdReasonIn, OutHead) |s, i, o, cx| {
         let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match text_of(i.field(|i| &i.reason)) {
-            Ok(r) => done(s, o, s.store.add_denylist(id, r)),
+            Ok(r) => done(s, o, step!(o, s.store.add_denylist(cx, id, r))),
             Err(e) => refused(s, o, e),
         }
     }
 );
 slot!(
     /// `list_denylist` (slot 22).
-    ListDenylist(InHead, LeasedStrListOut) |s, i, o| {
-        match s.store.list_denylist() {
+    ListDenylist(InHead, LeasedStrListOut) |s, i, o, cx| {
+        match step!(o, s.store.list_denylist(cx)) {
             Ok(v) => lease_strs(s, o, v),
             Err(e) => failed(s, o, e.0),
         }
@@ -986,8 +1047,8 @@ slot!(
 );
 slot!(
     /// `list_audit_tail` (slot 23).
-    ListAuditTail(U64In, LeasedListOut) |s, i, o| {
-        listed(s, o, s.store.list_audit_tail(i.value), false)
+    ListAuditTail(U64In, LeasedListOut) |s, i, o, cx| {
+        listed(s, o, step!(o, s.store.list_audit_tail(cx, i.value)), false)
     }
 );
 
@@ -995,19 +1056,19 @@ slot!(
 
 slot!(
     /// `upsert_plane_record` (slot 24).
-    UpsertPlaneRecord(UpsertPlaneRecordIn, OutHead) |s, i, o| {
+    UpsertPlaneRecord(UpsertPlaneRecordIn, OutHead) |s, i, o, cx| {
         match plane_record(i.field(|i| &i.record)) {
-            Ok(r) => done(s, o, s.store.upsert_plane_record(r)),
+            Ok(r) => done(s, o, step!(o, s.store.upsert_plane_record(cx, r))),
             Err(e) => refused(s, o, e),
         }
     }
 );
 slot!(
     /// `get_plane_record` (slot 25): the body into the host buffer.
-    GetPlaneRecord(GetPlaneRecordIn, HostBytesOut) |s, i, o| {
+    GetPlaneRecord(GetPlaneRecordIn, HostBytesOut) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match s.store.get_plane_record(kind, id) {
+        match step!(o, s.store.get_plane_record(cx, kind, id)) {
             Ok(body) => bytes_into(o, i.field(|i| &i.body).ptr(), body.as_deref()),
             Err(e) => failed(s, o, e.0),
         }
@@ -1015,16 +1076,16 @@ slot!(
 );
 slot!(
     /// `append_plane_record` (slot 26), deduped on its `op_id`.
-    AppendPlaneRecord(AppendPlaneRecordIn, OutHead) |s, i, o| {
+    AppendPlaneRecord(AppendPlaneRecordIn, OutHead) |s, i, o, cx| {
         match plane_record(i.field(|i| &i.record)) {
-            Ok(r) => op_answer(s, o, s.store.append_plane_record_op(i.op_id, r)),
+            Ok(r) => op_answer(s, o, step!(o, s.store.append_plane_record_op(cx, i.op_id, r))),
             Err(e) => refused(s, o, e),
         }
     }
 );
 slot!(
     /// `list_plane_records` (slot 27): bodies into the host's blobs.
-    ListPlaneRecords(ListPlaneRecordsIn, HostListOut) |s, i, o| {
+    ListPlaneRecords(ListPlaneRecordsIn, HostListOut) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         let selector = match i.selector {
             SELECT_ALL => PlaneSelector::All,
@@ -1034,7 +1095,7 @@ slot!(
             },
             n => return refused(s, o, Text::render(format_args!("selector {n} is not a plane selector"))),
         };
-        match s.store.list_plane_records(kind, &selector) {
+        match step!(o, s.store.list_plane_records(cx, kind, &selector)) {
             Ok(bodies) => {
                 let runs = bodies.iter().map(|b| [b.as_slice()]);
                 let host = i.field(|i| &i.out);
@@ -1048,9 +1109,9 @@ slot!(
 );
 slot!(
     /// `list_plane_record_parents` (slot 28).
-    ListPlaneRecordParents(IdIn, LeasedStrListOut) |s, i, o| {
+    ListPlaneRecordParents(IdIn, LeasedStrListOut) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match s.store.list_plane_record_parents(kind) {
+        match step!(o, s.store.list_plane_record_parents(cx, kind)) {
             Ok(v) => lease_strs(s, o, v),
             Err(e) => failed(s, o, e.0),
         }
@@ -1058,9 +1119,9 @@ slot!(
 );
 slot!(
     /// `purge_plane_records_before` (slot 29).
-    PurgePlaneRecordsBefore(KindBeforeIn, CountOut) |s, i, o| {
+    PurgePlaneRecordsBefore(KindBeforeIn, CountOut) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match s.store.purge_plane_records_before(kind, i.before) {
+        match step!(o, s.store.purge_plane_records_before(cx, kind, i.before)) {
             Ok(n) => { o.count = n; Outcome::Ready }
             Err(e) => failed(s, o, e.0),
         }
@@ -1068,20 +1129,20 @@ slot!(
 );
 slot!(
     /// `delete_plane_record` (slot 30); absent is READY.
-    DeletePlaneRecord(KindIdIn, OutHead) |s, i, o| {
+    DeletePlaneRecord(KindIdIn, OutHead) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match text_of(i.field(|i| &i.id)) {
-            Ok(id) => done(s, o, s.store.delete_plane_record(kind, id)),
+            Ok(id) => done(s, o, step!(o, s.store.delete_plane_record(cx, kind, id))),
             Err(e) => refused(s, o, e),
         }
     }
 );
 slot!(
     /// `redeem_plane_token` (slot 31): YES = this call was the first redemption.
-    RedeemPlaneToken(TokenIn, VerdictOut) |s, i, o| {
+    RedeemPlaneToken(TokenIn, VerdictOut) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         let token = match text_of(i.field(|i| &i.token)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match s.store.redeem_plane_token(kind, token, i.expires_at, i.now) {
+        match step!(o, s.store.redeem_plane_token(cx, kind, token, i.expires_at, i.now)) {
             Ok(y) => { o.verdict = if y { VERDICT_YES } else { VERDICT_NO }; Outcome::Ready }
             Err(e) => failed(s, o, e.0),
         }
@@ -1089,10 +1150,10 @@ slot!(
 );
 slot!(
     /// `plane_token_live` (slot 32): spends nothing.
-    PlaneTokenLive(TokenIn, VerdictOut) |s, i, o| {
+    PlaneTokenLive(TokenIn, VerdictOut) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         let token = match text_of(i.field(|i| &i.token)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match s.store.plane_token_live(kind, token, i.expires_at, i.now) {
+        match step!(o, s.store.plane_token_live(cx, kind, token, i.expires_at, i.now)) {
             Ok(y) => { o.verdict = if y { VERDICT_YES } else { VERDICT_NO }; Outcome::Ready }
             Err(e) => failed(s, o, e.0),
         }
@@ -1103,7 +1164,7 @@ slot!(
 
 slot!(
     /// `append_batch` (slot 33): the head the stream reached.
-    AppendBatch(AppendBatchIn, HeadOut) |s, i, o| {
+    AppendBatch(AppendBatchIn, HeadOut) |s, i, o, cx| {
         let stream = match text_of(i.field(|i| &i.stream)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         let mut records = Vec::with_capacity(i.records().len());
         for r in i.records().iter() {
@@ -1112,7 +1173,7 @@ slot!(
                 Err(e) => return refused(s, o, e),
             }
         }
-        match s.store.append_batch(i.op_id, stream, &records) {
+        match step!(o, s.store.append_batch(cx, i.op_id, stream, &records)) {
             Ok(h) => { o.seq = h.seq; o.epoch = h.epoch; Outcome::Ready }
             Err(OpRefused::Conflict) => conflict(o),
             Err(OpRefused::Failed(t)) => failed(s, o, t),
@@ -1121,7 +1182,7 @@ slot!(
 );
 slot!(
     /// `reserve` (slot 34): the capacity check first, then one all-or-nothing draw.
-    Reserve(ReserveIn, ReserveOut) |s, i, o| {
+    Reserve(ReserveIn, ReserveOut) |s, i, o, cx| {
         o.failed_cell = RESERVE_NO_FAILED_CELL;
         let cells_in = i.cells();
         let grants_buf = i.grants();
@@ -1139,7 +1200,7 @@ slot!(
         }
         let mut grants = GrantsInto(grants_buf);
         let cells = cells_in.iter().filter_map(|c| unit_cell(c).ok()); // every one decodes
-        match s.store.reserve(i.op_id, i.epoch, cells, &mut grants) {
+        match step!(o, s.store.reserve(cx, i.op_id, i.epoch, cells, &mut grants)) {
             Ok(()) if grants.0.asked() == cells_in.len() => {
                 o.grants_len = grants.0.written();
                 o.reason = RESERVE_OK;
@@ -1163,7 +1224,7 @@ slot!(
 );
 slot!(
     /// `slice_release` (slot 35): the capacity check first, then the clamped release.
-    SliceRelease(SliceReleaseIn, SliceReleaseOut) |s, i, o| {
+    SliceRelease(SliceReleaseIn, SliceReleaseOut) |s, i, o, cx| {
         let items_in = i.items();
         let released_buf = i.released();
         if released_buf.cap() < items_in.len() {
@@ -1173,7 +1234,7 @@ slot!(
         // The items read in place, the amounts straight into the host's array: nothing allocated.
         let mut released = ReleasedInto { items: items_in, buf: released_buf };
         let items = items_in.iter().map(|it| (it.slice_id, it.unspent));
-        match s.store.slice_release(i.op_id, i.epoch, items, &mut released) {
+        match step!(o, s.store.slice_release(cx, i.op_id, i.epoch, items, &mut released)) {
             Ok(()) if released.buf.asked() == items_in.len() => {
                 o.released_len = released.buf.written();
                 Outcome::Ready
@@ -1186,8 +1247,8 @@ slot!(
 );
 slot!(
     /// `heads` (slot 36): under a lease.
-    Heads(InHead, HeadsOut) |s, i, o| {
-        match s.store.heads() {
+    Heads(InHead, HeadsOut) |s, i, o, cx| {
+        match step!(o, s.store.heads(cx)) {
             Ok(v) if v.is_empty() => {
                 o.items = std::ptr::null();
                 o.items_len = 0;
@@ -1221,10 +1282,10 @@ slot!(
 );
 slot!(
     /// `session_put` (slot 37).
-    SessionPut(SessionPutIn, OutHead) |s, i, o| {
+    SessionPut(SessionPutIn, OutHead) |s, i, o, cx| {
         let node = match text_of(i.field(|i| &i.node)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         let principal = match text_of(i.field(|i| &i.principal)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match s.store.session_put(i.session, node, principal) {
+        match step!(o, s.store.session_put(cx, i.session, node, principal)) {
             Ok(()) => Outcome::Ready,
             Err(e) => failed(s, o, e),
         }
@@ -1232,8 +1293,8 @@ slot!(
 );
 slot!(
     /// `session_remove` (slot 38).
-    SessionRemove(U64In, OutHead) |s, i, o| {
-        match s.store.session_remove(i.value) {
+    SessionRemove(U64In, OutHead) |s, i, o, cx| {
+        match step!(o, s.store.session_remove(cx, i.value)) {
             Ok(()) => Outcome::Ready,
             Err(e) => failed(s, o, e),
         }
@@ -1241,9 +1302,9 @@ slot!(
 );
 slot!(
     /// `sessions_for` (slot 39): rows into the host's sessions.
-    SessionsFor(SessionsForIn, HostListOut) |s, i, o| {
+    SessionsFor(SessionsForIn, HostListOut) |s, i, o, cx| {
         let principal = match text_of(i.field(|i| &i.principal)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match s.store.sessions_for(principal) {
+        match step!(o, s.store.sessions_for(cx, principal)) {
             Ok(rows) => {
                 let runs = rows.iter().map(|(_, n)| [n.as_bytes()]);
                 let host = i.field(|i| &i.out);
@@ -1257,10 +1318,10 @@ slot!(
 );
 slot!(
     /// `record_put` (slot 40).
-    RecordPut(RecordPutIn, OutHead) |s, i, o| {
+    RecordPut(RecordPutIn, OutHead) |s, i, o, cx| {
         let schema = match text_of(i.field(|i| &i.schema)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         let value = match record_slice(i.field(|i| &i.value).bytes()) { Ok(v) => v, Err(e) => return refused(s, o, e) };
-        match s.store.record_put(schema, i.field(|i| &i.key).bytes(), value) {
+        match step!(o, s.store.record_put(cx, schema, i.field(|i| &i.key).bytes(), value)) {
             Ok(()) => Outcome::Ready,
             Err(e) => failed(s, o, e),
         }
@@ -1268,9 +1329,9 @@ slot!(
 );
 slot!(
     /// `record_get` (slot 41): the value into the host buffer.
-    RecordGet(RecordGetIn, HostBytesOut) |s, i, o| {
+    RecordGet(RecordGetIn, HostBytesOut) |s, i, o, cx| {
         let schema = match text_of(i.field(|i| &i.schema)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match s.store.record_get(schema, i.field(|i| &i.key).bytes()) {
+        match step!(o, s.store.record_get(cx, schema, i.field(|i| &i.key).bytes())) {
             Ok(v) => bytes_into(o, i.field(|i| &i.value).ptr(), v.as_ref().map(RecordBytes::as_slice)),
             Err(e) => failed(s, o, e),
         }
@@ -1278,9 +1339,9 @@ slot!(
 );
 slot!(
     /// `record_scan` (slot 42): entries into the host's records; `limit` 0 is nothing.
-    RecordScan(RecordScanIn, HostListOut) |s, i, o| {
+    RecordScan(RecordScanIn, HostListOut) |s, i, o, cx| {
         let schema = match text_of(i.field(|i| &i.schema)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
-        match s.store.record_scan(schema, i.field(|i| &i.prefix).bytes(), i.limit) {
+        match step!(o, s.store.record_scan(cx, schema, i.field(|i| &i.prefix).bytes(), i.limit)) {
             Ok(rows) => {
                 let rows = &rows[..rows.len().min(i.limit as usize)];
                 let runs = rows.iter().map(|(k, v)| [k.as_slice(), v.as_slice()]);
@@ -1298,7 +1359,7 @@ slot!(
 
 slot!(
     /// `add_usage_batch` (slot 43): one `op_id`, the cells in order, atomically.
-    AddUsageBatch(AddUsageBatchIn, OutHead) |s, i, o| {
+    AddUsageBatch(AddUsageBatchIn, OutHead) |s, i, o, cx| {
         let mut cells = Vec::with_capacity(i.cells().len());
         for c in i.cells().iter() {
             let bucket = match text_of(c.field(|c| &c.bucket)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
@@ -1307,12 +1368,12 @@ slot!(
                 Err(e) => return refused(s, o, e),
             }
         }
-        op_answer(s, o, s.store.add_usage_batch(i.op_id, &cells))
+        op_answer(s, o, step!(o, s.store.add_usage_batch(cx, i.op_id, &cells)))
     }
 );
 slot!(
     /// `add_metering_batch` (slot 44).
-    AddMeteringBatch(OpBlobsIn, OutHead) |s, i, o| {
+    AddMeteringBatch(OpBlobsIn, OutHead) |s, i, o, cx| {
         let mut rows = Vec::with_capacity(i.records().len());
         for r in i.records().iter() {
             match json::<MeteringDelta>(r) {
@@ -1320,12 +1381,12 @@ slot!(
                 Err(e) => return refused(s, o, e),
             }
         }
-        op_answer(s, o, s.store.add_metering_batch(i.op_id, &rows))
+        op_answer(s, o, step!(o, s.store.add_metering_batch(cx, i.op_id, &rows)))
     }
 );
 slot!(
     /// `append_audit_batch` (slot 45).
-    AppendAuditBatch(OpBlobsIn, OutHead) |s, i, o| {
+    AppendAuditBatch(OpBlobsIn, OutHead) |s, i, o, cx| {
         let mut rows = Vec::with_capacity(i.records().len());
         for r in i.records().iter() {
             match json::<AuditRecord>(r) {
@@ -1333,12 +1394,12 @@ slot!(
                 Err(e) => return refused(s, o, e),
             }
         }
-        op_answer(s, o, s.store.append_audit_batch(i.op_id, &rows))
+        op_answer(s, o, step!(o, s.store.append_audit_batch(cx, i.op_id, &rows)))
     }
 );
 slot!(
     /// `window_caps` (slot 46): atomic per push; a conflict names its index first.
-    WindowCaps(WindowCapsIn, OutHead) |s, i, o| {
+    WindowCaps(WindowCapsIn, OutHead) |s, i, o, cx| {
         let mut caps = Vec::with_capacity(i.caps().len());
         for c in i.caps().iter() {
             match window_cap(c) {
@@ -1346,7 +1407,7 @@ slot!(
                 Err(e) => return refused(s, o, e),
             }
         }
-        match s.store.window_caps(i.op_id, &caps) {
+        match step!(o, s.store.window_caps(cx, i.op_id, &caps)) {
             Ok(()) => Outcome::Ready,
             Err(CapsRefused::CapConflict { index }) => {
                 o.error = s.text(Text::render(format_args!("{index}: {DIAG_CAP_CONFLICT}")));

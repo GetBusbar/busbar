@@ -150,6 +150,7 @@ extern "C" {
 #define BB_STORE_RESERVE_OK UINT32_C(0) /* [`ReserveOut::reason`]: granted (READY). */
 #define BB_STORE_RESERVE_EXHAUSTED UINT32_C(1) /* [`ReserveOut::reason`]: a cell's window has no headroom (`SliceError::Exhausted`). */
 #define BB_STORE_RESERVE_STALE_EPOCH UINT32_C(2) /* [`ReserveOut::reason`]: the node's epoch is behind the fleet's (`SliceError::StaleEpoch`). */
+#define BB_STORE_SLICE_TTL_MS UINT64_C(60000) /* THE STORE KIND'S EPOCH AND SLICE LIFE (ARCHITECT ruling on the store epoch spec). A store a */
 #define BB_STORE_RESERVE_UNAVAILABLE UINT32_C(3) /* [`ReserveOut::reason`]: the store could not be reached (`SliceError::Unavailable`). */
 #define BB_STORE_RESERVE_NO_CAP UINT32_C(4) /* [`ReserveOut::reason`]: a cell names a window no `window_caps` cap was pushed for — never an */
 #define BB_STORE_RESERVE_NO_FAILED_CELL UINT32_C(0xffffffff) /* [`ReserveOut::failed_cell`]: no cell is named (READY, or a failure no single cell caused). */

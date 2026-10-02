@@ -8,7 +8,6 @@
 use super::*;
 use busbar_contract::abi::sdk::store::{
     Cap, CapsRefused, Cell, CellKey, Dimension, Grant, OpRefused, OpResult, ReserveRefused,
-    StoreSlots,
 };
 use busbar_contract::abi::store::{OpId, OP_ID_RETENTION_SECS};
 use busbar_contract::kinds::RecordBytes;
@@ -50,20 +49,20 @@ fn reserve(
     cells: &[Cell<'_>],
 ) -> Result<Vec<Grant>, ReserveRefused> {
     let mut grants = Vec::new();
-    s.reserve(op, epoch, cells.iter().copied(), &mut grants)
+    s.v3_reserve(op, epoch, cells.iter().copied(), &mut grants)
         .map(|()| grants)
 }
 
 /// `slice_release`, its amounts collected.
 fn release(s: &MemoryStore, op: OpId, epoch: u64, items: &[(u64, u64)]) -> OpResult<Vec<u64>> {
     let mut released = Vec::new();
-    s.slice_release(op, epoch, items.iter().copied(), &mut released)
+    s.v3_slice_release(op, epoch, items.iter().copied(), &mut released)
         .map(|()| released)
 }
 
 fn capped(dimension: Dimension<'static>, c: u64) -> MemoryStore {
     let s = MemoryStore::new();
-    s.window_caps(op(1_000_000), &[cap(dimension, c, 1)])
+    s.v3_window_caps(op(1_000_000), &[cap(dimension, c, 1)])
         .expect("caps");
     s
 }
@@ -95,7 +94,7 @@ fn audit(seq: u64, action: &str) -> AuditRecord {
 #[test]
 fn the_memory_store_states_it_is_ephemeral_and_refuses_forks() {
     assert_eq!(
-        <MemoryStore as StoreSlots>::TAIL,
+        <MemoryStore as busbar_contract::abi::sdk::store::StoreSlots>::TAIL,
         busbar_contract::abi::sdk::store::Tail {
             ephemeral: true,
             durable_plane: false,
@@ -108,8 +107,8 @@ fn the_memory_store_states_it_is_ephemeral_and_refuses_forks() {
 fn a_replayed_usage_batch_applies_once() {
     let s = MemoryStore::new();
     let cells = [("k", 60, delta(1, 10))];
-    s.add_usage_batch(op(1), &cells).expect("first");
-    s.add_usage_batch(op(1), &cells)
+    s.v3_add_usage_batch(op(1), &cells).expect("first");
+    s.v3_add_usage_batch(op(1), &cells)
         .expect("replay answers the original");
     assert_eq!(s.get_usage("k", 60).expect("read").requests, 1);
 }
@@ -118,18 +117,18 @@ fn a_replayed_usage_batch_applies_once() {
 fn equal_bodies_under_distinct_op_ids_both_apply() {
     let s = MemoryStore::new();
     let cells = [("k", 60, delta(2, 4))];
-    s.add_usage_batch(op(1), &cells).expect("a");
-    s.add_usage_batch(op(2), &cells).expect("b");
+    s.v3_add_usage_batch(op(1), &cells).expect("a");
+    s.v3_add_usage_batch(op(2), &cells).expect("b");
     assert_eq!(s.get_usage("k", 60).expect("read").requests, 4);
 }
 
 #[test]
 fn a_reused_op_id_with_a_different_body_is_a_conflict_and_applies_nothing() {
     let s = MemoryStore::new();
-    s.add_usage_batch(op(1), &[("k", 60, delta(1, 1))])
+    s.v3_add_usage_batch(op(1), &[("k", 60, delta(1, 1))])
         .expect("first");
     assert_eq!(
-        s.add_usage_batch(op(1), &[("k", 60, delta(5, 5))]),
+        s.v3_add_usage_batch(op(1), &[("k", 60, delta(5, 5))]),
         Err(OpRefused::Conflict)
     );
     assert_eq!(s.get_usage("k", 60).expect("read").requests, 1);
@@ -138,9 +137,10 @@ fn a_reused_op_id_with_a_different_body_is_a_conflict_and_applies_nothing() {
 #[test]
 fn an_op_id_reused_across_slots_is_a_conflict() {
     let s = MemoryStore::new();
-    s.add_usage_op(op(1), "k", 60, &delta(1, 1)).expect("usage");
+    s.v3_add_usage_op(op(1), "k", 60, &delta(1, 1))
+        .expect("usage");
     assert_eq!(
-        s.append_audit_op(op(1), &audit(1, "a")),
+        s.v3_append_audit_op(op(1), &audit(1, "a")),
         Err(OpRefused::Conflict)
     );
     assert!(s.list_audit().expect("list").is_empty());
@@ -152,11 +152,11 @@ fn a_failed_write_is_not_recorded_so_a_retry_is_evaluated_afresh() {
     s.append_audit(&audit(1, "a")).expect("seed");
     // A fork FAILS and is not recorded under the op_id ...
     assert!(matches!(
-        s.append_audit_op(op(9), &audit(1, "forked")),
+        s.v3_append_audit_op(op(9), &audit(1, "forked")),
         Err(OpRefused::Failed(_))
     ));
     // ... so the same op_id with a different, applicable body is new, not a conflict.
-    s.append_audit_op(op(9), &audit(2, "b")).expect("fresh");
+    s.v3_append_audit_op(op(9), &audit(2, "b")).expect("fresh");
     assert_eq!(s.list_audit().expect("list").len(), 2);
 }
 
@@ -166,13 +166,13 @@ fn an_audit_batch_with_one_fork_applies_none_of_it() {
     s.append_audit(&audit(2, "a")).expect("seed");
     let batch = [audit(1, "x"), audit(2, "forked")];
     assert!(matches!(
-        s.append_audit_batch(op(1), &batch),
+        s.v3_append_audit_batch(op(1), &batch),
         Err(OpRefused::Failed(_))
     ));
     assert_eq!(s.list_audit().expect("list").len(), 1);
     // Two different records at one seq INSIDE the batch are a fork too.
     let inner = [audit(5, "x"), audit(5, "y")];
-    assert!(s.append_audit_batch(op(2), &inner).is_err());
+    assert!(s.v3_append_audit_batch(op(2), &inner).is_err());
     assert_eq!(s.list_audit().expect("list").len(), 1);
 }
 
@@ -189,7 +189,7 @@ fn a_usage_batch_applies_its_cells_in_order() {
         billable_requests: 1,
         models: vec![],
     };
-    s.add_usage_batch(op(1), &[("k", 60, neg), ("k", 60, pos)])
+    s.v3_add_usage_batch(op(1), &[("k", 60, neg), ("k", 60, pos)])
         .expect("batch");
     // The floor at zero makes order matter: -1 then +1 is 1, not 0.
     assert_eq!(s.get_usage("k", 60).expect("read").billable_requests, 1);
@@ -214,9 +214,9 @@ fn a_metering_batch_replay_applies_once() {
         priced_from_ms: 0,
         usage_units: Default::default(),
     };
-    s.add_metering_batch(op(1), std::slice::from_ref(&d))
+    s.v3_add_metering_batch(op(1), std::slice::from_ref(&d))
         .expect("a");
-    s.add_metering_batch(op(1), std::slice::from_ref(&d))
+    s.v3_add_metering_batch(op(1), std::slice::from_ref(&d))
         .expect("replay");
     let rows = s.list_metering(86_400).expect("list");
     assert_eq!(rows.iter().map(|r| r.requests).sum::<u64>(), 2);
@@ -284,7 +284,7 @@ fn an_overflowing_draw_is_exhausted_not_wrapped() {
 #[test]
 fn a_chain_draw_is_all_or_nothing() {
     let s = MemoryStore::new();
-    s.window_caps(
+    s.v3_window_caps(
         op(100),
         &[
             cap(Dimension::Requests, 10, 1),
@@ -352,7 +352,7 @@ fn a_refused_reserve_is_not_recorded() {
         reserve(&s, op(2), 0, &[cell(Dimension::Requests, 1)]),
         Err(ReserveRefused::Exhausted { cell: 0 })
     );
-    s.window_caps(op(3), &[cap(Dimension::Requests, 2, 2)])
+    s.v3_window_caps(op(3), &[cap(Dimension::Requests, 2, 2)])
         .expect("raise");
     // The same op_id is evaluated afresh and now fits.
     reserve(&s, op(2), 0, &[cell(Dimension::Requests, 1)]).expect("afresh");
@@ -401,16 +401,16 @@ fn releasing_an_unknown_slice_fails_and_applies_nothing() {
 #[test]
 fn window_caps_newest_generation_wins_and_equal_generation_conflicts() {
     let s = MemoryStore::new();
-    s.window_caps(op(1), &[cap(Dimension::Requests, 1, 5)])
+    s.v3_window_caps(op(1), &[cap(Dimension::Requests, 1, 5)])
         .expect("gen 5");
-    s.window_caps(op(2), &[cap(Dimension::Requests, 99, 4)])
+    s.v3_window_caps(op(2), &[cap(Dimension::Requests, 99, 4)])
         .expect("an older generation is ignored");
     assert_eq!(
         reserve(&s, op(3), 0, &[cell(Dimension::Requests, 2)]),
         Err(ReserveRefused::Exhausted { cell: 0 })
     );
     assert_eq!(
-        s.window_caps(
+        s.v3_window_caps(
             op(4),
             &[
                 cap(Dimension::Requests, 3, 6),
@@ -425,7 +425,7 @@ fn window_caps_newest_generation_wins_and_equal_generation_conflicts() {
         reserve(&s, op(5), 0, &[cell(Dimension::Requests, 2)]),
         Err(ReserveRefused::Exhausted { cell: 0 })
     );
-    s.window_caps(op(6), &[cap(Dimension::Requests, 3, 6)])
+    s.v3_window_caps(op(6), &[cap(Dimension::Requests, 3, 6)])
         .expect("gen 6");
     reserve(&s, op(7), 0, &[cell(Dimension::Requests, 2)]).expect("cap 3");
 }
@@ -434,13 +434,13 @@ fn window_caps_newest_generation_wins_and_equal_generation_conflicts() {
 fn an_op_id_is_forgotten_after_its_retention() {
     let s = MemoryStore::new();
     s.pin_clock(1_000);
-    s.add_usage_batch(op(1), &[("k", 60, delta(1, 1))])
+    s.v3_add_usage_batch(op(1), &[("k", 60, delta(1, 1))])
         .expect("a");
     s.pin_clock(1_000 + OP_ID_RETENTION_SECS);
     // Recording another op sweeps the expired one; the old op_id then reads as new.
-    s.add_usage_batch(op(2), &[("j", 60, delta(1, 1))])
+    s.v3_add_usage_batch(op(2), &[("j", 60, delta(1, 1))])
         .expect("b");
-    s.add_usage_batch(op(1), &[("k", 60, delta(1, 1))])
+    s.v3_add_usage_batch(op(1), &[("k", 60, delta(1, 1))])
         .expect("new again");
     assert_eq!(s.get_usage("k", 60).expect("read").requests, 2);
 }
@@ -450,19 +450,22 @@ fn append_batch_advances_the_stream_head_once_per_op() {
     let s = MemoryStore::new();
     let r = |b: u8| RecordBytes::new(vec![b]).expect("record");
     assert_eq!(
-        s.append_batch(op(1), "journal", &[r(1), r(2)])
+        s.v3_append_batch(op(1), "journal", &[r(1), r(2)])
             .expect("a")
             .seq,
         2
     );
     assert_eq!(
-        s.append_batch(op(1), "journal", &[r(1), r(2)])
+        s.v3_append_batch(op(1), "journal", &[r(1), r(2)])
             .expect("replay")
             .seq,
         2
     );
-    assert_eq!(s.append_batch(op(2), "journal", &[r(3)]).expect("b").seq, 3);
-    let heads = s.heads().expect("heads");
+    assert_eq!(
+        s.v3_append_batch(op(2), "journal", &[r(3)]).expect("b").seq,
+        3
+    );
+    let heads = s.v3_heads().expect("heads");
     assert_eq!(heads.len(), 1);
     assert_eq!(heads[0].0, "journal");
     assert_eq!(heads[0].1.seq, 3);
@@ -471,17 +474,38 @@ fn append_batch_advances_the_stream_head_once_per_op() {
 #[test]
 fn sessions_are_listed_per_principal_and_removed() {
     let s = MemoryStore::new();
-    s.session_put(1, "n1", "alice").expect("put");
-    s.session_put(2, "n2", "alice").expect("put");
-    s.session_put(3, "n1", "bob").expect("put");
+    s.v3_session_put(1, "n1", "alice").expect("put");
+    s.v3_session_put(2, "n2", "alice").expect("put");
+    s.v3_session_put(3, "n1", "bob").expect("put");
     assert_eq!(
-        s.sessions_for("alice").expect("list"),
+        s.v3_sessions_for("alice").expect("list"),
         vec![(1, "n1".to_string()), (2, "n2".to_string())]
     );
-    s.session_remove(1).expect("remove");
-    s.session_remove(1).expect("absent is Ok");
+    s.v3_session_remove(1).expect("remove");
+    s.v3_session_remove(1).expect("absent is Ok");
     assert_eq!(
-        s.sessions_for("alice").expect("list"),
+        s.v3_sessions_for("alice").expect("list"),
         vec![(2, "n2".to_string())]
     );
+}
+
+/// The store kind's shared cases, as a NODE-LOCAL store runs them: one constant epoch, slices that
+/// never expire, and a release that applies once per slice and closes it
+/// (`busbar_contract::testkit::store_v3`).
+struct SingleNode;
+
+impl busbar_contract::testkit::store_v3::Harness for SingleNode {
+    type Store = MemoryStore;
+    fn open(&self) -> MemoryStore {
+        MemoryStore::new()
+    }
+    fn now_ms(&self) -> u64 {
+        0
+    }
+    fn advance_ms(&self, _: u64) {}
+}
+
+#[test]
+fn the_single_node_rule_and_the_release_rule_hold() {
+    busbar_contract::testkit::store_v3::single_node_store(&SingleNode);
 }

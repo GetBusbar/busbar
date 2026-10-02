@@ -32,10 +32,16 @@ use busbar_contract::records::{
 // The build's store, named once: every subject below reaches it through this alias.
 use busbar_contract::slice::{bucket_all, CapDimension, Epoch, SliceId, SliceRequest, SliceStore};
 use busbar_plugin_loader::store_adapter::StoreAdapter;
-use busbar_store_memory as store_fixture;
+use fixture::store_fixture;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use store_fixture::MemoryStore;
+
+/// The build's store, reached by KIND: `Cargo.toml`'s `[package.metadata.busbar.both-ways]` row
+/// `store`, alone (`build.rs` writes `fixture_store.rs`). No source here names the instance.
+mod fixture {
+    include!(concat!(env!("OUT_DIR"), "/fixture_store.rs"));
+}
 
 // ── subjects: every door the build's store has ─────────────────────────────────────────────────
 
@@ -51,8 +57,9 @@ fn dropped_in() -> Option<Arc<dyn RecordStore>> {
     let exe = std::env::current_exe().ok()?;
     let profile_dir = exe.parent()?.parent()?;
     let name = format!(
-        "{}busbar_store_memory{}",
+        "{}{}{}",
         std::env::consts::DLL_PREFIX,
+        fixture::STORE_FIXTURE_CDYLIB,
         std::env::consts::DLL_SUFFIX
     );
     let found = [
@@ -848,6 +855,15 @@ mod v3 {
 
     pub use busbar_contract::abi::store::OpId;
 
+    /// This test process's `op_id` allocator: one counter, as the kernel's `door::op_id` is.
+    fn mint() -> OpId {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        OpId::from_parts(
+            0x3a11,
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
+        )
+    }
+
     fn bind_to(d: &Dispatcher) -> Bind {
         Bind {
             instance: Arc::from("the-instance"),
@@ -863,7 +879,7 @@ mod v3 {
         let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
         let row = LinkedRow::of(store_fixture::door).expect("the store states its Statement");
         let p = load_linked::<Store>(&row, bind_to(&d)).expect("door");
-        LoadedStore::open(p, d, b"{}", 3).expect("open")
+        LoadedStore::open(p, d, b"{}", mint).expect("open")
     }
 
     /// The same door dropped in (the `store_v3_door` example cdylib) through the same table;
@@ -887,7 +903,7 @@ mod v3 {
         // The signed manifest's rendering: the linked rlib's door, the same crate the cdylib is.
         let stated = rendering_of(store_fixture::door).expect("the store renders its Statement");
         let p = load_dropped::<Store>(&path, &stated, bind_to(&d)).expect("dropped door");
-        Some(LoadedStore::open(p, d, b"{}", 3).expect("open"))
+        Some(LoadedStore::open(p, d, b"{}", mint).expect("open"))
     }
 
     /// The window every `v3_*` test draws in (ms), and its bucket.

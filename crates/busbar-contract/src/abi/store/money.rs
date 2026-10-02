@@ -101,6 +101,32 @@ pub const RESERVE_OK: u32 = 0;
 pub const RESERVE_EXHAUSTED: u32 = 1;
 /// [`ReserveOut::reason`]: the node's epoch is behind the fleet's (`SliceError::StaleEpoch`).
 pub const RESERVE_STALE_EPOCH: u32 = 2;
+/// THE STORE KIND'S EPOCH AND SLICE LIFE (ARCHITECT ruling on the store epoch spec). A store a
+/// FLEET shares:
+///
+/// * (a) persists ONE fleet epoch (a `u64`, `0` before any reserve) that survives a restart. The one
+///   op that advances it is `reserve`: a reserve presenting an epoch above the stored one raises the
+///   stored epoch to it, atomically with its draw, and nothing ever lowers it. The kernel mints
+///   epochs; the store only fences.
+/// * (b) answers a `reserve` presenting an epoch BELOW the stored one FAILED [`RESERVE_STALE_EPOCH`],
+///   applying nothing and recording nothing under its `op_id`.
+/// * (c) grants every slice `valid_until_ms = now + SLICE_TTL_MS` (its own clock), never
+///   `u64::MAX`, and honours it: past `valid_until_ms` the slice is EXPIRED, and whatever of it is
+///   still unreturned goes back to its window's headroom (a later reserve can draw it).
+/// * `slice_release` ALWAYS applies, whatever the epoch (returning money is never refused), and
+///   returns each unit at most once: capped at the slice's remaining unreturned unspent, idempotent
+///   by `op_id`. A partial release leaves the slice open for the rest; it closes when nothing is
+///   left, a later release of it returns `0`, and expiry returns only what is still unreturned.
+///
+/// (d) A NODE-LOCAL store (Statement mark `MARK_EPHEMERAL`, one node) has no fleet: it holds one
+/// constant epoch, never answers [`RESERVE_STALE_EPOCH`] and may grant `valid_until_ms = u64::MAX`.
+/// That rule holds for a single node ONLY; a store a fleet shares follows (a)-(c). The shared
+/// conformance cases every durable store runs are `busbar_contract::testkit::store_v3`.
+///
+/// SLICE_TTL_MS is 60 s because the kernel names no slice refresh cadence to derive it from: it is
+/// the bound on the headroom a partitioned node's undrawn slices can strand before expiry returns it.
+pub const SLICE_TTL_MS: u64 = 60_000;
+
 /// [`ReserveOut::reason`]: the store could not be reached (`SliceError::Unavailable`).
 pub const RESERVE_UNAVAILABLE: u32 = 3;
 /// [`ReserveOut::reason`]: a cell names a window no `window_caps` cap was pushed for — never an
@@ -112,9 +138,9 @@ pub const RESERVE_NO_CAP: u32 = 4;
 /// Each cell draws from its `(bucket, pool, dimension, class_key, window_start)` slot, capped by
 /// the cap `window_caps` last set for it; one reserve is one all-or-nothing chain draw even across
 /// cells in different windows ("window caps" correction). ATOMIC: if ANY cell would grant 0, the
-/// store applies NOTHING and answers FAILED with a [`ReserveOut::reason`] and `grants_len == 0`. A node-local
-/// store (Statement mark `MARK_EPHEMERAL`) holds one constant epoch and never answers
-/// [`RESERVE_STALE_EPOCH`] (store_adapter.rs module doc, "Slices"). Deduped on `op_id`.
+/// store applies NOTHING and answers FAILED with a [`ReserveOut::reason`] and `grants_len == 0`. The
+/// epoch fences the draw and a grant's validity is bounded as [`SLICE_TTL_MS`] states (a node-local
+/// store's single-node rule is stated there too). Deduped on `op_id`.
 ///
 /// GRANT SIZE, PINNED TO 1.5.5 (STORE v3 MONEY RULINGS S5). 1.5.5 never granted PART of a draw:
 /// its admission checked every capped bucket of the chain and either charged all of them or
@@ -202,7 +228,8 @@ pub struct ReleaseItem {
 /// `op_id`.
 ///
 /// CLAMPED: the store returns to each slice at most what that slice has left, never more than it
-/// granted.
+/// granted. It ALWAYS applies, whatever the epoch, and a slice with nothing left returns `0`
+/// ([`SLICE_TTL_MS`]).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct SliceReleaseIn {
@@ -228,7 +255,7 @@ pub struct SliceReleaseIn {
 /// [`SliceReleaseIn::released`]). On READY the store has written, per item in order, the amount it
 /// actually took back after clamping, and `released_len == items_len`. READY with any other
 /// `released_len`, or an amount over the item's `unspent`, is FAULT. FAILED (the store could not be
-/// reached, a stale epoch, an unknown slice) applies nothing and writes nothing: `released_len == 0`
+/// reached, a slice it never granted) applies nothing and writes nothing: `released_len == 0`
 /// ([`super::check::check_slice_release`]).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]

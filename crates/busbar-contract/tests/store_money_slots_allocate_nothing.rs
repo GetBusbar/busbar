@@ -20,9 +20,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Op, OutHead, Outcome};
 use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut};
+use busbar_contract::abi::sdk::conn::Host;
 use busbar_contract::abi::sdk::door::slot_at;
 use busbar_contract::abi::sdk::store::{
-    Cap, CapsRefused, Cell, Grant, OpRefused, OpResult, ReserveRefused, StoreSlots, Tail,
+    Cap, CapsRefused, Cell, Grant, Op as StoreOp, OpResult, ReserveRefused, Scanned, Step,
+    StoreSlots, Tail,
 };
 use busbar_contract::abi::store::{
     CellGrant, OpId, Ops, ReleaseItem, ReserveIn, ReserveOut, SliceReleaseIn, SliceReleaseOut,
@@ -30,8 +32,8 @@ use busbar_contract::abi::store::{
 };
 use busbar_contract::kinds::{Head, RecordBytes};
 use busbar_contract::records::{
-    AuditRecord, MeteringDelta, MeteringRow, PlaneRecordRef, RecordStore, RecordStoreResult,
-    UsageDelta, UsageLedger, VirtualKey,
+    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
+    PlaneSelector, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
 };
 
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
@@ -66,33 +68,6 @@ static ALLOCATOR: Counting = Counting;
 /// is taken back. Nothing else is called.
 struct Flat;
 
-impl RecordStore for Flat {
-    fn put_key(&self, _: &VirtualKey) -> RecordStoreResult<()> {
-        Ok(())
-    }
-    fn get_key(&self, _: &str) -> RecordStoreResult<Option<VirtualKey>> {
-        Ok(None)
-    }
-    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-        Ok(Vec::new())
-    }
-    fn delete_key(&self, _: &str) -> RecordStoreResult<()> {
-        Ok(())
-    }
-    fn get_usage(&self, _: &str, _: u64) -> RecordStoreResult<UsageLedger> {
-        Ok(UsageLedger::default())
-    }
-    fn put_usage(&self, _: &str, _: u64, _: &UsageLedger) -> RecordStoreResult<()> {
-        Ok(())
-    }
-    fn add_metering(&self, _: &MeteringDelta) -> RecordStoreResult<()> {
-        Ok(())
-    }
-    fn list_metering(&self, _: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-        Ok(Vec::new())
-    }
-}
-
 impl StoreSlots for Flat {
     const TAIL: Tail = Tail {
         ephemeral: true,
@@ -100,85 +75,335 @@ impl StoreSlots for Flat {
         fork_refusal: false,
     };
 
-    fn open(_: &[u8]) -> Result<Self, String> {
+    fn validate(_: &[u8]) -> Result<(), String> {
+        Ok(())
+    }
+    fn open(_: &[u8], _: Option<Host>) -> Result<Self, String> {
         Ok(Self)
     }
-    fn add_usage_op(&self, _: OpId, _: &str, _: u64, _: &UsageDelta) -> OpResult<()> {
-        Ok(())
+    fn add_usage_op(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: OpId,
+        _: &str,
+        _: u64,
+        _: &UsageDelta,
+    ) -> Step<OpResult<()>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
     }
-    fn add_metering_op(&self, _: OpId, _: &MeteringDelta) -> OpResult<()> {
-        Ok(())
+    fn add_metering_op(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: OpId,
+        _: &MeteringDelta,
+    ) -> Step<OpResult<()>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
     }
-    fn append_audit_op(&self, _: OpId, _: &AuditRecord) -> OpResult<()> {
-        Ok(())
+    fn append_audit_op(&self, _: &mut StoreOp<'_>, _: OpId, _: &AuditRecord) -> Step<OpResult<()>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
     }
-    fn append_plane_record_op(&self, _: OpId, _: PlaneRecordRef<'_>) -> OpResult<()> {
-        Ok(())
+    fn append_plane_record_op(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: OpId,
+        _: PlaneRecordRef<'_>,
+    ) -> Step<OpResult<()>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
     }
-    fn append_batch(&self, _: OpId, _: &str, _: &[RecordBytes]) -> OpResult<Head> {
-        Err(OpRefused::Conflict)
+    fn append_batch(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: OpId,
+        _: &str,
+        _: &[RecordBytes],
+    ) -> Step<OpResult<Head>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
     }
-    fn heads(&self) -> Result<Vec<(String, Head)>, String> {
-        Ok(Vec::new())
+    fn heads(&self, _: &mut StoreOp<'_>) -> Step<Result<Vec<(String, Head)>, String>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
     }
-    fn session_put(&self, _: u64, _: &str, _: &str) -> Result<(), String> {
-        Ok(())
+    fn session_put(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: u64,
+        _: &str,
+        _: &str,
+    ) -> Step<Result<(), String>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
     }
-    fn session_remove(&self, _: u64) -> Result<(), String> {
-        Ok(())
+    fn session_remove(&self, _: &mut StoreOp<'_>, _: u64) -> Step<Result<(), String>> {
+        // The witness's plain crossing: the floor every money slot is measured against.
+        Step::Ready(Ok(()))
     }
-    fn sessions_for(&self, _: &str) -> Result<Vec<(u64, String)>, String> {
-        Ok(Vec::new())
+    fn sessions_for(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+    ) -> Step<Result<Vec<(u64, String)>, String>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
     }
-    fn record_put(&self, _: &str, _: &[u8], _: &[u8]) -> Result<(), String> {
-        Ok(())
+    fn record_put(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+        _: &[u8],
+        _: &[u8],
+    ) -> Step<Result<(), String>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
     }
-    fn record_get(&self, _: &str, _: &[u8]) -> Result<Option<RecordBytes>, String> {
-        Ok(None)
+    fn record_get(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+        _: &[u8],
+    ) -> Step<Result<Option<RecordBytes>, String>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
     }
     fn record_scan(
         &self,
+        _: &mut StoreOp<'_>,
         _: &str,
         _: &[u8],
         _: u32,
-    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, String> {
-        Ok(Vec::new())
+    ) -> Step<Result<Scanned, String>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
     }
     fn reserve<'c>(
         &self,
+        _: &mut StoreOp<'_>,
         _: OpId,
         _: u64,
         cells: impl Iterator<Item = Cell<'c>> + Clone,
         grants: &mut impl Extend<Grant>,
-    ) -> Result<(), ReserveRefused> {
+    ) -> Step<Result<(), ReserveRefused>> {
         grants.extend(cells.enumerate().map(|(n, c)| Grant {
             slice_id: n as u64 + 1,
             granted: c.amount,
             valid_until_ms: u64::MAX,
         }));
-        Ok(())
+        Step::Ready(Ok(()))
     }
     fn slice_release(
         &self,
+        _: &mut StoreOp<'_>,
         _: OpId,
         _: u64,
         items: impl Iterator<Item = (u64, u64)> + Clone,
         released: &mut impl Extend<u64>,
-    ) -> OpResult<()> {
+    ) -> Step<OpResult<()>> {
         released.extend(items.map(|(_, unspent)| unspent));
-        Ok(())
+        Step::Ready(Ok(()))
     }
-    fn add_usage_batch(&self, _: OpId, _: &[(&str, u64, UsageDelta)]) -> OpResult<()> {
-        Ok(())
+    fn add_usage_batch(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: OpId,
+        _: &[(&str, u64, UsageDelta)],
+    ) -> Step<OpResult<()>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
     }
-    fn add_metering_batch(&self, _: OpId, _: &[MeteringDelta]) -> OpResult<()> {
-        Ok(())
+    fn add_metering_batch(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: OpId,
+        _: &[MeteringDelta],
+    ) -> Step<OpResult<()>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
     }
-    fn append_audit_batch(&self, _: OpId, _: &[AuditRecord]) -> OpResult<()> {
-        Ok(())
+    fn append_audit_batch(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: OpId,
+        _: &[AuditRecord],
+    ) -> Step<OpResult<()>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
     }
-    fn window_caps(&self, _: OpId, _: &[Cap<'_>]) -> Result<(), CapsRefused> {
-        Ok(())
+    fn window_caps(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: OpId,
+        _: &[Cap<'_>],
+    ) -> Step<Result<(), CapsRefused>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn put_key(&self, _: &mut StoreOp<'_>, _: &VirtualKey) -> Step<RecordStoreResult<()>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn get_key(&self, _: &mut StoreOp<'_>, _: &str) -> Step<RecordStoreResult<Option<VirtualKey>>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn list_keys(&self, _: &mut StoreOp<'_>) -> Step<RecordStoreResult<Vec<VirtualKey>>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn delete_key(&self, _: &mut StoreOp<'_>, _: &str) -> Step<RecordStoreResult<()>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn scrub_key(&self, _: &mut StoreOp<'_>, _: &str) -> Step<RecordStoreResult<()>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn list_keys_since(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: u64,
+    ) -> Step<RecordStoreResult<Vec<VirtualKey>>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn get_usage(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+        _: u64,
+    ) -> Step<RecordStoreResult<UsageLedger>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn put_usage(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+        _: u64,
+        _: &UsageLedger,
+    ) -> Step<RecordStoreResult<()>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn list_metering(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: u64,
+    ) -> Step<RecordStoreResult<Vec<MeteringRow>>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn purge_windows_before(&self, _: &mut StoreOp<'_>, _: u64) -> Step<RecordStoreResult<u64>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn purge_metering_before(&self, _: &mut StoreOp<'_>, _: &str) -> Step<RecordStoreResult<u64>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn put_credential(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &CredentialSecret,
+    ) -> Step<RecordStoreResult<()>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn put_key_with_credential(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &VirtualKey,
+        _: &CredentialSecret,
+    ) -> Step<RecordStoreResult<()>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn list_credentials(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+    ) -> Step<RecordStoreResult<Vec<CredentialMeta>>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn lookup_credential_secret(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+        _: &str,
+    ) -> Step<RecordStoreResult<Option<CredentialSecret>>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn revoke_credential(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+        _: &str,
+    ) -> Step<RecordStoreResult<()>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn list_credentials_since(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: u64,
+    ) -> Step<RecordStoreResult<Vec<CredentialSecret>>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn list_audit(&self, _: &mut StoreOp<'_>) -> Step<RecordStoreResult<Vec<AuditRecord>>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn add_denylist(&self, _: &mut StoreOp<'_>, _: &str, _: &str) -> Step<RecordStoreResult<()>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn list_denylist(&self, _: &mut StoreOp<'_>) -> Step<RecordStoreResult<Vec<String>>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn list_audit_tail(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: u64,
+    ) -> Step<RecordStoreResult<Vec<AuditRecord>>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn upsert_plane_record(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: PlaneRecordRef<'_>,
+    ) -> Step<RecordStoreResult<()>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn get_plane_record(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+        _: &str,
+    ) -> Step<RecordStoreResult<Option<Vec<u8>>>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn list_plane_records(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+        _: &PlaneSelector<'_>,
+    ) -> Step<RecordStoreResult<Vec<Vec<u8>>>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn list_plane_record_parents(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+    ) -> Step<RecordStoreResult<Vec<String>>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn purge_plane_records_before(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+        _: u64,
+    ) -> Step<RecordStoreResult<u64>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn delete_plane_record(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+        _: &str,
+    ) -> Step<RecordStoreResult<()>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn redeem_plane_token(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+        _: &str,
+        _: u64,
+        _: u64,
+    ) -> Step<RecordStoreResult<bool>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
+    }
+    fn plane_token_live(
+        &self,
+        _: &mut StoreOp<'_>,
+        _: &str,
+        _: &str,
+        _: u64,
+        _: u64,
+    ) -> Step<RecordStoreResult<bool>> {
+        unreachable!("the money witness reaches only open, session_remove and the money slots")
     }
 }
 
