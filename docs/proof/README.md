@@ -39,5 +39,5 @@ in the file name, so one checkout serves all three deploys.
 ## The files in this directory
 
 `dev.json` / `index.json` committed here are the seed the collator and the public-safety guard were
-developed against, and are what `node scripts/check-proof-manifest-public.mjs` (no arguments) checks
-locally. Nothing refreshes them; the live manifests are on the `proof-manifests` branch.
+developed against, and are what `cargo xtask proof-manifest --check` (no arguments; every `docs/proof/*.json`
+except `index.json`) checks locally. Nothing refreshes them; the live manifests are on the `proof-manifests` branch.

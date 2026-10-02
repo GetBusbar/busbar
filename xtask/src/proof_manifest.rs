@@ -9,7 +9,7 @@
 //! PUBLIC-SAFE BY CONSTRUCTION. The manifest carries verdicts, counts, gate names, test-function
 //! names, golden filenames, and field ids -- all already public in the docs/CHANGELOG the marketing
 //! site renders. It carries NO source, NO secrets, NO file contents, NO internal URLs. The companion
-//! guard `scripts/check-proof-manifest-public.mjs` fails the build if anything source-like appears.
+//! guard (`cargo xtask proof-manifest --check`, below) fails the build if anything source-like appears.
 //!
 //! HONESTY RULE (carried from the removed `qa/segments.toml`). A source that did not actually run
 //! renders `unknown`, never green. A report-only gate (plane-grep today) renders `report-only`,
@@ -22,6 +22,8 @@
 //!     --sha <40hex> --run-id 123 --run-url https://github.com/.../runs/123 \
 //!     --staged-json /path/to/staged.json --reports-dir testing --run-cargo
 //! cargo xtask proof-manifest --selftest
+//! cargo xtask proof-manifest --check [docs/proof/dev.json ...]   # the public-safety guard
+//! cargo xtask proof-manifest --check-selftest
 //! ```
 //!
 //! Flags: `--version` (release/branch label, also `release.version`/`tag`), `--out`, `--repo-root`,
@@ -2060,13 +2062,616 @@ fn any_file_mentions(dir: &Path, needle: &str) -> bool {
     false
 }
 
+// ── the public-safety guard (`--check`, `--check-selftest`) ───────────────────────────────────────
+//
+// (Ported from the retired Node guard; its messages and exit codes are kept.) The manifest is rendered PUBLIC by the
+// marketing site while the busbar source stays PRIVATE. This guard is fail-closed: it asserts the
+// manifest carries ONLY verdicts, counts, gate/test/field NAMES and evidence POINTERS -- and
+// NOTHING source-like. Any smell of source, secrets, or file CONTENTS fails the build.
+//
+// NOTHING TO CHECK IS NOT NOTHING TO LEAK. A guard handed no manifest used to print "no manifest
+// files found to check." and exit 0 -- its PASS, on the one input it never proved it had.
+// docs/proof/ renamed, emptied, or written to a different path by the collator all reach that
+// line, and all look exactly like a manifest set that is clean. Zero manifests is RED.
+
+/// THE KEY SET OF THE PUBLIC MANIFEST, defined ONCE. The checker whitelists exactly these keys
+/// anywhere in a manifest tree, and the writer ([`collate`]) refuses to write a manifest holding a
+/// key outside it ([`unknown_keys`]), so the collator can only emit what the guard accepts. (The
+/// hand list this replaces lacked `evidence`, `evidence_present` and `shared_with`, which the
+/// collator writes: a freshly generated manifest was rejected.)
+pub const PUBLIC_KEYS: &[&str] = &[
+    "schema_version",
+    "release",
+    "provenance",
+    "verdicts",
+    // release block
+    "version",
+    "tag",
+    "qa_sha",
+    "staging_tag",
+    "digest",
+    "run_id",
+    "run_url",
+    "recorded_at",
+    // provenance block
+    "content_digest",
+    "collator",
+    // verdict + source
+    "class",
+    "title",
+    "status",
+    "evidence_count",
+    "evidence_total",
+    "unit",
+    "meter",
+    "sources",
+    "id",
+    "kind",
+    "count",
+    "total",
+    "lane_count",
+    "breakdown",
+    "selftest",
+    "runs_in",
+    "note",
+    "drilldown",
+    "planes",
+    "legs",
+    "dialects",
+    "carried",
+    "waived",
+    "missing",
+    "by_dialect",
+    "waivers",
+    "evidence",
+    "evidence_present",
+    "shared_with",
+    // drilldown + waiver
+    "type",
+    "path",
+    "artifact",
+    "lanes",
+    "lane",
+    "cases",
+    "field",
+    "date",
+    "reason",
+];
+
+const STATUS_ENUM: &[&str] = &[
+    "pass",
+    "fail",
+    "report-only",
+    "reserved",
+    "unknown",
+    "present",
+];
+
+/// Fields whose VALUE is a map with dynamic keys (category / dialect / plane / conformance-leg
+/// names). Their keys are not whitelisted individually; each key must be a short safe token and
+/// each value a number or a status string.
+const VALUE_MAP_KEYS: &[&str] = &["breakdown", "planes", "legs", "dialects", "by_dialect"];
+
+/// Source-like smells that must never appear in any string value: (the JS literal the message
+/// quotes, the pattern for [`crate::rx`]).
+const SOURCE_SMELLS: &[(&str, &str)] = &[
+    (r"/\bfn\s+\w+\s*\(/", r"\bfn\s+\w+\s*\("), // a Rust fn signature body
+    (r"/\bimpl\s+\w/", r"\bimpl\s+\w"),         // impl block
+    (r"/\blet\s+\w+\s*=/", r"\blet\s+\w+\s*="), // rust/js binding
+    (r"/\buse\s+busbar_/", r"\buse\s+busbar_"), // a use import
+    (r"/=>|::<|\bunsafe\b/", r"=>|::<|\bunsafe\b"), // rust operators / unsafe
+    (r"/-----BEGIN [A-Z ]+-----/", r"-----BEGIN [A-Z ]+-----"), // PEM key
+    (r"/\bAKIA[0-9A-Z]{16}\b/", r"\bAKIA[0-9A-Z]{16}\b"), // AWS access key id
+    (
+        r"/\bxox[baprs]-[0-9A-Za-z-]+/",
+        r"\bxox[baprs]-[0-9A-Za-z-]+",
+    ), // slack token
+    (r"/\bghp_[0-9A-Za-z]{20,}/", r"\bghp_[0-9A-Za-z]{20,}"), // github PAT
+    (
+        r"/\bBearer\s+[A-Za-z0-9._-]{20,}/i",
+        r"(?i)\bBearer\s+[A-Za-z0-9._-]{20,}",
+    ),
+    (
+        r"/\bhttps?:\/\/(localhost|127\.0\.0\.1|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/",
+        r"\bhttps?://(localhost|127\.0\.0\.1|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)",
+    ), // internal URLs
+    (
+        r"/password|secret|api[_-]?key|token\s*[:=]/i",
+        r"(?i)password|secret|api[_-]?key|token\s*[:=]",
+    ),
+];
+
+/// The only URL space allowed in `release.run_url` (public GitHub Actions), or empty.
+/// `^https://github.com/GetBusbar/busbar/actions(/|$)|^$`.
+fn run_url_ok(u: &str) -> bool {
+    match u.strip_prefix("https://github.com/GetBusbar/busbar/actions") {
+        Some(rest) => rest.is_empty() || rest.starts_with('/'),
+        None => u.is_empty(),
+    }
+}
+
+fn is_safe_token(k: &str) -> bool {
+    !k.is_empty()
+        && k.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+}
+
+/// `JSON.stringify` of a string (non-ASCII left literal, as JS does).
+fn js_str(v: &str) -> String {
+    let mut o = String::from("\"");
+    for c in v.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
+            '\t' => o.push_str("\\t"),
+            '\u{8}' => o.push_str("\\b"),
+            '\u{c}' => o.push_str("\\f"),
+            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+/// `JSON.stringify(v)`; a missing value (JS `undefined`) renders `undefined`.
+fn js_json(v: Option<&Json>) -> String {
+    match v {
+        None => "undefined".into(),
+        Some(Json::Str(x)) => js_str(x),
+        Some(other) => dumps(other, None, false),
+    }
+}
+
+/// A template-literal `${v}`: strings raw, a missing value `undefined`.
+fn js_plain(v: Option<&Json>) -> String {
+    match v {
+        None => "undefined".into(),
+        Some(Json::Str(x)) => x.clone(),
+        Some(Json::Null) => "null".into(),
+        Some(other) => dumps(other, None, false),
+    }
+}
+
+fn is_status(v: Option<&Json>) -> bool {
+    matches!(v, Some(Json::Str(x)) if STATUS_ENUM.contains(&x.as_str()))
+}
+
+struct Guard {
+    smells: Vec<(&'static str, crate::rx::Regex)>,
+    errors: Vec<String>,
+}
+
+impl Guard {
+    fn new() -> Guard {
+        let smells = SOURCE_SMELLS
+            .iter()
+            .map(|(shown, pat)| {
+                let re = crate::rx::Regex::new(pat)
+                    .unwrap_or_else(|e| panic!("source smell {shown} does not compile: {e}"));
+                (*shown, re)
+            })
+            .collect();
+        Guard {
+            smells,
+            errors: Vec::new(),
+        }
+    }
+
+    fn fail(&mut self, wher: &str, msg: &str) {
+        self.errors.push(format!("{wher}: {msg}"));
+    }
+
+    fn check_string(&mut self, wher: &str, v: &str) {
+        for i in 0..self.smells.len() {
+            if self.smells[i].1.is_match_str(v) {
+                let cut: String = js_str(v).chars().take(80).collect();
+                let shown = self.smells[i].0;
+                self.fail(
+                    wher,
+                    &format!("value looks source-like / secret-like (matched {shown}): {cut}"),
+                );
+            }
+        }
+        // A multi-line string is a strong smell of embedded file contents.
+        if v.contains('\n') {
+            self.fail(wher, "multi-line string (embedded file contents?)");
+        }
+    }
+
+    fn check_value_map(&mut self, wher: &str, node: &Json) {
+        let Json::Object(o) = node else {
+            self.fail(wher, "expected an object map of name -> count/status");
+            return;
+        };
+        for (k, v) in o.iter() {
+            if !is_safe_token(k) || k.chars().count() > 40 {
+                self.fail(
+                    wher,
+                    &format!("map key {} is not a short safe token", js_str(k)),
+                );
+            }
+            match v {
+                Json::Int(_) | Json::Float(_) => continue,
+                Json::Str(x) if STATUS_ENUM.contains(&x.as_str()) => continue,
+                _ => {}
+            }
+            self.fail(
+                &format!("{wher}.{k}"),
+                &format!(
+                    "map value must be a number or status string, got {}",
+                    js_json(Some(v))
+                ),
+            );
+        }
+    }
+
+    fn walk(&mut self, wher: &str, node: &Json) {
+        match node {
+            Json::Null | Json::Bool(_) | Json::Int(_) | Json::Float(_) => {}
+            Json::Str(x) => self.check_string(wher, x),
+            Json::Array(a) => {
+                for (i, v) in a.iter().enumerate() {
+                    self.walk(&format!("{wher}[{i}]"), v);
+                }
+            }
+            Json::Object(o) => {
+                for (k, v) in o.iter() {
+                    if !PUBLIC_KEYS.contains(&k) {
+                        self.fail(
+                            wher,
+                            &format!("unexpected key {} (not in the public whitelist)", js_str(k)),
+                        );
+                    }
+                    if VALUE_MAP_KEYS.contains(&k) {
+                        self.check_value_map(&format!("{wher}.{k}"), v);
+                        continue;
+                    }
+                    self.walk(&format!("{wher}.{k}"), v);
+                }
+            }
+        }
+    }
+
+    /// `checkManifest` over an already-parsed document; `file` is the label used in the messages
+    /// and `base` the basename the tree walk is rooted at.
+    fn check_doc(&mut self, file: &str, base: &str, m: &Json) {
+        let field = |k: &str| match m {
+            Json::Object(o) => o.get(k),
+            _ => None,
+        };
+        if !matches!(field("schema_version"), Some(Json::Str(x)) if x == "1") {
+            self.fail(
+                file,
+                &format!(
+                    "schema_version must be \"1\", got {}",
+                    js_json(field("schema_version"))
+                ),
+            );
+        }
+        let verdicts: &[Json] = match field("verdicts") {
+            Some(Json::Array(a)) => a,
+            _ => &[],
+        };
+        if verdicts.is_empty() {
+            self.fail(file, "verdicts[] missing or empty");
+        }
+        let run_url = match field("release") {
+            Some(Json::Object(r)) => match r.get("run_url") {
+                None | Some(Json::Null) => String::new(),
+                Some(v) => js_plain(Some(v)),
+            },
+            _ => String::new(),
+        };
+        if !run_url_ok(&run_url) {
+            self.fail(
+                file,
+                &format!("release.run_url is not a public GetBusbar Actions URL: {run_url}"),
+            );
+        }
+        // statuses must be from the closed enum
+        for v in verdicts {
+            let get = |x: &'_ Json, k: &str| match x {
+                Json::Object(o) => o.get(k).cloned(),
+                _ => None,
+            };
+            let st = get(v, "status");
+            if !is_status(st.as_ref()) {
+                self.fail(
+                    file,
+                    &format!(
+                        "verdict {}: illegal status {}",
+                        js_plain(get(v, "class").as_ref()),
+                        js_json(st.as_ref())
+                    ),
+                );
+            }
+            if let Some(Json::Array(srcs)) = get(v, "sources") {
+                for src in &srcs {
+                    let st = get(src, "status");
+                    if !is_status(st.as_ref()) {
+                        self.fail(
+                            file,
+                            &format!(
+                                "source {}: illegal status {}",
+                                js_plain(get(src, "id").as_ref()),
+                                js_json(st.as_ref())
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        self.walk(base, m);
+    }
+
+    /// `checkManifest` over a file on disk.
+    fn check_file(&mut self, file: &Path) {
+        let label = file.display().to_string();
+        let base = file
+            .file_name()
+            .map_or(label.clone(), |n| n.to_string_lossy().into_owned());
+        let parsed = std::fs::read(file)
+            .map_err(|e| e.to_string())
+            .and_then(|b| String::from_utf8(b).map_err(|e| e.to_string()))
+            .and_then(|t| json_lite::parse(&t));
+        match parsed {
+            Err(e) => self.fail(&label, &format!("not valid JSON: {e}")),
+            Ok(m) => self.check_doc(&label, &base, &m),
+        }
+    }
+}
+
+/// Every key in a manifest tree that is not in [`PUBLIC_KEYS`] (the dynamic-keyed value maps are
+/// not descended into, exactly as the checker). The writer calls this before it writes.
+fn unknown_keys(node: &Json) -> Vec<String> {
+    let mut out = Vec::new();
+    fn go(node: &Json, out: &mut Vec<String>) {
+        match node {
+            Json::Array(a) => a.iter().for_each(|v| go(v, out)),
+            Json::Object(o) => {
+                for (k, v) in o.iter() {
+                    if !PUBLIC_KEYS.contains(&k) {
+                        out.push(k.to_string());
+                    }
+                    if !VALUE_MAP_KEYS.contains(&k) {
+                        go(v, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    go(node, &mut out);
+    out
+}
+
+/// The one place the run's verdict is decided, so `--check-selftest` can prove the empty case
+/// rather than restate it. Prints to stderr; returns the exit code.
+fn check_verdict(files: usize, errors: &[String], label: &str) -> i32 {
+    if files == 0 {
+        eprintln!(
+            "check-proof-manifest-public: FAIL -- no manifest file was checked ({label}).\n\
+             \x20 A public-safety guard handed nothing to read has proven nothing about what is published.\n\
+             \x20 Zero manifests is how docs/proof/ being renamed, emptied, or written to a different path\n\
+             \x20 looks from here, and it is indistinguishable from a manifest set that is clean. If the\n\
+             \x20 manifests legitimately moved, point this guard at their new home in a reviewed diff."
+        );
+        return 1;
+    }
+    if !errors.is_empty() {
+        eprintln!("check-proof-manifest-public: FAIL -- the manifest is not public-safe:");
+        for e in errors {
+            eprintln!("  - {e}");
+        }
+        return 1;
+    }
+    eprintln!(
+        "check-proof-manifest-public: PASS -- {files} manifest(s) are verdicts-only and public-safe."
+    );
+    0
+}
+
+/// The manifests `--check` reads with no arguments: every `docs/proof/*.json` except `index.json`.
+fn default_manifests(root: &Path) -> Vec<PathBuf> {
+    let dir = root.join("docs/proof");
+    let mut v: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name().is_some_and(|n| {
+                        let n = n.to_string_lossy();
+                        n.ends_with(".json") && n != "index.json"
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+/// `--check [<manifest.json>...]`.
+fn check_main(root: &Path, files: &[String]) -> i32 {
+    let (paths, wher): (Vec<PathBuf>, String) = if files.is_empty() {
+        (
+            default_manifests(root),
+            root.join("docs/proof").display().to_string(),
+        )
+    } else {
+        (
+            files.iter().map(PathBuf::from).collect(),
+            "explicit arguments".to_string(),
+        )
+    };
+    let mut g = Guard::new();
+    for p in &paths {
+        g.check_file(p);
+    }
+    check_verdict(paths.len(), &g.errors, &wher)
+}
+
+fn min_good() -> Json {
+    obj(vec![
+        ("schema_version", s("1")),
+        (
+            "release",
+            obj(vec![
+                ("version", s("1.6.0")),
+                (
+                    "run_url",
+                    s("https://github.com/GetBusbar/busbar/actions/runs/1"),
+                ),
+            ]),
+        ),
+        (
+            "verdicts",
+            Json::Array(vec![obj(vec![
+                ("class", s("gates")),
+                ("title", s("gates")),
+                ("status", s("pass")),
+                ("count", Json::Int(3)),
+            ])]),
+        ),
+    ])
+}
+
+fn with_top(doc: &Json, key: &str, v: Json) -> Json {
+    let mut d = doc.clone();
+    if let Some(o) = d.as_object_mut() {
+        o.insert(key, v);
+    }
+    d
+}
+
+fn with_verdict_note(doc: &Json, note: &str) -> Json {
+    let mut v0 = doc.get("verdicts").as_array().unwrap()[0].clone();
+    v0.as_object_mut().unwrap().insert("note", s(note));
+    with_top(doc, "verdicts", Json::Array(vec![v0]))
+}
+
+/// Every `--check-selftest` case: (name, document, expects a refusal).
+fn check_cases() -> Vec<(&'static str, Json, bool)> {
+    let good = min_good();
+    vec![
+        ("a clean verdicts-only manifest", good.clone(), false),
+        (
+            "an embedded Rust fn signature",
+            with_verdict_note(&good, "fn resolve_hook(x: &T) {"),
+            true,
+        ),
+        (
+            "an embedded multi-line blob",
+            with_verdict_note(&good, "line one\nline two"),
+            true,
+        ),
+        (
+            "a leaked bearer token",
+            with_verdict_note(&good, "Bearer abcdefghijklmnopqrstuvwxyz012345"),
+            true,
+        ),
+        (
+            "a key that is not on the public whitelist",
+            with_top(&good, "source_text", s("anything at all")),
+            true,
+        ),
+        (
+            "an internal run_url",
+            with_top(
+                &good,
+                "release",
+                obj(vec![("run_url", s("https://10.0.0.4/actions"))]),
+            ),
+            true,
+        ),
+        (
+            "an illegal verdict status",
+            with_top(
+                &good,
+                "verdicts",
+                Json::Array(vec![obj(vec![
+                    ("class", s("c")),
+                    ("status", s("probably")),
+                ])]),
+            ),
+            true,
+        ),
+        (
+            "a manifest with no verdicts at all",
+            with_top(&good, "verdicts", Json::Array(vec![])),
+            true,
+        ),
+        (
+            "the wrong schema_version",
+            with_top(&good, "schema_version", s("2")),
+            true,
+        ),
+    ]
+}
+
+/// The errors the guard reports for one document.
+fn check_errors(doc: &Json) -> Vec<String> {
+    let mut g = Guard::new();
+    g.check_doc("case.json", "case.json", doc);
+    g.errors
+}
+
+/// `--check-selftest`: a guard that has never been watched refuse is not a guard. Drives the REAL
+/// checker over fixtures whose verdict is known; both directions are proven (each smell fires AND
+/// the clean twin stays silent, or a guard that rejected everything would look correct).
+fn check_selftest() -> i32 {
+    let cases = check_cases();
+    let mut bad = 0;
+    for (name, doc, want) in &cases {
+        let errs = check_errors(doc);
+        let got = !errs.is_empty();
+        let word = if *want { "REFUSED" } else { "accepted" };
+        if got == *want {
+            eprintln!("  ok       {word}: {name}");
+        } else {
+            eprintln!(
+                "  FAILED   {name}: wanted {}, got {}",
+                if *want { "a refusal" } else { "silence" },
+                if errs.is_empty() {
+                    "silence".to_string()
+                } else {
+                    errs.join("; ")
+                }
+            );
+            bad += 1;
+        }
+    }
+    // THE VACUOUS PASS ITSELF.
+    if check_verdict(0, &[], "selftest") == 0 {
+        eprintln!(
+            "  FAILED   an EMPTY manifest set was accepted; the guard passes having read nothing"
+        );
+        bad += 1;
+    } else {
+        eprintln!("  ok       REFUSED: an empty manifest set is not a public-safe manifest set");
+    }
+    if bad > 0 {
+        eprintln!("\ncheck-proof-manifest-public selftest: RED ({bad} case(s) failed)");
+        return 1;
+    }
+    eprintln!(
+        "\ncheck-proof-manifest-public selftest: GREEN ({} cases)",
+        cases.len() + 1
+    );
+    0
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────────────────────────
 
 const USAGE: &str = "\
 usage: cargo xtask proof-manifest [--selftest] [--version V] [--out FILE] [--repo-root DIR]
        [--sha SHA] [--run-id ID] [--run-url URL] [--staged-json FILE] [--reports-dir DIR]
        [--hits-dir DIR] [--run-cargo] [--run-parity] [--run-composability]
-       [--mark ID=STATUS]... [--index] [--print]";
+       [--mark ID=STATUS]... [--index] [--print]
+       cargo xtask proof-manifest --check [MANIFEST.json ...] | --check-selftest";
 
 #[derive(Default)]
 struct Args {
@@ -2143,6 +2748,14 @@ fn resolve(p: &str) -> PathBuf {
 /// The entry point (`cargo xtask proof-manifest …`). `default_root` is the workspace root, the
 /// stand-in for "the script's parent's parent".
 pub fn main(default_root: &Path, argv: &[String]) -> i32 {
+    // The public-safety guard: `--check` takes positional manifest paths, so it is dispatched
+    // before the collator's flag parser.
+    if argv.iter().any(|a| a == "--check-selftest") {
+        return check_selftest();
+    }
+    if argv.first().is_some_and(|a| a == "--check") {
+        return check_main(&resolve(&default_root.display().to_string()), &argv[1..]);
+    }
     let args = match parse_args(argv) {
         Ok(a) => a,
         Err(e) => {
@@ -2232,6 +2845,14 @@ fn collate(root: &Path, args: &Args, version: &str, out: &str) -> Result<i32, St
     }
 
     let manifest = assemble(verdicts, &args.marks, &rel, COLLATOR);
+    // The writer can only emit keys the guard accepts (one set: PUBLIC_KEYS).
+    let stray = unknown_keys(&manifest);
+    if !stray.is_empty() {
+        return Err(format!(
+            "REFUSING to write a manifest with key(s) outside the public key set: {}",
+            stray.join(", ")
+        ));
+    }
     std::fs::write(&out_path, dumps(&manifest, Some(2), false) + "\n")
         .map_err(|e| format!("{}: {e}", out_path.display()))?;
     eprintln!("proof-manifest: wrote {}", out_path.display());
@@ -2587,5 +3208,257 @@ mod tests {
         assert!(a.print && !a.index);
         assert!(parse_args(&["--bogus".to_string()]).is_err());
         assert!(parse_args(&["--version".to_string()]).is_err());
+    }
+
+    // ── the public-safety guard ──────────────────────────────────────────────────────────────────
+
+    fn repo_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf()
+    }
+
+    /// A manifest built the collator's own way (`assemble`, then the real `dumps` renderer and a
+    /// re-parse), from the real subprocess-free verdict producers on this tree plus synthetic
+    /// classes whose sources carry `evidence`/`evidence_present` and are marked from sibling jobs
+    /// (which adds `note` and `shared_with`).
+    fn fresh_manifest() -> Json {
+        let root = repo_root();
+        let mut verdicts = vec![
+            verdict_byte_identity(&root, false),
+            verdict_composability(&root, false),
+            verdict_field_coverage(&root, false).unwrap(),
+            verdict_conformance(&root, None),
+            class(
+                "gates",
+                vec![
+                    src("gate-a", "unknown", Some(("xtask/src/gates/a.rs", true))),
+                    src("gate-b", "unknown", Some(("xtask/src/gates/b.rs", true))),
+                    src("gate-c", "unknown", Some(("xtask/src/gates/c.rs", false))),
+                    src("gate-d", "unknown", None),
+                ],
+            ),
+        ];
+        for v in &mut verdicts {
+            assert!(v.get("class").as_str().is_some());
+        }
+        let rel = Release {
+            version: "dev".into(),
+            tag: s("dev"),
+            qa_sha: s("0123456789abcdef0123456789abcdef01234567"),
+            staging_tag: Json::Null,
+            digest: Json::Null,
+            run_id: "1".into(),
+            run_url: "https://github.com/GetBusbar/busbar/actions/runs/1".into(),
+            recorded_at: "2026-01-02T03:04:05Z".into(),
+        };
+        let marks: Vec<String> = ["gate-a", "gate-b", "gate-c", "gate-d"]
+            .iter()
+            .map(|g| format!("{g}=success"))
+            .collect();
+        let m = assemble(verdicts, &marks, &rel, COLLATOR);
+        json_lite::parse(&(dumps(&m, Some(2), false) + "\n")).unwrap()
+    }
+
+    fn all_keys(node: &Json, out: &mut std::collections::BTreeSet<String>) {
+        match node {
+            Json::Array(a) => a.iter().for_each(|v| all_keys(v, out)),
+            Json::Object(o) => {
+                for (k, v) in o.iter() {
+                    out.insert(k.to_string());
+                    if !VALUE_MAP_KEYS.contains(&k) {
+                        all_keys(v, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn fresh_manifest_passes_the_checker() {
+        let m = fresh_manifest();
+        let mut keys = std::collections::BTreeSet::new();
+        all_keys(&m, &mut keys);
+        // The fixture really carries the keys the old hand list lacked.
+        for k in ["evidence", "evidence_present", "shared_with"] {
+            assert!(keys.contains(k), "fixture lacks {k}");
+        }
+        assert_eq!(check_errors(&m), Vec::<String>::new());
+        assert!(unknown_keys(&m).is_empty());
+    }
+
+    #[test]
+    fn every_key_the_writer_emits_is_in_the_shared_set() {
+        let mut keys = std::collections::BTreeSet::new();
+        all_keys(&fresh_manifest(), &mut keys);
+        for k in &keys {
+            assert!(PUBLIC_KEYS.contains(&k.as_str()), "writer emitted {k}");
+        }
+        // The shared set has no duplicates.
+        let uniq: std::collections::BTreeSet<_> = PUBLIC_KEYS.iter().collect();
+        assert_eq!(uniq.len(), PUBLIC_KEYS.len());
+    }
+
+    #[test]
+    fn writer_refuses_a_key_outside_the_shared_set() {
+        let m = with_top(&fresh_manifest(), "source_text", s("x"));
+        assert_eq!(unknown_keys(&m), ["source_text"]);
+    }
+
+    #[test]
+    fn unknown_key_fails_and_names_the_key() {
+        let m = with_top(&fresh_manifest(), "mystery_key", s("x"));
+        let errs = check_errors(&m);
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("unexpected key \"mystery_key\" (not in the public whitelist)")),
+            "{errs:?}"
+        );
+        // Nested, inside a source.
+        let mut m = fresh_manifest();
+        let srcs = m.as_object_mut().unwrap().get_mut("verdicts").unwrap();
+        if let Json::Array(vs) = srcs {
+            if let Some(Json::Array(ss)) = vs[0].as_object_mut().unwrap().get_mut("sources") {
+                ss[0].as_object_mut().unwrap().insert("deep_key", s("x"));
+            }
+        }
+        assert!(check_errors(&m).iter().any(|e| e.contains("\"deep_key\"")));
+    }
+
+    #[test]
+    fn committed_manifests_pass() {
+        let root = repo_root();
+        let dev = root.join("docs/proof/dev.json");
+        let mut g = Guard::new();
+        g.check_file(&dev);
+        assert!(g.errors.is_empty(), "{:?}", g.errors);
+        // No arguments: every docs/proof/*.json except index.json (as the .mjs defaulted).
+        let defaults = default_manifests(&root);
+        assert!(defaults.iter().any(|p| p.ends_with("dev.json")));
+        assert!(defaults.iter().all(|p| !p.ends_with("index.json")));
+        assert_eq!(check_main(&root, &[]), 0);
+    }
+
+    #[test]
+    fn zero_manifests_is_red() {
+        assert_eq!(check_verdict(0, &[], "selftest"), 1);
+        let empty = private_tmp("proof-check-empty-").unwrap();
+        assert_eq!(check_main(&empty, &[]), 1);
+        let _ = std::fs::remove_dir_all(&empty);
+    }
+
+    #[test]
+    fn selftest_cases_each_refuse_and_the_clean_case_is_green() {
+        let cases = check_cases();
+        assert_eq!(cases.len(), 9);
+        for (name, doc, want_refusal) in &cases {
+            let errs = check_errors(doc);
+            assert_eq!(
+                !errs.is_empty(),
+                *want_refusal,
+                "{name}: wanted refusal={want_refusal}, got {errs:?}"
+            );
+        }
+        assert_eq!(check_selftest(), 0);
+    }
+
+    #[test]
+    fn each_selftest_refusal_is_for_the_stated_reason() {
+        let by = |name: &str| {
+            let (_, d, _) = check_cases().into_iter().find(|c| c.0 == name).unwrap();
+            check_errors(&d).join("\n")
+        };
+        assert!(by("an embedded Rust fn signature").contains("source-like"));
+        assert!(by("an embedded multi-line blob").contains("multi-line string"));
+        assert!(by("a leaked bearer token").contains("source-like"));
+        assert!(by("a key that is not on the public whitelist").contains("\"source_text\""));
+        assert!(by("an internal run_url").contains(
+            "release.run_url is not a public GetBusbar Actions URL: https://10.0.0.4/actions"
+        ));
+        assert!(by("an illegal verdict status").contains("verdict c: illegal status \"probably\""));
+        assert!(by("a manifest with no verdicts at all").contains("verdicts[] missing or empty"));
+        assert!(by("the wrong schema_version").contains("schema_version must be \"1\", got \"2\""));
+    }
+
+    #[test]
+    fn remaining_refusals_of_the_guard() {
+        let good = min_good();
+        // Every source smell fires (and quotes its pattern), each by itself.
+        let bad_strings = [
+            "impl Foo {",
+            "let x = 1",
+            "use busbar_core::x",
+            "a => b",
+            "Vec::<u8>",
+            "unsafe block",
+            "-----BEGIN PRIVATE KEY-----",
+            "AKIAABCDEFGHIJKLMNOP",
+            "xoxb-12345-abcdef",
+            "ghp_abcdefghijklmnopqrstuvwxyz",
+            "see http://192.168.1.5/x",
+            "http://localhost:8080",
+            "the PASSWORD is",
+            "token: abc",
+            "api-key",
+        ];
+        for b in bad_strings {
+            assert!(
+                !check_errors(&with_verdict_note(&good, b)).is_empty(),
+                "{b} was accepted"
+            );
+        }
+        // Public prose stays quiet.
+        assert!(
+            check_errors(&with_verdict_note(&good, "46 golden byte-pairs, 3 planes")).is_empty()
+        );
+        // run_url: empty and the public Actions space pass; look-alikes do not.
+        for (u, ok) in [
+            ("", true),
+            ("https://github.com/GetBusbar/busbar/actions", true),
+            ("https://github.com/GetBusbar/busbar/actions/runs/1", true),
+            ("https://github.com/GetBusbar/busbar/actionsX", false),
+            ("https://github.com/Other/busbar/actions/runs/1", false),
+            ("http://github.com/GetBusbar/busbar/actions/runs/1", false),
+        ] {
+            let m = with_top(&good, "release", obj(vec![("run_url", s(u))]));
+            assert_eq!(check_errors(&m).is_empty(), ok, "{u}");
+        }
+        // Source status outside the enum; value maps.
+        let v0 = good.get("verdicts").as_array().unwrap()[0].clone();
+        let mut vs = v0.clone();
+        vs.as_object_mut()
+            .unwrap()
+            .insert("sources", Json::Array(vec![src("s1", "maybe", None)]));
+        let m = with_top(&good, "verdicts", Json::Array(vec![vs]));
+        assert!(check_errors(&m)
+            .iter()
+            .any(|e| e.contains("source s1: illegal status \"maybe\"")));
+        let map = |m: Json| {
+            let mut v = v0.clone();
+            v.as_object_mut().unwrap().insert("breakdown", m);
+            check_errors(&with_top(&good, "verdicts", Json::Array(vec![v])))
+        };
+        assert!(map(obj(vec![("a", Json::Int(1)), ("b", s("pass"))])).is_empty());
+        assert!(map(obj(vec![("a b", Json::Int(1))]))
+            .iter()
+            .any(|e| e.contains("not a short safe token")));
+        assert!(map(obj(vec![("a", s("source text"))]))
+            .iter()
+            .any(|e| e.contains("map value must be a number or status string")));
+        assert!(map(s("flat"))
+            .iter()
+            .any(|e| e.contains("expected an object map")));
+        // Not JSON at all, and a missing file.
+        let dir = private_tmp("proof-check-bad-").unwrap();
+        let bad = dir.join("bad.json");
+        std::fs::write(&bad, "{not json").unwrap();
+        assert_eq!(check_main(&repo_root(), &[bad.display().to_string()]), 1);
+        assert_eq!(
+            check_main(&repo_root(), &[dir.join("none.json").display().to_string()]),
+            1
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
