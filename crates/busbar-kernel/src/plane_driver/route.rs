@@ -802,14 +802,17 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             }
             let bufs = &run.bufs;
             let emitted = &bufs.reply[..(out.emitted as usize).min(bufs.reply.len())];
-            // A LOCAL ANSWER: the plane answered a piece bound for the far end with its reply done
-            // and nothing for the far end. The unit is the plane's to finish: its bytes go to the
-            // caller, and no far end is sent to.
-            if matches!(toward, Toward::FarEnd(_))
-                && out.flags & EMIT_TO_FAR_END == 0
-                && out.flags & EMIT_DONE != 0
-            {
-                *toward = Toward::Caller;
+            // A LOCAL ANSWER: the plane answered a piece bound for the far end with nothing for the
+            // far end, and either its reply done or (with no member to send to) a reply begun: a
+            // window of a longer answer asks for more and may not say done (ARCHITECT B7). The unit
+            // is the plane's to finish: its bytes go to the caller, and no far end is sent to.
+            if let Toward::FarEnd(request) = toward {
+                let answered = out.flags & EMIT_DONE != 0
+                    || (request.member.is_empty()
+                        && (out.reply_status != 0 || !emitted.is_empty()));
+                if out.flags & EMIT_TO_FAR_END == 0 && answered {
+                    *toward = Toward::Caller;
+                }
             }
             match toward {
                 Toward::FarEnd(request) => {
