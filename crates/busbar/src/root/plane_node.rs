@@ -1699,6 +1699,34 @@ impl NodeEndPost {
     }
 }
 
+/// THE EGRESS WALK'S WRITE-AHEAD RECORD, ON THE NODE'S BOOK (ARCHITECT P3 (c), 2026-10-02): a
+/// dispatch of a driven unit is written onto the book under the facts the unit was opened with at
+/// admission (its balance, window and arrival), before the dial, as a handed unit's is
+/// ([`Node::answer`]). A unit with no open facts was never admitted onto the book, so its record is
+/// refused and the walk sends nothing.
+impl busbar_kernel_egress::ports::Journal for NodeEndPost {
+    fn dispatched(
+        &self,
+        record: &busbar_kernel_egress::ports::Dispatched,
+    ) -> Result<(), busbar_kernel_egress::ports::DurabilityUnavailable> {
+        let facts = self
+            .lock()
+            .get(&record.unit)
+            .map(|(principal, arrived, _, _)| (principal.clone(), *arrived));
+        let (principal, arrived) =
+            facts.ok_or(busbar_kernel_egress::ports::DurabilityUnavailable)?;
+        // As the node's own dispatch record: a journal that will not take it retains and re-offers
+        // it, and that is never a refusal of the dispatch.
+        self.node.dispatch_on_book(&principal, arrived);
+        Ok(())
+    }
+
+    /// An attempt that produced no answer: the book carries no separate mark for it. The unit's
+    /// end settles what it consumed (the loop's one exit, or the abandoned end posted here), and a
+    /// recovery reads the dispatch mark as "something left", which an abandoned attempt did.
+    fn abandoned(&self, _record: &busbar_kernel_egress::ports::Dispatched) {}
+}
+
 impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
     /// Post the abandoned end, once. Inside the loop's `Drop` guard: the book's settle is the
     /// node's in-memory posting behind one short lock, and nothing here awaits or crosses a plugin.
