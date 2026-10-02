@@ -3,7 +3,7 @@
 
 //! A DOCUMENT'S DETACHED SIGNATURES, judged against a counterparty's declared root key: the
 //! verifier behind `trust.verify` (`BUSBAR-1.6.0.md` host services, the trust row: the kernel
-//! judges; ARCHITECT ruling fold-a2a-push-card-crypto (b)). A plane never links a crypto crate; it
+//! judges; ARCHITECT ruling on card crypto, option (b)). A plugin never links a crypto crate; it
 //! hands the payload and the signatures as written, and the kernel answers the verdict.
 //!
 //! * **The key decides the algorithm, never the header.** A header is written by the party being
