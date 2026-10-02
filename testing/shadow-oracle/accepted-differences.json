@@ -2139,6 +2139,31 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       }
+    },
+    {
+      "id": "S-16 same-dialect response headers are the upstream's, all but the governed",
+      "kind": "improvement",
+      "changelog": "On a same-dialect route the caller receives every upstream response header except hop-by-hop fields, Content-Length, Content-Encoding and the dialect's tenant- and credential-derived headers; 1.5.5 relayed only Content-Type and the dialect's request-id headers.",
+      "by": "owner (Matthew Jackson), STANDING RULE LLM DIALECT FIDELITY (2026-10-02), F2 response headers; ARCHITECT ruling 2026-10-02 (FOLD-LLM option B)",
+      "cells": "^llm\\|(anthropic\\|anthropic|bedrock\\|bedrock|cohere\\|cohere|gemini\\|gemini|openai\\|openai|responses\\|responses)\\|request\\|(ok|ok_stream|ok_stream_array|ok_cachepoint_document|ok_tool_use_tokens|ok_citation|stream_upstream_error)$",
+      "expected_cells": 21,
+      "classes": [
+        "headers"
+      ],
+      "rationale": "Dialect fidelity F2 (handoffs DIALECT-FIDELITY-DESIGN.md, under the owner's LLM dialect fidelity rule of 2026-10-02): on a same-dialect route the response head is the upstream's: every field passes except hop-by-hop fields, Content-Length, Content-Encoding and the dialect's declared tenant/credential-derived headers (dialect.rs governed_response_headers: anthropic-organization-id, openai-organization, openai-project). 1.5.5 built a fresh head instead: Content-Type plus the ingress dialect's relayed request-id names only (v1.5.5 crates/busbar/src/proxy/engine/mod.rs:1862-1880 passthrough error relay, :1927-1940 client-fault relay, :2300-2335 streamed 2xx; proxy/wire.rs:24-58; the names: proto/anthropic/writer.rs:104-106 request-id, proto/bedrock/writer.rs:1143-1147 x-amzn-requestid + x-amzn-errortype, proto/mod.rs:695-697 none for the rest). The plane relays through exchange::reply wire::relay_far_head; the llm door's needs state KEEP_ALL_EXCEPT_DENIED with the governed names denied (busbar-plane-llm plane_door.rs DENY_RESPONSE_HEADERS). Headers class only: no status, body or usage class is forgiven. Translated routes are unchanged (no far head crosses a dialect).",
+      "premise": {
+        "cell": "llm|anthropic|anthropic|request|ok",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-02",
+        "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-02, pre-approved register entries), F2 response headers; applied by ARCHITECT ruling 2026-10-02 (FOLD-LLM option B)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
     }
   ]
 }
