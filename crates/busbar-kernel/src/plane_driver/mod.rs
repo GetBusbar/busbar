@@ -32,6 +32,7 @@ mod cancel;
 mod epoch;
 mod far_end;
 mod money;
+mod needs;
 mod route;
 pub mod serve;
 
@@ -61,6 +62,7 @@ pub use far_end::{
     AuthBinding, Egress, EgressFarEnd, MemberRoute, UnitRoute, DEFAULT_ERROR_BODY_MAX,
 };
 pub use money::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
+pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick};
 
 use crate::auth::CallerRefKey;
