@@ -32,7 +32,7 @@ pub(crate) fn oauth_as_plane(app: &App) -> Option<Arc<AsPlane>> {
 
 /// The AS plane's fixture builder, as an extension of `TestApp`. Keeps the exact name/shape the
 /// in-core builder had, so a test that moved with the plane reads unchanged aside from
-/// `use busbar_oauth2::testkit::TestAppOauthExt;`.
+/// `use busbar_core_oauth2::testkit::TestAppOauthExt;`.
 pub trait TestAppOauthExt {
     /// Make the built App an OAuth 2.1 AUTHORIZATION SERVER, from the same `oauth_as:` config shape
     /// an operator writes.
@@ -58,7 +58,7 @@ impl TestAppOauthExt for TestApp {
 
 /// Register this crate's `AsPlaneSeam` into busbar-core's process-wide slot, EXACTLY ONCE for the
 /// whole test binary — the test-binary analogue of `crates/busbar`'s `main` calling
-/// `busbar_oauth2::install()`. Needed because busbar-oauth2's OWN test binary never runs `main`, so
+/// `busbar_core_oauth2::install()`. Needed because busbar-core-oauth2's OWN test binary never runs `main`, so
 /// nothing else registers the seam here; without it, `router::base_data_router` would see no seam
 /// and mount nothing, and every mount/flow test below would silently exercise dead code instead of
 /// the real mount. `std::sync::Once`-guarded because `install_as_plane_seam` panics on a second
