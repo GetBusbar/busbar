@@ -55,6 +55,8 @@ pub(crate) struct AsPlane {
     /// The RFC 8414 document the PLAIN posture serves, or `None` under the FAPI 2.0 posture, which
     /// serves `oauth-as`'s own. See [`plain_metadata`].
     plain_metadata: Option<bytes::Bytes>,
+    /// The verifiers a DPoP proof at busbar's resource is checked with: the plane's ES256 one.
+    dpop_verifiers: oauth_as::jwt::JwsVerifiers,
 }
 
 /// Why the plane could not be built. Distinct from [`super::config::AsCfgError`] because these are
@@ -191,6 +193,8 @@ impl AsPlane {
             .build()
             .map_err(AsBuildError::Service)?;
         let plain_metadata = (!identity.fapi2()).then(|| plain_metadata(&server));
+        let mut dpop_verifiers = oauth_as::jwt::JwsVerifiers::new();
+        dpop_verifiers.install(Arc::new(RingEs256Verifier));
 
         Ok(Self {
             identity,
@@ -198,7 +202,63 @@ impl AsPlane {
             server,
             sessions,
             plain_metadata,
+            dpop_verifiers,
         })
+    }
+
+    /// RFC 9449 s7 at busbar's own protected resource (the kernel door, `auth::dpop`, through the
+    /// seam). `true` only when every check holds:
+    ///
+    /// * the proof verifies for THIS request line: ES256 signature over its own `jwk`, `typ`,
+    ///   `htm`, `htu` (this plane's origin + the request path), `iat` within the window (s4.3);
+    /// * its `ath` is the SHA-256 of the presented token (s4.3 (11)), which binds it to the token;
+    /// * its key's RFC 7638 thumbprint is the token's `cnf.jkt` (s7.1), which binds the token to it;
+    /// * its `jti` has not been seen (s11.1), claimed in the plane's replay ledger until the proof
+    ///   could no longer pass the `iat` check anyway.
+    ///
+    /// The token's own signature, issuer and audience are NOT judged here: the chain judges them
+    /// next, exactly as it judges a bearer. This is what the token's binding adds, and only that.
+    pub(crate) async fn verify_dpop(
+        &self,
+        presented: busbar_kernel::oauth_as::seam::DpopPresentation,
+    ) -> bool {
+        use base64::Engine as _;
+        use oauth_as::store::Storage as _;
+        let htu = format!("{}{}", self.identity.origin(), presented.path);
+        let Ok(proof) = oauth_as::dpop::verify_proof(
+            &self.dpop_verifiers,
+            &presented.proof,
+            &presented.method,
+            &htu,
+            std::time::SystemTime::now(),
+        ) else {
+            return false;
+        };
+        let ath = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            ring::digest::digest(&ring::digest::SHA256, presented.token.as_bytes()).as_ref(),
+        );
+        let ath_matches = oauth_as::jwt::CompactJws::parse(&presented.proof)
+            .is_ok_and(|jws| jws.claim_str("ath") == Some(ath.as_str()));
+        let bound_to_proof_key =
+            oauth_as::jwt::CompactJws::parse(&presented.token).is_ok_and(|jws| {
+                jws.payload
+                    .get("cnf")
+                    .and_then(|cnf| cnf.get("jkt"))
+                    .and_then(|jkt| jkt.as_str())
+                    == Some(proof.jkt.as_str())
+            });
+        if !ath_matches || !bound_to_proof_key {
+            return false;
+        }
+        // Namespaced apart from the token endpoint's own proof `jti`s, which share the ledger.
+        let replay_id = format!("dpop-resource:{}:{}", proof.jkt, proof.jti);
+        matches!(
+            self.server
+                .store()
+                .claim_replay_id(&replay_id, proof.replay_until)
+                .await,
+            Ok(true)
+        )
     }
 
     /// Answer one request: the plane's whole wire surface. The plain posture's metadata document
@@ -334,6 +394,21 @@ fn plain_metadata(server: &AsServer) -> bytes::Bytes {
     bytes::Bytes::from(
         serde_json::to_vec(&meta).expect("the RFC 8414 document is plain JSON and serializes"),
     )
+}
+
+/// THE SEAM-TYPED DPoP VERIFIER (`AsPlaneSeam::verify_dpop`): downcasts core's type-erased plane
+/// and defers to [`AsPlane::verify_dpop`]. A plane that is not this crate's verifies nothing.
+pub(crate) fn seam_verify_dpop(
+    plane: &Arc<dyn std::any::Any + Send + Sync>,
+    presented: busbar_kernel::oauth_as::seam::DpopPresentation,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
+    let plane = Arc::clone(plane).downcast::<AsPlane>().ok();
+    Box::pin(async move {
+        match plane {
+            Some(plane) => plane.verify_dpop(presented).await,
+            None => false,
+        }
+    })
 }
 
 /// THE SEAM-TYPED BUILDER (`busbar_kernel::oauth_as::seam::AsPlaneSeam::build`): builds the plane AND

@@ -328,8 +328,9 @@ impl AsIdentity {
     pub fn jwks_uri(&self) -> String {
         format!("{}{}", self.origin(), self.jwks_path)
     }
-    /// The issuer's `scheme://authority`, with its path removed.
-    fn origin(&self) -> &str {
+    /// The issuer's `scheme://authority`, with its path removed: the origin busbar's own protected
+    /// resources are served on, which `auth::dpop` makes a proof's `htu` from.
+    pub fn origin(&self) -> &str {
         &self.issuer[..self.issuer.len() - self.issuer_path.len()]
     }
     pub fn default_grant(&self) -> &[String] {

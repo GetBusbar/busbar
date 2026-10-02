@@ -1532,6 +1532,40 @@ pub(crate) async fn auth_middleware(
     // check and the governance virtual-key lookup, so every scheme is validated identically and in
     // constant time. Replaces the previous Bearer-only `bearer_token`.
     let client_token: Option<String> = AuthMiddleware::extract_client_token(&req);
+    // RFC 9449 SENDER CONSTRAINT, on the data plane only (`auth::dpop`). A request that is neither
+    // a DPoP presentation nor a bound bearer is `Unconstrained` and nothing below changes for it.
+    let mut dpop_proven = false;
+    let client_token = if is_admin {
+        client_token
+    } else {
+        match dpop::judge(
+            &app,
+            req.method(),
+            &path,
+            req.headers(),
+            client_token.as_deref(),
+        )
+        .await
+        {
+            dpop::SenderConstraint::Unconstrained => client_token,
+            dpop::SenderConstraint::Proven(token) => {
+                dpop_proven = true;
+                Some(token)
+            }
+            dpop::SenderConstraint::Refused => {
+                return Err(match app.planes.admission_for(&path) {
+                    Some(adm) => challenge::refuse(
+                        challenge::ChallengeError::InvalidToken,
+                        &adm.resource_metadata,
+                        "A DPoP-bound access token needs its DPoP proof (RFC 9449), and this one \
+                         did not verify.",
+                        None,
+                    ),
+                    None => unauthorized_response(&app, &path),
+                });
+            }
+        }
+    };
     // EVERY CREDENTIAL CARRIER THE CONFIGURED GATE READS — the data-plane carriers (whichever one
     // carried this request's token, and the SigV4 signature on `Authorization`), and the admin
     // carriers when an admin chain is configured — with the caller's token as a ref. Handed on with
@@ -1539,6 +1573,9 @@ pub(crate) async fn auth_middleware(
     let mut consumed = ConsumedCredentials::carrying(&CLIENT_TOKEN_CARRIERS);
     if !app.admin_chain.is_empty() {
         consumed.carry(&ADMIN_TOKEN_CARRIERS);
+    }
+    if dpop_proven {
+        consumed.carry(&[dpop::DPOP_HEADER]);
     }
     consumed.caller = client_token.clone().map(CallerCredential);
 

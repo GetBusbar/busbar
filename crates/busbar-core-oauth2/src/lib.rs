@@ -77,6 +77,7 @@ pub fn install() {
         busbar_kernel::oauth_as::seam::AsPlaneSeam {
             build: plane::seam_build,
             mount: routes::seam_mount,
+            verify_dpop: plane::seam_verify_dpop,
         },
     );
 }
