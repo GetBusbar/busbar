@@ -778,12 +778,12 @@ fn trust_sight_judges_from_the_admitted_entries_and_writes_the_demotion() {
     let sight = |h: &str| run(|l| r.s.trust_sight(&me, "cp", h, l));
     assert_eq!(sight("fp").value, svc::TRUST_SAME);
     assert_eq!(sight("moved").value, svc::TRUST_DRIFTED);
-    let demoted = r.s.demotions.as_ref().unwrap().record.list();
+    let demoted = r.s.demotions.get().unwrap().record.list();
     assert_eq!(demoted.len(), 1);
     assert_eq!(demoted[0].server, demotion_key("inst", "cp"));
     assert_eq!(sight("moved").value, svc::TRUST_QUARANTINED);
     assert_eq!(sight("fp").value, svc::TRUST_SAME);
-    assert!(r.s.demotions.as_ref().unwrap().record.list().is_empty());
+    assert!(r.s.demotions.get().unwrap().record.list().is_empty());
     let s = run(|l| r.s.trust_sight(&me, "nobody", "fp", l));
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_A_COUNTERPARTY));
 }
@@ -882,7 +882,7 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
 
 /// The rig's kernel after a restart: the same durable demotion record, nothing else.
 fn restarted(r: &Rig) -> KernelServices {
-    let d = r.s.demotions.as_ref().unwrap();
+    let d = r.s.demotions.get().unwrap();
     services(Arc::default())
         .with_demotions(Arc::clone(&d.record), &d.default_instance)
         .with_pool(Arc::new(Inline))
@@ -935,7 +935,7 @@ fn an_unprefixed_row_replays_into_the_default_instance_only_and_it_clears_it() {
     let r = rig();
     // A row a single-instance deployment wrote: keyed by the counterparty alone.
     r.s.demotions
-        .as_ref()
+        .get()
         .unwrap()
         .record
         .record("cp", "quarantined", 1);
@@ -957,7 +957,7 @@ fn an_unprefixed_row_replays_into_the_default_instance_only_and_it_clears_it() {
         run(|l| pinned.trust_sight(&caller(SECTION_KEY), "cp", "fp", l)).value,
         svc::TRUST_SAME
     );
-    assert!(r.s.demotions.as_ref().unwrap().record.list().is_empty());
+    assert!(r.s.demotions.get().unwrap().record.list().is_empty());
 }
 
 #[test]
@@ -1135,13 +1135,13 @@ fn a_demotion_is_written_on_the_pool_and_the_sighting_answers_after_it() {
     // Nothing is written, nor answered, on the calling thread.
     assert!(matches!(ran, Ran::Later));
     assert!(slot.lock().unwrap().is_none());
-    assert!(r.s.demotions.as_ref().unwrap().record.list().is_empty());
+    assert!(r.s.demotions.get().unwrap().record.list().is_empty());
     assert_eq!(held.drain(), 1);
     assert_eq!(
         slot.lock().unwrap().take().unwrap().value,
         svc::TRUST_DRIFTED
     );
-    assert_eq!(r.s.demotions.as_ref().unwrap().record.list().len(), 1);
+    assert_eq!(r.s.demotions.get().unwrap().record.list().len(), 1);
     // A sighting with nothing to write answers at once.
     let s2 = run(|l| s.trust_sight(&caller("inst"), "cp", "moved", l));
     assert_eq!(s2.value, svc::TRUST_QUARANTINED);
@@ -1151,7 +1151,7 @@ fn a_demotion_is_written_on_the_pool_and_the_sighting_answers_after_it() {
 #[test]
 fn a_durable_record_with_no_pool_judges_nothing() {
     let r = rig();
-    let d = r.s.demotions.as_ref().unwrap();
+    let d = r.s.demotions.get().unwrap();
     let s = services(Arc::default()).with_demotions(Arc::clone(&d.record), SECTION_KEY);
     s.admit("inst", trusting(Some("fp"))).unwrap();
     let a = run(|l| s.trust_sight(&caller("inst"), "cp", "moved", l));
@@ -1286,7 +1286,7 @@ fn a_flush_the_pool_refuses_leaves_the_writes_readable_and_queued_for_the_next()
 fn a_row_without_a_label_is_read_back_under_the_section_key_instance_and_no_other() {
     let r = rig();
     // A row as a single-instance deployment wrote it: the counterparty's name alone.
-    let d = r.s.demotions.as_ref().unwrap();
+    let d = r.s.demotions.get().unwrap();
     d.record.record("cp", "quarantined", 1);
     let fresh = restarted(&r);
     for label in [SECTION_KEY, "inst", "tools-2"] {
