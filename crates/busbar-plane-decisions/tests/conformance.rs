@@ -318,14 +318,25 @@ mod door {
         (a.input.unit, a.input.method, a.input.target) = (unit, text(method), text(target));
         a.input.body = octets(REQUEST);
         let c = p.call(slot::ARRIVE, &mut a);
+        let pool = if a.out.pool.ptr.is_null() {
+            String::new()
+        } else {
+            // SAFETY: a READY answer's entry name lives in the instance past the call.
+            String::from_utf8_lossy(unsafe {
+                std::slice::from_raw_parts(a.out.pool.ptr, a.out.pool.len)
+            })
+            .into_owned()
+        };
         format!(
-            "arrive {:?} op_class={} principal_required={} dialect={} refusal={} status={}",
+            "arrive {:?} op_class={} principal_required={} dialect={} refusal={} status={} \
+             route={} pool={pool}",
             c.outcome,
             a.out.op_class,
             a.out.principal_need == PRINCIPAL_REQUIRED,
             a.out.dialect,
             a.out.refusal,
-            a.out.refusal_status
+            a.out.refusal_status,
+            a.out.route
         )
     }
 
@@ -485,8 +496,11 @@ mod door {
          admin_routes: [], openapi: None, audience: None, resource_metadata: None })",
         "13 Ready",
         "14 Ready",
-        "arrive Ready op_class=0 principal_required=true dialect=0 refusal=0 status=0",
-        "arrive Refused op_class=0 principal_required=false dialect=0 refusal=1 status=404",
+        // The one model routes directly (ARCHITECT Q-SW6/Q-FL3: ROUTE_DIRECT = 1).
+        "arrive Ready op_class=0 principal_required=true dialect=0 refusal=0 status=0 route=1 \
+         pool=jev",
+        "arrive Refused op_class=0 principal_required=false dialect=0 refusal=1 status=404 \
+         route=0 pool=",
         "attempt Ready emitted= more=0 to_far_end=true done=false status=0 verb=POST \
          target=/v1/systemone fields=[\"content-type=application/json\"] units=[]",
         "body Ready emitted={\"state\":{\"session\":\"s\"},\"context\":{}} more=0 to_far_end=true \
