@@ -5040,3 +5040,44 @@ fn test_buffered_as_stream_remaps_tool_ids_exactly_once() {
          behind and the backend rejects the next turn's tool_result: {emitted}"
     );
 }
+
+/// A Responses stream that ends on `response.failed` still REPORTS the usage the far end generated
+/// before it failed; the billing source `usage()` must carry it (#62: a failed stream is a cut, and
+/// a cut is not a refund). The failed arm used to push its Error and return before the usage read, so
+/// 2000 generated output tokens billed zero. Checked on the same-protocol tap and across protocols,
+/// and the failure is still the stream's terminal error.
+#[test]
+fn responses_failed_stream_bills_its_reported_usage() {
+    let created = b"event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"m\",\"output\":[],\"usage\":null}}\n\n";
+    let failed = b"event: response.failed\ndata: {\"type\":\"response.failed\",\"sequence_number\":1,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"status\":\"failed\",\"model\":\"m\",\"output\":[],\"error\":{\"code\":\"server_error\",\"message\":\"boom\"},\"usage\":{\"input_tokens\":300,\"output_tokens\":2000,\"total_tokens\":2300}}}\n\n";
+
+    let mut same = StreamTranslate::new_same_proto("responses").expect("same-proto translator");
+    let _ = same.feed(created);
+    let _ = same.feed(failed);
+    let _ = same.finish();
+    let u = same
+        .usage()
+        .expect("same-protocol: the usage a response.failed reports must bill");
+    assert_eq!(u.input_tokens, 300);
+    assert_eq!(u.output_tokens, 2000);
+    assert!(same.terminal_error().is_some(), "the stream still failed");
+
+    let mut cross = StreamTranslate::new("anthropic", "responses").expect("cross-proto translator");
+    let _ = cross.feed(created);
+    let _ = cross.feed(failed);
+    let _ = cross.finish();
+    let u = cross
+        .usage()
+        .expect("cross-protocol: the usage a response.failed reports must bill");
+    assert_eq!(u.input_tokens, 300);
+    assert_eq!(u.output_tokens, 2000);
+    assert!(cross.terminal_error().is_some(), "the stream still failed");
+
+    // A failed response that reports `"usage": null` carries nothing to bill.
+    let mut none = StreamTranslate::new_same_proto("responses").expect("same-proto translator");
+    let _ = none.feed(created);
+    let _ = none.feed(b"event: response.failed\ndata: {\"type\":\"response.failed\",\"sequence_number\":1,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"status\":\"failed\",\"model\":\"m\",\"output\":[],\"error\":{\"code\":\"server_error\",\"message\":\"boom\"},\"usage\":null}}\n\n");
+    let _ = none.finish();
+    assert!(none.usage().is_none());
+    assert!(none.terminal_error().is_some());
+}
