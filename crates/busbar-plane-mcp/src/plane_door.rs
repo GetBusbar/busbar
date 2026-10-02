@@ -12,8 +12,8 @@
 //! * `open` judges the same section, reads the deployment's public base URL and publishes the
 //!   first generation's snapshot ([`door::snapshot_spec`]); `refresh` judges the new section and
 //!   publishes the next generation over the base URL `open` was given; `retire` drops a
-//!   generation's snapshot. The section each generation serves is held once the request path
-//!   reads it;
+//!   generation's snapshot, and the catalogue built from its section with it. A request is
+//!   answered from the newest live generation's catalogue ([`McpDoor::current`]);
 //! * `tick` wants no tick, `drive` has no session with unsolicited output, `cancel` finds nothing
 //!   in flight, and `release`/`close` hold nothing the SDK does not already drop.
 
@@ -32,6 +32,9 @@ use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::abi::sdk::publish::Generations;
 use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
 
+use std::sync::Arc;
+
+use crate::catalogue::Catalogue;
 use crate::door;
 
 /// The most calls the kernel keeps in flight on one instance, as the transport doors state it.
@@ -46,17 +49,24 @@ pub const STATEMENT: Statement = Statement {
     ..statement(crate::PLANE_KEY, VERSION, MAX_INFLIGHT)
 };
 
-/// One instance: the public base URL `open` was given, and every live generation's snapshot.
+/// One instance: the public base URL `open` was given, and every live generation's snapshot with
+/// the catalogue built from that generation's section.
 pub struct McpDoor {
     public_url: Option<String>,
-    generations: Generations<PlaneSnapshot>,
+    generations: Generations<PlaneSnapshot, Catalogue>,
+}
+
+impl McpDoor {
+    /// The catalogue a request arriving now is answered from: the newest live generation's.
+    #[must_use]
+    pub fn current(&self) -> Option<Arc<Catalogue>> {
+        self.generations.current()
+    }
 }
 
 /// The settings blob read as the `tools:` section, or the refusal in the grammar's words.
-fn section(bytes: &[u8]) -> Result<(), Refusal> {
-    door::read_settings(bytes)
-        .map(|_| ())
-        .map_err(Refusal::refused)
+fn section(bytes: &[u8]) -> Result<crate::config::ToolsCfg, Refusal> {
+    door::read_settings(bytes).map_err(Refusal::refused)
 }
 
 /// The public base URL the host lent, when it states one.
@@ -97,16 +107,18 @@ slot!(
     /// `open`: the instance over the section and the public base URL, and the first generation's
     /// snapshot.
     Open, PlaneOpenIn, PlaneOpenOut, |instance, input, mut out| {
-        if let Err(refusal) = section(input.field(|i| &i.open.settings).bytes()) {
-            return out.fail(refusal);
-        }
+        let cfg = match section(input.field(|i| &i.open.settings).bytes()) {
+            Ok(cfg) => cfg,
+            Err(refusal) => return out.fail(refusal),
+        };
         let generation = input.get().open.generation;
         let plane = McpDoor {
             public_url: public_url(input.field(|i| &i.public_url).bytes()),
             generations: Generations::new(),
         };
         let spec = door::snapshot_spec(plane.public_url.as_deref());
-        out.publish(|o| &o.snapshot, &plane.generations, generation, &spec);
+        let catalogue = Catalogue::build(generation, &cfg);
+        out.publish_with(|o| &o.snapshot, &plane.generations, generation, &spec, catalogue);
         instance.open(plane);
         Outcome::Ready
     }
@@ -119,11 +131,14 @@ slot!(
         let Some(plane) = instance.get() else {
             return Outcome::Failed;
         };
-        if let Err(refusal) = section(input.field(|i| &i.settings).bytes()) {
-            return out.fail(refusal);
-        }
+        let cfg = match section(input.field(|i| &i.settings).bytes()) {
+            Ok(cfg) => cfg,
+            Err(refusal) => return out.fail(refusal),
+        };
+        let generation = input.get().generation;
         let spec = door::snapshot_spec(plane.public_url.as_deref());
-        out.publish(|o| &o.snapshot, &plane.generations, input.get().generation, &spec);
+        let catalogue = Catalogue::build(generation, &cfg);
+        out.publish_with(|o| &o.snapshot, &plane.generations, generation, &spec, catalogue);
         Outcome::Ready
     }
 );
