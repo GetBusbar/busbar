@@ -429,8 +429,8 @@ fn seam() -> std::sync::Arc<dyn super::super::relay::RelaySeam> {
             _addr: IpAddr,
             _headers: &[(String, String)],
             _body: &[u8],
-        ) -> Result<HttpResponse, String> {
-            Err("this test opens no socket".to_string())
+        ) -> Result<HttpResponse, crate::a2a::relay::SendFailure> {
+            Err("this test opens no socket".to_string().into())
         }
         fn post_stream(
             &self,

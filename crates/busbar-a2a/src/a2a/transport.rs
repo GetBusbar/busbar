@@ -75,7 +75,7 @@ use std::time::Duration;
 use busbar_kernel::egress::seam;
 
 use super::fetch::{FetchPolicy, HttpResponse, Resolver, Transport};
-use super::relay::{ChunkFlow, RelayTransport, StreamHead};
+use super::relay::{ChunkFlow, RelayTransport, SendFailure, StreamHead};
 use super::verify::CardTransports;
 
 /// How long one hop may take, end to end. An agent card is a small JSON document from a host an
@@ -361,7 +361,7 @@ impl ReqwestTransport {
         method: http::Method,
         hop: Hop<'_>,
         timeout: Duration,
-    ) -> Result<HttpResponse, String> {
+    ) -> Result<HttpResponse, SendFailure> {
         let Hop {
             url,
             addr,
@@ -377,14 +377,15 @@ impl ReqwestTransport {
         // `Location`, the peer SPKI pin (decoded from the same bytes `super::key_info::pin_hash` produces)
         // and whether busbar's own client identity was carried into the handshake. The deadline rides
         // the desc (`timeout_ms`), the identity/trust anchors ride their opaque refs.
-        let buffered = seam::send_pinned_buffered(&hop, cap).map_err(|f| f.cause)?;
+        let buffered =
+            seam::send_pinned_buffered(&hop, cap).map_err(|f| SendFailure::from(f.cause))?;
 
         match buffered.end {
             // A mid-body transport failure is reported with the SAME fixed line the plane's own read
             // produced — built HERE from the url the plane still holds (the seam kept the cause and the
             // url separate).
             busbar_kernel::proxy::ReadEnd::TransportError => {
-                Err(format!("`{url}`: the connection failed mid-body"))
+                Err(format!("`{url}`: the connection failed mid-body").into())
             }
             // Complete or Truncated both hand the bytes back: an over-cap body arrives one byte past
             // the ceiling and the driver refuses it there, so the size decision stays in the one
@@ -413,6 +414,7 @@ impl Transport for ReqwestTransport {
             },
             self.timeout,
         )
+        .map_err(|f| f.err)
     }
 }
 
@@ -429,7 +431,7 @@ impl RelayTransport for ReqwestTransport {
         addr: IpAddr,
         headers: &[(String, String)],
         body: &[u8],
-    ) -> Result<HttpResponse, String> {
+    ) -> Result<HttpResponse, SendFailure> {
         // PARSED, NOT MATCHED. The verb comes off the framing that composed the request, and
         // `http::Method` is the type that already knows which tokens are methods — a table here
         // would be a second, shorter answer to a question the http crate has answered once.

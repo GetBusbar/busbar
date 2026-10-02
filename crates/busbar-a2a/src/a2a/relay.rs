@@ -115,7 +115,7 @@ pub(crate) trait RelayTransport: Send + Sync {
         addr: IpAddr,
         headers: &[(String, String)],
         body: &[u8],
-    ) -> Result<HttpResponse, String>;
+    ) -> Result<HttpResponse, SendFailure>;
 
     /// THE STREAMING HOP. Same pin, same headers, same body; the difference is that the reply is
     /// handed to `on_chunk` AS IT ARRIVES rather than buffered whole.
@@ -132,6 +132,30 @@ pub(crate) trait RelayTransport: Send + Sync {
         body: &[u8],
         on_chunk: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),
     ) -> Result<StreamHead, String>;
+}
+
+/// A UNARY HOP THAT FAILED AT THE TRANSPORT, and how much of the backend's answer crossed the wire
+/// before it did — the half of a failed exchange the hop's `bytes` still bill (Q35: the bytes busbar
+/// actually received, and the request it carried). The streaming twin counts its chunks as they
+/// arrive, so it needs no such carrier.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SendFailure {
+    /// The operator line naming the failure.
+    pub(crate) err: String,
+    /// The response body bytes received before the connection failed: `Some` once the backend's
+    /// answer had begun (its head arrived, so the request was carried), `None` when no answer
+    /// arrived at all.
+    pub(crate) received: Option<usize>,
+}
+
+impl From<String> for SendFailure {
+    /// A failure before any answer arrived.
+    fn from(err: String) -> Self {
+        Self {
+            err,
+            received: None,
+        }
+    }
 }
 
 /// What the chunk sink says about continuing — the neutral host-owned [`busbar_kernel::egress::ChunkFlow`],
@@ -1767,12 +1791,12 @@ fn relay_once(
         bytes.add_sent(request.body.len());
         bytes.add_received(resp.body.len());
     }
-    let resp = sent.map_err(|err| {
+    let resp = sent.map_err(|f| {
         count_leg_failure(
             call,
             RelayRefusal::Transport {
                 url: url.to_string(),
-                err,
+                err: f.err,
             },
         )
     })?;

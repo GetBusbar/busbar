@@ -187,7 +187,7 @@ impl RelayTransport for RecordingTransport {
         addr: IpAddr,
         headers: &[(String, String)],
         body: &[u8],
-    ) -> Result<HttpResponse, String> {
+    ) -> Result<HttpResponse, crate::a2a::relay::SendFailure> {
         self.record(http_method, url, addr, headers, body, false);
         match &self.outcome {
             Outcome::Answers(status, reply) => Ok(HttpResponse {
@@ -204,7 +204,7 @@ impl RelayTransport for RecordingTransport {
                 client_identity_offered: false,
                 ..Default::default()
             }),
-            Outcome::Fails(err) => Err(err.clone()),
+            Outcome::Fails(err) => Err(err.clone().into()),
             Outcome::AnswersByHost(hosts) => {
                 let host = url.host_str().unwrap_or_default().to_string();
                 let (_, status, reply) = hosts
