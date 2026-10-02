@@ -229,27 +229,24 @@ impl FarEndReading {
         bytes
     }
 
-    /// The units the far end reported, read at the last piece.
-    ///
-    /// A count is reported only for a successful answer (a 2xx status and no `/error` member)
-    /// whose `/usage/units` is a whole number. An error answer, or a count that is missing,
-    /// negative or fractional, reports nothing.
-    ///
-    /// NOT YET THE LIVE DECODE, and it must be before the driver goes live: the served count must
-    /// match predev's `Plane::decode_response` + `meter` byte for byte. Two known differences:
-    /// this reading accepts a count above `i64::MAX`, where `decode_response` drops it (its
-    /// `i64::try_from`) and `meter` falls back to a locator; and this reading requires a 2xx
-    /// status, where `decode_response` judges success by the `/error` member alone.
+    /// The units the far end reported, read at the last piece, by the rule the plane's
+    /// `decode_response` reads them (`plane.rs`): a count is reported only for an answer with no
+    /// `/error` member, whose `/usage/units` is a whole number a signed 64-bit count holds. An
+    /// error answer, or a count that is missing, negative, fractional or past `i64::MAX`, reports
+    /// nothing. The status plays no part: `decode_response` judges success by the `/error` member
+    /// alone.
     #[must_use]
-    pub fn units(&self, status: u16) -> Option<Units> {
-        if !(200..300).contains(&status) || codec::has(&self.body, PTR_ERROR) {
+    pub fn units(&self) -> Option<Units> {
+        if codec::has(&self.body, PTR_ERROR) {
             return None;
         }
-        codec::read_u64(&self.body, PTR_USAGE_UNITS).map(|amount| Units {
-            class: tail::CLASS_DECISION_INDEX,
-            reported: true,
-            amount,
-        })
+        codec::read_u64(&self.body, PTR_USAGE_UNITS)
+            .filter(|amount| i64::try_from(*amount).is_ok())
+            .map(|amount| Units {
+                class: tail::CLASS_DECISION_INDEX,
+                reported: true,
+                amount,
+            })
     }
 }
 
