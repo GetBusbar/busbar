@@ -152,7 +152,7 @@ busbar-export-otlp = { workspace = true, optional = true }
 # not name the layer beneath it — so the root hands each wire's build the layer it built below it.
 # Which wires a build links is the `transport` rows of the linked table below; the source names none.
 busbar-transport-tcp = { path = "../busbar-transport-tcp" }
-busbar-transport-http = { path = "../busbar-transport-http" }
+busbar-transport-http = { workspace = true }
 # WebSocket, and the ONE transport that is optional: it is the voice plane's edge and nothing else
 # reaches it, so a build without voice must not carry it. Non-optional, `--no-default-features` still
 # pulled `tokio-tungstenite` through this line and voice stopped being strong-form deletable — the
@@ -408,7 +408,7 @@ proto-llm = "plane_node"
 
 [dev-dependencies]
 # root_listeners_are_the_connectors.rs: the TLS data door's certificate, generated per run.
-rcgen = { workspace = true }
+rcgen = { workspace = true, features = ["pem"] }
 # The loop-unify shadow-compare test (`root::gauntlet_kernel`) implements a deterministic
 # `GauntletPlane` to drive both the substrate gauntlet and the kernel rider on one input; the trait
 # is `#[async_trait]`, so its test impl needs the macro.
