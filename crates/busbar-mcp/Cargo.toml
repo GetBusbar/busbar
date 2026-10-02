@@ -150,7 +150,7 @@ busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # Test-only crates the MCP plane's own `test-support` suite names — reachable through busbar-core's
 # dev-deps under the old dual-compile, declared here now that the suite runs in this crate's own binary.
 reqwest = { workspace = true, features = ["json"] }
-rcgen = { workspace = true }
+rcgen = { workspace = true, features = ["pem"] }
 # THE ADMIN JSON-REST SERVICE, dev-only — a dev-dep BACK-EDGE, not linked into any shipped target
 # (the same shape as the `busbar-llm` back-edge above). `/api/v1/admin/*` is served by busbar-admin,
 # which busbar-core nests through the runtime fn-pointer seam `busbar_core::admin::seam`; production
