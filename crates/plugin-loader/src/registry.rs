@@ -451,6 +451,15 @@ impl PluginRegistry {
         &self.skipped
     }
 
+    /// Every DROPPED-IN `kind: hook` row, in scan order: the rows the hook axis reads its
+    /// dropped-in candidates from ([`crate::hook_door::HookRows::new`]). The manifest's kind word is
+    /// read here, where every other kind's is ([`Self::open_planes`], [`Self::open_transports`]).
+    pub fn dropped_hooks(&self) -> impl Iterator<Item = &LoadablePlugin> {
+        self.loadable()
+            .iter()
+            .filter(|p| p.manifest.kind == busbar_contract::abi::cold::kind::HOOK && !p.linked())
+    }
+
     /// Resolve `name_or_alias` to a row of `kind`, or say why not — the one explanation every
     /// `open_*` below gives: a skipped match names the skip, a miss names the loadable set, a row of
     /// another kind says it cannot `role`.

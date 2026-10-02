@@ -707,12 +707,7 @@ impl HookRows {
             }
             candidates.push(c);
         }
-        let hook = busbar_contract::abi::cold::kind::HOOK;
-        for p in registry
-            .map_or(&[][..], PluginRegistry::loadable)
-            .iter()
-            .filter(|p| p.manifest.kind == hook && !p.linked())
-        {
+        for p in registry.into_iter().flat_map(PluginRegistry::dropped_hooks) {
             let named = |e: String| format!("plugin '{}': {e}", p.manifest.name);
             let Some(stated) = p.manifest.stated_rendering().map_err(named)? else {
                 return Err(named(JSON_HOOK_REFUSED.to_string()));
