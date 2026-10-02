@@ -79,10 +79,18 @@ fn responses_parked_members_cross_as_their_slots_or_drop() {
             assert!(out.get(k).is_none(), "{egress} {k}: {out}");
         }
     }
-    // Gemini: metadata as `labels`, the rest dropped.
+    // Gemini: metadata as `labels`, the tier as `serviceTier`, `store` as itself (DF-MAP: Gemini's
+    // own members, mapped in gemini.toml), the rest dropped.
     let out = cross("responses", "gemini", &body);
     assert_eq!(out.get("labels"), Some(&json!({"a": "1"})), "{out}");
-    for k in MOVED {
+    assert_eq!(out.get("serviceTier"), Some(&json!("flex")), "{out}");
+    assert_eq!(out.get("store"), Some(&json!(false)), "{out}");
+    for k in [
+        "metadata",
+        "service_tier",
+        "safety_identifier",
+        "prompt_cache_key",
+    ] {
         assert!(out.get(k).is_none(), "gemini {k}: {out}");
     }
     // Bedrock: metadata as `requestMetadata`, the tier as `serviceTier.type`, the rest dropped.
@@ -134,4 +142,104 @@ fn anthropic_parked_service_tier_crosses_as_its_slot_or_drops() {
             assert!(out.get("service_tier").is_none(), "{tier} {egress}: {out}");
         }
     }
+}
+
+/// DF-MAP (design DIALECT FIDELITY F3/F4; the owner's dialect-fidelity standing rule, 2026-10-02): Gemini's
+/// `serviceTier` and `store` are the fields OpenAI Chat and Responses map as `service_tier` /
+/// `store`. They cross both ways now; 1.5.5 and predev dropped them on every crossing.
+#[test]
+fn gemini_service_tier_and_store_cross_both_ways() {
+    let gemini = |tier: &str| {
+        json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+               "serviceTier": tier, "store": true})
+    };
+    for (tier, openai) in [
+        ("standard", "default"),
+        ("flex", "flex"),
+        ("priority", "priority"),
+    ] {
+        for egress in ["openai", "responses"] {
+            let out = cross("gemini", egress, &gemini(tier));
+            assert_eq!(
+                out.get("service_tier"),
+                Some(&json!(openai)),
+                "{tier} {egress}: {out}"
+            );
+            assert_eq!(out.get("store"), Some(&json!(true)), "{egress}: {out}");
+        }
+    }
+    // A tier with no IR word crosses as nothing (Gemini's own `unspecified`).
+    let out = cross("gemini", "openai", &gemini("unspecified"));
+    assert!(out.get("service_tier").is_none(), "{out}");
+
+    let openai = |tier: &str| {
+        json!({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+               "service_tier": tier, "store": false})
+    };
+    for (tier, gemini_word) in [
+        ("default", Some("standard")),
+        ("flex", Some("flex")),
+        ("priority", Some("priority")),
+        ("auto", None),
+        ("scale", None),
+    ] {
+        let out = cross("openai", "gemini", &openai(tier));
+        assert_eq!(
+            out.get("serviceTier").and_then(Value::as_str),
+            gemini_word,
+            "{tier}: {out}"
+        );
+        assert_eq!(out.get("store"), Some(&json!(false)), "{out}");
+    }
+}
+
+/// Gemini -> Gemini through the IR keeps the caller's exact `serviceTier`, a word the slot cannot
+/// reproduce included (the row is parked).
+#[test]
+fn gemini_service_tier_same_dialect_keeps_the_raw_word() {
+    for tier in ["standard", "unspecified"] {
+        let body = json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                          "serviceTier": tier, "store": false});
+        let req = protocol_for("gemini")
+            .expect("gemini")
+            .reader()
+            .read_request(&body)
+            .expect("read");
+        let out = protocol_for("gemini")
+            .expect("gemini")
+            .writer()
+            .write_request(&req);
+        assert_eq!(out.get("serviceTier"), Some(&json!(tier)), "{out}");
+        assert_eq!(out.get("store"), Some(&json!(false)), "{out}");
+    }
+}
+
+/// DF-MAP: Converse `outputConfig.effort` is the reasoning effort Anthropic (`output_config.effort`)
+/// and the OpenAI family (`reasoning_effort`, `reasoning.effort`) map. It is read when the request
+/// states no `additionalModelRequestFields` reasoning ask (that ask wins).
+#[test]
+fn bedrock_output_config_effort_crosses_as_the_reasoning_ask() {
+    let body = json!({"messages": [{"role": "user", "content": [{"text": "hi"}]}],
+                      "outputConfig": {"effort": "high"}});
+    let out = cross("bedrock", "openai", &body);
+    assert_eq!(out.get("reasoning_effort"), Some(&json!("high")), "{out}");
+    let out = cross("bedrock", "anthropic", &body);
+    assert_eq!(
+        out.pointer("/output_config/effort"),
+        Some(&json!("high")),
+        "{out}"
+    );
+
+    // An explicit thinking budget in additionalModelRequestFields wins over the effort word.
+    let both = json!({"messages": [{"role": "user", "content": [{"text": "hi"}]}],
+                      "outputConfig": {"effort": "low"},
+                      "additionalModelRequestFields":
+                          {"thinking": {"type": "enabled", "budget_tokens": 2048}}});
+    let out = cross("bedrock", "anthropic", &both);
+    assert_eq!(
+        out.pointer("/thinking/budget_tokens"),
+        Some(&json!(2048)),
+        "{out}"
+    );
+    assert!(out.pointer("/output_config/effort").is_none(), "{out}");
 }
