@@ -7,7 +7,8 @@ use crate::codec::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
 use crate::codec::keys;
-use busbar_contract::codec::{CodecError, IngressReject, OperationHandler, RequestHandler};
+use crate::codec::leaf_codec::LeafCodec;
+use busbar_contract::codec::{CodecError, IngressReject, RequestHandler};
 use busbar_contract::codec::{EgressCtx, WireBody};
 use busbar_contract::operation::OpVerb;
 use busbar_contract::SlabBytes;
@@ -31,62 +32,6 @@ static CELLS: &[busbar_contract::codec::Cell] = &[
     (OpVerb::IMAGE, &IMG),
     (OpVerb::RERANK, &RERANK),
 ];
-
-/// Billable usage for a complete same-protocol (Bedrock -> Bedrock) non-stream 2xx body, keyed by
-/// the body's SHAPE rather than by the operation. The buffered Converse translator
-/// (`BedrockConverseBodyTranslator`) sits in for the verbatim relay on every Bedrock same-protocol
-/// non-stream response, and the forward path then reads billing usage from the translator instead
-/// of asking the operation. The translator does not know which operation it serves, so this picks
-/// the same `extract_usage` the operation would have run, from the response shape:
-///   - `output` / `stopReason` (a Converse body)     -> the chat tap (the Converse reader's usage)
-///   - `images`                                        -> the image cell's tap
-///   - `embedding` / `inputTextTokenCount`             -> the embeddings cell's tap
-///   - `results` (a Rerank body)                       -> no tokens; its counted search units
-///     ride [`same_protocol_open_billing`]
-///   - anything else                                   -> the chat tap (the decode-failure warn it
-///     raises is the one the relay raised too)
-///
-/// `parsed` is the body already decoded by the caller (`None` when it is not JSON), so the shape
-/// probe costs no second parse.
-pub fn same_protocol_usage(
-    body: &[u8],
-    parsed: Option<&Value>,
-) -> Option<busbar_contract::billing::TokenUsage> {
-    let has = |k: &str| parsed.is_some_and(|v| v.get(k).is_some());
-    if has(keys::OUTPUT) || has(super::STOP_REASON) {
-        CHAT.extract_usage(super::VENDOR_NAME, body)
-    } else if has(super::IMAGES) {
-        IMG.extract_usage(super::VENDOR_NAME, body)
-    } else if has(keys::EMBEDDING) || has(super::INPUT_TEXT_TOKEN_COUNT) {
-        EMB.extract_usage(super::VENDOR_NAME, body)
-    } else if has(keys::RESULTS) {
-        None
-    } else {
-        CHAT.extract_usage(super::VENDOR_NAME, body)
-    }
-}
-
-/// The NON-TOKEN billing of a complete same-protocol non-stream 2xx body, by the same shape probe as
-/// [`same_protocol_usage`]: a Rerank body (`results`) is read by the rerank cell's own reader, so the
-/// search units it billed reach both books as the open class the cross-protocol path ledgers (item
-/// 134). Every other shape bills tokens only, and answers `None`.
-pub fn same_protocol_open_billing(
-    body: &[u8],
-    parsed: Option<&Value>,
-) -> Option<busbar_contract::billing::Billing> {
-    if !parsed.is_some_and(|v| v.get(keys::RESULTS).is_some()) {
-        return None;
-    }
-    read_rerank_response(body).ok().and_then(|r| r.billing())
-}
-
-/// True when a same-protocol non-stream 2xx body is a Converse response (the shape that must carry
-/// `metrics.latencyMs`), as opposed to an InvokeModel embeddings / image / rerank body, which has no
-/// such member.
-pub fn is_converse_response(v: &Value) -> bool {
-    v.as_object()
-        .is_some_and(|o| o.contains_key(keys::OUTPUT) || o.contains_key(super::STOP_REASON))
-}
 
 impl RequestHandler for BedrockRequestHandler {
     dialect_identity!(super::VENDOR_NAME);
@@ -294,6 +239,11 @@ leaf_op! {
     BedrockRerank: super::VENDOR_NAME,
     RerankReqHandle = read_rerank_request,
     RerankRespHandle = read_rerank_response;
+    // Search-unit metered, as the Cohere cell: buffer the same-protocol non-stream 2xx body so the
+    // relay's tap reads the `meta.billed_units.search_units` it billed (item 134).
+    fn taps_usage(&self) -> bool {
+        true
+    }
 }
 
 /// IR → bedrock rerank request wire (the body of [`BedrockRerank::write_request`], moved behind the
@@ -516,7 +466,7 @@ pub fn read_rerank_request(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let documents = super::super::cohere::handler::rerank_documents_pub(wire.get(keys::DOCUMENTS));
+    let documents = crate::codec::rerank_wire::read_documents(wire.get(keys::DOCUMENTS));
     if query.is_empty() || documents.is_empty() {
         return Err(IngressReject::BadRequest(
             "rerank request requires `query` and `documents`".into(),
@@ -549,7 +499,7 @@ pub fn read_rerank_response(
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
     Ok(crate::codec::ir::rerank::RerankResp {
         id: v.get(keys::ID).and_then(Value::as_str).map(str::to_string),
-        results: super::super::cohere::handler::read_rerank_results(v.get(keys::RESULTS)),
+        results: crate::codec::rerank_wire::read_results(v.get(keys::RESULTS)),
         // A Bedrock-hosted Cohere rerank model answers in Cohere's shape; the search units it billed
         // (`meta.billed_units.search_units`) are read EXACTLY, as the Cohere reader reads them. A body
         // without them stays the flat marker — nothing is estimated.
@@ -561,3 +511,27 @@ pub fn read_rerank_response(
         ..Default::default()
     })
 }
+
+/// This dialect's row of the leaf-op `(operation, protocol)` dispatch, carried on `super::ENTRY`.
+pub(crate) const LEAF: crate::codec::leaf_codec::LeafCodecs =
+    crate::codec::leaf_codec::LeafCodecs {
+        embeddings: Some(LeafCodec {
+            write_request: write_embeddings_request,
+            write_response: write_embeddings_response,
+            read_request: read_embeddings_request,
+            read_response: read_embeddings_response,
+        }),
+        rerank: Some(LeafCodec {
+            write_request: write_rerank_request,
+            write_response: write_rerank_response,
+            read_request: read_rerank_request,
+            read_response: read_rerank_response,
+        }),
+        image: Some(LeafCodec {
+            write_request: write_image_request,
+            write_response: write_image_response,
+            read_request: read_image_request,
+            read_response: read_image_response,
+        }),
+        ..crate::codec::leaf_codec::LeafCodecs::NONE
+    };

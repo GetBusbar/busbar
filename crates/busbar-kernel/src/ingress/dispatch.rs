@@ -88,7 +88,7 @@ pub(crate) async fn protocol_dispatch(
     // The arrival is resolved from the core-owned, protocol-name-keyed side-table rather than off the
     // declaration: `path_ingress` split off `ProtocolDecl` when the decl relocated to
     // `busbar-substrate` (it named the core-only `Arrival`, which the neutral leaf cannot). Same fn
-    // pointer, same boxing, same by-name resolution — see `crate::ingress::path_ingress`.
+    // pointer, same boxing, same by-name resolution — see `crate::ingress::arrival::path_ingress_for`.
     //
     // Body-model protocols keep the model IN THE BODY, so the universal resolution + forward tail
     // (the generic `operation_ingress` → the one engine) RELOCATED into the extracted plane crate that
@@ -96,8 +96,8 @@ pub(crate) async fn protocol_dispatch(
     // the path-model table, and handed the same neutral arrival — the two aliases are one `fn` type,
     // so one arm serves both and core names no plane-specific type. No plane linked (core booted
     // plane-agnostic) → the honest no-handler 404 below.
-    let ingress = crate::ingress::path_ingress::path_ingress_for(proto)
-        .or_else(|| crate::ingress::body_ingress_for(proto));
+    let ingress =
+        crate::ingress::path_ingress_for(proto).or_else(|| crate::ingress::body_ingress_for(proto));
     if let Some(ingress) = ingress {
         // Mint the neutral arrival the dialect crate receives: its own URL-parsing reads
         // `path`/`uri`/`headers`/`body` directly, and it reaches core's resolution/forward pipeline
