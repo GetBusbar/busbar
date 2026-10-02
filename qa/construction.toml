@@ -394,6 +394,11 @@ because = "Test anchors for the failover-after-refusal test the ARCHITECT asked 
 # ── THE KERNEL CEILING, RE-ARMED BY THE P1 CORE UNIT (KIND-SHARE, KERNEL-AUTH-ZERO, BOOT-CHAIN, CONNECTOR-19,
 #    HEAD-FIELDS, CONNECTOR-19-U12; OWNER GRANT 2026-09-29 (3)) — one declaration over BIG for the stacked unit
 
+[gate.figure_raises."kind-isolation:matrix"]
+from    = 17744
+to      = 17786
+because = "FOLD-A2A (ARCHITECT rulings on PR #141, 2026-10-02: the matrix rise approved, declared the TURNSTILE-UNION way): +42 at the hop's measurement (run 36960649306, base 829fbc863: 17744 -> 17786) = the plane-door both-ways proof moved into busbar-plugin-loader under option (e)'s grant (loader x plane, x transport) and busbar-plane-a2a's door words (x legacy, x plane, x transport), each row in qa/kind-isolation.standing.txt. Drains at FOLD-A2A slice 8 (busbar-a2a deleted)."
+
 [gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
 file    = "qa/construction.toml"
 from    = 55537
