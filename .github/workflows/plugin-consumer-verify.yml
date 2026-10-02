@@ -1,4 +1,4 @@
-name: plugin-consumer-verify
+name: "Plugins: consumer verify"
 
 # plugin-consumer-verify - the ONE consumer-side check every first-party plugin repo calls, the way
 # they all already call plugin-ci.yml. It answers exactly one question per repo:
