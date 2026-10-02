@@ -7,6 +7,28 @@
 
 use crate::codec::carry::{Field, Handled, Slot, Table, ValueCodec, row};
 
+/// Row group `blocks`.
+pub(crate) const ROWS_BLOCKS: &[Field] = &[
+    row(&["messages[]", "role=tool", "content[]", "type=document", "document", "id"], Slot::Structure, ValueCodec::Prim("id")),
+    row(&["messages[]", "role=tool", "content[]", "type=document", "document", "data"], Slot::Structure, ValueCodec::Prim("data")),
+    row(&["messages[]", "role=tool", "tool_call_id"], Slot::Structure, ValueCodec::Prim("tool_call_id")),
+    row(&["messages[]", "role=assistant", "tool_calls"], Slot::Structure, ValueCodec::Prim("tool_calls")),
+    row(&["messages[]", "role=assistant"], Slot::Structure, ValueCodec::Prim("assistant")),
+    row(&["messages[]", "role=tool"], Slot::Structure, ValueCodec::Prim("tool")),
+    row(&["messages[]", "role=user"], Slot::Structure, ValueCodec::Prim("user")),
+    row(&["messages[]", "role=tool", "content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["messages[]", "role=user", "content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["messages[]", "role=system", "content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["messages[]", "role=assistant", "content"], Slot::Structure, ValueCodec::Prim("content")),
+    row(&["messages[]", "role=assistant", "tool_plan"], Slot::Structure, ValueCodec::Prim("tool_plan")),
+    row(&["messages[]", "role=assistant", "citations"], Slot::Structure, ValueCodec::Prim("citations")),
+    row(&["messages[]", "role=tool", "content[]", "type=text", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "role=user", "content[]", "type=text", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "role=system", "content[]", "type=text", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "role=assistant", "content[]", "type=text", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["messages[]", "role=user", "content[]", "type=image_url", "image_url", "url"], Slot::Structure, ValueCodec::Prim("url")),
+];
+
 /// Row group `penalties`.
 pub(crate) const ROWS_PENALTIES: &[Field] = &[
     row(&["frequency_penalty"], Slot::FrequencyPenalty, ValueCodec::Plain),
@@ -37,7 +59,7 @@ pub(crate) const ROWS_STRUCTURE: &[Field] = &[
 ];
 
 /// The request table, walked in order.
-pub(crate) const REQUEST: Table = &[ROWS_STRUCTURE, ROWS_SAMPLING, ROWS_PENALTIES];
+pub(crate) const REQUEST: Table = &[ROWS_STRUCTURE, ROWS_SAMPLING, ROWS_PENALTIES, ROWS_BLOCKS];
 
 /// How each control slot beyond the rows is handled.
 pub(crate) const CONTROLS: &[(Slot, Handled)] = &[

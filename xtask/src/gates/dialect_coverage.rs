@@ -19,11 +19,14 @@
 //!   (`content[].type=thinking` is `thinking`). A union's tag member (`type`, `role`: every `tag` the
 //!   locks record) is structure, never a leaf. Leaves compare lowercased with `_` removed, so a
 //!   camelCase wire (`topK`) and a snake_case one (`top_k`) name the same field.
-//! * A path's STRUCTURAL NODE is the innermost array item or union arm above its leaf (`input[]`,
-//!   `type=mcp_call`), named as its leaf is; a path with none sits at the body's root. A plain member
-//!   container is not a node: Gemini's `generationConfig.topK` sits at the root, as `top_k` does.
-//! * A mapped row names two leaves, each at its own node: its path's, and its concept's (the slot, or
-//!   the `prim` name): the slot registry is the declared alias (`p` maps `top_p`).
+//! * A path's PARENT is the segment right above its leaf (`container` in `container.id`, `mcp_call`
+//!   in `input[].type=mcp_call.arguments`), named as a leaf is; `""` at the body's root. A leaf
+//!   matches a mapped row's leaf only under the same parent, so a bare generic leaf (`id`, `text`,
+//!   `name`) never qualifies on its own.
+//! * A row's concept (its slot, or its `prim` name) is the declared alias, when it differs from the
+//!   row's leaf (`p` maps `top_p`; Gemini's `generationConfig.topK` is `top_k`). An alias matches at
+//!   the row's STRUCTURAL NODE, the innermost array item or union arm above the leaf (the root when
+//!   none): a plain member container (`generationConfig`) is not a node.
 //! * B maps a path when a row of B names it or a path beneath it (a row on `serviceTier.type` maps
 //!   `serviceTier`).
 
@@ -201,6 +204,19 @@ fn leaf(path: &str, tags: &BTreeSet<String>) -> Option<String> {
     }
 }
 
+/// The segment right above `path`'s leaf, named as a leaf is (an arm by its tag value, an item by its
+/// array's name); `""` at the body's root.
+fn parent(path: &str) -> String {
+    let Ok(segs) = segments(path) else {
+        return String::new();
+    };
+    match segs.len().checked_sub(2).and_then(|i| segs.get(i)) {
+        Some(Seg::Arm(_, arm)) => norm(arm),
+        Some(Seg::Each(n) | Seg::Key(n)) => norm(n),
+        None => String::new(),
+    }
+}
+
 /// The structural node above `path`'s leaf: the innermost `[]`/`{}` item or union arm before the
 /// last segment, named as a leaf is; `""` for the body's root.
 fn node(path: &str) -> String {
@@ -236,14 +252,22 @@ fn candidates(loaded: &[(MapFile, Lock)]) -> Vec<Candidate> {
         .filter_map(|e| e.tag.clone())
         .collect();
     // (direction, structural node, leaf) -> the dialects whose rows name it.
+    // Leaves by their parent, aliases by their structural node.
     let mut names: BTreeMap<(&str, String, String), BTreeSet<&str>> = BTreeMap::new();
+    let mut aliases: BTreeMap<(&str, String, String), BTreeSet<&str>> = BTreeMap::new();
     for (m, _) in loaded {
         for r in &m.rows {
-            let at = node(&r.path);
-            let concept = (!r.concept.is_empty()).then(|| norm(&r.concept));
-            for n in [leaf(&r.path, &tags), concept].into_iter().flatten() {
+            let own = leaf(&r.path, &tags);
+            if let Some(l) = &own {
                 names
-                    .entry((r.dir, at.clone(), n))
+                    .entry((r.dir, parent(&r.path), l.clone()))
+                    .or_default()
+                    .insert(m.name.as_str());
+            }
+            let concept = norm(&r.concept);
+            if !concept.is_empty() && own.as_deref() != Some(concept.as_str()) {
+                aliases
+                    .entry((r.dir, node(&r.path), concept))
                     .or_default()
                     .insert(m.name.as_str());
             }
@@ -273,9 +297,15 @@ fn candidates(loaded: &[(MapFile, Lock)]) -> Vec<Candidate> {
                 let Some(l) = leaf(path, &tags) else {
                     continue;
                 };
-                let Some(by) = names.get(&(dir.as_str(), node(path), l.clone())) else {
-                    continue;
-                };
+                let by: BTreeSet<&str> = [
+                    names.get(&(dir.as_str(), parent(path), l.clone())),
+                    aliases.get(&(dir.as_str(), node(path), l.clone())),
+                ]
+                .into_iter()
+                .flatten()
+                .flatten()
+                .copied()
+                .collect();
                 let mapped_by: Vec<String> = by
                     .iter()
                     .filter(|d| **d != m.name)

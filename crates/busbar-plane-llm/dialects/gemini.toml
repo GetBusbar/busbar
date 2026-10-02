@@ -1,10 +1,11 @@
 # crates/busbar-plane-llm/dialects/gemini.toml: the HAND-WRITTEN wire <> IR mapping of the Gemini
-# generateContent dialect (stage 0: flat request fields). Format: see openai_chat.toml.
+# generateContent dialect (stage 1: request, response and stream). Format: see openai_chat.toml.
 
 [dialect]
 wire = "gemini"  # the wire lock: dialects/gemini.wire.json (notation A paths)
 label = "Gemini"
-request = ["structure", "generation_config", "tier"]
+request = ["structure", "generation_config", "tier", "blocks"]
+response = ["response"]
 drop_warn = "dropping a request control on Gemini egress: generateContent has no form for it"
 
 # Members the dialect's own code models (`prim`). `generationConfig` is NOT one: it rides `extra`
@@ -45,12 +46,57 @@ park = true
 "flex" = { wire = "flex" }
 "priority" = { wire = "priority" }
 
+# The request members inside the message, tool and config structure that the dialect's own code
+# reads and writes (`prim`: structure is code; the walker does not walk these rows).
+[rows.blocks]
+"contents[].parts[].inlineData.mimeType" = { prim = "mime_type" }
+"contents[].parts[].inlineData.data" = { prim = "data" }
+"contents[].role" = { prim = "role" }
+"contents[].parts" = { prim = "parts" }
+"generationConfig.responseMimeType" = { prim = "response_mime_type" }
+"generationConfig.responseSchema" = { prim = "response_schema" }
+"generationConfig.responseModalities" = { prim = "response_modalities" }
+"generationConfig.thinkingConfig.thinkingBudget" = { prim = "thinking_budget" }
+"generationConfig.thinkingConfig.includeThoughts" = { prim = "include_thoughts" }
+"generationConfig.mediaResolution" = { prim = "media_resolution" }
+"generationConfig.speechConfig" = { prim = "speech_config" }
+"contents[].parts[].text" = { prim = "text" }
+"contents[].parts[].thought" = { prim = "thought" }
+"contents[].parts[].thoughtSignature" = { prim = "thought_signature" }
+"contents[].parts[].fileData.fileUri" = { prim = "file_uri" }
+"contents[].parts[].fileData.mimeType" = { prim = "mime_type" }
+"contents[].parts[].functionCall.name" = { prim = "name" }
+"contents[].parts[].functionCall.args" = { prim = "args" }
+"contents[].parts[].functionResponse.name" = { prim = "name" }
+"contents[].parts[].functionResponse.response" = { prim = "response" }
+"contents[].parts[].executableCode" = { prim = "executable_code" }
+"contents[].parts[].codeExecutionResult" = { prim = "code_execution_result" }
+
+# The answer members the dialect's reader and writer carry (`prim`: code carries them).
+[rows.response]
+"usageMetadata.thoughtsTokenCount" = { prim = "reasoning_tokens" }
+"usageMetadata.promptTokenCount" = { prim = "input_tokens" }
+"usageMetadata.candidatesTokenCount" = { prim = "output_tokens" }
+"usageMetadata.totalTokenCount" = { prim = "total_tokens" }
+"candidates[].content" = { prim = "content" }
+"candidates[].finishReason" = { prim = "finish_reason" }
+"candidates[].index" = { prim = "index" }
+"candidates[].safetyRatings" = { prim = "safety_ratings" }
+"candidates[].citationMetadata" = { prim = "citation_metadata" }
+"candidates[].groundingMetadata" = { prim = "grounding_metadata" }
+"candidates[].avgLogprobs" = { prim = "avg_logprobs" }
+"candidates[].logprobsResult" = { prim = "logprobs_result" }
+"candidates[].tokenCount" = { prim = "token_count" }
+"promptFeedback.blockReason" = { prim = "block_reason" }
+"promptFeedback.safetyRatings" = { prim = "safety_ratings" }
+"usageMetadata.cachedContentTokenCount" = { prim = "cache_read_tokens" }
+"usageMetadata.toolUsePromptTokenCount" = { prim = "tool_use_prompt_token_count" }
+"usageMetadata.promptTokensDetails" = { prim = "prompt_tokens_details" }
+"modelVersion" = { prim = "model" }
+"responseId" = { prim = "response_id" }
+
 # Controls beyond the rows: `labels` (validated per entry) and `responseModalities` are the
 # dialect's own code.
 [controls]
 "metadata" = { code = "gemini_labels" }
 "output_modalities" = { code = "gemini_response_modalities" }
-
-# Paths no row maps although another dialect maps a field of the same name (`dialect-candidates`).
-[unmapped.request]
-"generationConfig.responseFormat" = { no-equivalent = "Gemini's output-media format object (audio, image, text mime type and schema); the dialect reads structured output from responseMimeType / responseSchema, and no other dialect has the audio and image delivery settings" }
