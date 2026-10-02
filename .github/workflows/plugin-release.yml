@@ -1,5 +1,5 @@
 # plugin-release — build, sign, pack and publish ONE first-party plugin release, for every plugin
-# repo. The repo's `.github/workflows/release.yml` is a thin caller rendered by `cargo xtask fleet
+# repo. The repo's `.github/workflows/release.yml` is a thin caller rendered by `busbar-release plugin
 # render <repo>` from plugins.yaml: on a `v*` tag it runs plugin-ci.yml on the tagged commit, then this
 # file, then plugin-consumer-verify.yml, each taken at the busbar commit the repo pins.
 #
@@ -22,7 +22,7 @@
 #
 # A PRE-RELEASE tag (`vX.Y.Z-dev.N`, cut from a plugin repo's dev branch) runs the same build, sign and
 # pack, but its release is a GitHub pre-release: published, never marked latest, and no site dispatch.
-name: plugin-release
+name: "Plugins: release"
 
 on:
   workflow_call:
