@@ -315,7 +315,7 @@ pub fn drop_request_extra(ir: &mut IrRequest, ingress_protocol: &str) {
     // (they carry caller payload).
     let paths = super::proto_codec::with_reader(ingress_protocol, |r| {
         drops::extra_paths(&ir.extra, r.parked(), |path| {
-            crate::codec::carry::maps(r.request_map(), path)
+            crate::codec::carry::crosses(r.request_map(), path)
         })
     })
     .unwrap_or_else(|| drops::extra_paths(&ir.extra, &[], |_| false));
