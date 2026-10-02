@@ -61,7 +61,7 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
 use busbar_contract::abi::host::conn::connector::{
-    DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
+    DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB,
 };
 use busbar_contract::abi::host::service::DEST_PLAINTEXT;
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
@@ -732,12 +732,7 @@ impl Conns for Connector {
         // A TARGET THE NEED'S CONFIG NAMES IS THE OPERATOR'S OWN (OWNER Q7: a destination the
         // operator writes into config is trusted): its address is judged as operator
         // infrastructure, never under a class that refuses request-data destinations.
-        let judged_class =
-            if declared_target.is_some() && guard::PRIVATE_REFUSED_IN.contains(&egress_class) {
-                EGRESS_OPERATOR_INFRASTRUCTURE
-            } else {
-                egress_class
-            };
+        let judged_class = guard::judged_class(egress_class, declared_target.is_some());
         // THE DECLARED TARGET (1.5.5's per-module target guarantee, on every need): a need whose
         // config names its target dials that target and no other.
         if let Some(declared) = declared_target {

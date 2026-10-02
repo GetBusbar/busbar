@@ -30,9 +30,12 @@
 // sites flip onto the seam — the same not-yet-mounted posture `identity`/`trust_anchor` record.
 #![cfg_attr(not(test), allow(dead_code))]
 
+use std::net::IpAddr;
+
 use crate::egress::engine::ClientIdentity;
+use crate::host_services::DestRefusal;
 use crate::plane_host::spki::SpkiError;
-use rustls_pki_types::CertificateDer;
+pub use rustls_pki_types::CertificateDer;
 
 /// THE OUTBOUND EGRESS-TRUST HOST CAPABILITY, as a neutral trait a plane reaches through instead of
 /// calling [`identity`](super::identity) / [`trust_anchor`](super::trust_anchor) / [`spki`](super::spki)
@@ -60,6 +63,15 @@ pub trait EgressTrustHost: Send + Sync {
     /// The `sha256/<base64>` SPKI pin of a peer certificate a completed handshake produced. Pure DER
     /// walk; pass-through to [`spki::pin`](super::spki::pin).
     fn peer_leaf_pin(&self, cert_der: &[u8]) -> Result<String, SpkiError>;
+
+    /// An answer the kernel's own pooled client resolved for `host`, judged whole under `class` by
+    /// the deployment's destination guard (OWNER DESTINATION GUARD; the connector decides). INTERIM
+    /// for the eight pooled-client builders; struck when D1-D6 move onto `conns` (Phase B).
+    ///
+    /// # Errors
+    ///
+    /// The refusal of the first refused address.
+    fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), DestRefusal>;
 }
 
 /// The production egress-trust capability: a BYTE-FOR-BYTE pass-through to the host-side primitives.
@@ -86,6 +98,14 @@ impl EgressTrustHost for PassThroughEgressTrust {
 
     fn peer_leaf_pin(&self, cert_der: &[u8]) -> Result<String, SpkiError> {
         super::spki::pin(cert_der)
+    }
+
+    /// No guard behind the pass-through: FAIL CLOSED, every answer refused, never allowed.
+    fn judge_answer(&self, host: &str, _: &[IpAddr], _: u32) -> Result<(), DestRefusal> {
+        Err(DestRefusal {
+            verdict: busbar_contract::abi::host::service::DEST_NO_HOST,
+            reason: format!("host `{host}` was not dialled: no destination guard is installed"),
+        })
     }
 }
 

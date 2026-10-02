@@ -306,7 +306,7 @@ fn validate_config_command() -> i32 {
     }
     // THE DESTINATION GUARD, as boot builds it: a bad `advanced.allow_destinations` entry fails
     // here as it fails the boot.
-    if let Err(e) = busbar_core_connector::process::dest_judge(&cfg.destinations()) {
+    if let Err(e) = crate::root::connector::guard_for(&cfg.destinations()) {
         eprintln!(
             "[error] {}: config validation failed:\n  - {e}",
             diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()

@@ -28,7 +28,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use busbar_contract::abi::host::conn::connector::{EGRESS_DEFAULT, EGRESS_OPEN_WEB};
+use busbar_contract::abi::host::conn::connector;
 use busbar_contract::abi::host::service::{
     DEST_INTERNAL, DEST_METADATA, DEST_NO_ADDRESSES, DEST_OBFUSCATED,
 };
@@ -47,7 +47,19 @@ use busbar_kernel::config::Destinations;
 /// network (a caller- or plane-named target: the default class, `open-web`). Cloud metadata is
 /// refused in every class whatever this table says, a configured NAME rebinding to it included,
 /// unless an IP/CIDR allowlist entry names it.
-pub const PRIVATE_REFUSED_IN: &[u32] = &[EGRESS_DEFAULT, EGRESS_OPEN_WEB];
+pub const PRIVATE_REFUSED_IN: &[u32] = &[connector::EGRESS_DEFAULT, connector::EGRESS_OPEN_WEB];
+
+/// The class a dial's address is judged under: a need's own, or (its target named by its config,
+/// `configured`) the operator's own destination, trusted as operator infrastructure (OWNER Q7).
+#[must_use]
+pub fn judged_class(class: u32, configured: bool) -> u32 {
+    let trusted = connector::EGRESS_OPERATOR_INFRASTRUCTURE;
+    if configured && PRIVATE_REFUSED_IN.contains(&class) {
+        trusted
+    } else {
+        class
+    }
+}
 
 /// The config key an allowlist refusal at boot names.
 pub const ALLOW_KEY: &str = "advanced.allow_destinations";

@@ -65,6 +65,7 @@ fn connector_over(
     }])
     .expect("the view");
     let guard = Guard::from_config(&Destinations {
+        block_private_addresses: true,
         allow: allow.iter().map(|s| (*s).to_owned()).collect(),
         ..Destinations::default()
     })

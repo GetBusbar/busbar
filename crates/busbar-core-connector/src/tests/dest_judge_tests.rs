@@ -34,6 +34,10 @@ impl Resolve for HandResolver {
 
 /// The kernel's services judging by the guard `d` states, over `resolver`.
 fn services(resolver: Arc<HandResolver>, d: Destinations) -> KernelServices {
+    let d = Destinations {
+        block_private_addresses: true,
+        ..d
+    };
     let guard = Guard::from_config(&d).expect("a valid guard");
     KernelServices::new().with_dest_judge(Arc::new(GuardJudge::new(guard, resolver)))
 }

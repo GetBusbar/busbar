@@ -266,3 +266,33 @@ async fn a_judged_tls_dial_keeps_the_name_for_sni_and_host() {
     );
     assert_eq!(judged_conn.sni, records[1].sni);
 }
+
+/// THE SEAM, FAIL CLOSED (ARCHITECT ruling (C)): a pooled client naming no judge of its own asks
+/// the root-installed egress-trust seam; in a process that installed none (or the pass-through,
+/// which has no guard behind it) a private or metadata answer is refused, never allowed, as a
+/// connect failure, and no socket opens.
+#[tokio::test]
+async fn with_no_guard_installed_a_pooled_dial_fails_closed() {
+    let fixture = spawn_http(CannedResponse::ok("never served"), 4);
+    for answer in [fixture.addr, SocketAddr::new(IMDS, fixture.addr.port())] {
+        let spec = EngineSpec {
+            dns: Dns::Custom(Arc::new(Answers(vec![answer]))),
+            judge: None,
+            ..EngineSpec::pooled_webpki(4, 300, false, false)
+        };
+        let client = build_client(&spec).expect("builds");
+        let err = client
+            .request(get(&format!(
+                "http://seam.test:{}/v1/x",
+                fixture.addr.port()
+            )))
+            .await
+            .expect_err("refused without a guard");
+        assert!(err.is_connect(), "{err:?}");
+        assert!(
+            dial_refusal(&err).is_some(),
+            "refused through the seam: {err:?}"
+        );
+    }
+    assert!(fixture.records().is_empty(), "no connection was opened");
+}

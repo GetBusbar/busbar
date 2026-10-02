@@ -13,10 +13,7 @@
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use busbar_contract::abi::host::conn::connector::{
-    EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
-    EGRESS_PROVIDER,
-};
+use busbar_contract::abi::host::conn::connector::{EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB};
 use busbar_contract::abi::host::service::{
     DEST_INTERNAL, DEST_NO_HOST, DEST_PLAINTEXT, DEST_SCHEME, DEST_UNRESOLVABLE,
 };
@@ -94,7 +91,8 @@ impl GuardJudge {
     /// The name and scheme arms: the host, port and scheme to dial, and the literal when the host
     /// is one.
     fn named(&self, dest: &str, class: u32) -> Result<(String, u16, bool, Option<IpAddr>), u64> {
-        if !EGRESS_CLASSES.contains(&class) {
+        // The classes a need may declare are 0..=4; a destination under any other names none.
+        if class > EGRESS_LOOPBACK_ALLOWED {
             return Err(DEST_NO_HOST);
         }
         let (host, port, https) = split(dest)?;
@@ -108,16 +106,6 @@ impl GuardJudge {
         Ok((host, port, https, literal))
     }
 }
-
-/// The egress classes a need may declare; a destination under any other is refused as naming no
-/// usable host.
-const EGRESS_CLASSES: [u32; 5] = [
-    EGRESS_DEFAULT,
-    EGRESS_PROVIDER,
-    EGRESS_OPERATOR_INFRASTRUCTURE,
-    EGRESS_OPEN_WEB,
-    EGRESS_LOOPBACK_ALLOWED,
-];
 
 /// Loopback-allowed's scheme rule over a pinned address: plaintext to loopback only.
 fn plaintext_to_loopback(class: u32, https: bool, ip: IpAddr) -> Result<(), u64> {

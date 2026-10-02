@@ -117,24 +117,6 @@ impl std::error::Error for DestRefusal {}
 /// What `dest.judge` answers on services built without a destination judge.
 pub const NO_DEST_JUDGE: &str = "no destination judge is installed";
 
-static PROCESS_JUDGE: std::sync::OnceLock<Arc<dyn DestJudge>> = std::sync::OnceLock::new();
-
-/// Install the process's destination judge, once (the root, at boot, before any dial).
-///
-/// # Errors
-///
-/// One is already installed: the argument comes back.
-pub fn install_dest_judge(judge: Arc<dyn DestJudge>) -> Result<(), Arc<dyn DestJudge>> {
-    PROCESS_JUDGE.set(judge)
-}
-
-/// The process's destination judge, once the root installed it: what the kernel's own clients
-/// ask at dial time.
-#[must_use]
-pub fn installed_dest_judge() -> Option<&'static Arc<dyn DestJudge>> {
-    PROCESS_JUDGE.get()
-}
-
 /// Runs store I/O off the calling thread, on a bounded pool.
 pub trait Offload: Send + Sync {
     /// Submit `job`. A pool that refuses it drops it unrun; it never runs on the caller's thread.

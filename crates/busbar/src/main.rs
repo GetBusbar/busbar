@@ -820,9 +820,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // connection, built once here, before anything dials: the kernel's `dest.judge` and its own
     // clients ask it (installed below), and the connector dials by it.
     let dest = root::connector::dest_judge(&cfg);
-    if busbar_kernel::host_services::install_dest_judge(dest.clone()).is_err() {
-        die("the destination guard was installed twice; the process has one".to_owned());
-    }
+    root::connector::install_egress_trust(dest.clone());
     // THE SERVE PATH'S ONE COMPOSITION: the kernel's host services go into the dispatcher built at
     // boot, before any plugin is bound (`root::serve`).
     root::serve::compose(dest.clone(), &late_services);

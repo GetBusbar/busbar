@@ -19,7 +19,7 @@
 //! The pooled posture's arm is [`EgressResolver::Judged`]: the name is resolved once per new
 //! connection and EVERY address it answered with is judged by the deployment's one destination
 //! guard (OWNER ruling DESTINATION GUARD: the connector's, installed by the root and asked through
-//! `host_services::installed_dest_judge`) before `HttpConnector` sees any of them. A refused answer is a resolver error, so the dial fails as a connect failure and nothing
+//! `plane_host::egress_trust::egress_trust_host`, the root-installed egress-trust seam) before `HttpConnector` sees any of them. A refused answer is a resolver error, so the dial fails as a connect failure and nothing
 //! is connected; an admitted answer is handed on whole, and the `Uri` keeps the name for SNI, the
 //! certificate check and `Host`. A pooled connection was therefore dialled to an address this arm
 //! judged, which is what makes reusing it safe.
@@ -33,45 +33,34 @@ use std::task::{Context, Poll};
 use hyper_util::client::legacy::connect::dns::{GaiAddrs, GaiFuture, GaiResolver, Name};
 
 use busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
-use busbar_contract::abi::host::service::DEST_METADATA;
-use busbar_contract::net::ip_is_cloud_metadata;
 
-use crate::host_services::{installed_dest_judge, DestJudge, DestRefusal};
+use crate::host_services::DestJudge;
+use crate::plane_host::egress_trust::{egress_trust_host, EgressTrustHost, PassThroughEgressTrust};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-/// Judge one resolution's answer, refusing it whole, by `judge` or (none named) the process's
-/// installed destination guard. The refusal ([`DestRefusal`]) is the resolver's error, so
-/// `HttpConnector` reports the dial as a connect failure caused by it: not a timeout, so a plane
-/// fails it over as it does a refused connection. With no guard installed yet (a client built
-/// outside a booted process), cloud metadata alone is refused.
+/// Judge one resolution's answer, refusing it whole, by `judge` (a test's own) or the
+/// deployment's destination guard behind the root-installed egress-trust seam. The engine never
+/// decides: with no seam installed the answer is refused (fail closed). The refusal is the
+/// resolver's error, so `HttpConnector` reports the dial as a connect failure caused by it: not a
+/// timeout, so a plane fails it over as it does a refused connection.
 fn judged(
     judge: Option<&Arc<dyn DestJudge>>,
     host: &str,
     addrs: Vec<SocketAddr>,
 ) -> Result<ResolvedAddrs, BoxError> {
     let ips: Vec<IpAddr> = addrs.iter().map(SocketAddr::ip).collect();
-    let refused = match judge.or_else(|| installed_dest_judge()) {
-        Some(j) => j.judge_answer(host, &ips, EGRESS_PROVIDER).err(),
-        None => ips
-            .iter()
-            .find(|a| ip_is_cloud_metadata(a))
-            .map(|a| DestRefusal {
-                verdict: DEST_METADATA,
-                reason: format!(
-                    "host `{host}` resolves to the cloud-metadata address {a}; no destination \
-                     guard is installed"
-                ),
-            }),
+    let answer = match (judge, egress_trust_host()) {
+        (Some(j), _) => j.judge_answer(host, &ips, EGRESS_PROVIDER),
+        (None, Some(seam)) => seam.judge_answer(host, &ips, EGRESS_PROVIDER),
+        (None, None) => PassThroughEgressTrust.judge_answer(host, &ips, EGRESS_PROVIDER),
     };
-    if let Some(refusal) = refused {
-        return Err(Box::new(refusal));
-    }
+    answer.map_err(|refusal| Box::new(refusal) as BoxError)?;
     Ok(ResolvedAddrs::Listed(addrs.into_iter()))
 }
 
-/// The dial posture a pooled client is built with: the process's installed guard (`None`, read
-/// at each dial) over the system resolver. A test scopes its own judge and names over the
+/// The dial posture a pooled client is built with: the installed guard (`None`, read through the
+/// egress-trust seam at each dial) over the system resolver. A test scopes its own judge and names over the
 /// clients built inside `egress::fixtures::with_scoped_dial`, so a plane's runtime built in that
 /// scope judges by the test's judge without touching the process's.
 pub(crate) fn pooled_dial() -> (Option<Arc<dyn DestJudge>>, Option<Arc<dyn ResolveNames>>) {

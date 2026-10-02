@@ -126,11 +126,12 @@ fn every_service_is_the_installed_services_answer() {
 
 fn kernel(blocked: &[&str], allow_all: bool) -> KernelServices {
     let d = busbar_kernel::config::Destinations {
+        block_private_addresses: true,
         blocked: blocked.iter().map(|h| (*h).to_string()).collect(),
         allow_all_metadata: allow_all,
         ..busbar_kernel::config::Destinations::default()
     };
-    kernel_services(busbar_core_connector::process::dest_judge(&d).expect("the guard"))
+    kernel_services(crate::root::connector::guard_for(&d).expect("the guard"))
 }
 
 fn verdict(s: &dyn HostServices, dest: &str, class: u32) -> Stored {

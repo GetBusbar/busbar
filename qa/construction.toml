@@ -2026,7 +2026,7 @@ known_sites = [
   "crates/busbar-kernel/src/config/migrate.rs:1505",
   "crates/busbar-kernel/src/config/migrate.rs:1850",
   "crates/busbar-kernel/src/config/migrate.rs:1851",
-  "crates/busbar-kernel/src/config/mod.rs:796",
+  "crates/busbar-kernel/src/config/mod.rs:800",
   "crates/busbar-kernel/src/config/mod.rs:2285",
   "crates/busbar-kernel/src/config/pools.rs:302",
   # Moved from the retired shared value crate with the code that carries them (#83a SD-8), reviewed

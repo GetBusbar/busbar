@@ -220,6 +220,48 @@ pub fn default_block_private_addresses() -> bool {
     DEFAULT_BLOCK_PRIVATE_ADDRESSES
 }
 
+/// THE DESTINATION GUARD'S INPUTS, as one deployment states them (`RootCfg::destinations`): the
+/// connector builds its one guard from these. `Default` blocks nothing: state the owner default
+/// (`block_private_addresses: true`) where it is meant.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Destinations {
+    /// `advanced.block_private_addresses`.
+    pub block_private_addresses: bool,
+    /// `advanced.allow_destinations`, as written (each entry validated by the guard at boot).
+    pub allow: Vec<String>,
+    /// The 1.5.5 carve-outs that still load: `security.allow_metadata_hosts` and every
+    /// `providers.<p>.allow_metadata_hosts` (by provider name).
+    pub legacy_allow: Vec<String>,
+    /// `security.blocked_metadata_hosts`: extra refusals inside the one guard.
+    pub blocked: Vec<String>,
+    /// `security.allow_all_metadata`: every cloud-metadata name and address admitted, as 1.5.5.
+    pub allow_all_metadata: bool,
+}
+
+impl super::RootCfg {
+    /// The destination guard's inputs ([`Destinations`]).
+    #[must_use]
+    pub fn destinations(&self) -> Destinations {
+        let mut providers: Vec<_> = self.providers.iter().collect();
+        providers.sort_by(|a, b| a.0.cmp(b.0));
+        let legacy = providers
+            .into_iter()
+            .flat_map(|(_, p)| &p.allow_metadata_hosts);
+        Destinations {
+            block_private_addresses: self.block_private_addresses,
+            allow: self.allow_destinations.clone(),
+            legacy_allow: self
+                .allow_metadata_hosts
+                .iter()
+                .chain(legacy)
+                .cloned()
+                .collect(),
+            blocked: self.blocked_metadata_hosts.clone(),
+            allow_all_metadata: self.allow_all_metadata,
+        }
+    }
+}
+
 impl Default for AdvancedCfg {
     fn default() -> Self {
         Self {

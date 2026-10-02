@@ -110,7 +110,7 @@ pub struct EngineSpec {
     /// DNS when unpinned.
     pub dns: Dns,
     /// The destination guard every address `dns` answers with is judged by when unpinned: `None`
-    /// = the process's installed one (`host_services::installed_dest_judge`), read at each dial.
+    /// = the guard behind the root-installed egress-trust seam, read at each dial.
     pub judge: Option<Arc<dyn crate::host_services::DestJudge>>,
     /// Peer-certificate observation for SPKI pinning ([`observe`]). Off on the pooled posture (no
     /// walk, no hash per connect); on for every pinned posture.

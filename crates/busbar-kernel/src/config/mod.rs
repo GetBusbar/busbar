@@ -543,57 +543,7 @@ pub struct RootCfg {
     pub plane_sections: std::collections::BTreeSet<&'static str>,
 }
 
-/// THE DESTINATION GUARD'S INPUTS, as one deployment states them (`RootCfg::destinations`): the
-/// connector builds its one guard from these.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Destinations {
-    /// `advanced.block_private_addresses`.
-    pub block_private_addresses: bool,
-    /// `advanced.allow_destinations`, as written (each entry validated by the guard at boot).
-    pub allow: Vec<String>,
-    /// The 1.5.5 carve-outs, still loading: `security.allow_metadata_hosts` and every
-    /// `providers.<p>.allow_metadata_hosts` (by provider name). A NAME here admits its metadata
-    /// answer, as 1.5.5's carve-out did.
-    pub legacy_allow: Vec<String>,
-    /// `security.blocked_metadata_hosts`: extra refusals inside the one guard.
-    pub blocked: Vec<String>,
-    /// `security.allow_all_metadata`: every cloud-metadata name and address admitted, as 1.5.5.
-    pub allow_all_metadata: bool,
-}
-
-impl Default for Destinations {
-    /// The owner default: private addresses blocked, nothing allowed.
-    fn default() -> Self {
-        Destinations {
-            block_private_addresses: sections::DEFAULT_BLOCK_PRIVATE_ADDRESSES,
-            allow: Vec::new(),
-            legacy_allow: Vec::new(),
-            blocked: Vec::new(),
-            allow_all_metadata: false,
-        }
-    }
-}
-
 impl RootCfg {
-    /// The destination guard's inputs ([`Destinations`]).
-    #[must_use]
-    pub fn destinations(&self) -> Destinations {
-        let mut providers: Vec<_> = self.providers.iter().collect();
-        providers.sort_by(|a, b| a.0.cmp(b.0));
-        let legacy_allow = self.allow_metadata_hosts.iter().chain(
-            providers
-                .into_iter()
-                .flat_map(|(_, p)| &p.allow_metadata_hosts),
-        );
-        Destinations {
-            block_private_addresses: self.block_private_addresses,
-            allow: self.allow_destinations.clone(),
-            legacy_allow: legacy_allow.cloned().collect(),
-            blocked: self.blocked_metadata_hosts.clone(),
-            allow_all_metadata: self.allow_all_metadata,
-        }
-    }
-
     /// The VALIDATED endpoint resource for a plane, keyed by that plane's config `section`, or `None`
     /// when this deployment configures no such endpoint (or the owning plane was compiled out). The
     /// resource is type-erased as `Arc<dyn Any>` — the owning plane's own module downcasts it back to
@@ -1438,7 +1388,7 @@ impl DeployCfg {
 }
 
 // Moved to `busbar_kernel::config::sections`; re-exported at its historical `config::` path.
-pub use busbar_kernel::config::sections::SecurityCfg;
+pub use busbar_kernel::config::sections::{Destinations, SecurityCfg};
 
 /// The top-level `plugins:` block — the ONLY configuration surface of the dynamic plugin subsystem.
 /// A plugin is a plugin: store, auth, and hook plugins share this one block (one directory, one

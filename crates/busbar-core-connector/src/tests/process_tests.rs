@@ -51,6 +51,7 @@ impl Resolve for Table {
 /// The deployment's judge over `allow` (block on), resolving `names`.
 fn guard_judge(allow: &[&str], names: Vec<(&'static str, IpAddr)>) -> Arc<GuardJudge> {
     let d = Destinations {
+        block_private_addresses: true,
         allow: allow.iter().map(|s| (*s).to_owned()).collect(),
         ..Destinations::default()
     };

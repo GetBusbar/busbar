@@ -15,17 +15,19 @@
 
 use std::sync::{Arc, OnceLock};
 
-use busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
-use busbar_contract::abi::host::service::DEST_INTERNAL;
 use busbar_contract::abi::mechanism::door::DoorFn;
-use busbar_contract::net::url_host;
 use busbar_core_connector::framer::FramerDoor;
-use busbar_core_connector::guard::Guard;
-use busbar_core_connector::process::GuardJudge;
 use busbar_core_connector::registry::Entry;
 use busbar_core_connector::{process, Connector};
-use busbar_kernel::config::RootCfg;
-use busbar_kernel::host_services::DestJudge;
+use busbar_kernel::config::{Destinations, RootCfg};
+use std::net::IpAddr;
+
+use busbar_kernel::egress::engine::ClientIdentity;
+use busbar_kernel::host_services::{DestJudge, DestRefusal};
+use busbar_kernel::plane_host::egress_trust::{
+    install_egress_trust_host, CertificateDer, EgressTrustHost, PassThroughEgressTrust,
+};
+use busbar_kernel::plane_host::spki::SpkiError;
 
 use crate::root::loader::dispatch::{
     kinds::transport::Transport as TransportKind, load_linked, LinkedRow,
@@ -79,11 +81,52 @@ pub fn entries(doors: &[(&str, DoorFn)]) -> Result<Vec<Entry>, String> {
 /// THE DEPLOYMENT'S ONE DESTINATION GUARD (OWNER ruling DESTINATION GUARD), built once from
 /// `cfg`'s `advanced` keys and the 1.5.5 keys that still load. An allowlist entry the guard
 /// cannot read refuses the boot, naming it.
-pub fn dest_judge(cfg: &RootCfg) -> Arc<GuardJudge> {
-    process::dest_judge(&cfg.destinations()).unwrap_or_else(|refusal| {
+pub fn dest_judge(cfg: &RootCfg) -> Arc<process::GuardJudge> {
+    guard_for(&cfg.destinations()).unwrap_or_else(|refusal| {
         eprintln!("busbar: config errors:\n  - {refusal}");
         std::process::exit(2);
     })
+}
+
+/// The one guard `d` states, or the refusal naming its bad allowlist entry (`--validate`).
+///
+/// # Errors
+///
+/// An `advanced.allow_destinations` entry the guard cannot read.
+pub fn guard_for(d: &Destinations) -> Result<Arc<process::GuardJudge>, String> {
+    process::dest_judge(d)
+}
+
+/// THE EGRESS-TRUST CAPABILITY THE ROOT INSTALLS (ARCHITECT ruling (C), DEST-GUARD): the kernel's
+/// pass-through trust primitives, and every answer a kernel pooled client resolved judged by the
+/// deployment's one destination guard (`dest`). The connector decides; this only hands it on.
+pub struct GuardedEgressTrust(pub Arc<dyn DestJudge>);
+
+impl EgressTrustHost for GuardedEgressTrust {
+    fn register_client_identity(&self, identity: ClientIdentity) -> u64 {
+        PassThroughEgressTrust.register_client_identity(identity)
+    }
+    fn resolve_client_identity(&self, client_identity_ref: u64) -> Option<ClientIdentity> {
+        PassThroughEgressTrust.resolve_client_identity(client_identity_ref)
+    }
+    fn register_trust_anchor(&self, roots: Vec<CertificateDer<'static>>) -> u64 {
+        PassThroughEgressTrust.register_trust_anchor(roots)
+    }
+    fn resolve_trust_anchor(&self, trust_anchor_ref: u64) -> Vec<CertificateDer<'static>> {
+        PassThroughEgressTrust.resolve_trust_anchor(trust_anchor_ref)
+    }
+    fn peer_leaf_pin(&self, cert_der: &[u8]) -> Result<String, SpkiError> {
+        PassThroughEgressTrust.peer_leaf_pin(cert_der)
+    }
+    fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), DestRefusal> {
+        self.0.judge_answer(host, addrs, class)
+    }
+}
+
+/// Install [`GuardedEgressTrust`] over `dest` as the process's egress-trust capability, once, at
+/// boot, before any pooled client dials.
+pub fn install_egress_trust(dest: Arc<dyn DestJudge>) {
+    install_egress_trust_host(Box::leak(Box::new(GuardedEgressTrust(dest))));
 }
 
 /// THE BOOT PATH'S STEP: build the one Connector over every linked transport door, its dials

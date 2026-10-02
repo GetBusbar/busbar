@@ -106,3 +106,18 @@ fn the_composition_root_install_hands_the_installed_capability_back() {
         "the installed capability pins byte-identically to the free walk"
     );
 }
+
+/// THE DESTINATION JUDGEMENT ON THE SEAM (ARCHITECT ruling (C)): the pass-through has no guard
+/// behind it and refuses every answer (fail closed); the root's capability hands answers to the
+/// connector's guard (`busbar` root `connector::GuardedEgressTrust`).
+#[test]
+fn the_pass_through_seam_fails_closed() {
+    let public: std::net::IpAddr = "93.184.216.34".parse().unwrap();
+    let refused = PassThroughEgressTrust
+        .judge_answer("api.test", &[public], 0)
+        .unwrap_err();
+    assert_eq!(
+        refused.verdict,
+        busbar_contract::abi::host::service::DEST_NO_HOST
+    );
+}
