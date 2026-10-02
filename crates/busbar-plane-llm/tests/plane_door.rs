@@ -209,3 +209,49 @@ fn every_need_keeps_all_but_every_dialects_governed_response_fields() {
         assert_eq!(n.deny_response_headers_len, DENY_RESPONSE_HEADERS.len());
     }
 }
+
+/// RED (F2, ARCHITECT 2026-10-02 option B): no dialect's tenant- or credential-derived response
+/// field crosses to the plane through any need, read from the need itself through the contract's one
+/// crossing rule; every other upstream field does (the S-16 register entry's premise).
+#[test]
+fn red_no_dialects_governed_response_field_leaks_through_a_need() {
+    use busbar_contract::abi::host::conn::connector::keeps_response_field;
+    let none: [&[u8]; 0] = [];
+    for n in NEEDS {
+        let denied: Vec<&str> = if n.deny_response_headers_len == 0 {
+            Vec::new()
+        } else {
+            // SAFETY: the door's `'static` deny list of `deny_response_headers_len` strings.
+            let list = unsafe {
+                std::slice::from_raw_parts(n.deny_response_headers, n.deny_response_headers_len)
+            };
+            list.iter()
+                .map(|s| {
+                    // SAFETY: each entry is a `'static` str the door states (abi_str).
+                    let bytes = unsafe { std::slice::from_raw_parts(s.ptr, s.len) };
+                    std::str::from_utf8(bytes).expect("a field name is UTF-8")
+                })
+                .collect()
+        };
+        for d in DIALECTS {
+            for governed in d.governed_response_headers {
+                assert!(
+                    !keeps_response_field(n.keep_mode, &[], &denied, governed, none),
+                    "{} leaks `{governed}`",
+                    d.name
+                );
+            }
+        }
+        for relayed in [
+            "request-id",
+            "x-amzn-requestid",
+            "x-ratelimit-remaining-requests",
+            "set-cookie",
+        ] {
+            assert!(
+                keeps_response_field(n.keep_mode, &[], &denied, relayed, none),
+                "`{relayed}` is the upstream's and crosses (F2)"
+            );
+        }
+    }
+}
