@@ -177,8 +177,15 @@
 # cells; cells.json moves with it in this commit). No golden is recorded by this move. Feature branch head; re-pin to the
 # merge commit when it lands.
 #
+# 2026-10-02 (ARCHITECT rulings on the ORACLE-COMMIT findings, lane ORACLE-CELLS-3): moved e58d85c -> b168741
+# (busbar-release main, the merge of #18; carries #14 and #17). 1ef9f05: an accepted-differences transform also rewrites
+# string values inside body.json (a capture cell records its boot log there, not in body.text), so the D-1 diagnostic
+# suffix is normalized on capture cells as it already was on body.text; keys and non-string values are untouched. No
+# golden is recorded or moved by this pin. promote.yml RELEASE_REF is NOT moved here: the CI harness ref moves with
+# #181 / #265 and ORACLE-STABLE (busbar-release #24, cut from b168741).
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=e58d85c
+release_ref=b1687413136e368aa508ee8705dd320019c84580
 crate=busbar-release-oracle
 bin=busbar-oracle
