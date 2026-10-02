@@ -269,20 +269,21 @@ pub(crate) fn abi_symbol(
 /// THE PLUGIN-ABI HANDSHAKE, one home for every load path. The cold kinds, the upload vet, the
 /// plane loader and the transport loader each spelled it: four copies. Calls `busbar_abi()` under
 /// the ffi guard (it runs plugin code, so a panic fails the load closed) and refuses a plugin whose
-/// plugin-ABI version is not the engine's. `noun` is how the refusal names it (`plugin`, `plane`,
-/// `transport`), so each path's text is unchanged byte for byte.
+/// plugin-ABI version is not the engine's, answering the version it verified. `noun` is how the
+/// refusal names it (`plugin`, `plane`, `transport`), so each path's text is unchanged byte for
+/// byte.
 pub(crate) fn abi_handshake(
     abi: busbar_contract::abi::cold::AbiFn,
     display: &str,
     noun: &str,
-) -> Result<(), String> {
+) -> Result<u32, String> {
     let abi_version = ffi_guard_confined(display, "abi", || unsafe { abi() })?;
     if abi_version != TRANSPORT_VERSION {
         return Err(format!(
             "{noun} '{display}' targets transport ABI v{abi_version}, engine speaks v{TRANSPORT_VERSION}"
         ));
     }
-    Ok(())
+    Ok(abi_version)
 }
 
 fn ffi_guard_confined<R>(path: &str, op: &str, f: impl FnOnce() -> R) -> Result<R, String> {
@@ -1960,7 +1961,7 @@ pub fn validate_plugin(lib_path: &Path) -> Result<u32, String> {
 /// exit paths cannot each be responsible for routing the unload — the caller unloads once.
 fn validate_mapped(lib: &Library, display: &str) -> Result<u32, String> {
     let display = display.to_string();
-    abi_handshake(abi_symbol(lib, &display)?, &display, "plugin")?;
+    let abi_version = abi_handshake(abi_symbol(lib, &display)?, &display, "plugin")?;
     // The exported kind must be one the engine supports (a range exists for it).
     let plugin_kind = read_plugin_kind(lib, &display)?;
     if supported_abi(&plugin_kind).is_empty() {
@@ -1980,7 +1981,7 @@ fn validate_mapped(lib: &Library, display: &str) -> Result<u32, String> {
         lib.get::<CloseFn>(symbol::CLOSE)
             .map_err(|e| format!("plugin '{display}' missing busbar_close: {e}"))?;
     }
-    Ok(transport)
+    Ok(abi_version)
 }
 
 /// One entry in a plugins-directory inventory: the library filename and whether it validated as a
