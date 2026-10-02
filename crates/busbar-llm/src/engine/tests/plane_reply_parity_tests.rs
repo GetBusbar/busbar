@@ -473,8 +473,11 @@ fn canon(bytes: &[u8]) -> Vec<u8> {
 
 /// Head fields with a minted request id masked to its length.
 fn canon_fields(fields: &[(String, Vec<u8>)]) -> Vec<(String, Vec<u8>)> {
+    // The served side is written by a real server: its `date` is the clock's, and its
+    // per-connection fields are the writer's (the plane leaves both to the writer).
     fields
         .iter()
+        .filter(|(n, _)| n != "date" && !crate::engine::answer_re_derived(n, std::iter::empty()))
         .map(|(n, v)| {
             if n == "request-id" || n == "x-amzn-requestid" {
                 // A forwarded far-end id is its own bytes; a minted one is masked to its length.

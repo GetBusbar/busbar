@@ -1346,7 +1346,7 @@ plugin of that kind implements it. The kind's conformance suite is the finish li
 
 **11.7 Hooks are on the memory ABI.** Gates, rewrites and base-ordering are on the request path; the
 request body passes zero-copy as a blob. Hook behaviour stays 1.5.5's (#85): reply precedence, the
-status clamp, the message cap, `on_error` and the taps. ~~The 1.5.5 thread leak on a timed-out hook call
+status clamp, the message cap, `on_error` and the taps, with two owner-signed exceptions (2026-10-02): a failing transform under `on_error: reject` answers 503 (HOOK Q1), and a `prompt: ro|rw` hook sees tool-call arguments and tool results (HOOK Q2). ~~The 1.5.5 thread leak on a timed-out hook call
 becomes structurally impossible: a slow hook returns not-ready, and there is no blocking thread to leak.~~
 **SUPERSEDED 2026-09-27 by THE DESIGN §11.11 (Q-LEAK, owner ruling R1):** workers are thread-per-core; a
 hook that sleeps or spins in `decide` freezes its whole worker, not just the calling instance, and a slow
@@ -3515,7 +3515,7 @@ The loader checks in this order:
 | Slot | Contract |
 |---|---|
 | `decide` (P, may_pend) | Out: verb bits, `reject_status` + HAS, `reject_message`, `restrict_tags`, `order` into the host `order_buf` of `u32`. |
-| `transform` (P) | Out: verb bits plus rewrite blobs. **The kernel reads only the bits; the plane parses and validates the blobs**, and proceeds unmodified on failure. A `ro` rewrite is dropped by the kernel from the grant. |
+| `transform` (P) | Out: verb bits plus rewrite blobs. **The kernel reads only the bits; the plane parses and validates the blobs**, and a failed transform follows the hook's `on_error`: the default proceeds unmodified, and a chain ending in `reject` answers 503, fail closed (owner ruling HOOK Q1, 2026-10-02: an accepted difference from 1.5.5, which passed the request through; register entry HOOK-Q1). A `ro` rewrite is dropped by the kernel from the grant. |
 | `notify` (P, taps) | In is copied into the host-owned tap pool (global cap 1024, drop metric, stage projection with no prompt or signals, `groups:` filter). It never holds the request. |
 | `configure`, `status`, `describe` (O) | Run on a **fresh management instance** through the same door. Status and describe return 1.5.5 blobs. Configure: ack equal to the pushed version, 5 s deadline, a nack does not commit. |
 | routes, `serve` (O) | Routes are instance facts. Confined to `/hooks/<name>/*`; none/key/admin auth is enforced before `serve`; admin routes are admin-listener only. |

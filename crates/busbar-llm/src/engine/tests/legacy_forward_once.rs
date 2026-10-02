@@ -385,6 +385,15 @@ pub(super) async fn forward_once(
     match res {
         Ok(r) => {
             let status = r.status();
+            // A same-dialect answer relays the upstream head (mirrors the main forward path).
+            let upstream_head = r.headers().clone();
+            let relay = |resp: &mut Response| {
+                if ingress_protocol == egress_name {
+                    crate::engine::add_relayed_headers(resp.headers_mut(), &upstream_head, |n| {
+                        crate::engine::xchg::reply::wire::governed_response(ingress_protocol, n)
+                    });
+                }
+            };
             let ct = r.headers().get(CONTENT_TYPE).cloned();
             // Capture the upstream relayed request-id-class headers before `r` is consumed, keyed off
             // the ingress writer's `ingress_relayed_response_header_names` so this names no protocol
@@ -540,9 +549,11 @@ pub(super) async fn forward_once(
                 // On a fault, `record_transient_in` above transitioned the cell (cooldown-backoff
                 // preserved); the armed `probe_guard` releases the probe on drop (owner-checked no-op
                 // after). On a non-fault, the guard is the SOLE releaser.
-                return Ok(rb
+                let mut resp = rb
                     .body(Body::from(bytes))
-                    .unwrap_or_else(|_| status.into_response()));
+                    .unwrap_or_else(|_| status.into_response());
+                relay(&mut resp);
+                return Ok(resp);
             }
 
             // SUCCESS: the degraded path served a 2xx. Mirror the main forward loop
@@ -699,9 +710,11 @@ pub(super) async fn forward_once(
                 ingress_protocol,
                 upstream_relay_id.as_deref(),
             );
-            Ok(rb
+            let mut resp = rb
                 .body(guarded_body.into_body())
-                .unwrap_or_else(|_| status.into_response()))
+                .unwrap_or_else(|_| status.into_response());
+            relay(&mut resp);
+            Ok(resp)
         }
         Err(e) => {
             // Pre-response transport error: record transient against the ROUTING POOL cell, drop the
