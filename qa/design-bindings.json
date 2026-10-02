@@ -3016,7 +3016,7 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "next_refresh_never_sleeps_past_a_live_token_expiry",
+     "ref": "crates/busbar-kernel/src/egress_auth/tests/bearer_token_tests.rs::next_refresh_never_sleeps_past_a_live_token_expiry",
      "proves": "REFRESH_SKEW_SECS and MIN_SLEEP_SECS",
      "source": "curated",
      "status": "mapped"
@@ -3051,14 +3051,14 @@
     },
     {
      "kind": "test",
-     "ref": "token_response_tolerates_expires_in_as_number_string_or_absent",
+     "ref": "crates/busbar-kernel/src/egress_auth/tests/oauth_client_credentials_tests.rs::token_response_tolerates_expires_in_as_number_string_or_absent",
      "proves": "expires_in defaults to 3600",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:next_refresh_never_sleeps_past_a_live_token_expiry, test:headers_for_emits_nothing_before_first_mint, test:is_ready_false_before_first_mint_true_after, test:cached_token_new_omits_header_for_bytes_invalid_in_a_header_value, test:headers_for_reflects_prebuilt_header_after_a_refresh, test:token_response_tolerates_expires_in_as_number_string_or_absent"
+   "verdict_detail": "test:crates/busbar-kernel/src/egress_auth/tests/bearer_token_tests.rs::next_refresh_never_sleeps_past_a_live_token_expiry, test:headers_for_emits_nothing_before_first_mint, test:is_ready_false_before_first_mint_true_after, test:cached_token_new_omits_header_for_bytes_invalid_in_a_header_value, test:headers_for_reflects_prebuilt_header_after_a_refresh, test:crates/busbar-kernel/src/egress_auth/tests/oauth_client_credentials_tests.rs::token_response_tolerates_expires_in_as_number_string_or_absent"
   },
   {
    "id": "PB-65",

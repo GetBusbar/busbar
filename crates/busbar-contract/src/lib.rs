@@ -62,6 +62,7 @@ pub mod dest;
 pub mod diagnostic;
 pub mod duration;
 pub mod grammar;
+pub mod header;
 pub mod hook_calls;
 // The 1.5.5 wire, moved here verbatim from the kernel so it lives beside the ABI it serves: its
 // field docs are the wire's own module text, and its structs deliberately derive no `Debug` (they

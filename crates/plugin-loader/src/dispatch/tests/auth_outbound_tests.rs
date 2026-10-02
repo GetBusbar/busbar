@@ -4,7 +4,8 @@
 //! `OutboundInstance` over a real auth door, loaded and opened through the one dispatcher: the
 //! binding `open_outbound` answers, the ONE `fields` call answered on the spot and submitted on a
 //! ticket (the same fields both ways), the short answer re-called once with the buffers it named, a
-//! refusal, and the request's facts reaching the plugin. Every answer passes the kind's own
+//! refusal, the request's facts reaching the plugin, and the auth point the call is made at with
+//! the body lent only at `HeadBody`. Every answer passes the kind's own
 //! validator (`check_fields`) on the way back.
 
 use std::marker::PhantomData;
@@ -12,15 +13,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use busbar_contract::abi::auth::{
-    AuthTail, FieldSpan, FieldsIn, FieldsOut, OpenOutboundIn, OpenOutboundOut, StyleDecl,
-    CAP_INBOUND, CAP_OUTBOUND, FIELD_SENSITIVE, LOGIN_KIND_NONE, MODE_PASSTHROUGH,
+    AuthPoint, AuthTail, FieldSpan, FieldsIn, FieldsOut, OpenOutboundIn, OpenOutboundOut,
+    StyleDecl, CAP_INBOUND, CAP_OUTBOUND, FIELD_SENSITIVE, LOGIN_KIND_NONE, MODE_PASSTHROUGH,
+    POINT_HEAD, POINT_HEAD_BODY,
 };
 use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome, Span};
 use busbar_contract::abi::mechanism::door::KindTailHead;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
-use busbar_contract::abi::sdk::auth_door::{Held, Verdict, VerifyPlugin, VerifyView};
+use busbar_contract::abi::sdk::auth_door::{Answer, Verdict, Verifier, VerifyPlugin, VerifyView};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::lent::Lent;
+use busbar_contract::abi::sdk::life::Held;
 use busbar_contract::abi::sdk::safe::{Instance, SafeSlot};
 use busbar_contract::abi::sdk::Out;
 use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest, OutboundAuth};
@@ -35,6 +38,8 @@ use crate::dispatch::{
 const BEARER: &str = "bearer";
 /// The style whose fields do not: seventeen fields, one over `FIELDS_MAX`.
 const WIDE: &str = "wide";
+/// The style that signs the body: it needs the `HeadBody` point.
+const SIGNED: &str = "signed";
 
 mod plugin {
     use super::*;
@@ -46,25 +51,30 @@ mod plugin {
         fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, &'static str> {
             Ok(Outbound)
         }
-        fn verify(&self, _: &VerifyView<'_>) -> Verdict {
-            Verdict::Pass
+        fn verify(&self, _: &VerifyView<'_>) -> Answer {
+            Verdict::Pass.into()
         }
     }
 
-    /// `open_outbound`: `bearer` binds handle 1, `wide` handle 2; any other style FAILs.
+    /// The instance state the shared lifecycle serves.
+    type Inst = Held<Verifier<Outbound>>;
+
+    /// `open_outbound`: `bearer` binds handle 1, `wide` handle 2, `signed` handle 3; any other
+    /// style FAILs.
     pub struct Open(PhantomData<Outbound>);
     impl SafeSlot for Open {
         type In = OpenOutboundIn;
         type Out = OpenOutboundOut;
-        type State = Held<Outbound>;
+        type State = Inst;
         fn call(
-            _: Instance<'_, Held<Outbound>>,
+            _: Instance<'_, Inst>,
             input: Lent<'_, OpenOutboundIn>,
             mut out: Out<'_, OpenOutboundOut>,
         ) -> Outcome {
             let handle = match input.field(|i| &i.style).bytes() {
                 b"bearer" => 1,
                 b"wide" => 2,
+                b"signed" => 3,
                 _ => return Outcome::Failed,
             };
             out.set(|o| &o.handle, handle);
@@ -73,15 +83,16 @@ mod plugin {
     }
 
     /// `fields`: handle 1 answers `authorization: Bearer <method> <authority><path>` (sensitive);
-    /// handle 2 answers seventeen fields, short until its buffers hold them; a passthrough on
-    /// handle 1 is REFUSED.
+    /// handle 2 answers seventeen fields, short until its buffers hold them; handle 3 answers
+    /// `x-signed: <point> <body>` (the body as lent, `-` when none); a passthrough on handle 1 is
+    /// REFUSED.
     pub struct Fields(PhantomData<Outbound>);
     impl SafeSlot for Fields {
         type In = FieldsIn;
         type Out = FieldsOut;
-        type State = Held<Outbound>;
+        type State = Inst;
         fn call(
-            _: Instance<'_, Held<Outbound>>,
+            _: Instance<'_, Inst>,
             input: Lent<'_, FieldsIn>,
             mut out: Out<'_, FieldsOut>,
         ) -> Outcome {
@@ -99,6 +110,15 @@ mod plugin {
                 (2, _) => (0..17)
                     .map(|k| (format!("x-f{k:02}").into_bytes(), b"v".to_vec(), 0))
                     .collect(),
+                (3, _) => {
+                    let mut v = i.point.to_string().into_bytes();
+                    v.push(b' ');
+                    match i.body.fmt {
+                        busbar_contract::abi::mechanism::call::BLOB_ABSENT => v.push(b'-'),
+                        _ => v.extend_from_slice(input.field(|i| &i.body).bytes()),
+                    }
+                    vec![(b"x-signed".to_vec(), v, 0)]
+                }
                 _ => return Outcome::Failed,
             };
             let bytes: usize = fields.iter().map(|(n, v, _)| n.len() + v.len()).sum();
@@ -142,12 +162,17 @@ mod plugin {
         StyleDecl {
             name: abi_str("bearer"),
             flags: 0,
-            _reserved: 0,
+            points: POINT_HEAD,
         },
         StyleDecl {
             name: abi_str("wide"),
             flags: 0,
-            _reserved: 0,
+            points: POINT_HEAD,
+        },
+        StyleDecl {
+            name: abi_str("signed"),
+            flags: 0,
+            points: POINT_HEAD_BODY,
         },
     ];
     const TAIL: &AuthTail = &AuthTail {
@@ -158,7 +183,7 @@ mod plugin {
         caps: CAP_INBOUND | CAP_OUTBOUND,
         facts: 0,
         login_kind: LOGIN_KIND_NONE,
-        _reserved: 0,
+        inbound_points: POINT_HEAD,
         styles: STYLES.as_ptr(),
         styles_len: STYLES.len(),
     };
@@ -167,17 +192,7 @@ mod plugin {
     busbar_contract::plugin_door! {
         ops: busbar_contract::abi::auth::Ops,
         statement: a::with_tail(statement("outbound-test", "1.0.0", 8), TAIL),
-        lifecycle: {
-            validate: busbar_contract::abi::sdk::Safe<a::Validate<Outbound>>,
-            open: busbar_contract::abi::sdk::Safe<a::Open<Outbound>>,
-            refresh: busbar_contract::abi::sdk::Safe<a::Refresh<Outbound>>,
-            retire: busbar_contract::abi::sdk::Safe<a::Retire<Outbound>>,
-            tick: busbar_contract::abi::sdk::Safe<a::Tick<Outbound>>,
-            drive: busbar_contract::abi::sdk::Safe<a::Drive<Outbound>>,
-            cancel: busbar_contract::abi::sdk::Safe<a::Cancel<Outbound>>,
-            release: busbar_contract::abi::sdk::Safe<a::Release<Outbound>>,
-            close: busbar_contract::abi::sdk::Safe<a::Close<Outbound>>,
-        },
+        lifecycle: life(a::Verifier<Outbound>),
         kind_ops: {
             verify: busbar_contract::abi::sdk::Safe<a::Verify<Outbound>>,
             begin_login: busbar_contract::abi::sdk::Safe<a::NotServed<
@@ -281,6 +296,7 @@ fn open_outbound_answers_the_binding_and_refuses_a_style_it_does_not_serve() {
     let settings = serde_json::json!({});
     assert_eq!(a.open_outbound(BEARER, b"k", &settings), Ok(1));
     assert_eq!(a.open_outbound(WIDE, b"", &settings), Ok(2));
+    assert_eq!(a.open_outbound(SIGNED, b"k", &settings), Ok(3));
     let err = a.open_outbound("nope", b"k", &settings).unwrap_err();
     assert!(err.contains("`nope`"), "{err}");
 }
@@ -328,6 +344,50 @@ fn a_refused_fields_is_refused_on_a_ticket_and_left_to_it_on_the_spot() {
     assert_eq!(
         futures_lite_block_on(a.fields(9, request(), 0)),
         Fields::Failed
+    );
+}
+
+/// AUTH POINTS: the call carries the point it is made at; the body is lent at `HeadBody`, whole,
+/// both ways, and never at `Head` even when the request holds one.
+#[test]
+fn the_body_is_lent_at_head_body_and_never_at_head() {
+    let a = opened();
+    let signed = |f: Fields| match f {
+        Fields::Ready(v) => String::from_utf8(v[0].value.expose_secret().clone()).unwrap(),
+        other => panic!("{other:?}"),
+    };
+    let at = |point| FieldsRequest {
+        point,
+        body: Some(b"{\"a\":1}".to_vec()),
+        ..request()
+    };
+    let head_body = format!("{POINT_HEAD_BODY} {{\"a\":1}}");
+    let head = format!("{POINT_HEAD} -");
+    assert_eq!(
+        a.fields_now(3, &at(AuthPoint::HeadBody)).map(signed),
+        Some(head_body.clone())
+    );
+    assert_eq!(
+        signed(futures_lite_block_on(a.fields(
+            3,
+            at(AuthPoint::HeadBody),
+            0
+        ))),
+        head_body
+    );
+    assert_eq!(
+        a.fields_now(3, &at(AuthPoint::Head)).map(signed),
+        Some(head)
+    );
+    // An empty body at `HeadBody` is lent present and empty, never absent.
+    let empty = FieldsRequest {
+        point: AuthPoint::HeadBody,
+        body: Some(Vec::new()),
+        ..request()
+    };
+    assert_eq!(
+        a.fields_now(3, &empty).map(signed),
+        Some(format!("{POINT_HEAD_BODY} "))
     );
 }
 

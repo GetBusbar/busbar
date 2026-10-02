@@ -132,6 +132,12 @@ pub mod check;
 pub mod fields;
 pub mod route;
 
+/// THE AUTH POINTS a transport offers and calls its bound auth at (THE DESIGN, "Auth points
+/// and guest lists", step 1): defined once in `abi::auth`, referred to here, never redefined.
+pub use super::auth::{
+    AuthPoint, AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER,
+};
+
 use super::mechanism::call::{AbiStr, Field, InHead, Op, OutHead};
 use super::mechanism::check::{contract, OpContract};
 use super::mechanism::door::KindTailHead;

@@ -125,6 +125,7 @@ pub const LEDGER: &str = "qa/kind-isolation.toml";
 /// whose extension is not on [`BINARY_EXTS`], which is 1 707 of them today.
 const MIN_SCANNED: usize = 600;
 
+mod auth_words;
 mod instances;
 mod os_words;
 mod vendors;
@@ -606,6 +607,9 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
 
     let (files, skipped) = scan_set(cx)?;
     let contract = contract_identifiers(&files, &vocab);
+    // The auth ABI's own `decision` field (continue/stop) is masked in auth crates while the
+    // contract declares it ([`auth_words`]).
+    let auth_decision = auth_words::declared(&files);
     // A plugin's own conformance test naming the loader it is granted is the witness, not a
     // coupling ([`super::conformance_witness_edges`]).
     let granted = super::conformance_witness_edges(cx, crates);
@@ -652,6 +656,12 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
         // Its context is read off the ORIGINAL text: an earlier mask's filler must not change what
         // a neighbouring word says ("the unix socket" with `socket` masked as a contract name).
         let masked = os_words::mask_os_words_in(&rel, text, &masked);
+        let masked = match auth_words::scope(c.kind, &dir, &rel).filter(|_| auth_decision) {
+            Some(with_type) => std::borrow::Cow::Owned(
+                auth_words::mask_auth_decision(&rel, &masked, with_type).into_owned(),
+            ),
+            None => masked,
+        };
         // A dialect mapping file's wire-lock keys are the provider's words (ruling above).
         let masked = if c.kind == Some("plane") {
             mask_dialect_wire_keys(cx, &dir, &rel, text, &masked, &mut wire_locks)
@@ -2603,6 +2613,157 @@ pub fn selftest<'a>(
     // THE DIALECT WIRE-KEY SPAN (ARCHITECT ruling 2026-10-02, DF-MAP) is a COUNT property inside a
     // listed cell (`busbar-plane-llm × plane`), which presence cannot observe; it is proven on the
     // cell itself in `tests::a_dialect_wire_key_is_the_providers_word_and_the_same_word_elsewhere_counts`.
+    // THE AUTH ABI'S `decision` FIELD IS NOT THE DECISIONS PLANE ([`auth_words`]), and the mask is
+    // not a hole: an auth crate reading and naming the continue/stop field is green; the same crate
+    // writing the decisions plane's registry key `"decision"` is still a `× plane` cell. The plant
+    // files' own paths carry no plane word: a file's path is scanned as its line 0, unmasked.
+    let auth = super::census(cx).ok().and_then(|cs| {
+        cs.into_iter()
+            .filter(|c| c.kind == Some(auth_words::KIND))
+            .map(|c| (c.name, c.dir))
+            .min()
+    });
+    match auth {
+        Some((name, dir)) => {
+            let field = || {
+                plant(
+                    cx,
+                    &format!("{dir}/src/planted_verdict_field.rs"),
+                    "pub fn names_a_decision(out: &Out) -> u32 {\n    let decision = \
+                     out.decision;\n    decision\n}\n",
+                )
+            };
+            report.push(prove_rows_green(
+                cx,
+                gate,
+                "an auth crate naming its own ABI's `decision` field is no decisions-plane cell",
+                &[ROW_MATRIX],
+                field(),
+            ));
+            let mut plane = field();
+            plane.set(
+                format!("{dir}/src/planted_plane_key.rs"),
+                "pub const KEY: &str = \"decision\";\n".to_string(),
+            );
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                "an auth crate writing the decisions plane's key is still a `× plane` cell",
+                &[ROW_MATRIX],
+                plane,
+                &[&format!("{name} \u{d7} plane")],
+            ));
+        }
+        None => report.push(crate::gates::CasePlan::from(super::unplantable(
+            "an auth-kind crate to plant the `decision` field in",
+            &[ROW_MATRIX],
+            &["decision"],
+            "the census holds no auth-kind crate".to_string(),
+        ))),
+    }
+
+    const LOADER_PACKAGE: &str = "busbar-plugin-loader";
+    // …and on the LOADER'S side of the auth ABI: a plugin-tooling file whose path names `auth`
+    // reading the field and the contract's `Decision` type is green; the same file's crate writing
+    // the decisions plane's key in an auth file is still a `× plane` cell.
+    let loader = super::census(cx).ok().and_then(|cs| {
+        cs.into_iter()
+            .find(|c| c.kind == Some(auth_words::LOADER_KIND) && c.name == LOADER_PACKAGE)
+            .map(|c| (c.name, c.dir))
+    });
+    match loader {
+        Some((name, dir)) => {
+            let field = || {
+                plant(
+                    cx,
+                    &format!("{dir}/src/planted_auth_verdict.rs"),
+                    "use busbar_contract::auth_calls::Decision;\n\
+                     pub fn read(out: &Out) -> Decision {\n    let decision = out.decision;\n    \
+                     if decision == 0 { Decision::Continue } else { Decision::Stop }\n}\n",
+                )
+            };
+            report.push(prove_rows_green(
+                cx,
+                gate,
+                "the loader's auth file naming the auth ABI's `decision` and `Decision` is no \
+                 decisions-plane cell",
+                &[ROW_MATRIX],
+                field(),
+            ));
+            let mut plane = field();
+            plane.set(
+                format!("{dir}/src/planted_auth_key.rs"),
+                "pub const KEY: &str = \"decision\";\n".to_string(),
+            );
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                "the loader's auth file writing the `decision` key is still a `× plane` cell",
+                &[ROW_MATRIX],
+                plane,
+                &[&format!("{name} \u{d7} plane")],
+            ));
+        }
+        None => report.push(crate::gates::CasePlan::from(super::unplantable(
+            "the loader crate to plant its auth `decision` in",
+            &[ROW_MATRIX],
+            &["decision"],
+            format!("the census holds no plugin-tooling `{LOADER_PACKAGE}`"),
+        ))),
+    }
+
+    // THE DIALECT WIRE-KEY SPAN (ARCHITECT ruling 2026-10-02, DF-MAP): a quoted map key that IS a
+    // path of the file's wire lock is the provider's word; the same word anywhere else still counts.
+    // Every arm runs on the plane crate's row re-pinned to its measurement, so the plant alone moves it.
+    let dialect_case = |line: &'static str| {
+        let cx = cx.clone();
+        move || {
+            let file = "crates/busbar-plane-llm/dialects/openai_responses.toml";
+            let body = cx.read(file).unwrap_or_default();
+            row_at_measurement(&cx, "busbar-plane-llm", "plane").layered(&plant(
+                &cx,
+                file,
+                &format!("{body}\n{line}\n"),
+            ))
+        }
+    };
+    let llm_raised = ["ratchet", "busbar-plane-llm × plane", "RAISED"];
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a dialect map key that is a wire-lock path (`input[].type=mcp_call.arguments`) is the \
+         provider's word, not a plane coupling",
+        &[ROW_MATRIX],
+        dialect_case(
+            "[unmapped.stream]\n\"input[].type=mcp_call.arguments\" = { no-equivalent = \"x\" }",
+        ),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "the same plane word in a dialect map VALUE still counts",
+        &[ROW_MATRIX],
+        dialect_case("[unmapped.stream]\n\"input[].type=function_call.arguments\" = { no-equivalent = \"an mcp call\" }"),
+        &llm_raised,
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "the same plane word in a dialect map comment still counts",
+        &[ROW_MATRIX],
+        dialect_case("# the mcp tool"),
+        &llm_raised,
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a dialect map key the wire lock does not have still counts",
+        &[ROW_MATRIX],
+        dialect_case(
+            "[unmapped.stream]\n\"tools[].type=mcp.no_such_member\" = { no-equivalent = \"x\" }",
+        ),
+        &llm_raised,
+    ));
 
     // THIS ROW'S SCAN HAS A FLOOR, AND NOTHING PROVED IT. A mutation campaign turned
     // `files.len() < MIN_SCANNED` into `false && …` and the whole battery stayed green: every other

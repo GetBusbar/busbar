@@ -440,6 +440,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-auth-header"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "busbar-auth-oauth"
+version = "1.6.0"
+dependencies = [
+ "base64 0.22.1",
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "http",
+ "ring",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "busbar-auth-oidc"
 version = "1.0.0"
 source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=9ff64ff4d74bdd4d043ed7200d8771389810d19b#9ff64ff4d74bdd4d043ed7200d8771389810d19b"
@@ -464,6 +489,32 @@ dependencies = [
  "busbar-contract",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "busbar-auth-sigv4"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "hex",
+ "hmac",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "zeroize",
+]
+
+[[package]]
+name = "busbar-auth-webhook-signature"
+version = "1.6.0"
+dependencies = [
+ "base64 0.22.1",
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "ring",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

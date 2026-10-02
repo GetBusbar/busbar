@@ -490,9 +490,9 @@ pub enum SecretForm {
 /// public identifier — bearer/signed-token auth is deliberately NEVER represented here:
 /// `GovState::verify_token` never looks up a row, it only compares [`VirtualKey::generation_hash`]
 /// (a post-resolution fingerprint) against the token's own `generation` claim. Today's only `kind`
-/// is `"sigv4"` (`public_id` = AccessKeyId); a future auth mechanism (mTLS, HTTP Basic, …) is a new
-/// `kind` value on this SAME type, not a new type/table/trait-method set — that repeatable-accretion
-/// pattern is exactly what this generalization exists to close off.
+/// is the request-signing auth's (`public_id` = its access key id); a future auth mechanism (mTLS,
+/// HTTP Basic, …) is a new `kind` value on this SAME type, not a new type/table/trait-method set —
+/// that repeatable-accretion pattern is exactly what this generalization exists to close off.
 ///
 /// NEVER carries the secret — see [`CredentialSecret`] for the one place that does. Used by every
 /// listing/admin-API path, so a `SELECT *`-shaped bug in a backend cannot leak a secret through this
@@ -502,9 +502,9 @@ pub struct CredentialMeta {
     pub id: String,
     /// The owning `VirtualKey.id`.
     pub key_id: String,
-    /// Allowlisted by callers, not this type — today only `"sigv4"`. The admission rule for adding
-    /// a new value: only if that kind's verification path resolves a row from a wire-supplied
-    /// public identifier (see the type doc).
+    /// Allowlisted by callers, not this type — today only the request-signing auth's kind. The
+    /// admission rule for adding a new value: only if that kind's verification path resolves a row
+    /// from a wire-supplied public identifier (see the type doc).
     pub kind: String,
     /// 0 or 1. Bounds credential cardinality to exactly two rows per `(key_id, kind)`, which is what
     /// makes safe OVERLAP-WINDOW rotation possible: mint into the free slot, hand out the new
@@ -1291,8 +1291,9 @@ pub trait RecordStore: Send + Sync + 'static {
         Ok(0)
     }
 
-    /// Persist a row-looked-up credential (today: only `kind = "sigv4"`) — see [`CredentialSecret`]
-    /// and the [`RecordStore::list_credentials`] doc for the generalized-from-AWS-specific rationale.
+    /// Persist a row-looked-up credential (today: only the request-signing auth's kind) — see
+    /// [`CredentialSecret`] and the [`RecordStore::list_credentials`] doc for the
+    /// generalized-from-AWS-specific rationale.
     /// UPSERTs on `(key_id, kind, slot)`: minting into an occupied LIVE slot (not `revoked_at`) MUST
     /// fail rather than silently destroy a working credential mid-overlap-window — an explicit slot
     /// pointed at a live credential is almost certainly an operator mistake, not an intended
