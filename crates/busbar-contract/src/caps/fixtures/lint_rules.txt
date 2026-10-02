@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 Busbar Inc and contributors
+#
+# The lint hooks' DATA: the exact symbol lists the source scan enforces, and the symbols the join
+# test requires the list to keep naming. Read by `lint_rules.rs` (include_str!) and nothing else.
+#
+# It is a data file and not Rust source on purpose (ARCHITECT ruling Q-GG2, the PARK recorded at
+# qa/construction.toml `[rules.token-sealed] exclude_files`): the rule list has to spell the
+# constructors it confines, and a specification that is not compiled cannot be mistaken for a call
+# site by the construction gate's `token-sealed` scan, which walks `.rs` files only. A real mint
+# written in contract source is still caught; `cargo xtask gate construction --selftest` plants one.
+#
+# One record per line, fields separated by ` | `:
+#   rule   | <list> | <scope> | <symbol> | <because>
+#   expect | <symbol>
+# <list> is `hold-escape` or `seal-site`; <scope> is `banned` or `confined:<path fragment>`.
+# Blank lines and lines starting with `#` are ignored.
+
+# The ways a hold could be made to disappear without a posting. Every one of them compiles; none of
+# them is ever correct, because a hold that vanishes is money that vanishes.
+rule | hold-escape | banned | mem::forget | a forgotten hold is a unit that was admitted and never settled
+rule | hold-escape | banned | ManuallyDrop | the same as forgetting, spelled differently
+rule | hold-escape | banned | Box::leak | a leaked hold never reaches the exit path
+rule | hold-escape | banned | process::abort | aborting skips every exit path at once; the node drains instead
+rule | hold-escape | confined:kernel/src/teller | AssertUnwindSafe | it is what lets a hold cross a catch_unwind; the loop needs it in exactly one place and nothing else may use it
+rule | hold-escape | banned | JoinHandle::abort | an aborted task loses its unit's end; the sweep is the second exit, not abort
+
+# The symbols that decide who may build a capability at all. Each is a crate boundary Rust cannot
+# police, so each is one audited name. The take is spelled on a `HoldCell` value rather than through
+# the type, so the literal that finds every take site is the exit token the take demands.
+rule | seal-site | confined:kernel/src | KernelSeal::acquire_for_kernel | the seal is what mints every token; only the kernel may obtain one
+rule | seal-site | confined:recovery | Grant::<Recover>::mint( | it materialises a hold from a journal record with no admission behind it, so only the recovery path may name it; the capability crate that declares it is the one reviewed exception, and the gate names that exception by file
+rule | seal-site | confined:kernel/src | take(&Grant::<Exit>::mint( | there are three take sites -- the exit path and a child unit's end in the teller, and the sweep in the tick -- all in the kernel, and no fourth anywhere
+
+# Every escape the compiler cannot close that the source scan must keep looking for. The join test
+# fails if a `rule` line above stops naming one of these.
+expect | mem::forget
+expect | ManuallyDrop
+expect | Box::leak
+expect | AssertUnwindSafe
+expect | KernelSeal::acquire_for_kernel
+expect | Grant::<Recover>::mint(
+expect | take(&Grant::<Exit>::mint(

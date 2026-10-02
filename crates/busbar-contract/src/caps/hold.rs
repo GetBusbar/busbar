@@ -80,7 +80,7 @@
 //! and it is worth being exact about which does what. `#[must_use]` catches the accident above. The
 //! cell catches the double take. The canary catches the omission, after the fact, in arithmetic.
 //! The deliberate escape is caught by a source scan — the construction gate's `hold-escapes` rule
-//! — and the symbols it looks for are written down in the crate's `fixtures/lint_rules.rs` rather
+//! — and the symbols it looks for are written down in the crate's `fixtures/lint_rules.txt` rather
 //! than left to a reviewer to remember; a test in this crate holds the two tables to each other.
 
 use crate::caps::capability::{Admittance, DurableWrite, Exit, Recover, WriteMoney};
