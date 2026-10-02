@@ -17,7 +17,7 @@ use std::sync::Arc;
 use busbar_contract::abi::sdk::store::{Cap, Cell, CellKey, Dimension};
 use busbar_contract::abi::store::OpId;
 use busbar_contract::records::{RecordStore, VirtualKey};
-use busbar_contract::store_calls::{OpenedStore, StoreAxis, StoreCalls, StoreDoor};
+use busbar_contract::store_calls::{OpenedStore, StoreAxis, StoreDoor};
 
 use crate::dispatch::{rendering_of, DispatchConfig, Dispatcher, PluginLogConfig};
 use crate::store_v3::DoorStoreAxis;
@@ -162,7 +162,10 @@ fn boot_is_handed_a_stores_door_never_its_in_process_open() {
     let Ok(StoreDoor::Linked(d)) = reg.store_door("with-door") else {
         panic!("the row's door was not handed to boot");
     };
-    assert_eq!(d as usize, door as usize, "the row's own door");
+    assert_eq!(
+        d as usize, door as busbar_contract::abi::mechanism::door::DoorFn as usize,
+        "the row's own door"
+    );
     let opened = axis()
         .open(StoreDoor::Linked(d), "with-door", b"{}")
         .expect("it opens through the axis");
