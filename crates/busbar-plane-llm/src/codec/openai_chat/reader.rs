@@ -1486,7 +1486,6 @@ impl ProtocolReader for OpenAiReader {
             audio: super::read_message_audio(
                 choice.get(keys::MESSAGE).and_then(|m| m.get(super::AUDIO)),
             ),
-            ..Default::default()
         })
     }
 }
