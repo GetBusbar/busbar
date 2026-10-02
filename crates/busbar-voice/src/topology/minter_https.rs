@@ -48,7 +48,7 @@ impl HttpsTokenMinter {
     /// Build a minter over an already-assembled egress client. `base_url` is the provider origin
     /// (scheme + authority, e.g. `https://api.openai.com`); `api_key` is the REAL provider key held
     /// server-side; `safety_identifier` is the caller-identity binding; `requested_ttl_secs` is the
-    /// desired secret lifetime (`None` ⇒ [`busbar_plane_streaming::broker::DEFAULT_TTL_SECS`]),
+    /// desired secret lifetime (`None` ⇒ the broker's default),
     /// clamped to the accepted window on mint.
     pub fn new(
         client: EngineClient,

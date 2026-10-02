@@ -45,7 +45,7 @@ pub struct ClientRelay;
 
 #[async_trait]
 impl ToolExecutor for ClientRelay {
-    fn serves(&self, _name: &str) -> bool {
+    fn executes_here(&self, _name: &str) -> bool {
         false
     }
 

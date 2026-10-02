@@ -373,6 +373,11 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   series by their labels; a histogram's or summary's lines stay together in their usual order
   (buckets ascending, then `_sum`, then `_count`). Every name, label and value is unchanged, and
   the order served is one 1.5.5 could already print.
+- **The streaming plane serves the protected-resource metadata its challenge points at.** A caller
+  refused at a realtime door is pointed at
+  `<public_url>/.well-known/oauth-protected-resource/v1/realtime`, and nothing served that path. It
+  now answers the RFC 9728 document: the plane's audience as `resource` and
+  `bearer_methods_supported: ["header"]`, the same document the MCP route serves.
 
 ### Breaking
 
