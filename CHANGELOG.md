@@ -556,12 +556,11 @@ boot, as it did in 1.5.5. `BUSBAR_CONFIG`, secret `{ env: NAME }` references, `R
 
 ### Plugins
 
-The four published 1.5.5 store plugins (sqlite, postgres, mysql, valkey, `abi_version: 2`) load
-unchanged: the store ABI window is `2..=4`, the durable wire is additive, and a 1.5.5 plugin answers
-the eight new plane-record verbs with "unsupported", which the engine treats as inert. Secret, auth
-and hook plugins are untouched. Stores built against ABI 4 — the ones that persist MCP call
-records and A2A tasks durably — are a later release; nothing you have installed needs rebuilding
-for 1.6.0. See [the plugin guide](docs/plugins.md).
+**A published 1.5.5 JSON-contract plugin no longer loads** (spec section 11.8: no legacy loading). That
+includes the four published 1.5.5 store plugins (sqlite, postgres, mysql, valkey, `abi_version: 2`):
+boot refuses one with a message naming the rebuild against the 1.6.0 SDK. **Migration:** rebuild each
+plugin against the 1.6.0 SDK (see the SDK migration note) and install the rebuilt release before
+upgrading. See [the plugin guide](docs/plugins.md).
 
 **Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is
 named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset
