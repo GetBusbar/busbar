@@ -558,7 +558,7 @@ impl HookCalls for HookInstance {
                     slot::NOTIFY,
                     budget,
                     frame as Lent,
-                    move || Frame::new(held.0, out_head()),
+                    move || Frame::new(held.get(), out_head()),
                     |_: &OutHead| None,
                 )
                 .await;
@@ -632,6 +632,12 @@ struct Held<T>(T);
 // SAFETY: the pointers inside point at data the same future owns or lends to the op for its whole
 // life; one thread touches the future at a time.
 unsafe impl<T> Send for Held<T> {}
+impl<T: Copy> Held<T> {
+    /// The value, copied (a method, so a closure captures the whole `Held`, never its field).
+    fn get(&self) -> T {
+        self.0
+    }
+}
 
 // ── THE HOOK ROWS: the axis the composition root installs ─────────────────────────────────────
 
