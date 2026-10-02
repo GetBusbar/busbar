@@ -87,7 +87,8 @@ fn mk_response(
         stop_sequence: None,
         request_echo: None,
         stop_detail: None,
-    }..Default::default()
+        ..Default::default()
+    }
 }
 
 fn write_response(resp: &crate::codec::ir::IrResponse) -> serde_json::Value {
