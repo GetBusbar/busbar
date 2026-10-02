@@ -4033,9 +4033,11 @@ mod tests {
     /// THE RED ARM OF THE OWNER'S RULING (2026-10-02: "line count shouldnt halt ci"), and the arm
     /// that keeps the ruling from deleting the gate with it.
     ///
-    /// (a) A NEW CROSS-KIND EDGE IS STILL DENIED: a plane named in `busbar-transport-tcp`, a cell
+    /// (a) A NEW CROSS-KIND EDGE IS STILL DENIED: a plane named in `busbar-kernel-wal`, a cell
     ///     with no `[[cell]]` row, turns the row FAIL with `unlisted-cell` naming it, and the
-    ///     row's figure (the leading integer the release turnstile reads) rises.
+    ///     row's figure (the leading integer the release turnstile reads) rises. The plant was a
+    ///     transport naming a plane until the tcp transport moved to its own repo; both
+    ///     transports left on the tree carry a listed `× plane` cell, and the WAL names no plane.
     /// (b) MORE HITS IN A LISTED CELL ARE NOT: five hundred lines of plane vocabulary in the
     ///     composition root, whose `busbar × plane` cell is listed, measurably grow the cell and
     ///     add NO finding — the findings, tag + subject and whole text alike, are the ones the
@@ -4073,14 +4075,14 @@ mod tests {
         let (_, base_findings) = super::super::debt_free::split_detail(&base.detail);
 
         // (a) A NEW EDGE.
-        let edge = "kind-isolation:matrix\tunlisted-cell\tbusbar-transport-tcp \u{d7} plane";
+        let edge = "kind-isolation:matrix\tunlisted-cell\tbusbar-kernel-wal \u{d7} plane";
         assert!(
             !keys(&base).contains(edge),
             "the unplanted tree already carries {edge}; the plant would prove nothing"
         );
         let planted = cx.with_overlay(plant(
             &cx,
-            "crates/busbar-transport-tcp/src/leak.rs",
+            "crates/busbar-kernel-wal/src/leak.rs",
             "//! The llm plane's frames arrive here first.\n",
         ));
         let row = rule_matrix(&planted, &crates_of(&planted), &reg, false);
