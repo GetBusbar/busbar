@@ -7,6 +7,32 @@
 
 use crate::codec::carry::{Dir, Field, Handled, Slot, Table, ValueCodec, Word, row};
 
+/// Row group `blocks`.
+pub(crate) const ROWS_BLOCKS: &[Field] = &[
+    row(&["contents[]", "parts[]", "inlineData", "mimeType"], Slot::Structure, ValueCodec::Prim("mime_type")),
+    row(&["contents[]", "parts[]", "inlineData", "data"], Slot::Structure, ValueCodec::Prim("data")),
+    row(&["contents[]", "role"], Slot::Structure, ValueCodec::Prim("role")),
+    row(&["contents[]", "parts"], Slot::Structure, ValueCodec::Prim("parts")),
+    row(&["generationConfig", "responseMimeType"], Slot::Structure, ValueCodec::Prim("response_mime_type")),
+    row(&["generationConfig", "responseSchema"], Slot::Structure, ValueCodec::Prim("response_schema")),
+    row(&["generationConfig", "responseModalities"], Slot::Structure, ValueCodec::Prim("response_modalities")),
+    row(&["generationConfig", "thinkingConfig", "thinkingBudget"], Slot::Structure, ValueCodec::Prim("thinking_budget")),
+    row(&["generationConfig", "thinkingConfig", "includeThoughts"], Slot::Structure, ValueCodec::Prim("include_thoughts")),
+    row(&["generationConfig", "mediaResolution"], Slot::Structure, ValueCodec::Prim("media_resolution")),
+    row(&["generationConfig", "speechConfig"], Slot::Structure, ValueCodec::Prim("speech_config")),
+    row(&["contents[]", "parts[]", "text"], Slot::Structure, ValueCodec::Prim("text")),
+    row(&["contents[]", "parts[]", "thought"], Slot::Structure, ValueCodec::Prim("thought")),
+    row(&["contents[]", "parts[]", "thoughtSignature"], Slot::Structure, ValueCodec::Prim("thought_signature")),
+    row(&["contents[]", "parts[]", "fileData", "fileUri"], Slot::Structure, ValueCodec::Prim("file_uri")),
+    row(&["contents[]", "parts[]", "fileData", "mimeType"], Slot::Structure, ValueCodec::Prim("mime_type")),
+    row(&["contents[]", "parts[]", "functionCall", "name"], Slot::Structure, ValueCodec::Prim("name")),
+    row(&["contents[]", "parts[]", "functionCall", "args"], Slot::Structure, ValueCodec::Prim("args")),
+    row(&["contents[]", "parts[]", "functionResponse", "name"], Slot::Structure, ValueCodec::Prim("name")),
+    row(&["contents[]", "parts[]", "functionResponse", "response"], Slot::Structure, ValueCodec::Prim("response")),
+    row(&["contents[]", "parts[]", "executableCode"], Slot::Structure, ValueCodec::Prim("executable_code")),
+    row(&["contents[]", "parts[]", "codeExecutionResult"], Slot::Structure, ValueCodec::Prim("code_execution_result")),
+];
+
 /// Row group `generation_config`.
 pub(crate) const ROWS_GENERATION_CONFIG: &[Field] = &[
     row(&["generationConfig", "temperature"], Slot::Temperature, ValueCodec::Plain),
@@ -39,7 +65,7 @@ pub(crate) const ROWS_TIER: &[Field] = &[
 ];
 
 /// The request table, walked in order.
-pub(crate) const REQUEST: Table = &[ROWS_STRUCTURE, ROWS_GENERATION_CONFIG, ROWS_TIER];
+pub(crate) const REQUEST: Table = &[ROWS_STRUCTURE, ROWS_GENERATION_CONFIG, ROWS_TIER, ROWS_BLOCKS];
 
 /// How each control slot beyond the rows is handled.
 pub(crate) const CONTROLS: &[(Slot, Handled)] = &[
