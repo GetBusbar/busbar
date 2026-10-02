@@ -1134,3 +1134,7 @@ pub(crate) fn apply_inbound_concurrency_limit(
 #[cfg(test)]
 #[path = "tests/router_doc_tests.rs"]
 mod router_doc_tests;
+
+#[cfg(test)]
+#[path = "tests/router_door_tests.rs"]
+mod router_door_tests;
