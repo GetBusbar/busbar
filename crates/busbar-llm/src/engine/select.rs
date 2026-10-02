@@ -43,8 +43,8 @@ pub(crate) struct RequestCtx {
     /// "don't mutate the caller's exclusion set" rule. Cleared at the start of every `pick_among` call
     /// so it reflects that hop's exhaustion, not a stale earlier one.
     //
-    // Consumed by the queue/least_bad/Retry-After wiring in a later phase; populated and asserted by
-    // the taxonomy/refactor unit tests now — silence the release-build dead-code lint meanwhile.
+    // Read by the queue exhaustion pre-check (`exhaustion::queue`), which runs only when a pool
+    // exhausts; the unit tests populate and assert it. The lint is silenced outside tests.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) excluded_reasons: Vec<(usize, busbar_kernel::store::Unavailable)>,
     /// This request's correlation id — a single `u64` `fetch_add`'d off [`App::next_request_id`]

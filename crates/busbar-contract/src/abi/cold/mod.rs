@@ -73,18 +73,11 @@ pub const TRANSPORT_VERSION: u32 = 1;
 
 /// The kind strings a plugin may declare via `busbar_plugin_kind()` and its signed manifest `kind`.
 ///
-/// EACH kind comes in TWO forms and they are NOT interchangeable:
-///
-/// * the plain `&str` (`STORE`, `SECRET`, …) — for comparisons, manifests, logs, anything Rust-side;
-/// * the `*_NUL` `&[u8]` sibling (`STORE_NUL`, `SECRET_NUL`, …) — the ONLY form that may back a
-///   [`PluginKindFn`] return value.
-///
-/// The reason is the ABI itself: `busbar_plugin_kind()` returns a bare `*const u8` with NO length,
-/// and the engine reads it with `CStr::from_ptr`. A plain `&str` is NOT NUL-terminated, so the
-/// obvious hand-written `busbar_plugin_kind() { kind::EXPORT.as_ptr() }` compiles cleanly and is an
-/// UNBOUNDED out-of-bounds read in the engine (undefined behavior). Return `kind::EXPORT_NUL.as_ptr()`
-/// instead — same discipline the [`symbol`] constants have always used (`b"busbar_abi\0"`). Plugins
-/// built on `busbar-plugin-sdk` never touch either form: the SDK's export macro emits the safe one.
+/// These are plain `&str`s — for comparisons, manifests, logs, anything Rust-side. None of them is
+/// NUL-terminated, so none may back a [`PluginKindFn`] return: `busbar_plugin_kind()` returns a bare
+/// `*const u8` with NO length and the engine reads it with `CStr::from_ptr`. The SDK's
+/// `export_plugin!` emits the NUL-terminated form (`concat!(kind, "\0")`), the same discipline the
+/// [`symbol`] constants use (`b"busbar_abi\0"`).
 pub mod kind {
     /// A durable governance store (`Box<dyn crate::records::RecordStore>`).
     pub const STORE: &str = "store";
@@ -113,21 +106,6 @@ pub mod kind {
     /// its decl through a dedicated entrypoint ([`crate::abi::hot::symbol::TRANSPORT_DECL`]); its payload
     /// axis is the airlock minor.
     pub const TRANSPORT: &str = "transport";
-
-    /// [`STORE`], NUL-terminated — return `STORE_NUL.as_ptr()` from `busbar_plugin_kind()`.
-    pub const STORE_NUL: &[u8] = b"store\0";
-    /// [`SECRET`], NUL-terminated — return `SECRET_NUL.as_ptr()` from `busbar_plugin_kind()`.
-    pub const SECRET_NUL: &[u8] = b"secret\0";
-    /// [`AUTH`], NUL-terminated — return `AUTH_NUL.as_ptr()` from `busbar_plugin_kind()`.
-    pub const AUTH_NUL: &[u8] = b"auth\0";
-    /// [`HOOK`], NUL-terminated — return `HOOK_NUL.as_ptr()` from `busbar_plugin_kind()`.
-    pub const HOOK_NUL: &[u8] = b"hook\0";
-    /// [`EXPORT`], NUL-terminated — return `EXPORT_NUL.as_ptr()` from `busbar_plugin_kind()`.
-    pub const EXPORT_NUL: &[u8] = b"export\0";
-    /// [`PLANE`], NUL-terminated — return `PLANE_NUL.as_ptr()` from `busbar_plugin_kind()`.
-    pub const PLANE_NUL: &[u8] = b"plane\0";
-    /// [`TRANSPORT`], NUL-terminated — return `TRANSPORT_NUL.as_ptr()` from `busbar_plugin_kind()`.
-    pub const TRANSPORT_NUL: &[u8] = b"transport\0";
 }
 
 /// The store-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: store`).
@@ -676,9 +654,9 @@ pub type AbiFn = unsafe extern "C-unwind" fn() -> u32;
 /// The return carries NO LENGTH: the engine reads it with `CStr::from_ptr` and walks to the first
 /// NUL byte. A pointer into a non-NUL-terminated buffer is therefore an unbounded out-of-bounds read
 /// in the ENGINE's address space — undefined behavior, not a load error. So the pointer MUST come
-/// from one of the NUL-terminated [`kind`] siblings (`kind::STORE_NUL.as_ptr()`, …), never from the
-/// plain `kind::STORE.as_ptr()` (a `&str`, which has no terminator). Plugins built on
-/// `busbar-plugin-sdk` get the safe form from the export macro and never write this by hand.
+/// from a NUL-terminated static, never from the plain `kind::STORE.as_ptr()` (a `&str`, which has
+/// no terminator). Plugins built on `busbar-plugin-sdk` get the safe form from `export_plugin!` and
+/// never write this by hand.
 pub type PluginKindFn = unsafe extern "C-unwind" fn() -> *const u8;
 
 /// `busbar_open` — construct an instance from a JSON config blob. On `STATUS_OK`, `*out_handle` is

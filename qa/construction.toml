@@ -520,11 +520,7 @@ because = "OWNER GRANT 2026-09-29 (3), ARCHITECT approval: line-limit re-arm at 
 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 26157 -> 29284 (REARM cg-31) — EXPIRED AND STRUCK: its commit reached the base; struck by REARM cg-58 below.
 
-[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
-file    = "qa/construction.toml"
-from    = 29284
-to      = 29803
-because = "REARM cg-58 then cg-60 (K-SERVE abi/plane append +31, ARCHITECT C2c S5 Q4: 29772 + 31 = 29803) (CONVERGER; ARCHITECT ruling 2026-10-01: ceilings land as approved DELTAS on top of what predev measures): gate.surface_ceilings.contract_caps measured 29772 by cargo xtask gate construction on the DEST-PIN tip 93c14402a (lane-fast2); predev 8fc5e67e2 carries 29284 and already measures 29590 (the standing loc-ceilings:caps-contract / surface-ceiling:contract red); the bundle adds exactly the approved +182 (SDK-SVC wrappers +130, ARCHITECT S7-TICK 2026-10-01; DEST-PIN judged-address pin +52, ARCHITECT DEST-PIN 2026-10-01): 29590 + 182 = 29772."
+# [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 29284 -> 29803 (REARM cg-58, cg-60) — STRUCK by train/cg-61a: DEL-HOTCOLD-A lowers the contract to its measured 29392, so no raise stands.
 
 # [gate.ceiling_raises."gate.surface_ceilings.contract_caps"] 25682 -> 26157 (TRAIN BIG: E12 -243, URL-SEAM +489, H2 +229) — EXPIRED AND
 # STRUCK: its commit reached the base; struck by the P1 core unit's re-arm above.
@@ -551,11 +547,7 @@ because = "Legacy fold ruling F12 (ARCHITECT 2026-09-28; FOLD-MCP phase A plan a
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 26157 -> 29284 (REARM cg-31) — EXPIRED AND STRUCK: its commit reached the base; struck by REARM cg-58 below.
 
-[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
-file    = "qa/construction.toml"
-from    = 29284
-to      = 29803
-because = "REARM cg-58 then cg-60 (K-SERVE abi/plane append +31, ARCHITECT C2c S5 Q4: 29772 + 31 = 29803) (CONVERGER; ARCHITECT ruling 2026-10-01: ceilings land as approved DELTAS on top of what predev measures): rules.loc-ceilings.caps_contract_ceiling measured 29772 by cargo xtask gate construction on the DEST-PIN tip 93c14402a (lane-fast2); predev 8fc5e67e2 carries 29284 and already measures 29590 (the standing loc-ceilings:caps-contract / surface-ceiling:contract red); the bundle adds exactly the approved +182 (SDK-SVC wrappers +130, ARCHITECT S7-TICK 2026-10-01; DEST-PIN judged-address pin +52, ARCHITECT DEST-PIN 2026-10-01): 29590 + 182 = 29772."
+# [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 29284 -> 29803 (REARM cg-58, cg-60) — STRUCK by train/cg-61a: DEL-HOTCOLD-A lowers the contract to its measured 29392, so no raise stands.
 
 # [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"] 25682 -> 26157 (TRAIN BIG: E12 -243, URL-SEAM +489, H2 +229) — EXPIRED AND
 # STRUCK: its commit reached the base; struck by the P1 core unit's re-arm above.
@@ -895,7 +887,8 @@ because = "Q77-PENDING (a), a MOVE forced by a cited ruling: ARCHITECT RULINGS 2
 # ── SUMMED on the trunk (CONVERGER): contract_caps 27080 + (26609 - 26608) = 27081; the measurement at the segment tip re-arms it.
 # RE-ARMED 26157 -> 26184 with its pair (ABI-TRIM F3 $, +27).
 # ── SUMMED on the trunk (CONVERGER): contract_caps 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
-contract_caps = 29803
+# ── LOWERED 29803 -> 29392 by train/cg-61a at the measurement (DEL-HOTCOLD-A deletes the dead hot/cold ABI; lower only).
+contract_caps = 29392
 # RE-ARMED 26157 -> 28653 with its pair (the P1 core unit: KIND-SHARE +1826, BOOT-CHAIN +506, HEAD-FIELDS +111, CONNECTOR-19-U12 +57; composed -4), declared above.
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
@@ -1667,7 +1660,8 @@ contract_crate = "busbar-contract"
 # ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27080 + (26609 - 26608) = 27081; the measurement at the segment tip re-arms it.
 # RE-ARMED 26157 -> 26184 with its pair (ABI-TRIM F3 $, +27).
 # ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
-caps_contract_ceiling = 29803
+# ── LOWERED 29803 -> 29392 by train/cg-61a at the measurement (DEL-HOTCOLD-A; lower only).
+caps_contract_ceiling = 29392
 # RE-ARMED 26157 -> 28653 with its pair (the P1 core unit), declared above.
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
@@ -2048,7 +2042,7 @@ known_sites = [
   "crates/busbar-kernel/src/metrics/money.rs:236",
   "crates/busbar-kernel/src/plane_host/build_input.rs:152",
   "crates/busbar-kernel/src/router.rs:424",
-  "crates/busbar-kernel/src/store/vocab.rs:136",
+  "crates/busbar-kernel/src/store/vocab.rs:137",
   "crates/busbar-kernel/src/test_support/mod.rs:220",
 ]
 

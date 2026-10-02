@@ -18,12 +18,13 @@
 // bounds — not fabricated exact times.
 
 /// Advisory recovery floor for a lost single-flight probe race: the peer's probe resolves the cell
-/// within roughly one request, so "come back very shortly". Advisory only (not yet wired to the
-/// production `Retry-After`, which is repointed at `recovery_hint_ms` in a later phase).
+/// within roughly one request, so "come back very shortly". Advisory: `recovery_hint_ms` reports it on
+/// `/stats`, the `busbar_lane_recovery_hint_ms` gauge and a breaker refusal's recovery floor. The
+/// caller-facing `Retry-After` is the store's own `retry_after_secs`, never this floor.
 const PROBE_RETRY_FLOOR_MS: u64 = 250;
 
 /// Advisory recovery floor for an inbound-shed request (`limits.max_inbound_concurrent`). Advisory
-/// only until the observability phase renders it.
+/// like the probe floor above.
 ///
 /// `pub(crate)` so the inbound-admission `Retry-After` DERIVES its whole-second value from this one
 /// source rather than hardcoding a bare `"1"` beside it — the same coupling
@@ -61,9 +62,9 @@ pub enum Unavailable {
     AtCapacity { drain_hint_ms: Option<u64> },
     /// Inbound backpressure shed this request before lane selection (`limits.max_inbound_concurrent`).
     //
-    // Constructed only by the observability/shed wiring landed in a later phase; the variant is part
-    // of the taxonomy vocabulary now (and exercised by the unit tests). `#[cfg(test)]`-scoped
-    // construction means the release build has no constructor yet, so silence the lint there only.
+    // Constructed by `PlaneBreakers::try_admit`'s fail-closed arm (a planeless table) and by the
+    // breaker host-call's `reconstruct_unavailable`. Both are dead when their planes are compiled
+    // out, so the lint is silenced outside tests only.
     #[cfg_attr(not(test), allow(dead_code))]
     Shedding,
 }
