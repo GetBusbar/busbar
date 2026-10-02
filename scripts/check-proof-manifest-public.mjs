@@ -16,7 +16,7 @@
 //
 // NOTHING TO CHECK IS NOT NOTHING TO LEAK. A guard that was handed no manifest used to print
 // "no manifest files found to check." and exit 0 -- its PASS, on the one input it never proved it
-// had. docs/proof/ renamed, emptied, or written to a different path by the collator all reach that
+// had. docs/proof/ renamed, emptied, or written to a different path by the collator (`cargo xtask proof-manifest`) all reach that
 // line, and all of them look exactly like a manifest set that is clean. Zero manifests is now RED.
 
 import { readFileSync, readdirSync, existsSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";

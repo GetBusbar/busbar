@@ -1,10 +1,20 @@
 # Where the published proof manifests live
 
-The Build Proof Dashboard manifest is collated by `scripts/proof-manifest.py`. The `proof-manifest`
+The Build Proof Dashboard manifest is collated by `cargo xtask proof-manifest`. The `proof-manifest`
 job that ran it (in the removed `ci.yml`, on a push to `dev`, `qa` or `main`) is deleted with the rest of busbar's
 workflows: `promote.yml` does not publish a manifest, so nothing refreshes the published copies until
 the collator is wired into the release engine in busbar-release. The last published manifests are on
 the `proof-manifests` branch.
+
+Usage:
+
+```
+cargo xtask proof-manifest --version dev --out docs/proof/dev.json
+cargo xtask proof-manifest --version 1.6.0 --out docs/proof/1.6.0.json \
+    --sha <40hex> --run-id 123 --run-url https://github.com/.../runs/123 \
+    --staged-json /path/to/staged.json --reports-dir testing --run-cargo --index
+cargo xtask proof-manifest --selftest
+```
 
 1. **The `proof-manifests` branch** (canonical, for readers). One file per SOURCE branch —
    `docs/proof/dev.json`, `docs/proof/qa.json`, `docs/proof/main.json` — plus the `index.json`

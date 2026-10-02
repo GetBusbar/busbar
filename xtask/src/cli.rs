@@ -32,6 +32,8 @@ usage:
   cargo xtask loc --selftest
   cargo xtask teller-steps [--root-legs] [--root-legs-gating]
   cargo xtask ledger {sync|status|next|record|fixed|move} | --check
+  cargo xtask proof-manifest --version <v> --out <file> [--sha S] [--run-id ID] [--run-url U] [--staged-json F] [--reports-dir D] [--hits-dir D] [--repo-root D] [--run-cargo|--run-parity|--run-composability] [--mark ID=STATUS]... [--index] [--print]
+  cargo xtask proof-manifest --selftest
   cargo xtask audit-verify --range <range.json> --keys <keys.json> [--head <head.json>]
   cargo xtask conformance check --suite <id>|all|--musts [--sha <sha>] [--manifest <path>] [--format=tsv]
   cargo xtask conformance check --selftest
@@ -62,6 +64,7 @@ pub const NON_GATE_SUBCOMMANDS: &[&str] = &[
     "perf-ab-mock",
     "dialect",
     "ship",
+    "proof-manifest",
 ];
 
 pub fn main(args: &[String]) -> i32 {
@@ -137,6 +140,13 @@ pub fn main(args: &[String]) -> i32 {
         // THE OUT-OF-PROCESS AUDIT-CHAIN VERIFIER (#82(c), TODO 597). Not a gate: it checks bodies a
         // node published, by the published recipe pages alone, and reads no tree.
         Some("audit-verify") => crate::audit_verify::main(&args[1..]),
+        // THE BUILD PROOF DASHBOARD'S COLLATOR (`docs/proof/README.md`). Not a gate: it WRITES
+        // `docs/proof/<version>.json` (and, with `--index`, `index.json`) from the verdicts of
+        // gates it runs or reads, and owns no row set of its own.
+        Some("proof-manifest") => match open_ctx() {
+            Ok(cx) => crate::proof_manifest::main(cx.root(), &args[1..]),
+            Err(code) => code,
+        },
         Some("ledger") => match open_ctx() {
             Ok(cx) => crate::audit_cmd::main(cx.root(), &args[1..]),
             Err(code) => code,

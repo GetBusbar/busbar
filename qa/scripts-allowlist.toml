@@ -324,11 +324,6 @@ class = "port"
 reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes the ladder's release-binaries build in busbar-release; nothing runs it today"
 
 [[script]]
-path = "scripts/proof-manifest.py"
-class = "port"
-reason = "the docs/proof dashboard collator: becomes a busbar-release subcommand, or retires with docs/proof (owner call)"
-
-[[script]]
 path = "scripts/proto-deletion-gate.sh"
 class = "port"
 reason = "a verify-1.6.0-done.sh group: becomes an xtask gate, proven to give identical verdicts on predev before this file goes"

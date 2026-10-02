@@ -53,6 +53,7 @@ pub mod manifest;
 pub mod parity;
 pub mod perf_ab;
 pub mod planes;
+pub mod proof_manifest;
 pub mod rx;
 pub mod scan;
 pub mod selftest;
