@@ -138,21 +138,16 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     let _published = Published(instance);
     let (port, mut heard) = far_end().await;
 
-    // THE CONNECTOR, over every linked transport door and the http framer's door (the linked
-    // `busbar-transport-http` crate's own memory-ABI door: the root's linked tables do not yet put
-    // it on the transport-door axis), its dials judged by a destination guard that admits loopback
-    // (a far end on this host).
+    // THE CONNECTOR, over every linked transport door (the default distribution links the http
+    // framer's door: the `connector-door` row), its dials judged by a destination guard that admits
+    // loopback (a far end on this host).
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
         block_private_addresses: false,
         ..Default::default()
     })
     .expect("the guard");
     let connector = busbar_core_connector::process::build(
-        || {
-            let mut doors = crate::LINKED_TRANSPORT_DOORS.to_vec();
-            doors.push(("http", busbar_transport_http::door::door));
-            crate::root::connector::entries(&doors)
-        },
+        || crate::root::connector::entries(crate::LINKED_TRANSPORT_DOORS),
         judge,
         &[],
         Arc::new(|_| {}),
