@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DOOR'S HALF OF THE TASK VERBS: the host records the task store reads, reached through the
-//! SDK connector ([`Via`]), and `on_piece` for a unit whose verb the plane answers itself
+//! THE DOOR'S HALF OF THE TASK VERBS: the host records the task store reads and the destination
+//! judge, reached through [`Via`], and `on_piece` for a unit whose verb the plane answers itself
 //! ([`crate::local`]).
 //!
 //! A unit's pieces share its ticket, and the host keeps every service result under its handle until
@@ -15,13 +15,15 @@
 use std::task::Poll;
 
 use busbar_contract::abi::host::conn::connector::EGRESS_OPEN_WEB;
-use busbar_contract::abi::host::service::MAX_SPANS;
-use busbar_contract::abi::mechanism::call::Outcome;
+use busbar_contract::abi::host::service::ItemSpan;
+use busbar_contract::abi::mechanism::call::{Outcome, Span};
+use busbar_contract::abi::mechanism::check::SPAN_ABSENT;
+use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::plane::{
     OnPieceIn, OnPieceOut, OutField, RecordWrite, EMIT_DONE, FROM_CALLER, RECORD_PUT,
 };
-use busbar_contract::abi::sdk::conn::{Answer as Polled, Connector};
-use busbar_contract::abi::sdk::{Instance, Keyed, Lent, Out};
+use busbar_contract::abi::sdk::conn::{Connector, Host};
+use busbar_contract::abi::sdk::{Instance, Keyed, Lent, Out, ServiceError, Services};
 use serde_json::Value;
 
 use crate::arrival::{Decision, JSON_MEDIA_TYPE};
@@ -51,51 +53,91 @@ struct Entry {
     sweep: bool,
 }
 
-/// THE HOST RECORDS AND THE DESTINATION JUDGE, through one piece's connector.
-pub struct Via<'h>(pub Connector<'h>);
-
-fn polled<T>(answer: Polled<T>) -> Result<T, Halt> {
-    match answer {
-        Poll::Pending => Err(Halt::Pending),
-        Poll::Ready(Ok(v)) => Ok(v),
-        Poll::Ready(Err(e)) => Err(Halt::Failed(e.to_string())),
-    }
+/// THE HOST RECORDS AND THE DESTINATION JUDGE, for one piece: its connector, and the host services
+/// the door was opened with. Every call counts on the piece's one handle sequence.
+pub struct Via<'h> {
+    host: &'h Host,
+    services: Option<Services>,
+    ticket: Ticket,
+    conn: Connector<'h>,
 }
 
-impl Records for Via<'_> {
-    fn get(&mut self, kind: &str, key: &str) -> Result<Option<Vec<u8>>, Halt> {
-        polled(self.0.records_get(kind, key.as_bytes()))
-    }
-
-    fn list(&mut self, kind: &str, prefix: &str) -> Result<Vec<(String, Vec<u8>)>, Halt> {
-        let mut rows = Vec::new();
-        let mut after: Option<Vec<u8>> = None;
-        loop {
-            let page = polled(
-                self.0
-                    .records_list(kind, prefix.as_bytes(), after.as_deref(), 0),
-            )?;
-            let full = page.len() as u64 >= MAX_SPANS;
-            after = page.last().map(|(k, _)| k.clone());
-            rows.extend(
-                page.into_iter()
-                    .filter(|(_, v)| !v.is_empty())
-                    .map(|(k, v)| (String::from_utf8_lossy(&k).into_owned(), v)),
-            );
-            if !full {
-                return Ok(rows);
-            }
+impl<'h> Via<'h> {
+    /// The piece's calls, counting on from the `issued` its unit's finished pieces made.
+    pub fn new(host: &'h Host, services: Option<Services>, ticket: Ticket, issued: u32) -> Self {
+        Self {
+            host,
+            services,
+            ticket,
+            conn: host.connector_from(ticket, issued),
         }
     }
 
-    fn claim(&mut self, kind: &str, key: &str, ttl_ms: u64) -> Result<bool, Halt> {
-        polled(self.0.records_claim(kind, key.as_bytes(), ttl_ms))
+    /// The handles this piece has issued, counted from its unit's start.
+    pub const fn issued(&self) -> u32 {
+        self.conn.issued()
+    }
+
+    /// The next handle, for a host service the connector does not wrap.
+    fn next_handle(&mut self) -> CompletionHandle {
+        let seq = self.conn.issued();
+        self.conn = self.host.connector_from(self.ticket, seq + 1);
+        CompletionHandle {
+            ticket: self.ticket,
+            seq,
+            _reserved: 0,
+        }
     }
 }
 
+/// TRANSITIONAL: the SDK's host-records wrappers land with K-RECORDS' SDK lane (ARCHITECT ruling on
+/// PR #141); until then every records call fails in these words and a local verb answers unreadable.
+const RECORDS_UNSERVED: &str = "the host records services are not reachable from the SDK yet";
+
+impl Records for Via<'_> {
+    fn get(&mut self, _kind: &str, _key: &str) -> Result<Option<Vec<u8>>, Halt> {
+        Err(Halt::Failed(RECORDS_UNSERVED.to_owned()))
+    }
+
+    fn list(&mut self, _kind: &str, _prefix: &str) -> Result<Vec<(String, Vec<u8>)>, Halt> {
+        Err(Halt::Failed(RECORDS_UNSERVED.to_owned()))
+    }
+
+    fn claim(&mut self, _kind: &str, _key: &str, _ttl_ms: u64) -> Result<bool, Halt> {
+        Err(Halt::Failed(RECORDS_UNSERVED.to_owned()))
+    }
+}
+
+/// Room for the judged addresses of one destination.
+const JUDGED_BYTES: usize = 512;
+/// One span per judged address.
+const JUDGED_ADDRESSES: usize = 16;
+
 impl Reach for Via<'_> {
     fn judge(&mut self, dest: &str) -> Result<u64, Halt> {
-        polled(self.0.dest_judge(dest, EGRESS_OPEN_WEB, true))
+        let Some(services) = self.services else {
+            return Err(Halt::Failed(format!("{:?}", ServiceError::Unserved)));
+        };
+        let handle = self.next_handle();
+        let absent = Span {
+            offset: SPAN_ABSENT,
+            len: 0,
+        };
+        let mut bytes = [0u8; JUDGED_BYTES];
+        let mut spans = [ItemSpan {
+            key: absent,
+            value: absent,
+        }; JUDGED_ADDRESSES];
+        match services.dest_judge(
+            handle,
+            dest,
+            EGRESS_OPEN_WEB,
+            Some((&mut bytes[..], &mut spans[..])),
+        ) {
+            Poll::Pending => Err(Halt::Pending),
+            Poll::Ready(Ok(judged)) => Ok(judged.verdict),
+            Poll::Ready(Err(e)) => Err(Halt::Failed(format!("{e:?}"))),
+        }
     }
 }
 
@@ -155,7 +197,7 @@ pub fn on_piece(
         });
         Some((u.pass.issued, entry))
     })?;
-    let mut via = Via(host.connector_from(instance.ticket(), base));
+    let mut via = Via::new(host, plane.services, instance.ticket(), base);
     // An HTTP+JSON unit answers the envelope its request spelled, not the caller's body.
     let raw = composed
         .as_deref()
@@ -182,7 +224,7 @@ pub fn on_piece(
         Ok(None) => return Some(Outcome::Refused),
         Ok(Some(answer)) => answer,
     };
-    let issued = via.0.issued();
+    let issued = via.issued();
     let body = match composed {
         Some(_) => crate::rest::reframe(answer.status, &answer.body),
         None => answer.body,

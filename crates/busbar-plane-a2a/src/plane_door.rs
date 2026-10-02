@@ -42,7 +42,7 @@ use busbar_contract::abi::sdk::conn::Host;
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::abi::sdk::publish::{Generations, Keyed};
-use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
+use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot, Services};
 
 use std::sync::Arc;
 
@@ -166,6 +166,7 @@ impl Outbox {
 pub struct A2aDoor {
     public_url: Option<String>,
     pub(crate) host: Option<Host>,
+    pub(crate) services: Option<Services>,
     generations: Generations<PlaneSnapshot, AgentsCfg>,
     pub(crate) units: Keyed<u64, Unit>,
     pub(crate) swept: Keyed<(), u64>,
@@ -270,6 +271,10 @@ slot!(
         let plane = A2aDoor {
             public_url: public_url(input.field(|i| &i.public_url).bytes()),
             host: input.field(|i| &i.open).host().map(|h| Host::of(h.get())),
+            services: input
+                .field(|i| &i.open)
+                .host()
+                .and_then(|h| Services::of(h.get())),
             generations: Generations::new(),
             units: Keyed::new(),
             swept: Keyed::new(),
