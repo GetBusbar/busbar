@@ -5,9 +5,10 @@
 //!
 //! The host owns every socket, and a socket's readiness comes from the reactor of the worker that
 //! registered it: `register`, `poll_ready`, `clear_ready`, `deregister`. Nothing here starts a
-//! thread or runs a runtime of its own. A socket registered outside a worker is refused
-//! ([`NOT_ON_A_WORKER`]) rather than handed a reactor thread to hide behind, and every wait answers
-//! not-ready with the caller's waker registered, never a block.
+//! thread or runs a runtime of its own. A socket registered off a runtime thread (a dispatcher
+//! worker driving a plugin's connection) goes on the process's one runtime the root installed
+//! ([`install_process_reactor`]); with none installed it is refused ([`NOT_ON_A_WORKER`]). Every
+//! wait answers not-ready with the caller's waker registered, never a block.
 //!
 //! * [`register`] puts a non-blocking descriptor on the calling worker's reactor, for both
 //!   directions;
@@ -58,10 +59,26 @@ impl<T: AsRawFd> Ready<'_, T> {
 ///
 /// [`NOT_ON_A_WORKER`] when the caller is not on a worker; the reactor's own refusal otherwise.
 pub fn register<T: AsRawFd>(io: T) -> io::Result<Registered<T>> {
-    if tokio::runtime::Handle::try_current().is_err() {
-        return Err(io::Error::other(NOT_ON_A_WORKER));
-    }
+    // A plugin driving its connection from a dispatcher worker (an export sink delivering a batch)
+    // is on no runtime thread: its socket goes on the reactor of the process's one runtime, the
+    // one the root installed at boot ([`install_process_reactor`]). Never a reactor of its own.
+    let _entered = match tokio::runtime::Handle::try_current() {
+        Ok(_) => None,
+        Err(_) => match PROCESS_REACTOR.get() {
+            Some(h) => Some(h.enter()),
+            None => return Err(io::Error::other(NOT_ON_A_WORKER)),
+        },
+    };
     AsyncFd::with_interest(io, Interest::READABLE | Interest::WRITABLE).map(Registered)
+}
+
+/// The process's one runtime, as the root installed it at boot.
+static PROCESS_REACTOR: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
+
+/// Install the process's one runtime: a socket registered off a runtime thread goes on its
+/// reactor. Set once; a second install is ignored.
+pub fn install_process_reactor(handle: tokio::runtime::Handle) {
+    let _ = PROCESS_REACTOR.set(handle);
 }
 
 impl<T: AsRawFd> Registered<T> {
