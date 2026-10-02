@@ -139,14 +139,14 @@ const MAX_OUTPUT_INDEX: usize = 127;
 /// omits `model` fails a strict Pydantic/Zod decoder — and a real `/v1/responses` endpoint never
 /// omits it, making the omission a distinguishability tell. On any cross-protocol path
 /// (Anthropic→Responses, Bedrock→Responses) the IR `model` is `None`; emit this fallback rather
-/// than dropping the key. Mirrors `openai_chat::OPENAI_FAMILY_DEFAULT_MODEL`.
-const DEFAULT_MODEL: &str = super::openai_chat::OPENAI_FAMILY_DEFAULT_MODEL;
+/// than dropping the key. One value with the Chat writer's (`dialect::FALLBACK_MODEL`).
+const DEFAULT_MODEL: &str = crate::codec::dialect::FALLBACK_MODEL;
 
 /// Hard cap on the number of DISTINCT output indices tracked per stream in `StreamDecodeState`
 /// (`open_tools`) and in the writer's open-item sets. Bounds per-request memory against a
 /// pathological backend that emits a unique `output_index` per event (a per-connection amplification
-/// DoS). Matches `openai_chat::OPENAI_FAMILY_MAX_OPEN_TOOLS` (OpenAI's documented parallel-tool-call limit, 128).
-const MAX_OPEN_TOOLS: usize = super::openai_chat::OPENAI_FAMILY_MAX_OPEN_TOOLS;
+/// DoS). The shared `dialect::MAX_OPEN_TOOL_CALLS` (OpenAI's documented parallel-tool-call limit, 128).
+const MAX_OPEN_TOOLS: usize = crate::codec::dialect::MAX_OPEN_TOOL_CALLS;
 
 /// The BYTE ceiling any ONE of the writer's per-item accumulators may reach over the life of a
 /// stream. `MAX_OPEN_TOOLS` bounds how MANY items accumulate; this bounds how large one of them

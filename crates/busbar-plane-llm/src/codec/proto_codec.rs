@@ -1212,7 +1212,7 @@ pub struct ToolIdRemap {
 /// (OpenAI's documented parallel-tool-call limit), which is the number of distinct tool ids a
 /// legitimate turn can carry; a stream that presents more is an untrusted upstream growing a
 /// per-request map without bound, not a request busbar needs to memoize for.
-pub const TOOL_ID_REMAP_MAX_MEMO: usize = crate::codec::openai_chat::OPENAI_FAMILY_MAX_OPEN_TOOLS;
+pub const TOOL_ID_REMAP_MAX_MEMO: usize = crate::codec::dialect::MAX_OPEN_TOOL_CALLS;
 
 impl ToolIdRemap {
     /// Number of memoized pairs currently retained — the retention the cap bounds.

@@ -74,10 +74,8 @@ impl ProtocolReader for ResponsesReader {
 
     #[cfg(test)]
     fn classify(&self, status: StatusCode, body: &[u8]) -> CanonicalSignal {
-        // Identical to OpenAiReader::classify — both emit the same OpenAI error envelope, so the
-        // mapping is single-sourced in `openai_chat::openai_classify` (the OpenAI dialect's codec
-        // home), reached the same RELATIVE way every sibling reach into `openai_chat` is.
-        super::super::openai_chat::openai_classify(status, body)
+        // Both bearer-envelope dialects classify alike: single-sourced in the shared dialect module.
+        crate::codec::dialect::bearer_error_classify(status, body)
     }
 
     fn read_request(
