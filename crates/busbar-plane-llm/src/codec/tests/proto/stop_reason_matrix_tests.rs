@@ -30,7 +30,8 @@ fn resp(reason: IrStopReason) -> IrResponse {
         stop_sequence: None,
         request_echo: None,
         stop_detail: None,
-    }..Default::default()
+        ..Default::default()
+    }
 }
 
 const ALL: [IrStopReason; 9] = [
