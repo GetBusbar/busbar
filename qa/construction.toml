@@ -3218,6 +3218,15 @@ plane_crates = 4
 # root's pinned rev (GetBusbar/busbar-export-file, -webhook, -prometheus, -otlp) — the loader's both-ways
 # rows `export`, `export-webhook`, `export-scrape`, `export-otlp`. Neither export glob matches a
 # directory in this repo any more: the kind's documented zero.
+# A plugin_kinds floor drops only for a crate that MOVED OUT (pinned back as a git dependency at a
+# rev) or one REMOVED BY A CITED OWNER RULING, named here (ARCHITECT 2026-10-02). `transport` 4 -> 3:
+# busbar-transport-stdio is parked, not moved out: busbar's default build does not link it, and its
+# repo stays a fleet member.
+[[gate.census.parked]]
+crate = "busbar-transport-stdio"
+reason = "parked on 1.6.x-mcp-stdio"
+ruling = "OWNER 2026-10-02"
+
 [gate.census.plugin_kinds]
 plane = 5
 hook = 2

@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{glob_matches, lowered_floors, moved_out};
+use super::{glob_matches, lowered_floors, moved_out, parked_crates};
 
 const ROOT: &str = "[workspace.dependencies]\n\
     busbar-x-moved = { git = \"https://example.invalid/busbar-x-moved\", rev = \"0123abc\" }\n\
@@ -27,7 +27,7 @@ fn doc(s: &str) -> crate::toml_doc::Document {
 #[test]
 fn a_crate_pinned_back_as_a_git_dependency_at_a_rev_moved_out() {
     assert_eq!(
-        moved_out(&["crates/busbar-x-moved".into()], package, ROOT),
+        moved_out(&["crates/busbar-x-moved".into()], package, ROOT, &[]),
         Some(1)
     );
 }
@@ -41,7 +41,11 @@ fn a_drop_with_no_pinned_git_dependency_is_not_a_move_out() {
         "crates/busbar-x-branch",
         "crates/busbar-x-path",
     ] {
-        assert_eq!(moved_out(&[gone.into()], package, ROOT), None, "{gone}");
+        assert_eq!(
+            moved_out(&[gone.into()], package, ROOT, &[]),
+            None,
+            "{gone}"
+        );
     }
     assert_eq!(
         moved_out(
@@ -50,11 +54,12 @@ fn a_drop_with_no_pinned_git_dependency_is_not_a_move_out() {
                 "crates/busbar-x-gone".into()
             ],
             package,
-            ROOT
+            ROOT,
+            &[]
         ),
         None
     );
-    assert_eq!(moved_out(&[], package, ROOT), None);
+    assert_eq!(moved_out(&[], package, ROOT, &[]), None);
 }
 
 /// RED: the floor drop is refused unless a move-out covers it, and only by as many crates as moved.
@@ -94,4 +99,44 @@ fn a_kind_glob_matches_one_directory_level() {
         "crates/busbar-transport-ws/src"
     ));
     assert!(!glob_matches("crates/store-*", "crates/busbar-store-x"));
+}
+
+/// A crate REMOVED BY A CITED OWNER RULING (a `[[gate.census.parked]]` row naming the crate, the
+/// reason and the ruling) is the second accepted way down; a row missing its reason or ruling
+/// excuses nothing.
+#[test]
+fn a_crate_parked_by_a_cited_owner_ruling_is_an_accepted_drop() {
+    let rows = doc("[[gate.census.parked]]\ncrate = \"busbar-x-gone\"\n\
+         reason = \"parked on 1.6.x-mcp-stdio\"\nruling = \"OWNER 2026-10-02\"\n\n\
+         [[gate.census.parked]]\ncrate = \"busbar-x-unruled\"\nreason = \"tidy\"\n");
+    let parked = parked_crates(&rows);
+    assert_eq!(parked, vec!["busbar-x-gone".to_string()]);
+    assert_eq!(
+        moved_out(&["crates/busbar-x-gone".into()], package, ROOT, &parked),
+        Some(1)
+    );
+    // The row without a ruling is not a row.
+    assert_eq!(
+        moved_out(&["crates/busbar-x-unruled".into()], package, ROOT, &parked),
+        None
+    );
+}
+
+/// RED: a drop with no parked row and no pinned git dependency is still refused, end to end.
+#[test]
+fn a_drop_with_no_parked_row_and_no_pin_is_still_refused() {
+    let parked = parked_crates(&doc(DOC));
+    assert!(parked.is_empty());
+    let moved: BTreeMap<String, i64> =
+        match moved_out(&["crates/busbar-x-gone".into()], package, ROOT, &parked) {
+            Some(n) => [("plugin_kinds.x".to_string(), n as i64)].into(),
+            None => BTreeMap::new(),
+        };
+    let now = doc(&DOC.replace("x = 4", "x = 3"));
+    let out = lowered_floors(&now, &doc(DOC), "abc1234", &moved);
+    assert_eq!(out.len(), 1, "{out:?}");
+    assert!(
+        out[0].contains("plugin_kinds.x: the floor itself went 4 -> 3"),
+        "{out:?}"
+    );
 }
