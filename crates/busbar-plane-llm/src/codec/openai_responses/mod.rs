@@ -2239,8 +2239,7 @@ mod tests;
 #[path = "tests/input_hardening_tests.rs"]
 mod input_hardening_tests;
 
-// The field-coverage carry instruments (qa/field-coverage.status → `carried <fn>`). Each named
-// test FAILS if its field stops surviving the read→IR→write hop, per the gate's rigor contract.
+// The field carry instruments: each test FAILS if its field stops surviving the read→IR→write hop.
 #[cfg(test)]
 #[path = "tests/field_carry_tests.rs"]
 mod field_carry_tests;
