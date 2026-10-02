@@ -278,3 +278,14 @@ fn the_observation_carries_the_identity_and_the_capability_set() {
     assert_eq!(obs.pin, Some(pin));
     assert_eq!(obs.capabilities, skill_digests(&card).expect("digests"));
 }
+
+/// The card digest moved from RustCrypto `sha2` to ring (ONE crypto backend = ring). It is an
+/// operator-facing value compared against `openssl dgst -sha256 -binary | base64`, so the rendering
+/// must be bit-identical: the FIPS 180-2 "abc" vector, standard base64.
+#[test]
+fn the_card_digest_is_sha256_byte_for_byte() {
+    assert_eq!(
+        sha256_tagged(b"abc"),
+        "sha256/ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0="
+    );
+}

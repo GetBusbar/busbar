@@ -1341,7 +1341,7 @@ fn amend_rate_history_effect(
     attribution: &AmendAttribution,
 ) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
     use busbar_core_admin::GovernanceError;
-    use sha2::Digest as _;
+    use busbar_kernel_ledger::digest::sha256;
 
     let doc: serde_json::Value =
         serde_json::from_slice(body).map_err(|_| GovernanceError::Validation)?;
@@ -1382,7 +1382,7 @@ fn amend_rate_history_effect(
         .and_then(serde_json::Value::as_str)
         .filter(|s| !s.is_empty())
         .ok_or(GovernanceError::Validation)?;
-    let reason_hash: [u8; 32] = sha2::Sha256::digest(reason.as_bytes()).into();
+    let reason_hash: [u8; 32] = sha256(reason.as_bytes());
 
     // **A CORRECTION MAY NOT NAME A DENOMINATION**, and one that tries is REFUSED rather than
     // accepted-and-ignored (#66 `BUSBAR-1.6.0.md:528`: money is UNITLESS abstract cost).
@@ -1485,7 +1485,7 @@ fn amend_rate_history_effect(
     };
     let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&operator_key)
         .map_err(|_| GovernanceError::Validation)?;
-    let expected_fingerprint = hex::encode(sha2::Sha256::digest(operator_key));
+    let expected_fingerprint = busbar_kernel_ledger::digest::sha256_hex(&operator_key);
     if operator_fingerprint != expected_fingerprint {
         return Err(GovernanceError::Validation);
     }

@@ -72,7 +72,7 @@
 use std::collections::VecDeque;
 
 use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, StepName};
-use sha2::{Digest as _, Sha256};
+use ring::digest::{Context, SHA256};
 
 use crate::record::Record;
 use crate::ship::Shipper;
@@ -429,9 +429,9 @@ impl JournalRecord {
     #[must_use]
     pub fn digest_of_chain(&self) -> [u8; 32] {
         let bytes = self.encode();
-        let mut hasher = Sha256::new();
+        let mut hasher = Context::new(&SHA256);
         hasher.update(&bytes[0..at::HASH]);
-        hasher.finalize().into()
+        crate::record::digest32(hasher)
     }
 
     /// This record's identity as the log knows it.
@@ -444,9 +444,9 @@ impl JournalRecord {
 /// The digest of a body.
 #[must_use]
 pub fn body_digest(body: &[u8]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
+    let mut hasher = Context::new(&SHA256);
     hasher.update(body);
-    hasher.finalize().into()
+    crate::record::digest32(hasher)
 }
 
 /// Thirty-two bytes as hexadecimal.

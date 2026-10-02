@@ -58,7 +58,6 @@ use busbar_contract::records::RecordStore;
 use busbar_contract::services::{
     merge_list, Caller, HostServices, Later, Ran, Reading, RecordsList, Stored,
 };
-use sha2::{Digest, Sha256};
 
 /// The refusal of a record write past the write queue's bound.
 pub const QUEUE_FULL: &str = "the record write queue is full";
@@ -804,13 +803,14 @@ pub fn demotion_key(instance: &str, counterparty: &str) -> String {
 /// instance, the kind and the key, each separated by a zero byte.
 #[must_use]
 pub fn claim_token(instance: &str, kind: &str, key: &[u8]) -> String {
-    let mut h = Sha256::new();
-    h.update(instance.as_bytes());
-    h.update([0]);
-    h.update(kind.as_bytes());
-    h.update([0]);
-    h.update(key);
-    let minted = IdempotencyKey::mint(&KernelSeal::acquire_for_kernel(), h.finalize().into());
+    let digest = busbar_kernel_ledger::digest::sha256_of(&[
+        instance.as_bytes(),
+        &[0],
+        kind.as_bytes(),
+        &[0],
+        key,
+    ]);
+    let minted = IdempotencyKey::mint(&KernelSeal::acquire_for_kernel(), digest);
     hex::encode(minted.bytes())
 }
 

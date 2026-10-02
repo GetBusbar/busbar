@@ -24,4 +24,9 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
+# SHA-256 for the frame and journal digests, on ring (the one crypto backend).
+ring = { workspace = true }
+
+[dev-dependencies]
+# Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.
 sha2 = { workspace = true }

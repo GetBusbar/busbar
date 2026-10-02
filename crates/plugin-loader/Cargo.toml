@@ -130,7 +130,6 @@ busbar-kernel-wal = { path = "../busbar-kernel-wal" }
 # (DECISIONS #33). Verify + sign only, no key generation and therefore no RNG: the
 # engine-facing half stays RNG-free and `keygen` keeps its OS RNG on the tooling side.
 ed25519-dalek = { workspace = true }
-sha2 = { workspace = true }
 hex = { workspace = true }
 libloading = { workspace = true }
 # The kind:hook seam: `DlopenPolicy` implements the async `busbar_contract::hooks::RoutingPolicy` trait, running

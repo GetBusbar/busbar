@@ -33,7 +33,6 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 /// The token prefix, so a busbar key is visually distinct from an opaque bearer and a quick
 /// structural pre-check can reject an obviously-non-busbar credential before any crypto.
@@ -384,11 +383,7 @@ impl TokenVerifier {
 // (not plane-gated) because it is key hygiene any future plane may derive through.
 #[cfg_attr(not(feature = "relay"), allow(dead_code))]
 fn subkey_seed(secret: &[u8; 32], domain: &str) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update(b"busbar/subkey/v1");
-    h.update(secret);
-    h.update(domain.as_bytes());
-    h.finalize().into()
+    busbar_kernel_ledger::digest::sha256_of(&[b"busbar/subkey/v1", secret, domain.as_bytes()])
 }
 
 #[cfg(test)]

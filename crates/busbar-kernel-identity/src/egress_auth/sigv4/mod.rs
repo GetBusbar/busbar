@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! AWS Signature Version 4 request signing — hand-rolled with RustCrypto (sha2 + hmac), no AWS
+//! AWS Signature Version 4 request signing — hand-rolled on ring (digest + hmac), no AWS
 //! SDK, ported unchanged from `busbar-substrate`'s signer. The canonical-request -> string-to-sign
 //! -> signature chain is verified against AWS's own published worked example (GET iam ListUsers,
 //! 2015-08-30) in the tests, so correctness does not rely on trusting the port.
@@ -14,11 +14,7 @@
 //! SigV4-verifying ingress path needs it here too, it is a second, explicit dependency, not a
 //! silent inheritance.
 
-use hmac::digest::KeyInit;
-use hmac::{Hmac, Mac};
-use sha2::{Digest, Sha256};
-
-type HmacSha256 = Hmac<Sha256>;
+use ring::{digest, hmac as ring_hmac};
 
 const SECS_PER_DAY: u64 = 86_400;
 const SECS_PER_HOUR: u64 = 3_600;
@@ -31,21 +27,14 @@ const SIGNATURE_KEY_PREFIX: &str = "AWS4";
 
 /// Lowercase hex SHA-256 of `data`.
 pub fn sha256_hex(data: &[u8]) -> String {
-    hex::encode(Sha256::digest(data))
+    hex::encode(digest::digest(&digest::SHA256, data).as_ref())
 }
 
-/// HMAC-SHA256 of `data` under `key`. `Hmac::new_from_slice` is infallible for HMAC (the spec
-/// accepts a key of any length), so the error arm is unreachable; on it we return an empty digest,
-/// which yields a wrong signature and a graceful upstream 403 rather than a panic on the request
-/// path.
+/// HMAC-SHA256 of `data` under `key`. HMAC accepts a key of any length, so there is no fallible
+/// step and nothing can panic on the request path.
 pub(crate) fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
-    match HmacSha256::new_from_slice(key) {
-        Ok(mut mac) => {
-            mac.update(data);
-            mac.finalize().into_bytes().to_vec()
-        }
-        Err(_) => Vec::new(),
-    }
+    let key = ring_hmac::Key::new(ring_hmac::HMAC_SHA256, key);
+    ring_hmac::sign(&key, data).as_ref().to_vec()
 }
 
 /// Derive the SigV4 signing key: HMAC chain over date -> region -> service -> "aws4_request".

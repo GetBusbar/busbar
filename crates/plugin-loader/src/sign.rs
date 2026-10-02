@@ -53,7 +53,6 @@
 use ed25519_dalek::{Signature, Signer};
 pub use ed25519_dalek::{SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 /// The reserved first-party publisher name. A manifest carrying this publisher verifies against the
@@ -636,9 +635,7 @@ impl std::error::Error for Rejected {}
 
 /// Lowercase-hex SHA-256 of `bytes` - the library digest stored in the manifest.
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    let mut h = Sha256::new();
-    h.update(bytes);
-    hex::encode(h.finalize())
+    busbar_kernel_ledger::digest::sha256_hex(bytes)
 }
 
 /// The canonical byte string that is signed/verified: the whole manifest MINUS its `signature`, as
