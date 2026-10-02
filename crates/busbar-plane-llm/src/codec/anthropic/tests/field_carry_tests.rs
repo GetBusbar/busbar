@@ -683,6 +683,7 @@ fn anthropic_response_carries_every_spec_required_member_with_default_shapes() {
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(out["stop_details"], serde_json::Value::Null);
@@ -780,6 +781,7 @@ fn anthropic_response_cache_creation_is_null_when_total_known_but_tiers_are_not(
 
         request_echo: None,
         stop_detail: None,
+        ..Default::default()
     };
     let out = anthropic_writer().write_response(&resp);
     assert_eq!(out["usage"]["cache_creation_input_tokens"], 9);
