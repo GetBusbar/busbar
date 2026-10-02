@@ -251,6 +251,27 @@ pub fn judge_jev_ledger(totals: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// The subject's generated config: one decisions model on the rig's far end, a data-plane key
+/// chain, the admin token, the decision class priced at 1 micro-unit per unit, and the far end's
+/// loopback address declared as an allowed destination (`advanced.allow_destinations`), as an
+/// operator declares one, so the connector's default destination guard (private, loopback and
+/// metadata addresses refused, QUESTIONS Q130/Q131) admits the dial. The oidf rig declares its IdP
+/// stub the same way.
+pub fn jev_subject_config(data: u16, admin: u16, key_file: &Path) -> String {
+    format!(
+        "listen: \"127.0.0.1:{data}\"\n\
+         admin_listen: \"127.0.0.1:{admin}\"\n\
+         providers:\n  {PROVIDER}:\n    api_key: {{ env: JEV_CONFORMANCE_PROVIDER_KEY }}\n\
+         models: {{}}\n\
+         identity-providers:\n  admin-tokens: {{ module: admin-tokens, token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n\
+         auth:\n  chain: [keys]\n  admin_auth: [admin-tokens]\n  signing_key: {{ file: {} }}\n\
+         advanced:\n  allow_destinations: [\"127.0.0.1\"]\n\
+         decisions:\n  models:\n    {MODEL}:\n      provider: {PROVIDER}\n\
+         \x20 rate_card:\n    {MODEL}: {{ units: {{ decision: 1 }} }}\n",
+        key_file.display()
+    )
+}
+
 fn check(ok: bool, finding: impl FnOnce() -> String) -> Result<(), String> {
     if ok {
         Ok(())
@@ -332,17 +353,7 @@ impl Runner {
                 return;
             }
         };
-        let config = format!(
-            "listen: \"127.0.0.1:{data}\"\n\
-             admin_listen: \"127.0.0.1:{admin}\"\n\
-             providers:\n  {PROVIDER}:\n    api_key: {{ env: JEV_CONFORMANCE_PROVIDER_KEY }}\n\
-             models: {{}}\n\
-             identity-providers:\n  admin-tokens: {{ module: admin-tokens, token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n\
-             auth:\n  chain: [keys]\n  admin_auth: [admin-tokens]\n  signing_key: {{ file: {} }}\n\
-             decisions:\n  models:\n    {MODEL}:\n      provider: {PROVIDER}\n\
-             \x20 rate_card:\n    {MODEL}: {{ units: {{ decision: 1 }} }}\n",
-            key_file.display()
-        );
+        let config = jev_subject_config(data, admin, &key_file);
         let providers = format!(
             "{PROVIDER}:\n  protocol: jev\n  base_url: http://127.0.0.1:{}\n  error_map: {{}}\n",
             far.port
