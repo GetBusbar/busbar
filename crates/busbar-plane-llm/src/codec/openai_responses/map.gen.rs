@@ -29,7 +29,7 @@ pub(crate) const ROWS_RESPONSES_STRUCTURE: &[Field] = &[
     row(&["input[]", "type=reasoning"], Slot::Structure, ValueCodec::Prim("reasoning")),
     row(&["input[]", "type=function_call", "arguments"], Slot::Structure, ValueCodec::Prim("tool_arguments")),
     row(&["reasoning", "effort"], Slot::Structure, ValueCodec::Prim("reasoning")),
-    row(&["tool_choice", "type=allowed_tools", "tools"], Slot::Structure, ValueCodec::Prim("allowed_tools")),
+    row(&["tool_choice", "type=allowed_tools", "tools"], Slot::Structure, ValueCodec::Prim("tool_choice_subset")),
     row(&["tools"], Slot::Structure, ValueCodec::Prim("tools")),
     row(&["max_output_tokens"], Slot::Structure, ValueCodec::Prim("max_output")),
     row(&["top_logprobs"], Slot::Structure, ValueCodec::Prim("logprobs")),

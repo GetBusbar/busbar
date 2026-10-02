@@ -18,13 +18,12 @@ it; `-` means the dialect has no form for it.
 | cohere | request | 17 | 1 |
 | gemini | request | 19 | 3 |
 | openai_chat | request | 32 | 4 |
-| openai_responses | request | 22 | 23 |
+| openai_responses | request | 22 | 20 |
 
 ## request
 
 | concept | anthropic | bedrock | cohere | gemini | openai_chat | openai_responses |
 | --- | --- | --- | --- | --- | --- | --- |
-| allowed_tools | - | - | - | - | `tool_choice.type=allowed_tools.allowed_tools.tools` | `tool_choice.type=allowed_tools.tools` |
 | frequency_penalty | - | - | `frequency_penalty` | `generationConfig.frequencyPenalty` | `frequency_penalty` | - |
 | json_array_shim | - | - | - | `__busbar_gemini_json_array` (busbar's own) | - | - |
 | logprobs | - | - | `logprobs` | `generationConfig.responseLogprobs`<br>`generationConfig.logprobs` | `logprobs`<br>`top_logprobs` | `top_logprobs` |
@@ -50,6 +49,7 @@ it; `-` means the dialect has no form for it.
 | temperature | `temperature` | `inferenceConfig.temperature` | `temperature` | `generationConfig.temperature` | `temperature` | `temperature` |
 | tool_arguments | `messages[].content[].type=tool_use.input` | `messages[].content[].toolUse.input` | `messages[].role=assistant.tool_calls[].function.arguments` | - | `messages[].role=assistant.tool_calls[].type=function.function.arguments`<br>`messages[].role=assistant.function_call.arguments` | `input[].type=function_call.arguments` |
 | tool_choice | `tool_choice` | `toolConfig.toolChoice` | `tool_choice` | - | `tool_choice` | `tool_choice` |
+| tool_choice_subset | - | - | - | - | `tool_choice.type=allowed_tools.allowed_tools.tools` | `tool_choice.type=allowed_tools.tools` |
 | tools | `tools` | `toolConfig.tools` | `tools` | `tools` | `tools` | `tools` |
 | top_k | `top_k` | code `bedrock_top_k` | `k` | `generationConfig.topK` | - | - |
 | top_p | `top_p` | `inferenceConfig.topP` | `p` | `generationConfig.topP` | `top_p` | `top_p` |

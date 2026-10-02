@@ -19,7 +19,7 @@ request = [
 "input[].type=reasoning" = { prim = "reasoning" }
 "input[].type=function_call.arguments" = { prim = "tool_arguments" }
 "reasoning.effort" = { prim = "reasoning" }
-"tool_choice.type=allowed_tools.tools" = { prim = "allowed_tools" }
+"tool_choice.type=allowed_tools.tools" = { prim = "tool_choice_subset" }
 "tools" = { prim = "tools" }
 "max_output_tokens" = { prim = "max_output" }
 "top_logprobs" = { prim = "logprobs" }
@@ -56,15 +56,12 @@ park = true
 "input[].type=configuration_update.reasoning" = { no-equivalent = "a mid-conversation reasoning reconfiguration item; the IR reasoning ask is per request" }
 "input[].type=configuration_update.reasoning.effort" = { no-equivalent = "a mid-conversation reasoning reconfiguration item; the IR reasoning ask is per request" }
 "input[].type=custom_tool_call.input" = { no-equivalent = "a replayed custom-tool call's free-text input; the IR tool call carries function arguments only" }
-"input[].type=mcp_approval_request.arguments" = { no-equivalent = "the arguments of a replayed hosted-MCP approval request; the IR has no hosted MCP calls" }
-"input[].type=mcp_call.arguments" = { no-equivalent = "the arguments of a replayed hosted-MCP call; the IR has no hosted MCP calls" }
+"input[].type=mcp_approval_request.arguments" = { no-equivalent = "the arguments of a replayed approval request of a provider-hosted tool server; the IR has no hosted tool-server calls" }
+"input[].type=mcp_call.arguments" = { no-equivalent = "the arguments of a replayed call to a provider-hosted tool server; the IR has no hosted tool-server calls" }
 "input[].type=tool_search_call.arguments" = { no-equivalent = "the arguments of a replayed tool-search call; the IR has no tool search" }
-"input[].type=additional_tools.tools[].type=mcp.allowed_tools" = { no-equivalent = "the tools a hosted MCP server may expose, not the tool-choice subset; the IR has no hosted MCP tool" }
-"input[].type=tool_search_output.tools[].type=mcp.allowed_tools" = { no-equivalent = "the tools a hosted MCP server may expose, not the tool-choice subset; the IR has no hosted MCP tool" }
-"tools[].type=mcp.allowed_tools" = { no-equivalent = "the tools a hosted MCP server may expose, not the tool-choice subset; the IR has no hosted MCP tool" }
 "moderation.policy.input" = { no-equivalent = "OpenAI's moderation policy for the input; no other dialect has a moderation pass" }
 "input[].type=local_shell_call.action.user" = { no-equivalent = "the OS user of a replayed local-shell call; the matched `user` is the end-user identifier member" }
-"input[].type=mcp_list_tools.tools" = { no-equivalent = "a replayed MCP tool listing (Responses' hosted MCP record); the IR has no MCP listing" }
+"input[].type=mcp_list_tools.tools" = { no-equivalent = "a replayed tool listing of a provider-hosted tool server; the IR has no such listing" }
 "input[].type=message.content[].type=output_text.logprobs" = { no-equivalent = "log probabilities of a replayed assistant answer in history; the IR logprobs are an answer's, not a request's" }
 "input[].type=message.content[].type=output_text.logprobs[].top_logprobs" = { no-equivalent = "log probabilities of a replayed assistant answer in history; the IR logprobs are an answer's, not a request's" }
 "input[].type=tool_search_output.tools" = { no-equivalent = "tools returned by a replayed tool-search call; the IR has no tool search" }

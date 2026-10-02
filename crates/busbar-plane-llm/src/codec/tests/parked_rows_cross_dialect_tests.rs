@@ -144,7 +144,7 @@ fn anthropic_parked_service_tier_crosses_as_its_slot_or_drops() {
     }
 }
 
-/// DF-MAP (design DIALECT FIDELITY F3/F4; LLM DIALECT FIDELITY standing rule, 2026-10-02): Gemini's
+/// DF-MAP (design DIALECT FIDELITY F3/F4; the owner's dialect-fidelity standing rule, 2026-10-02): Gemini's
 /// `serviceTier` and `store` are the fields OpenAI Chat and Responses map as `service_tier` /
 /// `store`. They cross both ways now; 1.5.5 and predev dropped them on every crossing.
 #[test]
