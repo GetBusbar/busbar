@@ -97,16 +97,13 @@ pub(super) fn deliver<'a>(
             .flatten();
 
         // A non-stream cross-protocol response is buffered whole and translated egress → IR → ingress.
-        // A same-protocol buffered response also takes this path when the client asked to stream:
-        // the client's dialect stream (SSE framing, metering-at-end) must be served even though the
-        // upstream itself ignored `stream` and answered one JSON body — the raw same-protocol relay
-        // below only fits a client that did not ask for a stream. Boxed: this arm is cold and its
-        // future is large relative to the pinned hot path.
+        // A same-protocol answer is relayed as the upstream sent it, a stream-asked, body-answered
+        // reply included (LLM DIALECT FIDELITY). Boxed: this arm is cold and its future is large
+        // relative to the pinned hot path.
         if crate::engine::xchg::reply::relay::takes_whole(
             hop.ingress_protocol,
             hop.egress_name,
             is_sse,
-            hop.wants_stream,
         ) {
             return deliver_buffered(
                 hop,
@@ -151,7 +148,7 @@ pub(super) fn deliver<'a>(
     }
 }
 
-/// The `!is_sse && (cross_protocol || wants_stream)` delivery: buffer the whole upstream body and
+/// The `!is_sse && cross_protocol` delivery: buffer the whole upstream body and
 /// translate egress → IR → ingress, then ride the finished tap back on the response. Pure extraction
 /// of the buffered branch of [`deliver`]; the caller's `budget_guard` is borrowed so the arm that
 /// keeps/refunds the charge is the same guard the streaming sibling would have used.

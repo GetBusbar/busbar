@@ -242,7 +242,7 @@ impl Reply {
                 },
             };
         };
-        if relay::takes_whole(ingress, egress, far_is_stream, ctx.intent.wants_stream) {
+        if relay::takes_whole(ingress, egress, far_is_stream) {
             return Reply {
                 state: State::Whole {
                     status,

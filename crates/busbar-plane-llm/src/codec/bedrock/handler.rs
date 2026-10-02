@@ -32,62 +32,6 @@ static CELLS: &[busbar_contract::codec::Cell] = &[
     (OpVerb::RERANK, &RERANK),
 ];
 
-/// Billable usage for a complete same-protocol (Bedrock -> Bedrock) non-stream 2xx body, keyed by
-/// the body's SHAPE rather than by the operation. The buffered Converse translator
-/// (`BedrockConverseBodyTranslator`) sits in for the verbatim relay on every Bedrock same-protocol
-/// non-stream response, and the forward path then reads billing usage from the translator instead
-/// of asking the operation. The translator does not know which operation it serves, so this picks
-/// the same `extract_usage` the operation would have run, from the response shape:
-///   - `output` / `stopReason` (a Converse body)     -> the chat tap (the Converse reader's usage)
-///   - `images`                                        -> the image cell's tap
-///   - `embedding` / `inputTextTokenCount`             -> the embeddings cell's tap
-///   - `results` (a Rerank body)                       -> no tokens; its counted search units
-///     ride [`same_protocol_open_billing`]
-///   - anything else                                   -> the chat tap (the decode-failure warn it
-///     raises is the one the relay raised too)
-///
-/// `parsed` is the body already decoded by the caller (`None` when it is not JSON), so the shape
-/// probe costs no second parse.
-pub fn same_protocol_usage(
-    body: &[u8],
-    parsed: Option<&Value>,
-) -> Option<busbar_contract::billing::TokenUsage> {
-    let has = |k: &str| parsed.is_some_and(|v| v.get(k).is_some());
-    if has(keys::OUTPUT) || has(super::STOP_REASON) {
-        CHAT.extract_usage(super::VENDOR_NAME, body)
-    } else if has(super::IMAGES) {
-        IMG.extract_usage(super::VENDOR_NAME, body)
-    } else if has(keys::EMBEDDING) || has(super::INPUT_TEXT_TOKEN_COUNT) {
-        EMB.extract_usage(super::VENDOR_NAME, body)
-    } else if has(keys::RESULTS) {
-        None
-    } else {
-        CHAT.extract_usage(super::VENDOR_NAME, body)
-    }
-}
-
-/// The NON-TOKEN billing of a complete same-protocol non-stream 2xx body, by the same shape probe as
-/// [`same_protocol_usage`]: a Rerank body (`results`) is read by the rerank cell's own reader, so the
-/// search units it billed reach both books as the open class the cross-protocol path ledgers (item
-/// 134). Every other shape bills tokens only, and answers `None`.
-pub fn same_protocol_open_billing(
-    body: &[u8],
-    parsed: Option<&Value>,
-) -> Option<busbar_contract::billing::Billing> {
-    if !parsed.is_some_and(|v| v.get(keys::RESULTS).is_some()) {
-        return None;
-    }
-    read_rerank_response(body).ok().and_then(|r| r.billing())
-}
-
-/// True when a same-protocol non-stream 2xx body is a Converse response (the shape that must carry
-/// `metrics.latencyMs`), as opposed to an InvokeModel embeddings / image / rerank body, which has no
-/// such member.
-pub fn is_converse_response(v: &Value) -> bool {
-    v.as_object()
-        .is_some_and(|o| o.contains_key(keys::OUTPUT) || o.contains_key(super::STOP_REASON))
-}
-
 impl RequestHandler for BedrockRequestHandler {
     dialect_identity!(super::VENDOR_NAME);
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
@@ -294,6 +238,11 @@ leaf_op! {
     BedrockRerank: super::VENDOR_NAME,
     RerankReqHandle = read_rerank_request,
     RerankRespHandle = read_rerank_response;
+    // Search-unit metered, as the Cohere cell: buffer the same-protocol non-stream 2xx body so the
+    // relay's tap reads the `meta.billed_units.search_units` it billed (item 134).
+    fn taps_usage(&self) -> bool {
+        true
+    }
 }
 
 /// IR → bedrock rerank request wire (the body of [`BedrockRerank::write_request`], moved behind the

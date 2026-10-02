@@ -518,10 +518,9 @@ fn a_json_array_caller_reads_its_stream_as_one_array() {
         relay::content_type("gemini", "gemini", true, true),
         ContentType::Json
     );
-    assert!(relay::takes_whole("openai", "anthropic", false, false));
-    assert!(relay::takes_whole("openai", "openai", false, true));
-    assert!(!relay::takes_whole("openai", "openai", false, false));
-    assert!(!relay::takes_whole("openai", "anthropic", true, true));
+    assert!(relay::takes_whole("openai", "anthropic", false));
+    assert!(!relay::takes_whole("openai", "openai", false));
+    assert!(!relay::takes_whole("openai", "anthropic", true));
 }
 
 // ── the reply ───────────────────────────────────────────────────────────────────────────────────

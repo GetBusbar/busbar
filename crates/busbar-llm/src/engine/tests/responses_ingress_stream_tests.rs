@@ -2,7 +2,8 @@
 //! (`content-type: text/event-stream`, opening `response.created`, terminal `response.completed`)
 //! for EVERY egress dialect — whether the upstream streamed its answer or handed back one buffered
 //! JSON body — and the stream is metered exactly like every other stream (11 input / 7 output
-//! tokens land on the key's ledger once).
+//! tokens land on the key's ledger once). The one exception is the same dialect answering one JSON
+//! body: that is relayed as the upstream sent it.
 //!
 //! Each egress dialect gets two cases: the upstream streams natively (the live translate path), and
 //! the upstream ignores `stream` and answers a single JSON body (the buffered-response synthesis
@@ -304,7 +305,7 @@ async fn run_case(egress: &str, shape: Upstream) {
         }
     );
     let (content_type, body) = upstream_answer(egress, &shape);
-    let base_url = canned_upstream(content_type, body).await;
+    let base_url = canned_upstream(content_type, body.clone()).await;
 
     // A governed key on a fresh in-memory registry, so the ledger starts empty for this case.
     let store: Arc<dyn busbar_contract::records::RecordStore> =
@@ -374,77 +375,92 @@ async fn run_case(egress: &str, shape: Upstream) {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    assert!(
-        ct.starts_with("text/event-stream"),
-        "[{label}] a stream: true Responses request is answered as SSE, got content-type {ct:?}"
-    );
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .expect("drain the stream");
-    let text = String::from_utf8(bytes.to_vec()).expect("SSE is UTF-8");
-    let frames = parse_frames(&text);
-    assert!(!frames.is_empty(), "[{label}] the stream carries events");
-    assert_eq!(
-        frames[0].0, "response.created",
-        "[{label}] the stream opens with response.created: {text}"
-    );
-    assert!(
-        !text.contains("[DONE]"),
-        "[{label}] a Responses stream has no [DONE] sentinel: {text}"
-    );
-    let (last_event, last_data) = frames.last().expect("terminal frame");
-    assert_eq!(
-        last_event, "response.completed",
-        "[{label}] the stream ends with response.completed: {text}"
-    );
-    let completed: Value = serde_json::from_str(last_data)
-        .unwrap_or_else(|e| panic!("[{label}] response.completed data is JSON ({e}): {last_data}"));
-    assert_eq!(
-        completed["type"], "response.completed",
-        "[{label}] {last_data}"
-    );
-    assert!(
-        completed["sequence_number"].is_u64(),
-        "[{label}] response.completed carries a sequence_number: {last_data}"
-    );
-    let response = &completed["response"];
-    assert_eq!(response["object"], "response", "[{label}] {last_data}");
-    assert_eq!(response["status"], "completed", "[{label}] {last_data}");
-    assert!(
-        response["id"]
-            .as_str()
-            .is_some_and(|id| id.starts_with("resp_")),
-        "[{label}] response.completed names a resp_ id: {last_data}"
-    );
-    assert_eq!(
-        response["output"][0]["content"][0]["text"], MARKER,
-        "[{label}] the completed output carries the upstream text: {last_data}"
-    );
-    assert_eq!(
-        response["usage"]["input_tokens"], IN_TOK,
-        "[{label}] {last_data}"
-    );
-    assert_eq!(
-        response["usage"]["output_tokens"], OUT_TOK,
-        "[{label}] {last_data}"
-    );
-    assert_eq!(
-        response["usage"]["total_tokens"],
-        IN_TOK + OUT_TOK,
-        "[{label}] {last_data}"
-    );
-    // Every frame's payload is JSON with a `type` matching its event line.
-    for (event, data) in &frames {
-        let v: Value = serde_json::from_str(data)
-            .unwrap_or_else(|e| panic!("[{label}] frame {event} data is JSON ({e}): {data}"));
+    if egress == "responses" && matches!(shape, Upstream::Buffered) {
+        // Same dialect: the upstream's one JSON body is relayed as it was sent (LLM DIALECT
+        // FIDELITY), under the upstream's content type, and metered by the relay's usage tap.
+        assert_eq!(ct, content_type, "[{label}] the upstream's content type");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("drain the body");
         assert_eq!(
-            v["type"],
-            event.as_str(),
-            "[{label}] event line matches payload type"
+            bytes.as_ref(),
+            body.as_slice(),
+            "[{label}] the upstream's bytes, unchanged"
         );
+    } else {
+        assert!(
+            ct.starts_with("text/event-stream"),
+            "[{label}] a stream: true Responses request is answered as SSE, got content-type {ct:?}"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("drain the stream");
+        let text = String::from_utf8(bytes.to_vec()).expect("SSE is UTF-8");
+        let frames = parse_frames(&text);
+        assert!(!frames.is_empty(), "[{label}] the stream carries events");
+        assert_eq!(
+            frames[0].0, "response.created",
+            "[{label}] the stream opens with response.created: {text}"
+        );
+        assert!(
+            !text.contains("[DONE]"),
+            "[{label}] a Responses stream has no [DONE] sentinel: {text}"
+        );
+        let (last_event, last_data) = frames.last().expect("terminal frame");
+        assert_eq!(
+            last_event, "response.completed",
+            "[{label}] the stream ends with response.completed: {text}"
+        );
+        let completed: Value = serde_json::from_str(last_data).unwrap_or_else(|e| {
+            panic!("[{label}] response.completed data is JSON ({e}): {last_data}")
+        });
+        assert_eq!(
+            completed["type"], "response.completed",
+            "[{label}] {last_data}"
+        );
+        assert!(
+            completed["sequence_number"].is_u64(),
+            "[{label}] response.completed carries a sequence_number: {last_data}"
+        );
+        let response = &completed["response"];
+        assert_eq!(response["object"], "response", "[{label}] {last_data}");
+        assert_eq!(response["status"], "completed", "[{label}] {last_data}");
+        assert!(
+            response["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("resp_")),
+            "[{label}] response.completed names a resp_ id: {last_data}"
+        );
+        assert_eq!(
+            response["output"][0]["content"][0]["text"], MARKER,
+            "[{label}] the completed output carries the upstream text: {last_data}"
+        );
+        assert_eq!(
+            response["usage"]["input_tokens"], IN_TOK,
+            "[{label}] {last_data}"
+        );
+        assert_eq!(
+            response["usage"]["output_tokens"], OUT_TOK,
+            "[{label}] {last_data}"
+        );
+        assert_eq!(
+            response["usage"]["total_tokens"],
+            IN_TOK + OUT_TOK,
+            "[{label}] {last_data}"
+        );
+        // Every frame's payload is JSON with a `type` matching its event line.
+        for (event, data) in &frames {
+            let v: Value = serde_json::from_str(data)
+                .unwrap_or_else(|e| panic!("[{label}] frame {event} data is JSON ({e}): {data}"));
+            assert_eq!(
+                v["type"],
+                event.as_str(),
+                "[{label}] event line matches payload type"
+            );
+        }
     }
 
-    // Metering: the stream's usage lands on the key's ledger exactly once, 11 in / 7 out.
+    // Metering: the answer's usage lands on the key's ledger exactly once, 11 in / 7 out.
     let gov = app.governance.clone().expect("governance is configured");
     let usage = gov
         .usage_for(&app.cost, &key.id, charged_at)
@@ -528,10 +544,9 @@ async fn responses_stream_over_responses_stream() {
     run_case("responses", Upstream::Stream).await;
 }
 
-/// Same-protocol: a Responses upstream that ignores `stream` and answers one JSON body. A
-/// wants-stream same-protocol buffered 2xx now routes through the same buffered translate path
-/// (`engine/attempt/respond.rs`) that cross-protocol buffered responses use, so the client still
-/// gets its dialect's SSE stream instead of a relayed `application/json` body.
+/// Same-protocol: a Responses upstream that ignores `stream` and answers one JSON body. Within one
+/// dialect the answer is relayed as the upstream sent it (LLM DIALECT FIDELITY, owner 2026-10-02;
+/// 1.5.5's bytes): the client reads the upstream's JSON body, metered once.
 #[tokio::test]
 async fn responses_stream_over_responses_buffered() {
     run_case("responses", Upstream::Buffered).await;

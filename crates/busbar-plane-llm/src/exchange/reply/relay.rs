@@ -37,10 +37,11 @@ pub enum ContentType {
 }
 
 /// Whether the far end's success answer is taken whole rather than relayed: a non-stream answer
-/// that crosses dialects, or one the caller asked to stream from a far end that answered one body.
+/// that crosses dialects. Within one dialect the answer is relayed as the far end sent it, a
+/// stream-asked, body-answered reply included (LLM DIALECT FIDELITY, owner 2026-10-02).
 #[must_use]
-pub fn takes_whole(ingress: &str, egress: &str, far_is_stream: bool, wants_stream: bool) -> bool {
-    !far_is_stream && (ingress != egress || wants_stream)
+pub fn takes_whole(ingress: &str, egress: &str, far_is_stream: bool) -> bool {
+    !far_is_stream && ingress != egress
 }
 
 /// The content type a relayed answer wears.
@@ -162,7 +163,7 @@ pub type Parts = (
 );
 
 /// The translator the pair of dialects names for a far end's answer (a stream reframed across
-/// dialects, re-emitted byte-exact within one, or a same-dialect whole body a dialect completes),
+/// dialects, or re-emitted byte-exact within one),
 /// told the caller's usage opt-in and request; and the JSON-array framer for a caller that asked
 /// for its stream as an array.
 #[must_use]
