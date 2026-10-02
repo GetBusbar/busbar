@@ -474,7 +474,7 @@ fn the_sealed_digest_of_an_amendment_is_the_frozen_hex() {
         // had ever been sealed in production (the item's own measurement: zero construction sites),
         // so no stored correction carries the previous encoding. The value is computed independently
         // of this crate, by hashing the length-prefixed framing of the fixture by hand
-        // (`amend_digest.py` beside this file, which also reproduces the
+        // (`amend_digest.py`, at 6fac14e479 in busbar-kernel-audit's tests/, which also reproduces the
         // access constant above and the retired adjustment constant 56addfe3…0a2bc byte for byte).
         adjust.hash,
         "2efa76937dfebe0452c23ac8dee4a1293c9fcb2b6488dfd9ed9ae183cb9ea940",
@@ -486,7 +486,7 @@ fn the_sealed_digest_of_an_amendment_is_the_frozen_hex() {
 /// Q64/Q67: AN ADJUSTMENT NAMES ITS POOL, and one sealed before the field existed keeps its hash.
 /// The unscoped fixture still digests to the frozen `2efa7693…a940` above (so a stored adjustment
 /// still verifies, and still reads unscoped); the same correction naming `pool-a` digests to its
-/// own value, derived independently by `amend_digest.py` ("pooled adjust"), never captured from a
+/// own value, derived independently by `amend_digest.py` (6fac14e479, "pooled adjust"), never captured from a
 /// run. The pool is on the record the chain seals.
 #[test]
 fn a_pooled_adjustment_digests_its_pool_and_an_unscoped_one_digests_as_sealed() {
