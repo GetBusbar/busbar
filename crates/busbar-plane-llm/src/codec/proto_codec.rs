@@ -452,6 +452,20 @@ pub trait ProtocolWriter: Send + Sync {
         })
     }
 
+    /// [`Self::write_error`] with the entropy for any identifier the envelope mints handed in by the
+    /// caller ([`crate::codec::write_error_envelope`]), for a caller that may not read a random
+    /// source. Default: the envelope mints nothing, so the entropy is unused. A dialect whose
+    /// envelope carries a minted id overrides this and builds that id from `entropy`.
+    fn write_error_from_entropy(
+        &self,
+        status: u16,
+        kind: &str,
+        message: &str,
+        _entropy: &[u8],
+    ) -> serde_json::Value {
+        self.write_error(status, kind, message)
+    }
+
     /// Attach any protocol-specific RESPONSE HEADERS a native endpoint always carries on an error
     /// response, given the already-built error `envelope` and canonical `kind`. Default no-op (most
     /// protocols carry the error entirely in the body). Bedrock attaches `x-amzn-RequestId` +
