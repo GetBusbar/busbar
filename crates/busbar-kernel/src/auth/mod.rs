@@ -1134,6 +1134,14 @@ async fn run_admin_chain(
     Ok((ChainVerdict::Denied, None))
 }
 
+/// The PROBE arm of [`external_admin_module`]: a cold admin module's `authenticate`, called on the
+/// caller's own thread. Only the synchronous [`admin_door`] reaches it (it polls the walk once with
+/// `probe` set, never on the reactor's await path), so the call stays in a plain `fn`, as the
+/// synchronous admin walk had it; the awaited arm offloads instead.
+fn probe_admin_module(module: &dyn AuthModule, credential: Option<&str>) -> AuthVerdict {
+    module.authenticate(credential)
+}
+
 /// One EXTERNAL cold admin module's verdict over `credential`; `None` when no module is resolved
 /// under `name`. Awaited, a module's `authenticate` — a synchronous FFI call that can do blocking
 /// JWKS/introspection I/O — runs on the blocking pool under its OWN [`ADMIN_OFFLOAD_PERMITS`]
@@ -1151,7 +1159,7 @@ async fn external_admin_module(
         return Ok(None);
     };
     if probe {
-        return Ok(Some(module.authenticate(credential)));
+        return Ok(Some(probe_admin_module(module.as_ref(), credential)));
     }
     // Warn-once transition latch: a saturated admin offload persists per request until the wedged
     // plugin recovers. Warn on the transition; hold the rest at debug; reset on a fresh permit.
