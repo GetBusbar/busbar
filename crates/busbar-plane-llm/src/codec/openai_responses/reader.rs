@@ -1818,6 +1818,7 @@ impl ProtocolReader for ResponsesReader {
 
             request_echo: None,
             stop_detail: None,
+            ..Default::default()
         })
     }
 
