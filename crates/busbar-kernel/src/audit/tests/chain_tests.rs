@@ -597,3 +597,39 @@ fn length_prefixing_makes_the_field_split_unforgeable_where_a_separator_does_not
         "length prefixes make the same shift a different byte stream"
     );
 }
+
+/// AN EGRESS REFUSAL IS AUDITED on core's hash chain, in core's audit vocabulary, with no record
+/// type, no chain and no resource spelling written for the plane that refused (the egress gate's
+/// seam test, `busbar-kernel-scope` `tests/egress.rs`, covers the gating and wording half).
+/// `nothing auditing wise should be mcp a2a or llm specific` is the ruling.
+#[test]
+fn an_egress_refusal_is_audited_on_the_chain() {
+    use crate::egress_grant::EgressRefusal;
+
+    let refusal: EgressRefusal<()> = EgressRefusal::NoGrant {
+        caller: "k-queue".to_string(),
+        grant: (),
+        scope_kind: "queue_broker",
+        value: "kafka-prod".to_string(),
+    };
+    let mut chain: Chain<AuditEntry> = Chain::new();
+    let records = vec![chain.append(
+        "admin",
+        AuditInput {
+            ts: 1,
+            action: "queue.egress".to_string(),
+            resource: refusal.audit_resource(),
+            outcome: crate::audit_ring::OUTCOME_REJECTED.to_string(),
+            principal: refusal.caller().to_string(),
+        },
+    )];
+    assert_eq!(verify_chain(&records), Ok(()));
+    assert_eq!(records[0].outcome, crate::audit_ring::OUTCOME_REJECTED);
+    assert_eq!(records[0].resource, "queue_broker:kafka-prod");
+    assert_eq!(records[0].principal, "k-queue");
+
+    // TAMPER-EVIDENT exactly as the three real streams are: rewriting who was refused breaks the chain.
+    let mut forged = records;
+    forged[0].principal = "someone-else".to_string();
+    verify_chain(&forged).expect_err("an edited egress-refusal record must break the chain");
+}

@@ -224,6 +224,10 @@ pub use busbar_kernel_wal::durable;
 // whether or not a plane needing the seam is built. See the module header.
 pub mod egress;
 pub mod egress_auth;
+/// THE EGRESS GRANT GATE: may busbar spend its own outbound credential on a subject for this
+/// caller? Authorization, so it lives in `busbar-kernel-scope` (Part 2 #36); re-exported here for
+/// the planes that already reach the kernel.
+pub use busbar_kernel_scope::egress as egress_grant;
 pub mod endpoints;
 // The narrow, `pub` re-export facade a plane's own extracted engine reaches DOWN into core through
 // once it lives in its own plane crate (1.6.0 money-path relocation, Phase 0). Pure visibility lift
