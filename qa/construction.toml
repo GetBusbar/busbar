@@ -901,7 +901,7 @@ because = "train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (xtask loc 29397 over 29392, 
 # ── SUMMED on the trunk (CONVERGER): contract_caps 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
 # ── LOWERED 29803 -> 29392 by train/cg-61a at the measurement (DEL-HOTCOLD-A deletes the dead hot/cold ABI; lower only).
 # ── RE-ARMED 29392 -> 29397 by train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (measured after the union drain) (merge-steward delegation <= +150).
-contract_caps = 29395
+contract_caps = 29397
 # RE-ARMED 26157 -> 28653 with its pair (the P1 core unit: KIND-SHARE +1826, BOOT-CHAIN +506, HEAD-FIELDS +111, CONNECTOR-19-U12 +57; composed -4), declared above.
 # REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
 # `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
@@ -1683,7 +1683,7 @@ contract_crate = "busbar-contract"
 # ── SUMMED on the trunk (CONVERGER): caps_contract_ceiling 27081 + (26184 - 26157) = 27108; the measurement at the segment tip re-arms it.
 # ── LOWERED 29803 -> 29392 by train/cg-61a at the measurement (DEL-HOTCOLD-A; lower only).
 # ── RE-ARMED 29392 -> 29397 by train/cg-65: MONEY-CHAIN UNITS_FLOOR +5 (measured after the union drain) (merge-steward delegation <= +150).
-caps_contract_ceiling = 29395
+caps_contract_ceiling = 29397
 # RE-ARMED 26157 -> 28653 with its pair (the P1 core unit), declared above.
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped

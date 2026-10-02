@@ -31,7 +31,9 @@ use core::fmt;
 use zeroize::Zeroize;
 
 /// A resolved secret held in memory. `Debug`/`Display` print `"[REDACTED]"`; the value never
-/// serializes; the backing memory is zeroized on drop. See the module docs.
+/// serializes; the backing memory is zeroized on drop. See the module docs. `Default` is an EMPTY
+/// secret (what a `#[derive(Default)]` on a struct with a `Redacted` field fills in): no material.
+#[derive(Default)]
 pub struct Redacted<T: Zeroize>(T);
 
 impl<T: Zeroize> Redacted<T> {
@@ -91,19 +93,11 @@ impl<T: Zeroize + Clone> Clone for Redacted<T> {
 /// `String` (a token, a key) and a `Vec<u8>` (DER key material, a raw credential).
 impl<T: Zeroize + AsRef<[u8]>> PartialEq for Redacted<T> {
     fn eq(&self, other: &Self) -> bool {
-        constant_time_eq_bytes(self.0.as_ref(), other.0.as_ref())
+        constant_time_eq(&self.0, &other.0)
     }
 }
 
 impl<T: Zeroize + AsRef<[u8]>> Eq for Redacted<T> {}
-
-/// An EMPTY secret — what a `#[derive(Default)]` on a struct with a `Redacted` field fills in. It holds
-/// no material, so it reveals nothing.
-impl<T: Zeroize + Default> Default for Redacted<T> {
-    fn default() -> Self {
-        Self(T::default())
-    }
-}
 
 // ── The constant-time primitive `Redacted`'s `PartialEq` is built on ───────────────────────────
 //
@@ -131,14 +125,12 @@ impl<T: Zeroize + Default> Default for Redacted<T> {
 /// `sha256_hex`) still leaks whether the two lengths matched. Prefer hashing both sides
 /// first (see `sha256_hex`'s doc) so length never enters the comparison at all; this primitive alone
 /// does not guarantee that for its caller.
-pub fn constant_time_eq(a: &str, b: &str) -> bool {
-    constant_time_eq_bytes(a.as_bytes(), b.as_bytes())
-}
-
-/// [`constant_time_eq`] over raw bytes — the one loop both it and [`Redacted`]'s `PartialEq` (which
-/// also compares `Vec<u8>` secrets) run, so there is still exactly one constant-time primitive.
+///
+/// Generic over any byte view (`str`, `String`, `[u8]`, `Vec<u8>`), so [`Redacted`]'s `PartialEq`
+/// (which also compares `Vec<u8>` secrets) runs this same loop: one constant-time primitive.
 #[inline(never)]
-fn constant_time_eq_bytes(a_bytes: &[u8], b_bytes: &[u8]) -> bool {
+pub fn constant_time_eq<A: AsRef<[u8]> + ?Sized, B: AsRef<[u8]> + ?Sized>(a: &A, b: &B) -> bool {
+    let (a_bytes, b_bytes) = (a.as_ref(), b.as_ref());
     if a_bytes.len() != b_bytes.len() {
         return false;
     }

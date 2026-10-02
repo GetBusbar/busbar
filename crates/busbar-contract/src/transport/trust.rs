@@ -26,17 +26,26 @@
 /// material a composition root already resolved, not a handle into a registry the transport cannot
 /// reach.
 ///
-/// `Debug` is DERIVED and still redacts: the key is a [`Redacted`](crate::Redacted), whose own
-/// `Debug` prints `[REDACTED]`, so the certificate chain (public) prints as itself and the key never
-/// does — structurally, not by a hand-rolled impl each edit must remember. The key zeroizes on drop
-/// and compares in constant time; a TLS stack reads it through `expose_secret()` at the one site
-/// that hands it to the handshake.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// The key is a [`Redacted`](crate::Redacted): it zeroizes on drop, compares in constant time, and a
+/// TLS stack reads it through `expose_secret()` at the one site that hands it to the handshake.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct ClientIdentity {
     /// The certificate chain to present, leaf first, each entry one DER certificate.
     pub cert_chain: Vec<Vec<u8>>,
     /// The private key, in DER, that proves the leaf.
     pub private_key: crate::Redacted<Vec<u8>>,
+}
+
+impl core::fmt::Debug for ClientIdentity {
+    /// Hand-rolled so the text stays exactly what 1.5.5 printed (log text is customer-visible): the
+    /// certificate chain is public and prints as itself, and the key prints as `<redacted>`, not as
+    /// `Redacted`'s own `[REDACTED]`.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ClientIdentity")
+            .field("cert_chain", &self.cert_chain)
+            .field("private_key", &"<redacted>")
+            .finish()
+    }
 }
 
 /// The trust a composition root decided for one OUTBOUND connection, as the seam carries it.
