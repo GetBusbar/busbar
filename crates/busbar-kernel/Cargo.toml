@@ -169,7 +169,7 @@ tokio-tungstenite = { workspace = true, optional = true }
 # W4.b P2 (absorbed from busbar-substrate): the egress differential-harness fixtures + the relocated
 # plane_host identity/trust_anchor registry tests mint throw-away certs with rcgen; OPTIONAL, pulled
 # only by `test-support`. (A dev-dependency copy below still serves plain `cargo test -p`.)
-rcgen = { workspace = true, optional = true }
+rcgen = { workspace = true, optional = true, features = ["pem"] }
 
 [features]
 # The `#[cfg(feature = ...)]` sites live in this crate, so this crate declares the features and
@@ -318,7 +318,7 @@ http-body-util = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
 serde_json = { workspace = true }
-rcgen = { workspace = true }
+rcgen = { workspace = true, features = ["pem"] }
 # THE POOL-CREDS MICRO-BENCH (`benches/pool_upstream_creds.rs`) — measures the per-request
 # egress credential-mode resolution delta (String-keyed SipHash probe vs the flag-gated Copy read).
 criterion = { workspace = true }
