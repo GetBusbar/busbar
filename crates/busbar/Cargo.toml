@@ -159,7 +159,7 @@ busbar-transport-http = { path = "../busbar-transport-http" }
 # pulled `tokio-tungstenite` through this line and voice stopped being strong-form deletable — the
 # exact leak `cargo xtask gate duplex-ws-default-edge` exists to catch. `plane-streaming` carries the edge.
 busbar-transport-ws = { path = "../busbar-transport-ws", optional = true }
-busbar-transport-stdio = { path = "../busbar-transport-stdio" }
+busbar-transport-stdio = { workspace = true }
 # The root's card is SWAPPED by a live config apply and PINNED by every unit that prices against it,
 # which is one atomic store against many lock-free readers — the same shape, and the same crate, the
 # engine already swaps its config snapshot with.
@@ -373,7 +373,7 @@ transport-http = "transport"
 transport-sse = "transport"
 transport-ws = "transport"
 transport-grpc = "transport"
-transport-stdio = "transport"
+transport-stdio = "transport transport-door"
 
 # A linked crate whose entry module is not `<crate>::linked`: the decisions plane is a PURE plane
 # crate whose manifest names `busbar-contract` and nothing else (#40), so its kernel-typed hooks are

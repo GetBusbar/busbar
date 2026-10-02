@@ -1026,12 +1026,9 @@ dependencies = [
 [[package]]
 name = "busbar-transport-stdio"
 version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-transport-stdio?rev=8d33f0d9439feed07ed66d63bde6fa7bdd714c10#8d33f0d9439feed07ed66d63bde6fa7bdd714c10"
 dependencies = [
  "busbar-contract",
- "busbar-plugin-loader",
- "busbar-transport-stdio",
- "futures",
- "tokio",
 ]
 
 [[package]]
