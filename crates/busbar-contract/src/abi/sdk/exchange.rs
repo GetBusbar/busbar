@@ -29,6 +29,10 @@ pub const READ_CHUNK: usize = 16 * 1024;
 /// The most a reply's body may reach before the exchange fails (a far end that never ends).
 pub const REPLY_MAX: usize = 16 * 1024 * 1024;
 
+/// The failure text of a reply whose body passed [`REPLY_MAX`]: a driver that words that case its
+/// own way matches on it.
+pub const REPLY_OVER_BOUND: &str = "the reply passed the exchange's bound";
+
 /// ONE REQUEST, as [`exchange`] sends it through a framed need.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Request {
@@ -290,7 +294,7 @@ fn send_and_read(
             REPLY_BODY if fresh => {
                 state.reply.body.extend_from_slice(&state.buf[..got.len]);
                 if state.reply.body.len() > REPLY_MAX {
-                    return failed("the reply passed the exchange's bound");
+                    return failed(REPLY_OVER_BOUND);
                 }
             }
             REPLY_HEAD | REPLY_ACK | REPLY_BODY | REPLY_END => {}

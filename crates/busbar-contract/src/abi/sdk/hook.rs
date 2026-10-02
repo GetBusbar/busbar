@@ -791,7 +791,8 @@ pub fn json_hook(handler: Box<dyn HookHandler>) -> Box<dyn Hook> {
     Box::new(JsonHook(handler))
 }
 
-/// How a plugin opens: its settings (the operator's JSON section, `"{}"` when none) to a [`Hook`].
+/// How a plugin opens: its settings, the operator's section exactly as the host lent it (empty when
+/// none, as 1.5.5 handed it), to a [`Hook`].
 pub trait HookOpen: 'static {
     /// Open an instance.
     ///
@@ -858,7 +859,7 @@ impl<P> HookLife<P> {
     }
 }
 
-/// The settings as text; `"{}"` when absent.
+/// A pushed settings map as text; `"{}"` when absent (`configure` reads it as an object).
 fn settings_text(bytes: &[u8]) -> Cow<'_, str> {
     if bytes.is_empty() {
         return Cow::Borrowed("{}");
@@ -866,9 +867,10 @@ fn settings_text(bytes: &[u8]) -> Cow<'_, str> {
     String::from_utf8_lossy(bytes)
 }
 
-/// [`HookOpen::open`] over `settings`; its refusal is the plugin's own words.
+/// [`HookOpen::open`] over `settings`, verbatim (an empty blob stays empty, so the plugin answers
+/// it in its own 1.5.5 words); its refusal is the plugin's own words.
 fn opened<P: HookOpen>(settings: &[u8]) -> Result<Arc<dyn Hook>, Refusal> {
-    P::open(&settings_text(settings))
+    P::open(&String::from_utf8_lossy(settings))
         .map(Arc::<dyn Hook>::from)
         .map_err(Refusal::failed)
 }

@@ -806,3 +806,37 @@ fn a_hook_with_no_connector_answers_unarmed() {
     assert_eq!(error_text(&out.head), ConnFailure::Unarmed.to_string());
     closed::<OpenForward>(p);
 }
+
+/// What [`OpenRecording`] was handed, in order.
+static OPENED_WITH: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+struct OpenRecording;
+impl HookOpen for OpenRecording {
+    fn open(settings: &str) -> Result<Box<dyn Hook>, String> {
+        OPENED_WITH.lock().unwrap().push(settings.to_owned());
+        Ok(Box::new(Forward))
+    }
+}
+
+/// RED (ARCHITECT ruling 2026-10-02: operator-visible text equals 1.5.5): `open` hands the plugin
+/// its settings verbatim. An empty blob stays empty (1.5.5's hooks were handed exactly that, and
+/// answer it in their own words), never rewritten to `{}`; a present one crosses byte for byte.
+#[test]
+fn red_open_hands_the_plugin_its_settings_verbatim_an_empty_blob_stays_empty() {
+    let empty = opened_with::<OpenRecording>(&zeroed());
+    let raw = br#"{"url": "https://x"}"#;
+    let mut input: OpenIn = zeroed();
+    input.settings = Blob {
+        ptr: raw.as_ptr(),
+        len: raw.len(),
+        fmt: BLOB_JSON,
+        flags: 0,
+    };
+    let present = opened_with::<OpenRecording>(&input);
+    assert_eq!(
+        *OPENED_WITH.lock().unwrap(),
+        vec![String::new(), r#"{"url": "https://x"}"#.to_owned()]
+    );
+    closed::<OpenRecording>(empty);
+    closed::<OpenRecording>(present);
+}
