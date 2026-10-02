@@ -1064,10 +1064,11 @@ pub fn build_app_from_config(
         h2_prior_knowledge,
     };
 
-    // The hook plugin-resolution environment: the validated registry + shared projectors. Every hook
-    // `plugin:` ref opens a `DlopenPolicy` through this. Built once and cloned into each resolver and
-    // onto `App` (for the control-plane reads + scrape).
-    let hook_env = hooks::HookEnv::new(plugin_registry.clone(), secret_resolver.clone());
+    // The hook plugin-resolution environment: the validated registry and the root's hook axis over
+    // it. Every hook `plugin:` ref opens through the axis. Built once and cloned into each resolver
+    // and onto `App` (for the control-plane reads + scrape). A 1.5.5 JSON hook plugin in the
+    // registry refuses the build here, naming the rebuild.
+    let hook_env = hooks::HookEnv::new(plugin_registry.clone(), secret_resolver.clone())?;
 
     // FAIL-CLOSED: resolve every hook's SecretRef settings ONCE, up front, so an unresolvable
     // hook secret aborts boot/reload here — matching the store path (above) and the auth chain

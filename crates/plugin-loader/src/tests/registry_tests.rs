@@ -491,12 +491,13 @@ fn open_auth_refuses_non_auth_kind() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Kind gating: a non-hook plugin resolves but cannot serve as a routing hook. Mirrors
-/// `open_store_refuses_non_store_kind`: a store-kind manifest passes phase 1/2/3 and is then
-/// handed to `open_hook`, which must reject on the KIND gate before ever attempting to load it
-/// (the dummy projectors below are never invoked - the kind check short-circuits first).
+/// Kind gating: a non-hook plugin resolves but cannot serve as a hook. Mirrors
+/// `open_store_refuses_non_store_kind`: a store-kind manifest passes phase 1/2/3, and the hook axis
+/// over the registry holds no row for it, so opening it as a hook is refused naming the module,
+/// before anything is loaded.
 #[test]
-fn open_hook_refuses_non_hook_kind() {
+fn the_hook_axis_refuses_a_non_hook_kind() {
+    use busbar_contract::hook_calls::HookAxis;
     let release = key(1);
     let dir = tmpdir("hookkind");
     let m = sign(
@@ -506,19 +507,24 @@ fn open_hook_refuses_non_hook_kind() {
     );
     write_tarball(&dir, "gamma.tar.gz", &m, b"store lib");
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
-    let projectors = std::sync::Arc::new(crate::hook::HookProjectors {
-        decide: Box::new(|_req, _cands, _ctx| serde_json::Value::Null),
-        transform: Box::new(|_req| serde_json::Value::Null),
-        normalize: Box::new(|_v, _cands| unreachable!("kind gate must short-circuit first")),
-        transform_outcome: Box::new(|_v| unreachable!("kind gate must short-circuit first")),
-        status: Box::new(|_v| None),
-        describe_schema: Box::new(|_v| None),
-    });
-    let err = reg
-        .open_hook("gamma", "{}", "gamma", projectors)
+    assert!(reg.resolve("gamma").is_some(), "the store row resolves");
+    let dispatcher = std::sync::Arc::new(crate::dispatch::Dispatcher::new(
+        crate::dispatch::DispatchConfig::default(),
+    ));
+    let rows = crate::hook_door::HookRows::new(&[], Some(&reg), dispatcher).expect("the axis");
+    let err = rows
+        .open(
+            "gamma",
+            "gamma",
+            &serde_json::json!({}),
+            std::time::Duration::from_secs(1),
+        )
         .map(|_| ())
         .unwrap_err();
-    assert!(err.contains("kind 'store'"), "got {err}");
+    assert!(
+        err.contains("no `kind: hook` plugin answers to 'gamma'"),
+        "got {err}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

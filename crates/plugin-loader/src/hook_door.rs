@@ -50,6 +50,9 @@ use crate::dispatch::{
 };
 use crate::PluginRegistry;
 
+/// The refusal of a dropped-in `kind: hook` plugin that states no Statement.
+pub const JSON_HOOK_REFUSED: &str = "it speaks the 1.5.5 JSON hook contract, which this host does not load — rebuild the plugin against the 1.6.0 SDK";
+
 /// The host's clamp on a hook Statement's `max_inflight`.
 const MAX_INFLIGHT_CAP: u32 = 64;
 /// The first trial window after a fault.
@@ -654,8 +657,9 @@ pub struct HookRows {
     dispatcher: Arc<Dispatcher>,
     /// `plugins.logs`: each OPENED instance's own log sink; `None` = its records are discarded.
     logs: Option<PluginLogConfig>,
-    /// The host's one connection table: an OPENED instance's needs are declared on it.
-    conns: Option<Arc<dyn DeclaredConns>>,
+    /// The host's one connection table, read when an instance is OPENED (never sooner: the root
+    /// builds the axis before its connection table exists): its needs are declared on it.
+    conns: Option<fn() -> Arc<dyn DeclaredConns>>,
 }
 
 impl std::fmt::Debug for HookRows {
@@ -671,11 +675,12 @@ impl std::fmt::Debug for HookRows {
 
 impl HookRows {
     /// The compiled-in hook doors `linked`, then every loadable dropped-in `kind: hook` plugin of
-    /// `registry` whose signed manifest states a Statement, bound on `dispatcher`. A dropped-in
-    /// hook that states none speaks the 1.5.5 JSON contract and is not a row here.
+    /// `registry` (its signed manifest states its Statement), bound on `dispatcher`.
     ///
     /// # Errors
-    /// The first row that will not state itself, named.
+    /// The first row that will not state itself, named. A dropped-in hook whose manifest states no
+    /// Statement speaks the 1.5.5 JSON contract: it is REFUSED, naming the rebuild (one version per
+    /// kind; C21's hook half).
     pub fn new(
         linked: &[DoorFn],
         registry: Option<&PluginRegistry>,
@@ -697,11 +702,11 @@ impl HookRows {
         for p in registry
             .map_or(&[][..], PluginRegistry::loadable)
             .iter()
-            .filter(|p| p.manifest.kind == hook)
+            .filter(|p| p.manifest.kind == hook && !p.linked())
         {
             let named = |e: String| format!("plugin '{}': {e}", p.manifest.name);
             let Some(stated) = p.manifest.stated_rendering().map_err(named)? else {
-                continue;
+                return Err(named(JSON_HOOK_REFUSED.to_string()));
             };
             let c = Candidate::from_rendering(
                 stated,
@@ -743,9 +748,9 @@ impl HookRows {
         self
     }
 
-    /// Each opened instance declares its needs on `conns`.
+    /// Each opened instance declares its needs on the table `conns` answers when it opens.
     #[must_use]
-    pub fn with_conns(mut self, conns: Arc<dyn DeclaredConns>) -> Self {
+    pub fn with_conns(mut self, conns: fn() -> Arc<dyn DeclaredConns>) -> Self {
         self.conns = Some(conns);
         self
     }
@@ -815,19 +820,10 @@ impl HookAxis for HookRows {
                 None => Arc::new(NoSink),
             })
         };
-        let plugin = Self::bind(
-            &c,
-            &self.dispatcher,
-            label,
-            sink(label)?,
-            self.conns.clone(),
-        )?;
+        let conns = self.conns.map(|table| table());
+        let plugin = Self::bind(&c, &self.dispatcher, label, sink(label)?, conns.clone())?;
         let rebind = {
-            let (dispatcher, conns, label) = (
-                Arc::clone(&self.dispatcher),
-                self.conns.clone(),
-                label.to_string(),
-            );
+            let (dispatcher, label) = (Arc::clone(&self.dispatcher), label.to_string());
             let sink = sink(label.as_str())?;
             move || Self::bind(&c, &dispatcher, &label, Arc::clone(&sink), conns.clone())
         };

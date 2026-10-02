@@ -886,7 +886,7 @@ async fn admin_usage_over_an_unpriced_class_answers_named_409() {
 /// plugin acks by default); `GET .../schema` proxies the plugin's `describe` self-description
 /// envelope, extracting the `schema` member (single nest). The retired socket/webhook mock is gone —
 /// the plugin IS the transport now. (A NACK/wrong-version ack rejecting the commit is covered at the
-/// DlopenPolicy configure unit level.)
+/// hook seam's configure unit level.)
 #[tokio::test]
 async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
     busbar_kernel::metrics::init();
@@ -7483,7 +7483,8 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
     let hook_env = busbar_kernel::hooks::HookEnv::new(
         std::sync::Arc::new(registry),
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
-    );
+    )
+    .expect("the registry's hook axis");
     let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
     let client = reqwest::Client::new();
 
@@ -7627,7 +7628,8 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
     let hook_env = busbar_kernel::hooks::HookEnv::new(
         std::sync::Arc::new(registry),
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
-    );
+    )
+    .expect("the registry's hook axis");
     let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
     let client = reqwest::Client::new();
 
@@ -7875,7 +7877,8 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     let hook_env = busbar_kernel::hooks::HookEnv::new(
         std::sync::Arc::new(registry),
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
-    );
+    )
+    .expect("the registry's hook axis");
     let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
     let client = reqwest::Client::new();
 
@@ -7910,7 +7913,8 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     let hook_env2 = busbar_kernel::hooks::HookEnv::new(
         std::sync::Arc::new(registry2),
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
-    );
+    )
+    .expect("the registry's hook axis");
     let (addr2, handle2) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env2).await;
     let got2: serde_json::Value = client
         .get(format!(
@@ -7979,7 +7983,8 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     let bad_hook_env = busbar_kernel::hooks::HookEnv::new(
         std::sync::Arc::new(bad_registry),
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
-    );
+    )
+    .expect("the registry's hook axis");
     let (bad_addr, bad_handle) =
         serve_with_plugins_dir_and_hook_env(bad_dir.clone(), bad_hook_env).await;
     let got_bad: serde_json::Value = client

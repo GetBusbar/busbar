@@ -46,7 +46,6 @@ pub mod export;
 pub mod fetch;
 mod ffi_thread;
 pub mod highwater;
-pub mod hook;
 pub mod hook_door;
 mod host;
 /// THE ONE DURABLE-WRITE OWNER, named once for the whole loader: every file or directory the loader
@@ -90,7 +89,6 @@ impl LinkedPlugin {
 pub use carrier::{HotReply, ReplyStream, RequestHead, MAX_PLANE_REPLY_LEN};
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
-pub use hook::DlopenPolicy;
 pub use host::{install_egress_carrier, EgressCarrier};
 pub use plane::{
     link_plane, load_plane, load_plane_from_bytes, DynPlane, HotClaim, HotDeclaration, ServedPlane,
@@ -162,13 +160,13 @@ pub mod contract_types_are_named_from_the_contract {}
 
 /// INTERN a plugin name into a stable `&'static str`, reusing one allocation per unique name.
 ///
-/// `DlopenPolicy`/`DynAuth` carry `name: &'static str`, and a name string used to be `Box::leak`ed on
-/// EVERY open — but `open_hook`/`open_auth` run per config/plugin reload, per `push_configure`, per
+/// The hook routing seam and `DynAuth` carry `name: &'static str`, and a name string used to be
+/// `Box::leak`ed on EVERY open — but hook and auth opens run per config/plugin reload, per `push_configure`, per
 /// `fetch_status` (every Prometheus `/metrics/hooks` scrape refresh), per `fetch_schema`, and per
 /// `resolve_on_error_chain`, so the leak was per-CALL and unbounded over the process lifetime, driven
 /// by routine external scraping. Interning bounds it to ONE leak per DISTINCT plugin name for the life
 /// of the process: a repeated open of the same plugin reuses the interned `&'static str`.
-pub(crate) fn intern_name(name: &str) -> &'static str {
+pub fn intern_name(name: &str) -> &'static str {
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
     static INTERNED: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
@@ -369,8 +367,7 @@ impl RawPlugin {
             .map_err(|e| TransportError::engine(format!("plugin request encode failed: {e}")))?;
         let mut out: *mut u8 = std::ptr::null_mut();
         let mut out_len: usize = 0;
-        // Guard the `busbar_call` crossing, for PARITY with the hook seam (`DlopenPolicy::call`).
-        // What this can catch is stated on `ffi_guard`: an unwind from this process's own runtime.
+        // Guard the `busbar_call` crossing. What this can catch is stated on `ffi_guard`: an unwind from this process's own runtime.
         // A dlopened plugin's panic is caught by the SDK on the PLUGIN side (answered as
         // `STATUS_PANIC`, classified below); one that escapes a non-SDK plugin is a foreign
         // exception to this runtime and aborts the process — no host-side guard can turn that into
@@ -913,7 +910,7 @@ fn wire_up(
     }
     // On the SUCCESS path a well-behaved plugin leaves `err` null, but an ABI-violating
     // plugin may set a non-null `err` alongside `STATUS_OK`. Free it here rather than leaking it on
-    // every load (the hot `fetch_status` → `open_hook` → `wire_up_raw` metrics-scrape path).
+    // every load (the `wire_up_raw` path every cold open takes).
     free_guarded(free, &display, err, err_len);
 
     // Success: disarm the guard and move the library + backing into the RawPlugin (whose fields drop
@@ -2136,11 +2133,6 @@ mod auth_conformance_tests;
 #[cfg(test)]
 #[path = "tests/auth_verify_conformance_tests.rs"]
 mod auth_verify_conformance_tests;
-
-/// `kind: hook` through both doors: one wire, one row, one routing policy.
-#[cfg(test)]
-#[path = "tests/hook_conformance_tests.rs"]
-mod hook_conformance_tests;
 
 /// The dispatcher through both doors: one script, LINKED and DROPPED, byte-identical, and a RED
 /// arm per mechanism rule.

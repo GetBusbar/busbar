@@ -286,3 +286,26 @@ fn a_hook_statement_without_its_kind_tail_is_refused_at_load() {
         );
     assert!(tailed.is_ok(), "the tailed door opens");
 }
+
+/// RED (C21's hook half; one version per kind): a dropped-in `kind: hook` plugin whose manifest
+/// states no Statement speaks the 1.5.5 JSON hook contract. The axis refuses it — and so the boot —
+/// naming the plugin and the rebuild, where it used to load it over the JSON lane.
+#[test]
+fn a_dropped_in_1_5_5_json_hook_plugin_is_refused_naming_the_rebuild() {
+    let abi = *crate::supported_abi("hook")
+        .iter()
+        .min()
+        .expect("a hook payload schema");
+    let registry = crate::both_ways::dropped(
+        "json-hook",
+        crate::both_ways::statement("hook", "json-hook", "json-hook", abi),
+        b"a 1.5.5 JSON hook library",
+    );
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let refused = HookRows::new(&[], Some(&registry), dispatcher)
+        .expect_err("a 1.5.5 JSON hook plugin is refused");
+    assert!(
+        refused.contains(super::JSON_HOOK_REFUSED) && refused.contains("json-hook"),
+        "{refused}"
+    );
+}

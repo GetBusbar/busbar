@@ -691,9 +691,8 @@ pub unsafe fn secret_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutc
 
 // ── HOOK-plugin glue (`kind: hook`) ───────────────────────────────────────────────────────────────
 // A hook plugin is a routing policy behind the frozen six-symbol ABI. Its author implements the tiny
-// SYNC [`HookHandler`] trait (the six ops over JSON), NOT the engine's async `RoutingPolicy` — the
-// async/borrowed trait lives on the ENGINE side (`DlopenPolicy`), which translates each method into a
-// `busbar_call`. The op-dispatch match ([`dispatch_hook`]) is the ergonomic helper the spec asks for:
+// SYNC [`HookHandler`] trait (the six ops over JSON), NOT the engine's async `RoutingPolicy`; on the
+// hook door the SDK's `json_hook` bridges it onto the kind's typed ops. The op-dispatch match ([`dispatch_hook`]) is the ergonomic helper the spec asks for:
 // a hook author writes `decide`/`transform`/etc. and the SDK routes the op envelope to them.
 
 /// The sync contract a `kind: hook` plugin author implements. Each method receives the op's payload as

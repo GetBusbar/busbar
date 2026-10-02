@@ -308,9 +308,8 @@ fn the_rewrite_apply_site_never_falls_back_to_the_caller_s_original_params() {
 /// question at that join turns on what can arrive there. A missing check is not a vulnerability
 /// until the line is shown to execute.
 ///
-/// A `kind: hook` plugin's panic is caught THREE times before it could reach a plane: the SDK's
-/// mandatory export-boundary `catch_unwind` (→ `STATUS_PANIC`), the engine's `ffi_guard` inside
-/// `transport_call`, and `DlopenPolicy::call`'s own belt-and-braces guard. It therefore arrives at
+/// A `kind: hook` plugin's panic is caught at its door (the SDK answers the op FAULT) and the host's
+/// hook seam reads that as a broken answer. It therefore arrives at
 /// `transform_over_over` as `TransformOutcome::Failed` — **the seam RAN and produced a verdict** —
 /// and the operator's `on_error` decides what happens next. Both halves are here because the pair
 /// is the point:
